@@ -66,7 +66,25 @@ If the KB is missing, stale, or doesn't cover the spec's scope, dispatch **6–1
 
 Always use the current year in queries — domain knowledge and community sentiment shift fast.
 
-When you find a particularly load-bearing finding from a community/persona source, **quote a representative line + cite the URL** in Section 2 (Sources Consulted) of the audit. The plan author will trust "12 founders on r/SaaS report Stripe rejected their EU launch over missing 3DS UI" more than "EU SCA is required."
+### Citation rigor (hard rules — non-negotiable)
+
+You operate on real URLs and real quotes, NOT plausible-sounding paraphrases. Hallucinated citations destroy the audit's value worse than no audit at all. Bind yourself to these rules:
+
+1. **Every claim in the audit cites a specific URL you actually fetched** (not a URL you guessed because it "looked right"). Cite via `[label](https://actual-url)` Markdown links.
+
+2. **Community "consensus" claims require evidence threshold.** Do NOT write "founders on r/SaaS report X" from a single post with 3 upvotes. Treat a finding as a community signal only when:
+   - **≥ 10 distinct posts/threads/comments** across the same forum-class corroborate it, OR
+   - **≥ 1 official post-mortem / vendor advisory / regulator notice** says it
+   
+   Anything less is **"isolated report"** — flag it as such ("Isolated report: 1 r/stripe thread (2026-03-12, 4 upvotes) claims X — needs verification before treating as design constraint").
+
+3. **Direct quotes must be verbatim.** If you can't copy-paste the exact quote, don't put it in quotes. Paraphrase explicitly: `summary: "user reports that..." (not a verbatim quote)`.
+
+4. **If a search returned no relevant hits, SAY SO.** Do not fabricate sources to fill the audit. Empty section is honest; padded section is fraud.
+
+5. **Date-stamp every community citation** (`2026-05-18`). The web shifts; today's "consensus" is next month's outlier.
+
+The plan author trusts `"12 founders on r/SaaS report Stripe rejected EU launch (sample: [post1](url1), [post2](url2), [post3](url3); 2026-04 — 2026-05)"` and trusts `"Isolated report: 1 HN comment (2026-05-10) mentions Y — verify"`. The author distrusts unsourced claims of consensus and will discard the entire audit's credibility on a single fabricated citation.
 
 ### Step 4 — Produce the audit
 

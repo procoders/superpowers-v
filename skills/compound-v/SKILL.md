@@ -30,7 +30,7 @@ All three are independent — different failure modes, different lookup paths, n
 **Announce at start of each phase:**
 - Phase 1: `"💉 Compound V injected — triple pre-flight (archaeology + domain-expert + library-validator) in parallel."`
 - Phase 2: `"💉 Compound V — enforcing Disjoint Partition Map."`
-- Phase 3: `"💉 Compound V — going Supe: N implementers parallel on Opus."`
+- Phase 3: `"💉 Compound V — dispatching N implementers in parallel on Opus."`
 
 (Heavy theming is optional flavor; technical content is straight business.)
 

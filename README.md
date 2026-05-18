@@ -23,32 +23,49 @@ You don't invoke Compound V. It invokes itself.
 
 ## 1 · 2 · 3 — install in three steps
 
-### 1. Install Context7 MCP (required for Phase 1C)
-
-```bash
-# In Claude Code (or your harness)
-/mcp add context7
-```
-
-Without Context7, Phase 1C falls back to WebSearch — slower, less authoritative, still works.
-
-### 2. Install the plugin
+### 1. Install the plugin
 
 **From GitHub (recommended):**
-```bash
+```
 /plugin install https://github.com/procoders/superpowers-v
 ```
 
 **From a local clone (for development):**
 ```bash
 git clone https://github.com/procoders/superpowers-v.git ~/dev/superpowers-v
+```
+then in Claude Code:
+```
 /plugin marketplace add ~/dev/superpowers-v
 /plugin install superpowers-v
 ```
 
-### 3. Use Superpowers normally
+### 2. Use Superpowers normally
 
 That's it. Open a session, brainstorm a feature, and watch Compound V appear at the right moments. The SessionStart hook prints a banner so you know it's loaded.
+
+### 3. (Recommended) Add Context7 MCP for Phase 1C
+
+Phase 1C (library/doc validator) uses Context7 MCP for live documentation lookups. It's recommended but not required — without it Phase 1C falls back to WebSearch (slower, less authoritative).
+
+The simplest path is via the official Anthropic plugin marketplace:
+```
+/plugin install context7@claude-plugins-official
+```
+
+Or add it manually to your `~/.claude.json` (or project `.mcp.json`):
+```json
+{
+  "mcpServers": {
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp"]
+    }
+  }
+}
+```
+
+Verify it's loaded: `/mcp` should show `context7` connected.
 
 ---
 
