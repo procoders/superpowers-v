@@ -1,0 +1,10 @@
+{
+  "$comment": "cclint config for superpowers-v. Disables CLAUDE.md-specific rules that don't apply to skills/agents/commands.",
+  "rules": {
+    "structure": "off",
+    "content-appropriateness": "off",
+    "file-location": "off",
+    "monorepo-hierarchy": "off",
+    "file-size": "off"
+  }
+}

@@ -93,7 +93,7 @@ For each library or ecosystem topic, append to `docs/superpowers/library-audit/_
 
 If no KB file exists for the topic, create one:
 
-```
+```markdown
 # <Topic> Library Knowledge Base
 
 Maintained by Compound V Phase 1C validator. Append at the bottom.

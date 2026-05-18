@@ -82,7 +82,7 @@ After every task is approved, dispatch ONE final integration-reviewer subagent o
 
 Return a structured summary at the end of execution:
 
-```
+```plaintext
 COMPOUND V DISPATCH COMPLETE: <plan-path>
 
 Phase totals:

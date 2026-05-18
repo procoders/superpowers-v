@@ -74,7 +74,7 @@ If the parallel batch has > 6 tasks, verify the plan declares batches (`Batch A:
 
 Return a structured report — short.
 
-```
+```plaintext
 PARTITION REVIEW: <plan-path>
 
 VERDICT: PASS | FAIL

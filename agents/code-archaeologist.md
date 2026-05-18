@@ -28,7 +28,7 @@ List every dimension the existing code branches by, and enumerate all combinatio
 
 Example (gateway):
 
-```
+```plaintext
 | is_free | proxied | hosting_url | Example            | userId source     |
 |---------|---------|-------------|--------------------|-------------------|
 | true    | false   | null        | community external | n/a (no auth)     |
@@ -45,7 +45,7 @@ Red flag: tested one cell, assumed the rest "work the same way." They don't.
 
 For every variable the new code reads, document where it's set — in every branch. One table per variable.
 
-```
+```plaintext
 userId (local var in mcp-gateway/index.ts):
 - Set in: if (isHostedFree && token) { userId = jwt.sub }
 - NOT set when: !isHostedFree

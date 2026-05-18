@@ -97,7 +97,7 @@ For each domain, append generalized findings to `docs/superpowers/expert/_knowle
 
 If no KB file exists for the domain, create one with this header:
 
-```
+```markdown
 # <Domain> Knowledge Base
 
 Maintained by Compound V Phase 1B advisor. Append at the bottom on each pass.

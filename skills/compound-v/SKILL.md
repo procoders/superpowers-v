@@ -154,7 +154,7 @@ Violating any of these = stop, fix, restart the phase.
 
 Compound V writes to a flat, predictable structure under `docs/superpowers/`:
 
-```
+```plaintext
 docs/superpowers/
 ├── archaeology/
 │   └── YYYY-MM-DD-<topic>.md          # Phase 1A output per feature

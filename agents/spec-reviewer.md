@@ -71,7 +71,7 @@ For each MUST item from steps 2 and 3, find the test that would fail if the requ
 
 Return a verdict-first report.
 
-```
+```plaintext
 SPEC REVIEW: Task K — <name>
 
 VERDICT: APPROVED | ISSUES
