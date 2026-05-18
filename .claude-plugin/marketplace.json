@@ -9,7 +9,7 @@
     {
       "name": "superpowers-v",
       "description": "Compound V for Superpowers: triple parallel pre-flight (code archaeology + domain-expert + Context7 library validator), disjoint partitioning, and batched parallel dispatch (Opus default, narrow Sonnet exception)",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "source": "./",
       "author": {
         "name": "Oleg",

@@ -1,6 +1,6 @@
-# Compound V — Codex / Universal Agent Shim
+# Compound V — Codex / Universal Agent Shim (🧪 experimental, untested)
 
-This file is auto-discovered by **Codex CLI** and other tools that read `AGENTS.md` from a project root. It tells those harnesses how to use this plugin's content even though it was authored for Claude Code.
+This file documents how the plugin's content *would* be consumed by tools that read `AGENTS.md` from a project root (Codex CLI and similar). **It has not been tested on a real Codex install** — tool-name mappings and dispatch syntax are based on documentation and may need adaptation per your harness version.
 
 ## What this plugin does
 

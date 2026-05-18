@@ -23,7 +23,7 @@ Compound V is a **transparent interceptor** that sits between Superpowers phases
 
 All three are independent — different failure modes, different lookup paths, no shared state. Dispatch them in **one message with three concurrent Task calls** to keep wall-clock cost low.
 
-**Auto-fire caveat:** "Auto-fires after brainstorming" is description-driven (the parent agent recognizes the trigger from this skill's description and invokes it). It is NOT enforced by Claude Code hooks — hooks fire on lifecycle events (SessionStart, SubagentStop, PreToolUse), not on description matches. If you want hard enforcement, wrap brainstorming's exit in a `SubagentStop` hook that runs `Skill compound-v`. Otherwise, trust the description-based trigger.
+**Auto-fire caveat:** "Auto-fires after brainstorming" is **description-driven** (the parent agent reads this skill's description and recognizes the trigger condition). It is NOT enforced by Claude Code hooks. The plugin ships two helper hooks (`SessionStart` banner + `PostToolUse` plan-saved nudge) that print *reminders* to the parent agent, but the actual skill invocation still depends on the parent recognizing the description trigger. Reliability is high on Opus / Sonnet 4.6+; weaker models may miss the trigger.
 
 **The skyscraper metaphor** (see [assets/skyscraper-metaphor.md](../../assets/skyscraper-metaphor.md)): Without pre-flight you build a 500m² hat on a 200m² tower. With both audits, you add three proper floors that fit the building AND the building code.
 

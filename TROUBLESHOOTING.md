@@ -6,7 +6,7 @@ Common issues with Compound V and how to fix them.
 
 **Symptom:** You finished `superpowers:brainstorming`, the spec is saved, but Compound V didn't dispatch the pre-flights.
 
-**Cause:** "Auto-fire" is a combination of: (a) the parent Claude reading Compound V's skill description and recognizing the trigger, (b) the SubagentStop hook printing a nudge. Either can fail silently.
+**Cause:** "Auto-fire" is **description-driven** — the parent Claude has to read Compound V's skill description and recognize the trigger condition. The plugin ships a `PostToolUse(Write)` hook that prints a *reminder* when a spec/plan file is saved, but the actual skill invocation still depends on the parent's recognition. Reliability is high on Opus / Sonnet 4.6+; weaker models may miss it.
 
 **Fix:**
 1. Confirm the plugin is installed: `/plugin list` should show `superpowers-v`.
@@ -119,7 +119,7 @@ Currently: dispatch the agent manually: `Task(subagent_type: "compound-v:doc-val
 
 The plugin ships compatibility shims:
 - **Codex**: `AGENTS.md` at the project root is auto-loaded by Codex CLI; it points at the same skills.
-- **Gemini CLI**: `GEMINI.md` + `gemini-extension.json` configure Gemini to load the same content.
+- **Gemini CLI**: `GEMINI.md` documents the conceptual mapping. The extension manifest schema is harness-specific — adapt to your Gemini CLI version's actual format (the shim is untested as of v0.1.1).
 
 The skill content is harness-neutral. Tool names differ (Claude Code's `Task` ≈ Codex's `subagent`); the dispatcher logic adapts.
 

@@ -1,6 +1,6 @@
-# Compound V — Gemini CLI Shim
+# Compound V — Gemini CLI Shim (🧪 experimental, untested)
 
-This file is auto-discovered by **Gemini CLI**. Combined with `gemini-extension.json` at the project root, it tells Gemini how to use this plugin's content.
+This file documents how the plugin's content *would* be used in Gemini CLI. **The shim has not been tested on a real Gemini CLI install** — the manifest format for Gemini CLI extensions is version-specific and the maintainer has not verified compatibility. Treat this as a starting point, not a working integration.
 
 ## What this plugin does
 

@@ -25,9 +25,6 @@ jobs:
       - name: Validate hooks.json is valid JSON
         run: jq empty hooks/hooks.json
 
-      - name: Validate gemini-extension.json is valid JSON
-        run: jq empty gemini-extension.json
-
       - name: Verify required plugin.json fields
         run: |
           set -e

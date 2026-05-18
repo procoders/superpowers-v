@@ -1,24 +1,14 @@
 {
-  "$schema": "https://json.schemastore.org/claude-code-hooks.json",
+  "$comment": "Compound V hooks. SubagentStop event was previously used but is not documented in official Claude Code hooks reference; removed v0.1.1 after honesty audit. SessionStart matcher pattern copied from upstream obra/superpowers v5.1.0.",
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "*",
+        "matcher": "startup|clear|compact",
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session-banner.sh"
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "matcher": "brainstorming|writing-plans",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/sidekick-nudge.sh"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/session-banner.sh\"",
+            "async": false
           }
         ]
       }
@@ -29,7 +19,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/plan-saved-nudge.sh"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/plan-saved-nudge.sh\"",
+            "async": false
           }
         ]
       }

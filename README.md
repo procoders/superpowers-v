@@ -121,11 +121,10 @@ superpowers-v/
 ├── commands/                                  # opt-in slash commands
 │   ├── v-archaeology.md                       # /v:archaeology <topic>
 │   └── v-dispatch.md                          # /v:dispatch <plan-path>
-├── hooks/                                     # hard sidekick auto-fire
-│   ├── hooks.json
-│   ├── session-banner.sh                      # SessionStart banner
-│   ├── sidekick-nudge.sh                      # SubagentStop: nudges on brainstorming/writing-plans completion
-│   └── plan-saved-nudge.sh                    # PostToolUse(Write): nudges when a plan/spec is saved
+├── hooks/                                     # sidekick reminders (description-based auto-fire is primary)
+│   ├── hooks.json                             # SessionStart + PostToolUse(Write)
+│   ├── session-banner.sh                      # SessionStart: emits banner via additionalContext JSON
+│   └── plan-saved-nudge.sh                    # PostToolUse(Write): emits next-step nudge when a plan/spec is saved
 ├── skills/
 │   └── compound-v/
 │       ├── SKILL.md                           # main entry, auto-fires at transitions
@@ -143,7 +142,6 @@ superpowers-v/
 │   └── validate.yml                           # CI: JSON schema, agent frontmatter, dead links, shellcheck
 ├── AGENTS.md                                  # Codex / generic-harness shim
 ├── GEMINI.md                                  # Gemini CLI shim
-├── gemini-extension.json                      # Gemini CLI extension manifest
 ├── CHANGELOG.md
 ├── TROUBLESHOOTING.md
 ├── README.md
@@ -157,8 +155,8 @@ superpowers-v/
 | Harness | Status | Entry point |
 |---|---|---|
 | **Claude Code** | ✅ primary target | `.claude-plugin/plugin.json` |
-| **Codex CLI** | ✅ best-effort via shim | [AGENTS.md](AGENTS.md) |
-| **Gemini CLI** | ✅ best-effort via shim | [GEMINI.md](GEMINI.md) + [gemini-extension.json](gemini-extension.json) |
+| **Codex CLI** | 🧪 untested shim — needs hands-on verification | [AGENTS.md](AGENTS.md) |
+| **Gemini CLI** | 🧪 untested shim — schema may need adaptation | [GEMINI.md](GEMINI.md) |
 
 The skill content is harness-neutral prose. Tool names differ across harnesses — the shims document the mapping.
 
@@ -230,7 +228,7 @@ See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — covers auto-fire issues, Contex
 ## Contributing
 
 PRs welcome. CI runs on every push:
-- `plugin.json` / `marketplace.json` / `hooks.json` / `gemini-extension.json` schema validation
+- `plugin.json` / `marketplace.json` / `hooks.json` schema validation
 - Agent frontmatter check (must have `name`, `description`; **must NOT specify Haiku**)
 - Skill frontmatter check
 - Dead intra-plugin `.md` link check
