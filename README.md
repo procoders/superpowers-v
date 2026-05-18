@@ -25,9 +25,12 @@ You don't invoke Compound V. It invokes itself.
 
 ### 1. Install the plugin
 
+Claude Code uses a two-step pattern: first register the marketplace, then install the plugin from it.
+
 **From GitHub (recommended):**
 ```
-/plugin install https://github.com/procoders/superpowers-v
+/plugin marketplace add https://github.com/procoders/superpowers-v
+/plugin install superpowers-v@superpowers-v-marketplace
 ```
 
 **From a local clone (for development):**
@@ -37,7 +40,14 @@ git clone https://github.com/procoders/superpowers-v.git ~/dev/superpowers-v
 then in Claude Code:
 ```
 /plugin marketplace add ~/dev/superpowers-v
-/plugin install superpowers-v
+/plugin install superpowers-v@superpowers-v-marketplace
+```
+
+**Live-edit mode** (skip install entirely; load directly from a local checkout, auto-reloadable):
+```bash
+claude --plugin-dir /path/to/superpowers-v
+# Then inside the session, after edits:
+/reload-plugins
 ```
 
 ### 2. Use Superpowers normally

@@ -4,6 +4,15 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [0.1.2] — 2026-05-18
+
+### Fixed (critical)
+- **Install instructions in README were wrong.** Claimed `/plugin install <github-url>` works directly; it does not. Real path is the documented two-step: `/plugin marketplace add <url-or-path>` first, then `/plugin install <plugin>@<marketplace-name>`. Reported by user trying to install v0.1.1 from GitHub and getting "Marketplace not found."
+
+### Changed
+- Marketplace name renamed from `superpowers-v-dev` to `superpowers-v-marketplace` (mirrors the upstream `obra/superpowers` → `superpowers-marketplace` naming convention; cleaner for end-user-facing install command).
+- README install section now shows three install paths: marketplace + GitHub, marketplace + local clone, and `--plugin-dir` live-edit mode.
+
 ## [0.1.1] — 2026-05-18
 
 Honesty pass after an independent verification audit caught several fabricated CLI/env-var references that I had baked into hooks and docs without verifying against the official Claude Code documentation.
