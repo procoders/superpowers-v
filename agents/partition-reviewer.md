@@ -1,6 +1,6 @@
 ---
 name: partition-reviewer
-description: Use when a plan has been written and you need to verify its Partition Map is genuinely disjoint BEFORE Phase 3 parallel dispatch. Reads a plan file, extracts the Partition Map, cross-checks that no file appears in two parallel tasks, validates that all shared resources are in Task 0, and confirms each Sonnet-assigned task has a valid justification per the strict junior-task taxonomy. Returns PASS or FAIL with a specific list of partition violations. Closes the gap where Compound V's Iron Rule "no execution without a verified Partition Map" depends on the planner's self-assessment.
+description: Use when a Compound V plan has been written and you need to verify its Partition Map is genuinely disjoint BEFORE executing parallel dispatch. Returns PASS or FAIL with specific violations (file overlap, shared-resource misplacement, unjustified Sonnet assignments).
 model: opus
 color: green
 ---

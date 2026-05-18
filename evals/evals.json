@@ -1,0 +1,88 @@
+{
+  "$schema": "https://raw.githubusercontent.com/anthropics/claude-code/main/schemas/skill-evals.schema.json",
+  "name": "compound-v skill triggering",
+  "description": "Test cases for compound-v skill auto-trigger discovery. Run with the Skill Creator's eval harness or your preferred prompt-test runner.",
+  "skill": "compound-v",
+  "tests": [
+    {
+      "name": "positive-1: brainstorming output triggers compound-v",
+      "category": "positive",
+      "prompt": "I just finished superpowers:brainstorming. The spec is for adding Notion OAuth to our existing OAuth gateway. What's next?",
+      "expect": {
+        "skill_invoked": "compound-v",
+        "rationale": "Description explicitly says 'Use when superpowers:brainstorming has produced a spec'. Direct trigger language."
+      }
+    },
+    {
+      "name": "positive-2: writing-plans output triggers compound-v",
+      "category": "positive",
+      "prompt": "writing-plans just produced a plan at docs/superpowers/plans/2026-05-18-notion-oauth.md. Ready to execute.",
+      "expect": {
+        "skill_invoked": "compound-v",
+        "rationale": "Description: 'OR when superpowers:writing-plans has produced a plan'. Plan path + execution intent = trigger."
+      }
+    },
+    {
+      "name": "positive-3: about-to-execute triggers compound-v",
+      "category": "positive",
+      "prompt": "I'm about to use superpowers:subagent-driven-development to implement this plan in parallel.",
+      "expect": {
+        "skill_invoked": "compound-v",
+        "rationale": "Description: 'OR when about to invoke superpowers:subagent-driven-development or superpowers:executing-plans'."
+      }
+    },
+    {
+      "name": "negative-1: greenfield feature without superpowers context",
+      "category": "negative",
+      "prompt": "I want to start a brand new React app from scratch. What's the best CLI to scaffold it?",
+      "expect": {
+        "skill_invoked": null,
+        "rationale": "No mention of superpowers, brainstorming, plans, or execution phase. Compound V should not fire."
+      }
+    },
+    {
+      "name": "negative-2: pure bash debugging",
+      "category": "negative",
+      "prompt": "My grep command isn't matching what I expect. Help me debug the regex.",
+      "expect": {
+        "skill_invoked": null,
+        "rationale": "No multi-step implementation context, no plan, no spec. Compound V should not fire."
+      }
+    },
+    {
+      "name": "edge-1: brainstorming mentioned but not completed",
+      "category": "edge",
+      "prompt": "Should I start brainstorming for this feature or skip straight to a plan?",
+      "expect": {
+        "skill_invoked": null,
+        "rationale": "Brainstorming has NOT 'produced a spec' yet — the user is asking whether to begin. Compound V triggers AFTER brainstorming output, not at planning intent."
+      }
+    },
+    {
+      "name": "edge-2: writing-plans mentioned but for a refactor that touches every file",
+      "category": "edge",
+      "prompt": "writing-plans gave me a plan for refactoring our payment module — it touches every file in src/payments/. Should I use compound-v to dispatch?",
+      "expect": {
+        "skill_invoked": "compound-v",
+        "rationale": "Trigger fires (writing-plans output present), but Compound V's documented skip case ('pure refactors that touch every file — partitioning impossible') means the skill should LOAD then explicitly recommend the fall-back to default Superpowers. Loading is correct; the skill itself recommends the skip."
+      }
+    },
+    {
+      "name": "edge-3: spec mentions only a CSS toggle (Sonnet-eligible)",
+      "category": "edge",
+      "prompt": "brainstorming output: 'Add a dark-mode toggle to the header — store preference in localStorage.' Should compound-v fire?",
+      "expect": {
+        "skill_invoked": "compound-v",
+        "rationale": "Trigger fires. The skill itself will then determine that this is a 'pure UI tweak' per Phase 1A skip rule and recommend default Superpowers. Loading is correct; routing decision happens inside."
+      }
+    }
+  ],
+  "notes": [
+    "Positive tests should result in the parent model invoking the compound-v skill.",
+    "Negative tests should NOT invoke compound-v — over-triggering is as bad as under-triggering.",
+    "Edge tests verify the skill loads but then correctly applies its skip rules.",
+    "No official eval harness exists in Claude Code (2026-05). Recommended runners:",
+    "  - Skill Creator plugin's eval harness (https://medium.com/@karkeralathesh/the-complete-guide-to-testing-claude-code-skills-with-the-skill-creator-1ae3821bd7b8)",
+    "  - Manual: paste each prompt into a fresh CC session with the plugin loaded and verify the skill was/wasn't invoked"
+  ]
+}

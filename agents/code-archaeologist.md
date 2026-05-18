@@ -1,6 +1,6 @@
 ---
 name: code-archaeologist
-description: Use when a spec has come out of brainstorming and you need to audit the existing code the new design will sit next to — BEFORE writing the plan. Runs the five-phase code archaeology (matrix enumeration, shared-state audit, sibling-code read, external API verification, regression + DRY scan) and produces a structured audit document. Triggers on - new code inside middleware/auth/credentials/session, new code reading sibling-set variables (userId, apiKeyRecord, server), branching by mode/server/auth type, "path like X but for Y" where X exists, external API integration. Skip greenfield/UI-only/copy/config edits. Produces docs/superpowers/archaeology/YYYY-MM-DD-<topic>.md with a File Touch Map that Phase 2 partitioning consumes.
+description: Use when a brainstorming spec touches existing code — middleware, auth, credentials, session, shared-state variables, mode/server/auth-type branching, "path like X but for Y" patterns, or external APIs. Skip when greenfield in a new directory, pure UI, or copy/config edits.
 model: opus
 color: brown
 ---

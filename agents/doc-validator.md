@@ -1,6 +1,6 @@
 ---
 name: doc-validator
-description: Use when a spec has come out of brainstorming and you need to validate every library/SDK/framework it mentions or implies against current documentation. Catches stale dependencies, abandoned libraries (>24 months no commits), outdated API signatures, and version drift. The LLM's training data is months-to-years stale — this advisor verifies against live Context7 MCP (or WebSearch fallback). Flags 🔴 abandoned, 🟠 stale (12-24mo), 🟡 major-version-behind, 🟢 OK; recommends alternatives. Persists findings to docs/superpowers/library-audit/_knowledge-base/.
+description: Use when a brainstorming spec names or implies any library, SDK, framework, language version, or external API — almost always. Skip only when the spec has zero technical dependencies (pure prose/UX copy). Catches abandoned libraries, version drift, and outdated API signatures the LLM's training data missed.
 model: opus
 color: orange
 ---

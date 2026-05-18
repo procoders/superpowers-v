@@ -63,13 +63,19 @@ jobs:
             echo "Checking $skill..."
             head -20 "$skill" | grep -q "^name:" || { echo "❌ $skill missing 'name'"; exit 1; }
             head -20 "$skill" | grep -q "^description:" || { echo "❌ $skill missing 'description'"; exit 1; }
-            # Description must be under ~500 chars (CC spec recommends)
-            desc_len=$(head -20 "$skill" | grep "^description:" | wc -c)
-            if [ "$desc_len" -gt 600 ]; then
-              echo "⚠️  $skill description is $desc_len chars (recommended <500)"
-            fi
             echo "✅ $skill OK"
           done
+
+      - name: Set up Python for frontmatter linter
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Run frontmatter linter (description length, missing fields, no-Haiku policy)
+        run: python3 scripts/lint-frontmatter.py .
 
       - name: Check for dead intra-plugin cross-refs
         run: |

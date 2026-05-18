@@ -1,6 +1,6 @@
 ---
 name: spec-reviewer
-description: Use when an implementer subagent has reported DONE on a task and you need to verify the implementation matches the spec BEFORE running code-quality review. Reads the implementer's diff (git show / git diff), reads the task's spec section + all relevant audit design-constraints, and returns APPROVED or ISSUES with specific spec-compliance gaps. Catches over-building (added unrequested features), under-building (missed MUST items from the spec or audits), and silent scope drift. Always Opus — this is the safety net, not the place to save tokens.
+description: Use when an implementer subagent has reported DONE and you need to verify the diff matches the task spec BEFORE running code-quality review. Catches over-building, under-building, missed MUST items, and silent scope drift. Returns APPROVED or ISSUES.
 model: opus
 color: purple
 ---

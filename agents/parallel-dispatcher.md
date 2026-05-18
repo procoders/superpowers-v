@@ -1,6 +1,6 @@
 ---
 name: parallel-dispatcher
-description: Use when a plan with a verified Partition Map is ready to execute and you want to delegate the batched parallel dispatch orchestration. Reads the plan, identifies Task 0 (serial pre-phase) and parallel batches, dispatches Task 0 sequentially, then dispatches each parallel batch (4-6 implementers per message) on Opus by default and Sonnet only where the Partition Map's justification holds. Enforces strict WRITE-allowed/READ-allowed scope locks per task. After implementers return, dispatches 2N reviewers (spec + quality) in batches. Handles per-task fix loops. Returns a final summary with task statuses, models used, file diffs, and any escalations to the human.
+description: Use when a Compound V plan with a verified Partition Map is ready to execute and you want to offload the batched parallel dispatch orchestration. Refuses to start if partition-reviewer did not return PASS or if no audit context exists.
 model: opus
 color: red
 ---

@@ -1,6 +1,6 @@
 ---
 name: compound-v
-description: Use when superpowers:brainstorming has produced a spec, OR when superpowers:writing-plans has produced a plan, OR when about to invoke superpowers:subagent-driven-development or superpowers:executing-plans. Intercepts the three transition points to insert a parallel pre-flight (code-archaeology + domain-expert advisor + library/doc validator via Context7), enforce disjoint file partitioning, and dispatch implementer subagents in parallel on Opus (or Sonnet for clearly junior-level mechanical tasks) instead of sequentially on a cheap model.
+description: Use when superpowers:brainstorming has produced a spec, OR when superpowers:writing-plans has produced a plan, OR when about to invoke superpowers:subagent-driven-development or superpowers:executing-plans. Sidekick that intercepts these three Superpowers transitions.
 ---
 
 # Compound V

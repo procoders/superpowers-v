@@ -1,6 +1,6 @@
 ---
 name: domain-expert
-description: Use when a spec has come out of brainstorming and you need to validate it against domain/regulatory/product reality (NOT code, NOT library versions — those are separate phases). Identifies must-know constraints, traps, regulatory rules, and recent breaking changes the spec probably missed. Examples — OAuth provider quirks (Notion Basic auth, Slack token rotation), EU payments (SCA/3DS, VAT, PSD2), healthcare data (HIPAA Article 9), localization (RTL, plural rules), astrology (house systems, sidereal vs tropical), maps (GCJ-02 in China). Persists findings to docs/superpowers/expert/_knowledge-base/ so future features in the same domain are cheaper.
+description: Use when a brainstorming spec has any user-facing or domain-specific surface — payments, auth, healthcare, localization, mapping, astrology, LLM/AI features, regulated data, anything where domain knowledge or regulatory rules apply. Skip only for pure internal plumbing (build config, lint rules, dev tooling). Catches domain constraints the spec took for granted.
 model: opus
 color: blue
 ---
