@@ -1,0 +1,114 @@
+name: Validate Plugin
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    name: Validate plugin structure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get install -y jq
+
+      - name: Validate plugin.json is valid JSON
+        run: jq empty .claude-plugin/plugin.json
+
+      - name: Validate marketplace.json is valid JSON
+        run: jq empty .claude-plugin/marketplace.json
+
+      - name: Validate hooks.json is valid JSON
+        run: jq empty hooks/hooks.json
+
+      - name: Validate gemini-extension.json is valid JSON
+        run: jq empty gemini-extension.json
+
+      - name: Verify required plugin.json fields
+        run: |
+          set -e
+          for field in name description version author license; do
+            value=$(jq -r ".$field // \"\"" .claude-plugin/plugin.json)
+            if [ -z "$value" ] || [ "$value" = "null" ]; then
+              echo "❌ plugin.json missing required field: $field"
+              exit 1
+            fi
+            echo "✅ plugin.json.$field = $value"
+          done
+
+      - name: Verify agent files have required frontmatter
+        run: |
+          set -e
+          for agent in agents/*.md; do
+            echo "Checking $agent..."
+            # Frontmatter must have name and description
+            head -20 "$agent" | grep -q "^name:" || { echo "❌ $agent missing 'name' in frontmatter"; exit 1; }
+            head -20 "$agent" | grep -q "^description:" || { echo "❌ $agent missing 'description' in frontmatter"; exit 1; }
+            # Per project policy: no Haiku
+            if head -20 "$agent" | grep -qi "^model:.*haiku"; then
+              echo "❌ $agent specifies Haiku — project policy forbids Haiku"
+              exit 1
+            fi
+            echo "✅ $agent OK"
+          done
+
+      - name: Verify SKILL.md frontmatter
+        run: |
+          set -e
+          for skill in skills/*/SKILL.md; do
+            echo "Checking $skill..."
+            head -20 "$skill" | grep -q "^name:" || { echo "❌ $skill missing 'name'"; exit 1; }
+            head -20 "$skill" | grep -q "^description:" || { echo "❌ $skill missing 'description'"; exit 1; }
+            # Description must be under ~500 chars (CC spec recommends)
+            desc_len=$(head -20 "$skill" | grep "^description:" | wc -c)
+            if [ "$desc_len" -gt 600 ]; then
+              echo "⚠️  $skill description is $desc_len chars (recommended <500)"
+            fi
+            echo "✅ $skill OK"
+          done
+
+      - name: Check for dead intra-plugin cross-refs
+        run: |
+          set -e
+          # Find every (path).md link and verify the target exists
+          # Allow external links and absolute /docs/ links
+          fail=0
+          while IFS= read -r -d '' file; do
+            grep -oE '\]\([^)]+\.md[^)]*\)' "$file" 2>/dev/null | sed 's/^](//;s/)$//' | while read -r link; do
+              # Strip anchor
+              path="${link%%#*}"
+              # Skip URLs and absolute /docs paths
+              case "$path" in
+                http*|/docs/*|""|"#"*) continue ;;
+              esac
+              # Resolve relative to the source file's dir
+              dir=$(dirname "$file")
+              target="$dir/$path"
+              if [ ! -f "$target" ]; then
+                echo "❌ Dead link in $file → $path (resolved: $target)"
+                fail=1
+              fi
+            done
+          done < <(find . -name "*.md" -not -path "./node_modules/*" -not -path "./.git/*" -print0)
+          [ "$fail" = "0" ] || exit 1
+          echo "✅ All intra-plugin .md links resolve"
+
+      - name: Verify hook scripts are executable
+        run: |
+          set -e
+          for hook in hooks/*.sh; do
+            if [ ! -x "$hook" ]; then
+              echo "❌ $hook is not executable (run: chmod +x $hook)"
+              exit 1
+            fi
+            echo "✅ $hook is executable"
+          done
+
+      - name: Lint hook scripts with shellcheck
+        run: |
+          sudo apt-get install -y shellcheck
+          shellcheck hooks/*.sh

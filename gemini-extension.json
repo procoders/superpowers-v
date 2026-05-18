@@ -1,0 +1,48 @@
+{
+  "name": "superpowers-v",
+  "displayName": "Compound V (Superpowers sidekick)",
+  "description": "Sidekick to Superpowers: triple parallel pre-flight (code archaeology + domain-expert with audience search + library/doc validator via Context7), Disjoint File Partition Map, batched parallel dispatch on the most capable model.",
+  "version": "0.1.0",
+  "author": "Oleg",
+  "contextFile": "GEMINI.md",
+  "skills": [
+    {
+      "name": "compound-v",
+      "path": "skills/compound-v/SKILL.md",
+      "description": "Auto-fires at three Superpowers phase transitions to add pre-flight audits, partition enforcement, and parallel dispatch."
+    }
+  ],
+  "agents": [
+    {
+      "name": "code-archaeologist",
+      "path": "agents/code-archaeologist.md"
+    },
+    {
+      "name": "domain-expert",
+      "path": "agents/domain-expert.md"
+    },
+    {
+      "name": "doc-validator",
+      "path": "agents/doc-validator.md"
+    },
+    {
+      "name": "partition-reviewer",
+      "path": "agents/partition-reviewer.md"
+    },
+    {
+      "name": "parallel-dispatcher",
+      "path": "agents/parallel-dispatcher.md"
+    },
+    {
+      "name": "spec-reviewer",
+      "path": "agents/spec-reviewer.md"
+    }
+  ],
+  "recommendedMcpServers": [
+    {
+      "name": "context7",
+      "purpose": "Required for Phase 1C library currency validation",
+      "install": "npx -y @upstash/context7-mcp"
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "name": "superpowers-v",
+  "description": "Compound V for Superpowers: triple parallel pre-flight (code archaeology + domain-expert advisor + library/doc validator via Context7), disjoint file partitioning, and batched parallel dispatch (Opus default, Sonnet for narrow junior-task carve-out). Auto-intercepts brainstorming → writing-plans → execution transitions.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Oleg",
+    "email": "copeus@gmail.com"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/procoders/superpowers-v",
+  "repository": "https://github.com/procoders/superpowers-v",
+  "keywords": [
+    "superpowers",
+    "compound-v",
+    "the-boys",
+    "gen-v",
+    "parallel",
+    "subagents",
+    "opus",
+    "code-archaeology",
+    "domain-expert",
+    "orchestration"
+  ]
+}
