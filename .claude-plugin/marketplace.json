@@ -1,6 +1,6 @@
 {
-  "name": "superpowers-v-marketplace",
-  "description": "Compound V for Superpowers — marketplace for the superpowers-v plugin",
+  "name": "procoders",
+  "description": "procoders plugins marketplace",
   "owner": {
     "name": "Oleg",
     "email": "copeus@gmail.com"
@@ -9,7 +9,7 @@
     {
       "name": "superpowers-v",
       "description": "Compound V for Superpowers: triple parallel pre-flight (code archaeology + domain-expert + Context7 library validator), disjoint partitioning, and batched parallel dispatch (Opus default, narrow Sonnet exception)",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "source": "./",
       "author": {
         "name": "Oleg",

@@ -1,7 +1,7 @@
 {
   "name": "superpowers-v",
   "description": "Compound V for Superpowers: triple parallel pre-flight (code archaeology + domain-expert advisor + library/doc validator via Context7), disjoint file partitioning, and batched parallel dispatch (Opus default, Sonnet for narrow junior-task carve-out). Auto-intercepts brainstorming → writing-plans → execution transitions.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "author": {
     "name": "Oleg",
     "email": "copeus@gmail.com"

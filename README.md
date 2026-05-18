@@ -25,30 +25,14 @@ You don't invoke Compound V. It invokes itself.
 
 ### 1. Install the plugin
 
-Claude Code uses a two-step pattern: first register the marketplace, then install the plugin from it.
+In Claude Code:
 
-**From GitHub (recommended):**
 ```
 /plugin marketplace add https://github.com/procoders/superpowers-v
-/plugin install superpowers-v@superpowers-v-marketplace
+/plugin install superpowers-v@procoders
 ```
 
-**From a local clone (for development):**
-```bash
-git clone https://github.com/procoders/superpowers-v.git ~/dev/superpowers-v
-```
-then in Claude Code:
-```
-/plugin marketplace add ~/dev/superpowers-v
-/plugin install superpowers-v@superpowers-v-marketplace
-```
-
-**Live-edit mode** (skip install entirely; load directly from a local checkout, auto-reloadable):
-```bash
-claude --plugin-dir /path/to/superpowers-v
-# Then inside the session, after edits:
-/reload-plugins
-```
+That's it. For local development setups (clone-and-edit or `--plugin-dir` live-reload mode), see the **Development** section below.
 
 ### 2. Use Superpowers normally
 
@@ -226,6 +210,38 @@ Most users never need these — the hooks auto-fire the sidekick. But if you wan
 |---|---|
 | `/v:archaeology <topic>` | Run Phase 1A alone (code-archaeology audit) |
 | `/v:dispatch <plan-path>` | Run partition-review + parallel-dispatch on a plan |
+
+---
+
+## Development
+
+If you're hacking on the plugin itself (adding agents, tweaking prompts):
+
+```bash
+git clone https://github.com/procoders/superpowers-v.git
+cd superpowers-v
+
+# Live-edit mode — edits in the cloned dir are picked up by /reload-plugins
+claude --plugin-dir "$PWD"
+```
+
+Inside the session, after editing files:
+```
+/reload-plugins
+```
+
+Alternatively, install from the local clone via the same marketplace pattern:
+```
+/plugin marketplace add /absolute/path/to/superpowers-v
+/plugin install superpowers-v@procoders
+```
+
+Before opening a PR, run the linters locally:
+```bash
+python3 scripts/lint-frontmatter.py .
+# Optional cross-check (community linter):
+npx -y @felixgeelhaar/cclint lint skills/compound-v/SKILL.md
+```
 
 ---
 

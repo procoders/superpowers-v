@@ -4,6 +4,12 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [0.1.3] — 2026-05-18
+
+### Changed
+- Marketplace name renamed from `superpowers-v-marketplace` to `procoders`. End-user install command is now `/plugin install superpowers-v@procoders` (was the awkward `superpowers-v@superpowers-v-marketplace`). The `procoders` name is also future-proof — additional procoders plugins can ship via the same marketplace.
+- README install section trimmed to one path at the top; local-clone / `--plugin-dir` dev flows moved to a new **Development** section lower in the doc.
+
 ## [0.1.2] — 2026-05-18
 
 ### Fixed (critical)
