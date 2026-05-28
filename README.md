@@ -9,6 +9,8 @@
 
 > *"You don't tell people you're injecting them with Compound V. You just hand them the spec and watch them ship."*
 
+![Compound V — a sidekick to Superpowers](assets/compound-v-cover.png)
+
 You keep using **Superpowers** the way you already do. Compound V silently shows up at the three phase transitions and does the work that would otherwise burn your day:
 
 - It **measures the building** before you design the addition (code-archaeology)
