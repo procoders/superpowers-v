@@ -245,11 +245,10 @@ A reusable sub-skill (`skills/backend-launcher/`) exposing **one contract**. The
 ```bash
 # 1. isolate (kernel-bounds blast radius + clean diff baseline)
 git worktree add "$WT" HEAD
-# 2. run headless, no approvals, sandboxed to the worktree
+# 2. run headless (codex exec defaults to approval: never), sandboxed to the worktree
 timeout "$timeout_sec" codex exec \
   --cd "$WT" \
   --sandbox "$([ "$read_only" = true ] && echo read-only || echo workspace-write)" \
-  --ask-for-approval never \
   --skip-git-repo-check \
   --model "$model" \
   ${output_schema:+--output-schema "$output_schema"} \
@@ -262,6 +261,8 @@ files_changed=$(git -C "$WT" diff --name-only; git -C "$WT" ls-files --others --
 # 5. normalize  → job_result (summary from .job_result.txt or schema'd JSON)
 # 6. caller decides: merge worktree diff into main tree, or discard
 ```
+
+**Verified against `codex-cli 0.130` (2026-06-26, live run).** `--ask-for-approval never` is **invalid for `codex exec`** (top-level/interactive flag only) and is omitted — `exec` already defaults to `approval: never`; use `-c approval_policy=never` if a non-default is ever needed. Enforcement fields (`files_changed`, `violations`, `blocked`) are **git-derived**, never model-self-reported; `--output-last-message` text feeds only the human `summary`. Helper scripts target stock-macOS **bash 3.2 + python 3.9** (no bash-4 / py-3.10 features) and suppress codex's cosmetic `[features].codex_hooks is deprecated` stderr. Worktrees live in `$TMPDIR`; merge-back is `git -C "$WT" diff HEAD | git apply` on PASS. Full task-by-task plan: [v1.0 implementation plan](../plans/2026-06-26-compound-v-orchestrator-v1-plan.md).
 
 The **worker prompt** opens with the planner/executor lock: *"You are an implementation worker, NOT the planner. Do not change architecture. Do not write outside WRITE_ALLOWED. If the task needs a forbidden file, STOP and report BLOCKED."*
 
@@ -284,7 +285,7 @@ The `git diff` scope gate is the constant; the worktree is the escalation.
 
 ### 5.5 Routing Policy
 
-task-type → backend / model / isolation / run. Ships as `routing-policy.yaml`, tunable (a configurator playground exists). **Balanced** is the default stance; the active stance is chosen at init and saved to config (§5.9).
+task-type → backend / model / isolation / run. Ships as `routing-policy.yaml`, tunable via the `/v:init` stance walkthrough (a standalone HTML configurator is available as an optional dev tool — not a shipped runtime surface). **Balanced** is the default stance; the active stance is chosen at init and saved to config (§5.9).
 
 **Balanced default (shipped):**
 
@@ -302,7 +303,7 @@ task-type → backend / model / isolation / run. Ships as `routing-policy.yaml`,
 | Review — spec / quality / integration | claude · opus | direct | parallel/serial |
 | Unclear scope | **none → return to planning** | — | — |
 
-**Invariants enforced by the configurator and `partition-reviewer`:** reviewers are always Opus; Codex always implies worktree; unclear scope never dispatches. **Env-aware fallback:** if Codex is absent, the stance collapses to **Claude-only** (large-isolated → opus/worktree). Other stances available: **Conservative** (Opus-heavy, no Codex) and **Cost-aware** (more Sonnet/Codex).
+**Invariants enforced by `compound-v-validate-manifest.py` (deterministic) and `partition-reviewer`:** reviewers are always Opus; Codex always implies worktree; unclear scope never dispatches. **Env-aware fallback:** if Codex is absent, the stance collapses to **Claude-only** (large-isolated → opus/worktree). Other stances available: **Conservative** (Opus-heavy, no Codex) and **Cost-aware** (more Sonnet/Codex).
 
 ### 5.6 State machine & resume
 
@@ -482,10 +483,13 @@ Manifest · Backend Launcher (claude+codex) · scope gate · per-job isolation �
 
 ## 11. Open questions
 
-1. **Naming** — keep `/v:*` namespace and "Compound V Orchestrator"? Sub-skill name `backend-launcher` vs a themed alias?
-2. **Config location** — confirm `.claude/compound-v.json` (project) + user-level capability cache split.
-3. **Merge strategy for worktree jobs** — fast-forward branch vs `git apply` the diff into the main tree; pick one default.
-4. **Workflows capability probe** — exact detection signal for "Dynamic Workflows available & enabled."
+*All four resolved during planning (see the v1.0 plan §4):*
+1. **Naming** — ✅ keep `/v:*` + "Compound V Orchestrator"; sub-skill stays the literal `backend-launcher`.
+2. **Config location** — ✅ `.claude/compound-v.json` (project stance) + `~/.claude/compound-v-capabilities.json` (user capability cache).
+3. **Merge strategy** — ✅ `git -C <wt> diff HEAD | git apply` into the main tree on PASS, then `git worktree remove -f`; worktrees in `$TMPDIR`.
+4. **Workflows probe** — ✅ default **off**; attempt-and-catch behind a capability probe, automatic fallback to Engine A.
+
+*Surfaced + resolved by the dogfood pre-flight:* Codex adapter flag fix (drop `--ask-for-approval never`); resume tie-break = git-wins; codex `job_result` enforcement = git-derived; worktree storage = `$TMPDIR`; bash 3.2 / python 3.9 script portability.
 
 ## 12. Decision log
 
