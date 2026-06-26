@@ -21,7 +21,8 @@
 #     --prompt-file <abs-path> --model <model> \
 #     --write-allowed "<glob>[:<glob>...]" \
 #     [--timeout-sec <n>] [--network true|false] \
-#     [--read-only true|false] [--output-schema <abs-path>]
+#     [--read-only true|false] [--output-schema <abs-path>] \
+#     [--effort low|medium|high]
 #
 # All file paths MUST be absolute. write_allowed is a colon-separated glob list,
 # each glob matched repo-relative against the changed paths.
@@ -121,6 +122,7 @@ TIMEOUT_SEC="$DEFAULT_TIMEOUT_SEC"
 NETWORK="$DEFAULT_NETWORK"
 READ_ONLY="$DEFAULT_READ_ONLY"
 OUTPUT_SCHEMA=""
+EFFORT=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -134,6 +136,7 @@ while [ $# -gt 0 ]; do
     --network)       NETWORK="$2"; shift 2 ;;
     --read-only)     READ_ONLY="$2"; shift 2 ;;
     --output-schema) OUTPUT_SCHEMA="$2"; shift 2 ;;
+    --effort)        EFFORT="$2"; shift 2 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -154,6 +157,12 @@ case "$PROMPT_FILE" in /*) : ;; *) die "--prompt-file must be an absolute path: 
 if [ -n "$OUTPUT_SCHEMA" ]; then
   case "$OUTPUT_SCHEMA" in /*) : ;; *) die "--output-schema must be absolute: $OUTPUT_SCHEMA" ;; esac
   [ -f "$OUTPUT_SCHEMA" ] || die "--output-schema not found: $OUTPUT_SCHEMA"
+fi
+if [ -n "$EFFORT" ]; then
+  case "$EFFORT" in
+    low|medium|high) : ;;
+    *) die "--effort must be one of low|medium|high: $EFFORT" ;;
+  esac
 fi
 command -v jq  >/dev/null 2>&1 || die "jq not found on PATH"
 command -v git >/dev/null 2>&1 || die "git not found on PATH"
@@ -218,6 +227,8 @@ exit_code=0
 # and codex runs directly. It is intentionally left UNQUOTED so it word-splits into
 # the `timeout` argv (or vanishes when empty) — hence the SC2086 disables. The
 # optional --output-schema flag is injected only when set (bash 3.2-safe — no arrays).
+# $EFFORT_FLAG is an analogous optional middle chunk ("-c model_reasoning_effort=<e>"):
+# unquoted so it word-splits into the codex argv when set, or vanishes when empty.
 #
 # stdin is redirected from /dev/null. The prompt is passed POSITIONALLY, but `codex
 # exec` also reads stdin when it is not a TTY and will BLOCK ("Reading additional
@@ -232,6 +243,7 @@ run_codex() {
       --sandbox "$SANDBOX" \
       --skip-git-repo-check \
       --model "$MODEL" \
+      $EFFORT_FLAG \
       --output-schema "$OUTPUT_SCHEMA" \
       --output-last-message "$RESULT_TXT" \
       -c "sandbox_workspace_write.network_access=$NETWORK" \
@@ -243,6 +255,7 @@ run_codex() {
       --sandbox "$SANDBOX" \
       --skip-git-repo-check \
       --model "$MODEL" \
+      $EFFORT_FLAG \
       --output-last-message "$RESULT_TXT" \
       -c "sandbox_workspace_write.network_access=$NETWORK" \
       "$(cat "$PROMPT_FILE")" </dev/null
@@ -254,6 +267,15 @@ run_codex() {
 TIMEOUT_PREFIX=""
 if [ -n "$TIMEOUT_BIN" ]; then
   TIMEOUT_PREFIX="$TIMEOUT_BIN $TIMEOUT_SEC"
+fi
+
+# Build the codex reasoning-effort flag (word-split intentionally inside run_codex).
+# Empty when --effort was not given, in which case codex uses the model's default
+# reasoning effort. The value carries no spaces, so it splits into exactly the two
+# argv tokens `-c` and `model_reasoning_effort=<effort>`.
+EFFORT_FLAG=""
+if [ -n "$EFFORT" ]; then
+  EFFORT_FLAG="-c model_reasoning_effort=$EFFORT"
 fi
 
 # `set +e` so a non-zero exit (incl. 124 when the timeout fires) is captured rather

@@ -3,6 +3,12 @@
 # docs/superpowers/execution/<run-id>/manifest.yaml. Validated by
 # scripts/compound-v-validate-manifest.py. Schema + rules:
 # skills/compound-v/execution-manifest.md.
+#
+# Jobs route by INTENT (tier + effort), not by hardcoded model strings. The
+# dispatcher resolves (backend, tier, effort) → a concrete model via
+# scripts/compound-v-resolve-model.py before invoking the backend. A job may
+# instead carry an explicit `model:` override (see task-1-editor-ui below),
+# which skips resolution and stays valid — backward compatible.
 
 run_id: 2026-06-26-linkedin-sequence-editor
 feature: "LinkedIn outreach sequence editor"
@@ -27,7 +33,8 @@ jobs:
     title: "DB schema + migration + shared types"
     type: shared_foundation
     backend: claude
-    model: opus
+    tier: deep                      # shared foundation ⇒ deep (strongest reasoning)
+    effort: high
     isolation: direct               # serial pre-phase; no sibling can race it
     run: serial
     write_allowed:
@@ -44,7 +51,10 @@ jobs:
     title: "Sequence editor UI slice"
     type: large_isolated
     backend: codex
+    # Explicit model override: skips resolution, stays valid (backward-compatible).
+    # Demonstrates that a pinned model still works alongside tier/effort routing.
     model: gpt-5.5
+    effort: medium                  # large isolated codex work ⇒ standard-ish, medium effort
     isolation: worktree             # Codex ⇒ always worktree
     run: parallel
     depends_on:
@@ -63,7 +73,8 @@ jobs:
     title: "Sequence CRUD API slice"
     type: bounded_crud
     backend: claude
-    model: sonnet
+    tier: standard                  # bounded core/feature build ⇒ standard
+    effort: medium
     isolation: direct
     run: parallel
     depends_on:
@@ -76,3 +87,41 @@ jobs:
     acceptance:
       - "CRUD endpoints"
       - "input validation"
+
+  - id: task-3-docs
+    title: "Sequence editor user docs"
+    type: docs
+    backend: claude
+    tier: light                     # mechanical single-file / docs ⇒ light
+    effort: low
+    isolation: direct
+    run: parallel
+    depends_on:
+      - task-1-editor-ui
+      - task-2-api
+    write_allowed:
+      - "docs/features/sequences.md"
+    read_allowed:
+      - "src/features/sequences/**"
+    acceptance:
+      - "documents create/edit/delete flow"
+
+  - id: task-4-review
+    title: "Integration review of the sequence editor"
+    type: review
+    backend: claude
+    tier: deep                      # ALL reviewers ⇒ deep (resolves to opus)
+    effort: high
+    isolation: direct
+    run: serial
+    depends_on:
+      - task-1-editor-ui
+      - task-2-api
+      - task-3-docs
+    write_allowed: []               # reviewers write nothing
+    read_allowed:
+      - "src/features/sequences/**"
+      - "docs/features/sequences.md"
+    acceptance:
+      - "feature-level acceptance criteria met"
+      - "no writes outside partitioned sets across jobs"

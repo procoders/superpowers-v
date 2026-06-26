@@ -13,15 +13,21 @@ Invariants enforced (from PRD §5.1/§5.5 + plan §5/§6)
    matched by the other (checked both directions), or if they are identical.
 2. **Codex ⇒ worktree.** Any job with ``backend: codex`` must have
    ``isolation: worktree``.
-3. **Reviewers ⇒ opus.** Any job whose ``type`` or ``id`` marks it a reviewer
-   (spec/quality/integration/partition review) must use ``model: opus``.
+3. **Reviewers ⇒ deep/opus.** Any job whose ``type`` or ``id`` marks it a
+   reviewer (spec/quality/integration/partition review) must resolve to the
+   strongest reasoning: either ``tier: deep`` or ``model: opus``.
 4. **Shared foundation serial.** Files declared shared/contract (via the
    ``shared_resources`` top-level list, if present) must each be written by a
    ``shared_foundation`` job whose ``run`` is ``serial``. Independently, any
    job typed ``shared_foundation`` must run ``serial``.
+5. **Intent routing.** Jobs route by intent, not hardcoded model strings.
+   Every job MUST carry ``model`` OR ``tier`` (model is now an optional
+   override; existing explicit-model jobs stay valid — backward compatible).
+   If present, ``tier`` ∈ {deep, standard, light} and ``effort`` ∈
+   {low, medium, high}.
 
 Structural sanity is also checked (jobs is a non-empty list; each job has an
-``id``; ids unique; ``backend``/``model`` present; ``write_allowed`` is a list).
+``id``; ids unique; ``backend`` present; ``write_allowed`` is a list).
 
 Usage
 -----
@@ -368,6 +374,11 @@ def globs_overlap(a, b):
 # --------------------------------------------------------------------------- #
 REVIEWER_TOKENS = ("review", "reviewer", "spec_review", "quality", "integration")
 
+# Intent vocabulary (mirrors compound-v-resolve-model.py). Stable; never
+# changes when concrete models churn.
+VALID_TIERS = ("deep", "standard", "light")
+VALID_EFFORTS = ("low", "medium", "high")
+
 
 def _is_reviewer(job):
     jtype = str(job.get("type", "")).lower()
@@ -407,8 +418,30 @@ def validate(manifest):
 
         if not job.get("backend"):
             problems.append("job '%s' missing 'backend'" % jid)
-        if not job.get("model"):
-            problems.append("job '%s' missing 'model'" % jid)
+
+        # Invariant 5: intent routing — every job must carry model OR tier
+        # (model is now an optional override; tier routes by intent).
+        has_model = bool(job.get("model"))
+        has_tier = bool(job.get("tier"))
+        if not has_model and not has_tier:
+            problems.append(
+                "job '%s' must have 'model' or 'tier' "
+                "(model is an optional override)" % jid
+            )
+
+        # Invariant 5: tier / effort enum validation (only when present).
+        tier_val = job.get("tier")
+        if tier_val is not None and str(tier_val).lower() not in VALID_TIERS:
+            problems.append(
+                "job '%s' tier '%s' invalid (expected one of %s)"
+                % (jid, tier_val, ", ".join(VALID_TIERS))
+            )
+        effort_val = job.get("effort")
+        if effort_val is not None and str(effort_val).lower() not in VALID_EFFORTS:
+            problems.append(
+                "job '%s' effort '%s' invalid (expected one of %s)"
+                % (jid, effort_val, ", ".join(VALID_EFFORTS))
+            )
 
         wa = job.get("write_allowed")
         if wa is None:
@@ -426,12 +459,16 @@ def validate(manifest):
                     "(codex requires worktree)" % (jid, job.get("isolation"))
                 )
 
-        # Invariant 3: reviewers => opus.
+        # Invariant 3: reviewers => deep/opus (strongest reasoning). Satisfied
+        # by either tier: deep or model: opus.
         if _is_reviewer(job):
-            if str(job.get("model", "")).lower() != "opus":
+            is_deep = str(job.get("tier", "")).lower() == "deep"
+            is_opus = str(job.get("model", "")).lower() == "opus"
+            if not is_deep and not is_opus:
                 problems.append(
-                    "reviewer job '%s' must use model opus, got '%s'"
-                    % (jid, job.get("model"))
+                    "reviewer job '%s' must resolve to deep reasoning "
+                    "(tier: deep or model: opus), got tier='%s' model='%s'"
+                    % (jid, job.get("tier"), job.get("model"))
                 )
 
         # Invariant 4 (structural half): shared_foundation => serial.
@@ -559,7 +596,8 @@ jobs:
     title: "api slice"
     type: bounded_crud
     backend: claude
-    model: sonnet
+    tier: standard
+    effort: medium
     isolation: direct
     run: parallel
     write_allowed: [src/features/api/**]
@@ -568,7 +606,8 @@ jobs:
     title: "spec review gate"
     type: review
     backend: claude
-    model: opus
+    tier: deep
+    effort: high
     isolation: direct
     run: serial
     write_allowed: []
@@ -610,6 +649,20 @@ jobs:
     isolation: direct
     run: serial
     write_allowed: []
+  - id: task-4-no-routing
+    type: docs
+    backend: claude
+    isolation: direct
+    run: parallel
+    write_allowed: [docs/orphan-area.md]
+  - id: task-5-bad-vocab
+    type: docs
+    backend: claude
+    tier: turbo
+    effort: extreme
+    isolation: direct
+    run: parallel
+    write_allowed: [docs/another-area.md]
 """
 
 
@@ -666,6 +719,25 @@ def _selftest():
     expect(
         "bad: orphan shared resource caught",
         "orphan.ts" in joined or "not written by any" in joined,
+    )
+    expect(
+        "bad: missing model-or-tier caught",
+        "must have 'model' or 'tier'" in joined,
+    )
+    expect(
+        "bad: invalid tier caught",
+        "tier 'turbo' invalid" in joined,
+    )
+    expect(
+        "bad: invalid effort caught",
+        "effort 'extreme' invalid" in joined,
+    )
+
+    # Reviewer satisfied by tier: deep (no model) — GOOD manifest task-3 uses
+    # tier: deep and must not trip the reviewer invariant.
+    expect(
+        "reviewer via tier:deep accepted (no model)",
+        not any("reviewer job 'task-3-spec-review'" in p for p in good),
     )
 
     # Empty / malformed.

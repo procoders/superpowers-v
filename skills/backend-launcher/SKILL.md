@@ -21,7 +21,10 @@ There is no skill-import API: an adapter is a sibling doc (`adapter-codex.md`, `
 {
   "backend": "codex",                  // claude | codex | antigravity
   "prompt": "…",                       // the worker prompt (opens with the planner/executor lock, below)
-  "model": "gpt-5.5",                  // execution-layer data — NEVER appears in any frontmatter
+  "tier": "standard",                  // deep | standard | light — the routing INTENT (stable across model churn)
+  "effort": "medium",                  // low | medium | high — orthogonal reasoning-effort hint (optional)
+  "model": "gpt-5.5",                  // OPTIONAL explicit override; when present it skips resolution.
+                                       //   execution-layer data — NEVER appears in any frontmatter
   "cwd": "/repo",                      // absolute repo root
   "write_allowed": ["src/features/sequences/components/**"],
   "read_only": false,                  // true ⇒ sandbox read-only, no merge
@@ -30,6 +33,8 @@ There is no skill-import API: an adapter is a sibling doc (`adapter-codex.md`, `
   "output_schema": "/abs/schemas/job_result.schema.json"  // optional
 }
 ```
+
+**`tier` + `effort` + `model` — intent over hardcoded strings.** A `job_spec` carries the routing **intent** (`tier`, and optional `effort`), not a hardcoded model. The concrete `model` is **resolved before dispatch** by [`scripts/compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py) from `(backend, tier, effort, config)` — so the plugin survives model churn (refresh the config `models` map via `/v:models`, never the call sites). A job MUST carry `model` OR `tier`; an explicit `model` override skips resolution and always wins. `effort` is passed through to the worker: for `codex` it becomes `-c model_reasoning_effort=<effort>`; for `claude` it is advisory (the `Task` path has no separate effort flag). `tier`/`effort`/`model` are execution-layer values and never appear in any frontmatter. See [`skills/compound-v/execution-manifest.md`](../compound-v/execution-manifest.md) for the tier vocabulary, the config `models` map shape, and the reviewer ⇒ deep rule.
 
 ### OUTPUT — `job_result` (canonical, identical across backends)
 
