@@ -93,6 +93,14 @@ The map is **documented, not committed** in this repo (it is project-local confi
 
 A violation of rule 1, 3, 4, 5, or 6 is a hard validation failure (non-zero exit + specifics). Rules 2/7/8 are partition-design rules enforced jointly by `partition-reviewer` and the validator.
 
+### Scope-attribution rule (parallel `direct` jobs)
+
+The scope gate reads a **repo-wide** `git diff`, so per-job attribution requires per-job isolation. A `worktree` job (its tree holds only its own changes) and a **serial `direct`** job (nothing else writes concurrently) each get a deterministic per-job gate. **Parallel `direct`** jobs sharing one working tree do **not** — each job's per-job gate would also see its siblings' writes, yielding a false BLOCK or an unattributable diff. So parallel jobs must EITHER use **`isolation: worktree`** (true per-job attribution) OR be gated at **batch granularity**: run the gate once after the batch against the **union** of the batch's `write_allowed`, which deterministically catches any out-of-batch leak but cannot attribute it to a specific job. Set `isolation: worktree` on a parallel job whenever per-job attribution matters.
+
+### `.gitignore` must not blind the scope gate
+
+The gate's untracked-file probe is `git ls-files --others --exclude-standard`, which **excludes gitignored paths** — so an over-broad ignore could hide a worker's writes from enforcement. The committed run substrate must **never** be gitignored: `docs/superpowers/execution/**` and `docs/superpowers/memory/**` (and any other tracked output a job writes). Keep ignores limited to scratch/worktree artifacts.
+
 ---
 
 ## Relationship to the rest of the pipeline

@@ -233,6 +233,17 @@ agent/skill/command frontmatter. (`lint-frontmatter.py` + `validate.yml` reject
 Haiku; reviewers/agents always carry `model: opus` in their own frontmatter, which
 is the agent's model and is unrelated to this execution-layer tier resolution.)
 
+> **`isolation: direct` + `run: parallel` does not buy a per-job scope gate.** The
+> scope gate reads a repo-wide `git diff`, so a `direct` job only gets deterministic
+> *per-job* attribution when it does not run concurrently in the same working tree.
+> Where this table routes a job type to `direct · parallel`, the dispatcher gates
+> that batch at **batch granularity** (union of `write_allowed`, run once after the
+> batch — catches out-of-batch leaks, cannot attribute per job), OR the planner
+> promotes a parallel job to `isolation: worktree` for true per-job attribution.
+> Serial `direct` jobs keep their own per-job gate. See
+> [`execution-manifest.md`](execution-manifest.md) §"Scope-attribution rule" and
+> [`phase-3-parallel-opus-dispatch.md`](phase-3-parallel-opus-dispatch.md) Step 2b.
+
 ---
 
 ## How a job type is routed (the decision, in order)

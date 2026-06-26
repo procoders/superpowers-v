@@ -111,13 +111,15 @@ From the three audits run against this repo. These are non-negotiable for every 
 8. `hooks/hooks.json` → unchanged structure, kept valid (the scripts evolve in Batch C).
 9. `.gitignore` → ignore any in-repo run artifacts (worktrees live in `$TMPDIR`, but guard run dirs).
 
-**Acceptance:** CI green on the new schema + manifest-validator + collector-conformance + no-cost-metric gates; `SKILL.md` description still fires all `evals.json` positive/edge cases; both manifests bumped to 1.0.0 in lockstep.
+> **Sequencing note (don't gate Task 0 on scripts that don't exist yet).** The two CI steps that *invoke Batch-A scripts* — the `validate-manifest.py` step and the collector schema-conformance step — depend on `scripts/compound-v-validate-manifest.py` and `scripts/compound-v-collect-results.py`, which are authored in **Batch A**, not Task 0. In Task 0, *add the workflow wiring* (the YAML steps + example fixtures) but **add/verify these two script-dependent gates green only after Batch A completes** (the final integration pass). The other Task-0 gates that need no Batch-A script — `job_result.schema.json` jq-validity, the no-fabricated-cost grep, frontmatter, shellcheck, no-Haiku — verify green at Task 0's checkpoint as written.
+
+**Acceptance:** CI green on the new schema + manifest-validator + collector-conformance + no-cost-metric gates (the manifest-validator and collector-conformance gates verified at the post-Batch-A integration pass, per the sequencing note above); `SKILL.md` description still fires all `evals.json` positive/edge cases; both manifests bumped to 1.0.0 in lockstep.
 
 ### Batch A
 
 **`task-codex-adapter`** *(codex·gpt-5.5·worktree)* — `adapter-codex.md` + `compound-v-run-codex-worker.sh`.
 - Doc: the 6 steps (worktree add HEAD → `codex exec` → observe `git -C <wt> diff --name-only` ∪ `ls-files --others` → enforce `write_allowed` → normalize → caller merges via `git apply`), the worker-prompt planner/executor lock, resume form. **Pin the verified flags; explicitly note `--ask-for-approval never` is invalid for `codex exec` and omitted.**
-- Script: bash-3.2-safe, shellcheck-clean, `chmod +x`, absolute paths only, wraps `codex exec` in `timeout`, suppresses the `codex_hooks deprecated` stderr noise, captures session_id + summary from `--output-last-message`, emits git-derived `files_changed`/`violations`. Acceptance per partition.
+- Script: bash-3.2-safe, shellcheck-clean, `chmod +x`, absolute paths only, wraps `codex exec` in a timeout **best-effort** (the worker falls back `timeout` → `gtimeout` → uncapped, since stock macOS ships no `timeout` binary — so the cap is best-effort, not a hard requirement), suppresses the `codex_hooks deprecated` stderr noise, captures session_id + summary from `--output-last-message`, emits git-derived `files_changed`/`violations`. Acceptance per partition.
 
 **`task-claude-antigravity-adapters`** *(claude·sonnet·direct; justified)* — `adapter-claude.md` (Task-based dispatch, model override, `maxTurns:15`, optional worktree, same scope gate on return → canonical `job_result`) + `adapter-antigravity.md` (stub returning `unsupported`; cites agy blockers #408/#318/#223; v1.1 Python-SDK spike target).
 
@@ -168,7 +170,7 @@ From the three audits run against this repo. These are non-negotiable for every 
 
 ## 9. Risks & regression surface (from archaeology)
 
-- Rewriting `SKILL.md`'s description for orchestrator-as-default could degrade the auto-fire triggers → **evals.json is the guard; run it.**
+- Rewriting `SKILL.md`'s description for orchestrator-as-default could degrade the auto-fire triggers → **`evals.json` is a manual-verification item, not a CI gate.** CI only checks the file's JSON validity (and frontmatter); it does **not** execute the skill-trigger cases (there is no eval harness). The guard is to run the trigger cases by hand after editing the description.
 - Evolving the 3 agents changes their inputs (plan → manifest) → **must accept both** or external callers + the hook break.
 - Introducing worktrees changes the merge model (0.1.x did direct writes only) → the `git apply`-into-main default (Q3) plus per-job isolation choice is the mitigation; direct Claude jobs and worktree jobs must not collide at merge.
 - Hook edits risk the 3-shape jq branches / shellcheck → additive changes only.

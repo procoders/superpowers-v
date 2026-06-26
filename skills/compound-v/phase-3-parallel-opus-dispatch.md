@@ -108,6 +108,10 @@ If the manifest has a `type: shared_foundation`, `run: serial` job (shared types
 - Wait for completion. Run spec + quality reviews (sequentially, on Opus). Address feedback.
 - Only then proceed to the parallel batch (every parallel job `depends_on` it).
 
+### Step 1b: Optional gated cross-model plan review (high-stakes only)
+
+After the partition-reviewer returns **PASS** and before dispatching the parallel batch, the orchestrator MAY run an **optional gated cross-model plan review** — a read-only Codex second opinion per [`cross-model-review.md`](cross-model-review.md). Run it ONLY for high-stakes plans (security / auth / payments / migrations / shared data model, a large or coupled partition, an architectural change, or a human request); skip it for small/mechanical plans. It is **advisory only** — the orchestrator arbitrates every finding and Codex is never the authority. A clean review (or a skip) proceeds to dispatch; accepted findings fold back into the plan/manifest first.
+
 ### Step 2: Parallel Implementer Batch(es)
 
 For all `run: parallel` jobs in the current batch, dispatch implementers **in a single message with concurrent calls — up to 4-6 per message** (the manifest's `max_parallel`) to stay under rate-limit cascades. If a batch has more than `max_parallel` jobs, split it; the manifest's `depends_on` + batch grouping define the order.
@@ -186,7 +190,7 @@ The controller builds the READ list from Task 0's commit diff. Don't make the su
 
 ### Step 2b: Scope gate + state.json — after EVERY job returns
 
-The SCOPE LOCK prose is advisory. The **authority** is the deterministic git-diff scope gate, run on every job the moment it returns — regardless of backend or isolation:
+The SCOPE LOCK prose is advisory. The **authority** is the deterministic git-diff scope gate. Run it on every job the moment it returns when the job is isolated enough for per-job attribution — a `worktree` job or a **serial `direct`** job. For **parallel `direct`** jobs sharing one tree, the per-job gate is not deterministic (see the attribution note below); gate that batch as a unit instead. Regardless of backend or isolation:
 
 ```bash
 # worktree job (codex always, claude when isolation: worktree)
@@ -197,6 +201,12 @@ python3 scripts/compound-v-scope-check.py --repo "$CWD" --baseline "$BASE" --all
 
 The gate computes what the job *actually* changed purely from git —
 `git diff --name-only` ∪ `git ls-files --others --exclude-standard` — and matches each path against the job's `write_allowed`. These enforcement fields (`files_changed`, `violations`, `blocked`) are **git-derived, never model-self-reported**; the worker's `--output-last-message` / return text feeds only the human `summary`. See [`scripts/compound-v-scope-check.py`](../../scripts/compound-v-scope-check.py) and the rule in [`backend-launcher/SKILL.md`](../backend-launcher/SKILL.md).
+
+> **Per-job scope attribution requires per-job isolation (worktree).** The gate reads a *repo-wide* diff. That is unambiguous for a `worktree` job (the worktree contains only that job's changes) and for a **serial `direct`** job (nothing else is writing the tree at the same time). It is **NOT** safe for **parallel `direct`** jobs sharing one working tree: each job's per-job gate would see its siblings' changes too, producing a false BLOCK or unattributable diff. So for parallel jobs, EITHER:
+> - give each parallel job **`isolation: worktree`** for true per-job attribution (the routing policy already does this for risky/external jobs), OR
+> - gate the parallel `direct` jobs at **batch granularity**: run the gate **once after the whole batch** against the **union of the batch's `write_allowed`**. This deterministically detects any *out-of-batch* leak (a path no job in the batch was allowed to write) but **cannot attribute a leak to a specific job**. Serial `direct` jobs keep their own per-job gate.
+>
+> When the partition mixes parallel `direct` jobs, prefer worktrees if you need per-job attribution; otherwise document that the batch is gated as a unit.
 
 Then update `state.json` (the run's single source of truth — schema in [`state-machine.md`](state-machine.md)):
 

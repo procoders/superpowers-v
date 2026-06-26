@@ -127,6 +127,10 @@ PASS
   - Tests paired with code: ✅
 ```
 
+### After a PASS — flag high-stakes plans for an optional cross-model second opinion
+
+A PASS clears dispatch. For **high-stakes** plans the orchestrator SHOULD *additionally* run an **optional cross-model second opinion** before dispatch — a read-only Codex review per [`cross-model-review.md`](../skills/compound-v/cross-model-review.md). High-stakes = security / auth / payments / migrations / shared data model, a large or coupled partition, an architectural change, or a human request. This is **ADVISORY ONLY**: the orchestrator arbitrates each finding, and Codex is **never** the authority (a possibly-weaker reviewer must not silently overrule the plan). It does not change your own verdict — note it in the PASS report so the orchestrator can decide whether to invoke it.
+
 ## Constraints on YOU
 
 - DO run `compound-v-validate-manifest.py` whenever a manifest exists — it is the deterministic backing gate, not optional. A non-zero exit is an automatic FAIL.

@@ -101,7 +101,7 @@ flowchart LR
 
 **Trigger 1** (after brainstorming): three pre-flights dispatched in ONE message with three concurrent Task calls.
 
-**Trigger 2** (inside writing-plans): the plan declares a Partition Map and **materializes a `manifest.yaml`**; `partition-reviewer` checks it for file-overlap, missed shared resources, and unjustified Sonnet assignments, backed by the deterministic `compound-v-validate-manifest.py` gate.
+**Trigger 2** (inside writing-plans): the plan declares a Partition Map and **materializes a `manifest.yaml`**; `partition-reviewer` checks it for file-overlap, missed shared resources, and unjustified Sonnet assignments, backed by the deterministic `compound-v-validate-manifest.py` gate. For **high-stakes** plans (security/auth/payments/migrations, a large/coupled partition, or an architectural change), the orchestrator can additionally run an **optional independent Codex second opinion** before dispatch (`/v:review-plan`) — read-only and advisory, the orchestrator arbitrates each finding.
 
 **Trigger 3** (at execution): `parallel-dispatcher` runs Task 0 serially, then dispatches the manifest's parallel batches (4-6 per message) across backends — Claude on Opus by default, Sonnet only where justified, a headless **Codex** worker for large isolated builds. After **every** job a `git diff` scope gate checks the worker stayed inside its `write_allowed` list; a violation is **BLOCKED** and never merges. The run records progress in `state.json` so it survives a crash (`/v:resume`).
 
@@ -260,6 +260,7 @@ Most users never need these — the sidekick flows through orchestrate → dispa
 | `/v:status [run-id]` | Render `state.json` — phase + per-job status |
 | `/v:resume <run-id>` | Reconcile against git reality and re-dispatch only incomplete jobs after an interruption |
 | `/v:models` | Discover available models per backend (`agy models`, curated Codex list, native Claude tiers), assign tier→model, and write the `models` map into `.claude/compound-v.json` |
+| `/v:review-plan <plan>` | Run an optional **cross-model (Codex) second opinion** on a high-stakes plan before dispatch — read-only, advisory; the orchestrator arbitrates each finding |
 
 Plus the unchanged Phase 1A shortcut:
 

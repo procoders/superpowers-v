@@ -23,6 +23,11 @@ Compound V graduates from a description-driven skill-pack into a **lightweight e
 - **Skill escalation policy** (`skills/compound-v/skill-escalation.md`). Gated pull-in of deep-research / playground / avoid-ai-writing, plus forced Context7 — only when genuinely needed, each logged in the run's reasoning.
 - **Strict `job_result` schema** (`schemas/job_result.schema.json`) and committed fixtures (`examples/`) so CI validates real data.
 - New CI gates in `validate.yml`: schema validity, manifest-invariant check, collector schema-conformance, and a no-fabricated-cost-metric grep.
+- **Cross-model plan review** (optional, gated). A different model family (Codex/GPT) adversarially reviews a high-stakes plan/manifest *before* dispatch — the value is **error decorrelation** (a second Opus shares Opus's blind spots; Codex has different priors). Policy in `skills/compound-v/cross-model-review.md`; the read-only reviewer is `scripts/compound-v-codex-review.sh`, emitting findings against `schemas/plan-review.schema.json`. **Advisory only — the orchestrator arbitrates every finding; Codex is never the authority.** Gated by stakes (security/auth/payments/migrations/shared data model, large/coupled partition, architectural change, or human request); skipped for small/mechanical plans. Wired in after the `partition-reviewer` PASS in `phase-3` and surfaced by the `partition-reviewer` agent; manually triggerable via the new **`/v:review-plan`** command.
+
+### Fixed
+
+- **`validate-manifest.py` `globs_overlap` soundness fix.** The manifest validator's write-glob overlap test (rule 1, disjoint writes) had a soundness bug — caught on the first real cross-model review run when Codex read the repo and flagged it. Hardened so overlapping `write_allowed` globs are reliably detected.
 
 ### Added — the model-broker delta
 
