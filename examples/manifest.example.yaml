@@ -1,0 +1,78 @@
+# Compound V execution manifest — worked example (mirrors PRD §5.1).
+# Materialized from the verified Partition Map + Routing Policy, one per run, at
+# docs/superpowers/execution/<run-id>/manifest.yaml. Validated by
+# scripts/compound-v-validate-manifest.py. Schema + rules:
+# skills/compound-v/execution-manifest.md.
+
+run_id: 2026-06-26-linkedin-sequence-editor
+feature: "LinkedIn outreach sequence editor"
+spec_path: docs/superpowers/specs/2026-06-26-linkedin-sequence.md
+plan_path: docs/superpowers/plans/2026-06-26-linkedin-sequence.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-06-26-linkedin-sequence.md
+  domain: docs/superpowers/expert/2026-06-26-linkedin-sequence.md
+  library: docs/superpowers/library-audit/2026-06-26-linkedin-sequence.md
+
+# Feature-level Acceptance Criteria — the final integration review gates DONE on these.
+acceptance_criteria:
+  - "User can create / edit / delete sequence steps"
+  - "Sequence persists across reload"
+  - "No write outside the partitioned file sets"
+
+routing_stance: balanced            # balanced | conservative | cost-aware | claude-only
+max_parallel: 5                     # batch ceiling (phase-3 concurrency reality)
+
+jobs:
+  - id: task-0-schema
+    title: "DB schema + migration + shared types"
+    type: shared_foundation
+    backend: claude
+    model: opus
+    isolation: direct               # serial pre-phase; no sibling can race it
+    run: serial
+    write_allowed:
+      - "db/migrations/*"
+      - "src/db/schema.ts"
+      - "src/types/sequence.ts"
+    read_allowed:
+      - "src/db/**"
+    acceptance:
+      - "migration applies cleanly"
+      - "types exported"
+
+  - id: task-1-editor-ui
+    title: "Sequence editor UI slice"
+    type: large_isolated
+    backend: codex
+    model: gpt-5.5
+    isolation: worktree             # Codex ⇒ always worktree
+    run: parallel
+    depends_on:
+      - task-0-schema
+    write_allowed:
+      - "src/features/sequences/components/**"
+    read_allowed:
+      - "src/features/sequences/**"
+      - "src/shared/ui/**"
+      - "src/types/sequence.ts"
+    acceptance:
+      - "create/edit/delete steps"
+      - "no writes outside components/**"
+
+  - id: task-2-api
+    title: "Sequence CRUD API slice"
+    type: bounded_crud
+    backend: claude
+    model: sonnet
+    isolation: direct
+    run: parallel
+    depends_on:
+      - task-0-schema
+    write_allowed:
+      - "src/features/sequences/api/**"
+    read_allowed:
+      - "src/server/**"
+      - "src/types/sequence.ts"
+    acceptance:
+      - "CRUD endpoints"
+      - "input validation"

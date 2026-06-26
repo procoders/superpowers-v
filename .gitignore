@@ -4,3 +4,13 @@ node_modules/
 .env
 .env.local
 docs/superpowers/_runs/
+
+# Compound V orchestrator run artifacts.
+# Worktrees live under $TMPDIR/compound-v/<run-id>/<job-id> (outside the repo) by
+# design; these guards catch any that accidentally land in-tree, plus the codex
+# adapter's transient last-message capture. The committed audit trail
+# (docs/superpowers/execution/<run-id>/manifest.yaml, state.json, results/) and
+# docs/superpowers/memory/ are intentionally NOT ignored.
+.worktrees/
+/compound-v/
+.job_result.txt

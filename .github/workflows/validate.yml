@@ -25,6 +25,9 @@ jobs:
       - name: Validate hooks.json is valid JSON
         run: jq empty hooks/hooks.json
 
+      - name: Validate job_result.schema.json is valid JSON
+        run: jq empty schemas/job_result.schema.json
+
       - name: Verify required plugin.json fields
         run: |
           set -e
@@ -36,6 +39,17 @@ jobs:
             fi
             echo "✅ plugin.json.$field = $value"
           done
+
+      - name: Verify plugin.json and marketplace.json versions match
+        run: |
+          set -e
+          pv=$(jq -r '.version' .claude-plugin/plugin.json)
+          mv=$(jq -r '.plugins[] | select(.name=="superpowers-v") | .version' .claude-plugin/marketplace.json)
+          if [ "$pv" != "$mv" ]; then
+            echo "❌ version mismatch: plugin.json=$pv marketplace.json=$mv"
+            exit 1
+          fi
+          echo "✅ versions in lockstep: $pv"
 
       - name: Verify agent files have required frontmatter
         run: |
@@ -63,7 +77,7 @@ jobs:
             echo "✅ $skill OK"
           done
 
-      - name: Set up Python for frontmatter linter
+      - name: Set up Python for linters and validators
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -74,6 +88,85 @@ jobs:
       - name: Run frontmatter linter (description length, missing fields, no-Haiku policy)
         run: python3 scripts/lint-frontmatter.py .
 
+      - name: Validate example manifest against manifest invariants
+        run: |
+          set -e
+          # The deterministic manifest validator is built in Batch A. Run it against
+          # the committed example fixture so CI exercises the gate on real data.
+          if [ -f scripts/compound-v-validate-manifest.py ]; then
+            python3 scripts/compound-v-validate-manifest.py examples/manifest.example.yaml
+            echo "✅ example manifest passes the invariant gate"
+          else
+            echo "⚠️  scripts/compound-v-validate-manifest.py not present yet (Batch A) — skipping"
+          fi
+
+      - name: Validate example job_result against the schema
+        run: |
+          set -e
+          # Prefer the project's own collector validator when present; otherwise fall
+          # back to a stdlib jsonschema-style check via a tiny inline Python guard.
+          python3 - <<'PY'
+          import json, sys
+          schema = json.load(open("schemas/job_result.schema.json"))
+          inst = json.load(open("examples/job_result.example.json"))
+          req = schema.get("required", [])
+          props = schema.get("properties", {})
+          missing = [k for k in req if k not in inst]
+          if missing:
+              print("❌ example job_result missing required keys:", missing); sys.exit(1)
+          if schema.get("additionalProperties") is False:
+              extra = [k for k in inst if k not in props]
+              if extra:
+                  print("❌ example job_result has keys not in schema:", extra); sys.exit(1)
+          enum = props.get("status", {}).get("enum")
+          if enum and inst.get("status") not in enum:
+              print("❌ status not in enum:", inst.get("status")); sys.exit(1)
+          print("✅ example job_result conforms to job_result.schema.json")
+          PY
+
+      - name: No fabricated cost/token metrics (anti-ruflo gate)
+        run: |
+          set -e
+          # The anti-ruflo charter forbids printing token-cost numbers we cannot measure.
+          # Guard scripts/ and docs/ for fabricated metric output. We match phrases that
+          # would only appear if code/docs CLAIMED measured savings (e.g. "tokens saved",
+          # "cost savings: N", a hardcoded "baseline = 1000"). Pure mentions of the
+          # anti-pattern (the word "anti-ruflo", "fabricated", "do not print") are allowed.
+          fail=0
+          patterns='tokens? saved|token-cost (saved|savings)|cost savings:|saved [0-9]+ tokens|baseline ?= ?1000|\$[0-9]+\.[0-9]+ saved'
+          while IFS= read -r -d '' f; do
+            # Skip this workflow file itself (it names the patterns) and the PRD/plan,
+            # which discuss the anti-pattern by name.
+            case "$f" in
+              *docs/superpowers/specs/*|*docs/superpowers/plans/*) continue ;;
+            esac
+            if grep -inE "$patterns" "$f" >/dev/null 2>&1; then
+              echo "❌ possible fabricated cost/token metric in $f:"
+              grep -inE "$patterns" "$f"
+              fail=1
+            fi
+          done < <(find scripts docs -type f \( -name "*.sh" -o -name "*.py" -o -name "*.md" \) -print0 2>/dev/null)
+          [ "$fail" = "0" ] || exit 1
+          echo "✅ no fabricated cost/token metrics in scripts/ or docs/"
+
+      - name: Verify hook scripts are executable
+        run: |
+          set -e
+          for hook in hooks/*.sh; do
+            if [ ! -x "$hook" ]; then
+              echo "❌ $hook is not executable (run: chmod +x $hook)"
+              exit 1
+            fi
+            echo "✅ $hook is executable"
+          done
+
+      - name: Lint hook scripts with shellcheck
+        run: |
+          sudo apt-get install -y shellcheck
+          shellcheck hooks/*.sh
+
+      # FINAL step — run the repo-wide dead-link scan only after every file exists,
+      # so cross-refs to files authored by later batches resolve at integration time.
       - name: Check for dead intra-plugin cross-refs
         run: |
           set -e
@@ -99,19 +192,3 @@ jobs:
           done < <(find . -name "*.md" -not -path "./node_modules/*" -not -path "./.git/*" -print0)
           [ "$fail" = "0" ] || exit 1
           echo "✅ All intra-plugin .md links resolve"
-
-      - name: Verify hook scripts are executable
-        run: |
-          set -e
-          for hook in hooks/*.sh; do
-            if [ ! -x "$hook" ]; then
-              echo "❌ $hook is not executable (run: chmod +x $hook)"
-              exit 1
-            fi
-            echo "✅ $hook is executable"
-          done
-
-      - name: Lint hook scripts with shellcheck
-        run: |
-          sudo apt-get install -y shellcheck
-          shellcheck hooks/*.sh
