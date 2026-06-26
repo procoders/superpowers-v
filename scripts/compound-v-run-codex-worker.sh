@@ -183,7 +183,14 @@ mkdir -p "$(dirname "$WT")"
 git -C "$REPO" worktree add "$WT" HEAD >/dev/null 2>&1 \
   || die "git worktree add failed for $WT"
 
-RESULT_TXT="$WT/.job_result.txt"
+# Adapter scratch lives OUTSIDE the worktree, in a sibling dir under $TMPDIR (which is
+# one of codex's workspace-write sandbox roots, so --output-last-message can be written
+# there). This keeps the worktree PRISTINE: only the job's real output shows up in
+# `git diff`, so the generic scope-gate (scripts/compound-v-scope-check.py) agrees with
+# this worker's own git-derived enforcement WITHOUT needing any codex-specific ignore list.
+ART="$WT.art"
+mkdir -p "$ART"
+RESULT_TXT="$ART/job_result.txt"
 
 # --- run the headless Codex worker -------------------------------------------
 # Pinned flag set, verified live against codex-cli 0.130. NOTE: `--ask-for-approval
@@ -199,11 +206,11 @@ if [ "$READ_ONLY" = "true" ]; then
   SANDBOX="read-only"
 fi
 
-STDERR_LOG="$WT/.codex_stderr.log"
+STDERR_LOG="$ART/codex_stderr.log"
 # codex prints its FINAL agent message to stdout; we must NOT let it reach our stdout,
 # which is reserved for the canonical job_result JSON alone. Capture + discard it (the
 # human summary comes from --output-last-message, the session id from stderr).
-STDOUT_LOG="$WT/.codex_stdout.log"
+STDOUT_LOG="$ART/codex_stdout.log"
 exit_code=0
 
 # run_codex runs the pinned `codex exec` invocation. $TIMEOUT_PREFIX is an optional

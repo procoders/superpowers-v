@@ -49,14 +49,15 @@ timeout "$timeout_sec" codex exec \
   --skip-git-repo-check \
   --model "$model" \
   ${output_schema:+--output-schema "$output_schema"} \
-  --output-last-message "$WT/.job_result.txt" \
+  --output-last-message "$ART/job_result.txt" \
   -c "sandbox_workspace_write.network_access=$network" \
   "$prompt" </dev/null
 ```
 
-**Stream handling — verified live, both load-bearing (caught by the v1.0 end-to-end smoke test):**
+**Stream + scratch handling — verified live, all load-bearing (caught by the v1.0 smoke + e2e tests):**
 - **stdin → `/dev/null`.** The prompt is positional, but `codex exec` still reads stdin when it is not a TTY and will hang on `Reading additional input from stdin...` in a non-interactive / background run. `</dev/null` makes stdin an immediate EOF so only the positional prompt is used.
-- **codex stdout → captured, never passed through.** `codex exec` prints its final agent message to *stdout*; the script redirects it (`>"$WT/.codex_stdout.log"`) so the worker's own stdout carries **only** the canonical `job_result` JSON. The summary comes from `--output-last-message`; the session-id from the stderr banner — so codex's stdout is safely discarded.
+- **codex stdout → captured, never passed through.** `codex exec` prints its final agent message to *stdout*; the script redirects it to a scratch log so the worker's own stdout carries **only** the canonical `job_result` JSON. The summary comes from `--output-last-message`; the session-id from the stderr banner — so codex's stdout is safely discarded.
+- **scratch lives OUTSIDE the worktree.** `$ART` is a sibling dir under `$TMPDIR` (one of codex's `workspace-write` sandbox roots, so `--output-last-message` can be written there). The worktree therefore stays **pristine** — only the job's real output appears in `git diff`, so the generic scope-gate (`scripts/compound-v-scope-check.py`) agrees with this worker's own enforcement without any codex-specific ignore list.
 
 | Flag | Role |
 |---|---|
