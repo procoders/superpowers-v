@@ -1,8 +1,10 @@
-# Phase 3 — Parallel Opus Dispatch
+# Phase 3 — Manifest-Driven Parallel Dispatch
 
-**When this fires:** Plan with verified Partition Map exists, ready to execute.
+**When this fires:** A plan with a verified Partition Map and a validated [`manifest.yaml`](execution-manifest.md) exists (Phase 2 emitted both), ready to execute.
 
-**Goal:** Dispatch all parallel-batch implementers concurrently with strict scope locks, direct writes to the active workspace. **Opus by default; Sonnet only for the narrow set of clearly junior-level mechanical tasks defined below.** No worktrees, no sequential drag.
+**Goal:** Read `manifest.yaml` and dispatch each job to the backend the manifest names (Claude subagent or headless Codex worker) via the [`backend-launcher`](../backend-launcher/SKILL.md) contract, concurrently per batch, with strict scope locks and **per-job isolation** — direct writes to the active workspace where safe, an isolated git worktree where the job is risky or runs on an external backend. **Opus by default for Claude jobs; Sonnet only for the narrow junior-level mechanical tasks defined below; backend/model/isolation are read from the manifest, not re-decided here.** After every job the **scope gate** runs and `state.json` is updated.
+
+> **Compatibility:** the older "no worktrees, direct writes only" stance from 0.1.x is now **per-job isolation** (the manifest's `isolation` field). Direct writes remain the default for in-harness Claude jobs whose partition is clean; worktrees are used where a job is risky (touches a broad/shared surface) or runs on an external backend (Codex is **always** worktree). A bare plan path with no manifest still works — the dispatcher materializes a manifest first (see `commands/v-dispatch.md`), then proceeds as below.
 
 ## Concurrency Reality (from 2026 Claude Code testing)
 
@@ -10,7 +12,7 @@
 - **Background limit (`run_in_background: true`): 5-10.** Background agents auto-deny permission prompts (use already-granted perms) and the parent gets a notification when each finishes.
 - **If your plan has N>6 parallel tasks**, batch them: dispatch 4-6 at a time, wait for the batch to return, dispatch the next batch. Document the batches in the Partition Map.
 - **`run_in_background: true` for the implementer batch is acceptable** when permissions are pre-granted for the workspace — it lets you continue orchestration work while implementers run. Background subagents do NOT carry working-directory state between Bash calls; foreground subagents do. Plan accordingly.
-- **Cap runaway reasoning:** include `maxTurns: 15` (or your project's limit) on every dispatched Task call. Implementers that haven't finished in 15 turns are usually stuck and need a re-dispatch with more context, not more turns.
+- **Cap runaway reasoning:** include `maxTurns: 15` (or your project's limit) on every dispatched Claude Task call. Implementers that haven't finished in 15 turns are usually stuck and need a re-dispatch with more context, not more turns. (Codex worker jobs are bounded by `timeout_sec` in the `job_spec` instead — see `backend-launcher`.)
 
 ## The Three Overrides
 
@@ -18,17 +20,21 @@ This phase replaces three defaults from `subagent-driven-development`:
 
 | Default | Compound V |
 |---------|---------------|
-| "Never dispatch multiple implementation subagents in parallel (conflicts)" | **Dispatch all parallel-batch tasks in parallel** (batched at 4-6 concurrent) — Partition Map guarantees no conflicts |
-| "Use the least powerful model that can handle each role" / cheap model for mechanical tasks | **Opus by default; Sonnet allowed only when task passes the strict junior-task taxonomy below.** Reviewers always Opus. |
-| Isolated workspace via git worktrees | **Direct writes to active workspace** — Partition prevents collisions |
+| "Never dispatch multiple implementation subagents in parallel (conflicts)" | **Dispatch all parallel-batch jobs in parallel** (batched at 4-6 concurrent) — Partition Map + the manifest's disjoint `write_allowed` guarantee no conflicts |
+| "Use the least powerful model that can handle each role" / cheap model for mechanical tasks | **Opus by default; Sonnet allowed only when the job passes the strict junior-task taxonomy below.** The manifest's `model` already encodes this per job (routed by `routing-policy.md`); reviewers are always Opus. |
+| Isolated workspace via git worktrees | **Per-job isolation** — the manifest's `isolation` field: `direct` writes to the active workspace where the partition is clean and the backend is in-harness; `worktree` where the job is risky or external. **Codex jobs are always `worktree`.** Either way the scope gate runs on return. |
 
-The first override is safe ONLY because Phase 2 produced a verified Partition Map. Without the map, revert to sequential dispatch.
+The first override is safe ONLY because Phase 2 produced a verified Partition Map and a validated manifest. Without them, revert to sequential dispatch.
+
+> **Why isolation is now per-job, not blanket-off.** 0.1.x did direct writes only because every job was an in-harness Claude subagent the partition could keep apart. v1.0 adds an out-of-process Codex worker whose sandbox can only restrict writes to a *directory* — so external/risky jobs need a worktree, and the git-diff scope gate inside it is the enforcement. Direct writes are still the default for clean in-harness Claude jobs; worktrees are reserved for "risky or external," not imposed on everything. This is the reconciliation of the old "no worktrees" rule, not its reversal.
 
 ---
 
 ## Model Selection Taxonomy (Opus Default, Narrow Sonnet Exception)
 
-**Default: Opus.** Every implementer dispatched on Opus unless the task passes ALL the boxes for Sonnet eligibility below. Reviewers (spec + quality) are ALWAYS Opus — they're the safety net, and a cheap reviewer is no reviewer.
+> In the v1.0 flow this decision is already made for you: [`routing-policy.md`](routing-policy.md) routes each job's `type` to a `model` when Phase 2 materializes the manifest, and the dispatcher simply honors the manifest's `model` field. The taxonomy below is the *rationale* the routing policy encodes — keep it as the check when you author a job's `type`, or when you run a bare-plan flow with no manifest yet. Either way the rule is identical.
+
+**Default: Opus.** Every Claude implementer runs on Opus unless the job passes ALL the boxes for Sonnet eligibility below. Reviewers (spec + quality) are ALWAYS Opus — they're the safety net, and a cheap reviewer is no reviewer. (Codex jobs carry their own model, e.g. `gpt-5.5`, set by the routing policy — that is execution-layer data and never appears in any frontmatter.)
 
 ### When Sonnet IS allowed (the "Junior Dev" carve-out)
 
@@ -81,24 +87,37 @@ If the "Sonnet justification" column is empty for a Sonnet task, the partition i
 
 ## The Dispatch Sequence
 
+Read `manifest.yaml`. Honor `depends_on`, `run`, and `max_parallel`. Each job is dispatched **to the backend its manifest entry names**, through the one [`backend-launcher`](../backend-launcher/SKILL.md) contract — the dispatcher builds a `job_spec`, hands it to the adapter for `backend`, and gets back a canonical `job_result`. The orchestrator speaks only that contract; it never sees backend-specific flags. After **every** job returns, run the scope gate and update `state.json` (Step 2b).
+
+### Backend dispatch — one contract, two live adapters
+
+For each job, the dispatcher builds a `job_spec` (`backend`, `prompt`, `model`, `cwd`, `write_allowed`, `read_only`, `timeout_sec`, `network`, optional `output_schema`) and routes by `backend`:
+
+- **`backend: claude`** → [`adapter-claude.md`](../backend-launcher/adapter-claude.md): an in-harness `Task` call with the `model` override and `maxTurns: 15`. `isolation: direct` writes to the active workspace against a baseline commit; `isolation: worktree` runs inside an isolated worktree.
+- **`backend: codex`** → [`adapter-codex.md`](../backend-launcher/adapter-codex.md): a Bash-spawned headless `codex exec` worker (own process, own worktree — **always** `worktree`), via [`scripts/compound-v-run-codex-worker.sh`](../../scripts/compound-v-run-codex-worker.sh). Never an `agents/` entry, never the openai-codex broker.
+- **`backend: antigravity`** → [`adapter-antigravity.md`](../backend-launcher/adapter-antigravity.md): a stub returning `unsupported` (deferred to 1.1).
+
+Every adapter returns the **same** `job_result` shape ([`schemas/job_result.schema.json`](../../schemas/job_result.schema.json)); enforcement is uniform because it lives in the caller's scope gate, not in the backend.
+
 ### Step 1: Serial Pre-Phase (Task 0), if present
 
-If the plan has a Task 0 with shared types/migrations/configs:
+If the manifest has a `type: shared_foundation`, `run: serial` job (shared types/migrations/configs):
 
-- Dispatch **one** implementer subagent for Task 0 on Opus.
+- Dispatch **one** job — by its manifest backend (Task 0 is `claude · opus · direct` in every stance).
+- On return, run the scope gate (Step 2b) and write `state.json`.
 - Wait for completion. Run spec + quality reviews (sequentially, on Opus). Address feedback.
-- Only then proceed to parallel batch.
+- Only then proceed to the parallel batch (every parallel job `depends_on` it).
 
 ### Step 2: Parallel Implementer Batch(es)
 
-For all parallel-batch tasks, dispatch implementers **in a single message with concurrent Task tool calls — up to 4-6 per message** to stay under rate-limit cascades. If N > 6, batch them; document batches in the Partition Map ("Batch A: Tasks 1-5", "Batch B: Tasks 6-10").
+For all `run: parallel` jobs in the current batch, dispatch implementers **in a single message with concurrent calls — up to 4-6 per message** (the manifest's `max_parallel`) to stay under rate-limit cascades. If a batch has more than `max_parallel` jobs, split it; the manifest's `depends_on` + batch grouping define the order.
 
 Each dispatch must include:
 
-1. **Model override:** `model: "opus"` (or `claude-opus-4-7`) by default. `model: "sonnet"` only when the task passed the strict junior-task taxonomy above (and only with the explicit Sonnet-justification recorded in the Partition Map).
-2. **`maxTurns: 15`** to cap runaway reasoning. An implementer that hasn't finished in 15 turns is usually stuck and needs a re-dispatch with more *context*, not more turns.
-3. **`run_in_background: true`** is acceptable for the implementer batch — lets the orchestrator continue prep work while implementers run. The parent receives a notification per agent when it completes. Background subagents do NOT carry cwd state between Bash calls; plan absolute paths in the prompt.
-4. **Strict scope lock** — paste this verbatim at the top of the prompt:
+1. **Backend + model from the manifest** — never re-decide here. A `claude` job uses `model: "opus"` by default, `model: "sonnet"` only where the manifest's routing already justified it (the strict junior-task taxonomy above). A `codex` job carries its execution-layer model (e.g. `gpt-5.5`) in the `job_spec`, never in any frontmatter.
+2. **Turn/time bound:** `maxTurns: 15` on Claude Task calls; `timeout_sec` in the `job_spec` for Codex workers. An implementer that hasn't finished in 15 turns is usually stuck and needs a re-dispatch with more *context*, not more turns.
+3. **`run_in_background: true`** is acceptable for the implementer batch — lets the orchestrator continue prep work while implementers run. The parent receives a notification per agent when it completes. Background subagents do NOT carry cwd state between Bash calls; **plan absolute paths in the prompt** (this is also why Codex worktree paths in the `job_spec` are always absolute).
+4. **Strict scope lock** — paste this verbatim at the top of the prompt (it is the *instructed* half; the git-diff scope gate in Step 2b is the *enforced* half):
 
 ```
 SCOPE LOCK (Compound V):
@@ -146,6 +165,30 @@ The controller builds the READ list from Task 0's commit diff. Don't make the su
 7. **TDD requirement**: follow `superpowers:test-driven-development` for each behavior change.
 8. **Self-review requirement** before reporting DONE.
 
+### Step 2b: Scope gate + state.json — after EVERY job returns
+
+The SCOPE LOCK prose is advisory. The **authority** is the deterministic git-diff scope gate, run on every job the moment it returns — regardless of backend or isolation:
+
+```bash
+# worktree job (codex always, claude when isolation: worktree)
+python3 scripts/compound-v-scope-check.py --worktree "$WT" --allow-file "$ALLOW"
+# direct job (in-harness claude against a pre-dispatch baseline commit)
+python3 scripts/compound-v-scope-check.py --repo "$CWD" --baseline "$BASE" --allow-file "$ALLOW"
+```
+
+The gate computes what the job *actually* changed purely from git —
+`git diff --name-only` ∪ `git ls-files --others --exclude-standard` — and matches each path against the job's `write_allowed`. These enforcement fields (`files_changed`, `violations`, `blocked`) are **git-derived, never model-self-reported**; the worker's `--output-last-message` / return text feeds only the human `summary`. See [`scripts/compound-v-scope-check.py`](../../scripts/compound-v-scope-check.py) and the rule in [`backend-launcher/SKILL.md`](../backend-launcher/SKILL.md).
+
+Then update `state.json` (the run's single source of truth — schema in [`state-machine.md`](state-machine.md)):
+
+- **PASS** (no violation) → set the job `status: done`. For a worktree job, merge back: `git -C "$WT" diff HEAD | git apply` into the main tree, then `git worktree remove -f`. Direct jobs are already in the tree.
+- **BLOCKED** (any path outside `write_allowed`) → set `status: blocked`, advance the run `phase` to terminal **BLOCKED**, surface the offending paths, and **do not merge** — leave the worktree for inspection. A BLOCKED job halts the run; it does not get silently re-dispatched.
+- **failed / timeout** → set `status: failed`; eligible for re-dispatch (see resume in `state-machine.md`).
+
+`state.json` is written after every per-job transition, so a crash never loses more than the in-flight job, and [`/v:resume`](../../commands/v-resume.md) can reconcile against git (git-wins) and re-dispatch only the incomplete.
+
+> The wiring above is what [`agents/parallel-dispatcher.md`](../../agents/parallel-dispatcher.md) actually does: dispatch → scope-check → state.json, HALT on BLOCKED. This skill is the spec; that agent is the executable.
+
 ### Step 3: Parallel Reviewer Batch
 
 When all N implementers return, dispatch **2N reviewer subagents** — one spec-compliance reviewer and one code-quality reviewer per task. Same batching rule applies: 4-6 per message. If 2N > 6 (e.g. N=4 tasks → 8 reviewers), split into two messages.
@@ -163,13 +206,13 @@ This is the second source of speed: failures are isolated to the task that faile
 
 ### Step 5: Final Integration Review
 
-After every task is approved, dispatch ONE final code-reviewer subagent (on Opus) that reads the full set of changes across all tasks and verifies:
+After every task is approved and every worktree job has merged back (Step 2b), dispatch ONE final code-reviewer subagent (on Opus) that reads the full set of changes across all tasks and verifies:
 
-- No partition leaked (no file touched outside its assigned task)
+- No partition leaked (the scope gate already enforced this per-job from git; the reviewer confirms nothing slipped through at the integration seam)
 - Cross-task integration works (the types from Task 0 are used correctly by parallel tasks)
-- The composite change matches the original spec + archaeology constraints
+- The composite change matches the original spec + archaeology constraints **and the manifest's feature-level `acceptance_criteria`** (this is the AC-gate for the run)
 
-Then hand off to `superpowers:finishing-a-development-branch`.
+This is the final pass of the three-pass Review Gate (spec / quality / integration) — see [`agents/spec-reviewer.md`](../../agents/spec-reviewer.md). On PASS, advance `state.json` to `MERGED` and hand off to `superpowers:finishing-a-development-branch`.
 
 ## Dispatch Template (implementer)
 
@@ -264,6 +307,8 @@ Use Compound V when speed-to-shipping matters more than minimum cost. For tiny f
 | Tests pass per-task but integration fails | Cross-task assumption diverged | Final integration reviewer should catch this; fix in a sequential follow-up task |
 | Subagent returned BLOCKED with "I need to read sibling file" | Scope lock was correct; partition was incomplete | Add the sibling file to Task 0 or merge the two tasks; revise plan |
 | Opus model unavailable / rate-limited | Capacity issue | Fall back to most-capable available; document the fallback |
+| Codex job wrote outside its directory worktree | Codex sandbox restricts to a *directory*, not a file allow-list | The scope gate catches it from `git diff` on return → `status: blocked`, no merge; tighten `write_allowed` and re-dispatch |
+| Worktree merge-back conflicts with another job | Two worktree jobs' diffs touched the same line (partition leaked) | Should be impossible under a disjoint partition; if it happens the partition was wrong — the scope gate flags the overlap, resolve by hand and revise the manifest |
 
 ## Red Flags — STOP
 
@@ -271,6 +316,9 @@ Use Compound V when speed-to-shipping matters more than minimum cost. For tiny f
 - "Sonnet is fine for this simple task" → no; the override is hard
 - "I'll skip Task 0, the types are obvious" → no; without Task 0 the parallel batch races on types
 - "The plan doesn't have a Partition Map but I'll figure it out as I go" → STOP; go back to Phase 2
+- "I'll trust the worker's report of what it changed" → no; enforcement is **git-derived**, run the scope gate (Step 2b) on every job — never trust a model to self-report its writes
+- "A Codex job can run direct, the worktree is overhead" → no; Codex ⇒ worktree is a hard invariant (the sandbox can't enforce a file allow-list)
+- "I'll route the model/backend myself per task" → no; backend/model/isolation come from the manifest (routed by `routing-policy.md`); don't re-decide in dispatch
 
 ## Handoff
 
