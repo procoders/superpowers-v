@@ -23,7 +23,7 @@ file_path=$(echo "$input" | jq -r '.tool_input.file_path // empty' 2>/dev/null |
 nudge=""
 case "$file_path" in
   */docs/superpowers/plans/*.md)
-    nudge="💉 Compound V — plan saved at $file_path. To execute: invoke compound-v:partition-reviewer first (verify Partition Map is disjoint), then compound-v:parallel-dispatcher. Or use /v:dispatch $file_path to do both."
+    nudge="💉 Compound V — plan saved at $file_path. To execute: invoke compound-v:partition-reviewer first (verify Partition Map is disjoint), then compound-v:parallel-dispatcher. Shortcuts: /v:orchestrate $file_path materializes a manifest from the plan, or /v:dispatch $file_path runs the pipeline directly (it still accepts a bare plan path)."
     ;;
   */docs/superpowers/specs/*.md)
     nudge="💉 Compound V — spec saved at $file_path. If this came from brainstorming, dispatch the three pre-flights IN ONE MESSAGE WITH THREE PARALLEL TASK CALLS: compound-v:code-archaeologist, compound-v:domain-expert, compound-v:doc-validator. Then writing-plans with the three audits as design-constraint sources."

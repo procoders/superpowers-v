@@ -22,10 +22,10 @@ Common issues with Compound V and how to fix them.
 
 **Fix:**
 ```
-/mcp add context7
+/plugin install context7@claude-plugins-official
 ```
 
-Or in your `.mcp.json`:
+Or in your `~/.claude.json` (or project `.mcp.json`):
 ```json
 {
   "mcpServers": {
@@ -72,6 +72,63 @@ Never tell the implementer to "just peek" — that defeats the partition contrac
 2. `git log --oneline -5` to see commit attribution.
 3. Reject the violating implementer's commits; re-dispatch with a stricter scope lock and an explicit reminder: "improvising files outside the WRITE-allowed list is a scope-lock violation per Compound V Phase 3."
 4. Update the Partition Map if the implementer's "improvisation" reveals a real partition gap.
+
+## A job came back BLOCKED — "wrote outside write_allowed"
+
+**Symptom:** During dispatch a job's `job_result` has `"status": "blocked"` with `violations` listing files, the run halts, and nothing merged for that job.
+
+**Cause:** This is the **scope gate doing its job** (`scripts/compound-v-scope-check.py`). The worker touched a file outside its manifest `write_allowed` list. Unlike 0.1.x — where the SCOPE LOCK was prose a subagent could ignore — the gate is now deterministic: it unions `git diff --name-only HEAD` with `git ls-files --others --exclude-standard` and rejects any path not matched by `write_allowed`. The `violations` field is **git-derived**, not self-reported, so it's authoritative.
+
+**Fix:**
+1. Look at the `violations` paths in `docs/superpowers/execution/<run-id>/results/<job-id>.json`.
+2. If the violating file is a genuine shared resource (barrel/index, type, config, migration), move it into the **serial Task 0** (`shared_foundation` job) in the manifest, then re-dispatch — see `skills/compound-v/execution-manifest.md` and `skills/compound-v/phase-2-disjoint-partitioning.md`.
+3. If two jobs both need to write it, the partition was wrong — **merge those jobs**; they aren't parallelizable.
+4. If the worker simply improvised, re-dispatch with a tighter scope lock. For worktree jobs, the worktree is left in place (under `$TMPDIR/compound-v/<run-id>/<job-id>`) for inspection and is **not** merged.
+
+Never "just let it through." A BLOCKED job never merges by design.
+
+## `validate-manifest.py` rejects the manifest before dispatch
+
+**Symptom:** `partition-reviewer` fails (or `/v:dispatch` halts) with a manifest-invariant violation — e.g. overlapping `write_allowed`, a Codex job without `isolation: worktree`, or a reviewer not on Opus.
+
+**Cause:** `scripts/compound-v-validate-manifest.py` is the deterministic backing gate behind the partition review. It enforces: disjoint `write_allowed` across jobs, **Codex ⇒ worktree**, **reviewers ⇒ Opus**, shared resources in the serial Task 0, and "unclear scope never dispatches."
+
+**Fix:** Read the specific violation it printed and edit `manifest.yaml`:
+- Overlap → move the shared file to Task 0 or split the job by namespace.
+- Codex without worktree → set `isolation: worktree` (mandatory for external workers).
+- Reviewer not Opus → set `model: opus`.
+
+Re-run the validator (or `/v:dispatch`) until it's clean. The manifest schema + rules live in `skills/compound-v/execution-manifest.md`.
+
+## Codex worker produces no result / hangs / emits a deprecation warning
+
+**Symptom:** `scripts/compound-v-run-codex-worker.sh` returns nothing useful, times out, or you see `[features].codex_hooks is deprecated` noise.
+
+**Causes & fixes:**
+1. **The deprecation line is cosmetic.** `codex` emits `[features].codex_hooks is deprecated` on stderr; the worker script already suppresses it. If you call `codex exec` by hand, ignore that line — it does not indicate a failure.
+2. **Wrong flags.** The verified `codex-cli 0.130` flag set is `--cd <wt> --sandbox workspace-write --skip-git-repo-check --model <m> --output-last-message <f> -c sandbox_workspace_write.network_access=<bool>` (optionally `--output-schema <f>`). **Do not pass `--ask-for-approval never`** — it is invalid for `codex exec` (a top-level/interactive flag only) and will fail every job. `exec` already defaults to `approval: never`; if you ever need a non-default, use `-c approval_policy=never`.
+3. **Timeout.** The worker wraps `codex exec` in `timeout` (default 900s). A `status: timeout` result means the job exceeded it — raise `--timeout-sec` or split the job smaller.
+4. **Stale flags after a Codex upgrade.** Re-probe with `/v:init`, which re-checks the flag set against `codex exec --help` (the **exec** subcommand help, not the top-level help — the top-level merge is what masked the original `--ask-for-approval` bug).
+5. **No worktree / dirty diff.** The worker runs inside a fresh `git worktree add <wt> HEAD` under `$TMPDIR`. If `git worktree` fails (e.g. repo not initialized, or `$TMPDIR` unwritable), the script reports an environment fault rather than a job result.
+
+## A run was interrupted — how do I resume?
+
+**Symptom:** You killed a session (or it crashed) mid-batch. Some jobs finished, some didn't.
+
+**Fix:** `/v:resume <run-id>`. It re-reads `docs/superpowers/execution/<run-id>/state.json`, **reconciles it against git reality** (what actually landed — git wins the tie-break, so if `state.json` says `done` but the files aren't in git, the job is re-dispatched), and re-dispatches only `pending` / `failed` / `blocked` jobs. Finished jobs are not re-run.
+
+- Check status first with `/v:status <run-id>` (renders `state.json` — phase + per-job status).
+- Resume lives in **Engine A** (the helper-script layer), which is exactly why it survives a hard crash. The opt-in Workflows accelerator (Engine C) does **not** provide crash-resume — its resume is same-session-only, so the orchestrator never routes resume through it.
+- If you don't know the run-id, list `docs/superpowers/execution/` — each subdirectory is a run.
+
+## `/v:init` can't find Codex (or sets Claude-only unexpectedly)
+
+**Symptom:** `/v:init` reports Codex absent and sets the routing stance to **Claude-only**, even though you think Codex is installed.
+
+**Cause / fix:**
+1. Confirm the CLI is on `PATH`: `command -v codex`. If missing, install it (`npm i -g @openai/codex`) and re-run `/v:init`.
+2. Claude-only is a **correct, supported** stance, not a failure — the pipeline runs unchanged, with large-isolated jobs routed to `opus` + `worktree` instead of Codex. You only need Codex for the cheaper large-isolated carve-out.
+3. The capability cache lives at `~/.claude/compound-v-capabilities.json` (user-level) and the stance at `.claude/compound-v.json` (project-level). Delete the cache and re-run `/v:init` if it's stale after an install.
 
 ## "Opus rate-limited" mid-batch
 
@@ -121,7 +178,7 @@ The plugin ships compatibility shims:
 - **Codex**: `AGENTS.md` at the project root is auto-loaded by Codex CLI; it points at the same skills.
 - **Gemini CLI**: `GEMINI.md` documents the conceptual mapping. The extension manifest schema is harness-specific — adapt to your Gemini CLI version's actual format (the shim is untested as of v0.1.1).
 
-The skill content is harness-neutral. Tool names differ (Claude Code's `Task` ≈ Codex's `subagent`); the dispatcher logic adapts.
+The skill content is harness-neutral. Tool names differ (Claude Code's `Task` ≈ Codex's `subagent`); the dispatcher logic adapts. The orchestrator's deterministic core (the manifest schema, the `git diff` scope gate in `scripts/compound-v-scope-check.py`, and the `job_result` contract) is harness-neutral; only the dispatch wiring is Claude-Code-specific. The Codex *backend* (`adapter-codex.md`) is itself just `codex exec` driven by a shell script, so any harness with a shell can spawn it. These shims remain 🧪 untested on real non-Claude installs.
 
 ## Compound V says my repo is too small for it
 

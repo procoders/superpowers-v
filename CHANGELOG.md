@@ -4,6 +4,46 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [1.0.0] — 2026-06-26
+
+Compound V graduates from a description-driven skill-pack into a **lightweight execution orchestrator**. The three pre-flights and `/v:archaeology` are behaviourally unchanged; the orchestrator extends the *tail* of the flow (manifest → dispatch → scope-gate → collect → review → memory) with multi-backend execution, per-job isolation, and crash-resume. No daemon, no MCP server, no vector DB, and **no fabricated token-cost metrics** (the anti-ruflo charter). Built by dogfooding the Compound V pipeline on this repo.
+
+### Added — the orchestrator delta
+
+- **Execution manifest** (`skills/compound-v/execution-manifest.md`, `examples/manifest.example.yaml`). A machine-readable `manifest.yaml` of file-scoped jobs — backend · model · isolation · `write_allowed`/`read_allowed` · per-job and feature-level acceptance criteria — materialized from the verified Partition Map immediately after `writing-plans`. This is the contract between planner and executors.
+- **Backend Launcher** sub-skill (`skills/backend-launcher/`). One `job_spec → job_result` contract (`schemas/job_result.schema.json`) that every adapter implements; the orchestrator speaks only this contract and never sees backend-specific flags. Adapters: `adapter-claude.md` (Task-based, model override, `maxTurns: 15`), `adapter-codex.md` (headless `codex exec` in a git worktree), `adapter-antigravity.md` (stub — see dispositions below).
+- **Headless Codex worker** (`scripts/compound-v-run-codex-worker.sh`). Runs one file-scoped job on `codex exec` inside a dedicated `$TMPDIR` git worktree, then emits the canonical `job_result`. Verified against `codex-cli 0.130`: the flag set is `--cd / --sandbox / --skip-git-repo-check / --model / --output-last-message / -c sandbox_workspace_write.network_access` (plus optional `--output-schema`). **`--ask-for-approval never` is invalid for `codex exec` and is omitted** — `exec` already defaults to `approval: never`. Resume is `codex exec resume <uuid>`. The cosmetic `[features].codex_hooks is deprecated` stderr is suppressed.
+- **Scope gate** (`scripts/compound-v-scope-check.py`). The deterministic authority behind the prose `SCOPE LOCK`. After every job it unions `git diff --name-only HEAD` with `git ls-files --others --exclude-standard` and tests each changed path against `write_allowed`. A violation is **BLOCKED** — the job never merges and the run halts. Enforcement fields (`files_changed` / `violations` / `blocked`) are **git-derived, never model-self-reported**.
+- **Manifest validator** (`scripts/compound-v-validate-manifest.py`). A deterministic invariant gate the `partition-reviewer` runs: disjoint `write_allowed`, Codex⇒worktree, reviewers⇒Opus, shared resources in the serial Task 0.
+- **State machine + crash-resume** (`skills/compound-v/state-machine.md`). A lightweight `state.json` (not an FSM engine) tracks phase + per-job status under `docs/superpowers/execution/<run-id>/`. `/v:resume` reconciles `state.json` against git reality (**git-wins** tie-break) and re-dispatches only `pending`/`failed`/`blocked` jobs. Resume lives in Engine A so it survives a hard crash.
+- **Result collector + lean memory** (`scripts/compound-v-collect-results.py`, `scripts/compound-v-update-memory.py`, `docs/superpowers/memory/routing-lessons.md`). Normalizes heterogeneous worker output into schema-conforming `job_result`s, folds in the scope verdict, and appends one line per job to `task-outcomes.jsonl`. `routing-lessons.md` is human-curated. No semantic search, no scorecards in 1.0.
+- **Routing policy** (`skills/compound-v/routing-policy.md`). task-type → backend/model/isolation. **Balanced** default; **Conservative** and **Cost-aware** stances; **env-aware Claude-only fallback** when Codex is absent. Cites `routing-lessons.md` as a consulted input.
+- **`/v:init`** (`commands/v-init.md`). Detects Codex CLI / Context7 MCP / required skills, walks through any missing installs one at a time, re-probes the Codex flag set against `codex exec --help`, sets the routing stance, and saves config: project `.claude/compound-v.json` (stance) + user `~/.claude/compound-v-capabilities.json` (capability cache).
+- **New commands** `/v:orchestrate`, `/v:collect`, `/v:status`, `/v:resume` (`commands/`).
+- **Skill escalation policy** (`skills/compound-v/skill-escalation.md`). Gated pull-in of deep-research / playground / avoid-ai-writing, plus forced Context7 — only when genuinely needed, each logged in the run's reasoning.
+- **Strict `job_result` schema** (`schemas/job_result.schema.json`) and committed fixtures (`examples/`) so CI validates real data.
+- New CI gates in `validate.yml`: schema validity, manifest-invariant check, collector schema-conformance, and a no-fabricated-cost-metric grep.
+
+### Changed
+
+- **`plugin.json` + `marketplace.json` → `1.0.0`** in lockstep; added the `orchestrator` keyword.
+- **`SKILL.md`** evolved to orchestrator-as-default — the description now mentions manifest materialization and the scope-enforced, resumable pipeline, **without weakening the auto-fire triggers** (every existing `evals.json` case still passes).
+- **`/v:dispatch`** evolved to be manifest-aware **backward-compatibly**: it accepts a bare plan path (auto-materializing a manifest), a manifest, or a run-id. The 0.1.x plan-path flow — and the `plan-saved-nudge` hook — keep working.
+- **Agents evolved:** `parallel-dispatcher` is manifest-driven and multi-backend, calls `scope-check.py` after every job and HALTS on BLOCKED; `partition-reviewer` runs `validate-manifest.py` as its deterministic backing gate; `spec-reviewer` runs the three-pass Review Gate (spec acceptance criteria · quality/no-regression/no-fabricated-metrics · final integration). All reviewers remain `model: opus`. Manifest `backend`/`model` values (`gpt-5.5`, etc.) are execution-layer data and **never** appear in frontmatter.
+- **Phases evolved:** `phase-2` emits `manifest.yaml` (not only prose); `phase-3` is manifest-driven multi-backend dispatch with per-job isolation and the scope gate.
+- **Hooks evolved:** `session-banner.sh` adds a `/v:init` hint when `.claude/compound-v.json` is absent; `plan-saved-nudge.sh` mentions `/v:orchestrate` alongside the existing dispatch path. Both keep all three platform JSON branches and stay `shellcheck`-clean.
+
+### Explicit dispositions
+
+- **Antigravity adapter = stub, deferred to 1.1.** Assessed, not assumed. Google's official `agy` CLI fits the contract, but two blockers keep it out of 1.0: headless `agy --print` returns empty stdout when piped/redirected ([#408](https://github.com/google-antigravity/antigravity-cli/issues/408), [#318](https://github.com/google-antigravity/antigravity-cli/issues/318)) and there is no non-interactive auth ([#223](https://github.com/google-antigravity/antigravity-cli/issues/223)). `adapter-antigravity.md` ships as a stub returning `unsupported`; the 1.1 spike targets the Antigravity Python SDK first.
+- **Workflows accelerator = kept in 1.0 as opt-in (Engine C).** `skills/compound-v/workflows-accelerator.md` is a capability-probed fast-path for large parallel batches (16-wide) that **auto-falls-back to Engine A's batched `Task` dispatch** when Workflows is absent or disabled. The scope gate and `state.json` resume **stay in Engine A** even when C runs, so file-scope enforcement and crash-resume never regress. Engine B (`claude -p` shell-out) was rejected (rate-limit cascades + third-party-orchestrator policy).
+
+### Notes
+
+- All helper scripts target stock-macOS **bash 3.2** and **python 3.9** (stdlib only; pyyaml optional with an embedded-subset fallback) and are `shellcheck`-clean and executable.
+- Worktrees live in `$TMPDIR/compound-v/<run-id>/<job-id>`; merge-back on PASS is `git -C <wt> diff HEAD | git apply` into the main tree.
+- Honestly **not** auto-tested (documented + manually verified, no CI gate): the worker-prompt pre-emptive STOP behaviour (only the post-hoc scope-check is gated), Codex-session resume re-attachment, the `/v:init` flag-probe, capability-cache staleness, and the Workflows probe-fails→fallback path.
+
 ## [0.1.3] — 2026-05-18
 
 ### Changed
