@@ -200,6 +200,10 @@ if [ "$READ_ONLY" = "true" ]; then
 fi
 
 STDERR_LOG="$WT/.codex_stderr.log"
+# codex prints its FINAL agent message to stdout; we must NOT let it reach our stdout,
+# which is reserved for the canonical job_result JSON alone. Capture + discard it (the
+# human summary comes from --output-last-message, the session id from stderr).
+STDOUT_LOG="$WT/.codex_stdout.log"
 exit_code=0
 
 # run_codex runs the pinned `codex exec` invocation. $TIMEOUT_PREFIX is an optional
@@ -207,6 +211,12 @@ exit_code=0
 # and codex runs directly. It is intentionally left UNQUOTED so it word-splits into
 # the `timeout` argv (or vanishes when empty) — hence the SC2086 disables. The
 # optional --output-schema flag is injected only when set (bash 3.2-safe — no arrays).
+#
+# stdin is redirected from /dev/null. The prompt is passed POSITIONALLY, but `codex
+# exec` also reads stdin when it is not a TTY and will BLOCK ("Reading additional
+# input from stdin...") in a non-interactive / background context. </dev/null makes
+# stdin an immediate EOF so codex uses only the positional prompt and never hangs.
+# (Verified live against codex-cli 0.130 — without it the worker hangs indefinitely.)
 run_codex() {
   if [ -n "$OUTPUT_SCHEMA" ]; then
     # shellcheck disable=SC2086
@@ -218,7 +228,7 @@ run_codex() {
       --output-schema "$OUTPUT_SCHEMA" \
       --output-last-message "$RESULT_TXT" \
       -c "sandbox_workspace_write.network_access=$NETWORK" \
-      "$(cat "$PROMPT_FILE")"
+      "$(cat "$PROMPT_FILE")" </dev/null
   else
     # shellcheck disable=SC2086
     $TIMEOUT_PREFIX codex exec \
@@ -228,7 +238,7 @@ run_codex() {
       --model "$MODEL" \
       --output-last-message "$RESULT_TXT" \
       -c "sandbox_workspace_write.network_access=$NETWORK" \
-      "$(cat "$PROMPT_FILE")"
+      "$(cat "$PROMPT_FILE")" </dev/null
   fi
 }
 
@@ -242,7 +252,7 @@ fi
 # `set +e` so a non-zero exit (incl. 124 when the timeout fires) is captured rather
 # than aborting the script — we must still produce a job_result either way.
 set +e
-run_codex 2>"$STDERR_LOG"
+run_codex >"$STDOUT_LOG" 2>"$STDERR_LOG"
 exit_code=$?
 set -e
 
@@ -290,7 +300,7 @@ while IFS= read -r path; do
   [ -z "$path" ] && continue
   # Drop the adapter's transient artifacts written into the worktree root.
   case "$path" in
-    .job_result.txt|.codex_stderr.log|.codex_stderr.log.clean) continue ;;
+    .job_result.txt|.codex_stderr.log|.codex_stderr.log.clean|.codex_stdout.log) continue ;;
   esac
   if [ -z "$files_changed" ]; then
     files_changed="$path"

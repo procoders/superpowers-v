@@ -51,8 +51,12 @@ timeout "$timeout_sec" codex exec \
   ${output_schema:+--output-schema "$output_schema"} \
   --output-last-message "$WT/.job_result.txt" \
   -c "sandbox_workspace_write.network_access=$network" \
-  "$prompt"
+  "$prompt" </dev/null
 ```
+
+**Stream handling — verified live, both load-bearing (caught by the v1.0 end-to-end smoke test):**
+- **stdin → `/dev/null`.** The prompt is positional, but `codex exec` still reads stdin when it is not a TTY and will hang on `Reading additional input from stdin...` in a non-interactive / background run. `</dev/null` makes stdin an immediate EOF so only the positional prompt is used.
+- **codex stdout → captured, never passed through.** `codex exec` prints its final agent message to *stdout*; the script redirects it (`>"$WT/.codex_stdout.log"`) so the worker's own stdout carries **only** the canonical `job_result` JSON. The summary comes from `--output-last-message`; the session-id from the stderr banner — so codex's stdout is safely discarded.
 
 | Flag | Role |
 |---|---|
