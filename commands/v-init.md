@@ -129,13 +129,18 @@ Confirm the chosen stance back to the user before saving.
 
 Write **both**. Create parent dirs as needed.
 
-### 4a. Project stance → `.claude/compound-v.json` (committed)
+### 4a. Project stance → `.claude/compound-v.json` (project-local; committed in YOUR project, never in the plugin repo)
 
 ```json
 {
   "stance": "balanced",
   "backends": ["claude", "codex"],
-  "checked_at": "<YYYY-MM-DD>"
+  "checked_at": "<YYYY-MM-DD>",
+  "models": {
+    "claude":      { "deep": "opus",                  "standard": "opus",                  "light": "sonnet" },
+    "codex":       { "deep": "gpt-5.5",               "standard": "gpt-5.5",               "light": "gpt-5.3-codex-spark" },
+    "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Medium)", "light": "Gemini 3.1 Flash" }
+  }
 }
 ```
 
@@ -144,6 +149,16 @@ Write **both**. Create parent dirs as needed.
 - `checked_at` = today's date.
 - If the user opted into the Workflows accelerator, also include
   `"workflows_accelerator": true` (omit otherwise — default OFF).
+- **`models` — SEED the default tier→model map (exactly the block above)** so
+  intent-based routing resolves out of the box even with no further setup. This
+  is the same default the resolver
+  ([`scripts/compound-v-resolve-model.py`](../scripts/compound-v-resolve-model.py))
+  carries built-in; writing it here makes the project config self-describing and
+  user-editable. NEVER `haiku` anywhere. The `antigravity` values are illustrative
+  placeholders; codex has no list command (curated + user-overridable); claude uses
+  native tier aliases. Tell the user they can refresh or customize this map any time
+  with [`/v:models`](v-models.md) — they do **not** need to hand-edit JSON. The map
+  is project-local config; it is documented but not committed in the plugin repo.
 
 ### 4b. User capability cache → `~/.claude/compound-v-capabilities.json` (uncommitted)
 
@@ -168,7 +183,10 @@ The user-level cache of what this machine can do, reused across repos:
 
 Summarize: detected backends, the saved stance, both config paths written, and any
 capability still missing (with the exact next step). If Codex came back
-version-incompatible, say so plainly and recommend updating it.
+version-incompatible, say so plainly and recommend updating it. Mention that the
+default tier→model `models` map was seeded into `.claude/compound-v.json`, and that
+[`/v:models`](v-models.md) refreshes or customizes it whenever a backend ships new
+models.
 
 **Honesty rules:** report only what the probes actually returned. Never print token or
 cost numbers. Never claim a backend works that the probe did not confirm.

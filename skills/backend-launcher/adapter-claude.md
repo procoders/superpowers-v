@@ -15,7 +15,9 @@ The dispatcher already holds the `job_spec` (from the manifest). This adapter tu
 | `job_spec` field | Where it goes in the `Task` call |
 |---|---|
 | `prompt` | The Task prompt, prefixed with the worker-prompt lock (below) and the rendered `write_allowed` / `read_allowed` lists |
-| `model` | The subagent's model override (`opus` or `sonnet` — from routing policy; **never `haiku`**) |
+| `tier` | The routing **intent** (`deep` \| `standard` \| `light`). Resolved to a concrete model **before** dispatch via [`scripts/compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py) `--backend claude --tier <tier>` → `models.claude.<tier>` (native aliases: `deep`/`standard` → `opus`, `light` → `sonnet`; **never `haiku`**). The resolved model becomes the subagent's `model` override. |
+| `effort` | Advisory only on the Task path (`low` \| `medium` \| `high`). Unlike codex (which surfaces it as `-c model_reasoning_effort`), an in-harness `Task` has **no separate effort flag** — record it, optionally reflect it in the prompt's framing, but do not fabricate a knob that does not exist. |
+| `model` | The subagent's model override — the **resolved** `tier`→model value (`opus` or `sonnet`), or an explicit manifest `model` that skips resolution. From routing policy; **never `haiku`**. |
 | `cwd` | The directory the subagent operates in: the repo root for `direct`, the worktree path for `worktree` |
 | `write_allowed` | Rendered into the prompt as the SCOPE LOCK list, **and** handed to the scope gate on return (the enforced half) |
 | `read_allowed` | Rendered into the prompt as the read scope (auto-includes Task 0 outputs + the three audits per the manifest rules) |
@@ -27,7 +29,7 @@ The dispatcher already holds the `job_spec` (from the manifest). This adapter tu
 **Fixed Task parameters** every claude job sets:
 
 - **`subagent`** — the dispatcher's worker subagent (the `Task`-based dispatch reused from 0.1.x). The manifest's `backend: claude` selects this adapter; `model` selects the override.
-- **`model`** — the override from `job_spec.model`. Opus by default; Sonnet only for the clearly-junior mechanical slices the routing policy marks (bounded CRUD, mechanical refactor, docs/i18n). No Haiku, ever.
+- **`model`** — the **resolved** `tier`→model value (or an explicit `job_spec.model` override that skips resolution). `claude` resolves `tier` to a native alias via [`scripts/compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py): `deep`/`standard` → `opus`, `light` → `sonnet` (the clearly-junior mechanical slices the routing policy marks — bounded CRUD, mechanical refactor, docs/i18n). Resolution happens **before** dispatch so the call site passes a concrete model to the `Task`. No Haiku, ever. `job_spec.effort` is advisory here — the `Task` path has no effort flag, so it is not passed through to any backend call (contrast the codex adapter, which maps `effort` → `-c model_reasoning_effort`).
 - **`maxTurns: 15`** — the standard ceiling for a scoped implementation slice. Enough turns to write + self-check a partitioned file set; small enough that a runaway job ends rather than churns.
 - **`run_in_background`** — set `true` for jobs the manifest schedules into a background batch (`run: parallel` beyond the foreground 4–6 ceiling); `false` for foreground/serial jobs. When background, **pass `cwd` and every path as absolute** (background subagents do not inherit the foreground cwd reliably — the same caveat the dispatch phase pins).
 

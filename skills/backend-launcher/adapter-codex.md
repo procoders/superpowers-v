@@ -48,6 +48,7 @@ timeout "$timeout_sec" codex exec \
   --sandbox "$([ "$read_only" = true ] && echo read-only || echo workspace-write)" \
   --skip-git-repo-check \
   --model "$model" \
+  ${effort:+-c model_reasoning_effort="$effort"} \
   ${output_schema:+--output-schema "$output_schema"} \
   --output-last-message "$ART/job_result.txt" \
   -c "sandbox_workspace_write.network_access=$network" \
@@ -64,7 +65,8 @@ timeout "$timeout_sec" codex exec \
 | `--cd "$WT"` | working root = the worktree (sandbox is scoped here) |
 | `--sandbox workspace-write` \| `read-only` | OS-level write boundary; `read-only` for read-only jobs |
 | `--skip-git-repo-check` | the worktree is a linked checkout; suppress the repo-root check |
-| `--model "$model"` | execution-layer model (e.g. `gpt-5.5`) — never appears in any frontmatter |
+| `--model "$model"` | execution-layer model (e.g. `gpt-5.5`) — **resolved** from `(backend=codex, tier, effort)` before dispatch; never appears in any frontmatter |
+| `-c model_reasoning_effort=<effort>` | optional; codex's reasoning-effort dimension, set from the job's `effort` hint (`low` \| `medium` \| `high`) — see below |
 | `--output-schema "$file"` | optional; strict JSON Schema for the model's final message (drives only `summary`) |
 | `--output-last-message "$file"` | where the agent's last message is written → feeds the human `summary` |
 | `-c sandbox_workspace_write.network_access=<bool>` | network on/off inside the sandbox |
@@ -73,6 +75,12 @@ timeout "$timeout_sec" codex exec \
 ### `--ask-for-approval never` is INVALID for `codex exec` — omitted
 
 This is the defect the dogfood pre-flight caught in the PRD's original draft. `--ask-for-approval` (`-a`) is a **top-level / interactive** flag (it appears in `codex --help`, **not** in `codex exec --help`). `codex exec` already defaults to `approval: never`, so the flag is both redundant and rejected — passing it would fail **every** Codex job. It is therefore **deliberately omitted**. If a non-default policy is ever genuinely needed, use the config override `-c approval_policy=never` instead (an `exec`-valid form), never the top-level flag.
+
+### Model + effort: resolved before dispatch, not hardcoded
+
+The dispatcher never hands this adapter a hardcoded model string. It hands a routing **intent** — `tier` (`deep` \| `standard` \| `light`) plus an optional orthogonal `effort` (`low` \| `medium` \| `high`) — and resolves the concrete model **before** dispatch via [`scripts/compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py) with `--backend codex --tier <tier> [--effort <effort>] [--config .claude/compound-v.json]`. The resolver reads the config `models.codex.<tier>` map (e.g. `deep`/`standard` → `gpt-5.5`, `light` → `gpt-5.3-codex-spark`) and yields the concrete `--model` value; an explicit manifest `model` override skips resolution and wins. Codex has **no list command**, so its map is curated + user-overridable (refresh via `/v:models`). The plugin survives model churn because the call sites pass `tier`, never a literal model string.
+
+**`--effort` → `-c model_reasoning_effort=<effort>` (codex's effort dimension).** `effort` is orthogonal to `tier`: `tier` picks *which* model, `effort` tunes *how hard it reasons*. The worker script ([`scripts/compound-v-run-codex-worker.sh`](../../scripts/compound-v-run-codex-worker.sh)) takes an optional `--effort low|medium|high`. When set, it appends `-c model_reasoning_effort=<effort>` to **both** `codex exec` invocations (the `--output-schema` path and the plain path), word-split safely under bash 3.2. When omitted, the flag vanishes and codex uses the model's default reasoning effort. The dispatcher passes `--effort` to the worker only when the job carries an `effort` value; it is validated against `low|medium|high` and the run aborts (usage fault) on any other value. This is the codex-specific surfacing of the effort dimension that the generic resolver/manifest expose backend-agnostically — the claude adapter, by contrast, treats per-call effort as advisory because the `Task` path has no separate effort flag.
 
 ### Other pinned facts
 
@@ -139,7 +147,11 @@ scripts/compound-v-run-codex-worker.sh \
   --timeout-sec 900 \
   --network  false
 # optional: --read-only true   --output-schema /abs/schemas/job_result.schema.json
+# optional: --effort medium    # → appended as -c model_reasoning_effort=medium
 ```
+
+- `--model` is the **resolved** concrete model from `compound-v-resolve-model.py` (or the manifest's explicit override); this adapter never picks it from a literal in routing.
+- `--effort {low|medium|high}` is optional — when present it becomes `-c model_reasoning_effort=<effort>` on the `codex exec` line; when absent, codex uses the model's default reasoning effort.
 
 - All file paths MUST be **absolute** (the script rejects relative `--repo` / `--prompt-file` / `--output-schema`).
 - `--write-allowed` is a **colon-separated** glob list (`a/**:b/c.ts`), matched repo-relative against changed paths.

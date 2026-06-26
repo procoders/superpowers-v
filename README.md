@@ -21,6 +21,8 @@ You keep using **Superpowers** the way you already do. Compound V silently shows
 
 As of **v1.0**, the tail of that flow is a real **execution orchestrator**: it materializes a machine-readable `manifest.yaml` of file-scoped jobs, routes each to its backend (Claude subagent or a headless **Codex** worker), **enforces** with a `git diff` scope gate that no worker wrote outside its allowed files, collects canonical `job_result`s, reviews against the spec's Acceptance Criteria, and is **crash-resumable** via `state.json`. No daemon, no MCP server, no fabricated metrics.
 
+Routing is **tier-based and churn-proof**: jobs declare a `tier` (`deep`/`standard`/`light`) and an optional `effort` (`low`/`medium`/`high`) instead of a hardcoded model name. A resolver (`scripts/compound-v-resolve-model.py`) maps tier → concrete model through a refreshable config `models` map, so when models change you update one map (or run `/v:models`) instead of editing prompts. Codex's reasoning-effort is exposed as `--effort`.
+
 You don't invoke Compound V. It invokes itself.
 
 ---
@@ -126,6 +128,7 @@ superpowers-v/
 │   ├── v-collect.md                           # /v:collect <run-id> — re-run collect + gate + review
 │   ├── v-status.md                            # /v:status [run-id] — render state.json
 │   ├── v-resume.md                            # /v:resume <run-id> — re-dispatch incomplete jobs
+│   ├── v-models.md                            # /v:models — discover models, assign tier→model, write config map
 │   └── v-archaeology.md                       # /v:archaeology <topic> — Phase 1A alone (unchanged)
 ├── hooks/                                     # sidekick reminders (description-based auto-fire is primary)
 │   ├── hooks.json                             # SessionStart + PostToolUse(Write)
@@ -142,7 +145,7 @@ superpowers-v/
 │   │   ├── phase-2-disjoint-partitioning.md   # 🧩 partition-map planning → emits manifest.yaml
 │   │   ├── phase-3-parallel-opus-dispatch.md  # 🚀 manifest-driven multi-backend dispatch + taxonomy
 │   │   ├── execution-manifest.md              # manifest schema + rules
-│   │   ├── routing-policy.md                  # stances (Balanced/Conservative/Cost-aware) + env-aware
+│   │   ├── routing-policy.md                  # task-type → (tier, effort); stances + env-aware + models map
 │   │   ├── state-machine.md                   # states + run dir + crash-resume
 │   │   ├── skill-escalation.md                # gated deep-research / playground / writing-style
 │   │   ├── workflows-accelerator.md           # opt-in Engine C fast-path (probe + fallback to A)
@@ -154,6 +157,7 @@ superpowers-v/
 │       └── adapter-antigravity.md             # stub returning `unsupported` (deferred to 1.1)
 ├── scripts/                                   # small deterministic helpers (bash 3.2 / python 3.9, stdlib)
 │   ├── compound-v-scope-check.py              # git-diff scope gate (the SCOPE LOCK authority)
+│   ├── compound-v-resolve-model.py            # tier (+effort) → concrete model via config models map
 │   ├── compound-v-validate-manifest.py        # deterministic manifest-invariant gate
 │   ├── compound-v-run-codex-worker.sh         # headless Codex worker (worktree + diff + normalize)
 │   ├── compound-v-collect-results.py          # normalize heterogeneous output → job_result
@@ -200,6 +204,8 @@ The skill content is harness-neutral prose. Tool names differ across harnesses �
 - **Opus by default** — every implementer, reviewer, advisor
 - **Sonnet** — narrow exception per the strict **8-box junior-task taxonomy** in [phase-3](skills/compound-v/phase-3-parallel-opus-dispatch.md). Every Sonnet-assigned task needs a one-line justification in the Partition Map.
 - **Never Haiku** — not permitted in this project, even for read-only Explore-style work
+
+Under the hood these map through the **tier** vocabulary: the Claude `deep`/`standard` tiers resolve to `opus`, `light` resolves to `sonnet`, and no tier ever resolves to `haiku`. Jobs route by tier, not by a literal model name, so a model rename is a one-line config edit (or `/v:models`) rather than a prompt rewrite.
 
 The trade: Opus + parallel dispatch is more expensive per-task than default Superpowers. But wall-clock time for N parallel tasks ≈ the slowest task, domain blowups get caught before they're code, and the persistent knowledge bases make every subsequent feature in the same domain progressively cheaper.
 
@@ -253,6 +259,7 @@ Most users never need these — the sidekick flows through orchestrate → dispa
 | `/v:collect <run-id>` | Re-run collect + scope-gate + review on an existing run |
 | `/v:status [run-id]` | Render `state.json` — phase + per-job status |
 | `/v:resume <run-id>` | Reconcile against git reality and re-dispatch only incomplete jobs after an interruption |
+| `/v:models` | Discover available models per backend (`agy models`, curated Codex list, native Claude tiers), assign tier→model, and write the `models` map into `.claude/compound-v.json` |
 
 Plus the unchanged Phase 1A shortcut:
 

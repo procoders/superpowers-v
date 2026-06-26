@@ -32,7 +32,7 @@ The first override is safe ONLY because Phase 2 produced a verified Partition Ma
 
 ## Model Selection Taxonomy (Opus Default, Narrow Sonnet Exception)
 
-> In the v1.0 flow this decision is already made for you: [`routing-policy.md`](routing-policy.md) routes each job's `type` to a `model` when Phase 2 materializes the manifest, and the dispatcher simply honors the manifest's `model` field. The taxonomy below is the *rationale* the routing policy encodes — keep it as the check when you author a job's `type`, or when you run a bare-plan flow with no manifest yet. Either way the rule is identical.
+> In the v1.0 flow this decision is already made for you: [`routing-policy.md`](routing-policy.md) routes each job's `type` to a **`tier`** (`deep`/`standard`/`light`) when Phase 2 materializes the manifest, and the dispatcher resolves that tier to a concrete `model` via [`compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py) before dispatch (Step 2). Wherever this section says `model: opus` / `model: sonnet`, read it as **the resolved output of a tier** (`deep`/`standard`→`opus`, `light`→`sonnet`) — the literal strings are illustrative, not hardcoded call-site values. The taxonomy below is the *rationale* the routing policy encodes — keep it as the check when you author a job's `tier`, or when you run a bare-plan flow with no manifest yet. Either way the rule is identical.
 
 **Default: Opus.** Every Claude implementer runs on Opus unless the job passes ALL the boxes for Sonnet eligibility below. Reviewers (spec + quality) are ALWAYS Opus — they're the safety net, and a cheap reviewer is no reviewer. (Codex jobs carry their own model, e.g. `gpt-5.5`, set by the routing policy — that is execution-layer data and never appears in any frontmatter.)
 
@@ -91,7 +91,7 @@ Read `manifest.yaml`. Honor `depends_on`, `run`, and `max_parallel`. Each job is
 
 ### Backend dispatch — one contract, two live adapters
 
-For each job, the dispatcher builds a `job_spec` (`backend`, `prompt`, `model`, `cwd`, `write_allowed`, `read_only`, `timeout_sec`, `network`, optional `output_schema`) and routes by `backend`:
+For each job, the dispatcher builds a `job_spec` (`backend`, `prompt`, `tier`, optional `effort`, `model` [resolved from tier/effort, or an explicit manifest override], `cwd`, `write_allowed`, `read_only`, `timeout_sec`, `network`, optional `output_schema`) and routes by `backend`. The concrete `model` is resolved before dispatch by [`compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py) (see Step 2 below):
 
 - **`backend: claude`** → [`adapter-claude.md`](../backend-launcher/adapter-claude.md): an in-harness `Task` call with the `model` override and `maxTurns: 15`. `isolation: direct` writes to the active workspace against a baseline commit; `isolation: worktree` runs inside an isolated worktree.
 - **`backend: codex`** → [`adapter-codex.md`](../backend-launcher/adapter-codex.md): a Bash-spawned headless `codex exec` worker (own process, own worktree — **always** `worktree`), via [`scripts/compound-v-run-codex-worker.sh`](../../scripts/compound-v-run-codex-worker.sh). Never an `agents/` entry, never the openai-codex broker.
@@ -103,7 +103,7 @@ Every adapter returns the **same** `job_result` shape ([`schemas/job_result.sche
 
 If the manifest has a `type: shared_foundation`, `run: serial` job (shared types/migrations/configs):
 
-- Dispatch **one** job — by its manifest backend (Task 0 is `claude · opus · direct` in every stance).
+- Dispatch **one** job — by its manifest backend, resolving its model first via `compound-v-resolve-model.py` (Task 0 routes `claude · tier: deep · direct` ⇒ **opus** in every stance).
 - On return, run the scope gate (Step 2b) and write `state.json`.
 - Wait for completion. Run spec + quality reviews (sequentially, on Opus). Address feedback.
 - Only then proceed to the parallel batch (every parallel job `depends_on` it).
@@ -114,7 +114,26 @@ For all `run: parallel` jobs in the current batch, dispatch implementers **in a 
 
 Each dispatch must include:
 
-1. **Backend + model from the manifest** — never re-decide here. A `claude` job uses `model: "opus"` by default, `model: "sonnet"` only where the manifest's routing already justified it (the strict junior-task taxonomy above). A `codex` job carries its execution-layer model (e.g. `gpt-5.5`) in the `job_spec`, never in any frontmatter.
+1. **Backend + tier/effort from the manifest; resolve the concrete model BEFORE dispatch** — never re-decide backend/tier/isolation here. The manifest carries the routing **intent** (`tier` ∈ {deep, standard, light}, optional `effort` ∈ {low, medium, high}) instead of a hardcoded model string, so the plugin survives model churn (refresh the config `models` map via `/v:models`, never the call sites). Before invoking the backend for a job, resolve the model with [`scripts/compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py):
+
+   ```bash
+   # (backend, tier, effort, config) -> concrete model. --config points at the
+   # project .claude/compound-v.json whose `models` map overrides built-in
+   # defaults per cell; omit --config to use built-in defaults.
+   # Build the flag list with explicit if/else (portable across bash AND zsh —
+   # ${VAR:+...} conditional expansion does NOT word-split under zsh).
+   set -- --backend "$BACKEND" --tier "$TIER"
+   [ -n "$EFFORT" ] && set -- "$@" --effort "$EFFORT"
+   [ -n "$CONFIG" ] && set -- "$@" --config "$CONFIG"
+   RESOLVED=$(python3 scripts/compound-v-resolve-model.py "$@")
+   MODEL=$(printf '%s' "$RESOLVED" | python3 -c 'import json,sys; print(json.load(sys.stdin)["model"])')
+   ```
+
+   - **`claude`** resolves tier→model: `deep`/`standard`→`opus`, `light`→`sonnet`. Pass the resolved model to the `Task` call. `effort` is advisory on this path — the `Task` call has no separate effort flag.
+   - **`codex`** resolves tier→model (e.g. `deep`→`gpt-5.5`) and passes `--model <resolved>` **and** `--effort <effort>` to [`scripts/compound-v-run-codex-worker.sh`](../../scripts/compound-v-run-codex-worker.sh) (`--effort` → `-c model_reasoning_effort=<effort>`). The execution-layer model never appears in any frontmatter.
+   - **An explicit manifest `model:` override skips resolution** (call the resolver with `--explicit-model <M>`, or pass the model straight through). This keeps existing explicit-model jobs valid — a job MUST carry `model` OR `tier`.
+
+   A `claude` job lands on `opus` for `deep`/`standard` tiers, `sonnet` only where the manifest routed it `light` (the strict junior-task taxonomy above). Reviewer jobs always route `tier: deep` ⇒ opus.
 2. **Turn/time bound:** `maxTurns: 15` on Claude Task calls; `timeout_sec` in the `job_spec` for Codex workers. An implementer that hasn't finished in 15 turns is usually stuck and needs a re-dispatch with more *context*, not more turns.
 3. **`run_in_background: true`** is acceptable for the implementer batch — lets the orchestrator continue prep work while implementers run. The parent receives a notification per agent when it completes. Background subagents do NOT carry cwd state between Bash calls; **plan absolute paths in the prompt** (this is also why Codex worktree paths in the `job_spec` are always absolute).
 4. **Strict scope lock** — paste this verbatim at the top of the prompt (it is the *instructed* half; the git-diff scope gate in Step 2b is the *enforced* half):
@@ -288,7 +307,7 @@ Report: APPROVED or ISSUES with specific line references.
 
 ## Cost Reality
 
-Compound V is expensive per-task — Opus is ~5x the cost of Sonnet, and you're running multiple subagents per task (implementer + 2 reviewers). But:
+Compound V is expensive per-task — the `deep`/`standard` tier (Opus) is a larger model than the `light` tier (Sonnet), and you're running multiple subagents per task (implementer + 2 reviewers). The "~5x" below is a pre-existing relative magnitude claim about Opus-vs-Sonnet list pricing, not a measured per-run figure — never print fabricated per-run token/cost numbers. Opus is ~5x the cost of Sonnet, but:
 
 - **Wall-clock time** for N parallel tasks ≈ time for 1 task (the slowest one)
 - **Quality** is higher (Opus catches issues cheap models miss)
@@ -318,7 +337,8 @@ Use Compound V when speed-to-shipping matters more than minimum cost. For tiny f
 - "The plan doesn't have a Partition Map but I'll figure it out as I go" → STOP; go back to Phase 2
 - "I'll trust the worker's report of what it changed" → no; enforcement is **git-derived**, run the scope gate (Step 2b) on every job — never trust a model to self-report its writes
 - "A Codex job can run direct, the worktree is overhead" → no; Codex ⇒ worktree is a hard invariant (the sandbox can't enforce a file allow-list)
-- "I'll route the model/backend myself per task" → no; backend/model/isolation come from the manifest (routed by `routing-policy.md`); don't re-decide in dispatch
+- "I'll route the model/backend myself per task" → no; backend/tier/isolation come from the manifest (routed by `routing-policy.md`); the concrete model is resolved from `(backend, tier, effort, config)` via `compound-v-resolve-model.py` before dispatch — don't hardcode model strings
+- "I'll hardcode `gpt-5.5` / `opus` in the job_spec" → no; pass `tier`/`effort` and let the resolver produce the model, so a model-churn refresh via `/v:models` (not a call-site edit) keeps routing alive. Only an explicit manifest `model:` override is hand-set, and it skips resolution.
 
 ## Handoff
 

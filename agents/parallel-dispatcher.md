@@ -47,14 +47,14 @@ Honor the manifest's `depends_on`, `run`, and `max_parallel`. For each job you b
 
 | `backend` | Adapter | Mechanism |
 |---|---|---|
-| `claude` | [`adapter-claude.md`](../skills/backend-launcher/adapter-claude.md) | in-harness `Task` (model override, `maxTurns: 15`); `direct` against a baseline commit, or `worktree` |
-| `codex` | [`adapter-codex.md`](../skills/backend-launcher/adapter-codex.md) | Bash-spawned `codex exec` worker via [`scripts/compound-v-run-codex-worker.sh`](../scripts/compound-v-run-codex-worker.sh); **always** `worktree` |
+| `claude` | [`adapter-claude.md`](../skills/backend-launcher/adapter-claude.md) | in-harness `Task` (resolved-model override, `maxTurns: 15`); `direct` against a baseline commit, or `worktree`. Effort is advisory on this path. |
+| `codex` | [`adapter-codex.md`](../skills/backend-launcher/adapter-codex.md) | Bash-spawned `codex exec` worker via [`scripts/compound-v-run-codex-worker.sh`](../scripts/compound-v-run-codex-worker.sh) (`--model <resolved>` + `--effort <effort>`); **always** `worktree` |
 | `antigravity` | [`adapter-antigravity.md`](../skills/backend-launcher/adapter-antigravity.md) | stub returning `unsupported` (deferred to 1.1) |
 
 ### Step 1 — Task 0 (Serial Pre-Phase)
 
 If the manifest has a `type: shared_foundation`, `run: serial` job:
-- Dispatch ONE job by its manifest backend (Task 0 is `claude · opus · direct` in every stance — cheap models miscall shared types/migrations).
+- Dispatch ONE job by its manifest backend, resolving its model first via `compound-v-resolve-model.py` (Task 0 routes `claude · tier: deep · direct` ⇒ **opus** in every stance — cheap models miscall shared types/migrations).
 - On return, run the **scope gate** (Step 2b) and write `state.json`.
 - Wait for completion. Dispatch one spec-reviewer (`compound-v:spec-reviewer`) and one code-quality reviewer, both Opus. Address feedback; re-dispatch Task 0's implementer if reviewers found issues.
 - Only proceed to Step 2 when Task 0 is fully approved (every parallel job `depends_on` it).
@@ -65,10 +65,30 @@ Group `run: parallel` jobs into batches of **4-6 max per message** — the manif
 
 For each batch, dispatch all implementers in **one message with concurrent calls**. Each dispatch is built **from the manifest** — never re-decide backend/model/isolation here:
 
-1. **Backend + model from the manifest job entry.** A `claude` job uses `model: "opus"` by default, `"sonnet"` ONLY where the manifest's row carries a routing justification AND partition-reviewer's PASS confirmed it. A `codex` job carries its execution-layer model (e.g. `gpt-5.5`) in the `job_spec` — **never in any frontmatter**.
+1. **Backend + tier/effort from the manifest job entry; resolve the concrete model BEFORE dispatch.** The manifest carries the routing **intent** (`tier` ∈ {deep, standard, light}, optional `effort` ∈ {low, medium, high}), not a hardcoded model — so the plugin survives model churn. Before invoking the backend for a job, resolve the concrete model with [`scripts/compound-v-resolve-model.py`](../scripts/compound-v-resolve-model.py):
+
+   ```bash
+   # Resolve (backend, tier, effort, config) -> concrete model.
+   # --config points at the project .claude/compound-v.json (its `models` map
+   # overrides the built-in defaults per cell); omit it to use built-in defaults.
+   # Build the flag list with explicit if/else (portable across bash AND zsh —
+   # ${VAR:+...} conditional expansion does NOT word-split under zsh).
+   set -- --backend "$BACKEND" --tier "$TIER"
+   [ -n "$EFFORT" ] && set -- "$@" --effort "$EFFORT"
+   [ -n "$CONFIG" ] && set -- "$@" --config "$CONFIG"
+   RESOLVED=$(python3 scripts/compound-v-resolve-model.py "$@")
+   MODEL=$(printf '%s' "$RESOLVED" | python3 -c 'import json,sys; print(json.load(sys.stdin)["model"])')
+   EFFORT_OUT=$(printf '%s' "$RESOLVED" | python3 -c 'import json,sys; print(json.load(sys.stdin)["effort"])')
+   ```
+
+   - A `claude` job resolves tier→model (`deep`/`standard`→`opus`, `light`→`sonnet`); pass the resolved model to the `Task` call. `effort` on the claude path is advisory — the `Task` call has no separate effort flag.
+   - A `codex` job resolves tier→model (e.g. `deep`→`gpt-5.5`) and passes `--model <resolved>` **and** `--effort <effort>` to [`scripts/compound-v-run-codex-worker.sh`](../scripts/compound-v-run-codex-worker.sh) (`--effort` becomes `-c model_reasoning_effort=<effort>`). The execution-layer model **never** appears in any frontmatter.
+   - **Explicit manifest `model:` override skips resolution.** If a job entry carries an explicit `model`, do NOT run the resolver for it — that model wins (pass it straight through, or call the resolver with `--explicit-model <M>` which short-circuits to it). This preserves backward compatibility with existing explicit-model jobs.
+
+   A `claude` job uses `model: "opus"` for `deep`/`standard` tiers, `"sonnet"` ONLY where the manifest routed the job `light` AND partition-reviewer's PASS confirmed it. Reviewer jobs always resolve to `tier: deep` (⇒ opus). The resolution above is **execution-layer** and unrelated to this agent's own `model: opus` frontmatter.
 2. **Isolation from the manifest** — `direct` for clean in-harness Claude jobs (gated against a baseline commit), `worktree` for risky/broad-surface Claude jobs and **always** for Codex.
 3. **Turn/time bound** — `maxTurns: 15` on Claude Task calls; `timeout_sec` in the `job_spec` for Codex workers. A job that hasn't finished in 15 turns is usually stuck and needs re-dispatch with more *context*, not more turns.
-4. **`job_spec`** — `{ backend, prompt, model, cwd (absolute), write_allowed, read_only, timeout_sec, network, output_schema? }`, exactly the [`backend-launcher`](../skills/backend-launcher/SKILL.md) input.
+4. **`job_spec`** — `{ backend, prompt, tier, effort?, model (resolved or explicit override), cwd (absolute), write_allowed, read_only, timeout_sec, network, output_schema? }`, exactly the [`backend-launcher`](../skills/backend-launcher/SKILL.md) input. The `model` is the value the resolver returned in step 1 (or the explicit manifest override); `tier`/`effort` carry the intent forward.
 5. **Prompt content** (captured verbatim to `jobs/<id>.prompt.md` for resume) must include:
    - The **planner/executor lock** (verbatim-in-spirit): *"You are an implementation worker, NOT the planner. Do not change architecture. Do not write outside WRITE_ALLOWED. If the task needs a forbidden file, STOP and report BLOCKED."*
    - The **SCOPE LOCK** block declaring WRITE-allowed (the job's `write_allowed`) and READ-allowed (Task 0 outputs + the three audits + the plan section). This is the *instructed* half; Step 2b is the *enforced* half.
@@ -152,7 +172,7 @@ Do **not** print token-cost or token-savings numbers — they are not measurable
 ## Constraints on YOU
 
 - DO NOT dispatch if partition-reviewer returned FAIL. Refuse.
-- DO NOT re-decide backend / model / isolation — they come from the manifest (routed by `routing-policy.md`). Honor them.
+- DO NOT re-decide backend / tier / isolation — they come from the manifest (routed by `routing-policy.md`). Honor them. The concrete **model** is resolved from `(backend, tier, effort, config)` via `compound-v-resolve-model.py` before dispatch — do NOT hardcode model strings; an explicit manifest `model:` override skips resolution and wins.
 - DO NOT silently use Sonnet for a job not justified in the manifest, or run a Codex job `direct` (codex⇒worktree is a hard invariant).
 - DO NOT skip the scope gate after any job, and DO NOT merge a BLOCKED job. HALT and surface it.
 - DO NOT skip the final integration review — it's the AC-gate and the safety net for cross-task drift.
