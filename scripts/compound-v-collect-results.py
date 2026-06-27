@@ -270,6 +270,16 @@ def build_result(args: argparse.Namespace) -> Dict[str, Any]:
     if args.summary is not None:
         summary = args.summary
 
+    # Backend-failure classification. The codex worker emits these directly; for the
+    # claude/direct path the dispatcher passes them in (from compound-v-classify-failure.py).
+    # A successful job never carries a failure class. These are REQUIRED by the schema, so
+    # the normalized result for EVERY backend must include them.
+    failure_class = args.failure_class or None
+    retry_after_seconds = args.retry_after_seconds or 0
+    if status == "success":
+        failure_class = None
+        retry_after_seconds = 0
+
     result = {
         "status": status,
         "blocked": blocked,
@@ -279,6 +289,8 @@ def build_result(args: argparse.Namespace) -> Dict[str, Any]:
         "session_id": session_id,
         "worktree": worktree,
         "exit_code": exit_code,
+        "failure_class": failure_class,
+        "retry_after_seconds": retry_after_seconds,
     }  # type: Dict[str, Any]
     return result
 
@@ -320,16 +332,24 @@ def conformance_errors(result: Dict[str, Any], schema_path: str) -> List[str]:
         if key not in result:
             continue
         want = spec.get("type")
-        py = type_map.get(want)
         val = result[key]
+        # `type` may be a single string OR a list (e.g. ["string","null"] for a nullable
+        # field) — handle both. null is allowed only when "null" is among the listed types.
+        want_list = want if isinstance(want, list) else ([want] if want else [])
+        if val is None:
+            if want_list and "null" not in want_list:
+                errs.append("key %s must be %s, got null" % (key, "/".join(want_list)))
+            continue
         # bool is a subclass of int — guard the integer case explicitly.
-        if want == "integer" and isinstance(val, bool):
+        if "integer" in want_list and "boolean" not in want_list and isinstance(val, bool):
             errs.append("key %s must be integer, got boolean" % key)
             continue
-        if py is not None and not isinstance(val, py):
-            errs.append("key %s must be %s, got %s" % (key, want, type(val).__name__))
+        pytypes = tuple(type_map[t] for t in want_list if t in type_map)
+        if pytypes and not isinstance(val, pytypes):
+            errs.append("key %s must be %s, got %s"
+                        % (key, "/".join(want_list), type(val).__name__))
             continue
-        if want == "array":
+        if "array" in want_list:
             item_type = spec.get("items", {}).get("type")
             ipy = type_map.get(item_type)
             if ipy is not None:
@@ -365,6 +385,12 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     p.add_argument("--session-id", help="Force session_id")
     p.add_argument("--worktree", help="Force worktree path")
     p.add_argument("--exit-code", type=int, help="Force exit_code")
+    p.add_argument("--failure-class",
+                   choices=["none", "out_of_credits", "rate_limited", "overloaded",
+                            "auth", "context_length", "timeout", "network", "other"],
+                   help="Backend-failure class (from compound-v-classify-failure.py); omit on success")
+    p.add_argument("--retry-after-seconds", type=int, default=0,
+                   help="Seconds-until-retry from the provider, 0 if unknown")
     p.add_argument("--files-changed", help="Comma-separated files_changed")
     p.add_argument("--violations", help="Comma-separated violations")
     blocked_grp = p.add_mutually_exclusive_group()

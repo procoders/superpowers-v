@@ -64,8 +64,8 @@ _CODEX_RULES = [
         "429",
     ]),
     ("overloaded", [
-        "overloaded", "is currently overloaded", "503", "502", "500 internal",
-        "bad gateway", "service unavailable",
+        "overloaded", "is currently overloaded", "server_error", "internal server error",
+        "503", "502", "504", "500 internal", "bad gateway", "service unavailable",
     ]),
     ("network", [
         "connection reset", "econnreset", "connection refused", "could not connect",
@@ -192,6 +192,7 @@ def _selftest():
         ("codex", 1, "exceeded retry limit, last status: 429 Too Many Requests", "rate_limited"),
         ("codex", 1, "Rate limit reached for gpt-5.5", "rate_limited"),
         ("codex", 1, "error sending request: engine is currently overloaded", "overloaded"),
+        ("codex", 1, "openai 500 server_error: internal", "overloaded"),
         ("codex", 1, "401 Unauthorized: invalid_api_key", "auth"),
         ("codex", 1, "not logged in, please run `codex login`", "auth"),
         ("codex", 1, "400 context_length_exceeded: maximum context length is 400000", "context_length"),

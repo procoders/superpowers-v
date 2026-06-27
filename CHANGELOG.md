@@ -53,6 +53,16 @@ A second hardening pass on the graceful backend-failure feature, tightening the 
 
 Docs updated to match the scripts (no behavior is encoded in prose that the scripts don't enforce): `skills/compound-v/failure-policy.md`, `skills/compound-v/state-machine.md`, `agents/parallel-dispatcher.md`, `commands/v-resume.md`, `skills/backend-launcher/adapter-claude.md`.
 
+### Hardened — backend-failure round 3 (collector parity + breaker wiring)
+
+A third pass closing what a cross-model review of the round-2 code surfaced:
+
+- **Collector parity (critical regression fix).** `compound-v-collect-results.py` now emits the new required `failure_class` + `retry_after_seconds` fields, so a normalized `claude`/`direct` `job_result` satisfies `job_result.schema.json` (its hand-rolled conformance checker now also handles nullable `["string","null"]` types).
+- **Auth opens the breaker.** Opening `circuit_open[<backend>]` is keyed on the policy's `circuit_break: true` — true for `auth` as well as `out_of_credits` — not only the out_of_credits reroute path.
+- **Retries write a cooldown timestamp.** The `retry` action records `cooldowns[<backend>] = now + backoff_seconds` *before* sleeping, so the resume/half-open logic has a real timestamp to probe.
+- **Mid-batch circuit-break is check-before-launch.** Before launching each job the dispatcher checks `circuit_open[backend]`; in-flight jobs on a newly-broken backend complete and fail-fast (a no-daemon dispatcher can't un-launch them).
+- **Codex 5xx → overloaded.** `server_error` / `5xx` from codex now classify as `overloaded` (retryable), not `other`.
+
 ### Fixed / Documented — independent Codex review hardening (round 3)
 
 A third independent Codex review pass (0 critical, 3 high, 5 medium) produced quick real fixes plus honest documentation of inherent limits:

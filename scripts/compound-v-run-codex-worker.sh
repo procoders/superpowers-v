@@ -428,7 +428,10 @@ fi
 # "" => null in the emitted JSON.
 failure_class=""
 retry_after="0"
-if [ "$status" = "error" ] || [ "$status" = "timeout" ]; then
+# Classify on ANY non-zero codex exit — including a job that is also scope-BLOCKED — so an
+# out_of_credits/auth failure still records a class the dispatcher can use to open a circuit
+# (a blocked job whose codex exited 0 stays failure_class:null, correctly).
+if [ "$status" = "error" ] || [ "$status" = "timeout" ] || [ "$exit_code" != "0" ]; then
   # A GATE/enforcement fault (gate_rc neither 0 nor 1) is an ENVIRONMENT fault, not a
   # backend failure — classify it generically, NEVER via the codex exit code (which may
   # be 0 on a clean codex run whose scope GATE then faulted).
