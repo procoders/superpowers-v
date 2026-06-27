@@ -18,16 +18,24 @@ Resume is **Engine-A-owned**: it does not rely on Workflows (whose resume is sam
      - `done` in `state.json` but the job's `write_allowed` files are **not** in git → reclassify as not-done, re-dispatch.
      - `pending`/`running` in `state.json` but the files **are** fully present and within scope → reclassify as `done`, skip.
 
-4. **Re-dispatch only the incomplete jobs** — those that are `pending`, `failed`, or `blocked` after step 3 — via **Engine A** (`compound-v:parallel-dispatcher` / the backend-launcher), honoring `depends_on`, `run`, and `max_parallel` exactly as the original dispatch. Each re-dispatch replays the captured prompt at `jobs/<id>.prompt.md` verbatim.
+4. **Reconcile the circuit breaker (neither a silent retry nor a permanent lockout).** `circuit_open` is an **object per backend** — `{ "<backend>": { "open": bool, "reason": "out_of_credits|auth", "opened_at": "<iso-ts>", "cleared_by": null } }` (see [`state-machine.md`](../skills/compound-v/state-machine.md)). For each entry, decide whether to keep it open or clear it **before** any re-dispatch:
+   - **`reason == "out_of_credits"`** → keep the breaker **OPEN** unless the user confirms a credit top-up, **or** a cheap liveness probe — a tiny "reply ok" call to that backend — returns success. Only then set `cleared_by` (`"top_up"` or `"probe"`) and re-dispatch that backend's `failed` jobs. The run-level `total_retries` budget persists across the resume.
+   - **`reason == "auth"`** → keep the breaker **OPEN** until the user re-authenticates (point them at [`/v:init`](v-init.md)). Only after re-auth set `cleared_by: "reauth"` and re-dispatch its `failed` jobs.
+   - **Cooldown-only (no open breaker)** → a backend whose `cooldowns[backend]` timestamp has merely **expired** is **half-opened**: probe it **once** before full re-dispatch. A clean probe clears the cooldown; a repeat failure re-cools it via the policy.
+   - **Never silently re-dispatch to a still-open breaker.** If neither the top-up/probe (credits) nor the re-auth (auth) has happened, leave the breaker open, leave its jobs `failed`, and report exactly what the user must do to unblock — do not retry behind their back.
+   - Update `circuit_open[backend].cleared_by` and write `state.json` for every breaker transition.
+
+5. **Re-dispatch only the incomplete jobs** — those that are `pending`, `failed`, or `blocked` after steps 3–4 (and **not** behind a still-open breaker) — via **Engine A** (`compound-v:parallel-dispatcher` / the backend-launcher), honoring `depends_on`, `run`, and `max_parallel` exactly as the original dispatch. Each re-dispatch replays the captured prompt at `jobs/<id>.prompt.md` verbatim.
    - For a Codex worktree job with a recorded `session_id`, the codex adapter may use `codex exec resume <session_id>` instead of a cold start. Either way, the **scope gate re-runs** on return.
    - Update each job's `status` and write `state.json` after every transition.
 
-5. **Continue the pipeline** from the reconciled phase: re-collect results, run the scope gate on every job, then the three-pass Review Gate (AC-gated), then merge worktree diffs on PASS. Already-`done` jobs are not re-run.
+6. **Continue the pipeline** from the reconciled phase: re-collect results, run the scope gate on every job, then the three-pass Review Gate (AC-gated), then merge worktree diffs on PASS. Already-`done` jobs are not re-run.
 
-6. **Report.** Which jobs were skipped (already landed), which were re-dispatched, and the resulting `phase`. Point the user at [`/v:status {{args}}`](v-status.md) to inspect.
+7. **Report.** Which jobs were skipped (already landed), which were re-dispatched, which stayed **blocked behind an open breaker** (and the exact unblock action — top up credits or re-auth via `/v:init`), and the resulting `phase`. Point the user at [`/v:status {{args}}`](v-status.md) to inspect.
 
 ## Safety
 
 - A `blocked` job is re-dispatched only after its prompt/partition is corrected — do not blindly re-run a job that wrote outside its scope.
+- A backend with an **open `circuit_open` breaker** is never silently retried: `out_of_credits` needs a confirmed top-up (or a passing liveness probe), `auth` needs a re-auth (`/v:init`). Without that, its jobs stay `failed` and surfaced.
 - Resume never weakens enforcement: the `git diff` scope gate runs on every re-dispatched job.
 - Do **not** print fabricated cost or token metrics (anti-ruflo).

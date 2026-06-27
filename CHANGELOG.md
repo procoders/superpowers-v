@@ -39,6 +39,20 @@ A second independent Codex review went deeper and surfaced eight more findings �
 - **Collector job-id traversal guard.** `compound-v-collect-results.py` builds `<run-dir>/results/<job-id>.json`; `--job-id` is now validated against `^[A-Za-z0-9._-]+$` (rejecting `.`/`..`) before any path is built, exiting non-zero on a bad id (same class as the round-1 worker guard, previously missed here).
 - **Empty write-scope allowed for review jobs.** `compound-v-run-codex-worker.sh` no longer `die`s on an empty `--write-allowed`; an empty allow-list means NO writes are permitted, so the gate treats any changed path as a violation. `adapter-codex.md` documents empty write-scope = read-only/review job.
 
+### Hardened — backend-failure round 2 (fail-closed + health-aware reroute + deepest-tier guard)
+
+A second hardening pass on the graceful backend-failure feature, tightening the executable behavior and the docs that describe it:
+
+- **Fail-closed enforcement faults.** A worker `error`/`timeout` status can no longer carry `failure_class: none` — a genuine failure can't masquerade as success and skip the policy loop.
+- **Fallback-health-aware reroute.** `compound-v-failure-policy.py` gained `--fallback-open`: an `out_of_credits` whose only fallback is itself circuit-open now returns **`halt`** (both causes surfaced) instead of a doomed reroute. The dispatcher passes it when `circuit_open[<fallback-backend>].open` is true.
+- **Deepest-tier context guard.** The policy gained `--current-tier {deep|standard|light}`: a `context_length` failure escalates a tier **unless already at the deepest tier** (`deep`), where it halts and the job is split (back to planning) rather than escalating into a model that doesn't exist.
+- **Real claude enum parsing.** The classifier now **parses** the claude stream-json `api_retry.error` enum and maps the exact value (`billing_error` → `out_of_credits`, etc.); the claude substring needles are a narrow fallback used only when the output isn't JSON (no bare `context`/`invalid_request`, which would mis-escalate). Run the adapter with `--output-format stream-json`.
+- **`Retry-After` honored.** The classifier extracts the provider wait; `job_result` carries it as `retry_after_seconds` (int), which the dispatcher passes as `--retry-after` so a retry sleeps the provider's stated time instead of synthetic backoff.
+- **Circuit breaker is a reconciled object.** `state.json` `circuit_open` is now `{ "<backend>": { "open", "reason": "out_of_credits|auth", "opened_at", "cleared_by" } }` (not a bare bool). `/v:resume` reconciles it by `reason` — `out_of_credits` stays open until a top-up or a liveness probe, `auth` until re-auth (`/v:init`) — and **never silently re-dispatches** to a still-open breaker.
+- **Per-(job, class) attempts.** `state.json` `attempts` is keyed `{ "<job>": { "<failure-class>": n } }`, so a budget consumed by one class doesn't starve another; the counter resets/forks on a backend re-route or class change. The dispatcher passes `attempts[job][class]` as `--attempts`.
+
+Docs updated to match the scripts (no behavior is encoded in prose that the scripts don't enforce): `skills/compound-v/failure-policy.md`, `skills/compound-v/state-machine.md`, `agents/parallel-dispatcher.md`, `commands/v-resume.md`, `skills/backend-launcher/adapter-claude.md`.
+
 ### Fixed / Documented — independent Codex review hardening (round 3)
 
 A third independent Codex review pass (0 critical, 3 high, 5 medium) produced quick real fixes plus honest documentation of inherent limits:

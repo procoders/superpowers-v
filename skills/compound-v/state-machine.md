@@ -59,8 +59,10 @@ docs/superpowers/execution/<run-id>/
   "total_retries": 2,
   "max_total_retries": 12,
   "cooldowns": { "codex": "2026-06-26T14:33:10Z" },
-  "circuit_open": { "codex": false, "claude": false },
-  "attempts": { "task-2-api": 1 },
+  "circuit_open": {
+    "codex": { "open": true, "reason": "out_of_credits", "opened_at": "2026-06-26T14:32:55Z", "cleared_by": null }
+  },
+  "attempts": { "task-2-api": { "rate_limited": 2, "network": 1 } },
   "jobs": {
     "task-0-schema":   { "status": "done",    "isolation": "direct",   "worktree": null,                          "session_id": null },
     "task-1-editor-ui":{ "status": "running", "isolation": "worktree", "worktree": "$TMPDIR/compound-v/<run>/task-1-editor-ui", "session_id": "uuid" },
@@ -75,13 +77,13 @@ These run-level fields are how graceful backend-failure handling persists across
 
 | Field | Shape | Meaning |
 |---|---|---|
-| `attempts` | `{ "<job-id>": n }` | retries this job has had — fed to the policy as `--attempts` (per-class cap). Absent ⇒ 0. |
+| `attempts` | `{ "<job-id>": { "<failure-class>": n } }` | retries this job has had **per failure-class**, so a budget burned by one class doesn't starve another. The dispatcher feeds `attempts[job][class]` as `--attempts` (per-class cap). Absent class ⇒ 0; reset/fork the counter when the job is re-routed to a different backend or the class changes. |
 | `cooldowns` | `{ "<backend>": "<iso-ts>" }` | a transient-failed backend is **deprioritized** until this timestamp (eligible again next batch). |
-| `circuit_open` | `{ "<backend>": bool }` | `true` ⇒ the backend is **out for the run** (only confirmed `out_of_credits` or `auth` opens it). |
+| `circuit_open` | `{ "<backend>": { "open": bool, "reason": "out_of_credits\|auth", "opened_at": "<iso-ts>", "cleared_by": null } }` | a per-backend breaker **object** (not a bare bool). `open: true` ⇒ the backend is **out for the run**; only a confirmed `out_of_credits` or `auth` opens it. `reason` distinguishes the two so `/v:resume` can reconcile correctly (top-up vs re-auth); `cleared_by` records what closed it (`"top_up"` / `"reauth"` / `"probe"`), `null` while still open. |
 | `total_retries` | `int` | run-wide retry counter — the policy's `--total-retries`. |
 | `max_total_retries` | `int` (default 12) | run-level retry budget — the anti retry-storm cap (`--max-total-retries`). |
 
-"Deprioritize, don't remove": a 429/5xx/timeout gets a short **cooldown** (open next batch), only a confirmed `out_of_credits` opens the breaker for the whole run.
+"Deprioritize, don't remove": a 429/5xx/timeout gets a short **cooldown** (open next batch), only a confirmed `out_of_credits`/`auth` opens the breaker object for the whole run.
 
 ### Per-job `status`
 
@@ -111,9 +113,11 @@ The run-level `phase` and the per-job `status` map are distinct: `phase` is the 
    - `state.json` says `done` but the job's `write_allowed` files are **not** present in git → treat as **not done**, re-dispatch.
    - `state.json` says `running`/`pending` but the files **are** fully present and inside scope → treat as `done`, skip.
    - This keeps resume safe under a crash that landed files but never got to write `state.json` — and under a stale `done` whose work was reverted.
-4. **Half-open the breaker at batch start.** Before re-dispatching, reconcile the circuit-breaker fields:
-   - Any backend whose `cooldowns[backend]` timestamp has **expired** goes **half-open**: probe it **once** at the start of the next batch before full re-dispatch. A clean probe **closes** the breaker (clear the `cooldowns` entry); a repeat failure re-cools it via the policy.
-   - A backend with `circuit_open[backend]==true` from an **`out_of_credits`** event stays **open** — `/v:resume` does **not** reopen it automatically. The human tops up credits first, then re-runs `/v:resume`, which clears the flag and re-dispatches (the run-level `total_retries` budget persists across the resume). An **`auth`** circuit-break clears the same way once the key/login is fixed (via `/v:init`).
+4. **Reconcile the breaker — neither a silent retry nor a permanent lockout.** Before re-dispatching, reconcile the circuit-breaker fields. The full per-backend procedure (probe semantics, `cleared_by`) lives in [`commands/v-resume.md`](../../commands/v-resume.md); in brief:
+   - **Cooldown expired (transient):** a backend whose `cooldowns[backend]` timestamp has **expired** — and which has **no** open `circuit_open` entry — goes **half-open**: probe it **once** at the start of the next batch before full re-dispatch. A clean probe clears the `cooldowns` entry; a repeat failure re-cools it via the policy.
+   - **`circuit_open[backend].open==true` with `reason=="out_of_credits"`:** stays **open** — `/v:resume` does **not** reopen it automatically. Clear it (set `cleared_by`) only when the user confirms a top-up **or** a cheap liveness probe (a tiny "reply ok" call) succeeds; then re-dispatch that backend's failed jobs (the run-level `total_retries` budget persists across the resume).
+   - **`circuit_open[backend].open==true` with `reason=="auth"`:** stays **open** until the user re-auths (via `/v:init`); only then clear it (`cleared_by`) and re-dispatch its failed jobs.
+   - **Never silently re-dispatch to a still-open breaker.** An open `out_of_credits`/`auth` breaker that the user hasn't resolved keeps its jobs `failed` and surfaced, not re-tried.
 5. **Re-dispatch only `pending` / `failed` / `blocked`** jobs (after step 3 reclassification and step 4 breaker reconciliation), honoring `depends_on` and `max_parallel` exactly as the initial dispatch did. Each re-dispatch replays `jobs/<id>.prompt.md` verbatim.
    - For a Codex worktree job whose `session_id` is recorded, the codex adapter MAY resume the existing session (`codex exec resume <session_id>`) rather than start cold; either way the **scope gate re-runs** on return.
 6. **Continue the pipeline** from the reconciled phase: re-collect, re-run the scope gate on every job, then the Review Gate, then merge. Already-`done` jobs are not re-run.

@@ -71,7 +71,7 @@ def _backoff(attempts, retry_after, jitter):
 
 
 def decide(failure_class, backend, attempts, total_retries, max_total_retries,
-           retry_after=0, jitter=True):
+           retry_after=0, jitter=True, fallback_available=True, current_tier=None):
     def out(action, reason, **kw):
         d = {"action": action, "reason": reason, "backoff_seconds": 0,
              "reroute_to": None, "escalate_tier": False, "circuit_break": False}
@@ -87,18 +87,25 @@ def decide(failure_class, backend, attempts, total_retries, max_total_retries,
                    "/v:resume" % backend, circuit_break=True)
 
     if failure_class == "out_of_credits":
+        # Re-route ONLY if a fallback exists AND it is actually viable (not itself
+        # circuit-open / out-of-credits / unauthenticated). Caller passes that health in.
         fb = FALLBACK.get(backend)
-        if fb:
+        if fb and fallback_available:
             return out("reroute", "%s out of credits — circuit-break it and re-route "
                        "remaining jobs to %s (announce the cost change)" % (backend, fb),
                        reroute_to=fb, circuit_break=True)
-        return out("halt", "%s out of credits and no fallback backend — top up, then "
-                   "/v:resume" % backend, circuit_break=True)
+        return out("halt", "%s out of credits and the fallback (%s) is unavailable too — "
+                   "top up / fix the fallback, then /v:resume" % (backend, fb or "none"),
+                   circuit_break=True)
 
     if failure_class == "context_length":
-        return out("reroute", "context too large for %s at this tier — escalate to a "
-                   "bigger tier; if already deepest, split the job (back to planning)"
-                   % backend, escalate_tier=True)
+        # Escalate to a bigger tier — UNLESS we are already at the deepest tier, in which
+        # case a bigger model does not exist and the job must be split (back to planning).
+        if current_tier == "deep":
+            return out("halt", "context too large for %s even at the deepest tier — split "
+                       "the job (back to planning); no bigger tier exists" % backend)
+        return out("reroute", "context too large for %s at tier %s — escalate to a bigger "
+                   "tier" % (backend, current_tier or "?"), escalate_tier=True)
 
     if failure_class in RETRYABLE:
         cap = PER_CLASS_MAX.get(failure_class, 1)
@@ -149,6 +156,12 @@ def _selftest():
     check("timeout-exhausted", d["action"], "halt")
     d = decide("context_length", "codex", 0, 0, 12)
     check("ctx", d["action"], "reroute", d["escalate_tier"])
+    d = decide("out_of_credits", "codex", 0, 0, 12, fallback_available=False)
+    check("ooc-no-fallback", d["action"], "halt", d["circuit_break"])
+    d = decide("context_length", "codex", 0, 0, 12, current_tier="deep")
+    check("ctx-deep", d["action"], "halt")
+    d = decide("context_length", "codex", 0, 0, 12, current_tier="standard")
+    check("ctx-standard", d["action"], "reroute", d["escalate_tier"])
     # backoff is capped and grows
     b0 = decide("rate_limited", "codex", 0, 0, 99, jitter=False)["backoff_seconds"]
     b1 = decide("rate_limited", "codex", 1, 0, 99, jitter=False)["backoff_seconds"]
@@ -171,6 +184,10 @@ def main(argv):
                    help="run-level retry budget (anti retry-storm)")
     p.add_argument("--retry-after", type=float, default=0,
                    help="seconds from the provider's Retry-After, if known")
+    p.add_argument("--fallback-open", action="store_true",
+                   help="set when the fallback backend is itself circuit-open/unavailable")
+    p.add_argument("--current-tier", choices=["deep", "standard", "light"],
+                   help="the job's current tier (for context_length escalation)")
     p.add_argument("--no-jitter", action="store_true")
     p.add_argument("--selftest", action="store_true")
     args = p.parse_args(argv)
@@ -182,7 +199,8 @@ def main(argv):
 
     d = decide(args.failure_class, args.backend, args.attempts, args.total_retries,
                args.max_total_retries, retry_after=args.retry_after,
-               jitter=not args.no_jitter)
+               jitter=not args.no_jitter, fallback_available=not args.fallback_open,
+               current_tier=args.current_tier)
     print(json.dumps(d))
     return 0
 

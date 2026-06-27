@@ -20,25 +20,31 @@ job_result.status != success
         │
         ▼
 1. classify  ── compound-v-classify-failure.py --backend <B> --exit-code <N> [--stderr-file P]
-        │            → {failure_class, retryable, matched}
+        │            → {failure_class, retryable, matched, retry_after}
         │            (job_result.failure_class already carries this for codex; recompute for claude
-        │             from the stream-json api_retry.error enum — see adapter-claude.md)
+        │             by PARSING the stream-json api_retry.error enum — exact enum match, narrow
+        │             substring fallback only when the output isn't JSON — see adapter-claude.md.
+        │             retry_after is the parsed provider wait; the worker surfaces it on job_result
+        │             as retry_after_seconds.)
         ▼
 2. decide    ── compound-v-failure-policy.py --failure-class <C> --backend <B>
-        │            --attempts <state.attempts[job]> --total-retries <state.total_retries>
-        │            --max-total-retries <state.max_total_retries> [--retry-after S]
+        │            --attempts <state.attempts[job][class]> --total-retries <state.total_retries>
+        │            --max-total-retries <state.max_total_retries>
+        │            [--retry-after <job_result.retry_after_seconds>]
+        │            [--fallback-open]            # when circuit_open[<fallback-of-B>].open
+        │            [--current-tier deep|standard|light]   # the job's resolved tier
         │            → {action, reason, backoff_seconds, reroute_to, escalate_tier, circuit_break}
         ▼
 3. act on `action` ∈ {proceed, retry, reroute, halt}   (table below; loud reporting always)
 ```
 
-`failure_class` rides on the `job_result` ([`schemas/job_result.schema.json`](../../schemas/job_result.schema.json)) — the Codex worker emits it; it is `null` on success/blocked. A `blocked` result is a **scope-gate** halt, not a backend failure, and never enters this loop.
+`failure_class` and `retry_after_seconds` (int, 0 when unknown) ride on the `job_result` ([`schemas/job_result.schema.json`](../../schemas/job_result.schema.json)) — the Codex worker emits them; `failure_class` is `null` on success/blocked. The worker **fails closed**: an `error`/`timeout` status never carries `failure_class: none`, so a real failure cannot pose as success. `retry_after_seconds` flows straight into the policy's `--retry-after`. A `blocked` result is a **scope-gate** halt, not a backend failure, and never enters this loop.
 
 ---
 
 ## 1. Classification taxonomy (class → signature → retryable)
 
-Classify by the error **TYPE**, never the HTTP status — the status is ambiguous (OpenAI `insufficient_quota` and a throttle are **both** 429; an Anthropic credit error is a **400/402, not a 429**). The classifier branches on the captured stderr (codex) or the stream-json `api_retry.error` enum (claude), in priority order (most specific first), with `out_of_credits` checked **before** `rate_limited`.
+Classify by the error **TYPE**, never the HTTP status — the status is ambiguous (OpenAI `insufficient_quota` and a throttle are **both** 429; an Anthropic credit error is a **400/402, not a 429**). For **codex** the classifier branches on substrings in the captured stderr, in priority order (most specific first), with `out_of_credits` checked **before** `rate_limited`. For **claude** it **parses the stream-json `api_retry.error` enum** and maps the exact enum value (e.g. `billing_error` → `out_of_credits`); the narrow substring needles for claude are a **fallback only when the output isn't JSON** (deliberately narrow — no bare `context`/`invalid_request`, which would misclassify unrelated failures as `context_length` and wrongly trigger tier escalation). The classifier also extracts a provider `retry_after` (HTTP `Retry-After`, or a codex "try again in N days" countdown).
 
 | `failure_class` | Signature (where it comes from) | Retryable |
 |---|---|---|
@@ -63,26 +69,27 @@ The retryable set is exactly `{rate_limited, overloaded, timeout, network, other
 | `failure_class` | `action` | Effect | Caps |
 |---|---|---|---|
 | `none` | `proceed` | nothing to do | — |
-| `out_of_credits` (fallback exists) | `reroute` | `circuit_break` the backend for the run + `reroute_to` the fallback (codex→claude) | never retried |
-| `out_of_credits` (no fallback, e.g. claude) | `halt` | `circuit_break`; run stays resumable — top up, then `/v:resume` | never retried |
+| `out_of_credits` (fallback **viable**) | `reroute` | `circuit_break` the backend for the run + `reroute_to` the fallback (codex→claude) | never retried |
+| `out_of_credits` (no fallback, or fallback **dead** — `--fallback-open`) | `halt` | `circuit_break`; **both** causes surfaced in `reason`; run stays resumable — top up / fix the fallback, then `/v:resume` | never retried |
 | `auth` | `halt` | `circuit_break`; human re-auths via `/v:init`, then `/v:resume` | never retried |
-| `context_length` | `reroute` | `escalate_tier` (bigger tier); if already deepest, split the job → back to planning | never retried |
+| `context_length` (tier `<` deepest) | `reroute` | `escalate_tier` — re-resolve at a bigger tier | never retried |
+| `context_length` (`--current-tier deep`) | `halt` | no bigger model exists — **split the job** → back to planning | never retried |
 | `rate_limited` | `retry` → `halt` | retry SAME backend, exp backoff + jitter, honor `retry-after` | per-class **3**, then run-level `max_total_retries` |
 | `overloaded` | `retry` → `halt` | same | per-class **2**, then run-level |
 | `network` | `retry` → `halt` | same | per-class **2**, then run-level |
 | `timeout` | `retry` → `halt` | retry once, longer | per-class **1**, then run-level |
 | `other` | `retry` → `halt` | retry once, then stop | per-class **1**, then run-level |
 
-**Backoff:** exponential (`base 2 · 2^attempts`, jittered to de-sync siblings, capped at **60s**); a provider `retry-after` **overrides** the computed value. Retries are capped **twice** — per-class (above) **and** by the run-level `max_total_retries` (default 12), the anti retry-storm guard. Whichever ceiling hits first → `halt`.
+**Backoff:** exponential (`base 2 · 2^attempts`, jittered to de-sync siblings, capped at **60s**); a provider `retry-after` (passed as `--retry-after <job_result.retry_after_seconds>`) **overrides** the computed value. Retries are capped **twice** — per-(job, failure_class) (the counts above, against `attempts[job][class]`) **and** by the run-level `max_total_retries` (default 12), the anti retry-storm guard. Whichever ceiling hits first → `halt`. A class's budget is independent: a job that exhausts `rate_limited` can still spend its `network` budget, and re-routing to a different backend (or a class change) resets/forks the counter.
 
 ### Acting on each `action`
 
 - **`proceed`** — success; merge/collect as normal (this branch is only reached if something upstream mislabeled a success).
-- **`retry`** — re-dispatch the **same** backend after `backoff_seconds`; bump `attempts[job]` and `total_retries` in `state.json` first. Same prompt (`jobs/<id>.prompt.md`), same scope gate on return.
+- **`retry`** — sleep `backoff_seconds` (already the provider's `retry-after` when one was passed), then re-dispatch the **same** backend; bump `attempts[job][class]` (the per-class counter) and `total_retries` in `state.json` first. Same prompt (`jobs/<id>.prompt.md`), same scope gate on return.
 - **`reroute`**:
-  - `circuit_break: true` (out_of_credits) → set `circuit_open[backend]=true`, and re-route **this job and every remaining same-backend job** in the run through the env-aware **codex→claude** rewrite ([`routing-policy.md`](routing-policy.md) §Env-aware Claude-only fallback). Announce it loudly (below).
-  - `escalate_tier: true` (context_length) → re-resolve the job at a **bigger tier** via [`compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py) and re-dispatch. If already at the deepest tier, the job is too big for one shot — **split it** (back to planning/partition), don't loop.
-- **`halt`** — mark the job `failed` in `state.json`, keep the run **`/v:resume`-able**, and (ralph-tui-style) **continue other independent jobs** — a sibling's 429 must not kill jobs that have nothing to do with it. The run only stops dead when the **last viable backend** is exhausted.
+  - `circuit_break: true` (out_of_credits, fallback viable) → open the breaker **object** `circuit_open[backend] = {"open": true, "reason": "out_of_credits", "opened_at": "<iso-ts>", "cleared_by": null}`, and re-route **this job and every remaining same-backend job** in the run through the env-aware **codex→claude** rewrite ([`routing-policy.md`](routing-policy.md) §Env-aware Claude-only fallback). Announce it loudly (below). (If the fallback is itself open — `--fallback-open` — the policy returns `halt`, not `reroute`; see below.)
+  - `escalate_tier: true` (context_length, not yet deepest) → re-resolve the job at a **bigger tier** via [`compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py) and re-dispatch; reset/fork the per-class counter on the new backend/tier.
+- **`halt`** — mark the job `failed` in `state.json`, keep the run **`/v:resume`-able**, and (ralph-tui-style) **continue other independent jobs** — a sibling's 429 must not kill jobs that have nothing to do with it. Beyond the credit/auth cases, two round-2 conditions also halt: **out_of_credits with a dead fallback** (`--fallback-open`; both causes surfaced) and **context_length already at the deepest tier** (`--current-tier deep` → split the job, back to planning). The run only stops dead when the **last viable backend** is exhausted.
 
 ---
 
@@ -92,15 +99,15 @@ Borrowed from LiteLLM / OpenRouter, realized as **static state**, not a process.
 
 | Field | Shape | Meaning |
 |---|---|---|
-| `attempts` | `{ "<job-id>": n }` | how many times this job has been retried (the policy's `--attempts`) |
+| `attempts` | `{ "<job-id>": { "<failure-class>": n } }` | retries per **(job, failure_class)** — the policy's `--attempts` is `attempts[job][class]`, so one class's budget doesn't starve another (reset/fork on backend re-route or class change) |
 | `cooldowns` | `{ "<backend>": "<iso-ts>" }` | a transient-failed backend is **deprioritized** until this timestamp (retryable next batch) |
-| `circuit_open` | `{ "<backend>": bool }` | `true` = backend is out for the run (credit-exhausted or auth) |
+| `circuit_open` | `{ "<backend>": { "open": bool, "reason": "out_of_credits\|auth", "opened_at": "<iso-ts>", "cleared_by": null } }` | a per-backend breaker **object**; `open: true` = backend is out for the run. `reason` lets `/v:resume` reconcile correctly; `cleared_by` records what closed it (`null` while open) |
 | `total_retries` | `int` | run-wide retry counter (the policy's `--total-retries`) |
 | `max_total_retries` | `int` (default 12) | run-level retry budget — the anti retry-storm cap |
 
 **Breaker states** (no daemon — just how the fields are read):
-- **open** — `circuit_open[backend]==true`. Skip the backend entirely this run. Only `out_of_credits` (confirmed) and `auth` open it.
-- **half-open** — a backend whose `cooldowns[backend]` timestamp has **expired**: probe it **once** at the next batch start before full re-dispatch.
+- **open** — `circuit_open[backend].open==true`. Skip the backend entirely this run. Only `out_of_credits` (confirmed) and `auth` open it; `/v:resume` reconciles it by `reason` (top-up/probe vs re-auth) — never a silent re-dispatch.
+- **half-open** — a backend with **no** open breaker whose `cooldowns[backend]` timestamp has **expired**: probe it **once** at the next batch start before full re-dispatch.
 - **closed** — normal. A success clears any `cooldowns[backend]` entry.
 
 See [`state-machine.md`](state-machine.md) for the resume behavior built on these fields.

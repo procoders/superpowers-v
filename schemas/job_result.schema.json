@@ -14,7 +14,8 @@
     "session_id",
     "worktree",
     "exit_code",
-    "failure_class"
+    "failure_class",
+    "retry_after_seconds"
   ],
   "properties": {
     "status": {
@@ -56,6 +57,10 @@
       "type": ["string", "null"],
       "enum": [null, "none", "out_of_credits", "rate_limited", "overloaded", "auth", "context_length", "timeout", "network", "other"],
       "description": "On a non-success status, the classified backend-failure reason from compound-v-classify-failure.py (out_of_credits | rate_limited | overloaded | auth | context_length | timeout | network | other). null on success/blocked. Drives the dispatcher's deterministic retry/reroute/halt policy (compound-v-failure-policy.py): out_of_credits/auth never retry; out_of_credits circuit-breaks the backend and re-routes remaining jobs to the fallback; transient classes retry with capped backoff."
+    },
+    "retry_after_seconds": {
+      "type": "integer",
+      "description": "Seconds-until-retry parsed from the provider message (HTTP Retry-After, or a codex usage-limit countdown like 'try again in 5 days'), 0 when unknown. The dispatcher passes this to compound-v-failure-policy.py --retry-after so a retry honors the provider's stated wait instead of synthetic backoff."
     }
   }
 }

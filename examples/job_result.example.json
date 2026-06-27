@@ -10,5 +10,6 @@
   "session_id": "0b3d9c1e-2f4a-4d6b-9a11-7c5e8f2a4b10",
   "worktree": "/tmp/compound-v/2026-06-26-linkedin-sequence-editor/task-1-editor-ui",
   "exit_code": 0,
-  "failure_class": null
+  "failure_class": null,
+  "retry_after_seconds": 0
 }

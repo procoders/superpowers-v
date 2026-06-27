@@ -111,15 +111,18 @@ On `blocked`: the caller **must not merge** — it halts the run and surfaces th
 
 ## Classifying a claude failure (the `failure_class` for the policy loop)
 
-When a claude job returns non-success (errored, hit `maxTurns` without finishing, or the API surfaced a retry error), the dispatcher needs a `failure_class` to drive the [failure policy](../compound-v/failure-policy.md). Unlike the Codex worker — which captures stderr and **emits `failure_class` in its `job_result`** — an in-harness `Task` does not hand back a raw error enum on the canonical result. So for claude, the class is computed by reading the **stream-json `api_retry.error` enum**: run the adapter/worker with `--output-format stream-json` and feed the captured output to the classifier with `--backend claude`:
+When a claude job returns non-success (errored, hit `maxTurns` without finishing, or the API surfaced a retry error), the dispatcher needs a `failure_class` to drive the [failure policy](../compound-v/failure-policy.md). Unlike the Codex worker — which captures stderr and **emits `failure_class` in its `job_result`** — an in-harness `Task` does not hand back a raw error enum on the canonical result. So for claude, the class is computed by **parsing the stream-json `api_retry.error` enum exactly** — not by scanning prose. Run the adapter/worker with **`--output-format stream-json`** and feed the captured JSONL to the classifier with `--backend claude`:
 
 ```bash
-# claude path: the classifier reads the stream-json api_retry.error enum, not raw stderr text.
+# claude path: run with --output-format stream-json so the api_retry event is captured.
+#   claude ... --output-format stream-json > "$STREAM_JSON" 2>&1
+# The classifier PARSES the JSONL, selects the api_retry event, and maps the EXACT
+# api_retry.error enum value — it does NOT substring-scan free text on the JSON path.
 python3 scripts/compound-v-classify-failure.py --backend claude \
-  --exit-code "$EXIT" --stderr-file "$STREAM_JSON"   # → {failure_class, retryable, matched}
+  --exit-code "$EXIT" --stderr-file "$STREAM_JSON"   # → {failure_class, retryable, matched, retry_after}
 ```
 
-`--backend claude` selects the Anthropic enum rules (e.g. `billing_error` ⇒ `out_of_credits` — note this is a **400/402, not a 429**; `authentication_failed`/`oauth_org_not_allowed` ⇒ `auth`; `overloaded_error`/`529` ⇒ `overloaded`; `rate_limit` ⇒ `rate_limited`). The resulting class flows into [`compound-v-failure-policy.py`](../../scripts/compound-v-failure-policy.py) exactly as a Codex failure does.
+`--backend claude` selects the Anthropic enum map (exact `api_retry.error` value → class): `billing_error` ⇒ `out_of_credits` (note this is a **400/402, not a 429**), `authentication_failed`/`authentication_error`/`oauth_org_not_allowed`/`permission_error` ⇒ `auth`, `overloaded_error`/`server_error` ⇒ `overloaded`, `rate_limit` ⇒ `rate_limited`, `max_output_tokens` ⇒ `context_length`, and the too-generic `invalid_request`/`model_not_found`/`unknown` ⇒ `other` (deliberately **not** `context_length`, so they don't wrongly trigger a tier escalation). The classifier **only** falls back to a deliberately **narrow** substring match when the captured output isn't JSON; it never scans bare `context`/`invalid_request` text. It also extracts `retry_after` (a `Retry-After` value), which the dispatcher carries as `retry_after_seconds` into the policy. The resulting class flows into [`compound-v-failure-policy.py`](../../scripts/compound-v-failure-policy.py) exactly as a Codex failure does.
 
 **claude has no further local fallback in 1.0.** The fallback chain is `codex → claude → none`: an `out_of_credits` or `auth` failure **on claude** has no backend to re-route to, so the policy returns **`halt`** (circuit-break + resumable) rather than `reroute` — the human tops up / re-auths, then `/v:resume`. Antigravity is the candidate second fallback but ships as a stub deferred to **1.1** (see [`adapter-antigravity.md`](adapter-antigravity.md)). Transient claude failures (rate_limited/overloaded/network/timeout) still **retry on claude** with backoff, capped per-class and by `max_total_retries`.
 

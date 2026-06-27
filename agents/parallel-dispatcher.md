@@ -131,7 +131,7 @@ Write `state.json` after every per-job transition, so a crash never loses more t
 
 ### Step 2c — Backend-failure policy — on a non-success `job_result` (classify → decide → act)
 
-A `job_result.status` that is **not** `success` and **not** `blocked` is a backend failure (rate-limit, overload, out-of-credits, auth, context-length, timeout, network). Do **not** guess and do **not** blindly retry — run the deterministic two-stage pipeline, exactly as [`skills/compound-v/failure-policy.md`](../skills/compound-v/failure-policy.md) specifies. The circuit breaker is the `state.json` fields (`attempts` / `cooldowns` / `circuit_open` / `total_retries` / `max_total_retries`) read at batch boundaries — no daemon.
+A `job_result.status` that is **not** `success` and **not** `blocked` is a backend failure (rate-limit, overload, out-of-credits, auth, context-length, timeout, network). (The worker **fails closed**: an `error`/`timeout` status never carries `failure_class: none`, so a genuine failure can't masquerade as success.) Do **not** guess and do **not** blindly retry — run the deterministic two-stage pipeline, exactly as [`skills/compound-v/failure-policy.md`](../skills/compound-v/failure-policy.md) specifies. The circuit breaker is the `state.json` fields read at batch boundaries — no daemon: `attempts` (keyed **per (job, failure_class)**), `cooldowns`, `circuit_open` (a per-backend **object** with `open`/`reason`/`opened_at`/`cleared_by`), `total_retries`, `max_total_retries`.
 
 1. **Classify.** Read the job's `failure_class` from the `job_result` (the Codex worker emits it; `null` on success/blocked). If absent — e.g. a `claude` job — recompute it by running the classifier with the backend's exit code + captured stderr (for `claude`, pass `--backend claude`; the classifier reads the stream-json `api_retry.error` enum — see [`adapter-claude.md`](../skills/backend-launcher/adapter-claude.md)):
 
@@ -140,22 +140,36 @@ A `job_result.status` that is **not** `success` and **not** `blocked` is a backe
      --exit-code "$EXIT" --stderr-file "$STDERR"   # → {failure_class, retryable, matched}
    ```
 
-2. **Decide.** Feed the class + the job's attempts + the run-level retry counters to the decision table:
+2. **Decide.** Feed the class + the job's **per-(job, class)** attempts + the run-level retry counters to the decision table, plus the three round-2 inputs (provider wait, fallback health, current tier). Use the **per-class** attempt count — `attempts[<job>][<failure_class>]` — not a per-job total, so a budget burned by one class doesn't starve another:
 
    ```bash
-   python3 scripts/compound-v-failure-policy.py --failure-class "$CLASS" --backend "$BACKEND" \
-     --attempts "$ATTEMPTS" --total-retries "$TOTAL" --max-total-retries "$MAX" \
-     ${RETRY_AFTER:+--retry-after "$RETRY_AFTER"}
+   # ATTEMPTS = state.attempts[<job>][<CLASS>] (per (job, failure_class)); 0 if absent.
+   # RETRY_AFTER = job_result.retry_after_seconds (provider's stated wait; 0 if unknown).
+   # Pass --fallback-open ONLY when the fallback backend's breaker is open:
+   #   i.e. circuit_open[<fallback-of-$BACKEND>].open == true.
+   # Pass --current-tier as the job's RESOLVED tier (deep|standard|light).
+   set -- --failure-class "$CLASS" --backend "$BACKEND" \
+          --attempts "$ATTEMPTS" --total-retries "$TOTAL" --max-total-retries "$MAX" \
+          --current-tier "$TIER"
+   [ -n "$RETRY_AFTER" ] && [ "$RETRY_AFTER" -gt 0 ] && set -- "$@" --retry-after "$RETRY_AFTER"
+   [ "$FALLBACK_OPEN" = "1" ] && set -- "$@" --fallback-open
+   python3 scripts/compound-v-failure-policy.py "$@"
    # → {action, reason, backoff_seconds, reroute_to, escalate_tier, circuit_break}
    ```
 
-3. **Act** on `action`:
-   - **`retry`** → re-dispatch the **same** backend after `backoff_seconds` (replay `jobs/<id>.prompt.md`); first bump `attempts[<job>]` and `total_retries` in `state.json`. Re-run the scope gate on return.
-   - **`reroute`** with `circuit_break: true` (out_of_credits) → set `circuit_open[<backend>]=true` and re-route **this job AND every remaining same-backend job** in the run via the env-aware **codex→claude** rewrite ([`routing-policy.md`](../skills/compound-v/routing-policy.md) §Env-aware Claude-only fallback) — the SAME rewrite `/v:init` uses when Codex is absent, here at runtime. **Announce it loudly** (see Output): never silently swap a cheap backend for an expensive one.
-   - **`reroute`** with `escalate_tier: true` (context_length) → re-resolve the job at a **bigger tier** via `compound-v-resolve-model.py` and re-dispatch. If already at the deepest tier, **split the job** (back to planning) — do not loop.
-   - **`halt`** → mark the job `failed` in `state.json`, keep the run **`/v:resume`-able**, and **continue other independent jobs** (ralph-tui-style: a sibling's 429 must not kill unrelated jobs). The run stops dead only when the **last viable backend** is exhausted — i.e. `out_of_credits`/`auth` with no remaining fallback.
+   - `--retry-after <job_result.retry_after_seconds>` — honor the provider's stated wait; it **overrides** the computed backoff.
+   - `--fallback-open` — set it when `circuit_open[<fallback-backend>].open` is `true`, so an `out_of_credits` whose only fallback is already exhausted yields **`halt`** (both causes surfaced) instead of a doomed reroute.
+   - `--current-tier <resolved tier>` — so a `context_length` failure escalates to a bigger tier **unless already at the deepest tier** (`deep`), where it returns `halt` (split the job) rather than escalating into a model that doesn't exist.
 
-Write `state.json` after every transition. "Deprioritize, don't remove": a transient failure gets a short `cooldowns[<backend>]` timestamp (probed half-open next batch), only a confirmed `out_of_credits`/`auth` opens the breaker for the run. **Never** retry `out_of_credits`/`auth`; cap retries by **count AND wall-clock** (per-class ceiling *and* `max_total_retries`); classify by error **TYPE**, not HTTP status.
+3. **Act** on `action`:
+   - **`retry`** → **sleep `backoff_seconds`** (the policy's value — already the provider's `retry-after` when one was passed), then re-dispatch the **same** backend (replay `jobs/<id>.prompt.md`); first bump `attempts[<job>][<failure_class>]` (the per-class counter) and `total_retries` in `state.json`. Re-run the scope gate on return.
+   - **`reroute`** with `circuit_break: true` (out_of_credits) → open the breaker **object** `circuit_open[<backend>] = {"open": true, "reason": "out_of_credits", "opened_at": "<iso-ts>", "cleared_by": null}` and re-route **this job AND every remaining same-backend job** in the run via the env-aware **codex→claude** rewrite ([`routing-policy.md`](../skills/compound-v/routing-policy.md) §Env-aware Claude-only fallback) — the SAME rewrite `/v:init` uses when Codex is absent, here at runtime. **Announce it loudly** (see Output): never silently swap a cheap backend for an expensive one.
+   - **`reroute`** with `escalate_tier: true` (context_length, not yet at the deepest tier) → re-resolve the job at a **bigger tier** via `compound-v-resolve-model.py` and re-dispatch. When the job is re-routed to a different backend or its class changes, **reset/fork** its per-class attempt counter.
+   - **`halt`** → mark the job `failed` in `state.json`, keep the run **`/v:resume`-able**, and **continue other independent jobs** (ralph-tui-style: a sibling's 429 must not kill unrelated jobs). Two round-2 cases also return `halt` and must be honored, not retried:
+     - **out_of_credits with a dead fallback** (`--fallback-open` was set ⇒ the fallback backend is itself circuit-open) — both causes are surfaced; open this backend's breaker, leave the jobs `failed`, and stop dispatching to it. The run stops dead when the **last viable backend** is exhausted.
+     - **context_length already at the deepest tier** (`--current-tier deep`) — no bigger model exists, so **split the job → back to planning/partition**; do not loop on escalation.
+
+Write `state.json` after every transition. "Deprioritize, don't remove": a transient failure gets a short `cooldowns[<backend>]` timestamp (probed half-open next batch), only a confirmed `out_of_credits`/`auth` opens the breaker **object** for the run (which [`/v:resume`](../commands/v-resume.md) reconciles by `reason` — top-up/probe for credits, re-auth for auth — never a silent re-dispatch). **Never** retry `out_of_credits`/`auth`; cap retries by **count AND wall-clock** (per-(job,class) ceiling *and* `max_total_retries`); classify by error **TYPE**, not HTTP status.
 
 ### Step 3 — Parallel Reviewer Batch(es)
 

@@ -33,6 +33,7 @@ Python 3.9-safe, stdlib only.
 
 import argparse
 import json
+import re
 import sys
 
 TIMEOUT_EXIT_CODE = 124
@@ -73,38 +74,112 @@ _CODEX_RULES = [
     ]),
 ]
 
-# Anthropic / claude stream-json `api_retry.error` enum -> class (also matched as
-# substrings against stderr when the enum isn't available).
+# Anthropic / claude: the AUTHORITATIVE path is the stream-json `api_retry.error` enum
+# (see CLAUDE_ENUM + _parse_claude_json). These substrings are only the FALLBACK when the
+# output isn't JSON. Deliberately NARROW — no bare "context"/"invalid_request" (they
+# misclassify unrelated failures as context_length and wrongly trigger tier escalation).
 _CLAUDE_RULES = [
-    ("out_of_credits", ["billing_error", "credit balance is too low", "billing"]),
+    ("out_of_credits", ["billing_error", "credit balance is too low"]),
     ("auth", ["authentication_failed", "oauth_org_not_allowed", "authentication_error",
-              "permission_error", "401", "403"]),
-    ("context_length", ["max_output_tokens", "context", "prompt is too long",
-                        "invalid_request"]),
-    ("rate_limited", ["rate_limit", "429", "too many requests"]),
-    ("overloaded", ["overloaded", "overloaded_error", "server_error", "529", "503",
-                    "500"]),
-    ("network", ["connection", "econnreset", "network", "dns", "getaddrinfo"]),
+              "permission_error"]),
+    ("context_length", ["max_output_tokens", "prompt is too long",
+                        "context window exceeded", "context_length_exceeded"]),
+    ("rate_limited", ["rate_limit", "too many requests"]),
+    ("overloaded", ["overloaded_error", "529 overloaded", "server_error"]),
+    ("network", ["econnreset", "getaddrinfo", "connection refused"]),
 ]
+
+# Exact `api_retry.error` enum values -> class (claude headless stream-json).
+CLAUDE_ENUM = {
+    "billing_error": "out_of_credits",
+    "rate_limit": "rate_limited",
+    "overloaded": "overloaded",
+    "overloaded_error": "overloaded",
+    "server_error": "overloaded",
+    "authentication_failed": "auth",
+    "authentication_error": "auth",
+    "oauth_org_not_allowed": "auth",
+    "permission_error": "auth",
+    "max_output_tokens": "context_length",
+    "invalid_request": "other",   # too generic to escalate a tier — treat as other
+    "model_not_found": "other",
+    "unknown": "other",
+}
+
+
+def _parse_claude_json(text):
+    """Scan claude stream-json lines for an error event; return (class, raw) or None.
+
+    Parses actual JSONL — selects objects carrying an `error` (the `api_retry` event's
+    enum) and maps the EXACT enum value. Falls through to None (then the narrow substring
+    fallback runs) when no JSON error object is present.
+    """
+    found = None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("{") or '"error"' not in line:
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        err = obj.get("error")
+        if isinstance(err, dict):
+            err = err.get("type") or err.get("message")
+        if not isinstance(err, str):
+            continue
+        key = err.strip().lower()
+        if key in CLAUDE_ENUM:
+            return CLAUDE_ENUM[key], err          # exact enum wins immediately
+        for k, c in CLAUDE_ENUM.items():          # else a known enum as a substring
+            if k in key:
+                found = (c, err)
+    return found
+
+
+_RETRY_AFTER_RES = [
+    re.compile(r"retry[- ]after[:=\s]+(\d+)", re.I),
+    re.compile(r"try again in\s+(\d+)\s*(second|sec|minute|min|hour|day)s?", re.I),
+]
+_UNIT_SECONDS = {"second": 1, "sec": 1, "minute": 60, "min": 60, "hour": 3600, "day": 86400}
+
+
+def _extract_retry_after(text):
+    """Best-effort seconds-until-retry from a provider message; 0 if unknown."""
+    for rx in _RETRY_AFTER_RES:
+        m = rx.search(text)
+        if m:
+            n = int(m.group(1))
+            if m.lastindex and m.lastindex >= 2:
+                return n * _UNIT_SECONDS.get(m.group(2).lower().rstrip("s"), 1)
+            return n
+    return 0
 
 
 def classify(backend, exit_code, stderr):
-    """Return (failure_class, matched_signature_or_None)."""
+    """Return (failure_class, matched_signature_or_None, retry_after_seconds)."""
     if exit_code == 0:
-        return "none", None
+        return "none", None, 0
     if exit_code == TIMEOUT_EXIT_CODE:
-        return "timeout", "exit %d (timeout wrapper)" % TIMEOUT_EXIT_CODE
-    text = (stderr or "").lower()
+        return "timeout", "exit %d (timeout wrapper)" % TIMEOUT_EXIT_CODE, 0
+    raw = stderr or ""
+    retry_after = _extract_retry_after(raw)
+    if backend == "claude":
+        hit = _parse_claude_json(raw)
+        if hit is not None:
+            return hit[0], hit[1], retry_after
+    text = raw.lower()
     rules = _CLAUDE_RULES if backend == "claude" else _CODEX_RULES
     for cls, needles in rules:
         for n in needles:
             if n in text:
-                return cls, n
-    return "other", None
+                return cls, n, retry_after
+    return "other", None, retry_after
 
 
-def _result(cls, matched):
-    return {"failure_class": cls, "retryable": cls in RETRYABLE, "matched": matched}
+def _result(cls, matched, retry_after):
+    return {"failure_class": cls, "retryable": cls in RETRYABLE, "matched": matched,
+            "retry_after": retry_after}
 
 
 def _selftest():
@@ -129,20 +204,26 @@ def _selftest():
         ("claude", 1, '{"error":"overloaded"}', "overloaded"),
         ("claude", 1, '{"error":"authentication_failed"}', "auth"),
         ("claude", 1, '{"error":"oauth_org_not_allowed"}', "auth"),
+        # narrow needles: a benign mention of "context" must NOT become context_length
+        ("claude", 1, "log: building the context of the request (no error)", "other"),
+        ("claude", 1, '{"type":"system","subtype":"api_retry","error":"overloaded"}', "overloaded"),
     ]
     ok = 0
     fail = 0
     for backend, code, err, want in cases:
-        got, _m = classify(backend, code, err)
+        got, _m, _ra = classify(backend, code, err)
         if got == want:
             ok += 1
         else:
             fail += 1
             print("  FAIL [%s] exit=%d %r -> %s (want %s)" % (backend, code, err[:48], got, want))
-    # retryability sanity
-    assert _result("out_of_credits", None)["retryable"] is False
-    assert _result("auth", None)["retryable"] is False
-    assert _result("rate_limited", None)["retryable"] is True
+    # retryability + retry_after sanity
+    assert _result("out_of_credits", None, 0)["retryable"] is False
+    assert _result("auth", None, 0)["retryable"] is False
+    assert _result("rate_limited", None, 0)["retryable"] is True
+    assert _extract_retry_after("Retry-After: 30") == 30
+    assert _extract_retry_after("please try again in 5 days") == 5 * 86400
+    assert classify("codex", 1, "rate limited, retry-after: 12")[2] == 12
     print("SELFTEST: %d ok, %d fail" % (ok, fail))
     return 0 if fail == 0 else 1
 
@@ -170,8 +251,8 @@ def main(argv):
     else:
         stderr = "" if sys.stdin.isatty() else sys.stdin.read()
 
-    cls, matched = classify(args.backend, args.exit_code, stderr)
-    print(json.dumps(_result(cls, matched)))
+    cls, matched, retry_after = classify(args.backend, args.exit_code, stderr)
+    print(json.dumps(_result(cls, matched, retry_after)))
     return 0
 
 

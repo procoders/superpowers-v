@@ -57,6 +57,7 @@ die() {
 emit_job_result() {
   # $1 status  $2 blocked(true|false)  $3 files_nl  $4 violations_nl
   # $5 summary  $6 session_id  $7 worktree  $8 exit_code(int)  $9 failure_class ("" => null)
+  # ${10} retry_after_seconds(int, 0 when unknown)
   jq -n \
     --arg status "$1" \
     --argjson blocked "$2" \
@@ -67,6 +68,7 @@ emit_job_result() {
     --arg worktree "$7" \
     --argjson exit_code "$8" \
     --arg failure_class "$9" \
+    --argjson retry_after_seconds "${10}" \
     '{
        status: $status,
        blocked: $blocked,
@@ -76,7 +78,8 @@ emit_job_result() {
        session_id: $session_id,
        worktree: $worktree,
        exit_code: $exit_code,
-       failure_class: (if $failure_class == "" then null else $failure_class end)
+       failure_class: (if $failure_class == "" then null else $failure_class end),
+       retry_after_seconds: $retry_after_seconds
      }'
 }
 
@@ -168,8 +171,10 @@ if [ -n "$EFFORT" ]; then
     *) die "--effort must be one of low|medium|high: $EFFORT" ;;
   esac
 fi
-command -v jq  >/dev/null 2>&1 || die "jq not found on PATH"
-command -v git >/dev/null 2>&1 || die "git not found on PATH"
+command -v jq      >/dev/null 2>&1 || die "jq not found on PATH"
+command -v git     >/dev/null 2>&1 || die "git not found on PATH"
+command -v python3 >/dev/null 2>&1 || die "python3 not found on PATH (scope gate + failure classifier need it)"
+command -v codex   >/dev/null 2>&1 || die "codex not found on PATH"
 
 # Resolve which timeout binary is present (GNU `timeout` or coreutils `gtimeout`).
 TIMEOUT_BIN=""
@@ -422,11 +427,28 @@ fi
 # the captured codex stderr — see compound-v-classify-failure.py + -failure-policy.py.
 # "" => null in the emitted JSON.
 failure_class=""
+retry_after="0"
 if [ "$status" = "error" ] || [ "$status" = "timeout" ]; then
-  failure_class=$(python3 "$SCRIPT_DIR/compound-v-classify-failure.py" \
-    --backend codex --exit-code "$exit_code" --stderr-file "$STDERR_LOG" 2>/dev/null \
-    | jq -r '.failure_class' 2>/dev/null || true)
-  [ -n "$failure_class" ] && [ "$failure_class" != "null" ] || failure_class="other"
+  # A GATE/enforcement fault (gate_rc neither 0 nor 1) is an ENVIRONMENT fault, not a
+  # backend failure — classify it generically, NEVER via the codex exit code (which may
+  # be 0 on a clean codex run whose scope GATE then faulted).
+  if [ "$gate_rc" != "0" ] && [ "$gate_rc" != "1" ]; then
+    failure_class="other"
+  else
+    _cls_json=$(python3 "$SCRIPT_DIR/compound-v-classify-failure.py" \
+      --backend codex --exit-code "$exit_code" --stderr-file "$STDERR_LOG" 2>/dev/null || true)
+    failure_class=$(printf '%s' "$_cls_json" | jq -r '.failure_class' 2>/dev/null || true)
+    retry_after=$(printf '%s' "$_cls_json" | jq -r '.retry_after // 0' 2>/dev/null || echo 0)
+  fi
+  # FAIL CLOSED: an error/timeout status must NEVER carry failure_class none/empty — the
+  # policy maps `none` to `proceed`, which would let an enforcement failure continue as if
+  # it had succeeded. Force any none/empty/null to a real (retry-once-then-halt) class.
+  case "$failure_class" in
+    ""|null|none) failure_class="other" ;;
+  esac
+  case "$retry_after" in
+    ''|*[!0-9]*) retry_after="0" ;;
+  esac
 fi
 
 # --- emit --------------------------------------------------------------------
@@ -444,6 +466,7 @@ emit_job_result \
   "$session_id" \
   "$WT" \
   "$exit_code" \
-  "$failure_class"
+  "$failure_class" \
+  "$retry_after"
 
 exit 0
