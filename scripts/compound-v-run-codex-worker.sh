@@ -52,17 +52,18 @@ die() {
 }
 
 # Emit the canonical job_result JSON on stdout, built entirely with jq so every
-# field is correctly typed and escaped. Arrays arrive as newline-joined strings
-# and are split with jq's split/select to drop the trailing empty element.
+# field is correctly typed and escaped. files_changed / violations arrive as JSON
+# ARRAYS (straight from the gate's NUL-correct output) and pass through untouched —
+# no newline round-trip, so a path containing a newline stays ONE element.
 emit_job_result() {
-  # $1 status  $2 blocked(true|false)  $3 files_nl  $4 violations_nl
+  # $1 status  $2 blocked(true|false)  $3 files_json (JSON array)  $4 violations_json (JSON array)
   # $5 summary  $6 session_id  $7 worktree  $8 exit_code(int)  $9 failure_class ("" => null)
   # ${10} retry_after_seconds(int, 0 when unknown)
   jq -n \
     --arg status "$1" \
     --argjson blocked "$2" \
-    --arg files "$3" \
-    --arg violations "$4" \
+    --argjson files "$3" \
+    --argjson violations "$4" \
     --arg summary "$5" \
     --arg session_id "$6" \
     --arg worktree "$7" \
@@ -72,8 +73,8 @@ emit_job_result() {
     '{
        status: $status,
        blocked: $blocked,
-       files_changed: ($files     | split("\n") | map(select(length > 0))),
-       violations:    ($violations | split("\n") | map(select(length > 0))),
+       files_changed: $files,
+       violations:    $violations,
        summary: $summary,
        session_id: $session_id,
        worktree: $worktree,
@@ -189,7 +190,20 @@ fi
 
 TMPROOT="${TMPDIR:-/tmp}"
 TMPROOT="${TMPROOT%/}"
-WT_PARENT="$TMPROOT/compound-v"
+# Require an ABSOLUTE tmp root: a relative $TMPDIR would resolve the worktree against the
+# caller's cwd (possibly INSIDE the repo), defeating isolation and the scope diff.
+case "$TMPROOT" in
+  /*) : ;;
+  *) die "TMPDIR must be an absolute path (got: $TMPROOT)" ;;
+esac
+# Canonicalize the tmp root up front (resolve the /var → /private/var class of symlink) and
+# build the parent from the REAL path, so no symlinked component can redirect the worktree.
+TMPROOT_REAL="$(cd "$TMPROOT" 2>/dev/null && pwd -P)" || die "TMPDIR does not exist: $TMPROOT"
+WT_PARENT="$TMPROOT_REAL/compound-v"
+# Reject a pre-planted symlink at the parent (it could redirect writes/cleanup out of tmp).
+# We keep the DETERMINISTIC $RUN_ID/$JOB_ID path (not a random `mktemp -d`) on purpose:
+# idempotent re-dispatch + cleanup on resume locate the worktree by exactly that path.
+[ -L "$WT_PARENT" ] && die "refusing: worktree parent is a symlink: $WT_PARENT"
 WT="$WT_PARENT/$RUN_ID/$JOB_ID"
 
 # Defence-in-depth: even with the id-character guard above, ASSERT WT sits
@@ -209,6 +223,12 @@ WT_DIR_REAL="$(cd "$(dirname "$WT")" && pwd -P)"
 case "$WT_DIR_REAL/" in
   "$WT_PARENT_REAL"/*/) : ;;
   *) die "refusing to operate on worktree path outside $WT_PARENT_REAL: $WT" ;;
+esac
+# ...and assert the worktree is NOT inside the repo — a worktree under the repo would make
+# the `git diff` scope enforcement meaningless.
+REPO_REAL="$(cd "$REPO" && pwd -P)"
+case "$WT_DIR_REAL/" in
+  "$REPO_REAL"/*) die "refusing: worktree path is inside the repo: $WT" ;;
 esac
 
 # Clean any stale worktree at this path (idempotent re-dispatch on resume). Safe
@@ -390,13 +410,17 @@ set -e
 # Parse the gate verdict with jq (the gate's `changed`/`violations` arrays are the
 # authority). On a gate error (rc 2 / unparseable) treat enforcement as empty and
 # let the status logic below mark it an error.
-files_changed=""
-violations=""
+files_json="[]"
+violations_json="[]"
+viol_count=0
 gate_verdict=""
 if [ -n "$GATE_JSON" ] && printf '%s' "$GATE_JSON" | jq -e . >/dev/null 2>&1; then
   gate_verdict=$(printf '%s' "$GATE_JSON" | jq -r '.verdict // ""')
-  files_changed=$(printf '%s' "$GATE_JSON" | jq -r '.changed[]?')
-  violations=$(printf '%s' "$GATE_JSON" | jq -r '.violations[]?')
+  # Pass the gate's arrays through as JSON (the gate is NUL-correct) — no newline
+  # round-trip, so a filename containing a newline survives as a single element.
+  files_json=$(printf '%s' "$GATE_JSON" | jq -c '.changed // []')
+  violations_json=$(printf '%s' "$GATE_JSON" | jq -c '.violations // []')
+  viol_count=$(printf '%s' "$GATE_JSON" | jq '(.violations // []) | length')
 fi
 
 # --- derive status -----------------------------------------------------------
@@ -408,7 +432,7 @@ fi
 blocked="false"
 status="success"
 
-if [ "$gate_verdict" = "blocked" ] || [ -n "$violations" ]; then
+if [ "$gate_verdict" = "blocked" ] || [ "$viol_count" -gt 0 ]; then
   blocked="true"
   status="blocked"
 elif [ "$gate_rc" != "0" ] && [ "$gate_rc" != "1" ]; then
@@ -463,8 +487,8 @@ fi
 emit_job_result \
   "$status" \
   "$blocked" \
-  "$files_changed" \
-  "$violations" \
+  "$files_json" \
+  "$violations_json" \
   "$summary" \
   "$session_id" \
   "$WT" \
