@@ -81,6 +81,13 @@ match, **not** embedding similarity:
 This is why recall earns a place in autonomy: the bridge is *measurable and testable*, unlike a
 free-text "advisory" surface.
 
+**Autonomy is project-configurable** (set at [`/v:init`](../../commands/v-init.md) Step 3b,
+read from `.claude/compound-v.json`): `memory.auto_recall` (default `true`) gates whether the
+pipeline auto-surfaces recall in planning + at the review gate; `memory.auto_tighten` (default
+`false`) gates whether the `recall-check` verdict is **applied** automatically or merely
+surfaced as advisory. Both `false` ⇒ memory is a manual `/v:remember` lookup only. The
+conservative-only contract holds at every level — auto-tighten can only *tighten*.
+
 ---
 
 ## Invariants (enforced in the engine + self-tests)

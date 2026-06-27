@@ -4,6 +4,8 @@ description: Run an independent cross-model (Codex) adversarial review of a Comp
 
 You are running a **cross-model plan review** on `{{args}}` — an independent second opinion from a different model family (Codex/GPT), per [cross-model-review.md](../skills/compound-v/cross-model-review.md).
 
+> Run it on demand, or **automatically before dispatch** when the project set `review.cross_model: true` at [`/v:init`](v-init.md) Step 3c (read from `.claude/compound-v.json`). Either way the stakes check below still applies — skip small/mechanical plans.
+
 ## Steps
 
 1. **Resolve the plan path.** Use `{{args}}`; if empty, list `docs/superpowers/plans/*.md` and ask which to review.
