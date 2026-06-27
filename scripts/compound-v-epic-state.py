@@ -97,6 +97,8 @@ def validate_features(features):
         errs.append("duplicate feature ids: %s" % ", ".join(dup))
     idset = set(ids)
     for f in features:
+        if not isinstance(f, dict):
+            continue
         for d in (f.get("depends_on") or []):
             if d not in idset:
                 errs.append("feature %r depends_on unknown id %r" % (f.get("id"), d))
@@ -121,21 +123,41 @@ def build_state(features, epic_id, title):
 
 
 def check_specs(features, base_dir=""):
-    """Errors for features lacking an EXISTING spec_path. Enforces the epic contract that
-    every feature has an approved spec BEFORE the autonomous loop runs (no mid-loop
-    brainstorming pauses) — specs are written and human-approved up front."""
+    """Errors for features lacking an EXISTING, CONTAINED spec_path. Enforces the epic
+    contract that every feature has an approved spec BEFORE the autonomous loop runs (no
+    mid-loop brainstorming pauses) — specs are written and human-approved up front.
+
+    spec_path must resolve to a file UNDER base_dir (the epic dir). Absolute paths and `../`
+    traversal are REJECTED — a spec is fed verbatim into the pre-flights, so an out-of-tree
+    path would read arbitrary local files into the model context."""
     errs = []
+    base_real = os.path.realpath(base_dir) if base_dir else os.path.realpath(os.getcwd())
     for f in features:
+        if not isinstance(f, dict):
+            errs.append("feature entry is not an object: %r" % (f,))
+            continue
         fid = f.get("id")
         sp = f.get("spec_path")
         if not sp:
             errs.append("feature %r has no spec_path — the epic needs an approved spec per "
                         "feature up front (batch the brainstorming before --init)" % fid)
             continue
-        path = sp if os.path.isabs(sp) else os.path.join(base_dir, sp)
-        if not os.path.isfile(path):
-            errs.append("feature %r spec_path does not exist: %s" % (fid, path))
+        resolved = os.path.realpath(os.path.join(base_real, sp))
+        if resolved != base_real and not resolved.startswith(base_real + os.sep):
+            errs.append("feature %r spec_path escapes the epic dir (must live under it, no "
+                        "absolute/`..` paths): %s" % (fid, sp))
+            continue
+        if not os.path.isfile(resolved):
+            errs.append("feature %r spec_path does not exist: %s" % (fid, sp))
     return errs
+
+
+def check_state_specs(state, base_dir=""):
+    """Resume guard: every NON-done feature in an existing epic-state must still carry an
+    existing, contained spec_path. Closes the gap where resuming an old/hand-made epic-state
+    (pre-spec_path) would enter the loop spec-less, bypassing --init --require-specs."""
+    pending = [f for f in state.get("features", []) if isinstance(f, dict) and f.get("status") != "done"]
+    return check_specs(pending, base_dir=base_dir)
 
 
 def lint_decomposition(features):
@@ -143,23 +165,26 @@ def lint_decomposition(features):
     decomposition review). Empty list = nothing flagged. These are JUDGMENT hints, never
     hard errors — a weak split is a quality risk, not an invalid one."""
     warns = []
-    ids = [f["id"] for f in features if isinstance(f, dict) and f.get("id")]
+    feats = [f for f in features if isinstance(f, dict) and f.get("id")]
+    ids = [f["id"] for f in feats]
     if len(ids) < 2:
         return warns
     dependents = {i: 0 for i in ids}
-    for f in features:
+    for f in feats:
         for d in (f.get("depends_on") or []):
             if d in dependents:
                 dependents[d] += 1
-    for f in features:
+    # "most others" ≈ three-quarters of the other features; floor of 3 keeps tiny graphs quiet.
+    coupled_threshold = max(3, (3 * (len(ids) - 1) + 3) // 4)  # ceil(0.75 * (n-1))
+    for f in feats:
         fid = f.get("id")
         deps = list(f.get("depends_on") or [])
         if not deps and dependents.get(fid, 0) == 0:
             warns.append("feature %r is an ISLAND (no depends_on, no dependents) — a missed "
                          "dependency, or it belongs in its own epic?" % fid)
-        if len(deps) >= max(3, len(ids) - 1):
-            warns.append("feature %r depends on %d of %d features — likely a LAYER, not a "
-                         "vertical slice; reconsider the split" % (fid, len(deps), len(ids)))
+        if len(deps) >= coupled_threshold:
+            warns.append("feature %r depends on %d of %d features (most/all) — likely a LAYER, "
+                         "not a vertical slice; reconsider the split" % (fid, len(deps), len(ids)))
     return warns
 
 
@@ -296,22 +321,47 @@ def _selftest():
     check("clean DAG: no warnings", lint_decomposition(
         [{"id": "a", "depends_on": []}, {"id": "b", "depends_on": ["a"]}]) == [])
 
-    # check_specs (#1): missing path, nonexistent file, existing file
+    # check_specs (#1): missing path + nonexistent-but-contained file (existence + the
+    # containment rule are exercised more fully in the containment block below)
     import tempfile
-    miss = check_specs([{"id": "a", "depends_on": []}])
-    check("no spec_path -> error", any("no spec_path" in e for e in miss))
-    gone = check_specs([{"id": "a", "spec_path": "/no/such/spec.md"}])
-    check("nonexistent spec -> error", any("does not exist" in e for e in gone))
-    fd, sp_real = tempfile.mkstemp(suffix=".md")
-    os.close(fd)
-    try:
-        check("existing spec -> ok", check_specs([{"id": "a", "spec_path": sp_real}]) == [])
-    finally:
-        os.unlink(sp_real)
+    check("no spec_path -> error", any("no spec_path" in e for e in check_specs([{"id": "a", "depends_on": []}])))
+    check("nonexistent contained spec -> error", any("does not exist" in e for e in check_specs(
+        [{"id": "a", "spec_path": "nope.md"}], base_dir=tempfile.gettempdir())))
 
     # stats (#4)
     s = stats(build_state([{"id": "a", "depends_on": []}, {"id": "b", "depends_on": ["a"]}], "e", "E"))
     check("stats total/remaining", s["total"] == 2 and s["remaining"] == 2 and s["done"] == 0)
+
+    # containment (#2) + check_state_specs (#3)
+    import shutil
+    d = tempfile.mkdtemp()
+    try:
+        os.makedirs(os.path.join(d, "specs"))
+        with open(os.path.join(d, "specs", "a.md"), "w") as fh:
+            fh.write("spec")
+        check("contained spec ok", check_specs([{"id": "a", "spec_path": "specs/a.md"}], base_dir=d) == [])
+        check("`..` traversal rejected", any("escapes" in e for e in check_specs(
+            [{"id": "a", "spec_path": "../../../etc/hosts"}], base_dir=d)))
+        check("absolute-outside rejected", any("escapes" in e for e in check_specs(
+            [{"id": "a", "spec_path": "/etc/hosts"}], base_dir=d)))
+        ok_state = {"features": [{"id": "a", "status": "done"},
+                                 {"id": "b", "status": "pending", "spec_path": "specs/a.md"}]}
+        check("resume: done-no-spec skipped, pending-with-spec ok", check_state_specs(ok_state, base_dir=d) == [])
+        bad_state = {"features": [{"id": "b", "status": "pending"}]}
+        check("resume: pending-without-spec -> error", check_state_specs(bad_state, base_dir=d) != [])
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+    # lint defensive (#5): a non-dict entry must not crash lint_decomposition
+    check("lint ignores non-dict", isinstance(lint_decomposition(
+        [{"id": "a", "depends_on": []}, "junk", {"id": "b", "depends_on": ["a"]}]), list))
+
+    # over-coupled ratio (#6): 3-of-4 deps in a 5-feature graph flags "most"; 2-of-2 small graph does not
+    big = [{"id": "a", "depends_on": []}, {"id": "b", "depends_on": []}, {"id": "c", "depends_on": []},
+           {"id": "d", "depends_on": ["a"]}, {"id": "e", "depends_on": ["a", "b", "c"]}]
+    check("over-coupled (3/4) flagged", any("LAYER" in w and "'e'" in w for w in lint_decomposition(big)))
+    small = [{"id": "a", "depends_on": []}, {"id": "b", "depends_on": []}, {"id": "c", "depends_on": ["a", "b"]}]
+    check("small-graph 2 deps not over-coupled", not any("LAYER" in w for w in lint_decomposition(small)))
 
     print("SELFTEST: %d ok, %d fail" % (ok, fail))
     return 0 if fail == 0 else 1
@@ -338,6 +388,8 @@ def main(argv):
                    help="(with --state) print epic progress counts")
     p.add_argument("--require-specs", action="store_true",
                    help="(with --init) every feature must carry an existing spec_path")
+    p.add_argument("--check-specs", action="store_true",
+                   help="(with --state) verify every non-done feature still has an existing, contained spec_path (resume guard)")
     args = p.parse_args(argv)
 
     if args.selftest:
@@ -347,9 +399,12 @@ def main(argv):
         if not args.features:
             p.error("--lint needs --features <json>")
         feats = _read_json(args.features)
-        out = {"errors": validate_features(feats), "warnings": lint_decomposition(feats)}
-        print(json.dumps(out, indent=2))
-        return 1 if out["errors"] else 0
+        errors = validate_features(feats)
+        # If the list is structurally invalid, the advisory lint can't run safely — report
+        # the hard errors only (and never crash on a malformed entry).
+        warnings = [] if errors else lint_decomposition(feats)
+        print(json.dumps({"errors": errors, "warnings": warnings}, indent=2))
+        return 1 if errors else 0
 
     if args.init:
         if not args.features:
@@ -381,6 +436,15 @@ def main(argv):
     if not args.state or not os.path.exists(args.state):
         p.error("--state <epic-state.json> is required and must exist")
     state = _read_json(args.state)
+
+    if args.check_specs:
+        errs = check_state_specs(state, base_dir=os.path.dirname(os.path.abspath(args.state)))
+        if errs:
+            for e in errs:
+                print("epic spec-check error: %s" % e, file=sys.stderr)
+            return 1
+        print(json.dumps({"ok": True}))
+        return 0
 
     if args.stats:
         print(json.dumps(stats(state)))
