@@ -21,6 +21,8 @@ You keep using **Superpowers** the way you already do. Compound V silently shows
 
 As of **v1.0**, the tail of that flow is a real **execution orchestrator**: it materializes a machine-readable `manifest.yaml` of file-scoped jobs, routes each to its backend (Claude subagent or a headless **Codex** worker), **enforces** with a `git diff` scope gate that no worker wrote outside its allowed files, collects canonical `job_result`s, reviews against the spec's Acceptance Criteria, and is **crash-resumable** via `state.json`. No daemon, no MCP server, no fabricated metrics.
 
+**1.1** adds **epic mode** (`/v:epic`) — chain several features into one autonomous, resumable, dependency-ordered build on a single branch ("build a whole app"): each feature runs through the full pipeline above in topological order, ending with a cross-feature integration review. See [skills/compound-v/epic-mode.md](skills/compound-v/epic-mode.md).
+
 **1.1** adds a headless **Antigravity** (`agy --print`) worker as a third backend — same worktree + `git diff` scope gate as Codex — for `large_isolated` builds. It is **opt-in and lower-trust**: `agy` has no kernel write-confinement (headless writes require `--dangerously-skip-permissions`), so the gate *detects* in-worktree scope leaks but cannot *prevent* an out-of-worktree side-effect. **Prefer Codex (kernel-sandboxed) for untrusted / high-stakes work.**
 
 Backend failures are handled **gracefully**: a non-success job is classified (by error type, not HTTP status) and routed through a deterministic policy — retry transient errors with backoff, **circuit-break + re-route codex→claude on out-of-credits**, escalate tier on context-length, halt on auth — all resumable and **loudly reported** (never a silent cheap→expensive swap). See [skills/compound-v/failure-policy.md](skills/compound-v/failure-policy.md).
@@ -135,6 +137,7 @@ superpowers-v/
 │   ├── v-status.md                            # /v:status [run-id] — render state.json
 │   ├── v-resume.md                            # /v:resume <run-id> — re-dispatch incomplete jobs
 │   ├── v-models.md                            # /v:models — discover models, assign tier→model, write config map
+│   ├── v-epic.md                              # /v:epic <brief> — chain features into one resumable multi-feature build
 │   └── v-archaeology.md                       # /v:archaeology <topic> — Phase 1A alone (unchanged)
 ├── hooks/                                     # sidekick reminders (description-based auto-fire is primary)
 │   ├── hooks.json                             # SessionStart + PostToolUse(Write)
@@ -154,6 +157,7 @@ superpowers-v/
 │   │   ├── routing-policy.md                  # task-type → (tier, effort); stances + env-aware + models map
 │   │   ├── failure-policy.md                  # backend-failure classify → retry/reroute/halt + circuit breaker
 │   │   ├── state-machine.md                   # states + run dir + crash-resume
+│   │   ├── epic-mode.md                        # 🏗️ chain features into one resumable multi-feature build (/v:epic)
 │   │   ├── skill-escalation.md                # gated deep-research / playground / writing-style
 │   │   ├── workflows-accelerator.md           # opt-in Engine C fast-path (probe + fallback to A)
 │   │   └── rationalization-table.md           # rebuttals to every "just this once" excuse
@@ -172,6 +176,7 @@ superpowers-v/
 │   ├── compound-v-collect-results.py          # normalize heterogeneous output → job_result
 │   ├── compound-v-update-memory.py            # append task-outcomes.jsonl
 │   ├── compound-v-scorecard.py                # aggregate task-outcomes → worker-performance.jsonl (health per backend×type)
+│   ├── compound-v-epic-state.py               # epic-state.json spine — chain features (init/next/update/summary)
 │   └── lint-frontmatter.py                    # frontmatter linter (no-Haiku policy)
 ├── schemas/
 │   └── job_result.schema.json                 # strict JSON Schema; codex --output-schema target
@@ -272,6 +277,7 @@ Most users never need these — the sidekick flows through orchestrate → dispa
 | `/v:resume <run-id>` | Reconcile against git reality and re-dispatch only incomplete jobs after an interruption |
 | `/v:models` | Discover available models per backend (`agy models`, curated Codex list, native Claude tiers), assign tier→model, and write the `models` map into `.claude/compound-v.json` |
 | `/v:review-plan <plan>` | Run an optional **cross-model (Codex) second opinion** on a high-stakes plan before dispatch — read-only, advisory; the orchestrator arbitrates each finding |
+| `/v:epic <brief>` | Drive an **epic** — chain several features into one autonomous, resumable, dependency-ordered build on a single branch; each feature runs the full pipeline in topological order, ending with a cross-feature integration review |
 
 Plus the unchanged Phase 1A shortcut:
 

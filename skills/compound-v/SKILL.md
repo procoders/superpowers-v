@@ -34,6 +34,8 @@ brainstorm ─► spec (carries feature-level Acceptance Criteria)
 
 The orchestration contracts and scripts live alongside this skill: the manifest schema in [execution-manifest.md](execution-manifest.md), the backend contract in [backend-launcher/SKILL.md](../backend-launcher/SKILL.md), and the canonical result shape in [schemas/job_result.schema.json](../../schemas/job_result.schema.json). **No daemon, no MCP server, no vector DB, no fabricated cost metrics** — the anti-ruflo charter. Manual control is available via `/v:orchestrate`, `/v:dispatch`, `/v:collect`, `/v:status`, `/v:resume`, `/v:init`; in default operation the agent flows through orchestrate → dispatch → collect itself.
 
+**Epic mode (v1.1) — chain many features into one build.** A single run executes one plan (one feature). An **epic** chains several: an ordered set of features, each run through the full v1.0 pipeline above in **dependency order**, accumulating onto **one branch** — "build a whole app." It is the same discipline one level up: a deterministic topological spine (`epic-state.json` via [`scripts/compound-v-epic-state.py`](../../scripts/compound-v-epic-state.py)) drives a resumable, no-daemon feature loop, ending in a cross-feature integration review and `finishing-a-development-branch`. Run it with `/v:epic`; the model, run-dir layout, and honesty boundary are in [epic-mode.md](epic-mode.md).
+
 **Why three pre-flights, in parallel:**
 - 1A catches "the building is 200m², not 500m²" (existing code reality)
 - 1B catches "you're designing OAuth but Notion uses Basic auth + JSON body" (domain reality)
