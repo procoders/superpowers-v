@@ -4,7 +4,7 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
-## [1.2.0] — Unreleased
+## [1.2.0] — 2026-06-27
 
 ### Changed — Epic mode hardening (closes the gaps a re-review of v1.1 surfaced)
 
