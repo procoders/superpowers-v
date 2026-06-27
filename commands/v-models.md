@@ -1,5 +1,5 @@
 ---
-description: Refresh the Compound V tier→model map — discover the concrete models each backend (claude, codex, antigravity) currently offers, show them, let you assign deep/standard/light, and write the result into .claude/compound-v.json so intent-based routing survives model churn without touching any call site.
+description: Refresh the Compound V tier→model map — discover the concrete models each backend (claude, codex, antigravity, cursor) currently offers, show them, let you assign deep/standard/light, and write the result into .claude/compound-v.json so intent-based routing survives model churn without touching any call site.
 disable-model-invocation: true
 ---
 
@@ -15,7 +15,7 @@ at dispatch time, so refreshing the map here is the *only* thing you ever touch
 when models churn.
 
 Argument (optional): `{{args}}` may name a single backend to refresh in isolation
-(`claude` | `codex` | `antigravity`); otherwise walk all three.
+(`claude` | `codex` | `antigravity` | `cursor`); otherwise walk all of them.
 
 **This is the "skill picks the models and offers you the options" surface.** Do the
 discovery, *show* what you found, then let the user choose. Never silently pick a
@@ -34,7 +34,8 @@ is absent, fall back to the built-in default (the resolver carries the same one)
 "models": {
   "claude":      { "deep": "opus",                  "standard": "opus",                  "light": "sonnet" },
   "codex":       { "deep": "gpt-5.5",               "standard": "gpt-5.5",               "light": "gpt-5.3-codex-spark" },
-  "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" }
+  "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" },
+  "cursor":      { "deep": "auto",                  "standard": "auto",                  "light": "auto" }
 }
 ```
 
@@ -113,6 +114,22 @@ command -v agy >/dev/null \
   The script never invents names — it only ranks the catalog `agy models` actually
   printed, so anything you show came from the live CLI.
 
+### 1d. cursor — Auto by default (no list command; plan-gated)
+
+cursor-agent has **no `models` list command**, and named models are **plan-gated**: a Cursor
+**Free** plan can only use **`auto`** (passing a named model errors with *"Named models
+unavailable"* — verified live). So the default map is `auto` for every tier:
+
+```bash
+command -v cursor-agent && cursor-agent status </dev/null >/dev/null 2>&1 && echo "cursor usable (auth ok)" || echo "cursor unavailable/unauthed"
+```
+
+- **Free plan (or unsure):** keep `{deep,standard,light} = "auto"`. Tiering is a no-op (Auto
+  picks the model) — that is expected, not a bug.
+- **Paid plan:** the user may assign named ids per tier (e.g. `sonnet-4`, `gpt-5`,
+  `sonnet-4-thinking`) — a curated roster like codex (no discovery; whatever the plan accepts
+  via `cursor-agent --model` is valid). Only offer named models if the user confirms a paid plan.
+
 ---
 
 ## Step 2 — Show findings and let the user assign tiers
@@ -163,7 +180,8 @@ Resulting shape (only `models` is this command's responsibility):
   "models": {
     "claude":      { "deep": "opus",    "standard": "opus",    "light": "sonnet" },
     "codex":       { "deep": "gpt-5.5", "standard": "gpt-5.5", "light": "gpt-5.3-codex-spark" },
-    "antigravity": { "deep": "…",       "standard": "…",       "light": "…" }
+    "antigravity": { "deep": "…",       "standard": "…",       "light": "…" },
+    "cursor":      { "deep": "auto",    "standard": "auto",    "light": "auto" }
   }
 }
 ```

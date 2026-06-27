@@ -4,6 +4,15 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [2.1.1] — 2026-06-27
+
+### Fixed — Cursor worker hardening (all caught by live verification, not self-tests)
+
+- **Process-tree timeout supervisor (`scripts/compound-v-run-with-timeout.py`) — adopted by ALL three external workers (cursor, codex, antigravity).** These backends previously capped via an external `timeout`/`gtimeout` (or a bash watchdog), which signals only the **direct child** — a tool/shell child the agent spawned could outlive the cap and write **after** the scope gate (the exact leak the gate exists to stop). The new supervisor starts the command in a new session (`setsid`) and on expiry `killpg`s the **whole process group** (SIGTERM → grace → **always** SIGKILL — a descendant that ignores SIGTERM is still reaped) → `status: timeout` (124). It holds no copy of the command's output fds, so a hung child can't hang the dispatcher's `$(…)` capture. Proven by `--selftest` (a descendant — incl. one that **traps SIGTERM** — that tries to write after the cap is reaped first; the write never lands) and **live success + `--timeout-sec 1 ⇒ status:timeout` through all three workers**. `--timeout-sec` must be `> 0`; `--grace` `>= 0`. (Limitation: a descendant that itself `setsid`s into a new session escapes — true containment needs cgroups/job-objects; backend tool children don't daemonize.)
+- **Fixed a dispatcher-hang in the watchdog.** The watchdog subshell inherited the worker's stdout, so its `sleep` held the dispatcher's `$(...)` capture pipe open — every Cursor dispatch hung for the full timeout *after* the job finished. The watchdog's fds are now redirected to `/dev/null` and its `sleep` child is reaped. Verified: worker E2E back to ~29 s (was hanging ~600 s).
+- **Cursor model default is now `auto`.** A Cursor **Free** plan can only use Auto — passing a named model (`sonnet-4` / `gpt-5` / …) errors with *"Named models unavailable."* `resolve-model` now maps every Cursor tier to `auto` (works free **and** paid); named per-tier ids are a paid-plan opt-in via `/v:models` / config. `/v:init` Step 1e detects `timeout`/`gtimeout` and warns when the Codex worker would have no hard cap.
+- **New regression coverage:** a full-pipeline **seam** test (`validate-manifest → cursor worker → merge-back git-apply`) — 8/8 live, verifying the merge-back path the isolated worker test never exercised.
+
 ## [2.1.0] — 2026-06-27
 
 ### Added — Cursor CLI backend (4th dispatch backend)

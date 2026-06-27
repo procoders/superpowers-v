@@ -177,13 +177,11 @@ command -v git     >/dev/null 2>&1 || die "git not found on PATH"
 command -v python3 >/dev/null 2>&1 || die "python3 not found on PATH (scope gate + failure classifier need it)"
 command -v codex   >/dev/null 2>&1 || die "codex not found on PATH"
 
-# Resolve which timeout binary is present (GNU `timeout` or coreutils `gtimeout`).
-TIMEOUT_BIN=""
-if command -v timeout >/dev/null 2>&1; then
-  TIMEOUT_BIN="timeout"
-elif command -v gtimeout >/dev/null 2>&1; then
-  TIMEOUT_BIN="gtimeout"
-fi
+# Wall-clock cap: run codex under the shared PROCESS-GROUP timeout supervisor
+# (scripts/compound-v-run-with-timeout.py) — on expiry it killpg's the whole codex process tree
+# (not just the direct child) and returns 124. No external `timeout`/`gtimeout` binary needed.
+SUPERVISOR="$SCRIPT_DIR/compound-v-run-with-timeout.py"
+[ -f "$SUPERVISOR" ] || die "timeout supervisor not found: $SUPERVISOR"
 
 # --- worktree lifecycle ------------------------------------------------------
 # Worktrees live OUTSIDE the repo, under $TMPDIR, so no .gitignore change is needed.
@@ -281,11 +279,11 @@ STDERR_LOG="$ART/codex_stderr.log"
 STDOUT_LOG="$ART/codex_stdout.log"
 exit_code=0
 
-# run_codex runs the pinned `codex exec` invocation. $TIMEOUT_PREFIX is an optional
-# leading prefix ("timeout <sec>"): when no timeout binary is available it is empty
-# and codex runs directly. It is intentionally left UNQUOTED so it word-splits into
-# the `timeout` argv (or vanishes when empty) — hence the SC2086 disables. The
-# optional --output-schema flag is injected only when set (bash 3.2-safe — no arrays).
+# run_codex runs the pinned `codex exec` invocation UNDER the process-group timeout supervisor
+# (`python3 "$SUPERVISOR" --timeout <sec> -- codex exec …`): on expiry it killpg's the whole
+# codex tree (not just the direct child) and returns 124. The supervisor path is QUOTED (no
+# word-split, so a spaced repo path is safe). The optional --output-schema branch is chosen when
+# set (bash 3.2-safe — no arrays).
 # $EFFORT_FLAG is an analogous optional middle chunk ("-c model_reasoning_effort=<e>"):
 # unquoted so it word-splits into the codex argv when set, or vanishes when empty.
 #
@@ -297,7 +295,7 @@ exit_code=0
 run_codex() {
   if [ -n "$OUTPUT_SCHEMA" ]; then
     # shellcheck disable=SC2086
-    $TIMEOUT_PREFIX codex exec \
+    python3 "$SUPERVISOR" --timeout "$TIMEOUT_SEC" --grace 3 -- codex exec \
       --cd "$WT" \
       --sandbox "$SANDBOX" \
       --skip-git-repo-check \
@@ -309,7 +307,7 @@ run_codex() {
       "$(cat "$PROMPT_FILE")" </dev/null
   else
     # shellcheck disable=SC2086
-    $TIMEOUT_PREFIX codex exec \
+    python3 "$SUPERVISOR" --timeout "$TIMEOUT_SEC" --grace 3 -- codex exec \
       --cd "$WT" \
       --sandbox "$SANDBOX" \
       --skip-git-repo-check \
@@ -320,13 +318,6 @@ run_codex() {
       "$(cat "$PROMPT_FILE")" </dev/null
   fi
 }
-
-# Build the timeout prefix (word-split intentionally inside run_codex). Empty when
-# no timeout binary is present, in which case codex runs without a wall-clock cap.
-TIMEOUT_PREFIX=""
-if [ -n "$TIMEOUT_BIN" ]; then
-  TIMEOUT_PREFIX="$TIMEOUT_BIN $TIMEOUT_SEC"
-fi
 
 # Build the codex reasoning-effort flag (word-split intentionally inside run_codex).
 # Empty when --effort was not given, in which case codex uses the model's default
