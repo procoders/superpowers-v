@@ -415,7 +415,8 @@ fi
 
 # --- emit --------------------------------------------------------------------
 # stdout = the canonical job_result JSON, and ONLY that. The caller (dispatcher)
-# parses this and decides whether to merge (`git -C "$WT" diff HEAD | git apply`)
+# parses this and decides whether to merge (index-based patch including new files:
+# `git -C "$WT" add -A && git -C "$WT" diff --cached --binary HEAD | git apply --index`)
 # or to leave the worktree for inspection on BLOCKED. We do NOT merge here.
 
 emit_job_result \

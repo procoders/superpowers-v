@@ -25,6 +25,8 @@ The worker script performs steps 1–5; the **caller** (dispatcher) performs ste
 
 Step 4 is the keystone. Codex's sandbox can restrict writes to a *directory* but **not to a file allow-list** — so the only way to enforce an exact file list is worktree (prevention: kernel-isolated blast radius) **plus** `git diff` (detection: reject anything outside the list). Steps 3–4 are computed in git, never read from anything the model says it did. The script's `path_is_allowed` is a fast first-pass; the deterministic authority the dispatcher runs after every job is [`scripts/compound-v-scope-check.py`](../../scripts/compound-v-scope-check.py).
 
+**Only `write_allowed` is enforced; `read_allowed` is advisory.** Steps 3–4 are a git diff, and git tracks writes, not reads — so `write_allowed` is the hard, enforced boundary (anything outside it BLOCKS), while `read_allowed` only scopes the worker prompt and documents intent. Codex's `read-only` sandbox can forbid *all* writes, but there is no git-derived gate that detects an out-of-scope read. Never treat `read_allowed` as enforced.
+
 ---
 
 ## Worker-prompt planner/executor lock

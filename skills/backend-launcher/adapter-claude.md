@@ -58,9 +58,11 @@ Isolation is per-job, set by the planner in the manifest — not a global mode.
   WT="$TMPDIR/compound-v/<run-id>/<job-id>"
   git worktree add "$WT" HEAD            # before dispatch
   # … run the Task with cwd=$WT …
-  # on PASS:
-  git -C "$WT" diff HEAD | git apply     # merge into main tree
-  git worktree remove -f "$WT"
+  # on PASS: index-based patch so NEW (untracked) allowed files also land.
+  # A plain `git diff HEAD | git apply` would silently DROP added files.
+  git -C "$WT" add -A
+  git -C "$WT" diff --cached --binary HEAD | (cd "$REPO" && git apply --index)
+  git -C "$REPO" worktree remove -f "$WT"
   # on BLOCKED: leave $WT for inspection, do NOT merge
   ```
 
@@ -83,6 +85,8 @@ files_changed=$(git diff --name-only "$BASELINE"; git ls-files --others --exclud
 ```
 
 Both halves are required: `diff --name-only` catches edits to tracked files; `ls-files --others --exclude-standard` catches brand-new untracked files. Anything in `files_changed` not matching `write_allowed` is a `violation`. The deterministic authority is [`scripts/compound-v-scope-check.py`](../../scripts/compound-v-scope-check.py); this adapter calls it after every job. If `read_only` was set, any non-empty `files_changed` is itself a violation.
+
+**Only `write_allowed` is enforced; `read_allowed` is advisory.** The gate is a git diff, and git tracks writes, not reads. `write_allowed` is the hard boundary; `read_allowed` is rendered into the prompt to scope what the subagent *should* read and documents intent, but there is no git-derived gate that catches an out-of-scope read. Never present `read_allowed` as enforced.
 
 ---
 

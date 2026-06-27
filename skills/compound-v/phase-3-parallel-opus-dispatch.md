@@ -4,6 +4,8 @@
 
 **Goal:** Read `manifest.yaml` and dispatch each job to the backend the manifest names (Claude subagent or headless Codex worker) via the [`backend-launcher`](../backend-launcher/SKILL.md) contract, concurrently per batch, with strict scope locks and **per-job isolation** — direct writes to the active workspace where safe, an isolated git worktree where the job is risky or runs on an external backend. **Opus by default for Claude jobs; Sonnet only for the narrow junior-level mechanical tasks defined below; backend/model/isolation are read from the manifest, not re-decided here.** After every job the **scope gate** runs and `state.json` is updated.
 
+> **Agent-driven flow, deterministic enforcement (by design).** The orchestration *flow* below — read the manifest, dispatch batches, honor `depends_on`/`run`/`max_parallel`, run reviews — is intentionally **agent-driven**, not a standalone executable dispatcher daemon. That is the deliberate Engine A choice (PRD §3.1, anti-ruflo: no daemon, no MCP server, no scheduler process). The **enforcement**, by contrast, is fully **deterministic scripts**: [`compound-v-scope-check.py`](../../scripts/compound-v-scope-check.py) (the git-derived scope gate) and [`compound-v-validate-manifest.py`](../../scripts/compound-v-validate-manifest.py) (the invariant gate). The safety guarantees live in those scripts, not in the flow — an agent driving the flow cannot weaken a guarantee the scripts enforce. This is intent, not a gap.
+
 > **Compatibility:** the older "no worktrees, direct writes only" stance from 0.1.x is now **per-job isolation** (the manifest's `isolation` field). Direct writes remain the default for in-harness Claude jobs whose partition is clean; worktrees are used where a job is risky (touches a broad/shared surface) or runs on an external backend (Codex is **always** worktree). A bare plan path with no manifest still works — the dispatcher materializes a manifest first (see `commands/v-dispatch.md`), then proceeds as below.
 
 ## Concurrency Reality (from 2026 Claude Code testing)
@@ -210,7 +212,7 @@ The gate computes what the job *actually* changed purely from git —
 
 Then update `state.json` (the run's single source of truth — schema in [`state-machine.md`](state-machine.md)):
 
-- **PASS** (no violation) → set the job `status: done`. For a worktree job, merge back: `git -C "$WT" diff HEAD | git apply` into the main tree, then `git worktree remove -f`. Direct jobs are already in the tree.
+- **PASS** (no violation) → set the job `status: done`. For a worktree job, merge back with an **index-based patch that includes new (untracked) files** — `git -C "$WT" add -A && git -C "$WT" diff --cached --binary HEAD | (cd "$REPO" && git apply --index)` into the main tree, then `git worktree remove -f`. (A plain `git diff HEAD | git apply` would silently DROP allowed new files.) Direct jobs are already in the tree.
 - **BLOCKED** (any path outside `write_allowed`) → set `status: blocked`, advance the run `phase` to terminal **BLOCKED**, surface the offending paths, and **do not merge** — leave the worktree for inspection. A BLOCKED job halts the run; it does not get silently re-dispatched.
 - **failed / timeout** → set `status: failed`; eligible for re-dispatch (see resume in `state-machine.md`).
 

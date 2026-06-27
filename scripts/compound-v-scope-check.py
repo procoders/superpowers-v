@@ -9,10 +9,14 @@ What it does
 ------------
 Computes the set of files a job actually changed, purely from git:
 
-    changed = (git diff --name-only <baseline>)
-              ∪ (git ls-files --others --exclude-standard)
-              ∪ (git ls-files --others --ignored --exclude-standard -- .)
+    changed = (git diff --name-only -z <baseline>)
+              ∪ (git ls-files --others --exclude-standard -z)
+              ∪ (git ls-files --others --ignored --exclude-standard -z -- .)
               − (preexisting untracked/ignored snapshot, direct mode only)
+
+All three probes use NUL-delimited (``-z``) output and are split on ``\0``, not
+``\n`` — NUL is the only byte that cannot appear in a POSIX path, so a filename
+containing a newline cannot smuggle additional paths past the gate.
 
 The first term diffs the WORKING TREE against ``<baseline>`` — and because a
 ``git diff <baseline>`` includes anything COMMITTED since that baseline, a worker
@@ -92,6 +96,21 @@ def _split_lines(blob):
     return out
 
 
+def _split_nul(blob):
+    """Split git ``-z`` (NUL-delimited) output into paths.
+
+    NUL is the one byte that cannot appear in a POSIX path, so splitting on it —
+    instead of on newlines — means a filename containing a literal newline cannot
+    smuggle extra paths past the gate. Each record is a complete path; we keep it
+    verbatim (no strip) except for dropping empty trailing records.
+    """
+    out = []
+    for rec in blob.split("\0"):
+        if rec:
+            out.append(rec)
+    return out
+
+
 def changed_files(cwd, baseline, preexisting=None):
     """Union of tracked-diff, untracked, AND gitignored files, repo-relative.
 
@@ -114,28 +133,32 @@ def changed_files(cwd, baseline, preexisting=None):
     to it. (Worktree mode passes nothing — a fresh ``worktree add HEAD`` has no
     pre-existing untracked.) Result is deduped/sorted, repo-relative.
     """
-    rc1, diff_out, diff_err = _git(cwd, ["diff", "--name-only", baseline])
+    # All three probes use NUL-delimited (-z) output, split on '\0'. NUL is the
+    # only byte that cannot occur in a path, so a filename containing a newline
+    # (or other whitespace) cannot smuggle additional paths past the gate.
+    rc1, diff_out, diff_err = _git(cwd, ["diff", "--name-only", "-z", baseline])
     if rc1 != 0:
         raise RuntimeError(
             "git diff failed (baseline %r): %s" % (baseline, diff_err.strip())
         )
     rc2, oth_out, oth_err = _git(
-        cwd, ["ls-files", "--others", "--exclude-standard"]
+        cwd, ["ls-files", "--others", "--exclude-standard", "-z"]
     )
     if rc2 != 0:
         raise RuntimeError("git ls-files failed: %s" % oth_err.strip())
     # Ignored untracked files. Needs an explicit pathspec ('-- .') so git lists
     # ignored paths under the tree rather than nothing.
     rc3, ign_out, ign_err = _git(
-        cwd, ["ls-files", "--others", "--ignored", "--exclude-standard", "--", "."]
+        cwd,
+        ["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", "."],
     )
     if rc3 != 0:
         raise RuntimeError("git ls-files (ignored) failed: %s" % ign_err.strip())
 
     files = (
-        set(_split_lines(diff_out))
-        | set(_split_lines(oth_out))
-        | set(_split_lines(ign_out))
+        set(_split_nul(diff_out))
+        | set(_split_nul(oth_out))
+        | set(_split_nul(ign_out))
     )
     if preexisting:
         files -= set(preexisting)
@@ -568,6 +591,59 @@ def _selftest():
             "ignored: dist/leak.js BLOCKS (violation outside write_allowed)",
             "dist/leak.js" in violations,
         )
+
+        # UNUSUAL-FILENAME case: with NUL-delimited (-z) parsing, a path with a
+        # space — and (where the OS allows) a literal newline — is attributed as a
+        # SINGLE path, not split into phantom paths. A newline-containing name on a
+        # line-split parser would smuggle the second half past the gate; the -z gate
+        # must keep it intact and attribute it correctly.
+        nrepo = os.path.join(tmp, "nrepo")
+        os.makedirs(os.path.join(nrepo, "src"))
+        run(["git", "init", "-q"], cwd=nrepo)
+        run(["git", "config", "user.email", "t@t.t"], cwd=nrepo)
+        run(["git", "config", "user.name", "t"], cwd=nrepo)
+        with open(os.path.join(nrepo, "src", "base.ts"), "w") as f:
+            f.write("base\n")
+        run(["git", "add", "-A"], cwd=nrepo)
+        run(["git", "commit", "-q", "-m", "base"], cwd=nrepo)
+        # A file with a space in the name, OUTSIDE write_allowed → must BLOCK as one path.
+        with open(os.path.join(nrepo, "docs with space.md"), "w") as f:
+            f.write("space\n")
+        changed_sp, viol_sp = check(nrepo, "HEAD", ["src/**"])
+        expect(
+            "unusual: 'docs with space.md' attributed as one path",
+            "docs with space.md" in changed_sp,
+        )
+        expect(
+            "unusual: spaced filename BLOCKS (outside write_allowed)",
+            "docs with space.md" in viol_sp,
+        )
+        # A file whose name contains a literal newline (best-effort: skip if the
+        # filesystem rejects it). The whole name must be ONE changed path, and the
+        # text after the newline must NOT appear as a separate phantom path.
+        nl_name = "weird\nname.md"
+        try:
+            with open(os.path.join(nrepo, nl_name), "w") as f:
+                f.write("nl\n")
+            created_nl = True
+        except (OSError, ValueError):
+            created_nl = False
+        if created_nl:
+            changed_nl, viol_nl = check(nrepo, "HEAD", ["src/**"])
+            expect(
+                "unusual: newline filename kept intact as one path",
+                nl_name in changed_nl,
+            )
+            expect(
+                "unusual: newline filename does not split into a phantom path",
+                "name.md" not in changed_nl,
+            )
+            expect(
+                "unusual: newline filename BLOCKS (outside write_allowed)",
+                nl_name in viol_nl,
+            )
+        else:
+            expect("unusual: newline filename (skipped — FS rejected name)", True)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

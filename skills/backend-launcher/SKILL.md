@@ -67,6 +67,8 @@ Both halves are required: `diff --name-only` catches edits to tracked files; `ls
 
 The deterministic authority is [`scripts/compound-v-scope-check.py`](../../scripts/compound-v-scope-check.py) (built downstream). This file states the rule; that script is what the dispatcher actually calls after every job.
 
+**Only `write_allowed` is enforced; `read_allowed` is advisory.** The gate is git-derived, and git tracks writes, not reads. `write_allowed` is the hard boundary — any changed path outside it is a `violation` ⇒ `blocked`. `read_allowed` (in the `job_spec`) is **advisory only**: it scopes the worker prompt and documents intent, but git cannot detect an out-of-scope read, so there is no deterministic gate behind it. Never present `read_allowed` as enforced.
+
 ---
 
 ## Worker prompt lock (planner/executor separation)

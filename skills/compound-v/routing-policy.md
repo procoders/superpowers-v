@@ -251,6 +251,18 @@ is the agent's model and is unrelated to this execution-layer tier resolution.)
 > [`execution-manifest.md`](execution-manifest.md) §"Scope-attribution rule" and
 > [`phase-3-parallel-opus-dispatch.md`](phase-3-parallel-opus-dispatch.md) Step 2b.
 
+> **`direct` mode assumes a clean-ish tree — prefer `worktree` when untrusted.** A
+> `direct` job gates against a pre-dispatch baseline commit **minus** a snapshot of
+> untracked/ignored paths that existed before it (so a dirty tree does not
+> false-BLOCK). The inherent blind spot: a job that **modifies a pre-existing
+> untracked/ignored file** (already in that snapshot) is **not** flagged. A fresh
+> `worktree` has no pre-existing untracked files, so its gate is exact — every write
+> is attributed. So **recommend `isolation: worktree` as the safe default for
+> anything untrusted or running on a dirty working tree**; `direct` stays serial-only
+> and is for trusted, clean-tree jobs. This is a runtime property of the working
+> tree, so neither the validator nor `partition-reviewer` can detect it at plan time
+> — it is a routing judgment, not a hard gate.
+
 ---
 
 ## How a job type is routed (the decision, in order)

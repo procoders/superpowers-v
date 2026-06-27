@@ -50,6 +50,20 @@ with ``run: serial``.
 Structural sanity is also checked (jobs is a non-empty list; each job has an
 ``id``; ids unique; ``backend`` present; ``write_allowed`` is a list).
 
+Structural TYPE checks: ``jobs`` non-empty list, ``acceptance_criteria`` list,
+``audits`` mapping, ``max_parallel`` int, ``run_id``/``feature``/``spec_path``/
+``plan_path`` strings, and per-job ``write_allowed``/``read_allowed``/``acceptance``
+lists. A wrong-typed field is its own specific violation.
+
+never-Haiku (execution layer): any job whose explicit ``model`` contains
+``haiku`` (case-insensitive — ``haiku``, ``claude-haiku-...``) is rejected. The
+frontmatter linter only sees agent/skill frontmatter; this closes the
+execution-layer override path.
+
+``depends_on``: every referenced id must exist among the manifest job ids (a
+dangling ref is a violation) and the dependency graph must be acyclic (a cycle is
+a violation naming the jobs on it).
+
 Usage
 -----
     compound-v-validate-manifest.py <manifest.yaml>
@@ -539,6 +553,30 @@ def validate(manifest):
         if manifest.get(field) in (None, "", [], {}):
             problems.append("manifest missing required top-level field '%s'" % field)
 
+    # Structural TYPE checks on top-level fields (wrong type is its own,
+    # specific violation — distinct from "missing"). Only checked when the
+    # field is present and non-None, so the missing-field loop above owns
+    # absence; this loop owns mis-typing.
+    if "jobs" in manifest and manifest.get("jobs") is not None:
+        jv = manifest.get("jobs")
+        if not isinstance(jv, list) or not jv:
+            problems.append("manifest 'jobs' must be a non-empty list")
+    if "acceptance_criteria" in manifest and manifest.get("acceptance_criteria") is not None:
+        if not isinstance(manifest.get("acceptance_criteria"), list):
+            problems.append("manifest 'acceptance_criteria' must be a list")
+    if "audits" in manifest and manifest.get("audits") is not None:
+        if not isinstance(manifest.get("audits"), dict):
+            problems.append("manifest 'audits' must be a mapping")
+    if "max_parallel" in manifest and manifest.get("max_parallel") is not None:
+        mp = manifest.get("max_parallel")
+        # bool is an int subclass in Python; a YAML true/false here is wrong.
+        if not isinstance(mp, int) or isinstance(mp, bool):
+            problems.append("manifest 'max_parallel' must be an int")
+    for _sf in ("run_id", "feature", "spec_path", "plan_path"):
+        if _sf in manifest and manifest.get(_sf) is not None:
+            if not isinstance(manifest.get(_sf), str):
+                problems.append("manifest '%s' must be a string" % _sf)
+
     # routing_stance enum (only when present).
     stance = manifest.get("routing_stance")
     if stance is not None and str(stance).lower() not in VALID_STANCES:
@@ -563,6 +601,8 @@ def validate(manifest):
     # Structural sanity + collect per-job globs.
     seen_ids = set()
     job_globs = []  # (job_id, [globs])
+    job_deps = []   # (job_id, [depends_on ids]) — for ref + cycle validation
+    all_ids = []    # job ids in declared order (for cycle reporting)
     for idx, job in enumerate(jobs):
         if not isinstance(job, dict):
             problems.append("job #%d is not a mapping" % idx)
@@ -579,6 +619,18 @@ def validate(manifest):
         if jid in seen_ids:
             problems.append("duplicate job id '%s'" % jid)
         seen_ids.add(jid)
+        all_ids.append(jid)
+
+        # Collect depends_on (validated for refs + cycles after the loop).
+        dep = job.get("depends_on")
+        if dep is None:
+            deps = []
+        elif isinstance(dep, list):
+            deps = [str(d) for d in dep]
+        else:
+            problems.append("job '%s' depends_on must be a list" % jid)
+            deps = []
+        job_deps.append((jid, deps))
 
         # Per-job required fields (validated BEFORE the invariant checks below).
         for field in JOB_REQUIRED:
@@ -591,6 +643,26 @@ def validate(manifest):
                 continue
             if val in (None, "", [], {}):
                 problems.append("job '%s' missing required field '%s'" % (jid, field))
+
+        # Per-job structural TYPE checks: these three are list-valued fields.
+        # (write_allowed list-ness is also re-checked below where it is consumed;
+        # checking here keeps the violation specific and ordered with the job.)
+        for _lf in ("write_allowed", "read_allowed", "acceptance"):
+            if _lf in job and job.get(_lf) is not None:
+                if not isinstance(job.get(_lf), list):
+                    problems.append("job '%s' %s must be a list" % (jid, _lf))
+
+        # never-Haiku policy (execution layer). The frontmatter linter only sees
+        # agent/skill frontmatter; a manifest job can pin an execution-layer
+        # `model` override, so an explicit model containing "haiku" (any case,
+        # e.g. `haiku` or `claude-haiku-...`) must be rejected here too.
+        model_raw = job.get("model")
+        if model_raw is not None and "haiku" in str(model_raw).lower():
+            problems.append(
+                "job '%s' model '%s' violates the never-Haiku policy "
+                "(no Haiku as an execution-layer model override)"
+                % (jid, model_raw)
+            )
 
         if not job.get("backend"):
             problems.append("job '%s' missing 'backend'" % jid)
@@ -700,6 +772,67 @@ def validate(manifest):
                             "(%s) can both own the same path"
                             % (id_a, ga, id_b, gb)
                         )
+
+    # depends_on validation: every referenced id must exist (no dangling ref),
+    # and the dependency graph must be acyclic (no cycles).
+    id_set = set(all_ids)
+    dep_graph = {}  # id -> list of dep ids that actually exist in id_set
+    for jid, deps in job_deps:
+        existing = []
+        for d in deps:
+            if d not in id_set:
+                problems.append(
+                    "job '%s' depends_on references unknown job id '%s'"
+                    % (jid, d)
+                )
+            else:
+                existing.append(d)
+        # Last writer wins on duplicate ids; harmless for cycle detection.
+        dep_graph[jid] = existing
+
+    # Cycle detection via iterative DFS with a recursion stack. Reports the
+    # first cycle found, naming the jobs on it.
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color = {}
+    for nid in all_ids:
+        color.setdefault(nid, WHITE)
+    cycle_found = [None]
+
+    def _find_cycle(start):
+        # stack holds (node, iterator over its deps); path mirrors the GRAY set.
+        stack = [(start, iter(dep_graph.get(start, [])))]
+        path = [start]
+        color[start] = GRAY
+        while stack:
+            node, it = stack[-1]
+            advanced = False
+            for nxt in it:
+                if color.get(nxt, WHITE) == GRAY:
+                    # Found a back-edge: nxt..node is the cycle.
+                    idx = path.index(nxt)
+                    cycle_found[0] = path[idx:] + [nxt]
+                    return True
+                if color.get(nxt, WHITE) == WHITE:
+                    color[nxt] = GRAY
+                    stack.append((nxt, iter(dep_graph.get(nxt, []))))
+                    path.append(nxt)
+                    advanced = True
+                    break
+            if advanced:
+                continue
+            color[node] = BLACK
+            stack.pop()
+            path.pop()
+        return False
+
+    for nid in all_ids:
+        if color.get(nid, WHITE) == WHITE:
+            if _find_cycle(nid):
+                break
+    if cycle_found[0]:
+        problems.append(
+            "depends_on cycle detected: %s" % " -> ".join(cycle_found[0])
+        )
 
     # Invariant 4 (resource half): declared shared resources must be owned by a
     # shared_foundation serial job.
@@ -938,6 +1071,129 @@ jobs:
 """
 
 
+# A complete, otherwise-valid manifest whose ONE defect is a model: haiku
+# execution-layer override (must be rejected by the never-Haiku policy).
+HAIKU_MODEL_MANIFEST = """
+run_id: 2026-06-26-haiku
+feature: "haiku"
+spec_path: docs/superpowers/specs/2026-06-26-haiku.md
+plan_path: docs/superpowers/plans/2026-06-26-haiku.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-06-26-haiku.md
+  domain: docs/superpowers/expert/2026-06-26-haiku.md
+  library: docs/superpowers/library-audit/2026-06-26-haiku.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-1-cheap
+    title: "cheap slice"
+    type: docs
+    backend: claude
+    model: claude-haiku-4
+    isolation: worktree
+    run: parallel
+    write_allowed: [docs/cheap.md]
+    read_allowed: [src/**]
+    acceptance: ["x"]
+"""
+
+# A complete manifest whose ONE defect is a dangling depends_on reference.
+DANGLING_DEP_MANIFEST = """
+run_id: 2026-06-26-dangling
+feature: "dangling"
+spec_path: docs/superpowers/specs/2026-06-26-dangling.md
+plan_path: docs/superpowers/plans/2026-06-26-dangling.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-06-26-dangling.md
+  domain: docs/superpowers/expert/2026-06-26-dangling.md
+  library: docs/superpowers/library-audit/2026-06-26-dangling.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-1-build
+    title: "build slice"
+    type: bounded_crud
+    backend: claude
+    tier: standard
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-missing]
+    write_allowed: [src/build/**]
+    read_allowed: [src/**]
+    acceptance: ["builds"]
+"""
+
+# A complete manifest whose ONE defect is a depends_on cycle (A→B→A).
+CYCLE_DEP_MANIFEST = """
+run_id: 2026-06-26-cycle
+feature: "cycle"
+spec_path: docs/superpowers/specs/2026-06-26-cycle.md
+plan_path: docs/superpowers/plans/2026-06-26-cycle.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-06-26-cycle.md
+  domain: docs/superpowers/expert/2026-06-26-cycle.md
+  library: docs/superpowers/library-audit/2026-06-26-cycle.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-a
+    title: "a"
+    type: bounded_crud
+    backend: claude
+    tier: standard
+    isolation: worktree
+    run: parallel
+    depends_on: [task-b]
+    write_allowed: [src/a/**]
+    read_allowed: [src/**]
+    acceptance: ["a"]
+  - id: task-b
+    title: "b"
+    type: bounded_crud
+    backend: claude
+    tier: standard
+    isolation: worktree
+    run: parallel
+    depends_on: [task-a]
+    write_allowed: [src/b/**]
+    read_allowed: [src/**]
+    acceptance: ["b"]
+"""
+
+# A complete manifest whose ONE defect is a wrong-typed required field
+# (acceptance_criteria provided as a scalar string instead of a list).
+WRONG_TYPE_MANIFEST = """
+run_id: 2026-06-26-wrongtype
+feature: "wrongtype"
+spec_path: docs/superpowers/specs/2026-06-26-wrongtype.md
+plan_path: docs/superpowers/plans/2026-06-26-wrongtype.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-06-26-wrongtype.md
+  domain: docs/superpowers/expert/2026-06-26-wrongtype.md
+  library: docs/superpowers/library-audit/2026-06-26-wrongtype.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria: "ships"
+jobs:
+  - id: task-1-build
+    title: "build slice"
+    type: bounded_crud
+    backend: claude
+    tier: standard
+    isolation: worktree
+    run: parallel
+    write_allowed: [src/build/**]
+    read_allowed: [src/**]
+    acceptance: ["builds"]
+"""
+
+
 def _selftest():
     failures = []
 
@@ -1007,6 +1263,36 @@ def _selftest():
     expect(
         "bad: parallel+direct caught",
         "run: parallel with isolation: direct" in joined,
+    )
+
+    # never-Haiku policy: a model: haiku execution-layer override is INVALID.
+    haiku = validate_text(HAIKU_MODEL_MANIFEST)
+    expect(
+        "model:haiku override caught (never-Haiku policy)",
+        any("never-Haiku policy" in p for p in haiku),
+    )
+
+    # depends_on: dangling ref INVALID, cycle INVALID, valid DAG OK.
+    dangling = validate_text(DANGLING_DEP_MANIFEST)
+    expect(
+        "dangling depends_on ref caught",
+        any("references unknown job id 'task-0-missing'" in p for p in dangling),
+    )
+    cyc = validate_text(CYCLE_DEP_MANIFEST)
+    expect(
+        "depends_on cycle caught",
+        any("cycle detected" in p for p in cyc),
+    )
+    expect(
+        "valid DAG (good manifest) has no depends_on violation",
+        not any("depends_on" in p or "cycle detected" in p for p in good),
+    )
+
+    # Structural type check: wrong-typed required field is a specific violation.
+    wt_bad = validate_text(WRONG_TYPE_MANIFEST)
+    expect(
+        "wrong-typed acceptance_criteria caught",
+        any("'acceptance_criteria' must be a list" in p for p in wt_bad),
     )
 
     # parallel ⇒ worktree, and a bad job id, each caught.
