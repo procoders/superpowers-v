@@ -10,22 +10,22 @@ The epic model, run-dir layout, the final integration review, and the honesty bo
 
 ## Steps
 
-1. **Resolve the epic spec.** From `{{args}}`: if it is a path to an epic brief, read it; if it is a described feature set, work from the description. If `{{args}}` is empty, ask the user for the epic brief (or list existing epics under `docs/superpowers/execution/epics/` to resume one). Pick an `<epic-id>` (convention: `YYYY-MM-DD-<slug>`) and an epic **title**, and capture the epic's **acceptance criteria** (used by the final integration review).
+1. **Resolve the epic spec.** From `{{args}}`: if it is a path to an epic brief, read it; if it is a described feature set, work from the description. If `{{args}}` is empty, ask the user for the epic brief (or list existing epics under `docs/superpowers/execution/epics/` to resume one). Pick an `<epic-id>` (convention: `YYYY-MM-DD-<slug>`) and an epic **title**, and capture the epic's **acceptance criteria** (used by the final integration review). Agree an **autonomy budget** with the user — `MAX_FEATURES` per `/v:epic` invocation (**default 1**: build one feature, then checkpoint; raise it only when the user wants more autonomy per run). An epic is *N full v1.0 runs*, so this is both the **cost ceiling** and the human-in-the-loop point.
 
-2. **Derive the feature list.** Decompose the product into independent-ish **features** — each `{id, title, depends_on}`. Split by feature slice (a vertical capability), not by layer; capture cross-feature dependencies in `depends_on` (e.g. `api` depends_on `auth`). Aim for features that are each a *real* v1.0 unit of work — a spec the pre-flights and partition can chew on. This decomposition quality bounds the whole epic (see the honesty boundary).
+2. **Decompose + spec every feature UP FRONT — the one interactive phase.** Decompose the product into independent-ish **features**, each a *vertical slice* (`auth`, `api`, `ui`), not a layer; capture cross-feature dependencies in `depends_on` (`api` depends_on `auth`). Then, for **each** feature, run `superpowers:brainstorming` to produce a real **per-feature spec file** (with feature-level Acceptance Criteria), saved to `docs/superpowers/execution/epics/<epic-id>/specs/<feature-id>.md`. This is the **only** human-interactive phase: every spec is written and approved *here*, before the autonomous loop — so the loop never pauses to brainstorm. That batching is what makes the epic genuinely **autonomous** *and* keeps a **real spec per feature** (the central tension, resolved). Write `features.json` = a JSON array of `{id, title, depends_on, spec_path}`, each `spec_path` pointing at its spec file.
 
-3. **Resume-aware init.** The epic lives at `docs/superpowers/execution/epics/<epic-id>/epic-state.json`.
-   - **If it already exists → CONTINUE from it.** Do not re-init; read it and go to the loop. (Re-running `/v:epic` after a fix is the resume path.)
-   - **Else** write the feature list to `docs/superpowers/execution/epics/<epic-id>/features.json` (a JSON array of `{id, title, depends_on}`) and initialize:
+3. **Review the decomposition, then init (specs enforced).**
+   - **Gate the feature DAG before building** (one level up from partition-review): `python3 scripts/compound-v-epic-state.py --lint --features docs/superpowers/execution/epics/<epic-id>/features.json` flags structural smells (an **ISLAND** feature with no deps *and* no dependents = a likely missed dependency; an **over-coupled** feature depending on most others = a layer, not a slice) plus any hard validation error. Then **critique it yourself**: are these real vertical slices, are `depends_on` correct *and complete*? A missing edge means a feature builds before its prerequisite. Fix `features.json` until lint is clean and the split is sound — a weak decomposition is the #1 way an epic fails downstream.
+   - **Resume-aware init.** The epic lives at `docs/superpowers/execution/epics/<epic-id>/epic-state.json`. **If it already exists → CONTINUE** (read it, go to the loop). **Else** initialize:
      ```
-     python3 scripts/compound-v-epic-state.py --init \
+     python3 scripts/compound-v-epic-state.py --init --require-specs \
        --features docs/superpowers/execution/epics/<epic-id>/features.json \
        --epic-id <epic-id> --title "<title>" \
        --out docs/superpowers/execution/epics/<epic-id>/epic-state.json
      ```
-     It validates ids/refs/cycles and writes `epic-state.json` with every feature `pending`. A non-zero exit (bad id, dangling ref, cycle, duplicate) ⇒ fix the feature list and re-init — do not hand-edit the state.
+     `--require-specs` **refuses to start unless every feature has an existing `spec_path`** — the deterministic enforcement that no feature enters the autonomous loop without an approved spec. It also validates ids/refs/cycles/dups. A non-zero exit ⇒ fix and re-init; never hand-edit the state.
 
-4. **The loop.** Repeat until no feature is runnable:
+4. **The autonomous loop** (bounded by `MAX_FEATURES`). Repeat until no feature is runnable **or this invocation's budget is spent**:
    - **Ask for the next runnable feature:**
      ```
      python3 scripts/compound-v-epic-state.py --next \
@@ -35,7 +35,7 @@ The epic model, run-dir layout, the final integration review, and the honesty bo
    - **If `feature` is non-null** (`reason == "runnable"`):
      1. **Mark it running:** `compound-v-epic-state.py --update --feature <id> --status running --state <epic-state.json>`.
      2. **Run that ONE feature through the full v1.0 pipeline on the current branch** — exactly as a standalone feature, reusing everything:
-        - `superpowers:brainstorming` → a real per-feature **spec** (with feature-level Acceptance Criteria). Epic mode does not skip the spec — see the honesty boundary.
+        - **Read the feature's already-approved spec** (`spec_path` from step 2). The loop does **not** brainstorm — specs were batched + approved up front, so this stage is non-interactive.
         - The **three pre-flights** in parallel (1A archaeology ∥ 1B domain ∥ 1C library) per [`SKILL.md`](../skills/compound-v/SKILL.md). A 🔴 critical finding HALTs this feature.
         - `superpowers:writing-plans` + **Phase-2 Partition Map** ([`phase-2-disjoint-partitioning.md`](../skills/compound-v/phase-2-disjoint-partitioning.md)).
         - **Materialize a manifest** ([`/v:orchestrate`](v-orchestrate.md)) into a per-feature run dir, then **dispatch** ([`/v:dispatch`](v-dispatch.md)) — partition-review → Task 0 serial → parallel batches → `git diff` scope gate → collect.
@@ -52,13 +52,14 @@ The epic model, run-dir layout, the final integration review, and the honesty bo
           --run-id <run-id> --state docs/superpowers/execution/epics/<epic-id>/epic-state.json
         ```
         then **stop the loop** and go to step 6 (the epic is now blocked but resumable).
+     5. **Budget checkpoint.** Count each completed feature against `MAX_FEATURES`. When this invocation's budget is spent, **STOP and report** `python3 scripts/compound-v-epic-state.py --stats --state <epic-state.json>` (done / remaining) so the human reviews the accumulated diff and re-runs `/v:epic` to continue — the cost ceiling and the deliberate human-in-the-loop point. (With the default `MAX_FEATURES=1`, the epic checkpoints after every feature.)
    - **If `feature` is null**, branch on `reason` (step 5/6).
 
 5. **Epic complete** (`reason == "epic complete"`). All features are `done`. Run a **final cross-feature integration review**: the *whole accumulated diff* on the branch against the **epic's** acceptance criteria — not the per-feature ACs (those already passed in each feature's own review), but the cross-feature contracts: do the features compose, do shared boundaries line up, is the product coherent end-to-end. On PASS, hand to `superpowers:finishing-a-development-branch` (merge / PR / cleanup options). On ISSUES, surface them and stay resumable.
 
 6. **Epic blocked** (`reason` starts with `epic blocked` — a feature `failed` or an unmet dependency). **Stop and surface it.** Print `compound-v-epic-state.py --summary --state <epic-state.json>` so the user sees exactly which feature failed and what it blocks. The epic stays **resumable**: after the user fixes the failed feature (or its spec/partition), retry it (`--update --feature <id> --status pending`) and re-run `/v:epic <epic-id>` (or the same brief) — step 3 detects the existing `epic-state.json` and continues; only `pending` features run, the `done` ones are skipped.
 
-   **Epic needs reconcile** (`reason` starts with `epic needs reconcile` — a feature is still `running`). Because epic mode is **sequential**, `--next` is only ever called between features, so a `running` feature on resume means that feature's run **crashed mid-pipeline**. Do not route around it. **Reconcile before continuing:** inspect that feature's run dir / `state.json` (via its `run_id`); if the work is incomplete or unverified, mark it **`--status pending`** to retry from scratch, or **`--status failed`** to abandon and stop. Never leave a feature `running` across a resume — the epic will not advance until the stale run is reconciled.
+   **Epic needs reconcile** (`reason` starts with `epic needs reconcile` — a feature is still `running`). Because epic mode is **sequential**, `--next` is only ever called between features, so a `running` feature on resume means that feature's run **crashed mid-pipeline**. Do not route around it. **Reconcile by resuming first — don't discard half-built work:** the crashed feature ran a *normal v1.0 run* with its own crash-resume, so run **[`/v:resume <run-id>`](v-resume.md)** to re-dispatch only that run's incomplete jobs; if it completes, mark the feature **`--status done`**. Only if the run cannot be recovered, fall back to **`--status pending`** (full restart from the spec) or **`--status failed`** (abandon and stop). Never leave a feature `running` across a resume — the epic will not advance until the stale run is reconciled.
 
 7. **Report.** Print the epic summary (`--summary`), the per-feature run-ids, and the next step: the integration review + `finishing-a-development-branch` on complete, or the blocking feature + the resume hint on blocked.
 

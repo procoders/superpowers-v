@@ -4,6 +4,16 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [1.2.0] — Unreleased
+
+### Changed — Epic mode hardening (closes the gaps a re-review of v1.1 surfaced)
+
+- **Specs are batched UP FRONT — the autonomy-vs-quality tension resolved.** The epic now brainstorms a real spec file **per feature before the autonomous loop** (the one human-interactive phase, approved once), carried as a **`spec_path`** on every feature in `features.json`/`epic-state.json`. The loop runs each feature **from its pre-approved spec** and never pauses to brainstorm. `compound-v-epic-state.py --init --require-specs` **refuses to start unless every feature has an existing `spec_path`** — deterministic enforcement, not just prose.
+- **Decomposition review gate (one level up from partition-review).** `compound-v-epic-state.py --lint --features F.json` flags structural smells in the feature DAG — an **ISLAND** feature (no `depends_on` and no dependents → a likely missed dependency) and an **over-coupled** feature (depends on most others → a layer, not a vertical slice) — plus hard validation, before any build. A weak decomposition is the #1 way an epic fails downstream.
+- **Autonomy budget / checkpoint.** An epic is *N full v1.0 runs*, so it runs under a `MAX_FEATURES` budget per `/v:epic` invocation (default **1**): after the budget is spent it STOPS and reports `--stats` (done/remaining) for the human to review and re-run — a real cost ceiling + human-in-the-loop point, not an unbounded autonomous burn.
+- **Reconcile-by-resume — no discarded work.** A feature stuck `running` (crashed mid-pipeline) is reconciled by running its own `/v:resume <run-id>` **first** (re-dispatch only that run's incomplete jobs), falling back to full restart (`pending`) or `failed` only if it can't recover — composing with the per-feature crash-resume instead of throwing away half-built work.
+- `compound-v-epic-state.py` gains `--lint`, `--stats`, `--require-specs`, and a `spec_path` field (21-case self-test, up from 12). Docs: `commands/v-epic.md` + `skills/compound-v/epic-mode.md` rewritten to the batched-spec, budgeted, decomposition-gated, resume-reconciling workflow.
+
 ## [1.1.0] — 2026-06-27
 
 ### Added — Epic mode (multi-feature autonomous build)
