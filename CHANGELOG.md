@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Autonomy budget / checkpoint.** An epic is *N full v1.0 runs*, so it runs under a `MAX_FEATURES` budget per `/v:epic` invocation (default **1**): after the budget is spent it STOPS and reports `--stats` (done/remaining) for the human to review and re-run — a real cost ceiling + human-in-the-loop point, not an unbounded autonomous burn.
 - **Reconcile-by-resume — no discarded work.** A feature stuck `running` (crashed mid-pipeline) is reconciled by running its own `/v:resume <run-id>` **first** (re-dispatch only that run's incomplete jobs), falling back to full restart (`pending`) or `failed` only if it can't recover — composing with the per-feature crash-resume instead of throwing away half-built work.
 - `compound-v-epic-state.py` gains `--lint`, `--stats`, `--require-specs`, and a `spec_path` field (21-case self-test, up from 12). Docs: `commands/v-epic.md` + `skills/compound-v/epic-mode.md` rewritten to the batched-spec, budgeted, decomposition-gated, resume-reconciling workflow.
+- **Validated end-to-end:** a real 2-feature epic (`core` → `cli`, dependency-ordered) driven through the full loop with **live Codex workers** — batched specs → `--lint` → `--init --require-specs` → topological build accumulating on one branch → the **integrated app runs** (`python cli.py → 5`, `cli` importing `core`'s code) → fail-fast halt on a scope-blocked feature → reconcile drill — all behaved correctly.
 
 ## [1.1.0] — 2026-06-27
 
