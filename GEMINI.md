@@ -23,6 +23,10 @@ The execution tail is a small, deterministic orchestrator — contracts + helper
 - **Scope gate:** `scripts/compound-v-scope-check.py` (git-derived; pure Python 3.9 stdlib, harness-neutral).
 - **State + resume:** `skills/compound-v/state-machine.md`.
 
+## V-memory recall surface (v2.0)
+
+A local-first RECALL layer over `docs/superpowers/**` prose. Engine: `scripts/compound-v-memory.py`; authority doc: `skills/compound-v/memory.md`. Two lanes: **CORE** = SQLite FTS5 BM25 over git-tracked prose (pure stdlib, always on); **DENSE** = opt-in embeddings (multilingual-e5-small) in an isolated venv outside the repo, rank-unioned with FTS5 and degrade-safe (absent/broken ⇒ FTS5-only). Embeddings are **PURE PYTHON** (`fastembed` = onnxruntime + tokenizers) — no Node, no daemon, no external vector-DB service. Recall is **evidence for planning + review, never a routing input** — routing stays the deterministic v1.1 order. The prose at `skills/compound-v/memory.md` is harness-neutral; on Gemini CLI, read it directly.
+
 ## How Gemini uses it
 
 The skill content lives at `skills/compound-v/SKILL.md` and its phase reference files. Read those directly — they're harness-neutral.
@@ -63,6 +67,8 @@ These are Claude Code `/v:*` commands. On Gemini CLI, invoke the equivalent skil
 | `/v:review-plan <plan>` | Optional cross-model (Codex) second opinion on a high-stakes plan before dispatch — read-only, advisory; the orchestrator arbitrates |
 | `/v:epic <brief>` | Chain several features into one autonomous, resumable, dependency-ordered build on a single branch; each feature runs the full pipeline in topological order, ending with a cross-feature integration review |
 | `/v:archaeology <topic>` | (unchanged) Phase 1A only |
+| `/v:remember <query>` | Recall search over `docs/superpowers/**` prose (V-memory) — evidence for planning + review, not a routing input |
+| `/v:memory-refresh` | (Re)index the FTS5 recall lane; `--bootstrap` provisions the opt-in dense embeddings venv |
 
 ## Key entry points
 
