@@ -108,6 +108,20 @@ def cache_paths(root: str):
     }
 
 
+def config_wants_embeddings(root: str) -> bool:
+    """The project's DENSE-lane opt-in from `.claude/compound-v.json` (`memory.embeddings`),
+    set by /v:init. Missing/unreadable ⇒ False (FTS5-only). This makes the init choice take
+    effect everywhere — including the background hook — WITHOUT ever installing: actual
+    embedding is still gated by is_bootstrapped(), and bootstrap is the only network step."""
+    path = os.path.join(root, ".claude", "compound-v.json")
+    try:
+        with open(path) as fh:
+            cfg = json.load(fh)
+        return bool(cfg.get("memory", {}).get("embeddings", False))
+    except (OSError, ValueError, AttributeError, TypeError):
+        return False
+
+
 # --------------------------------------------------------------------------- #
 # redaction + content helpers
 # --------------------------------------------------------------------------- #
@@ -573,10 +587,13 @@ def cmd_refresh(args) -> int:
                   % (len(changed), QUICK_MAX_CHANGED))
             return 0
 
-        # embeddings: only with --with-embeddings AND a healthy bootstrap (never auto-install)
+        # embeddings: enabled by --with-embeddings OR the project's .claude/compound-v.json
+        # opt-in (memory.embeddings, set by /v:init), AND only when ALREADY bootstrapped —
+        # a hook/refresh NEVER installs (bootstrap is the one network step).
         embedder = None
         model = meta_get(conn, "embed_model", DEFAULT_MODEL)
-        if args.with_embeddings and is_bootstrapped(paths):
+        want_embed = args.with_embeddings or config_wants_embeddings(root)
+        if want_embed and is_bootstrapped(paths):
             ensure_embedder(paths)  # redeploy embedder.py from EMBEDDER_SRC (sync code changes)
             embedder = lambda texts: embed_texts(paths, model, "passage", texts)  # noqa: E731
 
@@ -1033,6 +1050,14 @@ def _selftest() -> int:
             fh.write("# Pulled\nA teammate's freshly pulled knowledge, not yet indexed locally.\n")
         s_new, s_removed = index_staleness(conn, find_repo_root(tmp))
         check("staleness flags an un-indexed pulled doc", s_new >= 1)
+
+        # /v:init opt-in: .claude/compound-v.json drives the dense lane (no --with-embeddings flag)
+        cfgdir = os.path.join(tmp, ".claude"); os.makedirs(cfgdir, exist_ok=True)
+        check("config embeddings default false", config_wants_embeddings(tmp) is False)
+        json.dump({"memory": {"embeddings": True}}, open(os.path.join(cfgdir, "compound-v.json"), "w"))
+        check("config embeddings true is read", config_wants_embeddings(tmp) is True)
+        json.dump({"stance": "balanced"}, open(os.path.join(cfgdir, "compound-v.json"), "w"))
+        check("config without memory key => false", config_wants_embeddings(tmp) is False)
 
         # cosine dimension guard — stale-identity vectors must not half-match
         check("cosine dim guard", cosine([1.0, 0.0], [1.0, 0.0, 0.0]) == 0.0

@@ -158,6 +158,35 @@ Confirm the chosen stance back to the user before saving.
 
 ---
 
+## Step 3b — V-memory recall lane (semantic embeddings: opt-in)
+
+V-memory (recall over `docs/superpowers/**` prose — see [`memory.md`](../skills/compound-v/memory.md))
+**always** runs its **FTS5 core** (pure stdlib, offline, zero setup). Ask the user — **as a
+structured choice (use the AskUserQuestion tool on Claude Code; a plain two-option question on
+other harnesses)** — which recall lane this project should use:
+
+- **"FTS5 only — fast, zero-setup"** — lexical BM25 over the prose; no install, no model,
+  fully offline. **Recommend this** while `docs/superpowers/` is small or young — lexical
+  search already wins there.
+- **"Semantic embeddings — ~200 MB model, once"** — adds a dense lane that also finds related
+  prior work when the wording differs (including **across languages**); downloads a small
+  multilingual model one time into an out-of-repo cache.
+
+**If the user picks semantic**, bootstrap it now — this is the **one consented install step**
+(never done from a hook):
+  ```bash
+  python3 scripts/compound-v-memory.py bootstrap
+  python3 scripts/compound-v-memory.py refresh --with-embeddings
+  ```
+  Confirm the `bootstrap OK` line before counting it enabled. If bootstrap fails (offline /
+  no wheels), say so and fall back to FTS5-only — recall still works.
+
+Record the choice in Step 4a as `"memory": { "embeddings": true|false }`. When `true`, the
+engine adds vectors on every refresh (including the silent background hook) — but still
+**only once bootstrapped**; it never installs on its own.
+
+---
+
 ## Step 4 — Save config (two files)
 
 Write **both**. Create parent dirs as needed.
@@ -169,6 +198,7 @@ Write **both**. Create parent dirs as needed.
   "stance": "balanced",
   "backends": ["claude", "codex"],
   "checked_at": "<YYYY-MM-DD>",
+  "memory": { "embeddings": false },
   "models": {
     "claude":      { "deep": "opus",                  "standard": "opus",                  "light": "sonnet" },
     "codex":       { "deep": "gpt-5.5",               "standard": "gpt-5.5",               "light": "gpt-5.3-codex-spark" },
@@ -185,6 +215,10 @@ Write **both**. Create parent dirs as needed.
 - `checked_at` = today's date.
 - If the user opted into the Workflows accelerator, also include
   `"workflows_accelerator": true` (omit otherwise — default OFF).
+- **`memory.embeddings`** = the Step 3b choice (default `false` = FTS5-only). When `true`,
+  `compound-v-memory.py` adds the semantic lane on every refresh (the engine reads this flag),
+  but only after an explicit `bootstrap` — it never installs on its own. `false` keeps the
+  pure-stdlib FTS5 lane.
 - **`models` — SEED the default tier→model map (exactly the block above)** so
   intent-based routing resolves out of the box even with no further setup. This
   is the same default the resolver
