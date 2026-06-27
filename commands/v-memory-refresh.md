@@ -22,8 +22,11 @@ python3 scripts/compound-v-memory.py bootstrap                 # creates the out
 python3 scripts/compound-v-memory.py refresh --with-embeddings # populate vectors
 ```
 
-If `{{args}}` asks for `--with-embeddings` and `doctor` shows embeddings are not
-bootstrapped, run `bootstrap` first (tell the user it will download a ~200 MB model once).
+If the project opted into embeddings at [`/v:init`](v-init.md) (`memory.embeddings: true` in
+`.claude/compound-v.json`), the engine **already** adds vectors on a plain `refresh` once
+bootstrapped — you don't need the flag. If `{{args}}` asks for `--with-embeddings` and
+`doctor` shows embeddings are not bootstrapped, run `bootstrap` first (tell the user it will
+download a ~200 MB model once).
 The semantic lane is **scale-gated**: it only changes ranking once the corpus is large
 enough to matter; on a small corpus FTS5 already wins. If bootstrap fails (offline / no
 wheels), the engine stays FTS5-only — recall still works. See

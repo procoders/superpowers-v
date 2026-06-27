@@ -33,6 +33,11 @@ python3 scripts/compound-v-memory.py bootstrap                  # out-of-repo ve
 python3 scripts/compound-v-memory.py refresh --with-embeddings  # populate vectors
 ```
 
+[`/v:init`](../../commands/v-init.md) asks once whether to enable this lane and records the
+choice as `memory.embeddings` in `.claude/compound-v.json`. When that flag is `true`, the
+engine adds vectors on **every** refresh (including the background hook) — but still only
+after the explicit `bootstrap` above; the flag never triggers an install.
+
 ---
 
 ## CLI
