@@ -176,7 +176,7 @@ Currently: dispatch the agent manually: `Task(subagent_type: "compound-v:doc-val
 
 The plugin ships compatibility shims:
 - **Codex**: `AGENTS.md` at the project root is auto-loaded by Codex CLI; it points at the same skills.
-- **Gemini CLI**: `GEMINI.md` documents the conceptual mapping. The extension manifest schema is harness-specific — adapt to your Gemini CLI version's actual format (the shim is untested as of v0.1.1).
+- **Gemini CLI**: `GEMINI.md` documents the conceptual mapping. The extension manifest schema is harness-specific — adapt to your Gemini CLI version's actual format (the shim is untested as of v1.1.0).
 
 The skill content is harness-neutral. Tool names differ (Claude Code's `Task` ≈ Codex's `subagent`); the dispatcher logic adapts. The orchestrator's deterministic core (the manifest schema, the `git diff` scope gate in `scripts/compound-v-scope-check.py`, and the `job_result` contract) is harness-neutral; only the dispatch wiring is Claude-Code-specific. The Codex *backend* (`adapter-codex.md`) is itself just `codex exec` driven by a shell script, so any harness with a shell can spawn it. These shims remain 🧪 untested on real non-Claude installs.
 

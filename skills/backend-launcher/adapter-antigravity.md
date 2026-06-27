@@ -74,7 +74,7 @@ cd "$WT" && timeout "$timeout_sec" agy \
 - **agy has NO `--cd`.** The script `cd "$WT"` first and passes `--add-dir "$WT"` so the worktree is the working + allowed root.
 - **Summary ← stdout.** agy prints the agent's response to *stdout*; the script captures it into the human `summary`. (Unlike Codex, there is no `--output-last-message` file.)
 - **No resumable session UUID** is exposed, so `session_id` is always `""` (the schema permits it). A re-dispatched Antigravity job runs **fresh**, consistent with the git-wins resume tie-break.
-- **`agy models` HANGS** — never call it. The model map is curated upstream (see Model resolution below).
+- **`agy models </dev/null` works headless** (~2s) — the bare command waits on stdin; the redirect is the same fix as `agy --print`. `/v:models` and `/v:init` pipe it through [`compound-v-discover-models.py`](../../scripts/compound-v-discover-models.py) to refresh the map (see Model resolution below).
 - **`--model` is OPTIONAL.** The worker omits `--model` entirely when the resolved value is empty, letting agy use its configured default.
 
 | Flag | Role |
@@ -96,7 +96,7 @@ agy has no output-schema flag. The worker accepts `--output-schema` for CLI pari
 
 ### Model + effort: resolved before dispatch, not hardcoded
 
-The dispatcher hands a routing **intent** — `tier` (`deep` \| `standard` \| `light`) — and resolves the concrete model **before** dispatch via [`scripts/compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py) with `--backend antigravity --tier <tier> [--config .claude/compound-v.json]`. The built-in curated map is `deep → Gemini 3.1 Pro (High)`, `standard → Gemini 3.1 Pro`, `light → Gemini 3.1 Flash` (illustrative — verify against `agy models` when that command is usable; refresh via `/v:models`). An explicit manifest `model` override skips resolution and wins. agy has **no effort flag**, so `effort` is advisory for this backend (like Claude).
+The dispatcher hands a routing **intent** — `tier` (`deep` \| `standard` \| `light`) — and resolves the concrete model **before** dispatch via [`scripts/compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py) with `--backend antigravity --tier <tier> [--config .claude/compound-v.json]`. The built-in fallback map is `deep → Gemini 3.1 Pro (High)`, `standard → Gemini 3.1 Pro (Low)`, `light → Gemini 3.5 Flash (Low)` (verified against `agy models` 1.0.13); `/v:models` / `/v:init` discover the live catalog via `agy models </dev/null | compound-v-discover-models.py` and write `.claude/compound-v.json`, which overrides the fallback. An explicit manifest `model` override skips resolution and wins. agy has **no effort flag**, so `effort` is advisory for this backend (like Claude).
 
 ### Timeout
 
