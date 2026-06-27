@@ -731,12 +731,19 @@ def validate(manifest):
             wa = []
         job_globs.append((jid, [str(g) for g in wa]))
 
-        # Invariant 2: codex => worktree.
-        if str(job.get("backend", "")).lower() == "codex":
+        # Invariant 2: codex => worktree, AND antigravity => worktree. Both are
+        # EXTERNAL workers. Codex has a kernel sandbox scoped to a directory;
+        # antigravity has NO kernel write-confinement at all (it runs with
+        # --dangerously-skip-permissions), so worktree + git-diff is the ONLY
+        # file-scope enforcement either backend gets. A non-worktree external
+        # worker cannot be deterministically attributed and is rejected.
+        backend_lc = str(job.get("backend", "")).lower()
+        if backend_lc in ("codex", "antigravity"):
             if str(job.get("isolation", "")).lower() != "worktree":
                 problems.append(
-                    "job '%s' uses backend codex but isolation is '%s' "
-                    "(codex requires worktree)" % (jid, job.get("isolation"))
+                    "job '%s' uses backend %s but isolation is '%s' "
+                    "(%s requires worktree)"
+                    % (jid, backend_lc, job.get("isolation"), backend_lc)
                 )
 
         # Invariant 3: reviewers => deep/opus (strongest reasoning). Satisfied
@@ -1194,6 +1201,37 @@ jobs:
 """
 
 
+# A complete, otherwise-valid manifest whose ONE defect is an antigravity job with
+# isolation: direct (an external no-kernel-sandbox worker MUST be worktree-isolated).
+# Uses run: serial so the ONLY violation is the antigravity⇒worktree invariant (not
+# the parallel⇒worktree one).
+ANTIGRAVITY_DIRECT_MANIFEST = """
+run_id: 2026-06-27-agy
+feature: "agy"
+spec_path: docs/superpowers/specs/2026-06-27-agy.md
+plan_path: docs/superpowers/plans/2026-06-27-agy.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-06-27-agy.md
+  domain: docs/superpowers/expert/2026-06-27-agy.md
+  library: docs/superpowers/library-audit/2026-06-27-agy.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-1-agy
+    title: "antigravity slice"
+    type: large_isolated
+    backend: antigravity
+    tier: standard
+    isolation: direct
+    run: serial
+    write_allowed: [src/agy/**]
+    read_allowed: [src/**]
+    acceptance: ["builds"]
+"""
+
+
 def _selftest():
     failures = []
 
@@ -1305,6 +1343,15 @@ def _selftest():
     expect(
         "bad job id '../x' caught",
         any("invalid characters" in p for p in badid),
+    )
+
+    # antigravity ⇒ worktree: an external no-kernel-sandbox worker with
+    # isolation: direct is INVALID (mirrors the codex⇒worktree invariant).
+    agy_bad = validate_text(ANTIGRAVITY_DIRECT_MANIFEST)
+    expect(
+        "antigravity+direct caught (antigravity requires worktree)",
+        any("backend antigravity but isolation" in p
+            and "antigravity requires worktree" in p for p in agy_bad),
     )
 
     # Reviewer satisfied by tier: deep (no model) — GOOD manifest task-3 uses

@@ -21,6 +21,8 @@ You keep using **Superpowers** the way you already do. Compound V silently shows
 
 As of **v1.0**, the tail of that flow is a real **execution orchestrator**: it materializes a machine-readable `manifest.yaml` of file-scoped jobs, routes each to its backend (Claude subagent or a headless **Codex** worker), **enforces** with a `git diff` scope gate that no worker wrote outside its allowed files, collects canonical `job_result`s, reviews against the spec's Acceptance Criteria, and is **crash-resumable** via `state.json`. No daemon, no MCP server, no fabricated metrics.
 
+**1.1** adds a headless **Antigravity** (`agy --print`) worker as a third backend — same worktree + `git diff` scope gate as Codex — for `large_isolated` builds. It is **opt-in and lower-trust**: `agy` has no kernel write-confinement (headless writes require `--dangerously-skip-permissions`), so the gate *detects* in-worktree scope leaks but cannot *prevent* an out-of-worktree side-effect. **Prefer Codex (kernel-sandboxed) for untrusted / high-stakes work.**
+
 Backend failures are handled **gracefully**: a non-success job is classified (by error type, not HTTP status) and routed through a deterministic policy — retry transient errors with backoff, **circuit-break + re-route codex→claude on out-of-credits**, escalate tier on context-length, halt on auth — all resumable and **loudly reported** (never a silent cheap→expensive swap). See [skills/compound-v/failure-policy.md](skills/compound-v/failure-policy.md).
 
 Routing is **tier-based and churn-proof**: jobs declare a `tier` (`deep`/`standard`/`light`) and an optional `effort` (`low`/`medium`/`high`) instead of a hardcoded model name. A resolver (`scripts/compound-v-resolve-model.py`) maps tier → concrete model through a refreshable config `models` map, so when models change you update one map (or run `/v:models`) instead of editing prompts. Codex's reasoning-effort is exposed as `--effort`.
@@ -159,12 +161,14 @@ superpowers-v/
 │       ├── SKILL.md                           # the contract every adapter implements
 │       ├── adapter-claude.md                  # Task-based dispatch (Opus/Sonnet)
 │       ├── adapter-codex.md                   # headless `codex exec` + worktree + git diff
-│       └── adapter-antigravity.md             # stub returning `unsupported` (deferred to 1.1)
+│       └── adapter-antigravity.md             # headless `agy --print` + worktree + git diff (lower-trust / opt-in)
 ├── scripts/                                   # small deterministic helpers (bash 3.2 / python 3.9, stdlib)
 │   ├── compound-v-scope-check.py              # git-diff scope gate (the SCOPE LOCK authority)
 │   ├── compound-v-resolve-model.py            # tier (+effort) → concrete model via config models map
 │   ├── compound-v-validate-manifest.py        # deterministic manifest-invariant gate
 │   ├── compound-v-run-codex-worker.sh         # headless Codex worker (worktree + diff + normalize)
+│   ├── compound-v-run-antigravity-worker.sh   # headless Antigravity (agy) worker — lower-trust, no kernel sandbox
+│   ├── compound-v-classify-failure.py         # backend-failure classifier (codex / claude / antigravity)
 │   ├── compound-v-collect-results.py          # normalize heterogeneous output → job_result
 │   ├── compound-v-update-memory.py            # append task-outcomes.jsonl
 │   ├── compound-v-scorecard.py                # aggregate task-outcomes → worker-performance.jsonl (health per backend×type)

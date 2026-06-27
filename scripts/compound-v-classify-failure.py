@@ -74,6 +74,32 @@ _CODEX_RULES = [
     ]),
 ]
 
+# Antigravity / agy (Gemini backend): substring signatures over Gemini/agy error text,
+# checked in PRIORITY ORDER. Gemini reuses `RESOURCE_EXHAUSTED` for BOTH quota
+# exhaustion AND throttling, so the quota/billing needles MUST come FIRST — when the
+# text mentions quota/billing/usage-limit, out_of_credits wins over rate_limited; a bare
+# `resource_exhausted` / `429` with no quota wording falls through to rate_limited.
+_ANTIGRAVITY_RULES = [
+    ("out_of_credits", [
+        "quota", "billing", "insufficient", "usage limit", "exceeded your",
+    ]),
+    ("auth", [
+        "permission_denied", "unauthenticated", "api key", "401", "403",
+    ]),
+    ("context_length", [
+        "exceeds the maximum", "token count", "context window",
+    ]),
+    ("rate_limited", [
+        "resource_exhausted", "rate limit", "429", "too many requests",
+    ]),
+    ("overloaded", [
+        "unavailable", "503", "500", "overloaded", "internal error",
+    ]),
+    ("network", [
+        "econnreset", "getaddrinfo", "connection refused", "dns",
+    ]),
+]
+
 # Anthropic / claude: the AUTHORITATIVE path is the stream-json `api_retry.error` enum
 # (see CLAUDE_ENUM + _parse_claude_json). These substrings are only the FALLBACK when the
 # output isn't JSON. Deliberately NARROW — no bare "context"/"invalid_request" (they
@@ -169,7 +195,12 @@ def classify(backend, exit_code, stderr):
         if hit is not None:
             return hit[0], hit[1], retry_after
     text = raw.lower()
-    rules = _CLAUDE_RULES if backend == "claude" else _CODEX_RULES
+    if backend == "claude":
+        rules = _CLAUDE_RULES
+    elif backend == "antigravity":
+        rules = _ANTIGRAVITY_RULES
+    else:
+        rules = _CODEX_RULES
     for cls, needles in rules:
         for n in needles:
             if n in text:
@@ -208,6 +239,14 @@ def _selftest():
         # narrow needles: a benign mention of "context" must NOT become context_length
         ("claude", 1, "log: building the context of the request (no error)", "other"),
         ("claude", 1, '{"type":"system","subtype":"api_retry","error":"overloaded"}', "overloaded"),
+        # Antigravity / agy (Gemini) — quota/billing wins over the shared 429/RESOURCE_EXHAUSTED.
+        ("antigravity", 1, "Error: 429 RESOURCE_EXHAUSTED: You exceeded your current quota", "out_of_credits"),
+        ("antigravity", 1, "PERMISSION_DENIED: The caller does not have permission (403)", "auth"),
+        ("antigravity", 1, "429 RESOURCE_EXHAUSTED: rate limit, please retry", "rate_limited"),
+        ("antigravity", 1, "503 UNAVAILABLE: model is overloaded, try again later", "overloaded"),
+        ("antigravity", 1, "input token count exceeds the maximum number of tokens", "context_length"),
+        ("antigravity", 1, "getaddrinfo ENOTFOUND: dns lookup failed", "network"),
+        ("antigravity", 1, "panic: totally unexpected agy crash", "other"),
     ]
     ok = 0
     fail = 0
@@ -231,7 +270,7 @@ def _selftest():
 
 def main(argv):
     p = argparse.ArgumentParser(description="Classify a backend failure.")
-    p.add_argument("--backend", choices=["codex", "claude"])
+    p.add_argument("--backend", choices=["codex", "claude", "antigravity"])
     p.add_argument("--exit-code", type=int)
     p.add_argument("--stderr-file")
     p.add_argument("--selftest", action="store_true")

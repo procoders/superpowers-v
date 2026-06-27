@@ -51,13 +51,25 @@ at dispatch.
 | Security / auth / payments / PII / a11y | claude | deep · high | worktree | parallel |
 | `core_slice` (design judgment) | claude | deep · high | worktree | parallel |
 | `bounded_crud` (8-box junior) | claude | light · low | direct | parallel |
-| `large_isolated` build | **codex** | standard · medium | worktree | parallel |
+| `large_isolated` build | **codex** (alt: **antigravity**, lower-trust) | standard · medium | worktree | parallel |
 | `mechanical_refactor` / rename / format | claude | light · low | direct | parallel |
 | `docs` / i18n strings | claude | light · low | direct | parallel |
 | `tests_new` — designing new tests | claude | deep · high | direct | parallel |
 | `external_api` integration | claude | deep · high | worktree | parallel |
 | `review` — spec / quality / integration | claude | deep · high | direct | parallel/serial |
 | **Unclear scope** | **none → return to planning** | — | — | — |
+
+> **Antigravity is a selectable alternative for `large_isolated` build — opt-in and
+> lower-trust.** It is a real backend (Bash-spawned `agy --print` in its own worktree,
+> same git-diff scope gate as Codex — [`adapter-antigravity.md`](../backend-launcher/adapter-antigravity.md)),
+> **available only when `agy` is installed** (env-aware; absent → the row stays on
+> codex/claude). But `agy` has **NO kernel write-confinement** like Codex's
+> `--sandbox workspace-write`, and headless writes require `--dangerously-skip-permissions`
+> (arbitrary shell + out-of-worktree writes possible). The worktree + `git diff` gate
+> detects in-worktree scope leaks but cannot *prevent* an out-of-worktree side-effect —
+> so **prefer Codex (kernel-sandboxed) for untrusted / high-stakes work**, and pick
+> antigravity only when the prompt and surface are trusted. **antigravity ⇒ worktree**
+> is a hard invariant (below).
 
 Why these tiers: `deep` is the strongest reasoning seat — it carries architecture,
 all sensitive surfaces, designing new tests, external APIs, every reviewer, and
@@ -234,9 +246,12 @@ These hold in **every** stance and are checked by `compound-v-validate-manifest.
    tier — `tier: deep` **OR** an explicit `model: opus`. (`deep` resolves to `opus`
    for claude, so this mirrors the frontmatter rule that reviewers/agents always
    carry `model: opus`.)
-2. **Codex ⇒ worktree.** Any `backend: codex` job MUST be `isolation: worktree`.
-   Codex's sandbox can only restrict writes to a *directory*, so worktree + `git diff`
-   is the only file-scope enforcement.
+2. **Codex ⇒ worktree, and Antigravity ⇒ worktree.** Any `backend: codex` **or**
+   `backend: antigravity` job MUST be `isolation: worktree`. Both are external workers
+   with no per-file enforcement of their own: Codex's sandbox restricts writes only to a
+   *directory*, and Antigravity has **no kernel sandbox at all** — so worktree + `git diff`
+   is the only file-scope enforcement either gets. The validator rejects either backend
+   with `isolation: direct`.
 3. **Unclear scope ⇒ return to planning.** A job whose scope the planner cannot pin
    never dispatches with a guessed partition — it goes back to writing-plans.
 4. **Model OR tier.** Every job MUST carry at least one of `model` or `tier`. A job

@@ -56,9 +56,13 @@ DEFAULT_MODELS = {
         "standard": "gpt-5.5",
         "light": "gpt-5.3-codex-spark",
     },
+    # Antigravity (agy) map is CURATED, not discovered: `agy models` HANGS, so it
+    # cannot be probed live. These values are ILLUSTRATIVE — verify them against
+    # `agy models` once that command is usable, and refresh via /v:models. The worker
+    # omits `--model` entirely if the resolved value is empty.
     "antigravity": {
         "deep": "Gemini 3.1 Pro (High)",
-        "standard": "Gemini 3.1 Pro (Medium)",
+        "standard": "Gemini 3.1 Pro",
         "light": "Gemini 3.1 Flash",
     },
 }
@@ -222,6 +226,13 @@ def _selftest():
                 and r["backend"] == backend
                 and r["tier"] == tier,
             )
+
+    # Antigravity (agy) curated map resolves for its strongest tier.
+    expect(
+        "antigravity/deep -> curated Gemini",
+        resolve("antigravity", "deep")["model"] == "Gemini 3.1 Pro (High)"
+        and resolve("antigravity", "deep")["effort"] == "high",
+    )
 
     # No 'haiku' anywhere in the default map.
     flat = json.dumps(DEFAULT_MODELS).lower()
