@@ -1,0 +1,66 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/procoders/superpowers-v/schemas/job_result.schema.json",
+  "title": "Compound V job_result",
+  "description": "Canonical, backend-independent result of one dispatched job. Identical shape across the claude, codex, and antigravity adapters. The enforcement fields (blocked, files_changed, violations) are GIT-DERIVED by the caller, never self-reported by the worker model; the model's --output-last-message text feeds only `summary`. Also usable as a codex `--output-schema` target.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "blocked",
+    "files_changed",
+    "violations",
+    "summary",
+    "session_id",
+    "worktree",
+    "exit_code",
+    "failure_class",
+    "retry_after_seconds"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["success", "blocked", "timeout", "error"],
+      "description": "Terminal disposition of the job. `blocked` means a scope violation; `timeout` means the timeout wrapper fired; `error` is any other non-zero exit."
+    },
+    "blocked": {
+      "type": "boolean",
+      "description": "True if any file outside write_allowed changed. Git-derived by the scope gate, never model-self-reported. When true, status MUST be `blocked` and the caller MUST NOT merge."
+    },
+    "files_changed": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Repo-relative paths the job actually changed: `git diff --name-only` UNION `git ls-files --others --exclude-standard` inside the worktree (or against the baseline commit for direct jobs)."
+    },
+    "violations": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Subset of files_changed that fall outside write_allowed. Non-empty ⇒ blocked. Git-derived."
+    },
+    "summary": {
+      "type": "string",
+      "description": "Human-readable one-paragraph summary. Sourced from --output-last-message (or the schema'd JSON) — informational only, never used for enforcement."
+    },
+    "session_id": {
+      "type": "string",
+      "description": "Backend session/run identifier for resume. For codex: the UUID from the run banner, resumed via `codex exec resume <uuid>`. May be empty string when the backend has no resumable session."
+    },
+    "worktree": {
+      "type": "string",
+      "description": "Absolute path of the worktree the job ran in, or empty string for `direct` (in-place) jobs. Worktrees live under $TMPDIR/compound-v/<run-id>/<job-id>."
+    },
+    "exit_code": {
+      "type": "integer",
+      "description": "Raw process exit code of the worker (0 on success; 124 if the timeout wrapper fired)."
+    },
+    "failure_class": {
+      "type": ["string", "null"],
+      "enum": [null, "none", "out_of_credits", "rate_limited", "overloaded", "auth", "context_length", "timeout", "network", "other"],
+      "description": "On a non-success status, the classified backend-failure reason from compound-v-classify-failure.py (out_of_credits | rate_limited | overloaded | auth | context_length | timeout | network | other). null on success/blocked. Drives the dispatcher's deterministic retry/reroute/halt policy (compound-v-failure-policy.py): out_of_credits/auth never retry; out_of_credits circuit-breaks the backend and re-routes remaining jobs to the fallback; transient classes retry with capped backoff."
+    },
+    "retry_after_seconds": {
+      "type": "integer",
+      "description": "Seconds-until-retry parsed from the provider message (HTTP Retry-After, or a codex usage-limit countdown like 'try again in 5 days'), 0 when unknown. The dispatcher passes this to compound-v-failure-policy.py --retry-after so a retry honors the provider's stated wait instead of synthetic backoff."
+    }
+  }
+}

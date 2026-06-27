@@ -75,12 +75,58 @@
         "skill_invoked": "compound-v",
         "rationale": "Trigger fires. The skill itself will then determine that this is a 'pure UI tweak' per Phase 1A skip rule and recommend default Superpowers. Loading is correct; routing decision happens inside."
       }
+    },
+    {
+      "name": "positive-4: about-to-execute via executing-plans triggers compound-v",
+      "category": "positive",
+      "prompt": "The plan is finalized at docs/superpowers/plans/2026-06-26-billing.md. I'm about to use superpowers:executing-plans to build it. Set me up.",
+      "expect": {
+        "skill_invoked": "compound-v",
+        "rationale": "Description: 'OR when about to invoke superpowers:subagent-driven-development or superpowers:executing-plans'. Execution intent on a finished plan = the orchestrator's entry. Compound V materializes the manifest and runs the scope-enforced pipeline."
+      }
+    },
+    {
+      "name": "orchestrator-1: manifest materialization on a verified plan",
+      "category": "positive",
+      "prompt": "writing-plans produced a partitioned plan with a Partition Map at docs/superpowers/plans/2026-06-26-sequence-editor.md. Turn it into a runnable manifest and dispatch it in parallel.",
+      "expect": {
+        "skill_invoked": "compound-v",
+        "rationale": "Plan output + explicit 'manifest' + 'dispatch in parallel' intent. The v1.0 description covers materializing a manifest and dispatching the orchestrated pipeline; this is squarely the orchestrator trigger (the /v:orchestrate → /v:dispatch path)."
+      }
+    },
+    {
+      "name": "orchestrator-2: resume an interrupted run",
+      "category": "positive",
+      "prompt": "My parallel Compound V run got killed halfway through — some jobs finished, some didn't. There's a state.json under docs/superpowers/execution/. How do I pick it back up?",
+      "expect": {
+        "skill_invoked": "compound-v",
+        "rationale": "Crash-resume of an orchestrated run is a v1.0 Compound V capability (state.json + /v:resume re-dispatches only incomplete jobs). The description mentions the 'resumable execution pipeline'; this prompt is about that exact mechanism."
+      }
+    },
+    {
+      "name": "orchestrator-3: scope-gate / BLOCKED job question",
+      "category": "edge",
+      "prompt": "During a Compound V dispatch, one job came back BLOCKED because it wrote a file outside its write_allowed list. What now?",
+      "expect": {
+        "skill_invoked": "compound-v",
+        "rationale": "The git-diff scope gate and the BLOCKED disposition are Compound V orchestrator mechanics. The skill should load to explain the gate, the git-derived violations, and the move-shared-resource-to-Task-0 remedy (also covered in TROUBLESHOOTING). Edge: it's an operational follow-up, not a phase-transition trigger, but it is unambiguously about this skill's machinery."
+      }
+    },
+    {
+      "name": "negative-3: codex CLI usage unrelated to Compound V",
+      "category": "negative",
+      "prompt": "How do I run `codex exec` headlessly with a custom sandbox directory? Nothing to do with Superpowers or any plan.",
+      "expect": {
+        "skill_invoked": null,
+        "rationale": "Generic codex-cli usage with no Superpowers phase, no plan/spec, no manifest, and no Compound V run context. The mere mention of 'codex exec' must not over-trigger the skill — Compound V fires on the phase transitions and on its own run artifacts, not on any codex command."
+      }
     }
   ],
   "notes": [
+    "13 cases: 6 positive, 3 negative, 4 edge. The original 8 (3/2/3) cover the unchanged phase-transition triggers; the 5 added cover the v1.0 orchestrator surface (manifest materialization, resume, scope-gate) plus a negative guard against over-triggering on bare `codex exec` usage.",
     "Positive tests should result in the parent model invoking the compound-v skill.",
     "Negative tests should NOT invoke compound-v — over-triggering is as bad as under-triggering.",
-    "Edge tests verify the skill loads but then correctly applies its skip rules.",
+    "Edge tests verify the skill loads but then correctly applies its skip rules (or explains its own orchestrator mechanics).",
     "No official eval harness exists in Claude Code (2026-05). Recommended runners:",
     "  - Skill Creator plugin's eval harness (https://medium.com/@karkeralathesh/the-complete-guide-to-testing-claude-code-skills-with-the-skill-creator-1ae3821bd7b8)",
     "  - Manual: paste each prompt into a fresh CC session with the plugin loaded and verify the skill was/wasn't invoked"

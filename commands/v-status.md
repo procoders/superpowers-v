@@ -1,0 +1,42 @@
+---
+description: Render the state of a Compound V orchestrator run — pipeline phase plus a per-job status table — by reading state.json from the run directory. Optional run-id argument; without one, list runs and pick the most recent.
+---
+
+You are about to render the **state of a Compound V orchestrator run**. This is read-only: it inspects `state.json`, it does not dispatch, collect, or merge anything.
+
+The run-id (optional) is `{{args}}`.
+
+## Steps
+
+1. **Locate the run.**
+   - If `{{args}}` names a run-id, the run dir is `docs/superpowers/execution/{{args}}/`.
+   - If `{{args}}` is empty, list the subdirectories of `docs/superpowers/execution/`. If there is exactly one, use it. If there are several, show them (newest first by run-id date prefix) and render the most recent, noting the others.
+   - If `docs/superpowers/execution/` is absent or empty, tell the user there are no orchestrator runs yet and stop.
+
+2. **Read `state.json`** from the run dir (and `manifest.yaml` for job titles). If `state.json` is missing or unreadable, report that the run dir exists but has no state yet, and stop.
+
+3. **Render the run-level phase.** Show the `phase` (one of `SPEC_READY → PREFLIGHT_DONE → PARTITION_VERIFIED → DISPATCHED → COLLECTED → REVIEWED → MERGED`, or terminal `BLOCKED`) and `updated_at`. The phase meanings are defined in [`skills/compound-v/state-machine.md`](../skills/compound-v/state-machine.md).
+
+4. **Render the per-job table.** One row per job from `state.json.jobs`, with `manifest.yaml` supplying the title:
+
+   | Job | Title | Status | Isolation | Worktree |
+   |---|---|---|---|---|
+   | task-0-schema | DB schema + types | done | direct | — |
+   | task-1-editor-ui | Editor UI slice | running | worktree | $TMPDIR/… |
+
+   Per-job `status` is one of `{pending | running | done | blocked | failed}` (see state-machine.md). Show the `session_id` for any Codex/worktree job that has one. If `state.json.attempts[<job>]` is present and non-zero, show the retry count for that job (e.g. an `Attempts` column or `· retried 2×`).
+
+5. **Render backend health (the circuit breaker).** From `state.json`, surface graceful-failure state so re-routes and credit-exhaustion are never silent (the fields are defined in [`state-machine.md`](../skills/compound-v/state-machine.md), the policy in [`failure-policy.md`](../skills/compound-v/failure-policy.md)):
+   - **Circuit-open backends** — any `circuit_open[<backend>] == true` (out for the run — out-of-credits or auth). Call it out prominently.
+   - **Cooldowns** — any `cooldowns[<backend>]` timestamp still in the future (a transiently-failed backend deprioritized until then; probed half-open next batch).
+   - **Run-level retries** — `total_retries` / `max_total_retries` (the anti retry-storm budget).
+   - **Active re-routes** — if a backend is circuit-open and jobs were re-routed (e.g. codex→claude/opus), state it with the job count and the cost direction (*"codex out of credits → 3 jobs re-routed to claude/opus, est. cost ↑"*). Never present a cheap→expensive swap silently.
+
+   If none of these fields are present (an older run, or no failures yet), skip this section.
+
+6. **Summarize.** Counts by status (e.g. "3 done, 1 running, 1 pending"). If `phase` is `BLOCKED` or any job is `blocked`/`failed`, or any backend is `circuit_open`, point the user at `/v:resume {{args}}` to reconcile and re-dispatch the incomplete jobs (for an out-of-credits circuit-break, the user tops up credits first — see [`failure-policy.md`](../skills/compound-v/failure-policy.md)).
+
+## Notes
+
+- This command never mutates the run. To recover an interrupted run, use [`/v:resume`](v-resume.md).
+- Do **not** print fabricated cost or token metrics — `state.json` carries none and neither should this output (anti-ruflo).

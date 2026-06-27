@@ -1,20 +1,38 @@
 ---
 name: compound-v
-description: Use when superpowers:brainstorming has produced a spec, OR when superpowers:writing-plans has produced a plan, OR when about to invoke superpowers:subagent-driven-development or superpowers:executing-plans. Sidekick that intercepts these three Superpowers transitions.
+description: Use when superpowers:brainstorming has produced a spec, OR when superpowers:writing-plans has produced a plan, OR when about to invoke superpowers:subagent-driven-development or superpowers:executing-plans. Sidekick that intercepts these three Superpowers transitions — runs triple parallel pre-flight, then materializes a manifest and dispatches the orchestrated, scope-enforced, resumable execution pipeline.
 ---
 
 # Compound V
 
 > *"You don't tell people you're injecting them with Compound V. You just hand them the spec and watch them go faster."* — internal Vought memo, probably
 
-Compound V is a **transparent interceptor** that sits between Superpowers phases. You don't invoke it directly — it fires automatically at three transitions:
+Compound V is a **transparent interceptor** that sits between Superpowers phases AND, as of v1.0, a **lightweight execution orchestrator** — the orchestrated pipeline is now the default execution path. You don't invoke it directly — it fires automatically at three transitions:
 
 1. **After `brainstorming`, before `writing-plans`** → injects THREE parallel pre-flights:
    - **Phase 1A: Code-Archaeology** — the *technical* reality of the existing code
    - **Phase 1B: Domain-Expert Advisor** — the *product/domain* reality (web-searched if needed, knowledge-base persisted)
    - **Phase 1C: Library/Doc Validator** — *library currency* via Context7 MCP (stale deps, abandoned libs, outdated API signatures)
-2. **Inside `writing-plans`** → enforces **Disjoint File Partitioning** so tasks can run in parallel
-3. **At execution** → dispatches implementer subagents **in parallel on Opus by default** (Sonnet allowed only for clearly junior-level mechanical tasks — see the strict taxonomy in `phase-3-parallel-opus-dispatch.md`), bypasses git worktrees, direct workspace writes
+2. **Inside `writing-plans`** → enforces **Disjoint File Partitioning** and **materializes a `manifest.yaml`** (the machine-readable contract) so tasks can run in parallel
+3. **At execution** → runs the **orchestration pipeline**: dispatch each manifested job to its backend (Claude subagent on **Opus by default**, Sonnet only for clearly junior mechanical tasks, or a headless **Codex** worker for large isolated builds — see `phase-3-parallel-opus-dispatch.md`), **enforce file-scope with a `git diff` gate after every job**, collect canonical `job_result`s, review against the spec's Acceptance Criteria, and update outcome memory. Runs **autonomously with guardrails** and is **crash-resumable** via `state.json`.
+
+**The unified pipeline (orchestrator-as-default):**
+
+```
+brainstorm ─► spec (carries feature-level Acceptance Criteria)
+   ▼ auto-fire
+[1A archaeology ∥ 1B domain ∥ 1C library] ─► 3 audits   (🔴 critical finding → HALT)
+   ▼ writing-plans + Phase 2 Partition Map
+★ MANIFEST  docs/superpowers/execution/<run-id>/manifest.yaml   (partition FAIL → HALT)
+   ▼ DISPATCH — batched Task (4–6) ∥ Codex via backend-launcher; per-job worktree|direct
+★ COLLECT + SCOPE GATE  git diff --name-only vs write_allowed   (violation → BLOCKED → HALT)
+   ▼ REVIEW  spec + quality + final integration (Opus), AC-gated   (unfixable ISSUES → HALT)
+   ▼ MEMORY  append task-outcomes.jsonl + routing-lessons.md
+   ▼ finishing-a-development-branch
+                          state.json updated after every phase ──► /v:status · /v:resume
+```
+
+The orchestration contracts and scripts live alongside this skill: the manifest schema in [execution-manifest.md](execution-manifest.md), the backend contract in [backend-launcher/SKILL.md](../backend-launcher/SKILL.md), and the canonical result shape in [schemas/job_result.schema.json](../../schemas/job_result.schema.json). **No daemon, no MCP server, no vector DB, no fabricated cost metrics** — the anti-ruflo charter. Manual control is available via `/v:orchestrate`, `/v:dispatch`, `/v:collect`, `/v:status`, `/v:resume`, `/v:init`; in default operation the agent flows through orchestrate → dispatch → collect itself.
 
 **Why three pre-flights, in parallel:**
 - 1A catches "the building is 200m², not 500m²" (existing code reality)
@@ -71,7 +89,7 @@ flowchart LR
 | Plan tasks may touch overlapping files | Plan **must** partition files disjointly; reviewer rejects overlap |
 | Implementer subagents run **sequentially** ("never in parallel — conflicts") | Implementers run **in parallel** (conflicts impossible by partition); practical batch size 4-6 concurrent — see phase-3 |
 | Implementer uses cheap/standard model by default | Implementer dispatched with **`model: "opus"`** by default; **`model: "sonnet"`** allowed only for clearly junior-level mechanical tasks (strict taxonomy in phase-3) |
-| Isolated work uses **git worktrees** | **No worktrees** — direct writes to active workspace (saves 1-2 sec per spawn × N spawns) |
+| Isolated work uses **git worktrees** globally | **Per-job isolation** — `direct` writes for disjoint Claude jobs; a `worktree` for Codex/external workers and overlap-prone jobs. The `git diff` scope gate runs on every job regardless. |
 | Spec + quality reviewers run sequentially per task | Reviewers run **per-task in parallel** after each batch completes |
 | No persistent domain knowledge between sessions | Phases 1B and 1C save **knowledge bases** at `docs/superpowers/{expert,library-audit}/_knowledge-base/` reused on future related features |
 | Library suggestions from LLM training data | Phase 1C validates against **live Context7 MCP** before any library is locked into the plan |
@@ -134,7 +152,7 @@ When the plan is ready:
 3. When all implementers return, dispatch 2N reviewers in parallel (spec + quality per task), also on Opus.
 4. Per-task fix loops, then final integration review.
 
-**No git worktrees.** Subagents write directly to the active workspace because partitioning prevents collisions.
+**Per-job isolation.** Disjoint Claude jobs write directly to the active workspace (partitioning prevents collisions); Codex/external workers and overlap-prone jobs run in a worktree under `$TMPDIR/compound-v/<run-id>/<job-id>`, merged back on PASS via an index-based patch that includes new files (`git -C <wt> add -A && git -C <wt> diff --cached --binary HEAD | (cd <repo> && git apply --index)`; a plain `git diff HEAD | git apply` would drop allowed untracked additions). The `git diff` scope gate runs on every job either way; a BLOCKED job never merges. See `phase-3-parallel-opus-dispatch.md` and [backend-launcher/SKILL.md](../backend-launcher/SKILL.md).
 
 ---
 
@@ -166,11 +184,22 @@ docs/superpowers/
 │   ├── YYYY-MM-DD-<topic>.md          # Phase 1C output per feature
 │   └── _knowledge-base/
 │       └── <topic>.md                  # Persistent library KB (version notes, alternatives)
+├── execution/                          # v1.0 orchestrator — one run dir per run
+│   └── <run-id>/
+│       ├── manifest.yaml               # the planner↔executor contract (execution-manifest.md)
+│       ├── state.json                  # phase + per-job status {pending|running|done|blocked|failed}
+│       ├── jobs/<id>.prompt.md         # dispatched prompt (for re-dispatch on resume)
+│       └── results/<id>.json           # normalized job_result (job_result.schema.json)
+├── memory/                             # v1.0 lean outcome memory (closes the routing loop)
+│   ├── task-outcomes.jsonl             # one line per job, appended by the collector
+│   └── routing-lessons.md              # human-curated routing lessons
 ├── specs/                              # default Superpowers
 └── plans/                              # default Superpowers
 ```
 
 The `_knowledge-base/` subdirectories hold **persistent knowledge** the advisors accumulate across features. On future related work, advisors read these first before running new web searches / Context7 queries — making each subsequent feature in the same domain or touching the same library cheaper and faster.
+
+The `execution/<run-id>/` directory **is** the run record and audit trail — `state.json` + `results/` are both execution substrate and the only observability surface (no separate `run.log` / `cost-estimate.md`; we do not print token-cost numbers we cannot measure). The `memory/` directory accumulates routing outcomes across runs: `task-outcomes.jsonl` is appended automatically by the collector, `routing-lessons.md` is human-curated.
 
 ---
 
@@ -184,7 +213,7 @@ If you catch yourself thinking any of these, you're about to break Compound V:
 - "I'll just dispatch one implementer first and see how it goes" → that's sequential. Dispatch all N or you've reverted.
 - "The plan is fine, I'll skip the Partition Map" → without the map, parallel dispatch is unsafe
 - "This task looks simple, let me grab Sonnet for it" → check the strict junior-task taxonomy in phase-3 first. If you can't tick every box, it's Opus.
-- "Worktrees are safer, let me keep them" → worktrees serialize cognitive overhead. Trust the partition.
+- "Worktrees are safer, let me put every job in one" → isolation is per-job: `direct` for disjoint Claude jobs, `worktree` only for Codex/external or overlap-prone work. The `git diff` scope gate is what actually keeps you safe — it runs either way.
 - "I'll run 1A and 1B and 1C sequentially, not parallel" → they're independent; sequential triples wall-clock for no benefit
 
 See [rationalization-table.md](rationalization-table.md) for the full list with rebuttals.
@@ -203,7 +232,7 @@ See [rationalization-table.md](rationalization-table.md) for the full list with 
 | `superpowers:writing-plans` | Run with Partition Map requirement (Trigger 2). |
 | `superpowers:subagent-driven-development` | Replace its "sequential implementer, cheap model, with worktree" defaults with Compound V dispatch (Trigger 3). |
 | `superpowers:dispatching-parallel-agents` | Compound V uses this skill's parallel pattern for implementers, not just for investigation. |
-| `superpowers:using-git-worktrees` | **Skipped.** Partition Map replaces worktree isolation. |
+| `superpowers:using-git-worktrees` | **Per-job, planner-decided.** Direct writes for disjoint Claude jobs (fast); a worktree for Codex/external workers (mandatory) and any overlap-prone Claude job. The `git diff` scope gate is the constant either way; the worktree is the escalation. |
 | `superpowers:executing-plans` | If chosen instead of subagent-driven, still apply parallel + Opus rules where possible. |
 
 ---

@@ -10,8 +10,30 @@ Compound V is a **sidekick to Superpowers**. It intercepts the three Superpowers
    - Code archaeology (existing-code reality)
    - Domain-expert advisor with three-layer audience search (product/regulatory reality)
    - Library/doc validator via Context7 MCP (dependency currency)
-2. **Disjoint File Partition Map enforcement** inside writing-plans
-3. **Batched parallel dispatch** (4-6 concurrent) on Opus by default, Sonnet only for strict junior-level mechanical tasks
+2. **Disjoint File Partition Map enforcement** inside writing-plans, which **materializes a `manifest.yaml`** — the machine-readable contract that drives dispatch
+3. **Manifest-driven multi-backend dispatch** (4-6 concurrent) on Opus by default, Sonnet only for strict junior-level mechanical tasks, or a headless **Codex** worker for large isolated builds
+4. **A `git diff` scope gate after every job** — a worker that writes outside its `write_allowed` list is BLOCKED and never merges; enforcement fields are git-derived, never model-self-reported
+5. **Crash-resume** via a `state.json` run directory
+
+## Orchestrator surface (v1.0)
+
+The execution tail is a small, deterministic orchestrator — contracts + helper scripts + the agent you already have. No daemon, no MCP server, no fabricated metrics.
+
+- **Manifest contract:** `skills/compound-v/execution-manifest.md` (schema) + `examples/manifest.example.yaml`.
+- **Backend Launcher sub-skill:** `skills/backend-launcher/SKILL.md` defines one `job_spec → job_result` contract (`schemas/job_result.schema.json`). Adapters: `adapter-claude.md`, `adapter-codex.md`, `adapter-antigravity.md` (stub — deferred to 1.1).
+- **Headless Codex worker:** `scripts/compound-v-run-codex-worker.sh`. The verified `codex-cli 0.130` invocation runs in a git worktree:
+
+  ```bash
+  codex exec --cd "$WT" --sandbox workspace-write --skip-git-repo-check \
+    --model "$model" --output-last-message "$WT/.job_result.txt" \
+    -c sandbox_workspace_write.network_access=false "$prompt"
+  ```
+
+  Do **not** pass `--ask-for-approval never` — it is invalid for `codex exec` (top-level/interactive flag only); `exec` already defaults to `approval: never`. Resume is `codex exec resume <uuid>`.
+- **Scope gate:** `scripts/compound-v-scope-check.py` unions `git diff --name-only HEAD` with `git ls-files --others --exclude-standard` and tests each path against `write_allowed`.
+- **State + resume:** `skills/compound-v/state-machine.md`; `/v:resume <run-id>` re-dispatches only incomplete jobs (git-wins tie-break).
+
+> Note: the orchestrator scripts and adapters are exercised on Claude Code. On a non-Claude harness, the prose contracts (`SKILL.md`, the adapter docs, the manifest schema) are harness-neutral, but the dispatch wiring assumes Claude Code's `Task` tool — adapt to your harness's subagent mechanism. 🧪 **untested on Codex/other harnesses.**
 
 ## How Codex / non-Claude-Code harnesses use it
 
@@ -24,6 +46,9 @@ The skill content lives at `skills/compound-v/SKILL.md` and its phase reference 
 | `Task(subagent_type, prompt, model, maxTurns, run_in_background)` | `subagent <name> --model opus --max-turns 15 --background` |
 | `Skill <name>` | Read the skill file directly and apply |
 | `mcp__plugin_context7_context7__*` | Whatever the local Context7 MCP installation exposes |
+| Codex backend (`adapter-codex.md`) | A Bash-spawned `codex exec` worker process — its own process, its own git worktree. NOT a subagent, NOT the `openai-codex` JSON-RPC broker (single-flight, can't fan out). |
+
+The Codex backend is harness-independent on purpose: it is just `codex exec` driven by `scripts/compound-v-run-codex-worker.sh`. Any harness with a shell can spawn it.
 
 ## First-class agents (under `agents/`)
 
@@ -32,9 +57,23 @@ These work in any harness that reads `agents/*.md` frontmatter. Codex CLI loads 
 - `compound-v:code-archaeologist` — Phase 1A
 - `compound-v:domain-expert` — Phase 1B (with multi-layer WebSearch incl. persona forums)
 - `compound-v:doc-validator` — Phase 1C
-- `compound-v:partition-reviewer` — pre-execution gate
-- `compound-v:parallel-dispatcher` — execution orchestrator
-- `compound-v:spec-reviewer` — post-implementer spec compliance
+- `compound-v:partition-reviewer` — pre-execution gate; runs `compound-v-validate-manifest.py` as its deterministic backing check
+- `compound-v:parallel-dispatcher` — manifest-driven multi-backend dispatcher; calls `compound-v-scope-check.py` after every job and HALTS on BLOCKED
+- `compound-v:spec-reviewer` — the three-pass Review Gate (spec acceptance criteria · quality/no-regression/no-fabricated-metrics · final integration), AC-gated
+
+All reviewers/agents carry `model: opus`. Manifest `backend`/`model` values (`gpt-5.5`, etc.) are execution-layer data and **never** appear in any frontmatter.
+
+## Slash commands
+
+| Command | Purpose |
+|---|---|
+| `/v:init` | Detect capabilities (Codex CLI, Context7 MCP), walk through installs, set + save routing stance |
+| `/v:orchestrate <plan>` | Materialize a `manifest.yaml` from a plan + routing policy |
+| `/v:dispatch <plan\|manifest\|run-id>` | Run the autonomous pipeline (partition-review → dispatch → scope-gate → collect → review). A bare plan path still works (backward-compatible) |
+| `/v:collect <run-id>` | Re-run collect + scope-gate + review on an existing run |
+| `/v:status [run-id]` | Render `state.json` |
+| `/v:resume <run-id>` | Reconcile + re-dispatch incomplete jobs after interruption |
+| `/v:archaeology <topic>` | (unchanged) Phase 1A only |
 
 ## Model policy (universal)
 
@@ -44,8 +83,11 @@ These work in any harness that reads `agents/*.md` frontmatter. Codex CLI loads 
 
 ## Key entry points
 
-- For setup: `README.md`
+- For setup: `README.md` (and `/v:init` to detect capabilities)
 - For the full skill flow: `skills/compound-v/SKILL.md`
+- For the execution contract: `skills/compound-v/execution-manifest.md` + `skills/backend-launcher/SKILL.md` + `schemas/job_result.schema.json`
+- For routing: `skills/compound-v/routing-policy.md`
+- For state + resume: `skills/compound-v/state-machine.md`
 - For "what's in this plugin": `CHANGELOG.md`
 - For "it broke": `TROUBLESHOOTING.md`
 - For the comic / why it exists: `assets/skyscraper-metaphor.md`

@@ -10,8 +10,18 @@ Compound V is a **sidekick to Superpowers**. It intercepts the three Superpowers
    - Code archaeology (existing-code reality)
    - Domain-expert advisor with three-layer audience search (product/regulatory reality)
    - Library/doc validator via Context7 MCP (dependency currency)
-2. **Disjoint File Partition Map enforcement** inside writing-plans
-3. **Batched parallel dispatch** on the most capable model available (Gemini 2.5 Pro or equivalent)
+2. **Disjoint File Partition Map enforcement** inside writing-plans, which **materializes a `manifest.yaml`** — the machine-readable contract that drives dispatch
+3. **Manifest-driven dispatch** on the most capable model available (Gemini 2.5 Pro or equivalent), with a **`git diff` scope gate after every job** (a worker that writes outside its `write_allowed` list is BLOCKED and never merges) and **crash-resume** via a `state.json` run directory
+
+## Orchestrator surface (v1.0)
+
+The execution tail is a small, deterministic orchestrator — contracts + helper scripts + the agent you already have. No daemon, no MCP server, no fabricated metrics.
+
+- **Manifest contract:** `skills/compound-v/execution-manifest.md` + `examples/manifest.example.yaml`.
+- **Backend Launcher sub-skill:** `skills/backend-launcher/SKILL.md` — one harness-neutral `job_spec → job_result` contract (`schemas/job_result.schema.json`).
+- **Adapters:** `adapter-claude.md`, `adapter-codex.md` (a headless `codex exec` worker, OpenAI-specific), `adapter-antigravity.md` (stub — deferred to 1.1). There is **no Gemini-specific backend adapter** in v1.0 — on Gemini CLI, run the Claude-equivalent path through your harness's subagent mechanism. 🧪 untested.
+- **Scope gate:** `scripts/compound-v-scope-check.py` (git-derived; pure Python 3.9 stdlib, harness-neutral).
+- **State + resume:** `skills/compound-v/state-machine.md`.
 
 ## How Gemini uses it
 
@@ -35,12 +45,29 @@ This plugin was authored for the Anthropic Claude family. On Gemini:
 - "Sonnet exception" → **Gemini 2.5 Flash** for the same narrow junior-task taxonomy
 - "Never Haiku" → Never use Gemini Flash-Lite or smaller; the project's reasoning bar is high
 
-See `skills/compound-v/phase-3-parallel-opus-dispatch.md` § "Model Selection Taxonomy" for the strict 8-box criteria that gate the cheaper-model carve-out.
+See `skills/compound-v/phase-3-parallel-opus-dispatch.md` § "Model Selection Taxonomy" for the strict 8-box criteria that gate the cheaper-model carve-out, and `skills/compound-v/routing-policy.md` for the env-aware stances (Balanced / Conservative / Cost-aware). Reviewers are always the top-tier model; the cheaper-model carve-out never applies to a reviewer.
+
+## Slash commands
+
+These are Claude Code `/v:*` commands. On Gemini CLI, invoke the equivalent skill content directly (the commands are thin wrappers over the skill prose).
+
+| Command | Purpose |
+|---|---|
+| `/v:init` | Detect capabilities (Codex CLI, Context7 MCP), walk through installs, set + save routing stance |
+| `/v:orchestrate <plan>` | Materialize a `manifest.yaml` from a plan + routing policy |
+| `/v:dispatch <plan\|manifest\|run-id>` | Run the autonomous pipeline (bare plan path still works) |
+| `/v:collect <run-id>` | Re-run collect + scope-gate + review |
+| `/v:status [run-id]` | Render `state.json` |
+| `/v:resume <run-id>` | Reconcile + re-dispatch incomplete jobs |
+| `/v:archaeology <topic>` | (unchanged) Phase 1A only |
 
 ## Key entry points
 
 - For setup: `README.md`
 - For the full skill flow: `skills/compound-v/SKILL.md`
+- For the execution contract: `skills/compound-v/execution-manifest.md` + `skills/backend-launcher/SKILL.md`
+- For routing: `skills/compound-v/routing-policy.md`
+- For state + resume: `skills/compound-v/state-machine.md`
 - For "what's in this plugin": `CHANGELOG.md`
 - For "it broke": `TROUBLESHOOTING.md`
 

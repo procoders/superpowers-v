@@ -4,3 +4,19 @@ node_modules/
 .env
 .env.local
 docs/superpowers/_runs/
+
+# Compound V orchestrator run artifacts.
+# Worktrees live under $TMPDIR/compound-v/<run-id>/<job-id> (outside the repo) by
+# design; these guards catch any that accidentally land in-tree, plus the codex
+# adapter's transient last-message capture. The committed audit trail
+# (docs/superpowers/execution/<run-id>/manifest.yaml, state.json, results/) and
+# docs/superpowers/memory/ are intentionally NOT ignored.
+.worktrees/
+/compound-v/
+.job_result.txt
+
+# The committed run substrate must NEVER be ignored — the scope gate uses
+# `git ls-files --others --exclude-standard`, which skips gitignored paths, so an
+# over-broad ignore here would blind enforcement. Un-ignore explicitly to be safe.
+!docs/superpowers/execution/
+!docs/superpowers/memory/

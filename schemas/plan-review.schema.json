@@ -1,0 +1,56 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/procoders/superpowers-v/schemas/plan-review.schema.json",
+  "title": "Compound V cross-model plan review",
+  "description": "Structured findings returned by an independent cross-model reviewer (e.g. Codex/GPT) over a Compound V plan or manifest. ADVISORY ONLY: the orchestrator arbitrates; the reviewer never has final authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["endorse", "concerns", "reject"],
+      "description": "endorse = plan is sound; concerns = proceed only after addressing findings; reject = a critical flaw should block dispatch until fixed."
+    },
+    "summary": {
+      "type": "string",
+      "description": "One-paragraph independent assessment, in the reviewer's own words."
+    },
+    "findings": {
+      "type": "array",
+      "description": "Each finding is a specific, falsifiable objection. Empty array is valid (and honest) when the reviewer finds nothing.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": ["critical", "high", "medium", "low"]
+          },
+          "category": {
+            "type": "string",
+            "enum": ["partition", "coupling", "scope", "model-routing", "acceptance", "sequencing", "risk", "other"]
+          },
+          "claim": {
+            "type": "string",
+            "description": "The specific objection — what is wrong or risky."
+          },
+          "evidence": {
+            "type": "string",
+            "description": "Why the reviewer believes it (a concrete reference to the plan/manifest/repo). Avoid vague assertions."
+          },
+          "recommendation": {
+            "type": "string",
+            "description": "A concrete, cheap-to-adjudicate suggested fix."
+          }
+        },
+        "required": ["severity", "category", "claim", "evidence", "recommendation"]
+      }
+    },
+    "blind_spots_checked": {
+      "type": "array",
+      "description": "What the reviewer actively tried to refute (so the orchestrator can see coverage, not just hits).",
+      "items": { "type": "string" }
+    }
+  },
+  "required": ["verdict", "summary", "findings", "blind_spots_checked"]
+}
