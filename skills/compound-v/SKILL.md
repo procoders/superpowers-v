@@ -32,7 +32,7 @@ brainstorm ─► spec (carries feature-level Acceptance Criteria)
                           state.json updated after every phase ──► /v:status · /v:resume
 ```
 
-The orchestration contracts and scripts live alongside this skill: the manifest schema in [execution-manifest.md](execution-manifest.md), the backend contract in [backend-launcher/SKILL.md](../backend-launcher/SKILL.md), and the canonical result shape in [schemas/job_result.schema.json](../../schemas/job_result.schema.json). **No daemon, no MCP server, no vector DB, no fabricated cost metrics** — the anti-ruflo charter. Manual control is available via `/v:orchestrate`, `/v:dispatch`, `/v:collect`, `/v:status`, `/v:resume`, `/v:init`; in default operation the agent flows through orchestrate → dispatch → collect itself.
+The orchestration contracts and scripts live alongside this skill: the manifest schema in [execution-manifest.md](execution-manifest.md), the backend contract in [backend-launcher/SKILL.md](../backend-launcher/SKILL.md), and the canonical result shape in [schemas/job_result.schema.json](../../schemas/job_result.schema.json). **No daemon, no MCP server, no external vector DB service, no fabricated cost metrics** — the anti-ruflo charter. (V-memory's optional DENSE lane is pure-Python embeddings in a repo-external venv, not a service — see [memory.md](memory.md).) Manual control is available via `/v:orchestrate`, `/v:dispatch`, `/v:collect`, `/v:status`, `/v:resume`, `/v:init`, plus `/v:remember` (recall search) and `/v:memory-refresh` (index/bootstrap); in default operation the agent flows through orchestrate → dispatch → collect itself.
 
 **Epic mode (v1.1) — chain many features into one build.** A single run executes one plan (one feature). An **epic** chains several: an ordered set of features, each run through the full v1.0 pipeline above in **dependency order**, accumulating onto **one branch** — "build a whole app." It is the same discipline one level up: a deterministic topological spine (`epic-state.json` via [`scripts/compound-v-epic-state.py`](../../scripts/compound-v-epic-state.py)) drives a resumable, no-daemon feature loop, ending in a cross-feature integration review and `finishing-a-development-branch`. Run it with `/v:epic`; the model, run-dir layout, and honesty boundary are in [epic-mode.md](epic-mode.md).
 
@@ -154,6 +154,8 @@ When the plan is ready:
 3. When all implementers return, dispatch 2N reviewers in parallel (spec + quality per task), also on Opus.
 4. Per-task fix loops, then final integration review.
 
+At the review gate, run `recall-check --files <diff's files>` over V-memory: if the same file pattern carries N≥k prior `blocked`/`error`/`timeout` or scope-violation records (default k=2), it returns the conservative-only verdict **tighten** (force worktree / add a review pass / fold into Task 0) — evidence that escalates, never reroutes or loosens. See [memory.md](memory.md).
+
 **Per-job isolation.** Disjoint Claude jobs write directly to the active workspace (partitioning prevents collisions); Codex/external workers and overlap-prone jobs run in a worktree under `$TMPDIR/compound-v/<run-id>/<job-id>`, merged back on PASS via an index-based patch that includes new files (`git -C <wt> add -A && git -C <wt> diff --cached --binary HEAD | (cd <repo> && git apply --index)`; a plain `git diff HEAD | git apply` would drop allowed untracked additions). The `git diff` scope gate runs on every job either way; a BLOCKED job never merges. See `phase-3-parallel-opus-dispatch.md` and [backend-launcher/SKILL.md](../backend-launcher/SKILL.md).
 
 ---
@@ -204,6 +206,8 @@ The `_knowledge-base/` subdirectories hold **persistent knowledge** the advisors
 
 The `execution/<run-id>/` directory **is** the run record and audit trail — `state.json` + `results/` are both execution substrate and the only observability surface (no separate `run.log` / `cost-estimate.md`; we do not print token-cost numbers we cannot measure). The `memory/` directory accumulates routing outcomes across runs: `task-outcomes.jsonl` is appended automatically by the collector; `worker-performance.jsonl` is the **machine-generated** scorecard derived from it by `compound-v-scorecard.py` (one row per `(backend, type)` with a `health` verdict; regenerated each run, never hand-edited); `routing-lessons.md` is human-curated. The router consults both — the scorecard for measured `(backend × task-type)` health, the lessons as the authoritative override (see `routing-policy.md` §Scorecard-aware routing).
 
+Beyond this outcome memory, **V-memory** adds a local-first RECALL layer over the `docs/superpowers/**` prose (archaeology, expert, library-audit, lessons): a CORE lane (SQLite FTS5 BM25 over git-tracked prose, pure stdlib, always on) and an opt-in DENSE lane (repo-external embeddings, used in a rank-union, degrade-safe to FTS5-only). It **extends** the two-half outcome memory above, never rewrites it. Recall is **evidence for planning and review, not a routing input** — routing stays the deterministic order. The authority is [memory.md](memory.md) (engine: `scripts/compound-v-memory.py`; commands `/v:remember` and `/v:memory-refresh`).
+
 ---
 
 ## Red Flags — STOP
@@ -232,7 +236,7 @@ See [rationalization-table.md](rationalization-table.md) for the full list with 
 | Universal domain-expert advisor (this plugin) | Inserted as Phase 1B. Dispatchable as `subagent_type: "compound-v:domain-expert"` (see `agents/domain-expert.md`). |
 | Library/doc validator via Context7 (this plugin) | Inserted as Phase 1C. Dispatchable as `subagent_type: "compound-v:doc-validator"` (see `agents/doc-validator.md`). |
 | MCP `plugin:context7:context7` | Required for Phase 1C (Phase 1C degrades to WebSearch if Context7 unavailable). |
-| `superpowers:writing-plans` | Run with Partition Map requirement (Trigger 2). |
+| `superpowers:writing-plans` | Before planning the feature, recall related prior work via `/v:remember` (V-memory) as planning evidence; then run with Partition Map requirement (Trigger 2). |
 | `superpowers:subagent-driven-development` | Replace its "sequential implementer, cheap model, with worktree" defaults with Compound V dispatch (Trigger 3). |
 | `superpowers:dispatching-parallel-agents` | Compound V uses this skill's parallel pattern for implementers, not just for investigation. |
 | `superpowers:using-git-worktrees` | **Per-job, planner-decided.** Direct writes for disjoint Claude jobs (fast); a worktree for Codex/external workers (mandatory) and any overlap-prone Claude job. The `git diff` scope gate is the constant either way; the worktree is the escalation. |

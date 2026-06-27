@@ -26,7 +26,18 @@ These are *not* the only inputs. Before routing a job type, the engine **consult
 the human-curated lessons distilled from `task-outcomes.jsonl`. A recorded lesson
 ("`large_isolated` on codex blocked twice on barrel files → fold barrels into Task 0")
 overrides the table default for that pattern. That is the closed loop: outcomes →
-lessons → routing — no vector DB, no semantic search (anti-ruflo, PRD §5.8).
+lessons → routing — a deterministic order, not a learned model.
+
+> **V-memory (v2.0) does not change this order.** The new prose-recall layer
+> (see [`memory.md`](memory.md)) is **evidence for planning + review, not a routing
+> input.** Routing stays the deterministic v1.1 order — lessons → stance table →
+> scorecard → fallback → invariants — exactly as above; recall never reorders it. The
+> one bridge from recall back into action is **conservative-only**: `recall-check
+> --files <glob>` counts prior structured `job_result` records (`blocked`/`error`/`timeout`
+> / scope violation) on the same file pattern, and `N≥k` returns a single verdict
+> **`tighten`** (force worktree / +review pass / fold into Task 0). It is the prose
+> analogue of the scorecard's `unhealthy → escalate`: it only ever makes routing **more**
+> conservative, and it **never reroutes to a lower-trust backend**.
 
 The engine also consults a **machine-generated scorecard** (see [Scorecard-aware
 routing](#scorecard-aware-routing) below). The scorecard is a *deterministic

@@ -14,7 +14,10 @@ Hard-won routing knowledge for Compound V — distilled by a human from the raw
 The routing engine (`skills/compound-v/routing-policy.md`) consults this file as
 an input when it picks backend / model / isolation for a job type — so a lesson
 recorded here actually changes future routing decisions. That is the whole point
-of the loop: it closes routing learning without scorecards or a vector DB.
+of the loop: a hand-curated lesson, written from outcomes, that the router obeys.
+(Since v1.1 the router also reads the machine-generated scorecard, and v2.0 adds a
+prose-recall layer for planning/review — but this file stays the authoritative,
+human-written override, and no script ever writes it.)
 
 ## Lessons
 

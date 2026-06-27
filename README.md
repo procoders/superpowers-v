@@ -120,7 +120,7 @@ flowchart LR
 ```
 superpowers-v/
 ├── .claude-plugin/
-│   ├── plugin.json                            # version 1.1.0; keywords += orchestrator
+│   ├── plugin.json                            # version 2.0.0; keywords += orchestrator
 │   └── marketplace.json                       # local-dev convenience (kept in lockstep)
 ├── agents/                                    # 6 first-class subagent definitions
 │   ├── code-archaeologist.md                  # → subagent_type: "compound-v:code-archaeologist"
@@ -138,11 +138,14 @@ superpowers-v/
 │   ├── v-resume.md                            # /v:resume <run-id> — re-dispatch incomplete jobs
 │   ├── v-models.md                            # /v:models — discover models, assign tier→model, write config map
 │   ├── v-epic.md                              # /v:epic <brief> — chain features into one resumable multi-feature build
+│   ├── v-remember.md                          # /v:remember <query> — recall over docs/superpowers prose (FTS5 ∪ opt-in dense)
+│   ├── v-memory-refresh.md                    # /v:memory-refresh — index the recall corpus / bootstrap embeddings
 │   └── v-archaeology.md                       # /v:archaeology <topic> — Phase 1A alone (unchanged)
 ├── hooks/                                     # sidekick reminders (description-based auto-fire is primary)
 │   ├── hooks.json                             # SessionStart + PostToolUse(Write)
 │   ├── session-banner.sh                      # SessionStart: banner + /v:init hint when no config
-│   └── plan-saved-nudge.sh                    # PostToolUse(Write): nudge toward /v:orchestrate or /v:dispatch
+│   ├── plan-saved-nudge.sh                    # PostToolUse(Write): nudge toward /v:orchestrate or /v:dispatch
+│   └── memory-refresh.sh                      # SessionStart + PostToolUse(Write): silent self-backgrounded FTS5-only recall refresh
 ├── skills/
 │   ├── compound-v/                            # main skill — orchestrator-as-default
 │   │   ├── SKILL.md                           # main entry, auto-fires at transitions
@@ -157,6 +160,7 @@ superpowers-v/
 │   │   ├── routing-policy.md                  # task-type → (tier, effort); stances + env-aware + models map
 │   │   ├── failure-policy.md                  # backend-failure classify → retry/reroute/halt + circuit breaker
 │   │   ├── state-machine.md                   # states + run dir + crash-resume
+│   │   ├── memory.md                           # 🧠 V-memory recall (FTS5 core + opt-in embeddings) + recall-check bridge
 │   │   ├── epic-mode.md                        # 🏗️ chain features into one resumable multi-feature build (/v:epic)
 │   │   ├── skill-escalation.md                # gated deep-research / playground / writing-style
 │   │   ├── workflows-accelerator.md           # opt-in Engine C fast-path (probe + fallback to A)
@@ -178,6 +182,7 @@ superpowers-v/
 │   ├── compound-v-update-memory.py            # append task-outcomes.jsonl
 │   ├── compound-v-scorecard.py                # aggregate task-outcomes → worker-performance.jsonl (health per backend×type)
 │   ├── compound-v-epic-state.py               # epic-state.json spine — chain features (init/next/update/summary)
+│   ├── compound-v-memory.py                    # V-memory recall engine — FTS5 core (∪ opt-in embeddings) + recall-check
 │   └── lint-frontmatter.py                    # frontmatter linter (no-Haiku policy)
 ├── schemas/
 │   └── job_result.schema.json                 # strict JSON Schema; codex --output-schema target
@@ -252,6 +257,25 @@ The `_knowledge-base/` subdirectories make each subsequent feature in the same d
 
 ---
 
+## Memory — V-memory recall (v2.0)
+
+Compound V already carries a **two-half memory**: the machine-appended `task-outcomes.jsonl` → scorecard (`worker-performance.jsonl`) and the human-curated [`routing-lessons.md`](docs/superpowers/memory/routing-lessons.md). **V-memory** adds a third surface that **extends** those two and **never rewrites** them: a local-first **recall layer** over `docs/superpowers/**` prose, so planning and review can ask *"have we seen this before?"* across specs, plans, reviews, archaeology, and lessons. Engine: [`scripts/compound-v-memory.py`](scripts/compound-v-memory.py); authority doc: [skills/compound-v/memory.md](skills/compound-v/memory.md).
+
+Two lanes, same toolchain discipline (pure-stdlib core, offline, no daemon, no fabricated metrics):
+
+- **Core — FTS5 (default, always on).** SQLite FTS5 BM25 over **git-tracked** prose. Zero new dependencies, instant, offline. This is the dependable substrate everything keys off.
+- **Dense — embeddings (opt-in, out-of-repo, scale-gated).** `multilingual-e5-small` in an isolated venv that lives **outside the repo** (`~/.cache/compound-v/memory/<repo-id>/`), bootstrapped only by an explicit command and used in a rank-union with FTS5 — but only once the corpus is large enough to matter. Absent or broken ⇒ silently FTS5-only. **Semantic recall is not on by default; you opt in.**
+
+Recall is **evidence, not a routing input.** Routing stays the deterministic v1.1 order (`routing-lessons.md` → stance table → conservative scorecard → fallback → invariants); a fuzzy BM25/cosine match has no conservative-only contract, so it is never wired into routing. It feeds **planning and review only**.
+
+The one exception is a deliberately narrow, conservative-only bridge — the prose analogue of the scorecard's *unhealthy → escalate*. `recall-check --files <glob>` counts prior `job_result` records (`blocked`/`error`/`timeout` or a scope violation) on the same file pattern; **N ≥ k** (default 2) returns a `tighten` verdict — force a worktree, add a review pass, or fold the work into Task 0. It only ever makes the plan more conservative; it never reroutes to lower trust and never loosens.
+
+A silent SessionStart + PostToolUse:Write hook ([hooks/memory-refresh.sh](hooks/memory-refresh.sh)) self-backgrounds an FTS5-only refresh so the index tracks edits; it **never** installs or touches the embedding lane. Drive it by hand with [`/v:remember`](commands/v-remember.md) (search) and [`/v:memory-refresh`](commands/v-memory-refresh.md) (index/bootstrap).
+
+**Multi-developer:** knowledge accumulates **through git**, not a shared index. Every source V-memory reads — the `docs/superpowers/**` prose, the committed `execution/*/results/*.json` failure records, `routing-lessons.md` — is a committed artifact, so a teammate's `push` + your `pull` propagates it. The index itself is **per-developer, local, and never committed** (no binary-merge conflicts); it rebuilds from the pulled files on SessionStart or `/v:memory-refresh`, and `search` warns to stderr when your local index is behind the freshly-pulled corpus.
+
+---
+
 ## When NOT to use
 
 - Greenfield single-file features (no prior code to audit)
@@ -279,6 +303,8 @@ Most users never need these — the sidekick flows through orchestrate → dispa
 | `/v:models` | Discover available models per backend (`agy models`, curated Codex list, native Claude tiers), assign tier→model, and write the `models` map into `.claude/compound-v.json` |
 | `/v:review-plan <plan>` | Run an optional **cross-model (Codex) second opinion** on a high-stakes plan before dispatch — read-only, advisory; the orchestrator arbitrates each finding |
 | `/v:epic <brief>` | Drive an **epic** — chain several features into one autonomous, resumable, dependency-ordered build on a single branch; each feature runs the full pipeline in topological order, ending with a cross-feature integration review |
+| `/v:remember <query>` | Recall over `docs/superpowers/**` prose (specs, plans, reviews, archaeology, lessons) — FTS5 BM25 by default, ∪ opt-in embeddings when bootstrapped; returns an agent-ready context pack as planning/review evidence |
+| `/v:memory-refresh` | Re-index the recall corpus (incremental by file hash; FTS5-only by default). `bootstrap`/`--with-embeddings` is the explicit, opt-in step that builds the out-of-repo embedding venv |
 
 Plus the unchanged Phase 1A shortcut:
 

@@ -4,6 +4,19 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [2.0.0] — 2026-06-27
+
+### Added — V-memory (local-first recall over docs/superpowers prose)
+
+- **V-memory — a local-first RECALL layer over the `docs/superpowers/**` prose** (a new subsystem, hence the major bump). It **extends** the existing two-half memory (machine-generated `task-outcomes.jsonl`/scorecard + human-curated `routing-lessons.md`) and **never rewrites them**; recall is **EVIDENCE for planning + review, NOT a routing input** — routing stays the deterministic v1.1 order (`routing-lessons.md` → stance table → conservative scorecard → fallback → invariants). Engine: `scripts/compound-v-memory.py`. Authority doc: `skills/compound-v/memory.md`.
+- **Two lanes — CORE always on, DENSE opt-in.** **CORE** is SQLite **FTS5** BM25 over the git-tracked prose (pure stdlib, the default, always on). **DENSE** is opt-in embeddings (**multilingual-e5-small**) used in a **rank-union** with FTS5, **scale-gated**, and **degrade-safe** — when the embeddings are absent or broken the engine silently falls back to FTS5-only. The DENSE venv lives **OUTSIDE the repo** (`~/.cache/compound-v/memory/<repo-id>/`) and is bootstrapped only by an explicit command — never on its own.
+- **Embeddings are PURE PYTHON.** `fastembed` (onnxruntime + tokenizers) — **NO Node, no daemon, no external vector-DB service, no fabricated metrics.**
+- **One deterministic, conservative-only recall→action bridge — `recall-check --files <glob>`.** It counts prior `job_result` records (status in `{blocked, error, timeout}` / scope violation) on the same file pattern; **N ≥ k** (default **2**) yields the verdict **`tighten`** (force worktree / add a review pass / fold into Task 0). It **never reroutes to lower trust and never loosens** — the prose analogue of the scorecard's `unhealthy → escalate`.
+- **Two new commands** — `/v:remember` (recall search) and `/v:memory-refresh` (index / bootstrap).
+- **New hook — `hooks/memory-refresh.sh`.** Silent, self-backgrounds an **FTS5-only** refresh, **never installs/bootstraps**; appended to `SessionStart` + `PostToolUse:Write`.
+- **Key invariants (all enforced):** the cache lives **outside the repo**; only **git-tracked** prose is indexed; the FTS5 lane is **crash-safe**; writes use **`flock` + a transaction**; **hooks never bootstrap** the DENSE lane.
+- **New surfaces:** engine `scripts/compound-v-memory.py`; authority doc `skills/compound-v/memory.md`; commands `commands/v-remember.md` + `commands/v-memory-refresh.md`; hook `hooks/memory-refresh.sh`.
+
 ## [1.2.0] — 2026-06-27
 
 ### Changed — Epic mode hardening (closes the gaps a re-review of v1.1 surfaced)
