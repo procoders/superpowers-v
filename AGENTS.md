@@ -15,12 +15,12 @@ Compound V is a **sidekick to Superpowers**. It intercepts the three Superpowers
 4. **A `git diff` scope gate after every job** — a worker that writes outside its `write_allowed` list is BLOCKED and never merges; enforcement fields are git-derived, never model-self-reported
 5. **Crash-resume** via a `state.json` run directory
 
-## Orchestrator surface (v1.0)
+## Orchestrator surface (v1.0 + 1.1)
 
 The execution tail is a small, deterministic orchestrator — contracts + helper scripts + the agent you already have. No daemon, no MCP server, no fabricated metrics.
 
 - **Manifest contract:** `skills/compound-v/execution-manifest.md` (schema) + `examples/manifest.example.yaml`.
-- **Backend Launcher sub-skill:** `skills/backend-launcher/SKILL.md` defines one `job_spec → job_result` contract (`schemas/job_result.schema.json`). Adapters: `adapter-claude.md`, `adapter-codex.md`, `adapter-antigravity.md` (stub — deferred to 1.1).
+- **Backend Launcher sub-skill:** `skills/backend-launcher/SKILL.md` defines one `job_spec → job_result` contract (`schemas/job_result.schema.json`). Adapters: `adapter-claude.md`, `adapter-codex.md`, `adapter-antigravity.md` (1.1: a **real** headless `agy --print` worker — same worktree + `git diff` scope gate as Codex, but **opt-in / lower-trust**: `agy` has no kernel write-confinement, so the gate *detects* in-worktree scope leaks yet cannot *prevent* an out-of-worktree side-effect — **prefer Codex for untrusted work**).
 - **Headless Codex worker:** `scripts/compound-v-run-codex-worker.sh`. The verified `codex-cli 0.130` invocation runs in a git worktree:
 
   ```bash
@@ -73,6 +73,9 @@ All reviewers/agents carry `model: opus`. Manifest `backend`/`model` values (`gp
 | `/v:collect <run-id>` | Re-run collect + scope-gate + review on an existing run |
 | `/v:status [run-id]` | Render `state.json` |
 | `/v:resume <run-id>` | Reconcile + re-dispatch incomplete jobs after interruption |
+| `/v:models` | Discover models per backend (`agy models`, curated Codex list, native Claude tiers) and write the tier→model map into `.claude/compound-v.json` |
+| `/v:review-plan <plan>` | Optional cross-model (Codex) second opinion on a high-stakes plan before dispatch — read-only, advisory; the orchestrator arbitrates |
+| `/v:epic <brief>` | Chain several features into one autonomous, resumable, dependency-ordered build on a single branch; each feature runs the full pipeline in topological order, ending with a cross-feature integration review |
 | `/v:archaeology <topic>` | (unchanged) Phase 1A only |
 
 ## Model policy (universal)

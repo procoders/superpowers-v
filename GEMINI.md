@@ -13,13 +13,13 @@ Compound V is a **sidekick to Superpowers**. It intercepts the three Superpowers
 2. **Disjoint File Partition Map enforcement** inside writing-plans, which **materializes a `manifest.yaml`** — the machine-readable contract that drives dispatch
 3. **Manifest-driven dispatch** on the most capable model available (Gemini 2.5 Pro or equivalent), with a **`git diff` scope gate after every job** (a worker that writes outside its `write_allowed` list is BLOCKED and never merges) and **crash-resume** via a `state.json` run directory
 
-## Orchestrator surface (v1.0)
+## Orchestrator surface (v1.0 + 1.1)
 
 The execution tail is a small, deterministic orchestrator — contracts + helper scripts + the agent you already have. No daemon, no MCP server, no fabricated metrics.
 
 - **Manifest contract:** `skills/compound-v/execution-manifest.md` + `examples/manifest.example.yaml`.
 - **Backend Launcher sub-skill:** `skills/backend-launcher/SKILL.md` — one harness-neutral `job_spec → job_result` contract (`schemas/job_result.schema.json`).
-- **Adapters:** `adapter-claude.md`, `adapter-codex.md` (a headless `codex exec` worker, OpenAI-specific), `adapter-antigravity.md` (stub — deferred to 1.1). There is **no Gemini-specific backend adapter** in v1.0 — on Gemini CLI, run the Claude-equivalent path through your harness's subagent mechanism. 🧪 untested.
+- **Adapters:** `adapter-claude.md`, `adapter-codex.md` (a headless `codex exec` worker, OpenAI-specific), `adapter-antigravity.md` (1.1: a **real** headless `agy --print` worker — same worktree + `git diff` scope gate as Codex). Since `agy` is **Gemini-family**, on Gemini CLI it is the natural backend — but it is spawned as an external `agy` process, not an in-harness adapter (opt-in / lower-trust: no kernel sandbox, so the gate *detects* in-worktree scope leaks yet cannot *prevent* an out-of-worktree side-effect). There is still **no Gemini-specific in-harness adapter** — on Gemini CLI you either spawn the external `agy` worker or run the Claude-equivalent path through your harness's subagent mechanism. 🧪 untested.
 - **Scope gate:** `scripts/compound-v-scope-check.py` (git-derived; pure Python 3.9 stdlib, harness-neutral).
 - **State + resume:** `skills/compound-v/state-machine.md`.
 
@@ -59,6 +59,9 @@ These are Claude Code `/v:*` commands. On Gemini CLI, invoke the equivalent skil
 | `/v:collect <run-id>` | Re-run collect + scope-gate + review |
 | `/v:status [run-id]` | Render `state.json` |
 | `/v:resume <run-id>` | Reconcile + re-dispatch incomplete jobs |
+| `/v:models` | Discover models per backend (`agy models`, curated Codex list, native Claude tiers) and write the tier→model map into `.claude/compound-v.json` |
+| `/v:review-plan <plan>` | Optional cross-model (Codex) second opinion on a high-stakes plan before dispatch — read-only, advisory; the orchestrator arbitrates |
+| `/v:epic <brief>` | Chain several features into one autonomous, resumable, dependency-ordered build on a single branch; each feature runs the full pipeline in topological order, ending with a cross-feature integration review |
 | `/v:archaeology <topic>` | (unchanged) Phase 1A only |
 
 ## Key entry points

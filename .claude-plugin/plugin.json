@@ -1,7 +1,7 @@
 {
   "name": "superpowers-v",
-  "description": "Compound V for Superpowers: triple parallel pre-flight (code archaeology + domain-expert advisor + library/doc validator via Context7), disjoint file partitioning, manifest-driven multi-backend dispatch (Claude + headless Codex worker), git-diff scope enforcement, crash-resumable runs, and batched parallel dispatch (Opus default, Sonnet for narrow junior-task carve-out). Auto-intercepts brainstorming → writing-plans → execution transitions.",
-  "version": "1.0.0",
+  "description": "Compound V for Superpowers: triple parallel pre-flight (code archaeology + domain-expert advisor + library/doc validator via Context7), disjoint file partitioning, manifest-driven multi-backend dispatch (Claude + headless Codex + Antigravity workers), git-diff scope enforcement, crash-resumable runs, adaptive tier-based routing, epic mode for multi-feature builds, and batched parallel dispatch (Opus default, Sonnet for narrow junior-task carve-out). Auto-intercepts brainstorming → writing-plans → execution transitions.",
+  "version": "1.1.0",
   "author": {
     "name": "Oleg",
     "email": "copeus@gmail.com"

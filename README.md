@@ -120,7 +120,7 @@ flowchart LR
 ```
 superpowers-v/
 ├── .claude-plugin/
-│   ├── plugin.json                            # version 1.0.0; keywords += orchestrator
+│   ├── plugin.json                            # version 1.1.0; keywords += orchestrator
 │   └── marketplace.json                       # local-dev convenience (kept in lockstep)
 ├── agents/                                    # 6 first-class subagent definitions
 │   ├── code-archaeologist.md                  # → subagent_type: "compound-v:code-archaeologist"
