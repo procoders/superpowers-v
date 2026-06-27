@@ -25,6 +25,8 @@ Backend failures are handled **gracefully**: a non-success job is classified (by
 
 Routing is **tier-based and churn-proof**: jobs declare a `tier` (`deep`/`standard`/`light`) and an optional `effort` (`low`/`medium`/`high`) instead of a hardcoded model name. A resolver (`scripts/compound-v-resolve-model.py`) maps tier → concrete model through a refreshable config `models` map, so when models change you update one map (or run `/v:models`) instead of editing prompts. Codex's reasoning-effort is exposed as `--effort`.
 
+Routing is also **adaptive**: a machine-generated scorecard (`scripts/compound-v-scorecard.py` → `worker-performance.jsonl`) aggregates measured outcomes into a `health` verdict per backend × task-type, and the router prefers an alternative or escalates a tier when a task-type's static-default backend is measured-unhealthy **in this repo** — a hint layered on the static policy that only ever makes routing more conservative, never weaker, and emits no fabricated cost metrics.
+
 You don't invoke Compound V. It invokes itself.
 
 ---
@@ -165,6 +167,7 @@ superpowers-v/
 │   ├── compound-v-run-codex-worker.sh         # headless Codex worker (worktree + diff + normalize)
 │   ├── compound-v-collect-results.py          # normalize heterogeneous output → job_result
 │   ├── compound-v-update-memory.py            # append task-outcomes.jsonl
+│   ├── compound-v-scorecard.py                # aggregate task-outcomes → worker-performance.jsonl (health per backend×type)
 │   └── lint-frontmatter.py                    # frontmatter linter (no-Haiku policy)
 ├── schemas/
 │   └── job_result.schema.json                 # strict JSON Schema; codex --output-schema target
@@ -173,6 +176,7 @@ superpowers-v/
 │   └── job_result.example.json
 ├── docs/superpowers/memory/
 │   └── routing-lessons.md                     # human-curated routing memory seed
+│                                              # (task-outcomes.jsonl + worker-performance.jsonl generated at runtime)
 ├── assets/
 │   ├── compound-v-cover.png
 │   └── skyscraper-metaphor.md                 # comic + technical diagram

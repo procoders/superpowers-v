@@ -192,6 +192,7 @@ docs/superpowers/
 │       └── results/<id>.json           # normalized job_result (job_result.schema.json)
 ├── memory/                             # v1.0 lean outcome memory (closes the routing loop)
 │   ├── task-outcomes.jsonl             # one line per job, appended by the collector
+│   ├── worker-performance.jsonl        # machine-generated scorecard (compound-v-scorecard.py; regenerated each run)
 │   └── routing-lessons.md              # human-curated routing lessons
 ├── specs/                              # default Superpowers
 └── plans/                              # default Superpowers
@@ -199,7 +200,7 @@ docs/superpowers/
 
 The `_knowledge-base/` subdirectories hold **persistent knowledge** the advisors accumulate across features. On future related work, advisors read these first before running new web searches / Context7 queries — making each subsequent feature in the same domain or touching the same library cheaper and faster.
 
-The `execution/<run-id>/` directory **is** the run record and audit trail — `state.json` + `results/` are both execution substrate and the only observability surface (no separate `run.log` / `cost-estimate.md`; we do not print token-cost numbers we cannot measure). The `memory/` directory accumulates routing outcomes across runs: `task-outcomes.jsonl` is appended automatically by the collector, `routing-lessons.md` is human-curated.
+The `execution/<run-id>/` directory **is** the run record and audit trail — `state.json` + `results/` are both execution substrate and the only observability surface (no separate `run.log` / `cost-estimate.md`; we do not print token-cost numbers we cannot measure). The `memory/` directory accumulates routing outcomes across runs: `task-outcomes.jsonl` is appended automatically by the collector; `worker-performance.jsonl` is the **machine-generated** scorecard derived from it by `compound-v-scorecard.py` (one row per `(backend, type)` with a `health` verdict; regenerated each run, never hand-edited); `routing-lessons.md` is human-curated. The router consults both — the scorecard for measured `(backend × task-type)` health, the lessons as the authoritative override (see `routing-policy.md` §Scorecard-aware routing).
 
 ---
 

@@ -26,7 +26,14 @@ These are *not* the only inputs. Before routing a job type, the engine **consult
 the human-curated lessons distilled from `task-outcomes.jsonl`. A recorded lesson
 ("`large_isolated` on codex blocked twice on barrel files → fold barrels into Task 0")
 overrides the table default for that pattern. That is the closed loop: outcomes →
-lessons → routing, no scorecards or vector DB (anti-ruflo, PRD §5.8).
+lessons → routing — no vector DB, no semantic search (anti-ruflo, PRD §5.8).
+
+The engine also consults a **machine-generated scorecard** (see [Scorecard-aware
+routing](#scorecard-aware-routing) below). The scorecard is a *deterministic
+aggregate* of the same `task-outcomes.jsonl` — not a learned model, not a vector
+store — and it only ever makes routing **more** conservative. The human-curated
+`routing-lessons.md` remains the authoritative override; scorecards are a hint
+layered underneath it.
 
 ---
 
@@ -283,9 +290,70 @@ is the agent's model and is unrelated to this execution-layer tier resolution.)
 2. Check [`routing-lessons.md`](../../docs/superpowers/memory/routing-lessons.md)
    for a lesson matching this `type` + backend — if one applies, follow it.
 3. Otherwise apply the stance table above to get **backend + (tier, effort)**.
-4. Apply the env-aware fallback (rewrite Codex rows if Codex is absent).
-5. Validate the result against the invariants (the validator is the backstop).
-6. If the type is "unclear scope," **stop and return to planning** — do not guess.
-7. At **dispatch** (not planning), resolve `(backend, tier, effort)` → a concrete
+4. **Scorecard check** (see [Scorecard-aware routing](#scorecard-aware-routing)): query
+   the measured `health` of this (static-default backend × task-type) in THIS repo. If
+   `unhealthy`, prefer the routing alternative or escalate a tier and log a one-line
+   justification; if `watch`, keep the default but note it; if `healthy` /
+   `insufficient_data`, keep the default unchanged.
+5. Apply the env-aware fallback (rewrite Codex rows if Codex is absent).
+6. Validate the result against the invariants (the validator is the backstop).
+7. If the type is "unclear scope," **stop and return to planning** — do not guess.
+8. At **dispatch** (not planning), resolve `(backend, tier, effort)` → a concrete
    `model` via [`compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py)
    against the project `models` map. An explicit manifest `model` skips this step.
+
+---
+
+## Scorecard-aware routing
+
+The stance tables above are a **static guess**: a task-type maps to a fixed backend
+and tier, decided once and applied to every repo the same way. Scorecards make that
+guess **adaptive** — before assigning a task-type's static-default backend, the
+planner/router checks how that backend has *actually* performed for that task-type
+**in THIS repo**, and prefers an alternative when the default is measured-unhealthy.
+
+The signal comes from [`worker-performance.jsonl`](../../docs/superpowers/memory/),
+the machine-generated scorecard that
+[`scripts/compound-v-scorecard.py`](../../scripts/compound-v-scorecard.py) aggregates
+from `task-outcomes.jsonl` — one row per `(backend, type)` with a `health` verdict.
+Query a single cell at routing time:
+
+```bash
+python3 scripts/compound-v-scorecard.py --query --backend <default> --type <task-type>
+# → stats + health ∈ {insufficient_data, healthy, watch, unhealthy}
+```
+
+Act on `health`:
+
+| `health` | Action |
+|---|---|
+| `unhealthy` | **Prefer the routing alternative or escalate a tier** (Opus — `tier: deep` — is the safe escalation), and **log a one-line justification** (e.g. *"codex unhealthy on `large_isolated` here: block_rate .35 over 12 jobs → routing to opus this run"*). |
+| `watch` | Keep the static default, but **note it** in the routing log (one line) so a drift toward `unhealthy` is visible. |
+| `healthy` / `insufficient_data` | **Use the static default unchanged.** Don't over-react to thin data — the script needs **≥5 samples** to judge a cell; below that it returns `insufficient_data` and the static policy stands. |
+
+### What scorecards are NOT
+
+- **Not a replacement for the static policy** — they are a **hint layered on top of
+  it.** The stance table is still the default; the scorecard only nudges the router
+  off a default that the repo's own measured outcomes show is failing.
+- **They only ever make routing MORE conservative (escalate), never weaker.** An
+  `unhealthy` cell can push work to a *stronger* seat (Opus) or an alternative
+  backend; it can never downgrade a `deep` job to `light` or route a sensitive
+  surface off Opus to save cost.
+- **They do not override the HARD invariants.** Reviewers ⇒ `deep`, Codex ⇒
+  `worktree`, and unclear scope ⇒ return to planning hold regardless of any scorecard.
+  Security / auth / payments / PII / a11y stays `deep` in every stance, scorecard or
+  not.
+- **No cost/token metrics.** The scorecard reports only outcome health
+  (`block_rate`, `error_rate`, `success_rate`, `avg_rework`) — never a fabricated
+  cost or token number (anti-ruflo).
+
+### Where the scorecard comes from
+
+`worker-performance.jsonl` is **regenerated each run** by
+`compound-v-scorecard.py --update` after the dispatcher appends fresh outcomes to
+`task-outcomes.jsonl` (see [`parallel-dispatcher.md`](../../agents/parallel-dispatcher.md)
+post-run memory step). It is **machine-generated and never hand-edited** — unlike the
+human-curated `routing-lessons.md`, which remains the authoritative override. The
+loop is the same closed loop, with one extra derived artifact: outcomes →
+{lessons (hand-curated), scorecard (auto-aggregated)} → routing.
