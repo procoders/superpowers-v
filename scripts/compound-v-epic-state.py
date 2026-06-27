@@ -142,6 +142,10 @@ def check_specs(features, base_dir=""):
             errs.append("feature %r has no spec_path — the epic needs an approved spec per "
                         "feature up front (batch the brainstorming before --init)" % fid)
             continue
+        if os.path.isabs(sp):
+            errs.append("feature %r spec_path must be RELATIVE to the epic dir "
+                        "(no absolute paths): %s" % (fid, sp))
+            continue
         resolved = os.path.realpath(os.path.join(base_real, sp))
         if resolved != base_real and not resolved.startswith(base_real + os.sep):
             errs.append("feature %r spec_path escapes the epic dir (must live under it, no "
@@ -155,9 +159,21 @@ def check_specs(features, base_dir=""):
 def check_state_specs(state, base_dir=""):
     """Resume guard: every NON-done feature in an existing epic-state must still carry an
     existing, contained spec_path. Closes the gap where resuming an old/hand-made epic-state
-    (pre-spec_path) would enter the loop spec-less, bypassing --init --require-specs."""
-    pending = [f for f in state.get("features", []) if isinstance(f, dict) and f.get("status") != "done"]
-    return check_specs(pending, base_dir=base_dir)
+    (pre-spec_path) would enter the loop spec-less, bypassing --init --require-specs.
+
+    Also REJECTS a malformed state (no `features` list, or non-object feature entries) rather
+    than silently dropping bad entries — otherwise a hand-made state could pass the guard and
+    then crash `next_feature`."""
+    feats = state.get("features")
+    if not isinstance(feats, list) or not feats:
+        return ["epic-state has no valid 'features' list"]
+    errs = []
+    bad = [i for i, f in enumerate(feats) if not isinstance(f, dict)]
+    if bad:
+        errs.append("epic-state has malformed (non-object) feature entr%s at index %s"
+                    % ("y" if len(bad) == 1 else "ies", ", ".join(map(str, bad))))
+    pending = [f for f in feats if isinstance(f, dict) and f.get("status") != "done"]
+    return errs + check_specs(pending, base_dir=base_dir)
 
 
 def lint_decomposition(features):
@@ -208,7 +224,7 @@ def next_feature(state):
     a failure or a crashed run HALTS the epic until a human reconciles it — the loop never
     autonomously routes around a failed/stale feature.
     """
-    feats = state["features"]
+    feats = [f for f in state.get("features", []) if isinstance(f, dict)]
     done = {f["id"] for f in feats if f["status"] == "done"}
     failed = sorted(f["id"] for f in feats if f["status"] == "failed")
     running = sorted(f["id"] for f in feats if f["status"] == "running")
@@ -342,15 +358,22 @@ def _selftest():
         check("contained spec ok", check_specs([{"id": "a", "spec_path": "specs/a.md"}], base_dir=d) == [])
         check("`..` traversal rejected", any("escapes" in e for e in check_specs(
             [{"id": "a", "spec_path": "../../../etc/hosts"}], base_dir=d)))
-        check("absolute-outside rejected", any("escapes" in e for e in check_specs(
-            [{"id": "a", "spec_path": "/etc/hosts"}], base_dir=d)))
+        check("absolute spec rejected (outside)", check_specs(
+            [{"id": "a", "spec_path": "/etc/hosts"}], base_dir=d) != [])
+        check("absolute spec rejected (even if inside the dir)", check_specs(
+            [{"id": "a", "spec_path": os.path.join(d, "specs", "a.md")}], base_dir=d) != [])
         ok_state = {"features": [{"id": "a", "status": "done"},
                                  {"id": "b", "status": "pending", "spec_path": "specs/a.md"}]}
         check("resume: done-no-spec skipped, pending-with-spec ok", check_state_specs(ok_state, base_dir=d) == [])
         bad_state = {"features": [{"id": "b", "status": "pending"}]}
         check("resume: pending-without-spec -> error", check_state_specs(bad_state, base_dir=d) != [])
+        check("resume: malformed (non-dict) entry -> error", check_state_specs({"features": ["junk"]}, base_dir=d) != [])
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+    # next_feature must not CRASH on a malformed state (defensive — a guard should catch it first)
+    nf, _ = next_feature({"features": ["junk", {"id": "a", "status": "pending", "depends_on": []}]})
+    check("next_feature survives malformed entry", nf is not None and nf["id"] == "a")
 
     # lint defensive (#5): a non-dict entry must not crash lint_decomposition
     check("lint ignores non-dict", isinstance(lint_decomposition(
