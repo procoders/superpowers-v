@@ -75,7 +75,7 @@ jobs:
     backend: claude
     tier: standard                  # bounded core/feature build ⇒ standard
     effort: medium
-    isolation: direct
+    isolation: worktree             # parallel ⇒ worktree (per-job scope attribution)
     run: parallel
     depends_on:
       - task-0-schema
@@ -94,7 +94,7 @@ jobs:
     backend: claude
     tier: light                     # mechanical single-file / docs ⇒ light
     effort: low
-    isolation: direct
+    isolation: worktree             # parallel ⇒ worktree (per-job scope attribution)
     run: parallel
     depends_on:
       - task-1-editor-ui

@@ -121,4 +121,12 @@ Pinned facts (do not re-derive):
 
 ## Merge-back
 
-On **PASS**: `git -C "$WT" diff HEAD | git apply` into the main tree, then `git worktree remove -f`. On **BLOCKED**: leave the worktree for inspection, do **not** merge. Worktrees live under `$TMPDIR/compound-v/<run-id>/<job-id>` (outside the repo — no `.gitignore` change needed). This loses per-job commit attribution, which is acceptable for disjoint file sets.
+On **PASS**: apply the worktree's changes — **including new (untracked) files** — into the main tree, then `git worktree remove -f`. A plain `git diff HEAD | git apply` would silently DROP added files (an allowed new file passes the gate but never lands), so use an index-based patch:
+
+```bash
+git -C "$WT" add -A
+git -C "$WT" diff --cached --binary HEAD | (cd "$REPO" && git apply --index)
+git -C "$REPO" worktree remove -f "$WT"
+```
+
+On **BLOCKED**: leave the worktree for inspection, do **not** merge. Worktrees live under `$TMPDIR/compound-v/<run-id>/<job-id>` (outside the repo — no `.gitignore` change needed). This loses per-job commit attribution, which is acceptable for disjoint file sets.

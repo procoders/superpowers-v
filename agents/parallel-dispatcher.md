@@ -104,17 +104,26 @@ Mark each dispatched job `running` in `state.json` before the batch returns.
 The SCOPE LOCK prose is advisory. The **authority** is the deterministic, git-derived scope gate, run on every job the moment it returns — regardless of backend or isolation. Build the job's `write_allowed` allow-file from the manifest, then call:
 
 ```bash
-# worktree job (codex always; claude when isolation: worktree)
+# worktree job (codex always; claude when isolation: worktree). The worker
+# already baselines against the pre-`worktree add` SHA (so an in-worktree commit
+# is still diffed); a fresh worktree has no pre-existing untracked, so no snapshot.
 python3 scripts/compound-v-scope-check.py --worktree "$WT" --allow-file "$ALLOW"
 
-# direct job (in-harness claude against the pre-dispatch baseline commit)
-python3 scripts/compound-v-scope-check.py --repo "$CWD" --baseline "$BASE" --allow-file "$ALLOW"
+# direct job (in-harness claude against the pre-dispatch baseline commit). For a
+# direct/serial job you MUST record, BEFORE launch: (1) the pre-dispatch baseline
+# commit `$BASE`, and (2) a snapshot of pre-existing untracked + ignored paths
+# (`git -C "$CWD" ls-files --others --exclude-standard` ∪
+#  `git -C "$CWD" ls-files --others --ignored --exclude-standard -- .` → $PREEXIST).
+# Passing --preexisting keeps a normal dirty tree from producing false BLOCKs on
+# files this job never created, while a NEW out-of-scope path still BLOCKS.
+python3 scripts/compound-v-scope-check.py --repo "$CWD" --baseline "$BASE" \
+  --preexisting "$PREEXIST" --allow-file "$ALLOW"
 ```
 
 The gate computes what the job *actually* changed purely from git —
-`git diff --name-only` ∪ `git ls-files --others --exclude-standard` — and matches each path against `write_allowed`. The `files_changed` / `violations` / `blocked` enforcement fields are **git-derived, never model-self-reported**; the worker's return text feeds only the human `summary`. Fold the verdict into the canonical `job_result` with [`scripts/compound-v-collect-results.py`](../scripts/compound-v-collect-results.py) (writing `results/<id>.json`), then update `state.json`:
+`git diff --name-only <baseline>` ∪ `git ls-files --others --exclude-standard` ∪ the gitignored set, minus the direct-mode pre-existing snapshot — and matches each path against `write_allowed`. Diffing against the recorded baseline SHA (not a live `HEAD`) means a worker that COMMITS inside its worktree to fake a clean tree is still caught. The `files_changed` / `violations` / `blocked` enforcement fields are **git-derived, never model-self-reported**; the worker's return text feeds only the human `summary`. Fold the verdict into the canonical `job_result` with [`scripts/compound-v-collect-results.py`](../scripts/compound-v-collect-results.py) (writing `results/<id>.json`), then update `state.json`:
 
-- **PASS** (exit 0, no violations) → job `status: done`. For a worktree job, merge back: `git -C "$WT" diff HEAD | git apply` into the main tree, then `git worktree remove -f`. Direct jobs are already in the tree.
+- **PASS** (exit 0, no violations) → job `status: done`. For a worktree job, merge back with an **index-based patch that includes new files** (`git -C "$WT" add -A && git -C "$WT" diff --cached --binary HEAD | (cd "$CWD" && git apply --index)`), then `git worktree remove -f`. A plain `git diff HEAD | git apply` would silently DROP allowed new files. Direct jobs are already in the tree.
 - **BLOCKED** (exit 1, any path outside `write_allowed`) → job `status: blocked`, advance the run `phase` to terminal **BLOCKED**, surface the offending paths, and **do NOT merge** — leave the worktree for inspection. **A BLOCKED job HALTS the run.** It is not silently re-dispatched; you stop and surface it to the human.
 - **failed / timeout** (worker errored, timed out, or non-zero) → `status: failed`; eligible for re-dispatch via resume.
 

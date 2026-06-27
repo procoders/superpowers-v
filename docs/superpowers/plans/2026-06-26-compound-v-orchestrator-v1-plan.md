@@ -56,7 +56,7 @@ From the three audits run against this repo. These are non-negotiable for every 
 
 1. **Naming** → keep `backend-launcher` (literal sub-skill name = directory = invocation token = cross-ref path).
 2. **Config** → project `.claude/compound-v.json` (stance) + user `~/.claude/compound-v-capabilities.json` (capability cache).
-3. **Worktree merge-back** → on PASS: `git -C <wt> diff HEAD | git apply` into the main tree, then `git worktree remove -f`. On BLOCKED: leave the worktree for inspection, do not merge. (Loses per-job commit attribution — acceptable for disjoint file sets.)
+3. **Worktree merge-back** → on PASS: an **index-based patch that includes new files** — `git -C <wt> add -A && git -C <wt> diff --cached --binary HEAD | (cd <repo> && git apply --index)` into the main tree, then `git worktree remove -f`. (A plain `git diff HEAD | git apply` would silently DROP untracked additions — an allowed new file would pass the gate but never land.) On BLOCKED: leave the worktree for inspection, do not merge. (Loses per-job commit attribution — acceptable for disjoint file sets.)
 4. **Worktree storage** → a temp dir **outside** the repo (`$TMPDIR/compound-v/<run-id>/<job-id>`); no `.gitignore` change needed.
 5. **Resume tie-break** → **git-wins.** If `state.json` says `done` but the files aren't in git, re-dispatch (resume stays idempotent).
 6. **Codex `job_result` enforcement** → `files_changed` / `violations` / `blocked` are **git-derived** (authoritative); the model's `--output-last-message` text feeds only the human `summary`. Never trust the model to self-report what it changed.
@@ -118,7 +118,7 @@ From the three audits run against this repo. These are non-negotiable for every 
 ### Batch A
 
 **`task-codex-adapter`** *(codex·gpt-5.5·worktree)* — `adapter-codex.md` + `compound-v-run-codex-worker.sh`.
-- Doc: the 6 steps (worktree add HEAD → `codex exec` → observe `git -C <wt> diff --name-only` ∪ `ls-files --others` → enforce `write_allowed` → normalize → caller merges via `git apply`), the worker-prompt planner/executor lock, resume form. **Pin the verified flags; explicitly note `--ask-for-approval never` is invalid for `codex exec` and omitted.**
+- Doc: the 6 steps (worktree add HEAD → `codex exec` → observe `git -C <wt> diff --name-only` ∪ `ls-files --others` → enforce `write_allowed` → normalize → caller merges via an index-based patch `git add -A && git diff --cached --binary HEAD | git apply --index`, which includes new files), the worker-prompt planner/executor lock, resume form. **Pin the verified flags; explicitly note `--ask-for-approval never` is invalid for `codex exec` and omitted.**
 - Script: bash-3.2-safe, shellcheck-clean, `chmod +x`, absolute paths only, wraps `codex exec` in a timeout **best-effort** (the worker falls back `timeout` → `gtimeout` → uncapped, since stock macOS ships no `timeout` binary — so the cap is best-effort, not a hard requirement), suppresses the `codex_hooks deprecated` stderr noise, captures session_id + summary from `--output-last-message`, emits git-derived `files_changed`/`violations`. Acceptance per partition.
 
 **`task-claude-antigravity-adapters`** *(claude·sonnet·direct; justified)* — `adapter-claude.md` (Task-based dispatch, model override, `maxTurns:15`, optional worktree, same scope gate on return → canonical `job_result`) + `adapter-antigravity.md` (stub returning `unsupported`; cites agy blockers #408/#318/#223; v1.1 Python-SDK spike target).
@@ -162,7 +162,7 @@ From the three audits run against this repo. These are non-negotiable for every 
 
 **PRD §4.2 components → owning task** (completeness critic, all 12 covered): Manifest → Task 0 + phases-evolve + v-orchestrate; Backend Launcher → Task 0 + codex/claude/antigravity adapters; Scope Gate → task-scope-gate; Routing Policy → task-routing-config-init; State Machine/resume → task-state-status-resume; Result Collector → task-collector-memory; Review Gate (3-pass) → task-agents-evolve; Memory → task-collector-memory; Init → task-routing-config-init; Skill Escalation → task-routing-config-init; Workflows accelerator → task-routing-config-init; Commands → the three command tasks.
 
-**Gap fixes folded in:** **G1** configurator reworded (= `/v:init` walkthrough, no phantom playground); **G2** dead-link CI deferred to integration pass; **G3** committed `examples/` fixture so the e2e CI steps run on real data (not skip-clean); **G4** worktree merge-back resolved (`git apply` into main on PASS) and owned by the codex adapter + dispatcher.
+**Gap fixes folded in:** **G1** configurator reworded (= `/v:init` walkthrough, no phantom playground); **G2** dead-link CI deferred to integration pass; **G3** committed `examples/` fixture so the e2e CI steps run on real data (not skip-clean); **G4** worktree merge-back resolved (index-based `git add -A && git diff --cached --binary HEAD | git apply --index` into main on PASS — includes new files) and owned by the codex adapter + dispatcher.
 
 **Deterministic gates added** (converting LLM-only checks to CI): `validate-manifest.py` (disjoint/codex⇒worktree/reviewers⇒opus), schema-conformance of collector output, no-fabricated-cost grep.
 
@@ -172,7 +172,7 @@ From the three audits run against this repo. These are non-negotiable for every 
 
 - Rewriting `SKILL.md`'s description for orchestrator-as-default could degrade the auto-fire triggers → **`evals.json` is a manual-verification item, not a CI gate.** CI only checks the file's JSON validity (and frontmatter); it does **not** execute the skill-trigger cases (there is no eval harness). The guard is to run the trigger cases by hand after editing the description.
 - Evolving the 3 agents changes their inputs (plan → manifest) → **must accept both** or external callers + the hook break.
-- Introducing worktrees changes the merge model (0.1.x did direct writes only) → the `git apply`-into-main default (Q3) plus per-job isolation choice is the mitigation; direct Claude jobs and worktree jobs must not collide at merge.
+- Introducing worktrees changes the merge model (0.1.x did direct writes only) → the index-based `git apply --index`-into-main default (Q3, includes new files) plus per-job isolation choice is the mitigation; direct Claude jobs and worktree jobs must not collide at merge.
 - Hook edits risk the 3-shape jq branches / shellcheck → additive changes only.
 - New `execution/` + `memory/` dirs must not contradict `SKILL.md`'s Output Directory Conventions → updated in Task 0.
 

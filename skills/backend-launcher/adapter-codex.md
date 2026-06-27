@@ -19,7 +19,8 @@ The worker script performs steps 1–5; the **caller** (dispatcher) performs ste
              git -C <WT> ls-files --others --exclude-standard
 4. ENFORCE   every changed path ∉ write_allowed ⇒ violation ⇒ blocked  (do NOT merge)
 5. NORMALIZE → job_result  (summary ← --output-last-message; session_id ← run banner UUID)
-6. MERGE     caller, on PASS only:  git -C <WT> diff HEAD | git apply   →  git worktree remove -f <WT>
+6. MERGE     caller, on PASS only:  git -C <WT> add -A
+             git -C <WT> diff --cached --binary HEAD | (cd <repo> && git apply --index)  →  git worktree remove -f <WT>
 ```
 
 Step 4 is the keystone. Codex's sandbox can restrict writes to a *directory* but **not to a file allow-list** — so the only way to enforce an exact file list is worktree (prevention: kernel-isolated blast radius) **plus** `git diff` (detection: reject anything outside the list). Steps 3–4 are computed in git, never read from anything the model says it did. The script's `path_is_allowed` is a fast first-pass; the deterministic authority the dispatcher runs after every job is [`scripts/compound-v-scope-check.py`](../../scripts/compound-v-scope-check.py).
@@ -110,12 +111,17 @@ Worktrees live **outside the repo**, under `"${TMPDIR:-/tmp}"/compound-v/<run-id
 
 The script **observes and reports only — it never merges.** The dispatcher decides, based on `job_result.status`:
 
-- **PASS** (`status: success`): apply the worktree's diff into the main tree, then drop the worktree.
+- **PASS** (`status: success`): apply the worktree's changes — **including new (untracked) files** — into the main tree, then drop the worktree.
   ```bash
-  git -C "$WT" diff HEAD | git apply        # into the main working tree
+  # add -A stages new + modified files so the patch INCLUDES additions;
+  # --cached --binary makes a complete index patch; --index applies it to the
+  # main tree's index too. A plain `git diff HEAD | git apply` would DROP added
+  # files — an allowed new file would pass the gate but never land.
+  git -C "$WT" add -A
+  git -C "$WT" diff --cached --binary HEAD | (cd "$REPO" && git apply --index)
   git -C "$REPO" worktree remove -f "$WT"
   ```
-  This loses per-job commit attribution, which is acceptable because the file sets are disjoint (the partition guarantee). For brand-new untracked files, the dispatcher must also stage them — `git diff HEAD` covers tracked edits; untracked files reported in `files_changed` are copied/added explicitly.
+  This loses per-job commit attribution, which is acceptable because the file sets are disjoint (the partition guarantee). The index-based patch above covers BOTH tracked edits and brand-new untracked files in one step — no separate copy/stage pass is needed.
 - **BLOCKED** (`status: blocked`): **do not merge.** Leave the worktree on disk for inspection and surface the `violations`. The run halts.
 - **timeout / error**: do not merge; the partial worktree is left for inspection and the job is eligible for re-dispatch on `/v:resume`.
 
@@ -154,7 +160,8 @@ scripts/compound-v-run-codex-worker.sh \
 - `--effort {low|medium|high}` is optional — when present it becomes `-c model_reasoning_effort=<effort>` on the `codex exec` line; when absent, codex uses the model's default reasoning effort.
 
 - All file paths MUST be **absolute** (the script rejects relative `--repo` / `--prompt-file` / `--output-schema`).
-- `--write-allowed` is a **colon-separated** glob list (`a/**:b/c.ts`), matched repo-relative against changed paths.
+- `--write-allowed` is a **colon-separated** glob list (`a/**:b/c.ts`), matched repo-relative against changed paths. An **empty** `--write-allowed` is valid and means a **read-only / review job**: no writes are permitted, so the scope gate (run with zero allowed globs) treats ANY changed path as a violation and the job is BLOCKED. Pair it with `--read-only true` for a pure review worker.
+- `--timeout-sec` must be a **positive integer** (`^[0-9]+$`); the script `die`s on anything else, since the value is word-split into the `timeout` argv.
 - **stdout** is the canonical `job_result` JSON and nothing else — the dispatcher pipes it straight to the collector and the scope-check authority.
 - **Exit 0** means a `job_result` was produced (even for BLOCKED / timeout / error — those live in `status`). A non-zero exit means a usage/environment fault prevented producing a result at all.
 

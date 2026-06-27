@@ -5,9 +5,11 @@
 # Runs ONE file-scoped job on a headless `codex exec` worker inside a dedicated git
 # worktree, then emits the canonical job_result (schemas/job_result.schema.json) on
 # stdout as JSON. The enforcement fields (blocked / files_changed / violations) are
-# GIT-DERIVED here, never self-reported by the model: we diff the worktree and union
-# in untracked files, then test every changed path against write_allowed. The model's
-# --output-last-message text feeds only the human `summary`.
+# GIT-DERIVED, never self-reported by the model — and they are produced by DELEGATING
+# to the deterministic Python authority (scripts/compound-v-scope-check.py), the same
+# gate the dispatcher runs after every job. The worker does NOT re-implement glob
+# matching in bash (a weaker case-glob matcher would diverge from the Python gate and
+# miss gitignored writes). The model's --output-last-message text feeds only `summary`.
 #
 # Contract: skills/backend-launcher/SKILL.md + skills/backend-launcher/adapter-codex.md
 #
@@ -25,7 +27,9 @@
 #     [--effort low|medium|high]
 #
 # All file paths MUST be absolute. write_allowed is a colon-separated glob list,
-# each glob matched repo-relative against the changed paths.
+# each glob matched repo-relative against the changed paths. An EMPTY
+# --write-allowed is valid (read-only / review job): no writes are permitted, so
+# ANY changed path is a violation and the job is BLOCKED.
 #
 # Exit code: 0 when the job_result was produced (even for a BLOCKED/timeout/error
 # job — those are reported IN the job_result.status). Non-zero only on a usage /
@@ -74,41 +78,23 @@ emit_job_result() {
      }'
 }
 
-# Test one repo-relative path against the colon-separated write_allowed glob list.
-# Returns 0 (allowed) if any glob matches, 1 (not allowed) otherwise. Uses bash
-# `case` glob matching, which honours ** loosely via * — adequate because the
-# authoritative gate is scripts/compound-v-scope-check.py; this is the adapter's
-# fast first-pass so it can self-report a clean job_result.
-path_is_allowed() {
-  _candidate="$1"
-  _globs="$2"
-  _OLDIFS="$IFS"
-  IFS=":"
-  for _glob in $_globs; do
-    IFS="$_OLDIFS"
-    [ -z "$_glob" ] && continue
-    # Normalise a trailing "/**" to "/*" so bash case-globbing matches nested paths.
-    _g="$_glob"
-    case "$_g" in
-      */\*\*) _g="${_g%/\*\*}/*" ;;
-    esac
-    # shellcheck disable=SC2254  # intentional glob match against the pattern var
-    case "$_candidate" in
-      $_g) return 0 ;;
-    esac
-    # Also accept the directory-prefix form: "a/b/**" should match "a/b/c/d".
-    case "$_glob" in
-      */\*\*)
-        _prefix="${_glob%/\*\*}/"
-        case "$_candidate" in
-          "$_prefix"*) return 0 ;;
-        esac
-        ;;
-    esac
-  done
-  IFS="$_OLDIFS"
-  return 1
+# Validate an id (run_id / job_id) against a strict safe-character allow-list.
+# These ids become PATH SEGMENTS under $TMPROOT/compound-v/, so a `../` or any
+# separator could escape the tree and let the cleanup `rm -rf` delete arbitrary
+# dirs. Allow only [A-Za-z0-9._-]; reject `.` and `..`; reject empty. Returns 0
+# when safe, 1 otherwise. bash 3.2-safe (case glob, no regex/associative arrays).
+id_is_safe() {
+  _id="$1"
+  [ -n "$_id" ] || return 1
+  case "$_id" in
+    .|..) return 1 ;;
+    *[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  return 0
 }
+
+# Directory of THIS script (resolves the sibling Python scope gate authority).
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # --- argument parsing --------------------------------------------------------
 
@@ -148,7 +134,23 @@ done
 [ -n "$REPO" ]          || die "--repo is required"
 [ -n "$PROMPT_FILE" ]   || die "--prompt-file is required"
 [ -n "$MODEL" ]         || die "--model is required"
-[ -n "$WRITE_ALLOWED" ] || die "--write-allowed is required"
+# NOTE: --write-allowed may legitimately be EMPTY for a read-only / review job.
+# An empty allow-list means NO writes are permitted, so ANY changed path is a
+# violation (the scope gate, run with zero allowed globs, blocks everything).
+
+# --timeout-sec is interpolated UNQUOTED into the codex argv (word-split into the
+# `timeout` prefix), so a crafted value like '5; touch /tmp/PWNED' would inject
+# argv. Pin it to a positive integer BEFORE it is ever used.
+case "$TIMEOUT_SEC" in
+  ''|*[!0-9]*) die "--timeout-sec must be a positive integer: $TIMEOUT_SEC" ;;
+esac
+
+# Path-traversal guard: run_id / job_id become path segments under $TMPROOT, and
+# the stale-worktree cleanup does `rm -rf` on that path. A `../` (or any path
+# separator) in an id would escape the tree and delete arbitrary dirs. Validate
+# BEFORE building any path or touching the filesystem.
+id_is_safe "$RUN_ID" || die "--run-id has invalid characters (allowed: A-Za-z0-9._-, not . or ..): $RUN_ID"
+id_is_safe "$JOB_ID" || die "--job-id has invalid characters (allowed: A-Za-z0-9._-, not . or ..): $JOB_ID"
 
 case "$REPO" in /*) : ;; *) die "--repo must be an absolute path: $REPO" ;; esac
 case "$PROMPT_FILE" in /*) : ;; *) die "--prompt-file must be an absolute path: $PROMPT_FILE" ;; esac
@@ -180,13 +182,43 @@ fi
 
 TMPROOT="${TMPDIR:-/tmp}"
 TMPROOT="${TMPROOT%/}"
-WT="$TMPROOT/compound-v/$RUN_ID/$JOB_ID"
+WT_PARENT="$TMPROOT/compound-v"
+WT="$WT_PARENT/$RUN_ID/$JOB_ID"
 
-# Clean any stale worktree at this path (idempotent re-dispatch on resume).
+# Defence-in-depth: even with the id-character guard above, ASSERT WT sits
+# strictly under $TMPROOT/compound-v/ before any remove/rm. The destructive
+# `rm -rf` fallback only runs after this assertion holds — so a path that
+# somehow escaped can never be deleted.
+#
+# CANONICALIZE BOTH SIDES identically before comparing: on macOS $TMPDIR is
+# `/var/folders/...` while `pwd -P` resolves it to `/private/var/folders/...`
+# (the /var → /private/var symlink). Comparing a canonical parent against a raw
+# $WT prefix would FALSELY reject every valid run. So we canonicalize the parent
+# of $WT and compare it against the canonical $WT_PARENT. The real defense is the
+# id-character regex above (no `/`, no `..` ⇒ no traversal); this is belt-and-braces.
+mkdir -p "$(dirname "$WT")"
+WT_PARENT_REAL="$(cd "$WT_PARENT" && pwd -P)"
+WT_DIR_REAL="$(cd "$(dirname "$WT")" && pwd -P)"
+case "$WT_DIR_REAL/" in
+  "$WT_PARENT_REAL"/*/) : ;;
+  *) die "refusing to operate on worktree path outside $WT_PARENT_REAL: $WT" ;;
+esac
+
+# Clean any stale worktree at this path (idempotent re-dispatch on resume). Safe
+# now that WT is proven to live under $WT_PARENT_REAL.
 if [ -e "$WT" ]; then
   git -C "$REPO" worktree remove -f "$WT" >/dev/null 2>&1 || rm -rf "$WT"
 fi
-mkdir -p "$(dirname "$WT")"
+
+# Capture the BASELINE commit BEFORE `git worktree add` — the worktree is created
+# from HEAD, so this SHA is exactly the worktree's diff baseline. We pass this
+# pinned SHA (not the literal "HEAD") to the scope gate: if the executor COMMITS
+# inside its worktree, the working tree looks clean and a `git diff HEAD` would
+# see nothing — but `git diff <baseline-sha>` still includes the committed change,
+# so a commit-to-hide-changes attempt is still detected and BLOCKED.
+BASELINE_SHA="$(git -C "$REPO" rev-parse HEAD 2>/dev/null)" \
+  || die "could not resolve baseline HEAD in $REPO"
+[ -n "$BASELINE_SHA" ] || die "empty baseline HEAD in $REPO"
 
 # `git worktree add <path> HEAD` — fresh checkout at HEAD = clean diff baseline.
 git -C "$REPO" worktree add "$WT" HEAD >/dev/null 2>&1 \
@@ -312,51 +344,69 @@ if [ -f "$RESULT_TXT" ]; then
 fi
 [ -n "$summary" ] || summary="(no summary emitted by worker)"
 
-# --- git-derived enforcement -------------------------------------------------
-# files_changed = `git diff --name-only` UNION `git ls-files --others --exclude-standard`,
-# both inside the worktree. This is the authority for what the job touched — never the
-# model's self-report. Exclude the adapter's own scratch files (.job_result.txt etc.).
+# --- git-derived enforcement (delegated to the Python scope gate) ------------
+# The authoritative enforcement (files_changed / violations / blocked) comes from
+# scripts/compound-v-scope-check.py — the SAME deterministic gate the dispatcher
+# runs after every job. The worker no longer re-implements glob matching in bash
+# (a weaker `case`-glob matcher would DIVERGE from the Python authority, e.g. bash
+# `*` matches `/`, and it could not see gitignored writes). Single source of truth.
+#
+# write_allowed is a colon-separated glob list; the gate wants one glob per line,
+# so we expand it into an allow-file under $ART (outside the worktree → never seen
+# in the diff). An EMPTY --write-allowed (read-only / review job) yields an EMPTY
+# allow-file, which makes the gate treat EVERY changed path as a violation — a
+# review job that writes anything is correctly BLOCKED. Baseline = the pinned SHA
+# captured before `worktree add` (so an in-worktree commit is still diffed).
 
-raw_changed=$(
-  { git -C "$WT" diff --name-only 2>/dev/null
-    git -C "$WT" ls-files --others --exclude-standard 2>/dev/null
-  } | LC_ALL=C sort -u
-)
+ALLOW_FILE="$ART/write_allowed.globs"
+: > "$ALLOW_FILE"
+_OLDIFS="$IFS"
+IFS=":"
+for _glob in $WRITE_ALLOWED; do
+  IFS="$_OLDIFS"
+  [ -z "$_glob" ] && continue
+  printf '%s\n' "$_glob" >> "$ALLOW_FILE"
+done
+IFS="$_OLDIFS"
 
+# Run the gate. It prints a JSON verdict on stdout; exit 0 = pass, 1 = blocked,
+# 2 = usage/git error. Capture both so a gate fault becomes status: error rather
+# than a silently-clean result.
+GATE_JSON=""
+gate_rc=0
+set +e
+GATE_JSON=$(python3 "$SCRIPT_DIR/compound-v-scope-check.py" \
+  --worktree "$WT" --baseline "$BASELINE_SHA" --allow-file "$ALLOW_FILE" 2>"$ART/scope_check.err")
+gate_rc=$?
+set -e
+
+# Parse the gate verdict with jq (the gate's `changed`/`violations` arrays are the
+# authority). On a gate error (rc 2 / unparseable) treat enforcement as empty and
+# let the status logic below mark it an error.
 files_changed=""
 violations=""
-while IFS= read -r path; do
-  [ -z "$path" ] && continue
-  # Drop the adapter's transient artifacts written into the worktree root.
-  case "$path" in
-    .job_result.txt|.codex_stderr.log|.codex_stderr.log.clean|.codex_stdout.log) continue ;;
-  esac
-  if [ -z "$files_changed" ]; then
-    files_changed="$path"
-  else
-    files_changed="$files_changed
-$path"
-  fi
-  if ! path_is_allowed "$path" "$WRITE_ALLOWED"; then
-    if [ -z "$violations" ]; then
-      violations="$path"
-    else
-      violations="$violations
-$path"
-    fi
-  fi
-done <<EOF
-$raw_changed
-EOF
+gate_verdict=""
+if [ -n "$GATE_JSON" ] && printf '%s' "$GATE_JSON" | jq -e . >/dev/null 2>&1; then
+  gate_verdict=$(printf '%s' "$GATE_JSON" | jq -r '.verdict // ""')
+  files_changed=$(printf '%s' "$GATE_JSON" | jq -r '.changed[]?')
+  violations=$(printf '%s' "$GATE_JSON" | jq -r '.violations[]?')
+fi
 
 # --- derive status -----------------------------------------------------------
+# The gate's verdict decides blocked; the worker's exit code layers timeout/error
+# on top. A blocked verdict ALWAYS wins (a scope leak is terminal). Then: a gate
+# fault (rc 2 or unparseable) is an error; codex timeout (124) is a timeout; any
+# other non-zero codex exit is an error; otherwise success.
 
 blocked="false"
 status="success"
 
-if [ -n "$violations" ]; then
+if [ "$gate_verdict" = "blocked" ] || [ -n "$violations" ]; then
   blocked="true"
   status="blocked"
+elif [ "$gate_rc" != "0" ] && [ "$gate_rc" != "1" ]; then
+  # Gate could not produce a verdict (usage/git error) — fail closed as error.
+  status="error"
 elif [ "$exit_code" = "$TIMEOUT_EXIT_CODE" ]; then
   status="timeout"
 elif [ "$exit_code" != "0" ]; then

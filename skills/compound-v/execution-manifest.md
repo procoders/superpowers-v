@@ -39,8 +39,8 @@ Worked example: [`examples/manifest.example.yaml`](../../examples/manifest.examp
 | `tier` | enum | yes¹ | `deep` \| `standard` \| `light`. The **intent** the routing policy assigns; the dispatcher resolves it to a concrete model. Stable vocabulary that survives model churn. |
 | `effort` | enum | no | `low` \| `medium` \| `high`. Orthogonal reasoning-effort hint. Default pairing `deep→high`, `standard→medium`, `light→low`, but independently tunable per task-type. For `codex` it maps to `-c model_reasoning_effort=<effort>`; for `claude` it is advisory (the `Task` path has no separate effort flag). |
 | `model` | string | no¹ | Explicit override, e.g. `opus`, `sonnet`, `gpt-5.5`. When present it **skips resolution** (the manifest pins the model directly). Execution-layer data — never in frontmatter. Backward-compatible: pre-tier manifests carrying only `model` remain valid. |
-| `isolation` | enum | yes | `direct` \| `worktree`. |
-| `run` | enum | yes | `serial` \| `parallel`. |
+| `isolation` | enum | yes | `direct` \| `worktree`. **`run: parallel` ⇒ `worktree`** (per-job scope attribution); `direct` is only valid with `run: serial`. |
+| `run` | enum | yes | `serial` \| `parallel`. A `parallel` job MUST be `isolation: worktree` (see the rule above). |
 | `depends_on` | string[] | no | Job ids that must finish first (defaults to empty). |
 | `write_allowed` | string[] | yes | Glob list this job MAY write. The scope gate enforces it. |
 | `read_allowed` | string[] | yes | Glob list this job MAY read. Auto-includes Task 0 outputs + the three audits. |
@@ -88,18 +88,22 @@ The map is **documented, not committed** in this repo (it is project-local confi
 4. **Reviewers ⇒ deep.** Any review/reviewer job MUST resolve to the strongest tier — `tier: deep` OR an explicit `model: opus`. (Mirrors the frontmatter rule: reviewers are always Opus; `deep` resolves to `opus` for claude.)
 5. **Model OR tier.** Every job MUST carry at least one of `model` or `tier`. A job with neither cannot be dispatched (the resolver has nothing to route on) and fails validation.
 6. **Tier / effort enums.** If present, `tier ∈ {deep, standard, light}` and `effort ∈ {low, medium, high}`. Any other value fails validation.
-7. **Unclear scope never dispatches.** A job whose scope the planner can't pin returns to planning rather than shipping with a guessed partition.
-8. **`read_allowed` auto-includes** Task 0 outputs + the three audit files, so every job can read the shared foundation and the pre-flight findings without listing them.
+7. **Parallel ⇒ worktree.** A `run: parallel` job MUST be `isolation: worktree`. `isolation: direct` is only valid with `run: serial`. (A repo-wide `git diff` cannot attribute a parallel direct job's writes to that job, so per-job isolation is mandatory for parallel work.) Hard validation failure.
+8. **Required fields + safe ids.** Every top-level required field (`run_id`, `jobs`, `feature`, `acceptance_criteria`, `routing_stance`, `max_parallel`) and every per-job required field (`id`, `title`, `type`, `backend`, `isolation`, `run`, `write_allowed`, `read_allowed`, `acceptance`, plus `model` OR `tier`) must be present; enums must be in range; and each `id`/`run_id` must match `^[A-Za-z0-9._-]+$` (not `.`/`..`) — a `../x` id is a path-traversal vector, rejected before dispatch.
+9. **Unclear scope never dispatches.** A job whose scope the planner can't pin returns to planning rather than shipping with a guessed partition.
+10. **`read_allowed` auto-includes** Task 0 outputs + the three audit files, so every job can read the shared foundation and the pre-flight findings without listing them.
 
-A violation of rule 1, 3, 4, 5, or 6 is a hard validation failure (non-zero exit + specifics). Rules 2/7/8 are partition-design rules enforced jointly by `partition-reviewer` and the validator.
+A violation of rule 1, 3, 4, 5, 6, 7, or 8 is a hard validation failure (non-zero exit + specifics). Rules 2/9/10 are partition-design rules enforced jointly by `partition-reviewer` and the validator.
 
-### Scope-attribution rule (parallel `direct` jobs)
+### Scope-attribution rule (parallel ⇒ worktree, enforced)
 
-The scope gate reads a **repo-wide** `git diff`, so per-job attribution requires per-job isolation. A `worktree` job (its tree holds only its own changes) and a **serial `direct`** job (nothing else writes concurrently) each get a deterministic per-job gate. **Parallel `direct`** jobs sharing one working tree do **not** — each job's per-job gate would also see its siblings' writes, yielding a false BLOCK or an unattributable diff. So parallel jobs must EITHER use **`isolation: worktree`** (true per-job attribution) OR be gated at **batch granularity**: run the gate once after the batch against the **union** of the batch's `write_allowed`, which deterministically catches any out-of-batch leak but cannot attribute it to a specific job. Set `isolation: worktree` on a parallel job whenever per-job attribution matters.
+The scope gate reads a **repo-wide** `git diff`, so per-job attribution requires per-job isolation. A `worktree` job (its tree holds only its own changes) and a **serial `direct`** job (nothing else writes concurrently) each get a deterministic per-job gate. **Parallel `direct`** jobs sharing one working tree do **not** — each job's per-job gate would also see its siblings' writes, yielding a false BLOCK or an unattributable diff. So the rule is enforced (invariant 7): **`run: parallel` ⇒ `isolation: worktree`; `isolation: direct` ⇒ `run: serial`.** The validator rejects any parallel+direct job.
 
-### `.gitignore` must not blind the scope gate
+> Note: batch-granularity gating (run the gate once after a batch against the **union** of the batch's `write_allowed`) remains available as a coarse out-of-batch-leak check, but it cannot attribute a leak to a specific job — so it is a fallback, not the primary path. The primary, enforced path is per-job worktree isolation for every parallel job.
 
-The gate's untracked-file probe is `git ls-files --others --exclude-standard`, which **excludes gitignored paths** — so an over-broad ignore could hide a worker's writes from enforcement. The committed run substrate must **never** be gitignored: `docs/superpowers/execution/**` and `docs/superpowers/memory/**` (and any other tracked output a job writes). Keep ignores limited to scratch/worktree artifacts.
+### `.gitignore` does not blind the scope gate
+
+The gate unions THREE git probes — `git diff --name-only`, `git ls-files --others --exclude-standard` (untracked), **and** `git ls-files --others --ignored --exclude-standard -- .` (gitignored). The third term means a worker that writes a **gitignored** path (e.g. `dist/`, `.env`, `build/`) is still detected and BLOCKED if it falls outside `write_allowed` — an over-broad ignore can no longer hide a worker's writes. Even so, keep the committed run substrate (`docs/superpowers/execution/**`, `docs/superpowers/memory/**`, and any other tracked output a job writes) **un-ignored**, and keep ignores limited to scratch/worktree artifacts.
 
 ---
 

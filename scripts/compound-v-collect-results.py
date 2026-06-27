@@ -11,7 +11,10 @@ Design contract (PRD §4.2 #6, plan §3 / §4 Q6):
   - The ENFORCEMENT fields (`blocked`, `files_changed`, `violations`, `status`,
     `exit_code`) are GIT-DERIVED by the caller's scope gate, never self-reported
     by the worker model. This script folds the scope verdict in; it does not
-    re-derive it from a model's claims.
+    re-derive it from a model's claims. When a scope verdict is present, the
+    `--blocked` / `--violations` / `--files-changed` flags are ADDITIVE-ONLY —
+    they may force a block or add entries, but may NEVER clear a scope-gate block
+    or drop a scope violation (the deterministic gate stays the authority).
   - The worker's free-text output (codex `--output-last-message`, or a Claude
     subagent's returned text) feeds ONLY the human `summary`. If that text is
     itself JSON matching the schema, its `summary`/`session_id`/`worktree` may
@@ -43,8 +46,16 @@ Scope-verdict and individual fields may also be supplied directly:
   --blocked / --no-blocked, --status, --exit-code, --session-id, --worktree
   --files-changed a,b,c   --violations a,b   (comma-separated)
 
-Direct flags override the scope file, which overrides worker-output, which
-overrides defaults.
+ENFORCEMENT flags are ADDITIVE-ONLY when a --scope verdict is present. The
+git-derived scope verdict is authoritative and can never be weakened by a flag:
+  - blocked      = scope_blocked OR flag   (a flag may FORCE a block; --no-blocked
+                   can NOT clear a scope-gate block)
+  - violations   = union(scope, flag)      (a flag may ADD violations; it can NOT
+                   remove a scope violation)
+  - files_changed= union(scope, flag)      (additive)
+When NO scope verdict is present, the direct flags supply the values outright.
+Informational fields (status/session_id/worktree/summary/exit_code) still follow
+the override order: direct flag > scope file > worker-output > default.
 
 Python 3.9-safe, stdlib only. Exit 0 on a written + schema-valid result; exit 1
 on a usage error or schema-conformance failure.
@@ -53,10 +64,22 @@ on a usage error or schema-conformance failure.
 import argparse
 import json
 import os
+import re
 import sys
 from typing import Any, Dict, List, Optional
 
 STATUS_VALUES = ("success", "blocked", "timeout", "error")
+
+# A --job-id becomes the output filename (<run-dir>/results/<id>.json), so a
+# `.`/`..`/`/` in it is a path-traversal vector. Restrict to the same safe
+# allow-list the worker and validator enforce on ids.
+_JOB_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _job_id_is_safe(value: str) -> bool:
+    if value in (".", ".."):
+        return False
+    return _JOB_ID_RE.match(value) is not None
 
 
 def _read_json(path: str) -> Optional[Any]:
@@ -94,6 +117,21 @@ def _as_str_list(val: Any) -> List[str]:
             out.append(str(item))
         return out
     return [str(val)]
+
+
+def _union_preserve_order(primary: List[str], extra: List[str]) -> List[str]:
+    """Union of two string lists, primary order first, de-duplicated.
+
+    Used for the additive-only fold of scope (primary) + flag (extra) lists, so a
+    flag can ADD entries but the scope-derived entries are always retained.
+    """
+    out = []  # type: List[str]
+    seen = set()  # type: set
+    for item in list(primary) + list(extra):
+        if item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
 
 
 def _coerce_summary(worker_text: str) -> str:
@@ -159,21 +197,41 @@ def build_result(args: argparse.Namespace) -> Dict[str, Any]:
     # --- enforcement fields: scope verdict is authoritative ---------------
     # Accept both this collector's native key names and the scope-check.py
     # verdict shape ({"verdict","changed","violations"}) as aliases.
-    files_changed = _as_str_list(
+    #
+    # ADDITIVE-ONLY RULE: when a scope verdict is present, the --files-changed /
+    # --violations / --blocked flags may only ADD to (never replace or clear) the
+    # git-derived verdict. A flag can FORCE blocked=true or ADD violations/files,
+    # but can NEVER clear a scope-gate block or drop a scope violation. This keeps
+    # the deterministic gate the authority; flags are an annotation layer on top.
+    have_scope = bool(scope)
+
+    scope_files = _as_str_list(
         scope["files_changed"] if "files_changed" in scope else scope.get("changed")
     )
-    if args.files_changed is not None:
-        files_changed = _as_str_list(args.files_changed)
+    flag_files = _as_str_list(args.files_changed) if args.files_changed is not None else []
+    if have_scope:
+        files_changed = _union_preserve_order(scope_files, flag_files)
+    elif args.files_changed is not None:
+        files_changed = flag_files
+    else:
+        files_changed = scope_files
 
-    violations = _as_str_list(scope.get("violations"))
-    if args.violations is not None:
-        violations = _as_str_list(args.violations)
+    scope_violations = _as_str_list(scope.get("violations"))
+    flag_violations = _as_str_list(args.violations) if args.violations is not None else []
+    if have_scope:
+        violations = _union_preserve_order(scope_violations, flag_violations)
+    elif args.violations is not None:
+        violations = flag_violations
+    else:
+        violations = scope_violations
 
-    # blocked: any violation => blocked; an explicit verdict can also force it.
+    # blocked: any violation => blocked; a scope verdict can force it; a flag may
+    # ADD a block but may NEVER clear a scope block (additive-only).
     scope_blocked = bool(scope.get("blocked", False)) or scope.get("verdict") == "blocked"
     blocked = scope_blocked or bool(violations)
     if args.blocked is not None:
-        blocked = args.blocked or bool(violations)
+        # --no-blocked sets args.blocked False; it must NOT override a scope block.
+        blocked = blocked or bool(args.blocked)
 
     exit_code = scope.get("exit_code")
     if args.exit_code is not None:
@@ -322,6 +380,15 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
 
 def main(argv: List[str]) -> int:
     args = parse_args(argv)
+
+    # Validate --job-id BEFORE it is ever used to build a path. A `../x` (or any
+    # path separator) would let the output escape <run-dir>/results/.
+    if not _job_id_is_safe(args.job_id):
+        sys.stderr.write(
+            "error: --job-id has invalid characters "
+            "(allowed: A-Za-z0-9._-, not . or ..): %s\n" % args.job_id
+        )
+        return 1
 
     if not args.out and not args.run_dir:
         sys.stderr.write("error: one of --out or --run-dir is required\n")

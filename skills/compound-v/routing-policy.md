@@ -226,6 +226,10 @@ These hold in **every** stance and are checked by `compound-v-validate-manifest.
 5. **Tier / effort enums.** When present, `tier ∈ {deep, standard, light}` and
    `effort ∈ {low, medium, high}`. NEVER `haiku` anywhere — not in the map, not as
    a model override, not in frontmatter.
+6. **Parallel ⇒ worktree.** A `run: parallel` job MUST be `isolation: worktree`;
+   `isolation: direct` is valid only with `run: serial`. A repo-wide `git diff`
+   cannot attribute a parallel direct job's writes, so per-job isolation is
+   mandatory for parallel work. The validator rejects parallel+direct.
 
 `backend`, `tier`, `effort`, and `model` are **execution-layer data**. They drive
 dispatch and live only in the manifest — they **never** appear in any
@@ -233,14 +237,17 @@ agent/skill/command frontmatter. (`lint-frontmatter.py` + `validate.yml` reject
 Haiku; reviewers/agents always carry `model: opus` in their own frontmatter, which
 is the agent's model and is unrelated to this execution-layer tier resolution.)
 
-> **`isolation: direct` + `run: parallel` does not buy a per-job scope gate.** The
-> scope gate reads a repo-wide `git diff`, so a `direct` job only gets deterministic
-> *per-job* attribution when it does not run concurrently in the same working tree.
-> Where this table routes a job type to `direct · parallel`, the dispatcher gates
-> that batch at **batch granularity** (union of `write_allowed`, run once after the
-> batch — catches out-of-batch leaks, cannot attribute per job), OR the planner
-> promotes a parallel job to `isolation: worktree` for true per-job attribution.
-> Serial `direct` jobs keep their own per-job gate. See
+> **Parallel ⇒ worktree (enforced); direct ⇒ serial.** The scope gate reads a
+> repo-wide `git diff`, so a `direct` job only gets deterministic *per-job*
+> attribution when it does not run concurrently in the same working tree. The
+> validator therefore **rejects any `run: parallel` + `isolation: direct` job**: a
+> parallel job MUST be `isolation: worktree` (true per-job attribution), and
+> `isolation: direct` is valid only with `run: serial`. Where a table row above
+> reads `direct · parallel`, that is the *intent* for an isolated parallel job — the
+> planner materializes it as `isolation: worktree` in the manifest. Serial `direct`
+> jobs keep their own per-job gate. (Batch-granularity gating — union of
+> `write_allowed`, run once after a batch — remains a coarse out-of-batch-leak
+> fallback that cannot attribute per job; it is not the primary path.) See
 > [`execution-manifest.md`](execution-manifest.md) §"Scope-attribution rule" and
 > [`phase-3-parallel-opus-dispatch.md`](phase-3-parallel-opus-dispatch.md) Step 2b.
 

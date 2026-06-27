@@ -26,6 +26,27 @@ Invariants enforced (from PRD §5.1/§5.5 + plan §5/§6)
    If present, ``tier`` ∈ {deep, standard, light} and ``effort`` ∈
    {low, medium, high}.
 
+Required-field + enum validation (before invariant checks)
+-----------------------------------------------------------
+All required fields per ``execution-manifest.md`` are checked first. Top-level:
+``run_id``, ``jobs``, ``feature``, ``spec_path``, ``plan_path``, ``audits``,
+``acceptance_criteria``, ``routing_stance``, ``max_parallel``. Per-job: ``id``,
+``title``, ``type``, ``backend``, ``isolation``, ``run``, ``write_allowed``,
+``read_allowed``, ``acceptance``, plus (``model`` OR ``tier``). Enums: ``backend``
+∈ {claude, codex, antigravity} (``none`` is the routing "return to planning"
+sentinel, NOT a dispatched job backend); ``isolation`` ∈ {direct, worktree};
+``run`` ∈ {serial, parallel};
+``routing_stance`` ∈ {balanced, conservative, cost-aware, claude-only};
+``tier`` ∈ {deep, standard, light}; ``effort`` ∈ {low, medium, high}.
+
+Job ``id`` (and top-level ``run_id``) MUST match ``^[A-Za-z0-9._-]+$`` and not be
+``.`` / ``..`` — ids become path segments, so a ``../x`` id is a path-traversal
+vector and is rejected before dispatch.
+
+**Parallel ⇒ worktree.** A ``run: parallel`` job MUST be ``isolation: worktree``
+(per-job scope attribution needs isolation); ``isolation: direct`` is only valid
+with ``run: serial``.
+
 Structural sanity is also checked (jobs is a non-empty list; each job has an
 ``id``; ids unique; ``backend`` present; ``write_allowed`` is a list).
 
@@ -451,6 +472,50 @@ REVIEWER_TOKENS = ("review", "reviewer", "spec_review", "quality", "integration"
 VALID_TIERS = ("deep", "standard", "light")
 VALID_EFFORTS = ("low", "medium", "high")
 
+# Enum vocabularies for required-field validation (per execution-manifest.md).
+VALID_BACKENDS = ("claude", "codex", "antigravity")
+VALID_ISOLATIONS = ("direct", "worktree")
+VALID_RUNS = ("serial", "parallel")
+VALID_STANCES = ("balanced", "conservative", "cost-aware", "claude-only")
+
+# Top-level required fields (per execution-manifest.md "Top-level fields").
+TOPLEVEL_REQUIRED = (
+    "run_id",
+    "jobs",
+    "feature",
+    "spec_path",
+    "plan_path",
+    "audits",
+    "acceptance_criteria",
+    "routing_stance",
+    "max_parallel",
+)
+
+# Per-job required fields (per execution-manifest.md "Per-job fields"). model OR
+# tier is handled separately (at least one of the two).
+JOB_REQUIRED = (
+    "id",
+    "title",
+    "type",
+    "backend",
+    "isolation",
+    "run",
+    "write_allowed",
+    "read_allowed",
+    "acceptance",
+)
+
+# Strict id allow-list — a malicious manifest id (e.g. "../x") must be rejected
+# before dispatch, since ids become path segments in the run/worktree layout.
+_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _id_is_safe(value):
+    s = str(value)
+    if s in (".", ".."):
+        return False
+    return _ID_RE.match(s) is not None
+
 
 def _is_reviewer(job):
     jtype = str(job.get("type", "")).lower()
@@ -469,9 +534,31 @@ def validate(manifest):
     if not isinstance(manifest, dict):
         return ["manifest is not a mapping"]
 
+    # Top-level required fields (validated BEFORE invariant checks).
+    for field in TOPLEVEL_REQUIRED:
+        if manifest.get(field) in (None, "", [], {}):
+            problems.append("manifest missing required top-level field '%s'" % field)
+
+    # routing_stance enum (only when present).
+    stance = manifest.get("routing_stance")
+    if stance is not None and str(stance).lower() not in VALID_STANCES:
+        problems.append(
+            "manifest routing_stance '%s' invalid (expected one of %s)"
+            % (stance, ", ".join(VALID_STANCES))
+        )
+
+    # Top-level run_id id-safety (becomes a run-dir / path segment).
+    run_id = manifest.get("run_id")
+    if run_id is not None and run_id != "" and not _id_is_safe(run_id):
+        problems.append(
+            "manifest run_id '%s' has invalid characters "
+            "(allowed: A-Za-z0-9._-, not . or ..)" % run_id
+        )
+
     jobs = manifest.get("jobs")
     if not isinstance(jobs, list) or not jobs:
-        return ["manifest has no non-empty 'jobs' list"]
+        problems.append("manifest has no non-empty 'jobs' list")
+        return problems
 
     # Structural sanity + collect per-job globs.
     seen_ids = set()
@@ -484,12 +571,61 @@ def validate(manifest):
         if not jid:
             problems.append("job #%d missing 'id'" % idx)
             jid = "<job#%d>" % idx
+        elif not _id_is_safe(jid):
+            problems.append(
+                "job '%s' id has invalid characters "
+                "(allowed: A-Za-z0-9._-, not . or ..)" % jid
+            )
         if jid in seen_ids:
             problems.append("duplicate job id '%s'" % jid)
         seen_ids.add(jid)
 
+        # Per-job required fields (validated BEFORE the invariant checks below).
+        for field in JOB_REQUIRED:
+            val = job.get(field)
+            # write_allowed may legitimately be an empty list (reviewers); only
+            # flag it when the key is entirely absent.
+            if field == "write_allowed":
+                if "write_allowed" not in job:
+                    problems.append("job '%s' missing required field 'write_allowed'" % jid)
+                continue
+            if val in (None, "", [], {}):
+                problems.append("job '%s' missing required field '%s'" % (jid, field))
+
         if not job.get("backend"):
             problems.append("job '%s' missing 'backend'" % jid)
+        else:
+            backend_val = str(job.get("backend")).lower()
+            if backend_val not in VALID_BACKENDS:
+                problems.append(
+                    "job '%s' backend '%s' invalid (expected one of %s)"
+                    % (jid, job.get("backend"), ", ".join(VALID_BACKENDS))
+                )
+
+        # isolation / run enum checks (only when present).
+        iso_val = job.get("isolation")
+        if iso_val is not None and str(iso_val).lower() not in VALID_ISOLATIONS:
+            problems.append(
+                "job '%s' isolation '%s' invalid (expected one of %s)"
+                % (jid, iso_val, ", ".join(VALID_ISOLATIONS))
+            )
+        run_val = job.get("run")
+        if run_val is not None and str(run_val).lower() not in VALID_RUNS:
+            problems.append(
+                "job '%s' run '%s' invalid (expected one of %s)"
+                % (jid, run_val, ", ".join(VALID_RUNS))
+            )
+
+        # Invariant 6: parallel ⇒ worktree (per-job scope attribution). A repo-wide
+        # git diff cannot attribute a parallel direct job's writes, so parallel jobs
+        # MUST be isolated in a worktree; direct is only valid with serial.
+        if (str(run_val).lower() == "parallel"
+                and str(iso_val).lower() == "direct"):
+            problems.append(
+                "job '%s' uses run: parallel with isolation: direct — parallel "
+                "jobs require worktree isolation for per-job scope attribution; "
+                "use isolation: worktree or run: serial" % jid
+            )
 
         # Invariant 5: intent routing — every job must carry model OR tier
         # (model is now an optional override; tier routes by intent).
@@ -637,6 +773,12 @@ def main(argv):
 GOOD_MANIFEST = """
 run_id: 2026-06-26-demo
 feature: "demo"
+spec_path: docs/superpowers/specs/2026-06-26-demo.md
+plan_path: docs/superpowers/plans/2026-06-26-demo.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-06-26-demo.md
+  domain: docs/superpowers/expert/2026-06-26-demo.md
+  library: docs/superpowers/library-audit/2026-06-26-demo.md
 routing_stance: balanced
 max_parallel: 4
 shared_resources:
@@ -663,6 +805,7 @@ jobs:
     run: parallel
     depends_on: [task-0-foundation]
     write_allowed: [src/features/editor/**]
+    read_allowed: [src/features/editor/**]
     acceptance: ["create/edit"]
   - id: task-2-api
     title: "api slice"
@@ -670,9 +813,10 @@ jobs:
     backend: claude
     tier: standard
     effort: medium
-    isolation: direct
+    isolation: worktree
     run: parallel
     write_allowed: [src/features/api/**]
+    read_allowed: [src/server/**]
     acceptance: ["crud"]
   - id: task-3-spec-review
     title: "spec review gate"
@@ -683,6 +827,7 @@ jobs:
     isolation: direct
     run: serial
     write_allowed: []
+    read_allowed: [src/**]
     acceptance: ["AC met"]
 """
 
@@ -735,6 +880,61 @@ jobs:
     isolation: direct
     run: parallel
     write_allowed: [docs/another-area.md]
+"""
+
+
+# A complete, otherwise-valid manifest whose ONE defect is parallel + direct.
+PARALLEL_DIRECT_MANIFEST = """
+run_id: 2026-06-26-pd
+feature: "pd"
+spec_path: docs/superpowers/specs/2026-06-26-pd.md
+plan_path: docs/superpowers/plans/2026-06-26-pd.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-06-26-pd.md
+  domain: docs/superpowers/expert/2026-06-26-pd.md
+  library: docs/superpowers/library-audit/2026-06-26-pd.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-1-build
+    title: "build slice"
+    type: bounded_crud
+    backend: claude
+    tier: standard
+    isolation: direct
+    run: parallel
+    write_allowed: [src/build/**]
+    read_allowed: [src/**]
+    acceptance: ["builds"]
+"""
+
+# A complete manifest whose ONE defect is a path-traversal job id.
+BAD_ID_MANIFEST = """
+run_id: 2026-06-26-badid
+feature: "badid"
+spec_path: docs/superpowers/specs/2026-06-26-badid.md
+plan_path: docs/superpowers/plans/2026-06-26-badid.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-06-26-badid.md
+  domain: docs/superpowers/expert/2026-06-26-badid.md
+  library: docs/superpowers/library-audit/2026-06-26-badid.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: ../x
+    title: "evil"
+    type: bounded_crud
+    backend: claude
+    tier: standard
+    isolation: worktree
+    run: parallel
+    write_allowed: [src/evil/**]
+    read_allowed: [src/**]
+    acceptance: ["x"]
 """
 
 
@@ -803,6 +1003,22 @@ def _selftest():
     expect(
         "bad: invalid effort caught",
         "effort 'extreme' invalid" in joined,
+    )
+    expect(
+        "bad: parallel+direct caught",
+        "run: parallel with isolation: direct" in joined,
+    )
+
+    # parallel ⇒ worktree, and a bad job id, each caught.
+    pd_bad = validate_text(PARALLEL_DIRECT_MANIFEST)
+    expect(
+        "parallel+direct manifest invalid",
+        any("run: parallel with isolation: direct" in p for p in pd_bad),
+    )
+    badid = validate_text(BAD_ID_MANIFEST)
+    expect(
+        "bad job id '../x' caught",
+        any("invalid characters" in p for p in badid),
     )
 
     # Reviewer satisfied by tier: deep (no model) — GOOD manifest task-3 uses

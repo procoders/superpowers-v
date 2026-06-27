@@ -70,6 +70,11 @@ case "$REPO" in /*) : ;; *) die "--repo must be absolute: $REPO" ;; esac
 [ -n "$SCHEMA" ] || SCHEMA="$REPO/schemas/plan-review.schema.json"
 [ -f "$SCHEMA" ] || die "schema not found: $SCHEMA"
 case "$EFFORT" in low|medium|high) : ;; *) die "--effort must be low|medium|high: $EFFORT" ;; esac
+# --timeout-sec is interpolated UNQUOTED into the codex argv (word-split into the
+# `timeout` prefix), so a crafted value injects argv. Pin it to a positive integer.
+case "$TIMEOUT_SEC" in
+  ''|*[!0-9]*) die "--timeout-sec must be a positive integer: $TIMEOUT_SEC" ;;
+esac
 command -v codex >/dev/null 2>&1 || die "codex not found on PATH"
 
 TIMEOUT_BIN=""

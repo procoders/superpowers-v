@@ -9,7 +9,22 @@ What it does
 ------------
 Computes the set of files a job actually changed, purely from git:
 
-    changed = (git diff --name-only <baseline>)  ∪  (git ls-files --others --exclude-standard)
+    changed = (git diff --name-only <baseline>)
+              ∪ (git ls-files --others --exclude-standard)
+              ∪ (git ls-files --others --ignored --exclude-standard -- .)
+              − (preexisting untracked/ignored snapshot, direct mode only)
+
+The first term diffs the WORKING TREE against ``<baseline>`` — and because a
+``git diff <baseline>`` includes anything COMMITTED since that baseline, a worker
+that COMMITS inside its worktree to make the tree look clean is still caught (the
+worker passes the pre-``worktree add`` baseline SHA, not a moving ``HEAD``).
+
+The third term catches GITIGNORED writes — a worker writing a gitignored path
+(dist/, .env, build/) would otherwise be invisible to the gate.
+
+The optional ``--preexisting`` subtraction (direct mode) drops paths that were
+ALREADY untracked/ignored before the job started, so a normal dirty tree does not
+produce false BLOCKs for files this job never touched.
 
 then matches each changed path against the job's ``write_allowed`` glob list.
 Any changed file that matches NO allowed glob is a violation. One or more
@@ -21,7 +36,9 @@ Two modes (mutually exclusive)
   (``git -C <dir> ...``). Baseline defaults to ``HEAD`` (the commit the worktree
   was created at) unless ``--baseline`` is given.
 * direct mode (``--repo <dir> --baseline <commit>``): run git inside the repo,
-  diffing against an explicit pre-dispatch baseline commit/ref.
+  diffing against an explicit pre-dispatch baseline commit/ref. ``--baseline`` is
+  REQUIRED here — a direct job's baseline must be the recorded pre-dispatch
+  commit, never a defaulted (and possibly-moved) HEAD.
 
 ``write_allowed`` source
 ------------------------
@@ -75,8 +92,28 @@ def _split_lines(blob):
     return out
 
 
-def changed_files(cwd, baseline):
-    """Union of tracked-diff and untracked files, repo-relative, deduped/sorted."""
+def changed_files(cwd, baseline, preexisting=None):
+    """Union of tracked-diff, untracked, AND gitignored files, repo-relative.
+
+    Three sources, because a worker can write outside write_allowed in any of them:
+      1. tracked edits        — git diff --name-only <baseline>
+      2. untracked new files  — git ls-files --others --exclude-standard
+      3. IGNORED new files     — git ls-files --others --ignored --exclude-standard
+    Source 1 diffs the working tree against ``baseline``; because it also includes
+    anything COMMITTED since that baseline, a worker that commits inside its worktree
+    to fake a clean tree is still detected (the caller passes the pre-``worktree add``
+    baseline SHA, never a moving HEAD).
+    Source 3 is the one the old gate MISSED: --exclude-standard drops gitignored
+    paths, so a worker could write a gitignored file (e.g. dist/, .env, build/)
+    completely undetected. We union it in so any ignored write outside write_allowed
+    is reported as a violation.
+
+    ``preexisting`` (optional set/iterable of repo-relative paths) is SUBTRACTED
+    from the union: in direct mode the dispatcher snapshots untracked/ignored paths
+    that existed BEFORE the job, so files this job never created are not attributed
+    to it. (Worktree mode passes nothing — a fresh ``worktree add HEAD`` has no
+    pre-existing untracked.) Result is deduped/sorted, repo-relative.
+    """
     rc1, diff_out, diff_err = _git(cwd, ["diff", "--name-only", baseline])
     if rc1 != 0:
         raise RuntimeError(
@@ -87,8 +124,21 @@ def changed_files(cwd, baseline):
     )
     if rc2 != 0:
         raise RuntimeError("git ls-files failed: %s" % oth_err.strip())
+    # Ignored untracked files. Needs an explicit pathspec ('-- .') so git lists
+    # ignored paths under the tree rather than nothing.
+    rc3, ign_out, ign_err = _git(
+        cwd, ["ls-files", "--others", "--ignored", "--exclude-standard", "--", "."]
+    )
+    if rc3 != 0:
+        raise RuntimeError("git ls-files (ignored) failed: %s" % ign_err.strip())
 
-    files = set(_split_lines(diff_out)) | set(_split_lines(oth_out))
+    files = (
+        set(_split_lines(diff_out))
+        | set(_split_lines(oth_out))
+        | set(_split_lines(ign_out))
+    )
+    if preexisting:
+        files -= set(preexisting)
     return sorted(files)
 
 
@@ -191,8 +241,19 @@ def load_allow_file(path):
     return out
 
 
-def check(cwd, baseline, allowed):
-    changed = changed_files(cwd, baseline)
+def load_preexisting_file(path):
+    """Read a snapshot of pre-existing repo-relative paths (one per line)."""
+    out = []
+    with open(path, "r") as fh:
+        for raw in fh:
+            line = raw.strip()
+            if line:
+                out.append(line)
+    return out
+
+
+def check(cwd, baseline, allowed, preexisting=None):
+    changed = changed_files(cwd, baseline, preexisting=preexisting)
     violations = [p for p in changed if not is_allowed(p, allowed)]
     return changed, violations
 
@@ -209,7 +270,10 @@ def build_parser():
         "--baseline",
         metavar="COMMIT",
         default=None,
-        help="baseline commit/ref (default HEAD; required-ish for --repo)",
+        help="baseline commit/ref. In --worktree mode defaults to HEAD (the "
+        "worktree is fresh from HEAD). REQUIRED in --repo (direct) mode: a "
+        "direct job's baseline must be the recorded pre-dispatch commit, not "
+        "whatever HEAD happens to be now.",
     )
     p.add_argument(
         "--allow",
@@ -223,6 +287,15 @@ def build_parser():
         metavar="PATH",
         help="file of allowed globs, one per line (# comments ok)",
     )
+    p.add_argument(
+        "--preexisting",
+        metavar="PATH",
+        help="file of repo-relative paths (one per line) that existed BEFORE the "
+        "job (untracked/ignored snapshot); these are EXCLUDED from the changed/"
+        "violation set. Direct mode: the dispatcher snapshots pre-existing "
+        "untracked+ignored paths before launch and passes them here so a normal "
+        "dirty tree does not produce false BLOCKs.",
+    )
     p.add_argument("--selftest", action="store_true", help="run built-in tests")
     return p
 
@@ -233,11 +306,27 @@ def main(argv):
     if args.worktree:
         cwd = args.worktree
         mode = "worktree"
+        # Worktrees are created fresh from HEAD, so HEAD is the correct baseline.
         baseline = args.baseline or "HEAD"
     else:
         cwd = args.repo
         mode = "direct"
-        baseline = args.baseline or "HEAD"
+        # Direct mode REQUIRES an explicit baseline: it must be the recorded
+        # pre-dispatch commit, never a defaulted HEAD (which may have moved and
+        # would silently hide a job's writes against the wrong reference).
+        if not args.baseline:
+            print(
+                json.dumps(
+                    {
+                        "verdict": "error",
+                        "error": "--baseline is required in --repo (direct) mode "
+                        "(must be the recorded pre-dispatch commit)",
+                    }
+                ),
+                file=sys.stderr,
+            )
+            return 2
+        baseline = args.baseline
 
     if not os.path.isdir(cwd):
         print(
@@ -250,8 +339,12 @@ def main(argv):
     if args.allow_file:
         allowed.extend(load_allow_file(args.allow_file))
 
+    preexisting = None
+    if args.preexisting:
+        preexisting = load_preexisting_file(args.preexisting)
+
     try:
-        changed, violations = check(cwd, baseline, allowed)
+        changed, violations = check(cwd, baseline, allowed, preexisting=preexisting)
     except RuntimeError as e:
         print(json.dumps({"verdict": "error", "error": str(e)}), file=sys.stderr)
         return 2
@@ -384,6 +477,97 @@ def _selftest():
         changed, violations = check(wt, "HEAD", ["src/**"])
         expect("worktree: wt_only.ts detected", "src/wt_only.ts" in changed)
         expect("worktree: no violation under src/**", violations == [])
+
+        # COMMITTED-INSIDE-WORKTREE case: a worker that COMMITS a forbidden file
+        # inside its worktree makes `git diff HEAD` look clean — but the gate
+        # baselines against the pre-`worktree add` SHA, so `git diff <sha>` still
+        # includes the committed change and BLOCKS it. Capture the worktree's
+        # baseline SHA, commit a forbidden file inside the worktree, and verify the
+        # gate (baselined at that SHA) still flags it.
+        wt2 = os.path.join(tmp, "wt2")
+        run(["git", "worktree", "add", "-q", wt2, "HEAD"])
+        base_sha = subprocess.run(
+            ["git", "-C", wt2, "rev-parse", "HEAD"],
+            stdout=subprocess.PIPE, universal_newlines=True, check=True,
+        ).stdout.strip()
+        os.makedirs(os.path.join(wt2, "docs"))
+        with open(os.path.join(wt2, "docs", "committed_leak.md"), "w") as f:
+            f.write("leak via commit\n")
+        run(["git", "add", "-A"], cwd=wt2)
+        run(["git", "commit", "-q", "-m", "sneaky commit inside worktree"], cwd=wt2)
+        # `git diff HEAD` now sees NOTHING (the commit moved HEAD), so a HEAD-baselined
+        # gate would falsely PASS. The SHA-baselined gate must still detect + block it.
+        changed_head, _ = check(wt2, "HEAD", ["src/**"])
+        expect(
+            "committed: HEAD-baseline would MISS the committed leak (clean tree)",
+            "docs/committed_leak.md" not in changed_head,
+        )
+        changed_sha, viol_sha = check(wt2, base_sha, ["src/**"])
+        expect(
+            "committed: baseline-SHA detects the committed-inside-worktree file",
+            "docs/committed_leak.md" in changed_sha,
+        )
+        expect(
+            "committed: committed file outside write_allowed BLOCKS",
+            "docs/committed_leak.md" in viol_sha,
+        )
+
+        # PRE-EXISTING (direct mode) case: a file untracked BEFORE the job (passed
+        # via --preexisting) must NOT be flagged, while a NEW untracked file outside
+        # write_allowed still BLOCKS. Use the first repo (direct-style check).
+        with open(os.path.join(repo, "docs", "preexisting.md"), "w") as f:
+            f.write("was here before the job\n")
+        with open(os.path.join(repo, "docs", "new_leak.md"), "w") as f:
+            f.write("created by the job\n")
+        # Without the snapshot: BOTH untracked docs files are flagged.
+        _, viol_no_snap = check(repo, "HEAD", ["src/**"])
+        expect(
+            "preexisting: without snapshot both docs files flagged",
+            "docs/preexisting.md" in viol_no_snap and "docs/new_leak.md" in viol_no_snap,
+        )
+        # With the snapshot listing the pre-existing file: it is excluded; the new
+        # file outside write_allowed still BLOCKS.
+        changed_snap, viol_snap = check(
+            repo, "HEAD", ["src/**"], preexisting=["docs/preexisting.md"]
+        )
+        expect(
+            "preexisting: snapshotted file NOT flagged",
+            "docs/preexisting.md" not in changed_snap
+            and "docs/preexisting.md" not in viol_snap,
+        )
+        expect(
+            "preexisting: new file outside write_allowed still BLOCKS",
+            "docs/new_leak.md" in viol_snap,
+        )
+
+        # IGNORED-FILE case: a worker writes a gitignored path OUTSIDE
+        # write_allowed. --exclude-standard would hide it, so the gate must union
+        # in `--others --ignored` and BLOCK on it. Set up a fresh repo with a
+        # .gitignore so the write lands in an ignored path.
+        irepo = os.path.join(tmp, "irepo")
+        os.makedirs(os.path.join(irepo, "src"))
+        run(["git", "init", "-q"], cwd=irepo)
+        run(["git", "config", "user.email", "t@t.t"], cwd=irepo)
+        run(["git", "config", "user.name", "t"], cwd=irepo)
+        with open(os.path.join(irepo, ".gitignore"), "w") as f:
+            f.write("dist/\n.env\n")
+        with open(os.path.join(irepo, "src", "base.ts"), "w") as f:
+            f.write("base\n")
+        run(["git", "add", "-A"], cwd=irepo)
+        run(["git", "commit", "-q", "-m", "base"], cwd=irepo)
+        # Worker writes a GITIGNORED build artifact outside write_allowed.
+        os.makedirs(os.path.join(irepo, "dist"))
+        with open(os.path.join(irepo, "dist", "leak.js"), "w") as f:
+            f.write("leaked\n")
+        changed, violations = check(irepo, "HEAD", ["src/**"])
+        expect(
+            "ignored: dist/leak.js detected despite .gitignore",
+            "dist/leak.js" in changed,
+        )
+        expect(
+            "ignored: dist/leak.js BLOCKS (violation outside write_allowed)",
+            "dist/leak.js" in violations,
+        )
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
