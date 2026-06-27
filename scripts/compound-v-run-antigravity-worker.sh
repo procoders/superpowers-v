@@ -268,7 +268,8 @@ mkdir -p "$ART"
 #   * agy has NO `--cd`: we `cd "$WT"` and pass `--add-dir "$WT"`.
 #   * Response text → captured STDOUT → job_result.summary.
 #   * No resumable session UUID is exposed → session_id is "".
-#   * `agy models` HANGS — never called; the model map is curated upstream.
+#   * `agy models </dev/null` works headless; the map is resolved upstream (a fallback
+#     map, refreshable from the live catalog via /v:models discovery).
 #   * READ-ONLY / NETWORK: agy exposes no kernel sandbox toggle for these here, so
 #     --read-only and --network are advisory only and do not change the invocation
 #     (the post-hoc git-diff gate still BLOCKS any write on a read-only job).

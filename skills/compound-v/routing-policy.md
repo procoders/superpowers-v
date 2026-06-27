@@ -165,7 +165,7 @@ backend:
 "models": {
   "claude":      { "deep": "opus", "standard": "opus", "light": "sonnet" },
   "codex":       { "deep": "gpt-5.5", "standard": "gpt-5.5", "light": "gpt-5.3-codex-spark" },
-  "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Medium)", "light": "Gemini 3.1 Flash" }
+  "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" }
 }
 ```
 
