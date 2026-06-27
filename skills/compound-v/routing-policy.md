@@ -307,7 +307,8 @@ is the agent's model and is unrelated to this execution-layer tier resolution.)
 3. Otherwise apply the stance table above to get **backend + (tier, effort)**.
 4. **Scorecard check** (see [Scorecard-aware routing](#scorecard-aware-routing)): query
    the measured `health` of this (static-default backend × task-type) in THIS repo. If
-   `unhealthy`, prefer the routing alternative or escalate a tier and log a one-line
+   `unhealthy`, **escalate to an equal-or-higher-trust seat** (Codex → Opus/`deep` by
+   default; **never auto-route to a lower-trust backend** — see [What scorecards are NOT](#what-scorecards-are-not)) and log a one-line
    justification; if `watch`, keep the default but note it; if `healthy` /
    `insufficient_data`, keep the default unchanged.
 5. Apply the env-aware fallback (rewrite Codex rows if Codex is absent).
@@ -325,7 +326,7 @@ The stance tables above are a **static guess**: a task-type maps to a fixed back
 and tier, decided once and applied to every repo the same way. Scorecards make that
 guess **adaptive** — before assigning a task-type's static-default backend, the
 planner/router checks how that backend has *actually* performed for that task-type
-**in THIS repo**, and prefers an alternative when the default is measured-unhealthy.
+**in THIS repo**, and escalates to a higher-trust seat (never a lower-trust backend) when the default is measured-unhealthy.
 
 The signal comes from [`worker-performance.jsonl`](../../docs/superpowers/memory/),
 the machine-generated scorecard that

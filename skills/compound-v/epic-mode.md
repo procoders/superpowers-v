@@ -26,11 +26,16 @@ A feature advances through `pending → running → done` (or `failed`). The epi
 | Command | Effect |
 |---|---|
 | `--init --features F.json --epic-id E --title T --out S` | validate + write `epic-state.json`, every feature `pending` |
-| `--next --state S` | print `{"feature": <runnable\|null>, "reason": "runnable\|epic complete\|waiting\|epic blocked: …"}` |
+| `--next --state S` | print `{"feature": <runnable\|null>, "reason": "runnable\|epic complete\|epic blocked: …\|epic needs reconcile: …"}` |
 | `--update --feature F --status {pending\|running\|done\|failed} [--run-id R] --state S` | set a feature's status/run-id; roll up epic status |
 | `--summary --state S` | render the feature table |
 
 `--next` is **read-only** and never an error: a `null` feature with a stop reason is *information*, not failure. Mutate state only through `--update`; never hand-edit `epic-state.json`.
+
+**The loop is fail-fast and reconcile-strict** (the guard order in `next_feature` encodes it):
+
+- **`epic blocked`** — any `failed` feature halts the WHOLE epic, even independent pending features; the loop never autonomously routes around a failure (it may be systemic). Recover by retrying it (`--update --feature <id> --status pending`) or dropping it, then re-run.
+- **`epic needs reconcile`** — a feature is still `running`. Because epic mode is **sequential**, `--next` is only called between features, so a `running` feature on resume means that feature's run **crashed mid-pipeline**. Inspect its run dir / `state.json` (via `run_id`) and mark it `--status pending` (retry) or `--status failed` (abandon) before continuing — never leave a feature `running` across a resume.
 
 `epic-state.json` shape:
 

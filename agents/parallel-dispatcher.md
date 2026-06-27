@@ -215,8 +215,10 @@ This closes the routing loop: `task-outcomes.jsonl` is the raw record, and
 `worker-performance.jsonl` is its deterministic aggregate. The dispatcher/planner then
 consults `compound-v-scorecard.py --query --backend <default> --type <task-type>` when
 routing a job (per [`routing-policy.md`](../skills/compound-v/routing-policy.md)
-§Scorecard-aware routing): an `unhealthy` cell escalates a tier / prefers the
-alternative, `watch` is noted, `healthy`/`insufficient_data` keeps the static default.
+§Scorecard-aware routing): an `unhealthy` cell **escalates to an equal-or-higher-trust
+seat** (Codex → Opus/`deep` by default; it **never auto-downgrades to a lower-trust
+backend** like Antigravity), `watch` is noted, `healthy`/`insufficient_data` keeps the
+static default.
 The scorecard is regenerated each run and never hand-edited (unlike the human-curated
 `routing-lessons.md`); it emits no cost/token metrics.
 

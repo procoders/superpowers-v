@@ -80,14 +80,16 @@ _CODEX_RULES = [
 # text mentions quota/billing/usage-limit, out_of_credits wins over rate_limited; a bare
 # `resource_exhausted` / `429` with no quota wording falls through to rate_limited.
 _ANTIGRAVITY_RULES = [
-    # Gemini reuses RESOURCE_EXHAUSTED for BOTH quota exhaustion and throttling, so these
-    # needles are deliberately quota/billing/credit-SPECIFIC. Bare "insufficient" /
-    # "exceeded your" / "usage limit" were removed — they false-matched throttle text like
-    # "exceeded your rate limit", stealing it from rate_limited and forcing a needless
-    # backend reroute. Ambiguous "exhausted" text falls through to rate_limited (transient,
-    # retry) — the safer default than out_of_credits (reroute away).
+    # Gemini reuses RESOURCE_EXHAUSTED for BOTH quota exhaustion and per-minute throttling,
+    # so these needles are deliberately quota/billing/credit-SPECIFIC. Even bare "quota" is
+    # NOT here: Gemini's rate-limit message is literally "Quota exceeded for quota metric
+    # '…' limit '… per minute'" — a transient throttle, not out of credits. Bare "insufficient"
+    # / "exceeded your" / "usage limit" / "quota" were all removed because they stole throttle
+    # text from rate_limited and forced a needless backend reroute. Hard exhaustion is matched
+    # only by billing/credit phrasing or the specific "exceeded your current quota"; everything
+    # else ambiguous falls through to rate_limited (transient, retry) — the safer default.
     ("out_of_credits", [
-        "quota", "billing", "out of credit", "insufficient credit",
+        "billing", "out of credit", "insufficient credit",
         "insufficient funds", "exceeded your current quota", "purchase a plan",
     ]),
     ("auth", [
@@ -98,6 +100,7 @@ _ANTIGRAVITY_RULES = [
     ]),
     ("rate_limited", [
         "resource_exhausted", "rate limit", "429", "too many requests",
+        "quota metric", "per minute", "per day", "request limit",
     ]),
     ("overloaded", [
         "unavailable", "503", "500", "overloaded", "internal error",
@@ -251,6 +254,7 @@ def _selftest():
         ("antigravity", 1, "PERMISSION_DENIED: The caller does not have permission (403)", "auth"),
         ("antigravity", 1, "429 RESOURCE_EXHAUSTED: rate limit, please retry", "rate_limited"),
         ("antigravity", 1, "429 RESOURCE_EXHAUSTED: You have exceeded your rate limit, retry later", "rate_limited"),
+        ("antigravity", 1, "429 RESOURCE_EXHAUSTED: Quota exceeded for quota metric 'GenerateContent request limit per minute'. Please retry.", "rate_limited"),
         ("antigravity", 1, "503 UNAVAILABLE: model is overloaded, try again later", "overloaded"),
         ("antigravity", 1, "input token count exceeds the maximum number of tokens", "context_length"),
         ("antigravity", 1, "getaddrinfo ENOTFOUND: dns lookup failed", "network"),
