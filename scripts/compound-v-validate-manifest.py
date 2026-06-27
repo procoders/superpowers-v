@@ -33,7 +33,7 @@ All required fields per ``execution-manifest.md`` are checked first. Top-level:
 ``acceptance_criteria``, ``routing_stance``, ``max_parallel``. Per-job: ``id``,
 ``title``, ``type``, ``backend``, ``isolation``, ``run``, ``write_allowed``,
 ``read_allowed``, ``acceptance``, plus (``model`` OR ``tier``). Enums: ``backend``
-∈ {claude, codex, antigravity} (``none`` is the routing "return to planning"
+∈ {claude, codex, antigravity, cursor} (``none`` is the routing "return to planning"
 sentinel, NOT a dispatched job backend); ``isolation`` ∈ {direct, worktree};
 ``run`` ∈ {serial, parallel};
 ``routing_stance`` ∈ {balanced, conservative, cost-aware, claude-only};
@@ -487,7 +487,7 @@ VALID_TIERS = ("deep", "standard", "light")
 VALID_EFFORTS = ("low", "medium", "high")
 
 # Enum vocabularies for required-field validation (per execution-manifest.md).
-VALID_BACKENDS = ("claude", "codex", "antigravity")
+VALID_BACKENDS = ("claude", "codex", "antigravity", "cursor")
 VALID_ISOLATIONS = ("direct", "worktree")
 VALID_RUNS = ("serial", "parallel")
 VALID_STANCES = ("balanced", "conservative", "cost-aware", "claude-only")
@@ -731,14 +731,14 @@ def validate(manifest):
             wa = []
         job_globs.append((jid, [str(g) for g in wa]))
 
-        # Invariant 2: codex => worktree, AND antigravity => worktree. Both are
-        # EXTERNAL workers. Codex has a kernel sandbox scoped to a directory;
-        # antigravity has NO kernel write-confinement at all (it runs with
-        # --dangerously-skip-permissions), so worktree + git-diff is the ONLY
-        # file-scope enforcement either backend gets. A non-worktree external
-        # worker cannot be deterministically attributed and is rejected.
+        # Invariant 2: codex => worktree, antigravity => worktree, cursor => worktree.
+        # All three are EXTERNAL workers. Codex has a kernel sandbox scoped to a directory;
+        # antigravity and cursor have NO kernel write-confinement at all (antigravity runs
+        # with --dangerously-skip-permissions; cursor's headless `-f` grants arbitrary
+        # write+shell), so worktree + git-diff is the ONLY file-scope enforcement they get.
+        # A non-worktree external worker cannot be deterministically attributed and is rejected.
         backend_lc = str(job.get("backend", "")).lower()
-        if backend_lc in ("codex", "antigravity"):
+        if backend_lc in ("codex", "antigravity", "cursor"):
             if str(job.get("isolation", "")).lower() != "worktree":
                 problems.append(
                     "job '%s' uses backend %s but isolation is '%s' "

@@ -25,6 +25,8 @@ As of **v1.0**, the tail of that flow is a real **execution orchestrator**: it m
 
 **1.1** adds a headless **Antigravity** (`agy --print`) worker as a third backend — same worktree + `git diff` scope gate as Codex — for `large_isolated` builds. It is **opt-in and lower-trust**: `agy` has no kernel write-confinement (headless writes require `--dangerously-skip-permissions`), so the gate *detects* in-worktree scope leaks but cannot *prevent* an out-of-worktree side-effect. **Prefer Codex (kernel-sandboxed) for untrusted / high-stakes work.**
 
+**2.1** adds a headless **Cursor** (`cursor-agent -p -f`) worker as a fourth backend — same worktree + `git diff` scope gate, **verified live** (success + BLOCKED paths). Same **opt-in / lower-trust** tier as Antigravity: a headless run requires `-f` (an untrusted dir is otherwise refused), which grants arbitrary write+shell, so the gate detects but cannot prevent out-of-worktree effects — **prefer Codex for untrusted work**. Available only when `cursor-agent` is installed and authenticated. Output is one JSON object (`.result` → summary, `.session_id` → resume).
+
 Backend failures are handled **gracefully**: a non-success job is classified (by error type, not HTTP status) and routed through a deterministic policy — retry transient errors with backoff, **circuit-break + re-route codex→claude on out-of-credits**, escalate tier on context-length, halt on auth — all resumable and **loudly reported** (never a silent cheap→expensive swap). See [skills/compound-v/failure-policy.md](skills/compound-v/failure-policy.md).
 
 Routing is **tier-based and churn-proof**: jobs declare a `tier` (`deep`/`standard`/`light`) and an optional `effort` (`low`/`medium`/`high`) instead of a hardcoded model name. A resolver (`scripts/compound-v-resolve-model.py`) maps tier → concrete model through a refreshable config `models` map, so when models change you update one map (or run `/v:models`) instead of editing prompts. Codex's reasoning-effort is exposed as `--effort`. Antigravity's tier map is **auto-discovered** — `agy models </dev/null` is parsed and ranked by `scripts/compound-v-discover-models.py` into the deep/standard/light proposal that `/v:init` and `/v:models` write, so it tracks the live catalog instead of a hand-curated list.
@@ -169,7 +171,8 @@ superpowers-v/
 │       ├── SKILL.md                           # the contract every adapter implements
 │       ├── adapter-claude.md                  # Task-based dispatch (Opus/Sonnet)
 │       ├── adapter-codex.md                   # headless `codex exec` + worktree + git diff
-│       └── adapter-antigravity.md             # headless `agy --print` + worktree + git diff (lower-trust / opt-in)
+│       ├── adapter-antigravity.md             # headless `agy --print` + worktree + git diff (lower-trust / opt-in)
+│       └── adapter-cursor.md                   # headless `cursor-agent -p -f` + worktree + git diff (lower-trust / opt-in, 2.1)
 ├── scripts/                                   # small deterministic helpers (bash 3.2 / python 3.9, stdlib)
 │   ├── compound-v-scope-check.py              # git-diff scope gate (the SCOPE LOCK authority)
 │   ├── compound-v-resolve-model.py            # tier (+effort) → concrete model via config models map
@@ -177,7 +180,8 @@ superpowers-v/
 │   ├── compound-v-validate-manifest.py        # deterministic manifest-invariant gate
 │   ├── compound-v-run-codex-worker.sh         # headless Codex worker (worktree + diff + normalize)
 │   ├── compound-v-run-antigravity-worker.sh   # headless Antigravity (agy) worker — lower-trust, no kernel sandbox
-│   ├── compound-v-classify-failure.py         # backend-failure classifier (codex / claude / antigravity)
+│   ├── compound-v-run-cursor-worker.sh         # headless Cursor (cursor-agent) worker — lower-trust, no kernel sandbox (2.1)
+│   ├── compound-v-classify-failure.py         # backend-failure classifier (codex / claude / antigravity / cursor)
 │   ├── compound-v-collect-results.py          # normalize heterogeneous output → job_result
 │   ├── compound-v-update-memory.py            # append task-outcomes.jsonl
 │   ├── compound-v-scorecard.py                # aggregate task-outcomes → worker-performance.jsonl (health per backend×type)

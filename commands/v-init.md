@@ -90,6 +90,38 @@ absent, skip it and let Step 4a write the resolver's built-in fallback map.
 > out-of-worktree side-effect — so it is **opt-in**, and **Codex is preferred for
 > untrusted / high-stakes work**. See [`adapter-antigravity.md`](../skills/backend-launcher/adapter-antigravity.md).
 
+### 1a-ter. Cursor CLI (`cursor-agent`) — optional, lower-trust backend
+
+```bash
+command -v cursor-agent
+```
+
+If absent → Cursor is **not available** (record it; routing never offers it).
+
+If present → check **authentication** (the headless worker needs a logged-in session or
+`CURSOR_API_KEY`):
+
+```bash
+cursor-agent status </dev/null 2>&1 | head -3   # or: [ -n "$CURSOR_API_KEY" ]
+```
+
+- Installed **and** authenticated → Cursor is **usable**; record it and add it to `backends`.
+  The pinned headless invocation holds (verified, cursor-agent 2025.09.12):
+  `cd "$WT" && cursor-agent -p -f --output-format json [--model <M>] "<prompt>" </dev/null`
+  (`.result` → summary, `.session_id` → resume). Model ids `sonnet-4-thinking` / `sonnet-4` /
+  `gpt-5` are the `--help`-verified defaults (no `models` list command — set the richer
+  catalog via [`/v:models`](v-models.md) / config).
+- Installed but **not** authenticated → record it as **present but unauthenticated**; treat as
+  unavailable and tell the user to run `cursor-agent login` (or set `CURSOR_API_KEY`).
+
+> **Flag it as lower-trust when you record it.** cursor-agent has **no kernel write-confinement**
+> like Codex's `--sandbox workspace-write`, and a headless run **requires `-f`** (an untrusted
+> dir is otherwise refused), which also grants arbitrary shell + out-of-worktree writes. The
+> worktree + `git diff` gate detects in-worktree scope leaks but cannot *prevent* an
+> out-of-worktree side-effect — so it is **opt-in (same tier as Antigravity)**, and **Codex is
+> preferred for untrusted / high-stakes work**. See
+> [`adapter-cursor.md`](../skills/backend-launcher/adapter-cursor.md).
+
 ### 1b. Context7 MCP (match by namespace)
 
 Context7 is **plugin-namespaced** — match the namespace, not a bare `context7`:
@@ -231,16 +263,19 @@ Write **both**. Create parent dirs as needed.
   "models": {
     "claude":      { "deep": "opus",                  "standard": "opus",                  "light": "sonnet" },
     "codex":       { "deep": "gpt-5.5",               "standard": "gpt-5.5",               "light": "gpt-5.3-codex-spark" },
-    "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" }
+    "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" },
+    "cursor":      { "deep": "sonnet-4-thinking",     "standard": "sonnet-4",              "light": "gpt-5" }
   }
 }
 ```
 
 - `stance` = the stance chosen in Step 3.
 - `backends` = the usable set: always includes `"claude"`; add `"codex"` if Codex is
-  usable, add `"antigravity"` if `agy` is installed (Step 1a-bis). E.g. `["claude"]`,
-  `["claude","codex"]`, or `["claude","codex","antigravity"]`. Antigravity is the
-  lower-trust opt-in backend (no kernel sandbox); list it only when `agy` is present.
+  usable, add `"antigravity"` if `agy` is installed (Step 1a-bis), add `"cursor"` if
+  `cursor-agent` is installed **and authenticated** (Step 1a-ter). E.g. `["claude","codex"]`
+  or `["claude","codex","antigravity","cursor"]`. Antigravity and Cursor are the lower-trust
+  opt-in backends (no kernel sandbox); list each only when its CLI is present (Cursor also
+  requires auth).
 - `checked_at` = today's date.
 - If the user opted into the Workflows accelerator, also include
   `"workflows_accelerator": true` (omit otherwise — default OFF).
@@ -279,6 +314,7 @@ The user-level cache of what this machine can do, reused across repos:
 {
   "codex": { "available": true, "exec_flags_verified": true, "version": "<from `codex --version`>" },
   "antigravity": { "available": false, "trust": "lower (no kernel sandbox)", "version": "<from `agy --version`>" },
+  "cursor": { "available": false, "authenticated": false, "trust": "lower (no kernel sandbox)", "version": "<from `cursor-agent --version`>" },
   "context7": { "available": true },
   "workflows": { "available": false },
   "checked_at": "<YYYY-MM-DD>"

@@ -110,6 +110,41 @@ _ANTIGRAVITY_RULES = [
     ]),
 ]
 
+# Cursor (cursor-agent): proxies OpenAI / Anthropic / Composer models, so provider error TEXT
+# reuses the VERIFIED OpenAI-style needles (same family as _CODEX_RULES). Cursor-account auth
+# ("run cursor-agent login") and plan/usage-limit wording are layered on top. The cursor-
+# SPECIFIC needles (login/plan phrasing) are PROVISIONAL — refine them against a real
+# cursor-agent failure sample; the provider-error needles below are the reliable backbone.
+# Quota/credit needles come BEFORE rate_limited (a hard plan/quota cap must not be retried).
+_CURSOR_RULES = [
+    ("out_of_credits", [
+        "hit your usage limit", "usage limit reached", "monthly limit", "plan limit",
+        "upgrade to pro", "free plan", "insufficient_quota", "insufficient quota",
+        "exceeded your current quota", "quota exceeded", "credit balance is too low",
+        "out of credits", "no credits",
+    ]),
+    ("auth", [
+        "not authenticated", "cursor-agent login", "please log in", "log in to cursor",
+        "invalid_api_key", "incorrect api key", "unauthorized", "401", "403 forbidden",
+        "authentication",
+    ]),
+    ("context_length", [
+        "context_length_exceeded", "maximum context length", "context length",
+        "context window", "too many tokens", "reduce the length",
+    ]),
+    ("rate_limited", [
+        "rate limit", "rate_limit", "too many requests", "429", "slow down",
+    ]),
+    ("overloaded", [
+        "overloaded", "is currently overloaded", "server_error", "internal server error",
+        "503", "502", "504", "500 internal", "bad gateway", "service unavailable",
+    ]),
+    ("network", [
+        "connection reset", "econnreset", "connection refused", "could not connect",
+        "network is unreachable", "dns", "getaddrinfo", "tls handshake", "connection error",
+    ]),
+]
+
 # Anthropic / claude: the AUTHORITATIVE path is the stream-json `api_retry.error` enum
 # (see CLAUDE_ENUM + _parse_claude_json). These substrings are only the FALLBACK when the
 # output isn't JSON. Deliberately NARROW — no bare "context"/"invalid_request" (they
@@ -209,6 +244,8 @@ def classify(backend, exit_code, stderr):
         rules = _CLAUDE_RULES
     elif backend == "antigravity":
         rules = _ANTIGRAVITY_RULES
+    elif backend == "cursor":
+        rules = _CURSOR_RULES
     else:
         rules = _CODEX_RULES
     for cls, needles in rules:
@@ -259,6 +296,18 @@ def _selftest():
         ("antigravity", 1, "input token count exceeds the maximum number of tokens", "context_length"),
         ("antigravity", 1, "getaddrinfo ENOTFOUND: dns lookup failed", "network"),
         ("antigravity", 1, "panic: totally unexpected agy crash", "other"),
+        # Cursor — provider-error backbone (reliable) + provisional cursor-account wording.
+        ("cursor", 0, "", "none"),
+        ("cursor", 124, "", "timeout"),
+        ("cursor", 1, "Error: 429 insufficient_quota: You exceeded your current quota", "out_of_credits"),
+        ("cursor", 1, "You've hit your usage limit on the free plan — upgrade to Pro", "out_of_credits"),
+        ("cursor", 1, "Rate limit reached, too many requests", "rate_limited"),
+        ("cursor", 1, "Not authenticated. Run `cursor-agent login` first.", "auth"),
+        ("cursor", 1, "401 Unauthorized: invalid api key", "auth"),
+        ("cursor", 1, "400 context_length_exceeded: maximum context length is 200000", "context_length"),
+        ("cursor", 1, "503 service unavailable: model is overloaded", "overloaded"),
+        ("cursor", 1, "getaddrinfo ENOTFOUND api.cursor.sh", "network"),
+        ("cursor", 1, "panic: unexpected cursor-agent crash", "other"),
     ]
     ok = 0
     fail = 0
@@ -282,7 +331,7 @@ def _selftest():
 
 def main(argv):
     p = argparse.ArgumentParser(description="Classify a backend failure.")
-    p.add_argument("--backend", choices=["codex", "claude", "antigravity"])
+    p.add_argument("--backend", choices=["codex", "claude", "antigravity", "cursor"])
     p.add_argument("--exit-code", type=int)
     p.add_argument("--stderr-file")
     p.add_argument("--selftest", action="store_true")

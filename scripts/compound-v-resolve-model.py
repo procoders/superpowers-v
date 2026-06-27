@@ -72,9 +72,20 @@ DEFAULT_MODELS = {
         "standard": "Gemini 3.1 Pro (Low)",
         "light": "Gemini 3.5 Flash (Low)",
     },
+    # Cursor (cursor-agent) map below is a FALLBACK default. The model ids are the ones
+    # VERIFIED in `cursor-agent --help` (gpt-5 / sonnet-4 / sonnet-4-thinking). cursor-agent
+    # exposes NO `models` list command, so the richer catalog (opus, gpt-5.5, composer/auto)
+    # is set via config / `/v:models` and OVERRIDES this map. The worker omits `--model` when
+    # the resolved value is empty (cursor then uses its configured default). Cursor is the
+    # LOWER-TRUST tier (no kernel sandbox; `-f` required headlessly) — like antigravity.
+    "cursor": {
+        "deep": "sonnet-4-thinking",
+        "standard": "sonnet-4",
+        "light": "gpt-5",
+    },
 }
 
-BACKENDS = ("claude", "codex", "antigravity")
+BACKENDS = ("claude", "codex", "antigravity", "cursor")
 TIERS = ("deep", "standard", "light")
 EFFORTS = ("low", "medium", "high")
 
