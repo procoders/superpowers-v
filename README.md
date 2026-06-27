@@ -181,6 +181,7 @@ superpowers-v/
 │   ├── compound-v-run-codex-worker.sh         # headless Codex worker (worktree + diff + normalize)
 │   ├── compound-v-run-antigravity-worker.sh   # headless Antigravity (agy) worker — lower-trust, no kernel sandbox
 │   ├── compound-v-run-cursor-worker.sh         # headless Cursor (cursor-agent) worker — lower-trust, no kernel sandbox (2.1)
+│   ├── compound-v-run-with-timeout.py          # process-tree timeout supervisor (setsid + killpg) — caps a worker, reaps the whole tree (2.1.1)
 │   ├── compound-v-classify-failure.py         # backend-failure classifier (codex / claude / antigravity / cursor)
 │   ├── compound-v-collect-results.py          # normalize heterogeneous output → job_result
 │   ├── compound-v-update-memory.py            # append task-outcomes.jsonl

@@ -72,16 +72,18 @@ DEFAULT_MODELS = {
         "standard": "Gemini 3.1 Pro (Low)",
         "light": "Gemini 3.5 Flash (Low)",
     },
-    # Cursor (cursor-agent) map below is a FALLBACK default. The model ids are the ones
-    # VERIFIED in `cursor-agent --help` (gpt-5 / sonnet-4 / sonnet-4-thinking). cursor-agent
-    # exposes NO `models` list command, so the richer catalog (opus, gpt-5.5, composer/auto)
-    # is set via config / `/v:models` and OVERRIDES this map. The worker omits `--model` when
-    # the resolved value is empty (cursor then uses its configured default). Cursor is the
+    # Cursor (cursor-agent): "auto" is the SAFE DEFAULT for every tier. VERIFIED LIVE that a
+    # Cursor FREE plan can ONLY use Auto — passing a named model (sonnet-4 / gpt-5 / …) fails
+    # with "ActionRequiredError: Named models unavailable. Free plans can only use Auto." Both
+    # `--model auto` and omitting --model work on free AND paid plans, so all tiers map to
+    # "auto". On a PAID plan, override with named per-tier ids in .claude/compound-v.json via
+    # /v:models (cursor-agent has NO `models` list command, so no auto-discovery). Tiering is
+    # therefore a no-op on the default (free) — Auto picks the model — by design. Cursor is the
     # LOWER-TRUST tier (no kernel sandbox; `-f` required headlessly) — like antigravity.
     "cursor": {
-        "deep": "sonnet-4-thinking",
-        "standard": "sonnet-4",
-        "light": "gpt-5",
+        "deep": "auto",
+        "standard": "auto",
+        "light": "auto",
     },
 }
 

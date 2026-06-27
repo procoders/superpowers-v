@@ -193,13 +193,11 @@ command -v git     >/dev/null 2>&1 || die "git not found on PATH"
 command -v python3 >/dev/null 2>&1 || die "python3 not found on PATH (scope gate + failure classifier need it)"
 command -v agy     >/dev/null 2>&1 || die "agy not found on PATH"
 
-# Resolve which timeout binary is present (GNU `timeout` or coreutils `gtimeout`).
-TIMEOUT_BIN=""
-if command -v timeout >/dev/null 2>&1; then
-  TIMEOUT_BIN="timeout"
-elif command -v gtimeout >/dev/null 2>&1; then
-  TIMEOUT_BIN="gtimeout"
-fi
+# Wall-clock cap: run agy under the shared PROCESS-GROUP timeout supervisor
+# (scripts/compound-v-run-with-timeout.py) — on expiry it killpg's the whole agy tree (not just
+# the direct child) and returns 124. agy's own --print-timeout stays as an internal backstop.
+SUPERVISOR="$SCRIPT_DIR/compound-v-run-with-timeout.py"
+[ -f "$SUPERVISOR" ] || die "timeout supervisor not found: $SUPERVISOR"
 
 # --- worktree lifecycle ------------------------------------------------------
 # Worktrees live OUTSIDE the repo, under $TMPDIR, so no .gitignore change is needed.
@@ -298,17 +296,16 @@ STDERR_LOG="$ART/agy_stderr.log"
 STDOUT_LOG="$ART/agy_stdout.log"
 exit_code=0
 
-# run_agy runs the pinned `agy` invocation. $TIMEOUT_PREFIX is an optional leading
-# prefix ("timeout <sec>"): when no timeout binary is available it is empty and agy
-# runs directly. It is intentionally left UNQUOTED so it word-splits into the
-# `timeout` argv (or vanishes when empty) — hence the SC2086 disables. The optional
-# --model flag is injected only when set (bash 3.2-safe — no arrays). `--print` is
-# ALWAYS LAST, immediately followed by the prompt value.
+# run_agy runs the pinned `agy` invocation UNDER the process-group timeout supervisor
+# (`python3 "$SUPERVISOR" --timeout <sec> --cwd "$WT" -- agy …`): on expiry it killpg's the whole
+# agy tree (not just the direct child) and returns 124. The supervisor `--cwd`'s into the worktree
+# (agy has no `--cd`), and the supervisor path is QUOTED (no word-split — a spaced repo path is
+# safe). The optional --model flag is injected only when set (bash 3.2-safe). `--print` is ALWAYS
+# LAST, immediately followed by the prompt value. agy's own --print-timeout stays as a backstop.
 run_agy() {
-  cd "$WT" || return 2
   if [ -n "$MODEL" ]; then
     # shellcheck disable=SC2086
-    $TIMEOUT_PREFIX agy \
+    python3 "$SUPERVISOR" --timeout "$TIMEOUT_SEC" --grace 3 --cwd "$WT" -- agy \
       --dangerously-skip-permissions \
       --add-dir "$WT" \
       --print-timeout "${TIMEOUT_SEC}s" \
@@ -316,21 +313,13 @@ run_agy() {
       --print "$(cat "$PROMPT_FILE")" </dev/null
   else
     # shellcheck disable=SC2086
-    $TIMEOUT_PREFIX agy \
+    python3 "$SUPERVISOR" --timeout "$TIMEOUT_SEC" --grace 3 --cwd "$WT" -- agy \
       --dangerously-skip-permissions \
       --add-dir "$WT" \
       --print-timeout "${TIMEOUT_SEC}s" \
       --print "$(cat "$PROMPT_FILE")" </dev/null
   fi
 }
-
-# Build the timeout prefix (word-split intentionally inside run_agy). Empty when no
-# timeout binary is present, in which case agy relies on its own --print-timeout
-# (which we always pass) for the wall-clock cap.
-TIMEOUT_PREFIX=""
-if [ -n "$TIMEOUT_BIN" ]; then
-  TIMEOUT_PREFIX="$TIMEOUT_BIN $TIMEOUT_SEC"
-fi
 
 # `set +e` so a non-zero exit (incl. 124 when the timeout fires) is captured rather
 # than aborting the script — we must still produce a job_result either way.

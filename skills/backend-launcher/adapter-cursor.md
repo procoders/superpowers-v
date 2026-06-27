@@ -90,11 +90,24 @@ cursor-agent has no output-schema flag. The worker accepts `--output-schema` for
 
 ### Model + effort: resolved before dispatch, not hardcoded
 
-The dispatcher resolves the concrete model **before** dispatch via [`scripts/compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py) with `--backend cursor --tier <tier> [--config .claude/compound-v.json]`. The built-in fallback map is `deep → sonnet-4-thinking`, `standard → sonnet-4`, `light → gpt-5` — the model ids **verified in `cursor-agent --help`**. cursor-agent has **no `models` list command**, so the richer catalog (opus, gpt-5.5, composer/auto) is set in `.claude/compound-v.json` via `/v:models` / `/v:init` and overrides the fallback. An explicit manifest `model` override wins. cursor takes no separate effort flag, so `effort` is advisory for this backend (like Claude / Antigravity).
+The dispatcher resolves the concrete model **before** dispatch via [`scripts/compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py) with `--backend cursor --tier <tier> [--config .claude/compound-v.json]`. The built-in map is **`auto` for every tier** — VERIFIED LIVE that a Cursor **Free** plan can *only* use Auto: passing a named model (`sonnet-4` / `gpt-5` / …) fails with *"Named models unavailable. Free plans can only use Auto."* Both `--model auto` and omitting `--model` work on free and paid plans. On a **paid** plan, override with named per-tier ids in `.claude/compound-v.json` via `/v:models` (cursor-agent has **no `models` list command**, so no auto-discovery). An explicit manifest `model` override wins. Because the default is Auto, **tier-based routing is a no-op for Cursor on a free plan** (Auto picks the model) — by design. cursor takes no separate effort flag, so `effort` is advisory (like Claude / Antigravity).
 
-### Timeout
+### Timeout — portable bash watchdog (no `timeout` binary required)
 
-`timeout` may be absent on stock macOS; the script uses `timeout` if present, else `gtimeout` (coreutils), else there is **no cap** (cursor has no built-in `--print-timeout`). `--timeout-sec` must be a **positive integer** — it is word-split into the `timeout` argv, so the script `die`s on anything else.
+cursor-agent has **no built-in `--print-timeout`** (unlike agy), and a host may lack
+`timeout`/`gtimeout`. So the worker runs cursor-agent under the shared **process-tree timeout
+supervisor** [`scripts/compound-v-run-with-timeout.py`](../../scripts/compound-v-run-with-timeout.py):
+it starts the agent in a **new session** (`start_new_session=True` → `setsid`) and, on expiry,
+`os.killpg`s the **whole tree** (SIGTERM → grace → SIGKILL) and returns 124 → `status: timeout`.
+This closes the orphan-children scope-leak: a tool/shell **child** the agent spawned cannot
+outlive the cap and write after the gate. **Proven** by the supervisor's own `--selftest` (a
+backgrounded descendant that tries to write a file *after* the cap is reaped first — the write
+never lands) and live (`--timeout-sec 1` on a long job ⇒ `status: timeout`). The supervisor holds
+no copy of the agent's output fds, so a hung agent can't hang the dispatcher's `$(…)` capture.
+`--timeout-sec` must be a **positive integer > 0**. No external `timeout` binary needed.
+
+> The Codex and Antigravity workers run under this **same supervisor** (verified live: success +
+> timeout for both), so the process-tree cap is uniform across all three external backends.
 
 ---
 

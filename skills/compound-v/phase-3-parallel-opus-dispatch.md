@@ -97,7 +97,8 @@ For each job, the dispatcher builds a `job_spec` (`backend`, `prompt`, `tier`, o
 
 - **`backend: claude`** → [`adapter-claude.md`](../backend-launcher/adapter-claude.md): an in-harness `Task` call with the `model` override and `maxTurns: 15`. `isolation: direct` writes to the active workspace against a baseline commit; `isolation: worktree` runs inside an isolated worktree.
 - **`backend: codex`** → [`adapter-codex.md`](../backend-launcher/adapter-codex.md): a Bash-spawned headless `codex exec` worker (own process, own worktree — **always** `worktree`), via [`scripts/compound-v-run-codex-worker.sh`](../../scripts/compound-v-run-codex-worker.sh). Never an `agents/` entry, never the openai-codex broker.
-- **`backend: antigravity`** → [`adapter-antigravity.md`](../backend-launcher/adapter-antigravity.md): a stub returning `unsupported` (deferred to 1.1).
+- **`backend: antigravity`** → [`adapter-antigravity.md`](../backend-launcher/adapter-antigravity.md): a Bash-spawned headless `agy --print` worker (own process, own worktree — **always** `worktree`), via [`scripts/compound-v-run-antigravity-worker.sh`](../../scripts/compound-v-run-antigravity-worker.sh). **Lower-trust / opt-in** (no kernel sandbox); `--model` is omitted when empty. (Shipped 1.1.)
+- **`backend: cursor`** → [`adapter-cursor.md`](../backend-launcher/adapter-cursor.md): a Bash-spawned headless `cursor-agent -p -f` worker (own process, own worktree — **always** `worktree`), via [`scripts/compound-v-run-cursor-worker.sh`](../../scripts/compound-v-run-cursor-worker.sh). **Lower-trust / opt-in** (no kernel sandbox; requires an authenticated `cursor-agent`); resolves tier→`model` (default `auto` — the only option on a Cursor Free plan). (Shipped 2.1.)
 
 Every adapter returns the **same** `job_result` shape ([`schemas/job_result.schema.json`](../../schemas/job_result.schema.json)); enforcement is uniform because it lives in the caller's scope gate, not in the backend.
 
@@ -137,6 +138,8 @@ Each dispatch must include:
 
    - **`claude`** resolves tier→model: `deep`/`standard`→`opus`, `light`→`sonnet`. Pass the resolved model to the `Task` call. `effort` is advisory on this path — the `Task` call has no separate effort flag.
    - **`codex`** resolves tier→model (e.g. `deep`→`gpt-5.5`) and passes `--model <resolved>` **and** `--effort <effort>` to [`scripts/compound-v-run-codex-worker.sh`](../../scripts/compound-v-run-codex-worker.sh) (`--effort` → `-c model_reasoning_effort=<effort>`). The execution-layer model never appears in any frontmatter.
+   - **`antigravity`** resolves tier→model (a Gemini name, e.g. `deep`→`Gemini 3.1 Pro (High)`) and passes `--model <resolved>` to [`scripts/compound-v-run-antigravity-worker.sh`](../../scripts/compound-v-run-antigravity-worker.sh) (omitted when empty; agy has no effort flag). `--write-allowed` is colon-joined globs; always `worktree`.
+   - **`cursor`** resolves tier→model (default `auto`) and passes `--model <resolved>` to [`scripts/compound-v-run-cursor-worker.sh`](../../scripts/compound-v-run-cursor-worker.sh) (cursor has no effort flag). On a Cursor **Free** plan only `auto` works (named models error); set named ids per tier via config on a paid plan. Always `worktree`; requires an authenticated `cursor-agent`.
    - **An explicit manifest `model:` override skips resolution** (call the resolver with `--explicit-model <M>`, or pass the model straight through). This keeps existing explicit-model jobs valid — a job MUST carry `model` OR `tier`.
 
    A `claude` job lands on `opus` for `deep`/`standard` tiers, `sonnet` only where the manifest routed it `light` (the strict junior-task taxonomy above). Reviewer jobs always route `tier: deep` ⇒ opus.

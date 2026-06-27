@@ -46,7 +46,8 @@
 # --model is OPTIONAL: when empty, `--model` is omitted and cursor-agent uses its configured
 # default. --output-schema is ACCEPTED for CLI parity with the codex worker but IGNORED —
 # cursor-agent has no output-schema flag. --network is advisory only (no kernel toggle).
-# --read-only true OMITS --force (proposals only → no writes); default false passes --force.
+# --read-only is ADVISORY: `-f` is ALWAYS passed (a headless run is refused without it), so a
+# read-only job is enforced POST-HOC by the gate (pass an empty --write-allowed ⇒ any write BLOCKS).
 #
 # All file paths MUST be absolute. write_allowed is a colon-separated glob list, each glob
 # matched repo-relative against the changed paths. An EMPTY --write-allowed (read-only /
@@ -155,11 +156,12 @@ done
 # --model is OPTIONAL (empty => cursor-agent's configured default).
 # --write-allowed may be EMPTY for a read-only / review job (every changed path is a violation).
 
-# --timeout-sec is interpolated UNQUOTED into the argv (word-split into the `timeout` prefix),
-# so a crafted value could inject argv. Pin it to a positive integer BEFORE use.
+# --timeout-sec is passed to the supervisor (quoted) and used in shell arithmetic; pin it to a
+# positive integer BEFORE use so a non-numeric value can never inject argv or break arithmetic.
 case "$TIMEOUT_SEC" in
   ''|*[!0-9]*) die "--timeout-sec must be a positive integer: $TIMEOUT_SEC" ;;
 esac
+[ "$TIMEOUT_SEC" -gt 0 ] || die "--timeout-sec must be > 0 (got $TIMEOUT_SEC): a 0 cap would kill the job instantly"
 
 id_is_safe "$RUN_ID" || die "--run-id has invalid characters (allowed: A-Za-z0-9._-, not . or ..): $RUN_ID"
 id_is_safe "$JOB_ID" || die "--job-id has invalid characters (allowed: A-Za-z0-9._-, not . or ..): $JOB_ID"
@@ -183,15 +185,13 @@ command -v git          >/dev/null 2>&1 || die "git not found on PATH"
 command -v python3      >/dev/null 2>&1 || die "python3 not found on PATH (scope gate + failure classifier need it)"
 command -v cursor-agent >/dev/null 2>&1 || die "cursor-agent not found on PATH"
 
-# Resolve which timeout binary is present (GNU `timeout` or coreutils `gtimeout`). cursor-agent
-# has NO built-in --print-timeout, so without one of these there is NO wall-clock cap — the
-# adapter doc notes this; install coreutils (`gtimeout`) for a hard cap on macOS.
-TIMEOUT_BIN=""
-if command -v timeout >/dev/null 2>&1; then
-  TIMEOUT_BIN="timeout"
-elif command -v gtimeout >/dev/null 2>&1; then
-  TIMEOUT_BIN="gtimeout"
-fi
+# Wall-clock cap: cursor-agent has NO built-in `--print-timeout` (unlike agy) and a host may lack
+# `timeout`/`gtimeout`. The worker runs the agent under the shared PROCESS-TREE timeout supervisor
+# (scripts/compound-v-run-with-timeout.py): it `setsid`s the agent into its own session and, on
+# expiry, `killpg`s the WHOLE tree → a tool/shell child cannot outlive the cap and write after the
+# scope gate. Returns 124 on timeout; the parent holds no copy of the agent's output fds (no hang).
+SUPERVISOR="$SCRIPT_DIR/compound-v-run-with-timeout.py"
+[ -f "$SUPERVISOR" ] || die "timeout supervisor not found: $SUPERVISOR"
 
 # --- worktree lifecycle ------------------------------------------------------
 # Worktrees live OUTSIDE the repo, under $TMPDIR, so no .gitignore change is needed.
@@ -247,7 +247,8 @@ mkdir -p "$ART"
 #     enforced post-hoc by the git-diff gate. See SAFETY banner.
 #   * cursor-agent runs against the CURRENT directory — we `cd "$WT"` (no --add-dir flag).
 #   * stdin redirected </dev/null (the same hard-won lesson as codex/agy).
-#   * No built-in timeout flag — the optional `timeout`/`gtimeout` prefix is the only cap.
+#   * No built-in timeout flag — capped by the shared process-tree supervisor
+#     (compound-v-run-with-timeout.py): on expiry it killpg's the WHOLE agent tree → exit 124.
 #   * VERIFIED output shape: `{"type":"result","result": <final message>, "session_id": <uuid>, …}`.
 #     `.result` → summary; `.session_id` → session_id for `cursor-agent --resume <id>`. (`.usage`
 #     token counts are deliberately IGNORED — anti-ruflo: we never emit token/cost metrics.)
@@ -256,31 +257,23 @@ STDERR_LOG="$ART/cursor_stderr.log"
 STDOUT_LOG="$ART/cursor_stdout.log"
 exit_code=0
 
-# run_cursor runs the pinned, VERIFIED invocation. `-f` (force/trust) is ALWAYS passed: a
-# headless run in an untrusted worktree is refused without it (verified live), and it is what
-# lets writes land. $TIMEOUT_PREFIX and the optional --model word-split into the argv (or
-# vanish when empty) — hence the SC2086 disables. The prompt value is the LAST positional
-# argument; stdin is </dev/null.
-run_cursor() {
-  cd "$WT" || return 2
-  if [ -n "$MODEL" ]; then
-    # shellcheck disable=SC2086
-    $TIMEOUT_PREFIX cursor-agent -p -f --output-format json \
-      --model "$MODEL" "$(cat "$PROMPT_FILE")" </dev/null
-  else
-    # shellcheck disable=SC2086
-    $TIMEOUT_PREFIX cursor-agent -p -f --output-format json \
-      "$(cat "$PROMPT_FILE")" </dev/null
-  fi
-}
-
-TIMEOUT_PREFIX=""
-if [ -n "$TIMEOUT_BIN" ]; then
-  TIMEOUT_PREFIX="$TIMEOUT_BIN $TIMEOUT_SEC"
-fi
+# The pinned, VERIFIED invocation, run under the process-tree timeout supervisor (above): `-f`
+# (force/trust) is ALWAYS passed (a headless run in an untrusted worktree is refused without it),
+# the prompt is the LAST positional arg, stdin is </dev/null, and the supervisor `--cwd`'s into
+# the worktree, captures stdout/stderr to the logs, and on a timeout reaps the WHOLE agent tree
+# and returns 124. No bash watchdog, no orphaned children, no capture-pipe hang.
+PROMPT_TEXT="$(cat "$PROMPT_FILE")"
 
 set +e
-run_cursor >"$STDOUT_LOG" 2>"$STDERR_LOG"
+if [ -n "$MODEL" ]; then
+  python3 "$SUPERVISOR" --timeout "$TIMEOUT_SEC" --cwd "$WT" \
+    --stdout "$STDOUT_LOG" --stderr "$STDERR_LOG" \
+    -- cursor-agent -p -f --output-format json --model "$MODEL" "$PROMPT_TEXT" </dev/null
+else
+  python3 "$SUPERVISOR" --timeout "$TIMEOUT_SEC" --cwd "$WT" \
+    --stdout "$STDOUT_LOG" --stderr "$STDERR_LOG" \
+    -- cursor-agent -p -f --output-format json "$PROMPT_TEXT" </dev/null
+fi
 exit_code=$?
 set -e
 
@@ -290,9 +283,12 @@ set -e
 # for resume; "" if absent or the output was not parseable JSON (fall back to raw stdout).
 session_id=""
 summary=""
+agent_is_error="false"   # cursor's own JSON error signal (independent of exit code)
 if [ -s "$STDOUT_LOG" ] && jq -e . "$STDOUT_LOG" >/dev/null 2>&1; then
   summary=$(jq -r '.result // .text // .response // ""' "$STDOUT_LOG" 2>/dev/null || true)
   session_id=$(jq -r '.chatId // .chat_id // .session_id // .sessionId // .id // ""' "$STDOUT_LOG" 2>/dev/null || true)
+  # cursor reports failure IN the JSON too: is_error:true, or a subtype other than "success".
+  agent_is_error=$(jq -r 'if (.is_error == true) or (has("subtype") and .subtype != "success") then "true" else "false" end' "$STDOUT_LOG" 2>/dev/null || echo false)
 fi
 if [ -z "$summary" ] && [ -f "$STDOUT_LOG" ]; then
   summary=$(cat "$STDOUT_LOG")
@@ -349,6 +345,9 @@ elif [ "$gate_rc" != "0" ] && [ "$gate_rc" != "1" ]; then
 elif [ "$exit_code" = "$TIMEOUT_EXIT_CODE" ]; then
   status="timeout"
 elif [ "$exit_code" != "0" ]; then
+  status="error"
+elif [ "$agent_is_error" = "true" ]; then
+  # cursor's JSON said it failed even though the process exited 0 — don't report a false success.
   status="error"
 fi
 

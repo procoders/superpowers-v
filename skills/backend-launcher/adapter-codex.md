@@ -14,7 +14,7 @@ The worker script performs steps 1–5; the **caller** (dispatcher) performs ste
 
 ```
 1. ISOLATE   git -C <repo> worktree add <WT> HEAD          # kernel-bounds blast radius + clean diff baseline
-2. RUN       timeout <sec> codex exec … <prompt>            # headless, sandboxed to <WT>
+2. RUN       run-with-timeout.py --timeout <sec> -- codex exec … <prompt>   # headless, sandboxed to <WT>, tree-capped
 3. OBSERVE   git -C <WT> diff --name-only                   # ∪
              git -C <WT> ls-files --others --exclude-standard
 4. ENFORCE   every changed path ∉ write_allowed ⇒ violation ⇒ blocked  (do NOT merge)
@@ -46,7 +46,7 @@ The worker prompt is passed to the script via `--prompt-file <abs-path>` (a file
 The script uses **exactly** this set — verified present in `codex exec --help`:
 
 ```bash
-timeout "$timeout_sec" codex exec \
+python3 "$SUPERVISOR" --timeout "$timeout_sec" -- codex exec \
   --cd "$WT" \
   --sandbox "$([ "$read_only" = true ] && echo read-only || echo workspace-write)" \
   --skip-git-repo-check \
@@ -89,7 +89,7 @@ The dispatcher never hands this adapter a hardcoded model string. It hands a rou
 
 - **`git worktree diff` does not exist.** Observation uses plain `git -C "$WT" diff --name-only` + `git -C "$WT" ls-files --others --exclude-standard`. Both halves are required: `diff` catches edits to tracked files; `ls-files --others` catches brand-new untracked files the diff would miss.
 - **codex emits a cosmetic `[features].codex_hooks is deprecated` warning on stderr.** The script filters exactly that line out of the captured stderr so it never pollutes the banner scan or the result; all other stderr is preserved.
-- **`timeout` may be absent on stock macOS.** macOS ships no `timeout` binary by default. The script uses `timeout` if present, else `gtimeout` (coreutils), else runs codex **without** a wall-clock cap (and says so). To get the hard timeout, `brew install coreutils`. The timeout exit code is `124`, which the script maps to `status: "timeout"`.
+- **Wall-clock cap via the process-group supervisor.** The script runs codex under the shared [`scripts/compound-v-run-with-timeout.py`](../../scripts/compound-v-run-with-timeout.py) (`python3 "$SUPERVISOR" --timeout <sec> -- codex exec …`) — **no external `timeout`/`gtimeout` binary needed**. On expiry it `killpg`s the whole codex process tree (not just the direct child) and returns `124`, which the script maps to `status: "timeout"`. Verified live (success + `--timeout-sec 1 ⇒ status:timeout`).
 
 ---
 
@@ -163,7 +163,7 @@ scripts/compound-v-run-codex-worker.sh \
 
 - All file paths MUST be **absolute** (the script rejects relative `--repo` / `--prompt-file` / `--output-schema`).
 - `--write-allowed` is a **colon-separated** glob list (`a/**:b/c.ts`), matched repo-relative against changed paths. An **empty** `--write-allowed` is valid and means a **read-only / review job**: no writes are permitted, so the scope gate (run with zero allowed globs) treats ANY changed path as a violation and the job is BLOCKED. Pair it with `--read-only true` for a pure review worker.
-- `--timeout-sec` must be a **positive integer** (`^[0-9]+$`); the script `die`s on anything else, since the value is word-split into the `timeout` argv.
+- `--timeout-sec` must be a **positive integer** (`^[0-9]+$`); the script `die`s on anything else (it is passed to the supervisor's `--timeout` and used in arithmetic).
 - **stdout** is the canonical `job_result` JSON and nothing else — the dispatcher pipes it straight to the collector and the scope-check authority.
 - **Exit 0** means a `job_result` was produced (even for BLOCKED / timeout / error — those live in `status`). A non-zero exit means a usage/environment fault prevented producing a result at all.
 

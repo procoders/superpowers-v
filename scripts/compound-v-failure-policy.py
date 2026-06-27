@@ -53,9 +53,10 @@ PER_CLASS_MAX = {
     "other": 1,
 }
 
-# Backend fallback chain (codex -> claude). claude has no further local fallback in 1.0
-# (antigravity is a 1.1 stub). Mirrors routing-policy's env-aware codex->claude rewrite.
-FALLBACK = {"codex": "claude", "antigravity": "claude", "claude": None}
+# Backend fallback chain — every external backend reroutes to claude (always available); claude
+# itself has no further local fallback. Mirrors routing-policy's env-aware reroute. The lower-trust
+# external workers (antigravity, cursor) reroute UP to claude on a circuit-break, never down.
+FALLBACK = {"codex": "claude", "antigravity": "claude", "cursor": "claude", "claude": None}
 
 BACKOFF_BASE = 2
 BACKOFF_CAP = 60

@@ -108,9 +108,10 @@ cursor-agent status </dev/null 2>&1 | head -3   # or: [ -n "$CURSOR_API_KEY" ]
 - Installed **and** authenticated → Cursor is **usable**; record it and add it to `backends`.
   The pinned headless invocation holds (verified, cursor-agent 2025.09.12):
   `cd "$WT" && cursor-agent -p -f --output-format json [--model <M>] "<prompt>" </dev/null`
-  (`.result` → summary, `.session_id` → resume). Model ids `sonnet-4-thinking` / `sonnet-4` /
-  `gpt-5` are the `--help`-verified defaults (no `models` list command — set the richer
-  catalog via [`/v:models`](v-models.md) / config).
+  (`.result` → summary, `.session_id` → resume). Default model is **`auto`** — VERIFIED that a
+  Cursor **Free** plan can *only* use Auto (named models like `sonnet-4` error). On a **paid**
+  plan, set named per-tier ids via [`/v:models`](v-models.md) / config (no `models` list
+  command, so no auto-discovery). Note the plan when you record it.
 - Installed but **not** authenticated → record it as **present but unauthenticated**; treat as
   unavailable and tell the user to run `cursor-agent login` (or set `CURSOR_API_KEY`).
 
@@ -151,6 +152,14 @@ Note whether Dynamic Workflows look available (they are not exposed in a plain s
 shell). This only decides whether to *offer* the opt-in
 [`workflows-accelerator.md`](../skills/compound-v/workflows-accelerator.md) in Step 3 —
 it is never required and defaults OFF.
+
+### 1e. Wall-clock cap for external workers
+
+No probe needed: all three external workers (Codex, Antigravity, Cursor) run under the bundled
+**process-group timeout supervisor** ([`scripts/compound-v-run-with-timeout.py`](../scripts/compound-v-run-with-timeout.py)) —
+pure Python stdlib, **no `timeout`/`gtimeout` binary required**. On a job timeout it `killpg`s the
+whole backend process tree (not just the direct child) and reports `status: timeout`. Nothing to
+configure; just confirm `python3` is present (the workers already require it).
 
 ---
 
@@ -264,7 +273,7 @@ Write **both**. Create parent dirs as needed.
     "claude":      { "deep": "opus",                  "standard": "opus",                  "light": "sonnet" },
     "codex":       { "deep": "gpt-5.5",               "standard": "gpt-5.5",               "light": "gpt-5.3-codex-spark" },
     "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" },
-    "cursor":      { "deep": "sonnet-4-thinking",     "standard": "sonnet-4",              "light": "gpt-5" }
+    "cursor":      { "deep": "auto",                  "standard": "auto",                  "light": "auto" }
   }
 }
 ```

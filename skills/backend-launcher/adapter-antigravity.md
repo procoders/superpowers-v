@@ -100,7 +100,7 @@ The dispatcher hands a routing **intent** — `tier` (`deep` \| `standard` \| `l
 
 ### Timeout
 
-`timeout` may be absent on stock macOS; the script uses `timeout` if present, else `gtimeout` (coreutils), else relies on agy's own `--print-timeout` (always passed). The outer-`timeout` exit code `124` maps to `status: "timeout"`. `--timeout-sec` must be a **positive integer** — it is word-split into the `timeout` argv and interpolated into `--print-timeout`, so the script `die`s on anything else.
+The script runs agy under the shared process-group supervisor [`scripts/compound-v-run-with-timeout.py`](../../scripts/compound-v-run-with-timeout.py) (`python3 "$SUPERVISOR" --timeout <sec> --cwd "$WT" -- agy …`) — **no external `timeout`/`gtimeout` binary needed**. On expiry it `killpg`s the whole agy process tree (not just the direct child) and returns `124` → `status: "timeout"`. agy's own `--print-timeout` is still passed as an internal backstop. `--timeout-sec` must be a **positive integer** (interpolated into `--print-timeout`, so the script `die`s on anything else). Verified live (success + `--timeout-sec 1 ⇒ status:timeout`).
 
 ---
 

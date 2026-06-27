@@ -35,7 +35,7 @@ Worked example: [`examples/manifest.example.yaml`](../../examples/manifest.examp
 | `id` | string | yes | Unique job id within the run (e.g. `task-1-editor-ui`). |
 | `title` | string | yes | One-line job title. |
 | `type` | string | yes | Job-type token used by the routing policy (e.g. `shared_foundation`, `bounded_crud`, `large_isolated`, `core_slice`, `mechanical_refactor`, `docs`, `tests_new`, `external_api`, `review`). |
-| `backend` | enum | yes | `claude` \| `codex` \| `antigravity`. **Execution-layer data — NEVER appears in any frontmatter.** |
+| `backend` | enum | yes | `claude` \| `codex` \| `antigravity` \| `cursor`. **Execution-layer data — NEVER appears in any frontmatter.** (`antigravity`/`cursor` are opt-in, lower-trust, no kernel sandbox ⇒ always `worktree`.) |
 | `tier` | enum | yes¹ | `deep` \| `standard` \| `light`. The **intent** the routing policy assigns; the dispatcher resolves it to a concrete model. Stable vocabulary that survives model churn. |
 | `effort` | enum | no | `low` \| `medium` \| `high`. Orthogonal reasoning-effort hint. Default pairing `deep→high`, `standard→medium`, `light→low`, but independently tunable per task-type. For `codex` it maps to `-c model_reasoning_effort=<effort>`; for `claude` it is advisory (the `Task` path has no separate effort flag). |
 | `model` | string | no¹ | Explicit override, e.g. `opus`, `sonnet`, `gpt-5.5`. When present it **skips resolution** (the manifest pins the model directly). Execution-layer data — never in frontmatter. Backward-compatible: pre-tier manifests carrying only `model` remain valid. |
@@ -54,9 +54,9 @@ Worked example: [`examples/manifest.example.yaml`](../../examples/manifest.examp
 
 | Tier | Strongest fit | Routes to (Balanced) |
 |---|---|---|
-| `deep` | Strongest reasoning: architecture, security/auth/payments, designing tests, external APIs, **ALL reviewers**, shared-foundation Task 0. | claude `opus`, codex `gpt-5.5`, antigravity top model. |
-| `standard` | Bounded core/feature build, incl. large isolated codex work. | claude `opus`, codex `gpt-5.5`, antigravity mid model. |
-| `light` | Mechanical single-file / docs / i18n. | claude `sonnet`, codex spark model, antigravity flash model. |
+| `deep` | Strongest reasoning: architecture, security/auth/payments, designing tests, external APIs, **ALL reviewers**, shared-foundation Task 0. | claude `opus`, codex `gpt-5.5`, antigravity top model, cursor `auto`. |
+| `standard` | Bounded core/feature build, incl. large isolated codex work. | claude `opus`, codex `gpt-5.5`, antigravity mid model, cursor `auto`. |
+| `light` | Mechanical single-file / docs / i18n. | claude `sonnet`, codex spark model, antigravity flash model, cursor `auto`. |
 
 `effort ∈ {low, medium, high}` is orthogonal to tier. The default pairing (`deep→high`, `standard→medium`, `light→low`) is just a default — a task-type may pin a different effort independently.
 
@@ -68,7 +68,8 @@ The concrete model behind each tier lives in a **refreshable** map in the projec
 "models": {
   "claude":      { "deep": "opus",                      "standard": "opus",                       "light": "sonnet" },
   "codex":       { "deep": "gpt-5.5",                    "standard": "gpt-5.5",                     "light": "gpt-5.3-codex-spark" },
-  "antigravity": { "deep": "Gemini 3.1 Pro (High)",     "standard": "Gemini 3.1 Pro (Low)",        "light": "Gemini 3.5 Flash (Low)" }
+  "antigravity": { "deep": "Gemini 3.1 Pro (High)",     "standard": "Gemini 3.1 Pro (Low)",        "light": "Gemini 3.5 Flash (Low)" },
+  "cursor":      { "deep": "auto",                       "standard": "auto",                        "light": "auto" }
 }
 ```
 
