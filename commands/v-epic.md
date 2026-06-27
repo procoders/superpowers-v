@@ -31,7 +31,7 @@ The epic model, run-dir layout, the final integration review, and the honesty bo
      python3 scripts/compound-v-epic-state.py --next \
        --state docs/superpowers/execution/epics/<epic-id>/epic-state.json
      ```
-     It prints `{"feature": <feature|null>, "reason": "runnable|epic complete|waiting|epic blocked: …"}`. A feature is runnable when it is `pending` and **all** its `depends_on` are `done`, returned in topological order.
+     It prints `{"feature": <feature|null>, "reason": "runnable|epic complete|epic blocked: …|epic needs reconcile: …"}`. A feature is runnable when it is `pending` and **all** its `depends_on` are `done`, returned in topological order. The loop is **fail-fast**: any `failed` feature halts the whole epic (even independent pending features wait) until reconciled — `--next` will not route around a failure.
    - **If `feature` is non-null** (`reason == "runnable"`):
      1. **Mark it running:** `compound-v-epic-state.py --update --feature <id> --status running --state <epic-state.json>`.
      2. **Run that ONE feature through the full v1.0 pipeline on the current branch** — exactly as a standalone feature, reusing everything:
@@ -56,7 +56,9 @@ The epic model, run-dir layout, the final integration review, and the honesty bo
 
 5. **Epic complete** (`reason == "epic complete"`). All features are `done`. Run a **final cross-feature integration review**: the *whole accumulated diff* on the branch against the **epic's** acceptance criteria — not the per-feature ACs (those already passed in each feature's own review), but the cross-feature contracts: do the features compose, do shared boundaries line up, is the product coherent end-to-end. On PASS, hand to `superpowers:finishing-a-development-branch` (merge / PR / cleanup options). On ISSUES, surface them and stay resumable.
 
-6. **Epic blocked** (`reason` starts with `epic blocked` — a feature `failed` or an unmet dependency). **Stop and surface it.** Print `compound-v-epic-state.py --summary --state <epic-state.json>` so the user sees exactly which feature failed and what it blocks. The epic stays **resumable**: after the user fixes the failed feature (or its spec/partition), re-run `/v:epic <epic-id>` (or the same brief) — step 3 detects the existing `epic-state.json` and continues; only `pending` features run, the `done` ones are skipped.
+6. **Epic blocked** (`reason` starts with `epic blocked` — a feature `failed` or an unmet dependency). **Stop and surface it.** Print `compound-v-epic-state.py --summary --state <epic-state.json>` so the user sees exactly which feature failed and what it blocks. The epic stays **resumable**: after the user fixes the failed feature (or its spec/partition), retry it (`--update --feature <id> --status pending`) and re-run `/v:epic <epic-id>` (or the same brief) — step 3 detects the existing `epic-state.json` and continues; only `pending` features run, the `done` ones are skipped.
+
+   **Epic needs reconcile** (`reason` starts with `epic needs reconcile` — a feature is still `running`). Because epic mode is **sequential**, `--next` is only ever called between features, so a `running` feature on resume means that feature's run **crashed mid-pipeline**. Do not route around it. **Reconcile before continuing:** inspect that feature's run dir / `state.json` (via its `run_id`); if the work is incomplete or unverified, mark it **`--status pending`** to retry from scratch, or **`--status failed`** to abandon and stop. Never leave a feature `running` across a resume — the epic will not advance until the stale run is reconciled.
 
 7. **Report.** Print the epic summary (`--summary`), the per-feature run-ids, and the next step: the integration review + `finishing-a-development-branch` on complete, or the blocking feature + the resume hint on blocked.
 

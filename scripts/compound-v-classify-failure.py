@@ -80,8 +80,15 @@ _CODEX_RULES = [
 # text mentions quota/billing/usage-limit, out_of_credits wins over rate_limited; a bare
 # `resource_exhausted` / `429` with no quota wording falls through to rate_limited.
 _ANTIGRAVITY_RULES = [
+    # Gemini reuses RESOURCE_EXHAUSTED for BOTH quota exhaustion and throttling, so these
+    # needles are deliberately quota/billing/credit-SPECIFIC. Bare "insufficient" /
+    # "exceeded your" / "usage limit" were removed — they false-matched throttle text like
+    # "exceeded your rate limit", stealing it from rate_limited and forcing a needless
+    # backend reroute. Ambiguous "exhausted" text falls through to rate_limited (transient,
+    # retry) — the safer default than out_of_credits (reroute away).
     ("out_of_credits", [
-        "quota", "billing", "insufficient", "usage limit", "exceeded your",
+        "quota", "billing", "out of credit", "insufficient credit",
+        "insufficient funds", "exceeded your current quota", "purchase a plan",
     ]),
     ("auth", [
         "permission_denied", "unauthenticated", "api key", "401", "403",
@@ -243,6 +250,7 @@ def _selftest():
         ("antigravity", 1, "Error: 429 RESOURCE_EXHAUSTED: You exceeded your current quota", "out_of_credits"),
         ("antigravity", 1, "PERMISSION_DENIED: The caller does not have permission (403)", "auth"),
         ("antigravity", 1, "429 RESOURCE_EXHAUSTED: rate limit, please retry", "rate_limited"),
+        ("antigravity", 1, "429 RESOURCE_EXHAUSTED: You have exceeded your rate limit, retry later", "rate_limited"),
         ("antigravity", 1, "503 UNAVAILABLE: model is overloaded, try again later", "overloaded"),
         ("antigravity", 1, "input token count exceeds the maximum number of tokens", "context_length"),
         ("antigravity", 1, "getaddrinfo ENOTFOUND: dns lookup failed", "network"),

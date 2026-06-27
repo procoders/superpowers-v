@@ -117,35 +117,43 @@ def build_state(features, epic_id, title):
 
 
 def next_feature(state):
-    """Return (feature|None, reason)."""
+    """Return (feature|None, reason).
+
+    The order of the guards encodes the documented stop/resume model (commands/v-epic.md):
+    a failure or a crashed run HALTS the epic until a human reconciles it — the loop never
+    autonomously routes around a failed/stale feature.
+    """
     feats = state["features"]
     done = {f["id"] for f in feats if f["status"] == "done"}
-    failed = {f["id"] for f in feats if f["status"] == "failed"}
-    running = [f for f in feats if f["status"] == "running"]
+    failed = sorted(f["id"] for f in feats if f["status"] == "failed")
+    running = sorted(f["id"] for f in feats if f["status"] == "running")
     pending = [f for f in feats if f["status"] == "pending"]
 
-    if not pending and not running:
-        if failed:
-            return None, "epic blocked: %d feature(s) failed (%s)" % (len(failed), ", ".join(sorted(failed)))
+    # FAIL-FAST: any failed feature halts the WHOLE epic — even independent pending
+    # features wait. A failure may be systemic; do not burn more autonomous runs until a
+    # human retries (--update --status pending) or drops it.
+    if failed:
+        return None, ("epic blocked: feature(s) failed (%s) — retry "
+                      "(--update --status pending) or drop them, then re-run" % ", ".join(failed))
+
+    # RECONCILE: epic mode is sequential — the orchestrator calls --next only BETWEEN
+    # features, so a 'running' feature seen here means a prior run CRASHED mid-feature.
+    # Stop and force reconciliation; never hand out new work over a stale run.
+    if running:
+        return None, ("epic needs reconcile: feature(s) still 'running' (%s) — a prior run "
+                      "crashed; mark each --status failed (abandon) or pending (retry), then "
+                      "re-run" % ", ".join(running))
+
+    if not pending:
         return None, "epic complete: all features done"
 
+    # Clean state: hand out the next runnable pending feature in topological order. With a
+    # DAG validated at --init, one always exists here; the final return is defensive.
     runnable = [f for f in pending if all(d in done for d in f["depends_on"])]
     if runnable:
         return runnable[0], "runnable"
-
-    if running:
-        return None, "waiting: %d feature(s) still running" % len(running)
-
-    # pending remain but none runnable -> blocked by a failed/unsatisfiable dependency
-    blockers = []
-    for f in pending:
-        bad = [d for d in f["depends_on"] if d in failed]
-        if bad:
-            blockers.append("%s needs failed %s" % (f["id"], "/".join(bad)))
-    reason = "epic blocked: no runnable feature"
-    if blockers:
-        reason += " (" + "; ".join(blockers) + ")"
-    return None, reason
+    return None, ("epic blocked: no runnable feature — unsatisfiable dependencies among %s"
+                  % ", ".join(f["id"] for f in pending))
 
 
 def _read_json(path):
@@ -188,7 +196,7 @@ def _selftest():
     check("then api", f and f["id"] == "api")
     st["features"][1]["status"] = "running"
     f, why = next_feature(st)
-    check("waiting while running", f is None and "running" in why)
+    check("crashed 'running' -> reconcile stop", f is None and "reconcile" in why)
     st["features"][1]["status"] = "done"
     st["features"][2]["status"] = "done"
     f, why = next_feature(st)
@@ -198,6 +206,16 @@ def _selftest():
     st2["features"][0]["status"] = "failed"
     f, why = next_feature(st2)
     check("blocked by failed dep", f is None and "blocked" in why)
+    # FAIL-FAST (#1): a failure halts even an INDEPENDENT pending feature
+    indep = [{"id": "x", "depends_on": []}, {"id": "y", "depends_on": []}]
+    st3 = build_state(indep, "e3", "E")
+    st3["features"][0]["status"] = "failed"
+    f, why = next_feature(st3)
+    check("fail-fast halts independent pending", f is None and "blocked" in why)
+    # recovery (#1): retrying the failed feature re-opens the epic
+    st3["features"][0]["status"] = "pending"
+    f, why = next_feature(st3)
+    check("retry re-opens epic", f is not None and f["id"] in ("x", "y"))
     print("SELFTEST: %d ok, %d fail" % (ok, fail))
     return 0 if fail == 0 else 1
 
@@ -266,11 +284,11 @@ def main(argv):
         hit["status"] = args.status
         if args.run_id is not None:
             hit["run_id"] = args.run_id
-        # roll up epic status
+        # roll up epic status (fail-fast: any failure blocks the epic immediately)
         sts = [f["status"] for f in state["features"]]
         if all(s == "done" for s in sts):
             state["status"] = "done"
-        elif any(s == "failed" for s in sts) and not any(s in ("pending", "running") for s in sts):
+        elif any(s == "failed" for s in sts):
             state["status"] = "blocked"
         else:
             state["status"] = "running"

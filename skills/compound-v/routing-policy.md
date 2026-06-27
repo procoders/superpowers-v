@@ -342,7 +342,7 @@ Act on `health`:
 
 | `health` | Action |
 |---|---|
-| `unhealthy` | **Prefer the routing alternative or escalate a tier** (Opus — `tier: deep` — is the safe escalation), and **log a one-line justification** (e.g. *"codex unhealthy on `large_isolated` here: block_rate .35 over 12 jobs → routing to opus this run"*). |
+| `unhealthy` | **Escalate UP the trust/capability ordering** — to a *stronger, equal-or-higher-trust* seat (Opus, `tier: deep`, is the safe escalation), and **log a one-line justification** (e.g. *"codex unhealthy on `large_isolated` here: block_rate .35 over 12 jobs → escalating to opus/deep this run"*). **Never auto-route to a lower-trust backend** (trust ordering below): a Codex-unhealthy cell escalates to Opus — it does NOT silently fall to Antigravity. |
 | `watch` | Keep the static default, but **note it** in the routing log (one line) so a drift toward `unhealthy` is visible. |
 | `healthy` / `insufficient_data` | **Use the static default unchanged.** Don't over-react to thin data — the script needs **≥5 samples** to judge a cell; below that it returns `insufficient_data` and the static policy stands. |
 
@@ -351,10 +351,14 @@ Act on `health`:
 - **Not a replacement for the static policy** — they are a **hint layered on top of
   it.** The stance table is still the default; the scorecard only nudges the router
   off a default that the repo's own measured outcomes show is failing.
-- **They only ever make routing MORE conservative (escalate), never weaker.** An
-  `unhealthy` cell can push work to a *stronger* seat (Opus) or an alternative
-  backend; it can never downgrade a `deep` job to `light` or route a sensitive
-  surface off Opus to save cost.
+- **They only ever escalate UP a fixed trust/capability ordering, never down.** The
+  ordering is **`claude` (in-process, no external write surface) ≥ `codex` (kernel
+  `workspace-write` sandbox) ≥ `antigravity` (no kernel sandbox — opt-in/lower-trust)**.
+  An `unhealthy` cell pushes work to a *stronger or higher-trust* seat (Opus); it can
+  never downgrade a `deep` job to `light`, route a sensitive surface off Opus, or
+  **auto-select a lower-trust backend**. In particular a scorecard NEVER converts an
+  unhealthy Codex cell into Antigravity — Antigravity is entered only by explicit
+  per-job opt-in, never as an automatic "escalation."
 - **They do not override the HARD invariants.** Reviewers ⇒ `deep`, Codex ⇒
   `worktree`, and unclear scope ⇒ return to planning hold regardless of any scorecard.
   Security / auth / payments / PII / a11y stays `deep` in every stance, scorecard or
