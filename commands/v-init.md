@@ -181,9 +181,36 @@ other harnesses)** — which recall lane this project should use:
   Confirm the `bootstrap OK` line before counting it enabled. If bootstrap fails (offline /
   no wheels), say so and fall back to FTS5-only — recall still works.
 
-Record the choice in Step 4a as `"memory": { "embeddings": true|false }`. When `true`, the
-engine adds vectors on every refresh (including the silent background hook) — but still
-**only once bootstrapped**; it never installs on its own.
+Record the lane choice in Step 4a as `memory.embeddings: true|false`. When `true`, the engine
+adds vectors on every refresh (including the silent background hook) — but still **only once
+bootstrapped**; it never installs on its own.
+
+**Then ask a second structured choice — how much V-memory should DRIVE the pipeline:**
+
+- **"Manual only"** — recall fires only when you run `/v:remember`. (`memory.auto_recall: false`)
+- **"Auto-recall" (recommend)** — memory auto-surfaces related prior work during planning and
+  before the review gate, as **advisory evidence**. (`auto_recall: true`, `auto_tighten: false`)
+- **"Auto-tighten"** — additionally, the deterministic `recall-check` bridge **auto-tightens**
+  the next run (force worktree / +review pass / fold into Task 0) when the same files have
+  repeatedly failed. Conservative-only — never reroutes to lower trust, never loosens.
+  (`auto_recall: true`, `auto_tighten: true`)
+
+---
+
+## Step 3c — Autonomy & review defaults
+
+Two more structured choices — sensible defaults, reconfigurable any time:
+
+- **Epic autonomy — `epic.max_features`** (default **1**): how many features `/v:epic` builds
+  before stopping at a human checkpoint. An epic is *N full v1.0 runs*, so this is the
+  human-in-the-loop **cadence**, not a token meter. `1` checkpoints after every feature
+  (safest); raise it for more autonomy per invocation.
+- **Cross-model review — `review.cross_model`** (default **off**): run an automatic Codex
+  second opinion ([`/v:review-plan`](v-review-plan.md)) on high-stakes plans before dispatch.
+  Off = run it manually when you want it; on = decorrelated review by default, at the cost of
+  one extra read-only Codex pass.
+
+Confirm all choices back to the user before saving.
 
 ---
 
@@ -198,7 +225,9 @@ Write **both**. Create parent dirs as needed.
   "stance": "balanced",
   "backends": ["claude", "codex"],
   "checked_at": "<YYYY-MM-DD>",
-  "memory": { "embeddings": false },
+  "memory": { "embeddings": false, "auto_recall": true, "auto_tighten": false },
+  "epic":   { "max_features": 1 },
+  "review": { "cross_model": false },
   "models": {
     "claude":      { "deep": "opus",                  "standard": "opus",                  "light": "sonnet" },
     "codex":       { "deep": "gpt-5.5",               "standard": "gpt-5.5",               "light": "gpt-5.3-codex-spark" },
@@ -215,10 +244,20 @@ Write **both**. Create parent dirs as needed.
 - `checked_at` = today's date.
 - If the user opted into the Workflows accelerator, also include
   `"workflows_accelerator": true` (omit otherwise — default OFF).
-- **`memory.embeddings`** = the Step 3b choice (default `false` = FTS5-only). When `true`,
+- **`memory.embeddings`** = the Step 3b lane choice (default `false` = FTS5-only). When `true`,
   `compound-v-memory.py` adds the semantic lane on every refresh (the engine reads this flag),
   but only after an explicit `bootstrap` — it never installs on its own. `false` keeps the
   pure-stdlib FTS5 lane.
+- **`memory.auto_recall` / `memory.auto_tighten`** = the Step 3b autonomy level. `auto_recall`
+  (default `true`) makes the pipeline surface V-memory evidence in planning + at the review
+  gate; `auto_tighten` (default `false`) additionally lets the deterministic `recall-check`
+  bridge auto-tighten the next run on repeated structured failures (conservative-only). Both
+  `false` = memory is a manual `/v:remember` lookup only.
+- **`epic.max_features`** (default `1`) = the Step 3c epic-autonomy cadence `/v:epic` reads as
+  its per-invocation budget before a human checkpoint.
+- **`review.cross_model`** (default `false`) = the Step 3c toggle; when `true`, high-stakes
+  plans get an automatic Codex second opinion ([`/v:review-plan`](v-review-plan.md)) before
+  dispatch.
 - **`models` — SEED the default tier→model map (exactly the block above)** so
   intent-based routing resolves out of the box even with no further setup. This
   is the same default the resolver
