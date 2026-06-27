@@ -1,6 +1,6 @@
 ---
 name: backend-launcher
-description: Use when Compound V's dispatcher needs to run one file-scoped job on a chosen backend (Claude subagent, headless Codex worker, or headless Antigravity worker) and get back a canonical job_result. The single job_spec → job_result contract every adapter implements; the orchestrator speaks only this contract and never sees backend-specific flags.
+description: Use when Compound V's dispatcher needs to run one file-scoped job on a chosen backend (Claude subagent, headless Codex worker, headless Antigravity worker, or headless Cursor worker) and get back a canonical job_result. The single job_spec → job_result contract every adapter implements; the orchestrator speaks only this contract and never sees backend-specific flags.
 ---
 
 # Backend Launcher
@@ -19,7 +19,7 @@ There is no skill-import API: an adapter is a sibling doc (`adapter-codex.md`, `
 
 ```jsonc
 {
-  "backend": "codex",                  // claude | codex | antigravity
+  "backend": "codex",                  // claude | codex | antigravity | cursor
   "prompt": "…",                       // the worker prompt (opens with the planner/executor lock, below)
   "tier": "standard",                  // deep | standard | light — the routing INTENT (stable across model churn)
   "effort": "medium",                  // low | medium | high — orthogonal reasoning-effort hint (optional)
@@ -91,10 +91,12 @@ This is the *instructed* half. The git-diff scope gate above is the *enforced* h
 | `adapter-claude.md` | Claude subagent | in-harness `Task` (model override, `maxTurns: 15`) | `direct` or optional `worktree` | same caller scope gate on return | ships v1.0 |
 | `adapter-codex.md` | headless Codex | Bash-spawned `codex exec` (own process, own worktree) | `worktree` (mandatory) | git-diff scope gate | ships v1.0 |
 | `adapter-antigravity.md` | headless Antigravity | Bash-spawned `agy --print` (own process, own worktree) | `worktree` (mandatory) | git-diff scope gate | ships 1.1 — **lower-trust / opt-in (no kernel sandbox)** |
+| `adapter-cursor.md` | headless Cursor | Bash-spawned `cursor-agent -p -f` (own process, own worktree) | `worktree` (mandatory) | git-diff scope gate | ships 2.1 — **lower-trust / opt-in (no kernel sandbox)** |
 
 - **claude-subagent** — reuses today's `Task`-based dispatch with a `model` override and `maxTurns: 15`, optionally inside a worktree, and runs the **same** scope gate on return so enforcement is identical to Codex. Direct writes are gated against a baseline commit.
 - **codex** — a Bash-spawned `codex exec` worker in its own process and its own worktree (never an `agents/` entry, never the experimental `openai-codex` app-server broker, which is single-flight and can't fan out). Pinned flag set below.
 - **antigravity** — a Bash-spawned `agy --print` worker in its own process and its own worktree, mirroring Codex (worktree + git-diff scope gate, normalize → `job_result`). **Lower-trust / opt-in:** `agy` has **no kernel write-confinement** like Codex's `--sandbox workspace-write`, and headless writes require `--dangerously-skip-permissions` (arbitrary shell + out-of-worktree writes possible). The git-diff gate enforces file-scope *inside* the worktree but cannot *prevent* an out-of-worktree side-effect — so **prefer Codex for untrusted / high-stakes work**, and route to Antigravity only when the prompt/surface is trusted. Available only when `agy` is installed (env-aware routing). Runbook: [`adapter-antigravity.md`](adapter-antigravity.md); worker: [`scripts/compound-v-run-antigravity-worker.sh`](../../scripts/compound-v-run-antigravity-worker.sh).
+- **cursor** — a Bash-spawned `cursor-agent -p -f` worker in its own process and its own worktree, mirroring Antigravity (worktree + git-diff scope gate, normalize → `job_result`). **Lower-trust / opt-in (same tier as Antigravity):** cursor-agent has **no kernel write-confinement**, and a headless run **requires `-f`** (an untrusted dir is otherwise refused) which also grants arbitrary write+shell. Verified live (success + BLOCKED paths). Output is one JSON object — `.result` → summary, `.session_id` (a real UUID) → resumable via `cursor-agent --resume`. **Prefer Codex for untrusted / high-stakes work**; route to Cursor only when the prompt/surface is trusted (its editing models suit isolated build/UI work). Available only when `cursor-agent` is installed AND authenticated (env-aware routing). Runbook: [`adapter-cursor.md`](adapter-cursor.md); worker: [`scripts/compound-v-run-cursor-worker.sh`](../../scripts/compound-v-run-cursor-worker.sh).
 
 ---
 

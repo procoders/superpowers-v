@@ -4,6 +4,15 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [2.1.0] — 2026-06-27
+
+### Added — Cursor CLI backend (4th dispatch backend)
+
+- **`cursor-agent` as a headless dispatch backend** — `scripts/compound-v-run-cursor-worker.sh`, a Bash-spawned worker in its own git worktree that mirrors the Antigravity adapter (worktree isolation + git-derived scope gate → canonical `job_result`). **Verified live** (cursor-agent 2025.09.12): the success path (write within `write_allowed`) and the **BLOCKED** path (write outside scope → `violations`) both pass.
+- **Invocation** (verified): `cd "$WT" && cursor-agent -p -f --output-format json [--model M] "<prompt>" </dev/null`. `-f` is **required** — a headless run refuses an untrusted worktree without it. Output is one JSON object: `.result` → `summary`, `.session_id` (a real UUID) → resumable via `cursor-agent --resume`. Token `.usage` is ignored (anti-ruflo).
+- **Lower-trust / opt-in — same tier as Antigravity.** No kernel write-confinement (`-f` grants arbitrary write+shell); the git-diff gate is detection, not prevention. **Prefer Codex (kernel-sandboxed) for untrusted / high-stakes work**; `backend: cursor` ⇒ `isolation: worktree`.
+- **Plumbing:** `classify-failure.py --backend cursor` (OpenAI/Anthropic-style needles + provisional cursor-auth); `resolve-model.py` cursor map (`sonnet-4-thinking` / `sonnet-4` / `gpt-5`, user-overridable via `/v:models`); `adapter-cursor.md` runbook; `/v:init` detects `cursor-agent` + auth and adds it to `backends`. Available only when installed AND authenticated (env-aware routing).
+
 ## [2.0.0] — 2026-06-27
 
 ### Added — V-memory (local-first recall over docs/superpowers prose)
