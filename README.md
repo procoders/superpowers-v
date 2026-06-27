@@ -21,6 +21,8 @@ You keep using **Superpowers** the way you already do. Compound V silently shows
 
 As of **v1.0**, the tail of that flow is a real **execution orchestrator**: it materializes a machine-readable `manifest.yaml` of file-scoped jobs, routes each to its backend (Claude subagent or a headless **Codex** worker), **enforces** with a `git diff` scope gate that no worker wrote outside its allowed files, collects canonical `job_result`s, reviews against the spec's Acceptance Criteria, and is **crash-resumable** via `state.json`. No daemon, no MCP server, no fabricated metrics.
 
+Backend failures are handled **gracefully**: a non-success job is classified (by error type, not HTTP status) and routed through a deterministic policy — retry transient errors with backoff, **circuit-break + re-route codex→claude on out-of-credits**, escalate tier on context-length, halt on auth — all resumable and **loudly reported** (never a silent cheap→expensive swap). See [skills/compound-v/failure-policy.md](skills/compound-v/failure-policy.md).
+
 Routing is **tier-based and churn-proof**: jobs declare a `tier` (`deep`/`standard`/`light`) and an optional `effort` (`low`/`medium`/`high`) instead of a hardcoded model name. A resolver (`scripts/compound-v-resolve-model.py`) maps tier → concrete model through a refreshable config `models` map, so when models change you update one map (or run `/v:models`) instead of editing prompts. Codex's reasoning-effort is exposed as `--effort`.
 
 You don't invoke Compound V. It invokes itself.
@@ -146,6 +148,7 @@ superpowers-v/
 │   │   ├── phase-3-parallel-opus-dispatch.md  # 🚀 manifest-driven multi-backend dispatch + taxonomy
 │   │   ├── execution-manifest.md              # manifest schema + rules
 │   │   ├── routing-policy.md                  # task-type → (tier, effort); stances + env-aware + models map
+│   │   ├── failure-policy.md                  # backend-failure classify → retry/reroute/halt + circuit breaker
 │   │   ├── state-machine.md                   # states + run dir + crash-resume
 │   │   ├── skill-escalation.md                # gated deep-research / playground / writing-style
 │   │   ├── workflows-accelerator.md           # opt-in Engine C fast-path (probe + fallback to A)

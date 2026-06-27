@@ -205,6 +205,17 @@ collapses so nothing routes to a backend that is not installed:
 This is exactly Success Criterion #5 (PRD §9): with Codex absent, the pipeline runs
 unchanged, just Claude-only.
 
+> **Also invoked at runtime, not only at `/v:init`.** This same env-aware codex→claude
+> rewrite fires **during a run** when a Codex job fails with `out_of_credits`: the
+> failure policy circuit-breaks Codex for the run and re-routes the failed job — and
+> every remaining Codex job — through exactly this rewrite (codex rows → `backend:
+> claude`, `isolation: worktree`, `tier: deep`). It is the same transformation, just
+> triggered by a runtime credit-exhaustion event instead of an install-time capability
+> probe. The swap is **announced** — never a silent cheap→expensive substitution — and
+> surfaced in [`/v:status`](../../commands/v-status.md) and the run summary (e.g. *"codex
+> out of credits → N jobs re-routed to claude/opus, est. cost ↑"*). The full policy is
+> [`failure-policy.md`](failure-policy.md).
+
 ---
 
 ## Invariants (non-negotiable, deterministically enforced)

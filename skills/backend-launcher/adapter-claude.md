@@ -109,6 +109,20 @@ On `blocked`: the caller **must not merge** — it halts the run and surfaces th
 
 ---
 
+## Classifying a claude failure (the `failure_class` for the policy loop)
+
+When a claude job returns non-success (errored, hit `maxTurns` without finishing, or the API surfaced a retry error), the dispatcher needs a `failure_class` to drive the [failure policy](../compound-v/failure-policy.md). Unlike the Codex worker — which captures stderr and **emits `failure_class` in its `job_result`** — an in-harness `Task` does not hand back a raw error enum on the canonical result. So for claude, the class is computed by reading the **stream-json `api_retry.error` enum**: run the adapter/worker with `--output-format stream-json` and feed the captured output to the classifier with `--backend claude`:
+
+```bash
+# claude path: the classifier reads the stream-json api_retry.error enum, not raw stderr text.
+python3 scripts/compound-v-classify-failure.py --backend claude \
+  --exit-code "$EXIT" --stderr-file "$STREAM_JSON"   # → {failure_class, retryable, matched}
+```
+
+`--backend claude` selects the Anthropic enum rules (e.g. `billing_error` ⇒ `out_of_credits` — note this is a **400/402, not a 429**; `authentication_failed`/`oauth_org_not_allowed` ⇒ `auth`; `overloaded_error`/`529` ⇒ `overloaded`; `rate_limit` ⇒ `rate_limited`). The resulting class flows into [`compound-v-failure-policy.py`](../../scripts/compound-v-failure-policy.py) exactly as a Codex failure does.
+
+**claude has no further local fallback in 1.0.** The fallback chain is `codex → claude → none`: an `out_of_credits` or `auth` failure **on claude** has no backend to re-route to, so the policy returns **`halt`** (circuit-break + resumable) rather than `reroute` — the human tops up / re-auths, then `/v:resume`. Antigravity is the candidate second fallback but ships as a stub deferred to **1.1** (see [`adapter-antigravity.md`](adapter-antigravity.md)). Transient claude failures (rate_limited/overloaded/network/timeout) still **retry on claude** with backoff, capped per-class and by `max_total_retries`.
+
 ## Why this adapter is the simple one
 
 No process spawn, no sandbox flags, no `--output-last-message` parsing, no `codex_hooks` stderr to suppress, no session UUID to capture. The subagent runs inside the harness with a model override and a turn cap. The contract holds anyway because **enforcement does not live in the backend** — it lives in the caller's git-diff scope gate, which is identical whether the worker was an in-harness `Task` or a Bash-spawned `codex exec`. Same syringe, same finish-line check.

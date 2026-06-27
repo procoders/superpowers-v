@@ -13,7 +13,8 @@
     "summary",
     "session_id",
     "worktree",
-    "exit_code"
+    "exit_code",
+    "failure_class"
   ],
   "properties": {
     "status": {
@@ -50,6 +51,11 @@
     "exit_code": {
       "type": "integer",
       "description": "Raw process exit code of the worker (0 on success; 124 if the timeout wrapper fired)."
+    },
+    "failure_class": {
+      "type": ["string", "null"],
+      "enum": [null, "none", "out_of_credits", "rate_limited", "overloaded", "auth", "context_length", "timeout", "network", "other"],
+      "description": "On a non-success status, the classified backend-failure reason from compound-v-classify-failure.py (out_of_credits | rate_limited | overloaded | auth | context_length | timeout | network | other). null on success/blocked. Drives the dispatcher's deterministic retry/reroute/halt policy (compound-v-failure-policy.py): out_of_credits/auth never retry; out_of_credits circuit-breaks the backend and re-routes remaining jobs to the fallback; transient classes retry with capped backoff."
     }
   }
 }

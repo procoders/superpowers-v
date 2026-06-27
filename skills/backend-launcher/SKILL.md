@@ -47,11 +47,14 @@ Defined and validated by [`schemas/job_result.schema.json`](../../schemas/job_re
   "files_changed": ["src/features/sequences/components/Editor.tsx"],
   "violations": [],                    // files written but NOT allowed ⇒ blocked
   "summary": "Added step editor with create/edit/delete.",
+  "failure_class": null,               // null on success/blocked; else the classified backend failure
   "session_id": "uuid",                // codex exec resume <uuid>
   "worktree": "/tmp/compound-v/<run-id>/task-1-editor-ui",
   "exit_code": 0
 }
 ```
+
+**`failure_class` — the graceful-failure hook.** On a non-success backend *failure* (not a scope-gate `blocked`), the result carries a `failure_class` ∈ `{out_of_credits, rate_limited, overloaded, auth, context_length, timeout, network, other}` (the Codex worker emits it; `null` on success/blocked). The dispatcher feeds it to the deterministic **classify → policy → act** flow — [`scripts/compound-v-classify-failure.py`](../../scripts/compound-v-classify-failure.py) then [`scripts/compound-v-failure-policy.py`](../../scripts/compound-v-failure-policy.py) → **retry** (same backend, backoff), **reroute** (out_of_credits → circuit-break + env-aware codex→claude rewrite; context_length → bigger tier), or **halt** (resumable). A `claude` job whose result lacks the field is classified by re-reading the stream-json `api_retry.error` enum (`--backend claude`). Full policy: [`skills/compound-v/failure-policy.md`](../compound-v/failure-policy.md).
 
 ---
 

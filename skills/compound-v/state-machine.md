@@ -56,6 +56,11 @@ docs/superpowers/execution/<run-id>/
   "run_id": "2026-06-26-linkedin-sequence-editor",
   "phase": "DISPATCHED",
   "updated_at": "2026-06-26T14:31:00Z",
+  "total_retries": 2,
+  "max_total_retries": 12,
+  "cooldowns": { "codex": "2026-06-26T14:33:10Z" },
+  "circuit_open": { "codex": false, "claude": false },
+  "attempts": { "task-2-api": 1 },
   "jobs": {
     "task-0-schema":   { "status": "done",    "isolation": "direct",   "worktree": null,                          "session_id": null },
     "task-1-editor-ui":{ "status": "running", "isolation": "worktree", "worktree": "$TMPDIR/compound-v/<run>/task-1-editor-ui", "session_id": "uuid" },
@@ -63,6 +68,20 @@ docs/superpowers/execution/<run-id>/
   }
 }
 ```
+
+### Backend-failure fields (the circuit breaker — no daemon)
+
+These run-level fields are how graceful backend-failure handling persists across batch boundaries. The dispatcher reads them at the start/edges of each batch; nothing runs between batches. The full classify→decide→act policy is [`failure-policy.md`](failure-policy.md).
+
+| Field | Shape | Meaning |
+|---|---|---|
+| `attempts` | `{ "<job-id>": n }` | retries this job has had — fed to the policy as `--attempts` (per-class cap). Absent ⇒ 0. |
+| `cooldowns` | `{ "<backend>": "<iso-ts>" }` | a transient-failed backend is **deprioritized** until this timestamp (eligible again next batch). |
+| `circuit_open` | `{ "<backend>": bool }` | `true` ⇒ the backend is **out for the run** (only confirmed `out_of_credits` or `auth` opens it). |
+| `total_retries` | `int` | run-wide retry counter — the policy's `--total-retries`. |
+| `max_total_retries` | `int` (default 12) | run-level retry budget — the anti retry-storm cap (`--max-total-retries`). |
+
+"Deprioritize, don't remove": a 429/5xx/timeout gets a short **cooldown** (open next batch), only a confirmed `out_of_credits` opens the breaker for the whole run.
 
 ### Per-job `status`
 
@@ -92,9 +111,12 @@ The run-level `phase` and the per-job `status` map are distinct: `phase` is the 
    - `state.json` says `done` but the job's `write_allowed` files are **not** present in git → treat as **not done**, re-dispatch.
    - `state.json` says `running`/`pending` but the files **are** fully present and inside scope → treat as `done`, skip.
    - This keeps resume safe under a crash that landed files but never got to write `state.json` — and under a stale `done` whose work was reverted.
-4. **Re-dispatch only `pending` / `failed` / `blocked`** jobs (after step 3 reclassification), honoring `depends_on` and `max_parallel` exactly as the initial dispatch did. Each re-dispatch replays `jobs/<id>.prompt.md` verbatim.
+4. **Half-open the breaker at batch start.** Before re-dispatching, reconcile the circuit-breaker fields:
+   - Any backend whose `cooldowns[backend]` timestamp has **expired** goes **half-open**: probe it **once** at the start of the next batch before full re-dispatch. A clean probe **closes** the breaker (clear the `cooldowns` entry); a repeat failure re-cools it via the policy.
+   - A backend with `circuit_open[backend]==true` from an **`out_of_credits`** event stays **open** — `/v:resume` does **not** reopen it automatically. The human tops up credits first, then re-runs `/v:resume`, which clears the flag and re-dispatches (the run-level `total_retries` budget persists across the resume). An **`auth`** circuit-break clears the same way once the key/login is fixed (via `/v:init`).
+5. **Re-dispatch only `pending` / `failed` / `blocked`** jobs (after step 3 reclassification and step 4 breaker reconciliation), honoring `depends_on` and `max_parallel` exactly as the initial dispatch did. Each re-dispatch replays `jobs/<id>.prompt.md` verbatim.
    - For a Codex worktree job whose `session_id` is recorded, the codex adapter MAY resume the existing session (`codex exec resume <session_id>`) rather than start cold; either way the **scope gate re-runs** on return.
-5. **Continue the pipeline** from the reconciled phase: re-collect, re-run the scope gate on every job, then the Review Gate, then merge. Already-`done` jobs are not re-run.
+6. **Continue the pipeline** from the reconciled phase: re-collect, re-run the scope gate on every job, then the Review Gate, then merge. Already-`done` jobs are not re-run.
 
 **Why git-wins, restated:** `state.json` is a convenience cache; the filesystem under git is the ground truth. A resume that trusted a stale `done` could skip work that was never actually committed. By re-deriving from git on every resume, the run stays correct even across a hard crash mid-write.
 
@@ -102,6 +124,7 @@ The run-level `phase` and the per-job `status` map are distinct: `phase` is the 
 
 ## Cross-references
 
+- Graceful backend-failure policy (classify → retry/reroute/halt; the circuit-breaker fields above): [`failure-policy.md`](failure-policy.md)
 - Manifest schema + invariants: [`execution-manifest.md`](execution-manifest.md)
 - The job_result contract every `results/<id>.json` conforms to: [`schemas/job_result.schema.json`](../../schemas/job_result.schema.json)
 - Backend dispatch contract: [`backend-launcher/SKILL.md`](../backend-launcher/SKILL.md)

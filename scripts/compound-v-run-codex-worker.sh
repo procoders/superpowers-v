@@ -56,7 +56,7 @@ die() {
 # and are split with jq's split/select to drop the trailing empty element.
 emit_job_result() {
   # $1 status  $2 blocked(true|false)  $3 files_nl  $4 violations_nl
-  # $5 summary  $6 session_id  $7 worktree  $8 exit_code(int)
+  # $5 summary  $6 session_id  $7 worktree  $8 exit_code(int)  $9 failure_class ("" => null)
   jq -n \
     --arg status "$1" \
     --argjson blocked "$2" \
@@ -66,6 +66,7 @@ emit_job_result() {
     --arg session_id "$6" \
     --arg worktree "$7" \
     --argjson exit_code "$8" \
+    --arg failure_class "$9" \
     '{
        status: $status,
        blocked: $blocked,
@@ -74,7 +75,8 @@ emit_job_result() {
        summary: $summary,
        session_id: $session_id,
        worktree: $worktree,
-       exit_code: $exit_code
+       exit_code: $exit_code,
+       failure_class: (if $failure_class == "" then null else $failure_class end)
      }'
 }
 
@@ -413,6 +415,20 @@ elif [ "$exit_code" != "0" ]; then
   status="error"
 fi
 
+# --- classify a backend failure ----------------------------------------------
+# A non-success / non-blocked status carries a failure_class (out_of_credits /
+# rate_limited / overloaded / auth / context_length / timeout / network / other) that
+# drives the dispatcher's deterministic retry/reroute/halt policy. The classifier reads
+# the captured codex stderr — see compound-v-classify-failure.py + -failure-policy.py.
+# "" => null in the emitted JSON.
+failure_class=""
+if [ "$status" = "error" ] || [ "$status" = "timeout" ]; then
+  failure_class=$(python3 "$SCRIPT_DIR/compound-v-classify-failure.py" \
+    --backend codex --exit-code "$exit_code" --stderr-file "$STDERR_LOG" 2>/dev/null \
+    | jq -r '.failure_class' 2>/dev/null || true)
+  [ -n "$failure_class" ] && [ "$failure_class" != "null" ] || failure_class="other"
+fi
+
 # --- emit --------------------------------------------------------------------
 # stdout = the canonical job_result JSON, and ONLY that. The caller (dispatcher)
 # parses this and decides whether to merge (index-based patch including new files:
@@ -427,6 +443,7 @@ emit_job_result \
   "$summary" \
   "$session_id" \
   "$WT" \
-  "$exit_code"
+  "$exit_code" \
+  "$failure_class"
 
 exit 0
