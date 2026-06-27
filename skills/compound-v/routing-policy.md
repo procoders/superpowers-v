@@ -26,7 +26,14 @@ These are *not* the only inputs. Before routing a job type, the engine **consult
 the human-curated lessons distilled from `task-outcomes.jsonl`. A recorded lesson
 ("`large_isolated` on codex blocked twice on barrel files → fold barrels into Task 0")
 overrides the table default for that pattern. That is the closed loop: outcomes →
-lessons → routing, no scorecards or vector DB (anti-ruflo, PRD §5.8).
+lessons → routing — no vector DB, no semantic search (anti-ruflo, PRD §5.8).
+
+The engine also consults a **machine-generated scorecard** (see [Scorecard-aware
+routing](#scorecard-aware-routing) below). The scorecard is a *deterministic
+aggregate* of the same `task-outcomes.jsonl` — not a learned model, not a vector
+store — and it only ever makes routing **more** conservative. The human-curated
+`routing-lessons.md` remains the authoritative override; scorecards are a hint
+layered underneath it.
 
 ---
 
@@ -44,13 +51,25 @@ at dispatch.
 | Security / auth / payments / PII / a11y | claude | deep · high | worktree | parallel |
 | `core_slice` (design judgment) | claude | deep · high | worktree | parallel |
 | `bounded_crud` (8-box junior) | claude | light · low | direct | parallel |
-| `large_isolated` build | **codex** | standard · medium | worktree | parallel |
+| `large_isolated` build | **codex** (alt: **antigravity**, lower-trust) | standard · medium | worktree | parallel |
 | `mechanical_refactor` / rename / format | claude | light · low | direct | parallel |
 | `docs` / i18n strings | claude | light · low | direct | parallel |
 | `tests_new` — designing new tests | claude | deep · high | direct | parallel |
 | `external_api` integration | claude | deep · high | worktree | parallel |
 | `review` — spec / quality / integration | claude | deep · high | direct | parallel/serial |
 | **Unclear scope** | **none → return to planning** | — | — | — |
+
+> **Antigravity is a selectable alternative for `large_isolated` build — opt-in and
+> lower-trust.** It is a real backend (Bash-spawned `agy --print` in its own worktree,
+> same git-diff scope gate as Codex — [`adapter-antigravity.md`](../backend-launcher/adapter-antigravity.md)),
+> **available only when `agy` is installed** (env-aware; absent → the row stays on
+> codex/claude). But `agy` has **NO kernel write-confinement** like Codex's
+> `--sandbox workspace-write`, and headless writes require `--dangerously-skip-permissions`
+> (arbitrary shell + out-of-worktree writes possible). The worktree + `git diff` gate
+> detects in-worktree scope leaks but cannot *prevent* an out-of-worktree side-effect —
+> so **prefer Codex (kernel-sandboxed) for untrusted / high-stakes work**, and pick
+> antigravity only when the prompt and surface are trusted. **antigravity ⇒ worktree**
+> is a hard invariant (below).
 
 Why these tiers: `deep` is the strongest reasoning seat — it carries architecture,
 all sensitive surfaces, designing new tests, external APIs, every reviewer, and
@@ -227,9 +246,12 @@ These hold in **every** stance and are checked by `compound-v-validate-manifest.
    tier — `tier: deep` **OR** an explicit `model: opus`. (`deep` resolves to `opus`
    for claude, so this mirrors the frontmatter rule that reviewers/agents always
    carry `model: opus`.)
-2. **Codex ⇒ worktree.** Any `backend: codex` job MUST be `isolation: worktree`.
-   Codex's sandbox can only restrict writes to a *directory*, so worktree + `git diff`
-   is the only file-scope enforcement.
+2. **Codex ⇒ worktree, and Antigravity ⇒ worktree.** Any `backend: codex` **or**
+   `backend: antigravity` job MUST be `isolation: worktree`. Both are external workers
+   with no per-file enforcement of their own: Codex's sandbox restricts writes only to a
+   *directory*, and Antigravity has **no kernel sandbox at all** — so worktree + `git diff`
+   is the only file-scope enforcement either gets. The validator rejects either backend
+   with `isolation: direct`.
 3. **Unclear scope ⇒ return to planning.** A job whose scope the planner cannot pin
    never dispatches with a guessed partition — it goes back to writing-plans.
 4. **Model OR tier.** Every job MUST carry at least one of `model` or `tier`. A job
@@ -283,9 +305,75 @@ is the agent's model and is unrelated to this execution-layer tier resolution.)
 2. Check [`routing-lessons.md`](../../docs/superpowers/memory/routing-lessons.md)
    for a lesson matching this `type` + backend — if one applies, follow it.
 3. Otherwise apply the stance table above to get **backend + (tier, effort)**.
-4. Apply the env-aware fallback (rewrite Codex rows if Codex is absent).
-5. Validate the result against the invariants (the validator is the backstop).
-6. If the type is "unclear scope," **stop and return to planning** — do not guess.
-7. At **dispatch** (not planning), resolve `(backend, tier, effort)` → a concrete
+4. **Scorecard check** (see [Scorecard-aware routing](#scorecard-aware-routing)): query
+   the measured `health` of this (static-default backend × task-type) in THIS repo. If
+   `unhealthy`, **escalate to an equal-or-higher-trust seat** (Codex → Opus/`deep` by
+   default; **never auto-route to a lower-trust backend** — see [What scorecards are NOT](#what-scorecards-are-not)) and log a one-line
+   justification; if `watch`, keep the default but note it; if `healthy` /
+   `insufficient_data`, keep the default unchanged.
+5. Apply the env-aware fallback (rewrite Codex rows if Codex is absent).
+6. Validate the result against the invariants (the validator is the backstop).
+7. If the type is "unclear scope," **stop and return to planning** — do not guess.
+8. At **dispatch** (not planning), resolve `(backend, tier, effort)` → a concrete
    `model` via [`compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py)
    against the project `models` map. An explicit manifest `model` skips this step.
+
+---
+
+## Scorecard-aware routing
+
+The stance tables above are a **static guess**: a task-type maps to a fixed backend
+and tier, decided once and applied to every repo the same way. Scorecards make that
+guess **adaptive** — before assigning a task-type's static-default backend, the
+planner/router checks how that backend has *actually* performed for that task-type
+**in THIS repo**, and escalates to a higher-trust seat (never a lower-trust backend) when the default is measured-unhealthy.
+
+The signal comes from [`worker-performance.jsonl`](../../docs/superpowers/memory/),
+the machine-generated scorecard that
+[`scripts/compound-v-scorecard.py`](../../scripts/compound-v-scorecard.py) aggregates
+from `task-outcomes.jsonl` — one row per `(backend, type)` with a `health` verdict.
+Query a single cell at routing time:
+
+```bash
+python3 scripts/compound-v-scorecard.py --query --backend <default> --type <task-type>
+# → stats + health ∈ {insufficient_data, healthy, watch, unhealthy}
+```
+
+Act on `health`:
+
+| `health` | Action |
+|---|---|
+| `unhealthy` | **Escalate UP the trust/capability ordering** — to a *stronger, equal-or-higher-trust* seat (Opus, `tier: deep`, is the safe escalation), and **log a one-line justification** (e.g. *"codex unhealthy on `large_isolated` here: block_rate .35 over 12 jobs → escalating to opus/deep this run"*). **Never auto-route to a lower-trust backend** (trust ordering below): a Codex-unhealthy cell escalates to Opus — it does NOT silently fall to Antigravity. |
+| `watch` | Keep the static default, but **note it** in the routing log (one line) so a drift toward `unhealthy` is visible. |
+| `healthy` / `insufficient_data` | **Use the static default unchanged.** Don't over-react to thin data — the script needs **≥5 samples** to judge a cell; below that it returns `insufficient_data` and the static policy stands. |
+
+### What scorecards are NOT
+
+- **Not a replacement for the static policy** — they are a **hint layered on top of
+  it.** The stance table is still the default; the scorecard only nudges the router
+  off a default that the repo's own measured outcomes show is failing.
+- **They only ever escalate UP a fixed trust/capability ordering, never down.** The
+  ordering is **`claude` (in-process, no external write surface) ≥ `codex` (kernel
+  `workspace-write` sandbox) ≥ `antigravity` (no kernel sandbox — opt-in/lower-trust)**.
+  An `unhealthy` cell pushes work to a *stronger or higher-trust* seat (Opus); it can
+  never downgrade a `deep` job to `light`, route a sensitive surface off Opus, or
+  **auto-select a lower-trust backend**. In particular a scorecard NEVER converts an
+  unhealthy Codex cell into Antigravity — Antigravity is entered only by explicit
+  per-job opt-in, never as an automatic "escalation."
+- **They do not override the HARD invariants.** Reviewers ⇒ `deep`, Codex ⇒
+  `worktree`, and unclear scope ⇒ return to planning hold regardless of any scorecard.
+  Security / auth / payments / PII / a11y stays `deep` in every stance, scorecard or
+  not.
+- **No cost/token metrics.** The scorecard reports only outcome health
+  (`block_rate`, `error_rate`, `success_rate`, `avg_rework`) — never a fabricated
+  cost or token number (anti-ruflo).
+
+### Where the scorecard comes from
+
+`worker-performance.jsonl` is **regenerated each run** by
+`compound-v-scorecard.py --update` after the dispatcher appends fresh outcomes to
+`task-outcomes.jsonl` (see [`parallel-dispatcher.md`](../../agents/parallel-dispatcher.md)
+post-run memory step). It is **machine-generated and never hand-edited** — unlike the
+human-curated `routing-lessons.md`, which remains the authoritative override. The
+loop is the same closed loop, with one extra derived artifact: outcomes →
+{lessons (hand-curated), scorecard (auto-aggregated)} → routing.

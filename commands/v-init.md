@@ -57,6 +57,27 @@ fi
 
 Resume form for reference (no `--session-id` flag exists): `codex exec resume <uuid>`.
 
+### 1a-bis. Antigravity CLI (`agy`) — optional, lower-trust backend
+
+```bash
+command -v agy
+```
+
+If absent → Antigravity is **not available** (record it; routing never offers it).
+
+If present → Antigravity is **usable** (the pinned `agy 1.0.13` invocation holds:
+`cd "$WT" && agy --dangerously-skip-permissions --add-dir "$WT" --print-timeout "<sec>s" [--model …] --print "<prompt>"`).
+Do **not** run `agy models` — it **HANGS**; the model map is curated (refreshed via
+`/v:models` only when `agy models` becomes usable). Record antigravity as available and
+add it to `backends`.
+
+> **Flag it as lower-trust when you record it.** `agy` has **no kernel write-confinement**
+> like Codex's `--sandbox workspace-write`, and headless writes require
+> `--dangerously-skip-permissions` (arbitrary shell + out-of-worktree writes possible).
+> The worktree + `git diff` gate detects in-worktree scope leaks but cannot *prevent* an
+> out-of-worktree side-effect — so it is **opt-in**, and **Codex is preferred for
+> untrusted / high-stakes work**. See [`adapter-antigravity.md`](../skills/backend-launcher/adapter-antigravity.md).
+
 ### 1b. Context7 MCP (match by namespace)
 
 Context7 is **plugin-namespaced** — match the namespace, not a bare `context7`:
@@ -145,7 +166,10 @@ Write **both**. Create parent dirs as needed.
 ```
 
 - `stance` = the stance chosen in Step 3.
-- `backends` = `["claude","codex"]` if Codex is usable, else `["claude"]`.
+- `backends` = the usable set: always includes `"claude"`; add `"codex"` if Codex is
+  usable, add `"antigravity"` if `agy` is installed (Step 1a-bis). E.g. `["claude"]`,
+  `["claude","codex"]`, or `["claude","codex","antigravity"]`. Antigravity is the
+  lower-trust opt-in backend (no kernel sandbox); list it only when `agy` is present.
 - `checked_at` = today's date.
 - If the user opted into the Workflows accelerator, also include
   `"workflows_accelerator": true` (omit otherwise — default OFF).
@@ -167,6 +191,7 @@ The user-level cache of what this machine can do, reused across repos:
 ```json
 {
   "codex": { "available": true, "exec_flags_verified": true, "version": "<from `codex --version`>" },
+  "antigravity": { "available": false, "trust": "lower (no kernel sandbox)", "version": "<from `agy --version`>" },
   "context7": { "available": true },
   "workflows": { "available": false },
   "checked_at": "<YYYY-MM-DD>"
@@ -175,6 +200,8 @@ The user-level cache of what this machine can do, reused across repos:
 
 - `codex.exec_flags_verified` reflects the Step 1a exec-help assertion (false if Codex
   is present but version-incompatible).
+- `antigravity.available` reflects the Step 1a-bis `command -v agy` probe; record the
+  `version` from `agy --version`. Do **not** run `agy models` (it hangs).
 - Set each block from the actual probe results — never guess.
 
 ---

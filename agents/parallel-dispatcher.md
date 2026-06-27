@@ -198,6 +198,30 @@ After every task is approved and every worktree job has merged back, dispatch ON
 
 On PASS, advance `state.json` to `MERGED` and hand off to `superpowers:finishing-a-development-branch`.
 
+### Step 6 — Post-run memory (outcomes → scorecard)
+
+After the run settles, append one outcome line per job to
+`docs/superpowers/memory/task-outcomes.jsonl` via
+[`scripts/compound-v-update-memory.py`](../scripts/compound-v-update-memory.py), then
+refresh the machine-generated scorecard:
+
+```bash
+python3 scripts/compound-v-scorecard.py --update
+# regenerates docs/superpowers/memory/worker-performance.jsonl
+# (one row per (backend, type): success/block/error rates + health)
+```
+
+This closes the routing loop: `task-outcomes.jsonl` is the raw record, and
+`worker-performance.jsonl` is its deterministic aggregate. The dispatcher/planner then
+consults `compound-v-scorecard.py --query --backend <default> --type <task-type>` when
+routing a job (per [`routing-policy.md`](../skills/compound-v/routing-policy.md)
+§Scorecard-aware routing): an `unhealthy` cell **escalates to an equal-or-higher-trust
+seat** (Codex → Opus/`deep` by default; it **never auto-downgrades to a lower-trust
+backend** like Antigravity), `watch` is noted, `healthy`/`insufficient_data` keeps the
+static default.
+The scorecard is regenerated each run and never hand-edited (unlike the human-curated
+`routing-lessons.md`); it emits no cost/token metrics.
+
 ## Output
 
 Return a structured summary at the end of execution:

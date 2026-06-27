@@ -1,6 +1,6 @@
 ---
 name: backend-launcher
-description: Use when Compound V's dispatcher needs to run one file-scoped job on a chosen backend (Claude subagent, headless Codex worker, or Antigravity stub) and get back a canonical job_result. The single job_spec → job_result contract every adapter implements; the orchestrator speaks only this contract and never sees backend-specific flags.
+description: Use when Compound V's dispatcher needs to run one file-scoped job on a chosen backend (Claude subagent, headless Codex worker, or headless Antigravity worker) and get back a canonical job_result. The single job_spec → job_result contract every adapter implements; the orchestrator speaks only this contract and never sees backend-specific flags.
 ---
 
 # Backend Launcher
@@ -90,11 +90,11 @@ This is the *instructed* half. The git-diff scope gate above is the *enforced* h
 |---|---|---|---|---|---|
 | `adapter-claude.md` | Claude subagent | in-harness `Task` (model override, `maxTurns: 15`) | `direct` or optional `worktree` | same caller scope gate on return | ships v1.0 |
 | `adapter-codex.md` | headless Codex | Bash-spawned `codex exec` (own process, own worktree) | `worktree` (mandatory) | git-diff scope gate | ships v1.0 |
-| `adapter-antigravity.md` | Antigravity | stub returning `unsupported` | — | — | stub (1.1) |
+| `adapter-antigravity.md` | headless Antigravity | Bash-spawned `agy --print` (own process, own worktree) | `worktree` (mandatory) | git-diff scope gate | ships 1.1 — **lower-trust / opt-in (no kernel sandbox)** |
 
 - **claude-subagent** — reuses today's `Task`-based dispatch with a `model` override and `maxTurns: 15`, optionally inside a worktree, and runs the **same** scope gate on return so enforcement is identical to Codex. Direct writes are gated against a baseline commit.
 - **codex** — a Bash-spawned `codex exec` worker in its own process and its own worktree (never an `agents/` entry, never the experimental `openai-codex` app-server broker, which is single-flight and can't fan out). Pinned flag set below.
-- **antigravity** — a stub that returns `{"status":"error","blocked":false,...,"summary":"unsupported"}`. Google's `agy` CLI fits this contract on paper but `agy --print` returns empty stdout when piped (#408/#318) and has no non-interactive auth (#223); deferred to 1.1, with the Antigravity Python SDK as the likelier target.
+- **antigravity** — a Bash-spawned `agy --print` worker in its own process and its own worktree, mirroring Codex (worktree + git-diff scope gate, normalize → `job_result`). **Lower-trust / opt-in:** `agy` has **no kernel write-confinement** like Codex's `--sandbox workspace-write`, and headless writes require `--dangerously-skip-permissions` (arbitrary shell + out-of-worktree writes possible). The git-diff gate enforces file-scope *inside* the worktree but cannot *prevent* an out-of-worktree side-effect — so **prefer Codex for untrusted / high-stakes work**, and route to Antigravity only when the prompt/surface is trusted. Available only when `agy` is installed (env-aware routing). Runbook: [`adapter-antigravity.md`](adapter-antigravity.md); worker: [`scripts/compound-v-run-antigravity-worker.sh`](../../scripts/compound-v-run-antigravity-worker.sh).
 
 ---
 
