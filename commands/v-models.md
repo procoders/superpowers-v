@@ -34,7 +34,7 @@ is absent, fall back to the built-in default (the resolver carries the same one)
 "models": {
   "claude":      { "deep": "opus",                  "standard": "opus",                  "light": "sonnet" },
   "codex":       { "deep": "gpt-5.5",               "standard": "gpt-5.5",               "light": "gpt-5.3-codex-spark" },
-  "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Medium)", "light": "Gemini 3.1 Flash" }
+  "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" }
 }
 ```
 
@@ -78,22 +78,40 @@ command -v codex && codex exec --help 2>/dev/null | grep -q -- '--model' && echo
 If codex is unavailable, say so, keep the existing codex block unchanged, and skip
 its reassignment (the map can still carry codex entries for when it returns).
 
-### 1c. antigravity — `agy models` when present
+### 1c. antigravity — headless `agy models` discovery (real names)
 
-Antigravity (Gemini family) **does** have a discovery command. Probe for it, then
-list:
+Antigravity (Gemini family) **does** have a discovery command, and it runs
+**headlessly** — `agy models` just waits on stdin, so redirect `</dev/null` (the same
+fix used for `agy --print`) and it returns the catalog in ~2s without a TTY. Pipe that
+catalog through [`scripts/compound-v-discover-models.py`](../scripts/compound-v-discover-models.py)
+(pure parse + rank — the CALLER fetches the catalog; the script never calls a backend)
+to get a real `proposed` deep/standard/light map plus the full `available` list:
 
 ```bash
-command -v agy && agy models 2>/dev/null || echo "agy unavailable"
+command -v agy >/dev/null \
+  && agy models </dev/null | python3 scripts/compound-v-discover-models.py --backend antigravity \
+  || echo "agy unavailable"
 ```
 
-- If `agy models` returns a catalog, parse the available model names from it and
-  offer those (e.g. the Gemini Pro / Flash variants, including any effort-labelled
-  variants the CLI surfaces). These supersede the placeholder defaults.
-- If `agy` is absent or errors, say so plainly, keep the **illustrative placeholder**
-  values (`Gemini 3.1 Pro (High)` / `(Medium)` / `Gemini 3.1 Flash`) from the current
-  map, and note they are unverified placeholders to be refreshed once `agy` is
-  installed. Do **not** invent model names beyond what `agy models` actually printed.
+- This prints JSON `{available:[...], proposed:{deep,standard,light}, note, backend}`.
+  **Show the user the `available` catalog and the `proposed` map**, then let them
+  confirm or override (Step 2). The proposal is real, current model names — no more
+  placeholders. Against the live catalog (agy 1.0.13: Gemini 3.5 Flash Low/Medium/High,
+  Gemini 3.1 Pro Low/High, Claude Opus/Sonnet 4.6 Thinking, GPT-OSS 120B Medium) the
+  proposal is **deep: `Gemini 3.1 Pro (High)`, standard: `Gemini 3.1 Pro (Low)`,
+  light: `Gemini 3.5 Flash (Low)`**.
+- To write the confirmed proposal straight into the config, use the `--write-config`
+  form (it merges into `models.antigravity`, preserving the other backends):
+
+  ```bash
+  agy models </dev/null | python3 scripts/compound-v-discover-models.py \
+    --backend antigravity --write-config .claude/compound-v.json
+  ```
+
+- If `agy` is **absent**, say so plainly and keep the resolver's built-in fallback map
+  (the antigravity block from Step 0); note it can be refreshed once `agy` is installed.
+  The script never invents names — it only ranks the catalog `agy models` actually
+  printed, so anything you show came from the live CLI.
 
 ---
 
@@ -108,7 +126,7 @@ fast/cheap option → `light`). Example shape:
 |---|---|---|---|---|
 | claude | opus, sonnet | opus | opus | sonnet |
 | codex | gpt-5.5, gpt-5.3-codex-spark | gpt-5.5 | gpt-5.5 | gpt-5.3-codex-spark |
-| antigravity | *(from `agy models`)* | … | … | … |
+| antigravity | *(from `agy models </dev/null`)* | Gemini 3.1 Pro (High) | Gemini 3.1 Pro (Low) | Gemini 3.5 Flash (Low) |
 
 Then **let the user assign** each tier per backend — accept the suggestion as-is, or
 override any cell with any model name the discovery surfaced (or, for codex, any
@@ -181,15 +199,17 @@ map entries are still valid for when it returns.)
 
 ## Step 5 — Report
 
-Summarize per backend: what discovery returned (or that it was unavailable /
-placeholder), the final `deep`/`standard`/`light` assignment, and the path written
+Summarize per backend: what discovery returned (the real catalog from
+`agy models </dev/null` for antigravity, or that the backend was unavailable), the
+final `deep`/`standard`/`light` assignment, and the path written
 (`.claude/compound-v.json`). Note that the dispatcher now resolves these via
 [`scripts/compound-v-resolve-model.py`](../scripts/compound-v-resolve-model.py) and
 that `effort` (`low`/`medium`/`high`) is an **orthogonal** dimension chosen per
 task-type in [`routing-policy.md`](../skills/compound-v/routing-policy.md), not set
 here.
 
-**Honesty rules:** report only what discovery actually returned. If `agy models`
-didn't run, say the antigravity values are unverified placeholders — don't pass them
-off as confirmed. Never print token or cost numbers (anti-ruflo). Never assign
-`haiku`.
+**Honesty rules:** report only what discovery actually returned. `agy models </dev/null`
+runs headlessly and returns the live catalog, so report the discovered models as
+discovered. Only if `agy` is **absent** do we fall back to the built-in map — say so
+plainly when that happens, rather than passing the fallback off as discovered. Never
+print token or cost numbers (anti-ruflo). Never assign `haiku`.

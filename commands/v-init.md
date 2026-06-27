@@ -67,9 +67,21 @@ If absent → Antigravity is **not available** (record it; routing never offers 
 
 If present → Antigravity is **usable** (the pinned `agy 1.0.13` invocation holds:
 `cd "$WT" && agy --dangerously-skip-permissions --add-dir "$WT" --print-timeout "<sec>s" [--model …] --print "<prompt>"`).
-Do **not** run `agy models` — it **HANGS**; the model map is curated (refreshed via
-`/v:models` only when `agy models` becomes usable). Record antigravity as available and
-add it to `backends`.
+Record antigravity as available and add it to `backends`.
+
+`agy models` is **headless-friendly** — it just waits on stdin, so redirect `</dev/null`
+(the same fix used for `agy --print`) and it returns the catalog in ~2s, no TTY needed.
+Seed a **real** antigravity model map at init by piping that catalog through the
+discovery script (only when `agy` is present), which merges a real deep/standard/light
+proposal into `.claude/compound-v.json`:
+
+```bash
+agy models </dev/null | python3 scripts/compound-v-discover-models.py \
+  --backend antigravity --write-config .claude/compound-v.json
+```
+
+This is a **seed** — refreshable any time via [`/v:models`](v-models.md). If `agy` is
+absent, skip it and let Step 4a write the resolver's built-in fallback map.
 
 > **Flag it as lower-trust when you record it.** `agy` has **no kernel write-confinement**
 > like Codex's `--sandbox workspace-write`, and headless writes require
@@ -160,7 +172,7 @@ Write **both**. Create parent dirs as needed.
   "models": {
     "claude":      { "deep": "opus",                  "standard": "opus",                  "light": "sonnet" },
     "codex":       { "deep": "gpt-5.5",               "standard": "gpt-5.5",               "light": "gpt-5.3-codex-spark" },
-    "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Medium)", "light": "Gemini 3.1 Flash" }
+    "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" }
   }
 }
 ```
@@ -178,9 +190,11 @@ Write **both**. Create parent dirs as needed.
   is the same default the resolver
   ([`scripts/compound-v-resolve-model.py`](../scripts/compound-v-resolve-model.py))
   carries built-in; writing it here makes the project config self-describing and
-  user-editable. NEVER `haiku` anywhere. The `antigravity` values are illustrative
-  placeholders; codex has no list command (curated + user-overridable); claude uses
-  native tier aliases. Tell the user they can refresh or customize this map any time
+  user-editable. NEVER `haiku` anywhere. If `agy` is present, the Step 1a-bis discovery
+  pipe has already overwritten the `antigravity` block with **real** discovered names
+  (`agy models </dev/null` → discovery script), so the block above is just the fallback
+  used when `agy` is absent; codex has no list command (curated + user-overridable);
+  claude uses native tier aliases. Tell the user they can refresh or customize this map any time
   with [`/v:models`](v-models.md) — they do **not** need to hand-edit JSON. The map
   is project-local config; it is documented but not committed in the plugin repo.
 
@@ -201,7 +215,8 @@ The user-level cache of what this machine can do, reused across repos:
 - `codex.exec_flags_verified` reflects the Step 1a exec-help assertion (false if Codex
   is present but version-incompatible).
 - `antigravity.available` reflects the Step 1a-bis `command -v agy` probe; record the
-  `version` from `agy --version`. Do **not** run `agy models` (it hangs).
+  `version` from `agy --version`. When present, Step 1a-bis also seeds a real model map
+  via `agy models </dev/null` (headless — no TTY needed).
 - Set each block from the actual probe results — never guess.
 
 ---

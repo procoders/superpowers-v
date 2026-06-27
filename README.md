@@ -27,7 +27,7 @@ As of **v1.0**, the tail of that flow is a real **execution orchestrator**: it m
 
 Backend failures are handled **gracefully**: a non-success job is classified (by error type, not HTTP status) and routed through a deterministic policy — retry transient errors with backoff, **circuit-break + re-route codex→claude on out-of-credits**, escalate tier on context-length, halt on auth — all resumable and **loudly reported** (never a silent cheap→expensive swap). See [skills/compound-v/failure-policy.md](skills/compound-v/failure-policy.md).
 
-Routing is **tier-based and churn-proof**: jobs declare a `tier` (`deep`/`standard`/`light`) and an optional `effort` (`low`/`medium`/`high`) instead of a hardcoded model name. A resolver (`scripts/compound-v-resolve-model.py`) maps tier → concrete model through a refreshable config `models` map, so when models change you update one map (or run `/v:models`) instead of editing prompts. Codex's reasoning-effort is exposed as `--effort`.
+Routing is **tier-based and churn-proof**: jobs declare a `tier` (`deep`/`standard`/`light`) and an optional `effort` (`low`/`medium`/`high`) instead of a hardcoded model name. A resolver (`scripts/compound-v-resolve-model.py`) maps tier → concrete model through a refreshable config `models` map, so when models change you update one map (or run `/v:models`) instead of editing prompts. Codex's reasoning-effort is exposed as `--effort`. Antigravity's tier map is **auto-discovered** — `agy models </dev/null` is parsed and ranked by `scripts/compound-v-discover-models.py` into the deep/standard/light proposal that `/v:init` and `/v:models` write, so it tracks the live catalog instead of a hand-curated list.
 
 Routing is also **adaptive**: a machine-generated scorecard (`scripts/compound-v-scorecard.py` → `worker-performance.jsonl`) aggregates measured outcomes into a `health` verdict per backend × task-type, and the router prefers an alternative or escalates a tier when a task-type's static-default backend is measured-unhealthy **in this repo** — a hint layered on the static policy that only ever makes routing more conservative, never weaker, and emits no fabricated cost metrics.
 
@@ -169,6 +169,7 @@ superpowers-v/
 ├── scripts/                                   # small deterministic helpers (bash 3.2 / python 3.9, stdlib)
 │   ├── compound-v-scope-check.py              # git-diff scope gate (the SCOPE LOCK authority)
 │   ├── compound-v-resolve-model.py            # tier (+effort) → concrete model via config models map
+│   ├── compound-v-discover-models.py          # parse+rank a backend catalog (agy models) → deep/standard/light proposal
 │   ├── compound-v-validate-manifest.py        # deterministic manifest-invariant gate
 │   ├── compound-v-run-codex-worker.sh         # headless Codex worker (worktree + diff + normalize)
 │   ├── compound-v-run-antigravity-worker.sh   # headless Antigravity (agy) worker — lower-trust, no kernel sandbox

@@ -56,9 +56,12 @@ DEFAULT_MODELS = {
         "standard": "gpt-5.5",
         "light": "gpt-5.3-codex-spark",
     },
-    # Antigravity (agy) map is CURATED, not auto-discovered: `agy models` needs a TTY
-    # (it HANGS when piped), so the worker cannot probe it headlessly. These names are
-    # VERIFIED against `agy models` (agy 1.0.13) and accepted by `agy --model` live.
+    # Antigravity (agy) map below is a FALLBACK default. The live catalog IS discoverable
+    # headlessly — `agy models </dev/null` returns it in ~2s (the bare command waits on
+    # stdin; the redirect is the same fix as `agy --print`). `/v:models` and `/v:init` pipe
+    # it through compound-v-discover-models.py to refresh `.claude/compound-v.json`, which
+    # OVERRIDES this map. These fallback names are VERIFIED against `agy models` (1.0.13)
+    # and accepted by `agy --model` live.
     # Effort is baked into the model NAME for agy (unlike codex/claude, which take a
     # separate effort flag), so each tier picks a name+effort combo; refresh via
     # /v:models. The worker omits `--model` entirely if the resolved value is empty.
