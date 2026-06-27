@@ -56,14 +56,18 @@ DEFAULT_MODELS = {
         "standard": "gpt-5.5",
         "light": "gpt-5.3-codex-spark",
     },
-    # Antigravity (agy) map is CURATED, not discovered: `agy models` HANGS, so it
-    # cannot be probed live. These values are ILLUSTRATIVE — verify them against
-    # `agy models` once that command is usable, and refresh via /v:models. The worker
-    # omits `--model` entirely if the resolved value is empty.
+    # Antigravity (agy) map is CURATED, not auto-discovered: `agy models` needs a TTY
+    # (it HANGS when piped), so the worker cannot probe it headlessly. These names are
+    # VERIFIED against `agy models` (agy 1.0.13) and accepted by `agy --model` live.
+    # Effort is baked into the model NAME for agy (unlike codex/claude, which take a
+    # separate effort flag), so each tier picks a name+effort combo; refresh via
+    # /v:models. The worker omits `--model` entirely if the resolved value is empty.
+    # Gemini family is chosen for error-decorrelation (agy can also serve
+    # "Claude Opus 4.6 (Thinking)" / "GPT-OSS 120B (Medium)" — override with --model).
     "antigravity": {
         "deep": "Gemini 3.1 Pro (High)",
-        "standard": "Gemini 3.1 Pro",
-        "light": "Gemini 3.1 Flash",
+        "standard": "Gemini 3.1 Pro (Low)",
+        "light": "Gemini 3.5 Flash (Low)",
     },
 }
 

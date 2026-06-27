@@ -158,7 +158,7 @@ scripts/compound-v-run-antigravity-worker.sh \
   --job-id   task-1-build \
   --repo     /abs/path/to/repo \
   --prompt-file /abs/path/to/jobs/task-1-build.prompt.md \
-  --model    "Gemini 3.1 Pro" \
+  --model    "Gemini 3.1 Pro (High)" \
   --write-allowed "src/features/build/**" \
   --timeout-sec 900 \
   --network  false
