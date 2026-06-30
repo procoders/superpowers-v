@@ -17,14 +17,14 @@ The run-id (optional) is `{{args}}`.
 
 3. **Render the run-level phase.** Show the `phase` (one of `SPEC_READY → PREFLIGHT_DONE → PARTITION_VERIFIED → DISPATCHED → COLLECTED → REVIEWED → MERGED`, or terminal `BLOCKED`) and `updated_at`. The phase meanings are defined in [`skills/compound-v/state-machine.md`](../skills/compound-v/state-machine.md).
 
-4. **Render the per-job table.** One row per job from `state.json.jobs`, with `manifest.yaml` supplying the title:
+4. **Render the per-job table.** One row per job from `state.json.jobs`, with `manifest.yaml` supplying the title, the `backend`, and the routing **intent** (`tier`, optional `effort`). For each job, resolve the concrete **model** it runs on with [`scripts/compound-v-resolve-model.py`](../scripts/compound-v-resolve-model.py) — `--backend <job.backend> --tier <job.tier> [--effort <job.effort>] [--config .claude/compound-v.json]` (the manifest carries intent, not a hardcoded model, so the plugin survives model churn). Show it as a `Backend · Model` column so it is **always visible which model each job runs on**:
 
-   | Job | Title | Status | Isolation | Worktree |
-   |---|---|---|---|---|
-   | task-0-schema | DB schema + types | done | direct | — |
-   | task-1-editor-ui | Editor UI slice | running | worktree | $TMPDIR/… |
+   | Job | Title | Backend · Model | Status | Isolation | Worktree |
+   |---|---|---|---|---|---|
+   | task-0-schema | DB schema + types | claude · opus (deep/high) | done | direct | — |
+   | task-1-editor-ui | Editor UI slice | codex · gpt-5.5 (standard/med) | running | worktree | $TMPDIR/… |
 
-   Per-job `status` is one of `{pending | running | done | blocked | failed}` (see state-machine.md). Show the `session_id` for any Codex/worktree job that has one. If `state.json.attempts[<job>]` is present and non-zero, show the retry count for that job (e.g. an `Attempts` column or `· retried 2×`).
+   If a job carries an explicit `model:` override in the manifest, show that verbatim (resolution is skipped for it). Per-job `status` is one of `{pending | running | done | blocked | failed}` (see state-machine.md). Show the `session_id` for any Codex/worktree job that has one. If `state.json.attempts[<job>]` is present and non-zero, show the retry count for that job (e.g. an `Attempts` column or `· retried 2×`).
 
 5. **Render backend health (the circuit breaker).** From `state.json`, surface graceful-failure state so re-routes and credit-exhaustion are never silent (the fields are defined in [`state-machine.md`](../skills/compound-v/state-machine.md), the policy in [`failure-policy.md`](../skills/compound-v/failure-policy.md)):
    - **Circuit-open backends** — any `circuit_open[<backend>] == true` (out for the run — out-of-credits or auth). Call it out prominently.

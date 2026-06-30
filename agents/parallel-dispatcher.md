@@ -66,6 +66,16 @@ Group `run: parallel` jobs into batches of **4-6 max per message** — the manif
 
 For each batch, dispatch all implementers in **one message with concurrent calls**. Each dispatch is built **from the manifest** — never re-decide backend/model/isolation here:
 
+**Announce the batch tree first — with the resolved model.** Before dispatching a batch, resolve every job's model (step 1 below) and print a short tree so the human sees *what runs on which model* up front — e.g.:
+
+```
+▶ Batch 1 (parallel):
+   ├ task-1-toolkit   claude · opus (deep/high)     · worktree
+   └ task-2-prose     claude · opus (deep/medium)   · worktree
+```
+
+Always show the **resolved** model (`backend · model (tier/effort)`), never the bare tier or a placeholder. The same annotation surfaces in [`/v:status`](../commands/v-status.md), so the model each job runs on is visible whether you watch the dispatch live or check status after.
+
 1. **Backend + tier/effort from the manifest job entry; resolve the concrete model BEFORE dispatch.** The manifest carries the routing **intent** (`tier` ∈ {deep, standard, light}, optional `effort` ∈ {low, medium, high}), not a hardcoded model — so the plugin survives model churn. Before invoking the backend for a job, resolve the concrete model with [`scripts/compound-v-resolve-model.py`](../scripts/compound-v-resolve-model.py):
 
    ```bash
