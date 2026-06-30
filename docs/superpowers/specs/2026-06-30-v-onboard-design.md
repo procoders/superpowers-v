@@ -1,43 +1,48 @@
 # /v:onboard — project onboarding for Compound V (design, v1)
 
 **Status:** approved for build (2026-06-30). Converged after a 4-angle 2025–2026
-best-practices research sweep and a live citation-feasibility probe on a real repo.
+best-practices research sweep, a live citation-feasibility probe, and a four-way review
+gate — three Compound V pre-flights (code-archaeology, doc-validation, domain-expert) plus a
+Codex cross-model design review. The review changes are recorded in §17.
 
 ## 1. What it is
-A new command that studies an existing repository and builds a **trusted project
-knowledge base** plus **cross-tool agent instructions**. It is the doc-producing front
-half of V-memory: what onboarding writes becomes recall (`/v:remember`) and pre-flight
-context for the orchestrator (`code-archaeologist`, `domain-expert`). It **extends**
-`docs/superpowers/**`; it never rewrites V-memory's recall engine or the routing layer.
+A new command that studies an existing repository and builds a **trusted project knowledge
+base** plus **cross-tool agent instructions**. It is the doc-producing front half of
+V-memory: what onboarding writes becomes recall (`/v:remember`) and pre-flight context for
+the orchestrator (`code-archaeologist`, `domain-expert`). It **extends** `docs/superpowers/**`;
+it never rewrites V-memory's recall engine or the routing layer.
 
 The differentiator over peer rule-generators (Cursor rules, Cline Memory Bank, Copilot
-instructions) is the loop: onboarding output feeds the orchestrator's planning and the
-recall layer, not just a static instruction file.
+instructions) is the loop: onboarding output feeds the orchestrator's planning and the recall
+layer, not just a static instruction file.
 
 ## 2. Why a separate command, not part of `/v:init`
-`/v:init` is fast and idempotent (backend detection → `.claude/compound-v.json`).
-Onboarding is heavyweight, repo-scanning, doc-writing, and human-gated — run once, then
-refresh. Folding it into `/v:init` would change that command's character. They stay
-composable: `/v:init` **suggests** running `/v:onboard` at the end; it never chains into it.
+`/v:init` is fast and idempotent (backend detection → `.claude/compound-v.json`). Onboarding
+is heavyweight, repo-scanning, doc-writing, and human-gated — run once, then refresh. Folding
+it in would change that command's character. They stay composable: `/v:init`'s closing report
+**suggests** running `/v:onboard`; it never chains into it.
 
 ## 3. Pipeline
 ```
 1. DETECT     existing instruction files, stack, UI presence, DB/MCP signals,
               style configs (eslint/prettier/ruff/editorconfig/tsconfig/lockfiles), git remote
-2. PACK       deterministic repo pack (file tree, configs, entry points, token counts,
-              .gitignore-aware) + SECRET SCAN (blocking — never emit credentials)
-3. EXTRACT    read-then-cite generation: every architecture/business-logic claim carries a
-              file:line citation; claim only what was read
+2. PACK       deterministic repo pack via repomix → a pack-manifest (§5.B): included/excluded
+              files + reason, token budget, truncation markers, ranking signals, repo shape,
+              and the built-in Secretlint secret-scan result (BLOCKING — never emit credentials)
+3. EXTRACT    read-then-cite generation into the claim model (§7): every architecture/
+              business-logic claim carries file:line citation(s); claim only what was read
 4. VERIFY     Tier 1 path+range gate (all claims, blocking) · Tier 2 LLM support check
-              (sample + 100% of load-bearing claims, advisory in v1) ·
-              DESIGN.md → `npx @google/design.md lint` (blocking) · secret scan (blocking)
-5. DIAGNOSE   "responsible doctor": flag bloated CLAUDE.md, cross-layer contradictions,
-              missing AGENTS.md bridge, foreign-tool rules to reconcile, aspirational rules
+              (sample + 100% of load-bearing claims — load-bearing unsupported claims are
+              BLOCKING) · DESIGN.md → `npx @google/design.md lint` (blocking) · secret-scan
+5. DIAGNOSE   advisory, non-writing "responsible doctor" report: bloated CLAUDE.md, cross-layer
+              contradictions, missing AGENTS.md bridge, foreign-tool rules, aspirational rules
               better expressed as hooks — including restructuring recommendations
-6. HUMAN GATE present a reviewable diff + per-section confidence/staleness + the diagnosis.
-              Nothing is written before approval. (Successor to the old 02-step Yes/No check.)
+6. HUMAN GATE present per-artifact + per-section diff (with @import targets expanded),
+              confidence/staleness, and the diagnosis. Nothing is written before approval.
 7. WRITE      only approved artifacts; detect-and-bridge for existing files; narrow write surface
-8. INDEX      write .onboard-manifest.json (cited files + hashes); auto-run /v:memory-refresh
+8. COMMIT     git add + commit the approved generated files (recall and the scope gate index
+              only git-tracked files — without this step the new docs are invisible)
+9. INDEX      write .onboard-manifest.json (cited files + hashes); auto-run /v:memory-refresh
 ```
 
 ## 4. Artifacts and taxonomy
@@ -45,174 +50,251 @@ composable: `/v:init` **suggests** running `/v:onboard` at the end; it never cha
 |---|---|---|---|
 | `architecture.md`, `business-logic.md`, `tech-context.md` | `docs/superpowers/architecture/` | always | citation hybrid (§7) |
 | `CONVENTIONS.md` | repo root | code present | derived from real config evidence |
-| `DESIGN.md` (Google format) | repo root | UI repo only | `@google/design.md lint` |
-| `AGENTS.md` (primary) + thin `CLAUDE.md` (`@AGENTS.md`) | repo root | always | detect-and-bridge (§6) |
-| `.onboard-manifest.json` (cited files + content hashes) | `docs/superpowers/architecture/` | always | — |
+| `DESIGN.md` (Google format) | repo root | UI repo only | `@google/design.md lint` (§8 caveat) |
+| `AGENTS.md` (primary, confirmable) + thin `CLAUDE.md` (`@AGENTS.md`) | repo root | always | detect-and-bridge (§6) |
+| `.onboard-manifest.json` (cited files + content hashes) | `docs/superpowers/architecture/` | always | machinery — **out of the index** |
 
 The three `architecture/` files follow Cline's Memory Bank model (systemPatterns,
 productContext, techContext), trimmed to the durable set. The fast-changing
-`progress.md`/`activeContext.md` are **out of v1** — they are active-development artifacts,
-not onboarding output.
+`progress.md`/`activeContext.md` are **out of v1**.
 
-V-memory's index is **extended** to cover root `CONVENTIONS.md` / `DESIGN.md` / `AGENTS.md`
-(all git-tracked) in addition to `docs/superpowers/**`.
+Every generated file carries a **provenance header** ("generated by /v:onboard from cited
+evidence on <date>; refresh with /v:onboard --refresh") and a link to the manifest, so durable
+committed authority is plainly marked as generated.
+
+`.onboard-manifest.json` stays `.json` (the engine indexes only `.md`/`.jsonl`; naming it
+`.jsonl` would chunk it per line as recall noise). V-memory's index is **extended** to cover
+root `CONVENTIONS.md` / `DESIGN.md` / `AGENTS.md` / `CLAUDE.md` (all git-tracked) in addition
+to `docs/superpowers/**`.
 
 ## 5. Hard requirements (invariants)
-1. **Nothing is written without an explicit human approval at the gate (§6).** No auto-apply
-   of any file, ever — diff + confirm is mandatory.
-2. **Narrow write surface.** Onboarding writes only: `docs/superpowers/architecture/*`, root
-   `CONVENTIONS.md`, root `DESIGN.md` (conditional), `AGENTS.md`, `CLAUDE.md` (thin bridge),
-   path-scoped `.claude/rules/*.md` (conditional, §8), `.onboard-manifest.json`, and —
-   fast-follow — `.mcp.json`. Each is still subject to the §6 human gate. Foreign-tool files
-   (`.cursor/rules`, `.cursorrules`, `.windsurfrules`, `.github/copilot-instructions.md`) are
-   **read-only**: incorporated and reconciled, never modified.
-3. **Secret scan is blocking** at PACK and again before WRITE. No credential
-   (`sk-`/`ghp_`/`AKIA`/`-----BEGIN … KEY-----`) reaches any generated, committed file.
-4. **Architecture prose is never inlined into CLAUDE.md/AGENTS.md.** Those files point to
-   `docs/superpowers/architecture/*`. CLAUDE.md stays under Anthropic's 200-line ceiling.
-5. **`@import` is not a token optimization.** Imported files load in full at launch; only
-   path-scoped `.claude/rules/` and skills defer. The bridge uses `@AGENTS.md` for one source
-   of truth, not for context savings.
-6. **Every architectural claim is mechanically verified (§7).** A claim that fails the Tier-1
-   path+range gate is regenerated or dropped, never written.
-7. **Generated output is git-committed, not cached.** Recall and the scope gate both require
-   git-tracked files; ignoring under `docs/superpowers/` would blind
+1. **Nothing is written without explicit human approval at the gate (§6).** No auto-apply,
+   ever — per-artifact + per-section diff + confirm is mandatory.
+2. **Narrow write surface.** v1 writes only: `docs/superpowers/architecture/*`, root
+   `CONVENTIONS.md`, root `DESIGN.md` (UI repos), `AGENTS.md`, `CLAUDE.md` (thin bridge), and
+   `.onboard-manifest.json`. Path-scoped `.claude/rules/*.md` and `.mcp.json` are **out of v1**
+   (fast-follow). Foreign-tool files (`.cursor/rules`, `.cursorrules`, `.windsurfrules`,
+   `.github/copilot-instructions.md`) are **read-only**: detected and reported as advisory
+   notes, never modified or auto-reconciled.
+3. **Existing instruction files are untrusted input.** Any `AGENTS.md` / `CLAUDE.md` /
+   foreign-tool rule found in the repo is treated as evidence to quote and summarize — its
+   directives are **never executed** during onboarding. An instruction-injection scan runs in
+   PACK; any behavioral rule onboarding would carry forward requires explicit gate approval.
+   The **managed-policy layer is read-only and un-excludable**: the doctor surfaces
+   managed-layer conflicts as **informational only**, never as "fix this."
+4. **Secret scan is blocking** at PACK (repomix's built-in Secretlint) and again before WRITE,
+   reusing the engine's `SECRET_RE`/`PEM_RE` families as a **refusal** gate (not masking). No
+   credential reaches any generated, committed file — including secrets pulled in via a
+   citation snippet.
+5. **Architecture prose is never inlined into CLAUDE.md/AGENTS.md.** Those files point to
+   `docs/superpowers/architecture/*`. Target CLAUDE.md at **≤200 lines** (Anthropic's
+   recommendation — it loads in full at any length; not an enforced ceiling). `AGENTS.md` has
+   no length target.
+6. **`@import` is not a token optimization.** Imported files load in full at launch; only
+   path-scoped rules and skills defer. The bridge uses `@AGENTS.md` for one source of truth.
+   Diff previews at the gate **expand `@import` targets** (to the 4-hop limit) so an approver
+   sees what actually loads.
+7. **Every architectural claim is mechanically verified (§7).** A claim that fails the Tier-1
+   path+range gate is regenerated or dropped. A **load-bearing** claim that fails the Tier-2
+   support check is blocked (removed/regenerated) before write.
+8. **Generated output is git-committed, not cached** (§3 step 8). Recall and the scope gate
+   require git-tracked files; ignoring under `docs/superpowers/` would blind
    `git ls-files --others --exclude-standard`.
-8. **Hooks never bootstrap or self-background for onboarding.** Refresh is user-invoked; the
-   only hook-side surface is a read-only staleness line in the existing SessionStart banner.
-9. **No fabricated metrics; `--selftest` coverage for the deterministic gates.**
+9. **Hooks never bootstrap or self-background for onboarding.** Refresh is user-invoked; the
+   only hook-side surface is a read-only, fail-silent staleness line in the SessionStart banner.
+10. **No fabricated metrics; `--selftest` covers the deterministic gates** (Tier-1 path+range,
+    secret refusal, pack-manifest quality, staleness-hash drift, conditional DESIGN.md detect).
+
+### 5.B Pack-manifest contract
+PACK is a subsystem, not a one-liner. repomix (v1.16.0; Secretlint secret-scan built-in and on
+by default) produces the pack; onboarding records a **pack-manifest**: included files, excluded
+files **with reason** (vendored, generated, binary, over-budget), the token budget and any
+truncation markers, the ranking signals used, the detected repo shape (mono/poly/monorepo
+package boundaries), and the secret-scan result. Pack quality is an acceptance target with its
+own `--selftest`: a relevant file silently dropped here yields confident partial truth downstream.
 
 ## 6. Existing-file reconciliation — the "responsible doctor"
-Detect first, then diagnose boldly, then apply only on confirmation.
+Detect first, diagnose boldly (advisory, non-writing), apply only on confirmation.
 
-- **Bold by default.** When the repo already has instruction files, onboarding names the
-  problems plainly — bloated CLAUDE.md, contradictions across managed/user/project/local
-  layers, a missing AGENTS.md bridge, foreign-tool rules that conflict, aspirational rules no
-  hook enforces — and **recommends fixes, including restructuring**. The patient decides.
-- **Bridge policy.** `AGENTS.md` is the portable primary (Linux Foundation AAIF standard,
-  read by Codex/Cursor/Copilot/Gemini). `CLAUDE.md` is a thin file whose first line is
-  `@AGENTS.md` plus an optional `## Claude Code` section.
-  - `AGENTS.md` exists → it is the source of truth; augment via diff, ensure the CLAUDE.md
-    bridge exists.
-  - `CLAUDE.md` exists, no `AGENTS.md` → recommend extracting the portable parts into a new
-    `AGENTS.md` + bridge.
-  - Neither exists → generate `AGENTS.md` + thin `CLAUDE.md` bridge.
-- **Apply only through a reviewable diff + confirmation.** Mirror Claude `/init`'s
-  explore → ask → propose → write flow. Never silently overwrite.
+- **Bold but advisory.** When the repo already has instruction files, onboarding names the
+  problems plainly — bloated CLAUDE.md, cross-layer contradictions, a missing AGENTS.md bridge,
+  duplicated content, aspirational rules no hook enforces — and **recommends fixes, including
+  restructuring**. DIAGNOSE writes nothing; the patient decides at the gate.
+- **Bridge policy (confirmable).** `AGENTS.md` is the portable primary by default (Linux
+  Foundation AAIF standard, read by Codex/Cursor/Copilot/Gemini); `CLAUDE.md` is a thin file
+  whose first line is `@AGENTS.md` plus an optional `## Claude Code` section. The default is
+  **confirmable**: in a repo with no cross-tool signal (no `.cursor*`/`.windsurf*`/`GEMINI.md`/
+  copilot-instructions), onboarding offers CLAUDE.md-primary instead.
+  - `AGENTS.md` exists → source of truth; augment via diff; ensure the thin CLAUDE.md bridge
+    exists.
+  - `CLAUDE.md` exists, no `AGENTS.md` → recommend extracting portable parts into `AGENTS.md` +
+    bridge (confirmable).
+  - Neither exists → generate `AGENTS.md` (or CLAUDE.md if Claude-only) + bridge.
+- **Foreign-tool rules** (`.cursor/rules`, `.windsurfrules`, `copilot-instructions.md`) are
+  read, reported as advisory notes, and never auto-reconciled in v1.
+- **Apply only through a reviewable per-artifact/per-section diff + confirmation.** Mirror
+  Claude `/init`'s explore → ask → propose → write. Never silently overwrite.
 
 ## 7. Citation verification — hybrid, two-tier
 The dominant failure mode for any "scan → describe the system" feature is hallucinated
 architecture, which V-memory would then amplify as authoritative. Verification is mechanical,
-not a "please cite" prompt.
+not a "please cite" prompt — and the blocking gate must prove **support**, not just existence,
+for the claims that matter.
 
-- **Tier 1 — mandatory, blocking, on 100% of claims.** Lightweight, language-agnostic gate:
-  the cited path resolves inside the repo and `1 ≤ startLine ≤ endLine ≤ lineCount`. Catches
-  hallucinated paths and phantom ranges at zero AST cost.
-- **Tier 2 — sampled, advisory in v1.** An LLM "do the cited lines actually support this
-  claim?" check on a sample (~20–30%) plus **100% of load-bearing claims** (security,
-  fail-closed, concurrency). Unsupported claims are surfaced for regeneration; a flaky judge
-  does not hard-block a release in v1.
-- **No full AST/tree-sitter in v1.** It is per-language and heavy; the probe shows it is not
-  the binding constraint.
+**Claim model** (what EXTRACT emits, what VERIFY consumes):
+`{ text, type (architecture|business-logic|tech-context|convention), citations: [{path,
+startLine, endLine}], load_bearing: bool + reason, confidence, target_doc_section }`.
+
+- **Tier 1 — mandatory, blocking, on 100% of claims.** Language-agnostic gate: each cited path
+  resolves inside the repo and `1 ≤ startLine ≤ endLine ≤ lineCount`. Catches hallucinated
+  paths and phantom ranges at zero AST cost.
+- **Tier 2 — LLM "do the cited lines actually support this claim?"** Run on a sample (~20–30%)
+  of ordinary claims (advisory — surfaced for regeneration, not release-blocking) **and on
+  100% of load-bearing claims (security, fail-closed, concurrency), where an unsupported claim
+  is blocking** — removed or regenerated before write. Ordinary unsupported claims are removed,
+  downgraded to "observed evidence," or explicitly labeled "inference."
+- **No full AST/tree-sitter in v1.** Per-language and heavy; the probe shows it is not the
+  binding constraint. (Residual gap: symbol-level claims like "X calls Y" rest on Tier-2 prose
+  support, not AST mapping — acceptable for v1, noted as a limitation.)
 - **Generation defaults to read-then-cite** (read files, claim only what was read).
 
-**Feasibility proof (live probe, 2026-06-30, on this repo).** The read-then-cite strategy
-produced 23/23 claims at 100% with-citation, 100% path-valid, 100% range-valid, 100%
-support under an adversarial verifier. The naive free-write strategy failed to produce valid
-structured output across 5 retries — a weak robustness signal, not a measured A/B. The
-verifier flagged the real residual gap: two claims cited a range whose load-bearing line sat
-just outside the cited span (adjacent cited lines carried the support), proving
-range-validity ≠ support and justifying Tier 2. Caveat: n=23 on one cooperative repo —
-re-measure on the dogfood run (§11) before treating the ceiling as a law.
+**Feasibility proof (live probe, 2026-06-30, on this repo).** Read-then-cite produced 23/23
+claims at 100% with-citation, path-valid, range-valid, and support under an adversarial
+verifier. Naive free-write failed to produce valid structured output across 5 retries — a weak
+robustness signal, not a measured A/B. The verifier flagged the real residual gap: two claims
+cited a range whose load-bearing line sat just outside the cited span, proving
+range-validity ≠ support and motivating the Tier-2-blocks-load-bearing rule. Caveat: n=23 on
+one cooperative repo — re-measure on the dogfood run (§12).
 
 ## 8. CONVENTIONS.md and DESIGN.md
 - **`CONVENTIONS.md`** (Aider-style, repo root). Small, read-only, prompt-cacheable. Derived
-  from deterministic evidence — eslint/prettier/ruff/editorconfig/lockfile choices and
-  observed naming — not from the model's prior. Phrase concretely and verifiably ("use
-  2-space indentation"), and emit only the delta from competent-developer defaults. Broad
-  conventions go into the thin AGENTS.md/CLAUDE.md; file-pattern constraints go into
-  path-scoped `.claude/rules/*.md`, not into generated skills.
-- **`DESIGN.md`** (Google Labs format, repo root, UI repos only). YAML design tokens
-  (colors, typography, spacing, rounded, components) + prose rationale. Generated only when
-  a UI is detected (React/Vue/Svelte, Tailwind, CSS variables, design tokens), extracted from
-  real sources (`tailwind.config`, CSS variables, token files), and **verified by the
-  official linter** `npx @google/design.md lint` (structure, token references, WCAG contrast)
-  as a blocking gate before write. On a backend/CLI/library repo it is not generated.
+  from deterministic evidence — eslint/prettier/ruff/editorconfig/lockfile choices and observed
+  naming — not from the model's prior. Phrase concretely ("use 2-space indentation"); emit only
+  the delta from competent-developer defaults. Broad conventions go into the thin
+  AGENTS.md/CLAUDE.md; file-pattern constraints are reported as advisory notes in v1 (the
+  path-scoped `.claude/rules/` writer is fast-follow).
+- **`DESIGN.md`** (Google Labs format, repo root, UI repos only). YAML design tokens + prose
+  rationale, extracted from real sources (`tailwind.config`, CSS variables, token files) with
+  the source tokens cited. **Linter caveat:** `npx @google/design.md lint` validates only the
+  authored file's **internal consistency** and flat token-pair contrast — it does **not**
+  verify the extraction was faithful to the source CSS (a mis-extracted DESIGN.md lints green),
+  and it is blind to gradients, opacity, and dark-mode/CSS-var theming. Extraction faithfulness
+  is therefore evidence-grounded (cite source tokens) and the gate states "token pairs pass
+  WCAG AA **structurally**," never "accessible." On a backend/CLI/library repo, DESIGN.md is not
+  generated.
 
-## 9. Refresh and staleness
-Two layers, two mechanisms, no conflation.
+## 9. Refresh and cited-evidence staleness
+Two layers, two mechanisms.
 
 - **`/v:onboard --refresh`** owns the **docs**: re-extract only files whose content hash
-  changed since generation; flag any doc whose **cited files** changed (the staleness signal);
-  run the same human gate. On completion it **auto-runs `/v:memory-refresh`** so the index
-  follows.
+  changed since generation; flag any doc whose **cited files** changed (the cited-evidence
+  staleness signal); run the same human gate; then **auto-run `/v:memory-refresh`**.
 - **`/v:memory-refresh`** (existing) owns the **index** (FTS5/embeddings by file hash).
   Unchanged.
-- **Staleness signal** is deterministic: `.onboard-manifest.json` stores each doc's cited
-  files and their content hashes at generation time; on refresh, drift → the doc is marked
-  STALE and queued for a human-reviewed update.
-- **Manual only in v1.** No hook bootstraps or self-backgrounds. The single hook-side surface
-  is a read-only line in the SessionStart banner: "N architecture docs are stale vs HEAD →
+- **Staleness signal** is deterministic and named "cited-evidence staleness" — it is not full
+  doc freshness. `.onboard-manifest.json` stores each doc's cited files and their content hashes
+  at generation time; drift, or a **deleted** cited file, marks the doc STALE. To catch
+  architecture that migrated into a new **uncited** file, a cheap heuristic also flags when new
+  files appear in a cited doc's path-space that no doc references. High-signal config and
+  entry-point file hashes are stored alongside.
+- **Manual only in v1.** No hook bootstraps or self-backgrounds. The single hook-side surface is
+  a read-only, fail-silent line in the SessionStart banner: "N architecture docs stale vs HEAD →
   run /v:onboard --refresh." It writes nothing.
 
-## 10. MCP recommender (fast-follow, not a v1 blocker)
-Signal → server. A detector maps real evidence to a maintained vendor server and presents a
-confirmable shortlist (~3–5) with the file evidence that triggered each: `github.com` origin
-→ GitHub MCP; Postgres DSN / `prisma`+`pg` → Postgres MCP (read-only); `@supabase/*` →
-Supabase MCP (`--read-only --project-ref`, dev/branch DB); `playwright.config` → Playwright
-MCP; fast-moving libs → Context7; `@sentry/*` → Sentry.
+## 10. MCP / external-tool recommender (fast-follow, not a v1 deliverable)
+Post-v1. Signal → tool, present-only, with a bias toward an **already-authenticated CLI over an
+MCP server** when a solid one exists. `github.com` origin → **`gh` CLI** (not a GitHub MCP
+server — avoids the broad-PAT toxic-flow risk entirely). Otherwise a maintained vendor server:
+Postgres DSN / `prisma`+`pg` → Postgres MCP (`--access-mode=restricted`); `@supabase/*` →
+Supabase MCP (`--read-only --project-ref`, dev/branch DB); `playwright.config` → Playwright MCP
+(pin `≥ 0.0.40`, CVE-2025-9611); fast-moving libs → Context7; `@sentry/*` → Sentry.
 
-- **Writes `.mcp.json` through diff + confirmation**, with read-only / least-privilege flags
-  pre-filled. Never silent. Resolves to the maintained vendor server, not archived
-  `modelcontextprotocol/servers` reference entries.
-- **Lethal-trifecta is warn-only, loud, and specific.** When a recommendation would co-enable
-  private data + untrusted content + external write in one session, onboarding emits a named
-  warning (the 2025 Supabase service-role and GitHub toxic-agent exfiltration pattern) and
-  **the user decides**. No hard refusal.
+- **Writes `.mcp.json` through diff + confirmation** with read-only / least-privilege flags
+  pre-filled. Never silent. Resolves to the maintained vendor server, not archived reference
+  entries.
+- **Lethal-trifecta is warn-only, loud, and actionable.** Read-only defaults defuse the 2025
+  Supabase service-role pattern at the source. For any remaining private-data + untrusted-content
+  + external-write combination, onboarding emits a named warning **with the specific remedy**
+  (e.g. single-repo session / token scoping) and the user decides. No hard refusal.
 
 ## 11. Skills stance
 No bulk skill generation — overlapping descriptions degrade auto-triggering across the user's
-entire skill set and burn the shared skill-listing budget. v1 only **recommends which
-existing superpowers-v skills fit this repo**. Scaffolding a single project-specific
-review/quality skill (only when the repo has bespoke multi-step conventions, with a specific
-non-overlapping description, through the human gate) is **optional / fast-follow**.
+entire skill set. v1 only **recommends which existing superpowers-v skills fit this repo**.
+Scaffolding a single project-specific review/quality skill (only for bespoke multi-step
+conventions, specific non-overlapping description, through the human gate) is optional /
+fast-follow.
 
 ## 12. Quality bar and acceptance
-Per the project's dogfooding + cross-model + iterate-to-convergence style:
-
-- **E2E on superpowers-v itself** — a multi-config repo (`AGENTS.md`, `GEMINI.md`, `docs/`).
-  Exercises detect-and-bridge, the conditional **skip** of `DESIGN.md` (no UI — verifies the
-  negative path), and citation verification on real Python/bash/Markdown.
-- **E2E on a UI repo** — exercises the `DESIGN.md` extraction + linter path.
-- **Cross-model (Codex) review** of a sample of generated architecture prose before the
-  pipeline is declared trustworthy. The backend that writes prose and the backend that
-  verifies it differ.
-- **`--selftest`** on the deterministic gates: Tier-1 path+range, secret scan, staleness-hash
-  drift, conditional `DESIGN.md` detection.
+- **Dogfood on superpowers-v itself.** The repo today has `AGENTS.md` (~230 lines, no
+  `@AGENTS.md` bridge), a `GEMINI.md` that duplicates much of it, **no `CLAUDE.md`**, and no UI.
+  So the dogfood E2E's headline actions are: create a thin `CLAUDE.md` `@AGENTS.md` bridge, and
+  the doctor recommends collapsing the `GEMINI.md`↔`AGENTS.md` duplication into the bridged
+  source of truth. The DESIGN.md branch is **skipped** (no UI — verifies the negative path).
+  Citation verification runs on real Python/bash/Markdown.
+- **E2E on a UI repo** — exercises the DESIGN.md extraction + linter path (and re-measures the
+  §7 probe rates on messier code before the ceiling is trusted).
+- **Cross-model (Codex) review** of a sample of generated architecture prose before the pipeline
+  is declared trustworthy. The backend that writes prose and the one that verifies it differ.
+- **`--selftest`** on the deterministic gates (§5.10).
 
 ## 13. Command surface
 | Command | Effect |
 |---|---|
-| `/v:onboard` | full pipeline (§3) → human gate → write → index |
-| `/v:onboard --refresh` | re-extract changed-hash files, flag stale docs, gate, write, re-index |
+| `/v:onboard` | full pipeline (§3): detect → pack → extract → verify → diagnose → gate → write → commit → index |
+| `/v:onboard --refresh` | re-extract changed-hash files, flag stale docs, gate, write, commit, re-index |
 
-`/v:init` gains a closing suggestion to run `/v:onboard`. No other command changes in v1.
+`/v:init`'s closing report gains a one-line suggestion to run `/v:onboard` (suggestion text,
+never a chain). No other command changes in v1.
 
 ## 14. Out of scope (v1, deliberate)
-Bulk skill generation · full AST/tree-sitter citation verification · any auto-apply ·
-hooks that bootstrap or self-background · `progress.md`/`activeContext.md` · the MCP
-recommender as a v1 blocker (it ships as a fast-follow).
+Bulk skill generation · full AST/tree-sitter citation verification · any auto-apply · hooks
+that bootstrap or self-background · `progress.md`/`activeContext.md` · the MCP recommender and
+`.mcp.json` writing (fast-follow) · path-scoped `.claude/rules/*.md` writing (fast-follow) ·
+automated reconciliation of foreign-tool rules (advisory notes only) · any GitHub MCP server
+(GitHub is used via `gh` CLI).
 
 ## 15. Open items
-- Exact detector heuristics for "UI repo" (which signals, and the precedence when mixed).
+- Detector heuristics for "UI repo" and for cross-tool signal (which signals, precedence when
+  mixed).
 - Tier-2 sampling rate and the precise "load-bearing claim" classifier.
 - Whether the optional single review skill lands in v1 or the fast-follow.
 - Target version: proposed **v2.2.0** (next minor) — confirm against the planned numbering.
 
 ## 16. References
-- Claude Code memory / CLAUDE.md (length ceiling, `@import`, layering): https://code.claude.com/docs/en/memory
+- Claude Code memory / CLAUDE.md (length recommendation, `@import`, layering, managed policy): https://code.claude.com/docs/en/memory
 - Claude Code best practices (CLAUDE.md anti-patterns, hooks-are-deterministic): https://code.claude.com/docs/en/best-practices
 - AGENTS.md standard (Linux Foundation AAIF): https://agents.md
 - Cline Memory Bank (six-file taxonomy, update ritual): https://docs.cline.bot/prompting/cline-memory-bank
-- DESIGN.md format + linter: https://github.com/google-labs-code/design.md
+- DESIGN.md format + linter (v0.3.0): https://github.com/google-labs-code/design.md
+- repomix (v1.16.0, built-in Secretlint): https://github.com/yamadashy/repomix
 - Prior art (this maintainer, 2024 Cursor→Claude prompts): https://github.com/procoders/make-cursor-friendly-prompts
+
+## 17. Revisions from review (2026-06-30)
+A four-way review gate — three Compound V pre-flights plus a Codex cross-model design review —
+ran against the v1 draft. All four converged on one core weakness: the only *blocking* citation
+check proved a citation **exists**, not that the claim is **supported**, so unsupported
+architecture could reach the gate and be committed as durable authority. Changes folded in:
+
+- **Trust:** Tier-2 support check now **blocks** unsupported load-bearing claims (§7, §5.7); a
+  formal **claim model** was added so VERIFY has something to enforce; existing instruction
+  files are treated as **untrusted input** (no directive execution) and the managed-policy layer
+  as informational-only (§5.3).
+- **PACK** was promoted from a step to a **pack-manifest contract** with its own selftest
+  (§5.B), leaning on repomix's built-in Secretlint (confirmed current).
+- **Scope** tightened: `.mcp.json`/MCP recommender and path-scoped `.claude/rules/` moved fully
+  to fast-follow; foreign-tool reconciliation reduced to advisory notes (§5.2, §6, §14).
+- **Pipeline correctness:** an explicit **commit** step was inserted between WRITE and INDEX —
+  the engine indexes only git-tracked files (§3, §5.8, code-archaeology).
+- **Staleness** renamed to **cited-evidence staleness** with a new-uncited-file heuristic (§9).
+- **DESIGN.md honesty:** the linter checks internal consistency, not extraction faithfulness or
+  real accessibility (§8).
+- **Dependencies** (all verified current): Postgres MCP flag corrected to
+  `--access-mode=restricted`, Playwright pinned `≥ 0.0.40`, the 200-line figure reworded as a
+  target (§10, §5.5). Per the maintainer's decision, **GitHub uses `gh` CLI, not a GitHub MCP
+  server** (§10, §14).
+- Provenance headers, per-artifact/per-section approval, and `@import` expansion at the gate
+  were added (§4, §5.6, §6).
+
+The maintainer kept two choices the reviewers pushed on: the MCP recommender stays a fast-follow
+(not cut), and lethal-trifecta stays **warn-only** (domain-expert confirmed this is defensible
+with read-only defaults); the warning was strengthened to name a concrete remedy.
