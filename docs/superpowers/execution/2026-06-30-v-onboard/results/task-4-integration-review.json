@@ -1,0 +1,12 @@
+{
+  "status": "success",
+  "blocked": false,
+  "files_changed": [],
+  "violations": [],
+  "summary": "REVIEW GATE: APPROVED \u2014 PASS1 SPEC ok (6/6 acceptance criteria met), PASS2 QUALITY ok (no regressions, no fabricated metrics, stdlib-only honored), PASS3 INTEGRATION ok (cross-job seams hold: toolkit imports engine regexes/file_sha; banner calls staleness --quiet and degrades silently; prose references real subcommand contracts). Gate commands green: memory --selftest 0 failed, onboard --selftest OK, banner test PASS. No out-of-scope writes.",
+  "session_id": "ac504a8435a6eec68",
+  "worktree": "",
+  "exit_code": 0,
+  "failure_class": null,
+  "retry_after_seconds": 0
+}

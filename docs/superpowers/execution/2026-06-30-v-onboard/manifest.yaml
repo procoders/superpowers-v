@@ -1,0 +1,142 @@
+# Compound V execution manifest — /v:onboard v2.3.0
+# Materialized from the verified plan + the 4-way review gate. Validated by
+# scripts/compound-v-validate-manifest.py. Disjoint write scope; engine = Task 0 serial.
+
+run_id: 2026-06-30-v-onboard
+feature: "/v:onboard — project onboarding for Compound V"
+spec_path: docs/superpowers/specs/2026-06-30-v-onboard-design.md
+plan_path: docs/superpowers/plans/2026-06-30-v-onboard.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-06-30-v-onboard.md
+  domain: docs/superpowers/expert/2026-06-30-v-onboard-domain-audit.md
+  library: docs/superpowers/library-audit/2026-06-30-v-onboard-dependencies.md
+
+acceptance_criteria:
+  - "compound-v-memory.py and compound-v-onboard.py --selftest are both green"
+  - "Tier-1 path+range gate blocks all bad citations; Tier-2 blocks unsupported load-bearing claims"
+  - "secret scan refuses (does not mask); pack-manifest emitted; reuses engine SECRET_RE/PEM_RE"
+  - "AGENTS.md/CLAUDE.md bridge + architecture docs are human-gated (diff+confirm); nothing auto-applied"
+  - "SessionStart banner still emits valid JSON when the staleness probe fails"
+  - "no write outside the partitioned file sets"
+
+routing_stance: balanced
+max_parallel: 4
+
+shared_resources:
+  - scripts/compound-v-memory.py
+
+jobs:
+  - id: task-0-engine
+    title: "Extend V-memory engine to index root onboarding files"
+    type: shared_foundation
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: direct
+    run: serial
+    write_allowed:
+      - scripts/compound-v-memory.py
+    read_allowed:
+      - scripts/**
+      - docs/superpowers/specs/**
+      - docs/superpowers/plans/**
+      - docs/superpowers/archaeology/**
+    acceptance:
+      - "tracked_files unions root AGENTS/CLAUDE/CONVENTIONS/DESIGN via a SCOPED second ls-files (not a DOCS_REL widen)"
+      - "doc_type_for returns clean labels (agents/claude/conventions/design); existing selftest asserts still pass"
+      - "python3 scripts/compound-v-memory.py --selftest is green"
+
+  - id: task-1-toolkit
+    title: "compound-v-onboard.py — pack-manifest, Tier-1/2 citation gates, staleness, DESIGN lint"
+    type: large_isolated
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on:
+      - task-0-engine
+    write_allowed:
+      - scripts/compound-v-onboard.py
+    read_allowed:
+      - scripts/**
+      - docs/superpowers/specs/**
+      - docs/superpowers/plans/**
+      - docs/superpowers/library-audit/**
+    acceptance:
+      - "pack-manifest + BLOCKING secret refusal that reuses the engine's SECRET_RE/PEM_RE"
+      - "Tier-1 path+range gate on all claims; Tier-2 blocks load-bearing-unsupported, downgrades ordinary"
+      - "cited-evidence staleness manifest + uncited-new-file heuristic; reuses file_sha"
+      - "design-lint wraps npx @google/design.md; detect-ui; --selftest green"
+
+  - id: task-2-prose
+    title: "/v:onboard command + onboarding pipeline skill"
+    type: docs
+    backend: claude
+    tier: deep
+    effort: medium
+    isolation: worktree
+    run: parallel
+    depends_on:
+      - task-0-engine
+    write_allowed:
+      - commands/v-onboard.md
+      - skills/compound-v/onboarding.md
+    read_allowed:
+      - docs/superpowers/specs/**
+      - docs/superpowers/plans/**
+      - docs/superpowers/expert/**
+      - skills/compound-v/**
+      - AGENTS.md
+      - GEMINI.md
+    acceptance:
+      - "encodes the 9-step pipeline; untrusted-instruction rule; read-then-cite claims"
+      - "detect-and-bridge (AGENTS.md primary, confirmable); doctor advisory/non-writing"
+      - "per-artifact + per-section gate with @import expansion; provenance headers; frontmatter lint passes"
+
+  - id: task-3-wiring
+    title: "/v:init suggestion + fail-silent staleness banner line"
+    type: bounded_crud
+    backend: claude
+    tier: deep
+    effort: medium
+    isolation: worktree
+    run: parallel
+    depends_on:
+      - task-1-toolkit
+    write_allowed:
+      - commands/v-init.md
+      - hooks/session-banner.sh
+      - tests/test-session-banner-staleness.sh
+    read_allowed:
+      - hooks/**
+      - commands/**
+      - scripts/**
+      - docs/superpowers/plans/**
+    acceptance:
+      - "banner still emits valid JSON when the staleness probe fails (set -euo pipefail safe)"
+      - "/v:init Step 5 (Report) suggests /v:onboard as text, never a chain"
+
+  - id: task-4-integration-review
+    title: "Integration review gate for /v:onboard"
+    type: review
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: direct
+    run: serial
+    depends_on:
+      - task-1-toolkit
+      - task-2-prose
+      - task-3-wiring
+    write_allowed: []
+    read_allowed:
+      - scripts/**
+      - commands/**
+      - skills/**
+      - hooks/**
+      - tests/**
+      - docs/superpowers/**
+    acceptance:
+      - "feature-level acceptance criteria met"
+      - "no writes outside the partitioned file sets across jobs"

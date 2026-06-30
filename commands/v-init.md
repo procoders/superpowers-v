@@ -348,5 +348,7 @@ default tier→model `models` map was seeded into `.claude/compound-v.json`, and
 [`/v:models`](v-models.md) refreshes or customizes it whenever a backend ships new
 models.
 
+- **Next:** run `/v:onboard` to build the project knowledge base (architecture docs + AGENTS.md bridge). This is a suggestion, not automatic.
+
 **Honesty rules:** report only what the probes actually returned. Never print token or
 cost numbers. Never claim a backend works that the probe did not confirm.

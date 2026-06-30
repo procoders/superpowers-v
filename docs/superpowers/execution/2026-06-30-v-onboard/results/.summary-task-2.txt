@@ -1,0 +1,1 @@
+DONE — commands/v-onboard.md (+frontmatter description, {{args}} --refresh) + skills/compound-v/onboarding.md (9-step pipeline, untrusted-instruction rule, detect-and-bridge, @import-expansion gate, provenance, WCAG-structural). frontmatter lint clean. Merged bf7dcdc (+276).

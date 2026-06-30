@@ -1,0 +1,3 @@
+commands/v-init.md
+hooks/session-banner.sh
+tests/test-session-banner-staleness.sh

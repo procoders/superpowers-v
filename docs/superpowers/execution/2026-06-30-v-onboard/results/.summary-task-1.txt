@@ -1,0 +1,1 @@
+DONE — scripts/compound-v-onboard.py: 5 subcommands (pack, verify-citations, staleness, design-lint, detect-ui), reuses engine SECRET_RE/PEM_RE/file_sha, .onboard-manifest.json stays .json. --selftest OK (0 failed). Merged 536656a (+350).

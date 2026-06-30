@@ -1,0 +1,14 @@
+{
+  "verdict": "pass",
+  "mode": "worktree",
+  "baseline": "HEAD",
+  "changed": [
+    "commands/v-onboard.md",
+    "skills/compound-v/onboarding.md"
+  ],
+  "allowed": [
+    "commands/v-onboard.md",
+    "skills/compound-v/onboarding.md"
+  ],
+  "violations": []
+}

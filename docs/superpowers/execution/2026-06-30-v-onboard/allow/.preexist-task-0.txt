@@ -1,0 +1,6 @@
+docs/superpowers/execution/2026-06-30-v-onboard/allow/.baseline-sha
+docs/superpowers/execution/2026-06-30-v-onboard/allow/.preexist-task-0.txt
+docs/superpowers/execution/2026-06-30-v-onboard/allow/task-0-engine.txt
+docs/superpowers/execution/2026-06-30-v-onboard/allow/task-1-toolkit.txt
+docs/superpowers/execution/2026-06-30-v-onboard/allow/task-2-prose.txt
+docs/superpowers/execution/2026-06-30-v-onboard/allow/task-3-wiring.txt

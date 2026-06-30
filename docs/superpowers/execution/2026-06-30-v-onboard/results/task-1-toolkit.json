@@ -1,0 +1,14 @@
+{
+  "status": "success",
+  "blocked": false,
+  "files_changed": [
+    "scripts/compound-v-onboard.py"
+  ],
+  "violations": [],
+  "summary": "DONE \u2014 scripts/compound-v-onboard.py: 5 subcommands (pack, verify-citations, staleness, design-lint, detect-ui), reuses engine SECRET_RE/PEM_RE/file_sha, .onboard-manifest.json stays .json. --selftest OK (0 failed). Merged 536656a (+350).",
+  "session_id": "afe7d8d53caa2fd0e",
+  "worktree": ".worktrees/task-1-toolkit",
+  "exit_code": 0,
+  "failure_class": null,
+  "retry_after_seconds": 0
+}

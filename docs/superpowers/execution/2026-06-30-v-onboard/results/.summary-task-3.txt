@@ -1,0 +1,1 @@
+DONE — tests/test-session-banner-staleness.sh (new, PASS), hooks/session-banner.sh (fail-silent staleness append before jq switch, no second emit, set -euo pipefail safe), commands/v-init.md (Step 5 /v:onboard suggestion as report text, not a chain). Both selftests + banner test green. Merged a2d97e5 (+19).
