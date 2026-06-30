@@ -130,11 +130,19 @@ def redact(text: str) -> str:
     return SECRET_RE.sub("[REDACTED]", text)
 
 
+ONBOARD_ROOT_DOC_TYPES = {
+    "AGENTS.md": "agents", "CLAUDE.md": "claude",
+    "CONVENTIONS.md": "conventions", "DESIGN.md": "design",
+}
+
+
 def doc_type_for(relpath: str) -> str:
     parts = relpath.replace("\\", "/").split("/")
     # relpath is repo-relative; strip the docs/superpowers/ prefix if present
     if len(parts) >= 3 and parts[0] == "docs" and parts[1] == "superpowers":
         return parts[2] if len(parts) > 3 else "root"
+    if len(parts) == 1 and parts[0] in ONBOARD_ROOT_DOC_TYPES:
+        return ONBOARD_ROOT_DOC_TYPES[parts[0]]
     return parts[0] if parts else "root"
 
 
@@ -252,6 +260,13 @@ def tracked_files(root: str):
             )
             if out.returncode == 0:
                 rels = [p for p in out.stdout.decode("utf-8", "replace").split("\0") if p]
+                roots = subprocess.run(
+                    ["git", "-C", root, "ls-files", "-z", "--",
+                     "AGENTS.md", "CLAUDE.md", "CONVENTIONS.md", "DESIGN.md"],
+                    capture_output=True, timeout=30,
+                )
+                if roots.returncode == 0:
+                    rels += [p for p in roots.stdout.decode("utf-8", "replace").split("\0") if p]
                 return sorted(r for r in rels if r.endswith(".md") or r.endswith(".jsonl"))
         except (OSError, subprocess.SubprocessError):
             pass
@@ -1077,6 +1092,34 @@ def _selftest() -> int:
     finally:
         os.environ.pop("COMPOUND_V_MEMORY_HOME", None)
         shutil.rmtree(tmp, ignore_errors=True)
+
+    # onboarding: doc_type_for clean labels for root files (no filename leak)
+    check("doc_type root agents", doc_type_for("AGENTS.md") == "agents")
+    check("doc_type root claude", doc_type_for("CLAUDE.md") == "claude")
+    check("doc_type root conventions", doc_type_for("CONVENTIONS.md") == "conventions")
+    check("doc_type root design", doc_type_for("DESIGN.md") == "design")
+    # unchanged: a non-onboarding root path still falls back to parts[0]
+    check("doc_type other root", doc_type_for("README.md") == "README.md")
+
+    # onboarding: tracked_files unions root onboarding files when git-tracked
+    # (tempfile is already imported at module scope; only alias subprocess here to
+    # avoid shadowing the module-level `tempfile` used by the end-to-end block above)
+    import subprocess as _sp
+    d = tempfile.mkdtemp()
+    try:
+        _sp.run(["git", "-C", d, "init", "-q"], check=True)
+        os.makedirs(os.path.join(d, "docs", "superpowers", "architecture"))
+        for rel in ["AGENTS.md", "CONVENTIONS.md",
+                    os.path.join("docs", "superpowers", "architecture", "architecture.md")]:
+            with open(os.path.join(d, rel), "w") as fh:
+                fh.write("# x\n")
+        _sp.run(["git", "-C", d, "add", "-A"], check=True)
+        tf = tracked_files(d)
+        check("tracked_files unions roots",
+              "AGENTS.md" in tf and "CONVENTIONS.md" in tf
+              and any(p.endswith("architecture.md") for p in tf))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
     print("\n%d failed" % len(fails))
     if fails:
