@@ -22,6 +22,15 @@ if [ ! -e ".claude/compound-v.json" ]; then
   banner="$banner Tip: run /v:init to detect backends (Codex, Context7) and pick a routing stance — saved to .claude/compound-v.json."
 fi
 
+# Read-only onboarding staleness nudge. MUST fail silent: set -euo pipefail would
+# abort the whole banner on any non-zero exit, so guard python and swallow errors.
+if command -v python3 >/dev/null 2>&1 && [ -e "docs/superpowers/architecture/.onboard-manifest.json" ]; then
+  stale=$(python3 "${CLAUDE_PLUGIN_ROOT:-.}/scripts/compound-v-onboard.py" staleness --quiet 2>/dev/null || echo 0)
+  if [ "${stale:-0}" -gt 0 ] 2>/dev/null; then
+    banner="$banner ⚠ $stale architecture doc(s) stale vs HEAD — run /v:onboard --refresh."
+  fi
+fi
+
 # Detect platform and emit appropriate JSON shape
 if [ -n "${CURSOR_PLUGIN_ROOT:-}" ]; then
   jq -n --arg ctx "$banner" '{additional_context: $ctx}'
