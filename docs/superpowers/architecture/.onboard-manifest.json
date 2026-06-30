@@ -1,0 +1,42 @@
+{
+  "generated": "2026-06-30",
+  "docs": {
+    "docs/superpowers/architecture/architecture.md": {
+      "cited": {
+        "commands/v-onboard.md": "d2cb43e4159944cd5ecad785a877ac3bfe2777ccd9cce8623c07f24219d3eb79",
+        "scripts/compound-v-scope-check.py": "7a4ff1abdd305421031c27c72af5f22353dfbb59dc17cc03db53706e3133bbf5",
+        "skills/backend-launcher/SKILL.md": "b8ce354e8455d2d3a97e8f78b9b14767bdd168012ab03051454e23f488cd1eb8",
+        "skills/compound-v/SKILL.md": "948f4e8eedd8528b51f3bf5f77ff9929527e09ac18cc6ecdbaf2aec43f17a22c",
+        "skills/compound-v/memory.md": "2a23e77e553a17f029d662ba67649ea92034b462013387517a2e81f7a65ed755",
+        "skills/compound-v/onboarding.md": "108dfe0511449df7dd5672f33457e44fd9214af142744fb6ed39602b89da9942",
+        "skills/compound-v/phase-3-parallel-opus-dispatch.md": "7ff0374a22441f573a19f50c0ddf2d63ed7f96bf1b2d26a4b76f1bbdeb8cad06",
+        "skills/compound-v/state-machine.md": "315d4db3815e9a7376cad9c60ea400fa7fca97103d8ab5659b6b75c4450d5aa0"
+      }
+    },
+    "docs/superpowers/architecture/business-logic.md": {
+      "cited": {
+        ".claude-plugin/plugin.json": "2165fe97631bbbd3ecb70c90dfe074886f8429a20728d569bb6feeb4e8ec0340",
+        "skills/backend-launcher/SKILL.md": "b8ce354e8455d2d3a97e8f78b9b14767bdd168012ab03051454e23f488cd1eb8",
+        "skills/compound-v/SKILL.md": "948f4e8eedd8528b51f3bf5f77ff9929527e09ac18cc6ecdbaf2aec43f17a22c"
+      }
+    },
+    "docs/superpowers/architecture/tech-context.md": {
+      "cited": {
+        ".github/workflows/validate.yml": "77d378ecede9845e0e507107f67286e03f156fc61d583e487ba19a5cf5c9ee55",
+        "scripts/compound-v-onboard.py": "89a8ee567f548998dbdd801deec40960e7ef4b76959e1aed237e0bc959c2bcda",
+        "scripts/compound-v-scope-check.py": "7a4ff1abdd305421031c27c72af5f22353dfbb59dc17cc03db53706e3133bbf5",
+        "scripts/lint-frontmatter.py": "95c6c2569ea0facc1093acff045d5e8642ad1eebf599776b9be81181b0185372",
+        "skills/compound-v/SKILL.md": "948f4e8eedd8528b51f3bf5f77ff9929527e09ac18cc6ecdbaf2aec43f17a22c"
+      }
+    },
+    "CONVENTIONS.md": {
+      "cited": {
+        ".cclintrc.json": "8ac23a19d14a834e5fb062fe4c3962e2a2398386311bcfaa77bd5c08c03652dc",
+        ".github/workflows/validate.yml": "77d378ecede9845e0e507107f67286e03f156fc61d583e487ba19a5cf5c9ee55",
+        "scripts/compound-v-scope-check.py": "7a4ff1abdd305421031c27c72af5f22353dfbb59dc17cc03db53706e3133bbf5",
+        "scripts/lint-frontmatter.py": "95c6c2569ea0facc1093acff045d5e8642ad1eebf599776b9be81181b0185372",
+        "skills/backend-launcher/SKILL.md": "b8ce354e8455d2d3a97e8f78b9b14767bdd168012ab03051454e23f488cd1eb8"
+      }
+    }
+  }
+}
