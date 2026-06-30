@@ -65,14 +65,18 @@ Inventory the ground truth, write nothing:
 
 ### 2. PACK
 Run `python3 scripts/compound-v-onboard.py pack --repo . --json`. It produces a **pack-manifest**
-(included / excluded-with-reason / token budget / truncation markers / repo shape) and the
-**blocking secret scan** result.
+(included / excluded-with-reason / token budget / truncation markers / repo shape) and an
+**advisory secret scan** result.
 
-**Secret scan is a refusal, not masking.** If `secret_scan.clean` is `false`, STOP — surface the
-hit families and paths, and do not proceed to EXTRACT until the repo is clean. No credential may
-reach any generated, committed file — including one pulled in via a citation snippet. Pack quality
-matters: a relevant file silently dropped here becomes confident partial truth downstream, so review
-the excluded list for anything that looks load-bearing.
+**The pack secret scan is ADVISORY, not a blocking gate.** It flags secret-shaped strings *anywhere*
+in the input repo — which on a real codebase routinely includes test fixtures with fake tokens and
+docs that *document* secret patterns (e.g. this plugin's own selftests and security docs). Do **not**
+halt the run on `secret_scan.clean == false`; surface the hit families and paths at the human gate so
+the maintainer can eyeball them. The real refusal — "no credential reaches a generated, committed
+file" — is enforced on the **OUTPUT** by `scan-output` before WRITE (§7), never by refusing to
+onboard a repo that merely *contains* a fixture. Pack quality still matters: a relevant file silently
+dropped becomes confident partial truth downstream, so review the excluded list for anything
+load-bearing.
 
 ### 3. EXTRACT — read-then-cite into the claim model
 Generation is **read-then-cite**: open the files, claim only what you actually read, and attach a
@@ -100,7 +104,8 @@ Hand the claims file to `python3 scripts/compound-v-onboard.py verify-citations 
   - Run it on a **~20–30% sample of ordinary claims** — advisory: an unsupported ordinary claim is
     *downgraded* (to "observed evidence" or explicitly labeled "inference"), not release-blocking.
 - **DESIGN.md** (UI repos only) goes through `design-lint` here as well — see §DESIGN.
-- The **secret scan runs again before WRITE**.
+- The **output secret gate (`scan-output`) runs on the generated docs before WRITE** (§7) — that is
+  the blocking credential check, not the advisory pack scan.
 
 Tier 1 proves a citation *exists*; only Tier 2 proves the claim is *supported*. The live probe that
 motivated this design caught two claims that were range-valid but whose load-bearing line sat just
@@ -134,6 +139,15 @@ For each generated token in a DESIGN.md, also show the **source evidence** (whic
 var / class string it came from) — lint PASS does not certify extraction fidelity.
 
 ### 7. WRITE — only approved artifacts, narrow surface
+
+**Output secret gate (BLOCKING) — run it first.** Before writing or committing anything, run
+`python3 scripts/compound-v-onboard.py scan-output --files <each approved generated doc> --repo .` over
+the approved files (`docs/superpowers/architecture/*`, `CONVENTIONS.md`, `AGENTS.md`, the `CLAUDE.md`
+bridge, any `DESIGN.md`). A non-empty hit (`clean: false`, exit 2) is a **hard refusal**: a credential
+reached a generated doc (typically dragged in via a citation snippet) — strip it and regenerate that
+section before proceeding. **This** is the gate that enforces "no credential reaches a generated,
+committed file" — not the advisory input pack scan (§2), which would over-block on benign fixtures.
+
 Write **only** what was approved, and **only** within the v1 write surface:
 `docs/superpowers/architecture/*`, root `CONVENTIONS.md`, root `DESIGN.md` (UI repos), `AGENTS.md`,
 the thin `CLAUDE.md` bridge, and `.onboard-manifest.json`. `.mcp.json`, `.claude/rules/*.md`, and any

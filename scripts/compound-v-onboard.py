@@ -60,8 +60,30 @@ def pack(repo: str, token_budget: int = 200_000) -> dict:
         "included": sorted(included),
         "excluded": sorted(excluded, key=lambda e: e["path"]),
         "truncated": [],
+        # NOTE: this input-side scan is ADVISORY. It surfaces secret-shaped strings
+        # anywhere in the repo — including test fixtures and docs that *document*
+        # secret patterns — for the human gate to eyeball; it does NOT hard-block the
+        # run. The BLOCKING refusal is scan_output_files() on the GENERATED docs, per
+        # the spec invariant "no credential reaches a generated, committed file".
         "secret_scan": {"clean": not secret_hits, "hits": secret_hits},
     }
+
+
+def scan_output_files(repo: str, rels) -> dict:
+    """OUTPUT-side secret gate (BLOCKING). Scan the GENERATED files about to be
+    written/committed (architecture/*, CONVENTIONS.md, AGENTS.md, CLAUDE.md). A match
+    here is a hard refusal — a credential must never enter a committed doc (e.g. via a
+    citation snippet). The pack() input scan is advisory; THIS is the gate before WRITE."""
+    hits = []
+    for rel in rels:
+        ab = rel if os.path.isabs(rel) else os.path.join(repo, rel)
+        try:
+            with open(ab, "r", errors="replace") as fh:
+                for h in scan_secrets(fh.read()):
+                    hits.append({"path": rel, "family": h["family"]})
+        except OSError:
+            continue
+    return {"clean": not hits, "hits": hits}
 
 
 def _line_count(abspath: str) -> int:
@@ -303,6 +325,21 @@ def _selftest() -> int:
         shutil.rmtree(d5, ignore_errors=True)
     check("detect_ui false on bare", detect_ui(tempfile.mkdtemp()) is False)
 
+    # OUTPUT-side secret gate: blocks a secret in a GENERATED doc, passes clean prose.
+    d6 = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(d6, "architecture.md"), "w") as fh:
+            fh.write("# Arch\nThe scope gate unions git diff with ls-files.\n")
+        with open(os.path.join(d6, "bad.md"), "w") as fh:
+            fh.write("leaked token ghp_" + "a" * 22 + " pulled into a generated doc\n")
+        check("scan-output passes clean generated doc",
+              scan_output_files(d6, ["architecture.md"])["clean"] is True)
+        _r = scan_output_files(d6, ["bad.md"])
+        check("scan-output blocks secret in generated doc",
+              _r["clean"] is False and any(h["path"] == "bad.md" for h in _r["hits"]))
+    finally:
+        shutil.rmtree(d6, ignore_errors=True)
+
     print("FAILED %d" % len(fails) if fails else "OK")
     return 1 if fails else 0
 
@@ -322,6 +359,9 @@ def build_parser():
     sp = sub.add_parser("design-lint")
     sp.add_argument("--file", required=True); sp.add_argument("--json", action="store_true")
     sp = sub.add_parser("detect-ui"); sp.add_argument("--repo", default=".")
+    sp = sub.add_parser("scan-output")
+    sp.add_argument("--files", nargs="+", required=True)
+    sp.add_argument("--repo", default="."); sp.add_argument("--json", action="store_true")
     return p
 
 
@@ -343,6 +383,10 @@ def main(argv) -> int:
     if args.cmd == "detect-ui":
         print("ui" if detect_ui(os.path.abspath(args.repo)) else "no-ui")
         return 0
+    if args.cmd == "scan-output":
+        result = scan_output_files(os.path.abspath(args.repo), args.files)
+        print(json.dumps(result, indent=2))
+        return 0 if result["clean"] else 2
     build_parser().print_help(); return 1
 
 
