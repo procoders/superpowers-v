@@ -1,17 +1,18 @@
 {
   "run_id": "2026-06-30-v-onboard",
-  "phase": "PREFLIGHT_DONE",
-  "updated_at": "2026-06-30T00:00:00Z",
-  "total_retries": 0,
+  "phase": "REVIEWED",
+  "updated_at": "2026-06-30T20:07:00Z",
+  "review_gate": { "verdict": "APPROVED", "spec": "PASS", "quality": "PASS", "integration": "PASS", "acceptance": "6/6" },
+  "total_retries": 1,
   "max_total_retries": 12,
   "cooldowns": {},
   "circuit_open": {},
-  "attempts": {},
+  "attempts": { "task-2-prose": { "overloaded": 1 } },
   "jobs": {
-    "task-0-engine":             { "status": "pending", "isolation": "direct",   "worktree": null, "session_id": null },
-    "task-1-toolkit":            { "status": "pending", "isolation": "worktree", "worktree": null, "session_id": null },
-    "task-2-prose":              { "status": "pending", "isolation": "worktree", "worktree": null, "session_id": null },
-    "task-3-wiring":             { "status": "pending", "isolation": "worktree", "worktree": null, "session_id": null },
-    "task-4-integration-review": { "status": "pending", "isolation": "direct",   "worktree": null, "session_id": null }
+    "task-0-engine":             { "status": "done", "isolation": "direct",   "worktree": null, "session_id": null, "commit": "8822f5b" },
+    "task-1-toolkit":            { "status": "done", "isolation": "worktree", "worktree": null, "session_id": "afe7d8d53caa2fd0e", "commit": "536656a" },
+    "task-2-prose":              { "status": "done", "isolation": "worktree", "worktree": null, "session_id": "a81a5d5b77fc3b499", "prev_failure": "overloaded", "attempt": 2, "commit": "bf7dcdc" },
+    "task-3-wiring":             { "status": "done", "isolation": "worktree", "worktree": null, "session_id": "aa5e77030602723c9", "commit": "a2d97e5" },
+    "task-4-integration-review": { "status": "done", "isolation": "direct",   "worktree": null, "session_id": "ac504a8435a6eec68", "verdict": "APPROVED" }
   }
 }

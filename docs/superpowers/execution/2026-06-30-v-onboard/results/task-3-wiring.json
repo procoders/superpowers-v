@@ -1,0 +1,16 @@
+{
+  "status": "success",
+  "blocked": false,
+  "files_changed": [
+    "commands/v-init.md",
+    "hooks/session-banner.sh",
+    "tests/test-session-banner-staleness.sh"
+  ],
+  "violations": [],
+  "summary": "DONE \u2014 tests/test-session-banner-staleness.sh (new, PASS), hooks/session-banner.sh (fail-silent staleness append before jq switch, no second emit, set -euo pipefail safe), commands/v-init.md (Step 5 /v:onboard suggestion as report text, not a chain). Both selftests + banner test green. Merged a2d97e5 (+19).",
+  "session_id": "aa5e77030602723c9",
+  "worktree": ".worktrees/task-3-wiring",
+  "exit_code": 0,
+  "failure_class": null,
+  "retry_after_seconds": 0
+}

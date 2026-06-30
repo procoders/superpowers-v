@@ -1,0 +1,15 @@
+{
+  "status": "success",
+  "blocked": false,
+  "files_changed": [
+    "commands/v-onboard.md",
+    "skills/compound-v/onboarding.md"
+  ],
+  "violations": [],
+  "summary": "DONE \u2014 commands/v-onboard.md (+frontmatter description, {{args}} --refresh) + skills/compound-v/onboarding.md (9-step pipeline, untrusted-instruction rule, detect-and-bridge, @import-expansion gate, provenance, WCAG-structural). frontmatter lint clean. Merged bf7dcdc (+276).",
+  "session_id": "a81a5d5b77fc3b499",
+  "worktree": ".worktrees/task-2-prose",
+  "exit_code": 0,
+  "failure_class": null,
+  "retry_after_seconds": 0
+}

@@ -1,0 +1,1 @@
+DONE — extended scripts/compound-v-memory.py: doc_type_for clean labels (agents/claude/conventions/design), tracked_files scoped root-file union (DOCS_REL not widened), 6 new selftest asserts. compound-v-memory.py --selftest: 0 failed. commit 8822f5b (1 file, +43).

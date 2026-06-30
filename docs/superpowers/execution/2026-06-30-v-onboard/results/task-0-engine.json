@@ -1,0 +1,14 @@
+{
+  "status": "success",
+  "blocked": false,
+  "files_changed": [
+    "scripts/compound-v-memory.py"
+  ],
+  "violations": [],
+  "summary": "DONE \u2014 extended scripts/compound-v-memory.py: doc_type_for clean labels (agents/claude/conventions/design), tracked_files scoped root-file union (DOCS_REL not widened), 6 new selftest asserts. compound-v-memory.py --selftest: 0 failed. commit 8822f5b (1 file, +43).",
+  "session_id": "",
+  "worktree": "",
+  "exit_code": 0,
+  "failure_class": null,
+  "retry_after_seconds": 0
+}

@@ -1,0 +1,12 @@
+{
+  "verdict": "pass",
+  "mode": "worktree",
+  "baseline": "HEAD",
+  "changed": [
+    "scripts/compound-v-onboard.py"
+  ],
+  "allowed": [
+    "scripts/compound-v-onboard.py"
+  ],
+  "violations": []
+}

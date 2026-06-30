@@ -1,0 +1,16 @@
+{
+  "verdict": "pass",
+  "mode": "worktree",
+  "baseline": "HEAD",
+  "changed": [
+    "commands/v-init.md",
+    "hooks/session-banner.sh",
+    "tests/test-session-banner-staleness.sh"
+  ],
+  "allowed": [
+    "commands/v-init.md",
+    "hooks/session-banner.sh",
+    "tests/test-session-banner-staleness.sh"
+  ],
+  "violations": []
+}
