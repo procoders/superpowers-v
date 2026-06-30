@@ -1,0 +1,17 @@
+{
+  "run_id": "2026-06-30-v-onboard",
+  "phase": "PREFLIGHT_DONE",
+  "updated_at": "2026-06-30T00:00:00Z",
+  "total_retries": 0,
+  "max_total_retries": 12,
+  "cooldowns": {},
+  "circuit_open": {},
+  "attempts": {},
+  "jobs": {
+    "task-0-engine":             { "status": "pending", "isolation": "direct",   "worktree": null, "session_id": null },
+    "task-1-toolkit":            { "status": "pending", "isolation": "worktree", "worktree": null, "session_id": null },
+    "task-2-prose":              { "status": "pending", "isolation": "worktree", "worktree": null, "session_id": null },
+    "task-3-wiring":             { "status": "pending", "isolation": "worktree", "worktree": null, "session_id": null },
+    "task-4-integration-review": { "status": "pending", "isolation": "direct",   "worktree": null, "session_id": null }
+  }
+}
