@@ -258,7 +258,7 @@ automated reconciliation of foreign-tool rules (advisory notes only) · any GitH
   mixed).
 - Tier-2 sampling rate and the precise "load-bearing claim" classifier.
 - Whether the optional single review skill lands in v1 or the fast-follow.
-- Target version: proposed **v2.2.0** (next minor) — confirm against the planned numbering.
+- Target version: **v2.3.0** (confirmed).
 
 ## 16. References
 - Claude Code memory / CLAUDE.md (length recommendation, `@import`, layering, managed policy): https://code.claude.com/docs/en/memory
