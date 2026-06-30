@@ -4,6 +4,16 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [2.3.1] — 2026-06-30
+
+### Added — model visibility in the dispatch tree
+
+- **The dispatch tree and `/v:status` now show the resolved model per job.** `parallel-dispatcher` announces each batch as a tree annotated with `backend · model (tier/effort)` (resolved via `scripts/compound-v-resolve-model.py` **before** dispatch), and `/v:status` gains a `Backend · Model` column — so it is always visible *which model each job runs on*, both live during dispatch and after the fact.
+
+### Note — Claude Sonnet 5
+
+- Claude **Sonnet 5** (`claude-sonnet-5`, released 2026-06-30) is picked up automatically wherever Compound V routes to the `sonnet` tier alias (the `light` tier on the Claude backend) — the resolver intentionally emits native tier aliases (`opus`/`sonnet`), so the new model flows in with no code change. Routing **more** work to Sonnet 5 (it benchmarks close to Opus 4.8 at lower cost) is a deliberate routing-policy change tracked for a future minor (a `cost-aware`-stance `standard → sonnet` route), **not** a silent default shift — the default stays **Opus by default, reviewers always Opus, never Haiku.**
+
 ## [2.3.0] — 2026-06-30
 
 ### Added — `/v:onboard` (project onboarding → trusted, citation-verified knowledge base)
