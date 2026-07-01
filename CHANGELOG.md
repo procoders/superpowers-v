@@ -4,6 +4,17 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [2.5.1] — 2026-07-01
+
+### Added — MCP / external-tool recommender for `/v:onboard`
+
+- **`/v:onboard` now recommends the right external tools for your stack** — a new `recommend-mcp` subcommand in `scripts/compound-v-onboard.py` maps repo signals → tools from a **curated, currency-verified table**, with a deliberate **CLI-over-MCP bias**: a `github.com` remote yields the **`gh` CLI**, never a GitHub MCP server (avoids the broad-PAT toxic flow). Rows: Supabase MCP (`--read-only --project-ref`), Postgres MCP (`--access-mode=restricted`), Playwright MCP (pinned `>=0.0.40`, CVE-2025-9611), Context7, Sentry — every MCP row ships **least-privilege flags pre-filled**.
+- **`.mcp.json` via diff + confirmation, never auto-apply.** `mcp_json_config()` builds the config from the confirmed MCP recommendations, **merged additively** — it never clobbers an existing same-named server, and CLI recommendations (`gh`) are surfaced as setup instructions, not `.mcp.json` entries. The write is a gated WRITE-step artifact behind the human approval gate.
+- **Lethal-trifecta warn-only.** Any private-data + untrusted-content + external-write server (Supabase / Postgres) emits a **named warning with a specific remedy** (read-only + dev/branch-scoped + single-repo session). Read-only defaults defuse most at the source; no hard refusal — the user decides.
+- **Deterministic + evidence-cited + honest.** The table is a static curated map (no model guesswork on tool names/flags); each recommendation cites its triggering signal; an **unknown stack yields an empty set** (no invented tools). Currency (packages / flags / CVE pin) was WebSearch-verified 2026-07-01.
+- **Built with TDD, dogfooded, cross-model Codex-verified.** 21 selftest checks (github→gh CLI, Supabase read-only, Postgres restricted, fast-moving→Context7, Playwright, citation-grade evidence, trifecta warning, additive-merge, no-clobber, empty-on-unknown, Postgres DSN, existing-server warning). Dogfood on superpowers-v itself: exactly one recommendation (`github → gh CLI`), **no false MCPs**, empty `mcpServers` (the negative path). **Codex cross-model verification** (the model that writes ≠ the model that checks) caught **three** real spec/impl gaps the Opus author missed — a Postgres **DSN** (no `pg` dep) went undetected, evidence wasn't **`file:line`** citation-grade, and trifecta warnings skipped **existing** `.mcp.json` servers — **all three accepted and fixed**, each with added selftest coverage.
+- **Onboarding scope:** `.mcp.json` / MCP recommender moved from fast-follow to **in-scope**; `.claude/rules/*.md` (→ future) and bulk skill generation (deliberately avoided) stay out.
+
 ## [2.5.0] — 2026-07-01
 
 ### Added — hang detector (liveness probe + dispatcher sweep + enforced external launch)
