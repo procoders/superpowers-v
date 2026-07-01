@@ -99,6 +99,10 @@ The run-level `phase` and the per-job `status` map are distinct: `phase` is the 
 
 ---
 
+## Liveness sweep — reconcile in-flight, not only on resume
+
+`/v:resume` reconciles against git **after** an interruption. The dispatcher also reconciles **during** a run: between batches (and while awaiting a background job) it runs the read-only liveness probe ([`scripts/compound-v-liveness.py`](../../scripts/compound-v-liveness.py)) over `state.json` and applies the same **git-wins** rule live — a `running` job whose worktree already holds a commit past its `baseline` is `LIKELY-DONE` and is collected immediately (scope-gate + merge + `done`), rather than waiting on a completion notification that may never arrive (the "parked subagent" case). A job with no filesystem progress past the threshold is `STALE` (a suspected hang), surfaced and folded into the `timeout` failure class ([`failure-policy.md`](failure-policy.md)). No new phase, no daemon — just the git-derived probe read at batch boundaries. See [`agents/parallel-dispatcher.md`](../../agents/parallel-dispatcher.md) Step 2d.
+
 ## Resume — reconcile, then re-dispatch the incomplete
 
 `/v:resume <run-id>` (see [`commands/v-resume.md`](../../commands/v-resume.md)) recovers a crashed or interrupted run. It is **idempotent**: resuming a fully-`MERGED` run is a no-op.
