@@ -74,6 +74,21 @@ The deterministic authority is [`scripts/compound-v-scope-check.py`](../../scrip
 
 ---
 
+## External-CLI launch — supervisor + closed stdin (non-negotiable)
+
+**Every** external-CLI invocation — a dispatched worker (codex/cursor/agy) OR an orchestrator-level call (the cross-model plan review [`scripts/compound-v-codex-review.sh`](../../scripts/compound-v-codex-review.sh), any ad-hoc verification) — MUST run **through the process-group timeout supervisor** [`scripts/compound-v-run-with-timeout.py`](../../scripts/compound-v-run-with-timeout.py) with **`stdin </dev/null`**:
+
+```bash
+python3 scripts/compound-v-run-with-timeout.py --timeout <sec> --grace 3 -- <cli> … </dev/null
+```
+
+- **`</dev/null`** — `codex`/`cursor`/`agy` read stdin when it is not a TTY and **hang on `Reading additional input from stdin…`** in a background/non-interactive run. (This exact bug once left an ad-hoc codex review hung for 44 minutes at 0% CPU.) The redirect makes stdin an immediate EOF; the supervisor also forces `stdin=DEVNULL` on the child.
+- **The supervisor** guarantees a hard cap even when no `timeout`/`gtimeout` binary is installed, and `killpg`s the **whole process group** on expiry (a bare `timeout` prefix signals only the direct child, leaking orphaned tool children past the scope gate) → exit `124` → the `timeout` failure class.
+
+**A bare `codex`/`cursor`/`agy` call — no supervisor, or no `</dev/null` — is a bug.** The dispatcher's [liveness sweep](../compound-v/state-machine.md) *detects* a hang after the fact; this launch rule *prevents* it. (All three worker scripts already comply; `compound-v-codex-review.sh` was brought under the supervisor in v2.5.0.)
+
+---
+
 ## Worker prompt lock (planner/executor separation)
 
 Every dispatched `prompt` opens with this lock, verbatim-in-spirit:

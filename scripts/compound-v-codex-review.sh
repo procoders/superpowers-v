@@ -77,11 +77,13 @@ case "$TIMEOUT_SEC" in
 esac
 command -v codex >/dev/null 2>&1 || die "codex not found on PATH"
 
-TIMEOUT_BIN=""
-if command -v timeout >/dev/null 2>&1; then TIMEOUT_BIN="timeout"
-elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN="gtimeout"; fi
-TIMEOUT_PREFIX=""
-[ -n "$TIMEOUT_BIN" ] && TIMEOUT_PREFIX="$TIMEOUT_BIN $TIMEOUT_SEC"
+# Hard wall-clock cap via the shared process-group timeout supervisor — the SAME wrapper the
+# codex/cursor/agy workers use, NOT an external `timeout`/`gtimeout` binary. This guarantees a
+# cap even when neither binary is installed (previously: no binary ⇒ NO cap ⇒ a stalled codex
+# review could hang unbounded) and kills the whole codex process GROUP on expiry (a
+# `timeout`/`gtimeout` prefix signals only the direct child, leaking orphaned tool children).
+SUPERVISOR="$(cd "$(dirname "$0")" && pwd)/compound-v-run-with-timeout.py"
+[ -f "$SUPERVISOR" ] || die "timeout supervisor not found: $SUPERVISOR"
 
 # Scratch OUTSIDE the repo (read-only codex can still read the repo via --cd).
 TMPROOT="${TMPDIR:-/tmp}"; TMPROOT="${TMPROOT%/}"
@@ -131,8 +133,7 @@ EOF
 } > "$PROMPT_FILE"
 
 set +e
-# shellcheck disable=SC2086  # TIMEOUT_PREFIX intentionally word-splits (or vanishes)
-$TIMEOUT_PREFIX codex exec \
+python3 "$SUPERVISOR" --timeout "$TIMEOUT_SEC" --grace 3 -- codex exec \
   --cd "$REPO" \
   --sandbox read-only \
   --skip-git-repo-check \
