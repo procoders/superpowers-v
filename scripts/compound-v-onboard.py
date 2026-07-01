@@ -274,22 +274,59 @@ def _git_remote(repo):
     return out.stdout.strip() if out.returncode == 0 else None
 
 
+DSN_RE = re.compile(r"postgres(?:ql)?://")
+# Trifecta-risky server ids -> the least-privilege flag that defuses them.
+TRIFECTA_SERVERS = {"supabase": "--read-only", "postgres": "--access-mode=restricted"}
+
+
 def _pkg_deps(repo):
-    """Dependency names from package.json (deps + devDeps). Returns ({name: ver}, evidence|None)."""
+    """Dependency names from package.json (deps + devDeps). Returns ({name: ver}, {name: line})."""
     pj = os.path.join(repo, "package.json")
     if not os.path.isfile(pj):
-        return {}, None
+        return {}, {}
     try:
         with open(pj) as fh:
-            data = json.load(fh)
+            text = fh.read()
+        data = json.loads(text)
     except (OSError, ValueError):
-        return {}, None
+        return {}, {}
     deps = {}
     for key in ("dependencies", "devDependencies"):
         d = data.get(key)
         if isinstance(d, dict):
             deps.update(d)
-    return deps, "package.json"
+    lines = text.splitlines()
+    line_of = {}
+    for name in deps:
+        needle = '"%s"' % name
+        for i, ln in enumerate(lines, 1):
+            if needle in ln:
+                line_of[name] = i
+                break
+    return deps, line_of
+
+
+def _dep_ev(line_of, name):
+    """Citation-grade evidence for a matched dependency: `package.json:<line>` (file-level fallback)."""
+    n = line_of.get(name)
+    return "package.json:%d" % n if n else "package.json"
+
+
+def _postgres_dsn(repo):
+    """A Postgres DSN in a common config file -> `<relpath>:<line>`, else None. Catches Postgres
+    repos with no pg/prisma npm dep (e.g. Python / other-language stacks)."""
+    for rel in (".env", ".env.local", ".env.example", "prisma/schema.prisma"):
+        p = os.path.join(repo, rel)
+        if not os.path.isfile(p):
+            continue
+        try:
+            with open(p, errors="ignore") as fh:
+                for i, ln in enumerate(fh, 1):
+                    if DSN_RE.search(ln):
+                        return "%s:%d" % (rel, i)
+        except OSError:
+            continue
+    return None
 
 
 def _rec(rule_id, evidence):
@@ -298,10 +335,39 @@ def _rec(rule_id, evidence):
     return r
 
 
-def recommend_mcp(repo):
+def _trifecta_warn(rid, tool):
+    return {"id": rid,
+            "message": "%s combines private-data access with write capability (lethal-trifecta risk)." % tool,
+            "remedy": TRIFECTA_REMEDY}
+
+
+def _existing_trifecta_warnings(existing):
+    """Warn on an EXISTING .mcp.json server that looks like a private-data+write MCP (supabase /
+    postgres) but is MISSING its least-privilege flag — the user's own prior config, not our rec."""
+    out = []
+    servers = (existing or {}).get("mcpServers", {})
+    if not isinstance(servers, dict):
+        return out
+    for name, cfg in servers.items():
+        args = [str(a) for a in (cfg or {}).get("args", [])]
+        blob = (name + " " + " ".join(args)).lower()
+        rid = "supabase" if "supabase" in blob else ("postgres" if ("postgres" in blob or "postgresql" in blob) else None)
+        if rid is None:
+            continue
+        flag = TRIFECTA_SERVERS[rid].split("=")[0]
+        if not any(flag in a for a in args):
+            out.append({"id": "existing:%s" % name,
+                        "message": "Existing .mcp.json server '%s' looks like a %s server WITHOUT its least-privilege flag (%s) — lethal-trifecta risk." % (name, rid, TRIFECTA_SERVERS[rid]),
+                        "remedy": TRIFECTA_REMEDY})
+    return out
+
+
+def recommend_mcp(repo, existing=None):
     """Deterministic signal -> tool recommender. Returns {recommendations, warnings}. Each
-    recommendation is an MCP_RULES row + `evidence`; an unknown stack yields an empty set (no
-    invented tools). CLI-over-MCP bias: a github remote yields the gh CLI, never a GitHub MCP."""
+    recommendation is an MCP_RULES row + citation-grade `evidence`; an unknown stack yields an
+    empty set (no invented tools). CLI-over-MCP bias: a github remote yields the gh CLI, never a
+    GitHub MCP. When `existing` (a parsed .mcp.json) is given, its write-enabled servers are also
+    scanned for lethal-trifecta risk."""
     recs, seen = [], set()
 
     def add(rule_id, evidence):
@@ -313,25 +379,44 @@ def recommend_mcp(repo):
     if remote and "github.com" in remote:
         add("github", "git remote references github.com")
 
-    deps, dep_ev = _pkg_deps(repo)
-    if any(d.startswith("@supabase/") for d in deps):
-        add("supabase", dep_ev)
-    if any(d.startswith("@sentry/") for d in deps):
-        add("sentry", dep_ev)
-    if any(d in deps for d in ("pg", "prisma", "@prisma/client")):
-        add("postgres", dep_ev)
-    if any(d in deps for d in FASTMOVING):
-        add("context7", dep_ev)
+    deps, line_of = _pkg_deps(repo)
+
+    def first(names):
+        for n in names:
+            if n in deps:
+                return n
+        return None
+
+    def first_prefix(pfx):
+        for d in deps:
+            if d.startswith(pfx):
+                return d
+        return None
+
+    m = first_prefix("@supabase/")
+    if m:
+        add("supabase", _dep_ev(line_of, m))
+    m = first_prefix("@sentry/")
+    if m:
+        add("sentry", _dep_ev(line_of, m))
+    m = first(("pg", "prisma", "@prisma/client"))
+    if m:
+        add("postgres", _dep_ev(line_of, m))
+    else:
+        dsn = _postgres_dsn(repo)
+        if dsn:
+            add("postgres", dsn)
+    m = first(FASTMOVING)
+    if m:
+        add("context7", _dep_ev(line_of, m))
 
     for name in ("playwright.config.ts", "playwright.config.js", "playwright.config.mjs"):
         if os.path.isfile(os.path.join(repo, name)):
-            add("playwright", name)
+            add("playwright", "%s:1" % name)
             break
 
-    warnings = [{"id": r["id"],
-                 "message": "%s combines private-data access with write capability (lethal-trifecta risk)." % r["tool"],
-                 "remedy": TRIFECTA_REMEDY}
-                for r in recs if r["trifecta"]]
+    warnings = [_trifecta_warn(r["id"], r["tool"]) for r in recs if r["trifecta"]]
+    warnings += _existing_trifecta_warnings(existing)
     return {"recommendations": recs, "warnings": warnings}
 
 
@@ -475,6 +560,18 @@ def _selftest() -> int:
               all(r.get("evidence") for r in out["recommendations"]))
         check("recommend: lethal-trifecta warning w/ remedy for supabase/postgres",
               any(w["id"] in ("supabase", "postgres") and w["remedy"] for w in out["warnings"]))
+        # (Codex-caught) evidence is citation-grade file:line
+        check("recommend: evidence is citation-grade (package.json:<line>)",
+              any(r["id"] == "supabase" and ":" in r["evidence"] for r in out["recommendations"]))
+        # (Codex-caught) existing write-enabled .mcp.json server -> trifecta warning
+        exwarn = recommend_mcp(d7, existing={"mcpServers": {
+            "supabase": {"command": "npx", "args": ["-y", "@supabase/mcp-server-supabase"]}}})["warnings"]
+        check("recommend: warns on EXISTING write-enabled supabase server",
+              any(w["id"] == "existing:supabase" for w in exwarn))
+        okwarn = recommend_mcp(d7, existing={"mcpServers": {
+            "supabase": {"command": "npx", "args": ["-y", "@supabase/mcp-server-supabase", "--read-only"]}}})["warnings"]
+        check("recommend: no existing-warning when the least-priv flag is present",
+              not any(w["id"] == "existing:supabase" for w in okwarn))
         cfg = mcp_json_config(out["recommendations"])
         check("mcp_json: cli (github) excluded, supabase MCP present",
               "github" not in cfg["mcpServers"] and "supabase" in cfg["mcpServers"])
@@ -492,6 +589,16 @@ def _selftest() -> int:
                   recommend_mcp(d7b)["recommendations"] == [])
         finally:
             shutil.rmtree(d7b, ignore_errors=True)
+        # (Codex-caught) Postgres DSN with no pg/prisma dep still recommends Postgres MCP
+        d7c = tempfile.mkdtemp()
+        try:
+            with open(os.path.join(d7c, ".env"), "w") as fh:
+                fh.write("DATABASE_URL=postgres://u:p@localhost:5432/app\n")
+            dsn_recs = recommend_mcp(d7c)["recommendations"]
+            check("recommend: Postgres DSN (no pg dep) -> postgres rec, .env evidence",
+                  any(r["id"] == "postgres" and r["evidence"].startswith(".env") for r in dsn_recs))
+        finally:
+            shutil.rmtree(d7c, ignore_errors=True)
     finally:
         shutil.rmtree(d7, ignore_errors=True)
 
@@ -548,7 +655,6 @@ def main(argv) -> int:
         return 0 if result["clean"] else 2
     if args.cmd == "recommend-mcp":
         repo = os.path.abspath(args.repo)
-        out = recommend_mcp(repo)
         existing = None
         if args.mcp_config and os.path.isfile(args.mcp_config):
             try:
@@ -556,6 +662,7 @@ def main(argv) -> int:
                     existing = json.load(fh)
             except (OSError, ValueError):
                 existing = None
+        out = recommend_mcp(repo, existing)
         out["mcp_json"] = mcp_json_config(out["recommendations"], existing)
         print(json.dumps(out, indent=2))
         return 0
