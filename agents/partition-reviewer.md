@@ -65,6 +65,8 @@ If any appears in a parallel-task list instead of a serial Task 0 → **FAIL: SH
 
 ### Step 4 — Sonnet-justification check (judgment — the validator can't do this)
 
+> **Stance gate (read `routing_stance` from the manifest first).** Under `cost-aware`, a `standard`-tier `claude` implementer resolving to `sonnet` is the **routing-policy default**, not a junior-task exception — so it is **exempt** from the 8-box `SONNET_INELIGIBLE` / `SONNET_UNJUSTIFIED` check below. Under `balanced` / `conservative` / `claude-only`, apply the 8-box check exactly as before (there, `standard → opus`, so Sonnet appears only on the `light` tier and must pass the taxonomy). The `light`-tier Sonnet check still applies in **every** stance. This gate touches only the *implementer Sonnet eligibility* judgment — **reviewers ⇒ deep ⇒ opus and sensitive ⇒ deep ⇒ opus stay enforced in every stance** (unchanged).
+
 For every job assigned `model: sonnet`, verify the manifest/Partition Map carries a justification AND it plausibly maps to the strict 8-box taxonomy from [`phase-3-parallel-opus-dispatch.md`](../skills/compound-v/phase-3-parallel-opus-dispatch.md):
 
 - [ ] Single file ≤ 200 LOC

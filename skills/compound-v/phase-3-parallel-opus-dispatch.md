@@ -129,20 +129,24 @@ Each dispatch must include:
    # defaults per cell; omit --config to use built-in defaults.
    # Build the flag list with explicit if/else (portable across bash AND zsh —
    # ${VAR:+...} conditional expansion does NOT word-split under zsh).
+   # Read `routing_stance` once from the manifest and pass `--stance` on every
+   # resolve (Task 0 included); without it the resolver defaults to `balanced`.
+   STANCE=$(…manifest routing_stance…)   # read once from the manifest, default "balanced"
    set -- --backend "$BACKEND" --tier "$TIER"
    [ -n "$EFFORT" ] && set -- "$@" --effort "$EFFORT"
    [ -n "$CONFIG" ] && set -- "$@" --config "$CONFIG"
+   [ -n "$STANCE" ] && set -- "$@" --stance "$STANCE"
    RESOLVED=$(python3 scripts/compound-v-resolve-model.py "$@")
    MODEL=$(printf '%s' "$RESOLVED" | python3 -c 'import json,sys; print(json.load(sys.stdin)["model"])')
    ```
 
-   - **`claude`** resolves tier→model: `deep`/`standard`→`opus`, `light`→`sonnet`. Pass the resolved model to the `Task` call. `effort` is advisory on this path — the `Task` call has no separate effort flag.
+   - **`claude`** resolves tier→model: `deep`→opus, `standard`→opus (sonnet under `cost-aware`), `light`→sonnet. The dispatcher passes `--stance` from the manifest's `routing_stance` (default `balanced`), which is what flips `standard` to Sonnet under `cost-aware`. Pass the resolved model to the `Task` call. `effort` is advisory on this path — the `Task` call has no separate effort flag.
    - **`codex`** resolves tier→model (e.g. `deep`→`gpt-5.5`) and passes `--model <resolved>` **and** `--effort <effort>` to [`scripts/compound-v-run-codex-worker.sh`](../../scripts/compound-v-run-codex-worker.sh) (`--effort` → `-c model_reasoning_effort=<effort>`). The execution-layer model never appears in any frontmatter.
    - **`antigravity`** resolves tier→model (a Gemini name, e.g. `deep`→`Gemini 3.1 Pro (High)`) and passes `--model <resolved>` to [`scripts/compound-v-run-antigravity-worker.sh`](../../scripts/compound-v-run-antigravity-worker.sh) (omitted when empty; agy has no effort flag). `--write-allowed` is colon-joined globs; always `worktree`.
    - **`cursor`** resolves tier→model (default `auto`) and passes `--model <resolved>` to [`scripts/compound-v-run-cursor-worker.sh`](../../scripts/compound-v-run-cursor-worker.sh) (cursor has no effort flag). On a Cursor **Free** plan only `auto` works (named models error); set named ids per tier via config on a paid plan. Always `worktree`; requires an authenticated `cursor-agent`.
    - **An explicit manifest `model:` override skips resolution** (call the resolver with `--explicit-model <M>`, or pass the model straight through). This keeps existing explicit-model jobs valid — a job MUST carry `model` OR `tier`.
 
-   A `claude` job lands on `opus` for `deep`/`standard` tiers, `sonnet` only where the manifest routed it `light` (the strict junior-task taxonomy above). Reviewer jobs always route `tier: deep` ⇒ opus.
+   A `claude` job lands on `opus` for `deep`/`standard` tiers (a `standard`-tier job lands on `sonnet` under the `cost-aware` stance), `sonnet` otherwise only where the manifest routed it `light` (the strict junior-task taxonomy above). Reviewer jobs always route `tier: deep` ⇒ opus.
 2. **Turn/time bound:** `maxTurns: 15` on Claude Task calls; `timeout_sec` in the `job_spec` for Codex workers. An implementer that hasn't finished in 15 turns is usually stuck and needs a re-dispatch with more *context*, not more turns.
 3. **`run_in_background: true`** is acceptable for the implementer batch — lets the orchestrator continue prep work while implementers run. The parent receives a notification per agent when it completes. Background subagents do NOT carry cwd state between Bash calls; **plan absolute paths in the prompt** (this is also why Codex worktree paths in the `job_spec` are always absolute).
 4. **Strict scope lock** — paste this verbatim at the top of the prompt (it is the *instructed* half; the git-diff scope gate in Step 2b is the *enforced* half):

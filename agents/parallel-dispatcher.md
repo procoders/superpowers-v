@@ -84,21 +84,25 @@ Always show the **resolved** model (`backend · model (tier/effort)`), never the
    # overrides the built-in defaults per cell); omit it to use built-in defaults.
    # Build the flag list with explicit if/else (portable across bash AND zsh —
    # ${VAR:+...} conditional expansion does NOT word-split under zsh).
+   # Read `routing_stance` once from the manifest and pass `--stance` on every
+   # resolve (Task 0 included); without it the resolver defaults to `balanced`.
+   STANCE=$(…manifest routing_stance…)   # read once from the manifest, default "balanced"
    set -- --backend "$BACKEND" --tier "$TIER"
    [ -n "$EFFORT" ] && set -- "$@" --effort "$EFFORT"
    [ -n "$CONFIG" ] && set -- "$@" --config "$CONFIG"
+   [ -n "$STANCE" ] && set -- "$@" --stance "$STANCE"
    RESOLVED=$(python3 scripts/compound-v-resolve-model.py "$@")
    MODEL=$(printf '%s' "$RESOLVED" | python3 -c 'import json,sys; print(json.load(sys.stdin)["model"])')
    EFFORT_OUT=$(printf '%s' "$RESOLVED" | python3 -c 'import json,sys; print(json.load(sys.stdin)["effort"])')
    ```
 
-   - A `claude` job resolves tier→model (`deep`/`standard`→`opus`, `light`→`sonnet`); pass the resolved model to the `Task` call. `effort` on the claude path is advisory — the `Task` call has no separate effort flag.
+   - A `claude` job resolves tier→model (`deep`→opus, `standard`→opus (sonnet under `cost-aware`), `light`→sonnet); pass the resolved model to the `Task` call. `effort` on the claude path is advisory — the `Task` call has no separate effort flag.
    - A `codex` job resolves tier→model (e.g. `deep`→`gpt-5.5`) and passes `--model <resolved>` **and** `--effort <effort>` to [`scripts/compound-v-run-codex-worker.sh`](../scripts/compound-v-run-codex-worker.sh) (`--effort` becomes `-c model_reasoning_effort=<effort>`). The execution-layer model **never** appears in any frontmatter.
    - An `antigravity` job resolves tier→model (a Gemini name) and passes `--model <resolved>` (omitted when empty; no effort flag) to [`scripts/compound-v-run-antigravity-worker.sh`](../scripts/compound-v-run-antigravity-worker.sh); always `worktree`, lower-trust.
    - A `cursor` job resolves tier→model (default `auto`; named models are a paid-plan opt-in — a Free plan can only use Auto) and passes `--model <resolved>` (no effort flag) to [`scripts/compound-v-run-cursor-worker.sh`](../scripts/compound-v-run-cursor-worker.sh); always `worktree`, lower-trust, requires an authenticated `cursor-agent`.
    - **Explicit manifest `model:` override skips resolution.** If a job entry carries an explicit `model`, do NOT run the resolver for it — that model wins (pass it straight through, or call the resolver with `--explicit-model <M>` which short-circuits to it). This preserves backward compatibility with existing explicit-model jobs.
 
-   A `claude` job uses `model: "opus"` for `deep`/`standard` tiers, `"sonnet"` ONLY where the manifest routed the job `light` AND partition-reviewer's PASS confirmed it. Reviewer jobs always resolve to `tier: deep` (⇒ opus). The resolution above is **execution-layer** and unrelated to this agent's own `model: opus` frontmatter.
+   A `claude` job resolves `deep`→opus, `standard`→opus (sonnet under `cost-aware`), `light`→sonnet — `"sonnet"` for a `standard`-tier job only under the `cost-aware` stance, and otherwise ONLY where the manifest routed the job `light` AND partition-reviewer's PASS confirmed it. Reviewer jobs always resolve to `tier: deep` (⇒ opus). The resolution above is **execution-layer** and unrelated to this agent's own `model: opus` frontmatter.
 2. **Isolation from the manifest** — `direct` for clean in-harness Claude jobs (gated against a baseline commit), `worktree` for risky/broad-surface Claude jobs and **always** for Codex.
 3. **Turn/time bound** — `maxTurns: 15` on Claude Task calls; `timeout_sec` in the `job_spec` for Codex workers. A job that hasn't finished in 15 turns is usually stuck and needs re-dispatch with more *context*, not more turns.
 4. **`job_spec`** — `{ backend, prompt, tier, effort?, model (resolved or explicit override), cwd (absolute), write_allowed, read_only, timeout_sec, network, output_schema? }`, exactly the [`backend-launcher`](../skills/backend-launcher/SKILL.md) input. The `model` is the value the resolver returned in step 1 (or the explicit manifest override); `tier`/`effort` carry the intent forward.

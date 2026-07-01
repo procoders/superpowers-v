@@ -90,7 +90,7 @@ i18n. `bounded_crud` sits on `light` here (a well-specified 8-box junior slice);
 fuzzier CRUD slice that needs more judgment is bumped to `standard` — that is a
 planner call, not a hard rule.
 
-> With the Balanced models map, `deep`/`standard` on `claude` both resolve to `opus`
+> With the per-stance models map (Balanced shown), `deep`/`standard` on `claude` both resolve to `opus`
 > and `light` to `sonnet`; `standard` on `codex` resolves to `gpt-5.5`. So this
 > table produces the same effective models as the pre-tier version — the difference
 > is that the model strings now live in one refreshable place, not in the table.
@@ -101,7 +101,7 @@ planner call, not a hard rule.
 
 For high-stakes or unfamiliar codebases where you want maximum judgment and no
 external worker. Every implementation job is `deep`; `light` is reserved for purely
-mechanical slices; Codex is not used at all. (With the Balanced models map `deep`
+mechanical slices; Codex is not used at all. (With the per-stance models map (Balanced shown) `deep`
 resolves to `opus` and `light` to `sonnet`, so this is "Opus-everywhere except the
 mechanical edges" — but stated in the churn-proof tier vocabulary.)
 
@@ -144,6 +144,12 @@ never the gate.
 
 > Security / auth / payments / PII / a11y stays `deep` (⇒ Opus) in **every** stance
 > — sensitive surfaces are never cost-optimized.
+>
+> Under this stance the `standard`-tier `claude` cell resolves to **Sonnet 5** (the
+> resolver's `cost-aware.claude.standard = sonnet`), so `core_slice`/`tests_new`
+> implementers run on Sonnet here — while `deep` (architecture, sensitive surfaces,
+> **all reviewers**) stays Opus. Only the `standard` Claude cell shifts; `light` is
+> `sonnet` in every stance, and `codex`/`antigravity`/`cursor` are identical across stances.
 
 ---
 
@@ -169,23 +175,39 @@ has no separate effort flag).
 
 ### The models map (project config, refreshable, not committed)
 
-`.claude/compound-v.json` carries a `models` map — one `{tier → model}` row per
-backend:
+`.claude/compound-v.json` carries a **per-stance** `models` map — its shape is
+`{<stance>: {<backend>: {<tier>: model}}}`, so each stance carries its own
+`{tier → model}` rows. Only the `claude` rows differ across stances; `codex` /
+`antigravity` / `cursor` are identical in every stance. The one cell that moves is
+`cost-aware.claude.standard`, which is **`sonnet`** (Sonnet 5) — everywhere else
+`standard` Claude is `opus`:
 
 ```json
 "models": {
-  "claude":      { "deep": "opus", "standard": "opus", "light": "sonnet" },
-  "codex":       { "deep": "gpt-5.5", "standard": "gpt-5.5", "light": "gpt-5.3-codex-spark" },
-  "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" }
+  "balanced": {
+    "claude":      { "deep": "opus", "standard": "opus", "light": "sonnet" },
+    "codex":       { "deep": "gpt-5.5", "standard": "gpt-5.5", "light": "gpt-5.3-codex-spark" },
+    "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" }
+  },
+  "cost-aware": {
+    "claude":      { "deep": "opus", "standard": "sonnet", "light": "sonnet" },
+    "codex":       { "deep": "gpt-5.5", "standard": "gpt-5.5", "light": "gpt-5.3-codex-spark" },
+    "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" }
+  }
 }
 ```
 
+(`conservative` and `claude-only` mirror `balanced`. Only `cost-aware.claude.standard`
+differs — `sonnet`, not `opus`. `cost-aware.claude.deep` stays `opus`.)
+
 The map is **documented, not committed** in this repo — it is project-local config.
-[`/v:init`](../../commands/v-init.md) seeds this default map so routing works out of
-the box; `/v:models` discovers what is actually available per backend and rewrites
-the map (`agy models` for antigravity; a curated, user-overridable list for codex,
-which has no list command; native tier aliases for claude). Antigravity values above
-are illustrative placeholders. **NEVER `haiku` anywhere.**
+[`/v:init`](../../commands/v-init.md) seeds this per-stance default map so routing
+works out of the box; `/v:models` discovers what is actually available per backend
+and rewrites the map (`agy models` for antigravity; a curated, user-overridable list
+for codex, which has no list command; native tier aliases for claude). The resolver
+still **accepts the legacy flat shape** `{<backend>: {<tier>: model}}` (applied to
+every stance) for backward-compat — it auto-detects which shape it was handed.
+Antigravity values above are illustrative placeholders. **NEVER `haiku` anywhere.**
 
 ### Resolution (tier → model), at dispatch time
 
@@ -207,10 +229,14 @@ Precedence, lowest to highest:
 3. **`--explicit-model M`** (a manifest `model` override) always wins and skips the
    map entirely.
 
-The dispatcher passes the resolved `model` to the worker (plus `--effort` for codex →
-`-c model_reasoning_effort`). A job carrying an explicit manifest `model` **skips
-resolution** — the manifest pinned it directly. The resolver exits non-zero if a tier
-cannot be resolved for a backend, which the dispatcher treats as a hard stop. See
+Resolution is **stance-aware**: the dispatcher reads the manifest's `routing_stance`
+and passes `--stance <stance>` (default `balanced`) on every resolve, so the
+`standard` Claude cell resolves to `opus` under `balanced` and `sonnet` under
+`cost-aware`. The dispatcher passes the resolved `model` to the worker (plus
+`--effort` for codex → `-c model_reasoning_effort`). A job carrying an explicit
+manifest `model` **skips resolution** — the manifest pinned it directly. The resolver
+exits non-zero if a tier cannot be resolved for a backend, which the dispatcher treats
+as a hard stop. See
 [`execution-manifest.md`](execution-manifest.md) for the job-spec `tier`/`effort`/`model`
 fields and [adapter-codex](../backend-launcher/adapter-codex.md) /
 [adapter-claude](../backend-launcher/adapter-claude.md) for per-backend effort

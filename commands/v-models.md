@@ -27,20 +27,34 @@ model the user did not confirm. **NEVER assign `haiku` to any tier on any backen
 
 Read `.claude/compound-v.json` if it exists. Remember its current `models` block
 (seeded by [`/v:init`](v-init.md)) so you can show the user what is changing and
-preserve any backend they don't refresh this run. If the file or its `models` key
-is absent, fall back to the built-in default (the resolver carries the same one):
+preserve any backend they don't refresh this run. The `models` block is **per-stance**
+— shape `{<stance>: {<backend>: {<tier>: model}}}`. If the file or its `models` key
+is absent, fall back to the built-in default (the resolver carries the same one). Only
+the `claude` rows differ across stances — `cost-aware.claude.standard` is `sonnet`,
+everywhere else `standard` Claude is `opus`:
 
 ```jsonc
 "models": {
-  "claude":      { "deep": "opus",                  "standard": "opus",                  "light": "sonnet" },
-  "codex":       { "deep": "gpt-5.5",               "standard": "gpt-5.5",               "light": "gpt-5.3-codex-spark" },
-  "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" },
-  "cursor":      { "deep": "auto",                  "standard": "auto",                  "light": "auto" }
+  "balanced": {
+    "claude":      { "deep": "opus",                  "standard": "opus",                  "light": "sonnet" },
+    "codex":       { "deep": "gpt-5.5",               "standard": "gpt-5.5",               "light": "gpt-5.3-codex-spark" },
+    "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" },
+    "cursor":      { "deep": "auto",                  "standard": "auto",                  "light": "auto" }
+  },
+  "cost-aware": {
+    "claude":      { "deep": "opus",                  "standard": "sonnet",                "light": "sonnet" },
+    "codex":       { "deep": "gpt-5.5",               "standard": "gpt-5.5",               "light": "gpt-5.3-codex-spark" },
+    "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" },
+    "cursor":      { "deep": "auto",                  "standard": "auto",                  "light": "auto" }
+  }
+  // conservative + claude-only mirror balanced
 }
 ```
 
-If `{{args}}` named one backend, only discover + reassign that backend and leave the
-other two blocks exactly as they are.
+`/v:models` writes this **per-stance** shape; the resolver still accepts the **legacy
+flat shape** `{<backend>: {<tier>: model}}` (applied to every stance) for backward-compat.
+If `{{args}}` named one backend, only discover + reassign that backend (across every
+stance's block) and leave the other backends exactly as they are.
 
 ---
 
@@ -170,7 +184,9 @@ other key** in the file (`stance`, `backends`, `checked_at`, `workflows_accelera
 dir) if absent, seeding the non-`models` keys from `/v:init` conventions if they
 aren't there yet.
 
-Resulting shape (only `models` is this command's responsibility):
+Resulting shape (only `models` is this command's responsibility) — write the
+**per-stance** shape, refreshing each backend's row inside every stance block (only
+`cost-aware.claude.standard` differs: `sonnet`, not `opus`):
 
 ```jsonc
 {
@@ -178,13 +194,26 @@ Resulting shape (only `models` is this command's responsibility):
   "backends": ["…"],         // preserved
   "checked_at": "…",         // preserved
   "models": {
-    "claude":      { "deep": "opus",    "standard": "opus",    "light": "sonnet" },
-    "codex":       { "deep": "gpt-5.5", "standard": "gpt-5.5", "light": "gpt-5.3-codex-spark" },
-    "antigravity": { "deep": "…",       "standard": "…",       "light": "…" },
-    "cursor":      { "deep": "auto",    "standard": "auto",    "light": "auto" }
+    "balanced": {
+      "claude":      { "deep": "opus",    "standard": "opus",    "light": "sonnet" },
+      "codex":       { "deep": "gpt-5.5", "standard": "gpt-5.5", "light": "gpt-5.3-codex-spark" },
+      "antigravity": { "deep": "…",       "standard": "…",       "light": "…" },
+      "cursor":      { "deep": "auto",    "standard": "auto",    "light": "auto" }
+    },
+    "cost-aware": {
+      "claude":      { "deep": "opus",    "standard": "sonnet",  "light": "sonnet" },
+      "codex":       { "deep": "gpt-5.5", "standard": "gpt-5.5", "light": "gpt-5.3-codex-spark" },
+      "antigravity": { "deep": "…",       "standard": "…",       "light": "…" },
+      "cursor":      { "deep": "auto",    "standard": "auto",    "light": "auto" }
+    }
+    // conservative + claude-only mirror balanced
   }
 }
 ```
+
+The resolver still accepts the **legacy flat shape** `{<backend>: {<tier>: model}}`
+(applied to every stance) for backward-compat, so an older flat config keeps working;
+new writes use the per-stance shape above.
 
 The `models` map is **project-local config** — written into the project, not
 committed in the plugin repo (it is documented in
@@ -196,22 +225,29 @@ committed in the plugin repo (it is documented in
 ## Step 4 — Verify the map resolves
 
 Before declaring success, confirm the resolver agrees with the new map — this is the
-loop that proves routing will actually use what you wrote:
+loop that proves routing will actually use what you wrote. Pass `--stance` so the
+resolver reads the per-stance block you wrote (omitting it defaults to `balanced`):
 
 ```bash
-for b in claude codex antigravity; do
-  for t in deep standard light; do
-    python3 scripts/compound-v-resolve-model.py --backend "$b" --tier "$t" \
-      --config .claude/compound-v.json
+for s in balanced cost-aware; do
+  for b in claude codex antigravity; do
+    for t in deep standard light; do
+      python3 scripts/compound-v-resolve-model.py --backend "$b" --tier "$t" \
+        --stance "$s" --config .claude/compound-v.json
+    done
   done
 done
 ```
 
-Each line should be a JSON object whose `model` matches the cell you just assigned
-(the resolver's `--config models.<backend>.<tier>` override beats its built-in
-default). A non-zero exit or a mismatched model means the write didn't take — fix the
-JSON and re-run. (Skip the `codex` rows if codex is unavailable on this machine; the
-map entries are still valid for when it returns.)
+Each line should be a JSON object whose `model` matches the cell you just assigned for
+that stance (the resolver's per-stance `--config models.<stance>.<backend>.<tier>`
+override beats its built-in default; under a legacy flat config the `--stance` is
+ignored and the same map applies to every stance). In particular,
+`--backend claude --tier standard --stance cost-aware` must resolve to `sonnet`, while
+`--stance balanced` (or omitted) resolves to `opus`. A non-zero exit or a mismatched
+model means the write didn't take — fix the JSON and re-run. (Skip the `codex` rows if
+codex is unavailable on this machine; the map entries are still valid for when it
+returns.)
 
 ---
 
