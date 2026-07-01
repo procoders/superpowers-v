@@ -63,6 +63,19 @@ def _git(args, cwd):
     return out.stdout.strip()
 
 
+def _git_ok(args, cwd):
+    """Run `git -C <cwd> <args>`; return True iff it exits 0 — for predicate subcommands like
+    `merge-base --is-ancestor`, where the answer is the exit status, not stdout."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", cwd] + list(args),
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out.returncode == 0
+
+
 def _newest_mtime(path):
     """Newest mtime among working-tree FILES under `path`, EXCLUDING `.git`. None if unreadable
     or empty. Excluding `.git` means a commit/`git init` does not read as file-edit progress —
@@ -73,7 +86,9 @@ def _newest_mtime(path):
             dirs[:] = [d for d in dirs if d != ".git"]
             for name in files:
                 try:
-                    m = os.stat(os.path.join(root, name)).st_mtime
+                    # lstat, NOT stat: measure a symlink's OWN mtime, never the target's — a
+                    # symlink pointing at a fresh external file is not in-worktree progress.
+                    m = os.lstat(os.path.join(root, name)).st_mtime
                 except OSError:
                     continue
                 if newest is None or m > newest:
@@ -84,10 +99,16 @@ def _newest_mtime(path):
 
 
 def _pid_alive(pid):
-    """True iff the pid is a live process (signal 0 probe)."""
+    """True iff the pid is a live process. `os.kill(pid, 0)` raises ProcessLookupError (ESRCH)
+    when the pid is dead, but PermissionError (EPERM) when it is ALIVE and owned by another
+    user — so EPERM must read as alive, not dead."""
     try:
         os.kill(int(pid), 0)
-    except (OSError, ValueError, TypeError):
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except (ValueError, TypeError, OSError):
         return False
     return True
 
@@ -104,12 +125,16 @@ def classify_job(job, now, stale_sec):
 
     have_wt = bool(wt) and os.path.isdir(wt)
 
-    # 1. LIKELY-DONE — a commit landed past the dispatch baseline (notification stuck).
+    # 1. LIKELY-DONE — a commit landed ON TOP OF the dispatch baseline (notification stuck).
+    #    Require baseline to be an ANCESTOR of HEAD, not merely different: a reset, a checkout
+    #    to another branch, or an unrelated commit also makes HEAD != baseline but is NOT
+    #    "the job's work landed".
     if have_wt and baseline:
         head = _git(["rev-parse", "HEAD"], wt)
-        if head and head != baseline:
+        if (head and head != baseline
+                and _git_ok(["merge-base", "--is-ancestor", baseline, "HEAD"], wt)):
             return ("LIKELY-DONE",
-                    "worktree HEAD %s != baseline %s (committed, not yet collected)"
+                    "worktree HEAD %s is past baseline %s (committed, not yet collected)"
                     % (head[:7], str(baseline)[:7]),
                     None)
 
@@ -215,6 +240,15 @@ def _selftest():
                               capture_output=True, text=True, env=env).stdout.strip()
         check("no false LIKELY-DONE when HEAD == baseline",
               cls({"status": "running", "worktree": repo, "baseline": head}) != "LIKELY-DONE")
+        # ancestry guard (Codex-caught): HEAD != baseline but baseline NOT an ancestor of HEAD
+        # ⇒ NOT likely-done. Build a divergent sibling line; use the OTHER tip as baseline.
+        g("checkout", "-q", "-b", "side", baseline)
+        with open(os.path.join(repo, "s.txt"), "w") as fh:
+            fh.write("s")
+        g("add", "-A")
+        g("commit", "-q", "-m", "sibling commit")   # HEAD = side tip (child of baseline)
+        check("no false LIKELY-DONE when baseline is not an ancestor of HEAD",
+              cls({"status": "running", "worktree": repo, "baseline": head}) != "LIKELY-DONE")
 
     # --- WORKING: plain dir, fresh file (non-git ⇒ rev-parse fails ⇒ mtime path) ---
     with tempfile.TemporaryDirectory() as d:
@@ -238,6 +272,25 @@ def _selftest():
     dead.wait()
     check("DEAD: dead pid, no worktree",
           cls({"status": "running", "pid": dead.pid}) == "DEAD")
+    # EPERM guard (Codex-caught): pid 1 exists but a normal user cannot signal it ⇒ alive.
+    check("_pid_alive: EPERM (pid 1) reads as alive, not dead", _pid_alive(1) is True)
+
+    # symlink (Codex-caught): a stale worktree with a symlink to a FRESH external file must stay
+    # STALE — lstat measures the link's own mtime, not the target's.
+    if os.utime in getattr(os, "supports_follow_symlinks", set()):
+        with tempfile.TemporaryDirectory() as sd, tempfile.TemporaryDirectory() as ext:
+            with open(os.path.join(ext, "fresh.txt"), "w") as fh:
+                fh.write("fresh")
+            realf = os.path.join(sd, "old.txt")
+            with open(realf, "w") as fh:
+                fh.write("old")
+            link = os.path.join(sd, "ptr")
+            os.symlink(os.path.join(ext, "fresh.txt"), link)
+            aged = now - 4000
+            os.utime(realf, (aged, aged))
+            os.utime(link, (aged, aged), follow_symlinks=False)   # age the LINK itself
+            check("STALE despite a symlink to a fresh external file (lstat, not stat)",
+                  cls({"status": "running", "worktree": sd, "baseline": "deadbeef"}, stale=600) == "STALE")
 
     # --- UNKNOWN: nothing to probe / live pid but no FS signal ---
     check("UNKNOWN: no worktree/pid/log",

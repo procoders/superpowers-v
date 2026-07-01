@@ -117,10 +117,10 @@ This is the *instructed* half. The git-diff scope gate above is the *enforced* h
 
 ## Pinned `codex exec` flag set (verified live against codex-cli 0.130)
 
-The codex adapter MUST use exactly this flag set:
+The codex adapter MUST use exactly this flag set, launched **under the process-group supervisor with `stdin </dev/null`** per the non-negotiable rule above (never a bare `timeout … codex exec`):
 
 ```bash
-timeout "$timeout_sec" codex exec \
+python3 scripts/compound-v-run-with-timeout.py --timeout "$timeout_sec" -- codex exec \
   --cd "$WT" \
   --sandbox "$([ "$read_only" = true ] && echo read-only || echo workspace-write)" \
   --skip-git-repo-check \
@@ -128,7 +128,7 @@ timeout "$timeout_sec" codex exec \
   ${output_schema:+--output-schema "$output_schema"} \
   --output-last-message "$WT/.job_result.txt" \
   -c "sandbox_workspace_write.network_access=$network" \
-  "$prompt"
+  "$prompt" </dev/null
 ```
 
 Pinned facts (do not re-derive):
