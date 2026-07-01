@@ -31,4 +31,7 @@ indexing is [`/v:memory-refresh`](v-memory-refresh.md).
    **structurally**, never "accessible."
 
 When the pipeline (or refresh) finishes, report what was written, what the doctor recommended
-(advisory), and that `/v:memory-refresh` re-indexed the committed docs.
+(advisory — including **MCP / external-tool recommendations** via `recommend-mcp`: CLI-over-MCP so a
+`github.com` remote yields the `gh` CLI not a GitHub MCP, least-privilege flags pre-filled, plus any
+lethal-trifecta warning with its remedy), whether an `.mcp.json` diff was written (**only** on
+confirmation, merged additively), and that `/v:memory-refresh` re-indexed the committed docs.
