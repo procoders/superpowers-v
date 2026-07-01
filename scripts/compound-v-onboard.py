@@ -235,6 +235,117 @@ def design_lint(file: str) -> dict:
         return {"ok": False, "errors": -1, "warnings": 0, "findings": [], "note": "tool-unavailable"}
 
 
+# --------------------------------------------------------------------------- MCP recommender
+# Signal -> tool recommendations. CURATED + currency-verified (2026-07-01, WebSearch). Bias: an
+# already-authenticated CLI over an MCP server when a good one exists. github.com -> gh CLI (NOT
+# a GitHub MCP: avoids the broad-PAT toxic flow). Least-privilege flags pre-filled.
+MCP_RULES = {
+    "github":   {"id": "github", "kind": "cli", "tool": "gh CLI", "flags": [], "trifecta": False,
+                 "note": "Use the authenticated gh CLI, NOT a GitHub MCP server — avoids the broad-PAT toxic flow."},
+    "supabase": {"id": "supabase", "kind": "mcp", "tool": "Supabase MCP",
+                 "package": "@supabase/mcp-server-supabase",
+                 "flags": ["--read-only", "--project-ref=<dev-or-branch-ref>"], "trifecta": True,
+                 "note": "Read-only + project-scoped defuses the 2025 service-role toxic flow at the source."},
+    "postgres": {"id": "postgres", "kind": "mcp", "tool": "Postgres MCP",
+                 "package": "crystaldba/postgres-mcp", "flags": ["--access-mode=restricted"], "trifecta": True,
+                 "note": "Restricted access mode = read-only, safe for exploration."},
+    "playwright": {"id": "playwright", "kind": "mcp", "tool": "Playwright MCP",
+                   "package": "@playwright/mcp@>=0.0.40", "flags": [], "trifecta": False,
+                   "note": "Pin >=0.0.40 (CVE-2025-9611: DNS-rebinding via missing Origin validation)."},
+    "context7": {"id": "context7", "kind": "mcp", "tool": "Context7",
+                 "package": "@upstash/context7-mcp", "flags": [], "trifecta": False,
+                 "note": "Up-to-date library docs for fast-moving deps."},
+    "sentry":   {"id": "sentry", "kind": "mcp", "tool": "Sentry MCP",
+                 "package": "@sentry/mcp-server", "flags": [], "trifecta": False,
+                 "note": "Error/issue context from Sentry."},
+}
+FASTMOVING = ("react", "next", "vue", "svelte", "@sveltejs/kit", "nuxt", "tailwindcss",
+              "prisma", "@prisma/client", "astro", "solid-js")
+TRIFECTA_REMEDY = ("run read-only (pre-filled) + scope to a dev/branch DB (not prod), and keep "
+                   "it a single-repo session so untrusted content can't exfiltrate private data")
+
+
+def _git_remote(repo):
+    try:
+        out = subprocess.run(["git", "-C", repo, "remote", "-v"],
+                             capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() if out.returncode == 0 else None
+
+
+def _pkg_deps(repo):
+    """Dependency names from package.json (deps + devDeps). Returns ({name: ver}, evidence|None)."""
+    pj = os.path.join(repo, "package.json")
+    if not os.path.isfile(pj):
+        return {}, None
+    try:
+        with open(pj) as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}, None
+    deps = {}
+    for key in ("dependencies", "devDependencies"):
+        d = data.get(key)
+        if isinstance(d, dict):
+            deps.update(d)
+    return deps, "package.json"
+
+
+def _rec(rule_id, evidence):
+    r = dict(MCP_RULES[rule_id])
+    r["evidence"] = evidence
+    return r
+
+
+def recommend_mcp(repo):
+    """Deterministic signal -> tool recommender. Returns {recommendations, warnings}. Each
+    recommendation is an MCP_RULES row + `evidence`; an unknown stack yields an empty set (no
+    invented tools). CLI-over-MCP bias: a github remote yields the gh CLI, never a GitHub MCP."""
+    recs, seen = [], set()
+
+    def add(rule_id, evidence):
+        if rule_id not in seen:
+            recs.append(_rec(rule_id, evidence))
+            seen.add(rule_id)
+
+    remote = _git_remote(repo)
+    if remote and "github.com" in remote:
+        add("github", "git remote references github.com")
+
+    deps, dep_ev = _pkg_deps(repo)
+    if any(d.startswith("@supabase/") for d in deps):
+        add("supabase", dep_ev)
+    if any(d.startswith("@sentry/") for d in deps):
+        add("sentry", dep_ev)
+    if any(d in deps for d in ("pg", "prisma", "@prisma/client")):
+        add("postgres", dep_ev)
+    if any(d in deps for d in FASTMOVING):
+        add("context7", dep_ev)
+
+    for name in ("playwright.config.ts", "playwright.config.js", "playwright.config.mjs"):
+        if os.path.isfile(os.path.join(repo, name)):
+            add("playwright", name)
+            break
+
+    warnings = [{"id": r["id"],
+                 "message": "%s combines private-data access with write capability (lethal-trifecta risk)." % r["tool"],
+                 "remedy": TRIFECTA_REMEDY}
+                for r in recs if r["trifecta"]]
+    return {"recommendations": recs, "warnings": warnings}
+
+
+def mcp_json_config(recommendations, existing=None):
+    """Additive .mcp.json for the kind=='mcp' recommendations. Never clobbers an existing
+    same-named server; CLI recs (e.g. gh) are excluded (surfaced as setup instructions)."""
+    servers = dict((existing or {}).get("mcpServers", {}))
+    for r in recommendations:
+        if r.get("kind") != "mcp" or r["id"] in servers:
+            continue
+        servers[r["id"]] = {"command": "npx", "args": ["-y", r["package"]] + list(r["flags"])}
+    return {"mcpServers": servers}
+
+
 def _selftest() -> int:
     fails = []
     def check(name, cond):
@@ -340,6 +451,50 @@ def _selftest() -> int:
     finally:
         shutil.rmtree(d6, ignore_errors=True)
 
+    # --- recommend-mcp (v2.5.1) ---
+    d7 = tempfile.mkdtemp()
+    try:
+        _sp.run(["git", "-C", d7, "init", "-q"], check=True, capture_output=True)
+        _sp.run(["git", "-C", d7, "remote", "add", "origin",
+                 "https://github.com/acme/app.git"], check=True, capture_output=True)
+        with open(os.path.join(d7, "package.json"), "w") as fh:
+            json.dump({"dependencies": {"@supabase/supabase-js": "^2", "next": "^15", "pg": "^8"}}, fh)
+        with open(os.path.join(d7, "playwright.config.ts"), "w") as fh:
+            fh.write("export default {};\n")
+        out = recommend_mcp(d7)
+        ids = sorted(r["id"] for r in out["recommendations"])
+        check("recommend: github -> gh CLI (kind cli, no MCP)",
+              any(r["id"] == "github" and r["kind"] == "cli" for r in out["recommendations"]))
+        check("recommend: supabase MCP with --read-only",
+              any(r["id"] == "supabase" and "--read-only" in r["flags"] for r in out["recommendations"]))
+        check("recommend: postgres (pg dep) restricted",
+              any(r["id"] == "postgres" and "--access-mode=restricted" in r["flags"] for r in out["recommendations"]))
+        check("recommend: fast-moving dep -> context7", "context7" in ids)
+        check("recommend: playwright.config -> playwright MCP", "playwright" in ids)
+        check("recommend: every rec carries evidence",
+              all(r.get("evidence") for r in out["recommendations"]))
+        check("recommend: lethal-trifecta warning w/ remedy for supabase/postgres",
+              any(w["id"] in ("supabase", "postgres") and w["remedy"] for w in out["warnings"]))
+        cfg = mcp_json_config(out["recommendations"])
+        check("mcp_json: cli (github) excluded, supabase MCP present",
+              "github" not in cfg["mcpServers"] and "supabase" in cfg["mcpServers"])
+        check("mcp_json: supabase carries --read-only",
+              "--read-only" in cfg["mcpServers"]["supabase"]["args"])
+        merged = mcp_json_config(out["recommendations"], existing={"mcpServers": {"custom": {"command": "x"}}})
+        check("mcp_json: additive merge preserves existing",
+              "custom" in merged["mcpServers"] and "supabase" in merged["mcpServers"])
+        clobber = mcp_json_config(out["recommendations"], existing={"mcpServers": {"supabase": {"command": "MINE"}}})
+        check("mcp_json: never clobbers an existing same-name server",
+              clobber["mcpServers"]["supabase"]["command"] == "MINE")
+        d7b = tempfile.mkdtemp()
+        try:
+            check("recommend: unknown stack -> empty set",
+                  recommend_mcp(d7b)["recommendations"] == [])
+        finally:
+            shutil.rmtree(d7b, ignore_errors=True)
+    finally:
+        shutil.rmtree(d7, ignore_errors=True)
+
     print("FAILED %d" % len(fails) if fails else "OK")
     return 1 if fails else 0
 
@@ -362,6 +517,10 @@ def build_parser():
     sp = sub.add_parser("scan-output")
     sp.add_argument("--files", nargs="+", required=True)
     sp.add_argument("--repo", default="."); sp.add_argument("--json", action="store_true")
+    sp = sub.add_parser("recommend-mcp")
+    sp.add_argument("--repo", default=".")
+    sp.add_argument("--mcp-config", default=None, help="existing .mcp.json to merge into (diff view)")
+    sp.add_argument("--json", action="store_true")
     return p
 
 
@@ -387,6 +546,19 @@ def main(argv) -> int:
         result = scan_output_files(os.path.abspath(args.repo), args.files)
         print(json.dumps(result, indent=2))
         return 0 if result["clean"] else 2
+    if args.cmd == "recommend-mcp":
+        repo = os.path.abspath(args.repo)
+        out = recommend_mcp(repo)
+        existing = None
+        if args.mcp_config and os.path.isfile(args.mcp_config):
+            try:
+                with open(args.mcp_config) as fh:
+                    existing = json.load(fh)
+            except (OSError, ValueError):
+                existing = None
+        out["mcp_json"] = mcp_json_config(out["recommendations"], existing)
+        print(json.dumps(out, indent=2))
+        return 0
     build_parser().print_help(); return 1
 
 
