@@ -55,29 +55,40 @@ Worked example: [`examples/manifest.example.yaml`](../../examples/manifest.examp
 | Tier | Strongest fit | Routes to (Balanced) |
 |---|---|---|
 | `deep` | Strongest reasoning: architecture, security/auth/payments, designing tests, external APIs, **ALL reviewers**, shared-foundation Task 0. | claude `opus`, codex `gpt-5.5`, antigravity top model, cursor `auto`. |
-| `standard` | Bounded core/feature build, incl. large isolated codex work. | claude `opus`, codex `gpt-5.5`, antigravity mid model, cursor `auto`. |
+| `standard` | Bounded core/feature build, incl. large isolated codex work. | claude `opus` (`sonnet` under the `cost-aware` stance), codex `gpt-5.5`, antigravity mid model, cursor `auto`. |
 | `light` | Mechanical single-file / docs / i18n. | claude `sonnet`, codex spark model, antigravity flash model, cursor `auto`. |
 
 `effort ∈ {low, medium, high}` is orthogonal to tier. The default pairing (`deep→high`, `standard→medium`, `light→low`) is just a default — a task-type may pin a different effort independently.
 
+Resolution is **stance-aware**: the `standard` Claude row resolves to `opus` under the `balanced` stance and `sonnet` under `cost-aware` (the resolver's `cost-aware.claude.standard = sonnet`; `cost-aware.claude.deep` stays `opus`). The dispatcher reads the manifest's `routing_stance` and passes it (`--stance`) to the resolver on every resolve; omitting it defaults to `balanced`. Only the `standard` Claude cell shifts — `deep` (incl. all reviewers + sensitive surfaces) is `opus` in every stance, and `codex`/`antigravity`/`cursor` are identical across stances.
+
 ### Config `models` map (project `.claude/compound-v.json`)
 
-The concrete model behind each tier lives in a **refreshable** map in the project config — not hardcoded in any job. This is what lets the plugin survive model churn: when models change, refresh the map (`/v:models`), not the manifests. Shape:
+The concrete model behind each tier lives in a **refreshable** map in the project config — not hardcoded in any job. This is what lets the plugin survive model churn: when models change, refresh the map (`/v:models`), not the manifests. The map is **per-stance** — its shape is `{<stance>: {<backend>: {<tier>: model}}}`. Only the `claude` rows differ across stances (`cost-aware.claude.standard = sonnet`; everywhere else `standard` is `opus`); `codex`/`antigravity`/`cursor` are identical in every stance:
 
 ```jsonc
 "models": {
-  "claude":      { "deep": "opus",                      "standard": "opus",                       "light": "sonnet" },
-  "codex":       { "deep": "gpt-5.5",                    "standard": "gpt-5.5",                     "light": "gpt-5.3-codex-spark" },
-  "antigravity": { "deep": "Gemini 3.1 Pro (High)",     "standard": "Gemini 3.1 Pro (Low)",        "light": "Gemini 3.5 Flash (Low)" },
-  "cursor":      { "deep": "auto",                       "standard": "auto",                        "light": "auto" }
+  "balanced": {
+    "claude":      { "deep": "opus",                      "standard": "opus",                       "light": "sonnet" },
+    "codex":       { "deep": "gpt-5.5",                    "standard": "gpt-5.5",                     "light": "gpt-5.3-codex-spark" },
+    "antigravity": { "deep": "Gemini 3.1 Pro (High)",     "standard": "Gemini 3.1 Pro (Low)",        "light": "Gemini 3.5 Flash (Low)" },
+    "cursor":      { "deep": "auto",                       "standard": "auto",                        "light": "auto" }
+  },
+  "cost-aware": {
+    "claude":      { "deep": "opus",                      "standard": "sonnet",                     "light": "sonnet" },
+    "codex":       { "deep": "gpt-5.5",                    "standard": "gpt-5.5",                     "light": "gpt-5.3-codex-spark" },
+    "antigravity": { "deep": "Gemini 3.1 Pro (High)",     "standard": "Gemini 3.1 Pro (Low)",        "light": "Gemini 3.5 Flash (Low)" },
+    "cursor":      { "deep": "auto",                       "standard": "auto",                        "light": "auto" }
+  }
+  // conservative + claude-only mirror balanced
 }
 ```
 
-The map is **documented, not committed** in this repo (it is project-local config). `/v:init` seeds the default map so routing works out of the box; `/v:models` discovers available models per backend and rewrites the map. NEVER `haiku` anywhere. Antigravity values are illustrative placeholders refreshed by `agy models`; codex has no list command, so its map is curated + user-overridable; claude uses native tier aliases.
+The map is **documented, not committed** in this repo (it is project-local config). `/v:init` seeds the per-stance default map so routing works out of the box; `/v:models` discovers available models per backend and rewrites the map. The resolver also **accepts the legacy flat shape** `{<backend>: {<tier>: model}}` (applied to every stance) for backward-compat — it auto-detects which shape it was given. NEVER `haiku` anywhere. Antigravity values are illustrative placeholders refreshed by `agy models`; codex has no list command, so its map is curated + user-overridable; claude uses native tier aliases.
 
 ### Resolution (tier → model)
 
-[`scripts/compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py) is the resolver the dispatcher runs **before** invoking any backend. Given `--backend`, `--tier`, optional `--effort`, and optional `--config`, it returns one JSON object on stdout — `{ "backend", "tier", "model", "effort" }` — using a built-in default map (the one above) that an `--config` `models.<backend>.<tier>` entry overrides, and an `--explicit-model` (the manifest `model` override) always wins. It is generic: no backend-specific routing logic baked in. See [`routing-policy.md`](routing-policy.md) for the task-type → (tier, effort) table.
+[`scripts/compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py) is the resolver the dispatcher runs **before** invoking any backend. Given `--backend`, `--tier`, optional `--effort`, optional `--stance` (default `balanced`, threaded from the manifest's `routing_stance`), and optional `--config`, it returns one JSON object on stdout — `{ "backend", "tier", "model", "effort" }` — using the stance's built-in default map (the one above) that a `--config` cell overrides (per-stance `models.<stance>.<backend>.<tier>` or legacy flat `models.<backend>.<tier>`), and an `--explicit-model` (the manifest `model` override) always wins. It is generic: no backend-specific routing logic baked in. See [`routing-policy.md`](routing-policy.md) for the task-type → (tier, effort) table.
 
 ---
 

@@ -1,0 +1,18 @@
+{
+  "run_id": "2026-07-01-v2.4.0-stance-aware-models",
+  "phase": "REVIEWED",
+  "updated_at": "2026-07-01T00:55:00Z",
+  "review_gate": { "verdict": "APPROVED", "spec": "PASS", "quality": "PASS", "integration": "PASS", "acceptance": "5/5" },
+  "total_retries": 0,
+  "max_total_retries": 12,
+  "cooldowns": {},
+  "circuit_open": {},
+  "attempts": {},
+  "jobs": {
+    "task-0-resolver":           { "status": "done", "isolation": "direct",   "worktree": null, "session_id": null, "commit": "acfef3d", "baseline": "6942b6168c4156c812fa4f0fbd6218ba11d96703", "scope_gate": "PASS", "selftest": "39/39" },
+    "task-1-reviewer-gate":      { "status": "done", "isolation": "worktree", "worktree": null, "session_id": null, "commit": "b473b4e", "merged_commit": "dc4f645", "baseline": "acfef3dbe72c484381d60a0d1198c9657fca1835", "scope_gate": "PASS" },
+    "task-2-callsites":          { "status": "done", "isolation": "worktree", "worktree": null, "session_id": null, "commit": "5829fe2", "merged_commit": "dc4f645", "baseline": "acfef3dbe72c484381d60a0d1198c9657fca1835", "scope_gate": "PASS" },
+    "task-3-config-docs":        { "status": "done", "isolation": "worktree", "worktree": null, "session_id": null, "commit": "36f689e", "merged_commit": "dc4f645", "baseline": "acfef3dbe72c484381d60a0d1198c9657fca1835", "scope_gate": "PASS" },
+    "task-4-integration-review": { "status": "done", "isolation": "direct",   "worktree": null, "session_id": null, "verdict": "APPROVED" }
+  }
+}

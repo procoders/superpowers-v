@@ -1,0 +1,7 @@
+docs/superpowers/execution/2026-07-01-v2.4.0-stance-aware-models/allow/task-0-resolver.txt
+docs/superpowers/execution/2026-07-01-v2.4.0-stance-aware-models/allow/task-1-reviewer-gate.txt
+docs/superpowers/execution/2026-07-01-v2.4.0-stance-aware-models/allow/task-2-callsites.txt
+docs/superpowers/execution/2026-07-01-v2.4.0-stance-aware-models/allow/task-3-config-docs.txt
+docs/superpowers/execution/2026-07-01-v2.4.0-stance-aware-models/manifest.yaml
+docs/superpowers/execution/2026-07-01-v2.4.0-stance-aware-models/state.json
+docs/superpowers/execution/2026-07-01-v2.4.0-stance-aware-models/task-0.preexist.txt

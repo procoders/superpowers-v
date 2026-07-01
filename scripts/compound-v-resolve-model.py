@@ -49,47 +49,50 @@ import sys
 # Built-in default model map. Mirrors the documented seed in /v:init and the
 # /v:models refresh surface. NEVER 'haiku' anywhere.
 # --------------------------------------------------------------------------- #
-DEFAULT_MODELS = {
-    "claude": {"deep": "opus", "standard": "opus", "light": "sonnet"},
-    "codex": {
-        "deep": "gpt-5.5",
-        "standard": "gpt-5.5",
-        "light": "gpt-5.3-codex-spark",
-    },
-    # Antigravity (agy) map below is a FALLBACK default. The live catalog IS discoverable
-    # headlessly — `agy models </dev/null` returns it in ~2s (the bare command waits on
-    # stdin; the redirect is the same fix as `agy --print`). `/v:models` and `/v:init` pipe
-    # it through compound-v-discover-models.py to refresh `.claude/compound-v.json`, which
-    # OVERRIDES this map. These fallback names are VERIFIED against `agy models` (1.0.13)
-    # and accepted by `agy --model` live.
-    # Effort is baked into the model NAME for agy (unlike codex/claude, which take a
-    # separate effort flag), so each tier picks a name+effort combo; refresh via
-    # /v:models. The worker omits `--model` entirely if the resolved value is empty.
-    # Gemini family is chosen for error-decorrelation (agy can also serve
-    # "Claude Opus 4.6 (Thinking)" / "GPT-OSS 120B (Medium)" — override with --model).
-    "antigravity": {
-        "deep": "Gemini 3.1 Pro (High)",
-        "standard": "Gemini 3.1 Pro (Low)",
-        "light": "Gemini 3.5 Flash (Low)",
-    },
-    # Cursor (cursor-agent): "auto" is the SAFE DEFAULT for every tier. VERIFIED LIVE that a
-    # Cursor FREE plan can ONLY use Auto — passing a named model (sonnet-4 / gpt-5 / …) fails
-    # with "ActionRequiredError: Named models unavailable. Free plans can only use Auto." Both
-    # `--model auto` and omitting --model work on free AND paid plans, so all tiers map to
-    # "auto". On a PAID plan, override with named per-tier ids in .claude/compound-v.json via
-    # /v:models (cursor-agent has NO `models` list command, so no auto-discovery). Tiering is
-    # therefore a no-op on the default (free) — Auto picks the model — by design. Cursor is the
-    # LOWER-TRUST tier (no kernel sandbox; `-f` required headlessly) — like antigravity.
-    "cursor": {
-        "deep": "auto",
-        "standard": "auto",
-        "light": "auto",
-    },
+# Per-backend tier→model maps. `claude` has two stance variants — cost-aware routes the
+# `standard` tier to sonnet (Sonnet 5 via Claude Code's native alias); deep stays opus.
+# codex/antigravity/cursor are identical across stances. NEVER 'haiku' anywhere.
+_CLAUDE_DEFAULT = {"deep": "opus", "standard": "opus", "light": "sonnet"}
+_CLAUDE_COST_AWARE = {"deep": "opus", "standard": "sonnet", "light": "sonnet"}
+_CODEX = {"deep": "gpt-5.5", "standard": "gpt-5.5", "light": "gpt-5.3-codex-spark"}
+# Antigravity (agy): FALLBACK default; the live catalog is discoverable headlessly
+# (`agy models </dev/null`), and /v:models/+/v:init pipe it through
+# compound-v-discover-models.py to OVERRIDE this map in .claude/compound-v.json. Names
+# VERIFIED against `agy models` (1.0.13). Effort is baked into the agy model NAME (no
+# separate effort flag); the worker omits --model if the value is empty. Gemini family
+# chosen for error-decorrelation; override with --model.
+_ANTIGRAVITY = {"deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)",
+                "light": "Gemini 3.5 Flash (Low)"}
+# Cursor (cursor-agent): "auto" is the SAFE DEFAULT for every tier — a FREE plan can ONLY
+# use Auto (named models error: "Named models unavailable"). Paid plans override per-tier
+# via /v:models (cursor-agent has no `models` list command). Lower-trust tier (no kernel
+# sandbox; headless -f required).
+_CURSOR = {"deep": "auto", "standard": "auto", "light": "auto"}
+
+
+def _stance_map(claude_map):
+    """Assemble a full {backend -> {tier -> model}} map for one stance. Only the claude
+    sub-map varies by stance; codex/antigravity/cursor are shared (read-only)."""
+    return {"claude": claude_map, "codex": _CODEX, "antigravity": _ANTIGRAVITY, "cursor": _CURSOR}
+
+
+# Built-in default map, now keyed by STANCE.
+DEFAULT_MODELS_BY_STANCE = {
+    "balanced": _stance_map(_CLAUDE_DEFAULT),
+    "conservative": _stance_map(_CLAUDE_DEFAULT),
+    "cost-aware": _stance_map(_CLAUDE_COST_AWARE),
+    "claude-only": _stance_map(_CLAUDE_DEFAULT),
 }
+# Derived alias so stance-unaware references (selftest loop, the resolve() fallback) keep
+# working unchanged: balanced is the default stance.
+DEFAULT_MODELS = DEFAULT_MODELS_BY_STANCE["balanced"]
 
 BACKENDS = ("claude", "codex", "antigravity", "cursor")
 TIERS = ("deep", "standard", "light")
 EFFORTS = ("low", "medium", "high")
+# Stance vocabulary — DUPLICATED on purpose from compound-v-validate-manifest.py:VALID_STANCES.
+# Both scripts are standalone, stdlib-only CLIs; do NOT introduce a shared import. Keep in sync.
+VALID_STANCES = ("balanced", "conservative", "cost-aware", "claude-only")
 
 # Default effort pairing when --effort is omitted. Independently tunable per
 # task-type by passing --effort explicitly; this is only the fallback.
@@ -119,64 +122,55 @@ def load_config_models(config_path):
     return models
 
 
-def resolve(backend, tier, effort=None, config_models=None, explicit_model=None):
-    """
-    Resolve to a concrete model. Returns the output dict.
+def _config_cell(config_models, stance, backend, tier):
+    """Config override for (stance, backend, tier). Supports BOTH the legacy flat shape
+    {backend: {tier: model}} (applied to every stance) and the per-stance shape
+    {stance: {backend: {tier: model}}}, discriminated by whether EVERY top-level key is a
+    stance name. Returns a non-empty model string, or None to fall back to the default map."""
+    if not config_models:
+        return None
+    keys = list(config_models.keys())
+    if keys and all(k in VALID_STANCES for k in keys):           # per-stance shape
+        stance_cfg = config_models.get(stance)
+        backend_map = stance_cfg.get(backend) if isinstance(stance_cfg, dict) else None
+    else:                                                         # legacy flat shape
+        backend_map = config_models.get(backend)
+    if isinstance(backend_map, dict):
+        candidate = backend_map.get(tier)
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate
+    return None
 
-    Precedence: explicit_model > config_models[backend][tier] > DEFAULT_MODELS.
-    Raises ValueError on unknown backend/tier or an unresolvable cell.
-    """
+
+def resolve(backend, tier, effort=None, config_models=None, explicit_model=None, stance="balanced"):
+    """Resolve to a concrete model. Precedence: explicit_model > config_models > the
+    stance's built-in default map. Raises ValueError on unknown backend/tier/effort/stance
+    or an unresolvable cell."""
     if backend not in BACKENDS:
-        raise ValueError(
-            "unknown backend '%s' (expected one of %s)"
-            % (backend, ", ".join(BACKENDS))
-        )
+        raise ValueError("unknown backend '%s' (expected one of %s)" % (backend, ", ".join(BACKENDS)))
     if tier not in TIERS:
-        raise ValueError(
-            "unknown tier '%s' (expected one of %s)" % (tier, ", ".join(TIERS))
-        )
+        raise ValueError("unknown tier '%s' (expected one of %s)" % (tier, ", ".join(TIERS)))
     if effort is not None and effort not in EFFORTS:
-        raise ValueError(
-            "unknown effort '%s' (expected one of %s)"
-            % (effort, ", ".join(EFFORTS))
-        )
+        raise ValueError("unknown effort '%s' (expected one of %s)" % (effort, ", ".join(EFFORTS)))
+    if stance not in VALID_STANCES:
+        raise ValueError("unknown stance '%s' (expected one of %s)" % (stance, ", ".join(VALID_STANCES)))
 
     resolved_effort = effort if effort is not None else DEFAULT_EFFORT_FOR_TIER[tier]
 
-    # Highest precedence: an explicit manifest model override skips the map.
     if explicit_model:
-        return {
-            "backend": backend,
-            "tier": tier,
-            "model": explicit_model,
-            "effort": resolved_effort,
-        }
+        return {"backend": backend, "tier": tier, "model": explicit_model, "effort": resolved_effort}
 
-    model = None
-    # Config override for this single (backend, tier) cell, if present & valid.
-    if config_models:
-        backend_map = config_models.get(backend)
-        if isinstance(backend_map, dict):
-            candidate = backend_map.get(tier)
-            if isinstance(candidate, str) and candidate.strip():
-                model = candidate
-
-    # Fall back to the built-in default map.
+    model = _config_cell(config_models, stance, backend, tier)
     if model is None:
-        model = DEFAULT_MODELS.get(backend, {}).get(tier)
+        model = DEFAULT_MODELS_BY_STANCE[stance].get(backend, {}).get(tier)
 
     if not model:
         raise ValueError(
-            "cannot resolve a model for backend '%s' tier '%s' "
-            "(no config override and no built-in default)" % (backend, tier)
+            "cannot resolve a model for stance '%s' backend '%s' tier '%s' "
+            "(no config override and no built-in default)" % (stance, backend, tier)
         )
 
-    return {
-        "backend": backend,
-        "tier": tier,
-        "model": model,
-        "effort": resolved_effort,
-    }
+    return {"backend": backend, "tier": tier, "model": model, "effort": resolved_effort}
 
 
 def main(argv):
@@ -190,6 +184,8 @@ def main(argv):
     parser.add_argument("--backend", required=True, choices=list(BACKENDS))
     parser.add_argument("--tier", required=True, choices=list(TIERS))
     parser.add_argument("--effort", default=None, choices=list(EFFORTS))
+    parser.add_argument("--stance", default="balanced", choices=list(VALID_STANCES),
+                        help="routing stance (default balanced)")
     parser.add_argument("--config", default=None, help="path to compound-v.json")
     parser.add_argument(
         "--explicit-model",
@@ -214,6 +210,7 @@ def main(argv):
             effort=args.effort,
             config_models=config_models,
             explicit_model=args.explicit_model,
+            stance=args.stance,
         )
     except ValueError as e:
         print(json.dumps({"error": str(e)}), file=sys.stderr)
@@ -236,6 +233,13 @@ def _selftest():
             print("  FAIL - %s" % name)
             failures.append(name)
 
+    def raises(fn):
+        try:
+            fn()
+            return False
+        except ValueError:
+            return True
+
     # Default resolution for every (backend, tier) cell.
     for backend in BACKENDS:
         for tier in TIERS:
@@ -254,9 +258,9 @@ def _selftest():
         and resolve("antigravity", "deep")["effort"] == "high",
     )
 
-    # No 'haiku' anywhere in the default map.
-    flat = json.dumps(DEFAULT_MODELS).lower()
-    expect("no haiku in default map", "haiku" not in flat)
+    # No 'haiku' anywhere in any stance map.
+    flat = json.dumps(DEFAULT_MODELS_BY_STANCE).lower()
+    expect("no haiku in any stance map", "haiku" not in flat)
 
     # Default effort pairing when --effort omitted.
     expect("deep default effort high", resolve("claude", "deep")["effort"] == "high")
@@ -308,14 +312,34 @@ def _selftest():
         resolve("claude", "deep", explicit_model="opus")["effort"] == "high",
     )
 
-    # Unknown backend / tier / effort raise.
-    def raises(fn):
-        try:
-            fn()
-            return False
-        except ValueError:
-            return True
+    # --- stance-aware resolution (v2.4.0) ---
+    expect("default stance is balanced (claude/standard -> opus)",
+           resolve("claude", "standard")["model"] == "opus")
+    expect("cost-aware claude/standard -> sonnet",
+           resolve("claude", "standard", stance="cost-aware")["model"] == "sonnet")
+    expect("cost-aware claude/deep stays opus (sensitive/reviewer guard)",
+           resolve("claude", "deep", stance="cost-aware")["model"] == "opus")
+    expect("cost-aware claude/light -> sonnet",
+           resolve("claude", "light", stance="cost-aware")["model"] == "sonnet")
+    expect("cost-aware codex/standard unchanged",
+           resolve("codex", "standard", stance="cost-aware")["model"]
+           == DEFAULT_MODELS["codex"]["standard"])
+    expect("balanced claude/standard -> opus",
+           resolve("claude", "standard", stance="balanced")["model"] == "opus")
+    expect("unknown stance raises", raises(lambda: resolve("claude", "deep", stance="turbo")))
+    _flat = {"claude": {"standard": "flat-override"}}
+    expect("legacy flat config applies under balanced",
+           resolve("claude", "standard", config_models=_flat)["model"] == "flat-override")
+    expect("legacy flat config applies under cost-aware too",
+           resolve("claude", "standard", stance="cost-aware", config_models=_flat)["model"] == "flat-override")
+    _perstance = {"cost-aware": {"claude": {"standard": "perstance-override"}}}
+    expect("per-stance config overrides its stance",
+           resolve("claude", "standard", stance="cost-aware", config_models=_perstance)["model"]
+           == "perstance-override")
+    expect("per-stance config leaves other stances on built-in default",
+           resolve("claude", "standard", stance="balanced", config_models=_perstance)["model"] == "opus")
 
+    # Unknown backend / tier / effort raise.
     expect("unknown backend raises", raises(lambda: resolve("gemini", "deep")))
     expect("unknown tier raises", raises(lambda: resolve("claude", "turbo")))
     expect(

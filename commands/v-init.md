@@ -270,13 +270,25 @@ Write **both**. Create parent dirs as needed.
   "epic":   { "max_features": 1 },
   "review": { "cross_model": false },
   "models": {
-    "claude":      { "deep": "opus",                  "standard": "opus",                  "light": "sonnet" },
-    "codex":       { "deep": "gpt-5.5",               "standard": "gpt-5.5",               "light": "gpt-5.3-codex-spark" },
-    "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" },
-    "cursor":      { "deep": "auto",                  "standard": "auto",                  "light": "auto" }
+    "balanced": {
+      "claude":      { "deep": "opus",                  "standard": "opus",                  "light": "sonnet" },
+      "codex":       { "deep": "gpt-5.5",               "standard": "gpt-5.5",               "light": "gpt-5.3-codex-spark" },
+      "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" },
+      "cursor":      { "deep": "auto",                  "standard": "auto",                  "light": "auto" }
+    },
+    "cost-aware": {
+      "claude":      { "deep": "opus",                  "standard": "sonnet",                "light": "sonnet" },
+      "codex":       { "deep": "gpt-5.5",               "standard": "gpt-5.5",               "light": "gpt-5.3-codex-spark" },
+      "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" },
+      "cursor":      { "deep": "auto",                  "standard": "auto",                  "light": "auto" }
+    }
   }
 }
 ```
+
+(`conservative` and `claude-only` mirror `balanced` — seed those two stance blocks
+identically to `balanced`. Only `cost-aware.claude.standard` differs: `sonnet`, not
+`opus`; `cost-aware.claude.deep` stays `opus`.)
 
 - `stance` = the stance chosen in Step 3.
 - `backends` = the usable set: always includes `"claude"`; add `"codex"` if Codex is
@@ -302,12 +314,19 @@ Write **both**. Create parent dirs as needed.
 - **`review.cross_model`** (default `false`) = the Step 3c toggle; when `true`, high-stakes
   plans get an automatic Codex second opinion ([`/v:review-plan`](v-review-plan.md)) before
   dispatch.
-- **`models` — SEED the default tier→model map (exactly the block above)** so
-  intent-based routing resolves out of the box even with no further setup. This
-  is the same default the resolver
+- **`models` — SEED the default per-stance tier→model map (exactly the block above)** so
+  intent-based routing resolves out of the box even with no further setup. The map is
+  **per-stance** — shape `{<stance>: {<backend>: {<tier>: model}}}`. Only the `claude`
+  rows differ across stances: `cost-aware.claude.standard` is `sonnet` (Sonnet 5),
+  everywhere else `standard` Claude is `opus`, and `cost-aware.claude.deep` stays `opus`;
+  `codex`/`antigravity`/`cursor` are identical in every stance. This is the same default
+  the resolver
   ([`scripts/compound-v-resolve-model.py`](../scripts/compound-v-resolve-model.py))
   carries built-in; writing it here makes the project config self-describing and
-  user-editable. NEVER `haiku` anywhere. If `agy` is present, the Step 1a-bis discovery
+  user-editable. The resolver also **accepts the legacy flat shape**
+  `{<backend>: {<tier>: model}}` (applied to every stance) for backward-compat — it
+  auto-detects which shape it was handed — so an older flat config keeps working.
+  NEVER `haiku` anywhere. If `agy` is present, the Step 1a-bis discovery
   pipe has already overwritten the `antigravity` block with **real** discovered names
   (`agy models </dev/null` → discovery script), so the block above is just the fallback
   used when `agy` is absent; codex has no list command (curated + user-overridable);
