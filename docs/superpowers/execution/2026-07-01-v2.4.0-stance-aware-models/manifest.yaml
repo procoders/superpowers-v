@@ -1,0 +1,137 @@
+# Compound V execution manifest — v2.4.0 stance-aware models map
+# Built on the BALANCED stance (the cost-aware behavior is what this run implements,
+# so the build itself runs Opus/deep). Disjoint write scope; resolver = Task 0 serial.
+
+run_id: 2026-07-01-v2.4.0-stance-aware-models
+feature: "Stance-aware models map — cost-aware routes Claude standard tier to Sonnet 5"
+spec_path: docs/superpowers/specs/2026-06-30-v2.4.0-stance-aware-models-design.md
+plan_path: docs/superpowers/plans/2026-06-30-v2.4.0-stance-aware-models.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-06-30-v2.4.0-stance-aware-models.md
+
+acceptance_criteria:
+  - "resolve-model.py --selftest green incl. new stance assertions: cost-aware claude/standard->sonnet, cost-aware claude/deep->opus, default stance==balanced, backward-compat flat config + per-stance config"
+  - "partition-reviewer exempts cost-aware standard-tier Claude Sonnet from the 8-box check; reviewers/sensitive stay deep->opus in every stance"
+  - "all five Claude model-resolve call sites thread --stance (parallel-dispatcher incl. Task 0, phase-3, adapter-claude, v-status; v-models verify loop)"
+  - "docs + the per-stance config shape are consistent with the resolver as the single source of truth; legacy flat config still honored"
+  - "no write outside the partitioned file sets"
+
+routing_stance: balanced
+max_parallel: 4
+
+shared_resources:
+  - scripts/compound-v-resolve-model.py
+
+jobs:
+  - id: task-0-resolver
+    title: "Stance-aware resolver: DEFAULT_MODELS_BY_STANCE + --stance + config detection + selftest"
+    type: shared_foundation
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: direct
+    run: serial
+    write_allowed:
+      - scripts/compound-v-resolve-model.py
+    read_allowed:
+      - scripts/**
+      - docs/superpowers/specs/**
+      - docs/superpowers/plans/**
+      - docs/superpowers/archaeology/**
+    acceptance:
+      - "stance appended as trailing keyword arg (default balanced); positional selftest callers unbroken"
+      - "DEFAULT_MODELS = DEFAULT_MODELS_BY_STANCE['balanced'] alias kept; only cost-aware.claude.standard flips opus->sonnet; cost-aware.claude.deep stays opus"
+      - "_config_cell handles legacy-flat (all stances) AND per-stance shapes; VALID_STANCES re-declared (not imported); --selftest green"
+
+  - id: task-1-reviewer-gate
+    title: "partition-reviewer: stance-gate the 8-box Sonnet check (cost-aware standard exempt)"
+    type: bounded_crud
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on:
+      - task-0-resolver
+    write_allowed:
+      - agents/partition-reviewer.md
+    read_allowed:
+      - agents/**
+      - skills/compound-v/**
+      - docs/superpowers/specs/**
+      - docs/superpowers/archaeology/**
+    acceptance:
+      - "under cost-aware, a standard-tier claude Sonnet implementer is exempt from SONNET_UNJUSTIFIED; balanced/conservative apply the 8-box check as before; light-tier Sonnet check applies in every stance"
+      - "reviewers->deep->opus and sensitive->deep->opus stay enforced; frontmatter lint clean"
+
+  - id: task-2-callsites
+    title: "Thread --stance into the dispatch + status resolve call sites"
+    type: bounded_crud
+    backend: claude
+    tier: deep
+    effort: medium
+    isolation: worktree
+    run: parallel
+    depends_on:
+      - task-0-resolver
+    write_allowed:
+      - agents/parallel-dispatcher.md
+      - skills/compound-v/phase-3-parallel-opus-dispatch.md
+      - skills/backend-launcher/adapter-claude.md
+      - commands/v-status.md
+    read_allowed:
+      - agents/**
+      - skills/**
+      - commands/**
+      - scripts/**
+      - docs/superpowers/archaeology/**
+    acceptance:
+      - "each Claude resolve call passes --stance <manifest routing_stance> (portable if/else like --effort/--config); Task 0 resolve included"
+      - "mapping language updated: standard->opus (sonnet under cost-aware); frontmatter lint clean"
+
+  - id: task-3-config-docs
+    title: "Per-stance config shape + routing docs (single source = resolver map)"
+    type: docs
+    backend: claude
+    tier: deep
+    effort: medium
+    isolation: worktree
+    run: parallel
+    depends_on:
+      - task-0-resolver
+    write_allowed:
+      - commands/v-init.md
+      - commands/v-models.md
+      - skills/compound-v/routing-policy.md
+      - skills/compound-v/execution-manifest.md
+    read_allowed:
+      - commands/**
+      - skills/**
+      - scripts/**
+      - docs/superpowers/archaeology/**
+    acceptance:
+      - "routing-policy 'Balanced models map' prose (lines ~93/~105) -> per-stance; cost-aware section + models-map note cost-aware.claude.standard=sonnet; v-models/v-init seed the per-stance shape + --stance in v-models verify loop"
+      - "no doc states cost-aware.claude.standard->opus or balanced.claude.standard->sonnet; frontmatter lint clean"
+
+  - id: task-4-integration-review
+    title: "Integration review gate for v2.4.0 stance-aware models"
+    type: review
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: direct
+    run: serial
+    depends_on:
+      - task-1-reviewer-gate
+      - task-2-callsites
+      - task-3-config-docs
+    write_allowed: []
+    read_allowed:
+      - scripts/**
+      - agents/**
+      - skills/**
+      - commands/**
+      - docs/superpowers/**
+    acceptance:
+      - "feature-level acceptance criteria met; resolver --selftest + manifest --selftest + frontmatter lint green"
+      - "no writes outside the partitioned file sets across jobs"

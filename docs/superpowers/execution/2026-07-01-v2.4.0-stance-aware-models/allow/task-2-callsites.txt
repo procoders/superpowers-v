@@ -1,0 +1,4 @@
+agents/parallel-dispatcher.md
+skills/compound-v/phase-3-parallel-opus-dispatch.md
+skills/backend-launcher/adapter-claude.md
+commands/v-status.md

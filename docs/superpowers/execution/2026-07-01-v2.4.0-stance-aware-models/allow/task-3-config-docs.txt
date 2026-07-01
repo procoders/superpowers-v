@@ -1,0 +1,4 @@
+commands/v-init.md
+commands/v-models.md
+skills/compound-v/routing-policy.md
+skills/compound-v/execution-manifest.md
