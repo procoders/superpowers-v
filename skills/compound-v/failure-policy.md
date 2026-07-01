@@ -133,6 +133,10 @@ See [`state-machine.md`](state-machine.md) for the resume behavior built on thes
 
 ---
 
+## Liveness sweep — a swept STALE/DEAD folds into `timeout` (no new class)
+
+The dispatcher's between-batch **liveness sweep** ([`agents/parallel-dispatcher.md`](../../agents/parallel-dispatcher.md) Step 2d, [`scripts/compound-v-liveness.py`](../../scripts/compound-v-liveness.py)) adds **no new failure class**. A running external worker the sweep finds `STALE`/`DEAD` — one that slipped past its process-group timeout cap — is treated as the existing **`timeout`** class and runs the exact table above (retry once, longer, then halt; per-class cap 1, then `max_total_retries`). A `LIKELY-DONE` job is not a failure at all — it committed and is collected. A `STALE` **Claude subagent** has no process to kill (harness-owned); it is surfaced, not retried, and reclassifies `LIKELY-DONE` once its commit is observed.
+
 ## Cross-references
 
 - Classifier: [`scripts/compound-v-classify-failure.py`](../../scripts/compound-v-classify-failure.py) · Decision table: [`scripts/compound-v-failure-policy.py`](../../scripts/compound-v-failure-policy.py)

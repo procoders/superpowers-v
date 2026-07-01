@@ -191,6 +191,23 @@ A `job_result.status` that is **not** `success` and **not** `blocked` is a backe
 
 Write `state.json` after every transition. "Deprioritize, don't remove": a transient failure gets a short `cooldowns[<backend>]` timestamp (probed half-open next batch), only a confirmed `out_of_credits`/`auth` opens the breaker **object** for the run (which [`/v:resume`](../commands/v-resume.md) reconciles by `reason` — top-up/probe for credits, re-auth for auth — never a silent re-dispatch). **Never** retry `out_of_credits`/`auth`; cap retries by **count AND wall-clock** (per-(job,class) ceiling *and* `max_total_retries`); classify by error **TYPE**, not HTTP status.
 
+### Step 2d — Liveness sweep — while awaiting a batch (detect parked / hung jobs)
+
+Between dispatching a batch and collecting it — and any time you are **waiting** on a background job whose completion notification has not arrived — run the read-only liveness probe over the run's `state.json` and act on it. This turns a silent forever-wait (a subagent that finished but whose notification was lost, or one that genuinely stalled) into a detected, acted-upon state. One-shot CLI, git+FS-derived, no daemon:
+
+```bash
+python3 scripts/compound-v-liveness.py "docs/superpowers/execution/$RUN_ID" [--stale-sec 600]
+# → per running job: WORKING | LIKELY-DONE | STALE | DEAD | UNKNOWN  (exit 3 if any STALE/DEAD)
+```
+
+Act on each running job's class:
+- **`LIKELY-DONE`** — the job's worktree already has a commit past its recorded `baseline`; the work landed and only the notification is stuck. **Collect it now**: run the Step 2b scope gate + merge-back + set `status: done`, exactly as if the completion had arrived. This is the git-wins reconcile ([`state-machine.md`](../skills/compound-v/state-machine.md)) applied **live** — it ends the "nudge the dispatcher by hand" failure mode.
+- **`STALE` / `DEAD`** — no progress past the threshold (a suspected hang). An **external** worker (codex/cursor/agy) is already bounded by the process-group timeout supervisor (→ exit 124 → the `timeout` class); if one is still `running` past that, treat it as a `timeout` failure and run the **Step 2c** policy (retry cap, then halt) — no new mechanism. A **Claude subagent** has no process for us to kill (the harness owns it): **surface** it loudly and let the harness watchdog reap it; on the next sweep, if it committed, it reclassifies `LIKELY-DONE` and is collected.
+- **`WORKING`** — progressing; keep waiting.
+- **`UNKNOWN`** — no worktree/pid/log signal yet (e.g. a direct job before its first write); no action, re-probe next sweep.
+
+The sweep **never** kills a Claude subagent (harness-owned) and **never** fabricates progress — every class is derived from git (`worktree HEAD` vs `baseline`) + filesystem mtimes. Record any `LIKELY-DONE` collect or `STALE`/`DEAD` action in `state.json` and the run report (loud, never silent).
+
 ### Step 3 — Parallel Reviewer Batch(es)
 
 When all implementers in a batch return PASS, dispatch **2N reviewers** (one spec-compliance + one code-quality per task), batched at 4-6 per message:
