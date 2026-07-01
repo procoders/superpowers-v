@@ -120,7 +120,8 @@ the gate. Surface, as advisory recommendations:
 - **restructuring recommendations** — boldly stated, but still only a recommendation surfaced at the
   gate, applied only on confirmation;
 - foreign-tool rules as **advisory notes only** (read-only in v1, never auto-reconciled);
-- managed-layer conflicts as **informational only** (per the cardinal rule).
+- managed-layer conflicts as **informational only** (per the cardinal rule);
+- **MCP / external-tool recommendations** from `python3 scripts/compound-v-onboard.py recommend-mcp --repo . [--mcp-config .mcp.json]`: signal→tool with a **CLI-over-MCP** bias (a `github.com` remote → the `gh` CLI, **never** a GitHub MCP), each recommendation carrying pre-filled **least-privilege** flags and its signal **evidence**. Surface any **lethal-trifecta** warning (private-data + untrusted-content + external-write) loudly, **with its specific remedy** — warn-only, the patient decides. Present-only here; the `.mcp.json` write happens at WRITE (§7), behind the gate.
 
 Also flag drift from `python3 scripts/compound-v-onboard.py staleness --repo .` on a refresh run
 (see §Refresh).
@@ -150,8 +151,10 @@ committed file" — not the advisory input pack scan (§2), which would over-blo
 
 Write **only** what was approved, and **only** within the v1 write surface:
 `docs/superpowers/architecture/*`, root `CONVENTIONS.md`, root `DESIGN.md` (UI repos), `AGENTS.md`,
-the thin `CLAUDE.md` bridge, and `.onboard-manifest.json`. `.mcp.json`, `.claude/rules/*.md`, and any
-foreign-tool file are **out of v1** (foreign files are read-only/advisory). Apply existing-file
+the thin `CLAUDE.md` bridge, `.onboard-manifest.json`, and — **only when the user confirms the diff** —
+`.mcp.json` (from `mcp_json_config`: merged **additively**, never clobbering an existing server; CLI
+recommendations like `gh` are surfaced as setup instructions, **not** `.mcp.json` entries). `.claude/rules/*.md`
+and any foreign-tool file are **out of scope** (foreign files are read-only/advisory). Apply existing-file
 changes through detect-and-bridge (§below); never silently overwrite.
 
 **Provenance header on every generated file.** Each file opens with a marker —
@@ -250,7 +253,6 @@ gate) is optional / fast-follow.
 ## Out of scope (v1)
 
 Bulk skill generation · full AST/tree-sitter citation verification · any auto-apply · hooks that
-bootstrap or self-background · `progress.md`/`activeContext.md` · the MCP recommender and `.mcp.json`
-writing (fast-follow) · path-scoped `.claude/rules/*.md` writing (fast-follow) · automated
-reconciliation of foreign-tool rules (advisory notes only) · any GitHub MCP server (GitHub is used
-via the `gh` CLI).
+bootstrap or self-background · `progress.md`/`activeContext.md` · path-scoped `.claude/rules/*.md`
+writing (fast-follow) · automated reconciliation of foreign-tool rules (advisory notes only) · any
+GitHub MCP server (GitHub is used via the `gh` CLI).
