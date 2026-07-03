@@ -26,7 +26,8 @@
 #     [--timeout-sec <n>]
 #
 # Defaults: model gpt-5.5, effort high (the "Codex on their max" the design calls for),
-# schema = <repo>/schemas/plan-review.schema.json.
+# schema = <plugin>/schemas/plan-review.schema.json, resolved relative to THIS script —
+# the reviewed repo has no reason to carry the plugin's schema.
 #
 # Exit: 0 when findings JSON was produced (even verdict=reject — that is reported IN the
 # JSON). Non-zero only on a usage / environment fault.
@@ -67,7 +68,10 @@ case "$PLAN_FILE" in /*) : ;; *) die "--plan-file must be absolute: $PLAN_FILE" 
 case "$REPO" in /*) : ;; *) die "--repo must be absolute: $REPO" ;; esac
 [ -f "$PLAN_FILE" ] || die "--plan-file not found: $PLAN_FILE"
 [ -d "$REPO" ]      || die "--repo not a directory: $REPO"
-[ -n "$SCHEMA" ] || SCHEMA="$REPO/schemas/plan-review.schema.json"
+# Default schema ships WITH the plugin (next to this script), NOT in the reviewed repo —
+# defaulting to "$REPO/schemas/..." broke /v:review-plan in every project except this one.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+[ -n "$SCHEMA" ] || SCHEMA="$SCRIPT_DIR/../schemas/plan-review.schema.json"
 [ -f "$SCHEMA" ] || die "schema not found: $SCHEMA"
 case "$EFFORT" in low|medium|high) : ;; *) die "--effort must be low|medium|high: $EFFORT" ;; esac
 # --timeout-sec is interpolated UNQUOTED into the codex argv (word-split into the
@@ -82,7 +86,7 @@ command -v codex >/dev/null 2>&1 || die "codex not found on PATH"
 # cap even when neither binary is installed (previously: no binary ⇒ NO cap ⇒ a stalled codex
 # review could hang unbounded) and kills the whole codex process GROUP on expiry (a
 # `timeout`/`gtimeout` prefix signals only the direct child, leaking orphaned tool children).
-SUPERVISOR="$(cd "$(dirname "$0")" && pwd)/compound-v-run-with-timeout.py"
+SUPERVISOR="$SCRIPT_DIR/compound-v-run-with-timeout.py"
 [ -f "$SUPERVISOR" ] || die "timeout supervisor not found: $SUPERVISOR"
 
 # Scratch OUTSIDE the repo (read-only codex can still read the repo via --cd).
