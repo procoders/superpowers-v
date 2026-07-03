@@ -49,12 +49,16 @@ Two modes (mutually exclusive)
 Either repeated ``--allow <glob>`` flags, or ``--allow-file <path>`` (one glob
 per line, ``#`` comments and blanks ignored), or both (unioned).
 
-Glob semantics (fnmatch-compatible, with ``**``)
-------------------------------------------------
+Glob semantics (fnmatch-like, with ``**``)
+------------------------------------------
 * ``*``   matches within a single path segment (not ``/``).
 * ``**``  matches across segments, including ``/`` (recursive).
 * ``dir/**`` also matches ``dir`` itself and everything beneath it.
-* ``?`` and ``[...]`` behave like fnmatch.
+* ``?``   matches one non-``/`` character.
+* ``[`` and ``]`` are LITERAL. fnmatch character classes are deliberately NOT
+  supported: bracketed path segments are the norm in modern frameworks
+  (Next.js ``app/[locale]/[uid]/page.tsx``, SvelteKit ``[slug]``), and a
+  char-class reading turns those allow-globs into false BLOCKED verdicts.
 Matching is anchored to the full repo-relative path.
 
 Output
@@ -170,7 +174,9 @@ def glob_to_regex(pattern):
     Translate a path glob (with ``**``) into a fully-anchored regex string.
 
     Hand-rolled rather than fnmatch.translate so that ``*`` does NOT cross ``/``
-    while ``**`` does. ``dir/**`` also matches ``dir`` itself.
+    while ``**`` does. ``dir/**`` also matches ``dir`` itself. ``[`` / ``]``
+    are literal (no character classes) so App-Router segments like
+    ``app/[locale]`` match their real on-disk paths.
     """
     import re
 
@@ -214,26 +220,10 @@ def glob_to_regex(pattern):
             out.append("[^/]")
             i += 1
             continue
-        if c == "[":
-            # Character class — find the closing ']'.
-            k = i + 1
-            if k < n and pattern[k] == "!":
-                k += 1
-            if k < n and pattern[k] == "]":
-                k += 1
-            while k < n and pattern[k] != "]":
-                k += 1
-            if k >= n:
-                # No closing bracket — treat '[' literally.
-                out.append(re.escape("["))
-                i += 1
-                continue
-            inner = pattern[i + 1:k]
-            if inner.startswith("!"):
-                inner = "^" + inner[1:]
-            out.append("[" + inner + "]")
-            i = k + 1
-            continue
+        # NOTE: '[' / ']' fall through to the literal branch below on purpose —
+        # treating them as fnmatch char classes made `app/[locale]/**` match
+        # "one char of {l,o,c,a,e}" instead of the real Next.js directory and
+        # produced false BLOCKED verdicts (plus a regex FutureWarning).
         out.append(re.escape(c))
         i += 1
     out.append(")\\Z")
@@ -434,6 +424,12 @@ def _selftest():
         ("scripts/other.py", "scripts/compound-v-scope-check.py", False),
         ("src/x.tsx", "src/*.tsx", True),
         ("src/x.ts", "src/*.tsx", False),
+        # Bracketed dynamic-route segments are LITERAL (Next.js App Router):
+        ("app/[locale]/x/[uid]/page.tsx", "app/[locale]/x/**", True),
+        ("app/[locale]/compound-v/result/[uid]/opengraph-image.tsx",
+         "app/[locale]/compound-v/result/**", True),
+        ("app/l/x/page.tsx", "app/[locale]/x/**", False),
+        ("app/[locale]/page.tsx", "app/[locale]/page.tsx", True),
     ]
     for path, pat, want in cases:
         got = matches(path, pat)
