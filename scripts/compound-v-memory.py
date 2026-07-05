@@ -318,6 +318,10 @@ CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
   INSERT INTO chunks_fts(rowid, text) VALUES (new.id, new.text);
 END;
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS query_cache (
+  qhash TEXT NOT NULL, model TEXT NOT NULL, vec TEXT NOT NULL, created_at TEXT NOT NULL,
+  PRIMARY KEY (qhash, model)
+);
 """
 
 
@@ -704,11 +708,42 @@ def bm25_search(conn, q, limit):
     return [dict(id=r[0], path=r[1], heading=r[2], text=r[3], doc_type=r[4], date=r[5]) for r in rows]
 
 
-def dense_search(conn, paths, model, q, limit):
-    vecs = embed_texts(paths, model, "query", [q])
+QUERY_CACHE_MAX = 500
+
+
+def _query_vec(conn, paths, model, q, embed=None):
+    """The query embedding, with a small SQLite cache. A repeated query skips the isolated-venv
+    embedder subprocess entirely — otherwise EVERY dense search pays one ONNX model load
+    (seconds). Keyed by (sha256(query), model), so a model change naturally misses; bounded to
+    QUERY_CACHE_MAX most-recent rows. Degrade-safe: any cache problem falls back to embedding."""
+    qh = hashlib.sha256(q.encode("utf-8")).hexdigest()
+    try:
+        row = conn.execute("SELECT vec FROM query_cache WHERE qhash=? AND model=?",
+                           (qh, model)).fetchone()
+        if row:
+            return json.loads(row[0])
+    except (sqlite3.Error, ValueError, TypeError):
+        pass
+    embed = embed or (lambda texts: embed_texts(paths, model, "query", texts))
+    vecs = embed([q])
     if not vecs:
+        return None
+    try:
+        conn.execute("INSERT OR REPLACE INTO query_cache(qhash,model,vec,created_at) "
+                     "VALUES(?,?,?,?)", (qh, model, json.dumps(vecs[0]), _now()))
+        conn.execute("DELETE FROM query_cache WHERE rowid NOT IN "
+                     "(SELECT rowid FROM query_cache ORDER BY created_at DESC, rowid DESC LIMIT ?)",
+                     (QUERY_CACHE_MAX,))
+        conn.commit()
+    except sqlite3.Error:
+        pass  # cache is an optimization, never a failure mode
+    return vecs[0]
+
+
+def dense_search(conn, paths, model, q, limit):
+    qv = _query_vec(conn, paths, model, q)
+    if not qv:
         return []
-    qv = vecs[0]
     rows = conn.execute(
         "SELECT id,path,heading,text,doc_type,date,embedding FROM chunks WHERE embedding IS NOT NULL"
     ).fetchall()
@@ -1082,6 +1117,22 @@ def _selftest() -> int:
         _nul = conn.execute("SELECT COUNT(*) FROM chunks WHERE embedding IS NULL").fetchone()[0]
         check("reindex_batch: failed embed degrades to NULL (FTS5-only), no crash",
               _tot > 0 and _nul == _tot)
+
+        # --- v2.5.5: query-vector cache — a repeated query skips the embedder (model load) ---
+        _qc = {"n": 0}
+
+        def _fake_q(texts):
+            _qc["n"] += 1
+            return [[1.0, 2.0]]
+        v1 = _query_vec(conn, None, "m1", "scope gate", embed=_fake_q)
+        v2 = _query_vec(conn, None, "m1", "scope gate", embed=_fake_q)   # cache HIT
+        check("query cache: repeat query skips the embedder (1 call, same vec)",
+              _qc["n"] == 1 and v1 == v2 == [1.0, 2.0])
+        _query_vec(conn, None, "m2", "scope gate", embed=_fake_q)        # model change -> MISS
+        check("query cache: model change misses (re-embeds)", _qc["n"] == 2)
+        check("query cache: failed embed returns None, nothing cached",
+              _query_vec(conn, None, "m3", "x", embed=lambda t: None) is None
+              and conn.execute("SELECT COUNT(*) FROM query_cache WHERE model='m3'").fetchone()[0] == 0)
 
         # lock: a held lock makes a second acquire a no-op (separate open file descriptions)
         fd = acquire_lock(paths["lock"])
