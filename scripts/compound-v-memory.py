@@ -538,19 +538,17 @@ def release_lock(fd):
 # --------------------------------------------------------------------------- #
 # refresh / indexing
 # --------------------------------------------------------------------------- #
-def reindex_file(conn, root, rel, embedder):
-    """Atomically replace one file's chunks (+ optional embeddings). Triggers sync FTS."""
+def _persist_chunks(conn, root, rel, chunks, vecs):
+    """Atomically replace one file's chunks (+ optional embeddings) and update indexed_files;
+    triggers the sync FTS. A None/short `vecs` (or a None element) degrades that chunk to a NULL
+    embedding — never crashes. Returns the chunk count."""
     abspath = os.path.join(root, rel)
-    chunks = chunk_file(abspath, rel)
-    vecs = None
-    if embedder is not None and chunks:
-        vecs = embedder([c["text"] for c in chunks])
     conn.execute("BEGIN IMMEDIATE")
     try:
         conn.execute("DELETE FROM chunks WHERE path=?", (rel,))
         for i, c in enumerate(chunks):
             blob = None
-            if vecs is not None and i < len(vecs):
+            if vecs is not None and i < len(vecs) and vecs[i] is not None:
                 blob = json.dumps(vecs[i]).encode("utf-8")
             conn.execute(
                 "INSERT INTO chunks(path,chunk_index,heading,text,doc_type,date,embedding) "
@@ -568,6 +566,36 @@ def reindex_file(conn, root, rel, embedder):
         conn.execute("ROLLBACK")
         raise
     return len(chunks)
+
+
+def reindex_file(conn, root, rel, embedder):
+    """Per-file (re)index: chunk -> optional per-file embed -> persist. Used when embeddings are
+    OFF (FTS5-only) and as a fallback. When many files are embedded at once, cmd_refresh uses
+    reindex_batch so the isolated-venv embedder loads the model ONCE, not once per file."""
+    abspath = os.path.join(root, rel)
+    chunks = chunk_file(abspath, rel)
+    vecs = None
+    if embedder is not None and chunks:
+        vecs = embedder([c["text"] for c in chunks])
+    return _persist_chunks(conn, root, rel, chunks, vecs)
+
+
+def reindex_batch(conn, root, rels, embedder):
+    """Re-index many files, embedding ALL their chunks in a SINGLE embedder call — so the isolated
+    venv embedder loads the ONNX model ONCE per refresh instead of once per file. Chunks are
+    flattened in order, embedded together, then the vectors are sliced back per file. Degrade-safe:
+    a None result (embed failed) persists every file with NULL embeddings (FTS5-only). Returns the
+    number of files processed."""
+    per_file = [(rel, chunk_file(os.path.join(root, rel), rel)) for rel in rels]
+    flat = [c["text"] for _, chunks in per_file for c in chunks]
+    all_vecs = embedder(flat) if (embedder is not None and flat) else None
+    offset = 0
+    for rel, chunks in per_file:
+        n = len(chunks)
+        vecs = all_vecs[offset:offset + n] if all_vecs is not None else None
+        offset += n
+        _persist_chunks(conn, root, rel, chunks, vecs)
+    return len(per_file)
 
 
 def _now() -> str:
@@ -627,10 +655,15 @@ def cmd_refresh(args) -> int:
                     if f in missing and f not in to_index:
                         to_index.append(f)
 
-        n_idx = 0
-        for f in to_index:
-            n_idx += 1
-            reindex_file(conn, root, f, embedder)
+        # Embed ALL files' chunks in ONE embedder call (one model load per refresh); the per-file
+        # path stays for the FTS5-only case (embedder is None).
+        if embedder is not None:
+            n_idx = reindex_batch(conn, root, to_index, embedder)
+        else:
+            n_idx = 0
+            for f in to_index:
+                n_idx += 1
+                reindex_file(conn, root, f, embedder)
         for p in removed:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute("DELETE FROM chunks WHERE path=?", (p,))
@@ -1026,6 +1059,29 @@ def _selftest() -> int:
         before = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
         cmd_refresh(A2())
         check("incremental stable", conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0] == before)
+
+        # --- v2.5.4: reindex_batch embeds ALL files' chunks in ONE embedder call (model loads once)
+        root = find_repo_root(tmp)
+        rels = [r[0] for r in conn.execute("SELECT path FROM indexed_files")]
+
+        def _enc(t):  # content-dependent scalar so a mis-sliced vector would not match its chunk
+            return float(sum(t.encode("utf-8")) % 1000000)
+        _calls = {"n": 0}
+
+        def _fake_embed(texts):
+            _calls["n"] += 1
+            return [[_enc(t)] for t in texts]
+        reindex_batch(conn, root, rels, _fake_embed)
+        check("reindex_batch: ONE embedder call for many files (model loaded once)",
+              _calls["n"] == 1 and len(rels) >= 2)
+        _rows = list(conn.execute("SELECT text, embedding FROM chunks WHERE embedding IS NOT NULL"))
+        check("reindex_batch: each chunk's vector matches its own text (slicing correct)",
+              len(_rows) > 0 and all(json.loads(bytes(e).decode()) == [_enc(t)] for t, e in _rows))
+        reindex_batch(conn, root, rels, lambda texts: None)   # failed embed -> degrade
+        _tot = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+        _nul = conn.execute("SELECT COUNT(*) FROM chunks WHERE embedding IS NULL").fetchone()[0]
+        check("reindex_batch: failed embed degrades to NULL (FTS5-only), no crash",
+              _tot > 0 and _nul == _tot)
 
         # lock: a held lock makes a second acquire a no-op (separate open file descriptions)
         fd = acquire_lock(paths["lock"])
