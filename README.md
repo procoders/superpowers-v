@@ -16,6 +16,8 @@ The fastest way to *get* what this plugin does. Three gamified episodes — **De
 
 [![Compound V Academy — meet the squad](assets/compound-v-squad.png)](https://amiainative.dev/compound-v)
 
+📄 Prefer a quick reference? The **[Compound V Cheatsheet](https://amiainative.dev/compound-v/cheatsheet)** puts the whole 8-phase pipeline, commands, skill triggers, memory, and backend-routing rules on one page.
+
 ---
 
 ## Main features
