@@ -652,6 +652,7 @@ def cmd_refresh(args) -> int:
         if embedder is not None:
             if not identity_matches(conn, model):
                 to_index = list(files)  # identity drift ⇒ re-embed the whole corpus
+                _invalidate_query_cache(conn)  # …and drop stale query vectors (same drift)
             else:
                 missing = {r[0] for r in conn.execute(
                     "SELECT DISTINCT path FROM chunks WHERE embedding IS NULL")}
@@ -711,6 +712,18 @@ def bm25_search(conn, q, limit):
 QUERY_CACHE_MAX = 500
 
 
+def _invalidate_query_cache(conn):
+    """Drop every cached query vector. Called on embedder IDENTITY DRIFT (embedder_src /
+    fingerprint changed while the model NAME stayed the same): the corpus is re-embedded by the
+    new revision, so query vectors from the old revision must never be compared against it —
+    the (qhash, model) key alone cannot see a revision change (Codex-caught)."""
+    try:
+        conn.execute("DELETE FROM query_cache")
+        conn.commit()
+    except sqlite3.Error:
+        pass
+
+
 def _query_vec(conn, paths, model, q, embed=None):
     """The query embedding, with a small SQLite cache. A repeated query skips the isolated-venv
     embedder subprocess entirely — otherwise EVERY dense search pays one ONNX model load
@@ -727,6 +740,8 @@ def _query_vec(conn, paths, model, q, embed=None):
     embed = embed or (lambda texts: embed_texts(paths, model, "query", texts))
     vecs = embed([q])
     if not vecs:
+        return None
+    if vecs[0] is None:
         return None
     try:
         conn.execute("INSERT OR REPLACE INTO query_cache(qhash,model,vec,created_at) "
@@ -1133,6 +1148,15 @@ def _selftest() -> int:
         check("query cache: failed embed returns None, nothing cached",
               _query_vec(conn, None, "m3", "x", embed=lambda t: None) is None
               and conn.execute("SELECT COUNT(*) FROM query_cache WHERE model='m3'").fetchone()[0] == 0)
+        _query_vec(conn, None, "m1", "different query", embed=_fake_q)  # new query -> MISS
+        check("query cache: different query misses (re-embeds)", _qc["n"] == 3)
+        for i in range(QUERY_CACHE_MAX + 30):                            # bound holds
+            _query_vec(conn, None, "m1", "bulk-%d" % i, embed=_fake_q)
+        check("query cache: bounded to QUERY_CACHE_MAX rows",
+              conn.execute("SELECT COUNT(*) FROM query_cache").fetchone()[0] <= QUERY_CACHE_MAX)
+        _invalidate_query_cache(conn)                                    # identity drift wipe
+        check("query cache: identity drift invalidation empties the cache",
+              conn.execute("SELECT COUNT(*) FROM query_cache").fetchone()[0] == 0)
 
         # lock: a held lock makes a second acquire a no-op (separate open file descriptions)
         fd = acquire_lock(paths["lock"])
