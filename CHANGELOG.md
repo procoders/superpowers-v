@@ -4,6 +4,11 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [2.5.5] — 2026-07-05
+
+### Performance
+- **Dense search: repeated queries skip the model load.** Every dense search paid one isolated-venv subprocess = one ONNX model load per query (seconds). A new `query_cache` SQLite table (`sha256(query) + model → vector`, `IF NOT EXISTS` so no migration, bounded to the 500 most-recent rows) lets a repeated query — the common case for `/v:remember` and the recall→action bridge's templated queries — return in milliseconds. A model change misses by key; **identity drift (embedder revision change) clears the cache** alongside the corpus re-embed, so a stale-revision vector is never served; any cache error falls back to embedding (the cache is an optimization, never a failure mode). Selftest proves hit / miss / model-miss / failed-embed-not-cached with a counting fake embedder. Profiled first: the FTS5 lane (rebuild 0.7 s, search 0.28 s, hooks ≤0.25 s) was left untouched — already fast. **Codex cross-model verification caught the stale-vector hazard** — the `(query, model)` key alone can't see an embedder **revision** change (the same drift the corpus re-embed handles), independently confirming the author's own finding — fixed via `_invalidate_query_cache` on the drift branch, plus the extra coverage Codex asked for (different-query miss, cache bound, drift invalidation): 7 cache checks total, all green.
+
 ## [2.5.4] — 2026-07-05
 
 ### Performance
