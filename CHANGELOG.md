@@ -4,6 +4,15 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [2.5.2] — 2026-07-03
+
+### Added
+- **Compound V Academy** — a gamified 3-episode tutorial (**Developer · Product Owner · Universal Creator**) is now linked prominently from the README: **<https://amiainative.dev/compound-v>**. The fastest way to learn the whole pipeline (onboarding → the three scouts → dispatch → the review gates), with the squad as guides.
+
+### Fixed
+- **Scope gate: bracketed path segments are literal.** `[locale]` / `[uid]` / `[slug]` in a `write_allowed` glob were parsed as fnmatch **character classes** (`[locale]` = "one of `l,o,c,a,e`"), which **falsely BLOCKED** any Next.js App Router write scope (e.g. `app/[locale]/…/[uid]/page.tsx`) and raised a regex `FutureWarning`. Bracketed dynamic segments — the dominant real-world case — now match **literally**; the selftest covers the App Router case positive + negative. (`scripts/compound-v-scope-check.py`)
+- **`/v:review-plan` schema resolves from the plugin, not the reviewed repo.** The cross-model review script defaulted its JSON-schema path to `$REPO/schemas/…` (the **reviewed** repo), so `/v:review-plan` died with "schema not found" in **every project except this one**. It now resolves the default schema next to the script (its install dir); the `--schema` override is unchanged. (`scripts/compound-v-codex-review.sh` + new regression test)
+
 ## [2.5.1] — 2026-07-01
 
 ### Added — MCP / external-tool recommender for `/v:onboard`

@@ -10,6 +10,12 @@ You describe a feature. Claude plans it, splits it into non-overlapping pieces, 
 
 ---
 
+## 🎮 New here? Learn it as a game → **[Compound V Academy](https://amiainative.dev/compound-v)**
+
+The fastest way to *get* what this plugin does. Three gamified episodes — **Developer · Product Owner · Universal Creator** — walk you through the whole pipeline (onboarding → the three scouts → manifest + dispatch → the review gates), with the squad — **The Trench**, **Bootcher**, **Monsieur Contexte**, **Motherboard**, **Git Noir**, **A-Express** — as your guides. 👉 **<https://amiainative.dev/compound-v>**
+
+---
+
 ## Main features
 
 - **Multi-model orchestration** — Claude builds the plan and routes implementation jobs to the right backend (**Claude / Codex / Antigravity / Cursor**). Each worker runs isolated under a scope check, so nothing writes outside the files it was given.
