@@ -450,8 +450,11 @@ def recommend_autoskills(repo):
             break
     if ev is None:
         try:
-            if any(f.endswith(".tf") for f in os.listdir(repo)):
-                ev = "*.tf"
+            for f in sorted(os.listdir(repo)):
+                # a real *.tf FILE (not a directory named foo.tf); evidence = the actual filename
+                if f.endswith(".tf") and os.path.isfile(os.path.join(repo, f)):
+                    ev = f
+                    break
         except OSError:
             pass
     if ev is None:
@@ -649,6 +652,22 @@ def _selftest() -> int:
               recommend_autoskills(d8)["applicable"] is True)
     finally:
         shutil.rmtree(d8, ignore_errors=True)
+
+    # (Codex-caught) top-level *.tf FILE -> applicable with the real filename as evidence;
+    # a DIRECTORY named *.tf must NOT count as a manifest (no false positive).
+    d8c = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(d8c, "main.tf"), "w") as fh:
+            fh.write("resource {}\n")
+        rtf = recommend_autoskills(d8c)
+        check("autoskills: top-level main.tf -> applicable, evidence is the filename",
+              rtf["applicable"] and rtf["evidence"] == "main.tf")
+        os.remove(os.path.join(d8c, "main.tf"))
+        os.mkdir(os.path.join(d8c, "infra.tf"))
+        check("autoskills: a directory named *.tf is not a manifest (no false positive)",
+              recommend_autoskills(d8c)["applicable"] is False)
+    finally:
+        shutil.rmtree(d8c, ignore_errors=True)
 
     print("FAILED %d" % len(fails) if fails else "OK")
     return 1 if fails else 0
