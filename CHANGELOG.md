@@ -4,6 +4,11 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [2.5.4] — 2026-07-05
+
+### Performance
+- **V-memory DENSE refresh now loads the embedding model *once*, not per file.** The refresh embedded per file — `reindex_file` invoked the isolated-venv embedder subprocess once per file, and each subprocess rebuilt the ONNX `InferenceSession`, so `N` files meant `N` model loads (the reason the first full pass over `docs/superpowers/**` was slow). `cmd_refresh` now uses a new `reindex_batch` that chunks all to-index files, flattens their chunks into **one** embedder call, and slices the vectors back per file — **one model load per refresh**. The FTS5-only (embeddings-off) path is unchanged and it stays **degrade-safe** (a failed batch persists `NULL` embeddings → FTS5-only; the CORE lexical lane is never affected). Selftest injects a **call-counting fake embedder** proving the single call + correct per-file vector slicing + degrade — no network/model needed. **Codex cross-model verification: ACCURATE** on all five claims with `file:line` evidence (single call, offset slicing with no off-by-one, empty-corpus skips the model load, degrade-safe `NULL` fallback, atomic persistence preserved).
+
 ## [2.5.3] — 2026-07-05
 
 ### Added — `npx autoskills` recommender for `/v:onboard`
