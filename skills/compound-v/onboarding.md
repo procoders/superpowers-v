@@ -122,6 +122,7 @@ the gate. Surface, as advisory recommendations:
 - foreign-tool rules as **advisory notes only** (read-only in v1, never auto-reconciled);
 - managed-layer conflicts as **informational only** (per the cardinal rule);
 - **MCP / external-tool recommendations** from `python3 scripts/compound-v-onboard.py recommend-mcp --repo . [--mcp-config .mcp.json]`: signal→tool with a **CLI-over-MCP** bias (a `github.com` remote → the `gh` CLI, **never** a GitHub MCP), each recommendation carrying pre-filled **least-privilege** flags and its signal **evidence**. Surface any **lethal-trifecta** warning (private-data + untrusted-content + external-write) loudly, **with its specific remedy** — warn-only, the patient decides. Present-only here; the `.mcp.json` write happens at WRITE (§7), behind the gate.
+- **Third-party skills via `npx autoskills`** from `python3 scripts/compound-v-onboard.py recommend-autoskills --repo .`: when a project manifest is detected (`applicable: true`, evidence = the marker file), recommend [`npx autoskills`](https://www.autoskills.sh/) — and, **behind a human confirm** (external code), run the **preview** `npx autoskills --dry-run` **through `scripts/compound-v-run-with-timeout.py` with `stdin </dev/null`** (the external-launch invariant) to show *which* skills it would install. Surface the **auto-trigger-degradation caution** (installing many overlapping skills hurts triggering across the user's whole set — see §Skills stance). **Never** run the install form; if the user declines, just recommend they run `npx autoskills` themselves. Present-only — onboarding installs nothing.
 
 Also flag drift from `python3 scripts/compound-v-onboard.py staleness --repo .` on a refresh run
 (see §Refresh).
@@ -247,6 +248,11 @@ explore → ask → propose → write.
 whole skill set. v1 only **recommends which existing superpowers-v skills fit this repo**.
 Scaffolding a single bespoke review/quality skill (non-overlapping description, through the human
 gate) is optional / fast-follow.
+
+For **third-party** stack skills, `/v:onboard` recommends [`npx autoskills`](https://www.autoskills.sh/)
+at DIAGNOSE — **present-only**, behind a confirmed `--dry-run` **preview**, carrying the same
+auto-trigger-degradation caution above. It **never installs**; the user runs the real `npx autoskills`
+(its own confirm + SHA-256 verification) themselves.
 
 ---
 

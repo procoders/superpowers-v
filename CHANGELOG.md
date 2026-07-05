@@ -4,6 +4,15 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [2.5.3] — 2026-07-05
+
+### Added — `npx autoskills` recommender for `/v:onboard`
+
+- **Third-party skill discovery.** `/v:onboard` now recommends [`npx autoskills`](https://www.autoskills.sh/) when a project manifest is detected — a new `recommend-autoskills` subcommand in `scripts/compound-v-onboard.py` flags applicability (`package.json`, `pyproject.toml`, `requirements.txt`, `Gemfile`, `go.mod`, `Cargo.toml`, `composer.json`, `pom.xml`, `build.gradle`, or a top-level `*.tf`), with the marker file as **evidence**; an unknown repo yields `applicable: false` (no false recommendation).
+- **Present-only, gated `--dry-run`, never auto-installs.** In DIAGNOSE, onboarding surfaces the recommendation and — **behind a human confirm** — runs the **preview** `npx autoskills --dry-run` through the process-group timeout supervisor with `stdin </dev/null` (the v2.5.0 external-launch invariant), to show *which* skills it would install. The real install stays the user's own action (autoskills has its own confirm + SHA-256 verification).
+- **Auto-trigger-degradation caution.** Because mass-installing overlapping skills degrades auto-triggering across the whole skill set (the onboarding **Skills stance**), the recommendation always carries a loud caution to review the dry-run and prefer a focused subset.
+- **Built with TDD, dogfooded, cross-model Codex-verified.** 5 selftest checks (manifest → applicable + evidence + `--dry-run` command; empty → not applicable; `pyproject.toml` → applicable; a top-level `main.tf` → applicable with the filename as evidence; a *directory* named `*.tf` → not applicable). Dogfood on superpowers-v itself (no standard manifest) → `applicable: false` — the negative path. **Codex cross-model verification** (the model that writes ≠ the model that checks) caught **two** real bugs in the Terraform branch — the evidence was the literal `"*.tf"` instead of the actual filename, and a *directory* named `foo.tf` was a false positive — **both accepted and fixed**, each with added selftest coverage.
+
 ## [2.5.2] — 2026-07-03
 
 ### Added

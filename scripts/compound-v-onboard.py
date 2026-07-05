@@ -431,6 +431,38 @@ def mcp_json_config(recommendations, existing=None):
     return {"mcpServers": servers}
 
 
+# --------------------------------------------------------------------------- autoskills recommender
+AUTOSKILLS_MARKERS = ("package.json", "pyproject.toml", "requirements.txt", "Gemfile",
+                      "go.mod", "Cargo.toml", "composer.json", "pom.xml", "build.gradle")
+AUTOSKILLS_CAUTION = ("autoskills installs multiple stack skills; overlapping skill descriptions "
+                      "can degrade auto-triggering across your WHOLE skill set (onboarding Skills "
+                      "stance). Review the --dry-run and prefer a focused subset before installing.")
+
+
+def recommend_autoskills(repo):
+    """`npx autoskills` applicability: any recognizable project manifest means it can match stack
+    skills. Present-only — the gated --dry-run preview + the user-run install are the onboarding
+    walk's job. Returns {applicable, evidence, command, caution}; unknown repo -> applicable False."""
+    ev = None
+    for marker in AUTOSKILLS_MARKERS:
+        if os.path.isfile(os.path.join(repo, marker)):
+            ev = marker
+            break
+    if ev is None:
+        try:
+            for f in sorted(os.listdir(repo)):
+                # a real *.tf FILE (not a directory named foo.tf); evidence = the actual filename
+                if f.endswith(".tf") and os.path.isfile(os.path.join(repo, f)):
+                    ev = f
+                    break
+        except OSError:
+            pass
+    if ev is None:
+        return {"applicable": False, "evidence": None, "command": None, "caution": None}
+    return {"applicable": True, "evidence": ev,
+            "command": "npx autoskills --dry-run", "caution": AUTOSKILLS_CAUTION}
+
+
 def _selftest() -> int:
     fails = []
     def check(name, cond):
@@ -602,6 +634,41 @@ def _selftest() -> int:
     finally:
         shutil.rmtree(d7, ignore_errors=True)
 
+    # --- recommend-autoskills (v2.5.3) ---
+    d8 = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(d8, "package.json"), "w") as fh:
+            fh.write("{}")
+        r8 = recommend_autoskills(d8)
+        check("autoskills: package.json -> applicable, evidence, --dry-run command",
+              r8["applicable"] and r8["evidence"] == "package.json"
+              and r8["command"] == "npx autoskills --dry-run" and bool(r8["caution"]))
+        os.remove(os.path.join(d8, "package.json"))
+        check("autoskills: empty repo -> not applicable",
+              recommend_autoskills(d8)["applicable"] is False)
+        with open(os.path.join(d8, "pyproject.toml"), "w") as fh:
+            fh.write("[project]\n")
+        check("autoskills: pyproject.toml -> applicable",
+              recommend_autoskills(d8)["applicable"] is True)
+    finally:
+        shutil.rmtree(d8, ignore_errors=True)
+
+    # (Codex-caught) top-level *.tf FILE -> applicable with the real filename as evidence;
+    # a DIRECTORY named *.tf must NOT count as a manifest (no false positive).
+    d8c = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(d8c, "main.tf"), "w") as fh:
+            fh.write("resource {}\n")
+        rtf = recommend_autoskills(d8c)
+        check("autoskills: top-level main.tf -> applicable, evidence is the filename",
+              rtf["applicable"] and rtf["evidence"] == "main.tf")
+        os.remove(os.path.join(d8c, "main.tf"))
+        os.mkdir(os.path.join(d8c, "infra.tf"))
+        check("autoskills: a directory named *.tf is not a manifest (no false positive)",
+              recommend_autoskills(d8c)["applicable"] is False)
+    finally:
+        shutil.rmtree(d8c, ignore_errors=True)
+
     print("FAILED %d" % len(fails) if fails else "OK")
     return 1 if fails else 0
 
@@ -627,6 +694,9 @@ def build_parser():
     sp = sub.add_parser("recommend-mcp")
     sp.add_argument("--repo", default=".")
     sp.add_argument("--mcp-config", default=None, help="existing .mcp.json to merge into (diff view)")
+    sp.add_argument("--json", action="store_true")
+    sp = sub.add_parser("recommend-autoskills")
+    sp.add_argument("--repo", default=".")
     sp.add_argument("--json", action="store_true")
     return p
 
@@ -665,6 +735,9 @@ def main(argv) -> int:
         out = recommend_mcp(repo, existing)
         out["mcp_json"] = mcp_json_config(out["recommendations"], existing)
         print(json.dumps(out, indent=2))
+        return 0
+    if args.cmd == "recommend-autoskills":
+        print(json.dumps(recommend_autoskills(os.path.abspath(args.repo)), indent=2))
         return 0
     build_parser().print_help(); return 1
 
