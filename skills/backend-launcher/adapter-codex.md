@@ -107,6 +107,8 @@ git -C "$REPO" worktree remove -f "$WT"
 
 Worktrees live **outside the repo**, under `"${TMPDIR:-/tmp}"/compound-v/<run-id>/<job-id>` — so no `.gitignore` change is needed. The script is **idempotent on resume**: if a worktree already exists at that path (e.g. a re-dispatched job), it is `worktree remove -f`'d (falling back to `rm -rf`) before a fresh `add HEAD`. The script itself never calls `worktree remove` on success — it leaves the worktree in place so the caller can merge from it; removal is the caller's responsibility after a successful `git apply`.
 
+**This create step is the ONLY correct way to fix a wrong worktree base — never ask Codex to rebase/reset it itself.** Under this adapter's documented pinned invocation (`--sandbox workspace-write --cd "$WT"`, no sandbox-bypass flag), Codex's sandbox is confined to `$WT`, but a worktree's actual git metadata lives in `<REPO>/.git/worktrees/<job-id>/` — outside `$WT` — so that operation is outside the sandbox root, and `approval_policy: never` means it can't ask to escalate either. See [`SKILL.md`](SKILL.md) §Worktree git-base fixes for the full rationale and why dropping worktree isolation is not the fix.
+
 ---
 
 ## Merge-back (caller, step 6)

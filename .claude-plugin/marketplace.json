@@ -9,7 +9,7 @@
     {
       "name": "superpowers-v",
       "description": "Compound V for Superpowers: triple parallel pre-flight (code archaeology + domain-expert + Context7 library validator), disjoint partitioning, manifest-driven multi-backend dispatch (Claude + Codex + Antigravity + Cursor), git-diff scope enforcement, crash-resumable runs, adaptive tier-based routing, epic mode, V-memory local-first semantic+lexical recall over docs/superpowers (opt-in pure-python embeddings + a deterministic recall→action bridge), and batched parallel dispatch (Opus default, narrow Sonnet exception)",
-      "version": "2.6.0",
+      "version": "2.6.1",
       "source": "./",
       "author": {
         "name": "Oleg",
