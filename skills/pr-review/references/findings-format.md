@@ -2,7 +2,7 @@
 
 The findings file is the working artifact of the review. It survives compaction and is the input to the comment-posting phase.
 
-**Path:** `./reviews/pr-review-findings-{N}.md` (host modes) or `./reviews/pr-review-findings-local.md` (local-branch), in the repo root of the **launch** worktree — never inside the disposable review worktree. Create `./reviews/` if missing.
+**Path:** `./reviews/pr-review-findings-{N}.md` (host modes) or `./reviews/pr-review-findings-local.md` (local-branch), in the repo root of the **launch** worktree — never inside the disposable review worktree. Create `./reviews/` if missing. The launch-repo-root `./reviews/` location is a deliberate, target-repo-scoped choice (stack-agnostic) — it belongs to whatever repo is under review, so it is not a doc-placement violation when this skill runs on a repo with its own docs conventions.
 
 **Write timing:** create at the end of Phase 1 (briefing agreed). Append the two sub-agent reports under `## Two-Axis Pre-Pass` at the end of Phase 3.5. Update the Findings table at the end of each domain in Phase 4. Finalize after Phase 5 (verdict + confidence assigned).
 

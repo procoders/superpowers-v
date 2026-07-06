@@ -46,7 +46,9 @@ JSON
 
 **Resolve project + diff refs** (positions need all three SHAs):
 ```bash
-PROJ=$(git remote get-url origin | sed -E 's#^.*[:/]([^/]+/.+?)(\.git)?$#\1#' | sed 's#/#%2F#g')
+PROJ=$(git remote get-url origin \
+  | sed -E 's#^[a-z]+://[^/]+/##; s#^[^/]+:##; s#\.git$##' \
+  | sed 's#/#%2F#g')
 glab api "projects/$PROJ/merge_requests/{n}" --jq '{base: .diff_refs.base_sha, start: .diff_refs.start_sha, head: .diff_refs.head_sha}'
 ```
 

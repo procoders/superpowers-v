@@ -1,7 +1,6 @@
 ---
 name: pr-review
 description: Use when the user wants to deeply review a pull/merge request or a local diff — "review this PR", "grill the MR", "stress-test this diff", "deep-dive code review", "code review before merge", or when they name a PR/MR URL, number, or feature branch. Works on GitHub (gh), GitLab (glab), or a plain local branch with no host. Review-only — never edits code.
-argument-hint: PR/MR URL or number | empty = current branch vs base
 ---
 
 # PR Review — Two-Axis, Stack-Agnostic Deep Code Review
@@ -194,7 +193,9 @@ Assign two mandatory fields per finding:
 - **Confidence:** High (verified by grep/code reading) / Medium (plausible pattern) / Low (suspicion).
 - **Verdict:** `Fix before merge` / `Reviewer decides` / `Verify before merge` / `Nice-to-have` / `Confirmed safe`.
 
-**Auto Mode:** assign autonomously. **Otherwise:** present as `AskUserQuestion` batch(es) and let the user adjust.
+**Auto Mode** (the user opted into autonomous operation — e.g. "review it, don't ask me", or a
+non-interactive run): assign verdict + confidence autonomously, no `AskUserQuestion` batch.
+**Otherwise:** present as `AskUserQuestion` batch(es) and let the user adjust.
 
 **Exit gate:** every row has Confidence + Verdict.
 
