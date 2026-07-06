@@ -1,7 +1,7 @@
 {
   "name": "superpowers-v",
   "description": "Compound V for Superpowers: triple parallel pre-flight (code archaeology + domain-expert advisor + library/doc validator via Context7), disjoint file partitioning, manifest-driven multi-backend dispatch (Claude + headless Codex + Antigravity + Cursor workers), git-diff scope enforcement, crash-resumable runs, adaptive tier-based routing, epic mode for multi-feature builds, V-memory local-first semantic+lexical recall over docs/superpowers (opt-in pure-python embeddings + a deterministic recall\u2192action bridge), and batched parallel dispatch (Opus default, Sonnet for narrow junior-task carve-out), plus /v:onboard — a project-onboarding command that builds a citation-verified knowledge base + AGENTS.md/CLAUDE.md bridge behind a human gate. Auto-intercepts brainstorming \u2192 writing-plans \u2192 execution transitions.",
-  "version": "2.5.5",
+  "version": "2.6.0",
   "author": {
     "name": "Oleg",
     "email": "copeus@gmail.com"

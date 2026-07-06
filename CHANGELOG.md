@@ -4,6 +4,14 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [2.6.0] — 2026-07-06
+
+### Added — `pr-review` skill + `/v:pr-review` command
+
+- **`pr-review` skill** — a two-axis, stack-agnostic **deep code-review** skill for a pull/merge request or a local diff. It first builds shared understanding of the change's intent, then hunts bugs and edge cases along **two deliberately separate axes** run as context-isolated sub-agents so neither pollutes the other: **Standards** (does the code follow *this repo's* documented conventions, discovered in a Phase-0 sweep?) ⊥ **Spec** (does it faithfully implement the originating spec/issue/PRD?). Findings are reported **side by side, never merged across axes**; genuine author-intent unknowns are promoted to Open Questions; every finding carries a **verdict + confidence**. **Review-only — it never edits, commits, pushes, or merges code.** Ships `SKILL.md` + four `references/` (exploration checklist, review domains, findings format, comment-posting).
+- **`/v:pr-review` command** — a thin entry point in the `/v:*` family that runs the skill. Argument = PR/MR URL or number; empty = current branch vs. its base. Auto-detects the host: GitHub (`gh`), GitLab (`glab`), or a hostless local diff.
+- **Self-contained** — no new runtime deps, hooks, or scripts; frontmatter within the linter's limits and all intra-plugin `.md` cross-refs resolve.
+
 ## [2.5.5] — 2026-07-05
 
 ### Performance
