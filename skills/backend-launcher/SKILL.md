@@ -87,6 +87,16 @@ python3 scripts/compound-v-run-with-timeout.py --timeout <sec> --grace 3 -- <cli
 
 **A bare `codex`/`cursor`/`agy` call — no supervisor, or no `</dev/null` — is a bug.** The dispatcher's [liveness sweep](../compound-v/state-machine.md) *detects* a hang after the fact; this launch rule *prevents* it. (All three worker scripts already comply; `compound-v-codex-review.sh` was brought under the supervisor in v2.5.0.)
 
+## Worktree git-base fixes — the CALLER's job, never the worker's (non-negotiable)
+
+**Never ask an external worker (Codex/Antigravity/Cursor) to fix its own worktree's git base** (rebase, reset, fetch, or any other repair of the worktree's git plumbing). If a worktree's base is wrong — stale relative to a merged prerequisite, or otherwise needs correcting — that is resolved by the **caller** recreating the worktree, never by instructing the worker to patch it mid-run.
+
+Two independent reasons this must stay caller-side, not worker-side:
+- **Every external worker already recreates its worktree fresh at current HEAD on every invocation** (each adapter's create step: remove any stale worktree at that path, then `git worktree add <WT> HEAD` — "idempotent on resume", documented per-backend in `adapter-codex.md` / `adapter-cursor.md` / `adapter-antigravity.md`). A job that needs a different base — e.g. it depends on another job's *already-merged* output — needs that modeled as `depends_on` in the manifest so the caller dispatches it in the right order, not patched after the fact.
+- **Codex specifically cannot do it even if asked.** A git worktree's `.git` is a *file* pointing at `<main-repo>/.git/worktrees/<name>/`, where the actual per-worktree git metadata (`HEAD`, index, etc.) physically lives — **outside** the worktree directory itself. Codex's `--sandbox workspace-write --cd "$WT"` confines writes to `$WT` only, so any git operation touching that metadata falls outside the sandbox root; combined with `approval_policy: never` (no one to ask for escalation — see the launch rule above), the operation is simply not permitted. This is a **sandbox limitation, not a code one** — dropping worktree isolation to work around it is not a fix, it removes the only file-scope enforcement Codex has (`codex ⇒ worktree` is a hard invariant in `compound-v-validate-manifest.py`, precisely because Codex can only be confined to a *directory*, never to a file allow-list).
+
+If a job ever appears to need a git-base fix mid-run, that is a signal the run's dependency ordering is wrong (missing `depends_on`) or a retry skipped the worker's normal create step — fix the manifest or re-dispatch through the full lifecycle; never patch the worker's worktree by hand or delegate the patch to the worker itself.
+
 ---
 
 ## Worker prompt lock (planner/executor separation)
