@@ -4,6 +4,15 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [2.6.2] — 2026-07-06
+
+### Fixed — `.claude/compound-v.json` no longer commits machine-local capability
+
+- **Closed a real downstream-repo review comment:** a teammate flagged the committed `.claude/compound-v.json` as looking like it should be gitignored. The diagnosis: the file mixed genuine team **policy** (`stance`, `models`, `memory`, `epic`, `review`, `workflows_accelerator` — correct to commit) with a **machine-local capability snapshot** (`backends`, `checked_at` — "which CLI/MCP tools were detected on the machine that last ran `/v:init`") — a fact about one developer's machine, wrong the moment a teammate with a different local setup opens the file.
+- **The fix removes `backends`/`checked_at` from the committed file — no new file needed.** A correct, already-uncommitted home for exactly this data already existed: `~/.claude/compound-v-capabilities.json` (`/v:init` Step 4b, user-home-scoped, already documented as "reused across repos"). `backends` was pure redundancy with it.
+- **Audited before touching anything:** `compound-v-resolve-model.py`'s `load_config_models()` reads only the `models` key; a full-repo grep found **zero** programmatic readers of `backends`/`checked_at` — actual backend availability is already re-probed live at dispatch time (the env-aware codex→claude fallback). So this is a hygiene/trust fix, not a routing-behavior change — nothing about dispatch logic changed. **Backward-compatible**: an existing committed file with the old fields is simply ignored, no migration needed.
+- `commands/v-init.md` Step 4a and `commands/v-models.md` Step 3 updated (write path + example JSON + an explicit "why" note at the canonical source). **Codex cross-model verification: ACCURATE** — independently confirmed `load_config_models()` reads only `models`, zero remaining `backends` references anywhere in the repo, the sole remaining `checked_at` is correctly inside the Step 4b capability-cache shape, and the Step 4b cache fully covers the old capability role.
+
 ## [2.6.1] — 2026-07-06
 
 ### Fixed — worktree git-base fixes are the caller's job, never the worker's
