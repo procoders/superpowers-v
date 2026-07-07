@@ -179,10 +179,13 @@ Guardrails on every assignment:
 ## Step 3 — Write the map into `.claude/compound-v.json`
 
 Merge the confirmed assignments into the config's `models` block. **Preserve every
-other key** in the file (`stance`, `backends`, `checked_at`, `workflows_accelerator`,
+other key** in the file (`stance`, `memory`, `epic`, `review`, `workflows_accelerator`,
 …) and any backend block you did not refresh this run. Create the file (and parent
 dir) if absent, seeding the non-`models` keys from `/v:init` conventions if they
-aren't there yet.
+aren't there yet. **Never write `backends` or `checked_at`** — machine-local
+capability lives in `~/.claude/compound-v-capabilities.json`, not in this committed
+file (v2.6.2). If an older file already has those two keys (pre-2.6.2), leave them
+untouched — they're inert, no migration needed.
 
 Resulting shape (only `models` is this command's responsibility) — write the
 **per-stance** shape, refreshing each backend's row inside every stance block (only
@@ -191,8 +194,6 @@ Resulting shape (only `models` is this command's responsibility) — write the
 ```jsonc
 {
   "stance": "…",            // preserved
-  "backends": ["…"],         // preserved
-  "checked_at": "…",         // preserved
   "models": {
     "balanced": {
       "claude":      { "deep": "opus",    "standard": "opus",    "light": "sonnet" },

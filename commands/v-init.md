@@ -261,11 +261,17 @@ Write **both**. Create parent dirs as needed.
 
 ### 4a. Project stance → `.claude/compound-v.json` (project-local; committed in YOUR project, never in the plugin repo)
 
+**Committed team POLICY only — never machine-local capability.** This file is shared across every
+developer's checkout, so it must never claim something that's only true of the machine that ran
+`/v:init` (e.g. "Codex is available" when a teammate's machine doesn't have it installed) — that
+data already has a correct, uncommitted home: the Step 4b user-level capability cache below. Do not
+add a `backends` or `checked_at` field here; they were removed in v2.6.2 for exactly this reason
+(a real downstream repo review flagged the committed file as looking like machine-local state — it
+was, in those two fields).
+
 ```json
 {
   "stance": "balanced",
-  "backends": ["claude", "codex"],
-  "checked_at": "<YYYY-MM-DD>",
   "memory": { "embeddings": false, "auto_recall": true, "auto_tighten": false },
   "epic":   { "max_features": 1 },
   "review": { "cross_model": false },
@@ -291,13 +297,6 @@ identically to `balanced`. Only `cost-aware.claude.standard` differs: `sonnet`, 
 `opus`; `cost-aware.claude.deep` stays `opus`.)
 
 - `stance` = the stance chosen in Step 3.
-- `backends` = the usable set: always includes `"claude"`; add `"codex"` if Codex is
-  usable, add `"antigravity"` if `agy` is installed (Step 1a-bis), add `"cursor"` if
-  `cursor-agent` is installed **and authenticated** (Step 1a-ter). E.g. `["claude","codex"]`
-  or `["claude","codex","antigravity","cursor"]`. Antigravity and Cursor are the lower-trust
-  opt-in backends (no kernel sandbox); list each only when its CLI is present (Cursor also
-  requires auth).
-- `checked_at` = today's date.
 - If the user opted into the Workflows accelerator, also include
   `"workflows_accelerator": true` (omit otherwise — default OFF).
 - **`memory.embeddings`** = the Step 3b lane choice (default `false` = FTS5-only). When `true`,
