@@ -16,6 +16,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Pre-flight phase docs 1B/1C now read `docs/superpowers/recon/` before opening new searches (deepen, don't repeat).
 - `skills/compound-v/skill-escalation.md` reconciled with Trigger 0's earlier deep-research use (previously claimed deep-research fires only past 1B/1C).
 
+### Cross-model review (Codex gpt-5.6-sol, 6 rounds, 10 accepted findings)
+- `/v:init` stated `ask`/`auto` unconditionally — now explicitly gate 3 of 3 (plumbing-skip and KB-hit gates named, authority linked).
+- **Epic mode silently bypassed Trigger 0** — per-feature brainstorms now run the recon gate sequence up front; later features converge via the KB-hit gate by design; the autonomous loop is described as the post-spec execution tail.
+- Stale three-phase enumerations (SKILL.md quick-reference heading, plugin/marketplace descriptions) updated to the four-transition reality.
+- The CHANGELOG guard was hardened round-by-round to CommonMark-correct fence handling: opener char+length tracked, closer requires same char + run ≥ opener + only trailing whitespace, a backtick opener with a backtick in its info string is not a fence, headings indented ≤3 spaces are matched with indent-independent version extraction. A 15-fixture adversarial suite was exercised locally; unbalanced fences still fail conservatively (loud, never a false pass).
+
 ## [2.6.4] — 2026-07-10
 
 ### Fixed — Compound V's own audit trail could be silently deleted, and `/v:status` could mislead
