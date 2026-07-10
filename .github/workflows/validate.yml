@@ -54,7 +54,12 @@ jobs:
       - name: Verify CHANGELOG top version matches plugin.json (lockstep guard)
         run: |
           PLUGIN_VERSION=$(jq -r .version .claude-plugin/plugin.json)
-          CHANGELOG_VERSION=$(grep -m1 -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md | tr -d '#[] ')
+          # First release heading OUTSIDE fenced code blocks; [Unreleased] (non-numeric) is skipped.
+          CHANGELOG_VERSION=$(awk '/^```/{fence=!fence; next} !fence && match($0, /^## \[[0-9]+\.[0-9]+\.[0-9]+\]/){print substr($0, RSTART+4, RLENGTH-5); exit}' CHANGELOG.md)
+          if [ -z "$CHANGELOG_VERSION" ]; then
+            echo "::error::No release heading '## [x.y.z]' found in CHANGELOG.md (outside code fences)."
+            exit 1
+          fi
           if [ "$PLUGIN_VERSION" != "$CHANGELOG_VERSION" ]; then
             echo "::error::CHANGELOG top entry ($CHANGELOG_VERSION) != plugin.json version ($PLUGIN_VERSION). Bump plugin.json, marketplace.json AND the CHANGELOG heading together."
             exit 1

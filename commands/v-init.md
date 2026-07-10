@@ -283,7 +283,12 @@ Two brainstorm-phase policy choices (committed team policy → the Step 4a `brai
   > pass (usually several minutes, spawns subagents) or up to 6 parallel web searches
   > (usually under a couple of minutes).
   > Note: this sends the topic text to external search services."*
-  `ask` makes that offer per brainstorm; `auto` runs it without asking (same bounds);
+  This config value is **gate 3 of three** — consulted only after Trigger 0's first two
+  gates pass (gate 1: plumbing-topic skip; gate 2: V-memory strong-hit skip — the
+  authoritative order lives in
+  [`phase-0-recon.md`](../skills/compound-v/phase-0-recon.md)). A plumbing topic or a
+  strong local KB hit means no offer and no recon regardless of this setting.
+  `ask` then makes that offer per brainstorm; `auto` runs it without asking (same bounds);
   `off` is a hard kill-switch — honored for cost AND confidentiality (some topics must
   never leave the machine).
 - **Batched elicitation — `brainstorm.batch_elicitation`** (toggle, default **on**):

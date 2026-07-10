@@ -110,7 +110,11 @@ flowchart LR
 
 ---
 
-## The Three Phases — Quick Reference
+## The Phases — Quick Reference
+
+### Phase 0: Pre-Brainstorm Recon (gated — Trigger 0)
+
+Before a brainstorm begins on a feature topic: gate 1 plumbing-skip → gate 2 V-memory strong-hit skip → gate 3 `brainstorm.deep_research` (`ask` default / `auto` / `off`). Engine: bundled `deep-research` via its skill interface if present, else ≤6 parallel WebSearch, else skip with notice — never blocks the brainstorm. Output: an anti-anchoring recon doc at `docs/superpowers/recon/YYYY-MM-DD-<topic>.md`, committed, read by the brainstorm and later by 1B/1C. Full procedure: [phase-0-recon.md](phase-0-recon.md).
 
 ### Phase 1: Parallel Pre-Flight (1A + 1B + 1C)
 
