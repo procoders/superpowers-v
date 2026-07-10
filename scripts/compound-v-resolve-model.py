@@ -69,8 +69,9 @@ _ANTIGRAVITY = {"deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Lo
                 "light": "Gemini 3.5 Flash (Low)"}
 # Cursor (cursor-agent): "auto" is the SAFE DEFAULT for every tier — a FREE plan can ONLY
 # use Auto (named models error: "Named models unavailable"). Paid plans override per-tier
-# via /v:models (cursor-agent has no `models` list command). Lower-trust tier (no kernel
-# sandbox; headless -f required).
+# via /v:models — `cursor-agent models` lists the live catalog for manual discovery (not
+# auto-ranked: it spans unrelated vendor families with no shared naming convention).
+# Lower-trust tier (no kernel sandbox; headless -f required).
 _CURSOR = {"deep": "auto", "standard": "auto", "light": "auto"}
 
 
