@@ -154,6 +154,23 @@ shell). This only decides whether to *offer* the opt-in
 [`workflows-accelerator.md`](../skills/compound-v/workflows-accelerator.md) in Step 3 —
 it is never required and defaults OFF.
 
+### 1d-bis. `deep-research` bundled skill (advisory presence probe)
+
+Check whether `deep-research` appears in **your own available-skills listing** (the
+skills the harness lists for this agent). This is a presence check ONLY:
+
+- **NOT a version check** — there is no version floor to assert.
+- **NOT a `Workflow({...})` call** — under the hood deep-research is a gate-able dynamic
+  Workflow, and the `Workflow` tool may be absent in a plain subagent shell; the only
+  contract is the skill/slash interface, i.e. its entry in the available-skills listing.
+
+Record the result for Step 4b: present in the listing → `deep_research: true`; absent →
+`false`. Either way it is an **advisory hint**: Trigger 0 (pre-brainstorm recon,
+[`phase-0-recon.md`](../skills/compound-v/phase-0-recon.md)) re-checks the live listing
+at fire time, because this flag can go stale — `disableBundledSkills` /
+`CLAUDE_CODE_DISABLE_BUNDLED_SKILLS` can hide the skill after `/v:init` ran. Absence
+never blocks recon; the engine ladder falls back to parallel WebSearch.
+
 ### 1e. Wall-clock cap for external workers
 
 No probe needed: all three external workers (Codex, Antigravity, Cursor) run under the bundled
@@ -252,6 +269,29 @@ Two more structured choices — sensible defaults, reconfigurable any time:
   Off = run it manually when you want it; on = decorrelated review by default, at the cost of
   one extra read-only Codex pass.
 
+---
+
+## Step 3d — Brainstorm defaults (recon + elicitation)
+
+Two brainstorm-phase policy choices (committed team policy → the Step 4a `brainstorm` block):
+
+- **Pre-brainstorm recon mode — `brainstorm.deep_research`** (options `ask` / `auto` /
+  `off`; default **`ask`**, recommended): whether Trigger 0 may run a research pass
+  before a brainstorm starts. Describe it with the honest cost/egress line — qualitative
+  only, no token or cost numbers:
+  > *"I can run a quick research pass before we brainstorm — either one deep-research
+  > pass (usually several minutes, spawns subagents) or up to 6 parallel web searches
+  > (usually under a couple of minutes).
+  > Note: this sends the topic text to external search services."*
+  `ask` makes that offer per brainstorm; `auto` runs it without asking (same bounds);
+  `off` is a hard kill-switch — honored for cost AND confidentiality (some topics must
+  never leave the machine).
+- **Batched elicitation — `brainstorm.batch_elicitation`** (toggle, default **on**):
+  allow ≥3 *independent* clarifying questions to batch into one Visual Companion form
+  screen (dependent chains always stay sequential — see
+  [`brainstorm-elicitation.md`](../skills/compound-v/brainstorm-elicitation.md)).
+  `false` keeps upstream's one-at-a-time questioning everywhere.
+
 Confirm all choices back to the user before saving.
 
 ---
@@ -276,6 +316,10 @@ was, in those two fields).
   "memory": { "embeddings": false, "auto_recall": true, "auto_tighten": false },
   "epic":   { "max_features": 1 },
   "review": { "cross_model": false },
+  "brainstorm": {
+    "deep_research": "ask",
+    "batch_elicitation": true
+  },
   "models": {
     "balanced": {
       "claude":      { "deep": "opus",                  "standard": "opus",                  "light": "sonnet" },
@@ -314,6 +358,15 @@ identically to `balanced`. Only `cost-aware.claude.standard` differs: `sonnet`, 
 - **`review.cross_model`** (default `false`) = the Step 3c toggle; when `true`, high-stakes
   plans get an automatic Codex second opinion ([`/v:review-plan`](v-review-plan.md)) before
   dispatch.
+- **`brainstorm.deep_research`** (default `"ask"`) / **`brainstorm.batch_elicitation`**
+  (default `true`) = the Step 3d choices: the pre-brainstorm recon mode (`ask|auto|off`;
+  `off` is a hard kill-switch) and the independent-question batching toggle. These are
+  **policy** (committed), not capability — the machine-local `deep-research` presence flag
+  lives in Step 4b, per the v2.6.2 split. Readers
+  ([`phase-0-recon.md`](../skills/compound-v/phase-0-recon.md),
+  [`brainstorm-elicitation.md`](../skills/compound-v/brainstorm-elicitation.md)) default
+  `deep_research` to `"ask"` and `batch_elicitation` to `true` when the `brainstorm` block
+  is absent (pre-v2.7 configs) — nothing validates this file, so the reader owns the default.
 - **`models` — SEED the default per-stance tier→model map (exactly the block above)** so
   intent-based routing resolves out of the box even with no further setup. The map is
   **per-stance** — shape `{<stance>: {<backend>: {<tier>: model}}}`. Only the `claude`
@@ -345,6 +398,7 @@ The user-level cache of what this machine can do, reused across repos:
   "cursor": { "available": false, "authenticated": false, "trust": "lower (no kernel sandbox)", "version": "<from `cursor-agent --version`>" },
   "context7": { "available": true },
   "workflows": { "available": false },
+  "deep_research": true,
   "checked_at": "<YYYY-MM-DD>"
 }
 ```
@@ -354,6 +408,11 @@ The user-level cache of what this machine can do, reused across repos:
 - `antigravity.available` reflects the Step 1a-bis `command -v agy` probe; record the
   `version` from `agy --version`. When present, Step 1a-bis also seeds a real model map
   via `agy models </dev/null` (headless — no TTY needed).
+- `deep_research` reflects the Step 1d-bis presence probe (is `deep-research` in the
+  available-skills listing?) — an **advisory hint only**: Trigger 0 re-checks the live
+  listing at fire time, because the flag can go stale (`disableBundledSkills` /
+  `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS` can hide the skill after init). A stale or absent
+  flag is never treated as a hard "off."
 - Set each block from the actual probe results — never guess.
 
 ---
