@@ -25,16 +25,18 @@
 #     [--schema <abs>] [--context-file <abs>] ... \
 #     [--timeout-sec <n>]
 #
-# Defaults: model gpt-5.5, effort high (the "Codex on their max" the design calls for),
-# schema = <plugin>/schemas/plan-review.schema.json, resolved relative to THIS script —
-# the reviewed repo has no reason to carry the plugin's schema.
+# Defaults: model gpt-5.6-sol, effort high (the "Codex on their max" the design calls for;
+# requires codex-cli >= 0.143.0 -- an older client fails loud with a clear "requires a newer
+# version of Codex" error, not silently), schema = <plugin>/schemas/plan-review.schema.json,
+# resolved relative to THIS script — the reviewed repo has no reason to carry the plugin's
+# schema.
 #
 # Exit: 0 when findings JSON was produced (even verdict=reject — that is reported IN the
 # JSON). Non-zero only on a usage / environment fault.
 
 set -euo pipefail
 
-DEFAULT_MODEL="gpt-5.5"
+DEFAULT_MODEL="gpt-5.6-sol"
 DEFAULT_EFFORT="high"
 DEFAULT_TIMEOUT_SEC=600
 

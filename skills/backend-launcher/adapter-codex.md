@@ -4,7 +4,7 @@
 
 The Codex backend is a **Bash-spawned `codex exec` worker** — its own process, its own git worktree. It is never an `agents/` entry and never the experimental `openai-codex` `app-server` broker (that broker is single-flight and returns "busy" mid-turn, so it cannot fan out). The orchestrator hands this adapter a `job_spec` and gets back the canonical `job_result`; enforcement is git-derived by the caller, identical to every other backend.
 
-Verified live against **codex-cli 0.130.0** on stock macOS (bash 3.2.57, git 2.50.1). All facts below are pinned — do not re-derive them per run; re-probe only in `/v:init`.
+Verified live against **codex-cli 0.144.1** on stock macOS (bash 3.2.57, git 2.50.1) — refreshed 2026-07-10 (was 0.130.0). All facts below are pinned — do not re-derive them per run; re-probe only in `/v:init`.
 
 ---
 
@@ -68,7 +68,7 @@ python3 "$SUPERVISOR" --timeout "$timeout_sec" -- codex exec \
 | `--cd "$WT"` | working root = the worktree (sandbox is scoped here) |
 | `--sandbox workspace-write` \| `read-only` | OS-level write boundary; `read-only` for read-only jobs |
 | `--skip-git-repo-check` | the worktree is a linked checkout; suppress the repo-root check |
-| `--model "$model"` | execution-layer model (e.g. `gpt-5.5`) — **resolved** from `(backend=codex, tier, effort)` before dispatch; never appears in any frontmatter |
+| `--model "$model"` | execution-layer model (e.g. `gpt-5.6-sol`) — **resolved** from `(backend=codex, tier, effort)` before dispatch; never appears in any frontmatter |
 | `-c model_reasoning_effort=<effort>` | optional; codex's reasoning-effort dimension, set from the job's `effort` hint (`low` \| `medium` \| `high`) — see below |
 | `--output-schema "$file"` | optional; strict JSON Schema for the model's final message (drives only `summary`) |
 | `--output-last-message "$file"` | where the agent's last message is written → feeds the human `summary` |
@@ -81,7 +81,7 @@ This is the defect the dogfood pre-flight caught in the PRD's original draft. `-
 
 ### Model + effort: resolved before dispatch, not hardcoded
 
-The dispatcher never hands this adapter a hardcoded model string. It hands a routing **intent** — `tier` (`deep` \| `standard` \| `light`) plus an optional orthogonal `effort` (`low` \| `medium` \| `high`) — and resolves the concrete model **before** dispatch via [`scripts/compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py) with `--backend codex --tier <tier> [--effort <effort>] [--config .claude/compound-v.json]`. The resolver reads the config `models.codex.<tier>` map (e.g. `deep`/`standard` → `gpt-5.5`, `light` → `gpt-5.3-codex-spark`) and yields the concrete `--model` value; an explicit manifest `model` override skips resolution and wins. Codex has **no list command**, so its map is curated + user-overridable (refresh via `/v:models`). The plugin survives model churn because the call sites pass `tier`, never a literal model string.
+The dispatcher never hands this adapter a hardcoded model string. It hands a routing **intent** — `tier` (`deep` \| `standard` \| `light`) plus an optional orthogonal `effort` (`low` \| `medium` \| `high`) — and resolves the concrete model **before** dispatch via [`scripts/compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py) with `--backend codex --tier <tier> [--effort <effort>] [--config .claude/compound-v.json]`. The resolver reads the config `models.codex.<tier>` map (e.g. `deep` → `gpt-5.6-sol`, `standard` → `gpt-5.6-terra`, `light` → `gpt-5.6-luna` — the GPT-5.6 family, refreshed 2026-07-10) and yields the concrete `--model` value; an explicit manifest `model` override skips resolution and wins. **`gpt-5.6-sol` requires codex-cli >= 0.143.0** — an older client fails loud with a clear 400 `"requires a newer version of Codex"` (not silently; the failure-policy retries once then halts cleanly), so a stale local install surfaces as an actionable error, not a routing misfire. `gpt-5.6-terra`/`gpt-5.6-luna` work on older clients too (verified back to 0.142.5). Codex has **no list command**, so its map is curated + user-overridable (refresh via `/v:models`). The plugin survives model churn because the call sites pass `tier`, never a literal model string.
 
 **`--effort` → `-c model_reasoning_effort=<effort>` (codex's effort dimension).** `effort` is orthogonal to `tier`: `tier` picks *which* model, `effort` tunes *how hard it reasons*. The worker script ([`scripts/compound-v-run-codex-worker.sh`](../../scripts/compound-v-run-codex-worker.sh)) takes an optional `--effort low|medium|high`. When set, it appends `-c model_reasoning_effort=<effort>` to **both** `codex exec` invocations (the `--output-schema` path and the plain path), word-split safely under bash 3.2. When omitted, the flag vanishes and codex uses the model's default reasoning effort. The dispatcher passes `--effort` to the worker only when the job carries an `effort` value; it is validated against `low|medium|high` and the run aborts (usage fault) on any other value. This is the codex-specific surfacing of the effort dimension that the generic resolver/manifest expose backend-agnostically — the claude adapter, by contrast, treats per-call effort as advisory because the `Task` path has no separate effort flag.
 
@@ -152,7 +152,7 @@ scripts/compound-v-run-codex-worker.sh \
   --job-id   task-1-editor-ui \
   --repo     /abs/path/to/repo \
   --prompt-file /abs/path/to/jobs/task-1-editor-ui.prompt.md \
-  --model    gpt-5.5 \
+  --model    gpt-5.6-sol \
   --write-allowed "src/features/sequences/components/**" \
   --timeout-sec 900 \
   --network  false

@@ -91,7 +91,7 @@ fuzzier CRUD slice that needs more judgment is bumped to `standard` — that is 
 planner call, not a hard rule.
 
 > With the per-stance models map (Balanced shown), `deep`/`standard` on `claude` both resolve to `opus`
-> and `light` to `sonnet`; `standard` on `codex` resolves to `gpt-5.5`. So this
+> and `light` to `sonnet`; `standard` on `codex` resolves to `gpt-5.6-terra`. So this
 > table produces the same effective models as the pre-tier version — the difference
 > is that the model strings now live in one refreshable place, not in the table.
 
@@ -186,12 +186,12 @@ has no separate effort flag).
 "models": {
   "balanced": {
     "claude":      { "deep": "opus", "standard": "opus", "light": "sonnet" },
-    "codex":       { "deep": "gpt-5.5", "standard": "gpt-5.5", "light": "gpt-5.3-codex-spark" },
+    "codex":       { "deep": "gpt-5.6-sol", "standard": "gpt-5.6-terra", "light": "gpt-5.6-luna" },
     "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" }
   },
   "cost-aware": {
     "claude":      { "deep": "opus", "standard": "sonnet", "light": "sonnet" },
-    "codex":       { "deep": "gpt-5.5", "standard": "gpt-5.5", "light": "gpt-5.3-codex-spark" },
+    "codex":       { "deep": "gpt-5.6-sol", "standard": "gpt-5.6-terra", "light": "gpt-5.6-luna" },
     "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" }
   }
 }
@@ -219,7 +219,7 @@ into it.
 ```
 compound-v-resolve-model.py --backend codex --tier deep --effort high \
   --config .claude/compound-v.json
-# → {"backend": "codex", "tier": "deep", "model": "gpt-5.5", "effort": "high"}
+# → {"backend": "codex", "tier": "deep", "model": "gpt-5.6-sol", "effort": "high"}
 ```
 
 Precedence, lowest to highest:

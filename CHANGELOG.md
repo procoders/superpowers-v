@@ -4,6 +4,14 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [2.6.3] — 2026-07-10
+
+### Changed — Codex defaults bumped to the GPT-5.6 family (Sol/Terra/Luna)
+
+- **`deep`→`gpt-5.6-sol`, `standard`→`gpt-5.6-terra`, `light`→`gpt-5.6-luna`** (was `gpt-5.5`/`gpt-5.5`/`gpt-5.3-codex-spark`) — a real per-tier differentiation where `deep`/`standard` previously shared the same model. Live-verified all three on `codex-cli 0.144.1` (`PROBE_OK`). **`gpt-5.6-sol` requires codex-cli >= 0.143.0** — confirmed broken with a clear 400 `"requires a newer version of Codex"` on 0.142.5, working on 0.144.1; an under-floor client fails loud (not silently — the failure-policy retries once then halts cleanly). `gpt-5.6-terra`/`gpt-5.6-luna` work on older clients too (verified back to 0.142.5). `compound-v-codex-review.sh`'s cross-model-review default follows the deep tier (`gpt-5.6-sol`, "Codex on their max").
+- **Two independently-stale adapter pins refreshed during the audit:** `adapter-codex.md`'s verified-against pin (`0.130.0` → `0.144.1`); `adapter-cursor.md`'s verified-against pin (`2025.09.12` → `2026.06.26`) **and** a now-**false** claim — "cursor-agent has no models list command" — corrected: it does now (`cursor-agent models`, a live 187-entry catalog verified). **Grok is not present in that live catalog** for this account (press coverage says available, likely region/plan-gated — not documented since unconfirmed hands-on). No auto-discovery was added for Cursor's catalog (would be over-engineering — it spans unrelated vendor families with no shared naming convention, unlike Antigravity's single-family Gemini catalog `/v:models` already ranks); curated + user-overridable stays the flow, now pointing at the real command for manual discovery.
+- Every doc stating the codex model map as **current fact** updated for consistency (`v-init.md` seed, `v-models.md` roster/table/example, `routing-policy.md` map/resolve-example, `execution-manifest.md` tier table/config example). Illustrative "(e.g. `gpt-5.5`)" mentions explaining the resolution *mechanism* (never hardcode a model — the resolver handles it) and the dated `routing-lessons.md` historical entry were deliberately left untouched. **Codex cross-model verification caught one real miss** — `compound-v-resolve-model.py`'s own source comment still said "cursor-agent has no `models` list command" (I'd audited the `.md` docs for this false claim but missed the `.py` comment) — fixed; a second pass confirmed every codex tier mapping, the review-script default, and every version pin consistent, with no remaining stale `gpt-5.5`/`gpt-5.3-codex-spark` current-default claims.
+
 ## [2.6.2] — 2026-07-06
 
 ### Fixed — `.claude/compound-v.json` no longer commits machine-local capability

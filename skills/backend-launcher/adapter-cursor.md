@@ -4,7 +4,7 @@
 
 The Cursor backend is a **Bash-spawned `cursor-agent -p` worker** — its own process, its own git worktree. It mirrors the Codex / Antigravity adapters step-for-step ([`adapter-antigravity.md`](adapter-antigravity.md)): worktree isolation, a git-derived scope gate, normalize → `job_result`, caller merges. The orchestrator hands this adapter a `job_spec` and gets back the canonical `job_result`; enforcement is git-derived by the caller, identical to every other backend.
 
-Verified live against **cursor-agent 2025.09.12** on stock macOS (bash 3.2.57): the headless invocation writes files into the worktree and the scope gate enforces `write_allowed` on both the success and BLOCKED paths (see *Verified facts*). The pinned facts below are load-bearing — do not re-derive them per run; re-probe only in `/v:init`.
+Verified live against **cursor-agent 2026.06.26** on stock macOS (bash 3.2.57) — refreshed 2026-07-10 (was 2025.09.12): the headless invocation writes files into the worktree and the scope gate enforces `write_allowed` on both the success and BLOCKED paths (see *Verified facts*). The pinned facts below are load-bearing — do not re-derive them per run; re-probe only in `/v:init`.
 
 ---
 
@@ -51,7 +51,7 @@ This is the *instructed* half of planner/executor separation; the git-diff scope
 
 ---
 
-## Pinned `cursor-agent` invocation (cursor-agent 2025.09.12)
+## Pinned `cursor-agent` invocation (cursor-agent 2026.06.26)
 
 The script uses **exactly** this shape — verified to write files into the worktree, print one JSON object to stdout, and exit 0:
 
@@ -90,7 +90,7 @@ cursor-agent has no output-schema flag. The worker accepts `--output-schema` for
 
 ### Model + effort: resolved before dispatch, not hardcoded
 
-The dispatcher resolves the concrete model **before** dispatch via [`scripts/compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py) with `--backend cursor --tier <tier> [--config .claude/compound-v.json]`. The built-in map is **`auto` for every tier** — VERIFIED LIVE that a Cursor **Free** plan can *only* use Auto: passing a named model (`sonnet-4` / `gpt-5` / …) fails with *"Named models unavailable. Free plans can only use Auto."* Both `--model auto` and omitting `--model` work on free and paid plans. On a **paid** plan, override with named per-tier ids in `.claude/compound-v.json` via `/v:models` (cursor-agent has **no `models` list command**, so no auto-discovery). An explicit manifest `model` override wins. Because the default is Auto, **tier-based routing is a no-op for Cursor on a free plan** (Auto picks the model) — by design. cursor takes no separate effort flag, so `effort` is advisory (like Claude / Antigravity).
+The dispatcher resolves the concrete model **before** dispatch via [`scripts/compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py) with `--backend cursor --tier <tier> [--config .claude/compound-v.json]`. The built-in map is **`auto` for every tier** — VERIFIED LIVE that a Cursor **Free** plan can *only* use Auto: passing a named model (`sonnet-4` / `gpt-5` / …) fails with *"Named models unavailable. Free plans can only use Auto."* Both `--model auto` and omitting `--model` work on free and paid plans. On a **paid** plan, run `cursor-agent models` to see the live catalog, then override with named per-tier ids in `.claude/compound-v.json` via `/v:models` (manual, not auto-discovered — cursor's catalog spans many unrelated vendor families with no shared naming convention, unlike antigravity's single-family Gemini catalog that `/v:models` ranks automatically). An explicit manifest `model` override wins. Because the default is Auto, **tier-based routing is a no-op for Cursor on a free plan** (Auto picks the model) — by design. cursor takes no separate effort flag, so `effort` is advisory (like Claude / Antigravity).
 
 ### Timeout — portable bash watchdog (no `timeout` binary required)
 

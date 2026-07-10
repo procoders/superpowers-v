@@ -106,12 +106,13 @@ cursor-agent status </dev/null 2>&1 | head -3   # or: [ -n "$CURSOR_API_KEY" ]
 ```
 
 - Installed **and** authenticated → Cursor is **usable**; record it and add it to `backends`.
-  The pinned headless invocation holds (verified, cursor-agent 2025.09.12):
+  The pinned headless invocation holds (verified, cursor-agent 2026.06.26):
   `cd "$WT" && cursor-agent -p -f --output-format json [--model <M>] "<prompt>" </dev/null`
   (`.result` → summary, `.session_id` → resume). Default model is **`auto`** — VERIFIED that a
   Cursor **Free** plan can *only* use Auto (named models like `sonnet-4` error). On a **paid**
-  plan, set named per-tier ids via [`/v:models`](v-models.md) / config (no `models` list
-  command, so no auto-discovery). Note the plan when you record it.
+  plan, run `cursor-agent models` to see the live catalog, then set named per-tier ids via
+  [`/v:models`](v-models.md) / config (manual — Compound V doesn't auto-rank cursor's multi-vendor
+  catalog). Note the plan when you record it.
 - Installed but **not** authenticated → record it as **present but unauthenticated**; treat as
   unavailable and tell the user to run `cursor-agent login` (or set `CURSOR_API_KEY`).
 
@@ -278,13 +279,13 @@ was, in those two fields).
   "models": {
     "balanced": {
       "claude":      { "deep": "opus",                  "standard": "opus",                  "light": "sonnet" },
-      "codex":       { "deep": "gpt-5.5",               "standard": "gpt-5.5",               "light": "gpt-5.3-codex-spark" },
+      "codex":       { "deep": "gpt-5.6-sol",            "standard": "gpt-5.6-terra",          "light": "gpt-5.6-luna" },
       "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" },
       "cursor":      { "deep": "auto",                  "standard": "auto",                  "light": "auto" }
     },
     "cost-aware": {
       "claude":      { "deep": "opus",                  "standard": "sonnet",                "light": "sonnet" },
-      "codex":       { "deep": "gpt-5.5",               "standard": "gpt-5.5",               "light": "gpt-5.3-codex-spark" },
+      "codex":       { "deep": "gpt-5.6-sol",            "standard": "gpt-5.6-terra",          "light": "gpt-5.6-luna" },
       "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" },
       "cursor":      { "deep": "auto",                  "standard": "auto",                  "light": "auto" }
     }
