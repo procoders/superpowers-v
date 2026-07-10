@@ -67,7 +67,9 @@ jobs:
               } else if (c == fc && len >= flen && rest ~ /^[ \t]*$/) { fence = 0 }
               next
             }
-            !fence && match($0, /^## \[[0-9]+\.[0-9]+\.[0-9]+\]/) { print substr($0, RSTART+4, RLENGTH-5); exit }
+            !fence && /^ {0,3}##[ \t]+\[[0-9]+\.[0-9]+\.[0-9]+\]/ {
+              match($0, /\[[0-9]+\.[0-9]+\.[0-9]+\]/); print substr($0, RSTART+1, RLENGTH-2); exit
+            }
           ' CHANGELOG.md)
           if [ -z "$CHANGELOG_VERSION" ]; then
             echo "::error::No release heading '## [x.y.z]' found in CHANGELOG.md (outside code fences)."
