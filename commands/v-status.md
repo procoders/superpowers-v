@@ -11,7 +11,15 @@ The run-id (optional) is `{{args}}`.
 1. **Locate the run.**
    - If `{{args}}` names a run-id, the run dir is `docs/superpowers/execution/{{args}}/`.
    - If `{{args}}` is empty, list the subdirectories of `docs/superpowers/execution/`. If there is exactly one, use it. If there are several, show them (newest first by run-id date prefix) and render the most recent, noting the others.
-   - If `docs/superpowers/execution/` is absent or empty, tell the user there are no orchestrator runs yet and stop.
+   - If `docs/superpowers/execution/` is absent or empty, tell the user there are no **Compound V**
+     orchestrator runs yet. Before stopping, do one cheap check: does `.superpowers/sdd/` exist in
+     this repo (plain Superpowers' `subagent-driven-development` task-tracking directory —
+     `task-N-brief.md` / `task-N-report.md` / `progress.md` / `review-<sha>..<sha>.diff`)? If so,
+     say so explicitly: work clearly happened here, just not through Compound V's manifest-driven
+     dispatch (auto-interception didn't trigger, or the plan predates it) — **do not** parse or
+     summarize its contents (that directory's format belongs to the base Superpowers plugin, not
+     Compound V; a presence check is all that's warranted). Otherwise stop as before — genuinely
+     no orchestrator runs of either kind.
 
 2. **Read `state.json`** from the run dir (and `manifest.yaml` for job titles). If `state.json` is missing or unreadable, report that the run dir exists but has no state yet, and stop.
 

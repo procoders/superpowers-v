@@ -231,7 +231,20 @@ After every task is approved and every worktree job has merged back, dispatch ON
   - Cross-task integration works (Task 0's types are used correctly by parallel tasks) and the build is green
   - The composite change matches the spec + all three audits' constraints **and the manifest's feature-level `acceptance_criteria`** (the AC-gate for the run)
 
-On PASS, advance `state.json` to `MERGED` and hand off to `superpowers:finishing-a-development-branch`.
+On PASS, advance `state.json` to `MERGED`. **Before handing off, commit the run directory** —
+`docs/superpowers/execution/<run-id>/**` (`state.json`, `results/*.json`, anything else written
+there this run) — if it isn't already:
+```bash
+git add docs/superpowers/execution/<run-id>/
+git commit -m "chore(v-dispatch): run <run-id> reviewed and merged"
+```
+**This is not optional.** `finishing-a-development-branch`'s cleanup step (Options 1/Merge and
+4/Discard) runs `git worktree remove` on the branch this run happened in — that command silently
+deletes any *uncommitted* files, including an uncommitted run directory. Skipping this step means
+Compound V's own audit trail — the thing `state-machine.md` calls "the record" — can vanish the
+moment the branch is merged, and `/v:status` will report "no orchestrator runs" afterward even
+though one demonstrably happened (a real incident — noticed by Oscar Salcedo). Only then hand off
+to `superpowers:finishing-a-development-branch`.
 
 ### Step 6 — Post-run memory (outcomes → scorecard)
 
