@@ -61,7 +61,8 @@ jobs:
             /^ {0,3}(```|~~~)/ {
               match($0, /(`+|~+)/); c = substr($0, RSTART, 1); len = RLENGTH
               if (!fence)                          { fence = 1; fc = c; flen = len }
-              else if (c == fc && len >= flen)     { fence = 0 }
+              else if (c == fc && len >= flen &&
+                       substr($0, RSTART + RLENGTH) ~ /^[ \t]*$/) { fence = 0 }
               next
             }
             !fence && match($0, /^## \[[0-9]+\.[0-9]+\.[0-9]+\]/) { print substr($0, RSTART+4, RLENGTH-5); exit }
