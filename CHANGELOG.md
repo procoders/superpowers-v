@@ -4,6 +4,18 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [2.7.0] — 2026-07-10
+
+### Added
+- **Trigger 0 — pre-brainstorm recon** (`skills/compound-v/phase-0-recon.md`): when a brainstorm is about to begin on an unfamiliar topic, a gated, bounded research pass (bundled `deep-research` if present, ≤6 parallel WebSearch otherwise, skip-with-notice if neither) writes an anti-anchoring recon doc to `docs/superpowers/recon/` that the brainstorm — and later pre-flights 1B/1C — read first. Gate order: plumbing-skip → V-memory KB hit → `brainstorm.deep_research` config (`ask` default / `auto` / `off` hard kill-switch). Recon is evidence, never a routing input. Description-driven with zero hook backstop — weaker than Triggers 1–3, documented as such.
+- **Batched elicitation** (`skills/compound-v/brainstorm-elicitation.md`): ≥3 *independent* questions (≤5 groups/screen, never a grid) may batch into ONE Visual Companion form screen — reusing upstream's companion server as-is, only if the user already accepted it this session. Independence is judged on answer interaction; when unsure → sequential. Deliberately overrides upstream's "text questions → terminal" rule for this narrow case, and says so.
+- **`/v:init`**: `brainstorm.deep_research` + `brainstorm.batch_elicitation` policy keys (committed config) and a `deep_research` presence probe (machine-local capabilities cache, advisory only — fire-time listing check is the contract).
+- **CI guard:** CHANGELOG top version must equal `plugin.json` version — closes the bug class where v2.6.4 shipped with both manifests still at 2.6.3 (the bump was written but never committed, and manifest-vs-manifest lockstep can't see it).
+
+### Fixed
+- Pre-flight phase docs 1B/1C now read `docs/superpowers/recon/` before opening new searches (deepen, don't repeat).
+- `skills/compound-v/skill-escalation.md` reconciled with Trigger 0's earlier deep-research use (previously claimed deep-research fires only past 1B/1C).
+
 ## [2.6.4] — 2026-07-10
 
 ### Fixed — Compound V's own audit trail could be silently deleted, and `/v:status` could mislead

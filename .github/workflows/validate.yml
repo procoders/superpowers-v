@@ -51,6 +51,15 @@ jobs:
           fi
           echo "✅ versions in lockstep: $pv"
 
+      - name: Verify CHANGELOG top version matches plugin.json (lockstep guard)
+        run: |
+          PLUGIN_VERSION=$(jq -r .version .claude-plugin/plugin.json)
+          CHANGELOG_VERSION=$(grep -m1 -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md | tr -d '#[] ')
+          if [ "$PLUGIN_VERSION" != "$CHANGELOG_VERSION" ]; then
+            echo "::error::CHANGELOG top entry ($CHANGELOG_VERSION) != plugin.json version ($PLUGIN_VERSION). Bump plugin.json, marketplace.json AND the CHANGELOG heading together."
+            exit 1
+          fi
+
       - name: Verify agent files have required frontmatter
         run: |
           set -e

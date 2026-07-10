@@ -20,3 +20,5 @@ docs/superpowers/_runs/
 # over-broad ignore here would blind enforcement. Un-ignore explicitly to be safe.
 !docs/superpowers/execution/
 !docs/superpowers/memory/
+# Trigger 0 recon docs — defense-in-depth; must stay visible to the scope gate.
+!docs/superpowers/recon/
