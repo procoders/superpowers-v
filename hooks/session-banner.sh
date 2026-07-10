@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-banner="Compound V loaded — sidekick to Superpowers. Auto-fires after brainstorming (description-based discovery). Phases: code-archaeologist + domain-expert + doc-validator (parallel) → partition-reviewer → parallel-dispatcher. You do not need to invoke it manually."
+banner="Compound V loaded — sidekick to Superpowers. Auto-fires before brainstorming (gated recon) and after it (pre-flights) — description-based discovery. Phases: recon → code-archaeologist + domain-expert + doc-validator (parallel) → partition-reviewer → parallel-dispatcher. You do not need to invoke it manually."
 
 # First-run setup hint: the project stance config is .claude/compound-v.json
 # (project-level, committed). SessionStart runs from the project root, so the
