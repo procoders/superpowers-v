@@ -60,9 +60,11 @@ jobs:
             NR==1 { sub(/^\xef\xbb\xbf/, "") }
             /^ {0,3}(```|~~~)/ {
               match($0, /(`+|~+)/); c = substr($0, RSTART, 1); len = RLENGTH
-              if (!fence)                          { fence = 1; fc = c; flen = len }
-              else if (c == fc && len >= flen &&
-                       substr($0, RSTART + RLENGTH) ~ /^[ \t]*$/) { fence = 0 }
+              rest = substr($0, RSTART + RLENGTH)
+              if (!fence) {
+                # a backtick opener whose info string contains a backtick is NOT a fence (CommonMark)
+                if (!(c == "`" && rest ~ /`/)) { fence = 1; fc = c; flen = len }
+              } else if (c == fc && len >= flen && rest ~ /^[ \t]*$/) { fence = 0 }
               next
             }
             !fence && match($0, /^## \[[0-9]+\.[0-9]+\.[0-9]+\]/) { print substr($0, RSTART+4, RLENGTH-5); exit }
