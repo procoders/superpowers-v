@@ -44,22 +44,23 @@ Dispatch a fresh subagent using the **`doc-validator-prompt.md`** template (in t
 
 The subagent will:
 
-1. **Extract every library/version mention** from the spec, including implied ones ("we'll use an ORM" → flag for choice validation).
-2. **For each library, query Context7** (or fall back to WebSearch + package registry) to get:
+1. **Check `docs/superpowers/recon/` for a Trigger 0 recon doc matching this topic.** If present, reuse its library/tooling findings as *leads to verify* — recon is unverified reconnaissance, so 1C still validates every claim it makes against live docs (Context7 or WebSearch), same as any spec claim. It tells you where to look first; it never substitutes for validation.
+2. **Extract every library/version mention** from the spec, including implied ones ("we'll use an ORM" → flag for choice validation).
+3. **For each library, query Context7** (or fall back to WebSearch + package registry) to get:
    - Current stable version
    - Last release date
    - Deprecation status
    - Known migration notes from major to major
    - Active maintenance signal (commits in last 12 months, open issues, response cadence)
-3. **Cross-check repo's declared versions** (if package manifest exists): are we pinned to something old?
-4. **Validate proposed APIs** against current docs via Context7's `query-docs`. If the spec or its example code uses a method, confirm the signature matches today's docs.
-5. **Flag staleness explicitly:**
+4. **Cross-check repo's declared versions** (if package manifest exists): are we pinned to something old?
+5. **Validate proposed APIs** against current docs via Context7's `query-docs`. If the spec or its example code uses a method, confirm the signature matches today's docs.
+6. **Flag staleness explicitly:**
    - 🔴 **CRITICAL**: library deprecated, archived, or abandoned (no commits 24+ months)
    - 🟠 **HIGH**: library not updated in 12-24 months — may still work, verify alternatives
    - 🟡 **MEDIUM**: major version behind current — migration may be needed
    - 🟢 **OK**: current, actively maintained
-6. **Recommend alternatives** for 🔴 and 🟠 cases. Cite usage stats (npm downloads, GitHub stars trend, what big projects use today).
-7. **Write the audit** to `docs/superpowers/library-audit/YYYY-MM-DD-<topic>.md`.
+7. **Recommend alternatives** for 🔴 and 🟠 cases. Cite usage stats (npm downloads, GitHub stars trend, what big projects use today).
+8. **Write the audit** to `docs/superpowers/library-audit/YYYY-MM-DD-<topic>.md`.
 
 ## Output Template
 

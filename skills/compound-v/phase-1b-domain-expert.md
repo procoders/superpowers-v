@@ -51,9 +51,10 @@ The subagent will:
 
 1. **Identify the domain(s).** From the spec text, infer: payments / auth / health / mapping / astrology / NLP / etc. List 1-3 domains.
 2. **Check the knowledge base** at `docs/superpowers/expert/_knowledge-base/<domain>.md`. If it exists and is recent (< 6 months) and covers the spec's scope, treat it as authoritative; only run web searches for genuine gaps.
-3. **Run parallel web searches** if knowledge is thin: 3–6 WebSearch calls in a single message covering: official spec / docs, common pitfalls, regulatory constraints, recent breaking changes, comparison vs alternatives.
-4. **Produce the audit** at `docs/superpowers/expert/YYYY-MM-DD-<topic>.md` (template below).
-5. **Update the knowledge base** at `docs/superpowers/expert/_knowledge-base/<domain>.md` with any new general-purpose findings (not feature-specific details). Append; never overwrite.
+3. **Check `docs/superpowers/recon/` for a Trigger 0 recon doc matching this topic.** If present, read it first and *deepen* its queries rather than repeating them — recon already covered the surface pass, so spend the web-search budget on what it didn't reach. Treat its SUGGESTED DIRECTIONS as non-exhaustive evidence, not a shortlist.
+4. **Run parallel web searches** if knowledge is thin: 3–6 WebSearch calls in a single message covering: official spec / docs, common pitfalls, regulatory constraints, recent breaking changes, comparison vs alternatives.
+5. **Produce the audit** at `docs/superpowers/expert/YYYY-MM-DD-<topic>.md` (template below).
+6. **Update the knowledge base** at `docs/superpowers/expert/_knowledge-base/<domain>.md` with any new general-purpose findings (not feature-specific details). Append; never overwrite.
 
 ## Output Template
 
