@@ -1,0 +1,16 @@
+{
+  "status": "done",
+  "blocked": false,
+  "files_changed": [
+    "skills/compound-v/SKILL.md",
+    "hooks/session-banner.sh",
+    "hooks/plan-saved-nudge.sh"
+  ],
+  "violations": [],
+  "summary": "SKILL.md: description 467/500 chars (four transitions incl. pre-brainstorm recon), Trigger 0 section above Trigger 1, mermaid upstream node, 2 override rows, recon/ tree node, integration row, zero-hook-backstop caveat, Phase 0 announcement. session-banner.sh pipeline string updated honestly; plan-saved-nudge.sh third arm for recon/*.md (explicitly does not close pre-fire gap). lint-frontmatter PASS, bash -n clean, live hook smoke test PASS. Scope gate PASS.",
+  "session_id": "",
+  "worktree": "/private/tmp/compound-v/2026-07-10-research-grounded-brainstorm/task-3-skill-wiring",
+  "exit_code": 0,
+  "failure_class": null,
+  "retry_after_seconds": 0
+}
