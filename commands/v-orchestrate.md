@@ -32,7 +32,14 @@ The manifest schema and rules are defined in [`skills/compound-v/execution-manif
    ```
    It enforces the invariants (disjoint `write_allowed`, `codex ⇒ worktree`, `reviewers ⇒ opus`, shared-in-Task-0). If it exits non-zero, **fix the manifest** and re-run — do not hand a manifest the validator rejects to dispatch.
 
-8. **Report.** Print the run-id, the run-dir path, the job count by backend/model, and the next step: `/v:dispatch <run-id>` to execute, or edit `manifest.yaml` first. Point the user at [`/v:status {{args}}`](v-status.md) to inspect.
+8. **Commit the run directory.** `docs/superpowers/execution/<run-id>/{manifest.yaml,state.json}` are new files on disk, not yet in git — a plain **write** is not durable. Stage and commit them now:
+   ```bash
+   git add docs/superpowers/execution/<run-id>/manifest.yaml docs/superpowers/execution/<run-id>/state.json
+   git commit -m "chore(v-orchestrate): materialize run <run-id>"
+   ```
+   This is not optional. If this run is happening inside a git worktree, an *uncommitted* run directory is silently deleted by `git worktree remove` — the cleanup step in `superpowers:finishing-a-development-branch` — the very moment the branch is merged or discarded, taking Compound V's own audit trail with it. See [`state-machine.md`](../skills/compound-v/state-machine.md)'s note on this.
+
+9. **Report.** Print the run-id, the run-dir path, the job count by backend/model, and the next step: `/v:dispatch <run-id>` to execute, or edit `manifest.yaml` first. Point the user at [`/v:status {{args}}`](v-status.md) to inspect.
 
 ## Safety
 

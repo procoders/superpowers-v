@@ -39,7 +39,7 @@ The run-dir layout and per-job `status` semantics are in [`skills/compound-v/sta
    - **INTEGRATION** — cross-job seams build, and the composite change satisfies the feature-level `acceptance_criteria`.
    DONE is gated on all three. Unresolvable reviewer ISSUES ⇒ HALT (do not merge).
 
-5. **Update state + report.** Write `state.json` after each transition (`COLLECTED` → `REVIEWED`). Report: per-job scope verdict, the three review-pass outcomes, and whether the run is clear to merge. If clear, point at the merge step (worktree diffs apply into the main tree, then `superpowers:finishing-a-development-branch`). If BLOCKED, point at [`/v:resume {{args}}`](v-resume.md).
+5. **Update state + report.** Write `state.json` after each transition (`COLLECTED` → `REVIEWED`). **Commit what this command rewrote** — `state.json` and the refreshed `results/*.json` — the same commit discipline as [`parallel-dispatcher`](../agents/parallel-dispatcher.md)'s Step 7: uncommitted files in a worktree are silently deleted by `finishing-a-development-branch`'s cleanup step, and `/v:collect` is explicitly usable **standalone** (re-checking an already-dispatched run), so don't assume a later step will commit on your behalf. Report: per-job scope verdict, the three review-pass outcomes, and whether the run is clear to merge. If clear, point at the merge step (worktree diffs apply into the main tree, then `superpowers:finishing-a-development-branch`). If BLOCKED, point at [`/v:resume {{args}}`](v-resume.md).
 
 ## Safety
 

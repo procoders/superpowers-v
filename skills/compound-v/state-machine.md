@@ -29,6 +29,19 @@ SPEC_READY ─► PREFLIGHT_DONE ─► PARTITION_VERIFIED ─► DISPATCHED ─
 
 `state.json` is written **after every phase transition** so a crash never loses more than the in-flight phase.
 
+**Written to disk is not the same as durable — the run directory must be explicitly committed.**
+"The run directory *is* the record" (above) is a promise that only holds if it's actually in git.
+Two mandatory commit points close the gap (a real incident — noticed by Oscar Salcedo — is what
+surfaced this): [`/v:orchestrate`](../../commands/v-orchestrate.md) commits `manifest.yaml` +
+the initial `state.json` right after materializing them, and
+[`parallel-dispatcher`](../../agents/parallel-dispatcher.md) commits the full run directory
+(final `state.json`, `results/*.json`) before handing off to
+`superpowers:finishing-a-development-branch`. This matters because that skill's cleanup step runs
+`git worktree remove` on Merge/Discard — a normal git operation that **silently deletes any
+uncommitted files** in the worktree, no warning, no confirmation. Skip either commit point and a
+crash, an early "discard," or just reaching the worktree-cleanup step can erase the run's own
+audit trail — `/v:status` will then honestly (and confusingly) report no runs ever happened.
+
 ---
 
 ## Run directory layout

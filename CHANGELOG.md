@@ -4,6 +4,25 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [2.6.4] — 2026-07-10
+
+### Fixed — Compound V's own audit trail could be silently deleted, and `/v:status` could mislead
+
+Two real incidents **noticed by Oscar Salcedo**, which a requested Codex cross-model hunt for
+"similar/adjacent bugs" grew into a full sweep of the same bug class across the orchestrator:
+
+- **Data loss: an uncommitted run directory vanishes on worktree cleanup.** `docs/superpowers/execution/<run-id>/**` is documented as "the committed run substrate" (`execution-manifest.md`) — but nothing in the pipeline actually committed it. `superpowers:finishing-a-development-branch`'s cleanup step runs `git worktree remove` on **both** its Merge and Discard paths, which **silently deletes any uncommitted files** in that worktree — taking Compound V's own audit trail with it. After a restart, `/v:status` would then honestly (but confusingly) report "no orchestrator runs" for a repo that demonstrably had one.
+- **Misleading status message for non-Compound-V work.** When a repo had real prior work done via plain Superpowers `subagent-driven-development` (evidenced by `.superpowers/sdd/` task-brief/report/review artifacts) rather than Compound V's own manifest-driven dispatch, `/v:status`'s "no orchestrator runs" message read as "nothing happened here" — it had no visibility into that different, upstream-owned execution path. **Fixed with a cheap presence-check** (not a parse — that directory's format belongs to the base Superpowers plugin, not Compound V) that disambiguates the message without trying to understand or summarize its contents.
+
+**The commit-discipline fix, after four rounds of Codex review, landed nine explicit commit points across the pipeline** (each closing a path where state could be written but never survive a worktree cleanup):
+1. `/v:orchestrate` — commits `manifest.yaml` + the initial `state.json` right after materializing them.
+2. `parallel-dispatcher` Step 7 — commits the run directory + memory/scorecard files in one shot **before** handing off to `finishing-a-development-branch` (the one point that can trigger the destructive cleanup). **Round 1 of review caught a bug in this very fix**: `state.json`'s phase was flipped to `MERGED` *after* the commit, so the committed record permanently lagged one phase behind reality — fixed by writing `MERGED` first, then committing everything together.
+3–7. `commands/v-epic.md` — a **separate, epic-level `epic-state.json`** (the epic's *only* resume mechanism, one level up from any single feature's run directory) was never committed anywhere. Five commit points added: after init, at every checkpoint (the default `MAX_FEATURES=1` stopping point after *every* feature), at epic-complete, at epic-blocked, and — caught in round 3 — after crash-reconcile (the `--status failed` "abandon and stop" path is terminal and doesn't otherwise pass through the checkpoint's commit).
+8. `commands/v-resume.md` — its own completion path didn't reference committing the recovered run substrate; a resume completing this way could re-lose the very state it just recovered.
+9. `commands/v-collect.md` — standalone use (re-checking an already-dispatched run without re-dispatching) rewrote `results/*.json` + `state.json` with no commit step at all.
+
+`state-machine.md` documents the general "written to disk ≠ durable" principle tying it all together. Docs-only; no code changed. **Codex cross-model verification, four rounds:** round 1 found the `MERGED`-ordering bug plus the v-epic/v-resume/v-collect gaps; round 2 (broad hunt) confirmed the fix and found nothing new to add; round 3 caught the crash-reconcile gap; round 4 (narrow re-check) confirmed all nine commit points present, correctly scoped, and non-contradictory.
+
 ## [2.6.3] — 2026-07-10
 
 ### Changed — Codex defaults bumped to the GPT-5.6 family (Sol/Terra/Luna)

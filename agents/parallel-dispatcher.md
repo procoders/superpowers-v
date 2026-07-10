@@ -231,7 +231,9 @@ After every task is approved and every worktree job has merged back, dispatch ON
   - Cross-task integration works (Task 0's types are used correctly by parallel tasks) and the build is green
   - The composite change matches the spec + all three audits' constraints **and the manifest's feature-level `acceptance_criteria`** (the AC-gate for the run)
 
-On PASS, advance `state.json` to `MERGED` and hand off to `superpowers:finishing-a-development-branch`.
+On PASS, proceed to Step 6 (post-run memory), then Step 7 (commit + `MERGED` + hand off). Do
+**not** advance `state.json` to `MERGED` yet — per [`state-machine.md`](../skills/compound-v/state-machine.md),
+`MERGED` means the run's substrate is actually merged and handed off, not just reviewed.
 
 ### Step 6 — Post-run memory (outcomes → scorecard)
 
@@ -256,6 +258,29 @@ backend** like Antigravity), `watch` is noted, `healthy`/`insufficient_data` kee
 static default.
 The scorecard is regenerated each run and never hand-edited (unlike the human-curated
 `routing-lessons.md`); it emits no cost/token metrics.
+
+### Step 7 — Advance to `MERGED`, commit EVERYTHING in that one commit, THEN hand off
+
+Everything Steps 5–6 wrote — the run directory **and** the memory/scorecard files — is sitting
+on disk, not yet in git. **Write `state.json`'s phase as `MERGED` FIRST**, then stage and commit
+it together with the rest — one commit, so the committed record and the phase agree the moment
+this returns (committing the substrate *before* flipping the phase, or flipping the phase without
+re-committing it, both leave the git-recorded phase permanently one step behind reality):
+
+```bash
+git add docs/superpowers/execution/<run-id>/ docs/superpowers/memory/task-outcomes.jsonl \
+        docs/superpowers/memory/worker-performance.jsonl
+git commit -m "chore(v-dispatch): run <run-id> reviewed and merged"
+```
+
+**This is not optional.** `finishing-a-development-branch`'s cleanup step (Options 1/Merge and
+4/Discard) runs `git worktree remove` on the branch this run happened in — that command silently
+deletes any *uncommitted* files, including an uncommitted run directory or memory update.
+Skipping this step means Compound V's own audit trail — the thing `state-machine.md` calls "the
+record" — and the scorecard's routing signal can both vanish the moment the branch is merged, and
+`/v:status` will report "no orchestrator runs" afterward even though one demonstrably happened (a
+real incident — noticed by Oscar Salcedo). **Only after this commit succeeds**, hand off to
+`superpowers:finishing-a-development-branch`.
 
 ## Output
 

@@ -29,7 +29,7 @@ Resume is **Engine-A-owned**: it does not rely on Workflows (whose resume is sam
    - For a Codex worktree job with a recorded `session_id`, the codex adapter may use `codex exec resume <session_id>` instead of a cold start. Either way, the **scope gate re-runs** on return.
    - Update each job's `status` and write `state.json` after every transition.
 
-6. **Continue the pipeline** from the reconciled phase: re-collect results, run the scope gate on every job, then the three-pass Review Gate (AC-gated), then merge worktree diffs on PASS. Already-`done` jobs are not re-run.
+6. **Continue the pipeline** from the reconciled phase: re-collect results, run the scope gate on every job, then the three-pass Review Gate (AC-gated), then merge worktree diffs on PASS. Already-`done` jobs are not re-run. **On reaching `MERGED`, commit the run substrate exactly as [`parallel-dispatcher`](../agents/parallel-dispatcher.md)'s Step 7 does** — `state.json` (phase written as `MERGED` first, then committed together with the rest), `results/*.json`, and the memory/scorecard files if this resume refreshed them — **before** handing off to `superpowers:finishing-a-development-branch`. This matters *especially* on the resume path: the whole point of resuming is recovering from a crash or interruption, so leaving the just-recovered state uncommitted means a subsequent worktree cleanup can silently erase the very state resume just fixed.
 
 7. **Report.** Which jobs were skipped (already landed), which were re-dispatched, which stayed **blocked behind an open breaker** (and the exact unblock action — top up credits or re-auth via `/v:init`), and the resulting `phase`. Point the user at [`/v:status {{args}}`](v-status.md) to inspect.
 
