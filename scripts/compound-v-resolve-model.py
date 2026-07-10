@@ -23,7 +23,7 @@ Vocabulary (never changes when models churn):
                                     light→low when --effort omitted)
 
 Output: a single JSON object on stdout, e.g.
-  {"backend": "codex", "tier": "deep", "model": "gpt-5.5", "effort": "high"}
+  {"backend": "codex", "tier": "deep", "model": "gpt-5.6-sol", "effort": "high"}
 
 Exit non-zero if a tier cannot be resolved for a backend (and no
 --explicit-model was given).
@@ -54,7 +54,11 @@ import sys
 # codex/antigravity/cursor are identical across stances. NEVER 'haiku' anywhere.
 _CLAUDE_DEFAULT = {"deep": "opus", "standard": "opus", "light": "sonnet"}
 _CLAUDE_COST_AWARE = {"deep": "opus", "standard": "sonnet", "light": "sonnet"}
-_CODEX = {"deep": "gpt-5.5", "standard": "gpt-5.5", "light": "gpt-5.3-codex-spark"}
+# GPT-5.6 family (Sol/Terra/Luna), verified live 2026-07-10: all three confirmed working on
+# codex-cli 0.144.1. gpt-5.6-sol specifically requires codex-cli >= 0.143.0 (confirmed: broken
+# with a clear 400 "requires a newer version of Codex" on 0.142.5, works on 0.144.1) -- an
+# under-floor client fails LOUD (not silent; the failure-policy retries once then halts cleanly).
+_CODEX = {"deep": "gpt-5.6-sol", "standard": "gpt-5.6-terra", "light": "gpt-5.6-luna"}
 # Antigravity (agy): FALLBACK default; the live catalog is discoverable headlessly
 # (`agy models </dev/null`), and /v:models/+/v:init pipe it through
 # compound-v-discover-models.py to OVERRIDE this map in .claude/compound-v.json. Names

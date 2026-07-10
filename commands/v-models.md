@@ -37,13 +37,13 @@ everywhere else `standard` Claude is `opus`:
 "models": {
   "balanced": {
     "claude":      { "deep": "opus",                  "standard": "opus",                  "light": "sonnet" },
-    "codex":       { "deep": "gpt-5.5",               "standard": "gpt-5.5",               "light": "gpt-5.3-codex-spark" },
+    "codex":       { "deep": "gpt-5.6-sol",            "standard": "gpt-5.6-terra",          "light": "gpt-5.6-luna" },
     "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" },
     "cursor":      { "deep": "auto",                  "standard": "auto",                  "light": "auto" }
   },
   "cost-aware": {
     "claude":      { "deep": "opus",                  "standard": "sonnet",                "light": "sonnet" },
-    "codex":       { "deep": "gpt-5.5",               "standard": "gpt-5.5",               "light": "gpt-5.3-codex-spark" },
+    "codex":       { "deep": "gpt-5.6-sol",            "standard": "gpt-5.6-terra",          "light": "gpt-5.6-luna" },
     "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" },
     "cursor":      { "deep": "auto",                  "standard": "auto",                  "light": "auto" }
   }
@@ -81,8 +81,9 @@ the user override any entry by hand (a model the curated list doesn't know about
 still valid — codex accepts whatever model string you pass to `codex exec --model`).
 Present this curated starting roster:
 
-- `gpt-5.5` — strongest; suggested for `deep` and `standard`
-- `gpt-5.3-codex-spark` — fast/cheap; suggested for `light`
+- `gpt-5.6-sol` — strongest; suggested for `deep` (requires codex-cli >= 0.143.0)
+- `gpt-5.6-terra` — balanced; suggested for `standard`
+- `gpt-5.6-luna` — fast/cheap; suggested for `light`
 
 Confirm codex is even usable first (so you don't write a map the project can't run):
 
@@ -128,11 +129,16 @@ command -v agy >/dev/null \
   The script never invents names — it only ranks the catalog `agy models` actually
   printed, so anything you show came from the live CLI.
 
-### 1d. cursor — Auto by default (no list command; plan-gated)
+### 1d. cursor — Auto by default (manual list command; plan-gated)
 
-cursor-agent has **no `models` list command**, and named models are **plan-gated**: a Cursor
-**Free** plan can only use **`auto`** (passing a named model errors with *"Named models
-unavailable"* — verified live). So the default map is `auto` for every tier:
+cursor-agent (2026.06.26+) has a `models` list command (`cursor-agent models`) for **manual**
+discovery — a paid-plan user can run it to see the live, real catalog and pick a named override.
+Compound V does not auto-rank/auto-discover it (unlike antigravity's single-family Gemini
+catalog): cursor's catalog spans many unrelated vendor families (GPT/Claude/Gemini/…) with no
+shared naming/effort convention, so ranking it well would need its own bespoke logic — curated +
+user-overridable stays the flow. Named models are also **plan-gated**: a Cursor **Free** plan can
+only use **`auto`** (passing a named model errors with *"Named models unavailable"* — verified
+live). So the default map is `auto` for every tier:
 
 ```bash
 command -v cursor-agent && cursor-agent status </dev/null >/dev/null 2>&1 && echo "cursor usable (auth ok)" || echo "cursor unavailable/unauthed"
@@ -156,7 +162,7 @@ fast/cheap option → `light`). Example shape:
 | Backend | Available now | deep | standard | light |
 |---|---|---|---|---|
 | claude | opus, sonnet | opus | opus | sonnet |
-| codex | gpt-5.5, gpt-5.3-codex-spark | gpt-5.5 | gpt-5.5 | gpt-5.3-codex-spark |
+| codex | gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna | gpt-5.6-sol | gpt-5.6-terra | gpt-5.6-luna |
 | antigravity | *(from `agy models </dev/null`)* | Gemini 3.1 Pro (High) | Gemini 3.1 Pro (Low) | Gemini 3.5 Flash (Low) |
 
 Then **let the user assign** each tier per backend — accept the suggestion as-is, or
@@ -197,13 +203,13 @@ Resulting shape (only `models` is this command's responsibility) — write the
   "models": {
     "balanced": {
       "claude":      { "deep": "opus",    "standard": "opus",    "light": "sonnet" },
-      "codex":       { "deep": "gpt-5.5", "standard": "gpt-5.5", "light": "gpt-5.3-codex-spark" },
+      "codex":       { "deep": "gpt-5.6-sol", "standard": "gpt-5.6-terra", "light": "gpt-5.6-luna" },
       "antigravity": { "deep": "…",       "standard": "…",       "light": "…" },
       "cursor":      { "deep": "auto",    "standard": "auto",    "light": "auto" }
     },
     "cost-aware": {
       "claude":      { "deep": "opus",    "standard": "sonnet",  "light": "sonnet" },
-      "codex":       { "deep": "gpt-5.5", "standard": "gpt-5.5", "light": "gpt-5.3-codex-spark" },
+      "codex":       { "deep": "gpt-5.6-sol", "standard": "gpt-5.6-terra", "light": "gpt-5.6-luna" },
       "antigravity": { "deep": "…",       "standard": "…",       "light": "…" },
       "cursor":      { "deep": "auto",    "standard": "auto",    "light": "auto" }
     }
