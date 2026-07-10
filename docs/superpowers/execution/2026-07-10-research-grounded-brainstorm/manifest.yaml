@@ -1,0 +1,172 @@
+# Compound V execution manifest — v2.7.0 Research-Grounded Brainstorm.
+# Materialized by /v:orchestrate from the verified Partition Map in
+# docs/superpowers/plans/2026-07-10-research-grounded-brainstorm.md.
+
+run_id: 2026-07-10-research-grounded-brainstorm
+feature: "Research-grounded brainstorm — Trigger 0 recon + batched elicitation (v2.7.0)"
+spec_path: docs/superpowers/specs/2026-07-10-research-grounded-brainstorm-design.md
+plan_path: docs/superpowers/plans/2026-07-10-research-grounded-brainstorm.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-10-research-grounded-brainstorm.md
+  domain: docs/superpowers/expert/2026-07-10-research-grounded-brainstorm.md
+  library: docs/superpowers/library-audit/2026-07-10-research-grounded-brainstorm.md
+
+# Feature-level Acceptance Criteria — condensed from spec ACs 1-13; the final
+# integration review gates DONE on the full spec list.
+acceptance_criteria:
+  - "Trigger 0 documented end-to-end (gate order, engine ladder, bounds, anti-anchoring output contract) in SKILL.md + phase-0-recon.md"
+  - "Batched elicitation documented with sequential default, unsure→sequential tiebreak, ≤5-group ceiling, upstream-override acknowledgment"
+  - "Config/capability split respected: brainstorm.* committed policy, deep_research presence machine-local advisory"
+  - "1B/1C read recon first; skill-escalation.md no longer contradicts Trigger 0"
+  - "Version 2.7.0 in all three places + CHANGELOG↔manifest CI guard live"
+  - "SKILL.md description ≤500 chars; no token/cost numbers; no upstream edits; no new agents; recon never a routing input"
+  - "No write outside the partitioned file sets"
+
+routing_stance: balanced
+max_parallel: 5
+
+jobs:
+  - id: task-0-foundation
+    title: "Version lockstep + CHANGELOG + CI guard + gitignore parity"
+    type: shared_foundation
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: direct               # serial pre-phase; no sibling can race it
+    run: serial
+    write_allowed:
+      - ".claude-plugin/plugin.json"
+      - ".claude-plugin/marketplace.json"
+      - "CHANGELOG.md"
+      - ".github/workflows/validate.yml"
+      - ".gitignore"
+    read_allowed:
+      - "docs/superpowers/plans/2026-07-10-research-grounded-brainstorm.md"
+    acceptance:
+      - "all three version locations read 2.7.0"
+      - "CI guard matches only the '## [x.y.z]' prefix (em-dash-proof) and compares to plugin.json"
+      - "changes committed (worktrees for the parallel batch are created at HEAD)"
+
+  - id: task-1-recon-doc
+    title: "phase-0-recon.md + skill-escalation.md reconcile"
+    type: core_guidance
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree             # parallel ⇒ worktree (per-job scope attribution)
+    run: parallel
+    depends_on:
+      - task-0-foundation
+    write_allowed:
+      - "skills/compound-v/phase-0-recon.md"
+      - "skills/compound-v/skill-escalation.md"
+    read_allowed:
+      - "skills/compound-v/**"
+      - "commands/v-remember.md"
+    acceptance:
+      - "gate order, engine ladder, bounds, output contract incl. verbatim anti-anchoring header"
+      - "skill-escalation.md reconciled without weakening the mid-pipeline rule"
+
+  - id: task-2-elicitation-doc
+    title: "brainstorm-elicitation.md"
+    type: core_guidance
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on:
+      - task-0-foundation
+    write_allowed:
+      - "skills/compound-v/brainstorm-elicitation.md"
+    read_allowed:
+      - "skills/compound-v/**"
+    acceptance:
+      - "classification rule with answer-interaction test + unsure→sequential tiebreak + ≥3 misclassification examples"
+      - "3-condition gate, ≤5-group ceiling, escape hatches, upstream override quoted and acknowledged"
+
+  - id: task-3-skill-wiring
+    title: "SKILL.md Trigger 0 wiring + both hooks"
+    type: core_guidance
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on:
+      - task-0-foundation
+    write_allowed:
+      - "skills/compound-v/SKILL.md"
+      - "hooks/session-banner.sh"
+      - "hooks/plan-saved-nudge.sh"
+    read_allowed:
+      - "skills/compound-v/**"
+      - "hooks/**"
+      - "scripts/lint-frontmatter.py"
+    acceptance:
+      - "description ≤500 chars and lint-frontmatter.py passes"
+      - "Trigger 0 section, mermaid node, 2 override rows, recon/ tree node, integration row, honest zero-hook-backstop caveat"
+      - "bash -n clean on both hooks"
+
+  - id: task-4-vinit
+    title: "/v:init capability probe + brainstorm policy keys"
+    type: config_wiring
+    backend: claude
+    tier: deep
+    effort: medium
+    isolation: worktree
+    run: parallel
+    depends_on:
+      - task-0-foundation
+    write_allowed:
+      - "commands/v-init.md"
+    read_allowed:
+      - "commands/**"
+      - "skills/compound-v/**"
+    acceptance:
+      - "4a committed policy block + 4b machine-local advisory flag, split preserved"
+      - "reader-owned defaults documented (ask / true)"
+
+  - id: task-5-integration-docs
+    title: "1B/1C recon-read steps + AGENTS.md + README.md"
+    type: docs
+    backend: claude
+    tier: deep                      # validator: this job's writes include reviewer phase docs ⇒ deep
+    effort: medium
+    isolation: worktree
+    run: parallel
+    depends_on:
+      - task-0-foundation
+    write_allowed:
+      - "skills/compound-v/phase-1b-domain-expert.md"
+      - "skills/compound-v/phase-1c-documentation-validation.md"
+      - "AGENTS.md"
+      - "README.md"
+    read_allowed:
+      - "skills/compound-v/**"
+      - "docs/superpowers/specs/2026-07-10-research-grounded-brainstorm-design.md"
+    acceptance:
+      - "1B insert between KB-first and web-search; 1C gets a NEW first step (it has no KB-first step)"
+      - "AGENTS/README describe four triggers, 🧪 description-driven, no overclaims"
+
+  - id: task-6-review
+    title: "Three-pass Review Gate (spec / quality / integration)"
+    type: review
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: direct
+    run: serial
+    depends_on:
+      - task-1-recon-doc
+      - task-2-elicitation-doc
+      - task-3-skill-wiring
+      - task-4-vinit
+      - task-5-integration-docs
+    write_allowed: []               # reviewers write nothing
+    read_allowed:
+      - "**"
+    acceptance:
+      - "spec ACs 1-13 met"
+      - "no writes outside partitioned sets across jobs"
+      - "no fabricated metrics anywhere in the diff"

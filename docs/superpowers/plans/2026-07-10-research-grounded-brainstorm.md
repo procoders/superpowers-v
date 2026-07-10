@@ -198,4 +198,4 @@ grep -m1 -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md | tr -d '#[] '  # →
 
 ## Execution Handoff
 
-Compound V manifest-driven dispatch (`/v:orchestrate` → partition review → dispatch): Task 0 serial, Tasks 1–5 parallel, all `claude · opus · direct` (disjoint docs jobs; no Codex worker — prose guidance with tight cross-references, not an isolated build). Scope gate after every job; three-pass Review Gate against spec ACs 1–13; then Codex cross-model review rounds (user-mandated) before any push.
+Compound V manifest-driven dispatch (`/v:orchestrate` → partition review → dispatch): Task 0 serial `claude · direct` (must COMMIT before the parallel batch — worktrees are created at HEAD), Tasks 1–5 parallel `claude · worktree` (per-job scope attribution; no Codex worker — prose guidance with tight cross-references, not an isolated build). Scope gate after every job; three-pass Review Gate against spec ACs 1–13; then Codex cross-model review rounds (user-mandated) before any push.
