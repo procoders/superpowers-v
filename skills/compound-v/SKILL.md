@@ -1,14 +1,15 @@
 ---
 name: compound-v
-description: Use when superpowers:brainstorming has produced a spec, OR when superpowers:writing-plans has produced a plan, OR when about to invoke superpowers:subagent-driven-development or superpowers:executing-plans. Sidekick that intercepts these three Superpowers transitions — runs triple parallel pre-flight, then materializes a manifest and dispatches the orchestrated, scope-enforced, resumable execution pipeline.
+description: Use when superpowers:brainstorming is about to begin (pre-brainstorm recon), OR has produced a spec, OR when superpowers:writing-plans has produced a plan, OR when about to invoke superpowers:subagent-driven-development or superpowers:executing-plans. Sidekick that intercepts these four Superpowers transitions — runs gated recon, triple parallel pre-flight, then materializes a manifest and dispatches the orchestrated, scope-enforced, resumable execution pipeline.
 ---
 
 # Compound V
 
 > *"You don't tell people you're injecting them with Compound V. You just hand them the spec and watch them go faster."* — internal Vought memo, probably
 
-Compound V is a **transparent interceptor** that sits between Superpowers phases AND, as of v1.0, a **lightweight execution orchestrator** — the orchestrated pipeline is now the default execution path. You don't invoke it directly — it fires automatically at three transitions:
+Compound V is a **transparent interceptor** that sits between Superpowers phases AND, as of v1.0, a **lightweight execution orchestrator** — the orchestrated pipeline is now the default execution path. You don't invoke it directly — it fires automatically at four transitions:
 
+0. **Before `brainstorming` begins** → offers a **gated pre-brainstorm recon** (Trigger 0): a bounded deep-research/WebSearch pass that writes an anti-anchoring recon doc to `docs/superpowers/recon/` — evidence to widen the brainstorm's questions, never a conclusion to converge on. See [phase-0-recon.md](phase-0-recon.md).
 1. **After `brainstorming`, before `writing-plans`** → injects THREE parallel pre-flights:
    - **Phase 1A: Code-Archaeology** — the *technical* reality of the existing code
    - **Phase 1B: Domain-Expert Advisor** — the *product/domain* reality (web-searched if needed, knowledge-base persisted)
@@ -19,6 +20,8 @@ Compound V is a **transparent interceptor** that sits between Superpowers phases
 **The unified pipeline (orchestrator-as-default):**
 
 ```
+★ RECON (gated)  docs/superpowers/recon/YYYY-MM-DD-<topic>.md   (Trigger 0 — skip: plumbing | KB hit | off)
+   ▼
 brainstorm ─► spec (carries feature-level Acceptance Criteria)
    ▼ auto-fire
 [1A archaeology ∥ 1B domain ∥ 1C library] ─► 3 audits   (🔴 critical finding → HALT)
@@ -43,11 +46,12 @@ The orchestration contracts and scripts live alongside this skill: the manifest 
 
 All three are independent — different failure modes, different lookup paths, no shared state. Dispatch them in **one message with three concurrent Task calls** to keep wall-clock cost low.
 
-**Auto-fire caveat:** "Auto-fires after brainstorming" is **description-driven** (the parent agent reads this skill's description and recognizes the trigger condition). It is NOT enforced by Claude Code hooks. The plugin ships two helper hooks (`SessionStart` banner + `PostToolUse` plan-saved nudge) that print *reminders* to the parent agent, but the actual skill invocation still depends on the parent recognizing the description trigger. Reliability is high on Opus / Sonnet 4.6+; weaker models may miss the trigger.
+**Auto-fire caveat:** "Auto-fires after brainstorming" is **description-driven** (the parent agent reads this skill's description and recognizes the trigger condition). It is NOT enforced by Claude Code hooks. The plugin ships two helper hooks (`SessionStart` banner + `PostToolUse` plan-saved nudge) that print *reminders* to the parent agent, but the actual skill invocation still depends on the parent recognizing the description trigger. Reliability is high on Opus / Sonnet 4.6+; weaker models may miss the trigger. Trigger 0 shares the same description-driven mechanism but has **no hook reinforcement at all** — nothing is written before a brainstorm begins, so no `PostToolUse` nudge can back it up — making it the weakest of the four triggers; do not overclaim its reliability.
 
 **The skyscraper metaphor** (see [assets/skyscraper-metaphor.md](../../assets/skyscraper-metaphor.md)): Without pre-flight you build a 500m² hat on a 200m² tower. With both audits, you add three proper floors that fit the building AND the building code.
 
 **Announce at start of each phase:**
+- Phase 0: `"💉 Compound V — pre-brainstorm recon (gated)."`
 - Phase 1: `"💉 Compound V injected — triple pre-flight (archaeology + domain-expert + library-validator) in parallel."`
 - Phase 2: `"💉 Compound V — enforcing Disjoint Partition Map."`
 - Phase 3: `"💉 Compound V — dispatching N implementers in parallel on Opus."`
@@ -60,6 +64,7 @@ All three are independent — different failure modes, different lookup paths, n
 
 ```mermaid
 flowchart LR
+    Z[📡 TRIGGER 0<br/>gated pre-brainstorm recon] --> A
     A[brainstorming<br/>completes spec] -->|TRIGGER 1| B1[🔬 Phase 1A<br/>code-archaeology]
     A -->|TRIGGER 1| B2[🧠 Phase 1B<br/>domain-expert advisor]
     A -->|TRIGGER 1| B3[📚 Phase 1C<br/>library/doc validator]
@@ -71,6 +76,9 @@ flowchart LR
     E -->|TRIGGER 3| F[🚀 parallel dispatch<br/>Opus by default<br/>Sonnet for junior tasks]
     F --> G[implementation done]
 ```
+
+**Trigger 0 — Pre-Brainstorm Recon (gated).** Fires when `superpowers:brainstorming` is about to begin on a feature topic. Gate order, first match wins: (1) pure-plumbing topic → skip; (2) V-memory knowledge-base hit (`/v:remember <topic>`) → skip, hand the recalled docs to the brainstorm instead; (3) `.claude/compound-v.json` → `brainstorm.deep_research`: `ask` (default — one offer with an honest qualitative cost note and an egress/confidentiality note; the topic text leaves the machine) | `auto` | `off` (hard kill-switch). Engine, degrade-safe: the bundled `deep-research` skill if present in the **live** available-skills listing, else 3–6 parallel WebSearch calls, else skip with a notice — never block the brainstorm. Bounds: one deep-research pass OR ≤6 searches; output ≤~150 lines to `docs/superpowers/recon/YYYY-MM-DD-<topic>.md`, committed — anti-anchoring structure, DIRECTIONS explicitly non-exhaustive; 1B/1C read it first and deepen (not repeat) its queries. Recon is evidence for the brainstorm and planning, **never a routing input**. Full procedure: [phase-0-recon.md](phase-0-recon.md).
+> *Honesty note:* Trigger 0 is description-driven with **zero hook backstop** — no file exists yet for a `PostToolUse` hook to react to, so it is weaker than Triggers 1–3 (which get hook reminders). If the parent misses it, nothing re-fires it.
 
 **Trigger 1 — Parallel Pre-Flight (1A + 1B + 1C).** Fires when brainstorming produces a spec. All three pre-flights run **in a single message with three concurrent Task calls** — they don't depend on each other.
 - 1A: archaeology — see [phase-1a-archaeology.md](phase-1a-archaeology.md). Saves to `docs/superpowers/archaeology/`.
@@ -95,12 +103,18 @@ flowchart LR
 | Spec + quality reviewers run sequentially per task | Reviewers run **per-task in parallel** after each batch completes |
 | No persistent domain knowledge between sessions | Phases 1B and 1C save **knowledge bases** at `docs/superpowers/{expert,library-audit}/_knowledge-base/` reused on future related features |
 | Library suggestions from LLM training data | Phase 1C validates against **live Context7 MCP** before any library is locked into the plan |
+| Brainstorm starts cold on unfamiliar topics | **Trigger 0**: a gated, bounded recon doc is read before the first question — see [phase-0-recon.md](phase-0-recon.md) |
+| Clarifying questions strictly one-at-a-time | **≥3 independent questions** may batch into one Visual Companion form (dependent chains stay sequential) — see [brainstorm-elicitation.md](brainstorm-elicitation.md) |
 
 **Violating the letter of these overrides is violating the spirit.** See [rationalization-table.md](rationalization-table.md) for the rebuttal sheet.
 
 ---
 
-## The Three Phases — Quick Reference
+## The Phases — Quick Reference
+
+### Phase 0: Pre-Brainstorm Recon (gated — Trigger 0)
+
+Before a brainstorm begins on a feature topic: gate 1 plumbing-skip → gate 2 V-memory strong-hit skip → gate 3 `brainstorm.deep_research` (`ask` default / `auto` / `off`). Engine: bundled `deep-research` via its skill interface if present, else ≤6 parallel WebSearch, else skip with notice — never blocks the brainstorm. Output: an anti-anchoring recon doc at `docs/superpowers/recon/YYYY-MM-DD-<topic>.md`, committed, read by the brainstorm and later by 1B/1C. Full procedure: [phase-0-recon.md](phase-0-recon.md).
 
 ### Phase 1: Parallel Pre-Flight (1A + 1B + 1C)
 
@@ -178,6 +192,8 @@ Compound V writes to a flat, predictable structure under `docs/superpowers/`:
 
 ```plaintext
 docs/superpowers/
+├── recon/
+│   └── YYYY-MM-DD-<topic>.md          # Trigger 0 output — evidence for the brainstorm, read by 1B/1C first
 ├── archaeology/
 │   └── YYYY-MM-DD-<topic>.md          # Phase 1A output per feature
 ├── expert/
@@ -231,7 +247,7 @@ See [rationalization-table.md](rationalization-table.md) for the full list with 
 
 | Superpowers skill | Compound V action |
 |---|---|
-| `superpowers:brainstorming` | Run unchanged. On completion, fire Trigger 1 (1A + 1B + 1C in parallel). |
+| `superpowers:brainstorming` | **Trigger 0 fires before it starts** (gated pre-brainstorm recon → [phase-0-recon.md](phase-0-recon.md)). The skill itself runs unchanged. On completion, fire Trigger 1 (1A + 1B + 1C in parallel). |
 | `code-archaeology` (mcpize or equivalent) | Inserted as Phase 1A. |
 | Universal domain-expert advisor (this plugin) | Inserted as Phase 1B. Dispatchable as `subagent_type: "compound-v:domain-expert"` (see `agents/domain-expert.md`). |
 | Library/doc validator via Context7 (this plugin) | Inserted as Phase 1C. Dispatchable as `subagent_type: "compound-v:doc-validator"` (see `agents/doc-validator.md`). |

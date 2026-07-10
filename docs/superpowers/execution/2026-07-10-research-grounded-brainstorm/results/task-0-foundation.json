@@ -1,0 +1,18 @@
+{
+  "status": "done",
+  "blocked": false,
+  "files_changed": [
+    ".claude-plugin/plugin.json",
+    ".claude-plugin/marketplace.json",
+    "CHANGELOG.md",
+    ".github/workflows/validate.yml",
+    ".gitignore"
+  ],
+  "violations": [],
+  "summary": "Version lockstep 2.7.0 in all three places; CHANGELOG [2.7.0] entry (em-dash verified); CHANGELOG<->plugin.json CI guard added beside existing lockstep step; !docs/superpowers/recon/ parity un-ignore. All probes 2.7.0; guard body simulated PASS. Committed 3280561 (direct mode). Scope gate PASS 5/5.",
+  "session_id": "",
+  "worktree": "",
+  "exit_code": 0,
+  "failure_class": null,
+  "retry_after_seconds": 0
+}

@@ -46,3 +46,39 @@ Resolve to the **maintained vendor/community server**, never the deprecated per-
 - **2026-06-30:** V-memory DENSE lane uses **direct onnxruntime**, NOT the `fastembed` library. Bootstrap installs `onnxruntime, tokenizers, huggingface_hub, numpy` (unpinned) into an isolated out-of-repo venv; runs the Xenova ONNX export of multilingual-e5-small (384-dim, 512-token window). `fastembed` is never imported — references to "fastembed/onnxruntime" are a mislabel.
 - `/v:onboard` adds **zero** new embedding/Python deps. Its only V-memory interaction is auto-running the existing `/v:memory-refresh` (INDEX step) and extending which git-tracked files are indexed (root `CONVENTIONS.md`/`DESIGN.md`/`AGENTS.md`). No conflict.
 - Source: `scripts/compound-v-memory.py:343-364, 850-889`.
+
+---
+
+## Updated 2026-07-10 — Claude Code bundled deep-research, Visual Companion contract, AskUserQuestion caps
+
+Audit: `docs/superpowers/library-audit/2026-07-10-research-grounded-brainstorm.md` (Research-Grounded Brainstorm v2.7.0).
+
+### Installed stack (this machine, 2026-07-10)
+- Claude Code **v2.1.197** (Mach-O arm64; BUILD_TIME 2026-06-29T19:08:42Z; GIT_SHA c8fd8048), at `~/.local/share/claude/versions/2.1.197`. Facts below are string-extracted from that binary unless noted.
+- Superpowers plugin cache holds **5.1.0, 6.0.3, 6.1.0, 6.1.1**; newest upstream = **6.1.1** (obra/superpowers, released 2026-07-02).
+
+### `deep-research` — bundled Claude Code Workflow (NOT a SKILL.md file)
+- **2026-07-10:** Present on v2.1.197; appears **unprefixed** in the available-skills listing (`deep-research`), the same bucket as builtin `/verify`, `/code-review`, `/run`. It is a **dynamic Workflow**, not a classic skill file.
+- **Invocation:** user-facing `/deep-research <question>`; programmatic `Workflow({name: 'deep-research', args: '<question>'})` (verified — the no-arg error prints exactly this). Argument = **one research-question string**.
+- **Pipeline:** scope agent *"Decompose this research question into complementary search angles"* → fan-out search agents → extract **2–5 FALSIFIABLE claims** → **N-vote adversarial verification** (`VOTES_PER_CLAIM`; verdict phase uses `VERDICT_SCHEMA`) → `{label:"synthesize", schema: REPORT_SCHEMA}` → report + 3–5 sentence executive summary.
+- **Output mode:** **returns the report as a message; does NOT write a file** (binary workflow-agent rule: *"Communicate your final report directly as a regular message — do NOT attempt to create files."*). Any caller that needs a persisted doc must write it itself.
+- **Provenance:** the dynamic-**Workflow** platform was introduced **v2.1.154 (2026-05-28)** (*"Introducing dynamic workflows … orchestrates … tens to hundreds of agents … Run /workflows"*; trigger keyword renamed `workflow`→`ultracode`). The changelog references `/deep-research` only via **bugfixes** (e.g. verifier misreporting "all claims refuted" as `unverified`, ~v2.1.196–198), never a clean "Added" line. **`skills.md`'s bundled-skills list omits deep-research** and is explicitly non-exhaustive ("including `/doctor`, `/code-review`, `/batch`, `/debug`, `/loop`, `/claude-api`" + `/run`, `/verify`, `/run-skill-generator`).
+- **Consequence for callers:** presence is **not** version-inferable and the skill is gate-able (`disableBundledSkills` / `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS`, ultracode toggle). Correct presence-check = **is `deep-research` in the live available-skills listing**; invoke via the skill/slash interface (a plain subagent may lack the `Workflow` tool). Absent ⇒ WebSearch fallback.
+- Source: binary strings in `versions/2.1.197`; `code.claude.com/docs/en/changelog`; `code.claude.com/docs/en/skills.md`.
+
+### Superpowers Visual Companion — contract is stable 6.0.3 → 6.1.1
+- **2026-07-10:** `skills/brainstorming/SKILL.md` and `scripts/start-server.sh` are **byte-identical** across 6.0.3 and 6.1.1; `visual-companion.md` differs only by **removing the Gemini-CLI launch note** in 6.1.1. → Reference the companion by its **contract**, never a version pin.
+- `start-server.sh` flags: `--project-dir <path>`, `--host`, `--url-host`, `--idle-timeout-minutes <n>`, `--open`, `--foreground` (=`--no-daemon`), `--background` (=`--daemon`). Returns startup JSON `{"type":"server-started","port":N,"url":"http://<host>:N/?key=…","screen_dir":"…/content","state_dir":"…/state"}`, also written to `$STATE_DIR/server-info`. The `?key=…` is mandatory.
+- Events: **`$STATE_DIR/events`**, JSONL, one obj/line `{"type":"click","choice":"a","text":"…","timestamp":…}`, **cleared on each new screen push**, **absent ⇒ no browser interaction**.
+- `data-multiselect`: supported — `helper.js`: `container.dataset.multiselect !== undefined` inside `toggleSelect`; put the bare attribute on a `.options` container.
+- Frame CSS classes (frame-template.html, 6.0.3 == 6.1.1): `.options .option .letter .content · .cards .card .card-image .card-body · .mockup .mockup-header .mockup-body · .split · .pros-cons .pros .cons · .mock-nav .mock-sidebar .mock-content .mock-button .mock-input .placeholder · .subtitle .section .label · .selected`. Selection wiring `data-choice onclick="toggleSelect(this)"`.
+- **Upstream rule that companion-batching guidance overrides** (quote): SKILL.md *"Use the terminal for content that is text — requirements questions, conceptual choices, tradeoff lists, A/B/C/D text options, scope decisions"*; visual-companion.md *"Use the terminal when the content is text or tabular … anything where the answer is words, not a visual preference."* Batching independent text questions into one form supersedes this — say so, and never force-open the browser (upstream: *"Offer … just-in-time — NOT upfront … This offer MUST be its own message … If no visual question ever arises, never offer it."*).
+- Source: installed 6.0.3/6.1.0/6.1.1 caches; `github.com/obra/superpowers/releases` (v6.1.1).
+
+### AskUserQuestion caps (native tool)
+- **2026-07-10:** **1–4 questions per call**, **2–4 options per question**, **header ≤12 chars**, automatic **"Other" free-text** option, **`multiSelect: true`** supported (multiSelect verified directly from the binary: *"Use multiSelect: true to allow multiple answers to be selected for a question"*; numeric caps are ajv-compiled — confirmed via `code.claude.com/docs/en/agent-sdk/user-input`). v2.1.200 (2026-07-03): dialogs **no longer auto-continue by default** (opt into idle timeout via `/config`) — the old "60s auto-timeout" is off by default now.
+- Source: binary strings; `code.claude.com/docs/en/agent-sdk/user-input`; changelog 2.1.181 / 2.1.200.
+
+### V-memory recall CLI (local)
+- **2026-07-10:** `python3 scripts/compound-v-memory.py search "<query>" [--repo REPO] [--top N] [--intent planning|review] [--json] [--no-embed]`. `/v:remember` uses `search "{{args}}" --top 8`. A separate `recall-check` subcommand (recurring-failure verdict) is for review gates — **not** brainstorm gate 2; gate 2 uses `search`. Agent bash cwd resets between calls → use an absolute script path or explicit `cd`.
+- Source: `scripts/compound-v-memory.py search --help`; `commands/v-remember.md:10`.

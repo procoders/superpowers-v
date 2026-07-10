@@ -4,6 +4,24 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [2.7.0] — 2026-07-10
+
+### Added
+- **Trigger 0 — pre-brainstorm recon** (`skills/compound-v/phase-0-recon.md`): when a brainstorm is about to begin on an unfamiliar topic, a gated, bounded research pass (bundled `deep-research` if present, ≤6 parallel WebSearch otherwise, skip-with-notice if neither) writes an anti-anchoring recon doc to `docs/superpowers/recon/` that the brainstorm — and later pre-flights 1B/1C — read first. Gate order: plumbing-skip → V-memory KB hit → `brainstorm.deep_research` config (`ask` default / `auto` / `off` hard kill-switch). Recon is evidence, never a routing input. Description-driven with zero hook backstop — weaker than Triggers 1–3, documented as such.
+- **Batched elicitation** (`skills/compound-v/brainstorm-elicitation.md`): ≥3 *independent* questions (≤5 groups/screen, never a grid) may batch into ONE Visual Companion form screen — reusing upstream's companion server as-is, only if the user already accepted it this session. Independence is judged on answer interaction; when unsure → sequential. Deliberately overrides upstream's "text questions → terminal" rule for this narrow case, and says so.
+- **`/v:init`**: `brainstorm.deep_research` + `brainstorm.batch_elicitation` policy keys (committed config) and a `deep_research` presence probe (machine-local capabilities cache, advisory only — fire-time listing check is the contract).
+- **CI guard:** CHANGELOG top version must equal `plugin.json` version — closes the bug class where v2.6.4 shipped with both manifests still at 2.6.3 (the bump was written but never committed, and manifest-vs-manifest lockstep can't see it).
+
+### Fixed
+- Pre-flight phase docs 1B/1C now read `docs/superpowers/recon/` before opening new searches (deepen, don't repeat).
+- `skills/compound-v/skill-escalation.md` reconciled with Trigger 0's earlier deep-research use (previously claimed deep-research fires only past 1B/1C).
+
+### Cross-model review (Codex gpt-5.6-sol, 6 rounds, 10 accepted findings)
+- `/v:init` stated `ask`/`auto` unconditionally — now explicitly gate 3 of 3 (plumbing-skip and KB-hit gates named, authority linked).
+- **Epic mode silently bypassed Trigger 0** — per-feature brainstorms now run the recon gate sequence up front; later features converge via the KB-hit gate by design; the autonomous loop is described as the post-spec execution tail.
+- Stale three-phase enumerations (SKILL.md quick-reference heading, plugin/marketplace descriptions) updated to the four-transition reality.
+- The CHANGELOG guard was hardened round-by-round to CommonMark-correct fence handling: opener char+length tracked, closer requires same char + run ≥ opener + only trailing whitespace, a backtick opener with a backtick in its info string is not a fence, headings indented ≤3 spaces are matched with indent-independent version extraction. A 15-fixture adversarial suite was exercised locally; unbalanced fences still fail conservatively (loud, never a false pass).
+
 ## [2.6.4] — 2026-07-10
 
 ### Fixed — Compound V's own audit trail could be silently deleted, and `/v:status` could mislead

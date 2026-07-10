@@ -4,8 +4,9 @@ This file documents how the plugin's content *would* be consumed by tools that r
 
 ## What this plugin does
 
-Compound V is a **sidekick to Superpowers**. It intercepts the three Superpowers phase transitions (brainstorming → writing-plans → execution) and adds:
+Compound V is a **sidekick to Superpowers**. It intercepts the four Superpowers phase transitions (pre-brainstorm recon → brainstorming → writing-plans → execution) and adds:
 
+0. **Gated pre-brainstorm recon (Trigger 0)** 🧪 description-driven, **zero hook backstop** (it fires before any file exists, so no hook can reinforce it — weaker than the other three interception points): before a brainstorm begins on an unfamiliar topic, a gated, bounded research pass (bundled `deep-research` if present, ≤6 parallel WebSearch otherwise, skip-with-notice if neither) writes an anti-anchoring recon doc to `docs/superpowers/recon/` that the brainstorm — and later pre-flights 1B/1C — read first. Gate order: plumbing-skip → V-memory KB hit → `brainstorm.deep_research` config (`ask` default / `auto` / `off` hard kill-switch). Recon is evidence, never a routing input. Also 🧪 description-driven: **batched elicitation** — ≥3 *independent* clarifying questions may batch into one Visual Companion form screen (dependent chains stay sequential; when unsure → sequential); see `skills/compound-v/brainstorm-elicitation.md`.
 1. **Three parallel pre-flights** after brainstorming:
    - Code archaeology (existing-code reality)
    - Domain-expert advisor with three-layer audience search (product/regulatory reality)

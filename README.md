@@ -30,6 +30,8 @@ The fastest way to *get* what this plugin does. Three gamified episodes — **De
 
 - **V-memory** — project memory that builds up as you work: decisions made, bugs fixed, things that failed. It surfaces the relevant bits when you plan or review.
 
+- **Research-grounded brainstorming** 🧪 — before a brainstorm on an unfamiliar topic, a gated, bounded recon pass (off by one config key) writes an evidence doc the brainstorm reads first. And when the brainstorm has 3+ *independent* clarifying questions, it can batch them into one Visual Companion form instead of asking one at a time (dependent questions stay sequential). Both are description-driven guidance, not hook-enforced.
+
 ---
 
 ## Install
@@ -63,7 +65,7 @@ _(Optional)_ Context7 MCP makes the library-docs check sharper: `/plugin install
 
 It detects which model CLIs you have, picks a routing setup, and saves the config.
 
-**2. Then just work.** Describe the feature or start brainstorming as usual — Compound V takes over planning and execution by itself. **There is no command to "launch" the orchestration; it's automatic.**
+**2. Then just work.** Describe the feature or start brainstorming as usual — Compound V takes over planning and execution by itself. On unfamiliar topics it first *offers* a quick pre-brainstorm research pass (gated, bounded, off by one config key) and saves the findings as a recon doc in `docs/superpowers/recon/` for the brainstorm — and the later pre-flights — to read. **There is no command to "launch" the orchestration; it's automatic.**
 
 That's it.
 

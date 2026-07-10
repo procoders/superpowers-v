@@ -1,0 +1,14 @@
+{
+  "status": "done",
+  "blocked": false,
+  "files_changed": [
+    "commands/v-init.md"
+  ],
+  "violations": [],
+  "summary": "v-init.md +59 lines: Step 1d-bis deep-research presence probe (listing-based, no version gate, no Workflow hardcode), Step 3d brainstorm policy questions with verbatim offer copy + egress line, Step 4a committed brainstorm block, Step 4b machine-local advisory deep_research flag with fire-time re-check note, reader-owned defaults sentence. Both JSON blocks jq-valid; 4a/4b split preserved (v2.6.2 discipline). Scope gate PASS.",
+  "session_id": "",
+  "worktree": "/private/tmp/compound-v/2026-07-10-research-grounded-brainstorm/task-4-vinit",
+  "exit_code": 0,
+  "failure_class": null,
+  "retry_after_seconds": 0
+}

@@ -3,3 +3,10 @@
 {"run_id": "2026-06-30-v-onboard", "type": "docs", "backend": "claude", "model": "opus", "status": "success", "blocked": false, "rework_rounds": 1}
 {"run_id": "2026-06-30-v-onboard", "type": "bounded_crud", "backend": "claude", "model": "opus", "status": "success", "blocked": false, "rework_rounds": 0}
 {"run_id": "2026-06-30-v-onboard", "type": "review", "backend": "claude", "model": "opus", "status": "success", "blocked": false, "rework_rounds": 0}
+{"run_id": "2026-07-10-research-grounded-brainstorm", "type": "shared_foundation", "backend": "claude", "model": "opus", "status": "success", "blocked": false, "rework_rounds": 0}
+{"run_id": "2026-07-10-research-grounded-brainstorm", "type": "core_guidance", "backend": "claude", "model": "opus", "status": "success", "blocked": false, "rework_rounds": 0}
+{"run_id": "2026-07-10-research-grounded-brainstorm", "type": "core_guidance", "backend": "claude", "model": "opus", "status": "success", "blocked": false, "rework_rounds": 0}
+{"run_id": "2026-07-10-research-grounded-brainstorm", "type": "core_guidance", "backend": "claude", "model": "opus", "status": "success", "blocked": false, "rework_rounds": 0}
+{"run_id": "2026-07-10-research-grounded-brainstorm", "type": "config_wiring", "backend": "claude", "model": "opus", "status": "success", "blocked": false, "rework_rounds": 0}
+{"run_id": "2026-07-10-research-grounded-brainstorm", "type": "docs", "backend": "claude", "model": "opus", "status": "success", "blocked": false, "rework_rounds": 0}
+{"run_id": "2026-07-10-research-grounded-brainstorm", "type": "review", "backend": "claude", "model": "opus", "status": "success", "blocked": false, "rework_rounds": 0}

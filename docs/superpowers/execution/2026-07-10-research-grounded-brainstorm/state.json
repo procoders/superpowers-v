@@ -1,0 +1,49 @@
+{
+  "run_id": "2026-07-10-research-grounded-brainstorm",
+  "phase": "MERGED",
+  "updated_at": "2026-07-10T17:28:39Z",
+  "jobs": {
+    "task-0-foundation": {
+      "status": "done",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null
+    },
+    "task-1-recon-doc": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": "/private/tmp/compound-v/2026-07-10-research-grounded-brainstorm/task-1-recon-doc",
+      "session_id": null
+    },
+    "task-2-elicitation-doc": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": "/private/tmp/compound-v/2026-07-10-research-grounded-brainstorm/task-2-elicitation-doc",
+      "session_id": null
+    },
+    "task-3-skill-wiring": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": "/private/tmp/compound-v/2026-07-10-research-grounded-brainstorm/task-3-skill-wiring",
+      "session_id": null
+    },
+    "task-4-vinit": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": "/private/tmp/compound-v/2026-07-10-research-grounded-brainstorm/task-4-vinit",
+      "session_id": null
+    },
+    "task-5-integration-docs": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": "/private/tmp/compound-v/2026-07-10-research-grounded-brainstorm/task-5-integration-docs",
+      "session_id": null
+    },
+    "task-6-review": {
+      "status": "done",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null
+    }
+  }
+}
