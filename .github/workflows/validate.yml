@@ -55,7 +55,17 @@ jobs:
         run: |
           PLUGIN_VERSION=$(jq -r .version .claude-plugin/plugin.json)
           # First release heading OUTSIDE fenced code blocks; [Unreleased] (non-numeric) is skipped.
-          CHANGELOG_VERSION=$(awk '/^```/{fence=!fence; next} !fence && match($0, /^## \[[0-9]+\.[0-9]+\.[0-9]+\]/){print substr($0, RSTART+4, RLENGTH-5); exit}' CHANGELOG.md)
+          # Fences per CommonMark: ``` or ~~~ (≤3 leading spaces); closer = same char, run ≥ opener's.
+          CHANGELOG_VERSION=$(awk '
+            NR==1 { sub(/^\xef\xbb\xbf/, "") }
+            /^ {0,3}(```|~~~)/ {
+              match($0, /(`+|~+)/); c = substr($0, RSTART, 1); len = RLENGTH
+              if (!fence)                          { fence = 1; fc = c; flen = len }
+              else if (c == fc && len >= flen)     { fence = 0 }
+              next
+            }
+            !fence && match($0, /^## \[[0-9]+\.[0-9]+\.[0-9]+\]/) { print substr($0, RSTART+4, RLENGTH-5); exit }
+          ' CHANGELOG.md)
           if [ -z "$CHANGELOG_VERSION" ]; then
             echo "::error::No release heading '## [x.y.z]' found in CHANGELOG.md (outside code fences)."
             exit 1

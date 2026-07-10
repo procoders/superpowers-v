@@ -65,7 +65,7 @@ A feature advances through `pending → running → done` (or `failed`). The epi
 
 ## One feature = one full v1.0 run
 
-When `--next` returns a runnable feature, mark it `running`, then run it through the **entire v1.0 pipeline on the current branch** — nothing about a feature's run changes because it is inside an epic. The one difference: the pipeline **starts from the feature's already-approved `spec_path`** — it does **not** brainstorm inside the loop, because every spec was batched + approved up front:
+When `--next` returns a runnable feature, mark it `running`, then run it through the **v1.0 pipeline's post-spec execution tail on the current branch** — nothing about a feature's run changes because it is inside an epic. The one difference: the loop **starts from the feature's already-approved `spec_path`** — Trigger 0 recon and brainstorming already ran up front (model step 3), so it does **not** recon or brainstorm inside the loop:
 
 ```
 read spec_path (the pre-approved feature spec — NO brainstorm in the loop)
