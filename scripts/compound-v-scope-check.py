@@ -327,15 +327,21 @@ def scan_escaping_symlinks(root):
             return False  # degrade-safe: skip unreadable/vanished entries
         return target != root_real and not target.startswith(prefix)
 
+    root_norm = os.path.normpath(root)
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         # CLASSIFY .git BEFORE pruning: a nested entry NAMED ".git" that is an
         # escaping SYMLINK is itself a violation (git treats .git specially, so
-        # git-derived detection is blind here); only a real .git directory is
-        # git's own internals and safe to skip.
+        # git-derived detection is blind here). Prune ONLY the ROOT's own real
+        # .git (git's internals) — a NESTED real .git directory is job-created
+        # content that git ignores entirely, so it must be DESCENDED into: an
+        # escaping link hidden inside it is invisible to every other signal
+        # (Codex v2.8 round-2 #1).
         if ".git" in dirnames:
             if _escaping(os.path.join(dirpath, ".git")):
                 escapes.append(os.path.relpath(os.path.join(dirpath, ".git"), root))
-            dirnames.remove(".git")
+                dirnames.remove(".git")  # never descend THROUGH a link
+            elif os.path.normpath(dirpath) == root_norm:
+                dirnames.remove(".git")  # the repo/worktree's own metadata dir
         for name in dirnames + filenames:
             p = os.path.join(dirpath, name)
             if _escaping(p):
@@ -832,6 +838,22 @@ def _selftest():
         expect(
             "symlink: nested .git-named escaping link BLOCKS (untracked leftover)",
             "sub/.git (symlink escapes the worktree)" in viol_gp,
+        )
+
+        # NESTED REAL .git DIRECTORY hiding an escaping link INSIDE it (Codex
+        # v2.8 round-2 #1): only the ROOT's own .git is pruned; a job-created
+        # real directory named .git is descended into — git ignores everything
+        # under any .git path, so the FS scan is again the only detector.
+        os.makedirs(os.path.join(perepo, "deep", ".git"))
+        os.symlink(outside_dir, os.path.join(perepo, "deep", ".git", "out"))
+        _, viol_gd = check(perepo, "HEAD", ["src/**", "sub/**", "deep/**"])
+        expect(
+            "symlink: escaping link INSIDE a nested real .git dir BLOCKS",
+            "deep/.git/out (symlink escapes the worktree)" in viol_gd,
+        )
+        expect(
+            "symlink: root's own real .git still not scanned/flagged",
+            not any(v.startswith(".git") for v in viol_gd),
         )
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
