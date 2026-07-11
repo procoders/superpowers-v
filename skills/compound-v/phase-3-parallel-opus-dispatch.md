@@ -36,7 +36,7 @@ The first override is safe ONLY because Phase 2 produced a verified Partition Ma
 
 > In the v1.0 flow this decision is already made for you: [`routing-policy.md`](routing-policy.md) routes each job's `type` to a **`tier`** (`deep`/`standard`/`light`) when Phase 2 materializes the manifest, and the dispatcher resolves that tier to a concrete `model` via [`compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py) before dispatch (Step 2). Wherever this section says `model: opus` / `model: sonnet`, read it as **the resolved output of a tier** (`deep`/`standard`→`opus`, `light`→`sonnet`) — the literal strings are illustrative, not hardcoded call-site values. The taxonomy below is the *rationale* the routing policy encodes — keep it as the check when you author a job's `tier`, or when you run a bare-plan flow with no manifest yet. Either way the rule is identical.
 
-**Default: Opus.** Every Claude implementer runs on Opus unless the job passes ALL the boxes for Sonnet eligibility below. Reviewers (spec + quality) are ALWAYS Opus — they're the safety net, and a cheap reviewer is no reviewer. (Codex jobs carry their own model, e.g. `gpt-5.5`, set by the routing policy — that is execution-layer data and never appears in any frontmatter.)
+**Default: Opus.** Every Claude implementer runs on Opus unless the job passes ALL the boxes for Sonnet eligibility below. Reviewers (spec + quality) are ALWAYS Opus — they're the safety net, and a cheap reviewer is no reviewer. (Codex jobs carry their own model, e.g. `gpt-5.6-sol`, set by the routing policy — that is execution-layer data and never appears in any frontmatter.)
 
 ### When Sonnet IS allowed (the "Junior Dev" carve-out)
 
@@ -141,7 +141,7 @@ Each dispatch must include:
    ```
 
    - **`claude`** resolves tier→model: `deep`→opus, `standard`→opus (sonnet under `cost-aware`), `light`→sonnet. The dispatcher passes `--stance` from the manifest's `routing_stance` (default `balanced`), which is what flips `standard` to Sonnet under `cost-aware`. Pass the resolved model to the `Task` call. `effort` is advisory on this path — the `Task` call has no separate effort flag.
-   - **`codex`** resolves tier→model (e.g. `deep`→`gpt-5.5`) and passes `--model <resolved>` **and** `--effort <effort>` to [`scripts/compound-v-run-codex-worker.sh`](../../scripts/compound-v-run-codex-worker.sh) (`--effort` → `-c model_reasoning_effort=<effort>`; this is the one backend where `xhigh` is accepted). The execution-layer model never appears in any frontmatter.
+   - **`codex`** resolves tier→model (e.g. `deep`→`gpt-5.6-sol`) and passes `--model <resolved>` **and** `--effort <effort>` to [`scripts/compound-v-run-codex-worker.sh`](../../scripts/compound-v-run-codex-worker.sh) (`--effort` → `-c model_reasoning_effort=<effort>`; this is the one backend where `xhigh` is accepted). The execution-layer model never appears in any frontmatter.
    - **`antigravity`** resolves tier→model (a Gemini name, e.g. `deep`→`Gemini 3.1 Pro (High)`) and passes `--model <resolved>` to [`scripts/compound-v-run-antigravity-worker.sh`](../../scripts/compound-v-run-antigravity-worker.sh) (omitted when empty; agy has no effort flag). `--write-allowed` is colon-joined globs; always `worktree`.
    - **`cursor`** resolves tier→model (default `auto`) and passes `--model <resolved>` to [`scripts/compound-v-run-cursor-worker.sh`](../../scripts/compound-v-run-cursor-worker.sh) (cursor has no effort flag). On a Cursor **Free** plan only `auto` works (named models error); set named ids per tier via config on a paid plan. Always `worktree`; requires an authenticated `cursor-agent`.
    - **An explicit manifest `model:` override skips resolution** (call the resolver with `--explicit-model <M>`, or pass the model straight through). This keeps existing explicit-model jobs valid — a job MUST carry `model` OR `tier`.
@@ -357,7 +357,7 @@ Use Compound V when speed-to-shipping matters more than minimum cost. For tiny f
 - "I'll trust the worker's report of what it changed" → no; enforcement is **git-derived**, run the scope gate (Step 2b) on every job — never trust a model to self-report its writes
 - "A Codex job can run direct, the worktree is overhead" → no; Codex ⇒ worktree is a hard invariant (the sandbox can't enforce a file allow-list)
 - "I'll route the model/backend myself per task" → no; backend/tier/isolation come from the manifest (routed by `routing-policy.md`); the concrete model is resolved from `(backend, tier, effort, config)` via `compound-v-resolve-model.py` before dispatch — don't hardcode model strings
-- "I'll hardcode `gpt-5.5` / `opus` in the job_spec" → no; pass `tier`/`effort` and let the resolver produce the model, so a model-churn refresh via `/v:models` (not a call-site edit) keeps routing alive. Only an explicit manifest `model:` override is hand-set, and it skips resolution.
+- "I'll hardcode `gpt-5.6-sol` / `opus` in the job_spec" → no; pass `tier`/`effort` and let the resolver produce the model, so a model-churn refresh via `/v:models` (not a call-site edit) keeps routing alive. Only an explicit manifest `model:` override is hand-set, and it skips resolution.
 
 ## Handoff
 

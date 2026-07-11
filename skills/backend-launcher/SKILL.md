@@ -23,7 +23,7 @@ There is no skill-import API: an adapter is a sibling doc (`adapter-codex.md`, `
   "prompt": "…",                       // the worker prompt (opens with the planner/executor lock, below)
   "tier": "standard",                  // deep | standard | light — the routing INTENT (stable across model churn)
   "effort": "medium",                  // low | medium | high | xhigh — orthogonal reasoning-effort hint (optional; xhigh is codex-only)
-  "model": "gpt-5.5",                  // OPTIONAL explicit override; when present it skips resolution.
+  "model": "gpt-5.6-sol",                  // OPTIONAL explicit override; when present it skips resolution.
                                        //   execution-layer data — NEVER appears in any frontmatter
   "cwd": "/repo",                      // absolute repo root
   "write_allowed": ["src/features/sequences/components/**"],

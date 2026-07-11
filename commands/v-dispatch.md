@@ -47,5 +47,5 @@ This replaces the default Superpowers `subagent-driven-development` sequential-i
 - Do NOT override the Sonnet eligibility from the routing policy, and reviewers stay `model: opus`.
 - Do NOT silently skip the final integration review.
 - A scope-gate **BLOCKED** halts the run — the offending worktree is left for inspection and never merged. Recover with [`/v:resume <run-id>`](v-resume.md).
-- `backend` / `model` (e.g. `gpt-5.5`) are **execution-layer data** — they live in the manifest, never in frontmatter.
+- `backend` / `model` (e.g. `gpt-5.6-sol`) are **execution-layer data** — they live in the manifest, never in frontmatter.
 - Do **not** print fabricated cost or token metrics (anti-ruflo).

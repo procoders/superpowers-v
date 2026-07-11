@@ -51,7 +51,7 @@ scripts/compound-v-codex-review.sh \
   [--context-file docs/superpowers/archaeology/<topic>.md] ...
 ```
 
-- The model is resolved for **codex / tier `deep`** (e.g. `gpt-5.5`) — see [routing-policy.md](routing-policy.md). `--effort high` is "Codex on their strongest reasoning."
+- The model is resolved for **codex / tier `deep`** (e.g. `gpt-5.6-sol`) — see [routing-policy.md](routing-policy.md). `--effort high` is "Codex on their strongest reasoning."
 - Codex runs **read-only** (`--sandbox read-only`): it may READ the repo to ground each objection against the real files, but writes nothing.
 - It returns structured findings per [`schemas/plan-review.schema.json`](../../schemas/plan-review.schema.json) — `verdict` (endorse | concerns | reject), a list of `findings` (each: `severity`, `category`, `claim`, `evidence`, `recommendation`), and `blind_spots_checked`.
 - The reviewer is prompted to **refute** the plan, default to skepticism, and prefer concrete evidence; an empty `findings` list is honest and valid.
