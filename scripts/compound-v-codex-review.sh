@@ -143,9 +143,12 @@ EOF
 } > "$PROMPT_FILE"
 
 set +e
+# --ephemeral: discovery review rounds must not persist/resume a session — statelessness
+# is the anti-anchoring point (each round reasons fresh, uninfluenced by prior session state).
 python3 "$SUPERVISOR" --timeout "$TIMEOUT_SEC" --grace 3 -- codex exec \
   --cd "$REPO" \
   --sandbox read-only \
+  --ephemeral \
   --skip-git-repo-check \
   --model "$MODEL" \
   -c model_reasoning_effort="$EFFORT" \

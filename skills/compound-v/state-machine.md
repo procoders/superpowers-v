@@ -52,12 +52,15 @@ docs/superpowers/execution/<run-id>/
 ├── state.json             # phase + per-job status (this doc)
 ├── jobs/
 │   └── <id>.prompt.md     # the exact dispatched prompt — replayed verbatim on resume
+├── logs/
+│   └── <id>.jsonl         # codex worker's --json event stream (session-aware workers)
 └── results/
     └── <id>.json          # normalized job_result (schemas/job_result.schema.json)
 ```
 
 - `manifest.yaml` — schema and rules live in [`execution-manifest.md`](execution-manifest.md). Read-only after materialization.
 - `jobs/<id>.prompt.md` — captured at dispatch time. Resume re-dispatches **this exact prompt**, so a re-run is deterministic rather than re-derived.
+- `logs/<id>.jsonl` — the codex worker's `--json` event stream, one file per codex job (the dispatcher passes `--events-log docs/superpowers/execution/<run-id>/logs/<id>.jsonl` and records that path into `state.json jobs[<id>].log`). Present only for codex jobs; the liveness sweep reads the newest event as a progress signal. Degrade-safe: absent ⇒ prior git+FS+pid behavior unchanged.
 - `results/<id>.json` — one normalized [`job_result`](../../schemas/job_result.schema.json) per finished job, written by the collector. Its `files_changed` / `violations` / `blocked` fields are **git-derived**, never model-self-reported.
 
 ---
@@ -77,12 +80,14 @@ docs/superpowers/execution/<run-id>/
   },
   "attempts": { "task-2-api": { "rate_limited": 2, "network": 1 } },
   "jobs": {
-    "task-0-schema":   { "status": "done",    "isolation": "direct",   "worktree": null,                          "session_id": null },
-    "task-1-editor-ui":{ "status": "running", "isolation": "worktree", "worktree": "$TMPDIR/compound-v/<run>/task-1-editor-ui", "session_id": "uuid" },
-    "task-2-api":      { "status": "pending", "isolation": "direct",   "worktree": null,                          "session_id": null }
+    "task-0-schema":   { "status": "done",    "isolation": "direct",   "worktree": null,                          "session_id": null,   "log": null },
+    "task-1-editor-ui":{ "status": "running", "isolation": "worktree", "worktree": "$TMPDIR/compound-v/<run>/task-1-editor-ui", "session_id": "uuid", "log": "docs/superpowers/execution/<run>/logs/task-1-editor-ui.jsonl" },
+    "task-2-api":      { "status": "pending", "isolation": "direct",   "worktree": null,                          "session_id": null,   "log": null }
   }
 }
 ```
+
+Per-job fields: `status` (lifecycle, below), `isolation` (`direct` | `worktree`), `worktree` (absolute path or `null`), `session_id` (the codex `thread_id` UUID read from the worker's `job_result.session_id`, UUID-validated — the resume UUID; `null` otherwise), `failure_class` (the returned `job_result.failure_class`, e.g. `timeout`/`network`; consulted by the resume-eligibility rule; `null` otherwise), and **`log`** (the codex worker's events-log path — `docs/superpowers/execution/<run-id>/logs/<id>.jsonl` — recorded by the dispatcher at dispatch; `null`/absent for non-codex jobs). `log` is read by the liveness sweep as a progress signal and is **degrade-safe**: absent ⇒ prior git+FS+pid behavior unchanged.
 
 ### Backend-failure fields (the circuit breaker — no daemon)
 
@@ -136,7 +141,7 @@ The run-level `phase` and the per-job `status` map are distinct: `phase` is the 
    - **`circuit_open[backend].open==true` with `reason=="auth"`:** stays **open** until the user re-auths (via `/v:init`); only then clear it (`cleared_by`) and re-dispatch its failed jobs.
    - **Never silently re-dispatch to a still-open breaker.** An open `out_of_credits`/`auth` breaker that the user hasn't resolved keeps its jobs `failed` and surfaced, not re-tried.
 5. **Re-dispatch only `pending` / `failed` / `blocked`** jobs (after step 3 reclassification and step 4 breaker reconciliation), honoring `depends_on` and `max_parallel` exactly as the initial dispatch did. Each re-dispatch replays `jobs/<id>.prompt.md` verbatim.
-   - For a Codex worktree job whose `session_id` is recorded, the codex adapter MAY resume the existing session (`codex exec resume <session_id>`) rather than start cold; either way the **scope gate re-runs** on return.
+   - For a Codex worktree job, the codex adapter MAY resume the existing session (`codex exec resume <session_id>`) rather than start cold **only under the resume-eligibility rule** — its recorded `failure_class` is environmental (`timeout` | `network`) **AND** its worktree still exists at the recorded path (the authoritative rule + rationale live in [`v-resume.md`](../../commands/v-resume.md) and [`parallel-dispatcher.md`](../../agents/parallel-dispatcher.md)); every other case recreates the worktree fresh at HEAD. Either way the **scope gate re-runs** on return.
 6. **Continue the pipeline** from the reconciled phase: re-collect, re-run the scope gate on every job, then the Review Gate, then merge. Already-`done` jobs are not re-run.
 
 **Why git-wins, restated:** `state.json` is a convenience cache; the filesystem under git is the ground truth. A resume that trusted a stale `done` could skip work that was never actually committed. By re-deriving from git on every resume, the run stays correct even across a hard crash mid-write.

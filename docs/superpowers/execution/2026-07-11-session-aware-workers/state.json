@@ -1,0 +1,49 @@
+{
+  "run_id": "2026-07-11-session-aware-workers",
+  "phase": "MERGED",
+  "updated_at": "2026-07-11T10:54:58Z",
+  "jobs": {
+    "task-0-versions": {
+      "status": "done",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null,
+      "log": null
+    },
+    "task-1-worker-json": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": "/private/tmp/compound-v/2026-07-11-session-aware-workers/task-1-worker-json",
+      "session_id": null,
+      "log": null
+    },
+    "task-2-ephemeral": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": "/private/tmp/compound-v/2026-07-11-session-aware-workers/task-2-ephemeral",
+      "session_id": null,
+      "log": null
+    },
+    "task-3-liveness-jsonl": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": "/private/tmp/compound-v/2026-07-11-session-aware-workers/task-3-liveness-jsonl",
+      "session_id": null,
+      "log": null
+    },
+    "task-4-resume-reconcile": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": "/private/tmp/compound-v/2026-07-11-session-aware-workers/task-4-resume-reconcile",
+      "session_id": null,
+      "log": null
+    },
+    "task-5-review": {
+      "status": "done",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null,
+      "log": null
+    }
+  }
+}

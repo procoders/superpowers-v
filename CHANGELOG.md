@@ -4,6 +4,25 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [2.8.1] — 2026-07-11
+
+### Added — session-aware codex workers
+
+- **Structured session-id capture.** The headless codex worker now runs `codex exec` with `--json` and parses the first `{"type":"thread.started","thread_id":"<uuid>"}` event, carrying the UUID-validated `thread_id` inside the canonical `job_result.session_id` (empty when the event is absent) — replacing the brittle stderr banner scrape; the dispatcher persists `session_id` + `failure_class` into `state.json jobs[<id>]`. (`scripts/compound-v-run-codex-worker.sh`, `skills/backend-launcher/adapter-codex.md`)
+- **`logs/<job-id>.jsonl` run-dir convention.** A new `--events-log <path>` worker arg tees the `--json` event stream to `docs/superpowers/execution/<run-id>/logs/<job-id>.jsonl`; the dispatcher records that same path in `state.json jobs[<id>].log`. Standalone worker use keeps an `$ART` default, so the arg is optional and degrade-safe. (`agents/parallel-dispatcher.md`, `skills/compound-v/state-machine.md`)
+- **Liveness JSONL signal.** `classify_job()` now reads the events-log's newest line when present: an event newer than the staleness threshold is a WORKING signal, an older newest-event reinforces STALE. Malformed/partial JSONL never raises — it falls through to the prior git+FS+pid behavior. No `log` field ⇒ identical prior behavior. (`scripts/compound-v-liveness.py`)
+- **`--ephemeral` discovery review.** `compound-v-codex-review.sh` adds `--ephemeral` to its single `codex exec` invocation — discovery rounds must not persist or resume (statelessness is the anti-anchoring point). Never added to the worker. (`scripts/compound-v-codex-review.sh`)
+
+### Fixed
+
+- **Resume/parallel-dispatcher contradiction reconciled.** `v-resume.md` and `parallel-dispatcher.md` now state a byte-identical resume-eligibility rule: a codex job may be resumed via `codex exec resume <captured-uuid>` IFF its `failure_class` is environmental (timeout | network) AND its worktree still exists; every other case recreates the worktree fresh at HEAD. Kills the archaeology-flagged contradiction (v-resume.md:29 vs parallel-dispatcher.md:183). (`commands/v-resume.md`, `agents/parallel-dispatcher.md`)
+- **Dead `job["log"]` now populated.** The state-machine's `log` field, previously documented but never written, is now recorded at dispatch for codex jobs and consumed by liveness.
+- **Stderr UUID-scrape replaced.** The fragile stderr session-id extraction is deleted in favor of the structured `--json` `thread.started` capture above.
+
+### Probed
+
+- **Thread-naming unsupported in `codex exec`** (live-probed 2026-07-11): `codex exec` exposes no flag to name or pin a thread id, so the worker captures the auto-generated UUID from the `thread.started` event rather than assigning one. `--json` and `--output-last-message` verified to coexist (result path unchanged); `--ephemeral` verified accepted by `codex exec`. All codex capability facts here are live-probed, per the library audit — not re-invented.
+
 ## [2.8.0] — 2026-07-11
 
 ### Security — two scope-gate exploits, both reproduced before fixing

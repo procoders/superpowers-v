@@ -1,0 +1,12 @@
+{
+  "status": "success",
+  "blocked": false,
+  "files_changed": [],
+  "violations": [],
+  "summary": "Three-pass Review Gate APPROVED 8/8: ACs against real file contents (reviewer ran selftests itself), contract seam coherent end-to-end (session-id, events-log path/arg/field consistent on all 3 sides), impl within Tasks 0-4 union, 0 dead links.",
+  "session_id": "",
+  "worktree": "",
+  "exit_code": 0,
+  "failure_class": null,
+  "retry_after_seconds": 0
+}

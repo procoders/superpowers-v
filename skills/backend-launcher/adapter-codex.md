@@ -18,7 +18,7 @@ The worker script performs steps 1–5; the **caller** (dispatcher) performs ste
 3. OBSERVE   git -C <WT> diff --name-only                   # ∪
              git -C <WT> ls-files --others --exclude-standard
 4. ENFORCE   every changed path ∉ write_allowed ⇒ violation ⇒ blocked  (do NOT merge)
-5. NORMALIZE → job_result  (summary ← --output-last-message; session_id ← run banner UUID)
+5. NORMALIZE → job_result  (summary ← --output-last-message; session_id ← thread_id from the --json `thread.started` event)
 6. MERGE     caller, on PASS only:  git -C <WT> add -A
              git -C <WT> diff --cached --binary HEAD | (cd <repo> && git apply --index)  →  git worktree remove -f <WT>
 ```
@@ -50,17 +50,20 @@ python3 "$SUPERVISOR" --timeout "$timeout_sec" -- codex exec \
   --cd "$WT" \
   --sandbox "$([ "$read_only" = true ] && echo read-only || echo workspace-write)" \
   --skip-git-repo-check \
+  --json \
   --model "$model" \
   ${effort:+-c model_reasoning_effort="$effort"} \
   ${output_schema:+--output-schema "$output_schema"} \
   --output-last-message "$ART/job_result.txt" \
   -c "sandbox_workspace_write.network_access=$network" \
-  "$prompt" </dev/null
+  "$prompt" </dev/null   # codex stdout (the JSONL stream) → --events-log
 ```
+
+`--json` is added to **both** invocations in the script (the `--output-schema` path and the plain path — the mirror hazard; they must stay identical). It turns codex's stdout into a JSONL event stream whose **first** line is `{"type":"thread.started","thread_id":"<uuid>"}` (live-probed, codex-cli 0.144.1). The worker redirects that stdout to the **events-log** (`--events-log <path>`, default `$ART/codex_events.jsonl`; the dispatcher passes `docs/superpowers/execution/<run-id>/logs/<job-id>.jsonl`) and parses the first `thread.started` event for `thread_id` → `session_id`. `--json` and `--output-last-message` **coexist** — the last-message file is still written verbatim, so the `summary` extraction path is unchanged.
 
 **Stream + scratch handling — verified live, all load-bearing (caught by the v1.0 smoke + e2e tests):**
 - **stdin → `/dev/null`.** The prompt is positional, but `codex exec` still reads stdin when it is not a TTY and will hang on `Reading additional input from stdin...` in a non-interactive / background run. `</dev/null` makes stdin an immediate EOF so only the positional prompt is used.
-- **codex stdout → captured, never passed through.** `codex exec` prints its final agent message to *stdout*; the script redirects it to a scratch log so the worker's own stdout carries **only** the canonical `job_result` JSON. The summary comes from `--output-last-message`; the session-id from the stderr banner — so codex's stdout is safely discarded.
+- **codex stdout → the events-log, never passed through.** With `--json`, `codex exec` prints its *event stream* (JSONL) to *stdout*; the script redirects it to the **events-log** so the worker's own stdout carries only the canonical `job_result` JSON (session_id rides inside it). The summary comes from `--output-last-message`; the **session-id is parsed structurally** from the events-log's first `thread.started` event (no more stderr-banner scrape) — so codex's raw stdout is never leaked to the caller.
 - **scratch lives OUTSIDE the worktree.** `$ART` is a sibling dir under `$TMPDIR` (one of codex's `workspace-write` sandbox roots, so `--output-last-message` can be written there). The worktree therefore stays **pristine** — only the job's real output appears in `git diff`, so the generic scope-gate (`scripts/compound-v-scope-check.py`) agrees with this worker's own enforcement without any codex-specific ignore list.
 
 | Flag | Role |
@@ -68,12 +71,15 @@ python3 "$SUPERVISOR" --timeout "$timeout_sec" -- codex exec \
 | `--cd "$WT"` | working root = the worktree (sandbox is scoped here) |
 | `--sandbox workspace-write` \| `read-only` | OS-level write boundary; `read-only` for read-only jobs |
 | `--skip-git-repo-check` | the worktree is a linked checkout; suppress the repo-root check |
+| `--json` | stdout becomes a JSONL event stream; first line `{"type":"thread.started","thread_id":"<uuid>"}` → the resume id. Added to **both** invocations (mirror hazard). Coexists with `--output-last-message` |
 | `--model "$model"` | execution-layer model (e.g. `gpt-5.6-sol`) — **resolved** from `(backend=codex, tier, effort)` before dispatch; never appears in any frontmatter |
 | `-c model_reasoning_effort=<effort>` | optional; codex's reasoning-effort dimension, set from the job's `effort` hint (`low` \| `medium` \| `high` \| `xhigh` — `xhigh` is codex-only) — see below |
 | `--output-schema "$file"` | optional; strict JSON Schema for the model's final message (drives only `summary`) |
 | `--output-last-message "$file"` | where the agent's last message is written → feeds the human `summary` |
 | `-c sandbox_workspace_write.network_access=<bool>` | network on/off inside the sandbox |
 | `"$prompt"` | positional initial instructions (the worker prompt, lock first) |
+
+> `--events-log <path>` is a **worker-script arg** (not a `codex exec` flag): it names the file the `--json` stdout stream is redirected to. Optional — defaults to `$ART/codex_events.jsonl` for standalone use; the dispatcher passes its run-dir path `docs/superpowers/execution/<run-id>/logs/<job-id>.jsonl` and records that same path in `state.json jobs[<id>].log` for liveness. The redirect is the worker's own shell (codex writes to the pipe, not to a file inside its sandbox), so the events-log may live anywhere the worker can write, including the main tree's run-dir — which never appears in the worktree diff.
 
 ### `--ask-for-approval never` is INVALID for `codex exec` — omitted
 
@@ -90,7 +96,7 @@ The dispatcher never hands this adapter a hardcoded model string. It hands a rou
 ### Other pinned facts
 
 - **`git worktree diff` does not exist.** Observation uses plain `git -C "$WT" diff --name-only` + `git -C "$WT" ls-files --others --exclude-standard`. Both halves are required: `diff` catches edits to tracked files; `ls-files --others` catches brand-new untracked files the diff would miss.
-- **codex emits a cosmetic `[features].codex_hooks is deprecated` warning on stderr.** The script filters exactly that line out of the captured stderr so it never pollutes the banner scan or the result; all other stderr is preserved.
+- **codex emits a cosmetic `[features].codex_hooks is deprecated` warning on stderr.** The script filters exactly that line out of the captured stderr so it stays clean for the failure classifier; all other stderr is preserved. (The session-id no longer comes from stderr — it is parsed from the `--json` `thread.started` event — so this filter is purely classifier hygiene now.)
 - **Wall-clock cap via the process-group supervisor.** The script runs codex under the shared [`scripts/compound-v-run-with-timeout.py`](../../scripts/compound-v-run-with-timeout.py) (`python3 "$SUPERVISOR" --timeout <sec> -- codex exec …`) — **no external `timeout`/`gtimeout` binary needed**. On expiry it `killpg`s the whole codex process tree (not just the direct child) and returns `124`, which the script maps to `status: "timeout"`. Verified live (success + `--timeout-sec 1 ⇒ status:timeout`).
 
 ---
@@ -135,14 +141,14 @@ The script **observes and reports only — it never merges.** The dispatcher dec
 
 ## Resume
 
-Codex sessions resume by UUID, captured into `job_result.session_id` from the run banner (there is **no `--session-id` flag**):
+Codex sessions resume by UUID, captured into `job_result.session_id` from the `--json` `thread.started` event (there is **no `--session-id` flag**, and no launch-time thread naming in `codex exec` — live-probed; capture the auto-generated UUID):
 
 ```bash
-codex exec resume <SESSION_ID> [PROMPT]     # UUID from the banner
+codex exec resume <SESSION_ID> [PROMPT]     # the captured thread_id UUID
 codex exec resume --last [PROMPT]           # most recent recorded session
 ```
 
-The script scrapes the first UUID-shaped token out of the (deprecation-filtered) stderr banner — and the `--output-last-message` file as a fallback — into `session_id`. When no UUID is found, `session_id` is the empty string (the schema permits it); the job is then re-dispatched fresh rather than resumed, consistent with the **git-wins** resume tie-break (if `state.json` says done but the files aren't in git, re-dispatch).
+The script parses the **first** `{"type":"thread.started","thread_id":"<uuid>"}` line of the events-log (the `--json` stream) into `session_id` — the value is forced to a JSON string (`jq 'select(type=="string")'`) and then UUID-shape-validated with a Bash `[[ =~ ]]` anchored to the whole scalar, so a malformed / partial JSONL line, or a `thread_id` containing a newline, yields an empty id rather than a crash or an injected token. When no `thread.started` event is captured, `session_id` is the empty string (the schema permits it); the job is then re-dispatched fresh rather than resumed, consistent with the **git-wins** resume tie-break (if `state.json` says done but the files aren't in git, re-dispatch). Resume by the captured UUID is authoritative — never resume by cwd filtering, since the worktree paths are ephemeral (pass the UUID explicitly, or `--all`).
 
 ---
 
@@ -160,6 +166,7 @@ scripts/compound-v-run-codex-worker.sh \
   --network  false
 # optional: --read-only true   --output-schema /abs/schemas/job_result.schema.json
 # optional: --effort medium    # → appended as -c model_reasoning_effort=medium
+# optional: --events-log /abs/run-dir/logs/task-1-editor-ui.jsonl   # where the --json stream is written
 ```
 
 - `--model` is the **resolved** concrete model from `compound-v-resolve-model.py` (or the manifest's explicit override); this adapter never picks it from a literal in routing.
@@ -168,7 +175,7 @@ scripts/compound-v-run-codex-worker.sh \
 - All file paths MUST be **absolute** (the script rejects relative `--repo` / `--prompt-file` / `--output-schema`).
 - `--write-allowed` is a **colon-separated** glob list (`a/**:b/c.ts`), matched repo-relative against changed paths. An **empty** `--write-allowed` is valid and means a **read-only / review job**: no writes are permitted, so the scope gate (run with zero allowed globs) treats ANY changed path as a violation and the job is BLOCKED. Pair it with `--read-only true` for a pure review worker.
 - `--timeout-sec` must be a **positive integer** (`^[0-9]+$`); the script `die`s on anything else (it is passed to the supervisor's `--timeout` and used in arithmetic).
-- **stdout** is the canonical `job_result` JSON and nothing else — the dispatcher pipes it straight to the collector and the scope-check authority.
+- **stdout** carries exactly one canonical `job_result` JSON (no preamble line). `session_id` rides inside that JSON; the dispatcher reads it from `job_result.session_id` and persists it into `state.json jobs[<id>].session_id` alongside `failure_class`. There is no line to strip — stdout is single-JSON, matching the generic backend contract.
 - **Exit 0** means a `job_result` was produced (even for BLOCKED / timeout / error — those live in `status`). A non-zero exit means a usage/environment fault prevented producing a result at all.
 
 The script targets stock-macOS **bash 3.2** (no associative arrays / `mapfile` / `${var,,}`) and uses only `git` + `jq`. It is shellcheck-clean and `chmod +x`.

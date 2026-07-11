@@ -1,0 +1,16 @@
+{
+  "status": "success",
+  "blocked": false,
+  "files_changed": [
+    ".claude-plugin/plugin.json",
+    ".claude-plugin/marketplace.json",
+    "CHANGELOG.md"
+  ],
+  "violations": [],
+  "summary": "Version 2.8.1 x3 + CHANGELOG (Added/Fixed/Probed crediting live probes). Guard simulated. Committed direct. Scope PASS.",
+  "session_id": "",
+  "worktree": "",
+  "exit_code": 0,
+  "failure_class": null,
+  "retry_after_seconds": 0
+}

@@ -1,0 +1,14 @@
+{
+  "status": "success",
+  "blocked": false,
+  "files_changed": [
+    "scripts/compound-v-codex-review.sh"
+  ],
+  "violations": [],
+  "summary": "--ephemeral on the codex exec invocation (discovery rounds must not persist/resume). bash -n clean. Scope PASS.",
+  "session_id": "",
+  "worktree": "/private/tmp/compound-v/2026-07-11-session-aware-workers/task-2-ephemeral",
+  "exit_code": 0,
+  "failure_class": null,
+  "retry_after_seconds": 0
+}

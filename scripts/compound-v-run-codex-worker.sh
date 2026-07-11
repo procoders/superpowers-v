@@ -3,8 +3,11 @@
 # compound-v-run-codex-worker.sh — Compound V Backend Launcher: the headless Codex adapter.
 #
 # Runs ONE file-scoped job on a headless `codex exec` worker inside a dedicated git
-# worktree, then emits the canonical job_result (schemas/job_result.schema.json) on
-# stdout as JSON. The enforcement fields (blocked / files_changed / violations) are
+# worktree, then emits, on stdout, exactly one canonical `job_result` JSON
+# (schemas/job_result.schema.json). Its `session_id` is the codex thread id parsed from
+# the `--json` event stream (UUID-validated; empty when absent). The `codex exec --json`
+# event stream is written to the events-log (--events-log, default under $ART).
+# The enforcement fields (blocked / files_changed / violations) are
 # GIT-DERIVED, never self-reported by the model — and they are produced by DELEGATING
 # to the deterministic Python authority (scripts/compound-v-scope-check.py), the same
 # gate the dispatcher runs after every job. The worker does NOT re-implement glob
@@ -24,7 +27,7 @@
 #     --write-allowed "<glob>[:<glob>...]" \
 #     [--timeout-sec <n>] [--network true|false] \
 #     [--read-only true|false] [--output-schema <abs-path>] \
-#     [--effort low|medium|high|xhigh]
+#     [--effort low|medium|high|xhigh] [--events-log <abs-path>]
 #
 # All file paths MUST be absolute. write_allowed is a colon-separated glob list,
 # each glob matched repo-relative against the changed paths. An EMPTY
@@ -115,6 +118,7 @@ NETWORK="$DEFAULT_NETWORK"
 READ_ONLY="$DEFAULT_READ_ONLY"
 OUTPUT_SCHEMA=""
 EFFORT=""
+EVENTS_LOG=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -129,6 +133,7 @@ while [ $# -gt 0 ]; do
     --read-only)     READ_ONLY="$2"; shift 2 ;;
     --output-schema) OUTPUT_SCHEMA="$2"; shift 2 ;;
     --effort)        EFFORT="$2"; shift 2 ;;
+    --events-log)    EVENTS_LOG="$2"; shift 2 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -262,14 +267,33 @@ ART="$WT.art"
 mkdir -p "$ART"
 RESULT_TXT="$ART/job_result.txt"
 
+# --events-log: where the `codex exec --json` JSONL event stream is written. The
+# dispatcher passes docs/superpowers/execution/<run-id>/logs/<job-id>.jsonl (its
+# run-dir) and records that SAME path in state.json jobs[<id>].log for liveness.
+# When omitted (standalone use) it defaults under $ART so nothing else changes.
+# The worker's OWN shell owns this redirect (codex writes to the pipe, not to a
+# file inside its sandbox), so the events-log may live anywhere the worker can
+# write — including the main tree's run-dir, which never touches the worktree diff.
+if [ -z "$EVENTS_LOG" ]; then
+  EVENTS_LOG="$ART/codex_events.jsonl"
+else
+  # An explicit --events-log MUST be absolute (round-2): a relative path is resolved
+  # against the worker's cwd, so a dispatcher invoked from another directory would write
+  # and monitor a different file than it recorded in state.json jobs[<id>].log.
+  case "$EVENTS_LOG" in /*) : ;; *) die "--events-log must be an absolute path: $EVENTS_LOG" ;; esac
+fi
+mkdir -p "$(dirname "$EVENTS_LOG")" 2>/dev/null || die "cannot create events-log dir for: $EVENTS_LOG"
+
 # --- run the headless Codex worker -------------------------------------------
 # Pinned flag set, verified live against codex-cli 0.144.1. NOTE: `--ask-for-approval
 # never` is INVALID for `codex exec` (top-level/interactive flag only) and is
 # deliberately OMITTED — `codex exec` already defaults to approval: never.
 #
 # codex emits a cosmetic `[features].codex_hooks is deprecated` warning on stderr;
-# we filter exactly that line out of the captured stderr so it does not pollute the
-# banner we scan for the session UUID. Everything else on stderr is preserved.
+# we filter exactly that line out of the captured stderr so it stays clean for the
+# failure classifier. Everything else on stderr is preserved. (The session id no
+# longer comes from stderr — it is parsed structurally from the `--json` stream; see
+# below.)
 
 SANDBOX="workspace-write"
 if [ "$READ_ONLY" = "true" ]; then
@@ -277,10 +301,13 @@ if [ "$READ_ONLY" = "true" ]; then
 fi
 
 STDERR_LOG="$ART/codex_stderr.log"
-# codex prints its FINAL agent message to stdout; we must NOT let it reach our stdout,
-# which is reserved for the canonical job_result JSON alone. Capture + discard it (the
-# human summary comes from --output-last-message, the session id from stderr).
-STDOUT_LOG="$ART/codex_stdout.log"
+# With `--json`, codex prints its event stream (JSONL) to STDOUT — the FIRST line is
+# `{"type":"thread.started","thread_id":"<uuid>"}` (live-probed, codex-cli 0.144.1;
+# library-audit/2026-07-11-session-aware-workers.md §1). We redirect that stdout to the
+# EVENTS_LOG so (a) it never reaches the worker's own stdout — reserved for the session
+# line + canonical job_result JSON — and (b) the id and any progress signal can be parsed
+# from it. `--output-last-message` still writes the final agent message verbatim (the two
+# COEXIST — audit §2), so the human summary path is unchanged.
 exit_code=0
 
 # run_codex runs the pinned `codex exec` invocation UNDER the process-group timeout supervisor
@@ -303,6 +330,7 @@ run_codex() {
       --cd "$WT" \
       --sandbox "$SANDBOX" \
       --skip-git-repo-check \
+      --json \
       --model "$MODEL" \
       $EFFORT_FLAG \
       --output-schema "$OUTPUT_SCHEMA" \
@@ -315,6 +343,7 @@ run_codex() {
       --cd "$WT" \
       --sandbox "$SANDBOX" \
       --skip-git-repo-check \
+      --json \
       --model "$MODEL" \
       $EFFORT_FLAG \
       --output-last-message "$RESULT_TXT" \
@@ -335,7 +364,7 @@ fi
 # `set +e` so a non-zero exit (incl. 124 when the timeout fires) is captured rather
 # than aborting the script — we must still produce a job_result either way.
 set +e
-run_codex >"$STDOUT_LOG" 2>"$STDERR_LOG"
+run_codex >"$EVENTS_LOG" 2>"$STDERR_LOG"
 exit_code=$?
 set -e
 
@@ -346,18 +375,42 @@ if [ -f "$STDERR_LOG" ]; then
 fi
 
 # --- capture session_id + summary --------------------------------------------
-# The session UUID is printed in the run banner. Scan the cleaned stderr (and the
-# result text as a fallback) for the first UUID-shaped token. No flag exists to
-# request it directly; resume is `codex exec resume <uuid>`.
-
-# ERE (grep -oE) quantifier syntax: bare {n}, not BRE \{n\}.
-UUID_RE='[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+# session_id = the codex thread UUID, parsed STRUCTURALLY from the `--json` event
+# stream (EVENTS_LOG). The FIRST `{"type":"thread.started","thread_id":"<uuid>"}`
+# event carries it (live-probed, codex-cli 0.144.1; audit §1); that thread_id IS the
+# id `codex exec resume <uuid>` accepts. The old stderr-banner UUID scrape is GONE —
+# it was a fragile any-UUID-shaped-token heuristic; this reads the id from the field
+# codex actually emits it in.
+#
+# Degrade-safe by construction: filter to candidate lines, then re-validate each with
+# jq's `select(.type=="thread.started")` so a stray substring match or a malformed /
+# partial JSONL line yields an EMPTY id (never a crash, never a wrong token). An empty
+# session_id is valid (the schema permits it) and simply means "resume fresh".
+#
+# HARDENING (Codex v2.8.1 round-1): (1) the whole pipeline is `|| true`-guarded — under
+# `set -euo pipefail` a no-match `grep` exits 1, which without this abort the worker
+# before it can emit its job_result (the older-CLI / early-failure degrade path). (2) the
+# jq filter forces `thread_id | type=="string"` and the value is then UUID-shape-validated,
+# so an object/number/array or a `thread_id` containing a newline can never inject a token.
 session_id=""
-if [ -f "$STDERR_LOG" ]; then
-  session_id=$(grep -oE "$UUID_RE" "$STDERR_LOG" 2>/dev/null | head -n1 || true)
-fi
-if [ -z "$session_id" ] && [ -f "$RESULT_TXT" ]; then
-  session_id=$(grep -oE "$UUID_RE" "$RESULT_TXT" 2>/dev/null | head -n1 || true)
+if [ -f "$EVENTS_LOG" ]; then
+  session_id=$(
+    {
+      grep -F 'thread.started' "$EVENTS_LOG" 2>/dev/null \
+        | while IFS= read -r _ev_line; do
+            _tid=$(printf '%s' "$_ev_line" \
+              | jq -r 'select(.type=="thread.started") | .thread_id | select(type=="string") // empty' 2>/dev/null) || _tid=""
+            if [ -n "$_tid" ]; then printf '%s' "$_tid"; break; fi
+          done
+    } || true
+  )
+  # UUID-shape gate: accept only canonical 8-4-4-4-12 hex; anything else ⇒ empty (resume
+  # fresh). Use Bash `[[ =~ ]]` against the WHOLE scalar, NOT line-oriented `grep` — a value
+  # like "<valid-uuid>\nINJECT" has one matching LINE and would slip past grep, but bash
+  # `=~` anchors `^…$` to the whole string so the trailing newline+junk fails it (round-2).
+  if [[ ! "$session_id" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+    session_id=""
+  fi
 fi
 
 summary=""
@@ -474,11 +527,18 @@ if [ "$status" = "error" ] || [ "$status" = "timeout" ] || [ "$exit_code" != "0"
 fi
 
 # --- emit --------------------------------------------------------------------
-# stdout = the canonical job_result JSON, and ONLY that. The caller (dispatcher)
-# parses this and decides whether to merge (index-based patch including new files:
-# `git -C "$WT" add -A && git -C "$WT" diff --cached --binary HEAD | git apply --index`)
-# or to leave the worktree for inspection on BLOCKED. We do NOT merge here.
-
+# stdout carries exactly one canonical job_result JSON (the generic backend contract).
+# The caller (dispatcher) reads `job_result.session_id` (the UUID-validated codex
+# thread_id) and persists it — with `failure_class` — into state.json jobs[<id>], then
+# decides whether to merge (index-based patch including new
+# files: `git -C "$WT" add -A && git -C "$WT" diff --cached --binary HEAD | git apply
+# --index`) or to leave the worktree for inspection on BLOCKED. We do NOT merge here.
+#
+# Canonical stdout = exactly one job_result JSON (the generic backend contract in
+# backend-launcher/SKILL.md). session_id rides INSIDE that JSON — the caller reads it
+# from `job_result.session_id`, NOT from a preamble line (Codex v2.8.1 round-1: a
+# non-JSON preamble broke the "one canonical job_result" boundary; the id was redundant
+# there since it is already in the JSON). Empty session_id ⇒ "resume fresh".
 emit_job_result \
   "$status" \
   "$blocked" \

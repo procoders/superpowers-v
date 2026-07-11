@@ -26,8 +26,16 @@ Resume is **Engine-A-owned**: it does not rely on Workflows (whose resume is sam
    - Update `circuit_open[backend].cleared_by` and write `state.json` for every breaker transition.
 
 5. **Re-dispatch only the incomplete jobs** — those that are `pending`, `failed`, or `blocked` after steps 3–4 (and **not** behind a still-open breaker) — via **Engine A** (`compound-v:parallel-dispatcher` / the backend-launcher), honoring `depends_on`, `run`, and `max_parallel` exactly as the original dispatch. Each re-dispatch replays the captured prompt at `jobs/<id>.prompt.md` verbatim.
-   - For a Codex worktree job with a recorded `session_id`, the codex adapter may use `codex exec resume <session_id>` instead of a cold start. Either way, the **scope gate re-runs** on return.
+   - A Codex worktree job's resume-vs-recreate decision is governed by the **resume-eligibility rule below** — reproduced verbatim so it agrees word-for-word with [`parallel-dispatcher.md`](../agents/parallel-dispatcher.md) and kills the old contradiction (this step once said "may use `codex exec resume`" unconditionally, while the dispatcher's invariant recreates the worktree fresh at HEAD). Either way — resumed session or fresh recreate — the **scope gate re-runs** on return.
    - Update each job's `status` and write `state.json` after every transition.
+
+Both inputs the rule needs live in **`state.json jobs[<id>]`** — `session_id` (the captured UUID) and `failure_class` — written there by the dispatcher on the job's return (Step 2 already reads `state.json`; you do **not** need to open `results/<id>.json` for this). A job with an empty `session_id` has no session to resume ⇒ recreate fresh regardless.
+
+> **Resume-eligibility rule (Shared Interface Contract — byte-identical in `commands/v-resume.md` and `agents/parallel-dispatcher.md`).**
+> A codex worktree job may be resumed via `codex exec resume <captured-uuid>` **IFF** its `failure_class` is
+> environmental (`timeout` | `network`) **AND** its worktree still exists at the recorded path.
+> Every other case recreates the worktree **fresh at HEAD** — the parallel-dispatcher worktree-recreate invariant.
+> Never resume by cwd filtering; pass the captured UUID explicitly.
 
 6. **Continue the pipeline** from the reconciled phase: re-collect results, run the scope gate on every job, then the three-pass Review Gate (AC-gated), then merge worktree diffs on PASS. Already-`done` jobs are not re-run. **On reaching `MERGED`, commit the run substrate exactly as [`parallel-dispatcher`](../agents/parallel-dispatcher.md)'s Step 7 does** — `state.json` (phase written as `MERGED` first, then committed together with the rest), `results/*.json`, and the memory/scorecard files if this resume refreshed them — **before** handing off to `superpowers:finishing-a-development-branch`. This matters *especially* on the resume path: the whole point of resuming is recovering from a crash or interruption, so leaving the just-recovered state uncommitted means a subsequent worktree cleanup can silently erase the very state resume just fixed.
 
