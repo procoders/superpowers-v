@@ -99,8 +99,10 @@ Python 3.9-safe, stdlib only. Targets stock-macOS python3 3.9.6.
 """
 
 import argparse
+import errno
 import json
 import os
+import stat
 import subprocess
 import sys
 
@@ -324,12 +326,29 @@ def scan_escaping_symlinks(root):
     prefix = root_real.rstrip(os.sep) + os.sep
 
     def _escaping(p):
+        # Classify by errno, NOT via os.path.islink — os.path.islink internally
+        # SWALLOWS OSError and returns False, so a 0400 (readable-but-not-
+        # searchable) parent dir makes islink() report "not a link" for a real
+        # escaping symlink inside it → false-PASS (Codex v2.8 round-4). os.lstat
+        # RAISES instead, letting us tell the cases apart:
+        #   ENOENT (vanished mid-scan)       -> genuinely gone, skip
+        #   EACCES/EPERM (permission denied) -> real but unresolvable link; LOUD
         try:
-            if not os.path.islink(p):
-                return False
+            st = os.lstat(p)
+        except OSError as e:
+            if e.errno == errno.ENOENT:
+                return False  # vanished — degrade-safe skip
+            unreadable.append(os.path.relpath(p, root))
+            return False  # counted as unreadable, never a clean pass
+        if not stat.S_ISLNK(st.st_mode):
+            return False
+        try:
             target = os.path.realpath(p)
-        except OSError:
-            return False  # degrade-safe: skip unreadable/vanished entries
+        except OSError as e:
+            if e.errno == errno.ENOENT:
+                return False
+            unreadable.append(os.path.relpath(p, root))
+            return False
         return target != root_real and not target.startswith(prefix)
 
     root_norm = os.path.normpath(root)
@@ -891,6 +910,24 @@ def _selftest():
             )
         finally:
             os.chmod(hidden, 0o700)  # restore so rmtree cleanup works
+
+        # 0400 (readable but NOT searchable) dir: os.walk enumerates children,
+        # but islink() on each child fails EACCES — the round-3 onerror never
+        # fires. _escaping must count that child as unreadable, not a clean pass
+        # (Codex v2.8 round-4 false-PASS).
+        nx = os.path.join(perepo, "noexec")
+        os.makedirs(nx)
+        os.symlink(outside_dir, os.path.join(nx, "sneak"))
+        os.chmod(nx, 0o400)
+        try:
+            _, viol_nx = check(perepo, "HEAD",
+                               ["src/**", "sub/**", "deep/**", "hidden/**", "noexec/**"])
+            expect(
+                "symlink: 0400 non-searchable dir surfaces as unreadable (no false PASS)",
+                any("noexec" in v and "unreadable during symlink scan" in v for v in viol_nx),
+            )
+        finally:
+            os.chmod(nx, 0o700)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
