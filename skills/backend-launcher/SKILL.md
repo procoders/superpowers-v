@@ -135,11 +135,17 @@ python3 scripts/compound-v-run-with-timeout.py --timeout "$timeout_sec" -- codex
   --sandbox "$([ "$read_only" = true ] && echo read-only || echo workspace-write)" \
   --skip-git-repo-check \
   --model "$model" \
+  --json \
   ${output_schema:+--output-schema "$output_schema"} \
   --output-last-message "$WT/.job_result.txt" \
   -c "sandbox_workspace_write.network_access=$network" \
-  "$prompt" </dev/null
+  "$prompt" </dev/null >"$events_log"
 ```
+
+`--json` streams JSONL events to stdout (redirected by the worker's own shell to
+`$events_log`, an absolute run-dir path); the worker parses the first `thread.started`
+event's `thread_id` (UUID-validated) into `job_result.session_id`, and liveness reads the
+same stream. `--output-last-message` still yields the canonical result (the two coexist).
 
 Pinned facts (do not re-derive):
 

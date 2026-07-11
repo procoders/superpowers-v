@@ -22,12 +22,12 @@ The execution tail is a small, deterministic orchestrator — contracts + helper
 
 - **Manifest contract:** `skills/compound-v/execution-manifest.md` (schema) + `examples/manifest.example.yaml`.
 - **Backend Launcher sub-skill:** `skills/backend-launcher/SKILL.md` defines one `job_spec → job_result` contract (`schemas/job_result.schema.json`). Adapters: `adapter-claude.md`, `adapter-codex.md`, `adapter-antigravity.md` (1.1: a **real** headless `agy --print` worker — same worktree + `git diff` scope gate as Codex, but **opt-in / lower-trust**: `agy` has no kernel write-confinement, so the gate *detects* in-worktree scope leaks yet cannot *prevent* an out-of-worktree side-effect — **prefer Codex for untrusted work**), and `adapter-cursor.md` (2.1: a headless `cursor-agent -p -f` worker, verified live, same worktree + scope gate — also opt-in / lower-trust, same caveat as Antigravity; needs an authenticated `cursor-agent`).
-- **Headless Codex worker:** `scripts/compound-v-run-codex-worker.sh`. The verified `codex-cli 0.144.1` invocation runs in a git worktree:
+- **Headless Codex worker:** `scripts/compound-v-run-codex-worker.sh`. The verified `codex-cli 0.144.1` invocation runs in a git worktree (with `--json` for structured `thread.started` session-id capture as of v2.8.1):
 
   ```bash
   codex exec --cd "$WT" --sandbox workspace-write --skip-git-repo-check \
-    --model "$model" --output-last-message "$WT/.job_result.txt" \
-    -c sandbox_workspace_write.network_access=false "$prompt"
+    --model "$model" --json --output-last-message "$WT/.job_result.txt" \
+    -c sandbox_workspace_write.network_access=false "$prompt" >"$events_log"
   ```
 
   Do **not** pass `--ask-for-approval never` — it is invalid for `codex exec` (top-level/interactive flag only); `exec` already defaults to `approval: never`. Resume is `codex exec resume <uuid>`. Effort `xhigh` is **codex-only** (kernel `model_reasoning_effort`); every other backend rejects it — use `high` elsewhere.

@@ -29,9 +29,11 @@ Resume is **Engine-A-owned**: it does not rely on Workflows (whose resume is sam
    - A Codex worktree job's resume-vs-recreate decision is governed by the **resume-eligibility rule below** — reproduced verbatim so it agrees word-for-word with [`parallel-dispatcher.md`](../agents/parallel-dispatcher.md) and kills the old contradiction (this step once said "may use `codex exec resume`" unconditionally, while the dispatcher's invariant recreates the worktree fresh at HEAD). Either way — resumed session or fresh recreate — the **scope gate re-runs** on return.
    - Update each job's `status` and write `state.json` after every transition.
 
+Both inputs the rule needs live in **`state.json jobs[<id>]`** — `session_id` (the captured UUID) and `failure_class` — written there by the dispatcher on the job's return (Step 2 already reads `state.json`; you do **not** need to open `results/<id>.json` for this). A job with an empty `session_id` has no session to resume ⇒ recreate fresh regardless.
+
 > **Resume-eligibility rule (Shared Interface Contract — byte-identical in `commands/v-resume.md` and `agents/parallel-dispatcher.md`).**
 > A codex worktree job may be resumed via `codex exec resume <captured-uuid>` **IFF** its `failure_class` is
-> environmental (`timeout` | `network` | `killed`) **AND** its worktree still exists at the recorded path.
+> environmental (`timeout` | `network`) **AND** its worktree still exists at the recorded path.
 > Every other case recreates the worktree **fresh at HEAD** — the parallel-dispatcher worktree-recreate invariant.
 > Never resume by cwd filtering; pass the captured UUID explicitly.
 

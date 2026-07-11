@@ -381,16 +381,28 @@ fi
 # jq's `select(.type=="thread.started")` so a stray substring match or a malformed /
 # partial JSONL line yields an EMPTY id (never a crash, never a wrong token). An empty
 # session_id is valid (the schema permits it) and simply means "resume fresh".
+#
+# HARDENING (Codex v2.8.1 round-1): (1) the whole pipeline is `|| true`-guarded — under
+# `set -euo pipefail` a no-match `grep` exits 1, which without this abort the worker
+# before it can emit its job_result (the older-CLI / early-failure degrade path). (2) the
+# jq filter forces `thread_id | type=="string"` and the value is then UUID-shape-validated,
+# so an object/number/array or a `thread_id` containing a newline can never inject a token.
 session_id=""
 if [ -f "$EVENTS_LOG" ]; then
   session_id=$(
-    grep -F 'thread.started' "$EVENTS_LOG" 2>/dev/null \
-      | while IFS= read -r _ev_line; do
-          _tid=$(printf '%s' "$_ev_line" \
-            | jq -r 'select(.type=="thread.started") | .thread_id // empty' 2>/dev/null) || _tid=""
-          if [ -n "$_tid" ]; then printf '%s' "$_tid"; break; fi
-        done
+    {
+      grep -F 'thread.started' "$EVENTS_LOG" 2>/dev/null \
+        | while IFS= read -r _ev_line; do
+            _tid=$(printf '%s' "$_ev_line" \
+              | jq -r 'select(.type=="thread.started") | .thread_id | select(type=="string") // empty' 2>/dev/null) || _tid=""
+            if [ -n "$_tid" ]; then printf '%s' "$_tid"; break; fi
+          done
+    } || true
   )
+  # UUID-shape gate: accept only canonical 8-4-4-4-12 hex; anything else ⇒ empty (resume fresh).
+  if ! printf '%s' "$session_id" | grep -qiE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+    session_id=""
+  fi
 fi
 
 summary=""
@@ -514,12 +526,11 @@ fi
 # files: `git -C "$WT" add -A && git -C "$WT" diff --cached --binary HEAD | git apply
 # --index`) or to leave the worktree for inspection on BLOCKED. We do NOT merge here.
 #
-# The session-id line is ALWAYS printed — `COMPOUND_V_SESSION_ID=` (empty) when no
-# thread.started event was captured — so the caller has one deterministic parse point.
-# session_id is ALSO carried inside the JSON below (same value), so a consumer that
-# parses only the JSON still sees it.
-printf 'COMPOUND_V_SESSION_ID=%s\n' "$session_id"
-
+# Canonical stdout = exactly one job_result JSON (the generic backend contract in
+# backend-launcher/SKILL.md). session_id rides INSIDE that JSON — the caller reads it
+# from `job_result.session_id`, NOT from a preamble line (Codex v2.8.1 round-1: a
+# non-JSON preamble broke the "one canonical job_result" boundary; the id was redundant
+# there since it is already in the JSON). Empty session_id ⇒ "resume fresh".
 emit_job_result \
   "$status" \
   "$blocked" \

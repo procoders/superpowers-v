@@ -22,3 +22,7 @@ docs/superpowers/_runs/
 !docs/superpowers/memory/
 # Trigger 0 recon docs — defense-in-depth; must stay visible to the scope gate.
 !docs/superpowers/recon/
+
+# Codex --json event streams: transient run telemetry (liveness reads them live);
+# large and full of prompts/tool-calls — never committed as run substrate.
+docs/superpowers/execution/*/logs/*.jsonl
