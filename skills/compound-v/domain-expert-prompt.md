@@ -3,7 +3,7 @@
 **Preferred dispatch (when this plugin is installed):**
 - `subagent_type`: `compound-v:domain-expert` (first-class agent at `agents/domain-expert.md`)
 - `model` and system prompt come from the agent definition — no need to repeat them
-- Just pass the spec + KB path as the prompt
+- Just pass the spec + KB path + the exact Trigger 0 recon path (if any) as the prompt
 
 **Fallback dispatch (plugin not installed / generic call):**
 - `subagent_type`: `general-purpose`
@@ -29,9 +29,11 @@ an audit that lists every domain-level constraint, trap, regulatory rule,
 and recent breaking change the plan MUST satisfy. The plan author will
 treat your "Design Constraints" section as non-negotiable.
 
-You are running in parallel with a separate code-archaeology audit. That
-audit handles "what the existing code does." You handle "what the field
-already knows that the spec took for granted." Don't duplicate their work.
+You are running in parallel with code-archaeology (Phase 1A) and the
+library/doc validator (Phase 1C). Phase 1A handles "what the existing
+code does"; Phase 1C handles library currency and API signatures. You
+handle "what the field already knows that the spec took for granted."
+Don't duplicate their work.
 
 ---
 
@@ -56,6 +58,17 @@ trusting it (APIs and regulations move).
 
 ---
 
+## Trigger 0 recon doc
+
+Exact path: <paste the recon path from the brainstorm's working state /
+spec metadata, or "none">
+
+Read the recon doc at this exact path; only if no path was handed, fall
+back to scanning docs/superpowers/recon/ for a doc matching this topic's
+slug. Scanning is fallback-only.
+
+---
+
 ## Your Process
 
 ### Step 1 — Identify the domain(s)
@@ -72,7 +85,18 @@ For each domain you identified, look for an existing KB file. If found,
 read it. If it's authoritative (per the rules above), reuse it and only
 run web searches for genuine gaps in the current spec.
 
-### Step 3 — Parallel web search (if needed)
+### Step 3 — Read the Trigger 0 recon doc (if any)
+
+Read the recon doc at the exact path handed above; only if no path was
+handed, fall back to scanning docs/superpowers/recon/ for a doc matching
+this topic's slug. If present, read it first and deepen its queries
+rather than repeating them — recon already covered the surface pass, so
+spend the web-search budget on what it didn't reach. Revalidate its
+VERIFIED FACTS / CONSTRAINTS (provisionally binding until confirmed),
+treat its UNVERIFIED LEADS as leads to verify, and treat its SUGGESTED
+DIRECTIONS as non-exhaustive evidence, not a shortlist.
+
+### Step 4 — Parallel web search (if needed)
 
 If KB is missing, stale, or doesn't cover the spec's scope, dispatch
 3–6 WebSearch calls IN A SINGLE MESSAGE (parallel, not sequential).
@@ -88,7 +112,7 @@ Suggested query angles:
 When the user's CLAUDE.md says to use the current year for web search,
 respect that — domain knowledge goes stale fast.
 
-### Step 4 — Produce the audit
+### Step 5 — Produce the audit
 
 Write the audit to: docs/superpowers/expert/YYYY-MM-DD-<topic-slug>.md
 
@@ -107,7 +131,7 @@ Use this exact section structure:
 Be concrete. "MUST use Notion v2 OAuth endpoint, base URL https://api.notion.com/v1/oauth/token"
 beats "use the latest endpoint."
 
-### Step 5 — Update the persistent knowledge base
+### Step 6 — Update the persistent knowledge base
 
 For each domain, append generalized findings to docs/superpowers/expert/_knowledge-base/<domain>.md.
 
@@ -128,7 +152,7 @@ Maintained by Compound V Phase 1B advisor. Append at the bottom on each pass.
 ---
 ```
 
-### Step 6 — Report back
+### Step 7 — Report back
 
 Return a short summary to the controller:
   - Path to the audit file
