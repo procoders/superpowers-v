@@ -4,6 +4,31 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [2.8.0] — 2026-07-11
+
+### Security — two scope-gate exploits, both reproduced before fixing
+
+- **Rename bypass (HIGH).** The gate's diff ran with git's default rename detection ON, so `git mv docs/important.md src/renamed.md` under `write_allowed: [src/**]` collapsed to a single record whose `--name-only` output was just the destination — the out-of-scope deletion of `docs/important.md` was invisible and the verdict was **pass** (reproduced). The diff argv now carries `--no-renames`: both sides of a rename surface as a delete + an add, and the out-of-scope source path BLOCKS. (`scripts/compound-v-scope-check.py`)
+- **Symlink escape (MEDIUM).** The gate string-matched changed paths and never `lstat`-ed anything — a symlink inside the allowed area pointing outside the worktree glob-matched cleanly, and a write through it landed OUTSIDE the repo with verdict **pass** (reproduced). The verdict path now scans the WHOLE gate root (`os.walk` with `followlinks=False`, symlinks only — cheap) and reports every symlink whose `realpath` escapes the root as a violation `"<path> (symlink escapes the worktree)"` — unconditionally: even inside the allowed area, and even for a **pre-existing** link committed before the baseline with no new changes at all, because a write through either lands where git sees nothing and the link itself is the only reliable gate-time signal. Degrade-safe on unreadable entries. **Honesty note (in the module docstring too):** the gate DETECTS the channel; it cannot observe writes already made through it — kernel-level confinement (the codex backend's sandbox) remains the preventive layer.
+- **Three new selftest cases** — rename-out-of-scope, job-created escaping symlink, pre-existing (committed-before-baseline) escaping symlink — each verified to FAIL against the unfixed logic via a temporary revert and PASS after the fix; the suite is green.
+
+### Added
+- **Trigger-0 hook backstop** (`hooks/brainstorm-trigger0-nudge.sh`, registered in `hooks/hooks.json`): when the Skill tool invokes `superpowers:brainstorming`, a one-line idempotent reminder to run the Trigger 0 gates is injected. A reminder, not enforcement — Trigger 0 stays description-driven; the hook closes the "agent simply forgets" gap documented in v2.7.0.
+- **`xhigh` effort — codex-only.** codex-cli live-accepts `model_reasoning_effort=xhigh` (probed 2026-07-11 on 0.144.1); the effort vocabulary gains `xhigh` valid **iff** `backend: codex` — every other backend rejects with a clear error naming the rule. Enforced in lockstep at `compound-v-resolve-model.py`, `compound-v-validate-manifest.py`, both codex shell workers, and stated identically on every active effort-vocabulary surface.
+- **Directions-late protocol (anti-anchoring, made explicit):** the brainstorm forms its own first-principles proposals BEFORE reading the recon doc's `## SUGGESTED DIRECTIONS`; consumption is observable via the recon-outcomes stream.
+- **recon-outcomes stream** (`docs/superpowers/memory/recon-outcomes.jsonl`): an append-only event machine — a gate-stopped Trigger-0 evaluation emits exactly one terminal event (`plumbing_skip|kb_skip|off|declined|no_engine`); an engine run emits `fired` → `saved` (with `path`) → `consumed` as three separate appended events, never a mutated line. Never read by routing.
+- **VERIFIED / UNVERIFIED split in recon docs:** the output contract is now genuinely five verbatim sections (`## QUESTIONS TO ASK`, `## VERIFIED FACTS / CONSTRAINTS`, `## UNVERIFIED LEADS`, `## SUGGESTED DIRECTIONS`, `## SOURCES`). VERIFIED = checked against a cited primary source (provisionally binding; 1B/1C revalidate); everything else is an UNVERIFIED LEAD that must become a question until validated.
+- **Gate-2 freshness rule:** a strong KB hit now requires scope AND freshness — volatile material (libraries, APIs, regulations, availability, best practices) older than ~30 days degrades to partial: still evidence, no longer skip-authority.
+
+### Fixed
+- **Recon wiring finally reaches the executing 1B/1C:** the recon-read step existed only in the phase docs — `agents/domain-expert.md`, `agents/doc-validator.md`, and both prompt templates never mentioned it, so dispatched pre-flights never learned a recon doc existed. All four now carry the read step plus the exact-path handoff contract.
+- **Epistemic contradiction in the gate-3 offer:** the "verbatim" copy promised deep-research even on machines without it, conflicting with the honesty rule one section down — the offer is now engine-aware and honest, and decline paths are reachable.
+- **Fail-closed config, verbatim everywhere it's consumed:** missing file or key → documented defaults (`deep_research: "ask"`, `batch_elicitation: true`); malformed JSON, wrong type, or unknown value → warn once, then `deep_research=ask` and `batch_elicitation=false` for the session — an invalid value is never treated as `auto`.
+- **Staleness sweep:** `GEMINI.md` was entirely pre-v2.7 ("three transitions", Gemini 2.5, missing command rows) — refreshed to the four-transition reality; surviving `codex-cli 0.130` pins → 0.144.1 and cursor worker provenance comments 2025.09.12 → 2026.06.26.
+
+### Audit credit
+Five audit lines drove this release: **F1** (live dogfood of Trigger 0/elicitation — procedures actually executed), **F2** (cross-repo consistency/staleness sweep), **F3** (scripts robustness — both scope-gate exploits reproduced on scratch fixtures before any fix), from three parallel Fable agents; plus **C1/C2** — two independent max-effort **Codex gpt-5.6-sol passes at `xhigh`** (the v2.7.0 guidance red-teamed as executable instructions, 28 findings; design red-team, 9 findings + 5 proposals). Cross-model by construction, convergent findings independently confirmed across lines. The pre-dispatch Codex plan review (verdict `reject`, 7 findings, all accepted) reshaped the plan itself — including the whole-root pre-existing-symlink scan shipped above.
+
 ## [2.7.0] — 2026-07-10
 
 ### Added

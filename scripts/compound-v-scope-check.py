@@ -9,7 +9,7 @@ What it does
 ------------
 Computes the set of files a job actually changed, purely from git:
 
-    changed = (git diff --name-only -z <baseline>)
+    changed = (git diff --name-only --no-renames -z <baseline>)
               ∪ (git ls-files --others --exclude-standard -z)
               ∪ (git ls-files --others --ignored --exclude-standard -z -- .)
               − (preexisting untracked/ignored snapshot, direct mode only)
@@ -22,9 +22,32 @@ The first term diffs the WORKING TREE against ``<baseline>`` — and because a
 ``git diff <baseline>`` includes anything COMMITTED since that baseline, a worker
 that COMMITS inside its worktree to make the tree look clean is still caught (the
 worker passes the pre-``worktree add`` baseline SHA, not a moving ``HEAD``).
+``--no-renames`` keeps rename detection OFF: with detection on, ``git mv
+docs/x.md src/y.md`` collapses to a single R-record whose ``--name-only`` output
+is just the destination — the out-of-scope deletion of ``docs/x.md`` became
+invisible and the gate passed. With ``--no-renames`` both sides surface (a
+delete + an add), so the out-of-scope source path is a violation again.
 
 The third term catches GITIGNORED writes — a worker writing a gitignored path
 (dist/, .env, build/) would otherwise be invisible to the gate.
+
+Escaping-symlink scan
+---------------------
+On top of the git-derived set, the verdict path scans the WHOLE gate root
+(``os.walk`` with ``followlinks=False`` — symlinks only, so it stays cheap) for
+any symlink whose ``os.path.realpath`` resolves OUTSIDE the root. Each such link
+is reported as a violation ``"<path> (symlink escapes the worktree)"`` —
+regardless of ``write_allowed`` and regardless of who created it. That covers
+BOTH a job-created escaping symlink AND a pre-existing one (committed before the
+baseline): a write through either lands outside the tree where git sees nothing,
+so the only reliable gate-time signal is the link itself. Unreadable entries are
+skipped (degrade-safe).
+
+HONESTY: the gate DETECTS the escaping-symlink channel; it cannot observe writes
+already made through it — by the time the gate runs, a byte written through such
+a link is outside the tree and outside git's view. Kernel-level write confinement
+(the codex backend's sandbox) is the preventive layer; this scan is the
+detection layer.
 
 The optional ``--preexisting`` subtraction (direct mode) drops paths that were
 ALREADY untracked/ignored before the job started, so a normal dirty tree does not
@@ -119,13 +142,17 @@ def changed_files(cwd, baseline, preexisting=None):
     """Union of tracked-diff, untracked, AND gitignored files, repo-relative.
 
     Three sources, because a worker can write outside write_allowed in any of them:
-      1. tracked edits        — git diff --name-only <baseline>
+      1. tracked edits        — git diff --name-only --no-renames <baseline>
       2. untracked new files  — git ls-files --others --exclude-standard
       3. IGNORED new files     — git ls-files --others --ignored --exclude-standard
     Source 1 diffs the working tree against ``baseline``; because it also includes
     anything COMMITTED since that baseline, a worker that commits inside its worktree
     to fake a clean tree is still detected (the caller passes the pre-``worktree add``
-    baseline SHA, never a moving HEAD).
+    baseline SHA, never a moving HEAD). ``--no-renames`` is load-bearing: with git's
+    default rename detection, a rename collapses to its DESTINATION path in
+    ``--name-only`` output, hiding the out-of-scope source — ``git mv`` out of the
+    allowed area would slip the gate. Detection off ⇒ both the deleted source and
+    the added destination surface, and each is matched against write_allowed.
     Source 3 is the one the old gate MISSED: --exclude-standard drops gitignored
     paths, so a worker could write a gitignored file (e.g. dist/, .env, build/)
     completely undetected. We union it in so any ignored write outside write_allowed
@@ -140,7 +167,9 @@ def changed_files(cwd, baseline, preexisting=None):
     # All three probes use NUL-delimited (-z) output, split on '\0'. NUL is the
     # only byte that cannot occur in a path, so a filename containing a newline
     # (or other whitespace) cannot smuggle additional paths past the gate.
-    rc1, diff_out, diff_err = _git(cwd, ["diff", "--name-only", "-z", baseline])
+    rc1, diff_out, diff_err = _git(
+        cwd, ["diff", "--name-only", "--no-renames", "-z", baseline]
+    )
     if rc1 != 0:
         raise RuntimeError(
             "git diff failed (baseline %r): %s" % (baseline, diff_err.strip())
@@ -265,9 +294,52 @@ def load_preexisting_file(path):
     return out
 
 
+def scan_escaping_symlinks(root):
+    """Return repo-relative paths of symlinks under ``root`` that resolve OUTSIDE it.
+
+    Scans the WHOLE gate root (not just git-changed paths): a PRE-EXISTING escaping
+    symlink — committed before the baseline, with no new changes at all — is just as
+    writable-through as a job-created one, and git shows nothing for either write.
+    The link itself is the only reliable gate-time signal, so every escaping link is
+    a violation regardless of write_allowed or provenance.
+
+    ``os.walk(followlinks=False)`` never descends through links; only ``islink``
+    entries pay a ``realpath``, so the scan stays cheap. ``.git`` is pruned (its
+    internals are git's own, and packed refs etc. are not job writes). Entries that
+    error on ``islink``/``realpath`` (unreadable, vanished mid-scan) are skipped —
+    degrade-safe: an unreadable entry can make the scan miss a link, never crash
+    the gate.
+
+    DETECTION, not prevention: a write already made through an escaping link landed
+    outside the tree before the gate ran and cannot be observed here. Kernel-level
+    confinement (the codex backend's sandbox) is the preventive layer.
+    """
+    escapes = []
+    root_real = os.path.realpath(root)
+    prefix = root_real.rstrip(os.sep) + os.sep
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        if ".git" in dirnames:
+            dirnames.remove(".git")
+        for name in dirnames + filenames:
+            p = os.path.join(dirpath, name)
+            try:
+                if not os.path.islink(p):
+                    continue
+                target = os.path.realpath(p)
+            except OSError:
+                continue  # degrade-safe: skip unreadable/vanished entries
+            if target != root_real and not target.startswith(prefix):
+                escapes.append(os.path.relpath(p, root))
+    return sorted(escapes)
+
+
 def check(cwd, baseline, allowed, preexisting=None):
     changed = changed_files(cwd, baseline, preexisting=preexisting)
     violations = [p for p in changed if not is_allowed(p, allowed)]
+    # Escaping symlinks are violations unconditionally — even inside the allowed
+    # area, even pre-existing: the link is a write channel out of the tree.
+    for p in scan_escaping_symlinks(cwd):
+        violations.append("%s (symlink escapes the worktree)" % p)
     return changed, violations
 
 
@@ -640,6 +712,89 @@ def _selftest():
             )
         else:
             expect("unusual: newline filename (skipped — FS rejected name)", True)
+
+        # RENAME-OUT-OF-SCOPE case (A1): with git's default rename detection, a
+        # `git mv docs/important.md src/renamed.md` collapses to its DESTINATION in
+        # --name-only output — the out-of-scope deletion of docs/important.md was
+        # invisible and the gate PASSED (reproduced exploit). --no-renames makes
+        # both sides surface; the old path must be listed and must BLOCK.
+        rrepo = os.path.join(tmp, "rrepo")
+        os.makedirs(os.path.join(rrepo, "src"))
+        os.makedirs(os.path.join(rrepo, "docs"))
+        run(["git", "init", "-q"], cwd=rrepo)
+        run(["git", "config", "user.email", "t@t.t"], cwd=rrepo)
+        run(["git", "config", "user.name", "t"], cwd=rrepo)
+        with open(os.path.join(rrepo, "src", "base.ts"), "w") as f:
+            f.write("base\n")
+        with open(os.path.join(rrepo, "docs", "important.md"), "w") as f:
+            f.write("do not move me\n")
+        run(["git", "add", "-A"], cwd=rrepo)
+        run(["git", "commit", "-q", "-m", "base"], cwd=rrepo)
+        run(["git", "mv", "docs/important.md", "src/renamed.md"], cwd=rrepo)
+        changed_rn, viol_rn = check(rrepo, "HEAD", ["src/**"])
+        expect(
+            "rename: out-of-scope source docs/important.md surfaces in changed",
+            "docs/important.md" in changed_rn,
+        )
+        expect(
+            "rename: out-of-scope rename source BLOCKS (old path listed)",
+            "docs/important.md" in viol_rn,
+        )
+        expect(
+            "rename: in-scope destination src/renamed.md is not a violation",
+            "src/renamed.md" in changed_rn and "src/renamed.md" not in viol_rn,
+        )
+
+        # JOB-CREATED ESCAPING SYMLINK case (A2): a symlink INSIDE the allowed
+        # area pointing OUTSIDE the gate root is a write channel out of the tree —
+        # glob-matching the link's own path said PASS (reproduced exploit). The
+        # whole-root symlink scan must BLOCK it; an in-root symlink must not trip.
+        srepo = os.path.join(tmp, "srepo")
+        os.makedirs(os.path.join(srepo, "src"))
+        run(["git", "init", "-q"], cwd=srepo)
+        run(["git", "config", "user.email", "t@t.t"], cwd=srepo)
+        run(["git", "config", "user.name", "t"], cwd=srepo)
+        with open(os.path.join(srepo, "src", "base.ts"), "w") as f:
+            f.write("base\n")
+        run(["git", "add", "-A"], cwd=srepo)
+        run(["git", "commit", "-q", "-m", "base"], cwd=srepo)
+        outside_dir = os.path.join(tmp, "outside-target")
+        if not os.path.isdir(outside_dir):
+            os.makedirs(outside_dir)
+        os.symlink(outside_dir, os.path.join(srepo, "src", "escape"))
+        os.symlink("base.ts", os.path.join(srepo, "src", "inside_link"))
+        changed_sl, viol_sl = check(srepo, "HEAD", ["src/**"])
+        expect(
+            "symlink: job-created escaping link BLOCKS despite matching src/**",
+            "src/escape (symlink escapes the worktree)" in viol_sl,
+        )
+        expect(
+            "symlink: in-root relative link is NOT flagged",
+            not any(v.startswith("src/inside_link") for v in viol_sl),
+        )
+
+        # PRE-EXISTING ESCAPING SYMLINK case (A2): the link was COMMITTED before
+        # the baseline and the job changed NOTHING — git reports an empty diff, so
+        # only the whole-root scan can see the open channel. Must still BLOCK.
+        perepo = os.path.join(tmp, "perepo")
+        os.makedirs(os.path.join(perepo, "src"))
+        run(["git", "init", "-q"], cwd=perepo)
+        run(["git", "config", "user.email", "t@t.t"], cwd=perepo)
+        run(["git", "config", "user.name", "t"], cwd=perepo)
+        with open(os.path.join(perepo, "src", "base.ts"), "w") as f:
+            f.write("base\n")
+        os.symlink(outside_dir, os.path.join(perepo, "src", "pre_escape"))
+        run(["git", "add", "-A"], cwd=perepo)
+        run(["git", "commit", "-q", "-m", "base with escaping symlink"], cwd=perepo)
+        changed_pe, viol_pe = check(perepo, "HEAD", ["src/**"])
+        expect(
+            "symlink: pre-existing (committed) escaping link — git diff is empty",
+            changed_pe == [],
+        )
+        expect(
+            "symlink: pre-existing escaping link still BLOCKS",
+            "src/pre_escape (symlink escapes the worktree)" in viol_pe,
+        )
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
