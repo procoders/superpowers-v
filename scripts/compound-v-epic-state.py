@@ -225,10 +225,13 @@ def next_feature(state):
     autonomously routes around a failed/stale feature.
     """
     feats = [f for f in state.get("features", []) if isinstance(f, dict)]
-    done = {f["id"] for f in feats if f["status"] == "done"}
-    failed = sorted(f["id"] for f in feats if f["status"] == "failed")
-    running = sorted(f["id"] for f in feats if f["status"] == "running")
-    pending = [f for f in feats if f["status"] == "pending"]
+    # .get("status"): a hand-made state entry missing the key must not KeyError (A7) — it
+    # simply matches no bucket below (check_state_specs rejects malformed states upstream;
+    # this is defense in depth, same as the isinstance filter above).
+    done = {f["id"] for f in feats if f.get("status") == "done"}
+    failed = sorted(f["id"] for f in feats if f.get("status") == "failed")
+    running = sorted(f["id"] for f in feats if f.get("status") == "running")
+    pending = [f for f in feats if f.get("status") == "pending"]
 
     # FAIL-FAST: any failed feature halts the WHOLE epic — even independent pending
     # features wait. A failure may be systemic; do not burn more autonomous runs until a
@@ -375,6 +378,16 @@ def _selftest():
     nf, _ = next_feature({"features": ["junk", {"id": "a", "status": "pending", "depends_on": []}]})
     check("next_feature survives malformed entry", nf is not None and nf["id"] == "a")
 
+    # A7: a hand-made feature entry MISSING "status" must not KeyError — it matches no
+    # bucket (not done/failed/running/pending), and the rest of the epic still advances.
+    nf2, why2 = next_feature({"features": [{"id": "nostatus"},
+                                           {"id": "b", "status": "pending", "depends_on": []}]})
+    check("next_feature survives missing status", nf2 is not None and nf2["id"] == "b")
+    # …and a missing-status DEPENDENCY is not silently counted as done: the dependent blocks.
+    nf3, why3 = next_feature({"features": [{"id": "nostatus"},
+                                           {"id": "b", "status": "pending", "depends_on": ["nostatus"]}]})
+    check("missing-status dep is not 'done'", nf3 is None and "blocked" in why3)
+
     # lint defensive (#5): a non-dict entry must not crash lint_decomposition
     check("lint ignores non-dict", isinstance(lint_decomposition(
         [{"id": "a", "depends_on": []}, "junk", {"id": "b", "depends_on": ["a"]}]), list))
@@ -476,7 +489,11 @@ def main(argv):
     if args.want_next:
         f, why = next_feature(state)
         print(json.dumps({"feature": f, "reason": why}))
-        return 0 if f is not None or "complete" in why else 0  # info, not an error
+        # INTENTIONALLY always 0 (A7): the JSON on stdout is the contract — a null feature
+        # with a stop reason is information, not failure (commands/v-epic.md: "--next is
+        # read-only and never an error"). Exit codes here are NOT a signal channel; the
+        # driver branches on "reason", and a nonzero would read as a script fault.
+        return 0
 
     if args.update:
         if not args.feature or not args.status:

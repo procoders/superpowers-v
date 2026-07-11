@@ -27,8 +27,9 @@ Usage:
       [--stdout <file>] [--stderr <file>] -- <command> [args...]
   compound-v-run-with-timeout.py --selftest
 
-Exit: 124 on timeout (GNU `timeout` convention); otherwise the command's own exit code (a
-command killed by signal N reports 128+N, the shell convention).
+Exit: 124 on timeout (GNU `timeout` convention); 127 if the command does not exist (shell
+convention, with a clean one-line message instead of a Popen traceback); otherwise the
+command's own exit code (a command killed by signal N reports 128+N, the shell convention).
 """
 import argparse
 import os
@@ -71,14 +72,21 @@ def run(timeout, grace, cwd, stdout_path, stderr_path, cmd):
             out = open(stdout_path, "wb")
         if stderr_path:
             err = open(stderr_path, "wb")
-        proc = subprocess.Popen(
-            cmd,
-            cwd=cwd or None,
-            stdin=subprocess.DEVNULL,
-            stdout=out,
-            stderr=err,
-            start_new_session=True,   # setsid: command leads a new session + process group
-        )
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=cwd or None,
+                stdin=subprocess.DEVNULL,
+                stdout=out,
+                stderr=err,
+                start_new_session=True,   # setsid: command leads a new session + process group
+            )
+        except FileNotFoundError:
+            # A9: nonexistent command — report cleanly and use the shell convention
+            # ("command not found" = 127), not a raw Popen traceback. Scoped to Popen only,
+            # so a missing --stdout/--stderr parent dir still surfaces as its own error.
+            sys.stderr.write("compound-v-run-with-timeout: command not found: %s\n" % cmd[0])
+            return 127
     finally:
         # Parent keeps NO copy of the command's output fds (a hung child holds no pipe; no leak
         # even if the second open() above raised).
@@ -135,6 +143,15 @@ def _selftest():
             fails.append(name)
 
     check("passthrough exit code", run(5, 1, None, None, None, ["sh", "-c", "exit 7"]) == 7)
+
+    # A9: nonexistent command -> clean 127 (shell convention), not a Popen traceback
+    import io
+    from contextlib import redirect_stderr
+    buf = io.StringIO()
+    with redirect_stderr(buf):
+        rc127 = run(5, 1, None, None, None, ["definitely-not-a-real-command-xyz"])
+    check("nonexistent command -> 127 + message",
+          rc127 == 127 and "command not found" in buf.getvalue())
 
     t0 = time.time()
     rc = run(1, 1, None, None, None, ["sh", "-c", "sleep 30"])

@@ -333,6 +333,20 @@ def open_db(path: str) -> sqlite3.Connection:
     return conn
 
 
+def open_db_checked(path: str) -> sqlite3.Connection:
+    """open_db, but a corrupt/garbage index file exits with a clean, actionable message
+    instead of a raw sqlite3.DatabaseError traceback (A8). The index is a disposable
+    derived cache — deleting it and re-indexing is always safe, so say exactly that.
+    Every CLI entry point opens the index through THIS wrapper; bare open_db stays for
+    tests/fixtures."""
+    try:
+        return open_db(path)
+    except sqlite3.DatabaseError:
+        sys.stderr.write("V-memory index corrupt — delete %s and re-run /v:memory-refresh\n"
+                         % path)
+        raise SystemExit(1)
+
+
 def meta_get(conn, key, default=None):
     row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
     return row[0] if row else default
@@ -614,7 +628,7 @@ def cmd_refresh(args) -> int:
         print("V-memory: refresh already running — skipped.")
         return 0
     try:
-        conn = open_db(paths["db"])
+        conn = open_db_checked(paths["db"])
         if args.rebuild:
             conn.executescript(
                 "DROP TABLE IF EXISTS chunks_fts; DROP TABLE IF EXISTS chunks; "
@@ -841,7 +855,7 @@ def cmd_search(args) -> int:
     if not os.path.exists(paths["db"]):
         print("V-memory index not found. Run: python3 scripts/compound-v-memory.py refresh")
         return 1
-    conn = open_db(paths["db"])
+    conn = open_db_checked(paths["db"])
     pool = max(args.top * 4, 20)
     bm25_list = bm25_search(conn, args.query, pool)
     dense_list = []
@@ -992,7 +1006,7 @@ def cmd_bootstrap(args) -> int:
     os.rename(venv_tmp, paths["venv"])
     with open(paths["embedder"], "w") as fh:
         fh.write(EMBEDDER_SRC)
-    conn = open_db(paths["db"])
+    conn = open_db_checked(paths["db"])
     meta_set(conn, "embed_model", model)
     meta_set(conn, "embed_dim", dim)
     meta_set(conn, "embed_fingerprint", fp)
@@ -1012,7 +1026,7 @@ def cmd_doctor(args) -> int:
     has_db = os.path.exists(paths["db"])
     print("  index       : %s" % ("present" if has_db else "absent (run refresh)"))
     if has_db:
-        conn = open_db(paths["db"])
+        conn = open_db_checked(paths["db"])
         n = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
         nf = conn.execute("SELECT COUNT(*) FROM indexed_files").fetchone()[0]
         nv = conn.execute("SELECT COUNT(*) FROM chunks WHERE embedding IS NOT NULL").fetchone()[0]
@@ -1251,6 +1265,30 @@ def _selftest() -> int:
               and any(p.endswith("architecture.md") for p in tf))
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+    # A8: a corrupt index.sqlite must exit 1 with an actionable message — never a raw
+    # sqlite3.DatabaseError traceback (open_db_checked is what every CLI entry point uses).
+    import contextlib
+    import io
+    d2 = tempfile.mkdtemp()
+    try:
+        bad = os.path.join(d2, "index.sqlite")
+        with open(bad, "wb") as fh:
+            fh.write(b"this is definitely not a sqlite database, just garbage bytes\x00\x01\x02")
+        buf = io.StringIO()
+        code = None
+        try:
+            with contextlib.redirect_stderr(buf):
+                open_db_checked(bad)
+        except SystemExit as e:
+            code = e.code
+        except sqlite3.DatabaseError:
+            code = "raw-traceback"
+        check("corrupt index -> clean exit 1 + delete/re-run message",
+              code == 1 and "index corrupt" in buf.getvalue()
+              and "/v:memory-refresh" in buf.getvalue())
+    finally:
+        shutil.rmtree(d2, ignore_errors=True)
 
     print("\n%d failed" % len(fails))
     if fails:

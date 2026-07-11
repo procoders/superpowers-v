@@ -22,7 +22,7 @@
 # backend (same tier as Antigravity) — prefer Codex (kernel-sandboxed) for untrusted /
 # high-stakes work.
 #
-# TRUST/FORCE (VERIFIED live, cursor-agent 2025.09.12): in a fresh/untrusted directory a
+# TRUST/FORCE (VERIFIED live, cursor-agent 2026.06.26): in a fresh/untrusted directory a
 # headless `-p` run REFUSES to proceed ("Pass --trust, --yolo, or -f if you trust this
 # directory") and exits non-zero — even for a no-write task. So `-f` is REQUIRED for ALL
 # headless runs; it both trusts the worktree AND auto-applies writes (verified: it created
@@ -236,7 +236,7 @@ ART="$WT.art"
 mkdir -p "$ART"
 
 # --- run the headless Cursor worker ------------------------------------------
-# cursor-agent headless (verified flag surface, cursor-agent 2025.09.12 + docs/cli/headless):
+# cursor-agent headless (verified flag surface, cursor-agent 2026.06.26 + docs/cli/headless):
 #   cd "$WT" && cursor-agent -p [--force] --output-format json [--model "$M"] "$PROMPT" </dev/null
 # prints a single JSON object whose `.result` is the agent's final message.
 #
