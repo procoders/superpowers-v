@@ -22,7 +22,7 @@ There is no skill-import API: an adapter is a sibling doc (`adapter-codex.md`, `
   "backend": "codex",                  // claude | codex | antigravity | cursor
   "prompt": "…",                       // the worker prompt (opens with the planner/executor lock, below)
   "tier": "standard",                  // deep | standard | light — the routing INTENT (stable across model churn)
-  "effort": "medium",                  // low | medium | high — orthogonal reasoning-effort hint (optional)
+  "effort": "medium",                  // low | medium | high | xhigh — orthogonal reasoning-effort hint (optional; xhigh is codex-only)
   "model": "gpt-5.5",                  // OPTIONAL explicit override; when present it skips resolution.
                                        //   execution-layer data — NEVER appears in any frontmatter
   "cwd": "/repo",                      // absolute repo root
@@ -34,7 +34,7 @@ There is no skill-import API: an adapter is a sibling doc (`adapter-codex.md`, `
 }
 ```
 
-**`tier` + `effort` + `model` — intent over hardcoded strings.** A `job_spec` carries the routing **intent** (`tier`, and optional `effort`), not a hardcoded model. The concrete `model` is **resolved before dispatch** by [`scripts/compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py) from `(backend, tier, effort, config)` — so the plugin survives model churn (refresh the config `models` map via `/v:models`, never the call sites). A job MUST carry `model` OR `tier`; an explicit `model` override skips resolution and always wins. `effort` is passed through to the worker: for `codex` it becomes `-c model_reasoning_effort=<effort>`; for `claude` it is advisory (the `Task` path has no separate effort flag). `tier`/`effort`/`model` are execution-layer values and never appear in any frontmatter. See [`skills/compound-v/execution-manifest.md`](../compound-v/execution-manifest.md) for the tier vocabulary, the config `models` map shape, and the reviewer ⇒ deep rule.
+**`tier` + `effort` + `model` — intent over hardcoded strings.** A `job_spec` carries the routing **intent** (`tier`, and optional `effort`), not a hardcoded model. The concrete `model` is **resolved before dispatch** by [`scripts/compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py) from `(backend, tier, effort, config)` — so the plugin survives model churn (refresh the config `models` map via `/v:models`, never the call sites). A job MUST carry `model` OR `tier`; an explicit `model` override skips resolution and always wins. `effort` is passed through to the worker: for `codex` it becomes `-c model_reasoning_effort=<effort>`; for `claude` it is advisory (the `Task` path has no separate effort flag). `xhigh` is valid **iff** `backend: codex`; every other backend rejects it with a clear error naming the rule (use `high` instead) — the resolver and the manifest validator both enforce this. `tier`/`effort`/`model` are execution-layer values and never appear in any frontmatter. See [`skills/compound-v/execution-manifest.md`](../compound-v/execution-manifest.md) for the tier vocabulary, the config `models` map shape, and the reviewer ⇒ deep rule.
 
 ### OUTPUT — `job_result` (canonical, identical across backends)
 
@@ -125,7 +125,7 @@ This is the *instructed* half. The git-diff scope gate above is the *enforced* h
 
 ---
 
-## Pinned `codex exec` flag set (verified live against codex-cli 0.130)
+## Pinned `codex exec` flag set (verified live against codex-cli 0.144.1)
 
 The codex adapter MUST use exactly this flag set, launched **under the process-group supervisor with `stdin </dev/null`** per the non-negotiable rule above (never a bare `timeout … codex exec`):
 

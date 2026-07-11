@@ -21,15 +21,17 @@
 # Usage:
 #   compound-v-codex-review.sh \
 #     --plan-file <abs> --repo <abs-repo-root> \
-#     [--model <model>] [--effort low|medium|high] \
+#     [--model <model>] [--effort low|medium|high|xhigh] \
 #     [--schema <abs>] [--context-file <abs>] ... \
 #     [--timeout-sec <n>]
 #
 # Defaults: model gpt-5.6-sol, effort high (the "Codex on their max" the design calls for;
 # requires codex-cli >= 0.143.0 -- an older client fails loud with a clear "requires a newer
-# version of Codex" error, not silently), schema = <plugin>/schemas/plan-review.schema.json,
-# resolved relative to THIS script — the reviewed repo has no reason to carry the plugin's
-# schema.
+# version of Codex" error, not silently). `--effort xhigh` is also accepted: this script runs
+# codex only, and `xhigh` is valid iff backend is codex (model_reasoning_effort=xhigh
+# live-verified 2026-07-11 on codex-cli 0.144.1; every other backend rejects it).
+# Schema default = <plugin>/schemas/plan-review.schema.json, resolved relative to THIS
+# script — the reviewed repo has no reason to carry the plugin's schema.
 #
 # Exit: 0 when findings JSON was produced (even verdict=reject — that is reported IN the
 # JSON). Non-zero only on a usage / environment fault.
@@ -75,7 +77,8 @@ case "$REPO" in /*) : ;; *) die "--repo must be absolute: $REPO" ;; esac
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 [ -n "$SCHEMA" ] || SCHEMA="$SCRIPT_DIR/../schemas/plan-review.schema.json"
 [ -f "$SCHEMA" ] || die "schema not found: $SCHEMA"
-case "$EFFORT" in low|medium|high) : ;; *) die "--effort must be low|medium|high: $EFFORT" ;; esac
+# xhigh accepted here because this script is codex-only (xhigh is valid iff backend: codex).
+case "$EFFORT" in low|medium|high|xhigh) : ;; *) die "--effort must be low|medium|high|xhigh: $EFFORT" ;; esac
 # --timeout-sec is interpolated UNQUOTED into the codex argv (word-split into the
 # `timeout` prefix), so a crafted value injects argv. Pin it to a positive integer.
 case "$TIMEOUT_SEC" in

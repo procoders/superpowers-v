@@ -24,7 +24,7 @@
 #     --write-allowed "<glob>[:<glob>...]" \
 #     [--timeout-sec <n>] [--network true|false] \
 #     [--read-only true|false] [--output-schema <abs-path>] \
-#     [--effort low|medium|high]
+#     [--effort low|medium|high|xhigh]
 #
 # All file paths MUST be absolute. write_allowed is a colon-separated glob list,
 # each glob matched repo-relative against the changed paths. An EMPTY
@@ -166,10 +166,14 @@ if [ -n "$OUTPUT_SCHEMA" ]; then
   case "$OUTPUT_SCHEMA" in /*) : ;; *) die "--output-schema must be absolute: $OUTPUT_SCHEMA" ;; esac
   [ -f "$OUTPUT_SCHEMA" ] || die "--output-schema not found: $OUTPUT_SCHEMA"
 fi
+# Effort vocabulary: `xhigh` is valid iff backend is codex — and this worker IS
+# the codex backend, so it is accepted here (the resolver + manifest validator
+# reject xhigh for every other backend). model_reasoning_effort=xhigh
+# live-verified 2026-07-11 on codex-cli 0.144.1.
 if [ -n "$EFFORT" ]; then
   case "$EFFORT" in
-    low|medium|high) : ;;
-    *) die "--effort must be one of low|medium|high: $EFFORT" ;;
+    low|medium|high|xhigh) : ;;
+    *) die "--effort must be one of low|medium|high|xhigh: $EFFORT" ;;
   esac
 fi
 command -v jq      >/dev/null 2>&1 || die "jq not found on PATH"
@@ -259,7 +263,7 @@ mkdir -p "$ART"
 RESULT_TXT="$ART/job_result.txt"
 
 # --- run the headless Codex worker -------------------------------------------
-# Pinned flag set, verified live against codex-cli 0.130. NOTE: `--ask-for-approval
+# Pinned flag set, verified live against codex-cli 0.144.1. NOTE: `--ask-for-approval
 # never` is INVALID for `codex exec` (top-level/interactive flag only) and is
 # deliberately OMITTED — `codex exec` already defaults to approval: never.
 #
@@ -291,7 +295,7 @@ exit_code=0
 # exec` also reads stdin when it is not a TTY and will BLOCK ("Reading additional
 # input from stdin...") in a non-interactive / background context. </dev/null makes
 # stdin an immediate EOF so codex uses only the positional prompt and never hangs.
-# (Verified live against codex-cli 0.130 — without it the worker hangs indefinitely.)
+# (Verified live against codex-cli 0.144.1 — without it the worker hangs indefinitely.)
 run_codex() {
   if [ -n "$OUTPUT_SCHEMA" ]; then
     # shellcheck disable=SC2086
