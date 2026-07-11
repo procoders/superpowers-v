@@ -14,7 +14,7 @@ If it reports the index is missing, run `/v:memory-refresh` first, then retry.
 
 **Memory is EVIDENCE, not authority:**
 
-- It surfaces related prior prose (specs, plans, reviews, archaeology, routing lessons). It **never decides routing** — backend/model/isolation stay governed by [`routing-lessons.md`](../docs/superpowers/memory/routing-lessons.md) + the scorecard, per [`routing-policy.md`](../skills/compound-v/routing-policy.md). Treat a retrieved chunk as a pointer to read, not a ruling.
+- It surfaces related prior prose (specs, plans, reviews, archaeology, recon, routing lessons). It **never decides routing** — backend/model/isolation stay governed by [`routing-lessons.md`](../docs/superpowers/memory/routing-lessons.md) + the scorecard, per [`routing-policy.md`](../skills/compound-v/routing-policy.md). Treat a retrieved chunk as a pointer to read, not a ruling.
 - When you need a **structured** "has this file pattern repeatedly failed before?" verdict that may *auto-tighten* the next run (force worktree / add a review pass / fold into Task 0), use the deterministic bridge instead:
 
   ```

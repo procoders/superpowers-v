@@ -6,7 +6,7 @@ This file documents how the plugin's content *would* be consumed by tools that r
 
 Compound V is a **sidekick to Superpowers**. It intercepts the four Superpowers phase transitions (pre-brainstorm recon → brainstorming → writing-plans → execution) and adds:
 
-0. **Gated pre-brainstorm recon (Trigger 0)** 🧪 description-driven, **zero hook backstop** (it fires before any file exists, so no hook can reinforce it — weaker than the other three interception points): before a brainstorm begins on an unfamiliar topic, a gated, bounded research pass (bundled `deep-research` if present, ≤6 parallel WebSearch otherwise, skip-with-notice if neither) writes an anti-anchoring recon doc to `docs/superpowers/recon/` that the brainstorm — and later pre-flights 1B/1C — read first. Gate order: plumbing-skip → V-memory KB hit → `brainstorm.deep_research` config (`ask` default / `auto` / `off` hard kill-switch). Recon is evidence, never a routing input. Also 🧪 description-driven: **batched elicitation** — ≥3 *independent* clarifying questions may batch into one Visual Companion form screen (dependent chains stay sequential; when unsure → sequential); see `skills/compound-v/brainstorm-elicitation.md`.
+0. **Gated pre-brainstorm recon (Trigger 0)** 🧪 description-driven, with a **reminder-only hook backstop** (v2.8: `hooks/brainstorm-trigger0-nudge.sh` nudges when the Skill tool invokes `superpowers:brainstorming` — a reminder, not enforcement; nothing can force the recon to run): before a brainstorm begins on an unfamiliar topic, a gated, bounded research pass (bundled `deep-research` if present, 3–6 parallel WebSearch otherwise, skip-with-notice if neither) writes an anti-anchoring recon doc to `docs/superpowers/recon/` that the brainstorm — and later pre-flights 1B/1C — read first. Gate order: plumbing-skip → V-memory KB hit → `brainstorm.deep_research` config (`ask` default / `auto` / `off` hard kill-switch). Recon is evidence, never a routing input. Also 🧪 description-driven: **batched elicitation** — ≥3 *independent* clarifying questions may batch into one Visual Companion form screen (dependent chains stay sequential; when unsure → sequential); see `skills/compound-v/brainstorm-elicitation.md`.
 1. **Three parallel pre-flights** after brainstorming:
    - Code archaeology (existing-code reality)
    - Domain-expert advisor with three-layer audience search (product/regulatory reality)
@@ -22,7 +22,7 @@ The execution tail is a small, deterministic orchestrator — contracts + helper
 
 - **Manifest contract:** `skills/compound-v/execution-manifest.md` (schema) + `examples/manifest.example.yaml`.
 - **Backend Launcher sub-skill:** `skills/backend-launcher/SKILL.md` defines one `job_spec → job_result` contract (`schemas/job_result.schema.json`). Adapters: `adapter-claude.md`, `adapter-codex.md`, `adapter-antigravity.md` (1.1: a **real** headless `agy --print` worker — same worktree + `git diff` scope gate as Codex, but **opt-in / lower-trust**: `agy` has no kernel write-confinement, so the gate *detects* in-worktree scope leaks yet cannot *prevent* an out-of-worktree side-effect — **prefer Codex for untrusted work**), and `adapter-cursor.md` (2.1: a headless `cursor-agent -p -f` worker, verified live, same worktree + scope gate — also opt-in / lower-trust, same caveat as Antigravity; needs an authenticated `cursor-agent`).
-- **Headless Codex worker:** `scripts/compound-v-run-codex-worker.sh`. The verified `codex-cli 0.130` invocation runs in a git worktree:
+- **Headless Codex worker:** `scripts/compound-v-run-codex-worker.sh`. The verified `codex-cli 0.144.1` invocation runs in a git worktree:
 
   ```bash
   codex exec --cd "$WT" --sandbox workspace-write --skip-git-repo-check \
@@ -30,7 +30,7 @@ The execution tail is a small, deterministic orchestrator — contracts + helper
     -c sandbox_workspace_write.network_access=false "$prompt"
   ```
 
-  Do **not** pass `--ask-for-approval never` — it is invalid for `codex exec` (top-level/interactive flag only); `exec` already defaults to `approval: never`. Resume is `codex exec resume <uuid>`.
+  Do **not** pass `--ask-for-approval never` — it is invalid for `codex exec` (top-level/interactive flag only); `exec` already defaults to `approval: never`. Resume is `codex exec resume <uuid>`. Effort `xhigh` is **codex-only** (kernel `model_reasoning_effort`); every other backend rejects it — use `high` elsewhere.
 - **Scope gate:** `scripts/compound-v-scope-check.py` unions `git diff --name-only HEAD` with `git ls-files --others --exclude-standard` and tests each path against `write_allowed`.
 - **State + resume:** `skills/compound-v/state-machine.md`; `/v:resume <run-id>` re-dispatches only incomplete jobs (git-wins tie-break).
 
@@ -84,6 +84,8 @@ All reviewers/agents carry `model: opus`. Manifest `backend`/`model` values (`gp
 | `/v:archaeology <topic>` | (unchanged) Phase 1A only |
 | `/v:remember <query>` | Recall search over `docs/superpowers/**` prose (V-memory) — evidence for planning + review, not a routing input |
 | `/v:memory-refresh` | (Re)index the FTS5 recall lane; `--bootstrap` provisions the opt-in dense embeddings venv |
+| `/v:onboard` | Scan the repo and build a trusted, citation-verified knowledge base (`docs/superpowers/architecture/*`) plus an `AGENTS.md`/`CLAUDE.md` bridge, behind a human approval gate; `--refresh` re-checks staleness |
+| `/v:pr-review [url\|number]` | Deep two-axis (Standards ⊥ Spec) code review of a PR/MR or local diff — review-only, never edits; GitHub (`gh`), GitLab (`glab`), or a hostless local branch |
 
 ## Model policy (universal)
 

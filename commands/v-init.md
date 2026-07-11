@@ -290,7 +290,8 @@ Two brainstorm-phase policy choices (committed team policy → the Step 4a `brai
   strong local KB hit means no offer and no recon regardless of this setting.
   `ask` then makes that offer per brainstorm; `auto` runs it without asking (same bounds);
   `off` is a hard kill-switch — honored for cost AND confidentiality (some topics must
-  never leave the machine).
+  never leave the machine). Invalid or unknown values fail **closed** (warn once → `ask`,
+  never `auto`) — the verbatim rule is in Step 4a below.
 - **Batched elicitation — `brainstorm.batch_elicitation`** (toggle, default **on**):
   allow ≥3 *independent* clarifying questions to batch into one Visual Companion form
   screen (dependent chains always stay sequential — see
@@ -367,11 +368,11 @@ identically to `balanced`. Only `cost-aware.claude.standard` differs: `sonnet`, 
   (default `true`) = the Step 3d choices: the pre-brainstorm recon mode (`ask|auto|off`;
   `off` is a hard kill-switch) and the independent-question batching toggle. These are
   **policy** (committed), not capability — the machine-local `deep-research` presence flag
-  lives in Step 4b, per the v2.6.2 split. Readers
+  lives in Step 4b, per the v2.6.2 split. Nothing validates this file, so the readers
   ([`phase-0-recon.md`](../skills/compound-v/phase-0-recon.md),
-  [`brainstorm-elicitation.md`](../skills/compound-v/brainstorm-elicitation.md)) default
-  `deep_research` to `"ask"` and `batch_elicitation` to `true` when the `brainstorm` block
-  is absent (pre-v2.7 configs) — nothing validates this file, so the reader owns the default.
+  [`brainstorm-elicitation.md`](../skills/compound-v/brainstorm-elicitation.md)) own the
+  defaults and apply the shared fail-closed rule verbatim:
+  Missing file or key → the documented defaults (`deep_research: "ask"`, `batch_elicitation: true`). Malformed JSON, wrong type, or unknown value → warn once, then use `deep_research=ask` and `batch_elicitation=false` for this session; never treat an invalid value as `auto`.
 - **`models` — SEED the default per-stance tier→model map (exactly the block above)** so
   intent-based routing resolves out of the box even with no further setup. The map is
   **per-stance** — shape `{<stance>: {<backend>: {<tier>: model}}}`. Only the `claude`

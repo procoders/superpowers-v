@@ -6,13 +6,24 @@ Common issues with Compound V and how to fix them.
 
 **Symptom:** You finished `superpowers:brainstorming`, the spec is saved, but Compound V didn't dispatch the pre-flights.
 
-**Cause:** "Auto-fire" is **description-driven** — the parent Claude has to read Compound V's skill description and recognize the trigger condition. The plugin ships a `PostToolUse(Write)` hook that prints a *reminder* when a spec/plan file is saved, but the actual skill invocation still depends on the parent's recognition. Reliability is high on Opus / Sonnet 4.6+; weaker models may miss it.
+**Cause:** "Auto-fire" is **description-driven** — the parent Claude has to read Compound V's skill description and recognize the trigger condition. The plugin ships a `PostToolUse(Write)` hook that prints a *reminder* when a Compound-V artifact is saved (three arms: plan saved → dispatch next steps, spec saved → the three pre-flights, recon saved → read it before the first brainstorm question), but the actual skill invocation still depends on the parent's recognition. Reliability is high on Opus / Sonnet 4.6+; weaker models may miss it.
 
 **Fix:**
 1. Confirm the plugin is installed: `/plugin list` should show `superpowers-v`.
-2. Confirm hooks are loaded: `cat ~/.claude/settings.json` (or your project's `.claude/settings.json`) should include the plugin's hooks (Claude Code loads plugin hooks automatically on session start).
+2. Confirm hooks are loaded: plugin hooks ship inside the plugin (`hooks/hooks.json`) and are loaded automatically at session start — they do **not** appear in `~/.claude/settings.json` or your project's `.claude/settings.json`, so don't hunt for them there. The observable signal that they loaded is the next item.
 3. Confirm the SessionStart banner appeared at session start: re-start the session if not (`/session new`).
 4. As a manual fallback, invoke the skill directly: `Skill compound-v`.
+
+## Trigger 0 (recon) didn't fire
+
+**Symptom:** You started a brainstorm on a topic you expected research for, but no recon offer appeared and no doc landed in `docs/superpowers/recon/`.
+
+**Cause:** Trigger 0 is **description-driven** — the parent Claude has to read the skill description and run the gates in `skills/compound-v/phase-0-recon.md`; nothing in the harness forces it. Since v2.8 there is a hook backstop, `hooks/brainstorm-trigger0-nudge.sh`, which injects a one-line reminder when the Skill tool invokes `superpowers:brainstorming` — but it is a **reminder, not enforcement**: it cannot make the recon run. Also, a silent skip is often *correct* behavior: gate 1 skips plumbing topics, gate 2 skips on a strong V-memory KB hit, and gate 3 honors `brainstorm.deep_research: "off"` as a hard kill-switch.
+
+**Fix:**
+1. Check *why* it stopped: `docs/superpowers/memory/recon-outcomes.jsonl` appends one terminal event per gated stop (`plumbing_skip` | `kb_skip` | `off` | `declined` | `no_engine`), and `fired` / `saved` / `consumed` events for runs that happened.
+2. Check the config: `brainstorm.deep_research` in `.claude/compound-v.json` (`ask` default / `auto` / `off`). `off` means no offer, ever — that's the kill-switch working, not a bug.
+3. Manual fallback — plain language works: tell the agent **"run the Trigger 0 recon from phase-0-recon.md for \<topic\>"**. It reads `skills/compound-v/phase-0-recon.md` and runs the gates + engine ladder for that topic.
 
 ## Phase 1C says "Context7 unavailable"
 
@@ -106,7 +117,7 @@ Re-run the validator (or `/v:dispatch`) until it's clean. The manifest schema + 
 
 **Causes & fixes:**
 1. **The deprecation line is cosmetic.** `codex` emits `[features].codex_hooks is deprecated` on stderr; the worker script already suppresses it. If you call `codex exec` by hand, ignore that line — it does not indicate a failure.
-2. **Wrong flags.** The verified `codex-cli 0.130` flag set is `--cd <wt> --sandbox workspace-write --skip-git-repo-check --model <m> --output-last-message <f> -c sandbox_workspace_write.network_access=<bool>` (optionally `--output-schema <f>`). **Do not pass `--ask-for-approval never`** — it is invalid for `codex exec` (a top-level/interactive flag only) and will fail every job. `exec` already defaults to `approval: never`; if you ever need a non-default, use `-c approval_policy=never`.
+2. **Wrong flags.** The verified `codex-cli 0.144.1` flag set is `--cd <wt> --sandbox workspace-write --skip-git-repo-check --model <m> --output-last-message <f> -c sandbox_workspace_write.network_access=<bool>` (optionally `--output-schema <f>`). **Do not pass `--ask-for-approval never`** — it is invalid for `codex exec` (a top-level/interactive flag only) and will fail every job. `exec` already defaults to `approval: never`; if you ever need a non-default, use `-c approval_policy=never`.
 3. **Timeout.** The worker wraps `codex exec` in `timeout` (default 900s). A `status: timeout` result means the job exceeded it — raise `--timeout-sec` or split the job smaller.
 4. **Stale flags after a Codex upgrade.** Re-probe with `/v:init`, which re-checks the flag set against `codex exec --help` (the **exec** subcommand help, not the top-level help — the top-level merge is what masked the original `--ask-for-approval` bug).
 5. **No worktree / dirty diff.** The worker runs inside a fresh `git worktree add <wt> HEAD` under `$TMPDIR`. If `git worktree` fails (e.g. repo not initialized, or `$TMPDIR` unwritable), the script reports an environment fault rather than a job result.
