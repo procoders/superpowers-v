@@ -40,8 +40,10 @@ is reported as a violation ``"<path> (symlink escapes the worktree)"`` —
 regardless of ``write_allowed`` and regardless of who created it. That covers
 BOTH a job-created escaping symlink AND a pre-existing one (committed before the
 baseline): a write through either lands outside the tree where git sees nothing,
-so the only reliable gate-time signal is the link itself. Unreadable entries are
-skipped (degrade-safe).
+so the only reliable gate-time signal is the link itself. A directory the walk
+CANNOT READ is itself a violation ("unreadable during symlink scan") — loud and
+conservative, because chmod-000 on a dir would otherwise hide a link inside it;
+only individual entries that vanish mid-scan are skipped.
 
 HONESTY: the gate DETECTS the escaping-symlink channel; it cannot observe writes
 already made through it — by the time the gate runs, a byte written through such
@@ -295,7 +297,9 @@ def load_preexisting_file(path):
 
 
 def scan_escaping_symlinks(root):
-    """Return repo-relative paths of symlinks under ``root`` that resolve OUTSIDE it.
+    """Return LABELED violation strings: escaping symlinks under ``root``, plus
+    directories the scan could not read (loud-conservative — an unreadable dir
+    could hide an escaping link).
 
     Scans the WHOLE gate root (not just git-changed paths): a PRE-EXISTING escaping
     symlink — committed before the baseline, with no new changes at all — is just as
@@ -315,6 +319,7 @@ def scan_escaping_symlinks(root):
     confinement (the codex backend's sandbox) is the preventive layer.
     """
     escapes = []
+    unreadable = []
     root_real = os.path.realpath(root)
     prefix = root_real.rstrip(os.sep) + os.sep
 
@@ -328,7 +333,17 @@ def scan_escaping_symlinks(root):
         return target != root_real and not target.startswith(prefix)
 
     root_norm = os.path.normpath(root)
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+
+    def _on_walk_error(err):
+        # An unreadable directory could HIDE an escaping link (worker: create
+        # link inside, then chmod 000 the dir — Codex v2.8 round-3). Loud and
+        # conservative: unreadable ⇒ violation, never a silent skip.
+        p = getattr(err, "filename", None) or root
+        unreadable.append(os.path.relpath(p, root))
+
+    for dirpath, dirnames, filenames in os.walk(
+        root, followlinks=False, onerror=_on_walk_error
+    ):
         # CLASSIFY .git BEFORE pruning: a nested entry NAMED ".git" that is an
         # escaping SYMLINK is itself a violation (git treats .git specially, so
         # git-derived detection is blind here). Prune ONLY the ROOT's own real
@@ -346,7 +361,13 @@ def scan_escaping_symlinks(root):
             p = os.path.join(dirpath, name)
             if _escaping(p):
                 escapes.append(os.path.relpath(p, root))
-    return sorted(escapes)
+    return sorted(
+        ["%s (symlink escapes the worktree)" % p for p in escapes]
+        + [
+            "%s (unreadable during symlink scan — cannot rule out an escaping link)" % p
+            for p in unreadable
+        ]
+    )
 
 
 def check(cwd, baseline, allowed, preexisting=None):
@@ -354,8 +375,7 @@ def check(cwd, baseline, allowed, preexisting=None):
     violations = [p for p in changed if not is_allowed(p, allowed)]
     # Escaping symlinks are violations unconditionally — even inside the allowed
     # area, even pre-existing: the link is a write channel out of the tree.
-    for p in scan_escaping_symlinks(cwd):
-        violations.append("%s (symlink escapes the worktree)" % p)
+    violations.extend(scan_escaping_symlinks(cwd))
     return changed, violations
 
 
@@ -855,6 +875,22 @@ def _selftest():
             "symlink: root's own real .git still not scanned/flagged",
             not any(v.startswith(".git") for v in viol_gd),
         )
+
+        # UNREADABLE DIRECTORY (Codex v2.8 round-3): create a link inside a dir,
+        # chmod 000 the dir — the walk cannot see the link, so the unreadable
+        # dir ITSELF must be a loud violation, never a silent skip.
+        hidden = os.path.join(perepo, "hidden")
+        os.makedirs(hidden)
+        os.symlink(outside_dir, os.path.join(hidden, "sneak"))
+        os.chmod(hidden, 0)
+        try:
+            _, viol_ur = check(perepo, "HEAD", ["src/**", "sub/**", "deep/**", "hidden/**"])
+            expect(
+                "symlink: chmod-000 dir is a loud violation (cannot rule out a link)",
+                any("hidden" in v and "unreadable during symlink scan" in v for v in viol_ur),
+            )
+        finally:
+            os.chmod(hidden, 0o700)  # restore so rmtree cleanup works
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
