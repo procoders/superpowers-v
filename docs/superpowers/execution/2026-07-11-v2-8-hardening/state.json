@@ -1,7 +1,7 @@
 {
   "run_id": "2026-07-11-v2-8-hardening",
-  "phase": "COLLECTED",
-  "updated_at": "2026-07-11T01:31:52Z",
+  "phase": "MERGED",
+  "updated_at": "2026-07-11T09:44:32Z",
   "jobs": {
     "task-0-gate-and-versions": {
       "status": "done",
@@ -58,7 +58,7 @@
       "session_id": null
     },
     "task-9-review": {
-      "status": "running",
+      "status": "done",
       "isolation": "direct",
       "worktree": null,
       "session_id": null

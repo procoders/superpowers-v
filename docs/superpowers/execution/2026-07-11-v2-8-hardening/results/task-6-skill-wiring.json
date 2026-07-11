@@ -1,0 +1,20 @@
+{
+  "status": "done",
+  "blocked": false,
+  "files_changed": [
+    "skills/compound-v/SKILL.md",
+    "agents/domain-expert.md",
+    "agents/doc-validator.md",
+    "skills/compound-v/domain-expert-prompt.md",
+    "skills/compound-v/doc-validator-prompt.md",
+    "skills/compound-v/phase-1b-domain-expert.md",
+    "skills/compound-v/phase-1c-documentation-validation.md"
+  ],
+  "violations": [],
+  "summary": "Recon-read + exact-path handoff in all 4 executing surfaces; phase-1b/1c aligned to five-section contract; SKILL.md literalized (search cmd, 3-6, 150, event machine); runs-unchanged-except fix; BOTH-audits relics purged; description 467/500. Scope PASS.",
+  "session_id": "",
+  "worktree": "/private/tmp/compound-v/2026-07-11-v2-8-hardening/task-6-skill-wiring",
+  "exit_code": 0,
+  "failure_class": null,
+  "retry_after_seconds": 0
+}

@@ -1,0 +1,16 @@
+{
+  "status": "done",
+  "blocked": false,
+  "files_changed": [
+    "docs/superpowers/execution/2026-07-11-v2-8-hardening/validation/live-validation.md",
+    "docs/superpowers/recon/2026-07-11-fts5-cyrillic-tokenizer.md",
+    "docs/superpowers/memory/recon-outcomes.jsonl"
+  ],
+  "violations": [],
+  "summary": "6/6 protocol checks PASS with honest injection notes: full Trigger-0 run (stale-index rule + engine-aware offer exercised live), five-section recon doc committed, directions-late mechanics, KB-hit+freshness re-run (recon doc topped all 3 slots), off + fail-closed controls, engine-failure transition, hook smoke on merged tree. Event stream: fired/saved/kb_skip/off/no_engine/consumed.",
+  "session_id": "",
+  "worktree": "",
+  "exit_code": 0,
+  "failure_class": null,
+  "retry_after_seconds": 0
+}

@@ -1,0 +1,24 @@
+{
+  "status": "done",
+  "blocked": false,
+  "files_changed": [
+    "scripts/compound-v-resolve-model.py",
+    "scripts/compound-v-validate-manifest.py",
+    "scripts/compound-v-run-codex-worker.sh",
+    "scripts/compound-v-codex-review.sh",
+    "skills/backend-launcher/adapter-codex.md",
+    "skills/backend-launcher/SKILL.md",
+    "skills/compound-v/execution-manifest.md",
+    "skills/compound-v/routing-policy.md",
+    "skills/compound-v/phase-3-parallel-opus-dispatch.md",
+    "agents/parallel-dispatcher.md",
+    "commands/v-models.md"
+  ],
+  "violations": [],
+  "summary": "xhigh iff backend:codex at every layer, identical wording; selftests accept+reject (44/44, 31/31); 0.130 pins refreshed; final grep assertion zero bare enums. Honest residual report (gpt-5.5 examples) led to post-review polish b7eff01. Scope PASS.",
+  "session_id": "",
+  "worktree": "/private/tmp/compound-v/2026-07-11-v2-8-hardening/task-5-xhigh-chain",
+  "exit_code": 0,
+  "failure_class": null,
+  "retry_after_seconds": 0
+}

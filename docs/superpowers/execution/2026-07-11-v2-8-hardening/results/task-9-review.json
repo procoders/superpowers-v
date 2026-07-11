@@ -1,0 +1,12 @@
+{
+  "status": "done",
+  "blocked": false,
+  "files_changed": [],
+  "violations": [],
+  "summary": "Three-pass Review Gate APPROVED: ACs 12/12 against real file contents (reviewer ran all selftests itself), 0 dead links across 27 changed md, seams byte-consistent, impl within union + bookkeeping within predeclared scope. One LOW non-blocking residual (gpt-5.5 examples) \u2014 fixed post-review in b7eff01.",
+  "session_id": "",
+  "worktree": "",
+  "exit_code": 0,
+  "failure_class": null,
+  "retry_after_seconds": 0
+}
