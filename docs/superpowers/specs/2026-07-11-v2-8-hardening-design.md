@@ -72,10 +72,11 @@ Rewrite the authority doc so no step requires invented policy:
   engine COMPLETES; failed A may fall to B with both attempts recorded; incomplete A
   discarded unless individually sourced (`partial`); WebSearch denial/quota: no retry,
   partial success → `PARTIAL RECON`, report the real reason. Engine B bound: 3–6 (harmonized).
-- **Output contract:** anti-anchoring header + exactly FOUR verbatim `##` sections, with
-  FACTS/CONSTRAINTS split into **VERIFIED** (primary-source, provisionally binding) vs
-  **UNVERIFIED LEADS** (must become questions until 1B/1C validate) — resolves the
-  binding-vs-unverified contradiction. Claim→source ids (`[F1]`, accessed date, exact claim;
+- **Output contract:** anti-anchoring header (a non-section italic line, not a heading) +
+  exactly FIVE verbatim `##` sections — `QUESTIONS TO ASK`, `VERIFIED FACTS / CONSTRAINTS`,
+  `UNVERIFIED LEADS`, `SUGGESTED DIRECTIONS`, `SOURCES` — splitting the old FACTS into
+  **VERIFIED** (primary-source, provisionally binding) vs **UNVERIFIED LEADS** (must become
+  questions until 1B/1C validate) — resolves the binding-vs-unverified contradiction. Claim→source ids (`[F1]`, accessed date, exact claim;
   "verified manually" names the artifact). Directions: at least 2, prefer 3, materially
   divergent, explicitly non-exhaustive (template line given). Slug rule (effective scope;
   lowercase; unicode-normalized; non-alnum→`-`; ≤60 chars; hash fallback; repo-local date);
@@ -158,7 +159,7 @@ Failures block release.
    (incl. `model: opus` enforcement passing on all existing agents).
 3. `xhigh` resolves/validates/dispatches for codex only; every other backend rejects it
    with a clear error; all five layers + docs agree; selftests cover accept + reject.
-4. phase-0-recon.md contains every Workstream-2 rule (four sections, VERIFIED/UNVERIFIED
+4. phase-0-recon.md contains every Workstream-2 rule (five sections, VERIFIED/UNVERIFIED
    split, freshness, fail-closed config, no-reply, slug/collision, no-editor commit,
    exact-path handoff, directions-late, outcomes stream) with zero remaining
    "agent must invent policy" gaps from the audit registry (A16-20, E C1 1-20).
