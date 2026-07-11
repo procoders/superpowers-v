@@ -317,18 +317,28 @@ def scan_escaping_symlinks(root):
     escapes = []
     root_real = os.path.realpath(root)
     prefix = root_real.rstrip(os.sep) + os.sep
+
+    def _escaping(p):
+        try:
+            if not os.path.islink(p):
+                return False
+            target = os.path.realpath(p)
+        except OSError:
+            return False  # degrade-safe: skip unreadable/vanished entries
+        return target != root_real and not target.startswith(prefix)
+
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        # CLASSIFY .git BEFORE pruning: a nested entry NAMED ".git" that is an
+        # escaping SYMLINK is itself a violation (git treats .git specially, so
+        # git-derived detection is blind here); only a real .git directory is
+        # git's own internals and safe to skip.
         if ".git" in dirnames:
+            if _escaping(os.path.join(dirpath, ".git")):
+                escapes.append(os.path.relpath(os.path.join(dirpath, ".git"), root))
             dirnames.remove(".git")
         for name in dirnames + filenames:
             p = os.path.join(dirpath, name)
-            try:
-                if not os.path.islink(p):
-                    continue
-                target = os.path.realpath(p)
-            except OSError:
-                continue  # degrade-safe: skip unreadable/vanished entries
-            if target != root_real and not target.startswith(prefix):
+            if _escaping(p):
                 escapes.append(os.path.relpath(p, root))
     return sorted(escapes)
 
@@ -794,6 +804,34 @@ def _selftest():
         expect(
             "symlink: pre-existing escaping link still BLOCKS",
             "src/pre_escape (symlink escapes the worktree)" in viol_pe,
+        )
+
+        # NESTED .git-NAMED ESCAPING SYMLINK (Codex v2.8 round-1 #1): a directory
+        # symlink NAMED ".git" nested in the tree used to be pruned from the walk
+        # BEFORE the islink test — invisible. Git also treats .git specially, so
+        # git-derived detection is blind here. Both job-created and pre-existing
+        # variants must BLOCK; the repo root's own real .git must NOT be flagged.
+        os.makedirs(os.path.join(srepo, "src", "vendor"))
+        os.symlink(outside_dir, os.path.join(srepo, "src", "vendor", ".git"))
+        _, viol_gl = check(srepo, "HEAD", ["src/**"])
+        expect(
+            "symlink: nested .git-named escaping link BLOCKS (job-created)",
+            "src/vendor/.git (symlink escapes the worktree)" in viol_gl,
+        )
+        expect(
+            "symlink: the real root .git is NOT flagged",
+            not any(v.startswith(".git ") for v in viol_gl),
+        )
+        # git REFUSES to track any path with a ".git" component (verified: `git add`
+        # fails) — so this channel is permanently invisible to every git-derived signal,
+        # including ls-files --others. Only the FS scan can see it: create it
+        # UNTRACKED (as a leftover from a prior job / base image would be).
+        os.makedirs(os.path.join(perepo, "sub"))
+        os.symlink(outside_dir, os.path.join(perepo, "sub", ".git"))
+        _, viol_gp = check(perepo, "HEAD", ["src/**", "sub/**"])
+        expect(
+            "symlink: nested .git-named escaping link BLOCKS (untracked leftover)",
+            "sub/.git (symlink escapes the worktree)" in viol_gp,
         )
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

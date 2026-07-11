@@ -25,7 +25,8 @@
 #     [--schema <abs>] [--context-file <abs>] ... \
 #     [--timeout-sec <n>]
 #
-# Defaults: model gpt-5.6-sol, effort high (the "Codex on their max" the design calls for;
+# Defaults: model gpt-5.6-sol, effort xhigh (the "Codex on their max" the design calls for —
+# xhigh is codex-only and live-verified on codex-cli 0.144.1;
 # requires codex-cli >= 0.143.0 -- an older client fails loud with a clear "requires a newer
 # version of Codex" error, not silently). `--effort xhigh` is also accepted: this script runs
 # codex only, and `xhigh` is valid iff backend is codex (model_reasoning_effort=xhigh
@@ -39,7 +40,7 @@
 set -euo pipefail
 
 DEFAULT_MODEL="gpt-5.6-sol"
-DEFAULT_EFFORT="high"
+DEFAULT_EFFORT="xhigh"
 DEFAULT_TIMEOUT_SEC=600
 
 die() { echo "compound-v-codex-review: $1" >&2; exit 2; }

@@ -1,6 +1,6 @@
 # Recon — FTS5 Cyrillic/multilingual tokenizer options for V-memory (2026-07-11)
 
-*This recon is evidence to widen the brainstorm's questions, not a conclusion to converge on. Treat VERIFIED FACTS / CONSTRAINTS as provisionally binding (1B/1C revalidate); treat UNVERIFIED LEADS as questions to ask; read SUGGESTED DIRECTIONS only after producing your own first-principles proposals — they are some of several possibilities, explicitly non-exhaustive.*
+*This recon is evidence to widen the brainstorm's questions, not a conclusion to converge on. VERIFIED FACTS / CONSTRAINTS are provisionally binding (1B/1C revalidate); UNVERIFIED LEADS are questions until validated; SUGGESTED DIRECTIONS are read last (directions-late) and are some of several possibilities — generate alternatives that ignore them.*
 
 Engine: B (3 parallel WebSearch, one message). Scope (narrowed at the offer): unicode61 options + trigram alternative + stemming extensions for Cyrillic queries in V-memory's FTS5 lane.
 

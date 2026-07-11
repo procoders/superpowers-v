@@ -51,11 +51,25 @@ Failure injected by decision (engines treated unavailable), not a real network d
 The documented transition was exercised: real-reason skip notice ("web search unavailable/denied",
 never "no engine exists"), brainstorm continues, terminal `no_engine` event appended. ✅
 
-## 6. Hook backstop on the merged tree — PASS
-Real stdin JSON through `hooks/brainstorm-trigger0-nudge.sh`: matching Skill+brainstorming →
-nudge with the contract reminder text (exit 0); non-matching skill → silent exit 0; malformed
-stdin → silent exit 0. (PreToolUse additionalContext injection itself was proven live by
-task-3's nested-session probe with a token round-trip — evidence in that job's report.) ✅
+## 6. Hook backstop on the merged tree — PASS (script smoke + generic injection probe)
+Honest scope of this check (per Codex round-1 #9): what was tested is (a) the SCRIPT —
+real stdin JSON piped in: matching Skill+brainstorming → nudge (exit 0); non-matching skill →
+silent exit 0; malformed → silent exit 0 — and (b) the INJECTION MECHANISM — task-3's
+nested-session probe proved PreToolUse `additionalContext` reaches the model's context via a
+token round-trip, but that probe used a `PreToolUse(Bash)` hook, not the registered
+`matcher: Skill` path. A full end-to-end (real Skill tool invoking superpowers:brainstorming
+inside a session with the plugin loaded, nudge observed in-context) has NOT been executed —
+it requires the plugin loaded in a nested session, which the bare `claude -p` probe
+environment does not do. Registered-matcher behavior rests on the documented hooks contract
+(matcher=tool-name) + the script smoke. ✅ with that stated boundary.
+
+## Round-1 corrections (2026-07-11, post-review)
+Codex round-1 findings #8/#9 against this evidence were accepted: the live recon doc's
+anti-anchoring header was NOT byte-equal to the §4 template (rewritten verbatim in
+`b7eff01`-follow-up); the `saved`-event/commit timing rule in phase-0-recon.md §6 was made
+executable (fired→no_engine legal path; saved = written, rides the doc commit, no-rollback
+rule); check 6's claim was downgraded to the honest boundary above. Check 1's "5 sections /
+header verbatim" line now holds byte-exactly.
 
 ## Event-stream shape after validation (append-only, never routing)
 fired → saved → consumed (run 1) · kb_skip (run 2) · off · no_engine — six events, one per

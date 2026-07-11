@@ -44,6 +44,14 @@ def path_class(rel):
 
     Uses path.parts, never substring matching (A6) — `mycommands/x.md` or
     `docs/commands-history.md` can no longer masquerade as a command.
+
+    RECURSIVE semantics, deliberate (Codex v2.8 round-1 #7): ANY `.md` under
+    `agents/` or `commands/` (nested dirs included) is gated, and ANY file
+    literally named `SKILL.md` at ANY depth under `skills/` is gated — stricter
+    than the docstring's `skills/*/SKILL.md` glob reads. Rationale: a nested
+    `commands/sub/x.md` would still be loaded as a command by the plugin
+    runtime, and a reference file has no business being named SKILL.md; if one
+    ever legitimately is, rename it rather than weakening the gate.
     """
     parts = rel.parts
     if len(parts) < 2 or rel.suffix != ".md":
@@ -192,6 +200,15 @@ def _selftest() -> int:
         check("substring 'commands' dir is not a command (name required)",
               any("missing required 'name'" in i
                   for i in issues_for("subcommands/x.md", "---\ndescription: d\n---\nb\n")))
+
+        # Recursive path-class semantics are DELIBERATE (Codex v2.8 r1 #7):
+        # nested commands and any SKILL.md at depth are gated
+        check("nested commands/sub/x.md requires frontmatter",
+              any("must start with a '---'" in i
+                  for i in issues_for("commands/sub/x.md", "no frontmatter here\n")))
+        check("nested skills/foo/refs/SKILL.md requires frontmatter",
+              any("must start with a '---'" in i
+                  for i in issues_for("skills/foo/refs/SKILL.md", "plain body\n")))
 
         # A5: agents must carry model: opus
         check("agent with model sonnet flagged",

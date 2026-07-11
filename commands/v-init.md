@@ -293,8 +293,10 @@ Two brainstorm-phase policy choices (committed team policy → the Step 4a `brai
   never leave the machine). Invalid or unknown values fail **closed** (warn once → `ask`,
   never `auto`) — the verbatim rule is in Step 4a below.
 - **Batched elicitation — `brainstorm.batch_elicitation`** (toggle, default **on**):
-  allow ≥3 *independent* clarifying questions to batch into one Visual Companion form
-  screen (dependent chains always stay sequential — see
+  allow ≥3 *independent* clarifying questions to batch into ONE screen via the surface
+  ladder — Visual Companion form if accepted this session, else the harness's
+  structured-question tool, else sequential; companion acceptance gates only the top
+  surface, never batching itself (dependent chains always stay sequential — see
   [`brainstorm-elicitation.md`](../skills/compound-v/brainstorm-elicitation.md)).
   `false` keeps upstream's one-at-a-time questioning everywhere.
 

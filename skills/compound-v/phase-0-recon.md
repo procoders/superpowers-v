@@ -148,7 +148,12 @@ When the doc is committed, announce: *"💉 Compound V — recon saved at `docs/
 
 ## 5. Path Handoff — Exact Path, Not Fuzzy Matching
 
-The caller that ran Trigger 0 **stores the exact recon path in the brainstorm's working state**, and the brainstorm **records that path in the spec's metadata** when it writes one. Every downstream reader (1B, 1C, planning) receives the exact path from its caller. **Scanning `docs/superpowers/recon/` for a matching topic is fallback-only** — used when the handed-off path is missing — and matches on the §4 slug, never on free-text similarity.
+The caller that ran Trigger 0 **stores the exact recon path in the brainstorm's working state**, and the brainstorm **records that path in the spec's metadata** when it writes one. Both carriers are literal, so no producer invents a format:
+
+- **Working state:** one line in the brainstorm's notes/worklist, exactly `Recon: docs/superpowers/recon/<file>.md` — or `Recon: none` when the gates skipped (the explicit `none` tells downstream readers not to fall back to scanning).
+- **Spec metadata:** one bold line directly under the spec's title: `**Recon:** docs/superpowers/recon/<file>.md` (or `**Recon:** none`).
+
+Every downstream reader (1B, 1C, planning) receives the exact path from its caller. **Scanning `docs/superpowers/recon/` for a matching topic is fallback-only** — used when the handed-off path is missing entirely (not when it says `none`) — and matches on the §4 slug, never on free-text similarity.
 
 ---
 
@@ -163,9 +168,9 @@ The caller that ran Trigger 0 **stores the exact recon path in the brainstorm's 
 ```
 
 - **Vocabulary:** terminal gate events `plumbing_skip | kb_skip | off | declined | no_engine`; engine-run events `fired`, `saved`, `consumed`.
-- **An evaluation that stops at a gate appends exactly one terminal event.** A run that starts an engine appends `fired`, then `saved` when the doc is committed (with `path`), then `consumed` when the brainstorm reads it — **three separate appended events, never a mutated line**. There is no `consumed` boolean field; consumption IS an event.
+- **Legal transitions (complete list):** an evaluation that stops at a gate appends exactly one terminal event and ends. A run that starts an engine appends `fired`; from there **either** the doc lands — `saved` (with `path`), then `consumed` when the brainstorm reads it — **or** every rung fails and the run ends with the terminal `no_engine` (`fired → no_engine` is the legal failure path; a PARTIAL doc counts as `saved`). Three-at-most separate appended events per run, never a mutated line. There is no `consumed` boolean field; consumption IS an event.
 - **Writer discipline:** append whole lines only; never rewrite, sort, or dedupe the file. `topic` is the §4 slug; `engine`/`path` appear only when known.
-- **Commit:** the `saved` event rides the same commit as the recon doc (§4 rule 10 stages both paths). Gate-skip events with no doc are loss-tolerant telemetry — include them in the next natural commit; never block the brainstorm on this file.
+- **`saved` semantics + commit:** `saved` records that the doc was **written** — append it right after writing, before committing; §4 rule 10 then stages doc + stream together so on success they land in one commit. If the commit FAILS, nothing rolls back: the doc does exist (the event stays true), rule 11's *"written but not committed"* announcement applies, and both files ride the next successful commit. Gate-skip events with no doc are loss-tolerant telemetry — include them in the next natural commit; never block the brainstorm on this file.
 - **NEVER a routing input.** Same boundary as §1: routing stays the deterministic order; the routing scorecard stays implementation-only.
 
 ---
