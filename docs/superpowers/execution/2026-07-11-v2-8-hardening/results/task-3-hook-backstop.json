@@ -1,0 +1,16 @@
+{
+  "status": "done",
+  "blocked": false,
+  "files_changed": [
+    "hooks/brainstorm-trigger0-nudge.sh",
+    "hooks/hooks.json",
+    "hooks/plan-saved-nudge.sh"
+  ],
+  "violations": [],
+  "summary": "PreToolUse additionalContext PROVEN live on 2.1.197 (nested-session token round-trip + binary handler + official docs). Hook fires only on Skill+superpowers:brainstorming; silent exit 0 otherwise; additive hooks.json registration; plan-saved-nudge relative-path fix. Scope PASS.",
+  "session_id": "",
+  "worktree": "/private/tmp/compound-v/2026-07-11-v2-8-hardening/task-3-hook-backstop",
+  "exit_code": 0,
+  "failure_class": null,
+  "retry_after_seconds": 0
+}

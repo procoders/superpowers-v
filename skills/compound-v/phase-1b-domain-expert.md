@@ -43,15 +43,16 @@ If users will see or feel the result, the domain applies. **When in doubt, run i
 Dispatch a fresh subagent using the **`domain-expert-prompt.md`** template in this skill directory. Key dispatch rules:
 
 1. **Model: `opus`** — domain reasoning is exactly where Opus earns its cost
-2. **One Task call**, dispatched in the same message as Phase 1A's archaeology Task call (so both pre-flights run in parallel)
+2. **One Task call**, dispatched in the same message as the Phase 1A archaeology and Phase 1C library-validator Task calls (all three pre-flights in one parallel dispatch)
 3. **Full spec text** in the prompt (don't make the subagent re-read brainstorming output)
 4. **Path to existing knowledge base** if any: `docs/superpowers/expert/_knowledge-base/`
+5. **Exact Trigger 0 recon path** if one exists — the caller hands it from the brainstorm's working state / spec metadata; scanning `docs/superpowers/recon/` is fallback-only
 
 The subagent will:
 
 1. **Identify the domain(s).** From the spec text, infer: payments / auth / health / mapping / astrology / NLP / etc. List 1-3 domains.
 2. **Check the knowledge base** at `docs/superpowers/expert/_knowledge-base/<domain>.md`. If it exists and is recent (< 6 months) and covers the spec's scope, treat it as authoritative; only run web searches for genuine gaps.
-3. **Check `docs/superpowers/recon/` for a Trigger 0 recon doc matching this topic.** If present, read it first and *deepen* its queries rather than repeating them — recon already covered the surface pass, so spend the web-search budget on what it didn't reach. Treat its SUGGESTED DIRECTIONS as non-exhaustive evidence, not a shortlist.
+3. **Read the Trigger 0 recon doc at the exact path handed by the caller** (from the brainstorm's working state / spec metadata); only if no path was handed, fall back to scanning `docs/superpowers/recon/` for a doc matching this topic's slug. If present, read it first and *deepen* its queries rather than repeating them — recon already covered the surface pass, so spend the web-search budget on what it didn't reach. Revalidate its `VERIFIED FACTS / CONSTRAINTS` (provisionally binding until confirmed), treat its `UNVERIFIED LEADS` as leads to verify, and treat its `SUGGESTED DIRECTIONS` as non-exhaustive evidence, not a shortlist.
 4. **Run parallel web searches** if knowledge is thin: 3–6 WebSearch calls in a single message covering: official spec / docs, common pitfalls, regulatory constraints, recent breaking changes, comparison vs alternatives.
 5. **Produce the audit** at `docs/superpowers/expert/YYYY-MM-DD-<topic>.md` (template below).
 6. **Update the knowledge base** at `docs/superpowers/expert/_knowledge-base/<domain>.md` with any new general-purpose findings (not feature-specific details). Append; never overwrite.
@@ -144,4 +145,4 @@ When the audit is complete, the controller announces:
 
 If there are open questions in section 8, **surface them to the human BEFORE invoking writing-plans.** A plan built on unanswered domain questions is a plan built on guesses.
 
-Once Phase 1A (archaeology) ALSO completes, invoke `writing-plans` with both audits attached.
+Once Phase 1A (archaeology) and Phase 1C (library/doc) ALSO complete, invoke `writing-plans` with all three audits attached.

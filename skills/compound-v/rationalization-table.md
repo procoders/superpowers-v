@@ -6,6 +6,13 @@ Agents (and humans) under pressure invent reasons to skip discipline. This file 
 
 ---
 
+## On the brainstorm-phase overrides (Trigger 0 recon + batched elicitation)
+
+| Excuse | Reality |
+|--------|---------|
+| "I know this domain — skip the recon." | Whether the KB already covers it is **gate 2's** call (V-memory strong hit + freshness), not yours — run the gates and let them skip honestly. "I know it" is the anchoring failure mode Trigger 0 exists for: a confident training-data guess mislabeled as a constraint is the most dangerous anchor, which is exactly why the recon doc splits VERIFIED from UNVERIFIED LEADS. If the topic really is plumbing, gate 1 skips it for free. |
+| "One-at-a-time is always politer / batching is rude." | Upstream's one-at-a-time is the rule for **dependent** chains — and it stays. ≥3 *independent* questions batched on one screen (companion → structured-question tool → sequential ladder) is fewer round-trips for the human, not less courtesy; the actual UX hazard is the survey **matrix/grid** (higher dropout, straight-lining), which stays banned. The gate (independence + count + config) decides, when unsure → sequential, and `batch_elicitation: false` restores one-at-a-time everywhere. |
+
 ## On skipping code-archaeology (Phase 1)
 
 | Excuse | Reality |

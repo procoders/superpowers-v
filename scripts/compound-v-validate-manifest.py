@@ -24,7 +24,10 @@ Invariants enforced (from PRD §5.1/§5.5 + plan §5/§6)
    Every job MUST carry ``model`` OR ``tier`` (model is now an optional
    override; existing explicit-model jobs stay valid — backward compatible).
    If present, ``tier`` ∈ {deep, standard, light} and ``effort`` ∈
-   {low, medium, high}.
+   {low, medium, high, xhigh}. ``effort: xhigh`` is valid iff
+   ``backend: codex`` (codex's kernel model_reasoning_effort accepts it —
+   live-verified 2026-07-11 on codex-cli 0.144.1); any other backend with
+   xhigh is a violation naming the rule.
 
 Required-field + enum validation (before invariant checks)
 -----------------------------------------------------------
@@ -37,7 +40,8 @@ All required fields per ``execution-manifest.md`` are checked first. Top-level:
 sentinel, NOT a dispatched job backend); ``isolation`` ∈ {direct, worktree};
 ``run`` ∈ {serial, parallel};
 ``routing_stance`` ∈ {balanced, conservative, cost-aware, claude-only};
-``tier`` ∈ {deep, standard, light}; ``effort`` ∈ {low, medium, high}.
+``tier`` ∈ {deep, standard, light}; ``effort`` ∈ {low, medium, high, xhigh}
+(``xhigh`` valid iff ``backend: codex``).
 
 Job ``id`` (and top-level ``run_id``) MUST match ``^[A-Za-z0-9._-]+$`` and not be
 ``.`` / ``..`` — ids become path segments, so a ``../x`` id is a path-traversal
@@ -482,9 +486,11 @@ def globs_overlap(a, b):
 REVIEWER_TOKENS = ("review", "reviewer", "spec_review", "quality", "integration")
 
 # Intent vocabulary (mirrors compound-v-resolve-model.py). Stable; never
-# changes when concrete models churn.
+# changes when concrete models churn. `xhigh` is valid iff backend == "codex"
+# (codex's kernel model_reasoning_effort accepts it — live-verified 2026-07-11
+# on codex-cli 0.144.1); validate() rejects xhigh on every other backend.
 VALID_TIERS = ("deep", "standard", "light")
-VALID_EFFORTS = ("low", "medium", "high")
+VALID_EFFORTS = ("low", "medium", "high", "xhigh")
 
 # Enum vocabularies for required-field validation (per execution-manifest.md).
 VALID_BACKENDS = ("claude", "codex", "antigravity", "cursor")
@@ -721,6 +727,16 @@ def validate(manifest):
             problems.append(
                 "job '%s' effort '%s' invalid (expected one of %s)"
                 % (jid, effort_val, ", ".join(VALID_EFFORTS))
+            )
+
+        # xhigh ⇒ codex only: `effort: xhigh` is valid iff `backend: codex`
+        # (every other backend rejects it with a clear error naming the rule).
+        if (effort_val is not None and str(effort_val).lower() == "xhigh"
+                and str(job.get("backend", "")).lower() != "codex"):
+            problems.append(
+                "job '%s' has effort 'xhigh' with backend '%s': xhigh is "
+                "codex-only (kernel: model_reasoning_effort); use high"
+                % (jid, job.get("backend"))
             )
 
         wa = job.get("write_allowed")
@@ -1201,6 +1217,65 @@ jobs:
 """
 
 
+# A complete, fully-VALID manifest: a codex job with effort: xhigh (xhigh is
+# valid iff backend: codex — this is the accept direction of that rule).
+XHIGH_CODEX_MANIFEST = """
+run_id: 2026-07-11-xhigh-ok
+feature: "xhigh-ok"
+spec_path: docs/superpowers/specs/2026-07-11-xhigh-ok.md
+plan_path: docs/superpowers/plans/2026-07-11-xhigh-ok.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-11-xhigh-ok.md
+  domain: docs/superpowers/expert/2026-07-11-xhigh-ok.md
+  library: docs/superpowers/library-audit/2026-07-11-xhigh-ok.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-1-codex-xhigh
+    title: "codex xhigh slice"
+    type: large_isolated
+    backend: codex
+    tier: deep
+    effort: xhigh
+    isolation: worktree
+    run: parallel
+    write_allowed: [src/features/**]
+    read_allowed: [src/**]
+    acceptance: ["builds"]
+"""
+
+# A complete manifest whose ONE defect is effort: xhigh on a NON-codex backend
+# (the reject direction: xhigh is codex-only).
+XHIGH_CLAUDE_MANIFEST = """
+run_id: 2026-07-11-xhigh-bad
+feature: "xhigh-bad"
+spec_path: docs/superpowers/specs/2026-07-11-xhigh-bad.md
+plan_path: docs/superpowers/plans/2026-07-11-xhigh-bad.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-11-xhigh-bad.md
+  domain: docs/superpowers/expert/2026-07-11-xhigh-bad.md
+  library: docs/superpowers/library-audit/2026-07-11-xhigh-bad.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-1-claude-xhigh
+    title: "claude xhigh slice"
+    type: core_slice
+    backend: claude
+    tier: deep
+    effort: xhigh
+    isolation: worktree
+    run: parallel
+    write_allowed: [src/features/**]
+    read_allowed: [src/**]
+    acceptance: ["builds"]
+"""
+
+
 # A complete, otherwise-valid manifest whose ONE defect is an antigravity job with
 # isolation: direct (an external no-kernel-sandbox worker MUST be worktree-isolated).
 # Uses run: serial so the ONLY violation is the antigravity⇒worktree invariant (not
@@ -1297,6 +1372,16 @@ def _selftest():
     expect(
         "bad: invalid effort caught",
         "effort 'extreme' invalid" in joined,
+    )
+
+    # effort xhigh: valid iff backend codex — selftested BOTH ways.
+    xh_ok = validate_text(XHIGH_CODEX_MANIFEST)
+    expect("codex+xhigh manifest valid (%r)" % xh_ok, xh_ok == [])
+    xh_bad = validate_text(XHIGH_CLAUDE_MANIFEST)
+    expect(
+        "claude+xhigh caught (xhigh is codex-only)",
+        any("xhigh is codex-only (kernel: model_reasoning_effort); use high" in p
+            for p in xh_bad),
     )
     expect(
         "bad: parallel+direct caught",

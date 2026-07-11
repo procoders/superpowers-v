@@ -167,11 +167,14 @@ or the manifests.
 | `standard` | bounded core/feature build, incl. large isolated Codex work | medium |
 | `light` | mechanical single-file edits, docs, i18n strings | low |
 
-`effort ∈ {low, medium, high}` is **orthogonal** to tier. The default pairing
+`effort ∈ {low, medium, high, xhigh}` is **orthogonal** to tier. The default pairing
 (`deep→high`, `standard→medium`, `light→low`) is only a default; a task-type may pin
 a different effort independently. For `codex`, effort maps to
 `-c model_reasoning_effort=<effort>`; for `claude` it is advisory (the `Task` path
-has no separate effort flag).
+has no separate effort flag). `xhigh` is valid **iff** `backend: codex`; every other
+backend rejects it with a clear error naming the rule (use `high` instead) — it is
+codex's top effort rung (live-verified 2026-07-11 on codex-cli 0.144.1), enforced by
+the resolver and the manifest validator.
 
 ### The models map (project config, refreshable, not committed)
 
@@ -294,8 +297,10 @@ These hold in **every** stance and are checked by `compound-v-validate-manifest.
 4. **Model OR tier.** Every job MUST carry at least one of `model` or `tier`. A job
    with neither gives the resolver nothing to route on and fails validation.
 5. **Tier / effort enums.** When present, `tier ∈ {deep, standard, light}` and
-   `effort ∈ {low, medium, high}`. NEVER `haiku` anywhere — not in the map, not as
-   a model override, not in frontmatter.
+   `effort ∈ {low, medium, high, xhigh}`. `xhigh` is valid **iff** `backend: codex`;
+   every other backend rejects it with a clear error naming the rule (use `high`
+   instead). NEVER `haiku` anywhere — not in the map, not as a model override, not
+   in frontmatter.
 6. **Parallel ⇒ worktree.** A `run: parallel` job MUST be `isolation: worktree`;
    `isolation: direct` is valid only with `run: serial`. A repo-wide `git diff`
    cannot attribute a parallel direct job's writes, so per-job isolation is

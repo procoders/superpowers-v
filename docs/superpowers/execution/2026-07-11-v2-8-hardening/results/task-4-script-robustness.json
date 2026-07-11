@@ -1,0 +1,18 @@
+{
+  "status": "done",
+  "blocked": false,
+  "files_changed": [
+    "scripts/compound-v-epic-state.py",
+    "scripts/compound-v-memory.py",
+    "scripts/compound-v-run-with-timeout.py",
+    "scripts/lint-frontmatter.py",
+    "scripts/compound-v-run-cursor-worker.sh"
+  ],
+  "violations": [],
+  "summary": "epic-state get-status + intentional exit contract (v-epic.md checked first); memory corrupt-db clean exit 1; supervisor 127 on missing command; lint-frontmatter presence gate + model:opus enforcement + EOF fix + path.parts + NEW 17-check selftest; cursor pins refreshed. All selftests green. Scope PASS.",
+  "session_id": "",
+  "worktree": "/private/tmp/compound-v/2026-07-11-v2-8-hardening/task-4-script-robustness",
+  "exit_code": 0,
+  "failure_class": null,
+  "retry_after_seconds": 0
+}

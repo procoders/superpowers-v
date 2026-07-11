@@ -117,7 +117,7 @@ The whole team's knowledge accumulates **through the committed corpus**, because
 truth is the git-tracked files, and the index is only a local, disposable cache derived from them:
 
 - Every knowledge source V-memory draws on is a **committed git artifact** — `docs/superpowers/**`
-  prose (specs/plans/reviews/archaeology), the `execution/*/results/*.json` `job_result` records
+  prose (specs/plans/reviews/archaeology/recon), the `execution/*/results/*.json` `job_result` records
   that feed `recall-check`, the human-curated `routing-lessons.md`, and `task-outcomes.jsonl`. A
   dev commits + pushes; a teammate pulls and now **has the same knowledge**.
 - The **index is per-developer, local, and out-of-repo** (`~/.cache/compound-v/memory/<repo-id>/`)

@@ -265,9 +265,10 @@ Summarize per backend: what discovery returned (the real catalog from
 final `deep`/`standard`/`light` assignment, and the path written
 (`.claude/compound-v.json`). Note that the dispatcher now resolves these via
 [`scripts/compound-v-resolve-model.py`](../scripts/compound-v-resolve-model.py) and
-that `effort` (`low`/`medium`/`high`) is an **orthogonal** dimension chosen per
-task-type in [`routing-policy.md`](../skills/compound-v/routing-policy.md), not set
-here.
+that `effort` (`low`/`medium`/`high`/`xhigh`) is an **orthogonal** dimension chosen
+per task-type in [`routing-policy.md`](../skills/compound-v/routing-policy.md), not
+set here. `xhigh` is valid **iff** `backend: codex`; every other backend rejects it
+with a clear error naming the rule (use `high` instead).
 
 **Honesty rules:** report only what discovery actually returned. `agy models </dev/null`
 runs headlessly and returns the live catalog, so report the discovered models as

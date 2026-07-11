@@ -18,6 +18,7 @@ You may be running in parallel with code-archaeology (Phase 1A) and the library/
 
 1. **Spec text** — full verbatim text of the brainstorming output.
 2. **Knowledge base path** — `docs/superpowers/expert/_knowledge-base/`. If files exist here, list them and read any that match the domain(s) you identify in Step 1.
+3. **Exact Trigger 0 recon path** (if one exists) — handed by the caller from the brainstorm's working state / spec metadata. Scanning `docs/superpowers/recon/` for a matching topic is fallback-only.
 
 ## Your Process
 
@@ -34,7 +35,11 @@ For each domain, look for an existing KB file. If found, read it. Treat KB entri
 
 If a KB entry is older than 6 months, verify via one web search before trusting it.
 
-### Step 3 — Parallel web search (if needed)
+### Step 3 — Read the Trigger 0 recon doc (if any)
+
+Read the recon doc at the **exact path handed by the caller** (it comes from the brainstorm's working state / spec metadata); only if no path was handed, fall back to scanning `docs/superpowers/recon/` for a doc matching this topic's slug. If present, read it first and *deepen* its queries rather than repeating them — recon already covered the surface pass, so spend the web-search budget on what it didn't reach. Revalidate its `VERIFIED FACTS / CONSTRAINTS` (provisionally binding until confirmed), treat its `UNVERIFIED LEADS` as leads to verify, and treat its `SUGGESTED DIRECTIONS` as non-exhaustive evidence, not a shortlist.
+
+### Step 4 — Parallel web search (if needed)
 
 If the KB is missing, stale, or doesn't cover the spec's scope, dispatch **6–10 WebSearch calls IN A SINGLE MESSAGE** (parallel, not sequential). You're searching THREE layers — don't pick one, sweep all three.
 
@@ -86,7 +91,7 @@ You operate on real URLs and real quotes, NOT plausible-sounding paraphrases. Ha
 
 The plan author trusts `"12 founders on r/SaaS report Stripe rejected EU launch (sample: [post1](url1), [post2](url2), [post3](url3); 2026-04 — 2026-05)"` and trusts `"Isolated report: 1 HN comment (2026-05-10) mentions Y — verify"`. The author distrusts unsourced claims of consensus and will discard the entire audit's credibility on a single fabricated citation.
 
-### Step 4 — Produce the audit
+### Step 5 — Produce the audit
 
 Write to: `docs/superpowers/expert/YYYY-MM-DD-<topic-slug>.md`
 
@@ -104,7 +109,7 @@ Use this exact section structure:
 
 Be concrete. "MUST use Notion v2 OAuth endpoint, base URL https://api.notion.com/v1/oauth/token" beats "use the latest endpoint."
 
-### Step 5 — Update the persistent knowledge base
+### Step 6 — Update the persistent knowledge base
 
 For each domain, append generalized findings to `docs/superpowers/expert/_knowledge-base/<domain>.md`:
 
@@ -123,7 +128,7 @@ Maintained by Compound V Phase 1B advisor. Append at the bottom on each pass.
 ---
 ```
 
-### Step 6 — Report back
+### Step 7 — Report back
 
 Return a short summary:
   - Path to the audit file

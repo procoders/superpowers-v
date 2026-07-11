@@ -1,6 +1,18 @@
 {
-  "$comment": "Compound V hooks. SubagentStop event was previously used but is not documented in official Claude Code hooks reference; removed v0.1.1 after honesty audit. SessionStart matcher pattern copied from upstream obra/superpowers v5.1.0. memory-refresh.sh (v2.0) is APPENDED to both events — it is silent (emits no context) and self-backgrounds an FTS5-only `refresh --quick`, so it composes with the banner/nudge without blocking and never installs/downloads.",
+  "$comment": "Compound V hooks. SubagentStop event was previously used but is not documented in official Claude Code hooks reference; removed v0.1.1 after honesty audit. SessionStart matcher pattern copied from upstream obra/superpowers v5.1.0. memory-refresh.sh (v2.0) is APPENDED to both events — it is silent (emits no context) and self-backgrounds an FTS5-only `refresh --quick`, so it composes with the banner/nudge without blocking and never installs/downloads. brainstorm-trigger0-nudge.sh (v2.8) uses PreToolUse additionalContext — live-probed 2026-07-11 on Claude Code 2.1.197 (see the probe comment in that hook); reminder only, never blocks.",
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/brainstorm-trigger0-nudge.sh\"",
+            "async": false
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "matcher": "startup|clear|compact",

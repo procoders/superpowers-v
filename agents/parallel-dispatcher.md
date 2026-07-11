@@ -77,7 +77,7 @@ For each batch, dispatch all implementers in **one message with concurrent calls
 
 Always show the **resolved** model (`backend · model (tier/effort)`), never the bare tier or a placeholder. The same annotation surfaces in [`/v:status`](../commands/v-status.md), so the model each job runs on is visible whether you watch the dispatch live or check status after.
 
-1. **Backend + tier/effort from the manifest job entry; resolve the concrete model BEFORE dispatch.** The manifest carries the routing **intent** (`tier` ∈ {deep, standard, light}, optional `effort` ∈ {low, medium, high}), not a hardcoded model — so the plugin survives model churn. Before invoking the backend for a job, resolve the concrete model with [`scripts/compound-v-resolve-model.py`](../scripts/compound-v-resolve-model.py):
+1. **Backend + tier/effort from the manifest job entry; resolve the concrete model BEFORE dispatch.** The manifest carries the routing **intent** (`tier` ∈ {deep, standard, light}, optional `effort` ∈ {low, medium, high, xhigh} — `xhigh` is valid **iff** `backend: codex`; every other backend rejects it with a clear error naming the rule (use `high` instead)), not a hardcoded model — so the plugin survives model churn. Before invoking the backend for a job, resolve the concrete model with [`scripts/compound-v-resolve-model.py`](../scripts/compound-v-resolve-model.py):
 
    ```bash
    # Resolve (backend, tier, effort, config) -> concrete model.
@@ -98,7 +98,7 @@ Always show the **resolved** model (`backend · model (tier/effort)`), never the
    ```
 
    - A `claude` job resolves tier→model (`deep`→opus, `standard`→opus (sonnet under `cost-aware`), `light`→sonnet); pass the resolved model to the `Task` call. `effort` on the claude path is advisory — the `Task` call has no separate effort flag.
-   - A `codex` job resolves tier→model (e.g. `deep`→`gpt-5.5`) and passes `--model <resolved>` **and** `--effort <effort>` to [`scripts/compound-v-run-codex-worker.sh`](../scripts/compound-v-run-codex-worker.sh) (`--effort` becomes `-c model_reasoning_effort=<effort>`). The execution-layer model **never** appears in any frontmatter.
+   - A `codex` job resolves tier→model (e.g. `deep`→`gpt-5.6-sol`) and passes `--model <resolved>` **and** `--effort <effort>` to [`scripts/compound-v-run-codex-worker.sh`](../scripts/compound-v-run-codex-worker.sh) (`--effort` becomes `-c model_reasoning_effort=<effort>`; codex is the one backend where `xhigh` is accepted). The execution-layer model **never** appears in any frontmatter.
    - An `antigravity` job resolves tier→model (a Gemini name) and passes `--model <resolved>` (omitted when empty; no effort flag) to [`scripts/compound-v-run-antigravity-worker.sh`](../scripts/compound-v-run-antigravity-worker.sh); always `worktree`, lower-trust.
    - A `cursor` job resolves tier→model (default `auto`; named models are a paid-plan opt-in — a Free plan can only use Auto) and passes `--model <resolved>` (no effort flag) to [`scripts/compound-v-run-cursor-worker.sh`](../scripts/compound-v-run-cursor-worker.sh); always `worktree`, lower-trust, requires an authenticated `cursor-agent`.
    - **Explicit manifest `model:` override skips resolution.** If a job entry carries an explicit `model`, do NOT run the resolver for it — that model wins (pass it straight through, or call the resolver with `--explicit-model <M>` which short-circuits to it). This preserves backward compatibility with existing explicit-model jobs.

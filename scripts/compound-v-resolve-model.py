@@ -18,9 +18,13 @@ No backend-specific routing logic is baked in here — every backend is just a
 
 Vocabulary (never changes when models churn):
   tier   ∈ { deep, standard, light }
-  effort ∈ { low, medium, high }   (orthogonal hint; passed through, default
+  effort ∈ { low, medium, high, xhigh }
+                                   (orthogonal hint; passed through, default
                                     pairing deep→high / standard→medium /
-                                    light→low when --effort omitted)
+                                    light→low when --effort omitted.
+                                    `xhigh` is valid iff backend is codex —
+                                    every other backend rejects it with a clear
+                                    error naming the rule; use `high` instead)
 
 Output: a single JSON object on stdout, e.g.
   {"backend": "codex", "tier": "deep", "model": "gpt-5.6-sol", "effort": "high"}
@@ -94,7 +98,11 @@ DEFAULT_MODELS = DEFAULT_MODELS_BY_STANCE["balanced"]
 
 BACKENDS = ("claude", "codex", "antigravity", "cursor")
 TIERS = ("deep", "standard", "light")
-EFFORTS = ("low", "medium", "high")
+# `xhigh` is valid iff backend == "codex": it maps to codex's kernel
+# model_reasoning_effort dimension, which live-accepts xhigh (verified
+# 2026-07-11 on codex-cli 0.144.1). resolve() rejects xhigh for every other
+# backend with a clear error naming the rule.
+EFFORTS = ("low", "medium", "high", "xhigh")
 # Stance vocabulary — DUPLICATED on purpose from compound-v-validate-manifest.py:VALID_STANCES.
 # Both scripts are standalone, stdlib-only CLIs; do NOT introduce a shared import. Keep in sync.
 VALID_STANCES = ("balanced", "conservative", "cost-aware", "claude-only")
@@ -157,6 +165,11 @@ def resolve(backend, tier, effort=None, config_models=None, explicit_model=None,
         raise ValueError("unknown tier '%s' (expected one of %s)" % (tier, ", ".join(TIERS)))
     if effort is not None and effort not in EFFORTS:
         raise ValueError("unknown effort '%s' (expected one of %s)" % (effort, ", ".join(EFFORTS)))
+    if effort == "xhigh" and backend != "codex":
+        raise ValueError(
+            "effort 'xhigh' is not valid for backend '%s': xhigh is codex-only "
+            "(kernel: model_reasoning_effort); use high" % backend
+        )
     if stance not in VALID_STANCES:
         raise ValueError("unknown stance '%s' (expected one of %s)" % (stance, ", ".join(VALID_STANCES)))
 
@@ -279,6 +292,36 @@ def _selftest():
     expect(
         "explicit effort overrides pairing",
         resolve("codex", "deep", effort="low")["effort"] == "low",
+    )
+
+    # xhigh is codex-only: `xhigh` is valid iff backend == codex (live-verified
+    # 2026-07-11 on codex-cli 0.144.1); every other backend rejects it with a
+    # clear error naming the rule.
+    expect(
+        "codex+xhigh accepted",
+        resolve("codex", "deep", effort="xhigh")["effort"] == "xhigh",
+    )
+    expect(
+        "claude+xhigh rejected",
+        raises(lambda: resolve("claude", "deep", effort="xhigh")),
+    )
+    expect(
+        "antigravity+xhigh rejected",
+        raises(lambda: resolve("antigravity", "deep", effort="xhigh")),
+    )
+    expect(
+        "cursor+xhigh rejected",
+        raises(lambda: resolve("cursor", "deep", effort="xhigh")),
+    )
+    _xhigh_msg = ""
+    try:
+        resolve("claude", "deep", effort="xhigh")
+    except ValueError as e:
+        _xhigh_msg = str(e)
+    expect(
+        "claude+xhigh error names the rule",
+        "xhigh is codex-only (kernel: model_reasoning_effort); use high"
+        in _xhigh_msg,
     )
 
     # Config override beats the built-in default for one cell only.

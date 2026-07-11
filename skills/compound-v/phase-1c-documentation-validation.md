@@ -41,10 +41,11 @@ Dispatch a fresh subagent using the **`doc-validator-prompt.md`** template (in t
 2. **One Task call**, dispatched in the **same message** as Phase 1A's archaeology and Phase 1B's domain-expert Task calls (all three pre-flights in one parallel dispatch).
 3. **Full spec text** in the prompt.
 4. **Pointer to** any package.json / requirements.txt / Cargo.toml / go.mod / Gemfile in the repo so the subagent can cross-check declared vs current versions.
+5. **Exact Trigger 0 recon path** if one exists — the caller hands it from the brainstorm's working state / spec metadata; scanning `docs/superpowers/recon/` is fallback-only.
 
 The subagent will:
 
-1. **Check `docs/superpowers/recon/` for a Trigger 0 recon doc matching this topic.** If present, reuse its library/tooling findings as *leads to verify* — recon is unverified reconnaissance, so 1C still validates every claim it makes against live docs (Context7 or WebSearch), same as any spec claim. It tells you where to look first; it never substitutes for validation.
+1. **Read the Trigger 0 recon doc at the exact path handed by the caller** (from the brainstorm's working state / spec metadata); only if no path was handed, fall back to scanning `docs/superpowers/recon/` for a doc matching this topic's slug. If present, use its library/tooling findings to direct the lookups: revalidate its `VERIFIED FACTS / CONSTRAINTS` against live docs (Context7 or WebSearch) and treat its `UNVERIFIED LEADS` as *leads to verify* — 1C validates every recon claim the same as any spec claim. Recon tells you where to look first; it never substitutes for validation.
 2. **Extract every library/version mention** from the spec, including implied ones ("we'll use an ORM" → flag for choice validation).
 3. **For each library, query Context7** (or fall back to WebSearch + package registry) to get:
    - Current stable version

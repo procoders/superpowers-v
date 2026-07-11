@@ -4,14 +4,15 @@ This file documents how the plugin's content *would* be used in Gemini CLI. **Th
 
 ## What this plugin does
 
-Compound V is a **sidekick to Superpowers**. It intercepts the three Superpowers phase transitions (brainstorming → writing-plans → execution) and adds:
+Compound V is a **sidekick to Superpowers**. It intercepts the four Superpowers phase transitions (pre-brainstorm recon → brainstorming → writing-plans → execution) and adds:
 
+0. **Gated pre-brainstorm recon (Trigger 0)** 🧪 description-driven, with a **reminder-only hook backstop** (`hooks/brainstorm-trigger0-nudge.sh`, a Claude Code hook that nudges when the Skill tool invokes `superpowers:brainstorming` — a reminder, not enforcement): before a brainstorm begins on an unfamiliar topic, a gated, bounded research pass (bundled `deep-research` if present, 3–6 parallel WebSearch otherwise, skip-with-notice if neither) writes an anti-anchoring recon doc to `docs/superpowers/recon/` that the brainstorm — and later pre-flights 1B/1C — read first. Gate order: plumbing-skip → V-memory KB hit → `brainstorm.deep_research` config (`ask` default / `auto` / `off` hard kill-switch). Recon is evidence, never a routing input. Also 🧪 description-driven: **batched elicitation** — ≥3 *independent* clarifying questions may batch into ONE screen via the surface ladder — Visual Companion form if accepted this session, else the harness's structured-question tool, else sequential (companion acceptance gates only the top surface); dependent chains stay sequential; when unsure → sequential; see `skills/compound-v/brainstorm-elicitation.md`.
 1. **Three parallel pre-flights** after brainstorming:
    - Code archaeology (existing-code reality)
    - Domain-expert advisor with three-layer audience search (product/regulatory reality)
    - Library/doc validator via Context7 MCP (dependency currency)
 2. **Disjoint File Partition Map enforcement** inside writing-plans, which **materializes a `manifest.yaml`** — the machine-readable contract that drives dispatch
-3. **Manifest-driven dispatch** on the most capable model available (Gemini 2.5 Pro or equivalent), with a **`git diff` scope gate after every job** (a worker that writes outside its `write_allowed` list is BLOCKED and never merges) and **crash-resume** via a `state.json` run directory
+3. **Manifest-driven dispatch** on the most capable model available (Gemini 3.1 Pro or equivalent), with a **`git diff` scope gate after every job** (a worker that writes outside its `write_allowed` list is BLOCKED and never merges) and **crash-resume** via a `state.json` run directory
 
 ## Orchestrator surface (v1.0 + 1.1)
 
@@ -45,8 +46,8 @@ Gemini's `activate_skill` tool can load the SKILL.md content on demand. Trigger:
 
 This plugin was authored for the Anthropic Claude family. On Gemini:
 
-- "Opus default" → **Gemini 2.5 Pro** (or whatever is currently the most capable model)
-- "Sonnet exception" → **Gemini 2.5 Flash** for the same narrow junior-task taxonomy
+- "Opus default" → **Gemini 3.1 Pro** (or whatever is currently the most capable model)
+- "Sonnet exception" → **Gemini 3.5 Flash** for the same narrow junior-task taxonomy
 - "Never Haiku" → Never use Gemini Flash-Lite or smaller; the project's reasoning bar is high
 
 See `skills/compound-v/phase-3-parallel-opus-dispatch.md` § "Model Selection Taxonomy" for the strict 8-box criteria that gate the cheaper-model carve-out, and `skills/compound-v/routing-policy.md` for the env-aware stances (Balanced / Conservative / Cost-aware). Reviewers are always the top-tier model; the cheaper-model carve-out never applies to a reviewer.
@@ -69,6 +70,8 @@ These are Claude Code `/v:*` commands. On Gemini CLI, invoke the equivalent skil
 | `/v:archaeology <topic>` | (unchanged) Phase 1A only |
 | `/v:remember <query>` | Recall search over `docs/superpowers/**` prose (V-memory) — evidence for planning + review, not a routing input |
 | `/v:memory-refresh` | (Re)index the FTS5 recall lane; `--bootstrap` provisions the opt-in dense embeddings venv |
+| `/v:onboard` | Scan the repo and build a trusted, citation-verified knowledge base (`docs/superpowers/architecture/*`) plus an `AGENTS.md`/`CLAUDE.md` bridge, behind a human approval gate; `--refresh` re-checks staleness |
+| `/v:pr-review [url\|number]` | Deep two-axis (Standards ⊥ Spec) code review of a PR/MR or local diff — review-only, never edits; GitHub (`gh`), GitLab (`glab`), or a hostless local branch |
 
 ## Key entry points
 

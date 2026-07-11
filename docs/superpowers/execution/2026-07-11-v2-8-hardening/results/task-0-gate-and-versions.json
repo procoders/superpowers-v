@@ -1,0 +1,17 @@
+{
+  "status": "done",
+  "blocked": false,
+  "files_changed": [
+    "scripts/compound-v-scope-check.py",
+    ".claude-plugin/plugin.json",
+    ".claude-plugin/marketplace.json",
+    "CHANGELOG.md"
+  ],
+  "violations": [],
+  "summary": "Rename bypass fixed (--no-renames) + whole-root escaping-symlink scan (catches pre-existing links). 3 new selftest cases proven fail-before/pass-after via live revert; 50 checks green. Versions 2.8.0 x3, CI guard simulated, gate dogfooded on own diff. Committed 0478857 (direct).",
+  "session_id": "",
+  "worktree": "",
+  "exit_code": 0,
+  "failure_class": null,
+  "retry_after_seconds": 0
+}

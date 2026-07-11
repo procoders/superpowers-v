@@ -46,12 +46,12 @@ The orchestration contracts and scripts live alongside this skill: the manifest 
 
 All three are independent — different failure modes, different lookup paths, no shared state. Dispatch them in **one message with three concurrent Task calls** to keep wall-clock cost low.
 
-**Auto-fire caveat:** "Auto-fires after brainstorming" is **description-driven** (the parent agent reads this skill's description and recognizes the trigger condition). It is NOT enforced by Claude Code hooks. The plugin ships two helper hooks (`SessionStart` banner + `PostToolUse` plan-saved nudge) that print *reminders* to the parent agent, but the actual skill invocation still depends on the parent recognizing the description trigger. Reliability is high on Opus / Sonnet 4.6+; weaker models may miss the trigger. Trigger 0 shares the same description-driven mechanism but has **no hook reinforcement at all** — nothing is written before a brainstorm begins, so no `PostToolUse` nudge can back it up — making it the weakest of the four triggers; do not overclaim its reliability.
+**Auto-fire caveat:** "Auto-fires after brainstorming" is **description-driven** (the parent agent reads this skill's description and recognizes the trigger condition). It is NOT enforced by Claude Code hooks. The plugin ships three helper hooks (`SessionStart` banner, the plan-saved nudge, and `hooks/brainstorm-trigger0-nudge.sh` — a one-line reminder injected when the Skill tool invokes `superpowers:brainstorming`) that print *reminders* to the parent agent, but the actual skill invocation still depends on the parent recognizing the description trigger. Reliability is high on Opus / Sonnet 4.6+; weaker models may miss the trigger. Trigger 0 shares the same description-driven mechanism; its hook backstop is a **reminder, not enforcement** — the model can still skip it — so Trigger 0 remains the weakest of the four triggers; do not overclaim its reliability. A missed Trigger 0 degrades to plain upstream brainstorming, and nothing breaks.
 
-**The skyscraper metaphor** (see [assets/skyscraper-metaphor.md](../../assets/skyscraper-metaphor.md)): Without pre-flight you build a 500m² hat on a 200m² tower. With both audits, you add three proper floors that fit the building AND the building code.
+**The skyscraper metaphor** (see [assets/skyscraper-metaphor.md](../../assets/skyscraper-metaphor.md)): Without pre-flight you build a 500m² hat on a 200m² tower. With the pre-flight audits, you add three proper floors that fit the building AND the building code.
 
 **Announce at start of each phase:**
-- Phase 0: `"💉 Compound V — pre-brainstorm recon (gated)."`
+- Phase 0: `"💉 Compound V — pre-brainstorm recon (gated)."` — **only when the gates decide to RUN**; a gate-skip gets the one-line log plus its terminal event, no announcement
 - Phase 1: `"💉 Compound V injected — triple pre-flight (archaeology + domain-expert + library-validator) in parallel."`
 - Phase 2: `"💉 Compound V — enforcing Disjoint Partition Map."`
 - Phase 3: `"💉 Compound V — dispatching N implementers in parallel on Opus."`
@@ -77,8 +77,8 @@ flowchart LR
     F --> G[implementation done]
 ```
 
-**Trigger 0 — Pre-Brainstorm Recon (gated).** Fires when `superpowers:brainstorming` is about to begin on a feature topic. Gate order, first match wins: (1) pure-plumbing topic → skip; (2) V-memory knowledge-base hit (`/v:remember <topic>`) → skip, hand the recalled docs to the brainstorm instead; (3) `.claude/compound-v.json` → `brainstorm.deep_research`: `ask` (default — one offer with an honest qualitative cost note and an egress/confidentiality note; the topic text leaves the machine) | `auto` | `off` (hard kill-switch). Engine, degrade-safe: the bundled `deep-research` skill if present in the **live** available-skills listing, else 3–6 parallel WebSearch calls, else skip with a notice — never block the brainstorm. Bounds: one deep-research pass OR ≤6 searches; output ≤~150 lines to `docs/superpowers/recon/YYYY-MM-DD-<topic>.md`, committed — anti-anchoring structure, DIRECTIONS explicitly non-exhaustive; 1B/1C read it first and deepen (not repeat) its queries. Recon is evidence for the brainstorm and planning, **never a routing input**. Full procedure: [phase-0-recon.md](phase-0-recon.md).
-> *Honesty note:* Trigger 0 is description-driven with **zero hook backstop** — no file exists yet for a `PostToolUse` hook to react to, so it is weaker than Triggers 1–3 (which get hook reminders). If the parent misses it, nothing re-fires it.
+**Trigger 0 — Pre-Brainstorm Recon (gated).** Fires when `superpowers:brainstorming` is about to begin on a feature topic; gates 1–3 are the **complete** eligibility test, and Phase 0 is announced **only when the gates decide to RUN** — a skip gets the one-line log plus exactly one terminal event (`plumbing_skip | kb_skip | off | declined | no_engine`) in `docs/superpowers/memory/recon-outcomes.jsonl`. Gate order, first match wins: (1) pure-plumbing topic → skip (tool choices, migrations, and version/compatibility questions are NOT plumbing); (2) V-memory check — from the repo root, `python3 scripts/compound-v-memory.py search "<topic>" --top 8 --json` (refresh first if the index warns it is behind; open the top results, rank alone never suffices) → skip only on a **strong hit**: same product/domain AND same task class AND current framework constraints AND fresh — volatile material older than ~30 days degrades to partial (still evidence, no longer skip-authority); (3) `.claude/compound-v.json` → `brainstorm.deep_research`: `ask` (default — **one blocking offer** built from the engines actually present, with an honest qualitative cost note and an egress/confidentiality note; the topic text leaves the machine) | `auto` | `off` (hard kill-switch for external recon; gate 2's local recall still applies). Engine ladder, degrade-safe, **at most one engine completes**: the bundled `deep-research` skill if present in the **live** available-skills listing, else **3–6 parallel WebSearch calls in one message**, else skip announcing the **real reason** — never block the brainstorm. Output: **≤150 lines** at `docs/superpowers/recon/YYYY-MM-DD-<slug>.md`, committed — the verbatim anti-anchoring header, then exactly five sections: `QUESTIONS TO ASK`, `VERIFIED FACTS / CONSTRAINTS`, `UNVERIFIED LEADS`, `SUGGESTED DIRECTIONS`, `SOURCES`. A run appends `fired` → `saved` → `consumed` events (three separate lines, never a mutated one); the brainstorm consumes the doc **directions-late**, and 1B/1C receive the **exact path** to deepen (not repeat) its queries. Recon is evidence for the brainstorm and planning, **never a routing input**. Full procedure: [phase-0-recon.md](phase-0-recon.md).
+> *Honesty note:* Trigger 0 is description-driven with **one backstop** — `hooks/brainstorm-trigger0-nudge.sh` injects a one-line reminder ("run the Trigger 0 gates from phase-0-recon.md if not already done") when the Skill tool invokes `superpowers:brainstorming`. That is a **reminder, not enforcement**: the model can still skip it, so Trigger 0 remains weaker than Triggers 1–3. A missed Trigger 0 degrades to plain upstream brainstorming.
 
 **Trigger 1 — Parallel Pre-Flight (1A + 1B + 1C).** Fires when brainstorming produces a spec. All three pre-flights run **in a single message with three concurrent Task calls** — they don't depend on each other.
 - 1A: archaeology — see [phase-1a-archaeology.md](phase-1a-archaeology.md). Saves to `docs/superpowers/archaeology/`.
@@ -103,8 +103,8 @@ flowchart LR
 | Spec + quality reviewers run sequentially per task | Reviewers run **per-task in parallel** after each batch completes |
 | No persistent domain knowledge between sessions | Phases 1B and 1C save **knowledge bases** at `docs/superpowers/{expert,library-audit}/_knowledge-base/` reused on future related features |
 | Library suggestions from LLM training data | Phase 1C validates against **live Context7 MCP** before any library is locked into the plan |
-| Brainstorm starts cold on unfamiliar topics | **Trigger 0**: a gated, bounded recon doc is read before the first question — see [phase-0-recon.md](phase-0-recon.md) |
-| Clarifying questions strictly one-at-a-time | **≥3 independent questions** may batch into one Visual Companion form (dependent chains stay sequential) — see [brainstorm-elicitation.md](brainstorm-elicitation.md) |
+| Brainstorm starts cold on unfamiliar topics | **Trigger 0**: a gated, bounded recon doc is produced before the first question and consumed **directions-late** (first-principles proposals first; SUGGESTED DIRECTIONS read last) — see [phase-0-recon.md](phase-0-recon.md) |
+| Clarifying questions strictly one-at-a-time | **≥3 independent questions** may batch at a design checkpoint (≤5 per batch; surface ladder: companion → structured-question tool → sequential; dependent chains stay sequential) — see [brainstorm-elicitation.md](brainstorm-elicitation.md) |
 
 **Violating the letter of these overrides is violating the spirit.** See [rationalization-table.md](rationalization-table.md) for the rebuttal sheet.
 
@@ -114,7 +114,7 @@ flowchart LR
 
 ### Phase 0: Pre-Brainstorm Recon (gated — Trigger 0)
 
-Before a brainstorm begins on a feature topic: gate 1 plumbing-skip → gate 2 V-memory strong-hit skip → gate 3 `brainstorm.deep_research` (`ask` default / `auto` / `off`). Engine: bundled `deep-research` via its skill interface if present, else ≤6 parallel WebSearch, else skip with notice — never blocks the brainstorm. Output: an anti-anchoring recon doc at `docs/superpowers/recon/YYYY-MM-DD-<topic>.md`, committed, read by the brainstorm and later by 1B/1C. Full procedure: [phase-0-recon.md](phase-0-recon.md).
+Before a brainstorm begins on a feature topic: gate 1 plumbing-skip (tool choices, migrations, and version/compat questions are NOT plumbing) → gate 2 V-memory check via `python3 scripts/compound-v-memory.py search "<topic>" --top 8 --json` from the repo root (refresh a stale index first; strong hit = same product/domain + same task class + current constraints + fresh, volatile material older than ~30 days degrading to partial; when unsure, weak → continue) → gate 3 `brainstorm.deep_research` (`ask` default / `auto` / `off`; fail-closed — an invalid value is never treated as `auto`). Announce Phase 0 only when the gates decide to RUN. Engine ladder, at most one completes: bundled `deep-research` via its live skill listing, else 3–6 parallel WebSearch calls in one message, else skip with the real reason — never blocks the brainstorm. Output: a ≤150-line recon doc at `docs/superpowers/recon/YYYY-MM-DD-<slug>.md` — the verbatim anti-anchoring header + five sections (`QUESTIONS TO ASK`, `VERIFIED FACTS / CONSTRAINTS`, `UNVERIFIED LEADS`, `SUGGESTED DIRECTIONS`, `SOURCES`) — committed together with its `saved` event. A run appends `fired` → `saved` → `consumed` to `docs/superpowers/memory/recon-outcomes.jsonl`; a gate-skip appends one terminal event instead. The brainstorm consumes the doc directions-late; 1B/1C receive the exact path. Full procedure: [phase-0-recon.md](phase-0-recon.md).
 
 ### Phase 1: Parallel Pre-Flight (1A + 1B + 1C)
 
@@ -164,7 +164,7 @@ When the plan is ready:
 2. Dispatch all N parallel implementers in **one message with N concurrent Task calls**:
    - `model: "opus"`
    - Strict WRITE-allowed / READ-allowed scope lock
-   - Full task text + design constraints from BOTH audits (archaeology + expert)
+   - Full task text + design constraints from all three audits (archaeology + expert + library)
 3. When all implementers return, dispatch 2N reviewers in parallel (spec + quality per task), also on Opus.
 4. Per-task fix loops, then final integration review.
 
@@ -247,7 +247,7 @@ See [rationalization-table.md](rationalization-table.md) for the full list with 
 
 | Superpowers skill | Compound V action |
 |---|---|
-| `superpowers:brainstorming` | **Trigger 0 fires before it starts** (gated pre-brainstorm recon → [phase-0-recon.md](phase-0-recon.md)). The skill itself runs unchanged. On completion, fire Trigger 1 (1A + 1B + 1C in parallel). |
+| `superpowers:brainstorming` | **Trigger 0 fires before it starts** (gated pre-brainstorm recon → [phase-0-recon.md](phase-0-recon.md)). The skill itself runs unchanged **except the gated elicitation override** ([brainstorm-elicitation.md](brainstorm-elicitation.md)). On completion, fire Trigger 1 (1A + 1B + 1C in parallel). |
 | `code-archaeology` (mcpize or equivalent) | Inserted as Phase 1A. |
 | Universal domain-expert advisor (this plugin) | Inserted as Phase 1B. Dispatchable as `subagent_type: "compound-v:domain-expert"` (see `agents/domain-expert.md`). |
 | Library/doc validator via Context7 (this plugin) | Inserted as Phase 1C. Dispatchable as `subagent_type: "compound-v:doc-validator"` (see `agents/doc-validator.md`). |

@@ -34,7 +34,7 @@ This sits in the three-layer plan check, each layer catching a different class o
 |---|---|---|
 | Deterministic | `scripts/compound-v-validate-manifest.py` | hard invariants (disjoint write-scope, codex⇒worktree, reviewers⇒opus/deep) — no opinions |
 | Primary judgment | `compound-v:partition-reviewer` (Opus) | decomposition sense, coverage |
-| **Independent second opinion** | **Codex, tier `deep`, effort `high`** | the planner-family's own blind spots |
+| **Independent second opinion** | **Codex, tier `deep`, effort `xhigh`** | the planner-family's own blind spots |
 
 ---
 
@@ -47,11 +47,11 @@ the read-only cross-model review:
 scripts/compound-v-codex-review.sh \
   --plan-file docs/superpowers/plans/<plan>.md \
   --repo "$PWD" \
-  --effort high \
+  --effort xhigh \
   [--context-file docs/superpowers/archaeology/<topic>.md] ...
 ```
 
-- The model is resolved for **codex / tier `deep`** (e.g. `gpt-5.5`) — see [routing-policy.md](routing-policy.md). `--effort high` is "Codex on their strongest reasoning."
+- The model is resolved for **codex / tier `deep`** (e.g. `gpt-5.6-sol`) — see [routing-policy.md](routing-policy.md). `--effort xhigh` is "Codex on their strongest reasoning" (codex-only top rung; the script accepts low|medium|high|xhigh and defaults to xhigh).
 - Codex runs **read-only** (`--sandbox read-only`): it may READ the repo to ground each objection against the real files, but writes nothing.
 - It returns structured findings per [`schemas/plan-review.schema.json`](../../schemas/plan-review.schema.json) — `verdict` (endorse | concerns | reject), a list of `findings` (each: `severity`, `category`, `claim`, `evidence`, `recommendation`), and `blind_spots_checked`.
 - The reviewer is prompted to **refute** the plan, default to skepticism, and prefer concrete evidence; an empty `findings` list is honest and valid.

@@ -103,7 +103,9 @@ flowchart LR
 
 ## The Technical View
 
-Same story, mapped onto Compound V's three phases (with parallel pre-flight 1A + 1B):
+Same story, mapped onto Compound V's three phases (with parallel pre-flight 1A + 1B + 1C):
+
+> *Period piece: this diagram predates per-job isolation ("no worktrees" was the v0.1 stance — external workers now get git worktrees + the scope gate) and the v2.7 pre-brainstorm recon (Trigger 0); it keeps the original shape because the metaphor hasn't changed.*
 
 ```mermaid
 flowchart TB

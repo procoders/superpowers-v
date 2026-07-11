@@ -1,0 +1,14 @@
+{
+  "status": "done",
+  "blocked": false,
+  "files_changed": [
+    "skills/compound-v/brainstorm-elicitation.md"
+  ],
+  "violations": [],
+  "summary": "204 lines: checkpoint algorithm with pairwise dependency graph incl. psychological co-presence edge, restructured gate (batching vs surface), <=5/no-second-batch, observable acceptance (yes + recorded state_dir), transactional protocol (namespaced ids, toggle-replay, read-before-push barrier, per-group reconciliation). C1 21-27 + C2 6-7 closed. Scope PASS.",
+  "session_id": "",
+  "worktree": "/private/tmp/compound-v/2026-07-11-v2-8-hardening/task-2-elicitation-contract",
+  "exit_code": 0,
+  "failure_class": null,
+  "retry_after_seconds": 0
+}

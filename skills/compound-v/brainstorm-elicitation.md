@@ -5,27 +5,52 @@
 This doc governs how clarifying questions are asked while `superpowers:brainstorming` runs
 with Compound V present. The default is, and stays, **upstream's one-at-a-time terminal
 interview** — correct and practitioner-backed for dependent, exploratory questioning. The
-one narrow exception: when **≥3 genuinely independent** questions pile up, they may batch
-into **ONE Visual Companion form screen** instead of three-plus serial turns. The exception
-is gated (three conditions below), bounded (≤5 groups, never a grid), and biased toward the
-default: **when unsure → sequential.**
+one narrow exception: when a checkpoint yields **≥3 genuinely independent** questions, they
+may batch onto **one structured surface** instead of three-plus serial turns. Three separate
+decisions, taken in order and never conflated: the **checkpoint algorithm** finds the
+batchable set, the **batch gate** decides whether that set batches at all, the **surface
+ladder** decides where a gated batch renders. Bias throughout: **when unsure → sequential.**
 
 ---
+
+## The checkpoint algorithm — when batching is even evaluated
+
+Questions never "pile up" in a one-at-a-time interview, so the batch question is evaluated
+at each **design checkpoint**: every moment the interviewer plans its next question(s) —
+the only well-defined evaluation moment. At each checkpoint:
+
+1. **List** the candidate questions currently worth asking.
+2. **Build the pairwise dependency graph.** Draw an edge between two questions when either:
+   - **answer interaction** — either answer can change the other's wording, options, or
+     necessity, or both draw on a shared budget (scope, time, effort) the form never
+     displays; or
+   - **psychological co-presence** — seeing one group's framing on the same screen could
+     plausibly shift the other answer (priming, order, carryover effects), even with zero
+     logical interaction between the answers.
+3. **Batch-eligible = isolated nodes only.** A question with at least one edge stays
+   sequential. A "mostly independent" cluster is not independent.
+4. **Recompute after every sequential answer.** Answers create edges, delete candidates,
+   and spawn new questions; the graph is stale the moment anything is answered. The next
+   checkpoint starts again from step 1.
 
 ## The classification rule — dependent chain vs independent batch
 
 - **Dependent chain:** an earlier answer changes what a later question means, which options
   it offers, or whether it should be asked at all. These stay **one-at-a-time in the
-  terminal**, upstream-style. A batched dependent question is half-stale the moment an
+  terminal**, upstream-style — a batched dependent question is half-stale the moment an
   earlier answer would have rewritten it.
-- **Independent batch:** every question can be answered in any order and no answer affects
-  any other. Only these are batch-eligible.
+- **Independent batch:** every question can be answered in any order, no answer affects any
+  other, and no group's on-screen framing plausibly primes another answer. Only these
+  batch.
 
 **The operational test is *answer interaction*, not surface topic:** could any answer
 change, contradict, or over-subscribe another — including through a shared constraint the
-form never displays (a scope, time, or effort budget)? If yes, the questions are dependent.
-Two questions about unrelated-looking topics can interact; two questions about the same
-topic can be independent. Judge the answers, not the subject line.
+form never displays? Two questions about unrelated-looking topics can interact; two
+questions about the same topic can be independent. Judge the answers, not the subject line.
+The co-presence edge is the second, softer test: even logically independent answers can be
+skewed by sharing a screen (an early problem-framed question colors later answers regardless
+of topic — documented questionnaire reality). If co-presence could skew, the pair stays
+sequential.
 
 **Tiebreak — when unsure → sequential.** The costs are asymmetric: a dependent question
 misread as independent yields a half-stale form and a revision cycle; an independent one
@@ -47,108 +72,133 @@ Verbatim from the [expert audit §4](../../docs/superpowers/expert/2026-07-10-re
    is the case the tiebreak must catch: **if the answers could ever contradict or
    over-subscribe a shared budget, they are not independent — ask sequentially.**
 
-Order/carryover/priming effects are documented questionnaire reality — an early
-problem-framed question colors later answers regardless of topic — which is why
-independence is judged on answer interaction, never on surface topic.
-
 ---
 
-## The batch gate — all three conditions, or stay sequential
+## The batch gate — independence + count + config decide batching
 
-1. **≥3 independent questions are pending, AND the batch fits in ≤5 groups on one screen.**
-   Below the floor, batching saves nothing; above the ceiling, the screen degrades into the
-   survey-matrix anti-pattern (higher dropout, straight-lining). More than 5 → split into
-   screens or continue one-at-a-time. **Never render a matrix/grid.**
-2. **The user already accepted the Visual Companion this session** — via upstream's own
-   just-in-time offer, made for a genuinely visual question. Batching is never a reason to
-   offer or open the companion; this condition exists precisely to preserve upstream's offer
-   etiquette (see the override section below).
-3. **`brainstorm.batch_elicitation != false`** in `.claude/compound-v.json`. Readers default
-   the key to `true` when the `brainstorm` block is absent (pre-v2.7 configs); `false` is an
-   honored kill-switch — the user gets upstream's sequential behavior, always.
+Exactly three conditions decide whether an eligible set BATCHES. The companion appears in
+none of them — acceptance gates only the companion SURFACE (next section), never batching.
 
-Form-shape rules for a batch that clears the gate:
+1. **Independence:** every question in the set is an isolated node in this checkpoint's
+   dependency graph.
+2. **Count:** **≥3** eligible questions (below the floor, batching saves nothing), and at
+   most the **first 5** eligible batch at one checkpoint. Overflow beyond 5 continues
+   **one-at-a-time**; **never a second batch from the same checkpoint** — the next
+   checkpoint may batch again, after a full recompute. **Never render a matrix/grid**
+   (the survey-matrix anti-pattern: higher dropout, straight-lining).
+3. **Config:** `brainstorm.batch_elicitation` in `.claude/compound-v.json` is not `false`.
+   Fail-closed rule, verbatim from the shared contract: Missing file or key → the
+   documented defaults (`deep_research: "ask"`, `batch_elicitation: true`). Malformed JSON,
+   wrong type, or unknown value → warn once, then use `deep_research=ask` and
+   `batch_elicitation=false` for this session; never treat an invalid value as `auto`.
+   `false` — configured or fail-closed — is an honored kill-switch: the user gets
+   upstream's sequential behavior, always.
+
+Form-shape rules for any batch, on any surface:
 
 - Groups must be **answerable in any order** and share **no rating scale or common stem**
   (a shared scale is a matrix wearing a costume).
 - Every group carries an **open-ended escape hatch** — an "other / none of these — tell me
   in the terminal" option — so the listed choices never frame out the true answer.
-- One screen per batch; answering is never mandatory — the terminal reply always wins.
+- One screen (or call) per batch; answering is never mandatory — the terminal reply wins.
 
----
+## The surface ladder — where a gated batch renders
+
+A batch that clears the gate renders on the highest available rung:
+
+1. **Visual Companion** — available only under the observable-acceptance rule below; one
+   form screen per the transactional protocol. Reference the companion by its stable
+   contract (state dir, events file, frame classes), never a version pin.
+2. **The harness's structured-question equivalent** (on Claude Code: `AskUserQuestion`) —
+   **ONE call**, sized to its caps: **≤4 questions per call, 2–4 options per question,
+   headers ≤12 chars**, `multiSelect: true` for checkbox-style groups (its automatic
+   "Other" free-text option is the escape hatch). A 5-group batch puts 4 in the call and
+   the fifth sequential; a question with more than 4 choices is restructured with
+   `multiSelect` or split; **never a second call from the same checkpoint.** No such tool
+   on this harness ⇒ rung 3.
+3. **One-at-a-time in the terminal** — upstream's default.
+
+The ladder only ever steps **down**: no rung re-offers the companion, no rung upgrades a
+terminal conversation into a form, and a **runtime failure descends immediately** — server
+dead, screen push fails, `$STATE_DIR/events` unreadable or unparseable ⇒ this batch drops a
+rung; answers already reconciled stand, unresolved groups are re-asked on the lower rung.
+On every rung the hard rule holds: **dependent questions NEVER enter any batch surface.**
+
+### Observable acceptance — when the companion counts as available
+
+"Companion accepted this session" requires BOTH observable facts:
+
+1. The user said an **explicit yes in THIS conversation** to upstream's own just-in-time
+   companion offer, made for a genuinely visual question — batching is never a reason to
+   make (or repeat) the offer.
+2. A **`state_dir` is recorded** in this conversation's working state (from the companion
+   server's startup JSON / `$STATE_DIR/server-info`).
+
+Either fact unknown or unverifiable ⇒ **companion unavailable** — use rung 2. A server
+left over from an earlier session, a config flag, or a remembered acceptance proves nothing.
+
+## Transactional answer protocol — companion batches only
+
+The companion's events file (`$STATE_DIR/events` — JSONL, one object per line, e.g.
+`{"type":"click","choice":"naming:b","text":"Option B - verb-first","timestamp":1706000101}`)
+is **cleared automatically on each new screen push** and carries no group identity of its
+own — two hazards for a multi-group form that this protocol neutralizes.
+
+**Authoring:**
+
+- **Namespaced choices:** every option's `data-choice` is `"group:option"` (`"naming:a"`,
+  `"scope:cli-only"`), and every id is **globally unique across the screen** — a bare
+  `"a"` repeated in two groups makes events unattributable.
+- Each group is a `.section` with a `.label`; choices live in an `.options` container of
+  `.option` elements wired `data-choice="…" onclick="toggleSelect(this)"`. Groups with
+  checkbox semantics put the bare `data-multiselect` attribute on their `.options`
+  container (the helper reads `container.dataset.multiselect` and toggles).
+
+**Reading:**
+
+- **Completion barrier — read before any push.** The user's terminal reply is the signal
+  that the form is done. Only after it arrives: read and parse `$STATE_DIR/events`,
+  reconcile per group (below) — and only then may any new screen be pushed. Pushing first
+  clears the file and races a still-clicking user; a screen with unread events is never
+  replaced.
+- **Absent events file ⇒ the user did not interact** — the terminal text is everything.
+- **Multiselect groups resolve by toggle-replay:** replay that group's click events in
+  timestamp order, toggling each choice's membership per click; the surviving set is the
+  answer. Single-select groups: the group's last click wins.
+
+**Per-group reconciliation** — the terminal text is primary; the form is an input surface,
+never an authority. Resolve each group independently:
+
+| The terminal reply… | That group's answer is… |
+|---|---|
+| Explicitly addresses the group | The terminal answer — it overrides that group's clicks |
+| Doesn't mention the group; events have a value | The event value |
+| Is a bare acknowledgement ("ok", "done", "looks right") | The event values — **acknowledgements override nothing** |
+| Is ambiguous for the group (unclear which option; contradicts the clicks unclearly) | **Re-ask that group, sequentially** |
+| Group has no events and no terminal mention | **Never infer a default** — ask it sequentially, or record it as explicitly deferred with the user's consent |
 
 ## The upstream override, stated honestly
 
-Upstream routes text questions to the terminal. Verbatim, from the `superpowers:brainstorming`
-SKILL.md and its `visual-companion.md`:
-
-> *"Per-question decision: Even after the user accepts, decide FOR EACH QUESTION whether to
-> use the browser or the terminal … **Use the terminal** for content that is text —
-> requirements questions, conceptual choices, tradeoff lists, A/B/C/D text options, scope
-> decisions."*
-
-> *"Use the terminal when the content is text or tabular: Requirements and scope questions …
-> Conceptual A/B/C choices … Tradeoff lists … Clarifying questions — anything where the
-> answer is words, not a visual preference."*
-
-**This doc deliberately overrides that rule for exactly one case:** a batch of independent
-text-ish questions (preference toggles, naming, styling directions, feature checkboxes)
-that clears the three-condition gate. The mechanism is the same **description-driven
-override** as Compound V's other interceptions — and it carries the same reliability caveat
-(nothing enforces it; a weaker model may miss it — see SKILL.md's auto-fire caveat).
-
-What is **not** overridden:
+Upstream routes text questions to the terminal. Verbatim, from the
+`superpowers:brainstorming` SKILL.md: *"Per-question decision: … **Use the terminal** for
+content that is text — requirements questions, conceptual choices, tradeoff lists, A/B/C/D
+text options, scope decisions."* **This doc deliberately overrides that rule for exactly
+one case:** a gated batch of independent text-ish questions. The mechanism is the same
+description-driven override as Compound V's other interceptions, with the same reliability
+caveat (nothing enforces it — see SKILL.md's auto-fire caveat). Not overridden:
 
 - **The just-in-time offer etiquette is inviolable.** Upstream: *"Offer … just-in-time —
-  NOT upfront … This offer MUST be its own message … If no visual question ever arises,
-  never offer it."* Compound V never force-opens the browser and never makes the offer on
-  batching's behalf — condition 2 exists for exactly this.
+  NOT upfront … If no visual question ever arises, never offer it."* Compound V never
+  force-opens the browser and never makes the offer on batching's behalf — the
+  observable-acceptance rule exists for exactly this.
 - **Dependent and exploratory questions stay in the terminal, one at a time** — upstream's
   default and the practitioner counter-signal agree, and this doc keeps them both.
-
----
-
-## Rendering contract — the companion by its stable contract, not a version pin
-
-Reference the companion by the surfaces below (stable across upstream releases), never by a
-version string:
-
-- **One form screen per batch.** Each group is a `.section` with a `.label`; choices live in
-  an `.options` container of `.option` elements wired `data-choice="…"
-  onclick="toggleSelect(this)"` (`.letter`/`.content` for the option body, `.selected` marks
-  the choice). Where a group has checkbox semantics ("pick all that apply"), put the bare
-  **`data-multiselect`** attribute on that group's `.options` container — the companion's
-  helper reads `container.dataset.multiselect` and toggles instead of replacing.
-- **Answers come from `$STATE_DIR/events`** — JSONL, one object per line, e.g.
-  `{"type":"click","choice":"a","text":"Option A - Simple Layout","timestamp":1706000101}`.
-  The file is **cleared automatically on each new screen push**; **absent ⇒ the user did not
-  interact** (use the terminal text only).
-- **Merge events with the user's terminal reply; the terminal text is primary.** A terminal
-  answer that contradicts a click wins — the form is an input surface, never an authority.
-
----
-
-## Fallback ladder
-
-1. **Companion accepted this session** → one form screen per the rendering contract above.
-2. **Companion declined or absent** → **ONE `AskUserQuestion` call**, sized to its caps:
-   **≤4 questions per call, 2–4 options per question, headers ≤12 chars**, with
-   `multiSelect: true` for checkbox-style groups (its automatic "Other" free-text option is
-   the escape hatch). A question with more than 4 choices can't list them all — restructure
-   with `multiSelect` or split it. **Overflow beyond 4 questions → continue one-at-a-time**;
-   never chain a second batched call to squeeze the rest in.
-3. **No interactive surface at all** → one-at-a-time in the terminal, upstream's default.
-
-The ladder only ever steps **down** — no rung re-offers the companion, and no rung upgrades
-a terminal conversation into a form. And on every rung, the hard rule holds: **dependent
-questions NEVER enter any batch surface.**
-
----
 
 ## Cross-references
 
 - The main skill (overrides table + auto-fire caveat): [SKILL.md](SKILL.md)
-- The sibling v2.7.0 surface, pre-brainstorm recon: [phase-0-recon.md](phase-0-recon.md)
+- The sibling surface, pre-brainstorm recon: [phase-0-recon.md](phase-0-recon.md)
 - Config key `brainstorm.batch_elicitation`: [/v:init](../../commands/v-init.md)
-- Misclassification evidence + batching thresholds: [expert audit](../../docs/superpowers/expert/2026-07-10-research-grounded-brainstorm.md)
+- Misclassification evidence + batching thresholds: [2026-07-10 expert audit](../../docs/superpowers/expert/2026-07-10-research-grounded-brainstorm.md)
+- Checkpoint + transactional hardening evidence (C1 21–27, C2 6–7): [2026-07-11 expert audit](../../docs/superpowers/expert/2026-07-11-v2-8-hardening.md)
 - Verified companion/`AskUserQuestion` contracts: [library audit](../../docs/superpowers/library-audit/2026-07-10-research-grounded-brainstorm.md)

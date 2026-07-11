@@ -14,7 +14,7 @@ You are running a **cross-model plan review** on `{{args}}` — an independent s
 
 3. **Dispatch the read-only Codex reviewer:**
    ```bash
-   scripts/compound-v-codex-review.sh --plan-file "<plan>" --repo "$PWD" --effort high
+   scripts/compound-v-codex-review.sh --plan-file "<plan>" --repo "$PWD" --effort xhigh
    ```
    (Add `--context-file <audit>` for any archaeology/domain/library audits that ground the review.) The model is resolved for codex / tier `deep`. Codex reads the repo read-only and returns findings JSON per `schemas/plan-review.schema.json`.
 

@@ -1,0 +1,14 @@
+{
+  "status": "done",
+  "blocked": false,
+  "files_changed": [
+    "skills/compound-v/phase-0-recon.md"
+  ],
+  "violations": [],
+  "summary": "Authority doc rewritten 186 lines: gates executable (freshness ~30d volatile, epic feature-delta, unsure->weak, stale-index refresh, KB=unavailable transition), fail-closed config verbatim, engine ladder with per-rung timeouts and one-completion budget, five verbatim sections with VERIFIED/UNVERIFIED split, directions-late protocol, slug/collision/no-editor commit, exact-path handoff, append-only outcomes event machine. Finding->line map for A16-20 + C1 1-20 + C2 1-5. Scope PASS.",
+  "session_id": "",
+  "worktree": "/private/tmp/compound-v/2026-07-11-v2-8-hardening/task-1-recon-contract",
+  "exit_code": 0,
+  "failure_class": null,
+  "retry_after_seconds": 0
+}

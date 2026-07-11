@@ -3,7 +3,7 @@
 **Preferred dispatch (when this plugin is installed):**
 - `subagent_type`: `compound-v:doc-validator` (first-class agent at `agents/doc-validator.md`)
 - `model` and system prompt come from the agent definition
-- Just pass the spec + manifest paths + KB path
+- Just pass the spec + manifest paths + KB path + the exact Trigger 0 recon path (if any)
 
 **Fallback dispatch:**
 - `subagent_type`: `general-purpose`
@@ -54,6 +54,17 @@ your audit. Paths to check:
 
 ---
 
+## Trigger 0 recon doc
+
+Exact path: <paste the recon path from the brainstorm's working state /
+spec metadata, or "none">
+
+Read the recon doc at this exact path; only if no path was handed, fall
+back to scanning docs/superpowers/recon/ for a doc matching this topic's
+slug. Scanning is fallback-only.
+
+---
+
 ## Tools
 
 **Primary: Context7 MCP** — `mcp__plugin_context7_context7__resolve-library-id`
@@ -76,7 +87,17 @@ the top of your audit. Still produce the audit; just lower confidence.
 
 ## Your Process
 
-### Step 1 — Extract libraries (explicit + implied)
+### Step 1 — Read the Trigger 0 recon doc (if any)
+
+Read the recon doc at the exact path handed above; only if no path was
+handed, fall back to scanning docs/superpowers/recon/ for a doc matching
+this topic's slug. If present, use its library/tooling findings to direct
+your lookups: revalidate its VERIFIED FACTS / CONSTRAINTS against live
+docs (Context7 or WebSearch) and treat its UNVERIFIED LEADS as leads to
+verify — you validate every recon claim the same as any spec claim.
+Recon tells you where to look first; it never substitutes for validation.
+
+### Step 2 — Extract libraries (explicit + implied)
 
 From the spec, list every library/SDK/framework/runtime:
   - Explicit: "use stripe-node", "with React 18", "via the Notion SDK"
@@ -85,7 +106,7 @@ From the spec, list every library/SDK/framework/runtime:
 
 Also list every external API mentioned — APIs have SDKs with versions.
 
-### Step 2 — For each library, fetch current state
+### Step 3 — For each library, fetch current state
 
 In ONE message, dispatch parallel lookups (multiple tool calls at once):
   - Context7 resolve-library-id + query-docs (for the SDK docs)
@@ -99,7 +120,7 @@ For each library, collect:
   - Active-maintenance signal: commits in last 12 months, issue response cadence
   - Migration notes between repo's pinned version and current
 
-### Step 3 — Validate every API signature
+### Step 4 — Validate every API signature
 
 If the spec or its example code calls specific methods, verify the
 signature against Context7's current docs. Examples of what to check:
@@ -111,7 +132,7 @@ signature against Context7's current docs. Examples of what to check:
 If a signature has changed (even subtly — e.g. options object → named
 args), flag it.
 
-### Step 4 — Stale-dependency classification
+### Step 5 — Stale-dependency classification
 
 For each library, assign one status:
 
@@ -123,7 +144,7 @@ For each library, assign one status:
 For 🔴 and 🟠, ALWAYS recommend an alternative. Cite usage signal
 (downloads/month, stars trend, what major projects use today).
 
-### Step 5 — Write the audit
+### Step 6 — Write the audit
 
 Write to: docs/superpowers/library-audit/YYYY-MM-DD-<topic-slug>.md
 
@@ -146,7 +167,7 @@ Be concrete. "stripe-node 11.0.0 is 6 majors behind v17.4.1 (released
 2026-03-12); v12 introduced automatic_payment_methods (relevant to EU
 SCA from Phase 1B audit)" beats "stripe is old."
 
-### Step 6 — Update the persistent KB
+### Step 7 — Update the persistent KB
 
 For each library or ecosystem topic, append to:
   docs/superpowers/library-audit/_knowledge-base/<topic>.md
@@ -167,7 +188,7 @@ Maintained by Compound V Phase 1C validator. Append at the bottom.
 ---
 ```
 
-### Step 7 — Report back
+### Step 8 — Report back
 
 Return a short summary to the controller:
   - Audit path

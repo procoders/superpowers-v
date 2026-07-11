@@ -1,0 +1,235 @@
+# Compound V execution manifest — v2.8.0 Hardening + Structural Anti-Anchoring.
+# Materialized from docs/superpowers/plans/2026-07-11-v2-8-hardening.md after a
+# cross-model plan review (Codex sol, verdict reject → all 7 findings arbitrated in).
+
+run_id: 2026-07-11-v2-8-hardening
+feature: "v2.8.0 — scope-gate exploit fixes, contract hardening, hook backstop, codex xhigh, directions-late"
+spec_path: docs/superpowers/specs/2026-07-11-v2-8-hardening-design.md
+plan_path: docs/superpowers/plans/2026-07-11-v2-8-hardening.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-11-v2-8-hardening.md
+  domain: docs/superpowers/expert/2026-07-11-v2-8-hardening.md
+  library: docs/superpowers/library-audit/2026-07-11-v2-8-hardening.md
+
+acceptance_criteria:
+  - "Both scope-gate exploits closed with 3 failing-then-passing selftests; fixed gate gates this run"
+  - "All script fixes land with selftests/lint green on the final tree (incl. model:opus enforcement)"
+  - "xhigh resolves/validates codex-only across every active surface; rejects elsewhere; grep assertion clean"
+  - "phase-0-recon.md and brainstorm-elicitation.md close every registered executability gap (five sections, VERIFIED/UNVERIFIED, freshness, fail-closed, transactional elicitation)"
+  - "Hook backstop live-probed, registered, smoke-tested, honestly documented"
+  - "Recon wiring in all 4 agent/template files; staleness list fully applied; version 2.8.0 lockstep x3"
+  - "Live end-to-end validation (Task 8) evidence recorded BEFORE the review gate; failures fixed"
+  - "No write outside the task union + predeclared orchestrator scope"
+
+routing_stance: balanced
+max_parallel: 5
+
+jobs:
+  - id: task-0-gate-and-versions
+    title: "Scope-gate exploit fixes + version lockstep 2.8.0"
+    type: shared_foundation
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: direct
+    run: serial
+    write_allowed:
+      - "scripts/compound-v-scope-check.py"
+      - ".claude-plugin/plugin.json"
+      - ".claude-plugin/marketplace.json"
+      - "CHANGELOG.md"
+    read_allowed:
+      - "docs/superpowers/plans/2026-07-11-v2-8-hardening.md"
+    acceptance:
+      - "--no-renames + escaping-symlink scan; 3 new selftest cases pass"
+      - "version probes 2.8.0 x3; CI guard body simulated; committed"
+
+  - id: task-1-recon-contract
+    title: "phase-0-recon.md full contract hardening"
+    type: core_guidance
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-gate-and-versions]
+    write_allowed:
+      - "skills/compound-v/phase-0-recon.md"
+    read_allowed:
+      - "skills/compound-v/**"
+    acceptance:
+      - "every Workstream-2 rule present; five verbatim sections; VERIFIED/UNVERIFIED; directions-late; outcomes event machine"
+
+  - id: task-2-elicitation-contract
+    title: "brainstorm-elicitation.md transactional + checkpoint hardening"
+    type: core_guidance
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-gate-and-versions]
+    write_allowed:
+      - "skills/compound-v/brainstorm-elicitation.md"
+    read_allowed:
+      - "skills/compound-v/**"
+    acceptance:
+      - "checkpoint algorithm, restructured gate, observable acceptance, transactional protocol — C1 21-27 closed"
+
+  - id: task-3-hook-backstop
+    title: "Trigger-0 hook backstop (live-probed) + nudge pattern fix"
+    type: core_guidance
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-gate-and-versions]
+    write_allowed:
+      - "hooks/brainstorm-trigger0-nudge.sh"
+      - "hooks/hooks.json"
+      - "hooks/plan-saved-nudge.sh"
+      - "hooks/session-banner.sh"
+    read_allowed:
+      - "hooks/**"
+      - "skills/compound-v/**"
+    acceptance:
+      - "probe recorded; correct event chosen; smoke tests match/non-match/malformed; bash -n clean"
+
+  - id: task-4-script-robustness
+    title: "epic-state, memory, supervisor, lint-frontmatter robustness"
+    type: bounded_crud
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-gate-and-versions]
+    write_allowed:
+      - "scripts/compound-v-epic-state.py"
+      - "scripts/compound-v-memory.py"
+      - "scripts/compound-v-run-with-timeout.py"
+      - "scripts/lint-frontmatter.py"
+      - "scripts/compound-v-run-cursor-worker.sh"
+    read_allowed:
+      - "scripts/**"
+      - "agents/**"
+      - "commands/**"
+    acceptance:
+      - "all selftests green; linter presence gate + model:opus enforcement passes on the real tree"
+
+  - id: task-5-xhigh-chain
+    title: "codex-only xhigh across every active effort surface"
+    type: bounded_crud
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-gate-and-versions]
+    write_allowed:
+      - "scripts/compound-v-resolve-model.py"
+      - "scripts/compound-v-validate-manifest.py"
+      - "scripts/compound-v-run-codex-worker.sh"
+      - "scripts/compound-v-codex-review.sh"
+      - "skills/backend-launcher/adapter-codex.md"
+      - "skills/backend-launcher/SKILL.md"
+      - "skills/compound-v/execution-manifest.md"
+      - "skills/compound-v/routing-policy.md"
+      - "skills/compound-v/phase-3-parallel-opus-dispatch.md"
+      - "agents/parallel-dispatcher.md"
+      - "commands/v-models.md"
+    read_allowed:
+      - "scripts/**"
+      - "skills/**"
+    acceptance:
+      - "xhigh iff codex at every layer; selftests accept+reject; final grep assertion judged clean"
+
+  - id: task-6-skill-wiring
+    title: "SKILL.md literalization + recon wiring into agents/templates/phase docs"
+    type: docs
+    backend: claude
+    tier: deep
+    effort: medium
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-gate-and-versions]
+    write_allowed:
+      - "skills/compound-v/SKILL.md"
+      - "agents/domain-expert.md"
+      - "agents/doc-validator.md"
+      - "skills/compound-v/domain-expert-prompt.md"
+      - "skills/compound-v/doc-validator-prompt.md"
+      - "skills/compound-v/phase-1b-domain-expert.md"
+      - "skills/compound-v/phase-1c-documentation-validation.md"
+    read_allowed:
+      - "skills/compound-v/**"
+      - "agents/**"
+    acceptance:
+      - "recon step in all 4 executing surfaces; summary literal to authority; 'unchanged except' fixed; lint green"
+
+  - id: task-7-staleness
+    title: "GEMINI/AGENTS/TROUBLESHOOTING/rationalization/metaphor/memory-prose/v-init sweep"
+    type: docs
+    backend: claude
+    tier: deep
+    effort: medium
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-gate-and-versions]
+    write_allowed:
+      - "GEMINI.md"
+      - "AGENTS.md"
+      - "TROUBLESHOOTING.md"
+      - "skills/compound-v/rationalization-table.md"
+      - "assets/skyscraper-metaphor.md"
+      - "commands/v-remember.md"
+      - "skills/compound-v/memory.md"
+      - "commands/v-init.md"
+    read_allowed:
+      - "skills/**"
+      - "commands/**"
+      - "docs/superpowers/specs/2026-07-11-v2-8-hardening-design.md"
+    acceptance:
+      - "four transitions everywhere; 0.130 gone outside history; Trigger-0 troubleshooting section; fail-closed note"
+
+  - id: task-8-live-validation
+    title: "Workstream-6 live end-to-end validation (evidence before review)"
+    type: validation
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: direct
+    run: serial
+    depends_on:
+      - task-1-recon-contract
+      - task-2-elicitation-contract
+      - task-3-hook-backstop
+      - task-4-script-robustness
+      - task-5-xhigh-chain
+      - task-6-skill-wiring
+      - task-7-staleness
+    write_allowed:
+      - "docs/superpowers/execution/2026-07-11-v2-8-hardening/validation/**"
+      - "docs/superpowers/recon/**"
+      - "docs/superpowers/memory/recon-outcomes.jsonl"
+    read_allowed:
+      - "**"
+    acceptance:
+      - "all 6 protocol checks executed with recorded evidence; failures fixed and re-run"
+
+  - id: task-9-review
+    title: "Three-pass Review Gate (spec / quality / integration)"
+    type: review
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: direct
+    run: serial
+    depends_on: [task-8-live-validation]
+    write_allowed: []
+    read_allowed:
+      - "**"
+    acceptance:
+      - "spec ACs 1-12 met (AC11 from Task 8 evidence)"
+      - "implementation writes within union; bookkeeping within predeclared scope"

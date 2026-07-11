@@ -19,6 +19,7 @@ You may be running in parallel with code-archaeology (Phase 1A) and the domain-e
 1. **Spec text** — full verbatim text of the brainstorming output.
 2. **Repo dependency manifests** — paths to any of: package.json, pnpm-lock.yaml, yarn.lock, requirements.txt, pyproject.toml, Cargo.toml, go.mod, Gemfile, composer.json.
 3. **Knowledge base path** — `docs/superpowers/library-audit/_knowledge-base/`.
+4. **Exact Trigger 0 recon path** (if one exists) — handed by the caller from the brainstorm's working state / spec metadata. Scanning `docs/superpowers/recon/` for a matching topic is fallback-only.
 
 ## Tools
 
@@ -28,7 +29,11 @@ You may be running in parallel with code-archaeology (Phase 1A) and the domain-e
 
 ## Your Process
 
-### Step 1 — Extract libraries (explicit + implied)
+### Step 1 — Read the Trigger 0 recon doc (if any)
+
+Read the recon doc at the **exact path handed by the caller** (it comes from the brainstorm's working state / spec metadata); only if no path was handed, fall back to scanning `docs/superpowers/recon/` for a doc matching this topic's slug. If present, use its library/tooling findings to direct your lookups: revalidate its `VERIFIED FACTS / CONSTRAINTS` against live docs (Context7 or WebSearch) and treat its `UNVERIFIED LEADS` as *leads to verify* — you validate every recon claim the same as any spec claim. Recon tells you where to look first; it never substitutes for validation.
+
+### Step 2 — Extract libraries (explicit + implied)
 
 From the spec, list every library/SDK/framework/runtime:
   - **Explicit**: "use stripe-node", "with React 18", "via the Notion SDK"
@@ -36,7 +41,7 @@ From the spec, list every library/SDK/framework/runtime:
 
 Also list every external API mentioned — APIs have SDKs with versions.
 
-### Step 2 — For each library, fetch current state (PARALLEL)
+### Step 3 — For each library, fetch current state (PARALLEL)
 
 In ONE message, dispatch parallel lookups (multiple tool calls at once):
   - Context7 `resolve-library-id` + `query-docs` (for the SDK docs)
@@ -49,11 +54,11 @@ For each library, collect:
   - Active-maintenance signal (commits in last 12 months, issue response cadence)
   - Migration notes between repo's pinned version and current
 
-### Step 3 — Validate every API signature
+### Step 4 — Validate every API signature
 
 If the spec or its example code calls specific methods, verify the signature against Context7's current docs. Flag any signature drift, even subtle (options object vs named args, deprecated parameter, renamed method).
 
-### Step 4 — Stale-dependency classification
+### Step 5 — Stale-dependency classification
 
 For each library, assign one status:
 
@@ -64,7 +69,7 @@ For each library, assign one status:
 
 For 🔴 and 🟠, ALWAYS recommend an alternative. Cite usage signal (downloads/month, stars trend, what major projects use today).
 
-### Step 5 — Write the audit
+### Step 6 — Write the audit
 
 Write to: `docs/superpowers/library-audit/YYYY-MM-DD-<topic-slug>.md`
 
@@ -82,7 +87,7 @@ Use this exact section structure:
 
 Be concrete. "stripe-node 11.0.0 is 6 majors behind v17.4.1 (released 2026-03-12); v12 introduced automatic_payment_methods (relevant to EU SCA from Phase 1B audit)" beats "stripe is old."
 
-### Step 6 — Update the persistent KB
+### Step 7 — Update the persistent KB
 
 For each library or ecosystem topic, append to `docs/superpowers/library-audit/_knowledge-base/<topic>.md`:
 
@@ -101,7 +106,7 @@ Maintained by Compound V Phase 1C validator. Append at the bottom.
 ---
 ```
 
-### Step 7 — Report back
+### Step 8 — Report back
 
 Return a short summary:
   - Audit path
