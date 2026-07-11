@@ -98,6 +98,41 @@ def _newest_mtime(path):
     return newest
 
 
+def _newest_jsonl_event(path):
+    """Parse the NEWEST complete line of a JSONL events log → the event dict, or None.
+
+    An ADDITIONAL, corroborating signal used behind the existing
+    `if log and os.path.isfile(log)` guard: a codex `--json` stream writes one JSON event per
+    line, so the newest line is the most recent event (`thread.started` / `item.completed` /
+    `turn.completed` / …). ABSOLUTELY degrade-safe — a malformed, partial (mid-write), empty,
+    non-dict, or unreadable line NEVER raises: it just yields None, and the caller falls
+    through to the existing git+FS+pid classifier. A partial NEWEST line (a stream caught
+    mid-write) is skipped so an older complete event is still found. Reads only the file tail,
+    so a long-running job's large log stays cheap."""
+    try:
+        with open(path, "rb") as fh:
+            try:
+                fh.seek(0, os.SEEK_END)
+                size = fh.tell()
+                fh.seek(size - 65536 if size > 65536 else 0)
+            except OSError:
+                fh.seek(0)
+            tail = fh.read()
+        for raw in reversed(tail.splitlines()):
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line.decode("utf-8", "replace"))
+            except ValueError:
+                # A partial/garbage line — try the next-older line rather than give up.
+                continue
+            return obj if isinstance(obj, dict) else None
+        return None
+    except (OSError, ValueError):
+        return None
+
+
 def _pid_alive(pid):
     """True iff the pid is a live process. `os.kill(pid, 0)` raises ProcessLookupError (ESRCH)
     when the pid is dead, but PermissionError (EPERM) when it is ALIVE and owned by another
@@ -140,20 +175,30 @@ def classify_job(job, now, stale_sec):
 
     # 2. mtime progress signal — newest working-tree file, plus an optional external log.
     mtime = _newest_mtime(wt) if have_wt else None
+    log_note = ""
     if log and os.path.isfile(log):
         try:
             lm = os.stat(log).st_mtime
-            mtime = lm if (mtime is None or lm > mtime) else mtime
         except OSError:
-            pass
+            lm = None
+        if lm is not None:
+            # JSONL-events signal (degrade-safe): if the log's newest complete line is a real
+            # codex `--json` event, name its type in the evidence — a recent event ⇒ WORKING,
+            # an old one ⇒ reinforces STALE (both decided by `lm` below, the event's append
+            # time). A malformed / partial / empty / non-event line NEVER raises: it yields no
+            # event, we keep the raw log mtime, and fall through to git+FS+pid unchanged.
+            event = _newest_jsonl_event(log)
+            if isinstance(event, dict) and event.get("type"):
+                log_note = "; log event %s" % event["type"]
+            mtime = lm if (mtime is None or lm > mtime) else mtime
 
     if mtime is not None:
         age = int(max(0, now - mtime))
         if age <= stale_sec:
-            return ("WORKING", "progress %ds ago (<= %ds)" % (age, stale_sec), age)
+            return ("WORKING", "progress %ds ago (<= %ds)%s" % (age, stale_sec, log_note), age)
         if pid is not None and not _pid_alive(pid):
-            return ("DEAD", "pid %s not alive; no progress for %ds" % (pid, age), age)
-        return ("STALE", "no progress for %ds (> %ds)" % (age, stale_sec), age)
+            return ("DEAD", "pid %s not alive; no progress for %ds%s" % (pid, age, log_note), age)
+        return ("STALE", "no progress for %ds (> %ds)%s" % (age, stale_sec, log_note), age)
 
     # 3. no worktree/log signal — fall back to pid liveness if one was recorded.
     if pid is not None:
@@ -291,6 +336,55 @@ def _selftest():
             os.utime(link, (aged, aged), follow_symlinks=False)   # age the LINK itself
             check("STALE despite a symlink to a fresh external file (lstat, not stat)",
                   cls({"status": "running", "worktree": sd, "baseline": "deadbeef"}, stale=600) == "STALE")
+
+    # --- JSONL-events signal (degrade-safe): fresh ⇒ WORKING, stale ⇒ STALE, malformed ⇒ fall back ---
+    def write_jsonl(path, lines, age=None):
+        with open(path, "w") as fh:
+            for ln in lines:
+                fh.write(ln + "\n")
+        if age is not None:
+            t = now - age
+            os.utime(path, (t, t))
+
+    with tempfile.TemporaryDirectory() as ld:
+        # fresh JSONL log, no worktree ⇒ WORKING, and the evidence names the newest event type
+        fresh = os.path.join(ld, "fresh.jsonl")
+        write_jsonl(fresh, ['{"type":"thread.started","thread_id":"abc"}',
+                            '{"type":"item.completed","item":{"id":"1"}}'])
+        rf = classify_job({"status": "running", "log": fresh}, now, DEFAULT_STALE_SEC)
+        check("WORKING: fresh JSONL log", rf[0] == "WORKING")
+        check("evidence names the newest JSONL event type", "item.completed" in rf[1])
+
+        # stale JSONL log + no other progress ⇒ STALE (the newest event is old)
+        stale = os.path.join(ld, "stale.jsonl")
+        write_jsonl(stale, ['{"type":"thread.started","thread_id":"abc"}',
+                            '{"type":"turn.completed","usage":{}}'], age=4000)
+        check("STALE: stale JSONL log, no other progress",
+              cls({"status": "running", "log": stale}, stale=600) == "STALE")
+
+        # malformed JSONL ⇒ parse yields None (never raises) and classify falls back to the mtime path
+        bad = os.path.join(ld, "bad.jsonl")
+        write_jsonl(bad, ['{"type":"thread.started"', 'not json at all', '{partial'])
+        check("_newest_jsonl_event returns None on malformed content",
+              _newest_jsonl_event(bad) is None)
+        rb = classify_job({"status": "running", "log": bad}, now, DEFAULT_STALE_SEC)
+        check("malformed JSONL log ⇒ no crash, falls back to mtime signal", rb[0] == "WORKING")
+
+        # a partial NEWEST line is skipped so an older complete event is still found (never raises)
+        mixed = os.path.join(ld, "mixed.jsonl")
+        write_jsonl(mixed, ['{"type":"turn.completed","usage":{}}', '{"type":"item.compl'])
+        ev = _newest_jsonl_event(mixed)
+        check("newest partial line skipped, older complete event still parsed",
+              isinstance(ev, dict) and ev.get("type") == "turn.completed")
+
+        # degrade-safe: a present-but-empty log adds no event note, does not crash, and (fresh
+        # mtime) still reads as WORKING via the existing mtime fold — no `log` key at all is
+        # covered by the UNKNOWN checks below (byte-identical to prior behavior).
+        empty = os.path.join(ld, "empty.jsonl")
+        write_jsonl(empty, [])
+        re_ = classify_job({"status": "running", "log": empty}, now, DEFAULT_STALE_SEC)
+        check("empty JSONL log ⇒ no crash, no event note",
+              re_[0] == "WORKING" and "log event" not in re_[1])
 
     # --- UNKNOWN: nothing to probe / live pid but no FS signal ---
     check("UNKNOWN: no worktree/pid/log",
