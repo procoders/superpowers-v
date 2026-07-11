@@ -87,7 +87,7 @@ docs/superpowers/execution/<run-id>/
 }
 ```
 
-Per-job fields: `status` (lifecycle, below), `isolation` (`direct` | `worktree`), `worktree` (absolute path or `null`), `session_id` (the codex `thread_id` UUID captured from the worker's `COMPOUND_V_SESSION_ID=<uuid>` line — the resume UUID; `null` otherwise), and **`log`** (the codex worker's events-log path — `docs/superpowers/execution/<run-id>/logs/<id>.jsonl` — recorded by the dispatcher at dispatch; `null`/absent for non-codex jobs). `log` is read by the liveness sweep as a progress signal and is **degrade-safe**: absent ⇒ prior git+FS+pid behavior unchanged.
+Per-job fields: `status` (lifecycle, below), `isolation` (`direct` | `worktree`), `worktree` (absolute path or `null`), `session_id` (the codex `thread_id` UUID read from the worker's `job_result.session_id`, UUID-validated — the resume UUID; `null` otherwise), `failure_class` (the returned `job_result.failure_class`, e.g. `timeout`/`network`; consulted by the resume-eligibility rule; `null` otherwise), and **`log`** (the codex worker's events-log path — `docs/superpowers/execution/<run-id>/logs/<id>.jsonl` — recorded by the dispatcher at dispatch; `null`/absent for non-codex jobs). `log` is read by the liveness sweep as a progress signal and is **degrade-safe**: absent ⇒ prior git+FS+pid behavior unchanged.
 
 ### Backend-failure fields (the circuit breaker — no daemon)
 

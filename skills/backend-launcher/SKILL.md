@@ -150,7 +150,7 @@ same stream. `--output-last-message` still yields the canonical result (the two 
 Pinned facts (do not re-derive):
 
 - **`--ask-for-approval never` is INVALID for `codex exec`.** It is a top-level/interactive flag, absent from `codex exec --help`; `exec` already defaults to `approval: never`. Passing it fails every Codex job. **Omit it.** If a non-default policy is ever needed: `-c approval_policy=never`.
-- **Resume** is `codex exec resume <SESSION_ID> [PROMPT]` (UUID printed in the run banner) or `--last`. There is **no `--session-id` flag**. Capture the UUID from the banner/output into `session_id`.
+- **Resume** is `codex exec resume <SESSION_ID> [PROMPT]` (the captured `thread_id` UUID) or `--last`. There is **no `--session-id` flag** and no launch-time thread naming. Capture the UUID from the first `--json` `thread.started` event into `session_id` (UUID-validated); resume only under the resume-eligibility rule.
 - **`git worktree diff` does not exist.** Use plain `git -C "$WT" diff --name-only` + `git -C "$WT" ls-files --others --exclude-standard`.
 - Codex emits a cosmetic `[features].codex_hooks is deprecated` stderr warning — the worker script suppresses/ignores it so it doesn't pollute captured output.
 - `--output-schema` accepts a strict JSON Schema (`additionalProperties:false` + `required`) — point it at `job_result.schema.json` when a schema'd summary is wanted. The schema drives only the human summary; enforcement stays git-derived.

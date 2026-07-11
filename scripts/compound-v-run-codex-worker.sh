@@ -3,9 +3,9 @@
 # compound-v-run-codex-worker.sh — Compound V Backend Launcher: the headless Codex adapter.
 #
 # Runs ONE file-scoped job on a headless `codex exec` worker inside a dedicated git
-# worktree, then emits, on stdout, a `COMPOUND_V_SESSION_ID=<uuid>` line (the codex
-# thread id parsed from the `--json` event stream; empty when absent) followed by the
-# canonical job_result (schemas/job_result.schema.json) as JSON. The `codex exec --json`
+# worktree, then emits, on stdout, exactly one canonical `job_result` JSON
+# (schemas/job_result.schema.json). Its `session_id` is the codex thread id parsed from
+# the `--json` event stream (UUID-validated; empty when absent). The `codex exec --json`
 # event stream is written to the events-log (--events-log, default under $ART).
 # The enforcement fields (blocked / files_changed / violations) are
 # GIT-DERIVED, never self-reported by the model — and they are produced by DELEGATING
@@ -276,6 +276,11 @@ RESULT_TXT="$ART/job_result.txt"
 # write — including the main tree's run-dir, which never touches the worktree diff.
 if [ -z "$EVENTS_LOG" ]; then
   EVENTS_LOG="$ART/codex_events.jsonl"
+else
+  # An explicit --events-log MUST be absolute (round-2): a relative path is resolved
+  # against the worker's cwd, so a dispatcher invoked from another directory would write
+  # and monitor a different file than it recorded in state.json jobs[<id>].log.
+  case "$EVENTS_LOG" in /*) : ;; *) die "--events-log must be an absolute path: $EVENTS_LOG" ;; esac
 fi
 mkdir -p "$(dirname "$EVENTS_LOG")" 2>/dev/null || die "cannot create events-log dir for: $EVENTS_LOG"
 
@@ -399,8 +404,11 @@ if [ -f "$EVENTS_LOG" ]; then
           done
     } || true
   )
-  # UUID-shape gate: accept only canonical 8-4-4-4-12 hex; anything else ⇒ empty (resume fresh).
-  if ! printf '%s' "$session_id" | grep -qiE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+  # UUID-shape gate: accept only canonical 8-4-4-4-12 hex; anything else ⇒ empty (resume
+  # fresh). Use Bash `[[ =~ ]]` against the WHOLE scalar, NOT line-oriented `grep` — a value
+  # like "<valid-uuid>\nINJECT" has one matching LINE and would slip past grep, but bash
+  # `=~` anchors `^…$` to the whole string so the trailing newline+junk fails it (round-2).
+  if [[ ! "$session_id" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
     session_id=""
   fi
 fi
@@ -519,10 +527,10 @@ if [ "$status" = "error" ] || [ "$status" = "timeout" ] || [ "$exit_code" != "0"
 fi
 
 # --- emit --------------------------------------------------------------------
-# stdout carries, in order: (1) the structured session-id line, then (2) the
-# canonical job_result JSON. The caller (dispatcher) reads the `COMPOUND_V_SESSION_ID=`
-# line into job_result.session_id (Shared Interface Contract) and strips it before
-# parsing the JSON, then decides whether to merge (index-based patch including new
+# stdout carries exactly one canonical job_result JSON (the generic backend contract).
+# The caller (dispatcher) reads `job_result.session_id` (the UUID-validated codex
+# thread_id) and persists it — with `failure_class` — into state.json jobs[<id>], then
+# decides whether to merge (index-based patch including new
 # files: `git -C "$WT" add -A && git -C "$WT" diff --cached --binary HEAD | git apply
 # --index`) or to leave the worktree for inspection on BLOCKED. We do NOT merge here.
 #
