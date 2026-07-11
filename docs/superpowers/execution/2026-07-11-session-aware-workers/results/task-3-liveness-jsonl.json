@@ -1,0 +1,14 @@
+{
+  "status": "done",
+  "blocked": false,
+  "files_changed": [
+    "scripts/compound-v-liveness.py"
+  ],
+  "violations": [],
+  "summary": "_newest_jsonl_event (64KiB tail, newest-first, None on any failure) behind the existing log-guard; degrade-safe (no-log path byte-identical); --selftest green + new JSONL cases. Self-caught+fixed a seek bug mid-impl. Scope PASS.",
+  "session_id": "",
+  "worktree": "/private/tmp/compound-v/2026-07-11-session-aware-workers/task-3-liveness-jsonl",
+  "exit_code": 0,
+  "failure_class": null,
+  "retry_after_seconds": 0
+}

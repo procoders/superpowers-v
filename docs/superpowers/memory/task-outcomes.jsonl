@@ -20,3 +20,9 @@
 {"run_id": "2026-07-11-v2-8-hardening", "type": "docs", "backend": "claude", "model": "opus", "status": "success", "blocked": false, "rework_rounds": 0}
 {"run_id": "2026-07-11-v2-8-hardening", "type": "validation", "backend": "claude", "model": "opus", "status": "success", "blocked": false, "rework_rounds": 0}
 {"run_id": "2026-07-11-v2-8-hardening", "type": "review", "backend": "claude", "model": "opus", "status": "success", "blocked": false, "rework_rounds": 0}
+{"run_id":"2026-07-11-session-aware-workers","type":"shared_foundation","backend":"claude","model":"opus","status":"success","blocked":false,"rework_rounds":0}
+{"run_id":"2026-07-11-session-aware-workers","type":"bounded_crud","backend":"claude","model":"opus","status":"success","blocked":false,"rework_rounds":0}
+{"run_id":"2026-07-11-session-aware-workers","type":"bounded_crud","backend":"claude","model":"opus","status":"success","blocked":false,"rework_rounds":0}
+{"run_id":"2026-07-11-session-aware-workers","type":"bounded_crud","backend":"claude","model":"opus","status":"success","blocked":false,"rework_rounds":0}
+{"run_id":"2026-07-11-session-aware-workers","type":"docs","backend":"claude","model":"opus","status":"success","blocked":false,"rework_rounds":0}
+{"run_id":"2026-07-11-session-aware-workers","type":"review","backend":"claude","model":"opus","status":"success","blocked":false,"rework_rounds":0}

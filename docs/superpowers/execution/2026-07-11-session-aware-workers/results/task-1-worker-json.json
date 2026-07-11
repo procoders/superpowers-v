@@ -1,0 +1,15 @@
+{
+  "status": "done",
+  "blocked": false,
+  "files_changed": [
+    "scripts/compound-v-run-codex-worker.sh",
+    "skills/backend-launcher/adapter-codex.md"
+  ],
+  "violations": [],
+  "summary": "--json on BOTH invocations (mirror), --events-log arg, structural thread.started/thread_id parse -> COMPOUND_V_SESSION_ID line, stderr-scrape deleted, --output-last-message kept. LIVE-probed 0.144.1 (real thread_id extracted); test-worker-path-transport PASS; 6-fixture dry parse PASS. adapter-codex.md doc refreshed. Scope PASS.",
+  "session_id": "",
+  "worktree": "/private/tmp/compound-v/2026-07-11-session-aware-workers/task-1-worker-json",
+  "exit_code": 0,
+  "failure_class": null,
+  "retry_after_seconds": 0
+}

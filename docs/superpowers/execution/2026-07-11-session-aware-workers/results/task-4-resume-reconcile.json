@@ -1,0 +1,16 @@
+{
+  "status": "done",
+  "blocked": false,
+  "files_changed": [
+    "commands/v-resume.md",
+    "agents/parallel-dispatcher.md",
+    "skills/compound-v/state-machine.md"
+  ],
+  "violations": [],
+  "summary": "resume tightened to environmental+intact-worktree by captured UUID; rule byte-identical across v-resume.md and parallel-dispatcher.md (md5 match); dispatcher records job.log + consumes COMPOUND_V_SESSION_ID; state-machine documents log field + logs/; worktree-recreate invariant intact. Scope PASS.",
+  "session_id": "",
+  "worktree": "/private/tmp/compound-v/2026-07-11-session-aware-workers/task-4-resume-reconcile",
+  "exit_code": 0,
+  "failure_class": null,
+  "retry_after_seconds": 0
+}
