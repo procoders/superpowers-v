@@ -29,6 +29,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Audit credit
 Five audit lines drove this release: **F1** (live dogfood of Trigger 0/elicitation — procedures actually executed), **F2** (cross-repo consistency/staleness sweep), **F3** (scripts robustness — both scope-gate exploits reproduced on scratch fixtures before any fix), from three parallel Fable agents; plus **C1/C2** — two independent max-effort **Codex gpt-5.6-sol passes at `xhigh`** (the v2.7.0 guidance red-teamed as executable instructions, 28 findings; design red-team, 9 findings + 5 proposals). Cross-model by construction, convergent findings independently confirmed across lines. The pre-dispatch Codex plan review (verdict `reject`, 7 findings, all accepted) reshaped the plan itself — including the whole-root pre-existing-symlink scan shipped above.
 
+### Post-build cross-model review (Codex gpt-5.6-sol @ `xhigh`, 5 rounds)
+The build was reviewed to convergence. Round 1 (9 findings, all accepted): a `.git`-named escaping symlink bypassed the scan; the outcomes event machine had no legal failure transition; the exact-path handoff had no literal storage carrier; five active surfaces still described batching as companion-only; the dedicated "max-effort" review command still capped at `high`. Rounds 2–5 hardened the symlink scan alone through four more genuine edges — a nested **real** `.git` directory hiding a link, a `chmod 000` directory, and finally a **real false-PASS** where `os.path.islink` silently swallows `EACCES` on a `0400` (readable-but-not-searchable) directory (fixed by switching to `os.lstat`, which raises). Each fix carries a selftest; the gate self-test suite is green.
+
 ## [2.7.0] — 2026-07-10
 
 ### Added
