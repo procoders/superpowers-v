@@ -1,17 +1,67 @@
 {
   "run_id": "2026-07-11-v2-8-hardening",
-  "phase": "PARTITION_VERIFIED",
-  "updated_at": "2026-07-11T00:57:32Z",
+  "phase": "COLLECTED",
+  "updated_at": "2026-07-11T01:31:52Z",
   "jobs": {
-    "task-0-gate-and-versions": { "status": "pending", "isolation": "direct", "worktree": null, "session_id": null },
-    "task-1-recon-contract": { "status": "pending", "isolation": "worktree", "worktree": null, "session_id": null },
-    "task-2-elicitation-contract": { "status": "pending", "isolation": "worktree", "worktree": null, "session_id": null },
-    "task-3-hook-backstop": { "status": "pending", "isolation": "worktree", "worktree": null, "session_id": null },
-    "task-4-script-robustness": { "status": "pending", "isolation": "worktree", "worktree": null, "session_id": null },
-    "task-5-xhigh-chain": { "status": "pending", "isolation": "worktree", "worktree": null, "session_id": null },
-    "task-6-skill-wiring": { "status": "pending", "isolation": "worktree", "worktree": null, "session_id": null },
-    "task-7-staleness": { "status": "pending", "isolation": "worktree", "worktree": null, "session_id": null },
-    "task-8-live-validation": { "status": "pending", "isolation": "direct", "worktree": null, "session_id": null },
-    "task-9-review": { "status": "pending", "isolation": "direct", "worktree": null, "session_id": null }
+    "task-0-gate-and-versions": {
+      "status": "done",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null
+    },
+    "task-1-recon-contract": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": "/private/tmp/compound-v/2026-07-11-v2-8-hardening/task-1-recon-contract",
+      "session_id": null
+    },
+    "task-2-elicitation-contract": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": "/private/tmp/compound-v/2026-07-11-v2-8-hardening/task-2-elicitation-contract",
+      "session_id": null
+    },
+    "task-3-hook-backstop": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": "/private/tmp/compound-v/2026-07-11-v2-8-hardening/task-3-hook-backstop",
+      "session_id": null
+    },
+    "task-4-script-robustness": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": "/private/tmp/compound-v/2026-07-11-v2-8-hardening/task-4-script-robustness",
+      "session_id": null
+    },
+    "task-5-xhigh-chain": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": "/private/tmp/compound-v/2026-07-11-v2-8-hardening/task-5-xhigh-chain",
+      "session_id": null
+    },
+    "task-6-skill-wiring": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": "/private/tmp/compound-v/2026-07-11-v2-8-hardening/task-6-skill-wiring",
+      "session_id": null
+    },
+    "task-7-staleness": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": "/private/tmp/compound-v/2026-07-11-v2-8-hardening/task-7-staleness",
+      "session_id": null
+    },
+    "task-8-live-validation": {
+      "status": "done",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null
+    },
+    "task-9-review": {
+      "status": "running",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null
+    }
   }
 }
