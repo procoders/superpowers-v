@@ -1,0 +1,13 @@
+{
+  "run_id": "2026-07-11-session-aware-workers",
+  "phase": "PARTITION_VERIFIED",
+  "updated_at": "2026-07-11T10:37:11Z",
+  "jobs": {
+    "task-0-versions": { "status": "pending", "isolation": "direct", "worktree": null, "session_id": null, "log": null },
+    "task-1-worker-json": { "status": "pending", "isolation": "worktree", "worktree": null, "session_id": null, "log": null },
+    "task-2-ephemeral": { "status": "pending", "isolation": "worktree", "worktree": null, "session_id": null, "log": null },
+    "task-3-liveness-jsonl": { "status": "pending", "isolation": "worktree", "worktree": null, "session_id": null, "log": null },
+    "task-4-resume-reconcile": { "status": "pending", "isolation": "worktree", "worktree": null, "session_id": null, "log": null },
+    "task-5-review": { "status": "pending", "isolation": "direct", "worktree": null, "session_id": null, "log": null }
+  }
+}

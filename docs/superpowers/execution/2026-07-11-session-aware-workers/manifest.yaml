@@ -1,0 +1,130 @@
+# Compound V execution manifest — v2.8.1 Session-Aware Workers.
+run_id: 2026-07-11-session-aware-workers
+feature: "Session-aware codex workers — --json thread_id capture, --ephemeral review, liveness JSONL signal, resume tightening"
+spec_path: docs/superpowers/specs/2026-07-11-session-aware-workers-design.md
+plan_path: docs/superpowers/plans/2026-07-11-session-aware-workers.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-11-session-aware-workers.md
+  library: docs/superpowers/library-audit/2026-07-11-session-aware-workers.md
+
+acceptance_criteria:
+  - "Worker adds --json to both invocations, parses thread.started.thread_id, emits COMPOUND_V_SESSION_ID, writes events-log, stderr-scrape gone, result path unchanged"
+  - "--ephemeral on the review script"
+  - "Liveness uses JSONL log as an additional, fully degrade-safe signal; selftest green"
+  - "/v:resume and parallel-dispatcher agree on resume eligibility (environmental + intact worktree, by UUID); state-machine documents job.log + logs/"
+  - "adapter-codex.md reflects --json/--events-log/thread_id; no stale stderr-scrape"
+  - "Version 2.8.1 lockstep x3 + CHANGELOG; CI green"
+  - "No write outside the partitioned sets"
+
+routing_stance: balanced
+max_parallel: 4
+
+jobs:
+  - id: task-0-versions
+    title: "Version lockstep 2.8.1 + CHANGELOG"
+    type: shared_foundation
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: direct
+    run: serial
+    write_allowed:
+      - ".claude-plugin/plugin.json"
+      - ".claude-plugin/marketplace.json"
+      - "CHANGELOG.md"
+    read_allowed:
+      - "docs/superpowers/plans/2026-07-11-session-aware-workers.md"
+    acceptance:
+      - "2.8.1 in all three; CHANGELOG guard simulated; committed"
+
+  - id: task-1-worker-json
+    title: "codex worker --json + structured session id"
+    type: bounded_crud
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-versions]
+    write_allowed:
+      - "scripts/compound-v-run-codex-worker.sh"
+      - "skills/backend-launcher/adapter-codex.md"
+    read_allowed:
+      - "scripts/**"
+      - "skills/backend-launcher/**"
+      - "docs/superpowers/library-audit/2026-07-11-session-aware-workers.md"
+    acceptance:
+      - "--json on BOTH invocations; thread_id parsed; COMPOUND_V_SESSION_ID emitted; events-log written; stderr-scrape deleted; bash -n clean"
+
+  - id: task-2-ephemeral
+    title: "codex discovery-review script gains --ephemeral"
+    type: bounded_crud
+    backend: claude
+    tier: deep
+    effort: medium
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-versions]
+    write_allowed:
+      - "scripts/compound-v-codex-review.sh"
+    read_allowed:
+      - "scripts/**"
+    acceptance:
+      - "--ephemeral present; bash -n clean; findings JSON still emitted"
+
+  - id: task-3-liveness-jsonl
+    title: "liveness JSONL additional signal (degrade-safe)"
+    type: bounded_crud
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-versions]
+    write_allowed:
+      - "scripts/compound-v-liveness.py"
+    read_allowed:
+      - "scripts/**"
+      - "skills/compound-v/state-machine.md"
+    acceptance:
+      - "JSONL signal layered behind the existing log-guard; malformed never crashes; --selftest green incl. new cases"
+
+  - id: task-4-resume-reconcile
+    title: "resume tightening + doc reconciliation + job.log/logs docs"
+    type: docs
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-versions]
+    write_allowed:
+      - "commands/v-resume.md"
+      - "agents/parallel-dispatcher.md"
+      - "skills/compound-v/state-machine.md"
+    read_allowed:
+      - "commands/**"
+      - "agents/**"
+      - "skills/compound-v/**"
+      - "docs/superpowers/specs/2026-07-11-session-aware-workers-design.md"
+    acceptance:
+      - "resume eligibility rule byte-identical in v-resume.md and parallel-dispatcher.md; state-machine documents job.log + logs/; worktree-recreate invariant intact"
+
+  - id: task-5-review
+    title: "Three-pass Review Gate"
+    type: review
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: direct
+    run: serial
+    depends_on:
+      - task-1-worker-json
+      - task-2-ephemeral
+      - task-3-liveness-jsonl
+      - task-4-resume-reconcile
+    write_allowed: []
+    read_allowed:
+      - "**"
+    acceptance:
+      - "spec ACs 1-8 met; end-to-end events-log/job.log/liveness contract coherent; no writes outside union"
