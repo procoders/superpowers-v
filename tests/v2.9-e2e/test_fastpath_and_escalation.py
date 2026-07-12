@@ -349,6 +349,19 @@ class TestAC10And12NoFabricatedMetric(_RepoCase):
     def _tri(self, *args):
         return run_json("compound-v-triage-outcomes.py", *args)
 
+    def _seed_verified_fastpath_success(self, stream, pid, rid):
+        """Write the git-derived evidence the triage counter now requires (HIGH-9): a committed
+        run state.json (MERGED + merge SHA) and an approved review receipt bound to (pid, rid),
+        so the terminal `actual` counts instead of being precision-ignored. exec_dir is derived
+        two levels up from the stream (…/memory/…jsonl -> …/execution)."""
+        exec_dir = os.path.join(os.path.dirname(os.path.dirname(stream)), "execution")
+        run = os.path.join(exec_dir, rid)
+        os.makedirs(os.path.join(run, "review"), exist_ok=True)
+        with open(os.path.join(run, "state.json"), "w", encoding="utf-8") as fh:
+            json.dump({"phase": "MERGED", "merge_sha": "a" * 40}, fh)
+        with open(os.path.join(run, "review", "receipt.json"), "w", encoding="utf-8") as fh:
+            json.dump({"verdict": "approved", "run_id": rid, "pre_eval_id": pid}, fh)
+
     def _assert_insufficient_no_number(self, result, raw):
         self.assertEqual(result.get("status"), "insufficient")
         self.assertNotIn("precision", result,
@@ -384,6 +397,7 @@ class TestAC10And12NoFabricatedMetric(_RepoCase):
         self._tri("bind", "--pre-eval-id", pid, "--run-id", rid, "--stream", stream)
         self._tri("actual", "--pre-eval-id", pid, "--run-id", rid,
                   "--review-result", "approved", "--test-result", "pass", "--stream", stream)
+        self._seed_verified_fastpath_success(stream, pid, rid)  # git-derived evidence (HIGH-9)
         # One sample, floor of five → still below the floor → insufficient, no number.
         rc, result, out, err = self._tri("precision", "--stream", stream, "--min-sample", "5")
         self.assertEqual(rc, 0, err)
@@ -403,6 +417,7 @@ class TestAC10And12NoFabricatedMetric(_RepoCase):
         self._tri("bind", "--pre-eval-id", pid, "--run-id", rid, "--stream", stream)
         self._tri("actual", "--pre-eval-id", pid, "--run-id", rid,
                   "--review-result", "approved", "--test-result", "pass", "--stream", stream)
+        self._seed_verified_fastpath_success(stream, pid, rid)  # git-derived evidence (HIGH-9)
         rc, result, out, err = self._tri("precision", "--stream", stream, "--min-sample", "1")
         self.assertEqual(rc, 0, err)
         self.assertIsNotNone(result, out)
