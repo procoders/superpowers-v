@@ -1,18 +1,19 @@
 {
   "run_id": "2026-07-11-v2.9-pre-evaluation",
   "phase": "DISPATCHING",
-  "updated_at": "2026-07-12T00:48:42Z",
+  "updated_at": "2026-07-12T01:22:32Z",
   "total_retries": 0,
   "max_total_retries": 12,
   "jobs": {
     "task-0-foundation": {
-      "status": "running",
+      "status": "done",
       "isolation": "direct",
       "worktree": null,
       "session_id": null,
       "failure_class": null,
       "log": null,
-      "baseline": "5e953bf9841577a1b7a96c9089c91720fe34ac1d"
+      "baseline": "5e953bf9841577a1b7a96c9089c91720fe34ac1d",
+      "scope_gate": "pass"
     },
     "task-a1-localize": {
       "status": "pending",

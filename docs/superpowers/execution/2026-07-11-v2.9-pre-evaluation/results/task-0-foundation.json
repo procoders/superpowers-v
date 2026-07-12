@@ -1,1 +1,17 @@
-{"id":"task-0-foundation","backend":"claude","model":"opus","tier":"deep","isolation":"direct","status":"done","scope_gate":"pass","baseline":"a55310f5ac52cc7f9b7e712e488452205d0edbda","violations":[],"summary":"shared foundation; all selftests pass; frontmatter clean"}
+{
+  "id": "task-0-foundation",
+  "backend": "claude",
+  "model": "opus",
+  "tier": "deep",
+  "isolation": "direct",
+  "status": "done",
+  "scope_gate": "pass",
+  "baseline": "a55310f5ac52cc7f9b7e712e488452205d0edbda",
+  "violations": [],
+  "summary": "shared foundation; all selftests pass; frontmatter clean",
+  "reviews": {
+    "spec": "approved-after-fix",
+    "quality": "approved-after-fix",
+    "rounds": 2
+  }
+}
