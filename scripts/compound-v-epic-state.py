@@ -530,14 +530,65 @@ def next_feature_autonomous(state):
     "reconcile"/"complete"/"blocked": "done: ...", "blocked_needing_human: ...",
     "running_with_failures: ...". v2.10 NEVER emits "done_with_blockers" (that terminal
     state needs a 2nd safe external family — v2.11).
+
+    FIX 1 (crash/breaker-window resume safety, v2.10 follow-up): a `failed` feature is no
+    longer blanket-treated as abandoned — it is routed BY its stored `disposition`:
+      - `retry_fix` AND still under the retry cap -> the feature ITSELF is runnable again
+        (the arbiter approved a retry and it hasn't re-run yet); its transitive dependents
+        are explicitly NOT blocked, because it is about to be retried, not abandoned.
+      - `retry_fix` but the retry cap is exhausted, or `halt_feature` -> abandoned, exactly
+        like the pre-fix blanket behavior (dependents blocked, independents continue).
+      - `halt_epic` -> handled by the pre-existing unconditional whole-epic halt check above.
+      - no/None disposition (the crash-in-arbitration window: the feature failed but the
+        arbiter never recorded a verdict before a breaker trip/crash) -> this must NOT be
+        silently treated as settled. It halts ALL routing (not just its own dependents) with
+        a dedicated "needs_arbitration" reason, so the driver re-runs the arbiter on resume
+        instead of quietly handing out unrelated independent work over an untriaged failure.
     """
     feats = [f for f in state.get("features", []) if isinstance(f, dict)]
     ids = {f.get("id") for f in feats}
     status_by = {f.get("id"): f.get("status") for f in feats}
     done_ids = {f["id"] for f in feats if f.get("status") == "done"}
     running_ids = sorted(f["id"] for f in feats if f.get("status") == "running")
-    blocking_ids = sorted(f["id"] for f in feats if f.get("status") in ("failed", "blocked"))
     pending = [f for f in feats if f.get("status") == "pending"]
+
+    # FIX 1: classify every `failed` feature by its stored disposition instead of treating
+    # "failed" as a single undifferentiated blocking state.
+    retry_runnable = []   # retry_fix + still under cap -> the feature itself is runnable
+    abandoned_ids = []    # retry_fix (cap exhausted) or halt_feature -> abandoned, as before
+    needs_arb_ids = []    # no/None disposition -> crash-in-arbitration window, halt routing
+    for f in feats:
+        if f.get("status") != "failed":
+            continue
+        fid = f.get("id")
+        disp = f.get("disposition")
+        disp_kind = disp.get("disposition") if isinstance(disp, dict) else None
+        if disp_kind == "retry_fix":
+            info = can_retry_info(state, fid)
+            if info and info.get("can_retry"):
+                retry_runnable.append(f)
+            else:
+                abandoned_ids.append(fid)
+        elif disp_kind in ("halt_feature", "blocked_external"):
+            # blocked_external is normally a `blocked`-status/ledger concept; if it somehow
+            # lands on a `failed` feature it WAS arbitrated, so treat it as an abandon rather
+            # than falling through to needs_arbitration.
+            abandoned_ids.append(fid)
+        elif disp_kind == "halt_epic":
+            pass  # handled by the unconditional halt_epic check below
+        else:
+            needs_arb_ids.append(fid)
+    retry_runnable.sort(key=lambda rf: rf.get("id") or "")
+    abandoned_ids = sorted(abandoned_ids)
+    needs_arb_ids = sorted(needs_arb_ids)
+
+    # `blocking_ids` retains its pre-fix meaning (used for messaging + dependents-blocking)
+    # EXCEPT a retry-runnable failed feature is explicitly excluded — its dependents are not
+    # blocked, per FIX 1.
+    blocking_ids = sorted(
+        [fid for fid in status_by if status_by.get(fid) == "blocked"] + abandoned_ids
+        + needs_arb_ids
+    )
 
     reverse = _reverse_deps_graph(feats)
     dependents_blocked = set()
@@ -567,8 +618,32 @@ def next_feature_autonomous(state):
                       "crashed; mark each --status failed (abandon) or pending (retry), then "
                       "re-run" % ", ".join(running_ids)), blocked_by
 
+    # FIX 1: a failed feature with no recorded disposition is the crash-in-arbitration
+    # window — do NOT silently abandon it, and do NOT hand out other work as if the epic
+    # were settled. Halt ALL routing until the arbiter re-runs. This takes priority over a
+    # retry-runnable feature elsewhere: an unresolved arbitration gap isn't closed by other
+    # work being available.
+    if needs_arb_ids:
+        return None, ("needs_arbitration: feature %s failed without a recorded disposition — "
+                      "re-run the arbiter" % ", ".join(needs_arb_ids)), blocked_by
+
+    # FIX 1: a retry_fix-approved failed feature that is still under the retry cap is itself
+    # directly runnable again — the driver re-runs it. This is checked before the normal
+    # pending-DAG routing below because it is not "new" work, it is the resumption of
+    # in-flight (arbiter-approved) work.
+    if retry_runnable:
+        return retry_runnable[0], "runnable", blocked_by
+
     if not pending:
         if ids and done_ids == ids:
+            # FIX 2: a due-but-not-yet-passed sample audit gates terminal completion, even
+            # once every feature is 'done' and final_review has passed — a breaker/crash
+            # between marking a sampled SUCCESS 'done' and running its PASS sample-audit must
+            # not silently lose that obligation on resume.
+            due_ids = sorted(f["id"] for f in feats if f.get("sample_audit_due") is True)
+            if due_ids:
+                return None, ("sample_audit_due: feature(s) %s awaiting sample-audit"
+                              % ", ".join(due_ids)), blocked_by
             fr = state.get("final_review")
             fr = fr if isinstance(fr, dict) else {}
             if fr.get("status") == "passed":
@@ -663,20 +738,27 @@ def _total_attempts(state):
 
 def _recompute_top_status(state):
     """Marathon top-level status recompute: 'done' iff every feature is done AND
-    final_review.status=="passed" (A6/Sol-R4#1); otherwise 'running' — UNLESS a breaker/
-    halt_epic already parked it at 'blocked_needing_human' (only --trip-breaker sets that;
-    this function never clears or overwrites it). This deliberately REPLACES the
-    checkpoint rollup's "any failed -> blocked" fail-fast rule for marathon states, because
-    that rule is exactly what autonomous DAG routing (`next_feature_autonomous`) exists to
-    route around — a single failed/blocked feature must not blanket-halt a marathon epic
-    while independent features are still runnable."""
+    final_review.status=="passed" AND no feature has a due sample-audit (A6/Sol-R4#1, FIX 2);
+    otherwise 'running' — UNLESS a breaker/halt_epic already parked it at
+    'blocked_needing_human' (only --trip-breaker sets that; this function never clears or
+    overwrites it). This deliberately REPLACES the checkpoint rollup's "any failed -> blocked"
+    fail-fast rule for marathon states, because that rule is exactly what autonomous DAG
+    routing (`next_feature_autonomous`) exists to route around — a single failed/blocked
+    feature must not blanket-halt a marathon epic while independent features are still
+    runnable.
+
+    FIX 2: a due sample-audit gates 'done' HERE too (not just in `next_feature_autonomous`
+    and `record_final_review`) — so `state["status"]` itself is never misleadingly 'done'
+    while a sampled SUCCESS's audit obligation is still outstanding, whichever call site
+    triggers the recompute."""
     if state.get("status") == "blocked_needing_human":
         return
     feats = [f for f in state.get("features", []) if isinstance(f, dict)]
     sts = [f.get("status") for f in feats]
     fr = state.get("final_review")
     fr = fr if isinstance(fr, dict) else {}
-    if sts and all(s == "done" for s in sts) and fr.get("status") == "passed":
+    audit_due = any(f.get("sample_audit_due") is True for f in feats)
+    if sts and all(s == "done" for s in sts) and fr.get("status") == "passed" and not audit_due:
         state["status"] = "done"
     else:
         state["status"] = "running"
@@ -863,7 +945,11 @@ def record_final_review(state, status):
 
     `passed` is REJECTED unless EVERY feature is currently done (Codex review #1) — a review
     can't pass over incomplete work, so only record_final_review(...,'passed') on a fully-
-    done epic can ever flip the top-level status to 'done'."""
+    done epic can ever flip the top-level status to 'done'.
+
+    FIX 2 (v2.10 follow-up): `passed` is ALSO rejected while any feature has
+    `sample_audit_due == True` — a due sample-audit is a durable obligation that a passed
+    final_review must never gate past, breaker trip or not."""
     if status not in ("pending", "passed", "failed"):
         return False, "--status must be one of: pending, passed, failed"
     if status == "passed":
@@ -872,6 +958,10 @@ def record_final_review(state, status):
         if not feats or not_done:
             return False, ("cannot record final_review=passed while features are not done "
                            "(not done: %s)" % (", ".join(map(str, not_done)) or "none"))
+        due_ids = sorted(f.get("id") for f in feats if f.get("sample_audit_due") is True)
+        if due_ids:
+            return False, ("cannot record final_review=passed while sample_audit_due is true "
+                           "for feature(s) %s" % ", ".join(due_ids))
     state["final_review"] = {"status": status}
     state["total_attempts"] = _total_attempts(state)  # recompute on every marathon mutation (#9)
     _recompute_top_status(state)
@@ -1115,6 +1205,42 @@ def clear_disposition(state, feature_id):
     return True, None
 
 
+def mark_sample_audit_due(state, feature_id):
+    """FIX 2 (v2.10 crash-safety follow-up): sets `feature.sample_audit_due = True` — a
+    durable obligation recorded BEFORE the PASS sample-audit runs, so a breaker trip/crash
+    in that window (after a sampled SUCCESS is marked 'done' but before its sample-audit
+    runs) is never silently lost on resume. `next_feature_autonomous` and
+    `record_final_review` both gate terminal completion on this flag. Marathon-only.
+    Returns (ok, error|None)."""
+    if not _is_marathon(state):
+        return False, "--mark-sample-audit-due requires a marathon-stance epic"
+    hit = _find_feature(state, feature_id)
+    if hit is None:
+        return False, "no feature %r" % feature_id
+    hit["sample_audit_due"] = True
+    state["total_attempts"] = _total_attempts(state)  # recompute on every mutation (#9)
+    # A stale 'done' (set by an earlier passed final_review, before this obligation was
+    # recorded) must not survive marking a sample-audit due — recompute now, not just at the
+    # next unrelated mutation.
+    _recompute_top_status(state)
+    return True, None
+
+
+def clear_sample_audit_due(state, feature_id):
+    """The counterpart to `mark_sample_audit_due` — the sample-audit passed, so the
+    obligation is cleared and terminal completion (and a passed final_review) can proceed
+    again. Marathon-only. Returns (ok, error|None)."""
+    if not _is_marathon(state):
+        return False, "--clear-sample-audit-due requires a marathon-stance epic"
+    hit = _find_feature(state, feature_id)
+    if hit is None:
+        return False, "no feature %r" % feature_id
+    hit["sample_audit_due"] = False
+    state["total_attempts"] = _total_attempts(state)  # recompute on every mutation (#9)
+    _recompute_top_status(state)
+    return True, None
+
+
 def validate_marathon_state(state):
     """Defensive integrity check for a LOADED marathon state (Codex review #10) — a legacy
     or hand-edited epic-state.json can carry corruption the builder would never produce.
@@ -1142,6 +1268,11 @@ def validate_marathon_state(state):
         if not isinstance(deps, list) or not all(isinstance(d, str) for d in deps):
             errs.append("feature %r has a malformed 'depends_on' %r (want a list of id strings)"
                         % (f.get("id"), deps))
+        # FIX 2: sample_audit_due is bool-or-absent — accept a missing key, reject anything
+        # present that isn't an actual bool (including None).
+        if "sample_audit_due" in f and not isinstance(f.get("sample_audit_due"), bool):
+            errs.append("feature %r has a malformed 'sample_audit_due' %r (want a bool or "
+                        "absent)" % (f.get("id"), f.get("sample_audit_due")))
     npc = state.get("no_progress_cycles", 0)
     if not _is_nonneg_int(npc):
         errs.append("'no_progress_cycles' is malformed %r (want a non-negative int)" % (npc,))
@@ -1427,6 +1558,10 @@ def _selftest():
               {"id": "z", "depends_on": ["x"]}]
     sta2 = build_state(indep2, "e", "E", stance="marathon", caps={})
     sta2["features"][0]["status"] = "failed"  # x failed
+    # FIX 1: an arbitrated abandon (halt_feature) — the pre-fix "bare failed" behavior for a
+    # feature that HAS been triaged. The no-disposition crash-window case is covered
+    # separately below (FIX 1 tests).
+    sta2["features"][0]["disposition"] = {"disposition": "halt_feature"}
     fa, whya, blocked_by = next_feature_autonomous(sta2)
     check("A2: independent y still runnable despite x failed", fa is not None and fa["id"] == "y")
     check("A2: z (transitive dependent of x) is in blocked_by", blocked_by == ["z"])
@@ -1462,6 +1597,7 @@ def _selftest():
     only_dep = [{"id": "x", "depends_on": []}, {"id": "z", "depends_on": ["x"]}]
     st_exh = build_state(only_dep, "e", "E", stance="marathon", caps={})
     st_exh["features"][0]["status"] = "failed"
+    st_exh["features"][0]["disposition"] = {"disposition": "halt_feature"}  # arbitrated abandon
     fa7, whya7, blocked_by7 = next_feature_autonomous(st_exh)
     check("A2: exhausted reachable work -> blocked_needing_human",
           fa7 is None and whya7.startswith("blocked_needing_human"))
@@ -1484,6 +1620,49 @@ def _selftest():
           "running_with_failures" in whyp and not whyp.startswith("blocked_needing_human"))
     check("A2 precedence: B (dependent on A) is in blocked_by, C is not",
           blocked_by_p == ["B"])
+
+    # --- FIX 1 (crash/breaker-window resume safety): a failed feature routes BY its stored
+    # disposition instead of being blanket-treated as abandoned -------------------------
+    fix1_feats = [{"id": "x", "depends_on": []}, {"id": "y", "depends_on": []},
+                  {"id": "z", "depends_on": ["x"]}]
+
+    st_f1 = build_state(fix1_feats, "e", "E", stance="marathon", caps={})
+    st_f1["features"][0]["status"] = "failed"
+    st_f1["features"][0]["attempts"] = 1  # < default cap (2) -> can_retry True
+    st_f1["features"][0]["disposition"] = {"disposition": "retry_fix"}
+    f_f1, why_f1, blocked_by_f1 = next_feature_autonomous(st_f1)
+    check("FIX1: retry_fix + can_retry -> the failed feature itself is runnable",
+          f_f1 is not None and f_f1["id"] == "x" and why_f1 == "runnable")
+    check("FIX1: retry_fix + can_retry does NOT block its dependents (about to be retried)",
+          blocked_by_f1 == [])
+
+    st_f2 = build_state(fix1_feats, "e", "E", stance="marathon", caps={})
+    st_f2["features"][0]["status"] = "failed"
+    st_f2["features"][0]["attempts"] = 2  # == default cap (2) -> can_retry False
+    st_f2["features"][0]["disposition"] = {"disposition": "retry_fix"}
+    f_f2, why_f2, blocked_by_f2 = next_feature_autonomous(st_f2)
+    check("FIX1: retry_fix + cap exhausted -> abandoned, independent y still runnable",
+          f_f2 is not None and f_f2["id"] == "y")
+    check("FIX1: retry_fix cap-exhausted blocks the transitive dependent z",
+          blocked_by_f2 == ["z"])
+    check("FIX1: retry_fix cap-exhausted reason carries running_with_failures",
+          "running_with_failures" in why_f2)
+
+    st_f3 = build_state(fix1_feats, "e", "E", stance="marathon", caps={})
+    st_f3["features"][0]["status"] = "failed"
+    st_f3["features"][0]["disposition"] = {"disposition": "halt_feature"}
+    f_f3, why_f3, blocked_by_f3 = next_feature_autonomous(st_f3)
+    check("FIX1: halt_feature -> abandoned, independent y still runnable",
+          f_f3 is not None and f_f3["id"] == "y")
+    check("FIX1: halt_feature blocks the transitive dependent z", blocked_by_f3 == ["z"])
+
+    st_f4 = build_state(fix1_feats, "e", "E", stance="marathon", caps={})
+    st_f4["features"][0]["status"] = "failed"  # disposition left None (build_state default)
+    f_f4, why_f4, blocked_by_f4 = next_feature_autonomous(st_f4)
+    check("FIX1: failed with NO recorded disposition -> needs_arbitration, no work handed out",
+          f_f4 is None and why_f4.startswith("needs_arbitration"))
+    check("FIX1: needs_arbitration names the untriaged feature",
+          "feature x failed without a recorded disposition" in why_f4)
 
     # --- A3: attempts + --can-retry + transition table -----------------------------------
     feats3 = [{"id": "a", "depends_on": []}]
@@ -1585,6 +1764,89 @@ def _selftest():
           fa6c is None and why6c.startswith("done"))
     okr2, _ = record_final_review(st6, "bogus")
     check("A6: invalid final-review status rejected", not okr2)
+
+    # --- FIX 2 (crash/breaker-window resume safety): a durable sample-audit obligation
+    # gates terminal completion --------------------------------------------------------------
+    feats_sa = [{"id": "a", "depends_on": []}]
+    st_sa = build_state(feats_sa, "e", "E", stance="marathon", caps={})
+    apply_update(st_sa, "a", "running")
+    apply_update(st_sa, "a", "done")
+    record_final_review(st_sa, "passed")
+    fa_sa0, why_sa0, _ = next_feature_autonomous(st_sa)
+    check("FIX2 setup: autonomous routing reports 'done' before any sample-audit is due",
+          fa_sa0 is None and why_sa0.startswith("done"))
+
+    ok_mark, err_mark = mark_sample_audit_due(st_sa, "a")
+    check("FIX2: mark_sample_audit_due ok", ok_mark and err_mark is None)
+    check("FIX2: feature.sample_audit_due is True", st_sa["features"][0]["sample_audit_due"] is True)
+    fa_sa1, why_sa1, _ = next_feature_autonomous(st_sa)
+    check("FIX2: mark due -> next_feature_autonomous no longer reports 'done'",
+          fa_sa1 is None and why_sa1.startswith("sample_audit_due"))
+    check("FIX2: sample_audit_due reason names the awaiting feature",
+          "feature(s) a awaiting sample-audit" in why_sa1)
+
+    ok_fr_reject, err_fr_reject = record_final_review(st_sa, "passed")
+    check("FIX2: record_final_review passed REJECTED while sample_audit_due is true",
+          ok_fr_reject is False and "sample_audit_due" in err_fr_reject)
+    check("FIX2: a rejected final_review=passed does not flip status to done",
+          st_sa["status"] != "done")
+
+    ok_clear, err_clear = clear_sample_audit_due(st_sa, "a")
+    check("FIX2: clear_sample_audit_due ok", ok_clear and err_clear is None)
+    check("FIX2: feature.sample_audit_due is False after clear",
+          st_sa["features"][0]["sample_audit_due"] is False)
+    fa_sa2, why_sa2, _ = next_feature_autonomous(st_sa)
+    check("FIX2: clear due -> normal completion resumes ('done')",
+          fa_sa2 is None and why_sa2.startswith("done"))
+    ok_fr2, err_fr2 = record_final_review(st_sa, "passed")
+    check("FIX2: record_final_review passed accepted again once due is cleared",
+          ok_fr2 and err_fr2 is None)
+
+    # Crash simulation: a 'done' feature with sample_audit_due left set (as if the process
+    # died between marking the sampled SUCCESS 'done' and clearing the audit) must be
+    # surfaced on the very next --next --autonomous — never silently skipped to 'done', and
+    # never allowed to acquire a passed final_review in the meantime.
+    st_sa2 = build_state(feats_sa, "e", "E", stance="marathon", caps={})
+    apply_update(st_sa2, "a", "running")
+    apply_update(st_sa2, "a", "done")
+    mark_sample_audit_due(st_sa2, "a")
+    fa_sa3, why_sa3, _ = next_feature_autonomous(st_sa2)
+    check("FIX2 crash-sim: sample_audit_due surfaces immediately on resume "
+          "(final_review still pending)",
+          fa_sa3 is None and why_sa3.startswith("sample_audit_due"))
+    ok_fr3, _ = record_final_review(st_sa2, "passed")
+    check("FIX2 crash-sim: final_review=passed still rejected on resume", ok_fr3 is False)
+
+    # --- --mark/clear-sample-audit-due: error handling ---------------------------------------
+    ok_unk, err_unk = mark_sample_audit_due(st_sa, "does-not-exist")
+    check("FIX2: mark_sample_audit_due on unknown feature -> controlled error",
+          ok_unk is False and "no feature" in err_unk)
+    ok_unk2, err_unk2 = clear_sample_audit_due(st_sa, "does-not-exist")
+    check("FIX2: clear_sample_audit_due on unknown feature -> controlled error",
+          ok_unk2 is False and "no feature" in err_unk2)
+
+    st_sa_chk = build_state(feats_sa, "e", "E")  # checkpoint (non-marathon)
+    ok_chk, err_chk = mark_sample_audit_due(st_sa_chk, "a")
+    check("FIX2: mark_sample_audit_due on a checkpoint state -> controlled error",
+          ok_chk is False and "marathon" in err_chk)
+    ok_chk2, err_chk2 = clear_sample_audit_due(st_sa_chk, "a")
+    check("FIX2: clear_sample_audit_due on a checkpoint state -> controlled error",
+          ok_chk2 is False and "marathon" in err_chk2)
+
+    # --- validate_marathon_state: sample_audit_due is bool-or-absent -------------------------
+    good_sa = build_state(feats_sa, "e", "E", stance="marathon", caps={})
+    check("FIX2: absent sample_audit_due validates clean",
+          validate_marathon_state(good_sa) == [])
+    good_sa["features"][0]["sample_audit_due"] = True
+    check("FIX2: a bool True sample_audit_due validates clean",
+          validate_marathon_state(good_sa) == [])
+    good_sa["features"][0]["sample_audit_due"] = False
+    check("FIX2: a bool False sample_audit_due validates clean",
+          validate_marathon_state(good_sa) == [])
+    bad_sa = build_state(feats_sa, "e", "E", stance="marathon", caps={})
+    bad_sa["features"][0]["sample_audit_due"] = "yes"
+    check("FIX2: a non-bool sample_audit_due -> validation error",
+          validate_marathon_state(bad_sa) != [])
 
     # --- A7: global breakers ------------------------------------------------------------------
     feats7 = [{"id": "a", "depends_on": []}, {"id": "b", "depends_on": []}]
@@ -2221,6 +2483,12 @@ def main(argv):
     p.add_argument("--clear-disposition", action="store_true",
                    help="(marathon) clear a feature's stored disposition, e.g. to undo a "
                         "sticky halt_epic/halt_feature verdict")
+    p.add_argument("--mark-sample-audit-due", action="store_true",
+                   help="(marathon) record a durable sample-audit obligation on --feature F "
+                        "before a PASS sample-audit runs; gates terminal completion")
+    p.add_argument("--clear-sample-audit-due", action="store_true",
+                   help="(marathon) clear --feature F's sample-audit obligation once the "
+                        "audit has passed")
     args = p.parse_args(argv)
 
     if args.selftest:
@@ -2397,6 +2665,32 @@ def main(argv):
         print(json.dumps({"feature": args.feature, "disposition": None}))
         return 0
 
+    if args.mark_sample_audit_due:
+        if not _needs_marathon("--mark-sample-audit-due"):
+            return 1
+        if not args.feature:
+            p.error("--mark-sample-audit-due needs --feature")
+        ok, err = mark_sample_audit_due(state, args.feature)
+        if not ok:
+            print("epic-sample-audit error: %s" % err, file=sys.stderr)
+            return 1
+        _atomic_write_json(args.state, state)
+        print(json.dumps({"feature": args.feature, "sample_audit_due": True}))
+        return 0
+
+    if args.clear_sample_audit_due:
+        if not _needs_marathon("--clear-sample-audit-due"):
+            return 1
+        if not args.feature:
+            p.error("--clear-sample-audit-due needs --feature")
+        ok, err = clear_sample_audit_due(state, args.feature)
+        if not ok:
+            print("epic-sample-audit error: %s" % err, file=sys.stderr)
+            return 1
+        _atomic_write_json(args.state, state)
+        print(json.dumps({"feature": args.feature, "sample_audit_due": False}))
+        return 0
+
     if args.record_progress_cycle:
         if not _needs_marathon("--record-progress-cycle"):
             return 1
@@ -2502,7 +2796,8 @@ def main(argv):
     p.error("one of --init / --next / --update / --summary / --stats / --check-specs / "
            "--lint / --can-retry / --breaker-check / --trip-breaker / --clear-breaker / "
            "--record-progress-cycle / --record-disposition / --clear-disposition / "
-           "--record-final-review / --selftest is required")
+           "--mark-sample-audit-due / --clear-sample-audit-due / --record-final-review / "
+           "--selftest is required")
 
 
 if __name__ == "__main__":
