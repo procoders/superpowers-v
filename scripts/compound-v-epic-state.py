@@ -40,8 +40,10 @@ Marathon (opt-in, additive). Every command below REJECTS a non-marathon state (c
 nonzero, no write); a negative/non-numeric cap is rejected at --init:
   --init --stance marathon [--max-attempts-per-feature N]
     [--max-no-progress-cycles N] [--max-total-attempts N] [--max-wall-clock-hours H]
-    [--now ISO]   (a cap may be an explicit null = unbounded on that axis; a MISSING cap
-    uses its documented default, never unbounded)
+    [--now ISO] [--start-sha SHA]   (a cap may be an explicit null = unbounded on that axis;
+    a MISSING cap uses its documented default, never unbounded; --start-sha is OPTIONAL and
+    stored as autonomy.start_sha for the halt-page accumulated-diff command — a checkpoint
+    --init rejects --start-sha)
   --next --autonomous -> {"feature": f|null, "reason": str, "blocked_by": [ids]}  (read-only)
     `reason` embeds the literal terminal-state token when terminal: "done: ...",
     "blocked_needing_human: ...", "running_with_failures: ...", or the reconcile/runnable
@@ -67,6 +69,17 @@ nonzero, no write); a negative/non-numeric cap is rejected at --init:
     sets epic status to "blocked_needing_human")
   --record-progress-cycle --cycle-id C [--now ISO] -> {"cycle_id","no_progress_cycles",
     "replayed"} (atomic write unless replayed; idempotent by cycle_id)
+  --clear-breaker [--now ISO] [--reset-wall-clock] [--set-max-total-attempts N] -> a JSON
+    summary of what was cleared/re-armed (atomic write). The human's re-arm after a
+    breaker trip / halt: clears the `blocked_needing_human` latch (removes any
+    `breaker_trip` record, resets `no_progress_cycles` to 0, recomputes top status).
+    --reset-wall-clock restarts `autonomy.started_at`; --set-max-total-attempts re-arms
+    that cap (N or an explicit null for unbounded). Still clears the latch even if the
+    (possibly re-armed) state would immediately re-trip — prints a loud stderr warning
+    naming the axis in that case.
+  --clear-disposition --feature F -> {"feature","disposition":null} (atomic write). Clears
+    a feature's stored disposition (the override for a sticky halt_epic/halt_feature verdict)
+    so `next_feature_autonomous` no longer short-circuits on it.
 
 Usage:
   compound-v-epic-state.py --init --features features.json --epic-id E --title T --out S
@@ -303,6 +316,16 @@ def build_state(features, epic_id, title, stance=None, caps=None):
             "max_wall_clock_hours": _cap_or_default(caps, "max_wall_clock_hours", 10),
             "started_at": started_at,
         }
+        # start_sha (v2.10 resume support) is OPTIONAL and OMITTED entirely when not
+        # supplied — a plain marathon build_state(...) call (no caps["start_sha"]) keeps the
+        # existing 6-key autonomy schema byte-for-byte (Codex/cross-model review golden
+        # tests assert `set(autonomy.keys())` exactly). The driver captures
+        # `git rev-parse HEAD` and passes it for the halt-page accumulated-diff command.
+        if "start_sha" in caps:
+            start_sha = caps["start_sha"]
+            if not isinstance(start_sha, str):
+                raise ValueError("start_sha must be a string (got %r)" % (start_sha,))
+            state["autonomy"]["start_sha"] = start_sha
         state["final_review"] = {"status": "pending"}
         state["blocker_ledger"] = []
         state["no_progress_cycles"] = 0
@@ -1002,6 +1025,96 @@ def record_progress_cycle(state, cycle_id):
             "replayed": False}
 
 
+# Human-facing hint per breaker axis for the --clear-breaker fail-safe re-trip warning: what
+# the human must actually go raise/restart for that specific axis to stop re-tripping
+# immediately. no_progress_cycles has no hint because clear_breaker unconditionally resets it
+# to 0, so it can never be part of an immediate re-trip.
+_BREAKER_AXIS_HINTS = {
+    "max_total_attempts": "raise the cap with --set-max-total-attempts",
+    "max_wall_clock_hours": "restart the clock with --reset-wall-clock (or raise "
+                             "autonomy.max_wall_clock_hours by hand)",
+}
+
+
+def clear_breaker(state, now_dt, reset_wall_clock=False, set_max_total_attempts=_UNSET):
+    """The human's re-arm after a breaker trip / halt (v2.10 resume support). Marathon-only.
+
+    Clears the `blocked_needing_human` latch: removes any `breaker_trip` record, resets
+    `no_progress_cycles` to 0, then recomputes the top-level status via
+    `_recompute_top_status` (-> 'running' or 'done'). `_recompute_top_status` itself treats
+    'blocked_needing_human' as sticky and refuses to overwrite it, so the status is force-set
+    to 'running' first so the recompute can actually re-derive it.
+
+    `reset_wall_clock=True` restarts the wall-clock axis (`autonomy.started_at = now`).
+    `set_max_total_attempts` (an int, None for explicit-unbounded, or the `_UNSET` sentinel
+    for "leave it alone") re-arms that axis, validated with the same non-negative/finite
+    rules as --init.
+
+    Fail-safe: after clearing, `breaker_check` is re-run against the (possibly re-armed)
+    state; if it would IMMEDIATELY re-trip (e.g. total_attempts is still >= max_total_attempts
+    and no --set-max-total-attempts was given), a loud stderr warning names exactly which
+    axis and what to raise — but the latch is cleared regardless; the human is in control.
+
+    Returns (ok, error|None, summary|None)."""
+    if not _is_marathon(state):
+        return False, "--clear-breaker requires a marathon-stance epic", None
+    if set_max_total_attempts is not _UNSET:
+        err = _validate_cap_value("max_total_attempts", set_max_total_attempts)
+        if err:
+            return False, err, None
+
+    had_trip = state.pop("breaker_trip", None) is not None
+    prior_no_progress = state.get("no_progress_cycles", 0)
+    state["no_progress_cycles"] = 0
+
+    autonomy = state.setdefault("autonomy", {})
+    if reset_wall_clock:
+        autonomy["started_at"] = _now_iso(now_dt)
+    if set_max_total_attempts is not _UNSET:
+        autonomy["max_total_attempts"] = set_max_total_attempts
+
+    # Force off the sticky latch so _recompute_top_status can re-derive the real status
+    # instead of its no-op early-return for 'blocked_needing_human'.
+    state["status"] = "running"
+    state["total_attempts"] = _total_attempts(state)  # recompute on every mutation (#9)
+    _recompute_top_status(state)
+
+    summary = {
+        "cleared_breaker_trip": had_trip,
+        "no_progress_cycles_reset_from": prior_no_progress,
+        "wall_clock_reset": bool(reset_wall_clock),
+        "max_total_attempts_set": (set_max_total_attempts
+                                    if set_max_total_attempts is not _UNSET else None),
+        "epic_status": state["status"],
+    }
+
+    recheck = breaker_check(state, now_dt)
+    summary["would_immediately_retrip"] = recheck["tripped"]
+    summary["would_retrip_which"] = recheck["which"]
+    if recheck["tripped"]:
+        hints = "; ".join("%s (%s)" % (axis, _BREAKER_AXIS_HINTS.get(axis, "raise that cap"))
+                          for axis in recheck["which"])
+        print("epic-clear-breaker warning: the latch is cleared, but this state would "
+              "IMMEDIATELY re-trip on the next --breaker-check: %s" % hints, file=sys.stderr)
+
+    return True, None, summary
+
+
+def clear_disposition(state, feature_id):
+    """Clears a feature's stored `disposition` (v2.10 resume support). Marathon-only. This
+    is the override for a sticky `halt_epic`/`halt_feature` verdict — once cleared,
+    `next_feature_autonomous` no longer short-circuits on it (a fresh disposition can still
+    be recorded later via `record_disposition`). Returns (ok, error|None)."""
+    if not _is_marathon(state):
+        return False, "--clear-disposition requires a marathon-stance epic"
+    hit = _find_feature(state, feature_id)
+    if hit is None:
+        return False, "no feature %r" % feature_id
+    hit["disposition"] = None
+    state["total_attempts"] = _total_attempts(state)  # recompute on every mutation (#9)
+    return True, None
+
+
 def validate_marathon_state(state):
     """Defensive integrity check for a LOADED marathon state (Codex review #10) — a legacy
     or hand-edited epic-state.json can carry corruption the builder would never produce.
@@ -1084,6 +1197,11 @@ def validate_marathon_state(state):
             except (ValueError, TypeError):
                 errs.append("autonomy.started_at %r is not a valid ISO-8601 timestamp"
                             % (started_at,))
+        # start_sha (v2.10) is string-or-absent — absent is normal (older marathon states,
+        # or a driver that didn't pass --start-sha at --init time) and not an error.
+        if "start_sha" in autonomy and not isinstance(autonomy["start_sha"], str):
+            errs.append("autonomy.start_sha is malformed %r (want a string or absent)"
+                        % (autonomy["start_sha"],))
     return errs
 
 
@@ -1889,6 +2007,139 @@ def _selftest():
     except (ValueError, TypeError):
         check("R3#8: _parse_iso raises on bad input (caught by the CLI guard)", True)
 
+    # ================================================================
+    # v2.10 marathon — human resume after a breaker/halt latch
+    # (--clear-breaker, --clear-disposition, --init --start-sha)
+    # ================================================================
+
+    # --- --clear-breaker: clears a tripped blocked_needing_human -> status recomputes ------
+    cb_feats = [{"id": "a", "depends_on": []}]
+    cbA = build_state(cb_feats, "e", "E", stance="marathon", caps={"max_no_progress_cycles": 2})
+    cbA["status"] = "blocked_needing_human"
+    cbA["breaker_trip"] = {"which": ["max_no_progress_cycles"], "detail": {},
+                           "tripped_at": "2026-01-01T00:00:00+00:00"}
+    cbA["no_progress_cycles"] = 5
+    okA, errA, sumA = clear_breaker(cbA, T0)
+    check("clear-breaker: ok + no error", okA and errA is None)
+    check("clear-breaker: status recomputes off blocked_needing_human ('running')",
+          cbA["status"] == "running")
+    check("clear-breaker: breaker_trip record removed", "breaker_trip" not in cbA)
+    check("clear-breaker: no_progress_cycles reset to 0", cbA["no_progress_cycles"] == 0)
+    check("clear-breaker: summary reports cleared_breaker_trip", sumA["cleared_breaker_trip"] is True)
+    check("clear-breaker: summary reports the prior no_progress_cycles",
+          sumA["no_progress_cycles_reset_from"] == 5)
+    check("clear-breaker: no immediate re-trip when caps are fine",
+          sumA["would_immediately_retrip"] is False and sumA["would_retrip_which"] == [])
+
+    # status recompute can also land back on 'done' (all-done + final_review passed)
+    cbD = build_state(cb_feats, "e", "E", stance="marathon", caps={})
+    apply_update(cbD, "a", "running", now_dt=T0)
+    apply_update(cbD, "a", "done", now_dt=T0)
+    record_final_review(cbD, "passed")
+    check("clear-breaker setup: status is 'done' pre-trip", cbD["status"] == "done")
+    cbD["status"] = "blocked_needing_human"  # simulate a later-tripped latch
+    cbD["breaker_trip"] = {"which": ["max_wall_clock_hours"], "detail": {}, "tripped_at": "x"}
+    okD, _, sumD = clear_breaker(cbD, T0)
+    check("clear-breaker: recompute can land back on 'done'", okD and cbD["status"] == "done")
+
+    # --- --clear-breaker --reset-wall-clock: moves started_at ------------------------------
+    cb2 = build_state(cb_feats, "e", "E", stance="marathon",
+                      caps={"started_at": "2020-01-01T00:00:00+00:00"})
+    ok2, _, sum2 = clear_breaker(cb2, T0, reset_wall_clock=True)
+    check("clear-breaker --reset-wall-clock: started_at moved to 'now'",
+          ok2 and cb2["autonomy"]["started_at"] == _now_iso(T0))
+    check("clear-breaker --reset-wall-clock: summary reflects the reset",
+          sum2["wall_clock_reset"] is True)
+    cb2b = build_state(cb_feats, "e", "E", stance="marathon",
+                       caps={"started_at": "2020-01-01T00:00:00+00:00"})
+    ok2b, _, sum2b = clear_breaker(cb2b, T0)  # no --reset-wall-clock
+    check("clear-breaker: started_at untouched without --reset-wall-clock",
+          ok2b and cb2b["autonomy"]["started_at"] == "2020-01-01T00:00:00+00:00"
+          and sum2b["wall_clock_reset"] is False)
+
+    # --- --clear-breaker --set-max-total-attempts: re-arms that axis -----------------------
+    cb3 = build_state(cb_feats, "e", "E", stance="marathon", caps={"max_total_attempts": 1})
+    ok3, err3, sum3 = clear_breaker(cb3, T0, set_max_total_attempts=50)
+    check("clear-breaker --set-max-total-attempts: cap updated",
+          ok3 and cb3["autonomy"]["max_total_attempts"] == 50)
+    check("clear-breaker --set-max-total-attempts: summary reflects the new cap",
+          sum3["max_total_attempts_set"] == 50)
+    ok3b, _, _ = clear_breaker(cb3, T0, set_max_total_attempts=None)
+    check("clear-breaker --set-max-total-attempts null: explicit-unbounded honored",
+          ok3b and cb3["autonomy"]["max_total_attempts"] is None)
+    ok3c, err3c, sum3c = clear_breaker(cb3, T0, set_max_total_attempts=-5)
+    check("clear-breaker --set-max-total-attempts: a negative cap is rejected (same rules as --init)",
+          ok3c is False and sum3c is None and err3c)
+
+    # --- --clear-breaker: clearing WITHOUT re-arming a still-over total_attempts axis warns -
+    cb4 = build_state(cb_feats, "e", "E", stance="marathon", caps={"max_total_attempts": 1})
+    apply_update(cb4, "a", "running", now_dt=T0)  # attempts=1 == cap
+    trip_res4 = trip_breaker(cb4, T0)
+    check("clear-breaker setup: over-cap trip actually latched",
+          trip_res4["tripped"] and cb4["status"] == "blocked_needing_human")
+    ok4, _, sum4 = clear_breaker(cb4, T0)  # no re-arm supplied
+    check("clear-breaker: the latch is still cleared even though it would re-trip",
+          ok4 and cb4["status"] != "blocked_needing_human")
+    check("clear-breaker: summary flags the immediate re-trip on max_total_attempts",
+          sum4["would_immediately_retrip"] is True
+          and "max_total_attempts" in sum4["would_retrip_which"])
+
+    # --- --clear-breaker: non-marathon state -> controlled error ---------------------------
+    cb5 = build_state(cb_feats, "e", "E")  # checkpoint
+    ok5, err5, sum5 = clear_breaker(cb5, T0)
+    check("clear-breaker: non-marathon state -> controlled error, no write",
+          ok5 is False and sum5 is None and "marathon" in err5)
+
+    # --- --clear-disposition: undoes a sticky halt_epic so autonomous routing resumes ------
+    cd_feats = [{"id": "a", "depends_on": []}, {"id": "b", "depends_on": ["a"]}]
+    cd1 = build_state(cd_feats, "e", "E", stance="marathon", caps={})
+    record_disposition(cd1, "a", "halt_epic", now_dt=T0)
+    fah_before, whyah_before, _ = next_feature_autonomous(cd1)
+    check("clear-disposition setup: a halt_epic disposition halts the epic",
+          fah_before is None and whyah_before.startswith("blocked_needing_human"))
+    okcd, errcd = clear_disposition(cd1, "a")
+    check("clear-disposition: ok + no error", okcd and errcd is None)
+    check("clear-disposition: the feature's disposition is cleared to null",
+          cd1["features"][0]["disposition"] is None)
+    fah_after, whyah_after, _ = next_feature_autonomous(cd1)
+    check("clear-disposition: next_feature_autonomous no longer short-circuits on it",
+          fah_after is not None and fah_after["id"] == "a")
+
+    okcd2, errcd2 = clear_disposition(cd1, "does-not-exist")
+    check("clear-disposition: unknown feature -> controlled error",
+          okcd2 is False and "no feature" in errcd2)
+
+    cd_chk = build_state(cd_feats, "e", "E")  # checkpoint
+    okcd3, errcd3 = clear_disposition(cd_chk, "a")
+    check("clear-disposition: non-marathon state -> controlled error, no write",
+          okcd3 is False and "marathon" in errcd3)
+
+    # --- --init --stance marathon --start-sha: stored as autonomy.start_sha ----------------
+    sha_feats = [{"id": "a", "depends_on": []}]
+    sha_state = build_state(sha_feats, "e", "E", stance="marathon", caps={"start_sha": "abc123"})
+    check("start-sha: marathon build_state stores autonomy.start_sha",
+          sha_state["autonomy"]["start_sha"] == "abc123")
+    check("start-sha: a stored string start_sha validates clean",
+          validate_marathon_state(sha_state) == [])
+    sha_absent = build_state(sha_feats, "e", "E", stance="marathon", caps={})
+    check("start-sha: absent start_sha is fine (no key, no validation error)",
+          "start_sha" not in sha_absent["autonomy"]
+          and validate_marathon_state(sha_absent) == [])
+    sha_bad = build_state(sha_feats, "e", "E", stance="marathon", caps={})
+    sha_bad["autonomy"]["start_sha"] = 12345  # simulate a hand-edited/corrupt state
+    check("start-sha: a non-string start_sha on a loaded state -> validation error",
+          any("start_sha" in e for e in validate_marathon_state(sha_bad)))
+    try:
+        build_state(sha_feats, "e", "E", stance="marathon", caps={"start_sha": 12345})
+        check("start-sha: a non-string start_sha is rejected at build time", False)
+    except ValueError:
+        check("start-sha: a non-string start_sha is rejected at build time", True)
+    # checkpoint --init stays unaffected: build_state without a marathon stance never looks
+    # at caps["start_sha"] at all (structurally impossible to leak into the checkpoint shape).
+    plain_sha = build_state(sha_feats, "e", "E")
+    check("start-sha: checkpoint build_state carries no autonomy/start_sha (unaffected)",
+          "autonomy" not in plain_sha)
+
     print("SELFTEST: %d ok, %d fail" % (ok, fail))
     return 0 if fail == 0 else 1
 
@@ -1957,6 +2208,19 @@ def main(argv):
     p.add_argument("--evidence", help="(with --update --status blocked) the missing external fact, if known")
     p.add_argument("--last-error", help="(with --update --status failed, marathon-only) persist the "
                                         "feature's last error; cleared on a retry/done")
+    p.add_argument("--start-sha", help="(with --init --stance marathon) git rev-parse HEAD, "
+                                       "stored as autonomy.start_sha; marathon-only")
+    p.add_argument("--clear-breaker", action="store_true",
+                   help="(marathon) human re-arm after a breaker trip/halt — clears the "
+                        "blocked_needing_human latch")
+    p.add_argument("--reset-wall-clock", action="store_true",
+                   help="(with --clear-breaker) reset autonomy.started_at to now")
+    p.add_argument("--set-max-total-attempts", type=_cap_arg(int), default=_UNSET,
+                   help="(with --clear-breaker) re-arm autonomy.max_total_attempts; N or "
+                        "'null'/'none' for an explicit unbounded axis")
+    p.add_argument("--clear-disposition", action="store_true",
+                   help="(marathon) clear a feature's stored disposition, e.g. to undo a "
+                        "sticky halt_epic/halt_feature verdict")
     args = p.parse_args(argv)
 
     if args.selftest:
@@ -2005,6 +2269,16 @@ def main(argv):
                 caps["max_wall_clock_hours"] = args.max_wall_clock_hours
             if args.now:
                 caps["started_at"] = args.now
+            if args.start_sha:
+                caps["start_sha"] = args.start_sha
+        elif args.start_sha:
+            # Non-marathon --init must REJECT --start-sha (not silently discard it) — same
+            # presence-based-rejection discipline as every other marathon-only arg in this
+            # file, and it keeps a plain checkpoint --init byte-identical (this path never
+            # reaches build_state with a caps dict at all).
+            print("epic-init error: --start-sha is marathon-only — not valid without "
+                  "--stance marathon", file=sys.stderr)
+            return 1
         try:
             state = build_state(feats, args.epic_id, args.title or args.epic_id,
                                 stance=stance, caps=caps)
@@ -2094,6 +2368,33 @@ def main(argv):
         if mutated:
             _atomic_write_json(args.state, state)
         print(json.dumps(result))
+        return 0
+
+    if args.clear_breaker:
+        if not _needs_marathon("--clear-breaker"):
+            return 1
+        now_dt = _resolve_now(args.now)
+        ok, err, summary = clear_breaker(state, now_dt,
+                                         reset_wall_clock=args.reset_wall_clock,
+                                         set_max_total_attempts=args.set_max_total_attempts)
+        if not ok:
+            print("epic-clear-breaker error: %s" % err, file=sys.stderr)
+            return 1
+        _atomic_write_json(args.state, state)
+        print(json.dumps(summary))
+        return 0
+
+    if args.clear_disposition:
+        if not _needs_marathon("--clear-disposition"):
+            return 1
+        if not args.feature:
+            p.error("--clear-disposition needs --feature")
+        ok, err = clear_disposition(state, args.feature)
+        if not ok:
+            print("epic-clear-disposition error: %s" % err, file=sys.stderr)
+            return 1
+        _atomic_write_json(args.state, state)
+        print(json.dumps({"feature": args.feature, "disposition": None}))
         return 0
 
     if args.record_progress_cycle:
@@ -2199,9 +2500,9 @@ def main(argv):
         return 0
 
     p.error("one of --init / --next / --update / --summary / --stats / --check-specs / "
-           "--lint / --can-retry / --breaker-check / --trip-breaker / "
-           "--record-progress-cycle / --record-disposition / --record-final-review / "
-           "--selftest is required")
+           "--lint / --can-retry / --breaker-check / --trip-breaker / --clear-breaker / "
+           "--record-progress-cycle / --record-disposition / --clear-disposition / "
+           "--record-final-review / --selftest is required")
 
 
 if __name__ == "__main__":
