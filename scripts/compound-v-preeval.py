@@ -1284,6 +1284,13 @@ def _selftest():
         tm.bind_run(prior, "run-prior", stream_path=stream)
         tm.append_actual(prior, "run-prior", escalated=True, review_result="fail",
                          stream_path=stream)  # terminal, ESCALATED fast-path outcome → unhealthy
+        # v2.9 triage counts a terminal actual only when it is git-verified against the run's
+        # committed state.json (an injected "approved" with no run state is precision-ignored).
+        # An ESCALATED fast-path parent needs phase==ESCALATION_REQUIRED + escalated_to, so write it.
+        _rundir = os.path.join(repo, "docs", "superpowers", "execution", "run-prior")
+        os.makedirs(_rundir, exist_ok=True)
+        with open(os.path.join(_rundir, "state.json"), "w", encoding="utf-8") as _sf:
+            json.dump({"phase": "ESCALATION_REQUIRED", "escalated_to": "run-prior-esc-child"}, _sf)
         fk = fake_localize_factory(_loc(["src/ui/button.css"], flags=[], fan_out=1))
         resu = run_preeval("tweak local button padding once more", repo=repo, _localize=fk,
                            config_values=_cfg(min_sample_count=1), ts="2026-07-12T10:24:00Z",
