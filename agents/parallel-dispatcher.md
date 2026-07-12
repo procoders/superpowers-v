@@ -218,6 +218,52 @@ Act on each running job's class:
 
 The sweep **never** kills a Claude subagent (harness-owned) and **never** fabricates progress — every class is derived from git (`worktree HEAD` vs `baseline`) + filesystem mtimes. Record any `LIKELY-DONE` collect or `STALE`/`DEAD` action in `state.json` and the run report (loud, never silent).
 
+### Step 2e — Fast-path dispatch (v2.9 pre-eval-backed runs)
+
+A `fast_path` manifest (a run initialized at `FASTPATH_DISPATCHED`, materialized by [`compound-v-fastpath-materialize.py`](../scripts/compound-v-fastpath-materialize.py) from an accepted `FASTPATH_ELIGIBLE` pre-eval) is a **single implementer job** whose tail replaces Steps 3–7's ordinary three-pass review/merge with the **ONE authoritative order** the Lifecycle & commit-ordering protocol defines. Every other run type is unaffected. The order is fixed — NOT review-then-F2:
+
+```
+implementer → tests (floor) → scope gate → F2 (pinned baseline, pre-merge)
+  → review (needs_review Task; writes receipt) → post-review receipt validation
+  → final scope recheck → merge → append+commit terminal `actual`
+```
+
+Reconcile git **against the job's immutable pre-launch baseline SHA** (`state.json jobs[<id>].baseline`), never a live `HEAD` — a fast-path worker may commit and move `HEAD` (CR5-3). Drive it with [`scripts/compound-v-fastpath-run.py`](../scripts/compound-v-fastpath-run.py) (Task H1 owns the runner; this doc owns the wiring — disjoint):
+
+1. **Test floor.** `fastpath-run.py test-floor --worktree "$WT" [--baseline "$BASE"] [--test-cmd "$CFG_TESTS"]` — the proportionate ladder (configured tests → guarded parse-check → cheap diff-read). A floor FAILURE blocks the merge; surface and HALT.
+2. **Scope gate** (Step 2b) against `$BASE`. Out-of-scope ⇒ BLOCKED, HALT.
+3. **F2 — post-hoc reclassify, AFTER the scope gate and BEFORE any merge/commit/worktree-removal (CR1-3).** Run the sibling reclassifier over the SAME pinned baseline + the authoritative changed-path set the scope gate used:
+   ```bash
+   python3 scripts/compound-v-postdiff-reclassify.py \
+     --worktree "$WT" --baseline "$BASE" --taxonomy "$TAXONOMY_REF" \   # manifest fast_path.taxonomy_ref (repo-relative)
+     [--changed-file "$SCOPE_CHANGED"]        # → {"escalate": bool, "reasons": [...]}
+   ```
+   On `escalate: true`, go to **Escalation** below — do NOT merge, do NOT remove the worktree.
+4. **Review — one combined SPEC+QUALITY deep/opus Task; write the receipt (CR2-5/CR5-6).** The review is **NOT** dispatched from Python. Build the request with the runner (it fails closed unless the floor PASSED, scope was CLEAN, and F2 did NOT escalate — so F2 always precedes review):
+   ```bash
+   python3 scripts/compound-v-fastpath-run.py review-spec --worktree "$WT" --baseline "$BASE" \
+     --manifest "$RUN_DIR/manifest.yaml" --run-id "$RUN_ID" --pre-eval-id "$PRE_EVAL_ID" \
+     --floor-result "$FLOOR_JSON" --scope-clean --f2-result "$F2_JSON" --out "$SPEC_JSON"
+   ```
+   Run the in-harness `deep`/opus Task on the emitted `needs_review` prompt (a combined SPEC+QUALITY pass with the recorded vacuous INTEGRATION rationale), then **write the dispatcher invocation receipt** to `$RUN_DIR/review/receipt.json` (naming the resolved reviewer model — `backend:claude`, model == Claude Opus). Validate the returned result: `fastpath-run.py accept-review --spec "$SPEC_JSON" --result "$RESULT_JSON"`; only a clean `approved` result bound to THIS diff advances.
+5. **Post-review receipt validation — C1 `--mode post-review`.** Before merge, `python3 scripts/compound-v-validate-manifest.py --mode post-review [--repo-root "$REPO"] [--receipt "$RUN_DIR/review/receipt.json"] "$RUN_DIR/manifest.yaml"` — it REQUIRES + verifies the receipt (run/pre-eval bindings, reviewer opus, self-digest). Missing/mismatched ⇒ fail closed, no merge.
+6. **Final scope recheck → merge.** Re-run the scope gate (Step 2b) once more, then merge the worktree diff back with the index-based patch (Step 2b PASS path) and `git worktree remove -f`.
+7. **Terminal `actual` at MERGED — append + commit, idempotently (CR3-2/CR5-4).** ONLY AFTER the merge/commit boundary succeeds, append the terminal triage event, then commit it with the run substrate:
+   ```bash
+   python3 scripts/compound-v-triage-outcomes.py actual \
+     --pre-eval-id "$PRE_EVAL_ID" --run-id "$RUN_ID" --review-result approved
+   ```
+   A precision-IGNORED `--merge-pending` intermediate MAY precede it, but a `review_passed` `actual` that never merged must NEVER reach Tier 2. Advance `phase` to `MERGED`, commit `state.json` + the run dir + `docs/superpowers/memory/triage-outcomes.jsonl` in one commit (Step 7 discipline) BEFORE any worktree cleanup, then hand off.
+
+**Escalation — idempotent two-phase protocol (F2 escalated; AC-15/CR2-4/CR4-3).** The frozen fast-path `manifest.yaml` is **never** mutated or replayed against a full pipeline. Each boundary is a two-command commit (no `&&`, each exit code checked) and a resume checkpoint:
+
+1. **Commit the patch + baseline evidence** under the ORIGINAL run (the fast-path diff + its immutable pre-launch baseline SHA) — the real evidence that overrode the wrong prediction.
+2. **Derive a deterministic child run-id from the parent** (same parent ⇒ same child id), so a resume never mints a second child. **Discover an existing child before minting** — if that run dir already exists, adopt it.
+3. **Create + commit the child** full-pipeline run (its own run dir + initial `state.json`), starting from the **clean baseline** — the preserved patch is **evidence only, never applied**.
+4. **Commit the parent's `escalated_to`** link **LAST** (committed link ⇒ child already durable), and append + commit the terminal `actual` with `--escalated` on the **PARENT** — precision is computed from the fast-path parent outcome only; the full-pipeline child contributes escalation evidence, never a low-corroboration signal.
+
+Advance the parent `phase` to terminal `ESCALATION_REQUIRED` with `escalated_to` set. `/v:resume` reconciles every partial state and re-discovers an existing child before minting another ([`v-resume.md`](../commands/v-resume.md) §Fast-path & escalation resume).
+
 ### Step 3 — Parallel Reviewer Batch(es)
 
 When all implementers in a batch return PASS, dispatch **2N reviewers** (one spec-compliance + one code-quality per task), batched at 4-6 per message:

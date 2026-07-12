@@ -41,6 +41,21 @@ Both inputs the rule needs live in **`state.json jobs[<id>]`** — `session_id` 
 
 7. **Report.** Which jobs were skipped (already landed), which were re-dispatched, which stayed **blocked behind an open breaker** (and the exact unblock action — top up credits or re-auth via `/v:init`), and the resulting `phase`. Point the user at [`/v:status {{args}}`](v-status.md) to inspect.
 
+## Fast-path & escalation resume (v2.9)
+
+A pre-eval-backed fast-path run reconciles by the same git-wins logic, with two deviations the state machine makes authoritative ([`state-machine.md`](../skills/compound-v/state-machine.md) §Fast-path resume, §Idempotent two-phase escalation). Detect the run kind from `state.json.phase` (and `manifest.yaml`'s `fast_path` block).
+
+**`FASTPATH_DISPATCHED` — reconcile like `DISPATCHED`, but baseline-relative, NOT HEAD-relative (CR5-3).** A fast-path job persists its **immutable pre-launch baseline SHA** in `state.json jobs[<id>].baseline` (recorded at dispatch, the same SHA the scope gate and F2 attribute against). Reconcile step 3's git observation against **THAT baseline**, never a live `HEAD`:
+- `git -C <worktree> diff --name-only <baseline>` ∪ `git -C <worktree> ls-files --others --exclude-standard`.
+- A HEAD-relative diff would go **blind** — a fast-path worker may commit and move `HEAD`, so a change attributed against `HEAD` would show nothing landed. Baseline-relative is the only correct signal (the identical reason the scope gate baselines against the recorded pre-`worktree add` SHA).
+- **Completion is a three-way agreement**, not a single flag: a fast-path job is `done` only when the normalized `results/<id>.json` **and** the git-derived scope verdict **and** the baseline-relative patch digest all agree the work landed and is in-scope. If any of the three disagrees, git wins — treat it as not-done and re-dispatch (replaying `jobs/<id>.prompt.md` verbatim).
+- After reconciling the single implementer job, continue the fast-path tail via the authoritative sequence, not the ordinary three-pass tail — see [`/v:collect`](v-collect.md) (scope gate → F2 → combined `needs_review` deep/opus Task → post-review receipt validation → final scope recheck → merge → terminal `actual`).
+
+**`ESCALATION_REQUIRED` — follow `escalated_to`, reconcile the two-phase escalation (AC-15/CR4-3).** The pre-merge F2 escalated: the frozen fast-path `manifest.yaml` is **never** replayed against a full pipeline. Instead follow the idempotent two-phase escalation protocol, discovering partial state and **never minting a duplicate child**:
+- If `state.json.escalated_to` is set, that child run-id already exists and is durable (the parent's `escalated_to` is committed **LAST**, so a committed link ⇒ the child is complete). Resume the child by that run-id (recurse into this same algorithm for it — it is a normal full-pipeline run starting from the clean baseline).
+- If `escalated_to` is **null** but the parent already committed the escalation's patch + baseline evidence, the escalation crashed mid-protocol. **Derive the deterministic child run-id from the parent** and check whether that run dir already exists: if it does, **adopt it** (do not create a second) and, if the parent's `escalated_to` is still unwritten, complete the protocol by committing the link last; if it does not, create + commit the child from the **clean baseline** (the preserved patch is evidence only, never applied), then commit the parent's `escalated_to`.
+- **Never replay the fast-path job set against a full manifest.** The escalated pipeline is a fresh full-pipeline run on its own run-id; the original fast-path run stays terminal at `ESCALATION_REQUIRED` with its patch preserved as evidence.
+
 ## Safety
 
 - A `blocked` job is re-dispatched only after its prompt/partition is corrected — do not blindly re-run a job that wrote outside its scope.

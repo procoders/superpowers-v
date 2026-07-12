@@ -12,6 +12,8 @@ The run-dir layout and per-job `status` semantics are in [`skills/compound-v/sta
 
 1. **Locate the run.** If `{{args}}` is empty, list the subdirectories of `docs/superpowers/execution/` and ask which run to collect. The run dir is `docs/superpowers/execution/<run-id>/`. If it does not exist, stop and say so. If no jobs have been dispatched yet (`phase` earlier than `DISPATCHED`), tell the user there is nothing to collect and stop.
 
+   **Branch on the manifest kind.** If `manifest.yaml` carries a `fast_path` block (a v2.9 pre-eval-backed fast-path run — its `phase` is `FASTPATH_DISPATCHED`), do **not** run the ordinary three-pass review tail (steps 3–4). Run the **fast-path authoritative sequence** below instead (CR5-2). Step 2 (collect/normalize) still applies to the single implementer job. A legacy (non-`fast_path`) manifest uses steps 2–5 unchanged.
+
 2. **Collect — normalize each job's output.** The collector is **per-job** (required `--job-id` + `--run-dir`; no positional run-dir). Loop over every dispatched `<job-id>`, normalizing its heterogeneous worker output into a canonical `results/<id>.json`:
    ```
    # for each dispatched <job-id>:
@@ -40,6 +42,34 @@ The run-dir layout and per-job `status` semantics are in [`skills/compound-v/sta
    DONE is gated on all three. Unresolvable reviewer ISSUES ⇒ HALT (do not merge).
 
 5. **Update state + report.** Write `state.json` after each transition (`COLLECTED` → `REVIEWED`). **Commit what this command rewrote** — `state.json` and the refreshed `results/*.json` — the same commit discipline as [`parallel-dispatcher`](../agents/parallel-dispatcher.md)'s Step 7: uncommitted files in a worktree are silently deleted by `finishing-a-development-branch`'s cleanup step, and `/v:collect` is explicitly usable **standalone** (re-checking an already-dispatched run), so don't assume a later step will commit on your behalf. Report: per-job scope verdict, the three review-pass outcomes, and whether the run is clear to merge. If clear, point at the merge step (worktree diffs apply into the main tree, then `superpowers:finishing-a-development-branch`). If BLOCKED, point at [`/v:resume {{args}}`](v-resume.md).
+
+## Fast-path collect — the authoritative sequence (v2.9, CR5-2)
+
+For a `fast_path` manifest, `/v:collect` runs the **ONE authoritative order** the Lifecycle & commit-ordering protocol defines (single authority; the dispatcher and `/v:resume` match it byte-for-intent). This replaces steps 3–4. The single implementer job has already been normalized (step 2). Reconcile git **against the job's immutable pre-launch baseline SHA** (`state.json jobs[<id>].baseline`), never a live `HEAD` — a fast-path worker may commit and move `HEAD` (CR5-3).
+
+1. **Scope gate** — run [`scripts/compound-v-scope-check.py`](../scripts/compound-v-scope-check.py) on the implementer job against its sole `write_allowed` literal, as in step 3. Any out-of-scope path ⇒ **BLOCKED**, HALT, do not merge.
+2. **F2 — post-hoc reclassify, pre-merge, against the pinned baseline.** BEFORE any merge/commit/worktree-removal, run the sibling reclassifier over the **same pinned baseline + the authoritative changed-path set the scope gate used**:
+   ```
+   python3 scripts/compound-v-postdiff-reclassify.py \
+     --worktree <wt-dir> --baseline <pinned-baseline-sha> \
+     --taxonomy <manifest fast_path.taxonomy_ref, repo-relative> [--changed-file <scope-changed-paths>]
+   # → {"escalate": bool, "reasons": [...]}   (exit 1 iff escalate)
+   ```
+   If `escalate` is true, the fast-path prediction was wrong: **do not merge**. Hand off to the dispatcher's two-phase escalation ([`parallel-dispatcher.md`](../agents/parallel-dispatcher.md)) — advance `phase` to `ESCALATION_REQUIRED`, preserve the patch + baseline as evidence, and the pipeline rejoins the full path via a **new** run. Escalation appends the terminal `actual` with `escalated:true` on **this** (parent) run.
+3. **Combined `needs_review` review — one deep/opus Task (write the receipt).** On a clean F2, build the review request with [`scripts/compound-v-fastpath-run.py`](../scripts/compound-v-fastpath-run.py) `review-spec` (it fails closed unless the floor PASSED, scope was CLEAN, and F2 did NOT escalate), run the in-harness combined **SPEC+QUALITY** review as a `deep`/opus Task, then write the dispatcher **invocation receipt** to `docs/superpowers/execution/<run-id>/review/receipt.json` (naming the resolved reviewer model). Validate the returned result with `accept-review`. This is one combined pass with a recorded vacuous INTEGRATION rationale — **not** the three separate passes.
+4. **Post-review receipt validation — C1 `--mode post-review`.** Before merge, verify the receipt with the validator:
+   ```
+   python3 scripts/compound-v-validate-manifest.py --mode post-review \
+     [--repo-root <repo>] [--receipt <run-dir>/review/receipt.json] <run-dir>/manifest.yaml
+   ```
+   `--mode post-review` REQUIRES + verifies the receipt (`run_id`/`pre_eval_id` bindings, `reviewer_backend:claude`, reviewer model == Claude Opus, self-digest). A missing or mismatched receipt fails closed — no merge.
+5. **Final scope recheck** — re-run the scope gate once more (step 1) to catch anything the review round touched; then **merge** the worktree diff back into the main tree.
+6. **Append + commit the terminal `actual` — ONLY AFTER the merge boundary succeeds (CR5-4).** Only once the merge/commit lands, append the terminal triage event:
+   ```
+   python3 scripts/compound-v-triage-outcomes.py actual \
+     --pre-eval-id <pre_eval_id> --run-id <run-id> --review-result approved
+   ```
+   A precision-**ignored** intermediate (`--merge-pending`) event MAY be recorded earlier, but a `review_passed` `actual` that never merged must **never** reach Tier 2 — the terminal `actual` is emitted strictly after the merge boundary. Commit `state.json` (phase `MERGED`) together with the run substrate before any worktree cleanup, exactly as the dispatcher's commit discipline requires.
 
 ## Safety
 
