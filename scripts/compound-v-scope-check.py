@@ -517,6 +517,14 @@ def _selftest():
     import tempfile
     import shutil
 
+    # Locale robustness: selftest names carry non-ASCII (em-dash); under a C/POSIX locale the
+    # default stdout is ASCII and would raise UnicodeEncodeError on the progress print. (v2.9)
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
     failures = []
 
     def expect(name, cond):
