@@ -56,7 +56,7 @@ def _read_json(path: str) -> Optional[Any]:
     if not path or not os.path.exists(path):
         return None
     try:
-        with open(path, "r") as fh:
+        with open(path, "r", encoding="utf-8") as fh:
             return json.load(fh)
     except (ValueError, OSError):
         return None
@@ -121,7 +121,10 @@ def append_line(path: str, line_obj: Dict[str, Any]) -> None:
         os.makedirs(parent, exist_ok=True)
     # Compact, one object per line (JSONL). ensure_ascii=False keeps unicode readable.
     line = json.dumps(line_obj, ensure_ascii=False, sort_keys=False)
-    with open(path, "a") as fh:
+    # Explicit UTF-8: ensure_ascii=False can emit non-ASCII (e.g. a unicode request slug);
+    # under a C/POSIX locale the default open() encoding is ASCII and would raise
+    # UnicodeEncodeError. The reader side already opens UTF-8. (v2.9 locale-robustness.)
+    with open(path, "a", encoding="utf-8") as fh:
         fh.write(line + "\n")
 
 
