@@ -93,17 +93,17 @@
       "log": null
     },
     "task-a3-preeval": {
-      "status": "pending",
+      "status": "running",
       "isolation": "worktree",
-      "worktree": null,
+      "worktree": ".v29-worktrees/task-a3-preeval",
       "session_id": null,
       "failure_class": null,
       "log": null
     },
     "task-d2-onboard": {
-      "status": "pending",
+      "status": "running",
       "isolation": "worktree",
-      "worktree": null,
+      "worktree": ".v29-worktrees/task-d2-onboard",
       "session_id": null,
       "failure_class": null,
       "log": null
