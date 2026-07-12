@@ -304,6 +304,48 @@ Confirm all choices back to the user before saving.
 
 ---
 
+## Step 3e — Pre-Evaluation triage defaults (`pre_eval.*`)
+
+The pre-eval stage is a **routing/triage** gate that may OFFER a proportionate fast-path on a
+proven-trivial change. Its config surface is the Task 0 contract
+[`pre-eval-config.md`](../docs/superpowers/architecture/pre-eval-config.md); `/v:init` seeds it into
+`.claude/compound-v.json` (Step 4a). **Every default is fail-closed** — the SAFE, never-auto-route
+value — so a user who just presses Enter gets the safe behaviour. Read/round-trip these ONLY through
+the shared loader `compound-v-project-config.load_project_config(repo)` + `resolve_pre_eval(cfg)`
+(never re-interpret the keys here). Offer two structured choices (defaults are safe; reconfigurable
+any time):
+
+- **Fast-path offer — `pre_eval.fast_path`** (options `ask` / `off`; default **`ask`**): whether the
+  pre-eval stage may *offer* a fast-path when a change is provably trivial. `ask` folds the offer
+  into the ONE recon/clarify interaction (never a standalone screen); it only ever OFFERS — it
+  **never auto-routes** (Iron-Invariant #4). `off` is a **hard kill-switch** — no offer, no
+  fast-path, ever (honored for cost AND confidentiality). There is deliberately **no `auto` value**;
+  a malformed/unknown value is coerced back to `ask` (offer), never to any auto-route.
+- **Remembered categories — `pre_eval.remember`** (default **`{}`** = ask every time): AC-11's
+  explicit, revocable, one-time per-taxonomy-category opt-in — e.g. after accepting the fast-path for
+  `css-only`, the developer MAY choose not to be re-asked for that category, recorded as
+  `{ "css-only": "fastpath" }`. This is a human opt-in, **NOT a silent auto-route**: it suppresses
+  **only the OFFER** for that category. Every fail-closed override — **sensitive path, shared-token,
+  a11y, churn-hot, tier-disagreement, and the post-hoc diff escalation** — STILL fires on every
+  request regardless of a remembered choice (the scorer re-checks them per spec §2). A remembered
+  category can never encode "skip an override": the **only honored value is the literal
+  `"fastpath"`** — `resolve_pre_eval` drops anything else and warns.
+
+**On every `/v:init` run, DISPLAY the currently-remembered categories and offer to revoke** (AC-11
+"displayable + revocable"): load the existing `.claude/compound-v.json` (if any) through the shared
+loader and list each remembered `category → fastpath`. Let the user drop any or all of them, and
+write the pruned map back in Step 4a. Revocation is also possible by hand-editing the config. When no
+prior config exists, nothing is remembered (ask every time).
+
+The remaining knobs (`enabled`, `min_sample_count`, `fan_out_threshold`, `token_cap`) keep their
+fail-closed defaults from the contract unless the user has a specific reason to change one; do **not**
+prompt for them by default — seed the defaults in Step 4a and point advanced users at
+[`pre-eval-config.md`](../docs/superpowers/architecture/pre-eval-config.md).
+
+Confirm the choices back to the user before saving.
+
+---
+
 ## Step 4 — Save config (two files)
 
 Write **both**. Create parent dirs as needed.
@@ -327,6 +369,14 @@ was, in those two fields).
   "brainstorm": {
     "deep_research": "ask",
     "batch_elicitation": true
+  },
+  "pre_eval": {
+    "enabled": true,
+    "fast_path": "ask",
+    "min_sample_count": 5,
+    "fan_out_threshold": 1,
+    "token_cap": 20000,
+    "remember": {}
   },
   "models": {
     "balanced": {
@@ -375,6 +425,21 @@ identically to `balanced`. Only `cost-aware.claude.standard` differs: `sonnet`, 
   [`brainstorm-elicitation.md`](../skills/compound-v/brainstorm-elicitation.md)) own the
   defaults and apply the shared fail-closed rule verbatim:
   Missing file or key → the documented defaults (`deep_research: "ask"`, `batch_elicitation: true`). Malformed JSON, wrong type, or unknown value → warn once, then use `deep_research=ask` and `batch_elicitation=false` for this session; never treat an invalid value as `auto`.
+- **`pre_eval`** (defaults `enabled:true`, `fast_path:"ask"`, `min_sample_count:5`,
+  `fan_out_threshold:1`, `token_cap:20000`, `remember:{}`) = the Step 3e Pre-Evaluation triage
+  surface, per the Task 0 contract
+  [`pre-eval-config.md`](../docs/superpowers/architecture/pre-eval-config.md). Seed the block above
+  verbatim; every default is the fail-closed / never-auto-route value. `fast_path:"off"` is a **hard
+  kill-switch**; `remember` holds AC-11's revocable per-category opt-ins (`{category: "fastpath"}`,
+  only the literal `"fastpath"` honored). This is **committed team POLICY**, not machine capability.
+  Unlike the resolver's `models` map, nothing hand-validates this file at read time on the hot path:
+  the shared loader `scripts/compound-v-project-config.py` owns the fail-closed rules for every
+  consumer — **structural** malformation (not JSON / root or `pre_eval` not an object) makes
+  `load_project_config` raise so the caller warns once and falls back to all-defaults, while a
+  **per-key** invalid value (`fast_path:"banana"`, negative `token_cap`, a `remember` value ≠
+  `"fastpath"`) is coerced to its declared default by `resolve_pre_eval`, which returns a `warnings`
+  list to surface once. An invalid value can only DEGRADE to the safe default — it is **NEVER** treated
+  as an auto-route (Iron-Invariant #4/#5). Do not re-implement these rules inline; call the loader.
 - **`models` — SEED the default per-stance tier→model map (exactly the block above)** so
   intent-based routing resolves out of the box even with no further setup. The map is
   **per-stance** — shape `{<stance>: {<backend>: {<tier>: model}}}`. Only the `claude`
@@ -438,3 +503,79 @@ models.
 
 **Honesty rules:** report only what the probes actually returned. Never print token or
 cost numbers. Never claim a backend works that the probe did not confirm.
+
+---
+
+## Verification fixture — `pre_eval.*` seeding + AC-11 (the "selftest" for this doc)
+
+This is a command doc (no runnable code of its own), so the selftest is a **verification fixture**
+that pins the four Step-3e/4a behaviours to the **real** shared loader
+`scripts/compound-v-project-config.py` (Task 0) — no fabricated behaviour, no re-implemented rules.
+It asserts: **(a)** `pre_eval.*` defaults are seeded; **(b)** a malformed value warns → uses the
+default → **never auto-routes**; **(c)** a remembered category is displayable + revocable; **(d)**
+`off` is a hard kill-switch — and that **every fail-closed override still fires on a remembered
+category** (structurally, because `remember` can only ever store the literal `"fastpath"`; the
+overrides themselves are re-checked by the scorer per spec §2, never by this config).
+
+Run from the repo root; it exits non-zero on any failure:
+
+```bash
+python3 - <<'PY'
+import importlib.util, os, tempfile
+spec = importlib.util.spec_from_file_location("cfg", "scripts/compound-v-project-config.py")
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+
+fails = []
+def ok(name, cond):
+    print(("ok   " if cond else "FAIL ") + name)
+    if not cond: fails.append(name)
+
+# (a) defaults are seeded exactly as Step 4a writes them (all fail-closed).
+v, w = m.resolve_pre_eval({})
+ok("(a) pre_eval defaults seeded", v == dict(m.PRE_EVAL_DEFAULTS) and w == [])
+ok("(a) fast_path default OFFERS ('ask'), is not an auto-route", v["fast_path"] == "ask")
+
+# (b) per-key malformed value -> warn once -> declared default -> NEVER auto-routes.
+v, w = m.resolve_pre_eval({"pre_eval": {"fast_path": "banana", "token_cap": -1}})
+ok("(b) bad fast_path -> default 'ask'", v["fast_path"] == "ask")
+ok("(b) bad token_cap -> default", v["token_cap"] == m.PRE_EVAL_DEFAULTS["token_cap"])
+ok("(b) malformed values warn once", len(w) >= 2)
+ok("(b) fast_path domain has no auto-route value at all", v["fast_path"] in ("ask", "off"))
+# structural malformation RAISES so the caller warns once + falls back to all-defaults.
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, ".claude"))
+    with open(os.path.join(td, ".claude", "compound-v.json"), "w") as fh:
+        fh.write("{ not json")
+    raised = False
+    try: m.load_project_config(td)
+    except ValueError: raised = True
+    ok("(b) structural malformation raises (caller warns -> defaults, never routes)", raised)
+
+# (c) a remembered category is displayable, and revocable (drop the key / edit config).
+v, _ = m.resolve_pre_eval({"pre_eval": {"remember": {"css-only": "fastpath"}}})
+ok("(c) remembered category is displayable", v["remember"] == {"css-only": "fastpath"})
+v, _ = m.resolve_pre_eval({"pre_eval": {"remember": {}}})
+ok("(c) revoked -> not remembered (ask every time)", v["remember"] == {})
+# 'remember' can ONLY store 'fastpath' -> it can never encode "skip a fail-closed override".
+v, w = m.resolve_pre_eval({"pre_eval": {"remember": {"css-only": "skip-overrides"}}})
+ok("(c/AC-11) non-'fastpath' remember value is dropped + warned",
+   v["remember"] == {} and len(w) >= 1)
+
+# (d) off is a hard kill-switch: it round-trips; no offer is representable beyond ask|off.
+v, w = m.resolve_pre_eval({"pre_eval": {"fast_path": "off"}})
+ok("(d) off is a hard kill-switch (round-trips, no warnings)", v["fast_path"] == "off" and w == [])
+
+print("\nRESULT:", "PASS" if not fails else "FAIL (%d)" % len(fails))
+raise SystemExit(1 if fails else 0)
+PY
+```
+
+> **Why the fail-closed overrides are proven here structurally, not executed:** the six overrides —
+> sensitive path, shared-token, a11y, churn-hot, tier-disagreement, and the post-hoc diff escalation
+> — live in the pre-eval **scorer** (spec §2 truth-table), not in this config. `remember` only ever
+> suppresses the *offer* for a category, and its value space is the single literal `"fastpath"`, so a
+> remembered category **cannot** encode "skip an override." The end-to-end proof that a
+> `css-only`-remembered request STILL escalates on a shared-token/a11y hit is the AC-11 scorer
+> fixture (plan Step 2, owned by A3/Z1); this fixture pins the config half of that contract.
+
+Expected output: every line `ok`, ending `RESULT: PASS` (exit 0).
