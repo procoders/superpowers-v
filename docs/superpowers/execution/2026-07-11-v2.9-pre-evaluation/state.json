@@ -109,9 +109,9 @@
       "log": null
     },
     "task-h1-fastpath-run": {
-      "status": "pending",
+      "status": "running",
       "isolation": "worktree",
-      "worktree": null,
+      "worktree": ".v29-worktrees/task-h1-fastpath-run",
       "session_id": null,
       "failure_class": null,
       "log": null
