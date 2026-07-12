@@ -2612,6 +2612,7 @@ def _fp_write_receipt(d, tax_mod, info, drop=None, bad_digest=False, **over):
         "final_diff_digest": info["final_diff_digest"],
         "reviewer_backend": "claude",
         "reviewer_model": "opus",
+        "reviewer_tier": "deep",  # schema-required (fastpath-run R3 MED-6)
         # MED-6: bind to the diff-root by default (the repo root ``d`` — the diff-root
         # when no separate worktree is passed). The CRIT-1 worktree topology overrides
         # this via ``worktree=<wt>`` so it matches the linked worktree diff_root.
