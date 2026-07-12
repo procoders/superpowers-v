@@ -93,9 +93,9 @@
       "log": null
     },
     "task-a3-preeval": {
-      "status": "running",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": ".v29-worktrees/task-a3-preeval",
+      "worktree": null,
       "session_id": null,
       "failure_class": null,
       "log": null
