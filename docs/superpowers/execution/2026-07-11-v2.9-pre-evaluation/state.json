@@ -61,33 +61,33 @@
       "baseline": "424af970c4a02207a1e75b4db4377e0b128e0dcd"
     },
     "task-c1-validator": {
-      "status": "pending",
+      "status": "running",
       "isolation": "worktree",
-      "worktree": null,
+      "worktree": ".v29-worktrees/task-c1-validator",
       "session_id": null,
       "failure_class": null,
       "log": null
     },
     "task-d1-churn": {
-      "status": "pending",
+      "status": "running",
       "isolation": "worktree",
-      "worktree": null,
+      "worktree": ".v29-worktrees/task-d1-churn",
       "session_id": null,
       "failure_class": null,
       "log": null
     },
     "task-f2-postdiff": {
-      "status": "pending",
+      "status": "running",
       "isolation": "worktree",
-      "worktree": null,
+      "worktree": ".v29-worktrees/task-f2-postdiff",
       "session_id": null,
       "failure_class": null,
       "log": null
     },
     "task-e1-adr": {
-      "status": "pending",
+      "status": "running",
       "isolation": "worktree",
-      "worktree": null,
+      "worktree": ".v29-worktrees/task-e1-adr",
       "session_id": null,
       "failure_class": null,
       "log": null
