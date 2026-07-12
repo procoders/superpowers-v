@@ -125,9 +125,9 @@
       "log": null
     },
     "task-c2-surfaces": {
-      "status": "pending",
+      "status": "running",
       "isolation": "worktree",
-      "worktree": null,
+      "worktree": ".v29-worktrees/task-c2-surfaces",
       "session_id": null,
       "failure_class": null,
       "log": null
