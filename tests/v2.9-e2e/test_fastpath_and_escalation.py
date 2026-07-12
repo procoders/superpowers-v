@@ -371,8 +371,24 @@ class TestAC10And12NoFabricatedMetric(_RepoCase):
         os.makedirs(os.path.join(run, "review"), exist_ok=True)
         with open(os.path.join(run, "state.json"), "w", encoding="utf-8") as fh:
             json.dump({"phase": "MERGED", "merge_sha": merge_sha}, fh)
+        # triage now verifies the FULL sealed receipt (validate-manifest's verify_sealed_receipt:
+        # schema shape + record_digest self-seal + verdict + bindings + reviewer-opus), so a minimal
+        # {verdict,run_id,pre_eval_id} no longer counts. Build a schema-complete, self-sealed receipt.
+        _tax = importlib.util.spec_from_file_location(
+            "cv_tax", os.path.join(SCRIPTS, "compound-v-taxonomy.py"))
+        _taxm = importlib.util.module_from_spec(_tax); _tax.loader.exec_module(_taxm)
+        receipt = {
+            "run_id": rid, "pre_eval_id": pid,
+            "manifest_digest": "sha256:" + "0" * 64,
+            "baseline_sha": "0" * 40, "final_diff_digest": "sha256:" + "0" * 64,
+            "reviewer_backend": "claude", "reviewer_tier": "deep", "reviewer_model": "opus",
+            "worktree": run, "attempt_id": 1, "ts": "2026-07-12T10:20:00Z",
+            "verdict": "approved",
+            "integration_rationale": "single-job fast-path: no cross-job seams",
+        }
+        receipt["digest"] = _taxm.record_digest(receipt, exclude_field="digest")
         with open(os.path.join(run, "review", "receipt.json"), "w", encoding="utf-8") as fh:
-            json.dump({"verdict": "approved", "run_id": rid, "pre_eval_id": pid}, fh)
+            json.dump(receipt, fh)
         # Commit the state.json + receipt + the (already-appended) stream so all are blobs at HEAD.
         _git("add", "-A")
         _git("commit", "-q", "-m", "evidence")
