@@ -84,6 +84,15 @@ malformed / unreadable taxonomy or snapshot ⇒ **unconditional `FULL_PIPELINE`*
 fix): without the sensitive-path + content-pattern protections there is no way to *prove* a change is
 safe.
 
+**Absent-taxonomy record shape (A3/C1/M1 treat it identically).** In that unconditional-`FULL_PIPELINE`
+case the record is STILL written (and the `predicted` triage event STILL appended, Iron-Invariant #5)
+— there is simply no snapshot to reference and no bytes to digest, so it is written with
+`taxonomy_ref: null`, `taxonomy_digest: null`, `taxonomy_version: null`, `decision: FULL_PIPELINE`.
+`pre-eval-record.schema.json` makes those three fields nullable and uses an
+`if decision == FASTPATH_ELIGIBLE then require non-null taxonomy_ref + taxonomy_digest` conditional, so
+the null-taxonomy record validates but can never be FASTPATH_ELIGIBLE. Consumers MUST route any
+null-taxonomy record straight to the full pipeline.
+
 ### Cross-artifact binding fields (AC-13, validator-enforced by C1)
 
 Equal across the fast-path **manifest**, the pinned **pre-eval record**, and the **localization

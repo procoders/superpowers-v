@@ -11,8 +11,6 @@
     "ts",
     "status",
     "taxonomy_version",
-    "taxonomy_ref",
-    "taxonomy_digest",
     "difficulty",
     "impact",
     "tiers_signalled",
@@ -21,6 +19,18 @@
     "decision",
     "min_sample_status"
   ],
+  "if": {
+    "properties": { "decision": { "const": "FASTPATH_ELIGIBLE" } },
+    "required": ["decision"]
+  },
+  "then": {
+    "description": "A FASTPATH_ELIGIBLE record MUST pin a real, non-null taxonomy snapshot + its content-address (a fast-path is impossible without the sensitive-path + content-pattern protections). taxonomy_ref/taxonomy_digest are required and strictly typed here.",
+    "required": ["taxonomy_ref", "taxonomy_digest"],
+    "properties": {
+      "taxonomy_ref": { "type": "string", "minLength": 1 },
+      "taxonomy_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+    }
+  },
   "properties": {
     "pre_eval_id": {
       "type": "string",
@@ -45,17 +55,17 @@
       "description": "Record-status field (prose-only lifecycle token; AC-7/CR2-8). NOT a state.json phase — no run dir exists at prediction time."
     },
     "taxonomy_version": {
-      "type": ["string", "integer"],
-      "description": "The `version` of the taxonomy snapshot used. Human-readable; the machine binding is `taxonomy_digest`."
+      "type": ["string", "integer", "null"],
+      "description": "The `version` of the taxonomy snapshot used. Human-readable; the machine binding is `taxonomy_digest`. NULL in the absent-taxonomy FULL_PIPELINE case (there is no taxonomy to version)."
     },
     "taxonomy_ref": {
-      "type": "string",
-      "description": "Repo-relative, normalized, no-'..' path to the IMMUTABLE taxonomy snapshot the score was computed against (pre-run, under docs/superpowers/pre-eval/<pre_eval_id>.taxonomy-snapshot.yaml). A committed regular file (never an escaping symlink). Copied into the run preserving this digest when a fast-path materializes (CR2-6/CR4-2)."
+      "type": ["string", "null"],
+      "description": "Repo-relative, normalized, no-'..' path to the IMMUTABLE taxonomy snapshot the score was computed against (pre-run, under docs/superpowers/pre-eval/<pre_eval_id>.taxonomy-snapshot.yaml). A committed regular file (never an escaping symlink). Copied into the run preserving this digest when a fast-path materializes (CR2-6/CR4-2). NULLABLE for the absent-taxonomy case (see taxonomy_digest); the top-level `if decision==FASTPATH_ELIGIBLE` conditional makes it a required, non-null, non-empty string on any fast-path record."
     },
     "taxonomy_digest": {
-      "type": "string",
+      "type": ["string", "null"],
       "pattern": "^sha256:[0-9a-f]{64}$",
-      "description": "'sha256:'+sha256(RAW snapshot bytes) of taxonomy_ref. MUST equal the manifest's taxonomy_digest (AC-13). Absent/malformed/unreadable taxonomy or snapshot ⇒ the engine emits decision=FULL_PIPELINE unconditionally (spec §2 round-3 fix); such a record still validates but can never be FASTPATH_ELIGIBLE."
+      "description": "'sha256:'+sha256(RAW snapshot bytes) of taxonomy_ref. On a FASTPATH_ELIGIBLE record it is required and MUST equal the manifest's taxonomy_digest (AC-13). ABSENT-TAXONOMY CASE (spec §2 missing-data table + Iron-Invariant #5): when the taxonomy file/snapshot is absent, malformed, or unavailable there is no snapshot to reference and no bytes to digest, so the engine STILL writes the record (and appends the `predicted` event) with decision=FULL_PIPELINE and `taxonomy_ref: null` / `taxonomy_digest: null` / `taxonomy_version: null`. Such a record validates precisely because these three fields are nullable when decision != FASTPATH_ELIGIBLE; the `if/then` conditional above forbids that null-taxonomy state from ever being FASTPATH_ELIGIBLE. A3/C1/M1 MUST treat the null-taxonomy record as an unconditional FULL_PIPELINE. (`pattern` applies only when the value is a string, so null passes.)"
     },
     "difficulty": { "$ref": "#/$defs/axis" },
     "impact": { "$ref": "#/$defs/axis" },

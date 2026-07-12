@@ -280,9 +280,13 @@ def _regex_search_batch(patterns, text, timeout_s=DEFAULT_REGEX_TIMEOUT_S):
         pfile = os.path.join(tmp, "patterns.json")
         tfile = os.path.join(tmp, "text.txt")
         rfile = os.path.join(tmp, "result.json")
-        with open(pfile, "w") as fh:
+        # Write in UTF-8 explicitly so the worker's UTF-8 read matches even under a
+        # C/POSIX locale (LANG=C in CI/cron/minimal Docker) — otherwise non-ASCII
+        # i18n/a11y/legal_copy scan text would raise UnicodeEncodeError and CRASH the
+        # scan instead of fail-closing, on exactly the content this module scans.
+        with open(pfile, "w", encoding="utf-8") as fh:
             json.dump(patterns, fh)
-        with open(tfile, "w") as fh:
+        with open(tfile, "w", encoding="utf-8") as fh:
             fh.write(text)
         cmd = [
             sys.executable, os.path.abspath(__file__), "--regex-search",
@@ -302,7 +306,7 @@ def _regex_search_batch(patterns, text, timeout_s=DEFAULT_REGEX_TIMEOUT_S):
         if proc.returncode != 0:
             return set(), True  # 124 timeout OR any worker error → fail-closed
         try:
-            with open(rfile, "r") as fh:
+            with open(rfile, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
             return set(int(x) for x in data.get("matched", [])), False
         except (ValueError, OSError):
@@ -314,7 +318,7 @@ def _regex_search_batch(patterns, text, timeout_s=DEFAULT_REGEX_TIMEOUT_S):
 
 def _regex_worker(patterns_file, text_file):
     """Internal worker (runs UNDER the timeout supervisor). Prints {"matched":[idx,...]}."""
-    with open(patterns_file, "r") as fh:
+    with open(patterns_file, "r", encoding="utf-8") as fh:
         patterns = json.load(fh)
     with open(text_file, "rb") as fh:
         text = fh.read().decode("utf-8", errors="replace")
@@ -369,7 +373,7 @@ def load_taxonomy(path=None, text=None):
     if text is None:
         if path is None:
             raise ValueError("load_taxonomy needs path= or text=")
-        with open(path, "r") as fh:
+        with open(path, "r", encoding="utf-8") as fh:  # explicit UTF-8 (matches the rb digest path)
             text = fh.read()
     data = load_yaml(text)
     if not isinstance(data, dict):
@@ -705,6 +709,18 @@ def _selftest():
     hits_none = match_content(tax, "nothing interesting here")
     expect("no spurious content hits", hits_none == [])
 
+    # Non-ASCII scan text must route through the UTF-8 temp-file write/read without
+    # crashing — regression guard for a C/POSIX-locale UnicodeEncodeError on exactly
+    # the i18n/a11y/legal content this module scans. The shell harness re-runs this
+    # whole selftest under LANG=C/PYTHONUTF8=0 to prove the locale independence.
+    non_ascii = 'café — feature_flag = enabléd — {{prénom}} setAttribute("aria-label","x")'
+    hits_na = match_content(tax, non_ascii)
+    expect("non-ASCII regex-scan finds feature_flag (no crash under any locale)",
+           any(h["kind"] == "feature_flag" and not h["timed_out"] for h in hits_na))
+    expect("non-ASCII scan also finds literal a11y + glob i18n",
+           any(h["kind"] == "a11y" for h in hits_na)
+           and any(h["kind"] == "i18n_placeholder" for h in hits_na))
+
     # --- classify combines path + content (impact only RAISES) ---
     c = classify(tax, path="src/ui/button.css",
                  content='el.setAttribute("aria-label","x")')
@@ -767,6 +783,57 @@ def _selftest():
            taxonomy_digest_bytes(b"abc") == "sha256:" + sha256_hex(b"abc"))
     expect("taxonomy_digest stable for identical bytes",
            taxonomy_digest_bytes(b"same") == taxonomy_digest_bytes(b"same"))
+
+    # --- schema representability: absent-taxonomy FULL_PIPELINE record validates ---
+    try:
+        import jsonschema
+        here = os.path.dirname(os.path.abspath(__file__))
+        schema_path = os.path.join(os.path.dirname(here), "schemas",
+                                   "pre-eval-record.schema.json")
+        with open(schema_path, "r", encoding="utf-8") as fh:
+            schema = json.load(fh)
+
+        absent = {
+            "pre_eval_id": "2026-07-12T101500Z-no-taxonomy-a1", "request_slug": "no-taxonomy",
+            "ts": "2026-07-12T10:15:00Z", "status": "PRE_EVAL_DONE",
+            "taxonomy_version": None, "taxonomy_ref": None, "taxonomy_digest": None,
+            "difficulty": {"band": "unknown"}, "impact": {"band": "unknown"},
+            "tiers_signalled": [], "override_fired": None, "decision": "FULL_PIPELINE",
+            "min_sample_status": "insufficient",
+            "localization": {"resolved_paths": [], "fan_out": 0, "flags": [],
+                             "confidence": "failed"},
+        }
+        jsonschema.validate(absent, schema)  # must NOT raise (nullable taxonomy fields)
+        expect("absent-taxonomy FULL_PIPELINE record validates against the schema", True)
+
+        # A FASTPATH_ELIGIBLE record with a null taxonomy MUST fail (the if/then guard).
+        elig_null = dict(absent)
+        elig_null["decision"] = "FASTPATH_ELIGIBLE"
+        try:
+            jsonschema.validate(elig_null, schema)
+            elig_null_ok = False
+        except jsonschema.ValidationError:
+            elig_null_ok = True
+        expect("FASTPATH_ELIGIBLE with null taxonomy is REJECTED (if/then guard)",
+               elig_null_ok)
+
+        # A proper FASTPATH_ELIGIBLE record (real snapshot + digest) validates.
+        elig_ok = {
+            "pre_eval_id": "2026-07-12T101500Z-make-button-red-a1b2",
+            "request_slug": "make-button-red", "ts": "2026-07-12T10:15:00Z",
+            "status": "PRE_EVAL_DONE", "taxonomy_version": 1,
+            "taxonomy_ref": "docs/superpowers/execution/r/taxonomy-snapshot.yaml",
+            "taxonomy_digest": "sha256:" + "0" * 64,
+            "difficulty": {"band": "low", "display": 2}, "impact": {"band": "low", "display": 2},
+            "tiers_signalled": ["T1", "localization"], "override_fired": None,
+            "decision": "FASTPATH_ELIGIBLE", "min_sample_status": "insufficient",
+            "localization": {"resolved_paths": ["src/ui/button.css"], "fan_out": 1,
+                             "flags": [], "confidence": "exact"},
+        }
+        jsonschema.validate(elig_ok, schema)
+        expect("valid FASTPATH_ELIGIBLE record (real snapshot) validates", True)
+    except ImportError:
+        expect("schema validation (skipped — jsonschema not installed)", True)
 
     if failures:
         print("\nSELFTEST FAILED: %d case(s)" % len(failures))
