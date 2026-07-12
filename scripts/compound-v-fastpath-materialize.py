@@ -168,6 +168,16 @@ def _is_single_literal_path(paths):
     return not any(c in _GLOB_METACHARS for c in p)
 
 
+_SHA256_DIGEST_RE = re.compile(r"sha256:[0-9a-fA-F]{64}\Z")
+
+
+def _is_sha256_digest(value):
+    """A content-digest is well-shaped iff it is a string ``'sha256:'``+64 hex (the form
+    ``tax.record_digest`` / ``taxonomy_digest_*`` emit). MED-8: absence / wrong-shape must
+    fail closed — a missing or non-string localization digest may NOT pass."""
+    return isinstance(value, str) and _SHA256_DIGEST_RE.match(value) is not None
+
+
 def _read_json(full):
     with open(full, "r", encoding="utf-8") as fh:
         return json.load(fh)
@@ -356,7 +366,16 @@ def _preflight(repo, pre_eval_id):
     if d_rec != d_art:
         raise MaterializeError("TAMPER: localization content-digest differs between "
                                "record and artifact")
-    if isinstance(artifact.get("digest"), str) and artifact["digest"] != d_art:
+    # MED-8: the committed localization artifact is the value C1 binds against, so its
+    # self-digest (the localization content-digest) MUST be present AND well-shaped
+    # ('sha256:'+hex) before we emit the manifest. A missing/non-string/malformed digest is
+    # NOT allowed to slip through — fail closed (the C1 validator rejects absence in parallel).
+    art_self_digest = artifact.get("digest")
+    if not _is_sha256_digest(art_self_digest):
+        raise MaterializeError(
+            "localization artifact digest is missing or malformed (want 'sha256:'+64 hex, "
+            "got %r)" % (art_self_digest,))
+    if art_self_digest != d_art:
         raise MaterializeError("TAMPER: localization artifact self-digest mismatch")
 
     # The pre-run taxonomy snapshot must content-address to the record's digest.
@@ -599,6 +618,11 @@ def _commit_paths(git, repo, rel_paths, message):
 
     fd, tmp_index = tempfile.mkstemp(prefix="cv-materialize-index-")
     os.close(fd)
+    # HIGH-4: mkstemp leaves an EXISTING zero-byte file at ``tmp_index``. ``git read-tree HEAD``
+    # expects the alternate ``GIT_INDEX_FILE`` to be ABSENT or a VALID index — a zero-byte file
+    # makes some git versions report an undersized/corrupt index. Retain only the NAME: unlink
+    # the empty file so git creates a fresh, valid index there.
+    os.unlink(tmp_index)
     try:
         idx_env = {"GIT_INDEX_FILE": tmp_index}
         git(repo, ["read-tree", "HEAD"], env=idx_env)          # seed temp index from HEAD
@@ -1165,6 +1189,81 @@ def _selftest():
         expect("MED-10 overlap: unrelated staged file preserved", "other.txt" in staged2)
         expect("MED-10 overlap: overlapping staged path preserved (not clobbered)",
                _norm_slash(life_rel) in staged2)
+
+    # ===================== (10) HIGH-4: isolated commit builds a VALID temp index ===== #
+    # The CR5-9 primitive seeds a PRIVATE temp index via `read-tree HEAD`. Before the fix the
+    # temp index was a mkstemp zero-byte file (an undersized/corrupt index on some git builds).
+    # Prove: the isolated commit succeeds on a real temp git repo AND the resulting index is
+    # valid — a follow-up `git status` + a normal commit both work, no "corrupt index" error.
+    with tempfile.TemporaryDirectory() as td:
+        repo = init_repo(td)
+        with open(os.path.join(repo, "seed.txt"), "w", encoding="utf-8") as fh:
+            fh.write("seed\n")
+        git(repo, ["add", "-A"])
+        git(repo, ["commit", "-q", "-m", "seed"])
+        before = count_commits(repo)
+        life_rel = os.path.join(EXEC_DIR_REL, "run-h4", "artifact.txt")
+        os.makedirs(os.path.dirname(os.path.join(repo, life_rel)), exist_ok=True)
+        with open(os.path.join(repo, life_rel), "w", encoding="utf-8") as fh:
+            fh.write("payload\n")
+        committed = _commit_paths(_run_git, repo, [life_rel],
+                                  "chore: HIGH-4 isolated commit")
+        expect("HIGH-4: isolated commit via private temp index SUCCEEDS", committed is True)
+        expect("HIGH-4: isolated commit advanced HEAD by exactly one",
+               count_commits(repo) == before + 1)
+        expect("HIGH-4: lifecycle path is now git-tracked", _git_tracked(git, repo, life_rel))
+        # The created temp index was valid — otherwise read-tree/add/commit above would have
+        # raised. Prove the REAL index is ALSO consistent: `git status` succeeds and reports a
+        # clean tree (no residual staged/corrupt state), and a follow-up commit works.
+        rc_status, status_out = git(repo, ["status", "--porcelain"], check=False, capture=True)
+        expect("HIGH-4: follow-up `git status` succeeds (no corrupt-index error)",
+               rc_status == 0)
+        expect("HIGH-4: working tree clean after isolated commit", status_out.strip() == "")
+        with open(os.path.join(repo, "after.txt"), "w", encoding="utf-8") as fh:
+            fh.write("after\n")
+        git(repo, ["add", "-A"])
+        git(repo, ["commit", "-q", "-m", "follow-up commit works"])
+        expect("HIGH-4: a normal follow-up commit works after the isolated commit",
+               count_commits(repo) == before + 2)
+
+    # ===================== (11) MED-8: localization digest must be present + shaped === #
+    # The committed localization artifact's self-digest (the value C1 binds against) MUST be
+    # present AND well-shaped ('sha256:'+hex). A missing or wrong-shaped digest FAILS CLOSED
+    # pre-commit — no run dir, no commit.
+    def _digest_case(name, mutate_artifact, err_substr):
+        with tempfile.TemporaryDirectory() as td:
+            repo = init_repo(td)
+            res = make_eligible(repo)
+            pid = res["pre_eval_id"]
+            before = count_commits(repo)
+            art_full = os.path.join(repo, _localize().artifact_rel_path(pid))
+            art = _read_json(art_full)
+            mutate_artifact(art)
+            _write_json(art_full, art)
+            raised = False
+            try:
+                run_materialize(repo, pid)
+            except MaterializeError as e:
+                raised = err_substr in str(e)
+            expect("MED-8 %s: rejected pre-commit (%s)" % (name, err_substr), raised)
+            expect("MED-8 %s: NO run dir created" % name,
+                   not os.path.isdir(os.path.join(repo, EXEC_DIR_REL, RUN_ID_PREFIX + pid)))
+            expect("MED-8 %s: NO commit created" % name, count_commits(repo) == before)
+
+    # (a) digest field entirely absent → missing/malformed rejection.
+    _digest_case("missing digest", lambda a: a.pop("digest", None),
+                 "missing or malformed")
+    # (b) digest present but non-string (a number) → malformed rejection.
+    _digest_case("non-string digest", lambda a: a.__setitem__("digest", 12345),
+                 "missing or malformed")
+    # (c) digest present, string, but wrong shape (no 'sha256:'+64hex) → malformed rejection.
+    _digest_case("wrong-shaped digest", lambda a: a.__setitem__("digest", "deadbeef"),
+                 "missing or malformed")
+    # (d) well-shaped but WRONG value (re-hex of a different content) → the value tamper guard
+    #     still fires (shape passes, content-digest mismatch).
+    _digest_case("well-shaped wrong-value digest",
+                 lambda a: a.__setitem__("digest", "sha256:" + ("0" * 64)),
+                 "self-digest mismatch")
 
     if failures:
         print("\nSELFTEST FAILED: %d case(s)" % len(failures))
