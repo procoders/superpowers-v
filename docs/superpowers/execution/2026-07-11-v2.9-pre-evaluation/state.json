@@ -1,17 +1,18 @@
 {
   "run_id": "2026-07-11-v2.9-pre-evaluation",
-  "phase": "PARTITION_VERIFIED",
-  "updated_at": "2026-07-11T00:00:00Z",
+  "phase": "DISPATCHING",
+  "updated_at": "2026-07-12T00:48:42Z",
   "total_retries": 0,
   "max_total_retries": 12,
   "jobs": {
     "task-0-foundation": {
-      "status": "pending",
+      "status": "running",
       "isolation": "direct",
       "worktree": null,
       "session_id": null,
       "failure_class": null,
-      "log": null
+      "log": null,
+      "baseline": "5e953bf9841577a1b7a96c9089c91720fe34ac1d"
     },
     "task-a1-localize": {
       "status": "pending",
