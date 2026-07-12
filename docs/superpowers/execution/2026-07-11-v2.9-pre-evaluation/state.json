@@ -69,9 +69,9 @@
       "log": null
     },
     "task-d1-churn": {
-      "status": "running",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": ".v29-worktrees/task-d1-churn",
+      "worktree": null,
       "session_id": null,
       "failure_class": null,
       "log": null
