@@ -133,9 +133,9 @@
       "log": null
     },
     "task-z1-integration": {
-      "status": "pending",
+      "status": "running",
       "isolation": "direct",
-      "worktree": null,
+      "worktree": ".v29-worktrees/task-z1-integration",
       "session_id": null,
       "failure_class": null,
       "log": null
