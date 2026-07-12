@@ -549,8 +549,16 @@ def _git_read_stream_lines(ctx, abspath):
     rel = _relposix(abspath, root)
     if rel is None:
         return []
-    rc, out = _run_git(["show", "HEAD:" + rel], cwd=root)
+    # Read cap+1 so we can DETECT truncation (HIGH-2): --max-output-bytes silently drops overflow
+    # with a success exit, so a >cap committed stream would otherwise yield a PREFIX read as complete
+    # — dropping a later overriding `actual` (e.g. escalated:true) and fabricating healthy precision.
+    rc, out = _run_git(["show", "HEAD:" + rel], cwd=root,
+                       cap_bytes=_GIT_OUTPUT_CAP_BYTES + 1)
     if rc != 0:
+        return []
+    if len(out) > _GIT_OUTPUT_CAP_BYTES:
+        # Over-cap committed stream -> the read is a truncated prefix. Fail-closed: count NOTHING
+        # rather than a fabricated prefix. (A committed triage stream this large is anomalous.)
         return []
     return out.decode("utf-8", "replace").splitlines()
 
