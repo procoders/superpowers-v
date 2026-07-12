@@ -77,9 +77,9 @@
       "log": null
     },
     "task-f2-postdiff": {
-      "status": "running",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": ".v29-worktrees/task-f2-postdiff",
+      "worktree": null,
       "session_id": null,
       "failure_class": null,
       "log": null
