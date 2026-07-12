@@ -357,6 +357,15 @@ def classify_via_codex(request_text, resolved_paths=None, model=None,
 # CLI
 # =========================================================================== #
 def main(argv):
+    # Locale robustness: under a C/POSIX locale (CI, minimal Docker) sys.stdout defaults to ASCII,
+    # so writing the prompt text — which contains non-ASCII (em-dash etc.) — would raise
+    # UnicodeEncodeError instead of emitting cleanly. Force UTF-8 on the CLI streams. (v2.9)
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
     if "--selftest" in argv:
         return _selftest()
 
