@@ -155,7 +155,7 @@ fast_path:
 | `eligible` | Must be `true`. A `fast_path` block with `eligible` not-true is rejected. |
 | `pre_eval_id` | The write-once id; the cross-artifact binding key. MUST match the pinned record and the localization artifact. |
 | `pre_eval_ref` | Committed path to the pinned pre-eval record (`schemas/pre-eval-record.schema.json`). |
-| `localization_ref` | Committed path to the localization artifact. Its canonical-JSON content-digest is bound across manifest+record+artifact (AC-13). |
+| `localization_ref` | Committed path (pointer) to the localization artifact. The artifact's canonical-JSON content-digest is verified **record ↔ artifact**; the manifest is tied to it via `write_allowed[0] == localization.resolved_paths[0]` (AC-13). |
 | `taxonomy_ref` | Committed path to the **immutable taxonomy snapshot** copied under the run (not a sha of mutable working-tree state; CR2-6/CR4-2). |
 | `taxonomy_digest` | `sha256:` content-address of `taxonomy_ref`'s RAW bytes. MUST equal the record's `taxonomy_digest`. Absent/malformed/unreadable ⇒ the pre-eval engine never produces `FASTPATH_ELIGIBLE` in the first place. |
 | `review` | The combined SPEC+QUALITY review **declaration** — a dispatcher PHASE outside `jobs`. MUST be `backend: claude` + `tier: deep` **OR** an explicit `model: opus`. |
@@ -183,10 +183,15 @@ fast_path:
 
 The validator (C1) checks, for a `fast_path` manifest:
 
-- the sole `write_allowed` literal **==** `localization.resolved_paths[0]`;
-- `pre_eval_id`, the `FASTPATH_ELIGIBLE` decision, `taxonomy_digest`, and the **localization
-  content-digest** are **equal** across the manifest, the pinned pre-eval record, and the
-  localization artifact.
+- the sole `write_allowed` literal **==** `localization.resolved_paths[0]` (this is what ties the
+  manifest to the localization artifact — the manifest carries a `localization_ref` pointer, not a
+  copy of the localization digest);
+- `pre_eval_id` and `taxonomy_digest` are **equal** across the manifest and the pinned pre-eval
+  record (and `taxonomy_digest` also matches the pinned taxonomy snapshot's content-address);
+- the `FASTPATH_ELIGIBLE` decision is bound via the manifest's `fast_path.eligible: true` **and** the
+  record's `decision == "FASTPATH_ELIGIBLE"` (the localization artifact carries no decision field);
+- the **localization content-digest** is verified **record ↔ artifact** (plus the artifact's own
+  self-digest); the record's self-digest is verified too.
 
 A mismatch on any field **fails validation** (tampering fixtures required). Otherwise a manifest
 could cite a safe CSS localization while authorizing a *different* file the scope gate would then
