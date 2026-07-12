@@ -1,7 +1,7 @@
 {
   "run_id": "2026-07-11-v2.9-pre-evaluation",
   "phase": "DISPATCHING",
-  "updated_at": "2026-07-12T01:22:32Z",
+  "updated_at": "2026-07-12T01:25:02Z",
   "total_retries": 0,
   "max_total_retries": 12,
   "jobs": {
@@ -16,44 +16,49 @@
       "scope_gate": "pass"
     },
     "task-a1-localize": {
-      "status": "pending",
+      "status": "running",
       "isolation": "worktree",
-      "worktree": null,
+      "worktree": ".v29-worktrees/task-a1-localize",
       "session_id": null,
       "failure_class": null,
-      "log": null
+      "log": null,
+      "baseline": "3b2b4d24b3eab15a9f553eda8d42468e08db8bf5"
     },
     "task-a2-classify": {
-      "status": "pending",
+      "status": "running",
       "isolation": "worktree",
-      "worktree": null,
+      "worktree": ".v29-worktrees/task-a2-classify",
       "session_id": null,
       "failure_class": null,
-      "log": null
+      "log": null,
+      "baseline": "3b2b4d24b3eab15a9f553eda8d42468e08db8bf5"
     },
     "task-b1-taxonomy": {
-      "status": "pending",
+      "status": "running",
       "isolation": "worktree",
-      "worktree": null,
+      "worktree": ".v29-worktrees/task-b1-taxonomy",
       "session_id": null,
       "failure_class": null,
-      "log": null
+      "log": null,
+      "baseline": "3b2b4d24b3eab15a9f553eda8d42468e08db8bf5"
     },
     "task-f1-triage": {
-      "status": "pending",
+      "status": "running",
       "isolation": "worktree",
-      "worktree": null,
+      "worktree": ".v29-worktrees/task-f1-triage",
       "session_id": null,
       "failure_class": null,
-      "log": null
+      "log": null,
+      "baseline": "3b2b4d24b3eab15a9f553eda8d42468e08db8bf5"
     },
     "task-g1-init": {
-      "status": "pending",
+      "status": "running",
       "isolation": "worktree",
-      "worktree": null,
+      "worktree": ".v29-worktrees/task-g1-init",
       "session_id": null,
       "failure_class": null,
-      "log": null
+      "log": null,
+      "baseline": "3b2b4d24b3eab15a9f553eda8d42468e08db8bf5"
     },
     "task-c1-validator": {
       "status": "pending",

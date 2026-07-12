@@ -1,0 +1,82 @@
+You are an **implementation worker, NOT the planner**. Do not change architecture. Do not write
+outside WRITE_ALLOWED. If the task needs a forbidden file, STOP and report `BLOCKED` with the path.
+
+## Where you work (ISOLATION: git worktree)
+Work **exclusively inside this git worktree** (a full checkout of the repo at the post-Task-0 commit):
+  /Users/oleg/Dev/superpowers-v/.v29-worktrees/task-f1-triage
+ALL file edits go under that absolute path (e.g. `/Users/oleg/Dev/superpowers-v/.v29-worktrees/task-f1-triage/scripts/...`). Read reference docs either from
+the worktree or the main repo — both have the committed Task 0 outputs, plan, spec, and audits.
+**Do NOT run any git commands** (no add/commit/worktree). Just edit files + run `python3`. The
+dispatcher runs a git-derived scope gate on your worktree and merges your work back centrally.
+
+## SCOPE LOCK
+**WRITE-allowed (create/modify ONLY these, under $WT):**
+- `scripts/compound-v-triage-outcomes.py` (CREATE)
+**READ-allowed (context — do not modify):**
+- `scripts/compound-v-update-memory.py` (for the `append_line` discipline — reuse, don't recopy)
+A `git diff`-derived scope gate BLOCKS this job if any path outside WRITE-allowed changed.
+
+## REQUIRED reading (absolute paths; read the relevant parts fully)
+- Plan (your task section + the **Lifecycle & commit-ordering protocol** + **Known integration
+  constraints CR5-1..10**): /Users/oleg/Dev/superpowers-v/docs/superpowers/plans/2026-07-11-v2.9-pre-evaluation-plan.md
+- Spec (§0 BINDING corrections; §2 truth-table + missing-data; Iron Invariants; the AC list):
+  /Users/oleg/Dev/superpowers-v/docs/superpowers/specs/2026-07-11-v2.9-pre-evaluation-design.md
+- Audits (binding design constraints):
+  /Users/oleg/Dev/superpowers-v/docs/superpowers/archaeology/2026-07-11-v2.9-pre-evaluation.md
+  /Users/oleg/Dev/superpowers-v/docs/superpowers/expert/2026-07-11-v2.9-pre-evaluation.md
+  /Users/oleg/Dev/superpowers-v/docs/superpowers/library-audit/2026-07-11-v2.9-pre-evaluation.md
+- Task 0 shared contracts you build on (already committed in your worktree): the shared taxonomy
+  loader `scripts/compound-v-taxonomy.py` (load_taxonomy/match_path/match_content/classify), the
+  timeout supervisor `scripts/compound-v-run-with-timeout.py` (now with `--max-output-bytes`),
+  `scripts/compound-v-project-config.py`, the canonical schemas under `schemas/`, and the updated
+  `skills/compound-v/state-machine.md` + `execution-manifest.md`.
+
+## Binding constraints (MUST honor — from the three audits + Global Constraints)
+- **Python 3.9-safe, stdlib-first.** Soft-PyYAML fallback — NEVER a hard `import yaml`.
+- **Reuse the named Task 0 / existing primitives — do NOT recopy them.** Import/delegate to the
+  shared loader, the timeout supervisor, `append_line` (update-memory.py), etc.
+- **Every external CLI** (rg, git grep, grep, codex, git) MUST go through
+  `scripts/compound-v-run-with-timeout.py` with `stdin` closed (DEVNULL) and bounded output — NEVER
+  a bare `subprocess.run(timeout=...)` on an external CLI.
+- **Fail-closed everywhere:** ambiguity / missing data / tier disagreement / unknown / parse failure
+  → FULL_PIPELINE (or escalate). Never fail open.
+- No fabricated cost/token metrics anywhere.
+
+## Method — TDD (required)
+Write the failing selftest FIRST (a `--selftest` mode is the repo convention), verify it fails,
+implement, verify it passes. Run every selftest with `python3` before declaring done. Self-review.
+
+## Report format (end your final message with exactly ONE token)
+`DONE` / `DONE_WITH_CONCERNS` (list them) / `NEEDS_CONTEXT` (say what) / `BLOCKED` (name the file).
+Include a short summary of what you built + selftest results.
+
+---
+## YOUR TASK
+**Task F1 — Append-only THREE-event triage-outcomes + cohort-separated Tier 2 + precision.**
+
+Create `scripts/compound-v-triage-outcomes.py`. API:
+`append_predicted(pre_eval_id, …)`, `bind_run(pre_eval_id, run_id)`, `append_actual(pre_eval_id,
+run_id, …)` — all via the **`append_line` discipline** from update-memory.py (forbidden-basename
+guard, makedirs, NEVER rewrite/sort/dedupe); `tier2_lookup(...) -> {health,n} | insufficient`;
+`precision_stats() -> {precision, escalation_rate, n} | insufficient`.
+
+The stream `docs/superpowers/memory/triage-outcomes.jsonl` is a THREE-event protocol
+(`predicted` → `bind` → `actual`) — three separate appended lines, NEVER a mutated line.
+- **Event keying `(pre_eval_id, run_id)`** (CR4-5): an escalation child has its OWN run-id, so its
+  bind/actual do NOT overwrite the fast-path parent's events. **Precision is computed from the
+  fast-path PARENT outcome only.**
+- **Cohort separation** (Iron-Invariant #3): only ACCEPTED fast-path outcomes support a
+  healthy/lowering signal; full-pipeline (incl. escalation-child) outcomes contribute **escalation
+  evidence only**. At launch all entries are full-pipeline → Tier 2 stays escalation-only.
+- Tier 2 `insufficient` below `min_sample_count`; join on `pre_eval_id`, disambiguate by `run_id`.
+- Precision formula (exact):
+  `precision = fastpath_runs_not_escalated_and_review_passed / fastpath_runs_total`;
+  `escalation_rate = escalated / fastpath_runs_total`; a missing `actual` → excluded from precision
+  (logged, never fabricated). CR5-4: a terminal `actual` counts only after merge; a precision-IGNORED
+  `merge_pending` event may precede it.
+
+**Step-1 failing selftest:** predicted/actual/bind are THREE append events joined on `pre_eval_id`
+(never a mutated line); Tier-2 insufficient below min_sample; a full-pipeline outcome is NOT counted as
+low-corroboration (only escalation evidence); precision/escalation_rate numerator/denominator match
+declared fixtures; duplicate/out-of-order events handled deterministically (last-writer-wins per
+(pre_eval_id,event)). Do NOT run git.
