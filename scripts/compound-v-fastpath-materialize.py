@@ -42,9 +42,10 @@ decision / ``taxonomy_digest`` / localization content-digest) equal across manif
 + artifact, CR4-6 containment, and a ``fast_path.review`` declaration (``backend: claude`` +
 ``tier: deep``) that resolves to Claude Opus — with NO review receipt yet.
 
-Commit discipline (v2.6.4): every commit is a **two-command** sequence (``git add`` then
-``git commit``, no ``&&``), each exit code checked, and each ``git commit`` is **pathspec-
-limited** so an unrelated pre-staged change is never swept into a lifecycle commit.
+Commit discipline (v2.6.4 + CR5-9): every lifecycle commit is built in a PRIVATE temporary
+index (``GIT_INDEX_FILE`` seeded from ``HEAD``) so ONLY the exact named paths are committed —
+unrelated user-staged work is never swept in, and an overlapping user-staged lifecycle path is
+**fail-closed** rather than clobbered. No ``&&``; every git exit code is checked.
 
 Reuse (imported BY PATH, never recopied):
   * ``compound-v-taxonomy.py``          — record_digest / taxonomy_digest_file / classify
@@ -72,6 +73,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 
 
 # --------------------------------------------------------------------------- #
@@ -268,12 +270,44 @@ def _preflight(repo, pre_eval_id):
     if record.get("pre_eval_id") != pre_eval_id:
         raise MaterializeError("record pre_eval_id %r != requested %r"
                                % (record.get("pre_eval_id"), pre_eval_id))
+
+    # CRIT-2 (a): verify the record's OWN self-digest FIRST — before trusting any field it
+    # carries. Reuse the SAME canonical-JSON digest the producer used (tax.record_digest,
+    # excluding the self-digest field). A record whose committed decision/band was flipped
+    # after write (without re-sealing) is caught here and rejected before a single byte is
+    # written. (A fully re-sealed forgery is then still stopped by the low/low + null-override
+    # band gate below and the localization/snapshot content-address guards further down.)
+    rec_digest = record.get("digest")
+    if not isinstance(rec_digest, str) or not rec_digest:
+        raise MaterializeError("record is missing its self-digest ('digest') field")
+    try:
+        computed_digest = tax.record_digest(record, exclude_field="digest")
+    except ValueError as e:
+        raise MaterializeError("cannot compute record self-digest (%s)" % e)
+    if computed_digest != rec_digest:
+        raise MaterializeError("TAMPER: record self-digest mismatch (recomputed %s != "
+                               "stored %s)" % (computed_digest, rec_digest))
+
     if record.get("status") != STATUS_PRE_EVAL_DONE:
         raise MaterializeError("record status %r is not %s"
                                % (record.get("status"), STATUS_PRE_EVAL_DONE))
     if record.get("decision") != DECISION_FASTPATH:
         raise MaterializeError("record decision %r is not %s — not fast-path eligible"
                                % (record.get("decision"), DECISION_FASTPATH))
+
+    # CRIT-2 (b): require the FULL FASTPATH_ELIGIBLE contract the producer guarantees — not
+    # merely decision==FASTPATH_ELIGIBLE. The producer emits FASTPATH only when NO override
+    # fired AND BOTH axes are 'low' (not merely "not high"). Enforce all three so a record
+    # carrying a fast-path decision beside a non-low band or a fired override is fail-closed.
+    if record.get("override_fired") is not None:
+        raise MaterializeError("FASTPATH record must carry override_fired == null "
+                               "(got %r)" % (record.get("override_fired"),))
+    for _axis in ("difficulty", "impact"):
+        _ax = record.get(_axis)
+        _band = _ax.get("band") if isinstance(_ax, dict) else None
+        if _band != "low":
+            raise MaterializeError("FASTPATH record %s.band %r is not 'low' — not fast-path "
+                                   "eligible" % (_axis, _band))
 
     tax_ref = record.get("taxonomy_ref")
     tax_digest = record.get("taxonomy_digest")
@@ -497,11 +531,16 @@ def _copy_snapshot(snap_src_full, dst_full):
 # Git primitives (pathspec-limited, two-command discipline). Run ONLY against the
 # repo passed in — the selftest uses a tempdir OUTSIDE this worktree.
 # --------------------------------------------------------------------------- #
-def _run_git(repo, args, check=True, capture=False):
+def _run_git(repo, args, check=True, capture=False, env=None):
     # Always capture git's own chatter so it never leaks into the CLI's JSON stdout;
-    # only RETURN stdout when the caller asked for it.
+    # only RETURN stdout when the caller asked for it. ``env`` overlays a few vars (e.g.
+    # ``GIT_INDEX_FILE`` for the isolated commit primitive) on top of the inherited env.
+    run_env = None
+    if env:
+        run_env = os.environ.copy()
+        run_env.update(env)
     r = subprocess.run(["git", "-C", repo] + list(args),
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=run_env)
     if check and r.returncode != 0:
         err = r.stderr.decode("utf-8", "replace") if r.stderr else ""
         raise MaterializeError("git %s failed (%d): %s"
@@ -522,15 +561,58 @@ def _paths_dirty(git, repo, rel_paths):
     return out.strip() != ""
 
 
+def _norm_slash(p):
+    """Repo-relative path with forward slashes — the form ``git`` reports/consumes."""
+    return p.replace(os.sep, "/")
+
+
+def _staged_paths(git, repo):
+    """The set of paths the USER already has staged in the real index (index vs HEAD)."""
+    _rc, out = git(repo, ["diff", "--cached", "--name-only"], check=False, capture=True)
+    return set(p for p in out.splitlines() if p.strip())
+
+
 def _commit_paths(git, repo, rel_paths, message):
-    """Two-command, pathspec-limited commit of exactly ``rel_paths`` (CR5-9 spirit — an
-    unrelated pre-staged change is never swept in). Idempotent: nothing dirty ⇒ no commit
-    (returns False). Each git exit code is checked (raises on failure)."""
+    """Isolated, path-limited commit of EXACTLY ``rel_paths`` (CR5-9). The commit is built in a
+    PRIVATE temporary index (``GIT_INDEX_FILE``) seeded from ``HEAD``, so:
+
+      * unrelated user-staged work is never swept into the commit (only the named paths are), and
+      * an overlapping user-staged version of a lifecycle path is never clobbered — if any target
+        path is already staged in the user's real index, we **fail closed** (raise) rather than
+        overwrite it.
+
+    Commit discipline (v2.6.4): no ``&&``, each git exit code checked. Idempotent: nothing dirty
+    ⇒ no commit (returns False). After the commit, ONLY the (guaranteed-unstaged) lifecycle paths
+    are synced into the real index so ``git ls-files``/``status`` reflect the new HEAD — the
+    user's unrelated staged entries are left exactly as they were."""
     rel_paths = list(rel_paths)
     if not _paths_dirty(git, repo, rel_paths):
         return False
-    git(repo, ["add", "--"] + rel_paths)                     # command 1
-    git(repo, ["commit", "-m", message, "--"] + rel_paths)   # command 2
+
+    # Fail closed: never clobber a user-staged version of a lifecycle path.
+    target_set = set(_norm_slash(p) for p in rel_paths)
+    overlap = _staged_paths(git, repo).intersection(target_set)
+    if overlap:
+        raise MaterializeError(
+            "refusing to commit lifecycle path(s) already staged in the user's index (would "
+            "clobber): %s" % ", ".join(sorted(overlap)))
+
+    fd, tmp_index = tempfile.mkstemp(prefix="cv-materialize-index-")
+    os.close(fd)
+    try:
+        idx_env = {"GIT_INDEX_FILE": tmp_index}
+        git(repo, ["read-tree", "HEAD"], env=idx_env)          # seed temp index from HEAD
+        git(repo, ["add", "--"] + rel_paths, env=idx_env)      # stage ONLY these (temp index)
+        git(repo, ["commit", "-m", message], env=idx_env)      # commit temp index → advance HEAD
+    finally:
+        try:
+            os.remove(tmp_index)
+        except OSError:
+            pass
+
+    # Sync exactly the lifecycle paths into the REAL index (they were proven unstaged above, so
+    # this touches nothing of the user's). Keeps ls-files/status consistent with the new HEAD.
+    git(repo, ["add", "--"] + rel_paths)
     return True
 
 
@@ -718,8 +800,6 @@ def main(argv):
 # OUTSIDE this worktree; never runs git in cwd.
 # --------------------------------------------------------------------------- #
 def _selftest():
-    import tempfile
-
     failures = []
 
     def expect(name, cond):
@@ -729,8 +809,8 @@ def _selftest():
 
     pe = _preeval()
 
-    def git(repo, args, check=True, capture=False):
-        return _run_git(repo, args, check=check, capture=capture)
+    def git(repo, args, check=True, capture=False, env=None):
+        return _run_git(repo, args, check=check, capture=capture, env=env)
 
     def init_repo(td):
         repo = os.path.join(td, "repo")
@@ -973,6 +1053,118 @@ def _selftest():
            and reparsed["map"]["deep"]["z"] == "w"
            and reparsed["jobs"][0]["write_allowed"] == ["a/b.css"]
            and reparsed["jobs"][0]["review"]["backend"] == "claude")
+
+    # ===================== (8) CRIT-2: self-digest + band/override gate ========== #
+    tax = _tax()
+
+    def _reseal(rec):
+        rec.pop("digest", None)
+        rec["digest"] = tax.record_digest(rec, exclude_field="digest")
+        return rec
+
+    def _tamper_case(name, mutate, err_substr):
+        """A single pre-commit tamper: mutate the accepted record, run materialize, and prove
+        it is rejected BEFORE any write (no run dir) and BEFORE any commit."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = init_repo(td)
+            res = make_eligible(repo)
+            pid = res["pre_eval_id"]
+            before = count_commits(repo)
+            rec_full = pe.record_path(repo, pid)
+            rec = _read_json(rec_full)
+            mutate(rec)
+            _write_json(rec_full, rec)
+            raised = False
+            try:
+                run_materialize(repo, pid)
+            except MaterializeError as e:
+                raised = err_substr in str(e)
+            expect("CRIT-2 %s: rejected (%s)" % (name, err_substr), raised)
+            expect("CRIT-2 %s: NO run dir created (pre-write reject)" % name,
+                   not os.path.isdir(os.path.join(repo, EXEC_DIR_REL, RUN_ID_PREFIX + pid)))
+            expect("CRIT-2 %s: NO commit created (pre-commit reject)" % name,
+                   count_commits(repo) == before)
+
+    # (a) corrupt the self-digest (no re-seal) → self-digest mismatch.
+    def _corrupt_digest(rec):
+        rec["digest"] = "sha256:" + ("0" * 64)
+    _tamper_case("corrupt self-digest", _corrupt_digest, "self-digest mismatch")
+
+    # (b) flip decision FULL_PIPELINE → FASTPATH but re-seal the digest so the self-digest
+    #     check passes: the decision/band gate must still refuse it (bands stay non-low).
+    def _flip_decision(rec):
+        rec["decision"] = "FULL_PIPELINE"
+        _reseal(rec)
+    _tamper_case("flip decision to FULL_PIPELINE (re-sealed)", _flip_decision,
+                 "not fast-path eligible")
+
+    # (c) set a non-low (medium) band, re-sealed → band gate rejects even with a valid digest.
+    def _medium_band(rec):
+        rec["difficulty"] = {"band": "medium", "display": 5}
+        _reseal(rec)
+    _tamper_case("medium difficulty band (re-sealed)", _medium_band, "is not 'low'")
+
+    # (d) a fired override beside a fast-path decision, re-sealed → override gate rejects.
+    def _override_set(rec):
+        rec["override_fired"] = 6
+        _reseal(rec)
+    _tamper_case("override_fired set (re-sealed)", _override_set,
+                 "override_fired == null")
+
+    # ===================== (9) MED-10: isolated commit primitive ================= #
+    # (a) an UNRELATED pre-staged file stays staged AND uncommitted across every lifecycle
+    #     commit — the temp-index primitive commits ONLY the named lifecycle paths.
+    with tempfile.TemporaryDirectory() as td:
+        repo = init_repo(td)
+        res = make_eligible(repo)
+        pid = res["pre_eval_id"]
+        user_file = "USER_UNRELATED.txt"
+        with open(os.path.join(repo, user_file), "w", encoding="utf-8") as fh:
+            fh.write("user's own work\n")
+        git(repo, ["add", "--", user_file])            # user stages an unrelated new file
+        out = run_materialize(repo, pid)
+        run_id = out["run_id"]
+        expect("MED-10 unrelated: run still materialized", out["status"] == "materialized")
+        _rc, cached = git(repo, ["diff", "--cached", "--name-only"], capture=True)
+        expect("MED-10 unrelated: user-staged file STILL staged after all lifecycle commits",
+               user_file in cached.split())
+        _rc, ulog = git(repo, ["log", "--format=%H", "--", user_file], capture=True)
+        expect("MED-10 unrelated: user-staged file was NOT committed", ulog.strip() == "")
+        with open(os.path.join(repo, user_file), "r", encoding="utf-8") as fh:
+            expect("MED-10 unrelated: user file content untouched",
+                   fh.read() == "user's own work\n")
+        expect("MED-10 unrelated: lifecycle state.json still committed (git-tracked)",
+               _git_tracked(git, repo, os.path.join(EXEC_DIR_REL, run_id, "state.json")))
+
+    # (b) an OVERLAPPING user-staged lifecycle path fails CLOSED (never clobbered) — proven on
+    #     the primitive directly, and no commit is made while unrelated staging is preserved.
+    with tempfile.TemporaryDirectory() as td:
+        repo = init_repo(td)
+        with open(os.path.join(repo, "seed.txt"), "w", encoding="utf-8") as fh:
+            fh.write("seed\n")
+        git(repo, ["add", "-A"])
+        git(repo, ["commit", "-q", "-m", "seed"])
+        life_rel = os.path.join(EXEC_DIR_REL, "run-x", "state.json")
+        os.makedirs(os.path.dirname(os.path.join(repo, life_rel)), exist_ok=True)
+        with open(os.path.join(repo, life_rel), "w", encoding="utf-8") as fh:
+            fh.write("{}\n")
+        git(repo, ["add", "--", life_rel])             # user pre-stages the lifecycle path
+        with open(os.path.join(repo, "other.txt"), "w", encoding="utf-8") as fh:
+            fh.write("other\n")
+        git(repo, ["add", "--", "other.txt"])          # plus an unrelated staged file
+        before = count_commits(repo)
+        raised = False
+        try:
+            _commit_paths(_run_git, repo, [life_rel], "chore: should not commit")
+        except MaterializeError as e:
+            raised = "clobber" in str(e)
+        expect("MED-10 overlap: overlapping staged lifecycle path FAILS CLOSED", raised)
+        expect("MED-10 overlap: NO commit made on fail-closed", count_commits(repo) == before)
+        _rc, cached2 = git(repo, ["diff", "--cached", "--name-only"], capture=True)
+        staged2 = set(cached2.split())
+        expect("MED-10 overlap: unrelated staged file preserved", "other.txt" in staged2)
+        expect("MED-10 overlap: overlapping staged path preserved (not clobbered)",
+               _norm_slash(life_rel) in staged2)
 
     if failures:
         print("\nSELFTEST FAILED: %d case(s)" % len(failures))
