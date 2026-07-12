@@ -26,3 +26,4 @@ docs/superpowers/_runs/
 # Codex --json event streams: transient run telemetry (liveness reads them live);
 # large and full of prompts/tool-calls — never committed as run substrate.
 docs/superpowers/execution/*/logs/*.jsonl
+.v29-worktrees/

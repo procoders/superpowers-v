@@ -1,0 +1,9 @@
+skills/compound-v/state-machine.md
+skills/compound-v/execution-manifest.md
+docs/superpowers/architecture/pre-eval-config.md
+scripts/compound-v-taxonomy.py
+scripts/compound-v-project-config.py
+scripts/compound-v-resolve-model.py
+scripts/compound-v-run-with-timeout.py
+schemas/pre-eval-record.schema.json
+schemas/fastpath-review-receipt.schema.json
