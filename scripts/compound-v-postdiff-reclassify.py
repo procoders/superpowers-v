@@ -413,32 +413,50 @@ def _py_fingerprints(source):
 
     def _scope_cf(scope_node):
         """Build a NORMALIZED STRUCTURAL control-flow signature for ``scope_node`` — a
-        nested, source-ORDERED tuple of ``(label, condition/callee-content, children)``.
-        Walks the scope's control-flow tree in source order, descending through
-        control-flow blocks (if/for/while/try/with bodies + conditions) but STOPPING at
-        nested def/class scopes (each is signed separately under its own qualname).
+        nested, source-ORDERED tuple of ``(field, index, label, condition/callee-content,
+        children)`` (control-flow nodes) or ``(field, index, children)`` (hoisted inner
+        control flow of a non-control-flow node). Walks the scope's control-flow tree in
+        source order, descending through control-flow blocks (if/for/while/try/with
+        bodies + conditions + else/finally/handlers) but STOPPING at nested def/class
+        scopes (each is signed separately under its own qualname).
 
-        For every tracked control-flow node it emits ``(label, _cf_content(node),
-        <recurse>)``; a NON-control-flow intermediate node (Assign, Expr, BinOp, …)
-        emits nothing itself but hoists its inner control-flow tokens up to the current
-        block level (a call inside an assignment is at the same block as the assignment).
+        Descent is over the NAMED AST fields (``body``, ``orelse``, ``finalbody``,
+        ``handlers``, ``test``, ``iter``, …) rather than ``ast.iter_child_nodes`` — which
+        FLATTENS those fields into one ordered child tuple, so a statement moved between
+        an ``if`` body and its ``else`` (or a loop body/else, or a ``try`` body/finally)
+        produced an IDENTICAL fingerprint. Tagging every token with its ``(field, index)``
+        makes the SAME node under ``body`` vs ``orelse`` vs ``finalbody`` yield DIFFERENT
+        tokens, so such a move now escalates (HIGH-5). A NON-control-flow intermediate
+        node (Assign, Expr, BinOp, …) emits nothing of its own but hoists its inner
+        control-flow tokens up to the current block level — carrying the ``(field,
+        index)`` marker so a call under ``body`` stays distinct from the same call under
+        ``orelse``; a node with no inner control flow contributes nothing at all.
 
-        This captures SHAPE (which nodes, nested how), ORDER (branch/elif ordering), and
-        CONTENT (each test/iter/callee, constants + names preserved). So ``if x`` !=
-        ``if not x``, an ``if/elif`` swap, and a renamed callee all change the signature,
-        while a pure whitespace/comment/docstring or constant-VALUE-only edit does not."""
+        This captures SHAPE (which nodes, nested how), FIELD IDENTITY (body vs else vs
+        finally vs handler), ORDER (branch/elif ordering), and CONTENT (each
+        test/iter/callee, constants + names preserved). So ``if x`` != ``if not x``, an
+        ``if/elif`` swap, a renamed callee, and a body↔else↔finally move all change the
+        signature, while a pure whitespace/comment/docstring or constant-VALUE-only edit
+        does not."""
 
         def walk(node):
             tokens = []
-            for child in ast.iter_child_nodes(node):
-                if isinstance(child, scope_types):
-                    continue  # separate scope — signed under its own qualname
-                child_tokens = walk(child)
-                label = cf_labels.get(type(child))
-                if label is not None:
-                    tokens.append((label, _cf_content(child), child_tokens))
-                else:
-                    tokens.extend(child_tokens)  # hoist nested control flow to this block
+            for field, value in ast.iter_fields(node):
+                items = value if isinstance(value, list) else (value,)
+                for idx, child in enumerate(items):
+                    if not isinstance(child, ast.AST):
+                        continue  # primitive field value (constant, operator, name str)
+                    if isinstance(child, scope_types):
+                        continue  # separate scope — signed under its own qualname
+                    child_tokens = walk(child)
+                    label = cf_labels.get(type(child))
+                    if label is not None:
+                        tokens.append((field, idx, label, _cf_content(child), child_tokens))
+                    elif child_tokens:
+                        # Non-control-flow node: hoist its inner control flow, but KEEP
+                        # the (field, index) so a call under `body` and the same call
+                        # under `orelse`/`finalbody`/a handler stay distinguishable.
+                        tokens.append((field, idx, child_tokens))
             return tuple(tokens)
 
         return walk(scope_node)
@@ -1040,6 +1058,92 @@ def _selftest():
         write(r, "mod.py", "def foo():\n    x = 2\n    return x\n")
         res, _ = run(r, base)
         expect("constant-literal-only (no control-flow) does NOT escalate", res["escalate"] is False)
+
+        # 5p. HIGH-5 (round 3): moving a `helper()` call from an `if` BODY to its ELSE
+        #     ESCALATES. Same node counts, same callee, same If test — only the branch
+        #     FIELD (body↔orelse) changed. iter_child_nodes flattened body+orelse into
+        #     one tuple, so this used to fingerprint IDENTICALLY and slip through; the
+        #     (field, index)-tagged walk now distinguishes them.
+        r = new_repo("py-cf-if-else-move")
+        write(r, "mod.py",
+              "def foo(a):\n    if a:\n        helper()\n    else:\n        pass\n")
+        git(r, ["add", "-A"]); git(r, ["commit", "-qm", "base"])
+        base = head(r)
+        write(r, "mod.py",
+              "def foo(a):\n    if a:\n        pass\n    else:\n        helper()\n")
+        res, _ = run(r, base)
+        expect("moving helper() from if-body to else escalates (HIGH-5 r3)",
+               res["escalate"] is True)
+        expect("if-body->else move is control-flow, not signature",
+               any("control-flow structure changed" in x for x in res["reasons"])
+               and not any("signature changed" in x for x in res["reasons"]))
+
+        # 5q. Moving a `helper()` call from a `for` BODY to its ELSE (for/else) ESCALATES.
+        r = new_repo("py-cf-for-else-move")
+        write(r, "mod.py",
+              "def foo(a):\n    for x in a:\n        helper()\n    else:\n        pass\n")
+        git(r, ["add", "-A"]); git(r, ["commit", "-qm", "base"])
+        base = head(r)
+        write(r, "mod.py",
+              "def foo(a):\n    for x in a:\n        pass\n    else:\n        helper()\n")
+        res, _ = run(r, base)
+        expect("moving helper() from for-body to for-else escalates (HIGH-5 r3)",
+               res["escalate"] is True)
+
+        # 5r. Moving a `helper()` call from a `while` BODY to its ELSE (while/else)
+        #     ESCALATES.
+        r = new_repo("py-cf-while-else-move")
+        write(r, "mod.py",
+              "def foo(a):\n    while a:\n        helper()\n    else:\n        pass\n")
+        git(r, ["add", "-A"]); git(r, ["commit", "-qm", "base"])
+        base = head(r)
+        write(r, "mod.py",
+              "def foo(a):\n    while a:\n        pass\n    else:\n        helper()\n")
+        res, _ = run(r, base)
+        expect("moving helper() from while-body to while-else escalates (HIGH-5 r3)",
+               res["escalate"] is True)
+
+        # 5s. Moving a `helper()` call from a `try` BODY to its FINALLY ESCALATES
+        #     (body↔finalbody — the field iter_child_nodes flattened away).
+        r = new_repo("py-cf-try-finally-move")
+        write(r, "mod.py",
+              "def foo(a):\n    try:\n        helper()\n    finally:\n        pass\n")
+        git(r, ["add", "-A"]); git(r, ["commit", "-qm", "base"])
+        base = head(r)
+        write(r, "mod.py",
+              "def foo(a):\n    try:\n        pass\n    finally:\n        helper()\n")
+        res, _ = run(r, base)
+        expect("moving helper() from try-body to finally escalates (HIGH-5 r3)",
+               res["escalate"] is True)
+        expect("try-body->finally move is control-flow reason",
+               any("control-flow structure changed" in x for x in res["reasons"]))
+
+        # 5t. Moving a `helper()` call from a `try` BODY into its EXCEPT handler
+        #     ESCALATES (body → handlers[0].body).
+        r = new_repo("py-cf-try-except-move")
+        write(r, "mod.py",
+              "def foo(a):\n    try:\n        helper()\n    except Exception:\n        pass\n")
+        git(r, ["add", "-A"]); git(r, ["commit", "-qm", "base"])
+        base = head(r)
+        write(r, "mod.py",
+              "def foo(a):\n    try:\n        pass\n    except Exception:\n        helper()\n")
+        res, _ = run(r, base)
+        expect("moving helper() from try-body to except-handler escalates (HIGH-5 r3)",
+               res["escalate"] is True)
+
+        # 5u. GUARD: a pure body-internal trivia edit (docstring) WITHIN one branch,
+        #     with NO cross-branch move, still does NOT escalate — proves the (field,
+        #     index) tagging did not turn benign in-branch edits into escalations.
+        r = new_repo("py-cf-branch-trivia")
+        write(r, "mod.py",
+              'def foo(a):\n    if a:\n        """old"""\n        helper()\n    else:\n        pass\n')
+        git(r, ["add", "-A"]); git(r, ["commit", "-qm", "base"])
+        base = head(r)
+        write(r, "mod.py",
+              'def foo(a):\n    if a:\n        """new text"""\n        helper()\n    else:\n        pass\n')
+        res, _ = run(r, base)
+        expect("in-branch docstring edit (no move) does NOT escalate (HIGH-5 r3 guard)",
+               res["escalate"] is False)
 
         # 6. Clean tiny CSS diff does NOT escalate.
         r = new_repo("css-clean")
