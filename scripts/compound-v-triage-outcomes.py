@@ -328,7 +328,129 @@ def _terminal_actual(slot):
     return a
 
 
-def _cohorts(stream_path=None):
+# ---------------------------------------------------------------------------- #
+# Git-derived terminal verification (HIGH-9). A terminal ``actual`` is COUNTED
+# (into precision / Tier 2) only when committed, git-derived run state backs it —
+# NEVER on a caller-provided ``approved``/``pass`` string alone. An unverifiable
+# terminal actual is treated exactly like a precision-IGNORED ``merge_pending`` one
+# (excluded from BOTH numerator and denominator, logged as no-terminal, never
+# fabricated into a success). The append itself stays strictly append-only (AC-3);
+# this verification happens at READ/COUNT time from the run dir / state.json.
+# ---------------------------------------------------------------------------- #
+_EXEC_RELPATH = os.path.join("docs", "superpowers", "execution")
+_RUN_STATE_BASENAME = "state.json"
+# The receipt path mirrors validate-manifest's _RECEIPT_SUBPATH (review/receipt.json).
+_RECEIPT_SUBPATH = os.path.join("review", "receipt.json")
+_MERGE_SHA_KEYS = ("merge_sha", "merged_sha", "merge_commit", "merged_commit")
+_PHASE_MERGED = "MERGED"
+_PHASE_ESCALATION = "ESCALATION_REQUIRED"
+
+
+def _resolve_exec_dir(stream_path=None, exec_dir=None, repo=None):
+    """Resolve the run-directory root (``docs/superpowers/execution``) that holds each
+    run's committed ``state.json``. Explicit ``exec_dir`` wins; else derive it two levels
+    up from the stream (the sibling of the stream's ``memory`` dir) so a stream and its
+    run dirs stay co-located; else off ``repo`` / repo-root. Real layout:
+    ``…/docs/superpowers/memory/triage-outcomes.jsonl`` → ``…/docs/superpowers/execution``."""
+    if exec_dir is not None:
+        return exec_dir
+    if stream_path:
+        sp = os.path.abspath(stream_path)
+        return os.path.join(os.path.dirname(os.path.dirname(sp)), "execution")
+    base = repo if repo is not None else _repo_root()
+    return os.path.join(base, _EXEC_RELPATH)
+
+
+def _read_run_state(exec_dir, run_id):
+    """Read the run's committed ``state.json`` (git-derived truth), or None. A missing /
+    unreadable / non-object state fails closed (None)."""
+    if not exec_dir or not run_id:
+        return None
+    path = os.path.join(exec_dir, run_id, _RUN_STATE_BASENAME)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            obj = json.load(fh)
+    except (ValueError, OSError):
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _merge_sha(state):
+    """A non-empty merge SHA recorded in ``state.json`` (any accepted alias), or None."""
+    for key in _MERGE_SHA_KEYS:
+        val = state.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return None
+
+
+def _read_receipt(exec_dir, run_id):
+    """Read the fast-path review receipt (``<run>/review/receipt.json``), or None."""
+    if not exec_dir or not run_id:
+        return None
+    path = os.path.join(exec_dir, run_id, _RECEIPT_SUBPATH)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            obj = json.load(fh)
+    except (ValueError, OSError):
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _receipt_approved_and_bound(receipt, pre_eval_id, run_id):
+    """The fast-path review receipt exists, is ``approved``, and is BOUND to this
+    ``(pre_eval_id, run_id)`` — defends against replaying an unrelated/stale receipt."""
+    if not isinstance(receipt, dict):
+        return False
+    if str(receipt.get("verdict", "")).lower() != "approved":
+        return False
+    if str(receipt.get("run_id")) != str(run_id):
+        return False
+    if str(receipt.get("pre_eval_id")) != str(pre_eval_id):
+        return False
+    return True
+
+
+def _verify_terminal_actual(pre_eval_id, run_id, slot, actual, is_fastpath, exec_dir):
+    """Git-derived gate (HIGH-9): does committed run state back this terminal ``actual``?
+
+    Counted only when ALL hold (else fail-closed → excluded, like a ``merge_pending``):
+
+      * a matching ``bind`` event exists for the same ``(pre_eval_id, run_id)``;
+      * the run's committed ``state.json`` records the right terminal phase —
+        ``MERGED`` + a merge SHA for a merged outcome, or ``ESCALATION_REQUIRED`` +
+        an ``escalated_to`` child link for a fast-path parent that escalated;
+      * a non-escalated fast-path PARENT additionally carries an ``approved`` review
+        receipt bound to this ``(pre_eval_id, run_id)``.
+
+    Never trusts the model's self-reported ``approved``/``pass`` — the evidence is read
+    from the run dir / state.json (git-derived), so an injected terminal actual with no
+    committed run behind it can never be fabricated into a success.
+    """
+    if not isinstance(slot.get("bind"), dict):
+        return False
+    state = _read_run_state(exec_dir, run_id)
+    if state is None:
+        return False
+    phase = state.get("phase")
+    escalated = bool(actual.get("escalated"))
+    if is_fastpath and escalated:
+        return phase == _PHASE_ESCALATION and bool(state.get("escalated_to"))
+    if phase != _PHASE_MERGED:
+        return False
+    if not _merge_sha(state):
+        return False
+    if is_fastpath:
+        return _receipt_approved_and_bound(
+            _read_receipt(exec_dir, run_id), pre_eval_id, run_id)
+    return True
+
+
+def _cohorts(stream_path=None, exec_dir=None, repo=None):
     """Split reduced runs into the two cohorts, honoring Iron-Invariant #3.
 
     Returns:
@@ -339,22 +461,31 @@ def _cohorts(stream_path=None):
     A fast-path PARENT run: predicted.decision == FASTPATH_ELIGIBLE AND not
     escalation_child. Everything else (declined/missing predicted → fail-closed, or an
     escalation child) is full-pipeline (escalation evidence only).
+
+    ``terminal`` is now git-DERIVED (HIGH-9): a non-``merge_pending`` ``actual`` counts as
+    terminal ONLY when committed run state backs it (``_verify_terminal_actual``). An
+    unverifiable terminal actual is excluded (``actual`` set to None, ``terminal`` False)
+    — treated exactly like a precision-IGNORED ``merge_pending`` one, never a success.
     """
     state = _reduce_stream(stream_path)
     predicted = state["predicted"]
+    exec_dir = _resolve_exec_dir(stream_path, exec_dir, repo)
     fastpath = []
     fullpipeline = []
     for (pid, rid), slot in state["runs"].items():
         pred = predicted.get(pid)
         decision = pred.get("decision") if isinstance(pred, dict) else None
+        is_fastpath = decision == FASTPATH_DECISION and not _is_escalation_child(slot)
         term = _terminal_actual(slot)
+        verified = term is not None and _verify_terminal_actual(
+            pid, rid, slot, term, is_fastpath, exec_dir)
         entry = {
             "pre_eval_id": pid,
             "run_id": rid,
-            "actual": term,
-            "terminal": term is not None,
+            "actual": term if verified else None,
+            "terminal": verified,
         }
-        if decision == FASTPATH_DECISION and not _is_escalation_child(slot):
+        if is_fastpath:
             fastpath.append(entry)
         else:
             fullpipeline.append(entry)
@@ -362,9 +493,11 @@ def _cohorts(stream_path=None):
             "malformed": state["malformed"]}
 
 
-def precision_stats(stream_path=None, min_sample_count=None, repo=None):
+def precision_stats(stream_path=None, min_sample_count=None, repo=None, exec_dir=None):
     """Fast-path precision + escalation-rate, computed from the fast-path PARENT outcome
-    only (spec §6 / AC-12). Returns either::
+    only (spec §6 / AC-12), counting ONLY git-VERIFIED terminal actuals (HIGH-9 — an
+    injected ``approved`` with no committed run behind it is precision-ignored, never a
+    fabricated success). Returns either::
 
         {"precision": float, "escalation_rate": float, "n": int,
          "excluded_no_terminal_actual": int}
@@ -374,12 +507,13 @@ def precision_stats(stream_path=None, min_sample_count=None, repo=None):
         {"status": "insufficient", "n": int, "excluded_no_terminal_actual": int,
          "min_sample_count": int|None}
 
-    ``n`` = ``fastpath_runs_total`` (fast-path parents WITH a terminal actual). Parents
-    with no terminal actual (missing / merge_pending) are excluded from BOTH numerator and
-    denominator and reported in ``excluded_no_terminal_actual`` — never fabricated.
+    ``n`` = ``fastpath_runs_total`` (fast-path parents with a git-VERIFIED terminal actual).
+    Parents with no verified terminal actual (missing / merge_pending / evidence-unbacked
+    per HIGH-9) are excluded from BOTH numerator and denominator and reported in
+    ``excluded_no_terminal_actual`` — never fabricated.
     ``insufficient`` when ``n == 0`` or (when a floor is given) ``n < min_sample_count``.
     """
-    cohorts = _cohorts(stream_path)
+    cohorts = _cohorts(stream_path, exec_dir=exec_dir, repo=repo)
     fastpath = cohorts["fastpath"]
     counted = [e for e in fastpath if e["terminal"]]
     excluded = len(fastpath) - len(counted)
@@ -406,7 +540,7 @@ def precision_stats(stream_path=None, min_sample_count=None, repo=None):
     }
 
 
-def tier2_lookup(min_sample_count=None, stream_path=None, repo=None):
+def tier2_lookup(min_sample_count=None, stream_path=None, repo=None, exec_dir=None):
     """Cohort-separated Tier-2 corroboration signal (Iron-Invariant #3). Returns either::
 
         {"health": "healthy"|"unhealthy", "n": int}     # n = fast-path cohort size
@@ -419,24 +553,33 @@ def tier2_lookup(min_sample_count=None, stream_path=None, repo=None):
 
     below the floor. A full-pipeline / escalation-child outcome NEVER contributes to
     ``health`` — it only accrues as ``escalation_evidence_n``. At launch every outcome is
-    full-pipeline, so this stays ``insufficient`` (escalation-only) by construction.
+    full-pipeline, so this stays ``insufficient`` (escalation-only) by construction. Only
+    git-VERIFIED terminal outcomes count on either side (HIGH-9).
 
     ``health`` is conservative: ``healthy`` requires the sampled fast-path cohort to be
     clean (zero escalations AND every review passed); any bad outcome → ``unhealthy``
     (raises ceremony). This is evidence, never a routing input.
+
+    MED-11: an EMPTY fast-path cohort (``n_fastpath == 0``) is NEVER ``healthy`` — empty
+    history is escalation-only (the launch invariant), independent of the floor. A
+    ``min_sample_count < 1`` is clamped to at least 1 (defensive — ``all([])`` is True and
+    would otherwise read an empty stream as calibrated-healthy).
     """
     floor = min_sample_count
     if floor is None:
         floor = resolve_min_sample_count(repo=repo)
     floor = int(floor)
+    if floor < 1:
+        floor = 1  # MED-11: clamp min_sample_count >= 1 (defensive; config side also clamps)
 
-    cohorts = _cohorts(stream_path)
+    cohorts = _cohorts(stream_path, exec_dir=exec_dir, repo=repo)
     fastpath_counted = [e for e in cohorts["fastpath"] if e["terminal"]]
     fullpipeline_counted = [e for e in cohorts["fullpipeline"] if e["terminal"]]
     n_fastpath = len(fastpath_counted)
     escalation_evidence_n = len(fullpipeline_counted)
 
-    if n_fastpath < floor:
+    # MED-11: fail closed on an empty cohort BEFORE any all()-over-empty can read healthy.
+    if n_fastpath == 0 or n_fastpath < floor:
         return {"status": "insufficient", "n": n_fastpath,
                 "escalation_evidence_n": escalation_evidence_n,
                 "min_sample_count": floor}
@@ -504,6 +647,8 @@ def main(argv):
         q.add_argument("--repo")
         q.add_argument("--min-sample", type=int)
         q.add_argument("--stream")
+        q.add_argument("--exec-dir",
+                       help="run-directory root (default: derived from stream/repo)")
 
     args = parser.parse_args(argv[1:])
     if not args.cmd:
@@ -535,11 +680,13 @@ def main(argv):
         if args.cmd == "precision":
             print(json.dumps(precision_stats(stream_path=args.stream,
                                               min_sample_count=args.min_sample,
-                                              repo=args.repo), indent=2))
+                                              repo=args.repo,
+                                              exec_dir=args.exec_dir), indent=2))
             return 0
         if args.cmd == "tier2":
             print(json.dumps(tier2_lookup(min_sample_count=args.min_sample,
-                                          stream_path=args.stream, repo=args.repo),
+                                          stream_path=args.stream, repo=args.repo,
+                                          exec_dir=args.exec_dir),
                              indent=2))
             return 0
     except ValueError as e:
@@ -561,8 +708,32 @@ def _selftest():
         if not cond:
             failures.append(name)
 
+    # A run dir at <td>/execution/<run-id>/ is what _resolve_exec_dir derives for EVERY
+    # stream below (two dirs up from the stream + "execution"), so a terminal actual only
+    # counts once we materialize the committed state.json (+ receipt) that backs it.
+    def mk_run(exec_dir, run_id, phase, pre_eval_id=None, merge_sha=None,
+               receipt=False, escalated_to=None):
+        rd = os.path.join(exec_dir, run_id)
+        os.makedirs(rd, exist_ok=True)
+        st = {"run_id": run_id, "phase": phase, "pre_eval_id": pre_eval_id,
+              "escalated_to": escalated_to}
+        if merge_sha:
+            st["merge_sha"] = merge_sha
+        with open(os.path.join(rd, _RUN_STATE_BASENAME), "w", encoding="utf-8") as fh:
+            json.dump(st, fh)
+        if receipt:
+            revdir = os.path.join(rd, "review")
+            os.makedirs(revdir, exist_ok=True)
+            rc = {"run_id": run_id, "pre_eval_id": pre_eval_id, "verdict": "approved",
+                  "reviewer_backend": "claude", "reviewer_model": "claude-opus-4-8"}
+            with open(os.path.join(revdir, "receipt.json"), "w", encoding="utf-8") as fh:
+                json.dump(rc, fh)
+
+    SHA40 = "a" * 40
+
     with tempfile.TemporaryDirectory() as td:
         stream = os.path.join(td, "memdir", STREAM_BASENAME)
+        exec_dir = os.path.join(td, "execution")  # == _resolve_exec_dir for every stream
 
         # --- THREE append events joined on pre_eval_id (never a mutated line) --------
         pid = "2026-07-11T181200Z-make-button-red-a1b2"
@@ -575,6 +746,9 @@ def _selftest():
         append_actual(pid, rid, escalated=False, review_result="approved",
                       test_result="pass", ts="2026-07-11T18:40:00Z", stream_path=stream,
                       diff_files=1, diff_lines=3, sensitive_hit=False)
+        # HIGH-9: back the terminal actual with committed run state + an approved receipt.
+        mk_run(exec_dir, rid, _PHASE_MERGED, pre_eval_id=pid, merge_sha=SHA40,
+               receipt=True)
         with open(stream, "r", encoding="utf-8") as fh:
             lines = [l for l in fh.read().splitlines() if l.strip()]
         expect("three separate appended lines", len(lines) == 3)
@@ -617,6 +791,7 @@ def _selftest():
         # A perfectly clean, non-escalated, review-passed FULL-PIPELINE outcome...
         append_actual(fpid, frid, escalated=False, review_result="approved",
                       test_result="pass", stream_path=stream2)
+        mk_run(exec_dir, frid, _PHASE_MERGED, pre_eval_id=fpid, merge_sha=SHA40)
         t2fp = tier2_lookup(min_sample_count=1, stream_path=stream2)
         expect("full-pipeline outcome does NOT create a healthy signal",
                t2fp.get("status") == "insufficient")
@@ -645,9 +820,21 @@ def _selftest():
             if merge_pending_only:
                 append_actual(ppid, prid, escalated=False, review_result=review,
                               merge_pending=True, stream_path=stream3)
+                # merge_pending is not terminal → no committed run backs it (excluded).
             else:
                 append_actual(ppid, prid, escalated=escalated, review_result=review,
                               test_result="pass", stream_path=stream3)
+                if escalated:
+                    # HIGH-9: an escalated parent is backed by ESCALATION_REQUIRED + child.
+                    mk_run(exec_dir, prid, _PHASE_ESCALATION, pre_eval_id=ppid,
+                           escalated_to=prid + "-child")
+                else:
+                    # HIGH-9: a merged parent is backed by MERGED + sha + approved receipt.
+                    # (The receipt proves the run genuinely merged; precision's numerator
+                    # still reads the stream's self-reported review_result — so P4's
+                    # changes_requested stays denominator-only, not a numerator hit.)
+                    mk_run(exec_dir, prid, _PHASE_MERGED, pre_eval_id=ppid,
+                           merge_sha=SHA40, receipt=True)
             return ppid, prid
 
         fastpath_run("P1", False, "approved")
@@ -696,6 +883,9 @@ def _selftest():
         bind_run(did, drid, stream_path=stream4)                 # out-of-order bind
         append_actual(did, drid, escalated=True, review_result="approved",
                       stream_path=stream4)                       # corrected -> LAST wins
+        # HIGH-9: the winning terminal is escalated → back it with escalation state.
+        mk_run(exec_dir, drid, _PHASE_ESCALATION, pre_eval_id=did,
+               escalated_to=drid + "-child")
         redu = _reduce_stream(stream4)
         expect("out-of-order bind still joins the run", (did, drid) in redu["runs"])
         expect("last-writer-wins: latest actual (escalated:true) wins",
@@ -723,6 +913,8 @@ def _selftest():
                and pmp["excluded_no_terminal_actual"] == 1)
         append_actual(mpid, mrid, escalated=False, review_result="approved",
                       test_result="pass", stream_path=stream5)   # terminal AFTER merge
+        mk_run(exec_dir, mrid, _PHASE_MERGED, pre_eval_id=mpid, merge_sha=SHA40,
+               receipt=True)                                     # HIGH-9: back the merge
         pmp2 = precision_stats(stream_path=stream5)
         expect("terminal actual after merge is counted (1/1)",
                pmp2["n"] == 1 and abs(pmp2["precision"] - 1.0) < 1e-9)
@@ -735,6 +927,8 @@ def _selftest():
         bind_run("PID-B", "RUN-B", stream_path=stream6)
         append_actual("PID-B", "RUN-B", escalated=False, review_result="approved",
                       test_result="pass", stream_path=stream6)
+        mk_run(exec_dir, "RUN-B", _PHASE_MERGED, pre_eval_id="PID-B", merge_sha=SHA40,
+               receipt=True)                                     # HIGH-9: back RUN-B
         pmiss = precision_stats(stream_path=stream6)
         expect("bound-but-no-actual parent excluded from denominator",
                pmiss["n"] == 1 and pmiss["excluded_no_terminal_actual"] == 1)
@@ -745,6 +939,8 @@ def _selftest():
         bind_run("PID-G", "RUN-G", stream_path=stream7)
         append_actual("PID-G", "RUN-G", escalated=False, review_result="approved",
                       test_result="pass", stream_path=stream7)
+        mk_run(exec_dir, "RUN-G", _PHASE_MERGED, pre_eval_id="PID-G", merge_sha=SHA40,
+               receipt=True)                                     # HIGH-9: back RUN-G
         with open(stream7, "a", encoding="utf-8") as fh:
             fh.write("this is not json\n")
             fh.write('{"event":"predicted"}\n')       # missing pre_eval_id
@@ -771,6 +967,100 @@ def _selftest():
         # === resolve_min_sample_count reads the shared config (default 5) ============
         expect("min_sample default resolves to 5 for an un-onboarded repo",
                resolve_min_sample_count(repo=td) == 5)
+
+        # ==================================================================== #
+        # HIGH-9 — a terminal actual is counted only when git-derived run state #
+        # backs it; an injected approved/pass string is NEVER a fabricated hit. #
+        # ==================================================================== #
+
+        # H9-a: terminal actual with NO matching bind → precision-ignored (no bind slot).
+        s_nobind = os.path.join(td, "h9-nobind", STREAM_BASENAME)
+        append_predicted("PID-NB", decision=FASTPATH_DECISION, stream_path=s_nobind)
+        append_actual("PID-NB", "RUN-NB", escalated=False, review_result="approved",
+                      test_result="pass", stream_path=s_nobind)   # actual, but no bind
+        # (even a MERGED run dir must not rescue it — the missing bind fails closed)
+        mk_run(exec_dir, "RUN-NB", _PHASE_MERGED, pre_eval_id="PID-NB", merge_sha=SHA40,
+               receipt=True)
+        p_nb = precision_stats(stream_path=s_nobind)
+        expect("terminal actual with no matching bind is NOT a success (precision-ignored)",
+               p_nb.get("status") == "insufficient" and p_nb["n"] == 0
+               and p_nb["excluded_no_terminal_actual"] == 1)
+
+        # H9-b: an injected approved with NO merge evidence (bind present, no state.json)
+        #       → does not raise precision (stays insufficient, never a fabricated hit).
+        s_noev = os.path.join(td, "h9-noev", STREAM_BASENAME)
+        append_predicted("PID-NE", decision=FASTPATH_DECISION, stream_path=s_noev)
+        bind_run("PID-NE", "RUN-NE", stream_path=s_noev)
+        append_actual("PID-NE", "RUN-NE", escalated=False, review_result="approved",
+                      test_result="pass", stream_path=s_noev)     # injected "success"
+        # deliberately NO run dir / state.json for RUN-NE
+        p_ne = precision_stats(stream_path=s_noev)
+        expect("injected approved with no merge evidence does not raise precision",
+               p_ne.get("status") == "insufficient" and p_ne["n"] == 0
+               and p_ne["excluded_no_terminal_actual"] == 1)
+        t2_ne = tier2_lookup(min_sample_count=1, stream_path=s_noev)
+        expect("injected approved with no merge evidence never reads healthy",
+               t2_ne.get("status") == "insufficient" and t2_ne["n"] == 0)
+
+        # H9-c: MERGED state but WRONG/absent evidence still fails closed:
+        #   - a merged fast-path parent with no receipt → not counted
+        #   - a merged fast-path parent with a receipt bound to the WRONG run → not counted
+        s_rcpt = os.path.join(td, "h9-rcpt", STREAM_BASENAME)
+        append_predicted("PID-NR", decision=FASTPATH_DECISION, stream_path=s_rcpt)
+        bind_run("PID-NR", "RUN-NR", stream_path=s_rcpt)
+        append_actual("PID-NR", "RUN-NR", escalated=False, review_result="approved",
+                      test_result="pass", stream_path=s_rcpt)
+        mk_run(exec_dir, "RUN-NR", _PHASE_MERGED, pre_eval_id="PID-NR", merge_sha=SHA40,
+               receipt=False)                                     # MERGED but NO receipt
+        p_nr = precision_stats(stream_path=s_rcpt)
+        expect("merged fast-path parent with no review receipt is not counted",
+               p_nr.get("status") == "insufficient" and p_nr["n"] == 0)
+        # now add a receipt but bind it to a DIFFERENT run-id (replay defense)
+        _rev = os.path.join(exec_dir, "RUN-NR", "review")
+        os.makedirs(_rev, exist_ok=True)
+        with open(os.path.join(_rev, "receipt.json"), "w", encoding="utf-8") as fh:
+            json.dump({"run_id": "SOME-OTHER-RUN", "pre_eval_id": "PID-NR",
+                       "verdict": "approved", "reviewer_backend": "claude",
+                       "reviewer_model": "claude-opus-4-8"}, fh)
+        p_nr2 = precision_stats(stream_path=s_rcpt)
+        expect("merged fast-path parent with an unbound (wrong run_id) receipt is not counted",
+               p_nr2.get("status") == "insufficient" and p_nr2["n"] == 0)
+
+        # H9-d: a GENUINELY verified fast-path success (bind + MERGED + sha + bound approved
+        #       receipt) IS counted — precision 1/1, cohort healthy.
+        s_ok = os.path.join(td, "h9-ok", STREAM_BASENAME)
+        append_predicted("PID-OK", decision=FASTPATH_DECISION, stream_path=s_ok)
+        bind_run("PID-OK", "RUN-OK", stream_path=s_ok)
+        append_actual("PID-OK", "RUN-OK", escalated=False, review_result="approved",
+                      test_result="pass", stream_path=s_ok)
+        mk_run(exec_dir, "RUN-OK", _PHASE_MERGED, pre_eval_id="PID-OK", merge_sha=SHA40,
+               receipt=True)
+        p_ok = precision_stats(stream_path=s_ok)
+        expect("genuinely verified fast-path success is counted (1/1)",
+               p_ok["n"] == 1 and abs(p_ok["precision"] - 1.0) < 1e-9)
+        t2_ok = tier2_lookup(min_sample_count=1, stream_path=s_ok)
+        expect("genuinely verified fast-path success reads healthy",
+               t2_ok.get("health") == "healthy" and t2_ok["n"] == 1)
+
+        # ==================================================================== #
+        # MED-11 — an empty fast-path cohort is NEVER calibrated-healthy.       #
+        # ==================================================================== #
+
+        # M11-a: empty stream with --min-sample 0 → insufficient (never healthy n=0).
+        s_empty = os.path.join(td, "m11-empty", STREAM_BASENAME)
+        t2_e0 = tier2_lookup(min_sample_count=0, stream_path=s_empty)
+        expect("tier2 empty stream with --min-sample 0 is insufficient (never healthy n=0)",
+               t2_e0.get("status") == "insufficient" and t2_e0["n"] == 0
+               and t2_e0.get("health") is None)
+        expect("tier2 clamps min_sample_count < 1 to at least 1",
+               t2_e0["min_sample_count"] == 1)
+
+        # M11-b: a NON-empty cohort that is entirely full-pipeline (no fast-path parents),
+        #        with --min-sample 0, is still insufficient (n_fastpath == 0), never healthy.
+        t2_fp0 = tier2_lookup(min_sample_count=0, stream_path=stream2)
+        expect("all-full-pipeline cohort with --min-sample 0 is insufficient, not healthy",
+               t2_fp0.get("status") == "insufficient" and t2_fp0["n"] == 0
+               and t2_fp0["escalation_evidence_n"] == 1)
 
     if failures:
         print("\nSELFTEST FAILED: %d case(s)" % len(failures))
