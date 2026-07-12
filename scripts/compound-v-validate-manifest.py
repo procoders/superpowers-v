@@ -582,6 +582,16 @@ _RECEIPT_SCHEMA = os.path.join("schemas", "fastpath-review-receipt.schema.json")
 # receipt written by the producer content-addresses to the same value here.
 _MAX_DIFF_BYTES = 1_000_000
 _GIT_DIFF_TIMEOUT_S = 30
+# Bounded wall-clock cap for the HEAD-containment `git cat-file -e` probe, which is
+# routed through the shared process-group timeout supervisor (MED-8).
+_GIT_PROBE_TIMEOUT_S = 30
+# MED-8 sentinel: git IS present (the tree has a `.git`) but the HEAD-containment
+# probe could NOT complete — the supervisor/launch itself failed (None → mapped
+# here), the probe timed out (supervisor exit 124), or the git binary is missing
+# (exit 127). This is DISTINCT from ``None`` (no `.git` at all → the legitimate
+# no-git degrade the pre-dispatch fixtures rely on): a ``require_committed`` caller
+# must fail CLOSED on this sentinel rather than silently skip the containment check.
+_GIT_UNAVAILABLE = object()
 
 _SIBLING_CACHE = {}
 
@@ -652,27 +662,58 @@ def _is_git_tracked(repo_root, relpath):
         return None
 
 
-def _is_committed_at_head(repo_root, relpath):
-    """True/False whether ``relpath`` exists in the HEAD *commit* tree — committed,
-    not merely tracked-or-staged. ``git ls-files`` accepts a newly-STAGED path that
-    is absent from every commit; artifacts must live in a commit (execution
-    -manifest.md), so a staged-but-uncommitted artifact must fail. Returns ``None``
-    when git/HEAD is unavailable (no ``.git`` or the subprocess raised) so the
-    caller degrades — a fixture with no repo behaves exactly as before. A resolvable
-    repo whose HEAD lacks the path (staged-only, untracked, or a repo with no
-    commits) returns False. Uses ``git cat-file -e HEAD:<path>``."""
+def _git_via_supervisor(cwd, git_args, timeout_s=_GIT_PROBE_TIMEOUT_S):
+    """Run ``git -C cwd <git_args>`` UNDER the shared process-group timeout
+    supervisor (``compound-v-run-with-timeout.py``) with ``stdin </dev/null`` and a
+    bounded wall-clock cap — never a bare ``subprocess.run(timeout=...)`` on git (the
+    external-launch invariant the rest of the pipeline holds; MED-8). Returns the
+    git command's own exit code, or ``None`` when the supervisor itself cannot be
+    launched (script absent / OSError). A timeout surfaces as 124 and a missing git
+    binary as 127 (supervisor conventions); both are fail-closed at the caller."""
     import subprocess
 
-    if not os.path.exists(os.path.join(repo_root, ".git")):
+    sup = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "compound-v-run-with-timeout.py")
+    if not os.path.isfile(sup):
         return None
+    cmd = [sys.executable, sup, "--timeout", str(int(timeout_s)), "--grace", "1",
+           "--", "git", "-C", cwd] + list(git_args)
     try:
         r = subprocess.run(
-            ["git", "-C", repo_root, "cat-file", "-e", "HEAD:" + relpath],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        return r.returncode == 0
-    except Exception:  # noqa: BLE001 - git missing/broken -> degrade (skip)
+            cmd, stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return r.returncode
+    except Exception:  # noqa: BLE001 - cannot launch the supervisor -> fail-closed
         return None
+
+
+def _is_committed_at_head(repo_root, relpath):
+    """Whether ``relpath`` exists in the HEAD *commit* tree — committed, not merely
+    tracked-or-staged. ``git ls-files`` accepts a newly-STAGED path that is absent
+    from every commit; artifacts must live in a commit (execution-manifest.md), so a
+    staged-but-uncommitted artifact must fail. Returns:
+
+      * ``True``  — the path is present in a commit at HEAD;
+      * ``False`` — git ran cleanly and the object is absent from HEAD (staged-only,
+        untracked, or a repo with no commits — ``cat-file -e`` exits 1/128);
+      * ``None``  — there is NO ``.git`` at all (the legitimate no-git degrade the
+        pre-dispatch fixtures rely on — a fixture with no repo behaves as before);
+      * ``_GIT_UNAVAILABLE`` — a ``.git`` IS present but the probe could not COMPLETE
+        (supervisor/launch failure, timeout=124, or git-not-found=127). MED-8: a
+        ``require_committed`` caller fails CLOSED on this, never silently skips it.
+
+    The probe (``git cat-file -e HEAD:<path>``) runs through the process-group
+    timeout supervisor (``stdin </dev/null``, bounded), like every other git read."""
+    if not os.path.exists(os.path.join(repo_root, ".git")):
+        return None
+    rc = _git_via_supervisor(repo_root, ["cat-file", "-e", "HEAD:" + relpath])
+    if rc is None or rc in (124, 127):
+        # supervisor/launch failure, timeout, or missing git binary while a `.git`
+        # IS present -> the probe could not complete -> fail closed (MED-8).
+        return _GIT_UNAVAILABLE
+    if rc == 0:
+        return True
+    return False  # git ran; object absent from HEAD (exit 1/128) -> not committed
 
 
 def _containment_problems(label, relpath, repo_root, must_exist=True,
@@ -733,6 +774,19 @@ def _containment_problems(label, relpath, repo_root, must_exist=True,
                     "%s '%s' is not present in a commit at HEAD — a staged-only "
                     "or uncommitted artifact is not durable; referenced artifacts "
                     "must be committed (fail-closed)" % (label, relpath))
+            elif committed is _GIT_UNAVAILABLE:
+                # MED-8: a `.git` IS present but the HEAD probe errored / timed out
+                # / git is unavailable. The prior code returned None here and the
+                # caller only treated literal False as a violation, so a git error
+                # PASSED containment. A committed-artifact requirement must fail
+                # CLOSED on an unverifiable probe — never a silent skip.
+                problems.append(
+                    "%s '%s' HEAD-commit containment could not be verified — the "
+                    "git probe errored, timed out, or git is unavailable while a "
+                    "'.git' is present; a committed-artifact requirement fails "
+                    "closed on an unverifiable probe (MED-8)" % (label, relpath))
+            # committed is True -> present at HEAD (ok); committed is None -> no
+            # `.git` at all -> the legitimate no-git degrade (skip).
     return problems
 
 
@@ -920,25 +974,12 @@ def _recompute_diff_digest(diff_root, baseline, tax):
     return tax.taxonomy_digest_bytes(data), None
 
 
-def _validate_receipt(receipt_full, receipt_rel, manifest, fp, expected_model,
-                      repo_root, manifest_bytes, sole_job_id, diff_root=None):
-    """post-review: require + FULLY verify the dispatcher-written invocation
-    receipt. Per CR5-6 the receipt MUST bind to and be verified against: run_id,
-    pre_eval_id, the manifest digest, the immutable pre-launch baseline SHA, the
-    FINAL diff digest, the reviewer backend/model (⇒ Claude Opus), attempt id,
-    timestamp, and a normalized verdict of 'approved'. A stale receipt (wrong
-    manifest / baseline / diff) or a non-approved-or-absent verdict fails
-    closed. Every binding value is recomputed here — never trusted from the
-    receipt itself."""
-    if not os.path.isfile(receipt_full):
-        return ["fast_path --mode post-review requires a review receipt at '%s', "
-                "none found (fail-closed)" % receipt_rel]
-    try:
-        with open(receipt_full, "r", encoding="utf-8") as fh:
-            receipt = json.load(fh)
-    except Exception as e:  # noqa: BLE001
-        return ["fast_path review receipt '%s' is unreadable or not JSON (%s)"
-                % (receipt_rel, e)]
+def _sealed_receipt_problems(receipt, pre_eval_id, run_id):
+    """The SEALED-receipt verification problem list (empty ⇒ verified). This is the
+    portion of the fast-path review receipt that is self-contained to the receipt
+    object plus the two binding ids — no repo / diff / manifest context. Backs
+    ``verify_sealed_receipt``; kept as a list so ``_validate_receipt`` can preserve
+    the exact per-check messages its regression suite asserts on."""
     problems = []
     schema = _load_receipt_schema()
     if schema is not None:
@@ -948,26 +989,20 @@ def _validate_receipt(receipt_full, receipt_rel, manifest, fp, expected_model,
     tax = _sibling("compound-v-taxonomy.py")
 
     # --- identity binding: run_id + pre_eval_id ---
-    if str(receipt.get("run_id")) != str(manifest.get("run_id")):
-        problems.append("review receipt run_id '%s' != manifest run_id '%s'"
-                        % (receipt.get("run_id"), manifest.get("run_id")))
-    if str(receipt.get("pre_eval_id")) != str(fp.get("pre_eval_id")):
-        problems.append("review receipt pre_eval_id '%s' != manifest "
-                        "fast_path.pre_eval_id '%s'"
-                        % (receipt.get("pre_eval_id"), fp.get("pre_eval_id")))
+    if str(receipt.get("run_id")) != str(run_id):
+        problems.append("review receipt run_id '%s' != expected run_id '%s'"
+                        % (receipt.get("run_id"), run_id))
+    if str(receipt.get("pre_eval_id")) != str(pre_eval_id):
+        problems.append("review receipt pre_eval_id '%s' != expected pre_eval_id "
+                        "'%s'" % (receipt.get("pre_eval_id"), pre_eval_id))
 
     # --- reviewer must resolve to Claude Opus (CR5-5) ---
     if str(receipt.get("reviewer_backend", "")).lower() != "claude":
         problems.append("review receipt reviewer_backend '%s' invalid — must be "
                         "claude (CR5-5)" % receipt.get("reviewer_backend"))
-    rmodel = receipt.get("reviewer_model")
-    if not _is_claude_opus(rmodel):
+    if not _is_claude_opus(receipt.get("reviewer_model")):
         problems.append("review receipt reviewer_model '%s' is not Claude Opus "
-                        "(CR5-5)" % rmodel)
-    if (expected_model is not None and rmodel is not None
-            and str(rmodel) != str(expected_model)):
-        problems.append("review receipt reviewer_model '%s' does not name the "
-                        "resolved review model '%s'" % (rmodel, expected_model))
+                        "(CR5-5)" % receipt.get("reviewer_model"))
 
     # --- verdict MUST be an explicit, normalized 'approved' (CR5-6) ---
     verdict = receipt.get("verdict")
@@ -992,6 +1027,72 @@ def _validate_receipt(receipt_full, receipt_rel, manifest, fp, expected_model,
         except Exception as e:  # noqa: BLE001
             problems.append("review receipt self-digest cannot be recomputed "
                             "(%s) — fail-closed" % e)
+    return problems
+
+
+def verify_sealed_receipt(receipt, pre_eval_id, run_id):
+    """Reusable sealed-receipt verification — the SINGLE authority for the receipt
+    checks that need no repo/diff/manifest context. Verifies, in order:
+
+      * schema shape (via the bundled fastpath-review-receipt schema, when present);
+      * the REQUIRED self-integrity digest matches the SHARED canonical-JSON
+        primitive ``compound-v-taxonomy.record_digest(receipt, exclude_field=
+        "digest")`` — the same primitive the producer seals the receipt with;
+      * ``verdict``, normalized, is exactly ``'approved'``;
+      * ``run_id`` and ``pre_eval_id`` bind to the supplied ids;
+      * ``reviewer_backend`` is ``'claude'`` AND ``reviewer_model`` is Claude Opus.
+
+    Returns ``(ok: bool, reason: str)`` — ``reason`` is empty on success, else the
+    ``'; '``-joined list of every failing check. Fail-closed: a non-dict receipt, an
+    unavailable shared digest primitive, or a missing self-digest all return False.
+
+    ``compound-v-triage-outcomes.py`` imports this by path so its precision gate
+    applies the SAME verification as the post-review validator, instead of a weaker
+    parallel ``verdict``/``run_id``/``pre_eval_id``-only check. The post-review path
+    (``_validate_receipt``) also calls this, then adds the repo-context bindings
+    (manifest digest, baseline, final diff, worktree) it alone can recompute."""
+    problems = _sealed_receipt_problems(receipt, pre_eval_id, run_id)
+    return (len(problems) == 0, "; ".join(problems))
+
+
+def _validate_receipt(receipt_full, receipt_rel, manifest, fp, expected_model,
+                      repo_root, manifest_bytes, sole_job_id, diff_root=None):
+    """post-review: require + FULLY verify the dispatcher-written invocation
+    receipt. Per CR5-6 the receipt MUST bind to and be verified against: run_id,
+    pre_eval_id, the manifest digest, the immutable pre-launch baseline SHA, the
+    FINAL diff digest, the reviewer backend/model (⇒ Claude Opus), attempt id,
+    timestamp, and a normalized verdict of 'approved'. A stale receipt (wrong
+    manifest / baseline / diff) or a non-approved-or-absent verdict fails
+    closed. Every binding value is recomputed here — never trusted from the
+    receipt itself."""
+    if not os.path.isfile(receipt_full):
+        return ["fast_path --mode post-review requires a review receipt at '%s', "
+                "none found (fail-closed)" % receipt_rel]
+    try:
+        with open(receipt_full, "r", encoding="utf-8") as fh:
+            receipt = json.load(fh)
+    except Exception as e:  # noqa: BLE001
+        return ["fast_path review receipt '%s' is unreadable or not JSON (%s)"
+                % (receipt_rel, e)]
+    problems = []
+    # --- sealed-receipt checks (schema shape + self-digest + verdict + id binding +
+    #     reviewer-opus) via the SHARED entrypoint that triage also imports, so the
+    #     two paths can never diverge. Repo-context bindings (expected_model,
+    #     manifest digest, baseline, final diff, worktree) are added below. ---
+    ok, reason = verify_sealed_receipt(
+        receipt, fp.get("pre_eval_id"), manifest.get("run_id"))
+    if not ok:
+        problems.append(reason)
+    if not isinstance(receipt, dict):
+        return problems
+    tax = _sibling("compound-v-taxonomy.py")
+    rmodel = receipt.get("reviewer_model")
+    if (expected_model is not None and rmodel is not None
+            and str(rmodel) != str(expected_model)):
+        problems.append("review receipt reviewer_model '%s' does not name the "
+                        "resolved review model '%s'" % (rmodel, expected_model))
+
+    # (verdict + reviewer-opus + self-digest are verified in verify_sealed_receipt.)
 
     # --- manifest_digest: REQUIRED + recomputed over the manifest under review ---
     r_mdig = receipt.get("manifest_digest")
@@ -1025,6 +1126,34 @@ def _validate_receipt(receipt_full, receipt_rel, manifest, fp, expected_model,
                         "baseline '%s' — receipt bound to a different baseline "
                         "(fail-closed, CR5-6)" % (r_base, baseline))
 
+    # --- MED-6: the receipt's OWN worktree binding MUST name the SAME checkout the
+    #     validator recomputes the final diff in (``diff_root``, falling back to
+    #     ``repo_root``). The prior code recomputed in that root but never checked
+    #     the receipt's declared ``worktree`` against it, so a receipt sealed against
+    #     a DIFFERENT checkout — whose diff hashes differently — was never caught by
+    #     this binding. Compared as normalized realpaths (symlinks/`.`/`..` resolved);
+    #     a relative worktree is anchored to ``repo_root``. The recompute below still
+    #     runs against the trusted CLI root regardless, so a mismatch is an ADDED
+    #     violation, never a way to skip the diff check. ---
+    eff_diff_root = diff_root or repo_root
+    r_wt = receipt.get("worktree")
+    if not isinstance(r_wt, str) or not r_wt.strip():
+        problems.append("review receipt is missing its 'worktree' binding — the "
+                        "diff-root the producer hashed final_diff_digest against is "
+                        "unrecorded, so the receipt cannot be tied to the checkout "
+                        "under verification (fail-closed, MED-6)")
+    elif eff_diff_root is None:
+        problems.append("review receipt 'worktree' binding cannot be verified — no "
+                        "diff-root is available to compare it against (fail-closed, "
+                        "MED-6)")
+    else:
+        wt_abs = r_wt if os.path.isabs(r_wt) else os.path.join(repo_root, r_wt)
+        if os.path.realpath(wt_abs) != os.path.realpath(eff_diff_root):
+            problems.append("review receipt 'worktree' '%s' does not resolve to the "
+                            "diff-root the final diff is recomputed in ('%s') — the "
+                            "receipt was sealed against a different checkout "
+                            "(fail-closed, MED-6)" % (r_wt, eff_diff_root))
+
     r_ddig = receipt.get("final_diff_digest")
     if not isinstance(r_ddig, str) or not r_ddig:
         problems.append("review receipt is missing final_diff_digest (fail-closed, "
@@ -1034,7 +1163,7 @@ def _validate_receipt(receipt_full, receipt_rel, manifest, fp, expected_model,
         # linked worktree), falling back to repo_root only when no diff_root was
         # supplied. An unavailable worktree makes the git diff fail → fail-closed.
         cur_ddig, derr = _recompute_diff_digest(
-            diff_root or repo_root, str(baseline), tax)
+            eff_diff_root, str(baseline), tax)
         if cur_ddig is None:
             problems.append("cannot recompute the final diff against baseline '%s' "
                             "(%s) — fail-closed" % (baseline, derr))
@@ -2483,6 +2612,10 @@ def _fp_write_receipt(d, tax_mod, info, drop=None, bad_digest=False, **over):
         "final_diff_digest": info["final_diff_digest"],
         "reviewer_backend": "claude",
         "reviewer_model": "opus",
+        # MED-6: bind to the diff-root by default (the repo root ``d`` — the diff-root
+        # when no separate worktree is passed). The CRIT-1 worktree topology overrides
+        # this via ``worktree=<wt>`` so it matches the linked worktree diff_root.
+        "worktree": d,
         "attempt_id": 1,
         "ts": "2026-07-12T10:20:00Z",
         "verdict": "approved",
@@ -2760,7 +2893,9 @@ def _selftest_fastpath(expect):
         txt = _fp_build(d, tax_mod)
         wt_info, wt = _fp_git_worktree_and_state(d, tax_mod, txt)
         if wt_info is not None:
-            _fp_write_receipt(d, tax_mod, wt_info)
+            # MED-6: the receipt's worktree binding must name the linked worktree
+            # (the diff-root the producer hashed) — not the main repo root.
+            _fp_write_receipt(d, tax_mod, wt_info, worktree=wt)
             # (i) with --worktree the receipt's worktree-hashed diff recomputes to
             #     the same digest → PASS (the main tree is clean, so this only
             #     passes because the recompute honored diff_root).
@@ -2864,6 +2999,128 @@ def _selftest_fastpath(expect):
     else:
         expect("fastpath MED-9: commit-containment suite (git unavailable - "
                "skipped)", True)
+
+    # ---------------------------------------------------------------------- #
+    # MED-6: the receipt's own ``worktree`` binding MUST equal the diff-root the
+    # validator recomputes the final diff in. A missing binding, or one that
+    # resolves to a DIFFERENT checkout, fails closed. (The matching-worktree
+    # PASS is already proven by the CRIT-1 (i) case above with worktree=wt.)
+    # ---------------------------------------------------------------------- #
+    if _shutil.which("git") is not None:
+        # (a) a receipt with NO worktree binding is rejected.
+        d = case("med6_missing_worktree")
+        txt = _fp_build(d, tax_mod)
+        info = _fp_git_and_state(d, tax_mod, txt)
+        if info is not None:
+            _fp_write_receipt(d, tax_mod, info, drop=["worktree"])
+            res = validate_text(txt, mode="post-review", repo_root=d)
+            expect("fastpath MED-6: receipt without a 'worktree' binding rejected",
+                   any("worktree" in p.lower() and "MED-6" in p for p in res))
+        else:
+            expect("fastpath MED-6: missing-worktree suite (git init failed - "
+                   "skipped)", True)
+
+        # (b) a receipt whose worktree resolves to a DIFFERENT checkout than the
+        #     diff-root is rejected (a receipt sealed against another checkout).
+        d = case("med6_wrong_worktree")
+        txt = _fp_build(d, tax_mod)
+        info = _fp_git_and_state(d, tax_mod, txt)
+        if info is not None:
+            other = os.path.join(d, "some", "other", "checkout")
+            _fp_write_receipt(d, tax_mod, info, worktree=other)
+            res = validate_text(txt, mode="post-review", repo_root=d)
+            expect("fastpath MED-6: receipt worktree bound to a different checkout "
+                   "rejected",
+                   any("different checkout" in p and "MED-6" in p for p in res))
+        else:
+            expect("fastpath MED-6: wrong-worktree suite (git init failed - "
+                   "skipped)", True)
+
+        # (c) the correct binding (worktree == repo-root diff-root) still PASSES —
+        #     the new gate does not over-reject a genuine single-tree receipt.
+        d = case("med6_correct_worktree")
+        txt = _fp_build(d, tax_mod)
+        info = _fp_git_and_state(d, tax_mod, txt)
+        if info is not None:
+            _fp_write_receipt(d, tax_mod, info, worktree=d)
+            res = validate_text(txt, mode="post-review", repo_root=d)
+            expect("fastpath MED-6: correctly-bound worktree receipt passes (%r)"
+                   % res, res == [])
+        else:
+            expect("fastpath MED-6: correct-worktree suite (git init failed - "
+                   "skipped)", True)
+
+    # ---------------------------------------------------------------------- #
+    # MED-8: HEAD-commit containment fails CLOSED on a git error while a `.git`
+    # IS present (was a silent skip), but still DEGRADES when there is no `.git`
+    # at all (the legitimate no-git pre-dispatch path). The git-error condition
+    # is simulated deterministically by stubbing the module-level probe to its
+    # sentinels; the real probe is also exercised end-to-end.
+    # ---------------------------------------------------------------------- #
+    if _shutil.which("git") is not None:
+        import subprocess as _sp8
+        med8 = case("med8_headcheck")
+        _fp_write(med8, "docs/a.json", "{}")
+
+        def _g8(*a):
+            return _sp8.run(["git", "-C", med8] + list(a),
+                            stdout=_sp8.PIPE, stderr=_sp8.PIPE)
+
+        _ok8 = _g8("init", "-q").returncode == 0
+        for _kv in (("user.email", "s@e.com"), ("user.name", "cv"),
+                    ("commit.gpgsign", "false"), ("core.hooksPath", "/dev/null")):
+            _g8("config", *_kv)
+        _g8("add", "-A")
+        _ok8 = _ok8 and _g8("commit", "-q", "--no-verify", "-m", "b").returncode == 0
+
+        if _ok8:
+            g = globals()
+            saved = g["_is_committed_at_head"]
+            # (a) git-error sentinel while a `.git` is present -> fail closed.
+            g["_is_committed_at_head"] = lambda rr, rp: _GIT_UNAVAILABLE
+            try:
+                probs = _containment_problems(
+                    "artifact", "docs/a.json", med8,
+                    must_exist=True, require_committed=True)
+            finally:
+                g["_is_committed_at_head"] = saved
+            expect("fastpath MED-8: HEAD containment fails closed on a git error "
+                   "(not a silent skip)",
+                   any("could not be verified" in p and "MED-8" in p
+                       for p in probs))
+
+            # (b) the no-`.git` degrade sentinel (None) still SKIPS — the
+            #     legitimate no-git path must not be turned into a violation.
+            g["_is_committed_at_head"] = lambda rr, rp: None
+            try:
+                probs = _containment_problems(
+                    "artifact", "docs/a.json", med8,
+                    must_exist=True, require_committed=True)
+            finally:
+                g["_is_committed_at_head"] = saved
+            expect("fastpath MED-8: no-.git containment still degrades (skip, not "
+                   "a fail)",
+                   not any("could not be verified" in p
+                           or "not present in a commit" in p for p in probs))
+
+            # (c) the REAL probe (through the timeout supervisor) returns True for
+            #     a genuinely committed file.
+            expect("fastpath MED-8: real _is_committed_at_head True for a "
+                   "committed file",
+                   _is_committed_at_head(med8, "docs/a.json") is True)
+        else:
+            expect("fastpath MED-8: git-error containment suite (git init/commit "
+                   "failed - skipped)", True)
+    else:
+        expect("fastpath MED-8: git-error containment suite (git unavailable - "
+               "skipped)", True)
+
+    # (d) the REAL probe returns None (degrade) when there is no `.git` at all —
+    #     independent of git availability, since it never shells out.
+    nogit = case("med8_nogit")
+    _fp_write(nogit, "docs/a.json", "{}")
+    expect("fastpath MED-8: real _is_committed_at_head None when no .git (legit "
+           "degrade)", _is_committed_at_head(nogit, "docs/a.json") is None)
 
 
 def _selftest():
