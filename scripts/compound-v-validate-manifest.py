@@ -577,6 +577,11 @@ FASTPATH_MODES = ("pre-dispatch", "post-review")
 _EXEC_DIR = os.path.join("docs", "superpowers", "execution")
 _RECEIPT_SUBPATH = os.path.join("review", "receipt.json")
 _RECEIPT_SCHEMA = os.path.join("schemas", "fastpath-review-receipt.schema.json")
+# Bounded `git diff` capture for the anti-stale-replay diff-digest recompute —
+# MUST match the producer's cap (compound-v-fastpath-run.py MAX_DIFF_BYTES) so a
+# receipt written by the producer content-addresses to the same value here.
+_MAX_DIFF_BYTES = 1_000_000
+_GIT_DIFF_TIMEOUT_S = 30
 
 _SIBLING_CACHE = {}
 
@@ -807,8 +812,76 @@ def _schema_lite(obj, schema, label):
     return problems
 
 
-def _validate_receipt(receipt_full, receipt_rel, manifest, fp, expected_model):
-    """post-review: require + verify the dispatcher-written invocation receipt."""
+def _read_run_baseline(repo_root, run_id, sole_job_id):
+    """Read the IMMUTABLE pre-launch baseline SHA from the run's state.json (the
+    scope gate + F2 reclassifier ran against it; never HEAD, CR5-3). The baseline
+    is the trust anchor — the receipt's baseline_sha is checked against THIS, and
+    the diff-digest is recomputed against THIS, never against a receipt-supplied
+    value. Returns (baseline_str, None) or (None, err) — fail-closed on absence."""
+    if repo_root is None or run_id in (None, ""):
+        return None, "no repo root or run_id to locate the run state"
+    state_full = os.path.join(repo_root, _EXEC_DIR, str(run_id), "state.json")
+    try:
+        with open(state_full, "r", encoding="utf-8") as fh:
+            state = json.load(fh)
+    except Exception as e:  # noqa: BLE001 - any read/parse failure -> fail-closed
+        return None, "run state.json unreadable (%s)" % e
+    jobs = state.get("jobs") if isinstance(state, dict) else None
+    if not isinstance(jobs, dict) or not jobs:
+        return None, "run state.json has no 'jobs' map"
+    entry = None
+    if sole_job_id is not None and sole_job_id in jobs:
+        entry = jobs[sole_job_id]
+    elif len(jobs) == 1:
+        entry = next(iter(jobs.values()))
+    if not isinstance(entry, dict):
+        return None, "run state.json has no entry for the fast-path job"
+    base = entry.get("baseline")
+    if not isinstance(base, str) or not base.strip():
+        return None, "the fast-path job has no recorded immutable baseline SHA"
+    return base.strip(), None
+
+
+def _recompute_diff_digest(repo_root, baseline, tax):
+    """Recompute the FINAL diff digest — 'sha256:'+sha256(git diff --no-color
+    <baseline>) over the current worktree — the anti-stale-replay comparison
+    value (same command + convention as the producer). Returns (digest, None) or
+    (None, err). Fail-closed on a git error, a non-object-id baseline, or a
+    truncated (over-cap) capture."""
+    import subprocess
+
+    if repo_root is None:
+        return None, "no repo root"
+    if tax is None:
+        return None, "shared digest primitive unavailable"
+    if not re.fullmatch(r"[0-9a-fA-F]{7,64}", str(baseline or "")):
+        return None, "baseline '%s' is not a git object id" % baseline
+    try:
+        p = subprocess.run(
+            ["git", "-C", repo_root, "diff", "--no-color", str(baseline)],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=_GIT_DIFF_TIMEOUT_S)
+    except Exception as e:  # noqa: BLE001 - git missing/broken/timeout -> fail-closed
+        return None, "git diff failed (%s)" % e
+    if p.returncode != 0:
+        return None, ("git diff against baseline '%s' exited %d"
+                      % (baseline, p.returncode))
+    data = p.stdout or b""
+    if len(data) >= _MAX_DIFF_BYTES:
+        return None, "diff exceeds the bounded capture — ambiguous, fail-closed"
+    return tax.taxonomy_digest_bytes(data), None
+
+
+def _validate_receipt(receipt_full, receipt_rel, manifest, fp, expected_model,
+                      repo_root, manifest_bytes, sole_job_id):
+    """post-review: require + FULLY verify the dispatcher-written invocation
+    receipt. Per CR5-6 the receipt MUST bind to and be verified against: run_id,
+    pre_eval_id, the manifest digest, the immutable pre-launch baseline SHA, the
+    FINAL diff digest, the reviewer backend/model (⇒ Claude Opus), attempt id,
+    timestamp, and a normalized verdict of 'approved'. A stale receipt (wrong
+    manifest / baseline / diff) or a non-approved-or-absent verdict fails
+    closed. Every binding value is recomputed here — never trusted from the
+    receipt itself."""
     if not os.path.isfile(receipt_full):
         return ["fast_path --mode post-review requires a review receipt at '%s', "
                 "none found (fail-closed)" % receipt_rel]
@@ -824,6 +897,9 @@ def _validate_receipt(receipt_full, receipt_rel, manifest, fp, expected_model):
         problems.extend(_schema_lite(receipt, schema, "review receipt"))
     if not isinstance(receipt, dict):
         return problems
+    tax = _sibling("compound-v-taxonomy.py")
+
+    # --- identity binding: run_id + pre_eval_id ---
     if str(receipt.get("run_id")) != str(manifest.get("run_id")):
         problems.append("review receipt run_id '%s' != manifest run_id '%s'"
                         % (receipt.get("run_id"), manifest.get("run_id")))
@@ -831,6 +907,8 @@ def _validate_receipt(receipt_full, receipt_rel, manifest, fp, expected_model):
         problems.append("review receipt pre_eval_id '%s' != manifest "
                         "fast_path.pre_eval_id '%s'"
                         % (receipt.get("pre_eval_id"), fp.get("pre_eval_id")))
+
+    # --- reviewer must resolve to Claude Opus (CR5-5) ---
     if str(receipt.get("reviewer_backend", "")).lower() != "claude":
         problems.append("review receipt reviewer_backend '%s' invalid — must be "
                         "claude (CR5-5)" % receipt.get("reviewer_backend"))
@@ -842,18 +920,82 @@ def _validate_receipt(receipt_full, receipt_rel, manifest, fp, expected_model):
             and str(rmodel) != str(expected_model)):
         problems.append("review receipt reviewer_model '%s' does not name the "
                         "resolved review model '%s'" % (rmodel, expected_model))
-    if isinstance(receipt.get("digest"), str):
-        tax = _sibling("compound-v-taxonomy.py")
-        if tax is not None:
-            try:
-                if tax.record_digest(receipt, exclude_field="digest") != receipt["digest"]:
-                    problems.append("review receipt self-digest mismatch")
-            except Exception:  # noqa: BLE001
-                pass
+
+    # --- verdict MUST be an explicit, normalized 'approved' (CR5-6) ---
+    verdict = receipt.get("verdict")
+    if not isinstance(verdict, str) or verdict.strip().lower() != "approved":
+        problems.append("review receipt verdict %r is not 'approved' — a "
+                        "non-approved or absent verdict blocks the merge "
+                        "(fail-closed, CR5-6)" % verdict)
+
+    # --- receipt self-digest: REQUIRED + verified via the SHARED primitive ---
+    rdig = receipt.get("digest")
+    if not isinstance(rdig, str) or not rdig:
+        problems.append("review receipt is missing its self-digest — cannot "
+                        "verify integrity (fail-closed, CR5-6)")
+    elif tax is None:
+        problems.append("review receipt self-digest cannot be verified — shared "
+                        "taxonomy digest primitive unavailable (fail-closed)")
+    else:
+        try:
+            if tax.record_digest(receipt, exclude_field="digest") != rdig:
+                problems.append("review receipt self-digest mismatch — the "
+                                "receipt was tampered (fail-closed, CR5-6)")
+        except Exception as e:  # noqa: BLE001
+            problems.append("review receipt self-digest cannot be recomputed "
+                            "(%s) — fail-closed" % e)
+
+    # --- manifest_digest: REQUIRED + recomputed over the manifest under review ---
+    r_mdig = receipt.get("manifest_digest")
+    if not isinstance(r_mdig, str) or not r_mdig:
+        problems.append("review receipt is missing manifest_digest — cannot bind "
+                        "the receipt to the reviewed contract (fail-closed, CR5-6)")
+    elif tax is None or manifest_bytes is None:
+        problems.append("review receipt manifest_digest cannot be verified "
+                        "(manifest bytes or digest primitive unavailable) — "
+                        "fail-closed")
+    else:
+        want_mdig = tax.taxonomy_digest_bytes(manifest_bytes)
+        if r_mdig != want_mdig:
+            problems.append("review receipt manifest_digest '%s' != the manifest "
+                            "under validation '%s' — stale or wrong-manifest "
+                            "receipt (fail-closed, CR5-6)" % (r_mdig, want_mdig))
+
+    # --- baseline_sha + final_diff_digest: bound to the run's IMMUTABLE
+    #     baseline (state.json), and the diff recomputed against it ---
+    baseline, berr = _read_run_baseline(
+        repo_root, manifest.get("run_id"), sole_job_id)
+    r_base = receipt.get("baseline_sha")
+    if not isinstance(r_base, str) or not r_base:
+        problems.append("review receipt is missing baseline_sha (fail-closed, "
+                        "CR5-6)")
+    if baseline is None:
+        problems.append("cannot read the run's immutable pre-launch baseline to "
+                        "verify the receipt (%s) — fail-closed" % berr)
+    elif isinstance(r_base, str) and r_base and str(r_base) != str(baseline):
+        problems.append("review receipt baseline_sha '%s' != the run's immutable "
+                        "baseline '%s' — receipt bound to a different baseline "
+                        "(fail-closed, CR5-6)" % (r_base, baseline))
+
+    r_ddig = receipt.get("final_diff_digest")
+    if not isinstance(r_ddig, str) or not r_ddig:
+        problems.append("review receipt is missing final_diff_digest (fail-closed, "
+                        "CR5-6)")
+    elif baseline is not None:
+        cur_ddig, derr = _recompute_diff_digest(repo_root, str(baseline), tax)
+        if cur_ddig is None:
+            problems.append("cannot recompute the final diff against baseline '%s' "
+                            "(%s) — fail-closed" % (baseline, derr))
+        elif cur_ddig != r_ddig:
+            problems.append("review receipt final_diff_digest '%s' != the current "
+                            "diff '%s' — stale-receipt replay against a changed "
+                            "diff (fail-closed, CR5-6)" % (r_ddig, cur_ddig))
+
     return problems
 
 
-def _validate_fast_path(manifest, fp, mode, repo_root, config_path, receipt_path):
+def _validate_fast_path(manifest, fp, mode, repo_root, config_path, receipt_path,
+                        manifest_bytes=None):
     """All v2.9 conditional fast-path invariants (gated on fast_path.eligible).
     Returns a list of violation strings."""
     problems = []
@@ -987,6 +1129,48 @@ def _validate_fast_path(manifest, fp, mode, repo_root, config_path, receipt_path
         problems.append("fast_path binding: pinned record decision '%s' is not "
                         "FASTPATH_ELIGIBLE (AC-13)" % rec.get("decision"))
 
+    # CRIT-2: the pinned pre-eval record must (a) carry a VALID self-digest and
+    # (b) fully satisfy the FASTPATH_ELIGIBLE contract — a null Layer-A override
+    # and BOTH axes at band 'low' (not merely "not high"). A tampered record (any
+    # digest mismatch, a fired override, or a non-low band) MUST fail closed, so a
+    # FULL_PIPELINE record with `decision` flipped to FASTPATH_ELIGIBLE and a
+    # medium band cannot be replayed as fast-path eligible (CR5-6/CR5-7).
+    if isinstance(rec, dict):
+        # (a) self-digest — REQUIRED + verified with the SHARED primitive the
+        #     producer used (compound-v-taxonomy.record_digest).
+        rec_dig = rec.get("digest")
+        if not isinstance(rec_dig, str) or not rec_dig:
+            problems.append("fast_path binding: pinned pre-eval record '%s' is "
+                            "missing its self-digest — cannot verify integrity "
+                            "(fail-closed, CR5-6)" % pre_ref)
+        elif tax is None:
+            problems.append("fast_path binding: shared taxonomy digest primitive "
+                            "unavailable — cannot verify pre-eval record "
+                            "self-digest (fail-closed)")
+        else:
+            try:
+                if tax.record_digest(rec, exclude_field="digest") != rec_dig:
+                    problems.append("fast_path binding: pinned pre-eval record "
+                                    "'%s' self-digest mismatch — the record was "
+                                    "tampered (fail-closed, CR5-6)" % pre_ref)
+            except Exception as e:  # noqa: BLE001
+                problems.append("fast_path binding: cannot recompute pre-eval "
+                                "record self-digest (%s) — fail-closed" % e)
+        # (b) FASTPATH_ELIGIBLE contract: a fired override forces FULL_PIPELINE.
+        if rec.get("override_fired") is not None:
+            problems.append("fast_path binding: pinned record override_fired=%r is "
+                            "set — a fired Layer-A override forces FULL_PIPELINE, "
+                            "not fast-path (fail-closed, CR5-6)"
+                            % rec.get("override_fired"))
+        # (b) BOTH difficulty + impact must be band 'low' (Iron-Invariant #2).
+        for axis in ("difficulty", "impact"):
+            ax = rec.get(axis)
+            band = ax.get("band") if isinstance(ax, dict) else None
+            if band != "low":
+                problems.append("fast_path binding: pinned record %s.band '%s' is "
+                                "not 'low' — only a low/low request is fast-path "
+                                "eligible (fail-closed, CR5-6)" % (axis, band))
+
     m_taxd = fp.get("taxonomy_digest")
     if isinstance(rec, dict) and str(m_taxd) != str(rec.get("taxonomy_digest")):
         problems.append("fast_path binding: manifest taxonomy_digest '%s' != "
@@ -1065,14 +1249,16 @@ def _validate_fast_path(manifest, fp, mode, repo_root, config_path, receipt_path
         decl_problems, resolved_model = _review_resolution(
             fp.get("review"), stance, repo_root, config_path)
         problems.extend(decl_problems)
+        sole_job_id = job0.get("id") if isinstance(job0, dict) else None
         problems.extend(_validate_receipt(
-            receipt_full, receipt_rel, manifest, fp, resolved_model))
+            receipt_full, receipt_rel, manifest, fp, resolved_model,
+            repo_root, manifest_bytes, sole_job_id))
 
     return problems
 
 
 def validate(manifest, mode=None, repo_root=None, config_path=None,
-             receipt_path=None):
+             receipt_path=None, manifest_bytes=None):
     """Return a list of violation strings; empty list means valid.
 
     ``mode``/``repo_root``/``config_path``/``receipt_path`` drive the v2.9
@@ -1420,16 +1606,22 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
     if "fast_path" in manifest and manifest.get("fast_path") is not None:
         problems.extend(_validate_fast_path(
             manifest, manifest.get("fast_path"), mode, repo_root,
-            config_path, receipt_path))
+            config_path, receipt_path, manifest_bytes))
 
     return problems
 
 
 def validate_text(text, mode=None, repo_root=None, config_path=None,
-                  receipt_path=None):
+                  receipt_path=None, manifest_bytes=None):
     data = load_yaml(text)
+    # The manifest_digest binding (CR5-6) is computed over the manifest's raw
+    # bytes. When a caller supplies the exact on-disk bytes (main() does), use
+    # them verbatim; otherwise fall back to the UTF-8 encoding of the text.
+    if manifest_bytes is None and isinstance(text, str):
+        manifest_bytes = text.encode("utf-8")
     return validate(data, mode=mode, repo_root=repo_root,
-                    config_path=config_path, receipt_path=receipt_path)
+                    config_path=config_path, receipt_path=receipt_path,
+                    manifest_bytes=manifest_bytes)
 
 
 def _find_repo_root(start):
@@ -1482,12 +1674,21 @@ def main(argv):
         return 2
     if repo_root is None:
         repo_root = _find_repo_root(os.path.dirname(os.path.abspath(path)))
-    with open(path, "r") as fh:
-        text = fh.read()
+    # Read the RAW bytes so the manifest_digest binding (CR5-6) content-addresses
+    # to exactly what the producer digested; decode for YAML parsing separately.
+    with open(path, "rb") as fh:
+        raw = fh.read()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as e:
+        print(json.dumps({"verdict": "error", "error": "manifest is not UTF-8 "
+                          "(%s)" % e}), file=sys.stderr)
+        return 2
     try:
         problems = validate_text(text, mode=mode, repo_root=repo_root,
                                  config_path=config_path,
-                                 receipt_path=receipt_path)
+                                 receipt_path=receipt_path,
+                                 manifest_bytes=raw)
     except Exception as e:  # noqa: BLE001 - report parse failure cleanly
         print(json.dumps({"verdict": "error", "error": str(e)}), file=sys.stderr)
         return 2
@@ -1961,14 +2162,21 @@ def _fp_build(root, tax_mod, **opts):
         "taxonomy_version": 1,
         "taxonomy_ref": tax_ref,
         "taxonomy_digest": record_tax_digest,
-        "difficulty": {"band": "low"},
-        "impact": {"band": "low"},
+        "difficulty": {"band": opts.get("record_difficulty_band", "low")},
+        "impact": {"band": opts.get("record_impact_band", "low")},
         "tiers_signalled": ["localization"],
         "localization": localization,
-        "override_fired": None,
+        "override_fired": opts.get("record_override_fired", None),
         "decision": opts.get("record_decision", "FASTPATH_ELIGIBLE"),
         "min_sample_status": "insufficient",
     }
+    # A genuine record carries its own canonical-JSON self-digest (the producer
+    # sets it via record_digest); a fast-path consumer verifies it (CR5-6/CR5-7).
+    record["digest"] = tax_mod.record_digest(record, exclude_field="digest")
+    if opts.get("record_bad_digest"):
+        record["digest"] = "sha256:" + ("0" * 64)  # tamper: valid shape, wrong value
+    elif opts.get("record_drop_digest"):
+        record.pop("digest", None)
     _fp_write(root, pre_ref, json.dumps(record))
 
     # The write target: a real committed-looking regular file (or an escaping
@@ -2084,6 +2292,90 @@ def _fp_receipt(**over):
     return r
 
 
+_FP_RUN_ID = "2026-07-12T101500Z-make-button-red-a1b2"
+_FP_JOB_ID = "task-1-button"
+_FP_WRITE_PATH = "src/components/button.css"
+
+
+def _fp_git_and_state(d, tax_mod, manifest_text):
+    """Turn the fixture dir into a real git repo with a committed pre-launch
+    baseline + one worker change, and write the run's state.json baseline — so
+    the post-review receipt binding (manifest_digest / baseline_sha /
+    final_diff_digest, CR5-6) can be recomputed against real git state. Returns
+    the correct binding values (or None when git is unavailable)."""
+    import subprocess
+
+    def g(*a):
+        return subprocess.run(["git", "-C", d] + list(a),
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    if g("init", "-q").returncode != 0:
+        return None
+    g("config", "user.email", "selftest@example.com")
+    g("config", "user.name", "cv-selftest")
+    g("config", "commit.gpgsign", "false")
+    g("config", "core.hooksPath", "/dev/null")  # ignore any global hooks in CI
+    g("add", "-A")
+    if g("commit", "-q", "--no-verify", "-m", "baseline").returncode != 0:
+        return None
+    rp = g("rev-parse", "HEAD")
+    if rp.returncode != 0:
+        return None
+    baseline = rp.stdout.decode("utf-8", "replace").strip()
+
+    # One worker change to the sole write target → a non-empty tracked diff.
+    with open(os.path.join(d, _FP_WRITE_PATH), "a", encoding="utf-8") as fh:
+        fh.write("/* changed by worker */\n")
+    diff = g("diff", "--no-color", baseline)
+    if diff.returncode != 0:
+        return None
+    diff_bytes = diff.stdout or b""
+
+    state = {"run_id": _FP_RUN_ID,
+             "jobs": {_FP_JOB_ID: {"status": "success", "baseline": baseline}}}
+    _fp_write(d, "docs/superpowers/execution/%s/state.json" % _FP_RUN_ID,
+              json.dumps(state))
+    return {
+        "run_id": _FP_RUN_ID,
+        "manifest_digest": tax_mod.taxonomy_digest_bytes(
+            manifest_text.encode("utf-8")),
+        "baseline_sha": baseline,
+        "final_diff_digest": tax_mod.taxonomy_digest_bytes(diff_bytes),
+        "receipt_rel": "docs/superpowers/execution/%s/review/receipt.json"
+                       % _FP_RUN_ID,
+    }
+
+
+def _fp_write_receipt(d, tax_mod, info, drop=None, bad_digest=False, **over):
+    """Write a post-review receipt bound to the real git state in ``info``.
+    ``over`` mutates a field (the self-digest is recomputed AFTER, so exactly the
+    overridden binding fails); ``bad_digest`` breaks the self-digest; ``drop``
+    removes fields entirely."""
+    receipt = {
+        "run_id": _FP_RUN_ID,
+        "pre_eval_id": _FP_RUN_ID,
+        "manifest_digest": info["manifest_digest"],
+        "baseline_sha": info["baseline_sha"],
+        "final_diff_digest": info["final_diff_digest"],
+        "reviewer_backend": "claude",
+        "reviewer_model": "opus",
+        "attempt_id": 1,
+        "ts": "2026-07-12T10:20:00Z",
+        "verdict": "approved",
+        "integration_rationale": "single-job fast-path: no cross-job seams",
+    }
+    receipt.update(over)
+    for k in (drop or []):
+        receipt.pop(k, None)
+    if "digest" in (drop or []):
+        pass  # intentionally absent
+    elif bad_digest:
+        receipt["digest"] = "sha256:" + ("e" * 64)
+    else:
+        receipt["digest"] = tax_mod.record_digest(receipt, exclude_field="digest")
+    _fp_write(d, info["receipt_rel"], json.dumps(receipt))
+
+
 def _selftest_fastpath(expect):
     import tempfile
 
@@ -2177,6 +2469,39 @@ def _selftest_fastpath(expect):
     expect("fastpath: non-FASTPATH_ELIGIBLE record rejected",
            any("FASTPATH_ELIGIBLE" in p for p in res))
 
+    # CRIT-2: pinned pre-eval record self-digest + FASTPATH_ELIGIBLE band gate.
+    d = case("tamper_rec_selfdigest")
+    txt = _fp_build(d, tax_mod, record_bad_digest=True)
+    res = validate_text(txt, mode="pre-dispatch", repo_root=d)
+    expect("fastpath: pre-eval record self-digest mismatch rejected",
+           any("record" in p and "self-digest" in p for p in res))
+
+    d = case("tamper_rec_missing_digest")
+    txt = _fp_build(d, tax_mod, record_drop_digest=True)
+    res = validate_text(txt, mode="pre-dispatch", repo_root=d)
+    expect("fastpath: pre-eval record missing self-digest rejected",
+           any("record" in p and "self-digest" in p for p in res))
+
+    # A FULL_PIPELINE record whose decision is flipped to FASTPATH_ELIGIBLE with a
+    # MEDIUM band (and a freshly-VALID self-digest) MUST still fail on the band gate.
+    d = case("tamper_rec_medium_band")
+    txt = _fp_build(d, tax_mod, record_impact_band="medium")
+    res = validate_text(txt, mode="pre-dispatch", repo_root=d)
+    expect("fastpath: pinned record impact.band=medium rejected (not low)",
+           any("impact.band" in p and "not 'low'" in p for p in res))
+
+    d = case("tamper_rec_diff_band")
+    txt = _fp_build(d, tax_mod, record_difficulty_band="high")
+    res = validate_text(txt, mode="pre-dispatch", repo_root=d)
+    expect("fastpath: pinned record difficulty.band=high rejected (not low)",
+           any("difficulty.band" in p and "not 'low'" in p for p in res))
+
+    d = case("tamper_rec_override")
+    txt = _fp_build(d, tax_mod, record_override_fired=3)
+    res = validate_text(txt, mode="pre-dispatch", repo_root=d)
+    expect("fastpath: pinned record override_fired set rejected",
+           any("override_fired" in p for p in res))
+
     d = case("tamper_taxdigest")
     txt = _fp_build(d, tax_mod, manifest_tax_digest="sha256:" + ("0" * 64))
     res = validate_text(txt, mode="pre-dispatch", repo_root=d)
@@ -2209,32 +2534,92 @@ def _selftest_fastpath(expect):
     expect("fastpath: pre-dispatch forbids an existing receipt",
            any("forbid" in p or "receipt" in p for p in res))
 
-    # post-review requires + verifies the receipt.
-    d = case("postreview_ok")
-    txt = _fp_build(d, tax_mod, make_receipt=_fp_receipt())
-    res = validate_text(txt, mode="post-review", repo_root=d)
-    expect("fastpath: post-review with a valid receipt passes (%r)" % res,
-           res == [])
+    # post-review requires + FULLY verifies the receipt (CR5-6). Real git repo so
+    # manifest_digest / baseline_sha / final_diff_digest are recomputable; a stale
+    # or mismatched binding, or a non-approved verdict, MUST fail closed.
+    import shutil as _shutil
+    if _shutil.which("git") is not None:
+        def _postreview(name, drop=None, bad_digest=False, **over):
+            d = case(name)
+            txt = _fp_build(d, tax_mod)
+            info = _fp_git_and_state(d, tax_mod, txt)
+            if info is None:
+                return None, d
+            _fp_write_receipt(d, tax_mod, info, drop=drop,
+                              bad_digest=bad_digest, **over)
+            return validate_text(txt, mode="post-review", repo_root=d), d
 
+        res, _ = _postreview("postreview_ok")
+        expect("fastpath: post-review with a fully-bound receipt passes (%r)"
+               % res, res == [])
+
+        res, _ = _postreview("postreview_badbackend", reviewer_backend="codex")
+        expect("fastpath: receipt reviewer_backend != claude rejected",
+               res is not None and any("claude" in p for p in res))
+
+        res, _ = _postreview("postreview_badmodel", reviewer_model="sonnet")
+        expect("fastpath: receipt reviewer_model not Opus rejected",
+               res is not None and any(
+                   "opus" in p.lower() or "resolved" in p.lower() for p in res))
+
+        res, _ = _postreview("postreview_verdict_issues", verdict="issues")
+        expect("fastpath: receipt verdict 'issues' rejected",
+               res is not None and any(
+                   "verdict" in p.lower() and "approved" in p.lower()
+                   for p in res))
+
+        res, _ = _postreview("postreview_verdict_absent", drop=["verdict"])
+        expect("fastpath: receipt with absent verdict rejected",
+               res is not None and any("verdict" in p.lower() for p in res))
+
+        res, _ = _postreview("postreview_bad_manifest_digest",
+                             manifest_digest="sha256:" + ("0" * 64))
+        expect("fastpath: receipt manifest_digest mismatch rejected "
+               "(stale/wrong manifest)",
+               res is not None and any("manifest_digest" in p for p in res))
+
+        res, _ = _postreview("postreview_bad_baseline", baseline_sha="f" * 40)
+        expect("fastpath: receipt baseline_sha mismatch rejected",
+               res is not None and any(
+                   "baseline" in p.lower() and "!=" in p for p in res))
+
+        res, _ = _postreview("postreview_stale_diff",
+                             final_diff_digest="sha256:" + ("0" * 64))
+        expect("fastpath: receipt final_diff_digest mismatch rejected "
+               "(stale-replay)",
+               res is not None and any("final_diff_digest" in p for p in res))
+
+        res, _ = _postreview("postreview_bad_selfdigest", bad_digest=True)
+        expect("fastpath: receipt self-digest mismatch rejected",
+               res is not None and any(
+                   "receipt self-digest" in p.lower() for p in res))
+
+        res, _ = _postreview("postreview_missing_selfdigest", drop=["digest"])
+        expect("fastpath: receipt missing self-digest rejected",
+               res is not None and any(
+                   "missing its self-digest" in p.lower() for p in res))
+
+        # A receipt that exists but the run has NO immutable baseline → fail-closed.
+        d = case("postreview_nobaseline")
+        txt = _fp_build(d, tax_mod)
+        info = _fp_git_and_state(d, tax_mod, txt)
+        if info is not None:
+            _fp_write(d, "docs/superpowers/execution/%s/state.json" % _FP_RUN_ID,
+                      json.dumps({"run_id": _FP_RUN_ID, "jobs": {}}))
+            _fp_write_receipt(d, tax_mod, info)
+            res = validate_text(txt, mode="post-review", repo_root=d)
+            expect("fastpath: post-review with no run baseline fails closed",
+                   any("baseline" in p.lower() for p in res))
+    else:
+        expect("fastpath: post-review git-binding suite (git unavailable — "
+               "skipped)", True)
+
+    # post-review still REQUIRES a receipt (independent of git availability).
     d = case("postreview_missing")
     txt = _fp_build(d, tax_mod)  # no receipt written
     res = validate_text(txt, mode="post-review", repo_root=d)
     expect("fastpath: post-review requires a receipt",
            any("receipt" in p for p in res))
-
-    d = case("postreview_badbackend")
-    txt = _fp_build(d, tax_mod,
-                    make_receipt=_fp_receipt(reviewer_backend="codex"))
-    res = validate_text(txt, mode="post-review", repo_root=d)
-    expect("fastpath: receipt reviewer_backend != claude rejected",
-           any("claude" in p for p in res))
-
-    d = case("postreview_badmodel")
-    txt = _fp_build(d, tax_mod,
-                    make_receipt=_fp_receipt(reviewer_model="sonnet"))
-    res = validate_text(txt, mode="post-review", repo_root=d)
-    expect("fastpath: receipt reviewer_model not Opus rejected",
-           any("opus" in p.lower() or "resolved" in p.lower() for p in res))
 
     # (h) containment: traversal ref + escaping symlink write target.
     d = case("traversal_ref")
