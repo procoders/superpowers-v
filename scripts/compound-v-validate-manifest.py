@@ -624,6 +624,17 @@ def _is_claude_opus(model):
     return isinstance(model, str) and "opus" in model.lower()
 
 
+# Canonical content-digest shape: 'sha256:' + 64 hex chars (pre-eval-config.md §2).
+_DIGEST_RE = re.compile(r"sha256:[0-9a-fA-F]{64}\Z")
+
+
+def _is_digest_shaped(v):
+    """True iff ``v`` is a well-formed canonical content-digest ('sha256:<64-hex>').
+    A missing/non-string/mis-shaped digest is NOT shaped, so a caller can fail
+    closed on absence instead of silently skipping the comparison."""
+    return isinstance(v, str) and _DIGEST_RE.match(v) is not None
+
+
 def _is_git_tracked(repo_root, relpath):
     """True/False if a git tree is present (worktree ``.git`` is a FILE, so we test
     existence not is-dir); None when git is unavailable so the caller can skip."""
@@ -641,7 +652,31 @@ def _is_git_tracked(repo_root, relpath):
         return None
 
 
-def _containment_problems(label, relpath, repo_root, must_exist=True):
+def _is_committed_at_head(repo_root, relpath):
+    """True/False whether ``relpath`` exists in the HEAD *commit* tree — committed,
+    not merely tracked-or-staged. ``git ls-files`` accepts a newly-STAGED path that
+    is absent from every commit; artifacts must live in a commit (execution
+    -manifest.md), so a staged-but-uncommitted artifact must fail. Returns ``None``
+    when git/HEAD is unavailable (no ``.git`` or the subprocess raised) so the
+    caller degrades — a fixture with no repo behaves exactly as before. A resolvable
+    repo whose HEAD lacks the path (staged-only, untracked, or a repo with no
+    commits) returns False. Uses ``git cat-file -e HEAD:<path>``."""
+    import subprocess
+
+    if not os.path.exists(os.path.join(repo_root, ".git")):
+        return None
+    try:
+        r = subprocess.run(
+            ["git", "-C", repo_root, "cat-file", "-e", "HEAD:" + relpath],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        return r.returncode == 0
+    except Exception:  # noqa: BLE001 - git missing/broken -> degrade (skip)
+        return None
+
+
+def _containment_problems(label, relpath, repo_root, must_exist=True,
+                          require_committed=False):
     """CR4-6 path containment. The path MUST be normalized, repo-relative (no
     absolute, no ``..`` segment), realpath-under-repo-root (this also rejects any
     escaping symlink in the chain — realpath resolves every link), and a committed
@@ -688,6 +723,16 @@ def _containment_problems(label, relpath, repo_root, must_exist=True):
         if tracked is False:
             problems.append("%s '%s' is not committed (git does not track it)"
                             % (label, relpath))
+        elif require_committed:
+            # MED-9: `git ls-files` (the tracked check above) also accepts a
+            # newly-STAGED path absent from every commit. Artifacts referenced by
+            # the manifest MUST be durable in a commit, so verify HEAD directly.
+            committed = _is_committed_at_head(repo_root, norm)
+            if committed is False:
+                problems.append(
+                    "%s '%s' is not present in a commit at HEAD — a staged-only "
+                    "or uncommitted artifact is not durable; referenced artifacts "
+                    "must be committed (fail-closed)" % (label, relpath))
     return problems
 
 
@@ -842,23 +887,26 @@ def _read_run_baseline(repo_root, run_id, sole_job_id):
     return base.strip(), None
 
 
-def _recompute_diff_digest(repo_root, baseline, tax):
+def _recompute_diff_digest(diff_root, baseline, tax):
     """Recompute the FINAL diff digest — 'sha256:'+sha256(git diff --no-color
-    <baseline>) over the current worktree — the anti-stale-replay comparison
-    value (same command + convention as the producer). Returns (digest, None) or
-    (None, err). Fail-closed on a git error, a non-object-id baseline, or a
-    truncated (over-cap) capture."""
+    <baseline>) — the anti-stale-replay comparison value (same command + convention
+    as the producer). CRIT-1: ``diff_root`` MUST be the SAME checkout the producer
+    hashed (the worker's linked WORKTREE), NOT necessarily the main repo — the
+    caller passes the run's worktree and falls back to the repo root only when none
+    was supplied. Returns (digest, None) or (None, err). Fail-closed on a git error
+    (an unavailable/wrong-checkout diff_root exits non-zero here), a non-object-id
+    baseline, or a truncated (over-cap) capture."""
     import subprocess
 
-    if repo_root is None:
-        return None, "no repo root"
+    if diff_root is None:
+        return None, "no diff root"
     if tax is None:
         return None, "shared digest primitive unavailable"
     if not re.fullmatch(r"[0-9a-fA-F]{7,64}", str(baseline or "")):
         return None, "baseline '%s' is not a git object id" % baseline
     try:
         p = subprocess.run(
-            ["git", "-C", repo_root, "diff", "--no-color", str(baseline)],
+            ["git", "-C", diff_root, "diff", "--no-color", str(baseline)],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             timeout=_GIT_DIFF_TIMEOUT_S)
     except Exception as e:  # noqa: BLE001 - git missing/broken/timeout -> fail-closed
@@ -873,7 +921,7 @@ def _recompute_diff_digest(repo_root, baseline, tax):
 
 
 def _validate_receipt(receipt_full, receipt_rel, manifest, fp, expected_model,
-                      repo_root, manifest_bytes, sole_job_id):
+                      repo_root, manifest_bytes, sole_job_id, diff_root=None):
     """post-review: require + FULLY verify the dispatcher-written invocation
     receipt. Per CR5-6 the receipt MUST bind to and be verified against: run_id,
     pre_eval_id, the manifest digest, the immutable pre-launch baseline SHA, the
@@ -982,7 +1030,11 @@ def _validate_receipt(receipt_full, receipt_rel, manifest, fp, expected_model,
         problems.append("review receipt is missing final_diff_digest (fail-closed, "
                         "CR5-6)")
     elif baseline is not None:
-        cur_ddig, derr = _recompute_diff_digest(repo_root, str(baseline), tax)
+        # CRIT-1: recompute in the SAME checkout the producer hashed (the worker's
+        # linked worktree), falling back to repo_root only when no diff_root was
+        # supplied. An unavailable worktree makes the git diff fail → fail-closed.
+        cur_ddig, derr = _recompute_diff_digest(
+            diff_root or repo_root, str(baseline), tax)
         if cur_ddig is None:
             problems.append("cannot recompute the final diff against baseline '%s' "
                             "(%s) — fail-closed" % (baseline, derr))
@@ -995,7 +1047,7 @@ def _validate_receipt(receipt_full, receipt_rel, manifest, fp, expected_model,
 
 
 def _validate_fast_path(manifest, fp, mode, repo_root, config_path, receipt_path,
-                        manifest_bytes=None):
+                        manifest_bytes=None, diff_root=None):
     """All v2.9 conditional fast-path invariants (gated on fast_path.eligible).
     Returns a list of violation strings."""
     problems = []
@@ -1087,7 +1139,8 @@ def _validate_fast_path(manifest, fp, mode, repo_root, config_path, receipt_path
             problems.append("%s is required on a fast_path manifest" % label)
         else:
             problems.extend(_containment_problems(
-                label, str(ref), repo_root, must_exist=True))
+                label, str(ref), repo_root, must_exist=True,
+                require_committed=True))
 
     # Cross-artifact binding (AC-13 / CR2-3).
     tax = _sibling("compound-v-taxonomy.py")
@@ -1183,7 +1236,16 @@ def _validate_fast_path(manifest, fp, mode, repo_root, config_path, receipt_path
             if d_rec != d_art:
                 problems.append("fast_path binding: localization content-digest "
                                 "differs between record and artifact (AC-13)")
-            if isinstance(art.get("digest"), str) and art["digest"] != d_art:
+            # MED-8: the localization content-digest (the artifact's self-digest)
+            # MUST be present AND well-shaped before it can be compared — a missing
+            # or non-'sha256:<hex>' digest previously slipped through silently.
+            art_dig = art.get("digest")
+            if not _is_digest_shaped(art_dig):
+                problems.append("fast_path binding: localization artifact "
+                                "content-digest is missing or malformed "
+                                "(expected 'sha256:<64-hex>') — absence/wrong-shape "
+                                "fails closed (AC-13)")
+            elif art_dig != d_art:
                 problems.append("fast_path binding: localization artifact "
                                 "self-digest mismatch")
         except Exception as e:  # noqa: BLE001
@@ -1252,18 +1314,21 @@ def _validate_fast_path(manifest, fp, mode, repo_root, config_path, receipt_path
         sole_job_id = job0.get("id") if isinstance(job0, dict) else None
         problems.extend(_validate_receipt(
             receipt_full, receipt_rel, manifest, fp, resolved_model,
-            repo_root, manifest_bytes, sole_job_id))
+            repo_root, manifest_bytes, sole_job_id, diff_root=diff_root))
 
     return problems
 
 
 def validate(manifest, mode=None, repo_root=None, config_path=None,
-             receipt_path=None, manifest_bytes=None):
+             receipt_path=None, manifest_bytes=None, diff_root=None):
     """Return a list of violation strings; empty list means valid.
 
-    ``mode``/``repo_root``/``config_path``/``receipt_path`` drive the v2.9
-    conditional fast-path checks (only when a top-level ``fast_path`` block is
-    present); a legacy manifest ignores them entirely (backward compatible)."""
+    ``mode``/``repo_root``/``config_path``/``receipt_path``/``diff_root`` drive the
+    v2.9 conditional fast-path checks (only when a top-level ``fast_path`` block is
+    present); a legacy manifest ignores them entirely (backward compatible).
+    ``diff_root`` (CR-CRIT-1) is the worker's linked worktree the producer hashed;
+    the post-review final-diff recompute runs there, falling back to ``repo_root``
+    only when it is unset."""
     problems = []
 
     if not isinstance(manifest, dict):
@@ -1606,13 +1671,13 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
     if "fast_path" in manifest and manifest.get("fast_path") is not None:
         problems.extend(_validate_fast_path(
             manifest, manifest.get("fast_path"), mode, repo_root,
-            config_path, receipt_path, manifest_bytes))
+            config_path, receipt_path, manifest_bytes, diff_root=diff_root))
 
     return problems
 
 
 def validate_text(text, mode=None, repo_root=None, config_path=None,
-                  receipt_path=None, manifest_bytes=None):
+                  receipt_path=None, manifest_bytes=None, diff_root=None):
     data = load_yaml(text)
     # The manifest_digest binding (CR5-6) is computed over the manifest's raw
     # bytes. When a caller supplies the exact on-disk bytes (main() does), use
@@ -1621,7 +1686,7 @@ def validate_text(text, mode=None, repo_root=None, config_path=None,
         manifest_bytes = text.encode("utf-8")
     return validate(data, mode=mode, repo_root=repo_root,
                     config_path=config_path, receipt_path=receipt_path,
-                    manifest_bytes=manifest_bytes)
+                    manifest_bytes=manifest_bytes, diff_root=diff_root)
 
 
 def _find_repo_root(start):
@@ -1657,12 +1722,15 @@ def main(argv):
     repo_root = _get_opt(args, "--repo-root")
     config_path = _get_opt(args, "--config")
     receipt_path = _get_opt(args, "--receipt")
+    # CRIT-1: the worker's linked worktree — the checkout the producer hashed the
+    # final diff in. The post-review recompute runs there; absent ⇒ repo_root.
+    diff_root = _get_opt(args, "--worktree")
     # Drop any remaining flags; the first non-flag token is the manifest path.
     positional = [a for a in args if not a.startswith("--")]
     if not positional:
         print("usage: compound-v-validate-manifest.py [--mode pre-dispatch|"
-              "post-review] [--repo-root DIR] [--config FILE] [--receipt FILE] "
-              "<manifest.yaml>", file=sys.stderr)
+              "post-review] [--repo-root DIR] [--worktree DIR] [--config FILE] "
+              "[--receipt FILE] <manifest.yaml>", file=sys.stderr)
         return 2
     if mode is not None and mode not in FASTPATH_MODES:
         print("error: --mode '%s' invalid (expected one of %s)"
@@ -1688,7 +1756,7 @@ def main(argv):
         problems = validate_text(text, mode=mode, repo_root=repo_root,
                                  config_path=config_path,
                                  receipt_path=receipt_path,
-                                 manifest_bytes=raw)
+                                 manifest_bytes=raw, diff_root=diff_root)
     except Exception as e:  # noqa: BLE001 - report parse failure cleanly
         print(json.dumps({"verdict": "error", "error": str(e)}), file=sys.stderr)
         return 2
@@ -2120,7 +2188,7 @@ def _fp_build(root, tax_mod, **opts):
     record_decision, manifest_tax_digest, record_tax_digest, artifact_fan_out,
     manifest_pre_eval_id, review (dict), audits_flow, second_job, glob_write,
     symlink_write, loc_ref, tax_ref, pre_ref, make_receipt (dict|None),
-    receipt_rel.
+    receipt_rel, artifact_drop_digest (MED-8), artifact_bad_shape_digest (MED-8).
     """
     pre_eval_id = "2026-07-12T101500Z-make-button-red-a1b2"
     run_id = pre_eval_id
@@ -2152,6 +2220,10 @@ def _fp_build(root, tax_mod, **opts):
     artifact = dict(localization)
     artifact["fan_out"] = opts.get("artifact_fan_out", 1)
     artifact["digest"] = tax_mod.record_digest(artifact)
+    if opts.get("artifact_drop_digest"):
+        artifact.pop("digest", None)              # MED-8: absent content-digest
+    elif opts.get("artifact_bad_shape_digest"):
+        artifact["digest"] = "not-a-valid-digest"  # MED-8: wrong-shape digest
     _fp_write(root, loc_ref, json.dumps(artifact))
 
     record = {
@@ -2346,6 +2418,58 @@ def _fp_git_and_state(d, tax_mod, manifest_text):
     }
 
 
+def _fp_git_worktree_and_state(d, tax_mod, manifest_text):
+    """CRIT-1 topology: a MAIN repo (``repo_root``) holding the committed artifacts
+    + state.json, and a SEPARATE linked WORKTREE (``diff_root``) holding the
+    worker's file change. The producer hashes the final diff in the worktree, so
+    the validator must recompute there — NOT in the main checkout. Returns
+    (info, worktree_path) or (None, None) when git/worktree is unavailable."""
+    import subprocess
+
+    def g(cwd, *a):
+        return subprocess.run(["git", "-C", cwd] + list(a),
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    if g(d, "init", "-q").returncode != 0:
+        return None, None
+    g(d, "config", "user.email", "selftest@example.com")
+    g(d, "config", "user.name", "cv-selftest")
+    g(d, "config", "commit.gpgsign", "false")
+    g(d, "config", "core.hooksPath", "/dev/null")
+    g(d, "add", "-A")
+    if g(d, "commit", "-q", "--no-verify", "-m", "baseline").returncode != 0:
+        return None, None
+    rp = g(d, "rev-parse", "HEAD")
+    if rp.returncode != 0:
+        return None, None
+    baseline = rp.stdout.decode("utf-8", "replace").strip()
+
+    wt = d + "-wt"
+    if g(d, "worktree", "add", "-q", "--detach", wt, baseline).returncode != 0:
+        return None, None
+    # The worker change lives ONLY in the linked worktree (the main tree is clean).
+    with open(os.path.join(wt, _FP_WRITE_PATH), "a", encoding="utf-8") as fh:
+        fh.write("/* changed by the worker in the linked worktree */\n")
+    diff = g(wt, "diff", "--no-color", baseline)
+    if diff.returncode != 0:
+        return None, None
+    diff_bytes = diff.stdout or b""
+
+    state = {"run_id": _FP_RUN_ID,
+             "jobs": {_FP_JOB_ID: {"status": "success", "baseline": baseline}}}
+    _fp_write(d, "docs/superpowers/execution/%s/state.json" % _FP_RUN_ID,
+              json.dumps(state))
+    return ({
+        "run_id": _FP_RUN_ID,
+        "manifest_digest": tax_mod.taxonomy_digest_bytes(
+            manifest_text.encode("utf-8")),
+        "baseline_sha": baseline,
+        "final_diff_digest": tax_mod.taxonomy_digest_bytes(diff_bytes),
+        "receipt_rel": "docs/superpowers/execution/%s/review/receipt.json"
+                       % _FP_RUN_ID,
+    }, wt)
+
+
 def _fp_write_receipt(d, tax_mod, info, drop=None, bad_digest=False, **over):
     """Write a post-review receipt bound to the real git state in ``info``.
     ``over`` mutates a field (the self-digest is recomputed AFTER, so exactly the
@@ -2514,6 +2638,24 @@ def _selftest_fastpath(expect):
     expect("fastpath: localization content-digest mismatch rejected",
            any("localization" in p and "digest" in p for p in res))
 
+    # MED-8: a MISSING localization-artifact content-digest previously slipped
+    # through (only a present string was compared); absence must fail closed.
+    d = case("med8_loc_missing_digest")
+    txt = _fp_build(d, tax_mod, artifact_drop_digest=True)
+    res = validate_text(txt, mode="pre-dispatch", repo_root=d)
+    expect("fastpath MED-8: localization artifact missing content-digest "
+           "rejected (absence fails closed)",
+           any("localization artifact content-digest is missing" in p
+               for p in res))
+
+    # MED-8: a wrong-SHAPE localization-artifact digest also fails closed.
+    d = case("med8_loc_badshape_digest")
+    txt = _fp_build(d, tax_mod, artifact_bad_shape_digest=True)
+    res = validate_text(txt, mode="pre-dispatch", repo_root=d)
+    expect("fastpath MED-8: localization artifact malformed content-digest "
+           "rejected (wrong shape fails closed)",
+           any("missing or malformed" in p for p in res))
+
     # (g) two validation modes.
     d = case("declined_backend")
     txt = _fp_build(d, tax_mod, review={"backend": "codex", "tier": "deep"})
@@ -2610,6 +2752,38 @@ def _selftest_fastpath(expect):
             res = validate_text(txt, mode="post-review", repo_root=d)
             expect("fastpath: post-review with no run baseline fails closed",
                    any("baseline" in p.lower() for p in res))
+
+        # CRIT-1: the final-diff recompute MUST run in the SAME checkout the
+        # producer hashed — the worker's linked WORKTREE (diff_root) — not the
+        # main repo the dispatcher passes as --repo-root.
+        d = case("crit1_worktree_diff_root")
+        txt = _fp_build(d, tax_mod)
+        wt_info, wt = _fp_git_worktree_and_state(d, tax_mod, txt)
+        if wt_info is not None:
+            _fp_write_receipt(d, tax_mod, wt_info)
+            # (i) with --worktree the receipt's worktree-hashed diff recomputes to
+            #     the same digest → PASS (the main tree is clean, so this only
+            #     passes because the recompute honored diff_root).
+            res = validate_text(txt, mode="post-review", repo_root=d,
+                                diff_root=wt)
+            expect("fastpath CRIT-1: post-review recomputes the diff in the "
+                   "linked worktree -> passes (%r)" % res, res == [])
+            # (ii) WITHOUT --worktree the recompute falls to the main repo, whose
+            #      diff against baseline is empty → digest mismatch → fail-closed.
+            #      Proves the recompute is NOT anchored to repo_root.
+            res = validate_text(txt, mode="post-review", repo_root=d,
+                                diff_root=None)
+            expect("fastpath CRIT-1: recomputing in the main checkout (no "
+                   "worktree change) fails closed on the diff digest",
+                   any("final_diff_digest" in p for p in res))
+            # (iii) an unavailable diff_root never silently passes — fail-closed.
+            res = validate_text(txt, mode="post-review", repo_root=d,
+                                diff_root=os.path.join(d, "no-such-worktree"))
+            expect("fastpath CRIT-1: an unavailable diff-root fails closed",
+                   any("recompute the final diff" in p for p in res))
+        else:
+            expect("fastpath CRIT-1: worktree diff-root suite (git worktree "
+                   "unavailable - skipped)", True)
     else:
         expect("fastpath: post-review git-binding suite (git unavailable — "
                "skipped)", True)
@@ -2639,6 +2813,57 @@ def _selftest_fastpath(expect):
         except OSError:
             expect("fastpath: escaping-symlink write target rejected "
                    "(symlink unsupported — skipped)", True)
+
+    # MED-9: a fast_path *_ref that is TRACKED/STAGED but absent from any commit
+    # must fail — `git ls-files` is not proof of a commit (execution-manifest.md
+    # §218-220: referenced artifacts must live in a commit).
+    if _shutil.which("git") is not None:
+        import subprocess as _sp
+
+        def _gitstage(root, commit):
+            r = _sp.run(["git", "-C", root, "init", "-q"],
+                        stdout=_sp.PIPE, stderr=_sp.PIPE)
+            if r.returncode != 0:
+                return False
+            for kv in (("user.email", "s@e.com"), ("user.name", "cv"),
+                       ("commit.gpgsign", "false"), ("core.hooksPath", "/dev/null")):
+                _sp.run(["git", "-C", root, "config"] + list(kv),
+                        stdout=_sp.PIPE, stderr=_sp.PIPE)
+            _sp.run(["git", "-C", root, "add", "-A"],
+                    stdout=_sp.PIPE, stderr=_sp.PIPE)
+            if commit:
+                r = _sp.run(["git", "-C", root, "commit", "-q", "--no-verify",
+                             "-m", "b"], stdout=_sp.PIPE, stderr=_sp.PIPE)
+                return r.returncode == 0
+            return True  # staged only — deliberately no commit, so no HEAD
+
+        # (i) staged-not-committed: refs are tracked by ls-files yet in NO commit
+        #     → the HEAD-commit check must reject (the pre-MED-9 code PASSED here).
+        d = case("med9_staged_not_committed")
+        txt = _fp_build(d, tax_mod)
+        if _gitstage(d, commit=False):
+            res = validate_text(txt, mode="pre-dispatch", repo_root=d)
+            expect("fastpath MED-9: staged-but-uncommitted ref rejected "
+                   "(ls-files is not a commit)",
+                   any("not present in a commit" in p for p in res))
+        else:
+            expect("fastpath MED-9: staged-not-committed suite (git init failed "
+                   "- skipped)", True)
+
+        # (ii) genuinely committed refs pass under pre-dispatch — the HEAD check
+        #      does not over-reject a durable artifact.
+        d = case("med9_committed_ok")
+        txt = _fp_build(d, tax_mod)
+        if _gitstage(d, commit=True):
+            res = validate_text(txt, mode="pre-dispatch", repo_root=d)
+            expect("fastpath MED-9: committed refs pass pre-dispatch (%r)" % res,
+                   res == [])
+        else:
+            expect("fastpath MED-9: committed-ok suite (commit failed - "
+                   "skipped)", True)
+    else:
+        expect("fastpath MED-9: commit-containment suite (git unavailable - "
+               "skipped)", True)
 
 
 def _selftest():
