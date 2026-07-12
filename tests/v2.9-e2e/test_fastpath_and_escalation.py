@@ -350,17 +350,32 @@ class TestAC10And12NoFabricatedMetric(_RepoCase):
         return run_json("compound-v-triage-outcomes.py", *args)
 
     def _seed_verified_fastpath_success(self, stream, pid, rid):
-        """Write the git-derived evidence the triage counter now requires (HIGH-9): a committed
-        run state.json (MERGED + merge SHA) and an approved review receipt bound to (pid, rid),
-        so the terminal `actual` counts instead of being precision-ignored. exec_dir is derived
-        two levels up from the stream (…/memory/…jsonl -> …/execution)."""
+        """Write the git-derived evidence the triage counter now requires (round-2 CRIT-2): the run
+        state.json (MERGED + a REAL merge-commit SHA) and an approved receipt bound to (pid, rid),
+        ALL COMMITTED at HEAD (triage reads committed blobs, not the working tree, and verifies the
+        merge SHA is a real commit object). exec_dir is …/execution (two levels up from the stream)."""
+        env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@e",
+                   GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@e")
+
+        def _git(*a):
+            subprocess.run(["git", "-C", self._tmp] + list(a), env=env, check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if not os.path.isdir(os.path.join(self._tmp, ".git")):
+            _git("init", "-q")
+        # An empty base commit gives a REAL merge-commit SHA to reference from state.json.
+        _git("commit", "-q", "--allow-empty", "-m", "base")
+        merge_sha = subprocess.run(["git", "-C", self._tmp, "rev-parse", "HEAD"],
+                                   env=env, capture_output=True, text=True, check=True).stdout.strip()
         exec_dir = os.path.join(os.path.dirname(os.path.dirname(stream)), "execution")
         run = os.path.join(exec_dir, rid)
         os.makedirs(os.path.join(run, "review"), exist_ok=True)
         with open(os.path.join(run, "state.json"), "w", encoding="utf-8") as fh:
-            json.dump({"phase": "MERGED", "merge_sha": "a" * 40}, fh)
+            json.dump({"phase": "MERGED", "merge_sha": merge_sha}, fh)
         with open(os.path.join(run, "review", "receipt.json"), "w", encoding="utf-8") as fh:
             json.dump({"verdict": "approved", "run_id": rid, "pre_eval_id": pid}, fh)
+        # Commit the state.json + receipt + the (already-appended) stream so all are blobs at HEAD.
+        _git("add", "-A")
+        _git("commit", "-q", "-m", "evidence")
 
     def _assert_insufficient_no_number(self, result, raw):
         self.assertEqual(result.get("status"), "insufficient")
