@@ -112,15 +112,46 @@ VALID_STANCES = ("balanced", "conservative", "cost-aware", "claude-only")
 DEFAULT_EFFORT_FOR_TIER = {"deep": "high", "standard": "medium", "light": "low"}
 
 
+def _project_config_module():
+    """Load the sibling ``compound-v-project-config.py`` by path.
+
+    The filename has hyphens (not an importable module name), so we load it via
+    importlib. Returns the module, or ``None`` if it cannot be loaded (in which
+    case ``load_config_models`` falls back to its own inline logic — this script
+    stays standalone-robust even if the sibling is missing).
+    """
+    import importlib.util
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(here, "compound-v-project-config.py")
+    try:
+        spec = importlib.util.spec_from_file_location("compound_v_project_config", path)
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:  # noqa: BLE001 - any load failure -> use the inline fallback
+        return None
+
+
 def load_config_models(config_path):
     """
     Return the ``models`` mapping from a config JSON, or an empty dict.
 
-    Missing file or absent ``models`` key is NOT an error — the built-in
-    default map covers it. A present-but-malformed file is reported by raising.
+    Thin wrapper over the shared ``load_project_config`` loader (CR2-11) so the
+    resolver and the pre-eval engine read the SAME file with the SAME fail-closed
+    rules. Behaviour-preserving: missing file / absent ``models`` → ``{}``;
+    non-object root or non-object ``models`` → raise. If the shared loader cannot
+    be loaded, an equivalent inline fallback keeps this script standalone.
     """
     if not config_path:
         return {}
+    mod = _project_config_module()
+    if mod is not None:
+        cfg = mod.load_config_file(config_path)  # missing → {}, malformed → raise
+        return mod.get_models(cfg)               # absent → {}, non-object → raise
+    # Fallback (sibling unavailable): the original inline logic, unchanged.
     if not os.path.isfile(config_path):
         return {}
     with open(config_path, "r") as fh:
@@ -386,6 +417,29 @@ def _selftest():
            == "perstance-override")
     expect("per-stance config leaves other stances on built-in default",
            resolve("claude", "standard", stance="balanced", config_models=_perstance)["model"] == "opus")
+
+    # --- load_config_models wrapper over the shared load_project_config (CR2-11) ---
+    import tempfile
+    with tempfile.TemporaryDirectory() as _td:
+        _cp = os.path.join(_td, "compound-v.json")
+        with open(_cp, "w") as _fh:
+            json.dump({"models": {"codex": {"deep": "gpt-from-file"}}}, _fh)
+        _m = load_config_models(_cp)
+        expect("wrapper reads models from a real file",
+               _m == {"codex": {"deep": "gpt-from-file"}})
+        expect("wrapper-read config applies through resolve()",
+               resolve("codex", "deep", config_models=_m)["model"] == "gpt-from-file")
+        _missing = os.path.join(_td, "nope.json")
+        expect("wrapper: missing file -> {}", load_config_models(_missing) == {})
+        with open(_cp, "w") as _fh:
+            _fh.write("[not, an, object]")
+        expect("wrapper: malformed config raises",
+               raises(lambda: load_config_models(_cp)))
+    # Behaviour-preserving guarantees the dispatcher relies on between waves:
+    expect("balanced claude/deep -> opus (regression guard)",
+           resolve("claude", "deep")["model"] == "opus")
+    expect("balanced claude/standard -> opus (regression guard)",
+           resolve("claude", "standard")["model"] == "opus")
 
     # Unknown backend / tier / effort raise.
     expect("unknown backend raises", raises(lambda: resolve("gemini", "deep")))

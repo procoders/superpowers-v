@@ -44,6 +44,84 @@ audit trail — `/v:status` will then honestly (and confusingly) report no runs 
 
 ---
 
+## v2.9 — Pre-Eval, fast-path & escalation states
+
+v2.9 adds a pre-brainstorm **Pre-Evaluation** stage and a proportionate **fast-path**. It introduces
+three new lifecycle tokens. Read them with one distinction firmly in mind (AC-7/CR2-8):
+
+| Token | Kind | Lives in | Reached when |
+|---|---|---|---|
+| `PRE_EVAL_DONE` | **record status field**, NOT a `state.json` phase | the write-once pre-eval **record** `docs/superpowers/pre-eval/<pre_eval_id>.json` (`status` field) | Score computed + record written **and committed**. **There is no `state.json` / run dir at prediction time** — the run dir is created post-plan (`v-orchestrate` Step 3), so `PRE_EVAL_DONE` cannot be a run phase. |
+| `FASTPATH_DISPATCHED` | real `state.json` **phase** | `state.json.phase` (a run exists by now) | Fast-path was eligible, the user accepted, and the single-job fast-path manifest was materialized + dispatched. |
+| `ESCALATION_REQUIRED` | real `state.json` **phase** | `state.json.phase` | The post-hoc diff re-classification failed; the patch is preserved as evidence and the pipeline rejoins the full path via a **new** run. |
+
+**No script hard-codes any phase enum** (phases are prose-only; `compound-v-liveness.py` keys on
+per-job `status`, not run `phase`). This section is the authority readers (`/v:status`, `/v:resume`,
+`parallel-dispatcher`) implement against.
+
+### Transitions
+
+```
+PRE_EVAL_DONE ─(eligible ∧ accept)─► FASTPATH_DISPATCHED ─► [scope-gate + test floor + F2]
+    ├─(F2 clean)──────► REVIEWED (1 combined SPEC+QUALITY pass) ─► MERGED
+    └─(F2 escalates)─► ESCALATION_REQUIRED ─► PREFLIGHT_DONE ─► PARTITION_VERIFIED ─► … (normal)
+PRE_EVAL_DONE ─(not eligible ∨ decline ∨ fast_path:off)─► SPEC_READY ─► … (normal)
+```
+
+- **Accepted fast-path:** the linked run **initializes at `FASTPATH_DISPATCHED`**.
+- **Decline / not-eligible / `off`:** the run **initializes normally** (`SPEC_READY`), exactly as
+  pre-v2.9. Pre-eval is fail-closed — a missed or disabled pre-eval simply degrades to the normal
+  pipeline (AC-6; PRE_EVAL is description-driven and unenforceable — never claim it is enforced).
+
+### New `state.json` fields (v2.9)
+
+| Field | Shape | Meaning |
+|---|---|---|
+| `pre_eval_id` | string \| null | The write-once id (`YYYY-MM-DDThhmmssZ-<slug>-<nonce>`) of the pre-eval record this run was materialized from. Present on any pre-eval-backed run (fast-path OR a declined pre-eval that later became a normal run — bound for both, CR3-2). `null` for runs created without a pre-eval. |
+| `escalated_to` | string \| null | On `ESCALATION_REQUIRED`, the **new** run-id of the full-pipeline child the fast-path escalated into. `null` otherwise. The fast-path patch stays under the ORIGINAL run as evidence; the child starts from the clean baseline. |
+
+The frozen `manifest.yaml` is **never mutated in place** on escalation (AC-4/H1) — `/v:resume`
+replays a fixed job set, so escalation mints a new run and links it via `escalated_to`.
+
+### Idempotent two-phase escalation protocol (AC-15/CR2-4)
+
+Escalation is **crash-consistent**. Every boundary below is a two-command commit (no `&&`, each exit
+code checked) and a resume checkpoint:
+
+1. **Commit patch + baseline evidence** under the original run (the fast-path diff + its immutable
+   pre-launch baseline SHA) — real evidence overriding the wrong prediction.
+2. **Derive a deterministic child run-id** from the parent (same parent ⇒ same child id) so a
+   re-run never mints a second child.
+3. **Create + commit the child** full-pipeline run (its own run dir + initial `state.json`), starting
+   from the **clean baseline** (the preserved patch is evidence only, not applied).
+4. **Commit the parent's `escalated_to`** link **LAST** — so a committed `escalated_to` ⇒ the child
+   is already durable.
+
+`/v:resume` **reconciles every partial state** and **discovers an existing child before minting
+another**: if step 2's deterministic child id already has a run dir, resume adopts it rather than
+creating a duplicate.
+
+### Fast-path resume reconciles against the pinned baseline, never HEAD (CR5-3)
+
+A fast-path run persists **each job's immutable pre-launch baseline SHA** in `state.json` and
+reconciles against **THAT**, never `HEAD` — a worker may commit and move `HEAD`, so a HEAD-relative
+diff would go blind (the same reason the scope gate baselines against the recorded pre-`worktree add`
+SHA). Completion of a fast-path job requires the normalized result **and** the git-derived scope
+verdict **and** the baseline-relative patch digest to agree. `FASTPATH_DISPATCHED` reconciles like
+`DISPATCHED`; `ESCALATION_REQUIRED` follows `escalated_to` and never replays the fast-path job set
+against a full manifest.
+
+### Unbound pre-eval discovery (`/v:status`)
+
+A pre-eval record can exist with **no run** (declined, or crashed before materialization). `/v:status`
+discovers these **unbound** records under `docs/superpowers/pre-eval/` (a `predicted` triage event
+with no `bind`) and renders their decision + derived 1-10 alongside real runs, so a pre-eval'd
+request is never invisible. Fast-path **precision + escalation-rate** are computed from the
+`triage-outcomes.jsonl` `predicted`↔`actual` join (git-derived actuals only), shown with their sample
+size and "insufficient samples" below the floor — never a fabricated number (AC-12).
+
+---
+
 ## Run directory layout
 
 ```
@@ -72,6 +150,8 @@ docs/superpowers/execution/<run-id>/
   "run_id": "2026-06-26-linkedin-sequence-editor",
   "phase": "DISPATCHED",
   "updated_at": "2026-06-26T14:31:00Z",
+  "pre_eval_id": null,
+  "escalated_to": null,
   "total_retries": 2,
   "max_total_retries": 12,
   "cooldowns": { "codex": "2026-06-26T14:33:10Z" },
@@ -87,7 +167,7 @@ docs/superpowers/execution/<run-id>/
 }
 ```
 
-Per-job fields: `status` (lifecycle, below), `isolation` (`direct` | `worktree`), `worktree` (absolute path or `null`), `session_id` (the codex `thread_id` UUID read from the worker's `job_result.session_id`, UUID-validated — the resume UUID; `null` otherwise), `failure_class` (the returned `job_result.failure_class`, e.g. `timeout`/`network`; consulted by the resume-eligibility rule; `null` otherwise), and **`log`** (the codex worker's events-log path — `docs/superpowers/execution/<run-id>/logs/<id>.jsonl` — recorded by the dispatcher at dispatch; `null`/absent for non-codex jobs). `log` is read by the liveness sweep as a progress signal and is **degrade-safe**: absent ⇒ prior git+FS+pid behavior unchanged.
+Per-job fields: `status` (lifecycle, below), `isolation` (`direct` | `worktree`), `worktree` (absolute path or `null`), `session_id` (the codex `thread_id` UUID read from the worker's `job_result.session_id`, UUID-validated — the resume UUID; `null` otherwise), `failure_class` (the returned `job_result.failure_class`, e.g. `timeout`/`network`; consulted by the resume-eligibility rule; `null` otherwise), `baseline` (the **immutable pre-launch baseline SHA** the scope gate — and, on a fast-path job, the post-hoc reclassifier — attribute against; recorded at dispatch, reconciled against on resume, **never** re-derived from a moved `HEAD`; CR5-3), and **`log`** (the codex worker's events-log path — `docs/superpowers/execution/<run-id>/logs/<id>.jsonl` — recorded by the dispatcher at dispatch; `null`/absent for non-codex jobs). `log` is read by the liveness sweep as a progress signal and is **degrade-safe**: absent ⇒ prior git+FS+pid behavior unchanged.
 
 ### Backend-failure fields (the circuit breaker — no daemon)
 

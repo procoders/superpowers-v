@@ -1,0 +1,80 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/procoders/superpowers-v/schemas/fastpath-review-receipt.schema.json",
+  "title": "Compound V fast-path review invocation receipt",
+  "description": "Canonical receipt (CR5-6/CR3-7) the dispatcher writes AFTER running the fast-path's combined SPEC+QUALITY review as an in-harness `needs_review` Task. The fast-path manifest carries only a review DECLARATION (fast_path.review:{backend:claude, tier:deep} OR model:opus); this receipt is the post-review PROOF that the declared reviewer actually ran and resolved to Claude Opus. The validator's two modes gate on it: `--mode pre-dispatch` FORBIDS a receipt (it cannot exist yet); `--mode post-review` REQUIRES + verifies it before REVIEWED/MERGED (CR4-1). Reviewer-opus is verified by resolving the declaration through the real resolver/config and requiring the concrete result == Claude Opus, with backend:claude required even when model:opus is pinned (CR5-5).\n\nBinding: the receipt is bound to run_id, pre_eval_id, the manifest digest, the pinned pre-launch baseline SHA, and the FINAL diff digest — so a stale receipt from an earlier attempt cannot be replayed against a changed diff (it is invalidated before any re-review; stale-receipt replay is tested across resume). Written atomically. `digest` is the same canonical-JSON self-digest convention as the pre-eval record (compound-v-taxonomy.record_digest, exclude_field='digest').",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "pre_eval_id",
+    "manifest_digest",
+    "baseline_sha",
+    "final_diff_digest",
+    "reviewer_backend",
+    "reviewer_model",
+    "attempt_id",
+    "ts",
+    "verdict",
+    "integration_rationale"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "description": "The fast-path run this receipt belongs to."
+    },
+    "pre_eval_id": {
+      "type": "string",
+      "description": "The originating write-once pre_eval_id (the cross-artifact binding key)."
+    },
+    "manifest_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "'sha256:'+sha256(canonical bytes) of the run's manifest.yaml at review time — ties the receipt to the exact contract reviewed."
+    },
+    "baseline_sha": {
+      "type": "string",
+      "description": "The immutable PRE-LAUNCH baseline commit SHA the scope gate + F2 reclassifier ran against (never HEAD; CR5-3). Full 40-char hex."
+    },
+    "final_diff_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "'sha256:'+sha256 of the canonicalized FINAL git diff (baseline..worktree) that was reviewed. A later re-review MUST invalidate this receipt if the diff digest changes — the anti-stale-replay guard."
+    },
+    "reviewer_backend": {
+      "type": "string",
+      "const": "claude",
+      "description": "MUST be claude (CR5-5): the reviewer⇒opus guarantee needs backend:claude even when model:opus is pinned, because tier:deep alone routes codex→gpt-5.6-sol, not opus."
+    },
+    "reviewer_model": {
+      "type": "string",
+      "description": "The CONCRETE model the declaration resolved to via compound-v-resolve-model.py against the project config. The validator requires this to be Claude Opus (a config override of models.<stance>.claude.deep that isn't opus fails, CR5-5)."
+    },
+    "attempt_id": {
+      "type": ["string", "integer"],
+      "description": "Which review attempt produced this receipt (increments on re-review). Lets resume distinguish a fresh receipt from a stale prior-attempt one."
+    },
+    "ts": {
+      "type": "string",
+      "description": "ISO-8601 UTC timestamp the receipt was written."
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["approved", "issues", "error"],
+      "description": "Normalized combined SPEC+QUALITY verdict. `approved` is required to advance to MERGED; `issues`/`error` block the merge (fail-closed)."
+    },
+    "integration_rationale": {
+      "type": "string",
+      "description": "The recorded rationale that the INTEGRATION pass is vacuous for a single-job fast-path (no cross-job seams) — an auto-pass WITH stated reason, never a silent skip (spec §4 review-pass matrix)."
+    },
+    "review_ref": {
+      "type": ["string", "null"],
+      "description": "Optional repo-relative path to the full review write-up. Advisory."
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "Self-integrity digest: 'sha256:'+sha256(canonical_json(receipt without `digest`)). Optional; verified with compound-v-taxonomy.record_digest(receipt, exclude_field='digest')."
+    }
+  }
+}

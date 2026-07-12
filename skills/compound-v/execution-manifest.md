@@ -129,6 +129,98 @@ The gate unions THREE git probes — `git diff --name-only`, `git ls-files --oth
 
 ---
 
+## v2.9 — Conditional `fast_path` block
+
+When Pre-Evaluation offers a proportionate fast-path and the user accepts, the fast-path materializer
+(M1) writes a **conditional** manifest carrying an optional top-level `fast_path` block. It is
+**absent** on every normal manifest (fully backward-compatible — the validator ignores the block
+unless present). A `fast_path` manifest is a single-job manifest with a relaxed spec/plan and a review
+modeled as a dispatcher **phase**, not a `jobs` entry.
+
+```yaml
+fast_path:
+  eligible: true                       # must be true; mirrors the pinned record's FASTPATH_ELIGIBLE
+  pre_eval_id: 2026-07-12T101500Z-make-button-red-a1b2
+  pre_eval_ref: docs/superpowers/pre-eval/2026-07-12T101500Z-make-button-red-a1b2.json
+  localization_ref: docs/superpowers/pre-eval/2026-07-12T101500Z-make-button-red-a1b2.localization.json
+  taxonomy_ref: docs/superpowers/execution/<run-id>/taxonomy-snapshot.yaml   # immutable snapshot copied into the run
+  taxonomy_digest: "sha256:…"          # content-address of taxonomy_ref (RAW bytes) — MUST equal the record's
+  review:                              # the combined SPEC+QUALITY review DECLARATION (a PHASE, not a job)
+    backend: claude
+    tier: deep                         # backend:claude + tier:deep  OR  model:opus  (CR4-8/CR5-5)
+```
+
+| `fast_path` field | Meaning |
+|---|---|
+| `eligible` | Must be `true`. A `fast_path` block with `eligible` not-true is rejected. |
+| `pre_eval_id` | The write-once id; the cross-artifact binding key. MUST match the pinned record and the localization artifact. |
+| `pre_eval_ref` | Committed path to the pinned pre-eval record (`schemas/pre-eval-record.schema.json`). |
+| `localization_ref` | Committed path to the localization artifact. Its canonical-JSON content-digest is bound across manifest+record+artifact (AC-13). |
+| `taxonomy_ref` | Committed path to the **immutable taxonomy snapshot** copied under the run (not a sha of mutable working-tree state; CR2-6/CR4-2). |
+| `taxonomy_digest` | `sha256:` content-address of `taxonomy_ref`'s RAW bytes. MUST equal the record's `taxonomy_digest`. Absent/malformed/unreadable ⇒ the pre-eval engine never produces `FASTPATH_ELIGIBLE` in the first place. |
+| `review` | The combined SPEC+QUALITY review **declaration** — a dispatcher PHASE outside `jobs`. MUST be `backend: claude` + `tier: deep` **OR** an explicit `model: opus`. |
+
+### What a fast-path manifest looks like
+
+- **(a) Minimal committed spec/plan stub.** `spec_path`/`plan_path` point to committed stubs the
+  materializer wrote — not the full brainstorm output. Still real, committed files.
+- **(b) Exactly ONE implementer job**, and the combined SPEC+QUALITY review is a **dispatcher phase**
+  (the `fast_path.review` declaration), NOT a second `jobs` entry. A second job under a fast-path
+  manifest is a validation failure. The INTEGRATION pass is vacuous (single job, no seams) →
+  auto-pass **with recorded rationale**; SPEC+QUALITY run as one combined Opus pass on the tiny diff.
+- **(c)** `localization_ref` resolves to a committed artifact.
+- **(d)** an **immutable taxonomy snapshot** lives under the run and is referenced by `taxonomy_ref` +
+  `taxonomy_digest`.
+- **Sentinel audits.** `audits` still validates as a non-empty dict, but each entry is a tiny
+  **block-YAML** skip-record `{skipped: true, reason: fastpath, localization: <path>,
+  taxonomy_version: …}` — auditable, not a silent null. (Flow-`{}` mappings are rejected: the
+  `_mini_yaml` fallback mis-parses them — use block YAML.)
+- **Single-literal-path partition.** The sole `write_allowed` entry MUST be **exactly one literal
+  normalized path** — no glob metachar (`*?[`), and not shared/generated/config/migration (classified
+  via the shared taxonomy loader against the **pinned snapshot**, not the working tree).
+
+### Cross-artifact binding the validator enforces (AC-13/CR2-3)
+
+The validator (C1) checks, for a `fast_path` manifest:
+
+- the sole `write_allowed` literal **==** `localization.resolved_paths[0]`;
+- `pre_eval_id`, the `FASTPATH_ELIGIBLE` decision, `taxonomy_digest`, and the **localization
+  content-digest** are **equal** across the manifest, the pinned pre-eval record, and the
+  localization artifact.
+
+A mismatch on any field **fails validation** (tampering fixtures required). Otherwise a manifest
+could cite a safe CSS localization while authorizing a *different* file the scope gate would then
+happily enforce. Digest conventions are single-sourced in
+[`pre-eval-config.md`](../../docs/superpowers/architecture/pre-eval-config.md) §2.
+
+### Two validation modes (Lifecycle protocol / CR4-1)
+
+The validator runs in one of two modes for a `fast_path` manifest (a `fast_path` manifest with **no
+explicit mode is rejected** — ambiguity is fail-closed; a normal manifest is validated mode-lessly as
+before):
+
+- **`--mode pre-dispatch`** — validate the review **DECLARATION** (`backend: claude` + `tier: deep`
+  **OR** `model: opus`; CR4-8/CR5-5) + all cross-artifact bindings + containment, and **forbid** any
+  review **receipt** (it cannot exist yet).
+- **`--mode post-review`** — require + verify the dispatcher-generated **invocation receipt**
+  (`schemas/fastpath-review-receipt.schema.json`) naming the resolved model **before**
+  `REVIEWED`/`MERGED`. Reviewer-opus is proven by resolving the declaration through the real resolver
+  against the project config and requiring the concrete result == **Claude Opus** (a
+  `models.<stance>.claude.deep` override that isn't opus fails; CR5-5).
+
+### Path containment (CR4-6)
+
+Every `*_ref` and the sole `write_allowed` literal MUST be: **normalized**, **repo-relative** (no
+absolute path, no `..` segment), **realpath-under-repo-root**, and a **committed regular file** — NOT
+an escaping symlink. The validator reuses `scope-check.py`'s escaping-symlink scan; it does **not**
+rely on `_seg_is_literal` alone (that only rejects `*?[`, not traversal or symlinks).
+
+> **Reviewer invariant is untouched.** The savings come from skipping the brainstorm + 3 pre-flights +
+> multi-job partition, NEVER from a cheaper reviewer — reviewers stay `deep`/opus (invariant 4). The
+> git-diff scope gate, the test floor, and a proportionate (not zero) review are **never** skipped.
+
+---
+
 ## Relationship to the rest of the pipeline
 
 - **Phase 2 (disjoint partitioning)** emits this manifest (not only prose).

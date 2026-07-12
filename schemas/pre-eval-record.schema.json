@@ -1,0 +1,139 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/procoders/superpowers-v/schemas/pre-eval-record.schema.json",
+  "title": "Compound V pre-eval record",
+  "description": "Canonical, write-once control-plane record written by the pre-eval scoring engine (A3) to docs/superpowers/pre-eval/<pre_eval_id>.json BEFORE any run dir exists (AC-2). `status: PRE_EVAL_DONE` is a RECORD field, NOT a state.json phase (AC-7/CR2-8) — there is no state.json at prediction time. `decision` only ever OFFERS FASTPATH_ELIGIBLE; the request-level score never auto-routes (Iron-Invariant #4). Enforcement fields are deterministic (taxonomy/localization/override logic), never model magnitude (Iron-Invariant #1). C1's fast-path cross-artifact binding (AC-13) verifies pre_eval_id / decision / taxonomy_digest / localization-digest match across this record, the manifest, and the localization artifact.\n\nDIGEST CONVENTION (CR5-6/CR5-7, single-sourced in compound-v-taxonomy.py, documented in docs/superpowers/architecture/pre-eval-config.md): the record's own `digest` = 'sha256:' + sha256(canonical_json(record MINUS the `digest` field)), where canonical_json = json.dumps(obj, sort_keys=True, separators=(',',':'), ensure_ascii=False, allow_nan=False). `taxonomy_digest` is a DISTINCT convention: 'sha256:' + sha256(RAW taxonomy-snapshot bytes) — a content address of the immutable snapshot, not a re-serialization.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "pre_eval_id",
+    "request_slug",
+    "ts",
+    "status",
+    "taxonomy_version",
+    "taxonomy_ref",
+    "taxonomy_digest",
+    "difficulty",
+    "impact",
+    "tiers_signalled",
+    "localization",
+    "override_fired",
+    "decision",
+    "min_sample_status"
+  ],
+  "properties": {
+    "pre_eval_id": {
+      "type": "string",
+      "description": "Write-once join key, minted before localization (CR5-10). Convention: 'YYYY-MM-DDThhmmssZ-<slug>-<nonce>'. The stream key for triage-outcomes and the binding key across every fast-path artifact. Independent of run_id (which does not exist yet).",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z-[A-Za-z0-9._-]+-[A-Za-z0-9]+$"
+    },
+    "run_id": {
+      "type": ["string", "null"],
+      "description": "The run this pre-eval later bound to, or null while unbound (a declined/full-pipeline request may never become a run). Set only via the `bind` triage event once the run dir is created; NEVER present at PRE_EVAL_DONE time."
+    },
+    "request_slug": {
+      "type": "string",
+      "description": "Slug derived from the request text (not the not-yet-existing plan). Human-readable; part of pre_eval_id."
+    },
+    "ts": {
+      "type": "string",
+      "description": "ISO-8601 UTC timestamp the record was written."
+    },
+    "status": {
+      "type": "string",
+      "const": "PRE_EVAL_DONE",
+      "description": "Record-status field (prose-only lifecycle token; AC-7/CR2-8). NOT a state.json phase — no run dir exists at prediction time."
+    },
+    "taxonomy_version": {
+      "type": ["string", "integer"],
+      "description": "The `version` of the taxonomy snapshot used. Human-readable; the machine binding is `taxonomy_digest`."
+    },
+    "taxonomy_ref": {
+      "type": "string",
+      "description": "Repo-relative, normalized, no-'..' path to the IMMUTABLE taxonomy snapshot the score was computed against (pre-run, under docs/superpowers/pre-eval/<pre_eval_id>.taxonomy-snapshot.yaml). A committed regular file (never an escaping symlink). Copied into the run preserving this digest when a fast-path materializes (CR2-6/CR4-2)."
+    },
+    "taxonomy_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "'sha256:'+sha256(RAW snapshot bytes) of taxonomy_ref. MUST equal the manifest's taxonomy_digest (AC-13). Absent/malformed/unreadable taxonomy or snapshot ⇒ the engine emits decision=FULL_PIPELINE unconditionally (spec §2 round-3 fix); such a record still validates but can never be FASTPATH_ELIGIBLE."
+    },
+    "difficulty": { "$ref": "#/$defs/axis" },
+    "impact": { "$ref": "#/$defs/axis" },
+    "tiers_signalled": {
+      "type": "array",
+      "items": { "type": "string", "enum": ["T1", "T2", "T3", "churn", "localization"] },
+      "description": "Which evidence tiers produced a signal (audit trail + `confidence` evidence). NEVER a gating number."
+    },
+    "localization": { "$ref": "#/$defs/localization" },
+    "override_fired": {
+      "type": ["integer", "null"],
+      "description": "The Layer-A hard-override row id (1-6, spec §2) that forced FULL_PIPELINE, or null if none fired. A non-null value REQUIRES decision=FULL_PIPELINE."
+    },
+    "decision": {
+      "type": "string",
+      "enum": ["FASTPATH_ELIGIBLE", "FULL_PIPELINE"],
+      "description": "The triage outcome. FASTPATH_ELIGIBLE only OFFERS a proportionate fast-path (Iron-Invariant #4 — never an auto-route). Any override / unknown axis / missing-or-malformed taxonomy / token-cap overrun ⇒ FULL_PIPELINE (fail-closed)."
+    },
+    "min_sample_status": {
+      "type": "string",
+      "enum": ["insufficient", "calibrated"],
+      "description": "Whether Tier-2 had >= min_sample_count calibrated FAST-PATH-TAKEN outcomes. `insufficient` (the launch default, no data) means Tier-2 is escalation-only (Iron-Invariant #3 counterfactual guard)."
+    },
+    "confidence": {
+      "type": ["number", "string", "null"],
+      "description": "Evidence-only confidence label (signalled tiers + localization confidence). Shown as EVIDENCE, never a gating number (spec §2). Optional."
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "Self-integrity digest of THIS record: 'sha256:'+sha256(canonical_json(record without `digest`)). Optional; when present, downstream verifies it with compound-v-taxonomy.record_digest(record, exclude_field='digest')."
+    }
+  },
+  "$defs": {
+    "band": {
+      "type": "string",
+      "enum": ["low", "medium", "high", "unknown"],
+      "description": "A deterministic band — never a raw magnitude (Iron-Invariant #1). `unknown` forces FULL_PIPELINE via Layer-A override #6."
+    },
+    "axis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["band"],
+      "properties": {
+        "band": { "$ref": "#/$defs/band" },
+        "display": {
+          "type": ["integer", "null"],
+          "description": "Derived 1-10 DISPLAY label (low→1-3, med→4-6, high→7-10); band-midpoint or per-tier max. Computed AFTER the decision — never the gate (spec §2)."
+        }
+      }
+    },
+    "localization": {
+      "type": "object",
+      "description": "The bounded read-only localization result. When A1 writes it as the standalone committed artifact docs/superpowers/pre-eval/<pre_eval_id>.localization.json, that file has THIS shape and its own canonical-JSON `digest` (record_digest, exclude_field='digest'); that localization-digest is the value bound across manifest+record+artifact (AC-13).",
+      "additionalProperties": false,
+      "required": ["resolved_paths", "fan_out", "flags", "confidence"],
+      "properties": {
+        "resolved_paths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Repo-relative paths the request resolves to. Fast-path REQUIRES exactly one literal normalized path; resolved_paths[0] MUST equal the manifest's sole write_allowed literal (AC-13)."
+        },
+        "fan_out": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many distinct sites/paths the change touches. Fast-path requires fan_out <= pre_eval.fan_out_threshold (Layer-B)."
+        },
+        "flags": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Semantic flags from the shared taxonomy classify() (e.g. sensitive_path, content:shared_token, content:a11y, content:feature_flag). Any override-triggering flag forces FULL_PIPELINE."
+        },
+        "confidence": {
+          "type": "string",
+          "enum": ["exact", "ambiguous", "failed"],
+          "description": "Localization confidence. `ambiguous`/`failed` ⇒ Layer-A override #1 ⇒ FULL_PIPELINE (Iron-Invariant #2: no `low` without exact localization)."
+        }
+      }
+    }
+  }
+}
