@@ -1,7 +1,7 @@
 {
   "run_id": "2026-07-11-v2.9-pre-evaluation",
   "phase": "DISPATCHING",
-  "updated_at": "2026-07-12T01:25:02Z",
+  "updated_at": "2026-07-12T01:28:59Z",
   "total_retries": 0,
   "max_total_retries": 12,
   "jobs": {
@@ -16,49 +16,44 @@
       "scope_gate": "pass"
     },
     "task-a1-localize": {
-      "status": "running",
+      "status": "pending",
       "isolation": "worktree",
-      "worktree": ".v29-worktrees/task-a1-localize",
+      "worktree": null,
       "session_id": null,
       "failure_class": null,
-      "log": null,
-      "baseline": "3b2b4d24b3eab15a9f553eda8d42468e08db8bf5"
+      "log": null
     },
     "task-a2-classify": {
-      "status": "running",
+      "status": "pending",
       "isolation": "worktree",
-      "worktree": ".v29-worktrees/task-a2-classify",
+      "worktree": null,
       "session_id": null,
       "failure_class": null,
-      "log": null,
-      "baseline": "3b2b4d24b3eab15a9f553eda8d42468e08db8bf5"
+      "log": null
     },
     "task-b1-taxonomy": {
-      "status": "running",
+      "status": "pending",
       "isolation": "worktree",
-      "worktree": ".v29-worktrees/task-b1-taxonomy",
+      "worktree": null,
       "session_id": null,
       "failure_class": null,
-      "log": null,
-      "baseline": "3b2b4d24b3eab15a9f553eda8d42468e08db8bf5"
+      "log": null
     },
     "task-f1-triage": {
-      "status": "running",
+      "status": "pending",
       "isolation": "worktree",
-      "worktree": ".v29-worktrees/task-f1-triage",
+      "worktree": null,
       "session_id": null,
       "failure_class": null,
-      "log": null,
-      "baseline": "3b2b4d24b3eab15a9f553eda8d42468e08db8bf5"
+      "log": null
     },
     "task-g1-init": {
-      "status": "running",
+      "status": "pending",
       "isolation": "worktree",
-      "worktree": ".v29-worktrees/task-g1-init",
+      "worktree": null,
       "session_id": null,
       "failure_class": null,
-      "log": null,
-      "baseline": "3b2b4d24b3eab15a9f553eda8d42468e08db8bf5"
+      "log": null
     },
     "task-c1-validator": {
       "status": "pending",
