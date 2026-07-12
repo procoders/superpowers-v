@@ -90,10 +90,14 @@ run.py:704` (tmp + `os.replace`).
   adjacency idiom); independent pending features stay runnable. It derives `blocked_by:[ids]` read-only
   (Sol-R3#5 — no persisted cascade to reverse later; reopening a source feature simply re-derives). Adds
   a THIRD key `"blocked_by":[ids]`; the default `--next` 2-key shape is unchanged.
-- **Terminal states (Sol-R2#5, Sol-R3):** `done` (all done); `done_with_blockers` (every remaining
-  feature is a **CONFIRMED** `blocked`, ≥1 done, nothing needs a human) — SUCCESS-with-caveats;
-  `blocked_needing_human` (a `halt_epic`, a tripped breaker, OR any **SUSPECTED** blocker needs a person);
-  `running_with_failures` (non-terminal, work still runnable). `--next --autonomous` reports which.
+- **Terminal states (Sol-R2#5, Sol-R3, Sol-R4#1):** `done` (all features done **AND** the persisted
+  `final_review.status=="passed"` — never `done` on feature-completion alone, so the final cross-feature
+  re-verification actually gates success); `done_with_blockers` (v2.11-only — needs CONFIRMED blockers,
+  which are unreachable in v2.10, so v2.10 never emits this); `blocked_needing_human` (a `halt_epic`, a
+  tripped breaker, OR any SUSPECTED blocker — the v2.10 blocker terminal); `running_with_failures`
+  (non-terminal, work still runnable). Top-level `"final_review":{"status":"pending|passed|failed"}`;
+  **`--record-final-review --status ...`** writes it atomically; autonomous terminal resolution returns
+  `done` only when all-done AND final_review passed. `--next --autonomous` reports which state.
 - **Abandonment is deterministic, not an arbiter "skip" vote (Sol-R2#8, Sol-R3):** once a feature is
   abandoned (retry cap hit, or arbiter `halt_feature`), the DAG — not a model vote — decides that
   independent features keep running. This removes the unreachable-`write_allowed` structural check
@@ -173,10 +177,14 @@ the rest.
 - **`--update --status blocked --feature F --blocker-reason ... --blocker-confirmed t|f
   --families-agreeing ...`** appends the entry. `--next --autonomous` treats `blocked` as a benign skip
   (only transitive dependents drop out, read-only-derived); it never trips a whole-epic halt.
-- **Confirmed vs suspected (Sol-R3#4):** CONFIRMED (≥2 known families) → contributes to
-  `done_with_blockers` (success-with-caveats). SUSPECTED (single family — the v2.10 default) → still
-  isolated so the epic keeps building, but resolves the terminal status to **`blocked_needing_human`** so
-  a person verifies it. The 2-family bar is thus meaningful, not cosmetic.
+- **v2.10 blockers are ALWAYS SUSPECTED — no caller-controlled confirmation (Sol-R4#2):** the ≥2-known-
+  family CONFIRMED tier is structurally unreachable on the Codex+Claude panel, so v2.10 **hard-rejects
+  `--blocker-confirmed true`** (and any caller-supplied `confirmed:true`); `--update --status blocked`
+  always records `confirmed:false`. Arbiter ballots are stored separately (audit trail) — confirmation is
+  DERIVED from ≥2 stored known-family ballots, never asserted by a caller. A suspected blocker is still
+  isolated (epic keeps building the rest) but resolves the terminal status to **`blocked_needing_human`**
+  so a person verifies it. CONFIRMED blockers + `done_with_blockers` arrive only with a 2nd safe external
+  family (v-future). This makes the bar real, not cosmetic, and closes the false-success hole.
 - **Two-point discovery:** a blocker can surface in **pre-flight research** (1B/1C) or mid-
   **implementation** (a worker hits it, like astrology #150). Both funnel through the arbiter's
   confirmation logic before `confirmed:true`.
@@ -246,19 +254,27 @@ Local caps never bound the system; the breaker lives in the deterministic script
 ## Feature DAG + disjoint partition (v2.10)
 
 ```
-A CORE CONTRACT  (scripts/compound-v-epic-state.py — Components 1,3,4: autonomy, --next --autonomous,   deps: []
-                  attempts, --record-disposition, blocker_ledger, terminal states, breakers, Py3.9 ISO.
-                  ONE serial unit = the WHOLE file. Publishes its state/CLI contract before B & C.)
-B arbiter-panel  (scripts/compound-v-epic-arbiter.py — new; Codex+Claude, family map, cap/rotate audit)  deps: [A]
-C driver+integrity(commands/v-epic.md, skills/compound-v/epic-mode.md, commands/v-init.md)                deps: [A,B]
+A CORE CONTRACT  (scripts/compound-v-epic-state.py — Components 1,3,4: autonomy, --init --stance,        deps: []
+                  --next --autonomous, attempts, --record-disposition, --record-final-review,
+                  --record-progress-cycle, --trip-breaker, blocker_ledger lifecycle, terminal states,
+                  Py3.9 ISO. ONE serial unit = the WHOLE file. Publishes its state/CLI contract 1st.)
+B arbiter-panel  (scripts/compound-v-epic-arbiter.py — new; Codex subprocess + Claude BALLOT-FILE input,  deps: [A]
+                  family map, truth table, redaction, cap/rotate audit, feature+epic id validation)
+C driver+review  (commands/v-epic.md, skills/compound-v/epic-mode.md, commands/v-init.md,                 deps: [A,B]
+                  agents/spec-reviewer.md — driver loop, Claude-ballot dispatch, anti-reward-hack gate)
 D docs + CI + rel(README.md, CHANGELOG.md, .claude-plugin/{plugin,marketplace}.json, validate.yml)        deps: [C]
 ```
 
 Disjoint writes — the **entire `compound-v-epic-state.py` is ONE serial unit A** (Components 1, 3, 4 —
 not split by number, which would collide). **A publishes its state-JSON + CLI contract before B/C.** B is
-a new file. `resolve-model.py` is NOT edited (the family map lives in B). C = 3 prose files. D = README/
-CHANGELOG/2 manifests/workflow. No two units write the same file. Plugin manifests are CLEAN. No
-`agents/parallel-dispatcher.md` / `backend-launcher` edits — those were only needed for v2.11 fencing.
+a new file; `resolve-model.py` is NOT edited (the family map lives in B). **Ballot interface (Sol-R4#7):**
+the arbiter script (B) polls Codex as a subprocess but CANNOT launch an in-harness Claude — so B *emits a
+bounded Claude prompt* and *accepts a ballot file* (`--claude-ballot <file>`) that the DRIVER (C)
+produces by dispatching a fresh adversarial Claude Task; B validates + aggregates it with the Codex
+ballot. **C also owns `agents/spec-reviewer.md`** (the anti-reward-hacking Review-Gate check lives there,
+not in driver prose — Sol-R4#9). C = 4 files. D = README/CHANGELOG/2 manifests/workflow. No two units
+write the same file. Plugin manifests are CLEAN. No `agents/parallel-dispatcher.md` / `backend-launcher`
+edits — those were only needed for v2.11 fencing.
 
 ## Chosen defaults (documented, tunable in `/v:init`)
 
@@ -285,6 +301,46 @@ The "survives while you sleep" layer, split out because it needs correct distrib
   rejected at the fenced merge boundary", never "two drivers never run simultaneously".
 - **Honesty boundary** (Level-1/Level-2/headless, sleep/quota/auth/7-day/disable-cron) from the earlier
   draft applies here.
+
+## Design constraints from Sol R4 — BIND THE PLAN (each becomes a task with tests)
+
+The plan MUST encode all of these with concrete CLI signatures + selftests (they are implementation-
+precision, resolved in code, not more spec prose):
+
+1. **Final-review gate (CRIT):** persisted `final_review.status`; `--record-final-review`; `done` iff
+   all-features-done AND `final_review==passed`. Crash/re-entry test around the boundary.
+2. **No caller-confirmed blockers (CRIT):** hard-reject `--blocker-confirmed true` in v2.10; confirmation
+   is DERIVED from ≥2 stored known-family ballots, never caller-asserted. Always `confirmed:false` in v2.10.
+3. **Arbiter truth table (HIGH):** a complete deterministic table for EVERY pair of valid ballots
+   (retry_fix/halt_feature/halt_epic/blocked_external × same), one-valid-ballot, and zero-ballot — the
+   exact resulting disposition + confirmed flag. Within `halt_*`, `halt_epic` beats `halt_feature` only on
+   explicit agreement; a lone halt_epic vs retry_fix → conservative halt_feature. Test each cell.
+4. **Breaker frequency + honest wall-clock (HIGH):** re-check breakers immediately after each attempt and
+   before every arbiter / sample-audit / retry / final-review model call — not only before a feature.
+   Either pass an absolute deadline into long phases OR **downgrade the promise**: "wall-clock is checked
+   at each attempt/model-call boundary; a single in-flight pipeline phase may overrun." Ship the honest
+   wording; do not claim a hard real-time kill.
+5. **`--record-progress-cycle` (HIGH):** one atomic, idempotent progress-boundary command (keyed by a
+   cycle id) that compares prior vs current `done` count, increments or resets `no_progress_cycles`,
+   called by the driver before each breaker check. Test the actual driver sequence, not preconstructed
+   states.
+6. **`--init --stance marathon` (HIGH):** explicit stance + cap arguments (or one validated config input)
+   that writes every marathon field exactly once; checkpoint `--init` stays byte-compatible. Test both.
+7. **Ballot exchange B↔C (HIGH):** B emits a bounded Claude prompt + accepts `--claude-ballot <file>`;
+   C dispatches the fresh Claude Task and feeds the file back. Malformed / stale / wrong-feature ballot
+   tests; B fails safe (drops that ballot) on any of them.
+8. **Blocker-ledger lifecycle (HIGH):** ledger writes idempotent by `(feature, attempt)`; entries carry
+   `active`/`resolved_at`; reopening a feature (`--status pending`) resolves its active entry so the end
+   report never lists a since-succeeded blocker. Test blocked→pending→done + replay of the same update.
+9. **Anti-reward-hack in `agents/spec-reviewer.md` (HIGH):** the "did the diff weaken its own tests/
+   scorers?" check lives in the reviewer agent's contract (C owns the file), with deterministic evidence
+   + a fixture where a weakened scorer is rejected.
+10. **Feature-id audit-path validation (MED):** validate BOTH `epic_id` and `feature` id at every audit
+    write boundary (legacy/handmade states can carry a traversal-style feature value); traversal + symlink
+    containment fixtures for each filename component.
+11. **Secret redaction (MED):** a conservative redaction function + tests for token / authorization-header
+    / private-key / URL-credential / multiline-secret forms; **fail closed** (omit the suspect evidence)
+    when redaction can't complete, before any external-model egress.
 
 ## Review provenance
 
