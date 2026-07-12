@@ -9,6 +9,8 @@ description: Use when superpowers:brainstorming is about to begin (pre-brainstor
 
 Compound V is a **transparent interceptor** that sits between Superpowers phases AND, as of v1.0, a **lightweight execution orchestrator** — the orchestrated pipeline is now the default execution path. You don't invoke it directly — it fires automatically at four transitions:
 
+**Stage −1 — Pre-Evaluation (v2.9).** *Before* Trigger 0 even offers recon, a fast, cheap **Pre-Evaluation** scores the change request on two separate axes (difficulty ⊥ impact) from deterministic tiered evidence and — only when a change is *provably* trivial **and** low-impact — OFFERS a proportionate **fast-path** that collapses the full pipeline into one scope-gated implementer plus one combined SPEC+QUALITY Opus review. Everything else routes to the full pipeline below. It uses no raw LLM magnitude, **never auto-routes** (it only ever offers), and fails closed on any ambiguity, sensitive-path touch, or shared-token/a11y surface. A sibling **post-diff re-classifier** can still ESCALATE an accepted fast-path back to the full pipeline before merge (minting a new run-id, never mutating the frozen manifest). See [phase-preeval.md](phase-preeval.md); the offer/accept decision is captured as a thin ADR via `/v:adr`.
+
 0. **Before `brainstorming` begins** → offers a **gated pre-brainstorm recon** (Trigger 0): a bounded deep-research/WebSearch pass that writes an anti-anchoring recon doc to `docs/superpowers/recon/` — evidence to widen the brainstorm's questions, never a conclusion to converge on. See [phase-0-recon.md](phase-0-recon.md).
 1. **After `brainstorming`, before `writing-plans`** → injects THREE parallel pre-flights:
    - **Phase 1A: Code-Archaeology** — the *technical* reality of the existing code
@@ -20,6 +22,10 @@ Compound V is a **transparent interceptor** that sits between Superpowers phases
 **The unified pipeline (orchestrator-as-default):**
 
 ```
+★ PRE-EVAL (v2.9)  two-axis score → OFFER fast-path | FULL_PIPELINE   (fail-closed; never auto-routes)
+   │  └─ accepted fast-path ─► materialize 1-job manifest ─► implement ─► scope gate
+   │        ─► post-diff re-classify (ESCALATE → full pipeline, new run-id) ─► review ─► merge
+   ▼  (full pipeline)
 ★ RECON (gated)  docs/superpowers/recon/YYYY-MM-DD-<topic>.md   (Trigger 0 — skip: plumbing | KB hit | off)
    ▼
 brainstorm ─► spec (carries feature-level Acceptance Criteria)
