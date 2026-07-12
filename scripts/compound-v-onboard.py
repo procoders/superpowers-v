@@ -127,13 +127,13 @@ def apply_tier2(claims, verdicts):
 
 def cmd_verify(args) -> int:
     repo = os.path.abspath(args.repo)
-    claims = json.load(open(args.claims))["claims"]
+    claims = json.load(open(args.claims, encoding="utf-8"))["claims"]
     blocked, downgraded = [], []
     for i, cl in enumerate(claims):
         for r in tier1_check(cl, repo):
             blocked.append({"index": i, "reason": r})
     if args.tier2:
-        verdicts = json.load(open(args.tier2))["verdicts"]
+        verdicts = json.load(open(args.tier2, encoding="utf-8"))["verdicts"]
         b2, dg = apply_tier2(claims, verdicts)
         blocked += b2; downgraded += dg
     verdict = {"ok": not blocked, "blocked": blocked, "downgraded": downgraded,
@@ -166,7 +166,7 @@ def check_staleness(repo: str) -> dict:
     path = os.path.join(repo, MANIFEST_REL)
     if not os.path.exists(path):
         return {"stale": [], "count": 0}
-    man = json.load(open(path))
+    man = json.load(open(path, encoding="utf-8"))
     stale = []
     cited_paths = set()
     for doc, info in man.get("docs", {}).items():
@@ -190,7 +190,7 @@ def check_staleness(repo: str) -> dict:
 def cmd_staleness(args) -> int:
     repo = os.path.abspath(args.repo)
     if args.write:
-        docmap = json.load(open(args.docmap))["docs"] if args.docmap else {}
+        docmap = json.load(open(args.docmap, encoding="utf-8"))["docs"] if args.docmap else {}
         write_manifest(repo, docmap)
         if not args.quiet:
             print(json.dumps({"written": MANIFEST_REL}, indent=2))
@@ -285,7 +285,7 @@ def _pkg_deps(repo):
     if not os.path.isfile(pj):
         return {}, {}
     try:
-        with open(pj) as fh:
+        with open(pj, encoding="utf-8") as fh:
             text = fh.read()
         data = json.loads(text)
     except (OSError, ValueError):
@@ -1174,6 +1174,13 @@ def build_parser():
 
 
 def main(argv) -> int:
+    # Locale robustness: the draft-taxonomy emitter and JSON output carry non-ASCII (em-dash etc.);
+    # under a C/POSIX locale sys.stdout is ASCII and would raise UnicodeEncodeError. Force UTF-8. (v2.9)
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     args = build_parser().parse_args(argv)
     if args.selftest:
         return _selftest()
