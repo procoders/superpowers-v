@@ -68,9 +68,30 @@ execution-layer override path.
 dangling ref is a violation) and the dependency graph must be acyclic (a cycle is
 a violation naming the jobs on it).
 
+v2.9 — conditional fast-path (only when a top-level ``fast_path`` block is present)
+-----------------------------------------------------------------------------------
+A ``fast_path`` manifest adds: single-literal-path partition, block-YAML audit
+skip-records, cross-artifact binding (AC-13/CR2-3: the sole ``write_allowed``
+literal == ``localization.resolved_paths[0]``; ``pre_eval_id`` / ``FASTPATH_ELIGIBLE``
+decision / ``taxonomy_digest`` / localization content-digest equal across the
+manifest + pinned pre-eval record + localization artifact), CR4-6 path containment
+(normalized, repo-relative, realpath-under-root, committed regular file), a pinned-
+snapshot taxonomy denylist, and TWO validation modes (CR4-1) — a ``fast_path``
+manifest with **no** ``--mode`` is rejected (fail-closed):
+  * ``--mode pre-dispatch`` validates the ``fast_path.review`` DECLARATION
+    (``backend:claude`` + ``tier:deep`` OR ``model:opus``, resolved through
+    compound-v-resolve-model.py to a concrete Claude Opus; CR4-8/CR5-5) and FORBIDS
+    a receipt (it cannot exist yet).
+  * ``--mode post-review`` REQUIRES + verifies the dispatcher-written invocation
+    receipt (``schemas/fastpath-review-receipt.schema.json``) naming the resolved
+    model before REVIEWED/MERGED.
+A legacy (non-fast_path) manifest ignores ``--mode`` entirely — backward compatible.
+
 Usage
 -----
     compound-v-validate-manifest.py <manifest.yaml>
+    compound-v-validate-manifest.py --mode pre-dispatch|post-review \\
+        [--repo-root DIR] [--config FILE] [--receipt FILE] <manifest.yaml>
     compound-v-validate-manifest.py --selftest
 
 Exit codes: 0 = all invariants hold, 1 = one or more violations (printed),
@@ -547,8 +568,516 @@ def _is_reviewer(job):
     return False
 
 
-def validate(manifest):
-    """Return a list of violation strings; empty list means valid."""
+# --------------------------------------------------------------------------- #
+# v2.9 conditional fast-path support (only engaged when a top-level `fast_path`
+# block is present). Sibling scripts are loaded by path (their filenames have
+# hyphens, so they are not importable module names).
+# --------------------------------------------------------------------------- #
+FASTPATH_MODES = ("pre-dispatch", "post-review")
+_EXEC_DIR = os.path.join("docs", "superpowers", "execution")
+_RECEIPT_SUBPATH = os.path.join("review", "receipt.json")
+_RECEIPT_SCHEMA = os.path.join("schemas", "fastpath-review-receipt.schema.json")
+
+_SIBLING_CACHE = {}
+
+
+def _load_sibling(basename):
+    import importlib.util
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(here, basename)
+    try:
+        modname = "cv_" + re.sub(r"[^0-9A-Za-z_]", "_", basename)
+        spec = importlib.util.spec_from_file_location(modname, path)
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:  # noqa: BLE001 - any load failure -> caller degrades
+        return None
+
+
+def _sibling(basename):
+    if basename not in _SIBLING_CACHE:
+        _SIBLING_CACHE[basename] = _load_sibling(basename)
+    return _SIBLING_CACHE[basename]
+
+
+def _read_json_file(repo_root, relpath):
+    """Read a JSON file relative to ``repo_root``; return (obj, err_or_None)."""
+    try:
+        with open(os.path.join(repo_root, relpath), "r", encoding="utf-8") as fh:
+            return json.load(fh), None
+    except Exception as e:  # noqa: BLE001 - any read/parse failure -> fail-closed
+        return None, str(e)
+
+
+def _is_claude_opus(model):
+    """A resolved model counts as Claude Opus iff its name contains 'opus'
+    (case-insensitive). A config override to sonnet/gpt/etc. therefore fails."""
+    return isinstance(model, str) and "opus" in model.lower()
+
+
+def _is_git_tracked(repo_root, relpath):
+    """True/False if a git tree is present (worktree ``.git`` is a FILE, so we test
+    existence not is-dir); None when git is unavailable so the caller can skip."""
+    import subprocess
+
+    if not os.path.exists(os.path.join(repo_root, ".git")):
+        return None
+    try:
+        r = subprocess.run(
+            ["git", "-C", repo_root, "ls-files", "--error-unmatch", relpath],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        return r.returncode == 0
+    except Exception:  # noqa: BLE001 - git missing/broken -> skip the tracked check
+        return None
+
+
+def _containment_problems(label, relpath, repo_root, must_exist=True):
+    """CR4-6 path containment. The path MUST be normalized, repo-relative (no
+    absolute, no ``..`` segment), realpath-under-repo-root (this also rejects any
+    escaping symlink in the chain — realpath resolves every link), and a committed
+    regular file (never a symlink). Mirrors scope-check.py's realpath containment
+    intent; the whole-tree escaping-symlink scan is scope-check.py's job at gate
+    time. Returns a list of violation strings."""
+    problems = []
+    if not isinstance(relpath, str) or not relpath.strip():
+        return ["%s is empty or not a string" % label]
+    if os.path.isabs(relpath) or (len(relpath) >= 2 and relpath[1] == ":"):
+        return ["%s '%s' must be repo-relative (absolute path rejected)"
+                % (label, relpath)]
+    parts = re.split(r"[\\/]", relpath)
+    if ".." in parts:
+        return ["%s '%s' contains a '..' traversal segment (rejected)"
+                % (label, relpath)]
+    norm = os.path.normpath(relpath)
+    if norm != relpath:
+        problems.append("%s '%s' is not normalized (expected '%s')"
+                        % (label, relpath, norm))
+    if repo_root is None:
+        return problems
+    root_real = os.path.realpath(repo_root)
+    prefix = root_real.rstrip(os.sep) + os.sep
+    full = os.path.join(repo_root, norm)
+    real = os.path.realpath(full)
+    if not (real == root_real or real.startswith(prefix)):
+        problems.append("%s '%s' resolves outside the repo root "
+                        "(symlink/realpath escape)" % (label, relpath))
+        return problems
+    if must_exist:
+        if not os.path.lexists(full):
+            problems.append("%s '%s' does not exist (expected a committed "
+                            "regular file)" % (label, relpath))
+            return problems
+        if os.path.islink(full):
+            problems.append("%s '%s' is a symlink (must be a committed regular "
+                            "file, not a symlink)" % (label, relpath))
+            return problems
+        if not os.path.isfile(full):
+            problems.append("%s '%s' is not a regular file" % (label, relpath))
+            return problems
+        tracked = _is_git_tracked(repo_root, norm)
+        if tracked is False:
+            problems.append("%s '%s' is not committed (git does not track it)"
+                            % (label, relpath))
+    return problems
+
+
+def _review_resolution(review, stance, repo_root, config_path):
+    """Validate + RESOLVE the fast_path.review DECLARATION through the real
+    resolver (CR5-5/CR4-8). Returns (problems, resolved_model). The declaration
+    MUST be backend:claude + (tier:deep OR model:opus), and the concrete resolved
+    model MUST be Claude Opus."""
+    problems = []
+    if not isinstance(review, dict) or not review:
+        return (["fast_path.review declaration is missing or not a mapping"], None)
+    backend = str(review.get("backend", "")).lower()
+    tier = review.get("tier")
+    model = review.get("model")
+    if backend != "claude":
+        problems.append(
+            "fast_path.review backend '%s' invalid — the reviewer-Opus guarantee "
+            "requires backend: claude (CR5-5)" % review.get("backend"))
+    has_deep = str(tier or "").lower() == "deep"
+    has_opus_pin = str(model or "").lower() == "opus"
+    if not has_deep and not has_opus_pin:
+        problems.append(
+            "fast_path.review must declare tier: deep OR model: opus "
+            "(CR4-8), got tier=%r model=%r" % (tier, model))
+
+    rm = _sibling("compound-v-resolve-model.py")
+    if rm is None:
+        problems.append("cannot load compound-v-resolve-model.py to resolve the "
+                        "fast_path.review declaration — fail-closed")
+        return (problems, None)
+    cfg_path = config_path
+    if cfg_path is None and repo_root is not None:
+        cand = os.path.join(repo_root, ".claude", "compound-v.json")
+        cfg_path = cand if os.path.isfile(cand) else None
+    try:
+        config_models = rm.load_config_models(cfg_path) if cfg_path else {}
+    except Exception as e:  # noqa: BLE001 - malformed config -> fail-closed
+        problems.append("fast_path.review: project config models unreadable "
+                        "(%s) — fail-closed" % e)
+        return (problems, None)
+    try:
+        res = rm.resolve(
+            backend="claude", tier="deep", config_models=config_models,
+            explicit_model=(model if has_opus_pin else None),
+            stance=(stance or "balanced"))
+        resolved_model = res.get("model")
+    except Exception as e:  # noqa: BLE001 - unresolvable -> fail-closed
+        problems.append("fast_path.review does not resolve to a concrete model "
+                        "(%s) — fail-closed" % e)
+        return (problems, None)
+    if not _is_claude_opus(resolved_model):
+        problems.append(
+            "fast_path.review resolves to '%s', not Claude Opus — reviewers must "
+            "be Opus (CR5-5); a models.<stance>.claude.deep override that isn't "
+            "opus fails" % resolved_model)
+    return (problems, resolved_model)
+
+
+def _load_receipt_schema():
+    here = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(os.path.dirname(here), _RECEIPT_SCHEMA)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:  # noqa: BLE001 - absent schema -> skip schema-shape checks
+        return None
+
+
+def _json_type_ok(v, t):
+    types = t if isinstance(t, list) else [t]
+    for tt in types:
+        if tt == "string" and isinstance(v, str):
+            return True
+        if tt == "integer" and isinstance(v, int) and not isinstance(v, bool):
+            return True
+        if tt == "number" and isinstance(v, (int, float)) and not isinstance(v, bool):
+            return True
+        if tt == "array" and isinstance(v, list):
+            return True
+        if tt == "object" and isinstance(v, dict):
+            return True
+        if tt == "boolean" and isinstance(v, bool):
+            return True
+        if tt == "null" and v is None:
+            return True
+    return False
+
+
+def _schema_lite_value(v, spec, label):
+    problems = []
+    t = spec.get("type")
+    if t is not None and not _json_type_ok(v, t):
+        return ["%s has wrong type (expected %s)" % (label, t)]
+    if "const" in spec and v != spec["const"]:
+        problems.append("%s must be %r (got %r)" % (label, spec["const"], v))
+    if "enum" in spec and v not in spec["enum"]:
+        problems.append("%s must be one of %s (got %r)" % (label, spec["enum"], v))
+    if "pattern" in spec and isinstance(v, str) and re.search(spec["pattern"], v) is None:
+        problems.append("%s does not match pattern %s" % (label, spec["pattern"]))
+    return problems
+
+
+def _schema_lite(obj, schema, label):
+    """A tiny JSON-Schema subset checker (required / additionalProperties:false /
+    type / const / enum / pattern on a flat object). Enough to structurally
+    validate the receipt without a jsonschema dependency."""
+    problems = []
+    if schema.get("type") == "object":
+        if not isinstance(obj, dict):
+            return ["%s is not a JSON object" % label]
+        props = schema.get("properties", {})
+        for req in schema.get("required", []):
+            if req not in obj:
+                problems.append("%s missing required field '%s'" % (label, req))
+        if schema.get("additionalProperties") is False:
+            for k in obj:
+                if k not in props:
+                    problems.append("%s has unknown field '%s'" % (label, k))
+        for k, spec in props.items():
+            if k in obj:
+                problems.extend(_schema_lite_value(obj[k], spec, "%s.%s" % (label, k)))
+    return problems
+
+
+def _validate_receipt(receipt_full, receipt_rel, manifest, fp, expected_model):
+    """post-review: require + verify the dispatcher-written invocation receipt."""
+    if not os.path.isfile(receipt_full):
+        return ["fast_path --mode post-review requires a review receipt at '%s', "
+                "none found (fail-closed)" % receipt_rel]
+    try:
+        with open(receipt_full, "r", encoding="utf-8") as fh:
+            receipt = json.load(fh)
+    except Exception as e:  # noqa: BLE001
+        return ["fast_path review receipt '%s' is unreadable or not JSON (%s)"
+                % (receipt_rel, e)]
+    problems = []
+    schema = _load_receipt_schema()
+    if schema is not None:
+        problems.extend(_schema_lite(receipt, schema, "review receipt"))
+    if not isinstance(receipt, dict):
+        return problems
+    if str(receipt.get("run_id")) != str(manifest.get("run_id")):
+        problems.append("review receipt run_id '%s' != manifest run_id '%s'"
+                        % (receipt.get("run_id"), manifest.get("run_id")))
+    if str(receipt.get("pre_eval_id")) != str(fp.get("pre_eval_id")):
+        problems.append("review receipt pre_eval_id '%s' != manifest "
+                        "fast_path.pre_eval_id '%s'"
+                        % (receipt.get("pre_eval_id"), fp.get("pre_eval_id")))
+    if str(receipt.get("reviewer_backend", "")).lower() != "claude":
+        problems.append("review receipt reviewer_backend '%s' invalid — must be "
+                        "claude (CR5-5)" % receipt.get("reviewer_backend"))
+    rmodel = receipt.get("reviewer_model")
+    if not _is_claude_opus(rmodel):
+        problems.append("review receipt reviewer_model '%s' is not Claude Opus "
+                        "(CR5-5)" % rmodel)
+    if (expected_model is not None and rmodel is not None
+            and str(rmodel) != str(expected_model)):
+        problems.append("review receipt reviewer_model '%s' does not name the "
+                        "resolved review model '%s'" % (rmodel, expected_model))
+    if isinstance(receipt.get("digest"), str):
+        tax = _sibling("compound-v-taxonomy.py")
+        if tax is not None:
+            try:
+                if tax.record_digest(receipt, exclude_field="digest") != receipt["digest"]:
+                    problems.append("review receipt self-digest mismatch")
+            except Exception:  # noqa: BLE001
+                pass
+    return problems
+
+
+def _validate_fast_path(manifest, fp, mode, repo_root, config_path, receipt_path):
+    """All v2.9 conditional fast-path invariants (gated on fast_path.eligible).
+    Returns a list of violation strings."""
+    problems = []
+    if repo_root is None:
+        repo_root = os.getcwd()
+    if not isinstance(fp, dict):
+        return ["fast_path block must be a mapping"]
+    if fp.get("eligible") is not True:
+        problems.append("fast_path.eligible must be true (a fast_path block with "
+                        "eligible not-true is rejected)")
+
+    # Mode is mandatory + fail-closed for a fast_path manifest.
+    if mode is None:
+        problems.append("fast_path manifest requires an explicit --mode "
+                        "(pre-dispatch|post-review); no-mode is fail-closed")
+    elif mode not in FASTPATH_MODES:
+        problems.append("fast_path --mode '%s' invalid (expected one of %s)"
+                        % (mode, ", ".join(FASTPATH_MODES)))
+
+    # Exactly ONE implementer job; the review is a dispatcher PHASE, not a job.
+    jobs = manifest.get("jobs") if isinstance(manifest.get("jobs"), list) else []
+    if len(jobs) != 1:
+        problems.append(
+            "fast_path manifest must have exactly ONE implementer job (found %d); "
+            "the combined SPEC+QUALITY review is a dispatcher phase "
+            "(fast_path.review), not a jobs entry" % len(jobs))
+    job0 = jobs[0] if jobs and isinstance(jobs[0], dict) else None
+    if job0 is not None and _is_reviewer(job0):
+        problems.append("fast_path manifest's sole job '%s' is a reviewer — the "
+                        "review must be the fast_path.review phase, not a jobs "
+                        "entry" % job0.get("id"))
+
+    # Sole write_allowed literal.
+    write_literal = None
+    if job0 is not None:
+        wa = job0.get("write_allowed")
+        if not isinstance(wa, list) or len(wa) != 1:
+            problems.append("fast_path job '%s' write_allowed must be exactly ONE "
+                            "literal path" % job0.get("id"))
+        else:
+            cand = str(wa[0])
+            if not _seg_is_literal(cand):
+                problems.append("fast_path write_allowed '%s' must be a single "
+                                "LITERAL normalized path (no glob metachar *?[)"
+                                % cand)
+            else:
+                write_literal = cand
+                if os.path.normpath(cand) != cand:
+                    problems.append("fast_path write_allowed '%s' is not "
+                                    "normalized (expected '%s')"
+                                    % (cand, os.path.normpath(cand)))
+
+    # Sentinel audits: block-YAML skip-records only (flow-{} rejected).
+    audits = manifest.get("audits")
+    if isinstance(audits, dict):
+        for k, v in audits.items():
+            if isinstance(v, str) and v.strip().startswith("{"):
+                problems.append("fast_path audit '%s' is a flow-style mapping — "
+                                "use a block YAML skip-record (the stdlib fallback "
+                                "parser mis-parses flow {})" % k)
+            elif not isinstance(v, dict):
+                problems.append("fast_path audit '%s' must be a block YAML "
+                                "skip-record {skipped, reason, localization, "
+                                "taxonomy_version}" % k)
+            elif not v:
+                problems.append("fast_path audit '%s' is an empty mapping — use a "
+                                "block YAML skip-record {skipped, reason, "
+                                "localization, taxonomy_version}" % k)
+            else:
+                if v.get("skipped") is not True:
+                    problems.append("fast_path audit '%s' skip-record must set "
+                                    "skipped: true" % k)
+                for f in ("reason", "localization", "taxonomy_version"):
+                    if v.get(f) in (None, ""):
+                        problems.append("fast_path audit '%s' skip-record missing "
+                                        "'%s'" % (k, f))
+
+    # Containment (CR4-6): the write literal + every *_ref.
+    pre_ref = fp.get("pre_eval_ref")
+    loc_ref = fp.get("localization_ref")
+    tax_ref = fp.get("taxonomy_ref")
+    if write_literal is not None:
+        problems.extend(_containment_problems(
+            "fast_path write target", write_literal, repo_root, must_exist=True))
+    for label, ref in (("fast_path.pre_eval_ref", pre_ref),
+                       ("fast_path.localization_ref", loc_ref),
+                       ("fast_path.taxonomy_ref", tax_ref)):
+        if ref in (None, ""):
+            problems.append("%s is required on a fast_path manifest" % label)
+        else:
+            problems.extend(_containment_problems(
+                label, str(ref), repo_root, must_exist=True))
+
+    # Cross-artifact binding (AC-13 / CR2-3).
+    tax = _sibling("compound-v-taxonomy.py")
+    rec = art = None
+    if pre_ref:
+        rec, err = _read_json_file(repo_root, str(pre_ref))
+        if rec is None:
+            problems.append("fast_path pinned pre-eval record '%s' unreadable "
+                            "(%s) — fail-closed" % (pre_ref, err))
+    if loc_ref:
+        art, err = _read_json_file(repo_root, str(loc_ref))
+        if art is None:
+            problems.append("fast_path localization artifact '%s' unreadable "
+                            "(%s) — fail-closed" % (loc_ref, err))
+
+    def _rp0(obj):
+        if isinstance(obj, dict):
+            rp = obj.get("resolved_paths")
+            if isinstance(rp, list) and rp:
+                return str(rp[0])
+        return None
+
+    art_rp0 = _rp0(art)
+    rec_loc = rec.get("localization") if isinstance(rec, dict) else None
+    rec_rp0 = _rp0(rec_loc)
+    if write_literal is not None and art_rp0 is not None and write_literal != art_rp0:
+        problems.append("fast_path binding: sole write_allowed '%s' != "
+                        "localization.resolved_paths[0] '%s' (AC-13)"
+                        % (write_literal, art_rp0))
+    if art_rp0 is not None and rec_rp0 is not None and art_rp0 != rec_rp0:
+        problems.append("fast_path binding: localization resolved_paths[0] differs "
+                        "between artifact '%s' and record '%s'"
+                        % (art_rp0, rec_rp0))
+    if isinstance(rec, dict) and str(fp.get("pre_eval_id")) != str(rec.get("pre_eval_id")):
+        problems.append("fast_path binding: manifest pre_eval_id '%s' != record "
+                        "pre_eval_id '%s' (AC-13)"
+                        % (fp.get("pre_eval_id"), rec.get("pre_eval_id")))
+    if isinstance(rec, dict) and str(rec.get("decision")) != "FASTPATH_ELIGIBLE":
+        problems.append("fast_path binding: pinned record decision '%s' is not "
+                        "FASTPATH_ELIGIBLE (AC-13)" % rec.get("decision"))
+
+    m_taxd = fp.get("taxonomy_digest")
+    if isinstance(rec, dict) and str(m_taxd) != str(rec.get("taxonomy_digest")):
+        problems.append("fast_path binding: manifest taxonomy_digest '%s' != "
+                        "record taxonomy_digest '%s' (AC-13)"
+                        % (m_taxd, rec.get("taxonomy_digest")))
+    if tax is not None and isinstance(rec_loc, dict) and isinstance(art, dict):
+        try:
+            d_rec = tax.record_digest(rec_loc, exclude_field="digest")
+            d_art = tax.record_digest(art, exclude_field="digest")
+            if d_rec != d_art:
+                problems.append("fast_path binding: localization content-digest "
+                                "differs between record and artifact (AC-13)")
+            if isinstance(art.get("digest"), str) and art["digest"] != d_art:
+                problems.append("fast_path binding: localization artifact "
+                                "self-digest mismatch")
+        except Exception as e:  # noqa: BLE001
+            problems.append("fast_path binding: cannot compute localization "
+                            "content-digest (%s) — fail-closed" % e)
+
+    # Taxonomy classification denylist against the PINNED snapshot.
+    if tax is not None and tax_ref:
+        tax_full = os.path.join(repo_root, str(tax_ref))
+        try:
+            snap_digest = tax.taxonomy_digest_file(tax_full)
+            if m_taxd is not None and str(m_taxd) != str(snap_digest):
+                problems.append("fast_path binding: manifest taxonomy_digest '%s' "
+                                "!= snapshot content-address '%s' (AC-13)"
+                                % (m_taxd, snap_digest))
+        except Exception:  # noqa: BLE001 - containment already reports absence
+            pass
+        loaded = None
+        try:
+            loaded = tax.load_taxonomy(path=tax_full)
+        except Exception as e:  # noqa: BLE001
+            problems.append("fast_path taxonomy snapshot '%s' unreadable/malformed "
+                            "(%s) — fail-closed" % (tax_ref, e))
+        if loaded is not None and write_literal is not None and _seg_is_literal(write_literal):
+            cls = tax.classify(loaded, path=write_literal)
+            if cls.get("sensitive"):
+                problems.append("fast_path write target '%s' is a sensitive path "
+                                "per the pinned taxonomy — not fast-path eligible"
+                                % write_literal)
+            if str(cls.get("impact_band")) == "high":
+                problems.append("fast_path write target '%s' classifies as "
+                                "high-impact per the pinned taxonomy — not "
+                                "fast-path eligible" % write_literal)
+            churn = loaded.get("churn") or {}
+            for g in churn.get("exclude_paths", []):
+                if glob_match(write_literal, str(g)):
+                    problems.append("fast_path write target '%s' is a "
+                                    "generated/vendored path (churn exclude '%s') "
+                                    "— not fast-path eligible" % (write_literal, g))
+                    break
+
+    # Mode-specific: review declaration + receipt handling.
+    stance = manifest.get("routing_stance") or "balanced"
+    run_id = manifest.get("run_id")
+    receipt_full = receipt_path or os.path.join(
+        repo_root, _EXEC_DIR, str(run_id), _RECEIPT_SUBPATH)
+    if receipt_path is None:
+        try:
+            receipt_rel = os.path.relpath(receipt_full, repo_root)
+        except Exception:  # noqa: BLE001
+            receipt_rel = receipt_full
+    else:
+        receipt_rel = receipt_path
+
+    if mode == "pre-dispatch":
+        decl_problems, _ = _review_resolution(fp.get("review"), stance, repo_root, config_path)
+        problems.extend(decl_problems)
+        if os.path.lexists(receipt_full):
+            problems.append("fast_path --mode pre-dispatch forbids a review "
+                            "receipt, but one exists at '%s' (it cannot exist "
+                            "before review)" % receipt_rel)
+    elif mode == "post-review":
+        decl_problems, resolved_model = _review_resolution(
+            fp.get("review"), stance, repo_root, config_path)
+        problems.extend(decl_problems)
+        problems.extend(_validate_receipt(
+            receipt_full, receipt_rel, manifest, fp, resolved_model))
+
+    return problems
+
+
+def validate(manifest, mode=None, repo_root=None, config_path=None,
+             receipt_path=None):
+    """Return a list of violation strings; empty list means valid.
+
+    ``mode``/``repo_root``/``config_path``/``receipt_path`` drive the v2.9
+    conditional fast-path checks (only when a top-level ``fast_path`` block is
+    present); a legacy manifest ignores them entirely (backward compatible)."""
     problems = []
 
     if not isinstance(manifest, dict):
@@ -886,29 +1415,79 @@ def validate(manifest):
                     "shared_foundation serial job" % res
                 )
 
+    # v2.9 conditional fast-path: only engaged when a top-level `fast_path` block
+    # is present (a legacy manifest is fully unaffected — backward compatible).
+    if "fast_path" in manifest and manifest.get("fast_path") is not None:
+        problems.extend(_validate_fast_path(
+            manifest, manifest.get("fast_path"), mode, repo_root,
+            config_path, receipt_path))
+
     return problems
 
 
-def validate_text(text):
+def validate_text(text, mode=None, repo_root=None, config_path=None,
+                  receipt_path=None):
     data = load_yaml(text)
-    return validate(data)
+    return validate(data, mode=mode, repo_root=repo_root,
+                    config_path=config_path, receipt_path=receipt_path)
+
+
+def _find_repo_root(start):
+    """Walk up from ``start`` to the nearest dir containing ``.git`` (a dir OR a
+    worktree ``.git`` file); fall back to the CWD when none is found."""
+    d = os.path.abspath(start)
+    while True:
+        if os.path.exists(os.path.join(d, ".git")):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            return os.getcwd()
+        d = parent
+
+
+def _get_opt(args, name):
+    """Pop ``--name VALUE`` from a mutable args list; return VALUE or None."""
+    if name in args:
+        i = args.index(name)
+        if i + 1 < len(args):
+            val = args[i + 1]
+            del args[i:i + 2]
+            return val
+        del args[i:i + 1]
+    return None
 
 
 def main(argv):
-    args = argv[1:]
+    args = list(argv[1:])
     if "--selftest" in args:
         return _selftest()
-    if not args:
-        print("usage: compound-v-validate-manifest.py <manifest.yaml>", file=sys.stderr)
+    mode = _get_opt(args, "--mode")
+    repo_root = _get_opt(args, "--repo-root")
+    config_path = _get_opt(args, "--config")
+    receipt_path = _get_opt(args, "--receipt")
+    # Drop any remaining flags; the first non-flag token is the manifest path.
+    positional = [a for a in args if not a.startswith("--")]
+    if not positional:
+        print("usage: compound-v-validate-manifest.py [--mode pre-dispatch|"
+              "post-review] [--repo-root DIR] [--config FILE] [--receipt FILE] "
+              "<manifest.yaml>", file=sys.stderr)
         return 2
-    path = args[0]
+    if mode is not None and mode not in FASTPATH_MODES:
+        print("error: --mode '%s' invalid (expected one of %s)"
+              % (mode, ", ".join(FASTPATH_MODES)), file=sys.stderr)
+        return 2
+    path = positional[0]
     if not os.path.isfile(path):
         print("error: not a file: %s" % path, file=sys.stderr)
         return 2
+    if repo_root is None:
+        repo_root = _find_repo_root(os.path.dirname(os.path.abspath(path)))
     with open(path, "r") as fh:
         text = fh.read()
     try:
-        problems = validate_text(text)
+        problems = validate_text(text, mode=mode, repo_root=repo_root,
+                                 config_path=config_path,
+                                 receipt_path=receipt_path)
     except Exception as e:  # noqa: BLE001 - report parse failure cleanly
         print(json.dumps({"verdict": "error", "error": str(e)}), file=sys.stderr)
         return 2
@@ -1307,6 +1886,376 @@ jobs:
 """
 
 
+# --------------------------------------------------------------------------- #
+# v2.9 fast-path self-test — builds on-disk fixtures in a temp repo root so the
+# containment + cross-artifact-binding checks exercise real files. Digests are
+# computed via the SHARED compound-v-taxonomy primitives (record_digest /
+# taxonomy_digest_bytes) so a producer (M1) and this consumer can never diverge.
+# --------------------------------------------------------------------------- #
+def _fp_taxonomy_bytes():
+    """The example taxonomy shipped with the plugin (a valid snapshot to test
+    classification against)."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    example = os.path.join(os.path.dirname(here),
+                           ".claude", "compound-v-impact-taxonomy.example.yaml")
+    with open(example, "rb") as fh:
+        return fh.read()
+
+
+def _fp_write(root, rel, data):
+    full = os.path.join(root, rel)
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    mode = "wb" if isinstance(data, bytes) else "w"
+    kw = {} if isinstance(data, bytes) else {"encoding": "utf-8"}
+    with open(full, mode, **kw) as fh:
+        fh.write(data)
+    return full
+
+
+def _fp_build(root, tax_mod, **opts):
+    """Materialize a fast-path fixture under ``root``; return the manifest text.
+
+    Knobs (all default to the VALID shape): write_path, resolved_path,
+    record_decision, manifest_tax_digest, record_tax_digest, artifact_fan_out,
+    manifest_pre_eval_id, review (dict), audits_flow, second_job, glob_write,
+    symlink_write, loc_ref, tax_ref, pre_ref, make_receipt (dict|None),
+    receipt_rel.
+    """
+    pre_eval_id = "2026-07-12T101500Z-make-button-red-a1b2"
+    run_id = pre_eval_id
+    write_path = opts.get("write_path", "src/components/button.css")
+    resolved_path = opts.get("resolved_path", write_path)
+
+    pre_ref = opts.get("pre_ref",
+                       "docs/superpowers/pre-eval/%s.json" % pre_eval_id)
+    loc_ref = opts.get("loc_ref",
+                       "docs/superpowers/pre-eval/%s.localization.json" % pre_eval_id)
+    tax_ref = opts.get(
+        "tax_ref",
+        "docs/superpowers/execution/%s/taxonomy-snapshot.yaml" % run_id)
+
+    # Immutable taxonomy snapshot + its content-address digest (RAW bytes).
+    tax_bytes = _fp_taxonomy_bytes()
+    _fp_write(root, tax_ref, tax_bytes)
+    real_tax_digest = tax_mod.taxonomy_digest_bytes(tax_bytes)
+    manifest_tax_digest = opts.get("manifest_tax_digest", real_tax_digest)
+    record_tax_digest = opts.get("record_tax_digest", real_tax_digest)
+
+    # Localization object (embedded in the record) + standalone artifact w/ digest.
+    localization = {
+        "resolved_paths": [resolved_path],
+        "fan_out": 1,
+        "flags": [],
+        "confidence": "exact",
+    }
+    artifact = dict(localization)
+    artifact["fan_out"] = opts.get("artifact_fan_out", 1)
+    artifact["digest"] = tax_mod.record_digest(artifact)
+    _fp_write(root, loc_ref, json.dumps(artifact))
+
+    record = {
+        "pre_eval_id": pre_eval_id,
+        "request_slug": "make-button-red",
+        "ts": "2026-07-12T10:15:00Z",
+        "status": "PRE_EVAL_DONE",
+        "taxonomy_version": 1,
+        "taxonomy_ref": tax_ref,
+        "taxonomy_digest": record_tax_digest,
+        "difficulty": {"band": "low"},
+        "impact": {"band": "low"},
+        "tiers_signalled": ["localization"],
+        "localization": localization,
+        "override_fired": None,
+        "decision": opts.get("record_decision", "FASTPATH_ELIGIBLE"),
+        "min_sample_status": "insufficient",
+    }
+    _fp_write(root, pre_ref, json.dumps(record))
+
+    # The write target: a real committed-looking regular file (or an escaping
+    # symlink for the containment tamper case).
+    if opts.get("symlink_write"):
+        outside = os.path.join(root, "..", "outside-secret.css")
+        with open(os.path.join(root, "outside-secret.css"), "w") as fh:
+            fh.write("body{}\n")  # a sibling target the symlink escapes to
+        link_full = os.path.join(root, write_path)
+        os.makedirs(os.path.dirname(link_full), exist_ok=True)
+        os.symlink(os.path.abspath(os.path.join(root, "outside-secret.css")),
+                   link_full)
+    elif not opts.get("skip_write_file"):
+        _fp_write(root, write_path, "body{}\n")
+
+    if opts.get("make_receipt") is not None:
+        receipt_rel = opts.get(
+            "receipt_rel",
+            "docs/superpowers/execution/%s/review/receipt.json" % run_id)
+        _fp_write(root, receipt_rel, json.dumps(opts["make_receipt"]))
+
+    manifest_pre_eval_id = opts.get("manifest_pre_eval_id", pre_eval_id)
+    review = opts.get("review", {"backend": "claude", "tier": "deep"})
+    review_lines = "\n".join(
+        "    %s: %s" % (k, v) for k, v in review.items())
+
+    if opts.get("audits_flow"):
+        audits_block = (
+            "audits:\n"
+            "  archaeology: {}\n"
+            "  domain: {}\n"
+            "  library: {}\n"
+        )
+    else:
+        skip = ("    skipped: true\n"
+                "    reason: fastpath\n"
+                "    localization: %s\n"
+                "    taxonomy_version: 1\n") % loc_ref
+        audits_block = (
+            "audits:\n"
+            "  archaeology:\n" + skip +
+            "  domain:\n" + skip +
+            "  library:\n" + skip
+        )
+
+    write_glob = "src/**" if opts.get("glob_write") else write_path
+    second = ""
+    if opts.get("second_job"):
+        second = (
+            "  - id: task-2-extra\n"
+            "    title: \"extra\"\n"
+            "    type: docs\n"
+            "    backend: claude\n"
+            "    tier: standard\n"
+            "    isolation: direct\n"
+            "    run: serial\n"
+            "    write_allowed: [docs/extra.md]\n"
+            "    read_allowed: [src/**]\n"
+            "    acceptance: [\"x\"]\n"
+        )
+
+    text = (
+        "run_id: %s\n"
+        "feature: \"make button red\"\n"
+        "spec_path: docs/superpowers/execution/%s/spec-stub.md\n"
+        "plan_path: docs/superpowers/execution/%s/plan-stub.md\n"
+        "%s"
+        "routing_stance: balanced\n"
+        "max_parallel: 1\n"
+        "acceptance_criteria:\n"
+        "  - \"button is red\"\n"
+        "fast_path:\n"
+        "  eligible: true\n"
+        "  pre_eval_id: %s\n"
+        "  pre_eval_ref: %s\n"
+        "  localization_ref: %s\n"
+        "  taxonomy_ref: %s\n"
+        "  taxonomy_digest: \"%s\"\n"
+        "  review:\n"
+        "%s\n"
+        "jobs:\n"
+        "  - id: task-1-button\n"
+        "    title: \"make button red\"\n"
+        "    type: bounded_crud\n"
+        "    backend: claude\n"
+        "    tier: standard\n"
+        "    isolation: direct\n"
+        "    run: serial\n"
+        "    write_allowed: [%s]\n"
+        "    read_allowed: [src/**]\n"
+        "    acceptance: [\"button red\"]\n"
+        "%s"
+    ) % (run_id, run_id, run_id, audits_block, manifest_pre_eval_id, pre_ref,
+         loc_ref, tax_ref, manifest_tax_digest, review_lines, write_glob, second)
+    return text
+
+
+def _fp_receipt(**over):
+    r = {
+        "run_id": "2026-07-12T101500Z-make-button-red-a1b2",
+        "pre_eval_id": "2026-07-12T101500Z-make-button-red-a1b2",
+        "manifest_digest": "sha256:" + ("a" * 64),
+        "baseline_sha": "a" * 40,
+        "final_diff_digest": "sha256:" + ("b" * 64),
+        "reviewer_backend": "claude",
+        "reviewer_model": "opus",
+        "attempt_id": 1,
+        "ts": "2026-07-12T10:20:00Z",
+        "verdict": "approved",
+        "integration_rationale": "single-job fast-path: no cross-job seams",
+    }
+    r.update(over)
+    return r
+
+
+def _selftest_fastpath(expect):
+    import tempfile
+
+    tax_mod = _sibling("compound-v-taxonomy.py")
+    if tax_mod is None:
+        expect("fastpath: shared taxonomy module loads", False)
+        return
+
+    base = tempfile.mkdtemp(prefix="cv-c1-fp-")
+
+    def case(name):
+        d = os.path.join(base, name)
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    # (a) minimal fast_path manifest validates under pre-dispatch.
+    d = case("valid_predispatch")
+    txt = _fp_build(d, tax_mod)
+    res = validate_text(txt, mode="pre-dispatch", repo_root=d)
+    expect("fastpath: valid manifest passes pre-dispatch (%r)" % res, res == [])
+
+    # No-mode = fail-closed for a fast_path manifest.
+    d = case("nomode")
+    txt = _fp_build(d, tax_mod)
+    res = validate_text(txt, mode=None, repo_root=d)
+    expect("fastpath: no --mode is rejected (fail-closed)",
+           any("mode" in p.lower() for p in res))
+
+    # (b) a second jobs entry under fast_path fails.
+    d = case("secondjob")
+    txt = _fp_build(d, tax_mod, second_job=True)
+    res = validate_text(txt, mode="pre-dispatch", repo_root=d)
+    expect("fastpath: second job rejected",
+           any("exactly ONE" in p for p in res))
+
+    # (c) glob write_allowed under fast_path rejected; one literal path passes.
+    d = case("globwrite")
+    txt = _fp_build(d, tax_mod, glob_write=True)
+    res = validate_text(txt, mode="pre-dispatch", repo_root=d)
+    expect("fastpath: glob write_allowed rejected",
+           any("LITERAL" in p for p in res))
+
+    # (d) block-YAML skip-record validates; flow-{} rejected ("use block YAML").
+    d = case("flowaudit")
+    txt = _fp_build(d, tax_mod, audits_flow=True)
+    res = validate_text(txt, mode="pre-dispatch", repo_root=d)
+    expect("fastpath: flow-{} audit rejected (use block YAML)",
+           any("block YAML" in p for p in res))
+    # _mini_yaml nested-mapping fixture: the skip-record parses as a real mapping.
+    parsed = _mini_yaml(_fp_build(case("miniyaml"), tax_mod))
+    expect("fastpath: _mini_yaml parses nested skip-record mapping",
+           isinstance(parsed.get("audits", {}).get("archaeology"), dict)
+           and parsed["audits"]["archaeology"].get("skipped") is True)
+
+    # (e) taxonomy classification: a sensitive write target is rejected.
+    d = case("sensitive")
+    txt = _fp_build(d, tax_mod, write_path="src/auth/login.css",
+                    resolved_path="src/auth/login.css")
+    res = validate_text(txt, mode="pre-dispatch", repo_root=d)
+    expect("fastpath: sensitive-path write target rejected",
+           any("sensitive" in p for p in res))
+    # unreadable taxonomy snapshot -> fail-closed.
+    d = case("badtax")
+    txt = _fp_build(d, tax_mod)
+    os.remove(os.path.join(
+        d, "docs/superpowers/execution/2026-07-12T101500Z-make-button-red-a1b2/"
+        "taxonomy-snapshot.yaml"))
+    res = validate_text(txt, mode="pre-dispatch", repo_root=d)
+    expect("fastpath: unreadable taxonomy snapshot fails closed",
+           any("taxonomy" in p.lower() and ("unreadable" in p or "does not exist"
+               in p or "not a regular file" in p) for p in res))
+
+    # (f) cross-artifact binding tampering — every mismatched field fails.
+    d = case("tamper_path")
+    _fp_write(d, "src/components/other.css", "body{}\n")
+    txt = _fp_build(d, tax_mod, write_path="src/components/other.css",
+                    resolved_path="src/components/button.css")
+    res = validate_text(txt, mode="pre-dispatch", repo_root=d)
+    expect("fastpath: write literal != resolved_paths[0] rejected",
+           any("resolved_paths[0]" in p for p in res))
+
+    d = case("tamper_preid")
+    txt = _fp_build(d, tax_mod, manifest_pre_eval_id="2026-07-12T101500Z-evil-9999")
+    res = validate_text(txt, mode="pre-dispatch", repo_root=d)
+    expect("fastpath: pre_eval_id mismatch rejected",
+           any("pre_eval_id" in p for p in res))
+
+    d = case("tamper_decision")
+    txt = _fp_build(d, tax_mod, record_decision="FULL_PIPELINE")
+    res = validate_text(txt, mode="pre-dispatch", repo_root=d)
+    expect("fastpath: non-FASTPATH_ELIGIBLE record rejected",
+           any("FASTPATH_ELIGIBLE" in p for p in res))
+
+    d = case("tamper_taxdigest")
+    txt = _fp_build(d, tax_mod, manifest_tax_digest="sha256:" + ("0" * 64))
+    res = validate_text(txt, mode="pre-dispatch", repo_root=d)
+    expect("fastpath: taxonomy_digest mismatch rejected",
+           any("taxonomy_digest" in p for p in res))
+
+    d = case("tamper_locdigest")
+    txt = _fp_build(d, tax_mod, artifact_fan_out=99)
+    res = validate_text(txt, mode="pre-dispatch", repo_root=d)
+    expect("fastpath: localization content-digest mismatch rejected",
+           any("localization" in p and "digest" in p for p in res))
+
+    # (g) two validation modes.
+    d = case("declined_backend")
+    txt = _fp_build(d, tax_mod, review={"backend": "codex", "tier": "deep"})
+    res = validate_text(txt, mode="pre-dispatch", repo_root=d)
+    expect("fastpath: review backend != claude rejected",
+           any("claude" in p and "review" in p.lower() for p in res))
+
+    d = case("review_no_deep_no_opus")
+    txt = _fp_build(d, tax_mod, review={"backend": "claude", "tier": "standard"})
+    res = validate_text(txt, mode="pre-dispatch", repo_root=d)
+    expect("fastpath: review claude+standard (not deep/opus) rejected",
+           any("deep" in p or "opus" in p for p in res))
+
+    # pre-dispatch forbids a receipt.
+    d = case("predispatch_receipt")
+    txt = _fp_build(d, tax_mod, make_receipt=_fp_receipt())
+    res = validate_text(txt, mode="pre-dispatch", repo_root=d)
+    expect("fastpath: pre-dispatch forbids an existing receipt",
+           any("forbid" in p or "receipt" in p for p in res))
+
+    # post-review requires + verifies the receipt.
+    d = case("postreview_ok")
+    txt = _fp_build(d, tax_mod, make_receipt=_fp_receipt())
+    res = validate_text(txt, mode="post-review", repo_root=d)
+    expect("fastpath: post-review with a valid receipt passes (%r)" % res,
+           res == [])
+
+    d = case("postreview_missing")
+    txt = _fp_build(d, tax_mod)  # no receipt written
+    res = validate_text(txt, mode="post-review", repo_root=d)
+    expect("fastpath: post-review requires a receipt",
+           any("receipt" in p for p in res))
+
+    d = case("postreview_badbackend")
+    txt = _fp_build(d, tax_mod,
+                    make_receipt=_fp_receipt(reviewer_backend="codex"))
+    res = validate_text(txt, mode="post-review", repo_root=d)
+    expect("fastpath: receipt reviewer_backend != claude rejected",
+           any("claude" in p for p in res))
+
+    d = case("postreview_badmodel")
+    txt = _fp_build(d, tax_mod,
+                    make_receipt=_fp_receipt(reviewer_model="sonnet"))
+    res = validate_text(txt, mode="post-review", repo_root=d)
+    expect("fastpath: receipt reviewer_model not Opus rejected",
+           any("opus" in p.lower() or "resolved" in p.lower() for p in res))
+
+    # (h) containment: traversal ref + escaping symlink write target.
+    d = case("traversal_ref")
+    txt = _fp_build(d, tax_mod, loc_ref="../evil.localization.json")
+    res = validate_text(txt, mode="pre-dispatch", repo_root=d)
+    expect("fastpath: '..' traversal ref rejected",
+           any("traversal" in p or ".." in p for p in res))
+
+    if hasattr(os, "symlink"):
+        d = case("symlink_write")
+        try:
+            txt = _fp_build(d, tax_mod, symlink_write=True)
+            res = validate_text(txt, mode="pre-dispatch", repo_root=d)
+            expect("fastpath: escaping-symlink write target rejected",
+                   any("symlink" in p or "outside the repo" in p
+                       or "escape" in p for p in res))
+        except OSError:
+            expect("fastpath: escaping-symlink write target rejected "
+                   "(symlink unsupported — skipped)", True)
+
+
 def _selftest():
     failures = []
 
@@ -1456,6 +2405,9 @@ def _selftest():
     expect("fallback parser: good manifest clean (%r)" % fb, fb == [])
     fb_bad = validate(_mini_yaml(BAD_MANIFEST))
     expect("fallback parser: bad manifest flagged", len(fb_bad) > 0)
+
+    # v2.9 conditional fast-path suite (on-disk fixtures).
+    _selftest_fastpath(expect)
 
     if failures:
         print("\nSELFTEST FAILED: %d case(s)" % len(failures))
