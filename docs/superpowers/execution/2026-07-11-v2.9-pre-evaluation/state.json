@@ -1,6 +1,6 @@
 {
   "run_id": "2026-07-11-v2.9-pre-evaluation",
-  "phase": "DISPATCHING",
+  "phase": "COLLECTED",
   "updated_at": "2026-07-12T00:00:00Z",
   "total_retries": 0,
   "max_total_retries": 12,
@@ -133,9 +133,9 @@
       "log": null
     },
     "task-z1-integration": {
-      "status": "running",
+      "status": "done",
       "isolation": "direct",
-      "worktree": ".v29-worktrees/task-z1-integration",
+      "worktree": null,
       "session_id": null,
       "failure_class": null,
       "log": null
