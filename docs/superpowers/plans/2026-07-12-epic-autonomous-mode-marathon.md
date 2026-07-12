@@ -196,6 +196,63 @@ the audit JSON.
   v2.10 boundary inline ("auto-resurrection coming in v2.11"). CHANGELOG 2.10.0 entry. Bump
   `.claude-plugin/{plugin,marketplace}.json` 2.9.0→2.10.0. Commit.
 
+## Plan-review corrections (Codex Sol xhigh) — BINDING (each is an acceptance criterion)
+
+Sol confirmed the partition is disjoint and A→B→C→D sound; these tighten the RUNTIME contract:
+
+**Unit A:**
+- **A2 blocker precedence (CRIT):** `--next --autonomous` returns a runnable INDEPENDENT feature FIRST;
+  it emits `blocked_needing_human` ONLY when no runnable feature remains. A suspected blocker never
+  terminates while independent work is runnable. Test: blocked A, dependent B, independent C → C runs
+  before any terminal escalation.
+- **A2/A6 final-review roll-up (CRIT):** change the `--update` epic roll-up (`epic-state.py:512-519`) so
+  top-level `done` is set ONLY by `--record-final-review passed` — last-feature completion yields a
+  `pending_final_review` reason, NOT `done`. Define `final_review==failed` behavior (stays non-terminal;
+  human re-runs). Test last-feature completion, crash/re-entry before review, failed review, passed review.
+- **A3 transition gating (HIGH):** the done/blocked→running rejection applies ONLY when the persisted
+  `autonomy.stance=="marathon"`; the legacy/checkpoint `--update` path is byte-unchanged (it accepts
+  arbitrary status replacement today). Add checkpoint golden tests for the previously-accepted update
+  transitions (dir contents + `git status`), not just `--init`.
+- **A3/A7 attempt accounting (HIGH):** invariant `total_attempts == sum(feature.attempts)`, recomputed on
+  every mutation/check; REMOVE any caller-controlled `--attempt` input; freeze omitted-vs-explicit-null
+  cap semantics (a loud log on explicit null=unbounded); either enforce `max_features` (cap features
+  started per invocation) or drop it from the schema — do not store an unenforced knob.
+
+**Unit B:**
+- **evidence-file containment (CRIT):** `--evidence-file` must be a non-symlink regular file, realpath-
+  contained under the validated epic/attempt dir; reject absolute/`..`/escaping-symlink BEFORE reading
+  (reuse the `check_specs` idiom, `epic-state.py:125-156`). Test `/etc/passwd`, `../`, escaping symlink,
+  valid contained file.
+- **two-phase ballot API (HIGH):** replace circular `classify [--claude-ballot]` with `prepare --state
+  --feature --attempt --now` → emits a bounded challenge+prompt bound to `{epic_id,feature,attempt,
+  challenge_id}`; then `classify --challenge <id> --claude-ballot <file> --evidence-file ...`. A ballot
+  whose 4-tuple doesn't match current state, or a replayed/consumed challenge, is DROPPED. Test replay
+  across attempts + after crash/re-entry.
+- **bounded output (HIGH):** the Codex invocation passes explicit supervisor `--stdout <f> --stderr <f>`
+  with `--max-output-bytes` (streams without file paths are inherited & UNCAPPED per
+  `run-with-timeout.py:100-109`); independently size-check the `--output-last-message` file before parse.
+  Oversized-fake-Codex test proves every retained artifact stays under its cap.
+- **frozen result+ledger schema (MED):** freeze the arbiter result (incl. redacted `evidence`/missing
+  fact, resolved family, attempt, audit path) and the ledger entry (families, derived dependents) so C's
+  halt-page fields all come from persisted data. CLI round-trip + golden halt-page test.
+
+**Unit C:**
+- **stance binding (HIGH):** the driver's autonomous branch passes `--init --stance marathon` + validated
+  caps, and REJECTS autonomous operation when persisted `state.autonomy.stance != marathon` (config alone
+  is insufficient — the persisted state stance is authoritative). Define the switch-config-on-existing-
+  checkpoint-epic migration/re-init policy. Test it.
+- **running→failed before arbitration (HIGH):** on a FAILURE the driver first `--update --status failed
+  --last-error ...` (mirroring `v-epic.md:50-54`) BEFORE progress/breaker/arbitration, so a retry starts
+  legally from `failed`, not `running`.
+- **breaker cadence (HIGH):** enumerate EVERY breaker boundary — call `--record-progress-cycle` (with a
+  stable cycle-id reused across the checks in one loop pass so it doesn't over-increment) then
+  `--breaker-check` before each feature AND re-check after each attempt and before every arbiter /
+  sample-audit / retry / final-review model call. Ship the honest single-phase-overrun wording.
+- **crash-resume commit points (HIGH):** name the exact two-command `git add`/`git commit` (check each
+  exit) after each completed attempt/disposition and before every terminal handoff — epic-state, arbiter
+  audit, ballot artifacts, ledger transitions. Crash-sim test: restart from committed state without
+  duplicating an attempt or losing an audit/ledger entry.
+
 ## Self-review (run before dispatch)
 - Spec coverage: every spec Component + all 11 R4 constraints map to a task above (final-review→A6/A2;
   no-caller-confirm→A4; truth table→B4; breaker freq→C1+A7; progress-cycle→A7; --init stance→A1; ballot
