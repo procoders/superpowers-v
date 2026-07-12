@@ -1,7 +1,7 @@
 {
   "run_id": "2026-07-11-v2.9-pre-evaluation",
   "phase": "DISPATCHING",
-  "updated_at": "2026-07-12T01:28:59Z",
+  "updated_at": "2026-07-12T00:00:00Z",
   "total_retries": 0,
   "max_total_retries": 12,
   "jobs": {
@@ -16,44 +16,49 @@
       "scope_gate": "pass"
     },
     "task-a1-localize": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
       "worktree": null,
       "session_id": null,
       "failure_class": null,
-      "log": null
+      "log": null,
+      "baseline": "424af970c4a02207a1e75b4db4377e0b128e0dcd"
     },
     "task-a2-classify": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
       "worktree": null,
       "session_id": null,
       "failure_class": null,
-      "log": null
+      "log": null,
+      "baseline": "424af970c4a02207a1e75b4db4377e0b128e0dcd"
     },
     "task-b1-taxonomy": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
       "worktree": null,
       "session_id": null,
       "failure_class": null,
-      "log": null
+      "log": null,
+      "baseline": "424af970c4a02207a1e75b4db4377e0b128e0dcd"
     },
     "task-f1-triage": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
       "worktree": null,
       "session_id": null,
       "failure_class": null,
-      "log": null
+      "log": null,
+      "baseline": "424af970c4a02207a1e75b4db4377e0b128e0dcd"
     },
     "task-g1-init": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
       "worktree": null,
       "session_id": null,
       "failure_class": null,
-      "log": null
+      "log": null,
+      "baseline": "424af970c4a02207a1e75b4db4377e0b128e0dcd"
     },
     "task-c1-validator": {
       "status": "pending",
