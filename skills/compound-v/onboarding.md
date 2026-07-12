@@ -123,6 +123,11 @@ the gate. Surface, as advisory recommendations:
 - managed-layer conflicts as **informational only** (per the cardinal rule);
 - **MCP / external-tool recommendations** from `python3 scripts/compound-v-onboard.py recommend-mcp --repo . [--mcp-config .mcp.json]`: signal→tool with a **CLI-over-MCP** bias (a `github.com` remote → the `gh` CLI, **never** a GitHub MCP), each recommendation carrying pre-filled **least-privilege** flags and its signal **evidence**. Surface any **lethal-trifecta** warning (private-data + untrusted-content + external-write) loudly, **with its specific remedy** — warn-only, the patient decides. Present-only here; the `.mcp.json` write happens at WRITE (§7), behind the gate.
 - **Third-party skills via `npx autoskills`** from `python3 scripts/compound-v-onboard.py recommend-autoskills --repo .`: when a project manifest is detected (`applicable: true`, evidence = the marker file), recommend [`npx autoskills`](https://www.autoskills.sh/) — and, **behind a human confirm** (external code), run the **preview** `npx autoskills --dry-run` **through `scripts/compound-v-run-with-timeout.py` with `stdin </dev/null`** (the external-launch invariant) to show *which* skills it would install. Surface the **auto-trigger-degradation caution** (installing many overlapping skills hurts triggering across the user's whole set — see §Skills stance). **Never** run the install form; if the user declines, just recommend they run `npx autoskills` themselves. Present-only — onboarding installs nothing.
+- **Impact-taxonomy DRAFT + churn cache** from `python3 scripts/compound-v-onboard.py draft-taxonomy --repo . --with-churn` (v2.9). This proposes the two static-evidence inputs the Pre-Evaluation stage reads — it does **not** decide anything and it **never auto-applies**:
+  - a first-cut **impact-taxonomy** built from the repo's directory/module structure + detected stack — **`path_patterns` from the repo's REAL dirs** (cosmetic surfaces low, front-end logic medium, migrations/auth/payments/`.github`/`*.sql`/`*.tf` high), the **content-pattern surfaces OFFERED per-repo** (the **four core** kinds — `legal_copy` · `i18n_placeholder` · `feature_flag` · `config_literal` — always offered; **`shared_token` + `a11y` offered only when a UI is detected**, each with a reason you can override at the GATE), and a **starter `sensitive_path_list`** (always carrying the secret-file surfaces `*.pem`/`*.key`/`*.env` so the required list is never empty — fail-closed — unioned with the repo's real high-blast surfaces). The subcommand **self-validates** the draft against `scripts/compound-v-validate-taxonomy.py` (B1) and emits **block-style YAML only** (never inline flow `{}` — the no-PyYAML fallback drops flow mappings). Its real home is `.claude/compound-v-impact-taxonomy.yaml`, written only at WRITE behind the GATE.
+  - a normalized **churn cache** (`docs/superpowers/memory/churn-cache.json`), built from the **same drafted taxonomy's `churn:` block** (single-sourced excludes) via `scripts/compound-v-churn.py` — the escalation-only static signal the scorer's override reads. `draft-taxonomy --with-churn` returns a **proposal summary** (path count, hot paths, `formula_id`, `head_sha`); it writes nothing here.
+
+  Both are **present-then-confirm** (the `recommend-mcp` precedent): the draft/summary is shown at the GATE, the real files are written at WRITE, committed at COMMIT, indexed at INDEX — **never auto-applied**. A human keeps/edits the taxonomy at the GATE; onboarding proposes, the maintainer decides.
 
 Also flag drift from `python3 scripts/compound-v-onboard.py staleness --repo .` on a refresh run
 (see §Refresh).
@@ -139,6 +144,13 @@ the import targets is what makes the real blast radius visible.
 
 For each generated token in a DESIGN.md, also show the **source evidence** (which config key / CSS
 var / class string it came from) — lint PASS does not certify extraction fidelity.
+
+Show the **impact-taxonomy draft** and the **churn-cache summary** here too, as their own
+**per-section diffs**: the `path_patterns` (with the real dir each row came from), the offered
+content-pattern surfaces (flagging `shared_token`/`a11y` as offered-only-if-UI, with the reason), the
+starter `sensitive_path_list`, and the churn summary (path count + hot paths). Surface the draft's
+**self-validation verdict** (B1 `valid`/`violations`) so the maintainer sees it will parse before
+approving. The maintainer keeps/edits the taxonomy at the GATE; nothing is applied without approval.
 
 ### 7. WRITE — only approved artifacts, narrow surface
 
@@ -158,6 +170,14 @@ recommendations like `gh` are surfaced as setup instructions, **not** `.mcp.json
 and any foreign-tool file are **out of scope** (foreign files are read-only/advisory). Apply existing-file
 changes through detect-and-bridge (§below); never silently overwrite.
 
+**Only when the user approved the taxonomy/churn diff (v2.9):** write the impact-taxonomy to
+`.claude/compound-v-impact-taxonomy.yaml` — `python3 scripts/compound-v-onboard.py draft-taxonomy
+--repo . --emit-yaml > .claude/compound-v-impact-taxonomy.yaml` (block-style, self-validated) — and,
+if it already exists, apply the maintainer's kept/edited version rather than clobbering it. Then build
+the churn cache from that now-written taxonomy: `python3 scripts/compound-v-churn.py --repo .` (a full,
+reproducible rebuild → `docs/superpowers/memory/churn-cache.json`). Both stay **out of the DESIGN/arch
+write set** — they are the Pre-Evaluation stage's static inputs, not generated prose.
+
 **Provenance header on every generated file.** Each file opens with a marker —
 "generated by /v:onboard from cited evidence on `<date>`; refresh with /v:onboard --refresh" — and a
 link to `.onboard-manifest.json`, so durable committed authority is plainly marked as generated.
@@ -166,14 +186,20 @@ link to `.onboard-manifest.json`, so durable committed authority is plainly mark
 `git add` + commit the approved generated files **before** indexing. Recall and the scope gate index
 **only git-tracked files**; an uncommitted (or `docs/superpowers/`-ignored) doc is invisible to
 `git ls-files` and therefore to V-memory. Commit-before-index is a correctness requirement, not
-hygiene.
+hygiene. Commit the approved **impact-taxonomy** and **churn cache** in this set too — the
+Pre-Evaluation scorer, localizer, and post-diff reclassifier all read `.claude/compound-v-impact-taxonomy.yaml`,
+and the escalation signal reads `docs/superpowers/memory/churn-cache.json`; an uncommitted taxonomy
+means the fast-path gate has no static evidence to read.
 
 ### 9. INDEX — write the manifest, then auto `/v:memory-refresh`
 Write/update `docs/superpowers/architecture/.onboard-manifest.json` (each doc's cited files + their
 content hashes) via `python3 scripts/compound-v-onboard.py staleness --repo . --write`, then **auto-run
 [`/v:memory-refresh`](../../commands/v-memory-refresh.md)** so the new docs (and root
 `AGENTS.md`/`CLAUDE.md`/`CONVENTIONS.md`/`DESIGN.md`) become recallable. The manifest stays `.json`
-(out of the index by design); everything else is now committed and indexable.
+(out of the index by design); everything else is now committed and indexable. The committed
+**impact-taxonomy** (`.yaml`) and **churn cache** (`.json`) are now git-tracked, so the scope gate and
+the Pre-Evaluation stage see them; they are static-evidence inputs, not recall prose, so — like the
+manifest — they carry no FTS5 obligation.
 
 ---
 

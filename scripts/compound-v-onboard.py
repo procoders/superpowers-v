@@ -463,6 +463,345 @@ def recommend_autoskills(repo):
             "command": "npx autoskills --dry-run", "caution": AUTOSKILLS_CAUTION}
 
 
+# --------------------------------------------------------------------------- draft-taxonomy (D2)
+# /v:onboard DRAFTS a first-cut impact-taxonomy from the repo's directory/module structure +
+# detected stack (path_patterns from REAL dirs; the six content-pattern kinds — the four core
+# surfaces always OFFERED per-repo, shared_token/a11y OFFERED only when a UI is detected; a starter
+# sensitive_path_list; the single-sourced churn block). Present-then-confirm (recommend-mcp
+# precedent): it emits a PROPOSAL and NEVER auto-writes the real
+# `.claude/compound-v-impact-taxonomy.yaml`. Output is BLOCK-STYLE YAML only — the no-PyYAML stdlib
+# fallback (_mini_yaml) silently drops inline flow `{}` mappings, so a flow-style draft would parse
+# EMPTY without PyYAML. The emitted draft self-validates against compound-v-validate-taxonomy.py (B1).
+
+_CHURN_EXCLUDES = ["**/*.min.js", "**/*.min.css", "**/dist/**", "**/build/**",
+                   "**/vendor/**", "**/node_modules/**", "**/*.lock", "**/package-lock.json"]
+_CHURN_FORMATS = [r"^chore\(fmt\)", r"^style:", r"^format:"]
+
+# path_patterns drafted ONLY for surfaces that actually exist in the repo (glob, difficulty, impact).
+_PATH_LOW_EXTS = [("css", "**/*.css"), ("scss", "**/*.scss"), ("sass", "**/*.sass"),
+                  ("less", "**/*.less"), ("md", "**/*.md")]
+_PATH_MED_EXTS = [("jsx", "**/*.jsx"), ("tsx", "**/*.tsx"), ("vue", "**/*.vue"),
+                  ("svelte", "**/*.svelte")]
+_PATH_HIGH_EXTS = [("sql", "**/*.sql"), ("tf", "**/*.tf")]
+_PATH_HIGH_SEGS = [("auth", "**/auth/**"), ("payments", "**/payments/**"),
+                   ("billing", "**/billing/**"), ("migrations", "**/migrations/**")]
+
+# sensitive_path_list — always-on secret-file surfaces (so the required list is NEVER empty, even on
+# a bare repo — fail-closed) unioned with evidence-driven high-blast surfaces.
+_SENS_ALWAYS = ["**/*.pem", "**/*.key", "**/*.env"]
+_SENS_SEGS = [("auth", "**/auth/**"), ("session", "**/session/**"),
+              ("credentials", "**/credentials/**"), ("payments", "**/payments/**"),
+              ("billing", "**/billing/**"), ("migrations", "**/migrations/**")]
+_SENS_EXTS = [("sql", "**/*.sql"), ("tf", "**/*.tf")]
+
+# content_patterns — the four CORE impact surfaces, always offered per-repo (content patterns only
+# ever RAISE impact, so a starter set is safe; the human prunes at the GATE).
+_CONTENT_CORE = [
+    {"match": "terms of service", "pattern_type": "literal", "case": "insensitive",
+     "scan": "content", "kind": "legal_copy", "impact_band": "high"},
+    {"match": "privacy policy", "pattern_type": "literal", "case": "insensitive",
+     "scan": "content", "kind": "legal_copy", "impact_band": "high"},
+    {"match": "consent", "pattern_type": "literal", "case": "insensitive",
+     "scan": "content", "kind": "legal_copy", "impact_band": "high"},
+    {"match": r"\{\{[a-zA-Z0-9_]+\}\}", "pattern_type": "regex", "case": "sensitive",
+     "scan": "content", "kind": "i18n_placeholder", "impact_band": "high"},
+    {"match": "%[sd]", "pattern_type": "regex", "case": "sensitive",
+     "scan": "content", "kind": "i18n_placeholder", "impact_band": "high"},
+    {"match": "feature_flag", "pattern_type": "literal", "case": "insensitive",
+     "scan": "content", "kind": "feature_flag", "impact_band": "high"},
+    {"match": "isEnabled", "pattern_type": "literal", "case": "insensitive",
+     "scan": "content", "kind": "feature_flag", "impact_band": "medium"},
+    {"match": "timeout", "pattern_type": "literal", "case": "insensitive",
+     "scan": "content", "kind": "config_literal", "impact_band": "medium"},
+    {"match": "rate_limit", "pattern_type": "literal", "case": "insensitive",
+     "scan": "content", "kind": "config_literal", "impact_band": "high"},
+    {"match": "price", "pattern_type": "literal", "case": "insensitive",
+     "scan": "content", "kind": "config_literal", "impact_band": "high"},
+]
+# content_patterns — shared_token + a11y are UI-conditional: a "cosmetic" color or aria construct is
+# a high-impact surface, so they are OFFERED only when a UI is detected (else offered=False, with a
+# reason the human can override at the GATE).
+_CONTENT_UI = [
+    {"match": "--color-", "pattern_type": "literal", "case": "insensitive",
+     "scan": "content", "kind": "shared_token", "impact_band": "high"},
+    {"match": "theme.tokens", "pattern_type": "literal", "case": "insensitive",
+     "scan": "content", "kind": "shared_token", "impact_band": "high"},
+    {"match": "aria-label", "pattern_type": "literal", "case": "insensitive",
+     "scan": "content", "kind": "a11y", "impact_band": "high"},
+    {"match": "alt=", "pattern_type": "literal", "case": "insensitive",
+     "scan": "content", "kind": "a11y", "impact_band": "medium"},
+]
+
+_TAXONOMY_TARGET_REL = os.path.join(".claude", "compound-v-impact-taxonomy.yaml")
+_CHURN_TARGET_REL = os.path.join("docs", "superpowers", "memory", "churn-cache.json")
+
+
+def _load_sibling(filename):
+    """Load a sibling script (hyphenated → importlib) by path. None if unavailable/broken."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+    if not os.path.isfile(path):
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("cv_" + re.sub(r"\W", "_", filename), path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:  # noqa: BLE001 — a broken sibling degrades, never crashes onboarding
+        return None
+
+
+def _repo_files(repo):
+    """Repo-relative file paths. Prefer git-tracked (ground truth); fall back to an os.walk that
+    prunes VENDOR_DIRS so draft-taxonomy still works on a not-yet-committed tree."""
+    tracked = _git_tracked(repo)
+    if tracked:
+        return tracked
+    files = []
+    for root, dirs, names in os.walk(repo):
+        dirs[:] = [d for d in dirs if d not in VENDOR_DIRS]
+        for nm in names:
+            rel = os.path.relpath(os.path.join(root, nm), repo)
+            files.append(rel.replace(os.sep, "/"))
+    return files
+
+
+def _scan_index(files):
+    exts, segs, basenames = set(), set(), set()
+    for f in files:
+        parts = f.split("/")
+        basenames.add(parts[-1])
+        for seg in parts[:-1]:
+            segs.add(seg)
+        if "." in parts[-1]:
+            exts.add(parts[-1].rsplit(".", 1)[1].lower())
+    return exts, segs, basenames
+
+
+def _first_ext(files, ext):
+    suf = "." + ext
+    for f in files:
+        if f.lower().endswith(suf):
+            return f
+    return None
+
+
+def _first_seg(files, seg):
+    for f in files:
+        if seg in f.split("/")[:-1]:
+            return f
+    return None
+
+
+def _draft_path_patterns(files, segs):
+    rows = []
+
+    def add(glob, dband, iband, evidence):
+        rows.append({"glob": glob, "difficulty_band": dband,
+                     "impact_band": iband, "evidence": evidence})
+
+    for ext, glob in _PATH_LOW_EXTS:
+        ev = _first_ext(files, ext)
+        if ev:
+            add(glob, "low", "low", ev)
+    for ext, glob in _PATH_MED_EXTS:
+        ev = _first_ext(files, ext)
+        if ev:
+            add(glob, "medium", "medium", ev)
+    for ext, glob in _PATH_HIGH_EXTS:
+        ev = _first_ext(files, ext)
+        if ev:
+            add(glob, "high", "high", ev)
+    for seg, glob in _PATH_HIGH_SEGS:
+        ev = _first_seg(files, seg)
+        if ev:
+            add(glob, "high", "high", ev)
+    if ".github" in segs:
+        add(".github/**", "high", "high", _first_seg(files, ".github"))
+    return rows
+
+
+def _draft_content_patterns(ui):
+    rows = list(_CONTENT_CORE)
+    reason_core = "core impact surface (offered per-repo)"
+    kinds = [
+        {"kind": "legal_copy", "offered": True, "reason": reason_core},
+        {"kind": "i18n_placeholder", "offered": True, "reason": reason_core},
+        {"kind": "feature_flag", "offered": True, "reason": reason_core},
+        {"kind": "config_literal", "offered": True, "reason": reason_core},
+    ]
+    if ui:
+        rows += _CONTENT_UI
+        kinds += [
+            {"kind": "shared_token", "offered": True,
+             "reason": "UI detected — a shared design token is a cosmetic-looking high-impact surface"},
+            {"kind": "a11y", "offered": True,
+             "reason": "UI detected — accessibility constructs silently break WCAG"},
+        ]
+    else:
+        kinds += [
+            {"kind": "shared_token", "offered": False,
+             "reason": "no UI detected — offer if this repo has a design-token system"},
+            {"kind": "a11y", "offered": False,
+             "reason": "no UI detected — offer if this repo renders user-facing markup"},
+        ]
+    return kinds, rows
+
+
+def _draft_sensitive(files, segs, basenames):
+    out = [{"glob": g, "evidence": "default (secret-file surface)"} for g in _SENS_ALWAYS]
+    for seg, glob in _SENS_SEGS:
+        ev = _first_seg(files, seg)
+        if ev:
+            out.append({"glob": glob, "evidence": ev})
+    for ext, glob in _SENS_EXTS:
+        ev = _first_ext(files, ext)
+        if ev:
+            out.append({"glob": glob, "evidence": ev})
+    if ".github" in segs:
+        out.append({"glob": ".github/**", "evidence": _first_seg(files, ".github")})
+    if "Dockerfile" in basenames:
+        ev = next((f for f in files if f.split("/")[-1] == "Dockerfile"), None)
+        out.append({"glob": "**/Dockerfile", "evidence": ev})
+    seen, dedup = set(), []
+    for e in out:
+        if e["glob"] not in seen:
+            seen.add(e["glob"])
+            dedup.append(e)
+    return dedup
+
+
+def _dq(s):
+    """Double-quoted YAML scalar (for globs / literal matches — no backslashes)."""
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _sq(s):
+    """Single-quoted YAML scalar (for regex — NO escape processing under PyYAML OR the _mini_yaml
+    fallback, so the pattern is byte-identical either way; only a literal `'` needs doubling)."""
+    return "'" + s.replace("'", "''") + "'"
+
+
+def _render_match(row):
+    return _sq(row["match"]) if row.get("pattern_type") == "regex" else _dq(row["match"])
+
+
+def emit_taxonomy_yaml(path_patterns, content_rows, sensitive, churn_block):
+    """Emit a BLOCK-STYLE taxonomy YAML (never inline flow `{}` — the _mini_yaml fallback drops
+    flow maps). Optional empty sections are omitted; sensitive_path_list + churn are always present."""
+    L = [
+        "# Compound V — impact taxonomy (v2.9 Pre-Evaluation). DRAFTED by /v:onboard from this repo's",
+        "# directory/module structure + detected stack; a FIRST CUT only. A human keeps/edits it at the",
+        "# GATE and it is NEVER auto-applied. Schema authority: scripts/compound-v-taxonomy.py.",
+        "# Bands: low | medium | high. Validate: python3 scripts/compound-v-validate-taxonomy.py <file>.",
+        "# BLOCK-STYLE ONLY — never inline flow mappings: the no-PyYAML stdlib fallback drops them.",
+        "#",
+        "# The real project taxonomy lives at .claude/compound-v-impact-taxonomy.yaml (present-then-",
+        "# confirm: /v:onboard proposes this text; WRITE writes it only after you approve at the GATE).",
+        "",
+        "version: 1",
+    ]
+    if path_patterns:
+        L += ["", "path_patterns:"]
+        for r in path_patterns:
+            L.append("  - glob: " + _dq(r["glob"]))
+            L.append("    difficulty_band: " + r["difficulty_band"])
+            L.append("    impact_band: " + r["impact_band"])
+    if content_rows:
+        L += ["", "content_patterns:"]
+        for r in content_rows:
+            L.append("  - match: " + _render_match(r))
+            L.append("    pattern_type: " + r["pattern_type"])
+            L.append("    case: " + r["case"])
+            L.append("    scan: " + r["scan"])
+            L.append("    kind: " + r["kind"])
+            L.append("    impact_band: " + r["impact_band"])
+    L += ["", "sensitive_path_list:"]
+    for e in sensitive:
+        L.append("  - " + _dq(e["glob"]))
+    L += ["", "churn:", "  exclude_paths:"]
+    for g in churn_block["exclude_paths"]:
+        L.append("    - " + _dq(g))
+    L.append("  format_commit_patterns:")
+    for rx in churn_block["format_commit_patterns"]:
+        L.append("    - " + _sq(rx))
+    return "\n".join(L) + "\n"
+
+
+def _validate_taxonomy_text(text):
+    """Self-validate the drafted taxonomy against B1 (compound-v-validate-taxonomy.py). Returns
+    (valid|None, violations). None = validator unavailable (reported, never a silent pass)."""
+    mod = _load_sibling("compound-v-validate-taxonomy.py")
+    if mod is None:
+        return None, ["validator unavailable (compound-v-validate-taxonomy.py)"]
+    try:
+        problems = mod.validate_text(text)
+    except Exception as e:  # noqa: BLE001 — fail-closed: a validator crash is "not valid"
+        return False, ["validator error: %s" % e]
+    return (not problems), problems
+
+
+def draft_taxonomy(repo):
+    """Draft a first-cut impact-taxonomy PROPOSAL from the repo. Present-then-confirm: returns the
+    proposal (incl. the block-style YAML + per-decision evidence + a self-validation verdict) and
+    writes NOTHING. The real `.claude/compound-v-impact-taxonomy.yaml` is written only at WRITE,
+    behind the human GATE (per skills/compound-v/onboarding.md)."""
+    files = _repo_files(repo)
+    _, segs, basenames = _scan_index(files)
+    ui = detect_ui(repo)
+    path_patterns = _draft_path_patterns(files, segs)
+    content_kinds, content_rows = _draft_content_patterns(ui)
+    sensitive = _draft_sensitive(files, segs, basenames)
+    churn_block = {"exclude_paths": list(_CHURN_EXCLUDES),
+                   "format_commit_patterns": list(_CHURN_FORMATS)}
+    yaml_text = emit_taxonomy_yaml(path_patterns, content_rows, sensitive, churn_block)
+    valid, violations = _validate_taxonomy_text(yaml_text)
+    return {
+        "target_path": _TAXONOMY_TARGET_REL,
+        "written": False,          # present-then-confirm — NEVER auto-written
+        "ui": ui,
+        "path_patterns": path_patterns,
+        "content_kinds": content_kinds,
+        "sensitive_path_list": sensitive,
+        "churn": churn_block,
+        "taxonomy_yaml": yaml_text,
+        "valid": valid,
+        "violations": violations,
+    }
+
+
+def draft_churn_summary(repo, taxonomy_yaml):
+    """Build the normalized churn cache IN MEMORY from the DRAFTED taxonomy (so the churn excludes
+    are single-sourced from the same draft the human is reviewing), and return a PROPOSAL summary.
+    Present-then-confirm: writes NOTHING — the real docs/superpowers/memory/churn-cache.json is
+    written at WRITE via `compound-v-churn.py --out …` once the human confirms."""
+    import shutil
+    import tempfile
+    churn = _load_sibling("compound-v-churn.py")
+    if churn is None:
+        return {"available": False, "reason": "churn module unavailable"}
+    tmpd = tempfile.mkdtemp(prefix="cv-onboard-churn-")
+    try:
+        tax_path = os.path.join(tmpd, "impact-taxonomy.yaml")
+        with open(tax_path, "w", encoding="utf-8") as fh:
+            fh.write(taxonomy_yaml)
+        cache = churn.build_churn_cache(repo=repo, taxonomy_path=tax_path)
+    except Exception as e:  # noqa: BLE001 — churn is escalation-only; a build failure degrades
+        return {"available": False, "reason": "churn build failed: %s" % e}
+    finally:
+        shutil.rmtree(tmpd, ignore_errors=True)
+    paths = cache.get("paths", {})
+    hot = sorted(p for p, v in paths.items() if v.get("hot"))
+    return {
+        "available": True,
+        "target_path": _CHURN_TARGET_REL,
+        "written": False,          # present-then-confirm — NEVER auto-written
+        "head_sha": cache.get("head_sha"),
+        "formula_id": cache.get("formula_id"),
+        "paths": len(paths),
+        "hot": hot,
+    }
+
+
 def _selftest() -> int:
     fails = []
     def check(name, cond):
@@ -669,6 +1008,132 @@ def _selftest() -> int:
     finally:
         shutil.rmtree(d8c, ignore_errors=True)
 
+    # --- draft-taxonomy (v2.9 Task D2) ---
+    _SIX_KINDS = {"legal_copy", "i18n_placeholder", "feature_flag",
+                  "config_literal", "shared_token", "a11y"}
+
+    def _touch(base, rel, txt="x\n"):
+        full = os.path.join(base, rel)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "w") as fh:
+            fh.write(txt)
+
+    d9 = tempfile.mkdtemp()
+    try:
+        # A fixture tree with mixed surfaces + a UI signal (tailwind.config.js → detect_ui True).
+        for rel in ("src/ui/button.css", "src/auth/login.ts", "db/migrations/001.sql",
+                    ".github/workflows/ci.yml", "components/App.tsx", "README.md",
+                    "Dockerfile", "infra/main.tf"):
+            _touch(d9, rel)
+        _touch(d9, "tailwind.config.js", "module.exports={}\n")
+
+        prop = draft_taxonomy(d9)
+        check("draft-taxonomy: self-validates (B1) zero violations",
+              prop["valid"] is True and prop["violations"] == [])
+        check("draft-taxonomy: never auto-writes the real taxonomy",
+              prop["written"] is False
+              and not os.path.exists(os.path.join(d9, ".claude",
+                                                  "compound-v-impact-taxonomy.yaml")))
+        check("draft-taxonomy: target is .claude/compound-v-impact-taxonomy.yaml",
+              prop["target_path"] == _TAXONOMY_TARGET_REL)
+
+        vt = _load_sibling("compound-v-validate-taxonomy.py")
+        vm = _load_sibling("compound-v-validate-manifest.py")
+        check("draft-taxonomy: emitted YAML passes the B1 validator",
+              vt is not None and vt.validate_text(prop["taxonomy_yaml"]) == [])
+        # Must ALSO parse + validate under the NO-PyYAML _mini_yaml fallback (block-style guard):
+        # a flow-`{}` draft would parse EMPTY here.
+        parsed_fb = vm._mini_yaml(prop["taxonomy_yaml"])
+        check("draft-taxonomy: valid under the no-PyYAML _mini_yaml fallback (block-style)",
+              vt.validate(parsed_fb) == [])
+        check("draft-taxonomy: fallback recovers path_patterns (flow-map guard)",
+              isinstance(parsed_fb.get("path_patterns"), list)
+              and len(parsed_fb["path_patterns"]) >= 1)
+        check("draft-taxonomy: fallback recovers content_patterns",
+              isinstance(parsed_fb.get("content_patterns"), list)
+              and len(parsed_fb["content_patterns"]) >= 1)
+        check("draft-taxonomy: fallback recovers churn block",
+              isinstance(parsed_fb.get("churn"), dict)
+              and isinstance(parsed_fb["churn"].get("format_commit_patterns"), list))
+
+        globs = [r["glob"] for r in prop["path_patterns"]]
+        check("draft-taxonomy: css low-surface from a real dir", "**/*.css" in globs)
+        check("draft-taxonomy: tsx medium surface", "**/*.tsx" in globs)
+        check("draft-taxonomy: migrations high surface", "**/migrations/**" in globs)
+        check("draft-taxonomy: auth high surface", "**/auth/**" in globs)
+        check("draft-taxonomy: .github high surface", ".github/**" in globs)
+        check("draft-taxonomy: sql/tf high surfaces",
+              "**/*.sql" in globs and "**/*.tf" in globs)
+        check("draft-taxonomy: every path row carries evidence",
+              all(r.get("evidence") for r in prop["path_patterns"]))
+
+        sens = [e["glob"] for e in prop["sensitive_path_list"]]
+        check("draft-taxonomy: sensitive list carries secret defaults (fail-closed non-empty)",
+              "**/*.pem" in sens and "**/*.key" in sens)
+        check("draft-taxonomy: Dockerfile sensitive from evidence", "**/Dockerfile" in sens)
+        check("draft-taxonomy: sql sensitive surface", "**/*.sql" in sens)
+
+        kinds = {k["kind"]: k["offered"] for k in prop["content_kinds"]}
+        check("draft-taxonomy: all six content kinds enumerated", set(kinds) == _SIX_KINDS)
+        check("draft-taxonomy: four core kinds offered",
+              all(kinds[k] for k in ("legal_copy", "i18n_placeholder",
+                                     "feature_flag", "config_literal")))
+        check("draft-taxonomy: shared_token/a11y offered when UI present",
+              prop["ui"] is True and kinds["shared_token"] and kinds["a11y"])
+        drafted_kinds = {r["kind"] for r in parsed_fb.get("content_patterns", [])}
+        check("draft-taxonomy: UI repo draft includes shared_token + a11y rows",
+              "shared_token" in drafted_kinds and "a11y" in drafted_kinds)
+    finally:
+        shutil.rmtree(d9, ignore_errors=True)
+
+    # Non-UI repo: still valid; shared_token/a11y NOT auto-offered.
+    d9b = tempfile.mkdtemp()
+    try:
+        _touch(d9b, "main.py", "print(1)\n")
+        prop_b = draft_taxonomy(d9b)
+        check("draft-taxonomy: non-UI repo draft still valid (B1)", prop_b["valid"] is True)
+        kb = {k["kind"]: k["offered"] for k in prop_b["content_kinds"]}
+        check("draft-taxonomy: shared_token/a11y NOT auto-offered without UI",
+              prop_b["ui"] is False and kb["shared_token"] is False and kb["a11y"] is False)
+        b_kinds = {r["kind"] for r in (_load_sibling("compound-v-validate-manifest.py")
+                                       ._mini_yaml(prop_b["taxonomy_yaml"])
+                                       .get("content_patterns", []))}
+        check("draft-taxonomy: non-UI draft omits shared_token/a11y rows",
+              "shared_token" not in b_kinds and "a11y" not in b_kinds)
+        check("draft-taxonomy: bare-repo sensitive list still non-empty (fail-closed)",
+              len(prop_b["sensitive_path_list"]) >= 1)
+    finally:
+        shutil.rmtree(d9b, ignore_errors=True)
+
+    # Churn wiring (git-gated): builds a PROPOSAL summary, writes nothing.
+    d9c = tempfile.mkdtemp()
+    try:
+        _env = dict(os.environ)
+        _env.update({"GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@e.com",
+                     "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@e.com",
+                     "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull})
+
+        def _g(*a):
+            _sp.run(["git", "-C", d9c] + list(a), env=_env, check=True,
+                    stdin=_sp.DEVNULL, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+        try:
+            _g("init", "-q", "-b", "main")
+            _touch(d9c, "src/app.py", "print('a')\n")
+            _g("add", "-A")
+            _g("commit", "-q", "-m", "feat: app")
+            prop_c = draft_taxonomy(d9c)
+            summary = draft_churn_summary(d9c, prop_c["taxonomy_yaml"])
+            check("draft-taxonomy: churn summary built and NOT written",
+                  summary.get("available") is True and summary.get("written") is False
+                  and not os.path.exists(os.path.join(d9c, "docs", "superpowers",
+                                                      "memory", "churn-cache.json")))
+            check("draft-taxonomy: churn summary reports formula_id + head_sha",
+                  summary.get("formula_id") and summary.get("head_sha"))
+        except (_sp.CalledProcessError, OSError):
+            check("draft-taxonomy: churn wiring (skipped — git unavailable)", True)
+    finally:
+        shutil.rmtree(d9c, ignore_errors=True)
+
     print("FAILED %d" % len(fails) if fails else "OK")
     return 1 if fails else 0
 
@@ -697,6 +1162,13 @@ def build_parser():
     sp.add_argument("--json", action="store_true")
     sp = sub.add_parser("recommend-autoskills")
     sp.add_argument("--repo", default=".")
+    sp.add_argument("--json", action="store_true")
+    sp = sub.add_parser("draft-taxonomy")
+    sp.add_argument("--repo", default=".")
+    sp.add_argument("--with-churn", action="store_true",
+                    help="also build a churn-cache PROPOSAL from the drafted taxonomy (not written)")
+    sp.add_argument("--emit-yaml", action="store_true",
+                    help="print ONLY the block-style taxonomy YAML (for the WRITE step to redirect)")
     sp.add_argument("--json", action="store_true")
     return p
 
@@ -739,6 +1211,16 @@ def main(argv) -> int:
     if args.cmd == "recommend-autoskills":
         print(json.dumps(recommend_autoskills(os.path.abspath(args.repo)), indent=2))
         return 0
+    if args.cmd == "draft-taxonomy":
+        repo = os.path.abspath(args.repo)
+        proposal = draft_taxonomy(repo)
+        if args.with_churn:
+            proposal["churn_cache"] = draft_churn_summary(repo, proposal["taxonomy_yaml"])
+        if args.emit_yaml:
+            sys.stdout.write(proposal["taxonomy_yaml"])
+            return 0 if proposal.get("valid") else 2
+        print(json.dumps(proposal, indent=2))
+        return 0 if proposal.get("valid") else 2
     build_parser().print_help(); return 1
 
 
