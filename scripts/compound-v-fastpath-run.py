@@ -60,7 +60,9 @@ CLI:
     compound-v-fastpath-run.py review-spec --worktree DIR --baseline SHA --manifest FILE
         --run-id ID --pre-eval-id ID [--attempt-id N] --floor-result FILE
         --scope-clean --f2-result FILE [--out spec.json]
-    compound-v-fastpath-run.py accept-review --spec spec.json --result result.json [--out v.json]
+    compound-v-fastpath-run.py accept-review --spec spec.json --result result.json
+        (--run-dir DIR | --receipt-out FILE) [--ts ISO] [--out v.json]
+        (exactly one receipt destination is REQUIRED — acceptance always seals a receipt)
     compound-v-fastpath-run.py --selftest
 
 Exit codes: 0 = phase OK / floor holds / review accepted; 1 = floor failed, review-spec refused
@@ -599,11 +601,13 @@ def accept_review(spec, result):
 RECEIPT_SUBPATH = os.path.join("review", "receipt.json")
 
 # The receipt's required, fully-sealed field set (mirrors the schema `required`
-# minus the derived `digest`, plus the optional diff-root/tier signals we always emit).
+# minus the derived `digest`). worktree + reviewer_tier are now MANDATORY (MED-6): the
+# post-review validator compares receipt.worktree to the diff-root, so an unseal-able receipt
+# without them fails CLOSED here rather than being written and rejected downstream.
 _RECEIPT_REQUIRED = (
     "run_id", "pre_eval_id", "manifest_digest", "baseline_sha", "final_diff_digest",
-    "reviewer_backend", "reviewer_model", "attempt_id", "ts", "verdict",
-    "integration_rationale",
+    "reviewer_backend", "reviewer_tier", "reviewer_model", "worktree", "attempt_id", "ts",
+    "verdict", "integration_rationale",
 )
 
 
@@ -652,6 +656,12 @@ def build_sealed_receipt(spec, accept_out, ts=None, tax=None):
         return None, ("shared taxonomy record_digest primitive unavailable — cannot seal "
                       "the receipt (fail-closed)")
 
+    # Diff-root signal for the validator's diff recompute — the worktree the producer hashed
+    # the final_diff_digest against (from the trusted spec, never a reviewer-echoed field).
+    # ALWAYS emitted (MED-6): if the spec carries no worktree, it is left blank so the
+    # required-field check below refuses to seal (fail-closed) rather than writing a receipt
+    # the validator's worktree/diff-root binding could not verify.
+    wt = spec.get("worktree") if isinstance(spec, dict) else None
     receipt = {
         "run_id": rf.get("run_id"),
         "pre_eval_id": rf.get("pre_eval_id"),
@@ -659,18 +669,15 @@ def build_sealed_receipt(spec, accept_out, ts=None, tax=None):
         "baseline_sha": rf.get("baseline_sha"),
         "final_diff_digest": rf.get("final_diff_digest"),
         "reviewer_backend": "claude",
-        "reviewer_tier": rf.get("reviewer_tier", "deep"),
+        "reviewer_tier": rf.get("reviewer_tier") or "deep",
         "reviewer_model": rf.get("reviewer_model"),
+        "worktree": str(wt) if wt else "",
         "attempt_id": rf.get("attempt_id"),
         "ts": ts or _now_iso_utc(),
         "verdict": "approved",
         "integration_rationale": rf.get("integration_rationale")
         or VACUOUS_INTEGRATION_RATIONALE,
     }
-    # Diff-root signal for the validator's diff recompute — the worktree the producer hashed
-    # the final_diff_digest against (from the trusted spec, never a reviewer-echoed field).
-    if isinstance(spec, dict) and spec.get("worktree"):
-        receipt["worktree"] = str(spec.get("worktree"))
     # No mandatory field may be missing/blank — an unsealed-looking receipt fails closed here
     # rather than being written and rejected downstream.
     for k in _RECEIPT_REQUIRED:
@@ -705,12 +712,30 @@ def _atomic_write_json(path, obj):
 
 def _receipt_dest(run_dir=None, receipt_out=None):
     """Resolve the receipt destination path: an explicit ``receipt_out`` wins, else
-    ``<run_dir>/review/receipt.json``, else None (pure-validation mode: no receipt written)."""
+    ``<run_dir>/review/receipt.json``, else None (no destination supplied). ``accept-review``
+    REQUIRES a destination (HIGH-3) so this returns None only when the caller passed neither."""
     if receipt_out:
         return receipt_out
     if run_dir:
         return os.path.join(run_dir, RECEIPT_SUBPATH)
     return None
+
+
+def _invalidate_receipt(dest):
+    """Remove any existing receipt at ``dest`` BEFORE a (re-)review attempt, so a rejected /
+    timed-out re-review can never leave a stale prior-approved receipt usable (CR5-6/HIGH-4).
+    Idempotent: a missing receipt is a no-op. Returns True iff the destination is clear
+    afterwards (removed or already absent); False only if a receipt SURVIVES removal — the
+    caller MUST then fail closed rather than risk a stale receipt validating against an
+    unchanged diff."""
+    if not dest:
+        return True
+    try:
+        if os.path.isfile(dest):
+            os.unlink(dest)
+    except OSError:
+        pass
+    return not os.path.isfile(dest)
 
 
 # --------------------------------------------------------------------------- #
@@ -757,13 +782,48 @@ def _cmd_review_spec(args):
 
 
 def _cmd_accept_review(args):
+    run_dir = getattr(args, "run_dir", None)
+    receipt_out = getattr(args, "receipt_out", None)
+
+    # HIGH-3: acceptance MUST ALWAYS produce a sealed receipt at a known path — require
+    # EXACTLY ONE destination. Refuse (nonzero, NO acceptance, NO receipt) when neither is
+    # given (the bug: accept-review used to 'succeed' without ever sealing) or when both are
+    # given (ambiguous). We refuse BEFORE reading/accepting anything so no acceptance leaks out.
+    if bool(run_dir) == bool(receipt_out):
+        problem = ("no receipt destination: accept-review requires exactly one of --run-dir "
+                   "or --receipt-out so acceptance always seals a receipt (fail-closed)"
+                   if not run_dir else
+                   "ambiguous receipt destination: pass exactly one of --run-dir or "
+                   "--receipt-out, not both")
+        refusal = {"accepted": False, "merge_ok": False,
+                   "failure_modes": ["no_receipt_destination"], "reasons": [problem],
+                   "verdict": None, "receipt_path": None}
+        _emit(refusal, args.out)
+        return 1
+
+    dest = _receipt_dest(run_dir, receipt_out)
+
+    # HIGH-4 (a): invalidate ANY existing receipt at the destination BEFORE this attempt, so a
+    # rejected / timed-out / wrong-tier re-review can never leave a stale prior-approved receipt
+    # behind (it would otherwise still validate against an unchanged diff). If a receipt cannot
+    # be removed, fail CLOSED rather than risk replaying it.
+    if not _invalidate_receipt(dest):
+        refusal = {"accepted": False, "merge_ok": False,
+                   "failure_modes": ["receipt_invalidation_failed"],
+                   "reasons": ["could not invalidate the prior receipt at %s before re-review "
+                               "— fail-closed" % dest],
+                   "verdict": None, "receipt_path": None}
+        _emit(refusal, args.out)
+        return 1
+
     spec = _read_json(args.spec)
     result = _read_json(args.result)
     out = accept_review(spec, result)
-    dest = _receipt_dest(getattr(args, "run_dir", None), getattr(args, "receipt_out", None))
+    out["receipt_path"] = None
     # Seal + write the receipt ONLY after acceptance succeeds. A rejected / timed-out /
-    # wrong-tier / malformed result writes NO receipt (fail-closed).
-    if out.get("accepted") and out.get("merge_ok") and dest:
+    # wrong-tier / malformed result writes NO receipt — and the pre-attempt invalidation above
+    # guarantees no earlier receipt survives either (fail-closed).
+    if out.get("accepted") and out.get("merge_ok"):
         receipt, err = build_sealed_receipt(spec, out, ts=getattr(args, "ts", None))
         if receipt is None:
             # Acceptance held but the receipt could not be sealed (e.g. taxonomy primitive
@@ -815,9 +875,11 @@ def main(argv):
     p3.add_argument("--result", required=True)
     p3.add_argument("--run-dir", dest="run_dir",
                     help="run directory; the sealed receipt is written to "
-                         "<run-dir>/review/receipt.json on acceptance")
+                         "<run-dir>/review/receipt.json on acceptance. REQUIRED unless "
+                         "--receipt-out is given (exactly one destination)")
     p3.add_argument("--receipt-out", dest="receipt_out",
-                    help="explicit receipt path (overrides --run-dir)")
+                    help="explicit receipt path; use INSTEAD of --run-dir (exactly one "
+                         "destination is required so acceptance always seals a receipt)")
     p3.add_argument("--ts", help="override the receipt seal timestamp (ISO-8601); "
                                  "defaults to now (UTC)")
     p3.add_argument("--out")
@@ -1096,6 +1158,7 @@ def _selftest():
                        "final_diff_digest": cli_spec["final_diff_digest"],
                        "attempt_id": cli_spec["attempt_id"]}, fh)
         rc = main(["prog", "accept-review", "--spec", spec_f, "--result", result_f,
+                   "--run-dir", os.path.join(tmp, "run-cli15"),
                    "--out", os.path.join(tmp, "verdict.json")])
         expect("CLI accept-review exits 0 on a clean approved result", rc == 0)
 
@@ -1185,6 +1248,92 @@ def _selftest():
         expect("CLI accept-review on a rejected result exits 1 and writes NO receipt",
                rc == 1 and not os.path.exists(
                    os.path.join(run_dir2, "review", "receipt.json")))
+
+        # ---- ROUND-3: HIGH-3 destination-required, HIGH-4 invalidation, MED-6 schema ----
+        # 21. HIGH-3: accept-review with NO destination REFUSES (nonzero, no acceptance) — the
+        #     authoritative flow can no longer 'succeed' without ever sealing a receipt.
+        nod_out = os.path.join(tmp, "verdict-nodest.json")
+        rc = main(["prog", "accept-review", "--spec", spec_f, "--result", result_f,
+                   "--out", nod_out])
+        nod = _read_json(nod_out)
+        expect("HIGH-3: accept-review with NO destination refuses (exit 1)", rc == 1)
+        expect("HIGH-3: no-destination refusal is NOT accepted / not merge_ok",
+               nod.get("accepted") is False and nod.get("merge_ok") is False
+               and "no_receipt_destination" in nod.get("failure_modes", []))
+
+        # 21b. HIGH-3: BOTH destinations is ambiguous → also refuses (exactly one).
+        both_a = os.path.join(tmp, "run-both")
+        both_b = os.path.join(tmp, "receipt-both.json")
+        rc = main(["prog", "accept-review", "--spec", spec_f, "--result", result_f,
+                   "--run-dir", both_a, "--receipt-out", both_b,
+                   "--out", os.path.join(tmp, "verdict-both.json")])
+        expect("HIGH-3: both destinations refuses (exit 1) and writes NO receipt",
+               rc == 1 and not os.path.exists(both_b)
+               and not os.path.exists(os.path.join(both_a, "review", "receipt.json")))
+
+        # 22. HIGH-4: an existing receipt is INVALIDATED before a new attempt; a rejected
+        #     re-review over a prior APPROVED receipt leaves NO valid receipt behind.
+        run_re = os.path.join(tmp, "run-reattempt")
+        receipt_path = os.path.join(run_re, "review", "receipt.json")
+        rc = main(["prog", "accept-review", "--spec", spec_f, "--result", result_f,
+                   "--run-dir", run_re, "--out", os.path.join(tmp, "v-approve.json")])
+        expect("HIGH-4: first approved attempt seals a receipt",
+               rc == 0 and os.path.isfile(receipt_path))
+        rc = main(["prog", "accept-review", "--spec", spec_f, "--result", reject_f,
+                   "--run-dir", run_re, "--out", os.path.join(tmp, "v-rereject.json")])
+        expect("HIGH-4: rejected re-review invalidates the prior receipt — none survives",
+               rc == 1 and not os.path.exists(receipt_path))
+
+        # 22b. HIGH-4: a TIMED-OUT re-review over a prior approved receipt also leaves none.
+        run_to = os.path.join(tmp, "run-timeout")
+        to_path = os.path.join(run_to, "review", "receipt.json")
+        rc = main(["prog", "accept-review", "--spec", spec_f, "--result", result_f,
+                   "--run-dir", run_to, "--out", os.path.join(tmp, "v-approve2.json")])
+        timeout_f = os.path.join(tmp, "timeout.json")
+        tr = _read_json(result_f); tr["status"] = "timeout"
+        with open(timeout_f, "w") as fh:
+            json.dump(tr, fh)
+        rc = main(["prog", "accept-review", "--spec", spec_f, "--result", timeout_f,
+                   "--run-dir", run_to, "--out", os.path.join(tmp, "v-retimeout.json")])
+        expect("HIGH-4: timed-out re-review leaves no valid receipt",
+               rc == 1 and not os.path.exists(to_path))
+
+        # 22c. _invalidate_receipt is idempotent: clears an existing file, no-op when absent.
+        inv_f = os.path.join(tmp, "inv", "receipt.json")
+        os.makedirs(os.path.dirname(inv_f))
+        with open(inv_f, "w") as fh:
+            fh.write("{}")
+        expect("HIGH-4: _invalidate_receipt removes an existing receipt",
+               _invalidate_receipt(inv_f) is True and not os.path.exists(inv_f))
+        expect("HIGH-4: _invalidate_receipt on a missing path is a clean no-op",
+               _invalidate_receipt(inv_f) is True)
+
+        # 23. The sealed receipt ALWAYS carries worktree + reviewer_tier + attempt_id, and its
+        #     self-digest verifies via the SHARED record_digest primitive.
+        seal_accept = accept_review(spec, good_result())
+        rcp3, _e3 = build_sealed_receipt(spec, seal_accept, ts="2026-07-12T00:00:00Z",
+                                         tax=tax_mod)
+        expect("sealed receipt always carries worktree + reviewer_tier(deep) + attempt_id",
+               rcp3 is not None and rcp3.get("worktree") == r
+               and rcp3.get("reviewer_tier") == "deep"
+               and rcp3.get("attempt_id") not in (None, ""))
+        expect("sealed receipt's attempt_id equals the request attempt_id",
+               rcp3 is not None and rcp3.get("attempt_id") == spec["attempt_id"])
+        expect("sealed receipt self-digest verifies via record_digest (round-3)",
+               rcp3 is not None
+               and tax_mod.record_digest(rcp3, exclude_field="digest") == rcp3.get("digest"))
+
+        # 23b. MED-6 fail-closed: a spec with NO worktree cannot be sealed (validator needs it).
+        spec_nowt = dict(spec); spec_nowt.pop("worktree", None)
+        rcp4, e4 = build_sealed_receipt(spec_nowt, accept_review(spec, good_result()),
+                                        tax=tax_mod)
+        expect("MED-6: no-worktree spec seals NO receipt (fail-closed) with a worktree reason",
+               rcp4 is None and bool(e4) and "worktree" in e4)
+
+        # 24. MED-6: the schema now REQUIRES worktree + reviewer_tier + digest.
+        req = set(receipt_schema.get("required", []))
+        expect("MED-6: schema requires worktree + reviewer_tier + digest",
+               {"worktree", "reviewer_tier", "digest"}.issubset(req))
 
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
