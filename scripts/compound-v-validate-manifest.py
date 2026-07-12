@@ -846,13 +846,26 @@ def _review_resolution(review, stance, repo_root, config_path):
 
 
 def _load_receipt_schema():
+    """Load the bundled fast-path receipt JSON-schema. Returns ``(schema, None)`` on
+    success, else ``(None, err)``. MED-3: the schema SHIPS in-repo at
+    ``schemas/fastpath-review-receipt.schema.json``, so a missing / unreadable /
+    malformed schema is an ANOMALY, not an expected "schema absent" case — the caller
+    MUST treat ``(None, err)`` as a verification PROBLEM and fail closed, NEVER skip
+    the shape validation (a receipt carrying only ids+backend+verdict must not slip
+    through because the schema failed to load)."""
     here = os.path.dirname(os.path.abspath(__file__))
     path = os.path.join(os.path.dirname(here), _RECEIPT_SCHEMA)
     try:
         with open(path, "r", encoding="utf-8") as fh:
-            return json.load(fh)
-    except Exception:  # noqa: BLE001 - absent schema -> skip schema-shape checks
-        return None
+            schema = json.load(fh)
+    except Exception as e:  # noqa: BLE001 - missing/unreadable/malformed all fail closed
+        return None, ("review-receipt schema '%s' could not be loaded (%s) — it ships "
+                      "in-repo, so this is an anomaly; fail-closed, shape validation "
+                      "cannot be skipped (MED-3)" % (_RECEIPT_SCHEMA, e))
+    if not isinstance(schema, dict):
+        return None, ("review-receipt schema '%s' is not a JSON object — fail-closed "
+                      "(MED-3)" % _RECEIPT_SCHEMA)
+    return schema, None
 
 
 def _json_type_ok(v, t):
@@ -981,8 +994,13 @@ def _sealed_receipt_problems(receipt, pre_eval_id, run_id):
     ``verify_sealed_receipt``; kept as a list so ``_validate_receipt`` can preserve
     the exact per-check messages its regression suite asserts on."""
     problems = []
-    schema = _load_receipt_schema()
-    if schema is not None:
+    # MED-3: a schema-load failure is itself a verification PROBLEM (fail-closed) — the
+    # schema ships in-repo, so an unloadable schema must REJECT, never silently skip the
+    # shape checks (which would let a receipt with only ids+backend+verdict pass).
+    schema, sch_err = _load_receipt_schema()
+    if sch_err is not None:
+        problems.append(sch_err)
+    elif schema is not None:
         problems.extend(_schema_lite(receipt, schema, "review receipt"))
     if not isinstance(receipt, dict):
         return problems
@@ -1056,7 +1074,8 @@ def verify_sealed_receipt(receipt, pre_eval_id, run_id):
 
 
 def _validate_receipt(receipt_full, receipt_rel, manifest, fp, expected_model,
-                      repo_root, manifest_bytes, sole_job_id, diff_root=None):
+                      repo_root, manifest_bytes, sole_job_id, diff_root=None,
+                      expected_attempt=None):
     """post-review: require + FULLY verify the dispatcher-written invocation
     receipt. Per CR5-6 the receipt MUST bind to and be verified against: run_id,
     pre_eval_id, the manifest digest, the immutable pre-launch baseline SHA, the
@@ -1064,7 +1083,15 @@ def _validate_receipt(receipt_full, receipt_rel, manifest, fp, expected_model,
     timestamp, and a normalized verdict of 'approved'. A stale receipt (wrong
     manifest / baseline / diff) or a non-approved-or-absent verdict fails
     closed. Every binding value is recomputed here — never trusted from the
-    receipt itself."""
+    receipt itself.
+
+    HIGH-1(b): when ``expected_attempt`` is supplied (the caller reads the CURRENT
+    review attempt from the run's state.json), the receipt's ``attempt_id`` MUST equal
+    it — a sealed attempt-1 receipt replayed when the expected next attempt is 2 fails
+    closed. The check lives HERE, in the post-review caller, NOT in the shared
+    ``verify_sealed_receipt`` (whose signature stays stable for triage). When
+    ``expected_attempt`` is None the attempt check is skipped (back-compat), but the
+    authoritative dispatcher flow ALWAYS passes it."""
     if not os.path.isfile(receipt_full):
         return ["fast_path --mode post-review requires a review receipt at '%s', "
                 "none found (fail-closed)" % receipt_rel]
@@ -1093,6 +1120,18 @@ def _validate_receipt(receipt_full, receipt_rel, manifest, fp, expected_model,
                         "resolved review model '%s'" % (rmodel, expected_model))
 
     # (verdict + reviewer-opus + self-digest are verified in verify_sealed_receipt.)
+
+    # --- HIGH-1(b): attempt binding. The authoritative flow passes the CURRENT review
+    #     attempt (from state.json); the receipt's attempt_id must equal it so a stale
+    #     prior-attempt receipt cannot be replayed against a newer attempt. Compared as
+    #     strings because the schema permits attempt_id to be string OR integer. ---
+    if expected_attempt is not None:
+        r_att = receipt.get("attempt_id")
+        if str(r_att) != str(expected_attempt):
+            problems.append("review receipt attempt_id %r != the expected review "
+                            "attempt %r (from state.json) — a stale prior-attempt "
+                            "receipt cannot be replayed against a newer attempt "
+                            "(fail-closed, HIGH-1)" % (r_att, expected_attempt))
 
     # --- manifest_digest: REQUIRED + recomputed over the manifest under review ---
     r_mdig = receipt.get("manifest_digest")
@@ -1176,7 +1215,7 @@ def _validate_receipt(receipt_full, receipt_rel, manifest, fp, expected_model,
 
 
 def _validate_fast_path(manifest, fp, mode, repo_root, config_path, receipt_path,
-                        manifest_bytes=None, diff_root=None):
+                        manifest_bytes=None, diff_root=None, expected_attempt=None):
     """All v2.9 conditional fast-path invariants (gated on fast_path.eligible).
     Returns a list of violation strings."""
     problems = []
@@ -1443,13 +1482,15 @@ def _validate_fast_path(manifest, fp, mode, repo_root, config_path, receipt_path
         sole_job_id = job0.get("id") if isinstance(job0, dict) else None
         problems.extend(_validate_receipt(
             receipt_full, receipt_rel, manifest, fp, resolved_model,
-            repo_root, manifest_bytes, sole_job_id, diff_root=diff_root))
+            repo_root, manifest_bytes, sole_job_id, diff_root=diff_root,
+            expected_attempt=expected_attempt))
 
     return problems
 
 
 def validate(manifest, mode=None, repo_root=None, config_path=None,
-             receipt_path=None, manifest_bytes=None, diff_root=None):
+             receipt_path=None, manifest_bytes=None, diff_root=None,
+             expected_attempt=None):
     """Return a list of violation strings; empty list means valid.
 
     ``mode``/``repo_root``/``config_path``/``receipt_path``/``diff_root`` drive the
@@ -1800,13 +1841,15 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
     if "fast_path" in manifest and manifest.get("fast_path") is not None:
         problems.extend(_validate_fast_path(
             manifest, manifest.get("fast_path"), mode, repo_root,
-            config_path, receipt_path, manifest_bytes, diff_root=diff_root))
+            config_path, receipt_path, manifest_bytes, diff_root=diff_root,
+            expected_attempt=expected_attempt))
 
     return problems
 
 
 def validate_text(text, mode=None, repo_root=None, config_path=None,
-                  receipt_path=None, manifest_bytes=None, diff_root=None):
+                  receipt_path=None, manifest_bytes=None, diff_root=None,
+                  expected_attempt=None):
     data = load_yaml(text)
     # The manifest_digest binding (CR5-6) is computed over the manifest's raw
     # bytes. When a caller supplies the exact on-disk bytes (main() does), use
@@ -1815,7 +1858,8 @@ def validate_text(text, mode=None, repo_root=None, config_path=None,
         manifest_bytes = text.encode("utf-8")
     return validate(data, mode=mode, repo_root=repo_root,
                     config_path=config_path, receipt_path=receipt_path,
-                    manifest_bytes=manifest_bytes, diff_root=diff_root)
+                    manifest_bytes=manifest_bytes, diff_root=diff_root,
+                    expected_attempt=expected_attempt)
 
 
 def _find_repo_root(start):
@@ -1854,12 +1898,23 @@ def main(argv):
     # CRIT-1: the worker's linked worktree — the checkout the producer hashed the
     # final diff in. The post-review recompute runs there; absent ⇒ repo_root.
     diff_root = _get_opt(args, "--worktree")
+    # HIGH-1(b): the CURRENT review attempt (the caller reads it from the run's
+    # state.json). When supplied, the post-review receipt's attempt_id MUST equal it —
+    # a stale prior-attempt receipt cannot be replayed against a newer attempt.
+    expected_attempt = _get_opt(args, "--expected-attempt")
+    if expected_attempt is not None:
+        try:
+            expected_attempt = int(expected_attempt)
+        except (TypeError, ValueError):
+            print("error: --expected-attempt must be an integer", file=sys.stderr)
+            return 2
     # Drop any remaining flags; the first non-flag token is the manifest path.
     positional = [a for a in args if not a.startswith("--")]
     if not positional:
         print("usage: compound-v-validate-manifest.py [--mode pre-dispatch|"
               "post-review] [--repo-root DIR] [--worktree DIR] [--config FILE] "
-              "[--receipt FILE] <manifest.yaml>", file=sys.stderr)
+              "[--receipt FILE] [--expected-attempt N] <manifest.yaml>",
+              file=sys.stderr)
         return 2
     if mode is not None and mode not in FASTPATH_MODES:
         print("error: --mode '%s' invalid (expected one of %s)"
@@ -1885,7 +1940,8 @@ def main(argv):
         problems = validate_text(text, mode=mode, repo_root=repo_root,
                                  config_path=config_path,
                                  receipt_path=receipt_path,
-                                 manifest_bytes=raw, diff_root=diff_root)
+                                 manifest_bytes=raw, diff_root=diff_root,
+                                 expected_attempt=expected_attempt)
     except Exception as e:  # noqa: BLE001 - report parse failure cleanly
         print(json.dumps({"verdict": "error", "error": str(e)}), file=sys.stderr)
         return 2
@@ -2920,6 +2976,71 @@ def _selftest_fastpath(expect):
         else:
             expect("fastpath CRIT-1: worktree diff-root suite (git worktree "
                    "unavailable - skipped)", True)
+
+        # ---- ROUND-4 HIGH-1(b): post-review attempt binding (--expected-attempt) ----
+        # A receipt sealed at attempt 1, validated when the run's CURRENT attempt is 2,
+        # is a stale prior-attempt replay → REJECTED. A correctly-incremented receipt
+        # passes. When --expected-attempt is absent, behavior is unchanged (back-compat).
+        d = case("postreview_attempt_stale")
+        txt = _fp_build(d, tax_mod)
+        info = _fp_git_and_state(d, tax_mod, txt)
+        if info is not None:
+            _fp_write_receipt(d, tax_mod, info, attempt_id=1)
+            expect("fastpath HIGH-1: attempt-1 receipt passes when NO expected "
+                   "attempt is supplied (back-compat)",
+                   validate_text(txt, mode="post-review", repo_root=d) == [])
+            expect("fastpath HIGH-1: attempt-1 receipt passes --expected-attempt 1",
+                   validate_text(txt, mode="post-review", repo_root=d,
+                                 expected_attempt=1) == [])
+            res_att = validate_text(txt, mode="post-review", repo_root=d,
+                                    expected_attempt=2)
+            expect("fastpath HIGH-1: attempt-1 receipt REJECTED under "
+                   "--expected-attempt 2 (stale prior-attempt replay)",
+                   any("attempt_id" in p and "expected review attempt" in p
+                       for p in res_att))
+
+        d = case("postreview_attempt_fresh")
+        txt = _fp_build(d, tax_mod)
+        info = _fp_git_and_state(d, tax_mod, txt)
+        if info is not None:
+            _fp_write_receipt(d, tax_mod, info, attempt_id=2)
+            expect("fastpath HIGH-1: correctly-incremented attempt-2 receipt passes "
+                   "--expected-attempt 2",
+                   validate_text(txt, mode="post-review", repo_root=d,
+                                 expected_attempt=2) == [])
+
+        # ---- ROUND-4 MED-3: an unloadable receipt schema fails CLOSED (no shape skip) ----
+        d = case("postreview_schema_unloadable")
+        txt = _fp_build(d, tax_mod)
+        info = _fp_git_and_state(d, tax_mod, txt)
+        if info is not None:
+            _fp_write_receipt(d, tax_mod, info)  # a fully-valid receipt
+            expect("fastpath MED-3: baseline receipt passes with a loadable schema",
+                   validate_text(txt, mode="post-review", repo_root=d) == [])
+            # Stub the module's schema path at a MALFORMED file — the load must fail and
+            # that failure must itself be a rejection (never a silent shape-check skip).
+            _saved_schema = _RECEIPT_SCHEMA
+            bad_schema = os.path.join(d, "bad-schema.json")
+            with open(bad_schema, "w", encoding="utf-8") as fh:
+                fh.write("{ this is not valid json")
+            globals()["_RECEIPT_SCHEMA"] = bad_schema
+            try:
+                res_sch = validate_text(txt, mode="post-review", repo_root=d)
+            finally:
+                globals()["_RECEIPT_SCHEMA"] = _saved_schema
+            expect("fastpath MED-3: malformed receipt schema REJECTS (fail-closed, "
+                   "no shape-check skip)",
+                   any("schema" in p.lower() and "fail-closed" in p.lower()
+                       for p in res_sch))
+            # A MISSING schema file also fails closed.
+            globals()["_RECEIPT_SCHEMA"] = os.path.join(d, "does-not-exist.json")
+            try:
+                res_sch2 = validate_text(txt, mode="post-review", repo_root=d)
+            finally:
+                globals()["_RECEIPT_SCHEMA"] = _saved_schema
+            expect("fastpath MED-3: missing receipt schema also REJECTS (fail-closed)",
+                   any("schema" in p.lower() and "fail-closed" in p.lower()
+                       for p in res_sch2))
     else:
         expect("fastpath: post-review git-binding suite (git unavailable — "
                "skipped)", True)

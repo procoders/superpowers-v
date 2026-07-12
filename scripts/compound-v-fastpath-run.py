@@ -817,6 +817,24 @@ def _cmd_accept_review(args):
         return 1
 
     spec = _read_json(args.spec)
+
+    # HIGH-1: bind acceptance to the EXPLICIT attempt the caller declares. The spec
+    # (produced by review-spec --attempt-id N) carries the attempt this review request
+    # was built for; a mismatch means the caller is accepting a review from a DIFFERENT
+    # attempt than it believes — refuse to seal a mis-attributed receipt (fail-closed).
+    # We only reach here after the pre-attempt invalidation cleared any stale receipt,
+    # so a refusal leaves NO receipt behind.
+    if str(spec.get("attempt_id")) != str(args.attempt_id):
+        refusal = {"accepted": False, "merge_ok": False,
+                   "failure_modes": ["attempt_mismatch"],
+                   "reasons": ["accept-review --attempt-id %r != the review spec's "
+                               "attempt_id %r — refusing to seal a mis-attributed "
+                               "receipt (fail-closed, HIGH-1)"
+                               % (args.attempt_id, spec.get("attempt_id"))],
+                   "verdict": None, "receipt_path": None}
+        _emit(refusal, args.out)
+        return 1
+
     result = _read_json(args.result)
     out = accept_review(spec, result)
     out["receipt_path"] = None
@@ -841,6 +859,29 @@ def _cmd_accept_review(args):
     return 0 if out.get("accepted") and out.get("merge_ok") else 1
 
 
+def _cmd_invalidate_receipt(args):
+    """Standalone receipt invalidation the DISPATCHER runs BEFORE dispatching a
+    (re-)review (HIGH-1). It closes the crash-between-review-and-accept window: if the
+    harness dies AFTER the review Task runs but BEFORE accept-review seals, no stale
+    prior-attempt receipt survives into the review window. Idempotent (a missing
+    receipt is a clean no-op). Fail-closed: exits non-zero if a receipt survives
+    removal."""
+    run_dir = getattr(args, "run_dir", None)
+    receipt_out = getattr(args, "receipt_out", None)
+    if bool(run_dir) == bool(receipt_out):
+        problem = ("invalidate-receipt requires exactly one of --run-dir or "
+                   "--receipt-out" if not run_dir else
+                   "ambiguous: pass exactly one of --run-dir or --receipt-out, not both")
+        _emit({"invalidated": False, "receipt_path": None, "reasons": [problem]}, args.out)
+        return 2
+    dest = _receipt_dest(run_dir, receipt_out)
+    ok = _invalidate_receipt(dest)
+    _emit({"invalidated": bool(ok), "receipt_path": dest,
+           "reasons": [] if ok else
+           ["a receipt survived removal at %s — fail-closed" % dest]}, args.out)
+    return 0 if ok else 1
+
+
 def main(argv):
     if "--selftest" in argv[1:]:
         return _selftest()
@@ -861,7 +902,12 @@ def main(argv):
     p2.add_argument("--manifest", required=True)
     p2.add_argument("--run-id", required=True)
     p2.add_argument("--pre-eval-id", required=True)
-    p2.add_argument("--attempt-id", type=int, default=1)
+    p2.add_argument("--attempt-id", type=int, required=True,
+                    help="EXPLICIT, monotonic review attempt number (HIGH-1): the "
+                         "caller increments it per review attempt. No silent default "
+                         "to 1 — a re-review MUST pass the incremented attempt so the "
+                         "sealed receipt records the CURRENT attempt, and a stale "
+                         "prior-attempt receipt cannot be replayed.")
     p2.add_argument("--floor-result", required=True)
     p2.add_argument("--scope-clean", action="store_true")
     p2.add_argument("--f2-result", required=True)
@@ -880,15 +926,33 @@ def main(argv):
     p3.add_argument("--receipt-out", dest="receipt_out",
                     help="explicit receipt path; use INSTEAD of --run-dir (exactly one "
                          "destination is required so acceptance always seals a receipt)")
+    p3.add_argument("--attempt-id", type=int, required=True,
+                    help="EXPLICIT review attempt this acceptance is for (HIGH-1). MUST "
+                         "equal the review spec's attempt_id (built by review-spec "
+                         "--attempt-id N); a mismatch means the caller is accepting a "
+                         "review from a DIFFERENT attempt and is refused (fail-closed).")
     p3.add_argument("--ts", help="override the receipt seal timestamp (ISO-8601); "
                                  "defaults to now (UTC)")
     p3.add_argument("--out")
     p3.set_defaults(func=_cmd_accept_review)
 
+    # Standalone receipt invalidation — the dispatcher calls this BEFORE dispatching a
+    # (re-)review, closing the crash-between-review-and-accept window (HIGH-1): no stale
+    # prior-attempt receipt can survive into the review window.
+    p4 = sub.add_parser("invalidate-receipt")
+    p4.add_argument("--run-dir", dest="run_dir",
+                    help="run directory; removes <run-dir>/review/receipt.json. Pass "
+                         "exactly one of --run-dir or --receipt-out.")
+    p4.add_argument("--receipt-out", dest="receipt_out",
+                    help="explicit receipt path to remove; use INSTEAD of --run-dir.")
+    p4.add_argument("--out")
+    p4.set_defaults(func=_cmd_invalidate_receipt)
+
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv[1:])
     if not getattr(args, "func", None):
-        ap.error("a phase is required: test-floor | review-spec | accept-review (or --selftest)")
+        ap.error("a phase is required: test-floor | review-spec | accept-review | "
+                 "invalidate-receipt (or --selftest)")
     return args.func(args)
 
 
@@ -1142,6 +1206,7 @@ def _selftest():
         spec_f = os.path.join(tmp, "spec.json")
         rc = main(["prog", "review-spec", "--worktree", r, "--baseline", base,
                    "--manifest", manifest_path, "--run-id", "r1", "--pre-eval-id", "pe1",
+                   "--attempt-id", "1",
                    "--floor-result", floor_f, "--scope-clean", "--f2-result", f2_f,
                    "--changed-file", _write_changed(tmp, ["styles/app.css"]),
                    "--out", spec_f])
@@ -1157,7 +1222,7 @@ def _selftest():
                        "baseline_sha": cli_spec["baseline_sha"],
                        "final_diff_digest": cli_spec["final_diff_digest"],
                        "attempt_id": cli_spec["attempt_id"]}, fh)
-        rc = main(["prog", "accept-review", "--spec", spec_f, "--result", result_f,
+        rc = main(["prog", "accept-review", "--attempt-id", "1", "--spec", spec_f, "--result", result_f,
                    "--run-dir", os.path.join(tmp, "run-cli15"),
                    "--out", os.path.join(tmp, "verdict.json")])
         expect("CLI accept-review exits 0 on a clean approved result", rc == 0)
@@ -1226,7 +1291,7 @@ def _selftest():
         # 20. CLI accept-review WRITES the sealed receipt to <run-dir>/review/receipt.json on
         #     acceptance; a rejected result writes NOTHING and exits non-zero.
         run_dir = os.path.join(tmp, "run-accept")
-        rc = main(["prog", "accept-review", "--spec", spec_f, "--result", result_f,
+        rc = main(["prog", "accept-review", "--attempt-id", "1", "--spec", spec_f, "--result", result_f,
                    "--run-dir", run_dir, "--out", os.path.join(tmp, "verdict2.json")])
         written = os.path.join(run_dir, "review", "receipt.json")
         expect("CLI accept-review exits 0 and writes <run-dir>/review/receipt.json",
@@ -1243,7 +1308,7 @@ def _selftest():
         with open(reject_f, "w") as fh:
             json.dump(rr, fh)
         run_dir2 = os.path.join(tmp, "run-reject")
-        rc = main(["prog", "accept-review", "--spec", spec_f, "--result", reject_f,
+        rc = main(["prog", "accept-review", "--attempt-id", "1", "--spec", spec_f, "--result", reject_f,
                    "--run-dir", run_dir2, "--out", os.path.join(tmp, "verdict3.json")])
         expect("CLI accept-review on a rejected result exits 1 and writes NO receipt",
                rc == 1 and not os.path.exists(
@@ -1253,7 +1318,7 @@ def _selftest():
         # 21. HIGH-3: accept-review with NO destination REFUSES (nonzero, no acceptance) — the
         #     authoritative flow can no longer 'succeed' without ever sealing a receipt.
         nod_out = os.path.join(tmp, "verdict-nodest.json")
-        rc = main(["prog", "accept-review", "--spec", spec_f, "--result", result_f,
+        rc = main(["prog", "accept-review", "--attempt-id", "1", "--spec", spec_f, "--result", result_f,
                    "--out", nod_out])
         nod = _read_json(nod_out)
         expect("HIGH-3: accept-review with NO destination refuses (exit 1)", rc == 1)
@@ -1264,7 +1329,7 @@ def _selftest():
         # 21b. HIGH-3: BOTH destinations is ambiguous → also refuses (exactly one).
         both_a = os.path.join(tmp, "run-both")
         both_b = os.path.join(tmp, "receipt-both.json")
-        rc = main(["prog", "accept-review", "--spec", spec_f, "--result", result_f,
+        rc = main(["prog", "accept-review", "--attempt-id", "1", "--spec", spec_f, "--result", result_f,
                    "--run-dir", both_a, "--receipt-out", both_b,
                    "--out", os.path.join(tmp, "verdict-both.json")])
         expect("HIGH-3: both destinations refuses (exit 1) and writes NO receipt",
@@ -1275,11 +1340,11 @@ def _selftest():
         #     re-review over a prior APPROVED receipt leaves NO valid receipt behind.
         run_re = os.path.join(tmp, "run-reattempt")
         receipt_path = os.path.join(run_re, "review", "receipt.json")
-        rc = main(["prog", "accept-review", "--spec", spec_f, "--result", result_f,
+        rc = main(["prog", "accept-review", "--attempt-id", "1", "--spec", spec_f, "--result", result_f,
                    "--run-dir", run_re, "--out", os.path.join(tmp, "v-approve.json")])
         expect("HIGH-4: first approved attempt seals a receipt",
                rc == 0 and os.path.isfile(receipt_path))
-        rc = main(["prog", "accept-review", "--spec", spec_f, "--result", reject_f,
+        rc = main(["prog", "accept-review", "--attempt-id", "1", "--spec", spec_f, "--result", reject_f,
                    "--run-dir", run_re, "--out", os.path.join(tmp, "v-rereject.json")])
         expect("HIGH-4: rejected re-review invalidates the prior receipt — none survives",
                rc == 1 and not os.path.exists(receipt_path))
@@ -1287,13 +1352,13 @@ def _selftest():
         # 22b. HIGH-4: a TIMED-OUT re-review over a prior approved receipt also leaves none.
         run_to = os.path.join(tmp, "run-timeout")
         to_path = os.path.join(run_to, "review", "receipt.json")
-        rc = main(["prog", "accept-review", "--spec", spec_f, "--result", result_f,
+        rc = main(["prog", "accept-review", "--attempt-id", "1", "--spec", spec_f, "--result", result_f,
                    "--run-dir", run_to, "--out", os.path.join(tmp, "v-approve2.json")])
         timeout_f = os.path.join(tmp, "timeout.json")
         tr = _read_json(result_f); tr["status"] = "timeout"
         with open(timeout_f, "w") as fh:
             json.dump(tr, fh)
-        rc = main(["prog", "accept-review", "--spec", spec_f, "--result", timeout_f,
+        rc = main(["prog", "accept-review", "--attempt-id", "1", "--spec", spec_f, "--result", timeout_f,
                    "--run-dir", run_to, "--out", os.path.join(tmp, "v-retimeout.json")])
         expect("HIGH-4: timed-out re-review leaves no valid receipt",
                rc == 1 and not os.path.exists(to_path))
@@ -1334,6 +1399,78 @@ def _selftest():
         req = set(receipt_schema.get("required", []))
         expect("MED-6: schema requires worktree + reviewer_tier + digest",
                {"worktree", "reviewer_tier", "digest"}.issubset(req))
+
+        # ---- ROUND-4: HIGH-1 explicit/monotonic attempt binding + standalone invalidate ----
+        # 25. review-spec now REQUIRES --attempt-id (no silent default to 1): omitting it
+        #     is a usage error (argparse exits 2 → SystemExit), never a spec built at 1.
+        try:
+            main(["prog", "review-spec", "--worktree", r, "--baseline", base,
+                  "--manifest", manifest_path, "--run-id", "r1", "--pre-eval-id", "pe1",
+                  "--floor-result", floor_f, "--scope-clean", "--f2-result", f2_f,
+                  "--out", os.path.join(tmp, "spec-noattempt.json")])
+            _no_attempt_rejected = False
+        except SystemExit as se:
+            _no_attempt_rejected = (se.code not in (0, None))
+        expect("HIGH-1: review-spec REQUIRES --attempt-id (no silent default to 1)",
+               _no_attempt_rejected)
+
+        # 26. review-spec --attempt-id 2 stamps attempt 2 into the spec (monotonic).
+        spec2_f = os.path.join(tmp, "spec-a2.json")
+        rc = main(["prog", "review-spec", "--worktree", r, "--baseline", base,
+                   "--manifest", manifest_path, "--run-id", "r1", "--pre-eval-id", "pe1",
+                   "--attempt-id", "2",
+                   "--floor-result", floor_f, "--scope-clean", "--f2-result", f2_f,
+                   "--changed-file", _write_changed(tmp, ["styles/app.css"]),
+                   "--out", spec2_f])
+        cli_spec2 = _read_json(spec2_f)
+        expect("HIGH-1: review-spec --attempt-id 2 records attempt_id 2 in the spec",
+               rc == 0 and cli_spec2.get("attempt_id") == 2)
+
+        # 27. accept-review --attempt-id must EQUAL the spec's attempt_id — a mismatch is
+        #     refused (no acceptance, no receipt sealed): the caller cannot accept a review
+        #     from a different attempt than it declares.
+        run_mis = os.path.join(tmp, "run-attempt-mismatch")
+        mis_out = os.path.join(tmp, "v-attempt-mismatch.json")
+        rc = main(["prog", "accept-review", "--attempt-id", "2", "--spec", spec_f,
+                   "--result", result_f, "--run-dir", run_mis, "--out", mis_out])
+        mis = _read_json(mis_out)
+        expect("HIGH-1: accept-review --attempt-id != spec.attempt_id is refused (exit 1)",
+               rc == 1 and mis.get("accepted") is False
+               and "attempt_mismatch" in mis.get("failure_modes", [])
+               and not os.path.exists(os.path.join(run_mis, "review", "receipt.json")))
+
+        # 28. accept-review --attempt-id matching the spec still accepts + seals normally.
+        run_match = os.path.join(tmp, "run-attempt-match")
+        rc = main(["prog", "accept-review", "--attempt-id", "1", "--spec", spec_f,
+                   "--result", result_f, "--run-dir", run_match,
+                   "--out", os.path.join(tmp, "v-attempt-match.json")])
+        expect("HIGH-1: accept-review --attempt-id == spec.attempt_id accepts + seals",
+               rc == 0 and os.path.isfile(
+                   os.path.join(run_match, "review", "receipt.json")))
+
+        # 29. Standalone invalidate-receipt subcommand removes an existing receipt (the
+        #     dispatcher runs this BEFORE dispatching a re-review, closing the
+        #     crash-between-review-and-accept window). Idempotent afterwards.
+        run_inv = os.path.join(tmp, "run-standalone-invalidate")
+        rc = main(["prog", "accept-review", "--attempt-id", "1", "--spec", spec_f,
+                   "--result", result_f, "--run-dir", run_inv,
+                   "--out", os.path.join(tmp, "v-inv-seed.json")])
+        inv_receipt = os.path.join(run_inv, "review", "receipt.json")
+        seeded = os.path.isfile(inv_receipt)
+        rc_inv = main(["prog", "invalidate-receipt", "--run-dir", run_inv,
+                       "--out", os.path.join(tmp, "v-inv.json")])
+        expect("HIGH-1: invalidate-receipt removes an existing receipt (exit 0)",
+               seeded and rc_inv == 0 and not os.path.exists(inv_receipt))
+        rc_inv2 = main(["prog", "invalidate-receipt", "--run-dir", run_inv,
+                        "--out", os.path.join(tmp, "v-inv2.json")])
+        expect("HIGH-1: invalidate-receipt on an already-clear run is a clean no-op (exit 0)",
+               rc_inv2 == 0)
+
+        # 30. invalidate-receipt requires exactly one destination (fail-closed).
+        rc_inv3 = main(["prog", "invalidate-receipt",
+                        "--out", os.path.join(tmp, "v-inv3.json")])
+        expect("HIGH-1: invalidate-receipt with NO destination is refused (exit 2)",
+               rc_inv3 == 2)
 
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
