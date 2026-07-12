@@ -16,7 +16,8 @@
     "attempt_id",
     "ts",
     "verdict",
-    "integration_rationale"
+    "integration_rationale",
+    "digest"
   ],
   "properties": {
     "run_id": {
@@ -46,9 +47,18 @@
       "const": "claude",
       "description": "MUST be claude (CR5-5): the reviewer⇒opus guarantee needs backend:claude even when model:opus is pinned, because tier:deep alone routes codex→gpt-5.6-sol, not opus."
     },
+    "reviewer_tier": {
+      "type": "string",
+      "const": "deep",
+      "description": "The reviewer TIER the declaration resolved through — MUST be 'deep' (the combined SPEC+QUALITY fast-path review is always the deep reviewer). Recorded for a fuller seal; the reviewer⇒opus guarantee is carried by reviewer_backend:claude + reviewer_model (CR5-5)."
+    },
     "reviewer_model": {
       "type": "string",
       "description": "The CONCRETE model the declaration resolved to via compound-v-resolve-model.py against the project config. The validator requires this to be Claude Opus (a config override of models.<stance>.claude.deep that isn't opus fails, CR5-5)."
+    },
+    "worktree": {
+      "type": "string",
+      "description": "The diff-root the producer hashed final_diff_digest against — the git worktree path the worker ran in. Recorded so the post-review validator recomputes the FINAL diff (baseline..worktree) against the SAME root the producer did, never a divergent one. Producer-trusted metadata (from the needs_review spec), NOT a reviewer-echoed binding field."
     },
     "attempt_id": {
       "type": ["string", "integer"],
@@ -74,7 +84,7 @@
     "digest": {
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$",
-      "description": "Self-integrity digest: 'sha256:'+sha256(canonical_json(receipt without `digest`)). Optional; verified with compound-v-taxonomy.record_digest(receipt, exclude_field='digest')."
+      "description": "REQUIRED self-integrity digest: 'sha256:'+sha256(canonical_json(receipt without `digest`)). An unsealed receipt (no digest) is schema-invalid AND rejected by the validator. Verified with compound-v-taxonomy.record_digest(receipt, exclude_field='digest') — the SAME primitive the producer seals it with, so producer and consumer agree."
     }
   }
 }

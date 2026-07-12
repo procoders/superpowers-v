@@ -68,6 +68,7 @@ Exit codes: 0 = phase OK / floor holds / review accepted; 1 = floor failed, revi
 """
 
 import argparse
+import datetime as _dt
 import hashlib
 import json
 import os
@@ -474,6 +475,10 @@ def build_review_spec(run_id, pre_eval_id, worktree, baseline, manifest_path,
         "final_diff_digest": _sha256_prefixed(diff_data),
         "attempt_id": attempt_id,
         "ts": ts,
+        # The diff-root the producer hashed the final_diff_digest against — carried so the
+        # receipt (and the validator recomputing the diff) bind to the SAME worktree, never a
+        # divergent root. Producer-trusted metadata, NOT a reviewer-echoed binding field.
+        "worktree": str(worktree),
         "changed_files": sorted(set(changed_paths)),
         "integration_rationale": VACUOUS_INTEGRATION_RATIONALE,
         "prompt": _build_review_prompt(changed_paths, diff_text),
@@ -572,12 +577,140 @@ def accept_review(spec, result):
         "baseline_sha": result.get("baseline_sha"),
         "final_diff_digest": result.get("final_diff_digest"),
         "reviewer_backend": "claude",
+        "reviewer_tier": "deep",
         "reviewer_model": result.get("reviewer_model"),
         "attempt_id": result.get("attempt_id"),
         "verdict": "approved",
         "integration_rationale": VACUOUS_INTEGRATION_RATIONALE,
     }
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Receipt SEALING (re-entry, post-acceptance). The runner emits the canonical
+# fast-path review receipt ONLY after acceptance succeeds — a fully-sealed,
+# self-digested record the validator (post-review) + triage read. The self-digest
+# uses the SHARED compound-v-taxonomy.record_digest primitive (imported by path) so
+# producer and consumer agree byte-for-byte; a rejected/timed-out/wrong-tier result
+# never produces a receipt (fail-closed).
+# --------------------------------------------------------------------------- #
+# Standard on-disk location, relative to a run directory (matches the validator's
+# _RECEIPT_SUBPATH: <run>/review/receipt.json).
+RECEIPT_SUBPATH = os.path.join("review", "receipt.json")
+
+# The receipt's required, fully-sealed field set (mirrors the schema `required`
+# minus the derived `digest`, plus the optional diff-root/tier signals we always emit).
+_RECEIPT_REQUIRED = (
+    "run_id", "pre_eval_id", "manifest_digest", "baseline_sha", "final_diff_digest",
+    "reviewer_backend", "reviewer_model", "attempt_id", "ts", "verdict",
+    "integration_rationale",
+)
+
+
+def _now_iso_utc():
+    """ISO-8601 UTC timestamp (Z-suffixed, second precision) for the seal moment."""
+    now = _dt.datetime.now(_dt.timezone.utc)
+    return now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _load_taxonomy():
+    """Import compound-v-taxonomy.py BY PATH — the SAME record_digest primitive the
+    validator uses to verify the receipt. Returns the module, or None (fail-closed:
+    an unsealed receipt must never be written)."""
+    import importlib.util
+    path = os.path.join(_script_dir(), "compound-v-taxonomy.py")
+    try:
+        spec = importlib.util.spec_from_file_location("compound_v_taxonomy", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        if not hasattr(mod, "record_digest"):
+            return None
+        return mod
+    except Exception:  # noqa: BLE001 — any import failure ⇒ cannot seal ⇒ fail-closed
+        return None
+
+
+def build_sealed_receipt(spec, accept_out, ts=None, tax=None):
+    """Build the FULLY-SEALED canonical review receipt from an ACCEPTED ``accept_review``
+    output + the producer-trusted ``needs_review`` spec. Returns ``(receipt, None)`` or
+    ``(None, err)``.
+
+    Refuses (returns an error, NEVER a receipt) unless the review was accepted AND merge_ok
+    — so a rejected / timed-out / wrong-tier result yields no receipt (fail-closed). The
+    self-``digest`` is computed LAST over the receipt-without-digest via the shared
+    ``record_digest`` primitive, so producer and consumer agree byte-for-byte."""
+    if not isinstance(accept_out, dict) or not accept_out.get("accepted") \
+            or not accept_out.get("merge_ok"):
+        return None, ("refusing to seal a receipt for a non-accepted review result "
+                      "(only a clean, bound, approved deep/claude/opus result is sealed)")
+    rf = accept_out.get("receipt_fields")
+    if not isinstance(rf, dict):
+        return None, "accepted review output carries no receipt_fields to seal"
+    if tax is None:
+        tax = _load_taxonomy()
+    if tax is None:
+        return None, ("shared taxonomy record_digest primitive unavailable — cannot seal "
+                      "the receipt (fail-closed)")
+
+    receipt = {
+        "run_id": rf.get("run_id"),
+        "pre_eval_id": rf.get("pre_eval_id"),
+        "manifest_digest": rf.get("manifest_digest"),
+        "baseline_sha": rf.get("baseline_sha"),
+        "final_diff_digest": rf.get("final_diff_digest"),
+        "reviewer_backend": "claude",
+        "reviewer_tier": rf.get("reviewer_tier", "deep"),
+        "reviewer_model": rf.get("reviewer_model"),
+        "attempt_id": rf.get("attempt_id"),
+        "ts": ts or _now_iso_utc(),
+        "verdict": "approved",
+        "integration_rationale": rf.get("integration_rationale")
+        or VACUOUS_INTEGRATION_RATIONALE,
+    }
+    # Diff-root signal for the validator's diff recompute — the worktree the producer hashed
+    # the final_diff_digest against (from the trusted spec, never a reviewer-echoed field).
+    if isinstance(spec, dict) and spec.get("worktree"):
+        receipt["worktree"] = str(spec.get("worktree"))
+    # No mandatory field may be missing/blank — an unsealed-looking receipt fails closed here
+    # rather than being written and rejected downstream.
+    for k in _RECEIPT_REQUIRED:
+        if receipt.get(k) in (None, ""):
+            return None, "cannot seal receipt: required field '%s' is missing/blank" % k
+
+    try:
+        receipt["digest"] = tax.record_digest(receipt, exclude_field="digest")
+    except Exception as e:  # noqa: BLE001
+        return None, "cannot compute the receipt self-digest (%s) — fail-closed" % e
+    return receipt, None
+
+
+def _atomic_write_json(path, obj):
+    """Write ``obj`` as pretty JSON to ``path`` ATOMICALLY (tmp in the same dir + os.replace),
+    creating parent dirs. The on-disk pretty-print is irrelevant to the self-digest — the
+    validator re-parses and re-canonicalizes before verifying record_digest."""
+    d = os.path.dirname(os.path.abspath(path))
+    os.makedirs(d, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".receipt-", suffix=".json", dir=d)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(obj, indent=2, ensure_ascii=False, sort_keys=True) + "\n")
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _receipt_dest(run_dir=None, receipt_out=None):
+    """Resolve the receipt destination path: an explicit ``receipt_out`` wins, else
+    ``<run_dir>/review/receipt.json``, else None (pure-validation mode: no receipt written)."""
+    if receipt_out:
+        return receipt_out
+    if run_dir:
+        return os.path.join(run_dir, RECEIPT_SUBPATH)
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -627,6 +760,23 @@ def _cmd_accept_review(args):
     spec = _read_json(args.spec)
     result = _read_json(args.result)
     out = accept_review(spec, result)
+    dest = _receipt_dest(getattr(args, "run_dir", None), getattr(args, "receipt_out", None))
+    # Seal + write the receipt ONLY after acceptance succeeds. A rejected / timed-out /
+    # wrong-tier / malformed result writes NO receipt (fail-closed).
+    if out.get("accepted") and out.get("merge_ok") and dest:
+        receipt, err = build_sealed_receipt(spec, out, ts=getattr(args, "ts", None))
+        if receipt is None:
+            # Acceptance held but the receipt could not be sealed (e.g. taxonomy primitive
+            # missing) → refuse to emit an unsealed receipt AND fail the phase closed.
+            out["accepted"] = False
+            out["merge_ok"] = False
+            out.setdefault("reasons", []).append("receipt seal failed: %s" % err)
+            out["receipt_path"] = None
+            _emit(out, args.out)
+            return 1
+        _atomic_write_json(dest, receipt)
+        out["receipt_path"] = dest
+        out["receipt"] = receipt
     _emit(out, args.out)
     return 0 if out.get("accepted") and out.get("merge_ok") else 1
 
@@ -663,6 +813,13 @@ def main(argv):
     p3 = sub.add_parser("accept-review")
     p3.add_argument("--spec", required=True)
     p3.add_argument("--result", required=True)
+    p3.add_argument("--run-dir", dest="run_dir",
+                    help="run directory; the sealed receipt is written to "
+                         "<run-dir>/review/receipt.json on acceptance")
+    p3.add_argument("--receipt-out", dest="receipt_out",
+                    help="explicit receipt path (overrides --run-dir)")
+    p3.add_argument("--ts", help="override the receipt seal timestamp (ISO-8601); "
+                                 "defaults to now (UTC)")
     p3.add_argument("--out")
     p3.set_defaults(func=_cmd_accept_review)
 
@@ -941,6 +1098,93 @@ def _selftest():
         rc = main(["prog", "accept-review", "--spec", spec_f, "--result", result_f,
                    "--out", os.path.join(tmp, "verdict.json")])
         expect("CLI accept-review exits 0 on a clean approved result", rc == 0)
+
+        # ---- RECEIPT SEALING (HIGH-3: accept-review emits a fully-sealed receipt) ----
+        tax_mod = _load_taxonomy()
+        expect("shared taxonomy record_digest primitive loads for sealing", tax_mod is not None)
+
+        # Load the receipt schema for a faithful, dependency-free schema check.
+        schema_path = os.path.join(os.path.dirname(_script_dir()), "schemas",
+                                   "fastpath-review-receipt.schema.json")
+        with open(schema_path, "r", encoding="utf-8") as fh:
+            receipt_schema = json.load(fh)
+
+        def schema_problems(rec):
+            probs = []
+            props = receipt_schema.get("properties", {})
+            for req in receipt_schema.get("required", []):
+                if req not in rec:
+                    probs.append("missing required '%s'" % req)
+            if receipt_schema.get("additionalProperties") is False:
+                for k in rec:
+                    if k not in props:
+                        probs.append("unknown field '%s'" % k)
+            return probs
+
+        # 17. Accepted result → build_sealed_receipt yields a schema-valid, self-verifying receipt.
+        ok_accept = accept_review(spec, good_result())
+        receipt, err = build_sealed_receipt(spec, ok_accept, ts="2026-07-12T00:00:00Z",
+                                            tax=tax_mod)
+        expect("sealed receipt built for an accepted result",
+               receipt is not None and err is None)
+        expect("sealed receipt is schema-valid (required present, no unknown fields)",
+               receipt is not None and schema_problems(receipt) == [])
+        expect("sealed receipt has a present digest matching the sha256 pattern",
+               receipt is not None and isinstance(receipt.get("digest"), str)
+               and receipt["digest"].startswith("sha256:") and len(receipt["digest"]) == 71)
+        expect("sealed receipt self-digest VERIFIES via record_digest",
+               receipt is not None
+               and tax_mod.record_digest(receipt, exclude_field="digest") == receipt["digest"])
+        expect("sealed receipt carries ts", bool(receipt and receipt.get("ts")))
+        expect("sealed receipt carries ALL binding fields",
+               receipt is not None
+               and all(receipt.get(k) not in (None, "") for k in _BINDING_FIELDS))
+        expect("sealed receipt records worktree diff-root + deep tier",
+               receipt is not None and receipt.get("worktree") == r
+               and receipt.get("reviewer_tier") == "deep")
+        expect("sealed receipt verdict normalized to approved",
+               receipt is not None and receipt.get("verdict") == "approved")
+
+        # 18. Any tampering breaks the self-digest (the seal is load-bearing).
+        if receipt is not None:
+            tampered = dict(receipt); tampered["verdict"] = "issues"
+            expect("tampering any field breaks the self-digest",
+                   tax_mod.record_digest(tampered, exclude_field="digest")
+                   != tampered["digest"])
+
+        # 19. Rejected / timed-out / wrong-tier results seal NO receipt (fail-closed).
+        for label, res in (("rejected", dict(good_result(), verdict="issues")),
+                           ("timed-out", dict(good_result(), status="timeout")),
+                           ("wrong-tier", dict(good_result(), reviewer_model="sonnet"))):
+            rcp, e = build_sealed_receipt(spec, accept_review(spec, res))
+            expect("%s result seals NO receipt (fail-closed)" % label,
+                   rcp is None and bool(e))
+
+        # 20. CLI accept-review WRITES the sealed receipt to <run-dir>/review/receipt.json on
+        #     acceptance; a rejected result writes NOTHING and exits non-zero.
+        run_dir = os.path.join(tmp, "run-accept")
+        rc = main(["prog", "accept-review", "--spec", spec_f, "--result", result_f,
+                   "--run-dir", run_dir, "--out", os.path.join(tmp, "verdict2.json")])
+        written = os.path.join(run_dir, "review", "receipt.json")
+        expect("CLI accept-review exits 0 and writes <run-dir>/review/receipt.json",
+               rc == 0 and os.path.isfile(written))
+        if os.path.isfile(written):
+            disk = _read_json(written)
+            expect("written receipt is schema-valid AND its self-digest verifies",
+                   schema_problems(disk) == []
+                   and tax_mod.record_digest(disk, exclude_field="digest")
+                   == disk.get("digest"))
+
+        reject_f = os.path.join(tmp, "reject.json")
+        rr = _read_json(result_f); rr["verdict"] = "issues"
+        with open(reject_f, "w") as fh:
+            json.dump(rr, fh)
+        run_dir2 = os.path.join(tmp, "run-reject")
+        rc = main(["prog", "accept-review", "--spec", spec_f, "--result", reject_f,
+                   "--run-dir", run_dir2, "--out", os.path.join(tmp, "verdict3.json")])
+        expect("CLI accept-review on a rejected result exits 1 and writes NO receipt",
+               rc == 1 and not os.path.exists(
+                   os.path.join(run_dir2, "review", "receipt.json")))
 
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
