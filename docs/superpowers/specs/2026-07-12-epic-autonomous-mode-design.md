@@ -122,12 +122,30 @@ any one backend.**
   for `available` backends among `codex`, `antigravity` (`agy`), `cursor`. No new detection.
 - **Panel poll:** for each available external backend, run a **read-only** advisory query via that
   backend's headless invocation (through the timeout supervisor, `stdin </dev/null`), asking for a
-  strict-JSON verdict `{"disposition": "retry_fix|skip_independent|halt", "reason": "<one line>"}` over
-  the failed feature's evidence (spec acceptance, scope-gate/reviewer output, the failing diff summary).
-  Read-only ⇒ `agy`/`cursor` lower-trust-as-*writer* does NOT apply; they are advisors here.
-- **Aggregate:** majority disposition; **ties and any parse failure break CONSERVATIVE toward `halt`**.
-  Record every panel member's raw verdict for the audit trail (`docs/superpowers/execution/epics/<id>/
-  arbiter/<feature>-<attempt>.json`) — never fabricate a vote for an absent/errored backend.
+  strict-JSON verdict `{"disposition": "retry_fix|skip_independent|halt|blocked_external",
+  "reason": "<one line>", "evidence": "<what external fact is missing, if blocked_external>"}` over the
+  failed feature's evidence (spec acceptance, scope-gate/reviewer output, the failing diff summary, and
+  any pre-flight finding that flagged an external gap). Read-only ⇒ `agy`/`cursor`
+  lower-trust-as-*writer* does NOT apply; they are advisors here.
+- **`blocked_external`** = the feature cannot be built because of a fundamental EXTERNAL reality (an
+  upstream API returns no/incomplete data, a DB lacks the field, an unmet upstream contract) — NOT a
+  quality bug and NOT retryable by us. Requires human/external action. (Archetype: astrology #150 —
+  `/horary/analyze` returns sign-only house cusps, no degrees ⇒ the wheel can't be rendered without an
+  upstream `/horary/chart` shape change.)
+- **Aggregate — asymmetric by disposition:**
+  - `retry_fix` vs `halt` vs `skip_independent`: majority disposition; **ties and any parse failure
+    break CONSERVATIVE toward `halt`** (never push unverified work through a gate).
+  - `blocked_external`: the OPPOSITE bias — accepting it must be HARD, or it becomes a lazy escape from
+    difficult work. **Accept as CONFIRMED only on ≥2 independent external models agreeing
+    `blocked_external` with no dissenting `retry_fix`.** If ANY panel member says `retry_fix`, the
+    feature is deemed *doable by someone* → route to `retry_fix` under the breaker (try, don't skip).
+    With <2 external models available (e.g. Claude-only, or a single backend), a `blocked_external`
+    proposal is downgraded to **SUSPECTED** (not confirmed) — see the Blocker Ledger: the feature is
+    still isolated so the epic continues, but the note is flagged UNCONFIRMED / needs-human-verify, and
+    Claude-self alone can never CONFIRM a blocker (same-family, and "not my choice" must mean not one
+    model's choice).
+  - Record every panel member's raw verdict for the audit trail (`docs/superpowers/execution/epics/
+    <id>/arbiter/<feature>-<attempt>.json`) — never fabricate a vote for an absent/errored backend.
 - **Fallback (zero external backends available):** emit a `needs_arbiter` prompt for a **separate,
   fresh-context Claude/Opus** agent (NOT the implementer), adversarially framed ("default to `halt`;
   only `retry_fix`/`skip_independent` if you can justify it"). The driver runs it as a Task and feeds
@@ -138,6 +156,43 @@ any one backend.**
   aggregates 3 verdicts, ties break to `halt`, a garbled backend reply is treated as `halt`-leaning
   and logged (not fabricated); zero-backend path emits a well-formed adversarial Claude prompt; a
   `retry_fix` past the cap becomes `halt`. All `--selftest`, `LANG=C`-clean.
+
+## Component 4b — Blocker Ledger + end-of-epic human report (the "do everything you can" credo)
+
+The core credo: **finish absolutely everything that is in your power; isolate ONLY the genuinely
+impossible; escalate that — with multi-model proof — to a human, without halting the rest.** A
+fundamental external blocker is a *fact about the world*, not a quality failure or a choice — so it must
+never stop the epic, only carve out its own sub-tree.
+
+- **State:** `epic-state.json` gains top-level `"blocker_ledger": [ {feature, confirmed: bool, reason,
+  evidence, models_agreeing: [ids], first_seen_at, blocks: [dependent ids]} ]`. A feature whose
+  disposition resolves to `blocked_external` (confirmed) or SUSPECTED-blocker gets a ledger entry and
+  status `"blocked"` (a NEW terminal-ish status distinct from `failed`).
+- **`--update --status blocked --feature F --blocker-reason ... --blocker-confirmed true|false
+  --models-agreeing codex,cursor`** appends the ledger entry and marks F `blocked`.
+- **`--next --autonomous` treats `blocked` like a benign skip, NOT a fail-fast trigger:** a `blocked`
+  feature blocks only its transitive dependents (they also become `blocked`, ledger-linked "blocked
+  upstream: F"); every INDEPENDENT pending feature stays runnable. The epic runs to completion on
+  everything reachable, then reports. (`failed` after the retry cap still halts-for-human; `blocked` is
+  the "world lacks the data" lane and does NOT halt.)
+- **Discovery is two-point:** a blocker can surface during **pre-flight research** (1B domain / 1C
+  doc-validator finds "the upstream API has no such field") *or* mid-**implementation** (a worker hits
+  it, like #150). Both funnel through the SAME arbiter-panel confirmation (≥2 external models) before a
+  ledger entry is marked `confirmed` — a pre-flight suspicion alone is SUSPECTED until the panel agrees.
+- **End-of-epic report:** on `epic complete` (all features `done` OR `blocked`), the final integration
+  review runs over the built subset, then the report leads with the Blocker Ledger:
+  > "Built everything reachable. **N feature(s) need YOU** — a human/external action, because the code
+  > cannot create data that doesn't exist upstream:" then per entry: feature, one-line reason, the
+  > missing external fact, which models agreed (confirmed) or that it is a single-model SUSPICION, and
+  > what it transitively blocked. `blocked` (world-fact) is visually separated from `failed`
+  > (needs-a-fix) so the human sees "impossible-without-me" apart from "broken".
+- **A `blocked`-only epic is still a SUCCESS-with-caveats, not a failure** — the point is maximal
+  completion. `--stats` counts `blocked` separately from `done`/`failed`.
+- **Acceptance:** selftest covers: a confirmed `blocked_external` isolates its dependents but not
+  independents; `--next --autonomous` keeps advancing past a `blocked` feature; a single-model proposal
+  yields `confirmed:false`; the ledger round-trips through `--update`/`--summary`; `--stats` breaks out
+  `blocked`. The report text names the missing external fact and the agreeing models, never fabricates a
+  vote, and never confirms on Claude-self alone.
 
 ## Component 5 — Driver wiring (v-epic.md, epic-mode.md, v-init.md)
 
