@@ -61,9 +61,9 @@
       "baseline": "424af970c4a02207a1e75b4db4377e0b128e0dcd"
     },
     "task-c1-validator": {
-      "status": "running",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": ".v29-worktrees/task-c1-validator",
+      "worktree": null,
       "session_id": null,
       "failure_class": null,
       "log": null
