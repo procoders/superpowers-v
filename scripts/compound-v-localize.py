@@ -360,7 +360,10 @@ def _classify_paths(repo, resolved, taxonomy):
             with open(os.path.join(repo, rel), "rb") as fh:
                 raw = fh.read(MAX_FILE_READ_BYTES + 1)
         except OSError:
+            # Could not read a resolved file -> we did NOT see its content, so we cannot
+            # claim `exact`. Fail-closed: mark the scan incomplete (caller -> ambiguous). (MED-6)
             raw = b""
+            incomplete = True
         if len(raw) > MAX_FILE_READ_BYTES:
             # File is larger than the per-file read cap -> this scan is incomplete.
             incomplete = True
