@@ -221,3 +221,18 @@ jobs:
           done < <(find . -name "*.md" -not -path "./node_modules/*" -not -path "./.git/*" -print0)
           [ "$fail" = "0" ] || exit 1
           echo "✅ All intra-plugin .md links resolve"
+
+      # Marathon-mode (v2.10) selftests run under Python 3.9 — the documented floor for
+      # scripts/compound-v-epic-state.py and scripts/compound-v-epic-arbiter.py (both pure
+      # stdlib, no PyYAML dependency). Installed LAST in the job so re-pointing PATH at a
+      # 3.9 interpreter can never affect the earlier PyYAML-dependent steps above.
+      - name: Set up Python 3.9 (marathon selftest floor)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Run epic-state.py selftest (Python 3.9 floor)
+        run: python3 scripts/compound-v-epic-state.py --selftest
+
+      - name: Run epic-arbiter.py selftest (Python 3.9 floor)
+        run: python3 scripts/compound-v-epic-arbiter.py --selftest
