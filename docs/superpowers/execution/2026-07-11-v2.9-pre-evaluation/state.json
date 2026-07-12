@@ -117,9 +117,9 @@
       "log": null
     },
     "task-m1-materialize": {
-      "status": "pending",
+      "status": "running",
       "isolation": "worktree",
-      "worktree": null,
+      "worktree": ".v29-worktrees/task-m1-materialize",
       "session_id": null,
       "failure_class": null,
       "log": null
