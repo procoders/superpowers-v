@@ -27,3 +27,4 @@ docs/superpowers/_runs/
 # large and full of prompts/tool-calls — never committed as run substrate.
 docs/superpowers/execution/*/logs/*.jsonl
 .v29-worktrees/
+docs/superpowers/execution/2026-07-11-v2.9-pre-evaluation/baselines/
