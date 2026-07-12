@@ -107,13 +107,15 @@ python3 scripts/compound-v-epic-state.py --next --autonomous \
   --state docs/superpowers/execution/epics/<epic-id>/epic-state.json
 ```
 
-Prints `{"feature": <feature|null>, "reason": "...", "blocked_by": [ids]}`. Unlike the checkpoint `--next`, this is **DAG-aware**: an abandoned/failed/blocked feature removes only its *transitive dependents* from the runnable set — independent pending features stay runnable and are returned **before** any terminal escalation. `reason` embeds a literal terminal-state token as a prefix when there is nothing runnable to hand out:
+Prints `{"feature": <feature|null>, "reason": "...", "blocked_by": [ids]}`. Unlike the checkpoint `--next`, this is **DAG-aware**: an abandoned/failed/blocked feature removes only its *transitive dependents* from the runnable set — independent pending features stay runnable and are returned **before** any terminal escalation. Routing is driven entirely by **persisted state** — a `failed` feature is routed by its *stored* `disposition` (not an in-memory intent), which is what makes retries and mid-arbitration crashes recover correctly across a re-entry. `reason` embeds a literal terminal-state token as a prefix when there is nothing runnable to hand out:
 
-- `"done: ..."` — every feature is `done` **and** `final_review.status == "passed"`. → §8/terminal (success).
+- `feature` non-null (`reason` is `"runnable"` or `"running_with_failures: runnable (...)"`) → §3. **A `failed` feature carrying a `retry_fix` disposition that is still under its retry cap is handed back here as runnable** — the driver runs it exactly like any other runnable feature (§3). This is the crash-safe retry path: the retry intent lives in the persisted `disposition`, so it survives a breaker trip or a hard crash between recording the verdict and re-running.
+- `"needs_arbitration: feature <id> ..."` — a `failed` feature with **no recorded disposition**: the arbiter exchange never completed (a crash mid-arbitration, or the loop was interrupted before §5 recorded a verdict). **Do NOT treat this as done or abandoned** — re-run the arbiter exchange (§5) for that feature now, from the top (`--prepare` re-issues idempotently for the same attempt; a previously-consumed challenge re-emits its persisted audit, so re-running is safe). Then act on the (re)recorded disposition (§6) and loop.
+- `"sample_audit_due: feature(s) <ids> ..."` — one or more `done` features were sampled for a PASS-integrity audit that has not completed (see §4). **Run the outstanding sample-audit(s) now** (§4 steps 1–4) before anything else — this reason is surfaced *before* `final_review`, and `--record-final-review passed` is **rejected while any audit is due**, so you cannot skip ahead to §8. Once every due audit clears, the next `--next --autonomous` advances normally.
+- `"done: ..."` — every feature is `done`, **no sample-audit is due**, **and** `final_review.status == "passed"`. → §8/terminal (success).
 - `"blocked_needing_human: ..."` — a tripped breaker, a `halt_epic` disposition, or exhausted reachable work (only blocked/failed features remain). → §7 (halt-page).
-- `"running_with_failures: all features done, awaiting final_review ..."` — every feature `done`, review not yet passed. → §8.
+- `"running_with_failures: all features done, awaiting final_review ..."` — every feature `done`, no audit due, review not yet passed. → §8.
 - `"epic needs reconcile: ..."` — a feature is stuck `running` from a prior crash. Same procedure as the checkpoint loop's step 6 (`/v:resume <run-id>`, or `--status pending`/`--status failed` if unrecoverable), then loop again.
-- `feature` non-null (`reason` is `"runnable"` or `"running_with_failures: runnable (...)"`) → §3.
 
 ### 3. Run the feature
 
@@ -126,21 +128,40 @@ python3 scripts/compound-v-epic-state.py --update --feature <id> --status runnin
 
 (Legal only from `pending`/`failed` — the marathon transition table rejects `done`/`blocked` sources; this also increments the feature's `attempts` counter, which the arbiter step below reads.) Then the same pre-flights → writing-plans + partition → manifest → dispatch → 3-pass review tail from step 4.2, unchanged.
 
-### 4. On success — mark done, then sample-audit a fraction of PASSes
+### 4. On success — mark done (+ durable audit obligation), then sample-audit a fraction of PASSes
 
-```
-python3 scripts/compound-v-epic-state.py --update --feature <id> --status done \
-  --run-id <run-id> --state docs/superpowers/execution/epics/<epic-id>/epic-state.json
-```
+**PASS-integrity sample-audit (spec Component 5).** A marathon SUCCESS is not automatically trusted — a fraction of them get a fresh adversarial re-review to catch a feature whose own 3-pass gate was satisfied by a weakened test/scorer (the reward-hack `agents/spec-reviewer.md` 2.5 guards against). Deterministic policy, stated so it is auditable, not a coin flip: **hold an in-invocation counter of successful features and sample-audit every 3rd one (the 3rd, 6th, 9th … `done` this invocation); always sample-audit the FIRST success of the invocation** (so a one-feature or short epic is never audited zero times). No RNG, no fabricated rate.
 
-Commit (§9). **PASS-integrity sample-audit (spec Component 5).** A marathon SUCCESS is not automatically trusted — a fraction of them get a fresh adversarial re-review to catch a feature whose own 3-pass gate was satisfied by a weakened test/scorer (the reward-hack `agents/spec-reviewer.md` 2.5 guards against). Deterministic policy, stated so it is auditable, not a coin flip: **hold an in-invocation counter of successful features and sample-audit every 3rd one (the 3rd, 6th, 9th … `done` this invocation); always sample-audit the FIRST success of the invocation** (so a one-feature or short epic is never audited zero times). No RNG, no fabricated rate. When a feature is sampled:
+**Whether or not this success is sampled, decide it FIRST — the obligation must be on disk before `done` is committed**, so a crash between "mark done" and "run the audit" can never lose the audit. The `done` mark and (for a sampled feature) the audit obligation are recorded and committed **together**, never `done` alone:
 
-1. **Run the breaker gate first** (§1, reusing THIS pass's cycle-id — idempotent, so it re-evaluates wall-clock without double-counting `no_progress_cycles`) before spending the audit's model call. Tripped → `--trip-breaker` → §7.
+- **Sampled** — record the obligation, then (or in the same commit as) the `done` mark:
+  ```
+  python3 scripts/compound-v-epic-state.py --mark-sample-audit-due --feature <id> \
+    --state docs/superpowers/execution/epics/<epic-id>/epic-state.json
+  ```
+  ```
+  python3 scripts/compound-v-epic-state.py --update --feature <id> --status done \
+    --run-id <run-id> --state docs/superpowers/execution/epics/<epic-id>/epic-state.json
+  ```
+  Commit (§9) — **both** writes in one commit, so `done` is never persisted without its pending `sample_audit_due`. While any feature has `sample_audit_due`, `--next --autonomous` reports `"sample_audit_due: ..."` (surfaced before `final_review`) and `--record-final-review passed` is **rejected** — the obligation is enforced by the state script, not by the driver remembering it.
+- **Not sampled** — just the `done` mark, then commit (§9):
+  ```
+  python3 scripts/compound-v-epic-state.py --update --feature <id> --status done \
+    --run-id <run-id> --state docs/superpowers/execution/epics/<epic-id>/epic-state.json
+  ```
+  Loop back to §1.
+
+Then run the sample-audit for a sampled feature (also the entry point when `--next --autonomous` re-surfaces a `"sample_audit_due: ..."` obligation after a crash/resume — run it here, do not skip to §8):
+
+1. **Run the breaker gate first** (§1, reusing THIS pass's cycle-id — idempotent, so it re-evaluates wall-clock without double-counting `no_progress_cycles`) before spending the audit's model call. Tripped → `--trip-breaker` → §7. (The obligation persists across the trip — it is cleared only by step 3, so the audit is still owed when the epic later resumes.)
 2. **Dispatch a FRESH `compound-v:spec-reviewer` Task** (Opus, no context from the build) for **PASS 2 QUALITY + the 2.5 reward-hack check** over just that feature's diff (`git diff` for its run), against its feature-level acceptance criteria.
-3. **On APPROVED** — nothing to do; loop back to §1.
-4. **On ISSUES** — the success was not real. Route the feature back through the **failure path (§5)**: `--update --status failed --last-error "sample-audit ISSUES: <summary>"` (a `done`→`failed` update is allowed — only the `→running` transition is source-gated to pending/failed), then the arbiter exchange as in §5. Reverting a `done` also invalidates a passed top-level `final_review` back to pending automatically, so a later regression can't slip through on a stale review.
-
-An unsampled success just loops back to §1.
+3. **On APPROVED** — clear the obligation, then commit (§9):
+   ```
+   python3 scripts/compound-v-epic-state.py --clear-sample-audit-due --feature <id> \
+     --state docs/superpowers/execution/epics/<epic-id>/epic-state.json
+   ```
+   Loop back to §1.
+4. **On ISSUES** — the success was not real. Clear the obligation and route the feature back through the **failure path (§5)**: `--clear-sample-audit-due --feature <id>` then `--update --status failed --last-error "sample-audit ISSUES: <summary>"` (a `done`→`failed` update is allowed — only the `→running` transition is source-gated to pending/failed), commit, then the arbiter exchange as in §5. Reverting a `done` also invalidates a passed top-level `final_review` back to pending automatically, so a later regression can't slip through on a stale review.
 
 ### 5. On failure — arbiter panel before any retry decision
 
@@ -182,11 +203,13 @@ python3 scripts/compound-v-epic-state.py --record-disposition --feature <id> \
   --state docs/superpowers/execution/epics/<epic-id>/epic-state.json
 ```
 
-**`--families-agreeing` is OMITTED entirely when the arbiter returns an empty `families_agreeing`** (all ballots dropped, or a tied/conservative default) — argparse requires a value, so passing the flag with nothing after it errors; drop the flag rather than passing a bare `--families-agreeing`. (If your dispatch harness cannot conditionally drop a flag, pass a quoted empty string `--families-agreeing ""` — the CLI parses it to an empty list, same result.) Commit (§9): epic-state.json + the `arbiter/` directory.
+**`--families-agreeing` is OMITTED entirely when the arbiter returns an empty `families_agreeing`** (all ballots dropped, or a tied/conservative default) — argparse requires a value, so passing the flag with nothing after it errors; drop the flag rather than passing a bare `--families-agreeing`. (If your dispatch harness cannot conditionally drop a flag, pass a quoted empty string `--families-agreeing ""` — the CLI parses it to an empty list, same result.) **Commit (§9) NOW — epic-state.json + the `arbiter/` directory — before the §6 breaker gate.** This commit is the durable retry intent: once the disposition is on disk, a trip/crash before the retry actually re-runs cannot lose it (§6). Recording the verdict here is also what turns a `"needs_arbitration"` `--next` reason (§2 — a `failed` feature with no disposition, i.e. a crash *before* this point) back into a normally-routed feature on the next pass.
 
 ### 6. Act on the disposition
 
-- **`retry_fix`** — a retry re-runs a whole v1.0 pipeline, which is a long model-spending phase, so **run the breaker gate (§1, this pass's cycle-id) once more BEFORE re-dispatching** — a retry must not start after a breaker has already tripped. If tripped → `--trip-breaker` → §7. Otherwise re-check `--can-retry --feature <id>` (defense-in-depth; `--classify` already capped it — this is the driver's own gate before spending another attempt): if `can_retry`, mark it running again (`--update --status running --run-id <run-id>` — legal from `failed`) and re-run the v1.0 pipeline (§3); if not, treat it as `halt_feature` (it should already have arrived as `halt_feature` from §5).
+The disposition is **already persisted** by the `--record-disposition` at the end of §5 — that write is the durable record of what to do, committed *before* the pre-retry breaker gate below. So a breaker trip or a hard crash at any point in this section loses nothing: on resume, `--next --autonomous` re-routes the feature by its *stored* disposition (a `retry_fix`-under-cap feature comes back as **runnable**; a `halt_feature`/cap-exhausted one is abandoned), never by an in-memory intent the crash would have erased.
+
+- **`retry_fix`** — the retry re-runs a whole v1.0 pipeline (a long model-spending phase). Because the disposition is persisted, the crash-safe way to re-run is to **loop back to §1**: the top-of-pass breaker gate runs, then `--next --autonomous` hands this feature back as runnable, and §3 re-runs it. If you instead re-dispatch immediately within this same live pass (an optimization, not required), **run the breaker gate (§1, this pass's cycle-id) once more BEFORE re-dispatching** — a retry must not start after a breaker has already tripped (tripped → `--trip-breaker` → §7) — then re-check `--can-retry --feature <id>` (defense-in-depth; `--classify` already capped it): if `can_retry`, `--update --status running --run-id <run-id>` (legal from `failed`) and re-run the v1.0 pipeline (§3); if not, treat it as `halt_feature` (it should already have arrived as `halt_feature` from §5). Either path is safe — the persisted disposition, not the choice of path, is what survives a crash.
 - **`halt_feature`** — abandon this feature. No further status change needed — it is already `failed`, disposition recorded — `--next --autonomous` on the next pass routes around it: independents keep running, only its transitive dependents block. Continue the loop (§1).
 - **`blocked_external`** — isolate it in the blocker ledger (always `confirmed:false` in v2.10 — never pass `--blocker-confirmed true`):
   ```
@@ -224,7 +247,7 @@ python3 scripts/compound-v-epic-state.py --record-final-review --status passed \
   --state docs/superpowers/execution/epics/<epic-id>/epic-state.json
 ```
 
-(or `--status failed` on ISSUES — `passed` is rejected unless every feature is currently `done`). Commit (§9), then loop back to §2: a `passed` review makes the next `--next --autonomous` report `"done: ..."` — print `--summary`/`--stats`, the per-feature run-ids, and hand off to `superpowers:finishing-a-development-branch` (same as the checkpoint loop's step 5, minus the separate review step already folded in here). A `failed` review is **not** silently retried in a tight loop — surface the spec-reviewer's ISSUES immediately. Since no feature is `pending`/`running` to route work to, an unaddressed failed final review shows up at §1 as a non-advancing pass (`no_progress_cycles` increments because `done` didn't grow) — either fix the integration issue and re-run the review within this invocation, or let the no-progress breaker trip on its own boundary and hand off to §7. Never re-run the identical failing review without addressing what it found.
+(or `--status failed` on ISSUES — `passed` is rejected unless every feature is currently `done` **and no `sample_audit_due` obligation is outstanding**; if `--next --autonomous` is still reporting `"sample_audit_due: ..."` you must clear those audits (§4) before this call will accept `passed`). Commit (§9), then loop back to §2: a `passed` review makes the next `--next --autonomous` report `"done: ..."` — print `--summary`/`--stats`, the per-feature run-ids, and hand off to `superpowers:finishing-a-development-branch` (same as the checkpoint loop's step 5, minus the separate review step already folded in here). A `failed` review is **not** silently retried in a tight loop — surface the spec-reviewer's ISSUES immediately. Since no feature is `pending`/`running` to route work to, an unaddressed failed final review shows up at §1 as a non-advancing pass (`no_progress_cycles` increments because `done` didn't grow) — either fix the integration issue and re-run the review within this invocation, or let the no-progress breaker trip on its own boundary and hand off to §7. Never re-run the identical failing review without addressing what it found.
 
 ### 9. Commit points (two-command discipline — check each exit, never `&&`)
 
@@ -238,7 +261,7 @@ git add docs/superpowers/execution/epics/<epic-id>/epic-state.json \
 git commit -m "chore(v-epic): marathon <epic-id> <feature-id> -> <what happened>"
 ```
 
-(Omit the `arbiter/` path when nothing was written there — e.g. a bare `done` mark.) Trigger points: a feature reaching `done` (§4); a sample-audit that reverts a `done` back to `failed` (§4); every `--record-disposition` + its accompanying `--update` (§5/§6 — `retry_fix`/`halt_feature`/`blocked_external`/`halt_epic`); every `--trip-breaker` (§1/§5/§7); every `--record-final-review` (§8); and once more, belt-and-suspenders, right before the halt-page (§7) or the terminal `done` report (§8).
+(Omit the `arbiter/` path when nothing was written there — e.g. a bare `done` mark.) Trigger points: a feature reaching `done` — **committed together with its `--mark-sample-audit-due` when sampled, so `done` is never on disk without the obligation** (§4); a `--clear-sample-audit-due` on a passed audit (§4); a sample-audit that clears the obligation and reverts a `done` back to `failed` (§4); every `--record-disposition` + its accompanying `--update` (§5/§6 — `retry_fix`/`halt_feature`/`blocked_external`/`halt_epic`); every `--trip-breaker` (§1/§5/§7); every `--record-final-review` (§8); and once more, belt-and-suspenders, right before the halt-page (§7) or the terminal `done` report (§8).
 
 ### The honest v2.10 boundary
 
