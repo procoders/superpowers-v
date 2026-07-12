@@ -45,6 +45,23 @@ missing ``actual`` (excluded, logged, never fabricated). A fast-path parent with
 terminal ``actual`` is excluded from BOTH numerator and denominator (logged, never
 counted as a success or a failure).
 
+CRIT-2 (genuinely git-DERIVED terminal verification)
+----------------------------------------------------
+A terminal ``actual`` is COUNTED only when **committed git truth** backs it, never on a
+working-tree file or a caller-supplied ``approved`` string. At read/count time every field
+is read from the **committed blob at HEAD** (``git show HEAD:<relpath>`` / ``git cat-file``,
+routed through the process-group timeout supervisor with ``stdin </dev/null``):
+
+  * the run's ``state.json`` and the review ``receipt.json`` are read from HEAD — a
+    working-tree-only / uncommitted state.json does NOT verify (fail-closed);
+  * the recorded merge SHA must resolve to a REAL commit object
+    (``git cat-file -e <sha>^{commit}``) — a fictitious 40-char string never verifies;
+  * the triage stream file itself must be committed at HEAD (git-tracked audit trail).
+
+Any unverifiable / uncommitted / fake-SHA terminal actual is excluded (precision-IGNORED,
+treated exactly like ``merge_pending``), never fabricated into a success. The append path
+stays strictly append-only (AC-3); this verification is read/count-time only.
+
 Reuse (no recopy)
 -----------------
 ``append_line`` — the forbidden-basename guard + ``makedirs`` + append-never-rewrite
@@ -71,6 +88,8 @@ import datetime
 import importlib.util
 import json
 import os
+import re
+import subprocess
 import sys
 
 STREAM_RELPATH = os.path.join("docs", "superpowers", "memory", "triage-outcomes.jsonl")
@@ -329,13 +348,15 @@ def _terminal_actual(slot):
 
 
 # ---------------------------------------------------------------------------- #
-# Git-derived terminal verification (HIGH-9). A terminal ``actual`` is COUNTED
-# (into precision / Tier 2) only when committed, git-derived run state backs it —
-# NEVER on a caller-provided ``approved``/``pass`` string alone. An unverifiable
-# terminal actual is treated exactly like a precision-IGNORED ``merge_pending`` one
-# (excluded from BOTH numerator and denominator, logged as no-terminal, never
-# fabricated into a success). The append itself stays strictly append-only (AC-3);
-# this verification happens at READ/COUNT time from the run dir / state.json.
+# Genuinely git-DERIVED terminal verification (CRIT-2). A terminal ``actual`` is
+# COUNTED (into precision / Tier 2) only when the COMMITTED git blob at HEAD backs
+# it — NEVER a working-tree file, and NEVER a caller-provided ``approved``/``pass``
+# string. An unverifiable / uncommitted / fake-SHA terminal actual is treated
+# exactly like a precision-IGNORED ``merge_pending`` one (excluded from BOTH
+# numerator and denominator, never fabricated into a success). The append itself
+# stays strictly append-only (AC-3); this verification happens at READ/COUNT time
+# and reads only from ``git`` (routed through the process-group timeout supervisor
+# with ``stdin </dev/null`` — never a bare ``subprocess.run(timeout=...)`` on git).
 # ---------------------------------------------------------------------------- #
 _EXEC_RELPATH = os.path.join("docs", "superpowers", "execution")
 _RUN_STATE_BASENAME = "state.json"
@@ -344,6 +365,157 @@ _RECEIPT_SUBPATH = os.path.join("review", "receipt.json")
 _MERGE_SHA_KEYS = ("merge_sha", "merged_sha", "merge_commit", "merged_commit")
 _PHASE_MERGED = "MERGED"
 _PHASE_ESCALATION = "ESCALATION_REQUIRED"
+
+# External-git boundary: every git read is bounded by the shared process-group
+# timeout supervisor (stdin </dev/null, bounded output) — see compound-v-churn.py.
+_GIT_TIMEOUT_S = 20
+_GIT_OUTPUT_CAP_BYTES = 4 * 1024 * 1024
+# A merge SHA must LOOK like an object name before we ever hand it to git (defends
+# ``cat-file -e <sha>^{commit}`` against a ref-name / refspec injection).
+_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
+
+
+def _supervisor_path():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "compound-v-run-with-timeout.py")
+
+
+def _run_git(argv, cwd, timeout_s=_GIT_TIMEOUT_S, cap_bytes=_GIT_OUTPUT_CAP_BYTES):
+    """Run a git command UNDER the shared process-group timeout supervisor.
+
+    Returns ``(returncode, stdout_bytes)``; ``(None, b"")`` if the launch itself
+    failed (missing supervisor / OSError) — a fail-closed sentinel. stdin is
+    ``DEVNULL``, the command leads its own session/process-group (SIGKILL'd as a
+    group on timeout), and ``--max-output-bytes`` bounds captured stdout on disk.
+    NEVER a bare ``subprocess.run(timeout=...)`` on git (external-launch invariant)."""
+    import shutil as _shutil
+    import tempfile as _tempfile
+
+    sup = _supervisor_path()
+    if not os.path.isfile(sup) or not cwd or not os.path.isdir(cwd):
+        return None, b""
+    tmpd = _tempfile.mkdtemp(prefix="cv-triage-git-")
+    outfile = os.path.join(tmpd, "out")
+    full = [
+        sys.executable, sup,
+        "--timeout", str(int(timeout_s)), "--grace", "1",
+        "--cwd", cwd, "--stdout", outfile,
+        "--max-output-bytes", str(int(cap_bytes)),
+        "--", "git",
+    ] + list(argv)
+    try:
+        proc = subprocess.run(
+            full, stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            with open(outfile, "rb") as fh:
+                raw = fh.read()
+        except OSError:
+            raw = b""
+        return proc.returncode, raw
+    except OSError:
+        return None, b""
+    finally:
+        _shutil.rmtree(tmpd, ignore_errors=True)
+
+
+def _relposix(abspath, root):
+    """``abspath`` expressed relative to git ``root``, POSIX-separated, or None when it
+    escapes the repo. Both sides are ``realpath``-normalized first so a symlinked temp
+    root (``/tmp`` → ``/private/tmp`` on macOS) does not produce a bogus ``../..`` path."""
+    try:
+        rel = os.path.relpath(os.path.realpath(abspath), os.path.realpath(root))
+    except (ValueError, OSError):
+        return None
+    if rel == os.pardir or rel.startswith(os.pardir + os.sep):
+        return None
+    return rel.replace(os.sep, "/")
+
+
+def _git_toplevel(dirpath):
+    """The git work-tree root containing ``dirpath`` (``rev-parse --show-toplevel``), or
+    None. A non-existent dir or a non-repo fails closed (None)."""
+    if not dirpath or not os.path.isdir(dirpath):
+        return None
+    rc, out = _run_git(["rev-parse", "--show-toplevel"], cwd=dirpath)
+    if rc != 0:
+        return None
+    top = out.decode("utf-8", "replace").strip()
+    return top or None
+
+
+def _make_git_ctx(exec_dir, stream_path=None):
+    """Resolve the git context used by all terminal verification in one place: the repo
+    root (derived from ``exec_dir``), a per-relpath ``git show`` cache, a per-SHA
+    commit-object cache, and whether the triage STREAM file is committed at HEAD.
+
+    No repo, or a stream that is not committed at HEAD, means NOTHING verifies — the
+    whole read is fail-closed (an uncommitted audit trail is never a fabricated success)."""
+    ctx = {"repo_root": None, "show_cache": {}, "commit_cache": {},
+           "stream_committed": False}
+    root = _git_toplevel(exec_dir)
+    ctx["repo_root"] = root
+    if root:
+        sp = os.path.abspath(stream_path or default_stream_path())
+        ctx["stream_committed"] = _git_path_committed(ctx, sp)
+    return ctx
+
+
+def _git_path_committed(ctx, abspath):
+    """Is ``abspath`` committed at HEAD (git-tracked)? ``git cat-file -e HEAD:<rel>`` —
+    cheap existence probe, reads no blob content."""
+    root = ctx.get("repo_root")
+    if not root:
+        return False
+    rel = _relposix(abspath, root)
+    if rel is None:
+        return False
+    rc, _ = _run_git(["cat-file", "-e", "HEAD:" + rel], cwd=root)
+    return rc == 0
+
+
+def _git_read_json(ctx, abspath):
+    """Parse the COMMITTED blob at ``HEAD:<abspath>`` as a JSON object, or None. A path
+    that is not committed, or a non-object / unparseable blob, fails closed (None). The
+    working-tree copy is deliberately NEVER read — that is the whole point of CRIT-2."""
+    root = ctx.get("repo_root")
+    if not root:
+        return None
+    rel = _relposix(abspath, root)
+    if rel is None:
+        return None
+    cache = ctx["show_cache"]
+    if rel in cache:
+        return cache[rel]
+    rc, out = _run_git(["show", "HEAD:" + rel], cwd=root)
+    obj = None
+    if rc == 0:
+        try:
+            parsed = json.loads(out.decode("utf-8"))
+            if isinstance(parsed, dict):
+                obj = parsed
+        except (ValueError, UnicodeDecodeError):
+            obj = None
+    cache[rel] = obj
+    return obj
+
+
+def _git_commit_exists(ctx, sha):
+    """Does ``sha`` name a REAL commit object in this repo? ``git cat-file -e
+    <sha>^{commit}`` — a tree/blob or a fictitious 40-char string peels/resolves to
+    nothing and fails closed. The ``_SHA_RE`` guard keeps a ref-name from being smuggled
+    in as a "SHA"."""
+    root = ctx.get("repo_root")
+    if not root or not isinstance(sha, str) or not _SHA_RE.match(sha):
+        return False
+    cache = ctx["commit_cache"]
+    if sha in cache:
+        return cache[sha]
+    rc, _ = _run_git(["cat-file", "-e", sha + "^{commit}"], cwd=root)
+    val = rc == 0
+    cache[sha] = val
+    return val
 
 
 def _resolve_exec_dir(stream_path=None, exec_dir=None, repo=None):
@@ -361,24 +533,20 @@ def _resolve_exec_dir(stream_path=None, exec_dir=None, repo=None):
     return os.path.join(base, _EXEC_RELPATH)
 
 
-def _read_run_state(exec_dir, run_id):
-    """Read the run's committed ``state.json`` (git-derived truth), or None. A missing /
-    unreadable / non-object state fails closed (None)."""
+def _read_run_state(ctx, exec_dir, run_id):
+    """Read the run's ``state.json`` FROM THE COMMITTED BLOB AT HEAD (git-derived truth),
+    or None. A working-tree-only / uncommitted / unreadable / non-object state fails
+    closed (None)."""
     if not exec_dir or not run_id:
         return None
     path = os.path.join(exec_dir, run_id, _RUN_STATE_BASENAME)
-    if not os.path.isfile(path):
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            obj = json.load(fh)
-    except (ValueError, OSError):
-        return None
-    return obj if isinstance(obj, dict) else None
+    return _git_read_json(ctx, path)
 
 
 def _merge_sha(state):
-    """A non-empty merge SHA recorded in ``state.json`` (any accepted alias), or None."""
+    """A non-empty merge SHA recorded in ``state.json`` (any accepted alias), or None.
+    NOTE: this only EXTRACTS the string — ``_git_commit_exists`` decides whether it names
+    a real commit object."""
     for key in _MERGE_SHA_KEYS:
         val = state.get(key)
         if isinstance(val, str) and val.strip():
@@ -386,19 +554,13 @@ def _merge_sha(state):
     return None
 
 
-def _read_receipt(exec_dir, run_id):
-    """Read the fast-path review receipt (``<run>/review/receipt.json``), or None."""
+def _read_receipt(ctx, exec_dir, run_id):
+    """Read the fast-path review receipt (``<run>/review/receipt.json``) FROM THE COMMITTED
+    BLOB AT HEAD, or None."""
     if not exec_dir or not run_id:
         return None
     path = os.path.join(exec_dir, run_id, _RECEIPT_SUBPATH)
-    if not os.path.isfile(path):
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            obj = json.load(fh)
-    except (ValueError, OSError):
-        return None
-    return obj if isinstance(obj, dict) else None
+    return _git_read_json(ctx, path)
 
 
 def _receipt_approved_and_bound(receipt, pre_eval_id, run_id):
@@ -415,25 +577,31 @@ def _receipt_approved_and_bound(receipt, pre_eval_id, run_id):
     return True
 
 
-def _verify_terminal_actual(pre_eval_id, run_id, slot, actual, is_fastpath, exec_dir):
-    """Git-derived gate (HIGH-9): does committed run state back this terminal ``actual``?
+def _verify_terminal_actual(ctx, pre_eval_id, run_id, slot, actual, is_fastpath, exec_dir):
+    """Genuinely git-DERIVED gate (CRIT-2): does COMMITTED git truth back this terminal
+    ``actual``? Counted only when ALL hold (else fail-closed → excluded, like a
+    ``merge_pending``):
 
-    Counted only when ALL hold (else fail-closed → excluded, like a ``merge_pending``):
-
+      * the git repo exists AND the triage stream itself is committed at HEAD
+        (an uncommitted audit trail is never a fabricated success);
       * a matching ``bind`` event exists for the same ``(pre_eval_id, run_id)``;
-      * the run's committed ``state.json`` records the right terminal phase —
-        ``MERGED`` + a merge SHA for a merged outcome, or ``ESCALATION_REQUIRED`` +
-        an ``escalated_to`` child link for a fast-path parent that escalated;
+      * the run's ``state.json``, READ FROM THE COMMITTED BLOB AT HEAD, records the right
+        terminal phase — ``MERGED`` + a merge SHA that resolves to a REAL commit object,
+        or ``ESCALATION_REQUIRED`` + an ``escalated_to`` child link for a fast-path
+        parent that escalated;
       * a non-escalated fast-path PARENT additionally carries an ``approved`` review
-        receipt bound to this ``(pre_eval_id, run_id)``.
+        receipt (also read from the committed blob) bound to this ``(pre_eval_id, run_id)``.
 
-    Never trusts the model's self-reported ``approved``/``pass`` — the evidence is read
-    from the run dir / state.json (git-derived), so an injected terminal actual with no
-    committed run behind it can never be fabricated into a success.
+    Never trusts the model's self-reported ``approved``/``pass`` and never reads the
+    working tree — the evidence is committed git state, so an injected terminal actual
+    with no committed run behind it (or a fictitious merge SHA) can never be fabricated
+    into a success.
     """
+    if not ctx.get("repo_root") or not ctx.get("stream_committed"):
+        return False
     if not isinstance(slot.get("bind"), dict):
         return False
-    state = _read_run_state(exec_dir, run_id)
+    state = _read_run_state(ctx, exec_dir, run_id)
     if state is None:
         return False
     phase = state.get("phase")
@@ -442,11 +610,11 @@ def _verify_terminal_actual(pre_eval_id, run_id, slot, actual, is_fastpath, exec
         return phase == _PHASE_ESCALATION and bool(state.get("escalated_to"))
     if phase != _PHASE_MERGED:
         return False
-    if not _merge_sha(state):
+    if not _git_commit_exists(ctx, _merge_sha(state)):
         return False
     if is_fastpath:
         return _receipt_approved_and_bound(
-            _read_receipt(exec_dir, run_id), pre_eval_id, run_id)
+            _read_receipt(ctx, exec_dir, run_id), pre_eval_id, run_id)
     return True
 
 
@@ -462,14 +630,16 @@ def _cohorts(stream_path=None, exec_dir=None, repo=None):
     escalation_child. Everything else (declined/missing predicted → fail-closed, or an
     escalation child) is full-pipeline (escalation evidence only).
 
-    ``terminal`` is now git-DERIVED (HIGH-9): a non-``merge_pending`` ``actual`` counts as
-    terminal ONLY when committed run state backs it (``_verify_terminal_actual``). An
+    ``terminal`` is now git-DERIVED (CRIT-2): a non-``merge_pending`` ``actual`` counts as
+    terminal ONLY when the COMMITTED git blob at HEAD backs it (``_verify_terminal_actual``
+    — committed state.json + a real merge-commit object + a committed bound receipt). An
     unverifiable terminal actual is excluded (``actual`` set to None, ``terminal`` False)
     — treated exactly like a precision-IGNORED ``merge_pending`` one, never a success.
     """
     state = _reduce_stream(stream_path)
     predicted = state["predicted"]
     exec_dir = _resolve_exec_dir(stream_path, exec_dir, repo)
+    ctx = _make_git_ctx(exec_dir, stream_path)
     fastpath = []
     fullpipeline = []
     for (pid, rid), slot in state["runs"].items():
@@ -478,7 +648,7 @@ def _cohorts(stream_path=None, exec_dir=None, repo=None):
         is_fastpath = decision == FASTPATH_DECISION and not _is_escalation_child(slot)
         term = _terminal_actual(slot)
         verified = term is not None and _verify_terminal_actual(
-            pid, rid, slot, term, is_fastpath, exec_dir)
+            ctx, pid, rid, slot, term, is_fastpath, exec_dir)
         entry = {
             "pre_eval_id": pid,
             "run_id": rid,
@@ -708,11 +878,42 @@ def _selftest():
         if not cond:
             failures.append(name)
 
+    # ---- git fixture helpers: a REAL throwaway repo in a tempdir OUTSIDE the worktree.
+    # CRIT-2 made verification genuinely git-derived, so evidence must be actually
+    # COMMITTED (git init + commit the state.json + receipt + stream) for a terminal
+    # actual to count — a working-tree-only / uncommitted state.json must NOT verify.
+    def _fx_env():
+        env = dict(os.environ)
+        env.update({
+            "GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@example.com",
+            "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@example.com",
+            "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull,
+        })
+        return env
+
+    def _fx_git(cwd, *args):
+        subprocess.run(["git", "-C", cwd] + list(args), env=_fx_env(),
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, check=True)
+
+    def _fx_git_out(cwd, *args):
+        p = subprocess.run(["git", "-C", cwd] + list(args), env=_fx_env(),
+                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                           stderr=subprocess.DEVNULL, check=True)
+        return p.stdout.decode("utf-8", "replace").strip()
+
+    def _fx_commit_all(repo, msg="fixture"):
+        _fx_git(repo, "add", "-A")
+        _fx_git(repo, "commit", "--allow-empty", "-q", "-m", msg)
+
     # A run dir at <td>/execution/<run-id>/ is what _resolve_exec_dir derives for EVERY
-    # stream below (two dirs up from the stream + "execution"), so a terminal actual only
-    # counts once we materialize the committed state.json (+ receipt) that backs it.
+    # stream below (two dirs up from the stream + "execution"). CRIT-2: a terminal actual
+    # counts only once the committed state.json (+ receipt) that backs it is COMMITTED,
+    # so mk_run writes the evidence AND commits it (with the already-appended stream) into
+    # HEAD. ``commit=False`` seeds working-tree-only evidence for the negative cases.
     def mk_run(exec_dir, run_id, phase, pre_eval_id=None, merge_sha=None,
-               receipt=False, escalated_to=None):
+               receipt=False, escalated_to=None, commit=True):
+        repo = os.path.dirname(os.path.abspath(exec_dir))  # == <td>
         rd = os.path.join(exec_dir, run_id)
         os.makedirs(rd, exist_ok=True)
         st = {"run_id": run_id, "phase": phase, "pre_eval_id": pre_eval_id,
@@ -728,10 +929,16 @@ def _selftest():
                   "reviewer_backend": "claude", "reviewer_model": "claude-opus-4-8"}
             with open(os.path.join(revdir, "receipt.json"), "w", encoding="utf-8") as fh:
                 json.dump(rc, fh)
+        if commit:
+            _fx_commit_all(repo)
 
-    SHA40 = "a" * 40
+    FAKE_SHA = "a" * 40  # NOT a real object → never resolves to a commit (CRIT-2)
 
     with tempfile.TemporaryDirectory() as td:
+        _fx_git(td, "init", "-q")
+        _fx_git(td, "commit", "--allow-empty", "-q", "-m", "root")
+        REAL_SHA = _fx_git_out(td, "rev-parse", "HEAD")  # a genuine commit object
+
         stream = os.path.join(td, "memdir", STREAM_BASENAME)
         exec_dir = os.path.join(td, "execution")  # == _resolve_exec_dir for every stream
 
@@ -747,7 +954,7 @@ def _selftest():
                       test_result="pass", ts="2026-07-11T18:40:00Z", stream_path=stream,
                       diff_files=1, diff_lines=3, sensitive_hit=False)
         # HIGH-9: back the terminal actual with committed run state + an approved receipt.
-        mk_run(exec_dir, rid, _PHASE_MERGED, pre_eval_id=pid, merge_sha=SHA40,
+        mk_run(exec_dir, rid, _PHASE_MERGED, pre_eval_id=pid, merge_sha=REAL_SHA,
                receipt=True)
         with open(stream, "r", encoding="utf-8") as fh:
             lines = [l for l in fh.read().splitlines() if l.strip()]
@@ -791,7 +998,7 @@ def _selftest():
         # A perfectly clean, non-escalated, review-passed FULL-PIPELINE outcome...
         append_actual(fpid, frid, escalated=False, review_result="approved",
                       test_result="pass", stream_path=stream2)
-        mk_run(exec_dir, frid, _PHASE_MERGED, pre_eval_id=fpid, merge_sha=SHA40)
+        mk_run(exec_dir, frid, _PHASE_MERGED, pre_eval_id=fpid, merge_sha=REAL_SHA)
         t2fp = tier2_lookup(min_sample_count=1, stream_path=stream2)
         expect("full-pipeline outcome does NOT create a healthy signal",
                t2fp.get("status") == "insufficient")
@@ -834,7 +1041,7 @@ def _selftest():
                     # still reads the stream's self-reported review_result — so P4's
                     # changes_requested stays denominator-only, not a numerator hit.)
                     mk_run(exec_dir, prid, _PHASE_MERGED, pre_eval_id=ppid,
-                           merge_sha=SHA40, receipt=True)
+                           merge_sha=REAL_SHA, receipt=True)
             return ppid, prid
 
         fastpath_run("P1", False, "approved")
@@ -913,7 +1120,7 @@ def _selftest():
                and pmp["excluded_no_terminal_actual"] == 1)
         append_actual(mpid, mrid, escalated=False, review_result="approved",
                       test_result="pass", stream_path=stream5)   # terminal AFTER merge
-        mk_run(exec_dir, mrid, _PHASE_MERGED, pre_eval_id=mpid, merge_sha=SHA40,
+        mk_run(exec_dir, mrid, _PHASE_MERGED, pre_eval_id=mpid, merge_sha=REAL_SHA,
                receipt=True)                                     # HIGH-9: back the merge
         pmp2 = precision_stats(stream_path=stream5)
         expect("terminal actual after merge is counted (1/1)",
@@ -927,7 +1134,7 @@ def _selftest():
         bind_run("PID-B", "RUN-B", stream_path=stream6)
         append_actual("PID-B", "RUN-B", escalated=False, review_result="approved",
                       test_result="pass", stream_path=stream6)
-        mk_run(exec_dir, "RUN-B", _PHASE_MERGED, pre_eval_id="PID-B", merge_sha=SHA40,
+        mk_run(exec_dir, "RUN-B", _PHASE_MERGED, pre_eval_id="PID-B", merge_sha=REAL_SHA,
                receipt=True)                                     # HIGH-9: back RUN-B
         pmiss = precision_stats(stream_path=stream6)
         expect("bound-but-no-actual parent excluded from denominator",
@@ -939,7 +1146,7 @@ def _selftest():
         bind_run("PID-G", "RUN-G", stream_path=stream7)
         append_actual("PID-G", "RUN-G", escalated=False, review_result="approved",
                       test_result="pass", stream_path=stream7)
-        mk_run(exec_dir, "RUN-G", _PHASE_MERGED, pre_eval_id="PID-G", merge_sha=SHA40,
+        mk_run(exec_dir, "RUN-G", _PHASE_MERGED, pre_eval_id="PID-G", merge_sha=REAL_SHA,
                receipt=True)                                     # HIGH-9: back RUN-G
         with open(stream7, "a", encoding="utf-8") as fh:
             fh.write("this is not json\n")
@@ -979,7 +1186,7 @@ def _selftest():
         append_actual("PID-NB", "RUN-NB", escalated=False, review_result="approved",
                       test_result="pass", stream_path=s_nobind)   # actual, but no bind
         # (even a MERGED run dir must not rescue it — the missing bind fails closed)
-        mk_run(exec_dir, "RUN-NB", _PHASE_MERGED, pre_eval_id="PID-NB", merge_sha=SHA40,
+        mk_run(exec_dir, "RUN-NB", _PHASE_MERGED, pre_eval_id="PID-NB", merge_sha=REAL_SHA,
                receipt=True)
         p_nb = precision_stats(stream_path=s_nobind)
         expect("terminal actual with no matching bind is NOT a success (precision-ignored)",
@@ -1010,21 +1217,23 @@ def _selftest():
         bind_run("PID-NR", "RUN-NR", stream_path=s_rcpt)
         append_actual("PID-NR", "RUN-NR", escalated=False, review_result="approved",
                       test_result="pass", stream_path=s_rcpt)
-        mk_run(exec_dir, "RUN-NR", _PHASE_MERGED, pre_eval_id="PID-NR", merge_sha=SHA40,
+        mk_run(exec_dir, "RUN-NR", _PHASE_MERGED, pre_eval_id="PID-NR", merge_sha=REAL_SHA,
                receipt=False)                                     # MERGED but NO receipt
         p_nr = precision_stats(stream_path=s_rcpt)
         expect("merged fast-path parent with no review receipt is not counted",
                p_nr.get("status") == "insufficient" and p_nr["n"] == 0)
-        # now add a receipt but bind it to a DIFFERENT run-id (replay defense)
+        # now COMMIT a receipt but bind it to a DIFFERENT run-id (replay defense): the
+        # binding check must reject it even though it is genuinely committed at HEAD.
         _rev = os.path.join(exec_dir, "RUN-NR", "review")
         os.makedirs(_rev, exist_ok=True)
         with open(os.path.join(_rev, "receipt.json"), "w", encoding="utf-8") as fh:
             json.dump({"run_id": "SOME-OTHER-RUN", "pre_eval_id": "PID-NR",
                        "verdict": "approved", "reviewer_backend": "claude",
                        "reviewer_model": "claude-opus-4-8"}, fh)
+        _fx_commit_all(td)  # commit the wrong-bound receipt → tests binding, not commit-ness
         p_nr2 = precision_stats(stream_path=s_rcpt)
-        expect("merged fast-path parent with an unbound (wrong run_id) receipt is not counted",
-               p_nr2.get("status") == "insufficient" and p_nr2["n"] == 0)
+        expect("merged fast-path parent with a committed but unbound (wrong run_id) receipt "
+               "is not counted", p_nr2.get("status") == "insufficient" and p_nr2["n"] == 0)
 
         # H9-d: a GENUINELY verified fast-path success (bind + MERGED + sha + bound approved
         #       receipt) IS counted — precision 1/1, cohort healthy.
@@ -1033,7 +1242,7 @@ def _selftest():
         bind_run("PID-OK", "RUN-OK", stream_path=s_ok)
         append_actual("PID-OK", "RUN-OK", escalated=False, review_result="approved",
                       test_result="pass", stream_path=s_ok)
-        mk_run(exec_dir, "RUN-OK", _PHASE_MERGED, pre_eval_id="PID-OK", merge_sha=SHA40,
+        mk_run(exec_dir, "RUN-OK", _PHASE_MERGED, pre_eval_id="PID-OK", merge_sha=REAL_SHA,
                receipt=True)
         p_ok = precision_stats(stream_path=s_ok)
         expect("genuinely verified fast-path success is counted (1/1)",
@@ -1061,6 +1270,90 @@ def _selftest():
         expect("all-full-pipeline cohort with --min-sample 0 is insufficient, not healthy",
                t2_fp0.get("status") == "insufficient" and t2_fp0["n"] == 0
                and t2_fp0["escalation_evidence_n"] == 1)
+
+        # ==================================================================== #
+        # CRIT-2 — verification is GENUINELY git-derived: read the committed     #
+        # blob at HEAD, and the merge SHA must be a REAL commit object. An       #
+        # uncommitted state.json / a fictitious SHA is NEVER a fabricated hit.   #
+        # (These use a REAL temp git repo — git init + commit — above.)          #
+        # ==================================================================== #
+
+        # C2-a: a COMMITTED MERGED state with a REAL merge-commit SHA + a bound approved
+        #       receipt is counted (the positive control for the git-derived path).
+        s_c2ok = os.path.join(td, "c2-ok", STREAM_BASENAME)
+        append_predicted("PID-C2", decision=FASTPATH_DECISION, stream_path=s_c2ok)
+        bind_run("PID-C2", "RUN-C2", stream_path=s_c2ok)
+        append_actual("PID-C2", "RUN-C2", escalated=False, review_result="approved",
+                      test_result="pass", stream_path=s_c2ok)
+        mk_run(exec_dir, "RUN-C2", _PHASE_MERGED, pre_eval_id="PID-C2",
+               merge_sha=REAL_SHA, receipt=True)  # committed, real commit SHA, bound receipt
+        p_c2 = precision_stats(stream_path=s_c2ok)
+        expect("committed MERGED + real merge-commit SHA + bound receipt is counted (1/1)",
+               p_c2["n"] == 1 and abs(p_c2["precision"] - 1.0) < 1e-9)
+
+        # C2-b: THE e2e GAP — an UNCOMMITTED state.json carrying a fictitious 40-char SHA
+        #       must NOT verify. Seed the evidence in the WORKING TREE only (commit=False),
+        #       exactly as the old read-the-working-tree bug would have happily accepted.
+        s_c2unc = os.path.join(td, "c2-uncommitted", STREAM_BASENAME)
+        append_predicted("PID-UC", decision=FASTPATH_DECISION, stream_path=s_c2unc)
+        bind_run("PID-UC", "RUN-UC", stream_path=s_c2unc)
+        append_actual("PID-UC", "RUN-UC", escalated=False, review_result="approved",
+                      test_result="pass", stream_path=s_c2unc)
+        mk_run(exec_dir, "RUN-UC", _PHASE_MERGED, pre_eval_id="PID-UC",
+               merge_sha=FAKE_SHA, receipt=True, commit=False)  # working-tree only + fake SHA
+        p_uc = precision_stats(stream_path=s_c2unc)
+        expect("uncommitted state.json with a fictitious SHA is NOT counted (the e2e gap)",
+               p_uc.get("status") == "insufficient" and p_uc["n"] == 0
+               and p_uc["excluded_no_terminal_actual"] == 1)
+        t2_uc = tier2_lookup(min_sample_count=1, stream_path=s_c2unc)
+        expect("uncommitted fake-SHA actual never reads healthy",
+               t2_uc.get("status") == "insufficient" and t2_uc["n"] == 0)
+
+        # C2-c: a COMMITTED MERGED state whose merge SHA is not a REAL git object
+        #       (fictitious 40-char string) must NOT verify — non-empty is not enough.
+        s_c2fake = os.path.join(td, "c2-fakesha", STREAM_BASENAME)
+        append_predicted("PID-FS", decision=FASTPATH_DECISION, stream_path=s_c2fake)
+        bind_run("PID-FS", "RUN-FS", stream_path=s_c2fake)
+        append_actual("PID-FS", "RUN-FS", escalated=False, review_result="approved",
+                      test_result="pass", stream_path=s_c2fake)
+        mk_run(exec_dir, "RUN-FS", _PHASE_MERGED, pre_eval_id="PID-FS",
+               merge_sha=FAKE_SHA, receipt=True)  # COMMITTED, but the SHA is not a commit
+        p_fs = precision_stats(stream_path=s_c2fake)
+        expect("committed MERGED whose merge SHA is not a real commit object is NOT counted",
+               p_fs.get("status") == "insufficient" and p_fs["n"] == 0
+               and p_fs["excluded_no_terminal_actual"] == 1)
+
+        # C2-d: an escalated fast-path PARENT backed by a COMMITTED ESCALATION_REQUIRED
+        #       state + escalated_to child link IS counted (escalation-rate denominator).
+        s_c2esc = os.path.join(td, "c2-esc", STREAM_BASENAME)
+        append_predicted("PID-ES", decision=FASTPATH_DECISION, stream_path=s_c2esc)
+        bind_run("PID-ES", "RUN-ES", stream_path=s_c2esc)
+        append_actual("PID-ES", "RUN-ES", escalated=True, review_result="approved",
+                      test_result="pass", stream_path=s_c2esc)
+        mk_run(exec_dir, "RUN-ES", _PHASE_ESCALATION, pre_eval_id="PID-ES",
+               escalated_to="RUN-ES-child")  # committed ESCALATION_REQUIRED + child link
+        p_es = precision_stats(stream_path=s_c2esc)
+        expect("committed ESCALATION_REQUIRED + escalated_to parent is counted (esc-rate 1/1)",
+               p_es["n"] == 1 and abs(p_es["escalation_rate"] - 1.0) < 1e-9
+               and abs(p_es["precision"] - 0.0) < 1e-9)
+
+        # C2-e: git-derived means the WORKING TREE is never consulted — a COMMITTED valid
+        #       MERGED state that is then OVERWRITTEN in the working tree with a bogus phase
+        #       still verifies from HEAD (and, conversely, a working-tree-only edit can
+        #       neither fabricate nor destroy a committed truth).
+        s_c2wt = os.path.join(td, "c2-worktree", STREAM_BASENAME)
+        append_predicted("PID-WT", decision=FASTPATH_DECISION, stream_path=s_c2wt)
+        bind_run("PID-WT", "RUN-WT", stream_path=s_c2wt)
+        append_actual("PID-WT", "RUN-WT", escalated=False, review_result="approved",
+                      test_result="pass", stream_path=s_c2wt)
+        mk_run(exec_dir, "RUN-WT", _PHASE_MERGED, pre_eval_id="PID-WT",
+               merge_sha=REAL_SHA, receipt=True)  # committed-good
+        with open(os.path.join(exec_dir, "RUN-WT", _RUN_STATE_BASENAME),
+                  "w", encoding="utf-8") as fh:
+            json.dump({"run_id": "RUN-WT", "phase": "GARBAGE"}, fh)  # working-tree tamper
+        p_wt = precision_stats(stream_path=s_c2wt)
+        expect("verification reads HEAD, not the working tree (committed truth wins)",
+               p_wt["n"] == 1 and abs(p_wt["precision"] - 1.0) < 1e-9)
 
     if failures:
         print("\nSELFTEST FAILED: %d case(s)" % len(failures))
