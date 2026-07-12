@@ -71,13 +71,13 @@ For a `fast_path` manifest, `/v:collect` runs the **ONE authoritative order** th
      --floor-result <run-dir>/review/floor-result.json --scope-clean --f2-result <f2-result.json> \
      --out <run-dir>/review/spec.json
    ```
-   Run the in-harness combined **SPEC+QUALITY** review as a `deep`/opus Task on the emitted `needs_review` prompt, then write the dispatcher **invocation receipt** to `docs/superpowers/execution/<run-id>/review/receipt.json` (naming the resolved reviewer model — `backend:claude`, model == Claude Opus). Validate the returned result with `accept-review`. This is one combined pass with a recorded vacuous INTEGRATION rationale — **not** the three separate passes.
+   Run the in-harness combined **SPEC+QUALITY** review as a `deep`/opus Task on the emitted `needs_review` prompt. Then let **`accept-review` seal the receipt after acceptance** (do NOT hand-write it, HIGH-3): `python3 scripts/compound-v-fastpath-run.py accept-review --spec <spec-json> --result <result-json> --run-dir docs/superpowers/execution/<run-id>`. It first invalidates any stale receipt (HIGH-4), then on a clean bound `approved` result atomically writes the fully-sealed `review/receipt.json` (ts + `worktree` + `attempt_id` + bindings + `record_digest` self-seal; `backend:claude`, model == Claude Opus). A rejected/timed-out result leaves no valid receipt. One combined pass with a recorded vacuous INTEGRATION rationale — **not** the three separate passes.
 5. **Post-review receipt validation — C1 `--mode post-review`.** Before merge, verify the receipt with the validator:
    ```
    python3 scripts/compound-v-validate-manifest.py --mode post-review \
-     [--repo-root <repo>] [--receipt <run-dir>/review/receipt.json] <run-dir>/manifest.yaml
+     [--repo-root <repo>] --worktree <wt-dir> [--receipt <run-dir>/review/receipt.json] <run-dir>/manifest.yaml
    ```
-   `--mode post-review` REQUIRES + verifies the receipt (`run_id`/`pre_eval_id` bindings, `reviewer_backend:claude`, reviewer model == Claude Opus, self-digest). A missing or mismatched receipt fails closed — no merge.
+   `--worktree <wt-dir>` is **mandatory** (MED-7): the validator recomputes `final_diff_digest` in the worker's linked worktree — the checkout the receipt hashed. Omitting it recomputes against the clean main checkout and fails closed. `--mode post-review` REQUIRES + verifies the receipt (`run_id`/`pre_eval_id` bindings, `reviewer_backend:claude`, reviewer model == Claude Opus, `worktree` == diff-root, self-digest). A missing or mismatched receipt fails closed — no merge.
 6. **Final scope recheck → merge** — re-run the scope gate once more (step 2) to catch anything the review round touched; then **merge** the worktree diff back into the main tree.
 7. **Append + commit the terminal `actual` — ONLY AFTER the merge boundary succeeds (CR5-4).** Only once the merge/commit lands, append the terminal triage event:
    ```
