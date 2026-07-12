@@ -85,9 +85,9 @@
       "log": null
     },
     "task-e1-adr": {
-      "status": "running",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": ".v29-worktrees/task-e1-adr",
+      "worktree": null,
       "session_id": null,
       "failure_class": null,
       "log": null
