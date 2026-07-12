@@ -494,11 +494,11 @@ import os, sys, time
 argv = sys.argv[1:]
 am = os.environ.get("FAKE_ARGV_MARK")
 if am:
-    open(am, "w").write("\x00".join(argv))
+    open(am, "w", encoding="utf-8").write("\x00".join(argv))
 sm = os.environ.get("FAKE_STDIN_MARK")
 if sm:
     data = sys.stdin.buffer.read()
-    open(sm, "w").write(str(len(data)))
+    open(sm, "w", encoding="utf-8").write(str(len(data)))
 out = None
 for i, a in enumerate(argv):
     if a == "--output-last-message" and i + 1 < len(argv):
@@ -512,7 +512,7 @@ if mode == "error":
     sys.exit(3)
 reply = {"enum": "plumbing", "nonenum": "I believe this is plumbing, probably."}.get(mode, "plumbing")
 if out:
-    open(out, "w").write(reply + "\n")
+    open(out, "w", encoding="utf-8").write(reply + "\n")
 sys.exit(0)
 '''
     tmp = tempfile.mkdtemp(prefix="cv-a2-selftest-")
@@ -548,11 +548,11 @@ sys.exit(0)
                                max_output_bytes=1024)
         expect("codex happy path -> plumbing", r["category"] == "plumbing")
         expect("codex proved closed stdin (0 bytes read)",
-               os.path.exists(stdin_mark) and open(stdin_mark).read() == "0")
+               os.path.exists(stdin_mark) and open(stdin_mark, encoding="utf-8").read() == "0")
         expect("codex argv recorded exec+read-only",
                os.path.exists(argv_mark)
-               and "exec" in open(argv_mark).read().split("\x00")
-               and "read-only" in open(argv_mark).read().split("\x00"))
+               and "exec" in open(argv_mark, encoding="utf-8").read().split("\x00")
+               and "read-only" in open(argv_mark, encoding="utf-8").read().split("\x00"))
 
         # output-bound proof: run the route AGAIN with an events file we own so we can size it.
         os.environ["FAKE_CODEX_MODE"] = "enum"
