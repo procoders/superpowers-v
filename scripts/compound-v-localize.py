@@ -261,8 +261,17 @@ def _parse_files(output_text, capped):
 def _search_repo(tokens, repo, timeout_s, cap_bytes, env):
     """Degrade rg -> git grep -> grep. Pick the FIRST backend that actually RUNS (a clean
     exit 0=matches or 1=no-matches). 127 (missing) / 124 (timeout) / other -> next backend.
-    Union matches across all tokens on the chosen backend. Returns (files, backend, ran)."""
+    Union matches across all tokens on the chosen backend.
+
+    Returns (files, backend, ran, incomplete). `incomplete` is True when the evidence is
+    uncertain and the verdict must degrade to at best `ambiguous`, i.e.:
+      * any backend search hit its file/result byte cap (`meta['capped']`) — later matches
+        past the cap are unknown, so a capped listing is NOT a complete listing; or
+      * a LATER token's search exited non-0/1 (124 timeout / error) — that token's matches
+        are unknown, so silently treating it as "no match" would be a fail-open.
+    Fail-closed: when in doubt, `incomplete=True`."""
     chosen = None
+    incomplete = False
     for backend in BACKENDS:
         if not tokens:
             break
@@ -270,18 +279,31 @@ def _search_repo(tokens, repo, timeout_s, cap_bytes, env):
                                         timeout_s, cap_bytes, env)
         if rc in (0, 1):
             chosen = backend
-            first_files = _parse_files(out, meta.get("capped", False)) if rc == 0 else []
+            if rc == 0:
+                first_capped = meta.get("capped", False)
+                first_files = _parse_files(out, first_capped)
+                if first_capped:
+                    incomplete = True  # bug #1: a capped listing is not complete
+            else:
+                first_files = []
             break
     if chosen is None:
-        return [], None, False
+        return [], None, False, False
 
     union = set(first_files)
     for token in tokens[1:]:
         rc, out, meta = _run_cli_search(_backend_argv(chosen, token), repo,
                                         timeout_s, cap_bytes, env)
         if rc == 0:
+            if meta.get("capped", False):
+                incomplete = True  # bug #1: a capped listing is not complete
             union.update(_parse_files(out, meta.get("capped", False)))
-    return sorted(union), chosen, True
+        elif rc == 1:
+            pass  # clean no-match for this token
+        else:
+            # bug #2: 124 timeout / error -> this token's matches are unknown, NOT "no match".
+            incomplete = True
+    return sorted(union), chosen, True, incomplete
 
 
 # ---------------------------------------------------------------------------- #
@@ -322,22 +344,33 @@ def _map_classify_flags(classify_flags):
 
 
 def _classify_paths(repo, resolved, taxonomy):
-    """Read each resolved file (bounded) and classify it via the SHARED loader. Returns the
-    unioned, sorted A1 flag list. Matching semantics are NOT reimplemented here."""
+    """Read each resolved file (bounded) and classify it via the SHARED loader. Returns
+    (sorted A1 flag list, incomplete). Matching semantics are NOT reimplemented here.
+
+    `incomplete` is True iff any file exceeded MAX_FILE_READ_BYTES: the content-based
+    classification then only saw the first cap bytes, so a sensitive/shared-token match
+    living past the cap could be missed. We read `MAX_FILE_READ_BYTES + 1` and treat an
+    over-cap read as a truncated (uncertain) scan — the caller degrades to `ambiguous`
+    rather than silently trusting a partial classification. Fail-closed."""
     tax = _taxonomy_module()
     flags = set()
+    incomplete = False
     for rel in resolved:
-        content = ""
         try:
             with open(os.path.join(repo, rel), "rb") as fh:
-                content = fh.read(MAX_FILE_READ_BYTES).decode("utf-8", "replace")
+                raw = fh.read(MAX_FILE_READ_BYTES + 1)
         except OSError:
-            content = ""
+            raw = b""
+        if len(raw) > MAX_FILE_READ_BYTES:
+            # File is larger than the per-file read cap -> this scan is incomplete.
+            incomplete = True
+            raw = raw[:MAX_FILE_READ_BYTES]
+        content = raw.decode("utf-8", "replace")
         c = tax.classify(taxonomy or {}, path=rel, content=content)
         flags |= _map_classify_flags(c.get("flags", []))
         if _is_generated(rel, content):
             flags.add("is_generated")
-    return sorted(flags)
+    return sorted(flags), incomplete
 
 
 # ---------------------------------------------------------------------------- #
@@ -349,13 +382,17 @@ def localize(request, repo, taxonomy, *, file_cap=FILE_CAP, timeout_s=SEARCH_TIM
 
     Returns {"resolved_paths": [...], "fan_out": int, "flags": [...], "confidence": str}
     with confidence in {exact, ambiguous, failed}:
-      * failed    — no extractable token, zero matches, or every backend unavailable/timed
-                    out (-> Layer-A override #1 -> FULL_PIPELINE).
-      * ambiguous — more than `file_cap` matching files (too broad to judge; bounded, not
-                    mini-archaeology -> override #1 -> FULL_PIPELINE).
-      * exact     — 1..file_cap matching files resolved within the cap. `flags` may still
-                    carry shared_token / is_a11y_state / sensitive_path / is_generated etc.,
-                    which A3's Layer-A overrides act on.
+      * failed    — no extractable token, a COMPLETE search with zero matches, or every
+                    backend unavailable/timed out (-> Layer-A override #1 -> FULL_PIPELINE).
+      * ambiguous — more than `file_cap` matching files (too broad to judge), OR the
+                    evidence is INCOMPLETE — a search that hit its file/result byte cap, a
+                    per-token timeout/error, or a file larger than MAX_FILE_READ_BYTES whose
+                    tail went unscanned. Incomplete evidence must NEVER be labeled `exact`
+                    (fail-closed -> override #1 -> FULL_PIPELINE).
+      * exact     — 1..file_cap matching files resolved within the cap from COMPLETE evidence
+                    (un-capped search, no per-token timeout, every file scanned in full).
+                    `flags` may still carry shared_token / is_a11y_state / sensitive_path /
+                    is_generated etc., which A3's Layer-A overrides act on.
     NEVER runs git; NEVER launches an external CLI outside the timeout supervisor.
     """
     repo = repo or "."
@@ -363,7 +400,8 @@ def localize(request, repo, taxonomy, *, file_cap=FILE_CAP, timeout_s=SEARCH_TIM
     if not tokens:
         return {"resolved_paths": [], "fan_out": 0, "flags": [], "confidence": "failed"}
 
-    files, _backend, ran = _search_repo(tokens, repo, timeout_s, cap_bytes, env)
+    files, _backend, ran, search_incomplete = _search_repo(
+        tokens, repo, timeout_s, cap_bytes, env)
     if not ran:
         # Every backend was unavailable/timed-out -> cannot resolve -> fail-closed.
         return {"resolved_paths": [], "fan_out": 0, "flags": [], "confidence": "failed"}
@@ -377,18 +415,29 @@ def localize(request, repo, taxonomy, *, file_cap=FILE_CAP, timeout_s=SEARCH_TIM
     resolved.sort()
 
     if not resolved:
+        # Zero surviving matches. A COMPLETE search that found nothing is a genuine
+        # no-match -> failed. But if the search was capped/timed-out we cannot conclude
+        # "no match" (the missed evidence could be a sensitive/shared-token hit) ->
+        # degrade to ambiguous (Layer-A override #1 -> FULL_PIPELINE). Fail-closed.
+        if search_incomplete:
+            return {"resolved_paths": [], "fan_out": 0, "flags": [],
+                    "confidence": "ambiguous"}
         return {"resolved_paths": [], "fan_out": 0, "flags": [], "confidence": "failed"}
 
     if len(resolved) > file_cap:
         # Too broad to judge within the bound -> ambiguous. Still surface bounded evidence.
         capped = resolved[:file_cap]
-        flags = _classify_paths(repo, capped, taxonomy)
+        flags, _ = _classify_paths(repo, capped, taxonomy)
         return {"resolved_paths": capped, "fan_out": len(resolved), "flags": flags,
                 "confidence": "ambiguous"}
 
-    flags = _classify_paths(repo, resolved, taxonomy)
+    flags, classify_incomplete = _classify_paths(repo, resolved, taxonomy)
+    # `exact` requires COMPLETE evidence: a full (un-capped, no-timeout) search AND a full
+    # (un-truncated) per-file scan. Any incompleteness -> ambiguous (override #1), never
+    # a silently-mislabeled `exact`. Fail-closed.
+    confidence = "ambiguous" if (search_incomplete or classify_incomplete) else "exact"
     return {"resolved_paths": resolved, "fan_out": len(resolved), "flags": flags,
-            "confidence": "exact"}
+            "confidence": confidence}
 
 
 # ---------------------------------------------------------------------------- #
@@ -519,12 +568,16 @@ def _write(path, text):
         fh.write(text)
 
 
-def _make_fake_cli(bindir, name, matches="", big=0, rc=0, sleep=0):
+def _make_fake_cli(bindir, name, matches="", big=0, rc=0, sleep=0, slow_token=""):
     """A fake search CLI that records (a) whether it is a session/process-group leader
     (os.getsid(0)==getpid() — TRUE only under the supervisor's start_new_session) and
     (b) whether its stdin is DEVNULL (immediate EOF), then emits `matches` followed by
     `big` padding bytes, and exits `rc`. Shebang points at THIS interpreter so PATH need
-    only contain `bindir` (proving backend selection by presence/absence)."""
+    only contain `bindir` (proving backend selection by presence/absence).
+
+    `slow_token`: if non-empty and it appears anywhere in argv, the fake hangs (long
+    sleep) so the supervisor kills it with exit 124 — lets a test time out one specific
+    query token while other tokens on the same backend return promptly."""
     os.makedirs(bindir, exist_ok=True)
     script = "#!%s\n" % sys.executable + '''
 import os, sys, json, select, time
@@ -542,6 +595,9 @@ except Exception:
 with open(os.path.join(mdir, name + ".json"), "w") as fh:
     json.dump({"name": name, "sid_self": sid_self, "stdin_eof": stdin_eof,
                "argv": sys.argv}, fh)
+slow_token = %(slow_token)r
+if slow_token and slow_token in sys.argv:
+    time.sleep(30)
 sleep = %(sleep)d
 if sleep:
     time.sleep(sleep)
@@ -551,7 +607,8 @@ if big:
     sys.stdout.write("Z" * big)
 sys.stdout.flush()
 sys.exit(%(rc)d)
-''' % {"name": name, "matches": matches, "big": big, "rc": rc, "sleep": sleep}
+''' % {"name": name, "matches": matches, "big": big, "rc": rc, "sleep": sleep,
+       "slow_token": slow_token}
     p = os.path.join(bindir, name)
     with open(p, "w") as fh:
         fh.write(script)
@@ -765,6 +822,75 @@ def _selftest():
         expect("more than file_cap matches -> ambiguous",
                res["confidence"] == "ambiguous" and res["fan_out"] > 3
                and len(res["resolved_paths"]) == 3)
+
+    # ===================================================================== #
+    # HIGH-8 — incomplete evidence MUST degrade to `ambiguous`, never `exact`.
+    # ===================================================================== #
+
+    # (a) a search that HIT the file/result byte cap -> ambiguous (not exact). The fake rg
+    #     emits ONE real match line then floods padding past cap_bytes, so the supervisor's
+    #     --max-output-bytes sink caps the listing -> `capped` -> the listing is incomplete.
+    with tempfile.TemporaryDirectory() as td:
+        bindir = os.path.join(td, "bin")
+        mdir = os.path.join(td, "markers")
+        os.makedirs(mdir)
+        repo = os.path.join(td, "repo")
+        _write(os.path.join(repo, "src/ui/button.css"), ".b{color:red}\n")
+        # One real match, then a flood that overruns the (small) output cap.
+        _make_fake_cli(bindir, "rg", matches="src/ui/button.css\n", big=200000, rc=0)
+        fenv = dict(os.environ)
+        fenv["PATH"] = bindir
+        fenv["CV_FAKE_MARKER_DIR"] = mdir
+        res = localize("touch button widget", repo, {}, timeout_s=5, cap_bytes=1000,
+                       env=fenv)
+        expect("HIGH-8(a): capped search listing -> ambiguous (NOT exact)",
+               res["confidence"] == "ambiguous"
+               and "src/ui/button.css" in res["resolved_paths"])
+
+    # (b) a LATER token whose backend TIMES OUT (fake-CLI hangs -> supervisor exit 124)
+    #     -> ambiguous. First token returns a clean match; the second token hangs.
+    with tempfile.TemporaryDirectory() as td:
+        bindir = os.path.join(td, "bin")
+        mdir = os.path.join(td, "markers")
+        os.makedirs(mdir)
+        repo = os.path.join(td, "repo")
+        _write(os.path.join(repo, "src/ui/alpha.css"), "alphatoken here\n")
+        # rg hangs whenever "betaslowtoken" is the query token (the 2nd token) -> 124.
+        _make_fake_cli(bindir, "rg", matches="src/ui/alpha.css\n", rc=0,
+                       slow_token="betaslowtoken")
+        fenv = dict(os.environ)
+        fenv["PATH"] = bindir
+        fenv["CV_FAKE_MARKER_DIR"] = mdir
+        import time as _t
+        t0 = _t.time()
+        res = localize("alphatoken betaslowtoken", repo, {}, timeout_s=1,
+                       cap_bytes=OUTPUT_CAP_BYTES, env=fenv)
+        elapsed = _t.time() - t0
+        expect("HIGH-8(b): later-token timeout (exit 124) -> ambiguous (NOT exact)",
+               res["confidence"] == "ambiguous"
+               and "src/ui/alpha.css" in res["resolved_paths"])
+        expect("HIGH-8(b): later-token timeout killed promptly by supervisor (<8s)",
+               elapsed < 8)
+
+    # (c) a file LARGER than MAX_FILE_READ_BYTES -> the content scan is incomplete (a match
+    #     past the read cap could be missed) -> ambiguous. Real toolchain (same as STEP-1).
+    with tempfile.TemporaryDirectory() as repo:
+        oversized = ("oversizedtokenqqq at the top\n"
+                     + "A" * (MAX_FILE_READ_BYTES + 4096) + "\n")
+        _write(os.path.join(repo, "src/ui/huge.css"), oversized)
+        res = localize("oversizedtokenqqq", repo, taxonomy)
+        expect("HIGH-8(c): file > MAX_FILE_READ_BYTES -> scan incomplete -> ambiguous",
+               res["confidence"] == "ambiguous"
+               and "src/ui/huge.css" in res["resolved_paths"])
+        # Direct unit check on the classifier's incompleteness signal.
+        _flags, _incomplete = _classify_paths(repo, ["src/ui/huge.css"], taxonomy)
+        expect("HIGH-8(c): _classify_paths flags the oversized file as incomplete",
+               _incomplete is True)
+        # Guard: a small in-cap file is NOT flagged incomplete (keeps `exact` reachable).
+        _write(os.path.join(repo, "src/ui/small.css"), "smalltok\n")
+        _f2, _inc2 = _classify_paths(repo, ["src/ui/small.css"], taxonomy)
+        expect("HIGH-8(c): a small in-cap file is NOT flagged incomplete",
+               _inc2 is False)
 
     if failures:
         print("\nSELFTEST FAILED: %d case(s)" % len(failures))
