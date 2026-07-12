@@ -161,13 +161,17 @@ def load_churn_config(repo, taxonomy_path=None):
 
     Single-sourced [CR4-10]: this module invents no excludes. Resolution order for the
     taxonomy file: explicit ``taxonomy_path`` -> project ``.claude/…yaml`` -> shipped
-    ``.example.yaml``. A missing/unreadable taxonomy degrades to EMPTY excludes (the
+    A missing/unreadable real taxonomy degrades to EMPTY excludes (the
     churn cache still builds; nothing is silently dropped)."""
+    # Cross-seam consistency (v2.9): do NOT fall back to the shipped .example.yaml — it is a
+    # TEMPLATE/fixture, not a project's real taxonomy. preeval treats an .example-only repo as
+    # "no taxonomy" (-> FULL_PIPELINE); churn must agree, or the two disagree on whether a repo
+    # has a taxonomy. A project with no real .claude/compound-v-impact-taxonomy.yaml degrades to
+    # EMPTY excludes here (safe: churn is escalation-only and low/absent churn is never hot).
     candidates = []
     if taxonomy_path:
         candidates.append(taxonomy_path)
     candidates.append(os.path.join(repo, DEFAULT_TAXONOMY_REL))
-    candidates.append(os.path.join(repo, EXAMPLE_TAXONOMY_REL))
     mod = _taxonomy_module()
     for cand in candidates:
         if not cand or not os.path.isfile(cand):
@@ -425,7 +429,7 @@ def main(argv):
     parser = argparse.ArgumentParser(prog="compound-v-churn.py")
     parser.add_argument("--repo", default=".", help="repository root (default: cwd)")
     parser.add_argument("--taxonomy", default=None,
-                        help="taxonomy YAML (default: .claude/…yaml -> .example.yaml)")
+                        help="taxonomy YAML (default: .claude/compound-v-impact-taxonomy.yaml; no .example fallback)")
     parser.add_argument("--out", default=None,
                         help="output path (default: <repo>/%s)" % DEFAULT_OUT_REL)
     parser.add_argument("--lookup", default=None,
