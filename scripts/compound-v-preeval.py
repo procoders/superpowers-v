@@ -73,6 +73,7 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
 import sys
 
 # --------------------------------------------------------------------------- #
@@ -1285,12 +1286,18 @@ def _selftest():
         tm.append_actual(prior, "run-prior", escalated=True, review_result="fail",
                          stream_path=stream)  # terminal, ESCALATED fast-path outcome → unhealthy
         # v2.9 triage counts a terminal actual only when it is git-verified against the run's
-        # committed state.json (an injected "approved" with no run state is precision-ignored).
-        # An ESCALATED fast-path parent needs phase==ESCALATION_REQUIRED + escalated_to, so write it.
+        # COMMITTED state.json (an uncommitted/working-tree one is precision-ignored). An ESCALATED
+        # fast-path parent needs a committed state.json {phase:ESCALATION_REQUIRED, escalated_to} and
+        # a committed stream. So git-init the temp repo and commit both.
         _rundir = os.path.join(repo, "docs", "superpowers", "execution", "run-prior")
         os.makedirs(_rundir, exist_ok=True)
         with open(os.path.join(_rundir, "state.json"), "w", encoding="utf-8") as _sf:
             json.dump({"phase": "ESCALATION_REQUIRED", "escalated_to": "run-prior-esc-child"}, _sf)
+        _env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@e",
+                    GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@e")
+        for _c in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "seed"]):
+            subprocess.run(["git", "-C", repo] + _c, env=_env, check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         fk = fake_localize_factory(_loc(["src/ui/button.css"], flags=[], fan_out=1))
         resu = run_preeval("tweak local button padding once more", repo=repo, _localize=fk,
                            config_values=_cfg(min_sample_count=1), ts="2026-07-12T10:24:00Z",
