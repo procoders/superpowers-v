@@ -1,6 +1,6 @@
 {
   "run_id": "2026-07-11-v2.9-pre-evaluation",
-  "phase": "COLLECTED",
+  "phase": "REVIEWED",
   "updated_at": "2026-07-12T00:00:00Z",
   "total_retries": 0,
   "max_total_retries": 12,
@@ -140,5 +140,10 @@
       "failure_class": null,
       "log": null
     }
+  },
+  "review": {
+    "gate": "APPROVED",
+    "codex_postbuild_rounds": 5,
+    "findings_fixed": 32
   }
 }
