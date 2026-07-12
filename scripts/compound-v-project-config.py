@@ -63,7 +63,7 @@ def load_config_file(config_path):
     if not config_path or not os.path.isfile(config_path):
         return {}
     try:
-        with open(config_path, "r") as fh:
+        with open(config_path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
     except ValueError as e:
         raise ValueError("config is not valid JSON (%s): %s" % (config_path, e))
@@ -142,16 +142,19 @@ def resolve_pre_eval(cfg):
             warnings.append("pre_eval.fast_path must be one of %s; using default %r"
                             % (_FAST_PATH_VALUES, PRE_EVAL_DEFAULTS["fast_path"]))
 
-    # positive-int knobs
+    # positive-int knobs. min_sample_count has a floor of 1 (Codex MED-11): a floor of 0 makes an
+    # empty fast-path cohort read as "calibrated healthy" (all([]) is True), which would let Tier 2
+    # lower ceremony on zero history — violating the launch invariant (empty history = escalation-only).
+    _min_allowed = {"min_sample_count": 1, "fan_out_threshold": 0, "token_cap": 1}
     for key in ("min_sample_count", "fan_out_threshold", "token_cap"):
         if key in raw:
             v = raw[key]
             # bool is an int subclass in Python — reject it explicitly.
-            if isinstance(v, int) and not isinstance(v, bool) and v >= 0:
+            if isinstance(v, int) and not isinstance(v, bool) and v >= _min_allowed[key]:
                 values[key] = v
             else:
-                warnings.append("pre_eval.%s must be a non-negative int; using default %r"
-                                % (key, PRE_EVAL_DEFAULTS[key]))
+                warnings.append("pre_eval.%s must be an int >= %d; using default %r"
+                                % (key, _min_allowed[key], PRE_EVAL_DEFAULTS[key]))
 
     # remember: {category: "fastpath"} — drop any non-"fastpath" value (fail-closed).
     if "remember" in raw:
