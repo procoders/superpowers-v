@@ -39,9 +39,15 @@ WHAT IT CHECKS (all unioned into `reasons`; a non-empty reasons list ⇒ escalat
    one that matches a pattern (a feature-flag name, legal copy, an i18n placeholder,
    a config literal) escalates.
 4. Typed structural pass (CR2-9 / CR2-10) — Python has a REAL analyzer (stdlib
-   ``ast``): parse the baseline + worktree versions and escalate iff the set of
-   function/class SIGNATURES changed (a body-only edit with unchanged signatures
-   and no content hit is allowed through). JS / TS / Go / Ruby escalate FAIL-CLOSED
+   ``ast``): parse the baseline + worktree versions and escalate iff the
+   function/class SIGNATURE map changed OR any scope's CONTROL-FLOW fingerprint
+   changed — a per-scope count of branches/loops/handlers (If, For, While, Try,
+   ExceptHandler, With, comprehensions, boolean operators, raise/return/break/
+   continue, calls). A body edit that adds an ``if``/loop/``try``/handler changes the
+   fingerprint and ESCALATES; a pure rename/whitespace/comment/docstring or
+   constant-value-only edit changes neither map and is allowed through (the content
+   axis still runs separately, so a string-literal that hits a taxonomy pattern still
+   escalates via check 3). JS / TS / Go / Ruby escalate FAIL-CLOSED
    unless the change is PROVABLY trivial (only blank / single-line-comment changed
    lines — a strict test, never string/brace/code) OR a language parser binary is
    registered for the extension, in which case it runs as a syntax check THROUGH the
@@ -297,11 +303,51 @@ def _changed_lines(worktree, baseline, path, tracked, abspath, timeout_s):
 # --------------------------------------------------------------------------- #
 # Typed structural pass.
 # --------------------------------------------------------------------------- #
-def _py_signatures(source):
-    """Set of (kind, name, argspec/bases, decorators) for every def/class. Raises
-    SyntaxError on unparseable source. ``ast.walk`` flattens scopes — a conservative
-    choice: at worst two same-named nested defs coalesce, which can only OVER-escalate."""
+def _cf_label_map():
+    """type(node) -> control-flow label, built for the running ``ast`` (3.9-safe).
+    Constants, names, assignments, binops, etc. are DELIBERATELY absent: a
+    constant-value-only edit or a pure rename leaves every counted label unchanged,
+    so it does not escalate. Only branch/loop/handler/call *shape* is tracked."""
     import ast
+
+    m = {
+        ast.If: "if", ast.IfExp: "ifexp",
+        ast.For: "for", ast.While: "while",
+        ast.Try: "try", ast.ExceptHandler: "except",
+        ast.With: "with", ast.Raise: "raise",
+        ast.Return: "return", ast.Break: "break",
+        ast.Continue: "continue", ast.Call: "call",
+        ast.BoolOp: "boolop", ast.comprehension: "comprehension",
+        ast.Assert: "assert",
+    }
+    # Version-gated nodes: absent on Python 3.9 (Match/match_case/TryStar).
+    for name, label in (("AsyncFor", "for"), ("AsyncWith", "with"),
+                        ("Await", "await"), ("TryStar", "try"),
+                        ("Match", "match"), ("match_case", "match_case")):
+        node = getattr(ast, name, None)
+        if node is not None:
+            m[node] = label
+    return m
+
+
+def _py_fingerprints(source):
+    """Parse ``source`` and return ``(sig_map, cf_map)``.
+
+    ``sig_map``: qualified-scope-name -> signature tuple for every def/class
+    (kind, argspec/bases, returns, decorators). ``cf_map``: qualified-scope-name ->
+    a sorted tuple of (control-flow-label, count) for that scope's OWN body, PLUS a
+    synthetic ``"<module>"`` scope for module-level control flow. Nested defs/classes
+    are their OWN scope entries (not counted in the parent), so a change is attributed
+    to the scope it lives in.
+
+    Raises ``SyntaxError`` on unparseable source; any OTHER surprise propagates and the
+    caller fails closed. Conservative: same-qualname collisions (e.g. two defs in
+    opposite branches) coalesce — matching the prior analyzer's stance."""
+    import ast
+
+    tree = ast.parse(source)
+    cf_labels = _cf_label_map()
+    scope_types = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 
     def _argspec(a):
         def names(seq):
@@ -324,22 +370,55 @@ def _py_signatures(source):
                 out.append("<deco>")
         return tuple(out)
 
-    tree = ast.parse(source)
-    sigs = set()
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            returns = ast.dump(node.returns) if node.returns is not None else None
-            sigs.add(("func", node.name, _argspec(node.args), returns, _decos(node)))
-        elif isinstance(node, ast.ClassDef):
-            bases = tuple(sorted(ast.dump(b) for b in node.bases))
-            sigs.add(("class", node.name, bases, None, _decos(node)))
-    return sigs
+    def _scope_cf(scope_node):
+        """Count control-flow constructs lexically inside ``scope_node``, descending
+        through control-flow blocks (if/for/while/try/with bodies) but STOPPING at
+        nested def/class scopes (they are counted separately under their own key)."""
+        counts = {}
+
+        def walk(node):
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, scope_types):
+                    continue  # separate scope — counted under its own qualname
+                label = cf_labels.get(type(child))
+                if label is not None:
+                    counts[label] = counts.get(label, 0) + 1
+                walk(child)
+
+        walk(scope_node)
+        return tuple(sorted(counts.items()))
+
+    sig_map = {}
+    cf_map = {"<module>": _scope_cf(tree)}
+
+    def descend(node, prefix):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                qn = prefix + child.name
+                returns = ast.dump(child.returns) if child.returns is not None else None
+                sig_map[qn] = ("func", _argspec(child.args), returns, _decos(child))
+                cf_map[qn] = _scope_cf(child)
+                descend(child, qn + ".<locals>.")
+            elif isinstance(child, ast.ClassDef):
+                qn = prefix + child.name
+                bases = tuple(sorted(ast.dump(b) for b in child.bases))
+                sig_map[qn] = ("class", bases, _decos(child))
+                cf_map[qn] = _scope_cf(child)
+                descend(child, qn + ".")
+            else:
+                descend(child, prefix)  # keep prefix; find defs nested in if/for/…
+
+    descend(tree, "")
+    return sig_map, cf_map
 
 
 def _python_structural(path, abspath, worktree, baseline, timeout_s):
-    """Escalate iff the Python function/class SIGNATURE set changed between baseline
-    and worktree, or either side fails to parse. Body-only edits pass (content axis
-    still runs separately)."""
+    """Escalate iff, between baseline and worktree, the Python function/class SIGNATURE
+    map changed OR any scope's control-flow fingerprint changed (an added/removed
+    branch, loop, exception handler, boolean operator, comprehension, raise/return/
+    break/continue, or call), or either side fails to parse / analyze. A pure
+    rename/whitespace/comment/docstring or constant-value-only edit changes neither
+    map and passes (the content axis still runs separately)."""
     cur, overflow, err = _read_bounded(abspath, MAX_FILE_READ_BYTES)
     if err or overflow:
         return ["%s: cannot read Python source (%s)" % (path, err or "over read cap")]
@@ -349,17 +428,26 @@ def _python_structural(path, abspath, worktree, baseline, timeout_s):
                           timeout_s, MAX_FILE_READ_BYTES)
     base_src = base_bytes.decode("utf-8", "replace") if rc == 0 else ""
     try:
-        cur_sigs = _py_signatures(cur.decode("utf-8", "replace"))
+        cur_sig, cur_cf = _py_fingerprints(cur.decode("utf-8", "replace"))
     except SyntaxError as e:
         return ["%s: Python parse failure in worktree (%s)" % (path, e.__class__.__name__)]
+    except Exception as e:  # noqa: BLE001 — analysis surprise ⇒ fail-closed
+        return ["%s: Python structural analysis error (%s) — fail-closed"
+                % (path, e.__class__.__name__)]
     try:
-        base_sigs = _py_signatures(base_src)
+        base_sig, base_cf = _py_fingerprints(base_src)
     except SyntaxError:
         # Baseline unparseable but worktree parses: cannot prove the change inert.
-        return ["%s: Python baseline unparseable — cannot prove signatures unchanged" % path]
-    if cur_sigs != base_sigs:
-        return ["%s: Python function/class signature changed" % path]
-    return []
+        return ["%s: Python baseline unparseable — cannot prove structure unchanged" % path]
+    except Exception as e:  # noqa: BLE001 — analysis surprise ⇒ fail-closed
+        return ["%s: Python baseline structural analysis error (%s) — fail-closed"
+                % (path, e.__class__.__name__)]
+    reasons = []
+    if cur_sig != base_sig:
+        reasons.append("%s: Python function/class signature changed" % path)
+    if cur_cf != base_cf:
+        reasons.append("%s: Python control-flow structure changed" % path)
+    return reasons
 
 
 def _all_trivial(lines, ext):
@@ -755,6 +843,84 @@ def _selftest():
         write(r, "mod.py", "def foo(a):\n    return a + 0\n")
         res, _ = run(r, base)
         expect("python body-only change does NOT escalate", res["escalate"] is False)
+
+        # 5c. Adding an `if` to a function body (unchanged signature) ESCALATES on the
+        #     control-flow axis — the HIGH-7 repro: identical signature set, added branch.
+        r = new_repo("py-cf-if")
+        write(r, "mod.py", "def foo(a):\n    return a\n")
+        git(r, ["add", "-A"]); git(r, ["commit", "-qm", "base"])
+        base = head(r)
+        write(r, "mod.py", "def foo(a):\n    if a:\n        return a\n    return 0\n")
+        res, _ = run(r, base)
+        expect("adding an if to a function body escalates", res["escalate"] is True)
+        expect("control-flow reason present",
+               any("control-flow structure changed" in x for x in res["reasons"]))
+        expect("added-if is NOT a signature change (control-flow axis only)",
+               not any("signature changed" in x for x in res["reasons"]))
+
+        # 5d. Adding a `for` loop escalates.
+        r = new_repo("py-cf-for")
+        write(r, "mod.py", "def foo(a):\n    return a\n")
+        git(r, ["add", "-A"]); git(r, ["commit", "-qm", "base"])
+        base = head(r)
+        write(r, "mod.py", "def foo(a):\n    for x in a:\n        pass\n    return a\n")
+        res, _ = run(r, base)
+        expect("adding a for loop escalates", res["escalate"] is True)
+
+        # 5e. Adding a `while` loop escalates.
+        r = new_repo("py-cf-while")
+        write(r, "mod.py", "def foo(a):\n    return a\n")
+        git(r, ["add", "-A"]); git(r, ["commit", "-qm", "base"])
+        base = head(r)
+        write(r, "mod.py", "def foo(a):\n    while a:\n        a = a - 1\n    return a\n")
+        res, _ = run(r, base)
+        expect("adding a while loop escalates", res["escalate"] is True)
+
+        # 5f. Adding a `try`/`except` handler escalates.
+        r = new_repo("py-cf-try")
+        write(r, "mod.py", "def foo(a):\n    return a\n")
+        git(r, ["add", "-A"]); git(r, ["commit", "-qm", "base"])
+        base = head(r)
+        write(r, "mod.py",
+              "def foo(a):\n    try:\n        return a\n    except Exception:\n        return 0\n")
+        res, _ = run(r, base)
+        expect("adding a try/except escalates", res["escalate"] is True)
+
+        # 5g. Adding a boolean-branch operator (and/or) escalates.
+        r = new_repo("py-cf-boolop")
+        write(r, "mod.py", "def foo(a, b):\n    return a\n")
+        git(r, ["add", "-A"]); git(r, ["commit", "-qm", "base"])
+        base = head(r)
+        write(r, "mod.py", "def foo(a, b):\n    return a and b\n")
+        res, _ = run(r, base)
+        expect("adding a boolean operator escalates", res["escalate"] is True)
+
+        # 5h. Pure comment/whitespace change (no AST delta) does NOT escalate.
+        r = new_repo("py-comment")
+        write(r, "mod.py", "def foo(a):\n    return a\n")
+        git(r, ["add", "-A"]); git(r, ["commit", "-qm", "base"])
+        base = head(r)
+        write(r, "mod.py", "def foo(a):\n    # a harmless note\n    return  a\n")
+        res, _ = run(r, base)
+        expect("python comment/whitespace change does NOT escalate", res["escalate"] is False)
+
+        # 5i. Docstring text change does NOT escalate (Constant value, not control flow).
+        r = new_repo("py-docstring")
+        write(r, "mod.py", 'def foo(a):\n    """old helper"""\n    return a\n')
+        git(r, ["add", "-A"]); git(r, ["commit", "-qm", "base"])
+        base = head(r)
+        write(r, "mod.py", 'def foo(a):\n    """new helper text"""\n    return a\n')
+        res, _ = run(r, base)
+        expect("python docstring change does NOT escalate", res["escalate"] is False)
+
+        # 5j. Constant-literal change with NO control-flow delta does NOT escalate.
+        r = new_repo("py-const")
+        write(r, "mod.py", "def foo():\n    return 1\n")
+        git(r, ["add", "-A"]); git(r, ["commit", "-qm", "base"])
+        base = head(r)
+        write(r, "mod.py", "def foo():\n    return 2\n")
+        res, _ = run(r, base)
+        expect("python constant-literal change does NOT escalate", res["escalate"] is False)
 
         # 6. Clean tiny CSS diff does NOT escalate.
         r = new_repo("css-clean")
