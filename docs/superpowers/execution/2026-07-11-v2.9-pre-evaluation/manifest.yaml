@@ -1,0 +1,353 @@
+# Compound V execution manifest — v2.9 Pre-Evaluation & Proportionate Fast-Path.
+# Materialized from docs/superpowers/plans/2026-07-11-v2.9-pre-evaluation-plan.md (rev 5.1,
+# 5 Codex plan-review rounds) + the three Trigger-1 audits. Schema: execution-manifest.md.
+# Waves are encoded as depends_on edges; the dispatcher schedules from them.
+
+run_id: 2026-07-11-v2.9-pre-evaluation
+feature: "Pre-Evaluation & proportionate fast-path"
+spec_path: docs/superpowers/specs/2026-07-11-v2.9-pre-evaluation-design.md
+plan_path: docs/superpowers/plans/2026-07-11-v2.9-pre-evaluation-plan.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-11-v2.9-pre-evaluation.md
+  domain: docs/superpowers/expert/2026-07-11-v2.9-pre-evaluation.md
+  library: docs/superpowers/library-audit/2026-07-11-v2.9-pre-evaluation.md
+
+acceptance_criteria:
+  - "AC-1: the 'make button X red' CSS case routes to FULL_PIPELINE via override #3 (validator fixture)"
+  - "AC-2/3: pre-eval record under docs/superpowers/pre-eval/ keyed by write-once pre_eval_id; three-event append-only triage-outcomes joined on pre_eval_id"
+  - "AC-6: PRE_EVAL is fail-closed and never claimed enforced"
+  - "AC-7/13/14/15: real state transitions; cross-artifact binding enforced; accepted offer materialized; crash-consistent escalation"
+  - "AC-8/9/16: content-pattern taxonomy; T3 never manufactures eligibility without taxonomy; bounded regex + typed structural fail-closed"
+  - "AC-10/11/12: offer-only never auto-route; per-category remember; /v:status precision from git-derived actuals, no fabricated metric"
+  - "All Codex round-1..5 findings (CR1-1..CR5-10) honored per the plan's Known-integration-constraints section"
+  - "No write outside each job's partitioned file set (git-derived scope gate)"
+
+routing_stance: balanced
+max_parallel: 6
+
+jobs:
+  # ---- Wave 0 (serial foundation; every other job depends on it) ----
+  - id: task-0-foundation
+    title: "Shared foundation — states/status, conditional+bound fast_path schema, shared loaders, hardened primitives"
+    type: shared_foundation
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: direct
+    run: serial
+    write_allowed:
+      - "skills/compound-v/state-machine.md"
+      - "skills/compound-v/execution-manifest.md"
+      - "docs/superpowers/architecture/pre-eval-config.md"
+      - "scripts/compound-v-taxonomy.py"
+      - "scripts/compound-v-project-config.py"
+      - "scripts/compound-v-resolve-model.py"
+      - "scripts/compound-v-run-with-timeout.py"
+      - "schemas/pre-eval-record.schema.json"
+      - "schemas/fastpath-review-receipt.schema.json"
+    read_allowed:
+      - "skills/compound-v/**"
+      - "scripts/compound-v-validate-manifest.py"
+      - "scripts/compound-v-scope-check.py"
+    acceptance:
+      - "Lifecycle protocol states/status + conditional fast_path schema documented"
+      - "shared taxonomy loader (bounded regex via killable subprocess) + load_project_config; load_config_models is a wrapper"
+      - "run-with-timeout gains --max-output-bytes; canonical record/receipt/digest schemas exist"
+
+  # ---- Wave 1 (depend on task-0 only) ----
+  - id: task-a1-localize
+    title: "Bounded read-only localization + committed localization artifact"
+    type: bounded_crud
+    backend: claude
+    tier: standard
+    effort: medium
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-foundation]
+    write_allowed:
+      - "scripts/compound-v-localize.py"
+    read_allowed:
+      - "scripts/compound-v-taxonomy.py"
+      - "scripts/compound-v-run-with-timeout.py"
+    acceptance:
+      - "rg->git grep->grep degrade; fake-CLI proves supervisor routing + stdin=DEVNULL + bounded output"
+      - "shared-token CSS request resolves exact with fan_out>1 + shared_token flag; write-once artifact"
+
+  - id: task-a2-classify
+    title: "T3 one-shot classify — parent-Task prompt/parser + optional codex route"
+    type: bounded_crud
+    backend: claude
+    tier: standard
+    effort: medium
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-foundation]
+    write_allowed:
+      - "scripts/compound-v-classify-request.py"
+    read_allowed:
+      - "scripts/compound-v-resolve-model.py"
+      - "scripts/compound-v-run-with-timeout.py"
+    acceptance:
+      - "non-enum reply -> unknown; bounded prompt; codex route via timeout wrapper + closed stdin"
+      - "net-new (resolver only resolves, never calls a model)"
+
+  - id: task-b1-taxonomy
+    title: "Impact-taxonomy schema (typed content patterns incl. shared_token/a11y + churn block) + validator"
+    type: bounded_crud
+    backend: claude
+    tier: standard
+    effort: medium
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-foundation]
+    write_allowed:
+      - "scripts/compound-v-validate-taxonomy.py"
+      - ".claude/compound-v-impact-taxonomy.example.yaml"
+    read_allowed:
+      - "scripts/compound-v-taxonomy.py"
+      - "scripts/compound-v-validate-manifest.py"
+    acceptance:
+      - "six content kinds (incl. shared_token/a11y) with pattern_type/case/scan; sensitive_path_list; churn block"
+      - "soft-PyYAML+stdlib; unbounded regex rejected"
+
+  - id: task-f1-triage
+    title: "Append-only three-event triage-outcomes + cohort-separated Tier-2 + precision"
+    type: bounded_crud
+    backend: claude
+    tier: standard
+    effort: medium
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-foundation]
+    write_allowed:
+      - "scripts/compound-v-triage-outcomes.py"
+    read_allowed:
+      - "scripts/compound-v-update-memory.py"
+    acceptance:
+      - "predicted/bind/actual three events keyed (pre_eval_id,run_id); never a mutated line"
+      - "cohort split: only accepted fast-path supports lowering; precision from parent only; terminal actual after merge"
+
+  - id: task-g1-init
+    title: "/v:init owns pre_eval.* config + remember-my-choice + revocation + off"
+    type: bounded_crud
+    backend: claude
+    tier: standard
+    effort: medium
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-foundation]
+    write_allowed:
+      - "commands/v-init.md"
+    read_allowed:
+      - "docs/superpowers/architecture/pre-eval-config.md"
+      - "scripts/compound-v-project-config.py"
+    acceptance:
+      - "seeds defaults; malformed->warn->default (never auto-route); remember displayable+revocable; off is a hard kill-switch"
+
+  # ---- Wave 2 ----
+  - id: task-c1-validator
+    title: "Manifest validator — conditional fast-path, cross-artifact binding, containment, two modes, review receipt"
+    type: core_slice
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-foundation, task-b1-taxonomy]
+    write_allowed:
+      - "scripts/compound-v-validate-manifest.py"
+    read_allowed:
+      - "scripts/compound-v-taxonomy.py"
+      - "scripts/compound-v-scope-check.py"
+      - "schemas/**"
+    acceptance:
+      - "single-literal-path; block-YAML skip-record + _mini_yaml fixture; cross-artifact binding (write_allowed==resolved_path + digests)"
+      - "--mode pre-dispatch|post-review; containment (realpath + escaping-symlink); review==claude+deep OR model:opus resolved to Opus"
+
+  - id: task-d1-churn
+    title: "Reproducible full-rebuild normalized churn cache (escalation-only)"
+    type: bounded_crud
+    backend: claude
+    tier: standard
+    effort: medium
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-foundation, task-b1-taxonomy]
+    write_allowed:
+      - "scripts/compound-v-churn.py"
+    read_allowed:
+      - "scripts/compound-v-taxonomy.py"
+      - "scripts/compound-v-run-with-timeout.py"
+    acceptance:
+      - "single git log --no-merges --numstat pass; -\\t- binary sentinel handled; separated revert/fix grep"
+      - "normalized (never raw), full rebuild deterministic, excludes from taxonomy churn block, escalation-only"
+
+  - id: task-f2-postdiff
+    title: "Post-hoc diff re-classifier — sibling, pinned baseline, pre-merge, typed fail-closed, content re-check"
+    type: core_slice
+    backend: claude
+    tier: standard
+    effort: medium
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-foundation, task-b1-taxonomy]
+    write_allowed:
+      - "scripts/compound-v-postdiff-reclassify.py"
+    read_allowed:
+      - "scripts/compound-v-scope-check.py"
+      - "scripts/compound-v-taxonomy.py"
+    acceptance:
+      - "reuses scope-check changed-path set; tracked+untracked size; NEVER extends scope-check.py"
+      - "Python ast typed; JS/TS/Go/Ruby fail-closed; content match over hunks (shared_token/a11y/flag/legal/i18n/config) escalates"
+
+  - id: task-e1-adr
+    title: "Thin human-confirmed ADR capture (FTS5-indexed, no C4/SAD)"
+    type: docs
+    backend: claude
+    tier: standard
+    effort: medium
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-foundation]
+    write_allowed:
+      - "commands/v-adr.md"
+      - "skills/compound-v/adr-capture.md"
+      - "docs/superpowers/adr/0001-fts5-not-vector-db.md"
+    read_allowed:
+      - "scripts/compound-v-memory.py"
+    acceptance:
+      - "context/decision/consequences; References-MUST-exist guardrail; draft->human-confirm; FTS5-recallable after commit"
+
+  # ---- Wave 3 ----
+  - id: task-a3-preeval
+    title: "Pre-Eval scoring engine + truth-table + write-once pinned record + pre-run taxonomy snapshot"
+    type: core_slice
+    backend: claude
+    tier: standard
+    effort: medium
+    isolation: worktree
+    run: parallel
+    depends_on: [task-a1-localize, task-a2-classify, task-b1-taxonomy, task-d1-churn, task-f1-triage]
+    write_allowed:
+      - "scripts/compound-v-preeval.py"
+      - "skills/compound-v/phase-preeval.md"
+    read_allowed:
+      - "scripts/compound-v-localize.py"
+      - "scripts/compound-v-classify-request.py"
+      - "scripts/compound-v-taxonomy.py"
+      - "scripts/compound-v-churn.py"
+      - "scripts/compound-v-triage-outcomes.py"
+      - "scripts/compound-v-project-config.py"
+    acceptance:
+      - "AC-1 fixture (button red -> FULL_PIPELINE via override #3); ordered Layer-A; conservative-max"
+      - "T3 total truth table; absent/malformed taxonomy -> unconditional FULL_PIPELINE; write-once record + pre-run snapshot + predicted event; needs_t3"
+
+  - id: task-d2-onboard
+    title: "/v:onboard drafts taxonomy + churn behind the GATE"
+    type: bounded_crud
+    backend: claude
+    tier: standard
+    effort: medium
+    isolation: worktree
+    run: parallel
+    depends_on: [task-b1-taxonomy, task-d1-churn]
+    write_allowed:
+      - "skills/compound-v/onboarding.md"
+      - "scripts/compound-v-onboard.py"
+    read_allowed:
+      - "scripts/compound-v-churn.py"
+      - "scripts/compound-v-validate-taxonomy.py"
+    acceptance:
+      - "DIAGNOSE drafts taxonomy (path + four content surfaces OFFERED) + builds churn cache; GATE per-section; never auto-applied"
+
+  - id: task-h1-fastpath-run
+    title: "Fast-path runner — guarded test floor + needs_review Task (not Python->Claude)"
+    type: core_slice
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [task-c1-validator, task-f2-postdiff]
+    write_allowed:
+      - "scripts/compound-v-fastpath-run.py"
+    read_allowed:
+      - "scripts/compound-v-postdiff-reclassify.py"
+      - "scripts/compound-v-validate-manifest.py"
+    acceptance:
+      - "test floor tier-1..3 (py_compile module form; gate on binary+manifest; degrade never crash)"
+      - "review emits needs_review spec + validates returned result (malformed/rejected/timeout/wrong-tier); order per Lifecycle (F2 before review)"
+
+  # ---- Wave 4 ----
+  - id: task-m1-materialize
+    title: "Idempotent fast-path materializer + bind-every-run in v-orchestrate"
+    type: core_slice
+    backend: claude
+    tier: standard
+    effort: medium
+    isolation: worktree
+    run: parallel
+    depends_on: [task-a3-preeval, task-c1-validator]
+    write_allowed:
+      - "scripts/compound-v-fastpath-materialize.py"
+      - "commands/v-orchestrate.md"
+    read_allowed:
+      - "scripts/compound-v-preeval.py"
+      - "scripts/compound-v-validate-manifest.py"
+      - "scripts/compound-v-triage-outcomes.py"
+    acceptance:
+      - "accepted offer -> committed run passing C1 --mode pre-dispatch; bind committed BEFORE state; state at FASTPATH_DISPATCHED LAST"
+      - "tampered record rejected pre-commit; crash after each boundary reconciled; v-orchestrate binds every pre-eval-backed run"
+
+  - id: task-c2-surfaces
+    title: "status/resume/dispatcher/collect learn states, needs_review receipt, pre-merge F2, 2-phase escalation, terminal actual"
+    type: core_slice
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [task-f1-triage, task-c1-validator, task-f2-postdiff, task-h1-fastpath-run, task-m1-materialize]
+    write_allowed:
+      - "commands/v-status.md"
+      - "commands/v-resume.md"
+      - "commands/v-collect.md"
+      - "agents/parallel-dispatcher.md"
+    read_allowed:
+      - "scripts/compound-v-triage-outcomes.py"
+      - "scripts/compound-v-postdiff-reclassify.py"
+      - "skills/compound-v/state-machine.md"
+    acceptance:
+      - "render 3 states + precision (insufficient-samples floor); resume reconcile + immutable per-job baseline SHA (not HEAD)"
+      - "dispatcher: needs_review Task writes receipt; F2 pre-merge; actual at MERGED+ESCALATION; 2-phase escalation; /v:collect fast-path tail"
+
+  # ---- Wave 5 (serial integration owner) ----
+  - id: task-z1-integration
+    title: "Serial integration owner — e2e AC fixtures + version bump + SKILL bridge"
+    type: core_slice
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: direct
+    run: serial
+    depends_on:
+      - task-a3-preeval
+      - task-d2-onboard
+      - task-h1-fastpath-run
+      - task-m1-materialize
+      - task-c2-surfaces
+      - task-e1-adr
+      - task-g1-init
+    write_allowed:
+      - "skills/compound-v/SKILL.md"
+      - "CHANGELOG.md"
+      - ".claude-plugin/plugin.json"
+      - ".claude-plugin/marketplace.json"
+      - "tests/v2.9-e2e/**"
+    read_allowed:
+      - "docs/superpowers/specs/2026-07-11-v2.9-pre-evaluation-design.md"
+      - "docs/superpowers/plans/2026-07-11-v2.9-pre-evaluation-plan.md"
+    acceptance:
+      - "AC-1 e2e (button red->FULL_PIPELINE); AC-11 (css-remembered still escalates on shared-token/a11y)"
+      - "AC-3/7 (fast-path clean->1-combined-review->MERGED; sensitive diff->ESCALATION_REQUIRED->new run-id, patch preserved)"
+      - "AC-10/12 (no fabricated metric; /v:status insufficient-samples on empty); version bump + CHANGELOG + SKILL bridge"

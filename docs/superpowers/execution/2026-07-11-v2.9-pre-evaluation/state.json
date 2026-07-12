@@ -1,0 +1,137 @@
+{
+  "run_id": "2026-07-11-v2.9-pre-evaluation",
+  "phase": "PARTITION_VERIFIED",
+  "updated_at": "2026-07-11T00:00:00Z",
+  "total_retries": 0,
+  "max_total_retries": 12,
+  "jobs": {
+    "task-0-foundation": {
+      "status": "pending",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null,
+      "failure_class": null,
+      "log": null
+    },
+    "task-a1-localize": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null,
+      "failure_class": null,
+      "log": null
+    },
+    "task-a2-classify": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null,
+      "failure_class": null,
+      "log": null
+    },
+    "task-b1-taxonomy": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null,
+      "failure_class": null,
+      "log": null
+    },
+    "task-f1-triage": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null,
+      "failure_class": null,
+      "log": null
+    },
+    "task-g1-init": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null,
+      "failure_class": null,
+      "log": null
+    },
+    "task-c1-validator": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null,
+      "failure_class": null,
+      "log": null
+    },
+    "task-d1-churn": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null,
+      "failure_class": null,
+      "log": null
+    },
+    "task-f2-postdiff": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null,
+      "failure_class": null,
+      "log": null
+    },
+    "task-e1-adr": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null,
+      "failure_class": null,
+      "log": null
+    },
+    "task-a3-preeval": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null,
+      "failure_class": null,
+      "log": null
+    },
+    "task-d2-onboard": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null,
+      "failure_class": null,
+      "log": null
+    },
+    "task-h1-fastpath-run": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null,
+      "failure_class": null,
+      "log": null
+    },
+    "task-m1-materialize": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null,
+      "failure_class": null,
+      "log": null
+    },
+    "task-c2-surfaces": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null,
+      "failure_class": null,
+      "log": null
+    },
+    "task-z1-integration": {
+      "status": "pending",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null,
+      "failure_class": null,
+      "log": null
+    }
+  }
+}
