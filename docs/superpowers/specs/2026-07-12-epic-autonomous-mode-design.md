@@ -47,9 +47,11 @@ Reuses: `compound-v-run-with-timeout.py` (all external calls, `</dev/null`, `--m
   with them. Proof obligation: all 34 existing `epic-state.py` selftests pass unchanged **plus**
   golden-file tests asserting checkpoint `--init`/`--update` produce byte-identical output to today.
   ("Behavioral compatibility", not the earlier over-strong "byte-for-byte in all paths".)
-- **Atomic, serialized state writes:** every mutation writes a temp file + `os.replace` (never a bare
-  `open(...,"w")` that a concurrent reader can observe truncated). All new scripts `LANG=C`-clean
-  (reconfigure stdout/stderr to UTF-8).
+- **Locked, atomic, serialized state writes:** `os.replace` gives *publish* atomicity but is NOT mutual
+  exclusion. Every mutation — especially lease acquire/renew/release — runs the whole read → validate →
+  mutate → temp-write → `os.replace` sequence under one **`fcntl.flock`** on a sibling lockfile
+  (`<state>.lock`), so two concurrent watchers can never both "acquire". (Reuse any existing `flock`
+  precedent in the repo.) All new scripts `LANG=C`-clean (reconfigure stdout/stderr to UTF-8).
 - **Python 3.9 ISO discipline:** emit timestamps as `datetime.now(timezone.utc).isoformat()` (→ `+00:00`
   form, never bare `Z`); on ingest, normalize a trailing `Z`→`+00:00` before `fromisoformat` (3.9 can't
   parse `Z`). `--now <iso>` is injectable for deterministic selftests; CLI default is the real clock.
@@ -84,14 +86,25 @@ Reuses: `compound-v-run-with-timeout.py` (all external calls, `</dev/null`, `--m
   `"attempts":0, "last_error":<str|null>`. Absent `autonomy` ⇒ every legacy/checkpoint path, untouched.
 - **`--next --autonomous` is a SEPARATE function** (`next_feature_autonomous`), selected at the
   `want_next` branch — the default `next_feature`, its load-bearing guard order, and all default
-  selftests are byte-for-byte untouched. It relaxes fail-fast: a `failed`/`blocked` feature blocks only
-  its **transitive dependents** (reuse the `_detect_cycle` adjacency-build idiom for reverse
-  reachability); independent pending features stay runnable. Returns the 2-key `{feature,reason}` plus a
-  THIRD key `"blocked_by_failure":[ids]` (default `--next` shape unchanged).
-- **Terminal-state fix (Sol#3):** decouple watcher terminality from the failed-roll-up. Epic status
-  gains `running_with_failures` (work still runnable despite ≥1 failed/blocked) vs `blocked_needing_human`
-  (no runnable work AND a failure needs a human). The watcher disarms ONLY on a truly terminal status
-  (`done` or `blocked_needing_human`), never on the first failure.
+  selftests are byte-for-byte untouched. It routes on the feature's **stored arbiter disposition**, not
+  on the bare `failed` status (Sol-R2#8): a failure with a null/`halt` disposition → the epic goes
+  `blocked_needing_human` (does NOT auto-route around it); a failure the arbiter marked
+  `skip_independent`, or a `blocked` feature, blocks only its **transitive dependents** (reuse the
+  `_detect_cycle` adjacency idiom for reverse reachability over `depends_on` — independence is a DAG
+  fact, since per-feature `write_allowed` maps don't exist until a feature dispatches); independent
+  pending features stay runnable. Returns the 2-key `{feature,reason}` plus a THIRD key
+  `"blocked_by_failure":[ids]` (default `--next` shape unchanged).
+- **Disposition→status transition table (Sol-R2#6/#8):** `halt`→`blocked_needing_human`;
+  `skip_independent`→feature `failed` + routed-around (dependents blocked); `blocked_external`
+  (confirmed)→feature `blocked` + ledger; `retry_fix`→feature `pending` (re-run) under the breaker. The
+  DISPOSITION is stored on the feature and drives `--next --autonomous`.
+- **Terminal states (Sol#3, Sol-R2#5):** decouple watcher terminality from the failed-roll-up. Epic
+  status gains `running_with_failures` (work still runnable despite ≥1 failed/blocked) and three terminal
+  states: `done` (all `done`), `done_with_blockers` (every remaining feature is `blocked`/`failed` but at
+  least one `done` and NO feature needs a fixable human retry — a SUCCESS-with-caveats), and
+  `blocked_needing_human` (a `halt` or a tripped breaker needs a person). The watcher disarms ONLY on a
+  terminal status, never on the first failure; a blocked-only exhaustion resolves to `done_with_blockers`,
+  not an endless watcher burn.
 - **Idempotent retry accounting (Sol#7, DE-R2):** `attempts` increments **only** on a valid
   non-running→`running` transition, keyed by a unique **attempt token** minted at that transition;
   replaying `--update --status running` with the same token is a no-op (watcher re-entry / crash-resume
@@ -113,30 +126,54 @@ a *live* run (double execution). Replace it with a real lease.
   **renews** it (bumps `renewed_at`/`expires_at`, default TTL 15 min) at every step boundary AND on a
   cheap timer during long phases — so a healthy long wave keeps the lease alive without a feature-status
   change. `last_progress_at` remains, but only as *human-facing progress*, never as the liveness gate.
-- **`--acquire-lease --owner U --pid P --now T [--ttl-min 15]`** → succeeds and writes the lease (atomic)
-  **only if** no lease exists OR the existing lease is expired (`expires_at < now`) — a **fencing**
-  acquire. Prints `{"acquired":bool, "generation":n, "held_by":<owner|null>}`. `--renew-lease`,
-  `--release-lease` mirror it. A resume/update carrying a stale `generation` is rejected (fencing).
-- **`--liveness --state S --now T [--stale-after-min 45]`** → `{alive, stale, held, lease_expired,
-  age_min, epic_status}`. `stale` now means **lease expired on an incomplete epic**, not "timestamp
-  old". This is what the watcher polls. Cross-references `compound-v-liveness.py` (per-JOB hang probe) in
-  the docstring — different granularity, deliberately separate, mirrors its `--json`/exit-3/`--selftest`
-  conventions.
-- **Acceptance:** two concurrent `--acquire-lease` — exactly one wins; an expired lease is acquirable and
-  bumps `generation`; a stale-generation `--renew`/update is rejected; a live-lease epic is never
-  `stale`; selftest simulates "long wave, no status change, lease renewed → not stale" (the exact
-  false-resurrection case) and "resume dies before renew → lease expires → next watcher acquires".
+- **`--claim-stale --owner U --pid P --now T [--ttl-min 15]`** is the SINGLE atomic operation the watcher
+  uses — it does check-terminality-and-expiry AND acquire in ONE flock-guarded transaction, returning
+  `{"claimed":bool, "generation":n, "reason":"live-lease-held|terminal|claimed", "held_by":<owner|null>}`.
+  It claims (and bumps `generation`) **only if** the epic is non-terminal AND (no lease OR lease expired).
+  This replaces the self-defeating two-step "acquire then re-check stale" (Sol-R2#2): acquiring would have
+  cleared the very staleness the watcher then tested. The watcher resumes iff `claimed==true`.
+  `--renew-lease` / `--release-lease` mirror it; both require the caller's current `generation` (fencing —
+  a stale generation is rejected).
+- **`--liveness --state S --now T`** → `{held, lease_expired, epic_status, terminal}` for reporting only;
+  the resume DECISION is `--claim-stale`, never a recompute-after-acquire. Cross-references
+  `compound-v-liveness.py` (per-JOB hang probe) in the docstring — different granularity, deliberately
+  separate; mirrors its `--json`/exit-3/`--selftest` conventions.
+- **Worker-layer fencing scope (Sol-R2#3 — honest bound, not a full distributed lock):** the epic lease
+  fences `epic-state.json`, but the actual per-feature work runs through the existing dispatcher /
+  worktrees / merge-back, which do NOT carry the generation. So the guarantee is scoped honestly: (a) the
+  driver **renews the lease on a timer** so expiry happens only on genuine death, keeping the
+  double-start window small; (b) the driver **re-validates the lease generation at each fenced boundary —
+  immediately before dispatch, before merge-back, before each commit — and REJECTS a stale-generation
+  completion**, so a superseded driver's results can never merge; (c) the claim is therefore *"a stale
+  driver's work is rejected at the fenced merge boundary"*, **NOT** *"two drivers can never run
+  simultaneously"* — a stale driver may briefly waste compute before its next boundary check aborts it.
+  Full generation-threading through every worker is explicitly out of scope for a single-user local tool.
+  The README/honesty text uses the scoped wording, never "never double-executes".
+- **Attempt token (durable, caller-supplied — Sol-R2#7):** the DRIVER mints a UUID and passes it:
+  `--update --status running --feature F --attempt-token UUID --generation G`. epic-state stores
+  `active_attempt_token`; replaying the SAME token is a no-op returning the same result; a DIFFERENT token
+  while one is active is rejected; the transition requires the current lease `generation`. A documented
+  transition table defines which prior statuses may go →`running` (pending/failed→running yes;
+  done/blocked no). This makes attempts crash-safe (a watcher re-fire can't inflate the count).
+- **Acceptance:** a **barrier-synchronized repeated-subprocess** test proves exactly one of N concurrent
+  `--claim-stale` wins and generations never duplicate (the flock proof); a live-lease claim returns
+  `claimed:false, reason:live-lease-held`; a terminal epic returns `claimed:false, reason:terminal`; an
+  expired-lease non-terminal epic is claimed and bumps `generation`; a stale-generation `--renew`/update
+  is rejected; replaying an attempt token is idempotent while a different one is rejected; "long wave, no
+  status change, lease renewed → not claimable" (the false-resurrection case) and "resume dies before
+  renew → lease expires → next `--claim-stale` succeeds".
 
 ## Component 3 — Two-Tier Watcher (compound-v-epic-watch.py + prose)
 
 Emits the watcher prompt and advises tiers; the driver makes the actual harness scheduling calls.
 
 - `emit-prompt --epic-id E --state S` → the **self-contained** resume prompt used by BOTH tiers:
-  *acquire an expired lease (no-op & exit if a live lease is held) → check liveness → resume only if
-  stale → on resume, increment the **resume-attempt counter BEFORE any work**, apply exponential backoff
-  + jitter, self-disarm after `max_no_progress_cycles` non-progressing fires → stop+disarm if
-  `done`/`blocked_needing_human` or any global breaker tripped*. Fully self-contained per the
-  `scheduled-tasks` contract.
+  *run `--claim-stale` (the ONE atomic op) → if `claimed==false` (live lease held, or terminal) exit as a
+  no-op → else increment the **resume-attempt counter BEFORE any work**, apply exponential backoff +
+  jitter, self-disarm after `max_no_progress_cycles` non-progressing fires → resume `/v:epic <id>` →
+  stop+disarm if `done`/`done_with_blockers`/`blocked_needing_human` or any global breaker tripped*. No
+  separate "acquire then check stale" step (Sol-R2#2). Fully self-contained per the `scheduled-tasks`
+  contract.
 - `plan --state S --now T` → `{tier1:{cron, disarm:bool}, tier2:{cadence, disarm:bool},
   disable_cron_detected:bool}`. Disarms only on truly-terminal status. Off-minute jittered cadence
   (:17/:47). Reports if `CLAUDE_CODE_DISABLE_CRON` is set (→ Tier-2 only). Notes the 7-day Tier-1
@@ -157,9 +194,15 @@ dependency on any one backend.**
 - **Discovery — capabilities file ONLY** (`.claude/compound-v.json` carries no availability since
   v2.6.2). Composite gates: `codex.available && codex.exec_flags_verified`; `antigravity.available`;
   `cursor.available && cursor.authenticated`. Absent/malformed file ⇒ zero backends ⇒ Claude fallback.
-- **Family de-dup (DE-R4):** resolve each backend→model→**family** via `compound-v-resolve-model.py`
-  (codex→GPT, antigravity→Gemini, cursor→whatever the user configured — could be GPT). Two same-family
-  votes count as correlated, NOT independent.
+- **Family de-dup (DE-R4):** `compound-v-resolve-model.py --backend X --tier deep` returns the concrete
+  model *name* (e.g. `gpt-5.6-sol`, `Gemini 3.1 Pro (High)`) — it has **no `family` concept**, so the
+  arbiter ships its OWN `model_name → family` classifier (substring/regex: `gpt`→GPT, `gemini`→Gemini,
+  `claude|opus|sonnet`→Claude, `grok`→Grok, else `unknown`). Crucially, **family is keyed on the resolved
+  NAME, not the backend** — `cursor` is seeded by `/v:init` as the literal `"auto"` (revealing no family)
+  and is user-configurable, so a resolved `"auto"`/unrecognized name is **family-`unknown`**, and
+  `cursor`+`codex` may even be two GPT votes. Two same-family votes count as correlated, NOT independent;
+  an `unknown`-family vote counts for the `retry_fix`/`halt` majority but is **INELIGIBLE to be the
+  "second family"** for the `skip_independent`/`blocked_external` bars (Sol-R2#4).
 - **Poll:** each available backend runs a **read-only advisory** query through the timeout supervisor
   (`</dev/null`, `--max-output-bytes`), **in a throwaway git worktree** (contains blast radius: only
   Codex's `--sandbox read-only` is a *kernel* boundary; agy/cursor are prompt-restricted — the honest
@@ -175,18 +218,25 @@ dependency on any one backend.**
     `halt` vote (that would fabricate a vote and let one flaky backend silently revert marathon to
     checkpoint). The conservative default applies only to the aggregate of *valid* votes.
   - `retry_fix` vs `halt`: majority of valid votes; **empty or tied → conservative `halt`**.
-  - `skip_independent`: the highest bar — **unanimity across ≥2 distinct families** AND a structural
-    check (the feature shares no `write_allowed` files / no DAG edge with in-flight work). A bare
-    majority authorizes at most `retry_fix`. (It is the only disposition whose wrong call compounds
+  - `skip_independent`: the highest bar — **unanimity across ≥2 distinct KNOWN families** AND a
+    structural DAG independence check (no `depends_on` edge to/from any in-flight or failed feature;
+    per-feature `write_allowed` maps don't exist at arbitration time, so independence is a DAG fact, and
+    unknown scope ⇒ NOT independent). A bare majority, or any `unknown`-family vote standing in for a
+    second family, authorizes at most `retry_fix`. (It is the only disposition whose wrong call compounds
     unattended.)
-  - `blocked_external`: **≥2 distinct families agree, none dissenting `retry_fix`** → CONFIRMED. Any
-    `retry_fix` dissent → route to `retry_fix` (someone thinks it's doable). <2 families ⇒ SUSPECTED
-    (isolated so the epic continues, but flagged UNCONFIRMED / needs-human-verify).
+  - `blocked_external`: **≥2 distinct KNOWN families agree, none dissenting `retry_fix`** → CONFIRMED. Any
+    `retry_fix` dissent → route to `retry_fix` (someone thinks it's doable). <2 known families (incl. a
+    lone backend, or `unknown`-family votes like Cursor's `auto` which never count toward the bar) ⇒
+    SUSPECTED (isolated so the epic continues, but flagged UNCONFIRMED / needs-human-verify).
   - Record every panel member's raw verdict + resolved family for the audit trail — never fabricate a
     vote. Audit path: validate `epic_id` (add `_id_ok` to `build_state`), derive the audit root from the
     contained state path with realpath containment, write atomically with a collision-safe invocation id.
-- **Breaker interaction:** consulted only if `--can-retry` is true and no global breaker is tripped; a
-  `retry_fix` past any cap is downgraded to `halt`. The breaker always wins.
+- **Classify vs. retry are SEPARATE (Sol-R2#6):** the panel is ALWAYS consulted on a failure to
+  *classify* it (so an exhausted feature can still be recorded as `blocked_external`/`skip_independent`/
+  reasoned-`halt`) — the ONLY thing the per-feature `--can-retry` cap gates is the `retry_fix`
+  *disposition*, which is masked to `halt` once `attempts >= cap`. Arbitration itself is suppressed only
+  if a GLOBAL breaker forbids further model calls (wall-clock / total-attempts tripped). The breaker
+  always wins on ACTION; the arbiter always gets to CLASSIFY.
 - **Claude-only fallback:** a separate fresh-context adversarial Opus agent ("default to `halt`; justify
   any `retry_fix`"). It may return only `halt` or `retry_fix` — **never `skip_independent`, never
   CONFIRM a `blocked_external`** (same-family self-judgment can't clear those bars). Honesty line ships:
@@ -217,8 +267,11 @@ quality failure or a choice.
 - **End-of-epic report** leads with the ledger, visually separated from `failed`: "Built everything
   reachable. **N feature(s) need YOU** — a human/external action, because code can't create data that
   doesn't exist upstream:" per entry: feature, one-line reason, the missing external fact, families that
-  agreed (or "single-model SUSPICION"), what it transitively blocked. A `blocked`-only epic is a
-  SUCCESS-with-caveats, not a failure; `--stats` counts `blocked` separately.
+  agreed (or "single-model SUSPICION"), what it transitively blocked. When blocked features transitively
+  exhaust all remaining work, the epic reaches the terminal **`done_with_blockers`** status (Sol-R2#5) —
+  a SUCCESS-with-caveats that disarms the watchers (NOT an endless burn, NOT `blocked_needing_human`);
+  `--stats` counts `blocked` separately. Resolving a blocker later is a human action: re-run
+  `/v:epic <id>` after `--update --status pending --feature F` reopens it (dependents re-derive).
 - **Acceptance:** confirmed `blocked_external` isolates dependents not independents; `--next
   --autonomous` advances past a `blocked` feature; single-family proposal → `confirmed:false`; ledger
   round-trips through `--update`/`--summary`; `--stats` breaks out `blocked`; report names the missing
@@ -284,19 +337,24 @@ in the deterministic script, not the driver prose.
 ## Feature DAG + disjoint partition
 
 ```
-F1 marathon-loop + breakers  (epic-state.py: autonomy, --next --autonomous, attempts/token, breakers)  deps: []
-F2 lease + heartbeat         (epic-state.py: lease/fencing, --liveness, atomic writes, Py3.9 ISO)        deps: [F1]
-F4 arbiter-panel             (compound-v-epic-arbiter.py)                                                deps: [F1]
-F3 watcher                   (compound-v-epic-watch.py)                                                  deps: [F2]
-F5 driver + review-integrity (v-epic.md, epic-mode.md, v-init.md)                                        deps: [F1,F2,F3,F4]
-F6 docs + CI + release       (README, CHANGELOG, plugin/marketplace json, validate.yml)                  deps: [F5]
+F1 CORE CONTRACT   (scripts/compound-v-epic-state.py — Components 1,2,4b,4c: autonomy, --next          deps: []
+                    --autonomous, attempts/token, lease+flock+--claim-stale, --liveness, breakers,
+                    blocker_ledger, terminal states, Py3.9 ISO. ONE serial unit — the WHOLE file.)
+F4 arbiter-panel   (compound-v-epic-arbiter.py — new file; consumes F1's published state/CLI contract)  deps: [F1]
+F3 watcher         (compound-v-epic-watch.py — new file; consumes F1's --claim-stale contract)          deps: [F1]
+F5 driver+integrity(v-epic.md, epic-mode.md, v-init.md — driver loop, halt-page runbook, PASS audit)    deps: [F1,F3,F4]
+F6 docs + CI + rel (README, CHANGELOG, plugin/marketplace json, validate.yml)                           deps: [F5]
 ```
 
-Disjoint writes — **F1 & F2 both edit `scripts/compound-v-epic-state.py`, so they are ONE serial
-dispatch unit, not parallel** (the disjoint-write invariant). F4/F3 are new files (parallel-safe). F5 =
-3 prose files. F6 = README/CHANGELOG/2 manifests/workflow. No two units write the same file. The plugin
-manifests are currently CLEAN (the session-start `M` was committed in the v2.9 flow) — no dirty-tree
-hazard.
+Disjoint writes — **the entire `scripts/compound-v-epic-state.py` (Components 1, 2, 4b, 4c — marathon
+loop, lease, blocker ledger, breakers) is ONE serial "core contract" unit (Sol-R2#9)**, NOT split by
+component number; splitting it would collide on the same file. **F1 must publish its completed state-JSON
++ CLI contract (the `--claim-stale`/`--can-retry`/`--breaker-check`/`--update` signatures and the state
+schema) BEFORE F3/F4 begin**, since both consume it. The `model_name→family` map lives inside F4's arbiter
+(the resolver stays name-only), so `resolve-model.py` is NOT edited — no cross-unit write there. F4/F3 are
+new files (parallel-safe once the contract is frozen). F5 = 3 prose files. F6 = README/CHANGELOG/2
+manifests/workflow. No two units write the same file. Plugin manifests are currently CLEAN (session-start
+`M` committed in the v2.9 flow) — no dirty-tree hazard.
 
 ## Chosen defaults for the escalated open questions (documented, tunable in `/v:init`)
 
@@ -322,6 +380,11 @@ hazard.
   Execution Lease + the Global Breakers are the deterministic guardrails it cannot override. Claude-self
   is weaker than a family-diverse panel — the **breakers, not the arbiter, are the safety net**, and
   without a second model family the arbiter adds ≈no autonomy.
+- **Concurrency guarantee is scoped honestly (Sol-R2#3):** the lease + `flock` + generation-fencing
+  guarantee *"a superseded driver's work is rejected at the fenced merge boundary"* and that two watchers
+  can never both claim a stale run — **NOT** *"two drivers can never run for a moment simultaneously"*. A
+  stale driver may briefly waste compute before its next boundary check aborts it. We never claim "never
+  double-executes".
 - `blocked_external` needs ≥2 model families to CONFIRM; a single model can only SUSPECT.
 - No fabricated metrics; the arbiter never invents a vote for an absent/errored backend.
 
