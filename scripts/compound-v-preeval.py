@@ -50,7 +50,8 @@ Reuse (imported BY PATH, never recopied):
   * `compound-v-localize.py`        — localize / write_localization_artifact / artifact paths
   * `compound-v-classify-request.py`— build_prompt (the T3 prompt the parent runs)
   * `compound-v-project-config.py`  — load_project_config / resolve_pre_eval (fail-closed)
-  * `compound-v-triage-outcomes.py` — append_predicted (append-only, forbidden-basename guard)
+  * `compound-v-validate-taxonomy.py`— validate_text (HIGH-3: malformed taxonomy → fail closed)
+  * `compound-v-triage-outcomes.py` — append_predicted / tier2_lookup (append-only + cohort read)
   * `compound-v-churn.py`           — load_churn_cache / read_path (escalation-only)
 
 Python 3.9-safe, stdlib only; soft-PyYAML via the shared taxonomy loader (never a hard
@@ -163,6 +164,10 @@ def _triage_mod():
 
 def _churn_mod():
     return _load_sibling("compound-v-churn.py", "compound_v_churn")
+
+
+def _validate_taxonomy_mod():
+    return _load_sibling("compound-v-validate-taxonomy.py", "compound_v_validate_taxonomy")
 
 
 # --------------------------------------------------------------------------- #
@@ -615,7 +620,15 @@ def write_record(repo, pre_eval_id, record):
 # --------------------------------------------------------------------------- #
 def _load_taxonomy(repo, taxonomy_path):
     """Return (taxonomy_dict|None, raw_bytes|None, version|None). Absent / malformed /
-    unreadable → (None, None, None) → the scorer routes to unconditional FULL_PIPELINE."""
+    unreadable / VALIDATION-FAILING → (None, None, None) → the scorer routes to unconditional
+    FULL_PIPELINE (spec §2 missing-data rule).
+
+    HIGH-3 fail-closed: a taxonomy that PARSES but the shared validator REJECTS — e.g. a
+    missing `churn` block, an unbounded content regex, an invalid band — is exactly as unsafe
+    as an absent one (its sensitive-path / content-pattern protections cannot be trusted), so
+    it fails closed the SAME way. Validation is not re-implemented here: it reuses
+    `compound-v-validate-taxonomy.validate_text` (the same subset its CLI runs), fed the raw
+    YAML text (not the normalized dict). Any violation → treat the taxonomy as absent."""
     tax = _tax()
     candidate = taxonomy_path or os.path.join(repo or ".", DEFAULT_TAXONOMY_REL)
     if not candidate or not os.path.isfile(candidate):
@@ -623,8 +636,16 @@ def _load_taxonomy(repo, taxonomy_path):
     try:
         with open(candidate, "rb") as fh:
             raw = fh.read()
-        data = tax.load_taxonomy(text=raw.decode("utf-8", "replace"))
+        text = raw.decode("utf-8", "replace")
+        data = tax.load_taxonomy(text=text)
     except (OSError, ValueError, RuntimeError):
+        return None, None, None
+    # Shared validation (reused, never recopied). A rejecting taxonomy is treated as ABSENT.
+    try:
+        problems = _validate_taxonomy_mod().validate_text(text)
+    except Exception:  # noqa: BLE001 — a validator that itself errors → fail closed too
+        return None, None, None
+    if problems:
         return None, None, None
     return data, raw, data.get("version")
 
@@ -658,11 +679,17 @@ def run_preeval(request, repo=".", taxonomy_path=None, t3_category=None,
     the record or appending `predicted` — the parent runs the light Task and re-invokes with
     `--t3-category`. Resume: an existing intent record for the same request fingerprint reuses
     its pre_eval_id and continues from the first missing artifact.
+
+    Config honored (fail-closed, HIGH-4): `pre_eval.enabled==false` → the whole stage is a
+    no-op (no artifacts) → FULL_PIPELINE; `pre_eval.fast_path=="off"` → hard kill-switch, the
+    score is still computed but the decision is forced FULL_PIPELINE (never FASTPATH_ELIGIBLE);
+    `pre_eval.min_sample_count` floors the Tier-2 cohort lookup applied per the spec's cohort
+    rule (healthy corroborates low, unhealthy raises, insufficient = no signal).
     """
     repo = repo or "."
     ts = ts or _now_iso()
 
-    # Config (fail-closed): fan_out_threshold, token_cap, min_sample_count.
+    # Config (fail-closed): enabled, fast_path, fan_out_threshold, token_cap, min_sample_count.
     if config_values is None:
         cfg_mod = _config_mod()
         try:
@@ -672,6 +699,15 @@ def run_preeval(request, repo=".", taxonomy_path=None, t3_category=None,
         config_values, _warn = cfg_mod.resolve_pre_eval(cfg)
     fan_out_threshold = config_values.get("fan_out_threshold", 1)
     token_cap = config_values.get("token_cap")
+    min_sample_count = config_values.get("min_sample_count")
+    fast_path_off = config_values.get("fast_path") == "off"  # hard kill-switch (AC-10)
+
+    # HIGH-4(a): pre_eval.enabled == false → the WHOLE stage is a no-op → FULL_PIPELINE.
+    # Nothing is localized, scored, snapshotted, or recorded; the harness proceeds on the
+    # normal (full-pipeline) path exactly as if pre-eval did not exist. No artifacts, no git.
+    if config_values.get("enabled") is False:
+        return {"needs_t3": False, "pre_eval_disabled": True,
+                "decision": DECISION_FULL, "pre_eval_id": None}
 
     # Phase-P step 0/1: discover-or-mint pre_eval_id, then the write-once intent record.
     if not pre_eval_id:
@@ -704,10 +740,33 @@ def run_preeval(request, repo=".", taxonomy_path=None, t3_category=None,
     if churn_hot is None:
         churn_hot = _churn_hot_for(repo, localization.get("resolved_paths", []))
 
+    # HIGH-4(c): Tier-2 historical corroboration — resolved via the shared cohort lookup when
+    # not injected. min_sample_count-gated (config floor); healthy corroborates `low`,
+    # UNHEALTHY raises difficulty, insufficient = no signal (Iron-Invariant #3). Fail-closed:
+    # any read error → no signal (never fabricates corroboration).
+    if tier2 is None:
+        try:
+            tier2 = _triage_mod().tier2_lookup(
+                min_sample_count=min_sample_count, stream_path=stream_path, repo=repo)
+        except (OSError, ValueError):
+            tier2 = None
+
     # Phase-P step 4: SCORE (deterministic; may return needs_t3).
     verdict = score(localization, taxonomy, t3_category=t3_category, tier2=tier2,
                     churn_hot=churn_hot, fan_out_threshold=fan_out_threshold,
                     token_cap=token_cap, request_text=request)
+
+    # HIGH-4(b): fast_path == "off" is a HARD kill-switch — no fast-path offer is EVER made.
+    # The bands stay computed (for the record + learning), but the DECISION is forced
+    # FULL_PIPELINE. When the score would need a T3 model call, we skip it entirely: a
+    # fast-path that can never be offered is not worth a model spend (spec §3, near-free).
+    if fast_path_off:
+        if verdict.get("needs_t3"):
+            verdict = _verdict(DECISION_FULL, override=None, diff="unknown", imp="unknown",
+                               tiers=verdict.get("tiers_signalled", []),
+                               min_sample=verdict.get("min_sample_status", "insufficient"))
+        elif verdict.get("decision") == DECISION_FASTPATH:
+            verdict = dict(verdict, decision=DECISION_FULL)
 
     if verdict.get("needs_t3"):
         # Pause: parent runs the light Task and re-invokes. Artifacts already durable.
@@ -1117,6 +1176,122 @@ def _selftest():
         bad["decision"] = DECISION_FASTPATH
         _schema_check(expect, bad, must_validate=False,
                       label="null-taxonomy FASTPATH record is schema-REJECTED")
+
+    # ============ HIGH-3: a MALFORMED (validator-rejected) taxonomy fails CLOSED ===== #
+    # A taxonomy that PARSES and even carries a non-empty sensitive_path_list (so the coverage
+    # check _has_safety_coverage alone would PASS) but is REJECTED by the shared validator
+    # (here: missing the required `churn` block) is treated as ABSENT → unconditional
+    # FULL_PIPELINE, never FASTPATH_ELIGIBLE. Proves the fix is the shared validator, not just
+    # the non-empty-sensitive-list coverage heuristic.
+    malformed_tax_text = (
+        "version: 1\n"
+        "path_patterns:\n"
+        "  - glob: \"**/*.css\"\n"
+        "    difficulty_band: low\n"
+        "    impact_band: low\n"
+        "content_patterns: []\n"
+        "sensitive_path_list:\n"
+        "  - \"src/auth/**\"\n"
+    )  # no `churn:` block → compound-v-validate-taxonomy rejects it.
+    expect("HIGH-3: shared validator rejects the malformed taxonomy",
+           bool(_validate_taxonomy_mod().validate_text(malformed_tax_text)))
+    with tempfile.TemporaryDirectory() as repo:
+        tax_dir = os.path.join(repo, ".claude")
+        os.makedirs(tax_dir)
+        tax_file = os.path.join(tax_dir, "compound-v-impact-taxonomy.yaml")
+        with open(tax_file, "w", encoding="utf-8") as fh:
+            fh.write(malformed_tax_text)
+        d, b, v = _load_taxonomy(repo, None)
+        expect("HIGH-3: _load_taxonomy returns None for a malformed taxonomy",
+               d is None and b is None and v is None)
+        # Guard against over-rejection: a VALID taxonomy at the same path still loads.
+        with open(tax_file, "w", encoding="utf-8") as fh:
+            fh.write(_EXAMPLE_TAXONOMY_TEXT)
+        d2, b2, v2 = _load_taxonomy(repo, None)
+        expect("HIGH-3: a valid taxonomy still loads (no over-rejection)",
+               d2 is not None and b2 is not None and v2 == 1)
+
+    with tempfile.TemporaryDirectory() as repo:
+        tax_dir = os.path.join(repo, ".claude")
+        os.makedirs(tax_dir)
+        with open(os.path.join(tax_dir, "compound-v-impact-taxonomy.yaml"), "w",
+                  encoding="utf-8") as fh:
+            fh.write(malformed_tax_text)
+        stream = os.path.join(repo, "docs", "superpowers", "memory",
+                              "triage-outcomes.jsonl")
+        fk = fake_localize_factory(_loc(["src/ui/button.css"], flags=[], fan_out=1))
+        resm = run_preeval("tweak local button padding", repo=repo, _localize=fk,
+                           t3_category="plumbing", ts="2026-07-12T10:20:00Z",
+                           stream_path=stream)
+        expect("HIGH-3 E2E: malformed taxonomy -> FULL_PIPELINE (never FASTPATH)",
+               resm["decision"] == DECISION_FULL and resm["decision"] != DECISION_FASTPATH)
+        expect("HIGH-3 E2E: malformed taxonomy treated as absent (null ref/digest)",
+               resm["record"]["taxonomy_ref"] is None
+               and resm["record"]["taxonomy_digest"] is None)
+
+    # ============ HIGH-4: the engine honors enabled / fast_path:off / Tier-2 ========= #
+    def _cfg(**kw):
+        return dict({"enabled": True, "fast_path": "ask", "min_sample_count": 5,
+                     "fan_out_threshold": 1, "token_cap": None}, **kw)
+
+    def _seed_taxonomy(repo):
+        tax_dir = os.path.join(repo, ".claude")
+        os.makedirs(tax_dir)
+        with open(os.path.join(tax_dir, "compound-v-impact-taxonomy.yaml"), "w",
+                  encoding="utf-8") as fh:
+            fh.write(_EXAMPLE_TAXONOMY_TEXT)
+        return os.path.join(repo, "docs", "superpowers", "memory", "triage-outcomes.jsonl")
+
+    # (a) enabled:false → the whole stage is a no-op → FULL_PIPELINE, NO artifacts written.
+    with tempfile.TemporaryDirectory() as repo:
+        _seed_taxonomy(repo)
+        fk = fake_localize_factory(_loc(["src/ui/button.css"], flags=[], fan_out=1))
+        resd = run_preeval("tweak local button padding", repo=repo, _localize=fk,
+                           config_values=_cfg(enabled=False), ts="2026-07-12T10:21:00Z")
+        expect("HIGH-4(a): enabled:false -> FULL_PIPELINE (no-op)",
+               resd["decision"] == DECISION_FULL and resd.get("pre_eval_disabled") is True)
+        expect("HIGH-4(a): enabled:false writes NO pre-eval artifacts",
+               (not os.path.isdir(pre_eval_dir(repo))) or not os.listdir(pre_eval_dir(repo)))
+
+    # (b) fast_path:"off" → a trivial CSS change that WOULD be FASTPATH is forced FULL; the
+    # score is still computed (low/low bands recorded), decision forced FULL_PIPELINE.
+    with tempfile.TemporaryDirectory() as repo:
+        stream = _seed_taxonomy(repo)
+        fk = fake_localize_factory(_loc(["src/ui/button.css"], flags=[], fan_out=1))
+        reso = run_preeval("tweak local button padding", repo=repo, _localize=fk,
+                           config_values=_cfg(fast_path="off"), ts="2026-07-12T10:22:00Z",
+                           stream_path=stream)
+        expect("HIGH-4(b): fast_path off -> FULL_PIPELINE (never FASTPATH)",
+               reso["decision"] == DECISION_FULL)
+        expect("HIGH-4(b): fast_path off still COMPUTES the score (low/low bands recorded)",
+               reso["record"]["difficulty"]["band"] == "low"
+               and reso["record"]["impact"]["band"] == "low")
+        # off ALSO short-circuits a would-be T3 call: an unclassified path never returns needs_t3.
+        fk2 = fake_localize_factory(_loc(["tools/gen.py"], flags=[], fan_out=1))
+        reso2 = run_preeval("do the mysterious thing", repo=repo, _localize=fk2,
+                            config_values=_cfg(fast_path="off"), ts="2026-07-12T10:23:00Z",
+                            stream_path=stream)
+        expect("HIGH-4(b): fast_path off -> no needs_t3 model call, decides FULL",
+               reso2.get("needs_t3") is False and reso2["decision"] == DECISION_FULL)
+
+    # (c) an UNHEALTHY Tier-2 cohort (resolved BY run_preeval itself, min_sample_count=1)
+    # RAISES a trivial CSS change away from the fast-path → FULL_PIPELINE, T2 signalled.
+    with tempfile.TemporaryDirectory() as repo:
+        stream = _seed_taxonomy(repo)
+        tm = _triage_mod()
+        prior = "2026-07-12T090000Z-prior-fastpath-aaaa"
+        tm.append_predicted(prior, decision=DECISION_FASTPATH, stream_path=stream)
+        tm.bind_run(prior, "run-prior", stream_path=stream)
+        tm.append_actual(prior, "run-prior", escalated=True, review_result="fail",
+                         stream_path=stream)  # terminal, ESCALATED fast-path outcome → unhealthy
+        fk = fake_localize_factory(_loc(["src/ui/button.css"], flags=[], fan_out=1))
+        resu = run_preeval("tweak local button padding once more", repo=repo, _localize=fk,
+                           config_values=_cfg(min_sample_count=1), ts="2026-07-12T10:24:00Z",
+                           stream_path=stream)
+        expect("HIGH-4(c): unhealthy Tier-2 cohort resolved by run_preeval RAISES -> FULL",
+               resu["decision"] == DECISION_FULL
+               and resu["record"]["difficulty"]["band"] != "low"
+               and "T2" in resu["record"]["tiers_signalled"])
 
     if failures:
         print("\nSELFTEST FAILED: %d case(s)" % len(failures))
