@@ -1,7 +1,11 @@
 # Compound V — impact taxonomy (v2.9 Pre-Evaluation, tier-1 static evidence).
 # Human-authored + human-maintained. /v:onboard drafts a first cut from the repo's structure;
 # a human keeps/edits it at the GATE (never auto-applied). Schema authority: scripts/compound-v-taxonomy.py.
-# Bands: low | medium | high. Validate with: python3 scripts/compound-v-validate-taxonomy.py <this file>.
+# Bands: low | medium | high. Validate: python3 scripts/compound-v-validate-taxonomy.py <this file>.
+#
+# BLOCK-STYLE ONLY — never inline flow `{...}` mappings: the no-PyYAML stdlib fallback parser
+# (_mini_yaml) silently drops flow mappings, which would empty path_patterns/content_patterns when
+# PyYAML is absent. Every row below is block style so the fallback parses identically.
 #
 # This is the EXAMPLE/reference shipped with the plugin. A real project's taxonomy lives at
 # .claude/compound-v-impact-taxonomy.yaml (this .example. file is the template).
@@ -9,73 +13,148 @@
 version: 1
 
 # ---------------------------------------------------------------------------
-# path_patterns — map path globs to (difficulty, impact) bands. First-cut only:
-# localization + the content_patterns below refine what a "cosmetic" edit really touches.
+# path_patterns — path globs -> (difficulty, impact) bands. First-cut only; localization +
+# content_patterns refine what a "cosmetic" edit really touches.
 # ---------------------------------------------------------------------------
 path_patterns:
-  # Cosmetic / presentation — low difficulty AND low impact ONLY when localization confirms
-  # the change is not a shared design token or an a11y state (override #3 catches those).
-  - {glob: "**/*.css",  difficulty_band: low, impact_band: low}
-  - {glob: "**/*.scss", difficulty_band: low, impact_band: low}
-  - {glob: "**/*.md",   difficulty_band: low, impact_band: low}
-
+  # Cosmetic / presentation — low ONLY when localization confirms it is not a shared token or a11y
+  # state (override #3 catches those).
+  - glob: "**/*.css"
+    difficulty_band: low
+    impact_band: low
+  - glob: "**/*.scss"
+    difficulty_band: low
+    impact_band: low
+  - glob: "**/*.md"
+    difficulty_band: low
+    impact_band: low
   # Front-end logic — moderate.
-  - {glob: "**/*.jsx", difficulty_band: medium, impact_band: medium}
-  - {glob: "**/*.tsx", difficulty_band: medium, impact_band: medium}
-
+  - glob: "**/*.jsx"
+    difficulty_band: medium
+    impact_band: medium
+  - glob: "**/*.tsx"
+    difficulty_band: medium
+    impact_band: medium
   # High-blast-radius surfaces — never trivial.
-  - {glob: "**/migrations/**",   difficulty_band: high, impact_band: high}
-  - {glob: "**/*.sql",           difficulty_band: high, impact_band: high}
-  - {glob: "src/auth/**",        difficulty_band: high, impact_band: high}
-  - {glob: "**/payments/**",     difficulty_band: high, impact_band: high}
-  - {glob: "**/billing/**",      difficulty_band: high, impact_band: high}
-  - {glob: ".github/**",         difficulty_band: high, impact_band: high}
-  - {glob: "**/*.tf",            difficulty_band: high, impact_band: high}
-  - {glob: "**/Dockerfile",      difficulty_band: high, impact_band: high}
+  - glob: "**/migrations/**"
+    difficulty_band: high
+    impact_band: high
+  - glob: "**/*.sql"
+    difficulty_band: high
+    impact_band: high
+  - glob: "src/auth/**"
+    difficulty_band: high
+    impact_band: high
+  - glob: "**/payments/**"
+    difficulty_band: high
+    impact_band: high
+  - glob: "**/billing/**"
+    difficulty_band: high
+    impact_band: high
+  - glob: ".github/**"
+    difficulty_band: high
+    impact_band: high
+  - glob: "**/*.tf"
+    difficulty_band: high
+    impact_band: high
 
 # ---------------------------------------------------------------------------
 # content_patterns — impact is what a change semantically IS, not only where it lives (1B DC-3).
-# A tiny diff whose risk is in the string/constant CONTENT. F2 re-checks these over changed hunks
-# post-diff; a hit escalates. kind ∈ legal_copy | i18n_placeholder | feature_flag | config_literal
-# | shared_token | a11y. pattern_type ∈ literal | glob | regex (regex is a bounded safe subset).
+# F2 re-checks these over changed hunks post-diff; a hit escalates.
+# kind ∈ legal_copy | i18n_placeholder | feature_flag | config_literal | shared_token | a11y.
+# pattern_type ∈ literal | glob | regex (regex is a bounded safe subset).
 # ---------------------------------------------------------------------------
 content_patterns:
-  # Legal / compliance copy — a one-word consent edit can be a GDPR change (IRMI: disclaimer
-  # language must be drawn as carefully as the rest of the design package).
-  - {match: "terms of service",  pattern_type: literal, case: insensitive, scan: content, kind: legal_copy,     impact_band: high}
-  - {match: "privacy policy",    pattern_type: literal, case: insensitive, scan: content, kind: legal_copy,     impact_band: high}
-  - {match: "consent",           pattern_type: literal, case: insensitive, scan: content, kind: legal_copy,     impact_band: high}
-  - {match: "cookie",            pattern_type: literal, case: insensitive, scan: content, kind: legal_copy,     impact_band: medium}
-
-  # i18n interpolation placeholders — deleting/altering a {{var}}/%s crashes or garbles across
-  # every locale (i18next best-practices; a minor bump silently changed undefined-var handling).
-  - {match: "\\{\\{[a-zA-Z0-9_]+\\}\\}", pattern_type: regex, case: sensitive, scan: content, kind: i18n_placeholder, impact_band: high}
-  - {match: "%[sd]",             pattern_type: regex,   case: sensitive,   scan: content, kind: i18n_placeholder, impact_band: high}
-
-  # Feature-flag definitions / default flips — one line, global blast radius (2025 GCP + PostHog
-  # outages were policy/flag changes not feature-flag-protected).
-  - {match: "featureflag",       pattern_type: literal, case: insensitive, scan: content, kind: feature_flag,   impact_band: high}
-  - {match: "feature_flag",      pattern_type: literal, case: insensitive, scan: content, kind: feature_flag,   impact_band: high}
-  - {match: "isEnabled",         pattern_type: literal, case: insensitive, scan: content, kind: feature_flag,   impact_band: medium}
-
-  # Config / constant literals — timeouts, pricing, quotas, rate limits (a 1s->300ms DB-timeout
-  # change cascaded into a real outage; config changes are a top outage class).
-  - {match: "timeout",           pattern_type: literal, case: insensitive, scan: content, kind: config_literal, impact_band: medium}
-  - {match: "rate_limit",        pattern_type: literal, case: insensitive, scan: content, kind: config_literal, impact_band: high}
-  - {match: "price",             pattern_type: literal, case: insensitive, scan: content, kind: config_literal, impact_band: high}
-  - {match: "quota",             pattern_type: literal, case: insensitive, scan: content, kind: config_literal, impact_band: medium}
-
-  # Shared design tokens — a "cosmetic" color that is a brand/contrast-compliance surface
-  # (generalizes override #3 to any design-token file).
-  - {match: "--color-",          pattern_type: literal, case: insensitive, scan: content, kind: shared_token,   impact_band: high}
-  - {match: "$brand",            pattern_type: literal, case: insensitive, scan: content, kind: shared_token,   impact_band: high}
-  - {match: "theme.tokens",      pattern_type: literal, case: insensitive, scan: content, kind: shared_token,   impact_band: high}
-
-  # Accessibility constructs — aria-label overrides native naming and silently breaks WCAG
-  # SC 2.5.3 / 4.1.2 (Level Access).
-  - {match: "aria-label",        pattern_type: literal, case: insensitive, scan: content, kind: a11y,           impact_band: high}
-  - {match: "role=",             pattern_type: literal, case: insensitive, scan: content, kind: a11y,           impact_band: medium}
-  - {match: "alt=",              pattern_type: literal, case: insensitive, scan: content, kind: a11y,           impact_band: medium}
+  # Legal / compliance copy.
+  - match: "terms of service"
+    pattern_type: literal
+    case: insensitive
+    scan: content
+    kind: legal_copy
+    impact_band: high
+  - match: "privacy policy"
+    pattern_type: literal
+    case: insensitive
+    scan: content
+    kind: legal_copy
+    impact_band: high
+  - match: "consent"
+    pattern_type: literal
+    case: insensitive
+    scan: content
+    kind: legal_copy
+    impact_band: high
+  # i18n interpolation placeholders — {{var}} / %s; deletion crashes/garbles across locales.
+  - match: "\\{\\{[a-zA-Z0-9_]+\\}\\}"
+    pattern_type: regex
+    case: sensitive
+    scan: content
+    kind: i18n_placeholder
+    impact_band: high
+  - match: "%[sd]"
+    pattern_type: regex
+    case: sensitive
+    scan: content
+    kind: i18n_placeholder
+    impact_band: high
+  # Feature-flag definitions / default flips — one line, global blast radius.
+  - match: "feature_flag"
+    pattern_type: literal
+    case: insensitive
+    scan: content
+    kind: feature_flag
+    impact_band: high
+  - match: "isEnabled"
+    pattern_type: literal
+    case: insensitive
+    scan: content
+    kind: feature_flag
+    impact_band: medium
+  # Config / constant literals — timeouts, pricing, quotas, rate limits.
+  - match: "timeout"
+    pattern_type: literal
+    case: insensitive
+    scan: content
+    kind: config_literal
+    impact_band: medium
+  - match: "rate_limit"
+    pattern_type: literal
+    case: insensitive
+    scan: content
+    kind: config_literal
+    impact_band: high
+  - match: "price"
+    pattern_type: literal
+    case: insensitive
+    scan: content
+    kind: config_literal
+    impact_band: high
+  # Shared design tokens — a "cosmetic" color that is a brand/contrast-compliance surface.
+  - match: "--color-"
+    pattern_type: literal
+    case: insensitive
+    scan: content
+    kind: shared_token
+    impact_band: high
+  - match: "theme.tokens"
+    pattern_type: literal
+    case: insensitive
+    scan: content
+    kind: shared_token
+    impact_band: high
+  # Accessibility constructs — aria-label overrides native naming and silently breaks WCAG.
+  - match: "aria-label"
+    pattern_type: literal
+    case: insensitive
+    scan: content
+    kind: a11y
+    impact_band: high
+  - match: "alt="
+    pattern_type: literal
+    case: insensitive
+    scan: content
+    kind: a11y
+    impact_band: medium
 
 # ---------------------------------------------------------------------------
 # sensitive_path_list — a touch anywhere here is a hard override -> FULL_PIPELINE, regardless of
@@ -96,9 +175,8 @@ sensitive_path_list:
   - "**/*.key"
 
 # ---------------------------------------------------------------------------
-# churn — single-sourced exclusions for the normalized churn cache (D1). Generated/vendor paths and
-# pure-format commits distort churn (Nagappan & Ball: raw churn is a poor predictor; normalize +
-# exclude). NOT interpretation-per-consumer — every churn consumer reads THIS block.
+# churn — single-sourced exclusions for the normalized churn cache (D1, CR4-10). Generated/vendor
+# paths + pure-format commits distort churn (Nagappan & Ball: raw churn is a poor predictor).
 # ---------------------------------------------------------------------------
 churn:
   exclude_paths:
@@ -110,10 +188,7 @@ churn:
     - "**/node_modules/**"
     - "**/*.lock"
     - "**/package-lock.json"
-    - "**/*.generated.*"
   format_commit_patterns:
     - "^chore\\(fmt\\)"
     - "^style:"
     - "^format:"
-    - "(?i)^prettier"
-    - "(?i)^gofmt"
