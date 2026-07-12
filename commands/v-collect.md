@@ -45,10 +45,17 @@ The run-dir layout and per-job `status` semantics are in [`skills/compound-v/sta
 
 ## Fast-path collect — the authoritative sequence (v2.9, CR5-2)
 
-For a `fast_path` manifest, `/v:collect` runs the **ONE authoritative order** the Lifecycle & commit-ordering protocol defines (single authority; the dispatcher and `/v:resume` match it byte-for-intent). This replaces steps 3–4. The single implementer job has already been normalized (step 2). Reconcile git **against the job's immutable pre-launch baseline SHA** (`state.json jobs[<id>].baseline`), never a live `HEAD` — a fast-path worker may commit and move `HEAD` (CR5-3).
+For a `fast_path` manifest, `/v:collect` runs the **ONE authoritative order** the Lifecycle & commit-ordering protocol defines (single authority; the dispatcher's [Step 2e](../agents/parallel-dispatcher.md) and `/v:resume` match it byte-for-intent). This replaces steps 3–4. The single implementer job has already been normalized (step 2). Reconcile git **against the job's immutable pre-launch baseline SHA** (`state.json jobs[<id>].baseline`), never a live `HEAD` — a fast-path worker may commit and move `HEAD` (CR5-3). The order is fixed — **tests (floor) → scope gate → F2 → review → post-review receipt validation → final scope recheck → merge → terminal `actual`** — and is driven by [`scripts/compound-v-fastpath-run.py`](../scripts/compound-v-fastpath-run.py):
 
-1. **Scope gate** — run [`scripts/compound-v-scope-check.py`](../scripts/compound-v-scope-check.py) on the implementer job against its sole `write_allowed` literal, as in step 3. Any out-of-scope path ⇒ **BLOCKED**, HALT, do not merge.
-2. **F2 — post-hoc reclassify, pre-merge, against the pinned baseline.** BEFORE any merge/commit/worktree-removal, run the sibling reclassifier over the **same pinned baseline + the authoritative changed-path set the scope gate used**:
+1. **Test floor — run it FIRST, persist the result, HALT on failure (non-skippable).** Ahead of the scope gate, run the proportionate floor ladder (configured tests → guarded parse-check → cheap diff-read) and write its **fresh** result into the run dir — step 4's `review-spec` fails closed unless this floor-result file exists and PASSED, and `/v:collect` is usable standalone, so this command must produce it (never assume the dispatcher left one behind):
+   ```
+   python3 scripts/compound-v-fastpath-run.py test-floor \
+     --worktree <wt-dir> [--baseline <pinned-baseline-sha>] [--test-cmd <configured-tests>] \
+     > docs/superpowers/execution/<run-id>/review/floor-result.json
+   ```
+   A floor **FAILURE** blocks the merge: surface it and **HALT** — do not scope-gate, review, or merge.
+2. **Scope gate** — run [`scripts/compound-v-scope-check.py`](../scripts/compound-v-scope-check.py) on the implementer job against its sole `write_allowed` literal, as in step 3. Any out-of-scope path ⇒ **BLOCKED**, HALT, do not merge.
+3. **F2 — post-hoc reclassify, pre-merge, against the pinned baseline.** BEFORE any merge/commit/worktree-removal, run the sibling reclassifier over the **same pinned baseline + the authoritative changed-path set the scope gate used**:
    ```
    python3 scripts/compound-v-postdiff-reclassify.py \
      --worktree <wt-dir> --baseline <pinned-baseline-sha> \
@@ -56,15 +63,23 @@ For a `fast_path` manifest, `/v:collect` runs the **ONE authoritative order** th
    # → {"escalate": bool, "reasons": [...]}   (exit 1 iff escalate)
    ```
    If `escalate` is true, the fast-path prediction was wrong: **do not merge**. Hand off to the dispatcher's two-phase escalation ([`parallel-dispatcher.md`](../agents/parallel-dispatcher.md)) — advance `phase` to `ESCALATION_REQUIRED`, preserve the patch + baseline as evidence, and the pipeline rejoins the full path via a **new** run. Escalation appends the terminal `actual` with `escalated:true` on **this** (parent) run.
-3. **Combined `needs_review` review — one deep/opus Task (write the receipt).** On a clean F2, build the review request with [`scripts/compound-v-fastpath-run.py`](../scripts/compound-v-fastpath-run.py) `review-spec` (it fails closed unless the floor PASSED, scope was CLEAN, and F2 did NOT escalate), run the in-harness combined **SPEC+QUALITY** review as a `deep`/opus Task, then write the dispatcher **invocation receipt** to `docs/superpowers/execution/<run-id>/review/receipt.json` (naming the resolved reviewer model). Validate the returned result with `accept-review`. This is one combined pass with a recorded vacuous INTEGRATION rationale — **not** the three separate passes.
-4. **Post-review receipt validation — C1 `--mode post-review`.** Before merge, verify the receipt with the validator:
+4. **Combined `needs_review` review — one deep/opus Task (write the receipt).** On a clean F2, build the review request with [`scripts/compound-v-fastpath-run.py`](../scripts/compound-v-fastpath-run.py) `review-spec` — it fails closed unless the **floor PASSED** (step 1's `floor-result.json`), scope was CLEAN, and F2 did NOT escalate, so it consumes the persisted floor result:
+   ```
+   python3 scripts/compound-v-fastpath-run.py review-spec \
+     --worktree <wt-dir> --baseline <pinned-baseline-sha> \
+     --manifest <run-dir>/manifest.yaml --run-id <run-id> --pre-eval-id <pre_eval_id> \
+     --floor-result <run-dir>/review/floor-result.json --scope-clean --f2-result <f2-result.json> \
+     --out <run-dir>/review/spec.json
+   ```
+   Run the in-harness combined **SPEC+QUALITY** review as a `deep`/opus Task on the emitted `needs_review` prompt, then write the dispatcher **invocation receipt** to `docs/superpowers/execution/<run-id>/review/receipt.json` (naming the resolved reviewer model — `backend:claude`, model == Claude Opus). Validate the returned result with `accept-review`. This is one combined pass with a recorded vacuous INTEGRATION rationale — **not** the three separate passes.
+5. **Post-review receipt validation — C1 `--mode post-review`.** Before merge, verify the receipt with the validator:
    ```
    python3 scripts/compound-v-validate-manifest.py --mode post-review \
      [--repo-root <repo>] [--receipt <run-dir>/review/receipt.json] <run-dir>/manifest.yaml
    ```
    `--mode post-review` REQUIRES + verifies the receipt (`run_id`/`pre_eval_id` bindings, `reviewer_backend:claude`, reviewer model == Claude Opus, self-digest). A missing or mismatched receipt fails closed — no merge.
-5. **Final scope recheck** — re-run the scope gate once more (step 1) to catch anything the review round touched; then **merge** the worktree diff back into the main tree.
-6. **Append + commit the terminal `actual` — ONLY AFTER the merge boundary succeeds (CR5-4).** Only once the merge/commit lands, append the terminal triage event:
+6. **Final scope recheck → merge** — re-run the scope gate once more (step 2) to catch anything the review round touched; then **merge** the worktree diff back into the main tree.
+7. **Append + commit the terminal `actual` — ONLY AFTER the merge boundary succeeds (CR5-4).** Only once the merge/commit lands, append the terminal triage event:
    ```
    python3 scripts/compound-v-triage-outcomes.py actual \
      --pre-eval-id <pre_eval_id> --run-id <run-id> --review-result approved

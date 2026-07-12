@@ -25,10 +25,14 @@ The authority behind your verdict is [`scripts/compound-v-validate-manifest.py`]
 3. **Reviewers ⇒ opus** — any review/reviewer job must be `model: opus`.
 4. **Shared foundation serial** — any `type: shared_foundation` job runs `serial`; declared `shared_resources` are each owned by such a job.
 
-Run it before forming any verdict:
+Run it before forming any verdict. **Pick the mode by manifest kind (CR5-1):** a legacy (plan-based) manifest carries no `fast_path` block and is validated **mode-lessly**, as before; a `fast_path` manifest (a v2.9 pre-eval-backed run) MUST be validated in **pre-dispatch** mode — a mode-less `fast_path` manifest is fail-closed rejected (ambiguity is a FAIL). In pre-dispatch mode the validator additionally checks the fast-path review **declaration**, its cross-artifact bindings, and path containment:
 
 ```bash
+# legacy manifest (no fast_path block):
 python3 scripts/compound-v-validate-manifest.py docs/superpowers/execution/<run-id>/manifest.yaml
+# fast_path manifest (v2.9 pre-eval-backed):
+python3 scripts/compound-v-validate-manifest.py docs/superpowers/execution/<run-id>/manifest.yaml \
+  --mode pre-dispatch --repo-root <repo>
 ```
 
 Exit 0 = invariants hold. Exit 1 = one or more violations (printed, with specifics) — your verdict is **FAIL**, quoting the script's violation lines. Exit 2 = parse/usage error — **FAIL: MANIFEST_UNPARSEABLE**, surface the error.
@@ -45,7 +49,7 @@ If given a manifest: run the deterministic gate above first, then apply the judg
 
 ### Step 1 — Deterministic invariant gate (manifest)
 
-Run `compound-v-validate-manifest.py` (above). Record its verdict. A non-zero exit is an automatic FAIL with the script's specifics. A zero exit clears invariants 1-4; continue to the judgment checks. **Do not duplicate the script's work by hand — cite it.**
+Run `compound-v-validate-manifest.py` (above), with the mode selected by manifest kind (legacy = mode-less, `fast_path` = `--mode pre-dispatch --repo-root <repo>`). Record its verdict. A non-zero exit is an automatic FAIL with the script's specifics. A zero exit clears invariants 1-4; continue to the judgment checks. **Do not duplicate the script's work by hand — cite it.**
 
 ### Step 2 — Disjoint-set verification (prose-only / cross-check)
 

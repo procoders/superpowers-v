@@ -21,11 +21,15 @@ This replaces the default Superpowers `subagent-driven-development` sequential-i
    - If `{{args}}` is a **run-id** or a **manifest path**, load that run's `manifest.yaml`. Skip to step 3 (already materialized).
    - If `{{args}}` is a **plan path**, verify it exists, then **materialize** per [`/v:orchestrate`](v-orchestrate.md): apply [`routing-policy.md`](../skills/compound-v/routing-policy.md), write `manifest.yaml` + initial `state.json` into `docs/superpowers/execution/<run-id>/` (schema: [`execution-manifest.md`](../skills/compound-v/execution-manifest.md); run-dir + state shape: [`state-machine.md`](../skills/compound-v/state-machine.md)), then continue.
 
-2. **Validate the materialized manifest** (only for the plan-path branch):
+2. **Validate the materialized manifest** (only for the plan-path branch). **Pick the validator mode by manifest kind (CR5-1):** if `manifest.yaml` carries a `fast_path` block, validate it in **pre-dispatch** mode; a legacy (plan-based) manifest carries no such block and is validated **mode-lessly**, as before — a mode-less `fast_path` manifest is fail-closed rejected:
    ```
+   # legacy manifest (no fast_path block):
    python3 scripts/compound-v-validate-manifest.py docs/superpowers/execution/<run-id>/manifest.yaml
+   # fast_path manifest (v2.9 pre-eval-backed):
+   python3 scripts/compound-v-validate-manifest.py docs/superpowers/execution/<run-id>/manifest.yaml \
+     --mode pre-dispatch --repo-root <repo>
    ```
-   Non-zero exit ⇒ fix the manifest and re-run; do not dispatch a manifest the validator rejects.
+   Non-zero exit ⇒ fix the manifest and re-run; do not dispatch a manifest the validator rejects. (A plan-path materialization always yields a legacy manifest; the `fast_path` branch matters when `{{args}}` is a manifest/run-id that resolves to a pre-eval-backed run — and the partition reviewer in step 3 re-runs the validator with the same mode rule.)
 
 3. **Run the partition reviewer first** (Iron Rule #4: no execution without a verified Partition Map):
    - Dispatch [`compound-v:partition-reviewer`](../agents/partition-reviewer.md) with the plan **and** the manifest (it runs `compound-v-validate-manifest.py` as its deterministic backing gate, then verifies disjointness + invariants).

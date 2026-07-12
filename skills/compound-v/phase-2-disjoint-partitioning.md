@@ -165,10 +165,14 @@ These come from `routing-policy.md` / `execution-manifest.md` and are enforced d
 
 ### Validate before handing off
 
-Run the deterministic validator against the materialized manifest:
+Run the deterministic validator against the materialized manifest. **Select the mode by manifest kind (CR5-1):** the manifest this phase emits from a plan carries **no** `fast_path` block, so it is validated **mode-lessly** (legacy), as shown. A `fast_path` manifest — the v2.9 pre-eval-backed single-job kind, materialized by [`compound-v-fastpath-materialize.py`](../../scripts/compound-v-fastpath-materialize.py), not by this phase — MUST instead be validated with `--mode pre-dispatch`; a mode-less `fast_path` manifest is fail-closed rejected:
 
 ```bash
+# plan-based (legacy) manifest — what this phase emits:
 python3 scripts/compound-v-validate-manifest.py docs/superpowers/execution/<run-id>/manifest.yaml
+# fast_path manifest (produced by the pre-eval materializer, shown here for completeness):
+python3 scripts/compound-v-validate-manifest.py docs/superpowers/execution/<run-id>/manifest.yaml \
+  --mode pre-dispatch --repo-root <repo>
 ```
 
 A non-zero exit (disjointness, codex⇒worktree, or reviewers⇒opus violation) means the manifest contradicts the partition — fix it before Phase 3. This is the same gate [`partition-reviewer`](../../agents/partition-reviewer.md) runs.
@@ -183,7 +187,7 @@ In addition to the partition checklist above, before saving the manifest verify:
 - [ ] No `backend: codex` job is `isolation: direct`.
 - [ ] No `review` job is anything but `model: opus`.
 - [ ] No path appears in two jobs' `write_allowed`.
-- [ ] `compound-v-validate-manifest.py` exits 0.
+- [ ] `compound-v-validate-manifest.py` exits 0 (mode-less — a plan-based manifest carries no `fast_path` block).
 
 ## Handoff to Phase 3
 
