@@ -101,9 +101,9 @@
       "log": null
     },
     "task-d2-onboard": {
-      "status": "running",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": ".v29-worktrees/task-d2-onboard",
+      "worktree": null,
       "session_id": null,
       "failure_class": null,
       "log": null
