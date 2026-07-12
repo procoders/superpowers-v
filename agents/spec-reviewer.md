@@ -89,6 +89,21 @@ For each MUST item from Pass 1, find the test that would fail if the requirement
 
 The change must not print, log, or document **token-cost or token-savings numbers that aren't actually measured**, hardcoded baselines (e.g. `baseline = 1000`), fake speedup percentages, or any self-reported "saved N tokens" meter. This is the anti-ruflo charter. Any fabricated/unmeasurable metric → **ISSUE: FABRICATED_METRIC** (file:line + the number). A real, measured value (wall-clock from a timer, a count from `git diff --stat`) is fine; an invented one is not.
 
+### 2.5 — No reward-hacking
+
+Did the diff make a check pass by **weakening the check itself**, instead of making the code actually satisfy it? This matters most in Compound V's own **marathon** stance (`skills/compound-v/epic-mode.md`), where a failure is judged by the arbiter panel and a feature can be retried unattended — a pattern that rewards "make the gate green" over "make the behavior correct" if nobody is watching. Diff every test/spec/scorer file the implementer touched (`git show <sha>` or the merged worktree diff, same as 1.1) against its pre-change version and look for concrete, deterministic evidence:
+
+| Evidence | Example |
+|---|---|
+| Removed or commented-out assertions | an `assert`/`expect(...).toBe(...)` present before the diff, gone or `// assert(...)` after |
+| Deleted or renamed test/spec files with no replacement covering the same behavior | `sequences/api.test.ts` deleted; nothing else asserts that path |
+| Loosened numeric thresholds with no spec justification | a score gate `>= 90` changed to `>= 60`, a tolerance widened, a timeout raised to mask a hang |
+| Edited the **scorer/grader/checker** itself rather than the implementation | changing what "pass" means instead of making the code satisfy the original bar |
+| Newly `.skip`/`xit`/`@pytest.mark.skip`/commented-out test, with no reason tied to the task spec | a previously-running test now skipped in the same diff that claims DONE |
+| A previously-propagating exception/assertion now caught and swallowed (silent no-op or a `print` instead of a raise/fail) | a hard failure converted to a soft one with no spec basis |
+
+Any such change → **ISSUE: REWARD_HACK** (file:line + which test/scorer + what changed + why it weakens the gate rather than fixing the code). A genuine, spec-justified relaxation (the task spec itself asked for a looser threshold, or a test was superseded by a *stronger* replacement in the same diff) is not a reward hack — cite the spec line that justifies it before waving this off.
+
 ---
 
 ## PASS 3 — INTEGRATION (final, run-level — gates DONE)
@@ -147,6 +162,10 @@ ISSUE: FABRICATED_METRIC  (PASS 2)
   - scripts/foo.sh:88 prints "saved ~1200 tokens" — not measured, hardcoded
   → Remove; print only measured values (wall-clock, git diff --stat counts)
 
+ISSUE: REWARD_HACK  (PASS 2)
+  - sequences/api.test.ts:41 — assert res.status === 200 loosened to assert res.status < 500
+  → Restore the original assertion; fix the handler so it actually returns 200, don't relax the test
+
 ISSUE: BUILD_RED  (PASS 3)
   - `npm test` fails: 2 failing in sequences/api.test.ts (see excerpt)
   → Fix before DONE
@@ -159,7 +178,7 @@ ISSUE: ACCEPTANCE_GAP  (PASS 3)
 
 APPROVED
   PASS 1 SPEC:        requirements K/K · audit MUSTs M/M · over-build clean · job acceptance met
-  PASS 2 QUALITY:     code-quality clean · no regression · every MUST has a guard test · no fabricated metrics
+  PASS 2 QUALITY:     code-quality clean · no regression · every MUST has a guard test · no fabricated metrics · no reward-hacking
   PASS 3 INTEGRATION: no partition leak · seams hold · build green (evidence: <cmd>) · feature AC J/J met
   Scope lock: respected (scope gate PASS, confirmed at seam)
 ```
@@ -170,7 +189,7 @@ APPROVED
 - DO order the passes: SPEC first, then QUALITY, then (run-level) INTEGRATION. Don't review quality of code that fails spec.
 - DO NOT approve with "minor issues, close enough." Compound V policy: if you found an issue, the implementer fixes it before the next pass. No "close enough."
 - DO NOT claim the build is green without running it (or observing its output). Evidence before assertion.
-- DO NOT skip the over-build check or the fabricated-metric check.
+- DO NOT skip the over-build check, the fabricated-metric check, or the reward-hacking check.
 - DO NOT propose code or edit files. The implementer fixes; you re-review on the next round.
 - DO cite file:line (or the failing command) for every claim.
 

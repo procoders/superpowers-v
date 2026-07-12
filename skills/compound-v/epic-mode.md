@@ -113,21 +113,74 @@ When `--next` returns `epic complete` (all features `done`), run a **final integ
 
 ---
 
+## Marathon stance (v2.10, opt-in)
+
+Everything above this section is the **checkpoint** stance — the unchanged default. `marathon` is an opt-in alternative, chosen only at `--init` time (`--stance marathon`; no in-place upgrade of an existing checkpoint `epic-state.json`), that chews the **whole runnable feature DAG in one `/v:epic` invocation** instead of stopping at every `MAX_FEATURES` checkpoint. The full driver sequence lives in [`v-epic.md`](../../commands/v-epic.md) "Autonomous marathon loop" — this section is the authority for *what* marathon is and *why* it's shaped this way; read the command doc for the exact command-by-command steps.
+
+**Schema (marathon-only, additive on top of the checkpoint shape above).** Absent `autonomy` ⇒ every checkpoint code path is untouched — new fields are read via `.get(..., default)` everywhere:
+
+```json
+{
+  "autonomy": {"stance": "marathon", "max_attempts_per_feature": 2, "max_no_progress_cycles": 3,
+               "max_total_attempts": 12, "max_wall_clock_hours": 10, "started_at": "2026-07-12T00:00:00+00:00",
+               "start_sha": "<git rev-parse HEAD at --init — the accumulated-diff baseline>"},
+  "final_review": {"status": "pending"},
+  "blocker_ledger": [],
+  "no_progress_cycles": 0,
+  "total_attempts": 0
+}
+```
+
+Per feature, marathon adds `"attempts": 0, "last_error": null, "disposition": null`.
+
+**CLI additions** (every one below REJECTS a non-marathon state; see [`compound-v-epic-state.py`](../../scripts/compound-v-epic-state.py)'s docstring "## CLI contract" for the authoritative, full argument list):
+
+| Command | Effect |
+|---|---|
+| `--init --stance marathon [--max-attempts-per-feature N] [--max-no-progress-cycles N] [--max-total-attempts N] [--max-wall-clock-hours H] [--start-sha <sha>]` | writes the marathon block once; checkpoint `--init` (no `--stance`) stays byte-identical. `--start-sha` (driver passes `git rev-parse HEAD`) is stored as `autonomy.start_sha`, the accumulated-diff baseline |
+| `--next --autonomous --state S` | `{"feature","reason","blocked_by":[ids]}` — DAG-transitive routing: an abandoned/blocked feature removes only its transitive **dependents**, never its independents; a runnable independent is always returned before any terminal escalation |
+| `--can-retry --feature F --state S` | `{"can_retry","attempts","cap"}` (read-only) |
+| `--record-disposition --feature F --disposition retry_fix\|halt_feature\|halt_epic\|blocked_external [--reason R] [--families-agreeing a,b]` | stores the arbiter's verdict; `--confirmed true` is **hard-rejected** in v2.10. **Omit `--families-agreeing` when the arbiter returns an empty `families_agreeing`** (argparse needs a value — drop the flag, or pass `""`) |
+| `--update --status blocked --feature F [--blocker-reason R] [--families-agreeing a,b] [--evidence E]` | appends/reactivates an idempotent blocker-ledger entry; `--blocker-confirmed true` is **hard-rejected** — v2.10 blockers are always `confirmed:false` (SUSPECTED, never caller-asserted) |
+| `--update --status failed --feature F [--last-error "..."]` | persists the failure reason (cleared on the next successful retry/done) |
+| `--record-final-review --status pending\|passed\|failed --state S` | `passed` requires every feature `done`; the epic reaches top-level `done` **only** via all-done AND `final_review.status=="passed"` — feature completion alone is never enough |
+| `--breaker-check [--now ISO] --state S` | read-only → `{"tripped","which":[...],"detail":{...}}` |
+| `--trip-breaker [--now ISO] --state S` | atomic write **iff** tripped — parks the epic at `blocked_needing_human` |
+| `--record-progress-cycle --cycle-id C [--now ISO] --state S` | idempotent by `cycle_id`; compares the pass's `done` count to the prior one, resets/increments `no_progress_cycles` |
+| `--clear-breaker --state S [--reset-wall-clock] [--set-max-total-attempts N]` | **human recovery:** clears the `blocked_needing_human` latch + re-arms the tripped caps so the next `/v:epic` **resumes the marathon**; `--reset-wall-clock` re-stamps `started_at`, `--set-max-total-attempts` raises the attempt cap |
+| `--clear-disposition --feature F --state S` | **human recovery:** clears a sticky `halt_epic` disposition on a feature so `--next --autonomous` routes normally again |
+
+**The arbiter panel** ([`compound-v-epic-arbiter.py`](../../scripts/compound-v-epic-arbiter.py), NEW in v2.10) classifies a feature FAILURE via a two-phase exchange — `--prepare --state S --feature F --attempt N` issues a bounded Claude ballot-task prompt + challenge id (bound to `{epic_id,feature,attempt,challenge_id}`; a mismatched/replayed/stale challenge is dropped before any model call), then `--classify --state S --feature F --challenge <id> [--evidence-file REL] [--claude-ballot FILE]` polls Codex (through the timeout supervisor, read-only sandbox, redacted+capped evidence) if the capabilities file says it's usable, validates the Claude ballot the **driver** supplies (the arbiter cannot itself launch an in-harness Claude Task — that's the driver's job), and aggregates with a complete deterministic truth table: a parse-fail/errored ballot is **dropped, never a fabricated halt vote**; empty/tied → conservative `halt_feature`; `retry_fix` past the per-feature `--can-retry` cap is masked to `halt_feature`; a `blocked_external` verdict on this Codex+Claude panel is always **SUSPECTED** — only two *distinct known external* families (`GPT`/`Gemini`/`Grok`) can CONFIRM one, and Claude-self can never count as an independent confirming family (same family as the implementer). Every ballot + the resolved family + the aggregation reason is written to a frozen audit JSON under `docs/superpowers/execution/epics/<epic-id>/arbiter/<feature>-<attempt>.json`.
+
+**The blocker ledger** — "do everything you can" credo: finish everything reachable, isolate only the genuinely impossible, escalate with proof, never halt the rest. A `blocked_external` disposition marks the feature `--status blocked` (ledger entry, always `confirmed:false` in v2.10); `--next --autonomous` treats `blocked` as a benign skip — only its transitive dependents drop out — and never trips a whole-epic halt by itself. The epic only resolves to `blocked_needing_human` once no other reachable work remains, or a `halt_epic` verdict or a tripped breaker fires (those two *do* halt the whole epic immediately, on purpose — a panel-level "stop everything" vote, or a hard resource limit, is not something the DAG should route around).
+
+**Global circuit breakers** — the honest bound on "how much can `/v:epic` do unattended": `total_attempts >= max_total_attempts` (default `max(6, 3×features)`), `no_progress_cycles >= max_no_progress_cycles` (default 3 — a full pass that advances `done` by zero counts as one), or wall-clock elapsed since `autonomy.started_at >= max_wall_clock_hours` (default 10). Counts and hours only — **never a fabricated cost**. Breakers are re-checked before every feature *and* after every attempt *and* before every model call (the arbiter, the final review) — not only once per pass; a single in-flight pipeline phase may still overrun its check window before the next boundary catches it (an honest, not a hard real-time, guarantee).
+
+**PASS integrity (spec Component 5).** A marathon SUCCESS is not blindly trusted. Two guards: (1) the driver **sample-audits a deterministic fraction of PASSes** — a fresh adversarial `compound-v:spec-reviewer` re-review (QUALITY + the 2.5 reward-hack check in [`agents/spec-reviewer.md`](../../agents/spec-reviewer.md)) on a sampled successful feature; the concrete rule (every 3rd `done`, plus always the first success of the invocation) lives in [`v-epic.md`](../../commands/v-epic.md) §4, and a failed sample-audit reverts the feature to `failed` and routes it through the arbiter path; (2) the **final cross-feature re-verification** (`--record-final-review`) gates terminal `done`. Both are model calls, so both are preceded by a breaker re-check.
+
+**Terminal states:** `done` (all features done **and** `final_review.status=="passed"` — feature completion alone is never `done`); `blocked_needing_human` (a `halt_epic` verdict, a tripped breaker, or exhausted reachable work — the v2.10 blocker terminal); `running_with_failures` (non-terminal, work still runnable, or all done and awaiting final review). v2.10 never emits `done_with_blockers` — that terminal needs a second safe external confirming family, deferred to v2.11.
+
+**Human recovery from a halt (resume the marathon — not a fallback to checkpoint).** `blocked_needing_human` is a latch, but it is not a dead end: a human resolves the root cause and **re-runs `/v:epic <epic-id>` to resume the marathon**. A tripped breaker is cleared and re-armed with `--clear-breaker` (`--reset-wall-clock` for the wall-clock cap, `--set-max-total-attempts N` for the attempt cap — without re-arming, the same cap re-trips on the first pass); a sticky `halt_epic` verdict is cleared with `--clear-disposition --feature F`; a mid-pipeline crash is recovered in place with `/v:resume <run-id>` (the feature's recorded `run_id`), distinct from a full `--update --status pending` restart from the spec. All human-gated — **nothing un-trips or re-runs automatically in v2.10** (that is the deferred v2.11 auto-watcher). The exact runbook (every field + copy-paste commands) is [`v-epic.md`](../../commands/v-epic.md) §7.
+
+---
+
 ## Honesty boundary
 
 State this to the user — epic mode is bounded, not magic:
 
 - **Autonomous *chaining*, not "guess a product from one sentence."** Each feature still needs a **real spec** — brainstormed and human-approved up front (carried as `spec_path`); the per-feature pre-flights and partition do the work, the epic layer only orders and chains.
-- **Bounded, not unbounded.** An epic is *N full v1.0 runs*; it runs under a `MAX_FEATURES` budget (default 1) and **STOPS at a human checkpoint** after the budget is spent — not a fire-and-forget overnight build. The checkpoint is a **driver-enforced cadence** (default: stop after every feature), the human-in-the-loop point — not a script-enforced token meter.
+- **Bounded, not unbounded (checkpoint stance).** An epic is *N full v1.0 runs*; it runs under a `MAX_FEATURES` budget (default 1) and **STOPS at a human checkpoint** after the budget is spent — not a fire-and-forget overnight build. The checkpoint is a **driver-enforced cadence** (default: stop after every feature), the human-in-the-loop point — not a script-enforced token meter.
 - **Large epics run sequentially, feature-by-feature.** Parallelism is *within* a feature (the v1.0 batch dispatch); features advance one runnable-front at a time in topological order. Independent features at the same depth still run one after another — there is **no cross-feature parallel dispatch** in v1.1.
 - **Quality is bounded by per-feature spec + partition quality.** A weak decomposition (overlapping features, missed deps) produces a weak epic. The state spine guarantees **order and resumability**, not that your decomposition was right.
+- **Marathon (v2.10, opt-in) — "survives a fall" is honest, not magic.** *In-session:* the loop continues past a soft per-feature error to the next runnable feature automatically, within the one live `/v:epic` invocation; a crashed feature is caught by the existing `running` → reconcile path on the next pass. *Hard death* (quota, closed terminal, crashed machine): a **human re-invokes `/v:epic <epic-id>`**, re-entrant, resuming from `epic-state.json`. **There is no automatic resurrection in v2.10** — nothing revives this epic while you're away; that is the deferred v2.11 auto-watcher (Execution Lease + Two-Tier Watcher + generation-fenced execution — its own spec, its own review pass). No fabricated cost/token metrics anywhere in either stance.
 
 ---
 
 ## Cross-references
 
 - Epic state spine (CLI + validation): [`scripts/compound-v-epic-state.py`](../../scripts/compound-v-epic-state.py)
-- Driver command: [`commands/v-epic.md`](../../commands/v-epic.md) (`/v:epic`)
+- Marathon arbiter panel (v2.10): [`scripts/compound-v-epic-arbiter.py`](../../scripts/compound-v-epic-arbiter.py)
+- Driver command: [`commands/v-epic.md`](../../commands/v-epic.md) (`/v:epic`) — the marathon loop's exact command sequence
 - Per-run state machine + crash-resume (one level down): [`state-machine.md`](state-machine.md)
 - The per-feature manifest contract: [`execution-manifest.md`](execution-manifest.md)
 - The main skill: [`SKILL.md`](SKILL.md)
