@@ -119,6 +119,8 @@ def _load_sibling(basename, modname):
 
 _UPDATE_MEMORY = None
 _PROJECT_CONFIG = None
+_VALIDATE_MANIFEST = None
+_VALIDATE_MANIFEST_TRIED = False
 
 
 def _update_memory():
@@ -137,6 +139,24 @@ def _project_config():
         _PROJECT_CONFIG = _load_sibling("compound-v-project-config.py",
                                         "compound_v_project_config")
     return _PROJECT_CONFIG
+
+
+def _validate_manifest():
+    """The validate-manifest module — we reuse its SHARED sealed-receipt verifier
+    (``verify_sealed_receipt``) so triage counts a receipt only when the producer
+    (``compound-v-fastpath-run.py`` seal) and the consumer (``validate-manifest``) also
+    would (CRIT-2). Never recopied. Loaded ONCE, fail-closed: any load failure leaves it
+    ``None`` and the receipt check below fails closed (an unverifiable receipt never
+    counts)."""
+    global _VALIDATE_MANIFEST, _VALIDATE_MANIFEST_TRIED
+    if not _VALIDATE_MANIFEST_TRIED:
+        _VALIDATE_MANIFEST_TRIED = True
+        try:
+            _VALIDATE_MANIFEST = _load_sibling("compound-v-validate-manifest.py",
+                                               "compound_v_validate_manifest")
+        except Exception:  # noqa: BLE001 - any load failure -> fail-closed (None)
+            _VALIDATE_MANIFEST = None
+    return _VALIDATE_MANIFEST
 
 
 # ---------------------------------------------------------------------------- #
@@ -266,33 +286,42 @@ def append_actual(pre_eval_id, run_id, escalated=False, review_result=None,
 # ---------------------------------------------------------------------------- #
 # Read side — reduce the append-only log, join, classify cohorts.
 # ---------------------------------------------------------------------------- #
-def _read_events(stream_path):
-    """Yield ``(obj, malformed_count)``. A missing file yields nothing. A malformed line
-    is skipped and counted (fail-closed: it can only SHRINK the sample, never fabricate)."""
-    path = stream_path or default_stream_path()
-    if not os.path.isfile(path):
-        return [], 0
+def _parse_events(line_iter):
+    """Parse an iterable of raw JSONL lines into ``(objs, malformed_count)``. A malformed
+    or unknown-event line is skipped and counted (fail-closed: it can only SHRINK the
+    sample, never fabricate). Source-agnostic — the same parser reduces the working-tree
+    file (structural helpers) and the COMMITTED blob (the count path, CRIT-1)."""
     objs = []
     malformed = 0
-    with open(path, "r", encoding="utf-8") as fh:
-        for raw in fh:
-            raw = raw.strip()
-            if not raw:
-                continue
-            try:
-                obj = json.loads(raw)
-            except ValueError:
-                malformed += 1
-                continue
-            if isinstance(obj, dict) and obj.get("event") in EVENTS:
-                objs.append(obj)
-            else:
-                malformed += 1
+    for raw in line_iter:
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            obj = json.loads(raw)
+        except ValueError:
+            malformed += 1
+            continue
+        if isinstance(obj, dict) and obj.get("event") in EVENTS:
+            objs.append(obj)
+        else:
+            malformed += 1
     return objs, malformed
 
 
-def _reduce_stream(stream_path=None):
-    """Reduce the append-only log to last-writer-wins state.
+def _read_events(stream_path):
+    """``(objs, malformed_count)`` read from the WORKING-TREE stream file. A missing file
+    yields nothing. Used by the structural ``_reduce_stream`` helper (and its selftests);
+    the COUNT path reads the committed blob instead (``_reduce_committed``, CRIT-1)."""
+    path = stream_path or default_stream_path()
+    if not os.path.isfile(path):
+        return [], 0
+    with open(path, "r", encoding="utf-8") as fh:
+        return _parse_events(fh)
+
+
+def _reduce_objs(objs, malformed):
+    """Reduce parsed events to last-writer-wins state (source-agnostic core).
 
     Returns a dict:
       {"predicted": {pre_eval_id: obj},
@@ -302,7 +331,6 @@ def _reduce_stream(stream_path=None):
     Reduce key is ``(pre_eval_id, run_id, event)`` (run_id None for predicted); the LAST
     line in file order wins.
     """
-    objs, malformed = _read_events(stream_path)
     predicted = {}
     runs = {}
     for obj in objs:
@@ -321,6 +349,15 @@ def _reduce_stream(stream_path=None):
         slot = runs.setdefault((pid, rid), {"bind": None, "actual": None})
         slot[ev] = obj  # last-writer-wins per (pre_eval_id, run_id, event)
     return {"predicted": predicted, "runs": runs, "malformed": malformed}
+
+
+def _reduce_stream(stream_path=None):
+    """Reduce the WORKING-TREE stream to last-writer-wins state. Structural helper used by
+    the selftests to assert the three-event join; the COUNT path deliberately reduces the
+    COMMITTED blob instead (``_reduce_committed`` — CRIT-1), so an uncommitted appended /
+    overriding event can never move precision / Tier-2."""
+    objs, malformed = _read_events(stream_path)
+    return _reduce_objs(objs, malformed)
 
 
 def _review_passed(review_result):
@@ -501,6 +538,36 @@ def _git_read_json(ctx, abspath):
     return obj
 
 
+def _git_read_stream_lines(ctx, abspath):
+    """The COMMITTED triage-stream blob at ``HEAD:<abspath>`` as a list of raw lines, or
+    ``[]``. The working-tree copy is deliberately NEVER read (CRIT-1) — an uncommitted
+    appended / overriding event must not affect precision / Tier-2. Bounded output +
+    ``stdin </dev/null`` come from the shared timeout supervisor via ``_run_git``."""
+    root = ctx.get("repo_root")
+    if not root:
+        return []
+    rel = _relposix(abspath, root)
+    if rel is None:
+        return []
+    rc, out = _run_git(["show", "HEAD:" + rel], cwd=root)
+    if rc != 0:
+        return []
+    return out.decode("utf-8", "replace").splitlines()
+
+
+def _reduce_committed(ctx, stream_abspath):
+    """Reduce the triage stream FROM THE COMMITTED BLOB AT HEAD (CRIT-1) to last-writer-
+    wins state. No repo, or a stream not committed at HEAD, reduces to the EMPTY state
+    (fail-closed — an uncommitted audit trail counts nothing). This is the ONLY reducer the
+    count path uses, so an uncommitted appended / overriding ``actual`` cannot change
+    precision / Tier-2 even though the append path itself stays working-tree + append-only.
+    """
+    if not ctx.get("repo_root") or not ctx.get("stream_committed"):
+        return {"predicted": {}, "runs": {}, "malformed": 0}
+    objs, malformed = _parse_events(_git_read_stream_lines(ctx, stream_abspath))
+    return _reduce_objs(objs, malformed)
+
+
 def _git_commit_exists(ctx, sha):
     """Does ``sha`` name a REAL commit object in this repo? ``git cat-file -e
     <sha>^{commit}`` — a tree/blob or a fictitious 40-char string peels/resolves to
@@ -563,18 +630,26 @@ def _read_receipt(ctx, exec_dir, run_id):
     return _git_read_json(ctx, path)
 
 
-def _receipt_approved_and_bound(receipt, pre_eval_id, run_id):
-    """The fast-path review receipt exists, is ``approved``, and is BOUND to this
-    ``(pre_eval_id, run_id)`` — defends against replaying an unrelated/stale receipt."""
+def _receipt_sealed_and_bound(receipt, pre_eval_id, run_id):
+    """The fast-path review receipt is FULLY SEALED and bound — verified through
+    validate-manifest's SHARED ``verify_sealed_receipt`` (CRIT-2), the same authority the
+    producer (``compound-v-fastpath-run.py`` seal) and the consumer (``validate-manifest``)
+    use. It validates schema shape + the REQUIRED ``record_digest(receipt,
+    exclude_field="digest")`` self-seal + ``verdict=='approved'`` + ``run_id`` /
+    ``pre_eval_id`` binding + reviewer backend:claude ⇒ Claude Opus — so a receipt that is
+    bound but NOT self-sealed (or missing reviewer fields) no longer counts here while it is
+    rejected there. Fail-closed: the shared verifier being unimportable, or a non-dict
+    receipt, returns False (an unverifiable receipt never counts)."""
     if not isinstance(receipt, dict):
         return False
-    if str(receipt.get("verdict", "")).lower() != "approved":
+    vm = _validate_manifest()
+    if vm is None or not hasattr(vm, "verify_sealed_receipt"):
         return False
-    if str(receipt.get("run_id")) != str(run_id):
+    try:
+        ok, _reason = vm.verify_sealed_receipt(receipt, pre_eval_id, run_id)
+        return bool(ok)
+    except Exception:  # noqa: BLE001 - any verifier error -> fail-closed
         return False
-    if str(receipt.get("pre_eval_id")) != str(pre_eval_id):
-        return False
-    return True
 
 
 def _verify_terminal_actual(ctx, pre_eval_id, run_id, slot, actual, is_fastpath, exec_dir):
@@ -613,7 +688,7 @@ def _verify_terminal_actual(ctx, pre_eval_id, run_id, slot, actual, is_fastpath,
     if not _git_commit_exists(ctx, _merge_sha(state)):
         return False
     if is_fastpath:
-        return _receipt_approved_and_bound(
+        return _receipt_sealed_and_bound(
             _read_receipt(ctx, exec_dir, run_id), pre_eval_id, run_id)
     return True
 
@@ -636,10 +711,13 @@ def _cohorts(stream_path=None, exec_dir=None, repo=None):
     unverifiable terminal actual is excluded (``actual`` set to None, ``terminal`` False)
     — treated exactly like a precision-IGNORED ``merge_pending`` one, never a success.
     """
-    state = _reduce_stream(stream_path)
-    predicted = state["predicted"]
     exec_dir = _resolve_exec_dir(stream_path, exec_dir, repo)
     ctx = _make_git_ctx(exec_dir, stream_path)
+    stream_abspath = os.path.abspath(stream_path or default_stream_path())
+    # CRIT-1: reduce the COMMITTED blob at HEAD, never the mutable working-tree file — an
+    # uncommitted appended / overriding event must not affect precision / Tier-2.
+    state = _reduce_committed(ctx, stream_abspath)
+    predicted = state["predicted"]
     fastpath = []
     fullpipeline = []
     for (pid, rid), slot in state["runs"].items():
@@ -878,6 +956,27 @@ def _selftest():
         if not cond:
             failures.append(name)
 
+    # A FULLY sealed fast-path review receipt, built through the SAME shared record_digest
+    # primitive the producer seals with and the validator verifies against (CRIT-2). A
+    # bound-but-unsealed receipt (``seal_it=False`` → no valid self-digest) is the negative
+    # fixture for "triage's receipt check == validate-manifest's verify".
+    _tax = _load_sibling("compound-v-taxonomy.py", "cv_triage_selftest_taxonomy")
+
+    def _sealed_receipt(run_id, pre_eval_id, verdict="approved", seal_it=True, **over):
+        _d = "sha256:" + "0" * 64
+        rc = {
+            "run_id": run_id, "pre_eval_id": pre_eval_id,
+            "manifest_digest": _d, "baseline_sha": "b" * 40, "final_diff_digest": _d,
+            "reviewer_backend": "claude", "reviewer_tier": "deep",
+            "reviewer_model": "claude-opus-4-8", "worktree": "/wt",
+            "attempt_id": 1, "ts": "2026-07-11T00:00:00Z", "verdict": verdict,
+            "integration_rationale": "single-job fast-path: no cross-job seams",
+        }
+        rc.update(over)
+        if seal_it:
+            rc["digest"] = _tax.record_digest(rc, exclude_field="digest")
+        return rc
+
     # ---- git fixture helpers: a REAL throwaway repo in a tempdir OUTSIDE the worktree.
     # CRIT-2 made verification genuinely git-derived, so evidence must be actually
     # COMMITTED (git init + commit the state.json + receipt + stream) for a terminal
@@ -912,7 +1011,7 @@ def _selftest():
     # so mk_run writes the evidence AND commits it (with the already-appended stream) into
     # HEAD. ``commit=False`` seeds working-tree-only evidence for the negative cases.
     def mk_run(exec_dir, run_id, phase, pre_eval_id=None, merge_sha=None,
-               receipt=False, escalated_to=None, commit=True):
+               receipt=False, escalated_to=None, commit=True, sealed_receipt=True):
         repo = os.path.dirname(os.path.abspath(exec_dir))  # == <td>
         rd = os.path.join(exec_dir, run_id)
         os.makedirs(rd, exist_ok=True)
@@ -925,8 +1024,11 @@ def _selftest():
         if receipt:
             revdir = os.path.join(rd, "review")
             os.makedirs(revdir, exist_ok=True)
-            rc = {"run_id": run_id, "pre_eval_id": pre_eval_id, "verdict": "approved",
-                  "reviewer_backend": "claude", "reviewer_model": "claude-opus-4-8"}
+            # CRIT-2: a counted fast-path receipt must be FULLY sealed (schema + self-digest
+            # + reviewer-opus + binding) so triage's check agrees byte-for-byte with the
+            # producer's seal and validate-manifest's verify. ``sealed_receipt=False`` seeds
+            # the bound-but-unsealed negative fixture (no valid digest → must NOT count).
+            rc = _sealed_receipt(run_id, pre_eval_id, seal_it=sealed_receipt)
             with open(os.path.join(revdir, "receipt.json"), "w", encoding="utf-8") as fh:
                 json.dump(rc, fh)
         if commit:
@@ -1054,6 +1156,9 @@ def _selftest():
         bind_run(p3id, child_rid, escalation_child=True, stream_path=stream3)
         append_actual(p3id, child_rid, escalated=False, review_result="approved",
                       test_result="pass", escalation_child=True, stream_path=stream3)
+        # CRIT-1: the count reduces the COMMITTED blob — P5 and the child were appended
+        # after P4's mk_run, so commit them before counting (they must be IN the sample).
+        _fx_commit_all(td)
 
         prec = precision_stats(stream_path=stream3)
         # denominator = P1,P2,P3,P4 = 4 (P5 merge_pending excluded, child excluded).
@@ -1101,8 +1206,10 @@ def _selftest():
         expect("last-writer-wins reflected in precision (escalated, 0/1 passed)",
                pdup["n"] == 1 and abs(pdup["precision"] - 0.0) < 1e-9
                and abs(pdup["escalation_rate"] - 1.0) < 1e-9)
-        # A duplicate predicted with a changed decision: last one wins.
+        # A duplicate predicted with a changed decision: last one wins (once committed —
+        # CRIT-1: the reclassifying predicted must be in the COMMITTED blob to take effect).
         append_predicted(did, decision="FULL_PIPELINE", stream_path=stream4)
+        _fx_commit_all(td)
         pdup2 = precision_stats(stream_path=stream4)
         expect("last predicted (FULL_PIPELINE) reclassifies the run out of fast-path",
                pdup2.get("status") == "insufficient" and pdup2["n"] == 0)
@@ -1114,6 +1221,7 @@ def _selftest():
         bind_run(mpid, mrid, stream_path=stream5)
         append_actual(mpid, mrid, escalated=False, review_result="approved",
                       merge_pending=True, stream_path=stream5)   # precision-IGNORED
+        _fx_commit_all(td)  # CRIT-1: commit so the merge_pending run is IN the counted blob
         pmp = precision_stats(stream_path=stream5)
         expect("merge_pending-only run is insufficient (excluded, not fabricated)",
                pmp.get("status") == "insufficient" and pmp["n"] == 0
@@ -1154,6 +1262,7 @@ def _selftest():
             fh.write('{"event":"bogus","pre_eval_id":"x"}\n')  # unknown event
         st7 = _reduce_stream(stream7)
         expect("malformed / unknown lines counted, not crashing", st7["malformed"] >= 2)
+        _fx_commit_all(td)  # CRIT-1: commit the malformed neighbors INTO the counted blob
         p7 = precision_stats(stream_path=stream7)
         expect("valid outcome still computes despite malformed neighbors", p7["n"] == 1)
 
@@ -1200,7 +1309,9 @@ def _selftest():
         bind_run("PID-NE", "RUN-NE", stream_path=s_noev)
         append_actual("PID-NE", "RUN-NE", escalated=False, review_result="approved",
                       test_result="pass", stream_path=s_noev)     # injected "success"
-        # deliberately NO run dir / state.json for RUN-NE
+        # deliberately NO run dir / state.json for RUN-NE — but commit the stream so the
+        # parent IS in the counted blob (CRIT-1) and is excluded for want of merge evidence.
+        _fx_commit_all(td)
         p_ne = precision_stats(stream_path=s_noev)
         expect("injected approved with no merge evidence does not raise precision",
                p_ne.get("status") == "insufficient" and p_ne["n"] == 0
@@ -1222,14 +1333,13 @@ def _selftest():
         p_nr = precision_stats(stream_path=s_rcpt)
         expect("merged fast-path parent with no review receipt is not counted",
                p_nr.get("status") == "insufficient" and p_nr["n"] == 0)
-        # now COMMIT a receipt but bind it to a DIFFERENT run-id (replay defense): the
-        # binding check must reject it even though it is genuinely committed at HEAD.
+        # now COMMIT a FULLY SEALED receipt but bind it to a DIFFERENT run-id (replay
+        # defense): the shared verifier's binding check must reject it even though it is a
+        # genuinely committed, self-sealed receipt at HEAD.
         _rev = os.path.join(exec_dir, "RUN-NR", "review")
         os.makedirs(_rev, exist_ok=True)
         with open(os.path.join(_rev, "receipt.json"), "w", encoding="utf-8") as fh:
-            json.dump({"run_id": "SOME-OTHER-RUN", "pre_eval_id": "PID-NR",
-                       "verdict": "approved", "reviewer_backend": "claude",
-                       "reviewer_model": "claude-opus-4-8"}, fh)
+            json.dump(_sealed_receipt("SOME-OTHER-RUN", "PID-NR"), fh)
         _fx_commit_all(td)  # commit the wrong-bound receipt → tests binding, not commit-ness
         p_nr2 = precision_stats(stream_path=s_rcpt)
         expect("merged fast-path parent with a committed but unbound (wrong run_id) receipt "
@@ -1299,6 +1409,10 @@ def _selftest():
         bind_run("PID-UC", "RUN-UC", stream_path=s_c2unc)
         append_actual("PID-UC", "RUN-UC", escalated=False, review_result="approved",
                       test_result="pass", stream_path=s_c2unc)
+        # Commit the STREAM (so the parent is in the counted blob, CRIT-1) but leave the
+        # state.json + receipt WORKING-TREE ONLY (commit=False) — exactly the e2e gap: the
+        # old working-tree read would have accepted it; the committed-blob read must not.
+        _fx_commit_all(td)
         mk_run(exec_dir, "RUN-UC", _PHASE_MERGED, pre_eval_id="PID-UC",
                merge_sha=FAKE_SHA, receipt=True, commit=False)  # working-tree only + fake SHA
         p_uc = precision_stats(stream_path=s_c2unc)
@@ -1354,6 +1468,72 @@ def _selftest():
         p_wt = precision_stats(stream_path=s_c2wt)
         expect("verification reads HEAD, not the working tree (committed truth wins)",
                p_wt["n"] == 1 and abs(p_wt["precision"] - 1.0) < 1e-9)
+
+        # ==================================================================== #
+        # CRIT-1 (round 3) — the terminal events are REDUCED from the committed  #
+        # blob, not the working tree. An uncommitted appended / overriding      #
+        # `actual` (working-tree only) must NOT move precision / Tier-2.         #
+        # ==================================================================== #
+        s_c1 = os.path.join(td, "r3-crit1", STREAM_BASENAME)
+        append_predicted("PID-C1", decision=FASTPATH_DECISION, stream_path=s_c1)
+        bind_run("PID-C1", "RUN-C1", stream_path=s_c1)
+        append_actual("PID-C1", "RUN-C1", escalated=False, review_result="approved",
+                      test_result="pass", stream_path=s_c1)
+        # committed, real merge-commit SHA, fully-sealed bound receipt → a verified 1/1.
+        mk_run(exec_dir, "RUN-C1", _PHASE_MERGED, pre_eval_id="PID-C1",
+               merge_sha=REAL_SHA, receipt=True)
+        p_c1_before = precision_stats(stream_path=s_c1)
+        expect("CRIT-1 baseline: committed clean fast-path success is 1/1",
+               p_c1_before["n"] == 1 and abs(p_c1_before["precision"] - 1.0) < 1e-9)
+        t2_c1_before = tier2_lookup(min_sample_count=1, stream_path=s_c1)
+        expect("CRIT-1 baseline: committed clean cohort reads healthy",
+               t2_c1_before.get("health") == "healthy" and t2_c1_before["n"] == 1)
+        # Now append an OVERRIDING actual to the WORKING TREE ONLY (escalated:true). Under
+        # the old working-tree reduce, last-writer-wins would flip precision to 0/1 and the
+        # cohort to unhealthy. With the committed-blob reduce it must be INVISIBLE.
+        append_actual("PID-C1", "RUN-C1", escalated=True, review_result="changes_requested",
+                      test_result="fail", stream_path=s_c1)  # NOT committed
+        # Sanity: the working tree really does carry the overriding (escalated) actual, so
+        # the "unchanged precision" below is due to the committed-blob read, not a no-op.
+        wt_reduced = _reduce_stream(s_c1)
+        expect("CRIT-1: the working tree DOES carry the overriding escalated actual",
+               wt_reduced["runs"][("PID-C1", "RUN-C1")]["actual"]["escalated"] is True)
+        p_c1_after = precision_stats(stream_path=s_c1)
+        expect("CRIT-1: an UNCOMMITTED appended actual does NOT change precision (still 1/1)",
+               p_c1_after["n"] == 1 and abs(p_c1_after["precision"] - 1.0) < 1e-9
+               and abs(p_c1_after["escalation_rate"] - 0.0) < 1e-9)
+        t2_c1_after = tier2_lookup(min_sample_count=1, stream_path=s_c1)
+        expect("CRIT-1: an uncommitted appended actual does NOT change Tier-2 (still healthy)",
+               t2_c1_after.get("health") == "healthy" and t2_c1_after["n"] == 1)
+
+        # ==================================================================== #
+        # CRIT-2 (round 3) — triage's receipt check == validate-manifest's       #
+        # verify_sealed_receipt. A receipt that is BOUND but NOT self-sealed     #
+        # (no valid digest) must NOT count; only a FULLY-sealed one does.        #
+        # ==================================================================== #
+        s_c2seal = os.path.join(td, "r3-crit2", STREAM_BASENAME)
+        append_predicted("PID-C2S", decision=FASTPATH_DECISION, stream_path=s_c2seal)
+        bind_run("PID-C2S", "RUN-C2S", stream_path=s_c2seal)
+        append_actual("PID-C2S", "RUN-C2S", escalated=False, review_result="approved",
+                      test_result="pass", stream_path=s_c2seal)
+        # committed MERGED + real merge SHA, but the receipt is BOUND yet UNSEALED (no valid
+        # self-digest). The old verdict/run_id/pre_eval_id-only check would have accepted it;
+        # the shared verify_sealed_receipt (schema + record_digest self-seal) must reject it.
+        mk_run(exec_dir, "RUN-C2S", _PHASE_MERGED, pre_eval_id="PID-C2S",
+               merge_sha=REAL_SHA, receipt=True, sealed_receipt=False)
+        p_unsealed = precision_stats(stream_path=s_c2seal)
+        expect("CRIT-2: a bound-but-UNSEALED receipt (no valid digest) is NOT counted",
+               p_unsealed.get("status") == "insufficient" and p_unsealed["n"] == 0
+               and p_unsealed["excluded_no_terminal_actual"] == 1)
+        # Replace ONLY the receipt with a fully-sealed one (same run, same MERGED state, same
+        # real SHA) and commit — now producer/validator/triage agree and it IS counted.
+        with open(os.path.join(exec_dir, "RUN-C2S", "review", "receipt.json"),
+                  "w", encoding="utf-8") as fh:
+            json.dump(_sealed_receipt("RUN-C2S", "PID-C2S"), fh)
+        _fx_commit_all(td)
+        p_sealed = precision_stats(stream_path=s_c2seal)
+        expect("CRIT-2: the SAME run with a fully-sealed committed receipt IS counted (1/1)",
+               p_sealed["n"] == 1 and abs(p_sealed["precision"] - 1.0) < 1e-9)
 
     if failures:
         print("\nSELFTEST FAILED: %d case(s)" % len(failures))
