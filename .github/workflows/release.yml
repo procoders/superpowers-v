@@ -1,0 +1,85 @@
+name: Release on version bump
+
+# When the plugin version in .claude-plugin/plugin.json is bumped on main and no matching
+# tag exists yet, cut a GitHub Release (tag vX.Y.Z + notes extracted from CHANGELOG.md).
+# This closes the gap that left releases stuck at v2.1.1 while the code shipped through v2.9.0.
+# Uses the built-in GITHUB_TOKEN (contents: write) — no user OAuth "workflow" scope needed.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".claude-plugin/plugin.json"
+      - "CHANGELOG.md"
+  workflow_dispatch: {}   # allow a manual re-run
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # need tags + history
+
+      - name: Read plugin version
+        id: ver
+        run: |
+          v=$(python3 -c "import json;print(json.load(open('.claude-plugin/plugin.json'))['version'])")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Plugin version: $v"
+
+      - name: Skip if the tag already exists
+        id: check
+        run: |
+          if git rev-parse -q --verify "refs/tags/v${{ steps.ver.outputs.version }}" >/dev/null \
+             || git ls-remote --exit-code --tags origin "v${{ steps.ver.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag v${{ steps.ver.outputs.version }} already exists — nothing to release."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Extract CHANGELOG notes for this version
+        if: steps.check.outputs.exists == 'false'
+        id: notes
+        run: |
+          python3 - "${{ steps.ver.outputs.version }}" <<'PY'
+          import re, sys, os
+          v = sys.argv[1]
+          cl = open("CHANGELOG.md", encoding="utf-8").read()
+          parts = re.split(r'(?m)^## \[?\d+\.\d+\.\d+.*$', cl)
+          heads = re.findall(r'(?m)^## \[?(\d+\.\d+\.\d+).*$', cl)
+          body = ""
+          for i, hv in enumerate(heads):
+              if hv == v:
+                  body = parts[i + 1].strip()
+                  break
+          if not body:
+              body = "See the CHANGELOG for details."
+          body = body[:6000].rstrip()
+          body += "\n\nFull detail in the [CHANGELOG](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)."
+          with open("_release_notes.md", "w", encoding="utf-8") as fh:
+              fh.write(body)
+          # a short human title line from the CHANGELOG heading, if any
+          m = re.search(r'(?m)^## \[?%s\]?\s*(?:[—-]\s*(.*))?$' % re.escape(v), cl)
+          title_suffix = (m.group(1).strip() if m and m.group(1) else "").strip()
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write("title_suffix=%s\n" % title_suffix)
+          print("Extracted %d chars of notes." % len(body))
+          PY
+
+      - name: Create the release
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.ver.outputs.version }}
+          SUFFIX: ${{ steps.notes.outputs.title_suffix }}
+        run: |
+          title="v$V"
+          if [ -n "$SUFFIX" ]; then title="v$V — $SUFFIX"; fi
+          gh release create "v$V" --target "${{ github.sha }}" --latest \
+            --title "$title" --notes-file _release_notes.md
+          echo "Released v$V"
