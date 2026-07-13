@@ -49,7 +49,7 @@ Compound V never lets a worker pick its own model. A **deterministic router** lo
 ![How Compound V decides who does the work](docs/routing.svg)
 
 - **Pre-Evaluation** splits the request first: trivially simple and low-impact takes a cheap **fast path** (one worker); anything real enters the full pipeline.
-- In the pipeline an **orchestrator** (a strong model) plans and splits the work, then the **router** assigns each job a mode: **full Opus** for risky / review / security / cross-cutting work, **Sonnet solo** for routine mechanical jobs, and — 🧪 *opt-in, in development* — **Sonnet + an on-demand Opus/Fable advisor** for medium, self-contained jobs (a cheap executor that calls a stronger model only for the hard sub-decisions, so most tokens stay cheap).
+- In the pipeline an **orchestrator** (a strong model) plans and splits the work, then the **router** assigns each job a mode: **full Opus** for risky / review / security / cross-cutting work, **Sonnet solo** for routine mechanical jobs, and, *opt-in*, **Sonnet + an on-demand cross-brand advisor** for medium, self-contained jobs. The cheap Sonnet executor consults a stronger model of a preferably different brand (Codex if you have it, else Opus) only on a hard sub-decision. The advisor is read-only: it advises, never writes files, so most tokens stay cheap and the pricey model is billed only for the hard calls. It is a subagent pattern, no API key.
 - Everything runs in parallel, every write is checked against a git-derived scope gate, and an Opus reviewer gates "done".
 
 ---
