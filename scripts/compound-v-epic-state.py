@@ -563,6 +563,21 @@ def next_feature_autonomous(state):
     halt_feature, halt_epic, and blocked_external: a stale verdict of ANY kind is not honored
     — re-arbitrate, which is always safe. A legacy disposition with no stored `attempt` key
     (pre-FIX-A data) is treated as attempt 0.
+
+    FIX 2 (v2.10, cross-unit integration review follow-up): a `failed` feature whose
+    ATTEMPT-MATCHED disposition is `blocked_external` is NOT the "arbiter already settled it"
+    case FIX 1 originally assumed — it is a distinct crash window: the driver recorded the
+    verdict (`--record-disposition blocked_external`) but crashed before completing the
+    `--update --status blocked` transition (which flips status and appends the
+    `blocker_ledger` entry). Treating it as abandoned would silently lose the blocker
+    transition. Instead this surfaces a dedicated "needs_blocker_recording" reason — analogous
+    priority to needs_arbitration: it takes precedence over handing out other work, so the
+    driver completes the transition first. The `--update --status blocked` ledger append is
+    already idempotent by (feature, attempt), so re-running it is always safe. A feature that
+    has ALREADY transitioned to `status == "blocked"` never reaches this classification loop
+    (which only inspects `status == "failed"`) and stays on the normal blocked/ledger path,
+    unchanged. An attempt-MISMATCHED blocked_external disposition still falls into the
+    needs_arbitration bucket above (FIX A), unchanged.
     """
     feats = [f for f in state.get("features", []) if isinstance(f, dict)]
     ids = {f.get("id") for f in feats}
@@ -576,6 +591,8 @@ def next_feature_autonomous(state):
     retry_runnable = []   # retry_fix + still under cap -> the feature itself is runnable
     abandoned_ids = []    # retry_fix (cap exhausted) or halt_feature -> abandoned, as before
     needs_arb_ids = []    # no/None disposition -> crash-in-arbitration window, halt routing
+    needs_blocker_recording_ids = []  # FIX 2: blocked_external verdict recorded, but the
+                                       # blocked/ledger transition crashed mid-flight
     for f in feats:
         if f.get("status") != "failed":
             continue
@@ -596,23 +613,28 @@ def next_feature_autonomous(state):
                 retry_runnable.append(f)
             else:
                 abandoned_ids.append(fid)
-        elif disp_kind in ("halt_feature", "blocked_external"):
-            # blocked_external is normally a `blocked`-status/ledger concept; if it somehow
-            # lands on a `failed` feature it WAS arbitrated, so treat it as an abandon rather
-            # than falling through to needs_arbitration.
+        elif disp_kind == "halt_feature":
             abandoned_ids.append(fid)
+        elif disp_kind == "blocked_external":
+            # FIX 2: blocked_external landing on a still-`failed` feature (attempt-matched)
+            # means the arbiter's verdict was recorded but the blocked/ledger transition did
+            # NOT complete before a crash — this is unresolved, not a settled abandon.
+            needs_blocker_recording_ids.append(fid)
         elif disp_kind == "halt_epic":
             pass  # handled by the unconditional (also attempt-gated) halt_epic check below
     retry_runnable.sort(key=lambda rf: rf.get("id") or "")
     abandoned_ids = sorted(abandoned_ids)
     needs_arb_ids = sorted(needs_arb_ids)
+    needs_blocker_recording_ids = sorted(needs_blocker_recording_ids)
 
     # `blocking_ids` retains its pre-fix meaning (used for messaging + dependents-blocking)
     # EXCEPT a retry-runnable failed feature is explicitly excluded — its dependents are not
-    # blocked, per FIX 1.
+    # blocked, per FIX 1. A needs_blocker_recording feature is included here too: it is
+    # unresolved (not abandoned, not runnable), so its dependents must stay blocked exactly
+    # like an abandoned or needs_arbitration feature's would.
     blocking_ids = sorted(
         [fid for fid in status_by if status_by.get(fid) == "blocked"] + abandoned_ids
-        + needs_arb_ids
+        + needs_arb_ids + needs_blocker_recording_ids
     )
 
     reverse = _reverse_deps_graph(feats)
@@ -656,6 +678,16 @@ def next_feature_autonomous(state):
     if needs_arb_ids:
         return None, ("needs_arbitration: feature %s failed without a recorded disposition — "
                       "re-run the arbiter" % ", ".join(needs_arb_ids)), blocked_by
+
+    # FIX 2: an attempt-matched blocked_external disposition on a still-`failed` feature is
+    # the "verdict recorded, transition incomplete" crash window — surface it with the same
+    # priority as needs_arbitration above (it also halts ALL routing, not just this feature's
+    # dependents), so the driver completes the blocked/ledger transition before any other work
+    # is handed out.
+    if needs_blocker_recording_ids:
+        return None, ("needs_blocker_recording: feature(s) %s — arbiter said blocked_external "
+                      "but the blocked/ledger transition is incomplete; re-run --update "
+                      "--status blocked" % ", ".join(needs_blocker_recording_ids)), blocked_by
 
     # FIX 1: a retry_fix-approved failed feature that is still under the retry cap is itself
     # directly runnable again — the driver re-runs it. This is checked before the normal
@@ -1817,6 +1849,76 @@ def _selftest():
     st_fa_bad2["features"][0]["disposition"] = "not-an-object"
     check("FIX A: validate_marathon_state flags a non-object disposition",
           validate_marathon_state(st_fa_bad2) != [])
+
+    # --- FIX 2 (v2.10, cross-unit integration review follow-up): a `failed` feature whose
+    # attempt-matched disposition is blocked_external must surface needs_blocker_recording
+    # (the blocked/ledger transition crashed mid-flight), NOT be treated as abandoned --------
+    fix2_feats = [{"id": "a", "depends_on": []}, {"id": "b", "depends_on": []},
+                  {"id": "c", "depends_on": ["a"]}]
+    st_fx1 = build_state(fix2_feats, "e", "E", stance="marathon", caps={})
+    apply_update(st_fx1, "a", "running", now_dt=_T_FA)  # attempts -> 1
+    apply_update(st_fx1, "a", "failed", now_dt=_T_FA)
+    record_disposition(st_fx1, "a", "blocked_external", now_dt=_T_FA)  # attempt stamped = 1
+    f_fx1, why_fx1, blocked_by_fx1 = next_feature_autonomous(st_fx1)
+    check("FIX 2: failed + attempt-matched blocked_external -> needs_blocker_recording, "
+          "not abandoned, no work handed out",
+          f_fx1 is None and why_fx1.startswith("needs_blocker_recording"))
+    check("FIX 2: needs_blocker_recording names the untriaged feature and points at the fix",
+          "feature(s) a" in why_fx1 and "--update --status blocked" in why_fx1)
+    check("FIX 2: needs_blocker_recording halts ALL routing (independent b not handed out "
+          "as if settled), mirroring needs_arbitration's priority",
+          f_fx1 is None)
+    check("FIX 2: transitive dependent c is reported as blocked_by",
+          blocked_by_fx1 == ["c"])
+
+    # Completing the transition (driver re-runs --update --status blocked) moves the feature
+    # OFF the needs_blocker_recording path and onto the normal blocked/ledger path -> b
+    # becomes runnable, independently of the still-blocked a/c.
+    apply_update(st_fx1, "a", "blocked", blocker_reason="vendor outage", now_dt=_T_FA)
+    check("FIX 2: completing the transition sets status=blocked and appends one ledger entry",
+          st_fx1["features"][0]["status"] == "blocked" and len(st_fx1["blocker_ledger"]) == 1)
+    f_fx1b, why_fx1b, blocked_by_fx1b = next_feature_autonomous(st_fx1)
+    check("FIX 2: after the transition completes, a blocked-status feature stays on the "
+          "normal blocked/ledger path (unchanged) -- independent b is runnable",
+          f_fx1b is not None and f_fx1b["id"] == "b" and "running_with_failures" in why_fx1b)
+    check("FIX 2: after the transition completes, c is still blocked_by a",
+          blocked_by_fx1b == ["c"])
+
+    # Re-running --update --status blocked a second time (the idempotent-recovery case the
+    # fix explicitly relies on) must not create a second ledger entry or otherwise change
+    # anything observable.
+    apply_update(st_fx1, "a", "blocked", blocker_reason="vendor outage (replay)", now_dt=_T_FA)
+    check("FIX 2: re-running --update --status blocked is idempotent by (feature, attempt) "
+          "-- still exactly one ledger entry",
+          len(st_fx1["blocker_ledger"]) == 1)
+
+    # An attempt-MISMATCHED blocked_external disposition is unaffected by FIX 2 -- it still
+    # falls into needs_arbitration (FIX A, unchanged).
+    st_fx2 = build_state(fa_feats, "e", "E", stance="marathon", caps={"max_attempts_per_feature": 5})
+    apply_update(st_fx2, "a", "running", now_dt=_T_FA)  # attempts -> 1
+    apply_update(st_fx2, "a", "failed", now_dt=_T_FA)
+    record_disposition(st_fx2, "a", "blocked_external", now_dt=_T_FA)  # attempt stamped = 1
+    apply_update(st_fx2, "a", "running", now_dt=_T_FA)  # attempts -> 2, disposition now stale
+    apply_update(st_fx2, "a", "failed", now_dt=_T_FA)
+    f_fx2, why_fx2, _ = next_feature_autonomous(st_fx2)
+    check("FIX 2: attempt-mismatched blocked_external -> needs_arbitration (unchanged from "
+          "FIX A), NOT needs_blocker_recording",
+          f_fx2 is None and why_fx2.startswith("needs_arbitration"))
+
+    # A feature that is ALREADY status=='blocked' with its ledger entry present never enters
+    # the failed-feature classification loop at all -- normal path, unaffected by FIX 2.
+    st_fx3 = build_state(fa_feats, "e", "E", stance="marathon", caps={})
+    apply_update(st_fx3, "a", "running", now_dt=_T_FA)
+    apply_update(st_fx3, "a", "failed", now_dt=_T_FA)
+    record_disposition(st_fx3, "a", "blocked_external", now_dt=_T_FA)
+    apply_update(st_fx3, "a", "blocked", blocker_reason="vendor outage", now_dt=_T_FA)
+    f_fx3, why_fx3, _ = next_feature_autonomous(st_fx3)
+    check("FIX 2: an already-blocked-status feature (transition complete) stays on the "
+          "normal blocked path -- not needs_blocker_recording",
+          not (why_fx3 or "").startswith("needs_blocker_recording"))
+    check("FIX 2: an already-blocked-status single-feature epic -> blocked_needing_human "
+          "(no other work), exactly as before this fix",
+          f_fx3 is None and why_fx3.startswith("blocked_needing_human"))
 
     # --- A3: attempts + --can-retry + transition table -----------------------------------
     feats3 = [{"id": "a", "depends_on": []}]
