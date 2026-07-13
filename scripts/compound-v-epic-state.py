@@ -102,11 +102,22 @@ shapes without updating both.
 
 epic-state.json (marathon + watch, v2.11, additive on top of v2.10's marathon shape):
   top-level adds: "last_progress_at" (ISO `+00:00`, bumped on every marathon mutation while
-    watch is on), "lease" ({"owner_pid","claimed_at","expires_at"} | absent until the first
-    `--claim-resume`), "resume_count" (int, absent until the first `--claim-resume`).
+    watch is on), "resume_count" (int, absent until the first `--claim-resume`).
   `autonomy` adds: "watch": true (only ever written as `true` — a `--init` without `--watch`
     never writes the key at all, so "absent" IS "false"), "max_resume_count" (int|null,
     default 20, the new global breaker axis; also written only when watch is on).
+
+  Cross-unit integration review (post-v2.11, BLOCKER fix — "auto-resurrection"): the ORIGINAL
+  v2.11 design bound liveness/ownership to a lease `{"owner_pid","claimed_at","expires_at"}`
+  and an OS-level `_pid_alive` probe. The Claude Code harness has NO stable driver pid — every
+  shell call gets a fresh `$$`, so a watcher's `--claim-resume --owner-pid $$` recorded a
+  Python subprocess pid that died the instant that subprocess exited, permitting duplicate
+  resurrection. `owner_pid`/the `lease` object are REMOVED ENTIRELY. `last_progress_at`
+  (bumped by the live driver at every sub-phase, and by a winning `--claim-resume`) is now the
+  SOLE liveness signal; the `fcntl.flock`-guarded transaction in `--claim-resume` is the SOLE
+  ownership/serialization authority (it decides who may act, not who "holds" anything
+  afterward — there is nothing left to hold). A legacy on-disk `lease` key from a state
+  written before this fix is inert and ignored (back-compat — see `validate_marathon_state`).
 
   --init --stance marathon --watch [--max-resume-count N]
     Opts a marathon epic into the watch surface. `--max-resume-count` is REJECTED unless
@@ -115,56 +126,55 @@ epic-state.json (marathon + watch, v2.11, additive on top of v2.10's marathon sh
     (same `_cap_arg` convention as the other caps).
 
   --liveness --state S --now T [--stale-after-min 45]
-    -> {"incomplete","stale","held","lease_expired","epic_status","terminal","resume_count"}
+    -> {"incomplete","stale","epic_status","terminal","resume_count"}
     (read-only; requires marathon+watch). This is the watcher's poll target. `terminal` is
-    `is_terminal(state)` (below). `incomplete` = status != "done". `held`/`lease_expired`
-    describe the CURRENT lease (`held` = a live, unexpired lease is on file; `lease_expired`
-    = a lease is on file but it is not live). `stale` = incomplete AND NOT terminal AND the
-    heartbeat (`last_progress_at`) is older than `stale_after_min` (missing/unparseable
-    FAILS SAFE as stale-eligible, mirroring `breaker_check`'s started_at fail-safe) AND the
-    lease's `owner_pid` is NOT a live OS process (belt-and-suspenders: a live owner always
-    defers the watcher even past the age threshold). Cross-reference: this is a DIFFERENT
-    granularity from the per-JOB `compound-v-liveness.py` (git+filesystem probe over a
-    dispatch run's `state.json`, one job at a time) — `--liveness` here is per-EPIC, driven
-    purely by the heartbeat + lease this file itself owns, never git/filesystem state.
+    `is_terminal(state)` (below). `incomplete` = status != "done". `stale` = incomplete AND
+    NOT terminal AND the heartbeat (`last_progress_at`) is older than `stale_after_min`
+    (missing/unparseable FAILS SAFE as stale-eligible, mirroring `breaker_check`'s started_at
+    fail-safe) — this single heartbeat age is now the WHOLE staleness signal (no lease, no
+    pid). Cross-reference: this is a DIFFERENT granularity from the per-JOB
+    `compound-v-liveness.py` (git+filesystem probe over a dispatch run's `state.json`, one job
+    at a time) — `--liveness` here is per-EPIC, driven purely by the heartbeat this file
+    itself owns, never git/filesystem state.
 
-  --claim-resume --state S --owner-pid P --now T [--lease-ttl-min M]
-    -> {"claimed","reason":"claimed|live-lease-held|terminal|resume-cap","resume_count"}
-    THE CRUX (v2.11): ONE `fcntl.flock`-guarded atomic transaction against `<state>.lock`
-    (BLOCKING `LOCK_EX`, not `compound-v-memory.py`'s `LOCK_NB` loser-noop idiom — every
-    contender must evaluate on the merits so `reason` is always one of the four documented
-    values, never a fifth "lock busy" outcome; see `claim_resume`'s docstring for why this
-    deliberately diverges from the reused locking idiom). `--lease-ttl-min` is validated via
-    `_validate_lease_ttl` BEFORE the lock is even opened (finite, >= 1 minute — a TTL=0 is
-    rejected outright so it can never let a second contender double-claim). Inside the lock:
-    reloads `state` fresh from disk (never trusts a caller's in-memory copy), derives
+  --claim-resume --state S --now T [--stale-after-min 45]
+    -> {"claimed","reason":"claimed|live|terminal|resume-cap","resume_count"}
+    THE CRUX (v2.11, post-integration-review). ONE `fcntl.flock`-guarded atomic transaction
+    against `<state>.lock` (BLOCKING `LOCK_EX`, not `compound-v-memory.py`'s `LOCK_NB`
+    loser-noop idiom — every contender must evaluate on the merits so `reason` is always one
+    of the four documented values, never a fifth "lock busy" outcome; see `claim_resume`'s
+    docstring for why this deliberately diverges from the reused locking idiom). Inside the
+    lock: reloads `state` fresh from disk (never trusts a caller's in-memory copy), derives
     terminality via the shared `is_terminal` classifier, uses OS time (`--now` is test-only,
-    range-checked against the real clock — see `_now_arg_in_range`), checks the lease — a
-    LIVE lease (time-unexpired) OR a recorded `owner_pid` that is still an alive OS process
-    (belt-and-suspenders, checked even past a time-expired lease — see `claim_resume`'s
-    docstring) ⇒ lose, reason "live-lease-held" — and `max_resume_count` (boundary: a cap of
-    N allows `resume_count` to advance 0->N across N successful claims and BLOCKS the
-    (N+1)th — mirrors `can_retry_info`'s `attempts < cap` convention elsewhere in this file;
-    at the cap the epic is ALSO tripped to `blocked_needing_human`, persisted before the lock
-    releases, so a later orphaned scheduler firing sees the terminal latch and is a harmless
-    no-op), else increments `resume_count`, records a fresh `lease` for `owner_pid`, bumps
-    `last_progress_at`, and writes atomically. A LOSING claim (`claimed: false`) is still a
-    SUCCESSFUL call (`ok`); the loser does not resume.
+    range-checked against the real clock — see `_now_arg_in_range`). Decision order:
+      1. `is_terminal(state)` -> lose, reason "terminal".
+      2. FRESH (`now - last_progress_at < stale_after_min`, i.e. something is actively
+         bumping the heartbeat) -> lose, reason "live" (replaces the old "live-lease-held").
+         Checked BEFORE the resume-cap so an actively-progressing epic that merely happens to
+         already sit at its resume cap is never spuriously tripped to `blocked_needing_human`
+         by a routine watcher poll — only a STALE epic can ever reach the resume-cap check.
+      3. `resume_count >= max_resume_count` (boundary: mirrors `can_retry_info`'s
+         `attempts < cap` convention elsewhere in this file; a cap of N allows N successful
+         claims and blocks the (N+1)th) -> trip to `blocked_needing_human`, persist, lose,
+         reason "resume-cap". The persisted latch means a later orphaned scheduler firing
+         sees terminal on its own next `--claim-resume` and is a harmless no-op.
+      4. Else: WIN — increment `resume_count`, bump `last_progress_at` to `now` (so a second
+         concurrent claim now observes a FRESH heartbeat and loses at step 2 — this bump IS
+         the serialization signal that replaces the old lease), write atomically, reason
+         "claimed".
+    A LOSING claim (`claimed: false`) is still a SUCCESSFUL call (`ok`); the loser does not
+    resume.
 
-  --renew-lease --state S --owner-pid P --now T [--lease-ttl-min M]
-    -> {"owner_pid","lease"} (atomic write). The lease holder's own periodic heartbeat —
-    extends `lease.expires_at` and bumps `last_progress_at`. Integration-review fix (Layer C
-    #1): CREATE-or-renew — an ABSENT lease is CREATED for the calling `owner_pid` (so the
-    initial driver can acquire its OWN lease at marathon start, without going through
-    `--claim-resume`'s resume-only semantics), a lease already held by the SAME `owner_pid`
-    is renewed (extends `expires_at`, preserves `claimed_at`), and a lease held by a
-    DIFFERENT `owner_pid` is still a hard, controlled error — renew never silently takes
-    over a lease another owner holds; only `--claim-resume`'s arbitrated transaction can do
-    that. `--lease-ttl-min` is validated the same way as `--claim-resume`'s (finite, >= 1
-    minute). Not flock-guarded like `--claim-resume`: only the single current owner (a fresh
-    driver creating its own first lease, or a live worker renewing itself) ever calls this,
-    so there is no multi-writer race here. Call at an interval COMFORTABLY below
-    `--stale-after-min` (default lease TTL 15min vs. the default 45min staleness threshold).
+  --renew-lease --state S --now T
+    -> {"last_progress_at"} (atomic write). The live driver's own periodic heartbeat —
+    post-integration-review, this is now simply "bump `last_progress_at` to now"; there is no
+    lease object left to create-or-renew (no pid, no TTL, no ownership record). Kept under
+    its original flag name for driver-side stability (an alias would work identically; the
+    name was kept rather than adding `--bump-progress` — see this file's CLI contract intro).
+    Not flock-guarded (only the single live driver calls this, so there is no multi-writer
+    race to arbitrate). Call at an interval COMFORTABLY below `--stale-after-min` (default
+    45min) so a live marathon that renews on schedule never reads as stale to `--liveness` or
+    `--claim-resume`.
 
   --clear-breaker ... [--reset-resume-count]
     v2.10's human re-arm now also accepts `--reset-resume-count`, which zeroes
@@ -249,29 +259,23 @@ _CAP_DEFAULTS = {
 # without unbounded growth over an all-night run.
 _PROCESSED_CYCLE_CAP = 512
 
-# -- v2.11 (Scheduler Auto-Resurrection, V1) module-level constants -----------------------
-# Lease TTL: the default interval a --claim-resume/--renew-lease lease stays live for.
-# COMFORTABLY below _DEFAULT_STALE_AFTER_MIN so a live worker renewing on schedule never
-# lets the watcher see a stale heartbeat while it is still actively holding the lease.
-_DEFAULT_LEASE_TTL_MIN = 15
-# Staleness threshold for --liveness: set ABOVE the worst-case silent single-feature-
-# pipeline window (pre-flights + dispatch + review can legitimately run long).
+# -- v2.11 (Scheduler Auto-Resurrection) module-level constants ---------------------------
+# Staleness threshold for --liveness/--claim-resume: set ABOVE the worst-case silent
+# single-feature-pipeline window (pre-flights + dispatch + review can legitimately run long).
+# Post-integration-review: this is now the ONLY liveness knob in the file — owner_pid and the
+# lease TTL were removed entirely (see the module docstring's "Cross-unit integration review"
+# note); a live driver's --renew-lease heartbeat must fire comfortably below this interval.
 _DEFAULT_STALE_AFTER_MIN = 45
 # --now is TEST-ONLY (deterministic selftests / the concurrency selftest below) — production
 # callers never pass it, always using the real OS clock. This bounds how far --now may drift
-# from the real clock so it can never become a production lever for defeating staleness/
-# lease timing by injecting an arbitrary clock value. V1-review fix 5: TIGHTENED from an
+# from the real clock so it can never become a production lever for defeating staleness
+# timing by injecting an arbitrary clock value. V1-review fix 5: TIGHTENED from an
 # initial 3650-day (10-year) placeholder to ~1 day — a real deterministic selftest injects a
 # --now within seconds/minutes of "now" (or a fixed historical date compared against another
 # fixed date, never against the live clock), so a generous multi-year allowance was never
 # actually exercising the "test-only" boundary; ~1 day is enough slack for clock skew/CI
-# latency while still closing off --now as a practical lever against staleness/lease timing.
+# latency while still closing off --now as a practical lever against staleness timing.
 _NOW_ARG_MAX_SKEW_DAYS = 1
-# Portable OS pid_t bounds (V1-review fix 5): a signed 32-bit range on every platform this
-# ships to. Used to validate a CLI --owner-pid up front and to gate _pid_alive against a pid
-# so large/negative that os.kill() would raise OverflowError instead of a clean not-alive.
-_PID_MIN = 1
-_PID_MAX = 2 ** 31 - 1
 # v2.11 Layer B: the two scheduler providers the watcher registry knows about (Component 3 /
 # V3 driver wiring — Tier-1 Cron, Tier-2 Desktop scheduled-tasks).
 _WATCHER_PROVIDERS = ("cron", "scheduled-tasks")
@@ -999,90 +1003,32 @@ def _bump_last_progress(state, now_dt):
         state["last_progress_at"] = _now_iso(now_dt)
 
 
-def _lease_live(state, now_dt):
-    """v2.11: a lease is 'live' iff one is recorded and `now_dt` has not yet reached its
-    `expires_at`. Fail-safe the other way from breaker_check's started_at handling: a
-    structurally malformed/missing lease can never PROVE liveness, so it is simply not
-    live — it does not block a claim (unlike a missing wall-clock started_at, which trips a
-    safety breaker; a missing lease just means nobody has claimed the epic yet)."""
-    lease = state.get("lease")
-    if not isinstance(lease, dict):
-        return False
-    exp = lease.get("expires_at")
-    if not isinstance(exp, str):
-        return False
-    try:
-        exp_dt = _parse_iso(exp)
-    except (ValueError, TypeError):
-        return False
-    return now_dt < exp_dt
-
-
-def _valid_pid(pid):
-    """V1-review fix 5: a structurally valid OS pid — a positive int in [1, 2^31-1]
-    (`_PID_MIN`/`_PID_MAX`, the portable pid_t range). Rejects bools (an `isinstance(x, int)`
-    trap in Python), floats, strings, and anything outside the platform's real pid space."""
-    return isinstance(pid, int) and not isinstance(pid, bool) and _PID_MIN <= pid <= _PID_MAX
-
-
-def _pid_alive(pid):
-    """POSIX liveness probe via a signal-0 kill (sends nothing — just checks whether the
-    process exists and is reachable). A permission error still means the process EXISTS
-    (owned by someone else) -> alive. Any other failure (no such process, bad pid) -> not
-    alive. Gated on `_valid_pid` first (never even calls os.kill on a structurally invalid
-    pid). V1-review fix 5: also catches OverflowError — os.kill() raises it (not OSError; it
-    is an ArithmeticError subclass) for a pid so far outside the platform's signed pid_t range
-    that the C layer can't represent it, which a pre-`_valid_pid` version of this function let
-    propagate uncaught. `_valid_pid`'s [1, 2^31-1] gate already excludes every pid that could
-    trigger this on the platforms this ships to, but the catch stays as defense in depth for
-    any caller that reaches os.kill by another path."""
-    if not _valid_pid(pid):
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
+def _heartbeat_stale(state, now_dt, stale_after_min):
+    """Post-integration-review (v2.11 auto-resurrection fix): the SOLE liveness primitive,
+    shared by `liveness_check` and `claim_resume` — no lease, no pid, just the age of
+    `last_progress_at`. A missing/unparseable heartbeat FAILS SAFE as stale-eligible (mirrors
+    `breaker_check`'s started_at fail-safe: an unproven heartbeat can never prove liveness),
+    exactly like the old `time_stale` computation inside `liveness_check` used to — this just
+    extracts it into one shared helper so `claim_resume` can use the IDENTICAL definition of
+    "fresh" instead of re-deriving it (or, worse, drifting from it)."""
+    lp = state.get("last_progress_at")
+    if not isinstance(lp, str):
         return True
-    except OverflowError:
-        return False
-    except OSError:
-        return False
-    return True
+    try:
+        age_min = (now_dt - _parse_iso(lp)).total_seconds() / 60.0
+    except (ValueError, TypeError):
+        return True
+    return age_min >= stale_after_min
 
 
 def _now_arg_in_range(now_dt):
     """v2.11: `--now` is test-only (deterministic selftests) — production callers of
     --liveness/--claim-resume/--renew-lease always use the real OS clock. This sanity-bounds
     an injected `--now` against the real clock so it can never become a production lever for
-    defeating staleness/lease timing by injecting an arbitrary value. V1-review fix 5:
+    defeating staleness timing by injecting an arbitrary value. V1-review fix 5:
     tightened to `_NOW_ARG_MAX_SKEW_DAYS` (~1 day, see its definition)."""
     skew_days = abs((now_dt - datetime.now(timezone.utc)).total_seconds()) / 86400.0
     return skew_days <= _NOW_ARG_MAX_SKEW_DAYS
-
-
-def _validate_lease_ttl(value):
-    """V1-review fix 1: `--lease-ttl-min` (for both `--claim-resume` and `--renew-lease`)
-    must be a FINITE number >= 1 minute. Two failure modes this closes:
-      - non-finite (NaN/inf) or non-numeric: NaN comparisons are always False (a NaN TTL would
-        make `now + timedelta(minutes=NaN)` produce a NaT-like unusable timestamp downstream);
-      - a sub-minute (including 0 or negative) TTL: a lease that expires in under a minute (or
-        expires in the PAST the instant it's written, at TTL<=0) gives a losing contender's
-        very next `--claim-resume` call a real chance to observe it as already-non-live and win
-        a SECOND concurrent claim inside the same resurrection window — exactly the double-claim
-        this whole lease mechanism exists to prevent. TTL=0 is the sharpest instance: it must
-        never let a second contender win, so it is rejected outright, before either caller
-        (`claim_resume`/`renew_lease`) so much as opens the lock file / touches the state.
-    Returns an error string, or None if valid."""
-    if not _is_number(value):
-        return "--lease-ttl-min must be a number (got %r)" % (value,)
-    if not math.isfinite(value):
-        return ("--lease-ttl-min must be finite (got %r) — a NaN/inf TTL would produce an "
-                "unusable lease.expires_at" % (value,))
-    if value < 1:
-        return ("--lease-ttl-min must be >= 1 (got %r) — a sub-minute TTL risks a second "
-                "concurrent claim winning inside the same resurrection window" % (value,))
-    return None
 
 
 def _validate_stale_after(value):
@@ -1948,31 +1894,14 @@ def validate_marathon_state(state):
     rc = state.get("resume_count")
     if rc is not None and not _is_nonneg_int(rc):
         errs.append("'resume_count' is malformed %r (want a non-negative int or absent)" % (rc,))
-    # v2.11: lease is {"owner_pid": int>0, "claimed_at": ISO str, "expires_at": ISO str}, or
-    # absent entirely (never claimed yet) — every key is required together when present (a
-    # partial lease is exactly the kind of hand-edited corruption this validator exists for).
-    lease = state.get("lease")
-    if lease is not None:
-        if not isinstance(lease, dict):
-            errs.append("'lease' is malformed %r (want an object or absent)" % (lease,))
-        else:
-            owner_pid = lease.get("owner_pid")
-            # V1-review fix 5: bounded to the portable pid_t range (_valid_pid), not just
-            # "any positive int" — a hand-edited/corrupt lease.owner_pid far outside that
-            # range used to pass this check and then risk an uncaught OverflowError deep in
-            # _pid_alive's os.kill() call; now it is rejected right here at load time.
-            if not _valid_pid(owner_pid):
-                errs.append("lease.owner_pid is malformed %r (want an int in [%d, %d])"
-                            % (owner_pid, _PID_MIN, _PID_MAX))
-            for k in ("claimed_at", "expires_at"):
-                v = lease.get(k)
-                if not isinstance(v, str):
-                    errs.append("lease.%s is malformed %r (want an ISO-8601 string)" % (k, v))
-                else:
-                    try:
-                        _parse_iso(v)
-                    except (ValueError, TypeError):
-                        errs.append("lease.%s %r is not a valid ISO-8601 timestamp" % (k, v))
+    # Post-integration-review (v2.11 auto-resurrection fix): `lease`/`owner_pid` are REMOVED
+    # from the current schema — `last_progress_at` + the --claim-resume flock are now the sole
+    # liveness/ownership authority (see the module docstring's "Cross-unit integration review"
+    # note). A state written BEFORE this fix may still carry an old-shape `lease` object
+    # (with `owner_pid`); it is deliberately left COMPLETELY UNVALIDATED here — back-compat
+    # means such a state must still LOAD cleanly (never a hard error over an inert, no-longer-
+    # read legacy key), not that its shape is policed. This script never reads or writes
+    # `lease` again after this point.
     # v2.11 Layer B: watcher_registry is a list of {"provider","task_id","armed_at",
     # "disarmed_at","status"} entries, or absent entirely (never armed a watcher yet, or
     # watch is off). Every entry's shape is validated regardless of the epic's current watch
@@ -2023,104 +1952,73 @@ def validate_marathon_state(state):
 
 
 def liveness_check(state, now_dt, stale_after_min=_DEFAULT_STALE_AFTER_MIN):
-    """v2.11 `--liveness` (Plan-review corrections, V1 #2): the watcher's single read-only
-    poll target. Never mutates `state`. Returns exactly:
-      {"incomplete","stale","held","lease_expired","epic_status","terminal","resume_count"}
+    """v2.11 `--liveness` (post-integration-review auto-resurrection fix): the watcher's
+    single read-only poll target. Never mutates `state`. Returns exactly:
+      {"incomplete","stale","epic_status","terminal","resume_count"}
 
     - `terminal` = `is_terminal(state)` — the shared classifier.
     - `incomplete` = `state["status"] != "done"` (a `blocked_needing_human` epic is BOTH
       terminal and incomplete — it halted before finishing successfully).
-    - `held` = a currently-live lease is on file (`_lease_live`).
-    - `lease_expired` = a lease is on file but it is NOT live (distinct from "no lease was
-      ever recorded", which is neither held nor expired — just unclaimed).
-    - `stale` = incomplete AND NOT terminal AND the heartbeat is past `stale_after_min` AND
-      the lease's `owner_pid` is not a live OS process (belt-and-suspenders: an alive owner
-      always defers the watcher, even past the age threshold — advisory only, this function
-      never itself decides to resume; that is `--claim-resume`'s job). A missing/unparseable
-      `last_progress_at` FAILS SAFE as stale-eligible (mirrors `breaker_check`'s
-      started_at fail-safe: an unproven heartbeat can never prove liveness)."""
+    - `stale` = incomplete AND NOT terminal AND `_heartbeat_stale(state, now_dt,
+      stale_after_min)` — the heartbeat's age is now the WHOLE staleness signal. No lease, no
+      pid: the original design's `held`/`lease_expired` fields and the owner-pid
+      belt-and-suspenders check are GONE (see the module docstring's "Cross-unit integration
+      review" note) — the harness has no stable driver pid to check in the first place."""
     terminal = is_terminal(state)
     incomplete = state.get("status") != "done"
-    lease = state.get("lease") if isinstance(state.get("lease"), dict) else None
-    live = _lease_live(state, now_dt)
-    lease_expired = bool(lease) and not live
-    owner_pid = lease.get("owner_pid") if lease else None
-    owner_alive = _pid_alive(owner_pid) if isinstance(owner_pid, int) else False
-    lp = state.get("last_progress_at")
-    time_stale = True  # fail-safe default: an unproven heartbeat reads as stale-eligible
-    if isinstance(lp, str):
-        try:
-            age_min = (now_dt - _parse_iso(lp)).total_seconds() / 60.0
-            time_stale = age_min >= stale_after_min
-        except (ValueError, TypeError):
-            time_stale = True
-    stale = bool(incomplete and not terminal and time_stale and not owner_alive)
+    stale = bool(incomplete and not terminal and _heartbeat_stale(state, now_dt, stale_after_min))
     return {
         "incomplete": incomplete,
         "stale": stale,
-        "held": live,
-        "lease_expired": lease_expired,
         "epic_status": state.get("status"),
         "terminal": terminal,
         "resume_count": state.get("resume_count", 0),
     }
 
 
-def renew_lease(state, owner_pid, now_dt, lease_ttl_min=_DEFAULT_LEASE_TTL_MIN):
-    """v2.11 `--renew-lease`: the lease holder's own periodic heartbeat. Extends
-    `lease.expires_at` to `now + lease_ttl_min` and bumps `last_progress_at`.
+def renew_lease(state, now_dt):
+    """v2.11 `--renew-lease` (post-integration-review auto-resurrection fix): the live
+    driver's own periodic heartbeat. Simply bumps `last_progress_at` to `now`.
 
-    Integration-review fix (Layer C #1, "lease protects a LIVE marathon"): CREATE-or-renew.
-    The very FIRST call a driver makes, at marathon start, has no lease on file yet — it must
-    still be able to acquire one for its own `owner_pid` without going through
-    `--claim-resume` (which is a RESUME operation: it increments `resume_count` and checks the
-    resume-cap breaker, neither of which applies to a fresh, still-running initial driver that
-    never died and is not being resurrected). So an ABSENT lease is a CREATE: this call records
-    a fresh `{owner_pid, claimed_at: now, expires_at: now+ttl}`, exactly like a winning
-    `--claim-resume` would, but WITHOUT touching `resume_count`. A lease already on file for
-    the SAME `owner_pid` is a RENEW: `claimed_at` is preserved, only `expires_at` advances. A
-    lease on file for a DIFFERENT `owner_pid` is still a hard reject — renew never silently
-    takes over a lease another owner holds (that would defeat the whole point of the lease);
-    a genuine takeover only ever happens through `--claim-resume`'s arbitrated transaction.
+    This USED to be a lease create-or-renew keyed by `owner_pid` — that whole mechanism is
+    GONE (see the module docstring's "Cross-unit integration review" note): the Claude Code
+    harness has no stable driver pid to key a lease on, so there is nothing left to "own" or
+    "renew" except the timestamp itself. The flag name is kept as `--renew-lease` (rather than
+    introducing a `--bump-progress` alias) for driver-side stability — callers that already
+    invoke `--renew-lease --owner-pid $$ ...` need only drop the now-rejected `--owner-pid`
+    argument, not learn a new flag name.
 
-    V1-review fix 1: `lease_ttl_min` is validated via `_validate_lease_ttl` up front — a
-    non-finite or sub-minute TTL is a controlled error, no write.
-
-    Not flock-guarded like `--claim-resume`: only the single current owner (the live worker
-    renewing itself, or a fresh driver creating its own first lease) ever calls this, so there
-    is no multi-writer race to arbitrate here — an ordinary mutate-then-let-the-caller-atomic-
-    write path (same as every other mutator in this file) is sufficient. Returns
-    (ok, error|None)."""
+    Not flock-guarded: only the single live driver calls this (never a concurrent watcher —
+    that is exactly what `--claim-resume`'s flock arbitrates), so there is no multi-writer
+    race to arbitrate here — an ordinary mutate-then-let-the-caller-atomic-write path (same as
+    every other mutator in this file) is sufficient. Returns (ok, error|None)."""
     if not _is_marathon(state):
         return False, "--renew-lease requires a marathon-stance epic"
     if not _watch_on(state):
         return False, ("--renew-lease requires the marathon epic's watch opt-in (re-init "
                        "with --stance marathon --watch)")
-    ttl_err = _validate_lease_ttl(lease_ttl_min)
-    if ttl_err:
-        return False, ttl_err
-    lease = state.get("lease")
-    if isinstance(lease, dict) and lease.get("owner_pid") not in (None, owner_pid):
-        return False, ("lease is held by a different owner_pid %r (this caller: %r) — a "
-                       "foreign owner cannot silently take over via --renew-lease; "
-                       "--claim-resume first" % (lease.get("owner_pid"), owner_pid))
-    claimed_at = (lease.get("claimed_at")
-                  if isinstance(lease, dict) and lease.get("owner_pid") == owner_pid
-                  else _now_iso(now_dt))
-    state["lease"] = {"owner_pid": owner_pid, "claimed_at": claimed_at,
-                      "expires_at": _now_iso(now_dt + timedelta(minutes=lease_ttl_min))}
-    _bump_last_progress(state, now_dt)
+    state["last_progress_at"] = _now_iso(now_dt)
     return True, None
 
 
-def claim_resume(state_path, owner_pid, now_dt, lease_ttl_min=_DEFAULT_LEASE_TTL_MIN):
-    """v2.11 `--claim-resume` — THE CRUX (Plan-review corrections, V1 #1, BLOCKER). ONE
+def claim_resume(state_path, now_dt, stale_after_min=_DEFAULT_STALE_AFTER_MIN):
+    """v2.11 `--claim-resume` — THE CRUX (post-integration-review auto-resurrection fix). ONE
     `fcntl.flock`-guarded atomic transaction against `<state_path>.lock`.
+
+    BLOCKER FIX (cross-unit integration review): the ORIGINAL v2.11 design bound ownership to
+    a lease `{"owner_pid","claimed_at","expires_at"}` and an OS-level `_pid_alive` probe. The
+    Claude Code harness has NO stable driver pid — every shell call gets a fresh `$$`, so a
+    watcher's `--owner-pid $$` recorded a Python subprocess pid that died the instant that
+    subprocess exited, permitting duplicate resurrection. `owner_pid` and the `lease` object
+    are REMOVED ENTIRELY. `last_progress_at` + this very flock are now the SOLE liveness/
+    ownership authority — there is no separate "who holds it" record left to check; the flock
+    only serializes WHO gets to evaluate first, and the loser's own reload sees the winner's
+    freshly-bumped heartbeat.
 
     Deliberately diverges from the reused `compound-v-memory.py:542` idiom in ONE respect:
     that idiom is `fcntl.flock(fd, LOCK_EX | LOCK_NB)` with a loser-noop (best-effort — "someone
     else is already refreshing, just skip"). Here every contender MUST evaluate on the merits
-    so its `reason` is always one of the four documented values ("claimed", "live-lease-held",
+    so its `reason` is always one of the four documented values ("claimed", "live",
     "terminal", "resume-cap") — never a fifth "lock busy" outcome that the documented CLI
     contract has no slot for. So this uses a BLOCKING `fcntl.flock(fd, LOCK_EX)` instead of
     `LOCK_NB`. The underlying lock+unlock mechanism (`fcntl.flock` on a sidecar `.lock` file,
@@ -2135,16 +2033,11 @@ def claim_resume(state_path, owner_pid, now_dt, lease_ttl_min=_DEFAULT_LEASE_TTL
       2. Validate stance/watch/structure (marathon + watch required; `validate_marathon_state`
          must be clean) — a structural problem is `ok=False`, no write.
       3. `is_terminal(state)` -> lose with reason "terminal" (no write: nothing changed).
-      4. Live-lease check (integration-review fix, Layer C #1, "lease protects a LIVE
-         marathon" — belt-and-suspenders): lose with reason "live-lease-held" (no write) if
-         EITHER `_lease_live(state, now_dt)` (the timestamp has not yet reached
-         `expires_at`) OR the recorded `lease.owner_pid` is a currently-alive OS process
-         (`_pid_alive`) — checked even when the timestamp says the lease has ALREADY expired.
-         A live long-running marathon (still inside one long feature's pipeline, past its own
-         lease's nominal expiry but never crashed) must never be resurrected out from under
-         itself just because a heartbeat-interval assumption ran long; the OS-level pid check
-         is the second, independent signal that catches exactly that gap. Only a lease whose
-         owner is BOTH time-expired AND not alive (a genuine crash) loses this check.
+      4. FRESH (`not _heartbeat_stale(state, now_dt, stale_after_min)`, i.e. something bumped
+         the heartbeat recently) -> lose with reason "live" (no write) — replaces the old
+         "live-lease-held". Checked BEFORE the resume-cap so a routine watcher poll against an
+         actively-progressing epic that merely happens to already sit at its resume cap can
+         never spuriously trip `blocked_needing_human`; only a STALE epic ever reaches step 5.
       5. `resume_count >= max_resume_count` (boundary: mirrors `can_retry_info`'s
          `attempts < cap` convention elsewhere in this file — a cap of N allows N successful
          claims and blocks the (N+1)th, which is what this check catches BEFORE incrementing)
@@ -2152,24 +2045,21 @@ def claim_resume(state_path, owner_pid, now_dt, lease_ttl_min=_DEFAULT_LEASE_TTL
          so `--clear-breaker` clears it uniformly), persist, lose with reason "resume-cap".
          The persisted latch means a later orphaned scheduler firing sees a terminal state on
          its own next `--claim-resume` and is a harmless no-op (reason "terminal").
-      6. Else: WIN — increment `resume_count`, record a fresh `lease` for `owner_pid`, bump
-         `last_progress_at`, atomic-write, reason "claimed".
-
-    V1-review fix 1: `lease_ttl_min` is validated via `_validate_lease_ttl` BEFORE the
-    transaction — before the lock file is even opened — so a non-finite or sub-minute TTL
-    (including 0, which must never let a second contender double-claim) is rejected with
-    `ok=False` and never reaches the flock/read/write path at all.
+      6. Else: WIN — increment `resume_count`, bump `last_progress_at` to `now`, atomic-write,
+         reason "claimed". The heartbeat bump IS the serialization signal: a second concurrent
+         contender that reloads after this write observes a FRESH heartbeat and loses at
+         step 4, exactly like a real live owner would.
 
     Returns (ok, result|None, error|None):
-      - `ok=False` only for a structural problem (bad --lease-ttl-min, lock/read failure,
+      - `ok=False` only for a structural problem (bad --stale-after-min, lock/read failure,
         non-marathon/non-watch state, a `validate_marathon_state` error) — no write in that
         case.
       - `ok=True` always carries a `result` dict {"claimed","reason","resume_count"}. A LOSING
         claim is still `ok=True` — losing is an expected, successful outcome of the
         transaction, not a script failure; the loser simply does not resume."""
-    ttl_err = _validate_lease_ttl(lease_ttl_min)
-    if ttl_err:
-        return False, None, ttl_err
+    sa_err = _validate_stale_after(stale_after_min)
+    if sa_err:
+        return False, None, sa_err
     lock_path = state_path + ".lock"
     lock_dir = os.path.dirname(os.path.abspath(lock_path)) or "."
     if not os.path.isdir(lock_dir):
@@ -2196,16 +2086,8 @@ def claim_resume(state_path, owner_pid, now_dt, lease_ttl_min=_DEFAULT_LEASE_TTL
             return True, {"claimed": False, "reason": "terminal",
                           "resume_count": resume_count}, None
 
-        # Layer C #1 belt-and-suspenders: a live recorded owner_pid defers the claim even
-        # past its lease's nominal time expiry (see the docstring above) — checked in
-        # addition to, not instead of, the plain time-based _lease_live check.
-        existing_lease = state.get("lease")
-        owner_pid_recorded = (existing_lease.get("owner_pid")
-                              if isinstance(existing_lease, dict) else None)
-        owner_alive = (_pid_alive(owner_pid_recorded)
-                      if isinstance(owner_pid_recorded, int) else False)
-        if _lease_live(state, now_dt) or owner_alive:
-            return True, {"claimed": False, "reason": "live-lease-held",
+        if not _heartbeat_stale(state, now_dt, stale_after_min):
+            return True, {"claimed": False, "reason": "live",
                           "resume_count": resume_count}, None
 
         autonomy = state.get("autonomy", {})
@@ -2223,8 +2105,6 @@ def claim_resume(state_path, owner_pid, now_dt, lease_ttl_min=_DEFAULT_LEASE_TTL
 
         new_count = resume_count + 1
         state["resume_count"] = new_count
-        state["lease"] = {"owner_pid": owner_pid, "claimed_at": _now_iso(now_dt),
-                          "expires_at": _now_iso(now_dt + timedelta(minutes=lease_ttl_min))}
         _bump_last_progress(state, now_dt)
         _atomic_write_json(state_path, state)
         return True, {"claimed": True, "reason": "claimed", "resume_count": new_count}, None
@@ -2265,20 +2145,20 @@ def _read_json(path):
         return json.load(fh)
 
 
-def _cr_worker(state_path, owner_pid, now_iso, barrier, q, lease_ttl_min=_DEFAULT_LEASE_TTL_MIN):
+def _cr_worker(state_path, now_iso, barrier, q, stale_after_min=_DEFAULT_STALE_AFTER_MIN):
     """Module-level (picklable) worker for the --claim-resume concurrency selftest below —
     must live at module scope for multiprocessing's 'spawn' start method (the macOS default)
     to locate it in the freshly re-imported child. Waits on a shared Barrier so all N
     processes call `claim_resume` at (as close to) the same instant as the OS scheduler
     allows, exercising the real cross-process `fcntl.flock` contention path — not just
-    in-process threading, which Python's GIL could mask bugs under. `lease_ttl_min` is
-    parameterized (V1-review fix 1) so the SAME harness can also drive the TTL=0
-    zero-winners concurrency selftest below."""
+    in-process threading, which Python's GIL could mask bugs under. No more `owner_pid`
+    (removed — see the module docstring's "Cross-unit integration review" note);
+    `stale_after_min` is parameterized so the SAME harness can also drive the invalid-
+    --stale-after-min zero-winners concurrency selftest below."""
     try:
         barrier.wait(timeout=10)
         now_dt = _parse_iso(now_iso)
-        ok, result, err = claim_resume(state_path, owner_pid, now_dt,
-                                       lease_ttl_min=lease_ttl_min)
+        ok, result, err = claim_resume(state_path, now_dt, stale_after_min=stale_after_min)
         q.put((ok, result, err))
     except Exception as e:  # pragma: no cover - defensive; surfaces in the parent's queue
         q.put((False, None, "worker exception: %r" % (e,)))
@@ -3693,51 +3573,33 @@ def _selftest():
     check("v2.11: record_audit_failed bumps last_progress_at when watch is on",
           s_raf["last_progress_at"] == _now_iso(t_new))
 
-    # --- _lease_live / _pid_alive ------------------------------------------------------------
-    check("v2.11 _lease_live: no lease -> False", _lease_live({}, t_new) is False)
-    check("v2.11 _lease_live: live lease (future expiry) -> True", _lease_live(
-        {"lease": {"owner_pid": 1,
-                  "expires_at": _now_iso(_parse_iso("2027-01-02T00:00:00+00:00"))}},
-        t_new) is True)
-    check("v2.11 _lease_live: expired lease -> False", _lease_live(
-        {"lease": {"owner_pid": 1,
-                  "expires_at": _now_iso(_parse_iso("2026-01-01T00:00:00+00:00"))}},
-        t_new) is False)
-    check("v2.11 _lease_live: malformed lease (non-dict) -> False",
-          _lease_live({"lease": "junk"}, t_new) is False)
-    check("v2.11 _lease_live: malformed expires_at -> False",
-          _lease_live({"lease": {"owner_pid": 1, "expires_at": 12345}}, t_new) is False)
+    # --- _heartbeat_stale (the sole liveness primitive, post-integration-review fix) --------
+    check("v2.11 _heartbeat_stale: no last_progress_at -> stale (fail-safe)",
+          _heartbeat_stale({}, t_new, 45) is True)
+    check("v2.11 _heartbeat_stale: a recent heartbeat -> not stale",
+          _heartbeat_stale({"last_progress_at": _now_iso(_parse_iso(
+              "2026-12-31T23:59:00+00:00"))}, t_new, 45) is False)
+    check("v2.11 _heartbeat_stale: an old heartbeat -> stale",
+          _heartbeat_stale({"last_progress_at": _now_iso(_parse_iso(
+              "2026-01-01T00:00:00+00:00"))}, t_new, 45) is True)
+    check("v2.11 _heartbeat_stale: a malformed last_progress_at -> stale (fail-safe)",
+          _heartbeat_stale({"last_progress_at": 12345}, t_new, 45) is True)
 
-    check("v2.11 _pid_alive: the current process is alive", _pid_alive(os.getpid()) is True)
-    check("v2.11 _pid_alive: a very-unlikely-to-exist huge pid is not alive",
-          _pid_alive(999999999) is False)
-    check("v2.11 _pid_alive: non-positive/non-int/bool input never raises, returns False",
-          _pid_alive(0) is False and _pid_alive(-1) is False and _pid_alive("x") is False
-          and _pid_alive(None) is False and _pid_alive(True) is False)
-
-    # --- liveness_check ----------------------------------------------------------------------
+    # --- liveness_check (post-fix: last_progress_at only, no lease/pid fields) --------------
     t0 = _parse_iso(v11_live_started)
     v11_live = build_state(v11_feats, "e", "E", stance="marathon",
                            caps={"watch": True, "started_at": v11_live_started})
     lv0 = liveness_check(v11_live, t0)
     check("v2.11 liveness: a fresh watch-on epic is not stale",
           lv0["stale"] is False and lv0["incomplete"] is True and lv0["terminal"] is False
-          and lv0["held"] is False and lv0["lease_expired"] is False
           and lv0["resume_count"] == 0)
+    check("v2.11 liveness: output shape has NO lease/pid fields (held/lease_expired dropped)",
+          set(lv0.keys()) == {"incomplete", "stale", "epic_status", "terminal", "resume_count"})
 
     t_past = _parse_iso("2026-01-01T00:46:00+00:00")  # 46min > default 45min threshold
     lv1 = liveness_check(v11_live, t_past)
-    check("v2.11 liveness: past the default 45min threshold with no live owner -> stale",
+    check("v2.11 liveness: past the default 45min threshold -> stale",
           lv1["stale"] is True)
-
-    v11_live_leased = build_state(v11_feats, "e", "E", stance="marathon",
-                                  caps={"watch": True, "started_at": v11_live_started})
-    v11_live_leased["lease"] = {"owner_pid": os.getpid(), "claimed_at": v11_live_started,
-                                "expires_at": v11_live_started}  # already expired
-    lv2 = liveness_check(v11_live_leased, t_past)
-    check("v2.11 liveness: belt-and-suspenders -- a live OWNER process defers staleness even "
-          "past the age threshold, despite an expired lease",
-          lv2["stale"] is False and lv2["lease_expired"] is True)
 
     v11_live_done = build_state(v11_feats, "e", "E", stance="marathon",
                                 caps={"watch": True, "started_at": v11_live_started})
@@ -3762,47 +3624,64 @@ def _selftest():
     check("v2.11 liveness: a missing last_progress_at FAILS SAFE as stale-eligible",
           lv5["stale"] is True)
 
-    # --- claim_resume: THE CRUX (single-process scenarios) -----------------------------------
+    # --- claim_resume: THE CRUX (post-integration-review fix -- staleness-based, no pid) ----
     v11_cr_dir = _tempfile.mkdtemp()
     try:
         v11_cr_path = os.path.join(v11_cr_dir, "epic-state.json")
         _atomic_write_json(v11_cr_path, build_state(v11_feats, "e", "E", stance="marathon",
                                                      caps={"watch": True,
                                                            "started_at": v11_live_started}))
-        t_claim = _parse_iso("2026-01-01T00:01:00+00:00")
-        ok_c1, res_c1, err_c1 = claim_resume(v11_cr_path, 111, t_claim)
-        check("v2.11 claim_resume: a fresh watch-on epic wins",
+        # FRESH: only 1 minute after start -- well under the default 45min stale_after_min ->
+        # BLOCKER FIX PROOF: a fresh marathon is NEVER resurrected -- loses, reason "live".
+        t_fresh = _parse_iso("2026-01-01T00:01:00+00:00")
+        ok_fr, res_fr, err_fr = claim_resume(v11_cr_path, t_fresh)
+        check("v2.11 claim_resume: a FRESH marathon (recent last_progress_at) loses "
+              "(reason 'live') -- the BLOCKER fix",
+              ok_fr and res_fr["claimed"] is False and res_fr["reason"] == "live"
+              and res_fr["resume_count"] == 0)
+        on_disk_fresh = _read_json(v11_cr_path)
+        check("v2.11 claim_resume: a losing FRESH claim does NOT mutate resume_count/"
+              "last_progress_at",
+              on_disk_fresh.get("resume_count") is None
+              and on_disk_fresh["last_progress_at"] == v11_live_started)
+
+        # STALE: 60 minutes after start -- past the default 45min threshold -> WINS.
+        t_stale = _parse_iso("2026-01-01T01:00:00+00:00")
+        ok_c1, res_c1, err_c1 = claim_resume(v11_cr_path, t_stale)
+        check("v2.11 claim_resume: a STALE watch-on epic wins",
               ok_c1 and res_c1["claimed"] is True and res_c1["reason"] == "claimed"
               and res_c1["resume_count"] == 1)
         on_disk1 = _read_json(v11_cr_path)
-        check("v2.11 claim_resume: lease persisted with the correct owner_pid",
-              on_disk1["lease"]["owner_pid"] == 111)
-        check("v2.11 claim_resume: lease.expires_at == claimed_at + default TTL",
-              on_disk1["lease"]["expires_at"]
-              == _now_iso(t_claim + timedelta(minutes=_DEFAULT_LEASE_TTL_MIN)))
+        check("v2.11 claim_resume: last_progress_at bumped to now on a win",
+              on_disk1["last_progress_at"] == _now_iso(t_stale))
         check("v2.11 claim_resume: resume_count persisted", on_disk1["resume_count"] == 1)
-        check("v2.11 claim_resume: last_progress_at bumped",
-              on_disk1["last_progress_at"] == _now_iso(t_claim))
+        check("v2.11 claim_resume: no 'lease' key is ever written by a win",
+              "lease" not in on_disk1)
 
-        t_claim2 = _parse_iso("2026-01-01T00:02:00+00:00")  # still inside the 15min lease TTL
-        ok_c2, res_c2, err_c2 = claim_resume(v11_cr_path, 222, t_claim2)
-        check("v2.11 claim_resume: a second owner loses to a still-live lease",
-              ok_c2 and res_c2["claimed"] is False and res_c2["reason"] == "live-lease-held"
+        # A second claim right after the win sees the JUST-BUMPED heartbeat -- FRESH -> loses
+        # "live". This is the concurrency-race mechanism in single-process miniature: the
+        # heartbeat bump IS the serialization signal, replacing the old lease.
+        t_claim2 = t_stale + timedelta(minutes=2)  # well under the 45min threshold
+        ok_c2, res_c2, err_c2 = claim_resume(v11_cr_path, t_claim2)
+        check("v2.11 claim_resume: a second claim on the now-fresh epic loses (reason 'live')",
+              ok_c2 and res_c2["claimed"] is False and res_c2["reason"] == "live"
               and res_c2["resume_count"] == 1)
         on_disk2 = _read_json(v11_cr_path)
-        check("v2.11 claim_resume: a losing claim does NOT mutate resume_count/lease",
-              on_disk2["resume_count"] == 1 and on_disk2["lease"]["owner_pid"] == 111)
+        check("v2.11 claim_resume: a losing claim does NOT mutate resume_count/"
+              "last_progress_at",
+              on_disk2["resume_count"] == 1
+              and on_disk2["last_progress_at"] == on_disk1["last_progress_at"])
 
         v11_cr_chk_path = os.path.join(v11_cr_dir, "chk.json")
         _atomic_write_json(v11_cr_chk_path, build_state(v11_feats, "e", "E"))
-        ok_c3, res_c3, err_c3 = claim_resume(v11_cr_chk_path, 111, t_claim)
+        ok_c3, res_c3, err_c3 = claim_resume(v11_cr_chk_path, t_stale)
         check("v2.11 claim_resume: a checkpoint state -> ok=False, marathon-only error",
               ok_c3 is False and res_c3 is None and "marathon" in err_c3)
 
         v11_cr_nowatch_path = os.path.join(v11_cr_dir, "nowatch.json")
         _atomic_write_json(v11_cr_nowatch_path,
                           build_state(v11_feats, "e", "E", stance="marathon", caps={}))
-        ok_c4, res_c4, err_c4 = claim_resume(v11_cr_nowatch_path, 111, t_claim)
+        ok_c4, res_c4, err_c4 = claim_resume(v11_cr_nowatch_path, t_stale)
         check("v2.11 claim_resume: marathon-without-watch -> ok=False, watch-only error",
               ok_c4 is False and res_c4 is None and "watch" in err_c4)
 
@@ -3813,31 +3692,34 @@ def _selftest():
         apply_update(v11_cr_done, "a", "done", now_dt=t0)
         record_final_review(v11_cr_done, "passed", now_dt=t0)
         _atomic_write_json(v11_cr_done_path, v11_cr_done)
-        ok_c5, res_c5, err_c5 = claim_resume(v11_cr_done_path, 111, t_claim)
+        ok_c5, res_c5, err_c5 = claim_resume(v11_cr_done_path, t_stale)
         check("v2.11 claim_resume: a terminal (done) epic loses with reason 'terminal'",
               ok_c5 and res_c5["claimed"] is False and res_c5["reason"] == "terminal")
         on_disk5 = _read_json(v11_cr_done_path)
-        check("v2.11 claim_resume: a terminal loss does NOT write resume_count/lease",
-              "resume_count" not in on_disk5 and "lease" not in on_disk5)
+        check("v2.11 claim_resume: a terminal loss does NOT write resume_count",
+              "resume_count" not in on_disk5)
 
+        # --- resume-cap (cap=1): the 1st claim wins on a STALE epic; the epic must go STALE
+        # AGAIN (not merely "past its old TTL") before the 2nd claim can even reach the
+        # resume-cap check -- see claim_resume's docstring for why FRESH is checked first.
         v11_cr_cap_path = os.path.join(v11_cr_dir, "cap.json")
         _atomic_write_json(v11_cr_cap_path,
                           build_state(v11_feats, "e", "E", stance="marathon",
                                      caps={"watch": True, "max_resume_count": 1,
                                            "started_at": v11_live_started}))
-        ok_cap1, res_cap1, _ = claim_resume(v11_cr_cap_path, 333, t_claim)
-        check("v2.11 claim_resume resume-cap: the 1st claim (cap=1) succeeds",
+        ok_cap1, res_cap1, _ = claim_resume(v11_cr_cap_path, t_stale)
+        check("v2.11 claim_resume resume-cap: the 1st claim (cap=1, epic stale) succeeds",
               ok_cap1 and res_cap1["claimed"] is True and res_cap1["resume_count"] == 1)
-        t_claim_late = t_claim + timedelta(minutes=_DEFAULT_LEASE_TTL_MIN + 1)
-        ok_cap2, res_cap2, _ = claim_resume(v11_cr_cap_path, 444, t_claim_late)
-        check("v2.11 claim_resume resume-cap: the 2nd claim (== cap) is BLOCKED, "
-              "reason resume-cap",
+        t_claim_late = t_stale + timedelta(minutes=50)  # >45min since the bump at t_stale
+        ok_cap2, res_cap2, _ = claim_resume(v11_cr_cap_path, t_claim_late)
+        check("v2.11 claim_resume resume-cap: the 2nd claim (== cap, epic stale again) is "
+              "BLOCKED, reason resume-cap",
               ok_cap2 and res_cap2["claimed"] is False and res_cap2["reason"] == "resume-cap")
         on_disk_cap = _read_json(v11_cr_cap_path)
         check("v2.11 claim_resume resume-cap: trips the epic to blocked_needing_human",
               on_disk_cap["status"] == "blocked_needing_human"
               and on_disk_cap["breaker_trip"]["which"] == ["max_resume_count"])
-        ok_cap3, res_cap3, _ = claim_resume(v11_cr_cap_path, 555, t_claim_late)
+        ok_cap3, res_cap3, _ = claim_resume(v11_cr_cap_path, t_claim_late + timedelta(minutes=1))
         check("v2.11 claim_resume resume-cap: the persisted latch makes a 3rd attempt a "
               "harmless no-op (reason 'terminal', not re-tripping)",
               ok_cap3 and res_cap3["claimed"] is False and res_cap3["reason"] == "terminal")
@@ -3851,141 +3733,74 @@ def _selftest():
               and cleared_state["resume_count"] == 0
               and cleared_state["status"] != "blocked_needing_human")
         _atomic_write_json(v11_cr_cap_path, cleared_state)
-        ok_cap4, res_cap4, _ = claim_resume(v11_cr_cap_path, 666, t_claim_late)
+        # clear_breaker ITSELF bumps last_progress_at to t_claim_late (a human re-arm counts
+        # as fresh progress too) -- the epic is FRESH again right after the re-arm, so the
+        # next claim must wait past the staleness threshold once more before it can win.
+        t_claim_rearmed = t_claim_late + timedelta(minutes=50)
+        ok_cap4, res_cap4, _ = claim_resume(v11_cr_cap_path, t_claim_rearmed)
         check("v2.11 claim_resume resume-cap: a claim succeeds again after "
               "--reset-resume-count",
               ok_cap4 and res_cap4["claimed"] is True and res_cap4["resume_count"] == 1)
 
-        # --- integration-review fix (Layer C #2): resume_count contract = "permits N,
-        # blocks N+1" -- re-verify the FULL boundary at cap=2 (two claims succeed, the third
-        # is blocked), not just the cap=1 edge case above.
+        # --- integration-review fix (Layer C #2, unaffected by the pid fix): resume_count
+        # contract = "permits N, blocks N+1" -- re-verify the FULL boundary at cap=2 (two
+        # claims succeed, the third is blocked), not just the cap=1 edge case above.
         v11_cr_cap2_path = os.path.join(v11_cr_dir, "cap2.json")
         _atomic_write_json(v11_cr_cap2_path,
                           build_state(v11_feats, "e", "E", stance="marathon",
                                      caps={"watch": True, "max_resume_count": 2,
                                            "started_at": v11_live_started}))
-        ok_c2a, res_c2a, _ = claim_resume(v11_cr_cap2_path, 701, t_claim)
+        ok_c2a, res_c2a, _ = claim_resume(v11_cr_cap2_path, t_stale)
         check("v2.11 claim_resume resume-cap=2: the 1st claim succeeds",
               ok_c2a and res_c2a["claimed"] is True and res_c2a["resume_count"] == 1)
-        t_c2b = t_claim + timedelta(minutes=_DEFAULT_LEASE_TTL_MIN + 1)
-        ok_c2b, res_c2b, _ = claim_resume(v11_cr_cap2_path, 702, t_c2b)
+        t_c2b = t_stale + timedelta(minutes=50)
+        ok_c2b, res_c2b, _ = claim_resume(v11_cr_cap2_path, t_c2b)
         check("v2.11 claim_resume resume-cap=2: the 2nd claim (== cap) still succeeds",
               ok_c2b and res_c2b["claimed"] is True and res_c2b["resume_count"] == 2)
-        t_c2c = t_c2b + timedelta(minutes=_DEFAULT_LEASE_TTL_MIN + 1)
-        ok_c2c, res_c2c, _ = claim_resume(v11_cr_cap2_path, 703, t_c2c)
+        t_c2c = t_c2b + timedelta(minutes=50)
+        ok_c2c, res_c2c, _ = claim_resume(v11_cr_cap2_path, t_c2c)
         check("v2.11 claim_resume resume-cap=2: the 3rd claim (cap+1) is BLOCKED",
               ok_c2c and res_c2c["claimed"] is False and res_c2c["reason"] == "resume-cap")
 
-        # --- V1-review fix 1: --lease-ttl-min is validated BEFORE the transaction ----------
-        ttl0_path = os.path.join(v11_cr_dir, "ttl0.json")
-        _atomic_write_json(ttl0_path, build_state(v11_feats, "e", "E", stance="marathon",
-                                                   caps={"watch": True,
-                                                         "started_at": v11_live_started}))
-        ok_ttl0, res_ttl0, err_ttl0 = claim_resume(ttl0_path, 801, t_claim, lease_ttl_min=0)
-        check("v2.11 claim_resume: TTL=0 is rejected BEFORE the transaction (ok=False)",
-              ok_ttl0 is False and res_ttl0 is None and "lease-ttl-min" in err_ttl0)
-        check("v2.11 claim_resume: a rejected TTL=0 call makes NO write at all",
-              _read_json(ttl0_path).get("resume_count") is None)
-        ok_ttlnan, _, err_ttlnan = claim_resume(ttl0_path, 801, t_claim,
-                                                lease_ttl_min=float("nan"))
-        check("v2.11 claim_resume: a NaN TTL is rejected", ok_ttlnan is False
-              and "finite" in err_ttlnan)
-        ok_ttlok, res_ttlok, _ = claim_resume(ttl0_path, 801, t_claim, lease_ttl_min=1)
-        check("v2.11 claim_resume: a TTL == 1 (the floor) is accepted",
-              ok_ttlok and res_ttlok["claimed"] is True)
-
-        # --- Layer C #1 belt-and-suspenders: a LIVE owner_pid defers the claim even past a
-        # time-EXPIRED lease; a DEAD owner + stale lease still wins -----------------------
-        live_owner_path = os.path.join(v11_cr_dir, "live-owner.json")
-        live_owner_state = build_state(v11_feats, "e", "E", stance="marathon",
-                                       caps={"watch": True, "started_at": v11_live_started})
-        # This process's own pid is unambiguously alive; expires_at is deliberately in the
-        # PAST relative to t_past below, so only the pid-liveness check can save this claim.
-        live_owner_state["lease"] = {"owner_pid": os.getpid(),
-                                     "claimed_at": v11_live_started,
-                                     "expires_at": v11_live_started}
-        _atomic_write_json(live_owner_path, live_owner_state)
-        ok_lo, res_lo, _ = claim_resume(live_owner_path, 999, t_past)
-        check("v2.11 claim_resume Layer C#1: a LIVE owner_pid defers the claim despite an "
-              "EXPIRED lease timestamp",
-              ok_lo and res_lo["claimed"] is False and res_lo["reason"] == "live-lease-held")
-
-        dead_owner_path = os.path.join(v11_cr_dir, "dead-owner.json")
-        dead_owner_state = build_state(v11_feats, "e", "E", stance="marathon",
-                                       caps={"watch": True, "started_at": v11_live_started})
-        dead_owner_state["lease"] = {"owner_pid": 999999999,  # not a live process
-                                     "claimed_at": v11_live_started,
-                                     "expires_at": v11_live_started}
-        _atomic_write_json(dead_owner_path, dead_owner_state)
-        ok_do, res_do, _ = claim_resume(dead_owner_path, 1000, t_past)
-        check("v2.11 claim_resume Layer C#1: a DEAD owner_pid + a stale/expired lease -> wins",
-              ok_do and res_do["claimed"] is True and res_do["reason"] == "claimed")
+        # --- --stale-after-min is validated BEFORE the transaction (replaces the old
+        # --lease-ttl-min validation -- there is no lease/TTL left to validate) -------------
+        sa_path = os.path.join(v11_cr_dir, "sa.json")
+        _atomic_write_json(sa_path, build_state(v11_feats, "e", "E", stance="marathon",
+                                                caps={"watch": True,
+                                                      "started_at": v11_live_started}))
+        ok_sa0, res_sa0, err_sa0 = claim_resume(sa_path, t_stale, stale_after_min=0)
+        check("v2.11 claim_resume: --stale-after-min=0 is rejected BEFORE the transaction "
+              "(ok=False)", ok_sa0 is False and res_sa0 is None and "stale-after-min" in err_sa0)
+        check("v2.11 claim_resume: a rejected --stale-after-min call makes NO write at all",
+              _read_json(sa_path).get("resume_count") is None)
+        ok_sanan, _, err_sanan = claim_resume(sa_path, t_stale, stale_after_min=float("nan"))
+        check("v2.11 claim_resume: a NaN --stale-after-min is rejected", ok_sanan is False
+              and "finite" in err_sanan)
+        ok_saok, res_saok, _ = claim_resume(sa_path, t_stale, stale_after_min=1)
+        check("v2.11 claim_resume: a small positive --stale-after-min is accepted",
+              ok_saok and res_saok["claimed"] is True)
     finally:
         shutil.rmtree(v11_cr_dir, ignore_errors=True)
 
-    # --- renew_lease ---------------------------------------------------------------------
-    v11_rl_dir = _tempfile.mkdtemp()
-    try:
-        v11_rl_path = os.path.join(v11_rl_dir, "epic-state.json")
-        _atomic_write_json(v11_rl_path, build_state(v11_feats, "e", "E", stance="marathon",
-                                                     caps={"watch": True,
-                                                           "started_at": v11_live_started}))
-        t_claim = _parse_iso("2026-01-01T00:01:00+00:00")
-        claim_resume(v11_rl_path, 777, t_claim)
-        rl_state = _read_json(v11_rl_path)
-        old_expiry = rl_state["lease"]["expires_at"]
-        t_renew = t_claim + timedelta(minutes=5)
-        ok_rl1, err_rl1 = renew_lease(rl_state, 777, t_renew)
-        check("v2.11 renew_lease: a matching owner_pid extends expires_at",
-              ok_rl1 and rl_state["lease"]["expires_at"] > old_expiry)
-        check("v2.11 renew_lease: bumps last_progress_at too",
-              rl_state["last_progress_at"] == _now_iso(t_renew))
+    # --- renew_lease (post-fix: pure last_progress_at bump -- no pid, no lease, no TTL) -----
+    rl_state = build_state(v11_feats, "e", "E", stance="marathon",
+                           caps={"watch": True, "started_at": v11_live_started})
+    old_lpa = rl_state["last_progress_at"]
+    t_renew = _parse_iso(v11_live_started) + timedelta(minutes=5)
+    ok_rl1, err_rl1 = renew_lease(rl_state, t_renew)
+    check("v2.11 renew_lease: bumps last_progress_at to now",
+          ok_rl1 and rl_state["last_progress_at"] == _now_iso(t_renew) != old_lpa)
+    check("v2.11 renew_lease: writes no 'lease' key", "lease" not in rl_state)
 
-        ok_rl2, err_rl2 = renew_lease(rl_state, 888, t_renew)
-        check("v2.11 renew_lease: a mismatched owner_pid is rejected (never a silent "
-              "takeover)", ok_rl2 is False and "different owner_pid" in err_rl2)
+    rl_nowatch = build_state(v11_feats, "e", "E", stance="marathon", caps={})
+    ok_rl4, err_rl4 = renew_lease(rl_nowatch, t_renew)
+    check("v2.11 renew_lease: marathon-without-watch is rejected",
+          ok_rl4 is False and "watch" in err_rl4)
 
-        # Integration-review fix (Layer C #1): CREATE-or-renew — an ABSENT lease is CREATED
-        # for the caller's own owner_pid, so a fresh driver can acquire its first lease at
-        # marathon start WITHOUT going through --claim-resume (which is resume-only: it
-        # bumps resume_count and checks the resume-cap breaker, neither applicable here).
-        rl_no_lease = build_state(v11_feats, "e", "E", stance="marathon",
-                                  caps={"watch": True, "started_at": v11_live_started})
-        ok_rl3, err_rl3 = renew_lease(rl_no_lease, 777, t_renew)
-        check("v2.11 renew_lease Layer C#1: an ABSENT lease is CREATED for the caller",
-              ok_rl3 and rl_no_lease["lease"]["owner_pid"] == 777)
-        check("v2.11 renew_lease Layer C#1: creating a lease does NOT touch resume_count",
-              "resume_count" not in rl_no_lease)
-        created_claimed_at = rl_no_lease["lease"]["claimed_at"]
-        check("v2.11 renew_lease Layer C#1: a freshly-created lease's claimed_at == now",
-              created_claimed_at == _now_iso(t_renew))
-        t_renew2 = t_renew + timedelta(minutes=3)
-        ok_rl3b, err_rl3b = renew_lease(rl_no_lease, 777, t_renew2)
-        check("v2.11 renew_lease Layer C#1: renewing the SAME owner_pid again preserves the "
-              "original claimed_at (a true renew, not a re-create)",
-              ok_rl3b and rl_no_lease["lease"]["claimed_at"] == created_claimed_at
-              and rl_no_lease["lease"]["expires_at"] == _now_iso(t_renew2 + timedelta(
-                  minutes=_DEFAULT_LEASE_TTL_MIN)))
-
-        rl_nowatch = build_state(v11_feats, "e", "E", stance="marathon", caps={})
-        ok_rl4, err_rl4 = renew_lease(rl_nowatch, 777, t_renew)
-        check("v2.11 renew_lease: marathon-without-watch is rejected",
-              ok_rl4 is False and "watch" in err_rl4)
-
-        rl_chk = build_state(v11_feats, "e", "E")
-        ok_rl5, err_rl5 = renew_lease(rl_chk, 777, t_renew)
-        check("v2.11 renew_lease: a checkpoint state is rejected",
-              ok_rl5 is False and "marathon" in err_rl5)
-
-        # V1-review fix 1: --lease-ttl-min validated the same way as --claim-resume's.
-        rl_ttl_state = build_state(v11_feats, "e", "E", stance="marathon",
-                                   caps={"watch": True, "started_at": v11_live_started})
-        ok_rlttl0, err_rlttl0 = renew_lease(rl_ttl_state, 777, t_renew, lease_ttl_min=0)
-        check("v2.11 renew_lease: a TTL=0 is rejected, no write",
-              ok_rlttl0 is False and "lease-ttl-min" in err_rlttl0
-              and "lease" not in rl_ttl_state)
-    finally:
-        shutil.rmtree(v11_rl_dir, ignore_errors=True)
+    rl_chk = build_state(v11_feats, "e", "E")
+    ok_rl5, err_rl5 = renew_lease(rl_chk, t_renew)
+    check("v2.11 renew_lease: a checkpoint state is rejected",
+          ok_rl5 is False and "marathon" in err_rl5)
 
     # --- validate_marathon_state: v2.11 fields ------------------------------------------------
     v11_vm_good = build_state(v11_feats, "e", "E", stance="marathon",
@@ -4008,36 +3823,26 @@ def _selftest():
     check("v2.11 validate: a malformed last_progress_at -> error",
           any("last_progress_at" in e for e in validate_marathon_state(v11_vm_bad_lpa)))
 
-    v11_vm_bad_lease1 = build_state(v11_feats, "e", "E", stance="marathon", caps={})
-    v11_vm_bad_lease1["lease"] = "junk"
-    check("v2.11 validate: a non-dict lease -> error",
-          any("lease" in e for e in validate_marathon_state(v11_vm_bad_lease1)))
+    # --- back-compat (integration-review fix): an OLD-SHAPE lease (with owner_pid), written
+    # by a pre-fix version of this script, must still LOAD cleanly -- it is dead, unvalidated,
+    # unread data now, never a hard error over an inert legacy key.
+    v11_vm_legacy_lease = build_state(v11_feats, "e", "E", stance="marathon", caps={})
+    v11_vm_legacy_lease["lease"] = {"owner_pid": 4242, "claimed_at": v11_live_started,
+                                    "expires_at": v11_live_started}
+    check("v2.11 validate back-compat: an old-shape lease (with owner_pid) still loads clean",
+          validate_marathon_state(v11_vm_legacy_lease) == [])
 
-    v11_vm_bad_lease2 = build_state(v11_feats, "e", "E", stance="marathon", caps={})
-    v11_vm_bad_lease2["lease"] = {"owner_pid": -1, "claimed_at": "x", "expires_at": "y"}
-    check("v2.11 validate: a malformed lease (bad owner_pid + bad timestamps) -> multiple "
-          "errors", len([e for e in validate_marathon_state(v11_vm_bad_lease2)
-                        if "lease" in e]) >= 2)
-
-    v11_vm_good_lease = build_state(v11_feats, "e", "E", stance="marathon", caps={})
-    v11_vm_good_lease["lease"] = {"owner_pid": 123, "claimed_at": v11_live_started,
-                                  "expires_at": v11_live_started}
-    check("v2.11 validate: a well-formed lease validates clean",
-          validate_marathon_state(v11_vm_good_lease) == [])
+    v11_vm_legacy_lease_garbage = build_state(v11_feats, "e", "E", stance="marathon", caps={})
+    v11_vm_legacy_lease_garbage["lease"] = {"owner_pid": -(2 ** 62), "claimed_at": "not-iso",
+                                            "expires_at": "also-not-iso"}
+    check("v2.11 validate back-compat: an old-shape lease with garbage fields ALSO loads "
+          "clean (the whole 'lease' key is inert, unvalidated legacy data now)",
+          validate_marathon_state(v11_vm_legacy_lease_garbage) == [])
 
     v11_vm_bad_cap = build_state(v11_feats, "e", "E", stance="marathon", caps={"watch": True})
     v11_vm_bad_cap["autonomy"]["max_resume_count"] = -5
     check("v2.11 validate: a negative autonomy.max_resume_count -> error",
           validate_marathon_state(v11_vm_bad_cap) != [])
-
-    # V1-review fix 5: lease.owner_pid is now bounded to [_PID_MIN, _PID_MAX], not just "any
-    # positive int" -- a huge owner_pid must be REJECTED at load time (it used to pass this
-    # check and then risk an uncaught OverflowError deep in _pid_alive's os.kill()).
-    v11_vm_huge_pid = build_state(v11_feats, "e", "E", stance="marathon", caps={})
-    v11_vm_huge_pid["lease"] = {"owner_pid": 2 ** 62, "claimed_at": v11_live_started,
-                               "expires_at": v11_live_started}
-    check("v2.11 validate fix 5: an out-of-range lease.owner_pid -> error",
-          any("owner_pid" in e for e in validate_marathon_state(v11_vm_huge_pid)))
 
     # --- Layer B: watcher_registry validation -------------------------------------------
     v11_vm_wr_good = build_state(v11_feats, "e", "E", stance="marathon", caps={"watch": True})
@@ -4188,21 +3993,7 @@ def _selftest():
           "(would have passed the old 3650-day placeholder)",
           _now_arg_in_range(datetime.now(timezone.utc) - timedelta(days=3)) is False)
 
-    # --- V1-review fix 5: _valid_pid / _pid_alive(OverflowError) / _validate_stale_after --
-    check("v2.11 _valid_pid: 1 (the floor) is valid", _valid_pid(1) is True)
-    check("v2.11 _valid_pid: 2^31-1 (the ceiling) is valid", _valid_pid(_PID_MAX) is True)
-    check("v2.11 _valid_pid: 0 is invalid", _valid_pid(0) is False)
-    check("v2.11 _valid_pid: a negative pid is invalid", _valid_pid(-1) is False)
-    check("v2.11 _valid_pid: 2^31 (one past the ceiling) is invalid",
-          _valid_pid(_PID_MAX + 1) is False)
-    check("v2.11 _valid_pid: a bool is invalid (isinstance(x, int) trap)",
-          _valid_pid(True) is False)
-    check("v2.11 _valid_pid: a float/string/None is invalid",
-          _valid_pid(1.0) is False and _valid_pid("1") is False and _valid_pid(None) is False)
-
-    check("v2.11 _pid_alive fix 5: a pid far outside pid_t range never raises, returns False",
-          _pid_alive(2 ** 62) is False and _pid_alive(-(2 ** 62)) is False)
-
+    # --- V1-review fix 5: _validate_stale_after (the sole timing knob left, post pid-fix) --
     check("v2.11 _validate_stale_after: a positive number is valid",
           _validate_stale_after(45) is None and _validate_stale_after(0.5) is None)
     check("v2.11 _validate_stale_after: zero is rejected",
@@ -4215,54 +4006,40 @@ def _selftest():
     check("v2.11 _validate_stale_after: a non-number is rejected",
           _validate_stale_after("45") is not None)
 
-    # --- V1-review fix 1: _validate_lease_ttl -----------------------------------------------
-    check("v2.11 _validate_lease_ttl: 1 (the floor) is valid", _validate_lease_ttl(1) is None)
-    check("v2.11 _validate_lease_ttl: 15 (the default) is valid",
-          _validate_lease_ttl(15) is None)
-    check("v2.11 _validate_lease_ttl: 0 is rejected (must never allow a double-claim)",
-          _validate_lease_ttl(0) is not None)
-    check("v2.11 _validate_lease_ttl: a sub-minute value (0.5) is rejected",
-          _validate_lease_ttl(0.5) is not None)
-    check("v2.11 _validate_lease_ttl: a negative value is rejected",
-          _validate_lease_ttl(-5) is not None)
-    check("v2.11 _validate_lease_ttl: NaN/inf are rejected",
-          _validate_lease_ttl(float("nan")) is not None
-          and _validate_lease_ttl(float("inf")) is not None)
-    check("v2.11 _validate_lease_ttl: a non-number is rejected",
-          _validate_lease_ttl("15") is not None)
-
-    # --- V1-review fix 1 + fix 2 concurrency: TTL=0 -> ZERO winners; --reset-resume-count is
-    # watch-gated and a watch-off --clear-breaker stays byte-identical to v2.10 -------------
+    # --- post-integration-review concurrency: an invalid --stale-after-min -> ZERO winners
+    # (replaces the old TTL=0 test -- there is no lease/TTL left, but --stale-after-min is
+    # STILL validated BEFORE the transaction, before the lock is even opened);
+    # --reset-resume-count is watch-gated and a watch-off --clear-breaker stays byte-
+    # identical to v2.10 -----------------------------------------------------------------
     import multiprocessing  # imported again (cheap, cached) below the concurrency section too
-    ttl0_conc_dir = _tempfile.mkdtemp()
+    sa0_conc_dir = _tempfile.mkdtemp()
     try:
-        ttl0_conc_path = os.path.join(ttl0_conc_dir, "epic-state.json")
-        _atomic_write_json(ttl0_conc_path, build_state(
+        sa0_conc_path = os.path.join(sa0_conc_dir, "epic-state.json")
+        _atomic_write_json(sa0_conc_path, build_state(
             v11_feats, "e", "E", stance="marathon",
             caps={"watch": True, "started_at": v11_live_started}))
         N0 = 6
         barrier0 = multiprocessing.Barrier(N0)
         q0 = multiprocessing.Queue()
-        now_iso_ttl0 = _now_iso(_parse_iso("2026-01-01T00:01:00+00:00"))
+        now_iso_sa0 = _now_iso(_parse_iso("2026-01-01T01:00:00+00:00"))
         procs0 = [multiprocessing.Process(target=_cr_worker,
-                                          args=(ttl0_conc_path, 20000 + i, now_iso_ttl0,
-                                                barrier0, q0, 0))
+                                          args=(sa0_conc_path, now_iso_sa0, barrier0, q0, 0))
                  for i in range(N0)]
         for pr in procs0:
             pr.start()
         for pr in procs0:
             pr.join(timeout=20)
         results0 = [q0.get(timeout=10) for _ in range(N0)]
-        check("v2.11 claim_resume concurrency TTL=0: every call is rejected (ok=False), "
-              "none proceed to the transaction",
+        check("v2.11 claim_resume concurrency invalid --stale-after-min: every call is "
+              "rejected (ok=False), none proceed to the transaction",
               all(r[0] is False for r in results0))
         winners0 = [r for r in results0 if r[0] and r[1] and r[1].get("claimed") is True]
-        check("v2.11 claim_resume concurrency TTL=0: ZERO winners (a TTL=0 must never let a "
-              "second contender double-claim)", len(winners0) == 0)
-        check("v2.11 claim_resume concurrency TTL=0: no write occurred at all",
-              _read_json(ttl0_conc_path).get("resume_count") is None)
+        check("v2.11 claim_resume concurrency invalid --stale-after-min: ZERO winners",
+              len(winners0) == 0)
+        check("v2.11 claim_resume concurrency invalid --stale-after-min: no write occurred "
+              "at all", _read_json(sa0_conc_path).get("resume_count") is None)
     finally:
-        shutil.rmtree(ttl0_conc_dir, ignore_errors=True)
+        shutil.rmtree(sa0_conc_dir, ignore_errors=True)
 
     # V1-review fix 2: --reset-resume-count on a watch-OFF marathon is a controlled error.
     cb_watchoff = build_state(v11_feats, "e", "E", stance="marathon", caps={})
@@ -4298,7 +4075,12 @@ def _selftest():
     # --- claim_resume concurrency: exactly one of N wins under a REAL OS-level flock race
     # (multiprocessing.Barrier synchronizes N separate PROCESSES, not just threads/coroutines,
     # so this exercises the actual fcntl.flock contention path, not something the GIL could
-    # mask) ---------------------------------------------------------------------------------
+    # mask). DoD proof #3: the epic must be genuinely STALE at race time (1 HOUR past
+    # started_at, past the default 45min threshold) -- the first process through the flock
+    # wins and bumps last_progress_at to "now"; every other process then reloads and sees a
+    # FRESH heartbeat, losing with reason "live" -- this IS the mechanism that guarantees a
+    # FRESH marathon is never resurrected, proven under real multi-process contention, not
+    # just in the single-process scenarios above. ------------------------------------------
     import multiprocessing
     cr_conc_dir = _tempfile.mkdtemp()
     try:
@@ -4309,10 +4091,9 @@ def _selftest():
         N = 8
         barrier = multiprocessing.Barrier(N)
         q = multiprocessing.Queue()
-        now_iso_conc = _now_iso(_parse_iso("2026-01-01T00:01:00+00:00"))
+        now_iso_conc = _now_iso(_parse_iso("2026-01-01T01:00:00+00:00"))  # 60min -> STALE
         procs = [multiprocessing.Process(target=_cr_worker,
-                                         args=(cr_conc_path, 10000 + i, now_iso_conc,
-                                               barrier, q))
+                                         args=(cr_conc_path, now_iso_conc, barrier, q))
                 for i in range(N)]
         for pr in procs:
             pr.start()
@@ -4323,18 +4104,18 @@ def _selftest():
         check("v2.11 claim_resume concurrency: all %d calls returned ok=True "
               "(no lock/read errors)" % N, len(oks) == N)
         winners = [r for r in results if r[0] and r[1] and r[1].get("claimed") is True]
-        check("v2.11 claim_resume concurrency: exactly ONE of %d concurrent claims wins" % N,
-              len(winners) == 1)
+        check("v2.11 claim_resume concurrency: exactly ONE of %d concurrent claims wins on a "
+              "STALE epic" % N, len(winners) == 1)
         losers = [r for r in results if r[0] and r[1] and r[1].get("claimed") is False]
-        check("v2.11 claim_resume concurrency: the other %d all lose with a documented "
-              "reason" % (N - 1),
-              len(losers) == N - 1
-              and all(r[1]["reason"] in ("live-lease-held", "terminal", "resume-cap")
-                     for r in losers))
+        check("v2.11 claim_resume concurrency: the other %d all lose, and ALL with reason "
+              "'live' -- the winner's heartbeat bump is what every loser observed" % (N - 1),
+              len(losers) == N - 1 and all(r[1]["reason"] == "live" for r in losers))
         final_conc_state = _read_json(cr_conc_path)
         check("v2.11 claim_resume concurrency: resume_count landed at exactly 1 "
               "(one winner, no double-counting)",
               final_conc_state.get("resume_count") == 1)
+        check("v2.11 claim_resume concurrency: no 'lease' key is ever written",
+              "lease" not in final_conc_state)
     finally:
         shutil.rmtree(cr_conc_dir, ignore_errors=True)
 
@@ -4430,31 +4211,31 @@ def main(argv):
                         "clear its sample_audit_due obligation, optionally set --last-error, "
                         "and invalidate a passed final_review back to pending — the fix for a "
                         "crash between the driver's separate clear-due/mark-failed writes")
-    # -- v2.11 (Scheduler Auto-Resurrection, V1) flags --------------------------------------
+    # -- v2.11 (Scheduler Auto-Resurrection) flags ------------------------------------------
+    # Post-integration-review BLOCKER fix: --owner-pid and --lease-ttl-min are REMOVED from
+    # --claim-resume/--renew-lease entirely (no stable driver pid exists in this harness —
+    # see the module docstring's "Cross-unit integration review" note). --stale-after-min is
+    # now shared by BOTH --liveness and --claim-resume (it used to be --liveness-only).
     p.add_argument("--watch", action="store_true",
                    help="(with --init --stance marathon) opt into the v2.11 watch surface "
-                        "(last_progress_at/lease/resume_count); rejected without "
-                        "--stance marathon")
+                        "(last_progress_at/resume_count); rejected without --stance marathon")
     p.add_argument("--max-resume-count", type=_cap_arg(int), default=_UNSET,
                    help="(with --init --stance marathon --watch) the new resume-count "
                         "breaker axis; default 20; 'null'/'none' for unbounded; rejected "
                         "without --watch")
     p.add_argument("--liveness", action="store_true",
                    help="(marathon + watch) read-only watcher poll -> {incomplete,stale,"
-                        "held,lease_expired,epic_status,terminal,resume_count}")
+                        "epic_status,terminal,resume_count}")
     p.add_argument("--stale-after-min", type=float, default=None,
-                   help="(with --liveness) staleness threshold in minutes (default 45)")
+                   help="(with --liveness / --claim-resume) staleness threshold in minutes "
+                        "(default 45)")
     p.add_argument("--claim-resume", action="store_true",
                    help="(marathon + watch) THE CRUX: one flock-guarded atomic transaction "
-                        "-> {claimed,reason,resume_count}; needs --owner-pid")
+                        "-> {claimed,reason,resume_count}; last_progress_at + the flock are "
+                        "the sole liveness/ownership authority (no --owner-pid)")
     p.add_argument("--renew-lease", action="store_true",
-                   help="(marathon + watch) the lease holder's own heartbeat; needs "
-                        "--owner-pid (must match the current lease)")
-    p.add_argument("--owner-pid", type=int,
-                   help="(with --claim-resume / --renew-lease) the calling process's pid")
-    p.add_argument("--lease-ttl-min", type=float, default=_DEFAULT_LEASE_TTL_MIN,
-                   help="(with --claim-resume / --renew-lease) lease TTL in minutes "
-                        "(default %g)" % _DEFAULT_LEASE_TTL_MIN)
+                   help="(marathon + watch) the live driver's own heartbeat -- bumps "
+                        "last_progress_at to now (no --owner-pid, no lease)")
     p.add_argument("--reset-resume-count", action="store_true",
                    help="(with --clear-breaker) re-arm the v2.11 resume-count axis to 0; "
                         "watch-only — rejected on a watch-off marathon epic")
@@ -4797,17 +4578,16 @@ def main(argv):
     if args.claim_resume:
         if not _needs_watch("--claim-resume"):
             return 1
-        if args.owner_pid is None:
-            p.error("--claim-resume needs --owner-pid")
-        if not _valid_pid(args.owner_pid):
-            print("epic-claim-resume error: --owner-pid must be an int in [%d, %d] (got %r)"
-                  % (_PID_MIN, _PID_MAX, args.owner_pid), file=sys.stderr)
-            return 1
         now_dt = _resolve_now_ranged("--claim-resume")
         if now_dt is None:
             return 1
-        ok, result, err = claim_resume(args.state, args.owner_pid, now_dt,
-                                       lease_ttl_min=args.lease_ttl_min)
+        stale_after = (args.stale_after_min if args.stale_after_min is not None
+                      else _DEFAULT_STALE_AFTER_MIN)
+        sa_err = _validate_stale_after(stale_after)
+        if sa_err:
+            print("epic-claim-resume error: %s" % sa_err, file=sys.stderr)
+            return 1
+        ok, result, err = claim_resume(args.state, now_dt, stale_after_min=stale_after)
         if not ok:
             print("epic-claim-resume error: %s" % err, file=sys.stderr)
             return 1
@@ -4817,21 +4597,15 @@ def main(argv):
     if args.renew_lease:
         if not _needs_watch("--renew-lease"):
             return 1
-        if args.owner_pid is None:
-            p.error("--renew-lease needs --owner-pid")
-        if not _valid_pid(args.owner_pid):
-            print("epic-renew-lease error: --owner-pid must be an int in [%d, %d] (got %r)"
-                  % (_PID_MIN, _PID_MAX, args.owner_pid), file=sys.stderr)
-            return 1
         now_dt = _resolve_now_ranged("--renew-lease")
         if now_dt is None:
             return 1
-        ok, err = renew_lease(state, args.owner_pid, now_dt, lease_ttl_min=args.lease_ttl_min)
+        ok, err = renew_lease(state, now_dt)
         if not ok:
             print("epic-renew-lease error: %s" % err, file=sys.stderr)
             return 1
         _atomic_write_json(args.state, state)
-        print(json.dumps({"owner_pid": args.owner_pid, "lease": state["lease"]}))
+        print(json.dumps({"last_progress_at": state["last_progress_at"]}))
         return 0
 
     if args.record_watcher_armed:

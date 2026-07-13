@@ -7,15 +7,18 @@ DRIVER (Component 3 -- v-epic.md / epic-mode.md / v-init.md, not yet built) make
 actual harness scheduling calls (CronCreate / mcp__scheduled-tasks__create_scheduled_task)
 and owns the real arm/disarm wiring. This file never talks to a scheduler directly.
 
-This file NEVER re-implements scripts/compound-v-epic-state.py's ("V1") lease/terminal/
+This file NEVER re-implements scripts/compound-v-epic-state.py's ("V1") liveness/terminal/
 breaker/registry logic -- every fact it needs (liveness, terminality, the watcher
 registry) is obtained by invoking V1 as a subprocess and reading its JSON stdout. See
 compound-v-epic-state.py's own docstring, section "CLI contract (v2.11 V1 -- Scheduler
-Auto-Resurrection...)", for the frozen contract this file consumes:
+Auto-Resurrection...)", for the frozen contract this file consumes. Post-integration-review
+BLOCKER fix: V1's `owner_pid`/lease were REMOVED entirely (the Claude Code harness has no
+stable driver pid) -- `last_progress_at` + V1's `--claim-resume` flock are now the sole
+liveness/ownership authority; this file never had any pid logic of its own to fix:
   --liveness --state S --now T [--stale-after-min N]
-      -> {"incomplete","stale","held","lease_expired","epic_status","terminal","resume_count"}
-  --claim-resume --state S --owner-pid P --now T [--lease-ttl-min M]
-      -> {"claimed","reason":"claimed|live-lease-held|terminal|resume-cap","resume_count"}
+      -> {"incomplete","stale","epic_status","terminal","resume_count"}
+  --claim-resume --state S --now T [--stale-after-min N]
+      -> {"claimed","reason":"claimed|live|terminal|resume-cap","resume_count"}
   --list-watchers --state S -> [{"provider","task_id","armed_at","status"}, ...] (armed only)
   --record-watcher-armed / --record-watcher-disarmed --state S --provider P --task-id ID
   is_terminal(state) -- the canonical terminal classifier folded into --liveness/--claim-resume.
@@ -160,10 +163,8 @@ Epic id:         {epic_id}
 Epic-state file: {state_path}
 
 ===============================================================================
-STEP 1 -- Determine your own identity and the current time
+STEP 1 -- Determine the current time
 ===============================================================================
-- Your own OS process id (owner-pid):
-    python3 -c "import os; print(os.getpid())"
 - The current UTC time in ISO-8601 (for --now):
     python3 -c "import datetime; print(datetime.datetime.now(datetime.timezone.utc).isoformat())"
 
@@ -171,13 +172,13 @@ STEP 1 -- Determine your own identity and the current time
 STEP 2 -- Attempt the ONE atomic resume claim
 ===============================================================================
 This is the sole authority for whether you may resume this epic. Never skip it and never
-reimplement its logic yourself -- call it exactly as written, substituting Step 1's values:
+reimplement its logic yourself -- call it exactly as written, substituting Step 1's value:
 
     python3 scripts/compound-v-epic-state.py --claim-resume \\
-      --state "{state_path}" --owner-pid <YOUR_PID_FROM_STEP_1> --now <UTC_ISO_FROM_STEP_1>
+      --state "{state_path}" --now <UTC_ISO_FROM_STEP_1>
 
 It prints exactly one JSON object:
-    {{"claimed": true|false, "reason": "claimed|live-lease-held|terminal|resume-cap", "resume_count": N}}
+    {{"claimed": true|false, "reason": "claimed|live|terminal|resume-cap", "resume_count": N}}
 
 ===============================================================================
 STEP 3 -- Branch on the result
@@ -191,10 +192,10 @@ BRANCH A -- claimed == true (reason "claimed")
   Let it run to its next natural stopping point. Obey the GLOBAL CONSTRAINTS below for
   any work you perform in this branch.
 
-BRANCH B -- claimed == false AND reason == "live-lease-held"
-  Another owner is actively working this epic (its lease is still live, or its recorded
-  owner_pid is still a live OS process). This is a normal, expected outcome, not an error.
-  Do NOT resume. Do NOT disarm anything. Exit now -- no further action needed.
+BRANCH B -- claimed == false AND reason == "live"
+  Another process is actively working this epic (its heartbeat is still fresh -- something
+  bumped last_progress_at recently). This is a normal, expected outcome, not an error. Do
+  NOT resume. Do NOT disarm anything. Exit now -- no further action needed.
 
 BRANCH C -- claimed == false AND reason is "terminal" OR "resume-cap"
   The epic is permanently done, blocked_needing_human, or has exhausted its resume cap --
@@ -369,10 +370,9 @@ def _selftest():
         "epic-alpha",
         "/repo/docs/superpowers/execution/epic-alpha/epic-state.json",
         "--claim-resume",
-        "--owner-pid",
         "--now",
         "/v:epic epic-alpha",
-        "live-lease-held",
+        "reason == \"live\"",
         "--list-watchers",
         "CronDelete",
         "mcp__scheduled-tasks__delete_scheduled_task",
@@ -386,6 +386,12 @@ def _selftest():
     ]
     for token in must_contain:
         check("emit-prompt contains %r" % (token,), token in prompt)
+
+    # post-integration-review BLOCKER fix: the prompt must NEVER instruct a fresh session to
+    # compute or pass its own OS pid -- there is no stable driver pid in this harness, which
+    # is the whole reason owner_pid/lease were removed from V1's --claim-resume contract.
+    check("emit-prompt drops the pid step entirely (no --owner-pid anywhere)",
+          "--owner-pid" not in prompt and "os.getpid" not in prompt)
 
     banned_phrases = [
         "as we discussed", "as discussed earlier", "earlier in this conversation",
@@ -463,31 +469,35 @@ def _selftest():
                 check("plan(): done epic -> tier1 disarm True", plan2["tier1"]["disarm"] is True)
                 check("plan(): done epic -> tier2 disarm True", plan2["tier2"]["disarm"] is True)
 
-            # -- fixture 3: terminal via resume-cap (a breaker trip mid-run, not "done")
+            # -- fixture 3: terminal via resume-cap (a breaker trip mid-run, not "done").
+            # Post-integration-review BLOCKER fix: no more --owner-pid/--lease-ttl-min --
+            # staleness (last_progress_at age vs. the default 45min threshold) is now the
+            # sole liveness signal. --init's own --now seeds started_at well in the past so
+            # the FIRST claim-resume already sees a genuinely stale epic and wins.
             cap_state = os.path.join(td, "cap-state.json")
+            t0 = datetime.now(timezone.utc)
+            t_started = t0 - timedelta(minutes=50)  # > default 45min stale_after_min
             rc, out, err = _run_epic_state([
                 "--init", "--stance", "marathon", "--watch", "--max-resume-count", "1",
                 "--features", feats_path, "--epic-id", "epic-cap", "--out", cap_state,
+                "--now", t_started.isoformat(),
             ])
             check("fixture: resume-cap epic --init succeeds", rc == 0)
 
-            dead = subprocess.Popen([sys.executable, "-c", "pass"])
-            dead.wait()
-            dead_pid = dead.pid
-
-            t0 = datetime.now(timezone.utc)
             rc, out, err = _run_epic_state([
-                "--claim-resume", "--state", cap_state, "--owner-pid", str(dead_pid),
-                "--now", t0.isoformat(), "--lease-ttl-min", "1",
+                "--claim-resume", "--state", cap_state, "--now", t0.isoformat(),
             ])
             check("fixture: first claim-resume succeeds (exit 0)", rc == 0)
             first = json.loads(out) if rc == 0 else {}
             check("fixture: first claim-resume claimed", first.get("claimed") is True)
 
-            t1 = t0 + timedelta(minutes=2)  # past the 1-minute lease TTL; dead_pid stays dead
+            # The win at t0 bumped last_progress_at to t0 -- the epic is fresh again right
+            # after. It must go stale ONCE MORE (> 45min later) before the resume-cap check
+            # is even reached (claim_resume checks freshness BEFORE the cap -- see its
+            # docstring), at which point resume_count(1) >= max_resume_count(1) trips it.
+            t1 = t0 + timedelta(minutes=50)
             rc, out, err = _run_epic_state([
-                "--claim-resume", "--state", cap_state, "--owner-pid", str(dead_pid),
-                "--now", t1.isoformat(), "--lease-ttl-min", "1",
+                "--claim-resume", "--state", cap_state, "--now", t1.isoformat(),
             ])
             check("fixture: second claim-resume succeeds (exit 0)", rc == 0)
             second = json.loads(out) if rc == 0 else {}
