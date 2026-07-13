@@ -88,29 +88,33 @@ Skip this entire subsection when §0's watch binding found `autonomy.watch` abse
      --state docs/superpowers/execution/epics/<epic-id>/epic-state.json
    ```
    This is what protects a **live** marathon from a scheduler-fired watcher trying to `--claim-resume` out from under it — `--claim-resume` defers with reason `"live"` (was `"live-lease-held"` before the fix) whenever `last_progress_at` is still fresh, checked BEFORE the resume-cap so a live pipeline phase is never mistaken for a crash. **Keep `last_progress_at` fresh by calling `--renew-lease` at marathon start and at each sub-phase boundary** — before §1's breaker check on each pass, before §3's pre-flights, before §3's dispatch, and before §4/§5/§8's model-call breaker gates — so a live marathon stays non-stale and the watcher defers. Call comfortably below the `--stale-after-min` threshold (default 45 min), so a marathon that renews on schedule never reads as stale to `--liveness`/`--claim-resume`.
-2. **Ensure both scheduler tiers are armed, idempotently AND crash-safely** — safe to re-run on every re-entry, including a scheduler-triggered `/v:epic` resume, which must never double-arm:
+2. **Ensure both scheduler tiers are armed, idempotently AND crash-safely** — reconcile against each PROVIDER'S OWN LIST (the authority for "does this task exist"), never against the `epic-state.json` watcher_registry alone, which is only a cache. Safe to re-run on every re-entry, including a scheduler-triggered `/v:epic` resume, which must never double-arm:
    ```
    python3 scripts/compound-v-epic-watch.py plan \
      --state docs/superpowers/execution/epics/<epic-id>/epic-state.json --now <UTC ISO now>
    ```
-   Prints `{"tier1":{"cron","disarm"},"tier2":{"cadence","disarm"},"disable_cron_detected","terminal"}`. If `terminal` is already `true`, skip arming entirely — the epic is already done/blocked; go straight to whichever of §7/§8 applies (and run the "Watch disarm" section instead). Otherwise **check what is already armed FIRST, before creating anything**:
-   ```
-   python3 scripts/compound-v-epic-state.py --list-watchers \
-     --state docs/superpowers/execution/epics/<epic-id>/epic-state.json
-   ```
-   (armed-not-disarmed entries only). **For any tier that already has an armed entry, SKIP creation entirely** — this is what makes a scheduler-triggered `/v:epic` re-entry (or an overlapping second invocation) never double-arm. Only for a tier with **no** entry (and that Step 1d-ter of [`/v:init`](v-init.md) found available on this machine — skip a tier that isn't), arm it in this exact order — **record an intent record BEFORE creating the real scheduler task**, so a crash anywhere after that record leaves `--list-watchers` non-empty for that tier and the next re-entry skips re-creating instead of double-arming:
-   1. **Record intent first**, using the deterministic task-id as the placeholder identity:
-      - **Tier-1**: `python3 scripts/compound-v-epic-state.py --record-watcher-armed --provider cron --task-id compound-v-watch-<epic-id>-cron --state docs/superpowers/execution/epics/<epic-id>/epic-state.json`
-      - **Tier-2**: `python3 scripts/compound-v-epic-state.py --record-watcher-armed --provider scheduled-tasks --task-id compound-v-watch-<epic-id>-scheduled-tasks --state docs/superpowers/execution/epics/<epic-id>/epic-state.json`
-   2. **Then actually create the task** — call `CronCreate` (Tier-1) with `plan`'s `tier1.cron` schedule, or `mcp__scheduled-tasks__create_scheduled_task` (Tier-2) with `plan`'s `tier2.cadence`, passing the SAME prompt from `python3 scripts/compound-v-epic-watch.py emit-prompt --epic-id <epic-id> --state <epic-state.json>`; note the REAL task id the call returns.
-   3. **Then update/confirm the record** with that real returned id:
+   Prints `{"tier1":{"cron","disarm"},"tier2":{"cadence","disarm"},"disable_cron_detected","terminal"}`. If `terminal` is already `true`, skip arming entirely — the epic is already done/blocked; go straight to whichever of §7/§8 applies (and run the "Watch disarm" section instead). Otherwise, for **each** tier:
+   1. **List the provider's own tasks FIRST, before creating anything:**
+      - **Tier-1**: call `CronList` (no arguments) — returns every session cron task.
+      - **Tier-2**: call `mcp__scheduled-tasks__list_scheduled_tasks` (no arguments) — returns every scheduled task.
+   2. **Check whether THIS epic's deterministic id/marker is already in that list:**
+      - **Tier-1**: does any returned entry's name/prompt/label contain the marker `compound-v-watch-<epic-id>-tier1`?
+      - **Tier-2**: does any returned task have `taskId == compound-v-watch-<epic-id>-tier2` exactly (`mcp__scheduled-tasks__create_scheduled_task` **requires** a caller-chosen `taskId` — "used as the directory name and storage key", auto-sanitized — so the real id IS this deterministic value whenever this flow created it)?
+   3. **If FOUND** — it is already armed. Do **not** call the create tool for this tier (creating again would either duplicate the task or error on an id collision). Just sync the registry (idempotent, never a duplicate):
       ```
-      python3 scripts/compound-v-epic-state.py --record-watcher-armed --provider cron --task-id <real-id> \
-        --state docs/superpowers/execution/epics/<epic-id>/epic-state.json
+      python3 scripts/compound-v-epic-state.py --record-watcher-armed --provider <cron|scheduled-tasks> \
+        --task-id <the matched id/marker> --state docs/superpowers/execution/epics/<epic-id>/epic-state.json
       ```
-      (Tier-2: `--provider scheduled-tasks --task-id <real-id>`.) `--record-watcher-armed` is **idempotent by `(provider, task-id)`** — if the real id happens to equal the deterministic placeholder from step 1, this call is a harmless no-op replay, never a duplicate; if it differs, this adds the second, accurately-linked entry for the actual task.
+   4. **If ABSENT** (and this tier was found available on this machine by Step 1d-ter of [`/v:init`](v-init.md) — skip a tier that isn't) — create it, THEN record:
+      - **Tier-1**: call `CronCreate` with `plan`'s `tier1.cron` schedule, passing the SAME prompt from `python3 scripts/compound-v-epic-watch.py emit-prompt --epic-id <epic-id> --state <epic-state.json>` (that prompt already embeds the deterministic marker `compound-v-watch-<epic-id>-tier1` in its own text, so a later `CronList` sweep — see "Watch disarm" — can find it by substring).
+      - **Tier-2**: call `mcp__scheduled-tasks__create_scheduled_task` passing `taskId=compound-v-watch-<epic-id>-tier2`, the SAME `emit-prompt` output as `prompt`, and a short human-readable `description`.
+      - Then record:
+        ```
+        python3 scripts/compound-v-epic-state.py --record-watcher-armed --provider <cron|scheduled-tasks> \
+          --task-id <the id/marker just created> --state docs/superpowers/execution/epics/<epic-id>/epic-state.json
+        ```
 
-   **Honest limitation, stated plainly rather than hidden:** if the harness's create call does not accept a caller-chosen id (so the REAL task id differs from the deterministic placeholder) and a crash lands between step 2 (create) and step 3 (confirm with the real id), the real scheduler task is an orphan — the registry only ever recorded the deterministic placeholder, never the real id, so the terminal disarm's deterministic-id fallback delete (below) won't find it either. This is bounded, not unbounded: a Tier-1 orphan self-expires within the tier's own **~7-day** cron expiry; Tier-2 (`scheduled-tasks`) carries no equivalent self-expiry, so a Tier-2 orphan in this narrow crash window needs a human to notice and delete it manually.
+   **This is crash-idempotent, both directions:** a create that succeeded but crashed before its `--record-watcher-armed` write is still found by the NEXT re-entry's list-first check (steps 1–2) and simply adopted (step 3) — never re-created, never duplicated. A registry record left over from a prior arm attempt whose task the provider no longer has (or never actually created) is found ABSENT in the provider's own list and is recreated (step 4) — the registry flag alone is never trusted for existence, only the provider's list is. **Closed crash window (v2.11 fix):** arming reconciles against each provider's own list by this epic's deterministic id/marker, so a crash between "create" and "record" can no longer lose or duplicate a task on either tier. The only residual scheduling caveat is the documented Tier-1 7-day cron cadence (step 3 below) — unrelated to this crash window, already handled by the periodic re-arm.
 
    Zero available tiers means this epic runs, in practice, exactly like a watch-off marathon (no scheduler ever revives it) — tell the user plainly.
 3. **Tier-1 7-day reconcile.** On this same ensure-armed pass, for any Tier-1 (`cron`) entry `--list-watchers` returns whose `armed_at` is **older than ~7 days**, RE-ARM it: call `CronCreate` again for a fresh task (Tier-1 tasks expire around then — see the honest boundary below), record the new task id with `--record-watcher-armed`, then retire the stale one — `CronDelete` on the OLD task id, then `--record-watcher-disarmed --provider cron --task-id <old id>` — so the registry never accumulates two live-looking Tier-1 entries for the same epic.
@@ -289,21 +293,17 @@ The disposition is **already persisted** by the `--record-disposition` at the en
 
 ### Watch disarm (v2.11, run at EVERY terminal exit — §7 and §8, watch-only)
 
-Skip entirely when §0's watch binding found `autonomy.watch` absent/false. Otherwise run this **once**, right before this invocation actually stops, whenever the epic reaches **any** terminal outcome — `done` (§8), `blocked_needing_human` from a tripped breaker or `halt_epic` (§7), or exhausted reachable work (§7). **Gate it on `--list-watchers` HAVING at least one armed record — never on the current `epic.autonomy.watch` config or capability state** — a persisted watch-enabled epic can carry live scheduler records even if the project config was later flipped off, and disarming must not depend on config that can drift after arming:
+Skip entirely when §0's watch binding found `autonomy.watch` absent/false. Otherwise run this **once**, right before this invocation actually stops, whenever the epic reaches **any** terminal outcome — `done` (§8), `blocked_needing_human` from a tripped breaker or `halt_epic` (§7), or exhausted reachable work (§7). **Always run both sweeps below, unconditionally — never gate on the `epic-state.json` watcher_registry (`--list-watchers`) or the current `epic.autonomy.watch` config/capability state.** The registry is only a cache and cannot be trusted for existence (a task created but never recorded would be invisible to a registry-gated disarm), and disarming must not depend on config that can drift after arming. Reconcile against each PROVIDER'S OWN LIST instead, keyed by this epic's deterministic id/marker prefix `compound-v-watch-<epic-id>-`:
 
-```
-python3 scripts/compound-v-epic-state.py --list-watchers \
-  --state docs/superpowers/execution/epics/<epic-id>/epic-state.json
-```
+1. **Tier-2 sweep (scheduled-tasks):** call `mcp__scheduled-tasks__list_scheduled_tasks` (no arguments). For **every** returned task whose `taskId` starts with `compound-v-watch-<epic-id>-` (covers this epic's exact `-tier2` id, and any older-convention id from before this fix):
+   - delete it — `mcp__scheduled-tasks__delete_scheduled_task`, passing that `taskId`
+   - then `--record-watcher-disarmed --provider scheduled-tasks --task-id <that taskId> --state <epic-state.json>`
 
-Whatever this returns — including `[]` — **always** also attempt the deterministic-id fallback below (belt-and-suspenders against a crash between a tier's create call and its `--record-watcher-armed` write, which would leave an orphaned scheduler task the registry never saw). For each entry `--list-watchers` DOES return:
+2. **Tier-1 sweep (session cron):** call `CronList` (no arguments). For **every** returned entry whose name/prompt/label contains `compound-v-watch-<epic-id>-`:
+   - delete it — `CronDelete`, passing that entry's id
+   - then `--record-watcher-disarmed --provider cron --task-id <that entry's id> --state <epic-state.json>`
 
-- `provider == "cron"` → delete it with `CronDelete <task_id>`, then
-  `--record-watcher-disarmed --provider cron --task-id <task_id> --state <epic-state.json>`.
-- `provider == "scheduled-tasks"` → delete it with `mcp__scheduled-tasks__delete_scheduled_task <task_id>`, then
-  `--record-watcher-disarmed --provider scheduled-tasks --task-id <task_id> --state <epic-state.json>`.
-
-**Deterministic-id fallback (always attempt, registry-empty or not):** also try deleting a Tier-1 task named `compound-v-watch-<epic-id>-cron` via `CronDelete`, and a Tier-2 task named `compound-v-watch-<epic-id>-scheduled-tasks` via `mcp__scheduled-tasks__delete_scheduled_task` — the same deterministic ids `compound-v-epic-watch.py`'s own fallback naming uses. A delete against a name that does not exist is expected and harmless; ignore a not-found error from either tool, it is not a failure. Commit the resulting `--record-watcher-disarmed` writes (§9) co-located with the SAME commit that records the terminal status — never leave a disarm uncommitted, per the v2.6.4 rule §9 already states.
+An empty list, or no match, on either tier is expected and harmless — not a failure. Because both sweeps key off the PROVIDER's own list (not the registry), a task that was created but never recorded (a crash between create and `--record-watcher-armed`) is still found and deleted here — there is no crash window where a Tier-2 task survives forever. Commit the resulting `--record-watcher-disarmed` writes (§9) co-located with the SAME commit that records the terminal status — never leave a disarm uncommitted, per the v2.6.4 rule §9 already states.
 
 ### 7. Halt-page runbook (whole-epic block only)
 

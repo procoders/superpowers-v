@@ -103,18 +103,32 @@ def _validate_state_path(value):
     return value
 
 
+def deterministic_id_prefix(epic_id):
+    """The per-epic prefix both arm and disarm reconcile against -- 'compound-v-watch-<epic_id>-'.
+    Tier-2's exact `taskId` is this prefix + 'tier2'; Tier-1's cron marker is this prefix +
+    'tier1'. The terminal-DISARM sweep (see PROMPT_TEMPLATE, and v-epic.md's "Watch disarm")
+    matches ANY provider-listed task whose id/marker starts with this prefix -- not only the
+    current tier1/tier2 suffixes -- so it also catches a task armed under an older naming
+    convention."""
+    return "compound-v-watch-%s-" % epic_id
+
+
 def deterministic_task_id(epic_id, provider):
-    """Placeholder deterministic naming for the Tier-1/Tier-2 fallback delete in the
-    terminal-DISARM branch of the emitted prompt: if arming ever crashed before its
-    watcher_registry record was written, --list-watchers cannot see the orphaned task, so
-    the disarm also tries a well-known name directly. V3 (driver + /v:init wiring) is NOT
-    yet built and owns the REAL arming convention -- this is a conservative, self-consistent
-    placeholder that MUST be reconciled with V3's actual naming once it exists, not silently
-    assumed to already match it."""
+    """The deterministic per-(epic, tier) id/marker that BOTH arm and disarm reconcile
+    against the scheduler PROVIDER'S OWN LIST with -- the sole naming convention (not a
+    fallback). Tier-2 (scheduled-tasks): mcp__scheduled-tasks__create_scheduled_task
+    REQUIRES a caller-chosen `taskId` ("used as the directory name and storage key",
+    auto-sanitized) -- so this value IS the real taskId whenever this flow created it, and
+    list_scheduled_tasks will surface it under this exact id if it exists, closing the
+    crash window where a Tier-2 task could be created but never recorded. Tier-1 (session
+    CronCreate): the harness's cron-create schema does not document a caller-chosen id, so
+    this value is instead embedded verbatim as a MARKER substring inside the cron task's
+    own prompt text (see PROMPT_TEMPLATE) -- CronList reconciliation matches on that marker
+    substring, not on an assumed exact id field."""
     if provider == "cron":
-        return "compound-v-watch-%s-cron" % epic_id
+        return deterministic_id_prefix(epic_id) + "tier1"
     if provider == "scheduled-tasks":
-        return "compound-v-watch-%s-scheduled-tasks" % epic_id
+        return deterministic_id_prefix(epic_id) + "tier2"
     raise ValueError("unknown provider %r" % (provider,))
 
 
@@ -205,29 +219,37 @@ BRANCH C -- claimed == false AND reason is "terminal" OR "resume-cap"
 ===============================================================================
 BRANCH C -- FULL DISARM (only when reason is "terminal" or "resume-cap")
 ===============================================================================
-1. List every still-armed watcher for this epic:
+Reconcile against each PROVIDER'S OWN LIST, keyed by this epic's deterministic id/marker
+prefix "{id_prefix}" -- NEVER against the epic-state.json watcher_registry alone, which is
+only a cache and cannot be trusted for existence. A task that was created but never
+recorded (a crash between the create call and --record-watcher-armed) is still found and
+deleted here, so there is no crash window where a task survives forever.
 
-    python3 scripts/compound-v-epic-state.py --list-watchers --state "{state_path}"
-
-   This prints a JSON array of {{"provider","task_id","armed_at","status"}} entries (only
-   entries whose status is "armed").
-
-2. For EACH entry returned:
-   - If its "provider" is "cron": delete that Tier-1 scheduler task with the CronDelete
-     tool, passing the entry's "task_id".
-   - If its "provider" is "scheduled-tasks": delete that Tier-2 scheduler task with the
-     mcp__scheduled-tasks__delete_scheduled_task tool, passing the entry's "task_id".
-   - Then record the disarm so the registry stays accurate:
+1. Tier-2 sweep (scheduled-tasks): call mcp__scheduled-tasks__list_scheduled_tasks (it
+   takes no arguments -- it returns every scheduled task). For EACH returned task whose
+   "taskId" starts with "{id_prefix}" (this epic's Tier-2 id is exactly "{sched_id}"; the
+   prefix match also catches an older-convention id from before this fix):
+   - Delete it: mcp__scheduled-tasks__delete_scheduled_task, passing that "taskId".
+   - Record the disarm:
 
        python3 scripts/compound-v-epic-state.py --record-watcher-disarmed \\
-         --state "{state_path}" --provider <that entry's provider> --task-id "<that entry's task_id>"
+         --state "{state_path}" --provider scheduled-tasks --task-id "<that taskId>"
 
-3. Deterministic-id fallback (belt-and-suspenders): if a prior arm ever crashed before its
-   registry record was written, --list-watchers cannot see that orphaned task. So also
-   attempt to delete a Tier-1 task named "{cron_fallback}" via CronDelete, and a Tier-2
-   task named "{sched_fallback}" via mcp__scheduled-tasks__delete_scheduled_task. A delete
-   against a name that does not exist is expected and harmless -- ignore a not-found error
-   from either tool; it is not a failure.
+   An empty list, or no taskId matching the prefix, is expected and harmless -- not a
+   failure.
+
+2. Tier-1 sweep (session cron): call CronList (it takes no arguments -- it returns every
+   session cron task). For EACH returned entry whose name/prompt/label contains
+   "{id_prefix}" (this epic's Tier-1 marker is exactly "{cron_id}"; the prefix match also
+   catches an older-convention marker from before this fix):
+   - Delete it: CronDelete, passing that entry's id.
+   - Record the disarm:
+
+       python3 scripts/compound-v-epic-state.py --record-watcher-disarmed \\
+         --state "{state_path}" --provider cron --task-id "<that entry's id>"
+
+   An empty list, or no entry containing the marker, is expected and harmless -- not a
+   failure.
 
 ===============================================================================
 GLOBAL CONSTRAINTS (apply to any work performed under BRANCH A)
@@ -253,8 +275,9 @@ def build_resume_prompt(epic_id, state_path):
     return PROMPT_TEMPLATE.format(
         epic_id=epic_id,
         state_path=state_path,
-        cron_fallback=deterministic_task_id(epic_id, "cron"),
-        sched_fallback=deterministic_task_id(epic_id, "scheduled-tasks"),
+        id_prefix=deterministic_id_prefix(epic_id),
+        cron_id=deterministic_task_id(epic_id, "cron"),
+        sched_id=deterministic_task_id(epic_id, "scheduled-tasks"),
     )
 
 
@@ -346,9 +369,11 @@ def _selftest():
     for bad in ["", "has\nnewline", 'has"quote', "has\x00nul"]:
         expect_raises("_validate_state_path rejects %r" % (bad,), _validate_state_path, bad)
 
-    check("deterministic_task_id: cron", deterministic_task_id("E1", "cron") == "compound-v-watch-E1-cron")
-    check("deterministic_task_id: scheduled-tasks",
-          deterministic_task_id("E1", "scheduled-tasks") == "compound-v-watch-E1-scheduled-tasks")
+    check("deterministic_id_prefix", deterministic_id_prefix("E1") == "compound-v-watch-E1-")
+    check("deterministic_task_id: cron -> tier1 marker",
+          deterministic_task_id("E1", "cron") == "compound-v-watch-E1-tier1")
+    check("deterministic_task_id: scheduled-tasks -> tier2 taskId",
+          deterministic_task_id("E1", "scheduled-tasks") == "compound-v-watch-E1-tier2")
     expect_raises("deterministic_task_id rejects an unknown provider",
                   deterministic_task_id, "E1", "bogus")
 
@@ -373,7 +398,8 @@ def _selftest():
         "--now",
         "/v:epic epic-alpha",
         "reason == \"live\"",
-        "--list-watchers",
+        "CronList",
+        "mcp__scheduled-tasks__list_scheduled_tasks",
         "CronDelete",
         "mcp__scheduled-tasks__delete_scheduled_task",
         "--record-watcher-disarmed",
@@ -386,6 +412,19 @@ def _selftest():
     ]
     for token in must_contain:
         check("emit-prompt contains %r" % (token,), token in prompt)
+
+    # v2.11 crash-window fix: the terminal DISARM branch must sweep each PROVIDER'S OWN
+    # list (list_scheduled_tasks / CronList) keyed by this epic's deterministic id/marker
+    # prefix -- never the epic-state.json watcher_registry alone (that is only a cache and
+    # cannot be trusted for existence; a task created but never recorded would otherwise be
+    # invisible to a registry-only sweep, letting a Tier-2 task orphan forever).
+    check("emit-prompt DISARM branch no longer keys off the registry's --list-watchers",
+          "--list-watchers" not in prompt)
+    id_prefix = deterministic_id_prefix("epic-alpha")
+    check("emit-prompt names this epic's deterministic id/marker prefix %r" % (id_prefix,),
+          id_prefix in prompt)
+    check("emit-prompt names the Tier-2 exact taskId", deterministic_task_id("epic-alpha", "scheduled-tasks") in prompt)
+    check("emit-prompt names the Tier-1 marker", deterministic_task_id("epic-alpha", "cron") in prompt)
 
     # post-integration-review BLOCKER fix: the prompt must NEVER instruct a fresh session to
     # compute or pass its own OS pid -- there is no stable driver pid in this harness, which
