@@ -54,6 +54,14 @@ trusted, symlink-free, count+byte-bounded audit directory.
                                                                 the challenge binding makes it so)
       {"state": "consumed", "challenge_id", "result"}      -- the frozen persisted result,
                                                                 RE-EMITTED verbatim, no new call
+    A record left `issued`/`in_progress` is FIRST checked against the canonical persisted
+    audit for the same tuple before being reported: if --classify persisted the frozen audit
+    but crashed before durably marking the record `consumed` (the window between those two
+    writes), the verdict already exists on disk, so this reports `consumed` with that result
+    and makes ZERO model calls -- never re-reports `in_progress`, which would otherwise cause
+    the driver to re-dispatch Claude and re-`--classify`, duplicating model work for a
+    decision that was already made. Only when no valid audit exists yet does it report
+    `in_progress` as before.
     A tampered/oversized/symlinked/inconsistent persisted record is refused with a controlled
     ArbiterError (fail closed), never a fabricated resume state.
 
@@ -1436,6 +1444,13 @@ def cmd_resume_challenge(args, p):
       {"state": "in_progress", "challenge_id", "prompt"}   -- re-dispatch on `prompt`, --classify
       {"state": "consumed", "challenge_id", "result"}      -- the frozen persisted result, as-is
 
+    An `issued`/`in_progress` record is not trusted at face value: --classify can persist the
+    canonical audit and then crash BEFORE marking the challenge record `consumed` (the window
+    between those two writes). Reporting `in_progress` in that window would make the driver
+    re-dispatch Claude and re-`--classify` a decision that is already final on disk. So this
+    probes the canonical audit for the same tuple first; a valid one flips the report to
+    `consumed` (result attached, zero model calls); absent/invalid falls back to `in_progress`.
+
     Uses the SAME containment as --prepare/--classify: the validated trusted-root epic dir,
     id checks, O_NOFOLLOW dir_fd reads, and size-capped record probes (Finding 5/6)."""
     if not args.feature:
@@ -1489,11 +1504,25 @@ def cmd_resume_challenge(args, p):
 
         status = record.get("status")
         if status in ("issued", "in_progress"):
-            # Both map to the SAME reported state: no result exists yet, so the driver must
-            # re-dispatch the Claude Task on this exact prompt and re-`--classify`. That is
-            # always safe/idempotent -- the challenge binding is what makes it so, and
-            # --classify's own crash-recovery fall-through (no audit yet) or re-emit
-            # (audit already written) handles either sub-case.
+            # Crash window (integration-review finding): --classify can persist the frozen
+            # audit result and THEN die before durably marking the challenge record
+            # `consumed` (see the in_progress -> consumed write at the tail of cmd_classify).
+            # If we reported `in_progress` here regardless, the driver would re-dispatch
+            # Claude and re-`--classify`, duplicating model work even though the verdict was
+            # already decided and sitting on disk. So: probe the CANONICAL audit for this
+            # exact (epic_id, feature, attempt) tuple FIRST. If a valid one exists, the
+            # verdict is final -- report `consumed` with that persisted result and make ZERO
+            # model calls. Only when no valid audit exists (the ordinary case: nothing has
+            # run yet, or classify crashed before writing the audit) do we fall back to
+            # reporting `in_progress` and handing back the prompt, exactly as before --
+            # --classify's own crash-recovery fall-through (no audit yet) or re-emit (audit
+            # already written) then handles either sub-case on the next attempt.
+            astatus, audit = _probe_record(arbiter_fd, audit_name, AUDIT_MAX_ONE_BYTES)
+            if astatus == "ok" and _audit_tuple_matches(audit, epic_id, args.feature,
+                                                         args.attempt, expected):
+                print(json.dumps({"state": "consumed", "challenge_id": expected,
+                                  "result": audit}))
+                return 0
             print(json.dumps({"state": "in_progress", "challenge_id": expected,
                               "prompt": record.get("claude_prompt", "")}))
             return 0
@@ -2538,6 +2567,92 @@ def _selftest():
               rc == 0 and json.loads(buf.getvalue().strip()) == {"state": "absent"})
     finally:
         shutil.rmtree(c1i, ignore_errors=True)
+
+    # C1j — the crash window this round's fix closes: --classify persisted the frozen
+    # canonical audit but died BEFORE the final issued/in_progress -> consumed write, so the
+    # challenge record is still (durably) "in_progress" even though the verdict already
+    # exists on disk. --resume-challenge must probe the canonical audit FIRST and report
+    # "consumed" with that persisted result, making ZERO model calls -- never re-report
+    # "in_progress" (which would make the driver re-dispatch Claude and re-classify,
+    # duplicating model work for a decision that was already made).
+    c1j = _tempfile.mkdtemp()
+    try:
+        epic_dir, state_path, state = _make_epic(c1j, attempts=1)
+        out, _, _ = run_cmd(cmd_prepare, _args(state=state_path, feature="featA", attempt=1))
+        cid = out["challenge_id"]
+        ballot = os.path.join(c1j, "b.json")
+        with open(ballot, "w") as fh:
+            json.dump({"epic_id": "epic1", "feature": "featA", "attempt": 1,
+                       "challenge_id": cid, "disposition": "retry_fix", "reason": "flaky"}, fh)
+        classified, _, _ = run_cmd(cmd_classify, _args(state=state_path, feature="featA",
+                                                       challenge=cid, claude_ballot=ballot))
+        with open(classified["audit_path"]) as fh:
+            persisted = json.load(fh)
+
+        # Simulate the crash: the audit is durably on disk (classify wrote it and rotated
+        # BEFORE the final consumption write — see cmd_classify's own comment on that
+        # ordering), but the challenge record never made it past "in_progress".
+        arbiter_fd = open_arbiter_dir_fd(epic_dir, create=False)
+        try:
+            rec = _read_json_at(arbiter_fd, "featA-1.challenge.json", CHALLENGE_RECORD_MAX_BYTES)
+            check("C1j: precondition -- classify durably consumed the record before we rewind it",
+                  rec.get("status") == "consumed")
+            rec["status"] = "in_progress"
+            rec["consumed_at"] = None
+            _write_json_at(arbiter_fd, "featA-1.challenge.json", rec)
+        finally:
+            os.close(arbiter_fd)
+
+        module_ns = globals()
+        _orig_poll_codex = module_ns["poll_codex"]
+        _poll_called = {"v": False}
+
+        def _boom_poll_codex(*a, **kw):
+            _poll_called["v"] = True
+            raise AssertionError("poll_codex must NEVER be called by --resume-challenge")
+
+        module_ns["poll_codex"] = _boom_poll_codex
+        try:
+            res, e, rc = run_cmd(cmd_resume_challenge,
+                                 _args(state=state_path, feature="featA", attempt=1))
+        finally:
+            module_ns["poll_codex"] = _orig_poll_codex
+
+        check("C1j: in_progress record + existing valid audit -> reported as consumed "
+              "(crash-after-persist-before-mark-consumed window)",
+              rc == 0 and res is not None and res["state"] == "consumed")
+        check("C1j: consumed carries the SAME challenge_id", res is not None and res["challenge_id"] == cid)
+        check("C1j: ZERO model calls -- the verdict was already decided", _poll_called["v"] is False)
+        check("C1j: re-emitted result is the IDENTICAL frozen persisted audit",
+              res is not None
+              and json.dumps(res["result"], sort_keys=True) == json.dumps(persisted, sort_keys=True))
+    finally:
+        shutil.rmtree(c1j, ignore_errors=True)
+
+    # C1k — the ordinary sub-case stays exactly as before: an in_progress record with NO
+    # audit written yet (classify claimed the record but crashed before persisting anything)
+    # is still reported "in_progress" so the driver re-dispatches. (C1c already exercises
+    # this path; this re-asserts it explicitly alongside the new C1j crash-window fix so a
+    # future change to the in_progress branch can't silently flip both outcomes to
+    # "consumed".)
+    c1k = _tempfile.mkdtemp()
+    try:
+        epic_dir, state_path, state = _make_epic(c1k, attempts=1)
+        out, _, _ = run_cmd(cmd_prepare, _args(state=state_path, feature="featA", attempt=1))
+        arbiter_fd = open_arbiter_dir_fd(epic_dir, create=False)
+        try:
+            rec = _read_json_at(arbiter_fd, "featA-1.challenge.json", CHALLENGE_RECORD_MAX_BYTES)
+            rec["status"] = "in_progress"
+            _write_json_at(arbiter_fd, "featA-1.challenge.json", rec)
+        finally:
+            os.close(arbiter_fd)
+        res, _, rc = run_cmd(cmd_resume_challenge,
+                             _args(state=state_path, feature="featA", attempt=1))
+        check("C1k: in_progress with NO audit on disk -> still state in_progress",
+              rc == 0 and res["state"] == "in_progress" and res["challenge_id"] == out["challenge_id"]
+              and res["prompt"] == out["prompt"])
+    finally:
+        shutil.rmtree(c1k, ignore_errors=True)
 
     print("SELFTEST: %d ok, %d fail" % (ok, fail))
     return 0 if fail == 0 else 1
