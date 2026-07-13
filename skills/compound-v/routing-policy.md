@@ -286,12 +286,19 @@ These hold in **every** stance and are checked by `compound-v-validate-manifest.
    tier — `tier: deep` **OR** an explicit `model: opus`. (`deep` resolves to `opus`
    for claude, so this mirrors the frontmatter rule that reviewers/agents always
    carry `model: opus`.)
-2. **Codex / Antigravity / Cursor ⇒ worktree.** Any `backend: codex`, `backend: antigravity`,
-   **or** `backend: cursor` job MUST be `isolation: worktree`. All three are external workers
-   with no per-file enforcement of their own: Codex's sandbox restricts writes only to a
-   *directory*, and Antigravity and Cursor have **no kernel sandbox at all** (Cursor's headless
-   `-f` grants arbitrary write+shell) — so worktree + `git diff` is the only file-scope
-   enforcement they get. The validator rejects any of these backends with `isolation: direct`.
+2. **Codex / Antigravity / Cursor / Devin / opencode ⇒ worktree.** Any `backend: codex`,
+   `backend: antigravity`, `backend: cursor`, `backend: devin`, **or** `backend: opencode`
+   job MUST be `isolation: worktree`. All five are external workers with no per-file
+   enforcement of their own: Codex's sandbox restricts writes only to a *directory*;
+   Antigravity, Cursor, and opencode have **no kernel sandbox at all** (Cursor's headless
+   `-f` grants arbitrary write+shell; opencode defaults to allowing all operations); Devin
+   has a live but Research-Preview `--sandbox` whose coverage is unverified and is treated
+   as no-confinement for enforcement purposes (v1) — so worktree + `git diff` is the only
+   file-scope enforcement any of the five external backends actually get. The validator
+   rejects any of these backends with `isolation: direct`. `devin` and `opencode` are also
+   **worker-only** — never a routable arbiter/review-panel seat (see
+   [`adapter-devin.md`](../backend-launcher/adapter-devin.md) /
+   [`adapter-opencode.md`](../backend-launcher/adapter-opencode.md)).
 3. **Unclear scope ⇒ return to planning.** A job whose scope the planner cannot pin
    never dispatches with a guessed partition — it goes back to writing-plans.
 4. **Model OR tier.** Every job MUST carry at least one of `model` or `tier`. A job

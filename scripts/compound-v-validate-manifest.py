@@ -36,8 +36,10 @@ All required fields per ``execution-manifest.md`` are checked first. Top-level:
 ``acceptance_criteria``, ``routing_stance``, ``max_parallel``. Per-job: ``id``,
 ``title``, ``type``, ``backend``, ``isolation``, ``run``, ``write_allowed``,
 ``read_allowed``, ``acceptance``, plus (``model`` OR ``tier``). Enums: ``backend``
-∈ {claude, codex, antigravity, cursor} (``none`` is the routing "return to planning"
-sentinel, NOT a dispatched job backend); ``isolation`` ∈ {direct, worktree};
+∈ {claude, codex, antigravity, cursor, devin, opencode} (``none`` is the routing
+"return to planning" sentinel, NOT a dispatched job backend; ``devin``/``opencode``
+are lower-trust, opt-in, WORKER-ONLY backends — see adapter-devin.md /
+adapter-opencode.md); ``isolation`` ∈ {direct, worktree};
 ``run`` ∈ {serial, parallel};
 ``routing_stance`` ∈ {balanced, conservative, cost-aware, claude-only};
 ``tier`` ∈ {deep, standard, light}; ``effort`` ∈ {low, medium, high, xhigh}
@@ -514,7 +516,7 @@ VALID_TIERS = ("deep", "standard", "light")
 VALID_EFFORTS = ("low", "medium", "high", "xhigh")
 
 # Enum vocabularies for required-field validation (per execution-manifest.md).
-VALID_BACKENDS = ("claude", "codex", "antigravity", "cursor")
+VALID_BACKENDS = ("claude", "codex", "antigravity", "cursor", "devin", "opencode")
 VALID_ISOLATIONS = ("direct", "worktree")
 VALID_RUNS = ("serial", "parallel")
 VALID_STANCES = ("balanced", "conservative", "cost-aware", "claude-only")
@@ -1697,14 +1699,18 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
             wa = []
         job_globs.append((jid, [str(g) for g in wa]))
 
-        # Invariant 2: codex => worktree, antigravity => worktree, cursor => worktree.
-        # All three are EXTERNAL workers. Codex has a kernel sandbox scoped to a directory;
-        # antigravity and cursor have NO kernel write-confinement at all (antigravity runs
-        # with --dangerously-skip-permissions; cursor's headless `-f` grants arbitrary
-        # write+shell), so worktree + git-diff is the ONLY file-scope enforcement they get.
+        # Invariant 2: codex => worktree, antigravity => worktree, cursor => worktree,
+        # devin => worktree, opencode => worktree. All five are EXTERNAL workers. Codex
+        # has a kernel sandbox scoped to a directory; antigravity and cursor have NO
+        # kernel write-confinement at all (antigravity runs with
+        # --dangerously-skip-permissions; cursor's headless `-f` grants arbitrary
+        # write+shell); devin has a live but Research-Preview `--sandbox` whose coverage
+        # is unverified (treated as no-confinement for enforcement purposes, v1); opencode
+        # has NO kernel write-confinement and defaults to allowing all operations. For all
+        # five, worktree + git-diff is the ONLY file-scope enforcement that actually holds.
         # A non-worktree external worker cannot be deterministically attributed and is rejected.
         backend_lc = str(job.get("backend", "")).lower()
-        if backend_lc in ("codex", "antigravity", "cursor"):
+        if backend_lc in ("codex", "antigravity", "cursor", "devin", "opencode"):
             if str(job.get("isolation", "")).lower() != "worktree":
                 problems.append(
                     "job '%s' uses backend %s but isolation is '%s' "
@@ -2335,6 +2341,128 @@ jobs:
     isolation: direct
     run: serial
     write_allowed: [src/agy/**]
+    read_allowed: [src/**]
+    acceptance: ["builds"]
+"""
+
+
+# A complete, otherwise-valid manifest whose ONE defect is a devin job with
+# isolation: direct (devin's --sandbox is Research-Preview and unverified for this
+# plugin's purposes, so it is treated as no-confinement like antigravity/cursor and
+# MUST be worktree-isolated).
+DEVIN_DIRECT_MANIFEST = """
+run_id: 2026-07-13-devin
+feature: "devin"
+spec_path: docs/superpowers/specs/2026-07-13-devin.md
+plan_path: docs/superpowers/plans/2026-07-13-devin.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-13-devin.md
+  domain: docs/superpowers/expert/2026-07-13-devin.md
+  library: docs/superpowers/library-audit/2026-07-13-devin.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-1-devin
+    title: "devin slice"
+    type: large_isolated
+    backend: devin
+    tier: standard
+    isolation: direct
+    run: serial
+    write_allowed: [src/devin/**]
+    read_allowed: [src/**]
+    acceptance: ["builds"]
+"""
+
+
+# A complete, VALID manifest with a single devin job, worktree-isolated -- confirms
+# "devin" is accepted end-to-end (VALID_BACKENDS + the worktree invariant) once it is
+# NOT paired with isolation: direct.
+DEVIN_WORKTREE_MANIFEST = """
+run_id: 2026-07-13-devin-ok
+feature: "devin-ok"
+spec_path: docs/superpowers/specs/2026-07-13-devin-ok.md
+plan_path: docs/superpowers/plans/2026-07-13-devin-ok.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-13-devin-ok.md
+  domain: docs/superpowers/expert/2026-07-13-devin-ok.md
+  library: docs/superpowers/library-audit/2026-07-13-devin-ok.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-1-devin-ok
+    title: "devin slice"
+    type: large_isolated
+    backend: devin
+    tier: standard
+    isolation: worktree
+    run: serial
+    write_allowed: [src/devin/**]
+    read_allowed: [src/**]
+    acceptance: ["builds"]
+"""
+
+
+# A complete, otherwise-valid manifest whose ONE defect is an opencode job with
+# isolation: direct (opencode has NO kernel write-confinement and defaults to
+# allowing all operations, so worktree isolation is REQUIRED).
+OPENCODE_DIRECT_MANIFEST = """
+run_id: 2026-07-13-opencode
+feature: "opencode"
+spec_path: docs/superpowers/specs/2026-07-13-opencode.md
+plan_path: docs/superpowers/plans/2026-07-13-opencode.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-13-opencode.md
+  domain: docs/superpowers/expert/2026-07-13-opencode.md
+  library: docs/superpowers/library-audit/2026-07-13-opencode.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-1-opencode
+    title: "opencode slice"
+    type: large_isolated
+    backend: opencode
+    tier: standard
+    isolation: direct
+    run: serial
+    write_allowed: [src/opencode/**]
+    read_allowed: [src/**]
+    acceptance: ["builds"]
+"""
+
+
+# A complete, VALID manifest with a single opencode job, worktree-isolated -- confirms
+# "opencode" is accepted end-to-end (VALID_BACKENDS + the worktree invariant) once it
+# is NOT paired with isolation: direct. model is a genuine "provider/model" string,
+# matching the resolver's opencode convention.
+OPENCODE_WORKTREE_MANIFEST = """
+run_id: 2026-07-13-opencode-ok
+feature: "opencode-ok"
+spec_path: docs/superpowers/specs/2026-07-13-opencode-ok.md
+plan_path: docs/superpowers/plans/2026-07-13-opencode-ok.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-13-opencode-ok.md
+  domain: docs/superpowers/expert/2026-07-13-opencode-ok.md
+  library: docs/superpowers/library-audit/2026-07-13-opencode-ok.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-1-opencode-ok
+    title: "opencode slice"
+    type: large_isolated
+    backend: opencode
+    model: "anthropic/claude-sonnet-4-6"
+    isolation: worktree
+    run: serial
+    write_allowed: [src/opencode/**]
     read_allowed: [src/**]
     acceptance: ["builds"]
 """
@@ -3376,6 +3504,27 @@ def _selftest():
         any("backend antigravity but isolation" in p
             and "antigravity requires worktree" in p for p in agy_bad),
     )
+
+    # devin ⇒ worktree: same invariant, new backend (v1: worker-only, lower-trust).
+    devin_bad = validate_text(DEVIN_DIRECT_MANIFEST)
+    expect(
+        "devin+direct caught (devin requires worktree)",
+        any("backend devin but isolation" in p
+            and "devin requires worktree" in p for p in devin_bad),
+    )
+    devin_ok = validate_text(DEVIN_WORKTREE_MANIFEST)
+    expect("devin+worktree manifest is valid", devin_ok == [])
+
+    # opencode ⇒ worktree: same invariant, new backend (v1: worker-only, lower-trust).
+    opencode_bad = validate_text(OPENCODE_DIRECT_MANIFEST)
+    expect(
+        "opencode+direct caught (opencode requires worktree)",
+        any("backend opencode but isolation" in p
+            and "opencode requires worktree" in p for p in opencode_bad),
+    )
+    opencode_ok = validate_text(OPENCODE_WORKTREE_MANIFEST)
+    expect("opencode+worktree manifest is valid (provider/model string accepted)",
+           opencode_ok == [])
 
     # Reviewer satisfied by tier: deep (no model) — GOOD manifest task-3 uses
     # tier: deep and must not trip the reviewer invariant.
