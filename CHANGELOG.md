@@ -4,6 +4,33 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [2.11.0] - 2026-07-13
+
+### Added — Auto-resurrection watch (opt-in, marathon-only)
+
+v2.10 shipped the Marathon Loop but deliberately deferred auto-resurrection: a hard death still needed a human to re-run `/v:epic <epic-id>`. v2.11 closes that gap with an ADDITIVE opt-in `watch` surface on top of marathon (`--watch` at `--init`, rejected without `--stance marathon`; no in-place upgrade of an existing epic, same rule as marathon itself). A watch-off marathon epic stays byte-identical to v2.10 — none of the fields below are ever written for it.
+
+- **V1 — atomic resume authority + liveness heartbeat** (`scripts/compound-v-epic-state.py`): `--claim-resume` is the crux — ONE `fcntl.flock`-guarded atomic transaction that decides whether a scheduler-fired session may resume a dead epic, returning `{"claimed","reason":"claimed|live|terminal|resume-cap","resume_count"}`. There is no pid or lease object involved — the Claude Code harness has no stable driver pid across shell calls, so a FRESH `last_progress_at` heartbeat alone defers the claim (`live`) and the `--claim-resume` flock is the sole ownership/serialization authority, closing the duplicate-resurrection gap an earlier pid-lease design would have had. `--liveness` is a read-only watcher poll (`{"incomplete","stale","epic_status","terminal","resume_count"}`); `stale` requires incomplete, non-terminal, and past a heartbeat threshold (default 45 min) — heartbeat age is the whole staleness signal. `--renew-lease` is the live driver's own heartbeat call (kept under its original flag name for driver-side stability): it simply bumps `last_progress_at` to now, no pid, no TTL, nothing to create-or-renew. A new `resume_count` global breaker axis (`max_resume_count`, default 20) permits N resumes and blocks the (N+1)th, tripping the same `blocked_needing_human` latch as every other breaker; `--clear-breaker --reset-resume-count` re-arms it. Built directly on v2.10's crash-safe resume — nothing about the existing single-process marathon path changed.
+- **V2 — two-tier watcher** (`scripts/compound-v-epic-watch.py`, new): never talks to a scheduler directly and never re-implements any state-spine logic. `emit-prompt` prints a SELF-CONTAINED resume prompt for a scheduler to hand to a fresh, memoryless session — that session calls `--claim-resume`, branches on the result, and performs the full disarm inline on a terminal/resume-cap verdict (a cold-prompt design: no conversation history is assumed). `plan` reads `--liveness` and advises the two tiers' cadence (off-minute `:17`/`:47`, ~30 min apart) and whether to disarm. The driver (`/v:epic`, not this script) owns the real scheduler wiring — session `CronCreate`/`CronDelete` for Tier-1, `mcp__scheduled-tasks__create_scheduled_task`/`delete_scheduled_task` for Tier-2.
+- **V3 — idempotent watcher registry + driver arm/disarm + capability detection**: `--record-watcher-armed`/`--record-watcher-disarmed`/`--list-watchers` track scheduler tasks idempotently by `(provider, task-id)`, so a crash-and-replay during arming or disarming is a harmless no-op, never a duplicate or a leak. `/v:epic`'s marathon loop (`commands/v-epic.md` §0c "Watch-on marathon start" and "Watch disarm") bumps the heartbeat and arms both tiers once at invocation start (recording an intent record before each real scheduler create call, so a crash mid-arm never double-arms on re-entry), re-arms a Tier-1 task past its ~7-day expiry, and disarms both tiers (plus a deterministic-id fallback, attempted even when the registry is empty) at every terminal exit. `/v:init` gained a capability-detection step for scheduler availability on this machine, feeding the `epic.autonomy.watch` config key (consulted only once, at a NEW epic's `--init` — the persisted `epic-state.json` is the sole authority afterward).
+- **CI**: `.github/workflows/validate.yml` now also runs `python3 scripts/compound-v-epic-watch.py --selftest` in the same Python 3.9 step as the existing `compound-v-epic-state.py`/`compound-v-epic-arbiter.py` selftests.
+
+### The corrected honest boundary (v2.11) — still not "survives while you sleep"
+
+Auto-resurrection is bounded and partial, not magic:
+
+- **Tier-1 (session `CronCreate`)** pauses while the session is unavailable or busy, MISSES any fire that elapses while paused (no catch-up), may restore on the next conversation turn while still unexpired, and expires after 7 days even inside a continuously open session.
+- **Tier-2 (`scheduled-tasks`, on-disk)** runs only while the desktop app is open and the machine is awake; it performs exactly ONE catch-up for the most recent missed run on app start/wake, within 7 days. It is not an always-on server.
+- **"Survives quota exhaustion"** holds only if the quota has since reset AND the session is still authenticated — an expired OAuth token still needs a human.
+- **A machine that is truly off (laptop closed, asleep) is not covered by either tier.** Genuine machine-off execution needs remote infrastructure, never claimed built-in here.
+- **Resurrection is bounded** by `max_resume_count` (default 20) — a persistently-dying run halts at `blocked_needing_human` for a human, same as any other tripped breaker.
+
+Opt-in (`epic.autonomy.watch`, default off); the default epic and a watch-off marathon are unchanged. No fabricated cost/token metrics anywhere in this surface.
+
+### Provenance
+
+Built on v2.10's crash-safe marathon resume. Cross-model reviewed by **Codex gpt-5.6-sol**.
+
 ## [2.10.0] — 2026-07-13
 
 ### Added — Marathon Loop (opt-in autonomous `/v:epic`, PHASED scope)
