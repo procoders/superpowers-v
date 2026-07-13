@@ -46,8 +46,10 @@ Usage
 Advisor helpers (v2.12, Feature B1):
   * ``advisor_eligible`` — a `standard`-tier / core-slice implementer OR a fast-path
     Claude worker MAY carry an advisor; reviewer/docs/shared_foundation jobs may not.
-  * ``select_advisor`` — cross-brand advisor picker: codex > any other non-claude >
-    opus fallback (backend claude, model opus). NEVER haiku.
+  * ``select_advisor`` — cross-brand advisor picker restricted to backends with an
+    IMPLEMENTED read-only consult path: codex (cross-brand, preferred) > opus fallback
+    (backend claude, model opus). cursor/antigravity/devin/opencode have NO consult
+    adapter, so they are NEVER offered as advisors. NEVER haiku.
 
 Python 3.9-safe (no match, no X|Y unions), stdlib only.
 """
@@ -321,9 +323,13 @@ def resolve(backend, tier, effort=None, config_models=None, explicit_model=None,
 #
 #   select_advisor(executor_backend, available_backends) -> {advisor_backend, tier, model}
 #       Given the executor's backend and the backends available in this run,
-#       pick the advisor backend, PREFERRING a different brand than the executor:
-#           codex > any other non-claude (cursor/antigravity/devin/opencode) > opus fallback
-#       Opus fallback = backend "claude", model "opus" (always available, never haiku).
+#       pick the advisor backend, PREFERRING a different brand than the executor —
+#       but ONLY among backends with an implemented read-only consult path:
+#           codex (cross-brand, preferred) > opus fallback
+#       cursor/antigravity/devin/opencode are NEVER selected as advisors — no consult
+#       adapter exists for them, so choosing one would be deterministic death
+#       ("unsupported advisor backend"). Opus fallback = backend "claude", model "opus"
+#       (always available, never haiku).
 # --------------------------------------------------------------------------- #
 
 # Job-type tokens that are NEVER advisor-eligible (substring match, mirroring the
@@ -331,8 +337,12 @@ def resolve(backend, tier, effort=None, config_models=None, explicit_model=None,
 # docs job, or a shared_foundation job is not a core-slice implementer.
 ADVISOR_INELIGIBLE_TYPE_TOKENS = ("review", "reviewer", "docs", "shared_foundation")
 
-# Cross-brand advisor preference among non-claude backends, strongest first.
-ADVISOR_NONCLAUDE_PREFERENCE = ("codex", "cursor", "antigravity", "devin", "opencode")
+# Non-claude advisor backends with an IMPLEMENTED read-only consult path — the ONLY
+# non-claude backends select_advisor may return. codex is the cross-brand preferred
+# advisor; the sole other consultable path is the Claude/opus fallback (below).
+# cursor/antigravity/devin/opencode have NO consult adapter, so offering them as an
+# advisor is deterministic death — they are deliberately excluded. NEVER haiku.
+ADVISOR_CONSULTABLE_NONCLAUDE = ("codex",)
 
 
 def advisor_eligible(tier=None, job_type=None, backend=None, fast_path=False):
@@ -353,19 +363,22 @@ def advisor_eligible(tier=None, job_type=None, backend=None, fast_path=False):
 
 
 def select_advisor(executor_backend, available_backends, stance="balanced"):
-    """Pick the cross-brand advisor backend. Prefer a DIFFERENT brand than the
-    executor: codex > any other non-claude > opus fallback. Returns a dict with
-    ``advisor_backend`` / ``tier`` / ``model``. The opus fallback (backend
+    """Pick the cross-brand advisor backend, restricted to backends with an IMPLEMENTED
+    read-only consult path. Prefer a DIFFERENT brand than the executor: codex > opus
+    fallback. cursor/antigravity/devin/opencode are NEVER returned (no consult adapter —
+    selecting one would be deterministic 'unsupported advisor backend' death). Returns a
+    dict with ``advisor_backend`` / ``tier`` / ``model``. The opus fallback (backend
     'claude', model 'opus') is always available. NEVER haiku."""
     exec_b = str(executor_backend or "").strip().lower()
     avail = set(
         str(b).strip().lower() for b in (available_backends or []) if str(b).strip()
     )
-    for cand in ADVISOR_NONCLAUDE_PREFERENCE:
+    for cand in ADVISOR_CONSULTABLE_NONCLAUDE:
         if cand in avail and cand != exec_b:
             model = resolve(cand, "deep", stance=stance)["model"]
             return {"advisor_backend": cand, "tier": "deep", "model": model}
-    # Opus fallback — different brand than any non-claude executor, always available.
+    # Opus fallback — the only other backend with an implemented consult path; a
+    # different brand than any non-claude executor, and always available.
     return {"advisor_backend": "claude", "tier": "deep", "model": "opus"}
 
 
@@ -749,9 +762,18 @@ def _selftest():
            == {"advisor_backend": "claude", "tier": "deep", "model": "opus"})
     expect("selector skips SAME-brand executor (codex exec) -> opus fallback",
            select_advisor("codex", ["codex", "claude"])["advisor_backend"] == "claude")
-    expect("selector picks another non-claude brand when codex absent",
-           select_advisor("claude", ["cursor", "claude"])["advisor_backend"] == "cursor")
-    expect("selector prefers codex over other non-claude when both present",
+    # FIX 6: only codex + the opus fallback have an implemented read-only consult path.
+    # cursor/antigravity/devin/opencode must NEVER be offered as advisors (no consult
+    # adapter => deterministic 'unsupported advisor backend' death).
+    expect("selector does NOT offer cursor -> opus fallback (not cursor)",
+           select_advisor("claude", ["cursor", "claude"])
+           == {"advisor_backend": "claude", "tier": "deep", "model": "opus"})
+    expect("selector does NOT offer antigravity/devin/opencode -> opus fallback",
+           select_advisor("claude", ["antigravity", "devin", "opencode", "claude"])
+           == {"advisor_backend": "claude", "tier": "deep", "model": "opus"})
+    expect("selector still picks codex when available (executor claude)",
+           select_advisor("claude", ["codex", "claude"])["advisor_backend"] == "codex")
+    expect("selector prefers codex even when a non-consultable brand is also present",
            select_advisor("claude", ["cursor", "codex"])["advisor_backend"] == "codex")
     expect("selector opus fallback is never haiku",
            select_advisor("codex", [])["model"] == "opus")

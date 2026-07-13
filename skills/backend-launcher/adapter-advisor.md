@@ -67,9 +67,17 @@ Both paths run under the shared process-group timeout supervisor [`scripts/compo
 
 ---
 
-## `advisor_calls` — worker-counted, not CLI-reported
+## `advisor_calls` — DERIVED by counting a per-job log, never self-reported
 
-`advisor_calls` counts **how many times the executor actually consulted an advisor**. This single consult contributes `1`. It is emitted by the consult script and is **NOT** read from any CLI's `usage.iterations[]` — that field is a *turn* count, not an advisor count, and reading it would over-report (see [library-audit](../../docs/superpowers/library-audit/2026-07-13-usage-and-advisor.md) §Advisor reality). Feature A's escalation sensor consumes `usage.advisor_calls` read-only; Feature B is the sole producer.
+`advisor_calls` counts **how many times the executor actually consulted an advisor**. The honest, tamper-resistant way to produce that count is to **count log lines on disk**, not to trust a number the worker reports about itself:
+
+- **Per-job advisor log:** the dispatcher passes `--calls-log <run-dir>/logs/<job-id>.advisor.jsonl` on every advisor-eligible dispatch (same `logs/` dir the codex events-log uses).
+- **The consult appends ONE line per successful consult.** On each SUCCESSFUL consult, `compound-v-advisor-consult.sh` appends exactly one compact JSON line — `{"advisor_backend", "advisor_model", "advisor_calls":1, "ts"}` — to that file (parent dir created if needed; **append, never truncate**). A *failed* consult `die()`s before the emit and logs nothing, so a line means a real, completed consult. Omitting `--calls-log` restores the prior behavior exactly (no logging) — the flag is backward-compatible.
+- **collect-results DERIVES the count.** [`scripts/compound-v-collect-results.py`](../../scripts/compound-v-collect-results.py) counts the lines in `<run-dir>/logs/<job-id>.advisor.jsonl` and writes that count into the job's `usage.advisor_calls`. The number is therefore **git/FS-derived from what actually happened**, never scraped from a CLI's `usage.iterations[]` (that field is a *turn* count, not an advisor count, and reading it would over-report — see [library-audit](../../docs/superpowers/library-audit/2026-07-13-usage-and-advisor.md) §Advisor reality) and never taken from the worker's own claim. No log file ⇒ `0` consults, honestly.
+
+The `advisor_calls: 1` on the consult's **stdout** object still reports *this* single consult; the RUN-LEVEL `usage.advisor_calls` is the derived line-count, not a sum of self-reported fields. Feature A's escalation sensor consumes `usage.advisor_calls` read-only; Feature B is the sole producer.
+
+**Wired case (end-to-end today):** a **CLAUDE executor** on an advisor-eligible job consults a **cross-brand (codex)** advisor when codex is available, else the **Opus fallback** (`backend: claude`, `model: opus`). The dispatcher wires the `--calls-log` path at dispatch time (see [`agents/parallel-dispatcher.md`](../../agents/parallel-dispatcher.md) §advisor consult); collect-results derives the count after the job. This is the meaningful, wired path — not an aspirational one.
 
 ---
 
@@ -81,8 +89,11 @@ scripts/compound-v-advisor-consult.sh \
   --context-path "src/worker/pool.ts" \
   --context-path "docs/superpowers/recon/*.md" \
   --executor claude \
-  --available "codex,claude"
+  --available "codex,claude" \
+  --calls-log "docs/superpowers/execution/$RUN_ID/logs/$JOB_ID.advisor.jsonl"
 # optional: --question-file <abs>   --advisor-backend codex   --cd <dir>   --timeout-sec 300
+# --calls-log is what the dispatcher passes so collect-results can DERIVE usage.advisor_calls;
+# omit it and the consult behaves exactly as before (no logging).
 ```
 
 Output (stdout) — exactly one JSON object:
@@ -93,5 +104,6 @@ Output (stdout) — exactly one JSON object:
 
 - `--question` / `--question-file` — the sub-decision (exactly one). Read-only context files are embedded into the prompt via repeatable `--context-path <glob>`, so the advice is grounded without relying on the backend's own (sandboxed / read-only) file access.
 - `--executor` (default `claude`) + `--available <csv>` feed the cross-brand selector; `--advisor-backend` overrides it.
-- The script writes **only** ephemeral scratch under `$TMPDIR` to capture the backend's own output — it never writes a repo/deliverable file, and its stdout is exactly one JSON object.
+- `--calls-log <path>` (optional) — on each SUCCESSFUL consult, append one compact JSON line to `<path>` (parent dir auto-created; append, never truncate). The dispatcher passes `<run-dir>/logs/<job-id>.advisor.jsonl`; collect-results counts those lines to derive `usage.advisor_calls`. Omitting it means no logging.
+- The script writes **only** ephemeral scratch under `$TMPDIR` (plus the append-only `--calls-log` line when that flag is given) to capture the backend's own output — it never writes a repo/deliverable file, and its stdout is exactly one JSON object.
 - **Testing:** set `$COMPOUND_V_ADVISOR_STUB` to a fake backend path and the consult invokes it in place of the real `codex`/`claude` binary with the **identical argv** — how [`test-advisor-worker-stub.sh`](../../scripts/test-advisor-worker-stub.sh) proves the selector, the safety flags, and the advice parse with no live run.

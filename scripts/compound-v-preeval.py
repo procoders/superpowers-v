@@ -733,6 +733,21 @@ def _advisor_hot_for(repo, run_dir):
     return False
 
 
+def _run_dir_contained(repo, run_dir):
+    """Path-containment guard for a caller-supplied ``--run-dir``: True iff it resolves
+    to a path inside the repo root (realpath-based, so a ``..`` traversal or an
+    escaping symlink is rejected, and an absolute path pointing OUTSIDE the repo fails).
+    ``run_dir`` may be repo-relative or absolute. Absence (falsy) => True (fail-open:
+    nothing to validate — the advisor sensor simply stays off)."""
+    if not run_dir:
+        return True
+    root_real = os.path.realpath(repo or ".")
+    base = run_dir if os.path.isabs(run_dir) else os.path.join(repo or ".", run_dir)
+    real = os.path.realpath(base)
+    prefix = root_real.rstrip(os.sep) + os.sep
+    return real == root_real or real.startswith(prefix)
+
+
 def run_preeval(request, repo=".", taxonomy_path=None, t3_category=None,
                 pre_eval_id=None, ts=None, config_values=None, tier2=None,
                 churn_hot=None, advisor_hot=None, run_dir=None, _localize=None,
@@ -900,6 +915,11 @@ def main(argv):
     ap.add_argument("--t3-category", dest="t3_category", choices=list(T3_CATEGORIES),
                     help="pre-resolved T3 enum (the engine never calls a model)")
     ap.add_argument("--pre-eval-id", dest="pre_eval_id", help="explicit pre_eval_id")
+    ap.add_argument("--run-dir", dest="run_dir", default=None,
+                    help="completed execution run directory (<run-dir>/results/*.json) for "
+                         "the POST-RUN advisor-hot reclassification sensor. Absent => the "
+                         "sensor is off (advisor_hot stays False; unchanged pre-dispatch "
+                         "behavior). Must resolve inside the repo root.")
     ap.add_argument("--score-only", action="store_true",
                     help="pure scoring from --localization-json, no writes")
     ap.add_argument("--localization-json", dest="localization_json",
@@ -924,8 +944,12 @@ def main(argv):
 
     if args.request is None:
         ap.error("--request is required (or use --selftest / --score-only)")
+    if args.run_dir is not None and not _run_dir_contained(args.repo, args.run_dir):
+        ap.error("--run-dir %r resolves outside the repo root (path-containment "
+                 "rejected)" % args.run_dir)
     result = run_preeval(args.request, repo=args.repo, taxonomy_path=args.taxonomy,
-                         t3_category=args.t3_category, pre_eval_id=args.pre_eval_id)
+                         t3_category=args.t3_category, pre_eval_id=args.pre_eval_id,
+                         run_dir=args.run_dir)
     print(json.dumps(result, indent=2, sort_keys=True, default=str))
     return 0
 
@@ -1444,6 +1468,55 @@ def _selftest():
         _write_result(os.path.join(abs_rd, "results"), "j.json",
                       {"usage": {"advisor_calls": ADVISOR_HOT_THRESHOLD + 5}})
         expect("advisor reader: absolute run_dir -> hot", _advisor_hot_for(repo, abs_rd) is True)
+
+    # ==== FIX 8: --run-dir is actually threaded into run_preeval so the POST-RUN advisor
+    #      sensor FIRES (it was dead before — no CLI/kwarg path reached _advisor_hot_for). ==
+    with tempfile.TemporaryDirectory() as repo:
+        tax_dir = os.path.join(repo, ".claude")
+        os.makedirs(tax_dir, exist_ok=True)
+        with open(os.path.join(tax_dir, "compound-v-impact-taxonomy.yaml"), "w",
+                  encoding="utf-8") as fh:
+            fh.write(_EXAMPLE_TAXONOMY_TEXT)
+        stream = os.path.join(repo, "docs", "superpowers", "memory",
+                              "triage-outcomes.jsonl")
+        fk_fp = fake_localize_factory(_loc(["src/ui/button.css"], flags=[], fan_out=1))
+
+        # (a) No run_dir => advisor sensor OFF (fail-open) => trivial change stays FASTPATH
+        #     (unchanged normal pre-dispatch behavior).
+        res_norund = run_preeval("tweak local padding no rundir", repo=repo,
+                                 _localize=fk_fp, ts="2026-07-12T11:00:00Z",
+                                 stream_path=stream)
+        expect("FIX8: no run_dir => advisor sensor off => FASTPATH, no override",
+               res_norund["decision"] == DECISION_FASTPATH
+               and res_norund["override_fired"] is None)
+
+        # (b) A run_dir whose results record advisor_calls OVER threshold => _advisor_hot_for
+        #     is consulted on the reclassification path => override #7 fires => the SAME
+        #     otherwise-trivial change reclassifies to FULL_PIPELINE.
+        rd = os.path.join("docs", "superpowers", "execution", "run-adv")
+        _res_dir = os.path.join(repo, rd, "results")
+        os.makedirs(_res_dir, exist_ok=True)
+        with open(os.path.join(_res_dir, "j.json"), "w", encoding="utf-8") as fh:
+            json.dump({"usage": {"advisor_calls": ADVISOR_HOT_THRESHOLD + 1}}, fh)
+        res_rund = run_preeval("tweak local padding with rundir", repo=repo,
+                               _localize=fk_fp, run_dir=rd,
+                               ts="2026-07-12T11:01:00Z", stream_path=stream)
+        expect("FIX8: --run-dir over threshold => advisor_hot override #7 => FULL",
+               res_rund["decision"] == DECISION_FULL
+               and res_rund["override_fired"] == 7)
+
+    # (c) --run-dir path containment: inside is allowed; None fail-opens; a `..` escape and
+    #     an outside-repo absolute path are rejected (validated before the sensor reads).
+    with tempfile.TemporaryDirectory() as repo:
+        expect("FIX8: run_dir=None is contained (fail-open, nothing to validate)",
+               _run_dir_contained(repo, None) is True)
+        expect("FIX8: repo-relative run_dir is contained",
+               _run_dir_contained(repo, "docs/superpowers/execution/run-x") is True)
+        expect("FIX8: '..' escaping run_dir is rejected",
+               _run_dir_contained(repo, "../evil-run") is False)
+        _outside = os.path.join(os.path.dirname(os.path.realpath(repo)), "outside-run")
+        expect("FIX8: outside-repo absolute run_dir is rejected",
+               _run_dir_contained(repo, _outside) is False)
 
     if failures:
         print("\nSELFTEST FAILED: %d case(s)" % len(failures))

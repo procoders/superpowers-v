@@ -40,7 +40,14 @@
 #     --question "<text>" | --question-file <abs-path> \
 #     [--context-path <glob>]... \
 #     [--executor <backend>] [--available <csv>] [--advisor-backend <b>] \
-#     [--cd <dir>] [--timeout-sec <n>]
+#     [--cd <dir>] [--timeout-sec <n>] [--calls-log <path>]
+#
+# --calls-log <path> (optional): on each SUCCESSFUL consult, append exactly ONE compact JSON line
+#   (the consult result object) to <path>, creating its parent dir if needed (append, never
+#   truncate). This is the per-job advisor log — the dispatcher passes
+#   `<run-dir>/logs/<job-id>.advisor.jsonl`, and collect-results COUNTS the lines in that file to
+#   DERIVE usage.advisor_calls (honest, git/FS-derived, never model-self-reported). Omitting
+#   --calls-log preserves the prior behavior exactly (no logging). See adapter-advisor.md.
 #
 # Exit: 0 when advice was produced; non-zero (with a diagnostic on stderr) on a usage/environment
 # fault or an unsupported advisor backend.
@@ -71,6 +78,7 @@ AVAILABLE=""
 ADVISOR_OVERRIDE=""
 CD_DIR="$PWD"
 TIMEOUT_SEC="$DEFAULT_TIMEOUT_SEC"
+CALLS_LOG=""
 # Indexed array of context globs (bash 3.2-safe).
 CONTEXT_PATHS=()
 
@@ -84,6 +92,7 @@ while [ $# -gt 0 ]; do
     --advisor-backend)  ADVISOR_OVERRIDE="$2"; shift 2 ;;
     --cd)               CD_DIR="$2"; shift 2 ;;
     --timeout-sec)      TIMEOUT_SEC="$2"; shift 2 ;;
+    --calls-log)        CALLS_LOG="$2"; shift 2 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -240,8 +249,28 @@ esac
 
 [ -n "$ADVICE" ] || die "advisor backend '$ADVISOR_BACKEND' returned no advice text"
 
+# --- record one line into the per-job advisor log (DERIVED count source) ------
+# On a SUCCESSFUL consult, append EXACTLY ONE compact JSON line to --calls-log (when given). The
+# dispatcher passes `<run-dir>/logs/<job-id>.advisor.jsonl`; collect-results COUNTS the lines to
+# DERIVE usage.advisor_calls — the honest, git/FS-derived count (never model-self-reported). We
+# reach here only after ADVICE was produced (a failed consult die()s earlier and never logs).
+# Append, never truncate; create the parent dir if needed. Omitting --calls-log => no logging
+# (backward compatible). This does NOT alter stdout — stdout stays exactly one JSON object.
+if [ -n "$CALLS_LOG" ]; then
+  _log_dir="$(dirname "$CALLS_LOG")"
+  [ -d "$_log_dir" ] || mkdir -p "$_log_dir" || die "cannot create --calls-log dir: $_log_dir"
+  jq -nc \
+    --arg advisor_backend "$ADVISOR_BACKEND" \
+    --arg advisor_model "$ADVISOR_MODEL" \
+    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --argjson advisor_calls 1 \
+    '{advisor_backend: $advisor_backend, advisor_model: $advisor_model, advisor_calls: $advisor_calls, ts: $ts}' \
+    >> "$CALLS_LOG" || die "cannot append to --calls-log: $CALLS_LOG"
+fi
+
 # --- emit --------------------------------------------------------------------
-# advisor_calls is WORKER-COUNTED: this consult == 1.
+# advisor_calls on the stdout object is this-consult == 1. The RUN-LEVEL usage.advisor_calls is
+# DERIVED by collect-results counting the --calls-log lines, NOT summed from this field.
 jq -n \
   --arg advisor_backend "$ADVISOR_BACKEND" \
   --arg advisor_model "$ADVISOR_MODEL" \
