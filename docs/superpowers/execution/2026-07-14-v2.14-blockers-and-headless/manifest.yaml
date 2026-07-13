@@ -1,0 +1,163 @@
+# Compound V execution manifest — v2.14 confirmed-blockers (2nd external family) + headless shim.
+# Materialized from the verified Partition Map + 3 live pre-flights (archaeology/domain/library).
+# Validated by scripts/compound-v-validate-manifest.py.
+#
+# Partition-critical seam: a1 (arbiter) and a2 (state) BOTH encode the family vocab {GPT,Gemini,Grok}
+# with no shared import — disjoint WRITE (separate files) but a semantic CONTRACT PAIR; the reviewer
+# must diff arbiter._EXTERNAL_CONFIRMING against a2's new known-external constant in one pass (casing
+# must match exactly, else confirmed silently stays false).
+# Feature C (architecture doc refresh via /v:onboard --refresh) is an INTERACTIVE, human-gated step run
+# AFTER a*/b*/z1 land — deliberately NOT a parallel worker job (it regenerates cited docs off final code).
+
+run_id: 2026-07-14-v2.14-blockers-and-headless
+feature: "Confirmed blockers (2nd external family) + headless resurrection shim"
+spec_path: docs/superpowers/specs/2026-07-14-v2.14-blockers-and-headless-design.md
+plan_path: docs/superpowers/specs/2026-07-14-v2.14-blockers-and-headless-design.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-14-v2.14-blockers-and-headless.md
+  domain: docs/superpowers/expert/2026-07-14-v2.14-blockers-and-headless.md
+  library: docs/superpowers/library-audit/2026-07-14-v2.14-blockers-and-headless.md
+
+acceptance_criteria:
+  - "Arbiter polls a 2nd distinct external family (Gemini via agy, read-only, explicit Gemini --model, NO --dangerously-skip-permissions); confirmed requires >=2 distinct external families agreeing on the SAME blocker_category enum; fail-closed on unknown family; no live model call in tests"
+  - "State derives confirmed from families_agreeing (never a raw boolean; raw --confirmed stays rejected); done_with_blockers terminal + awaiting-final-review pre-terminal + is_terminal prefix; abandoned feature still forces blocked_needing_human; checkpoint path byte-identical"
+  - "done_with_blockers auto-merges via final review + finishing-a-development-branch; confirmed-blocked features are ALWAYS over-sampled by the PASS-integrity audit; the blocked remainder is surfaced to the human, never dropped"
+  - "Headless shim is present-only (never launchctl-loads), emits --permission-mode dontAsk + a non-empty --allowedTools allowlist, NO bypass flag, absolute claude path, /dev/null stdin, bootstrap gui/$UID install command; honest launchd wake/coalesce boundary"
+  - "All selftests green under LANG=C + Python 3.9; 2.14.0 lockstep; scope gate clean on every job; no write outside the partitioned file sets"
+
+routing_stance: claude-only
+max_parallel: 6
+
+# Files a single serial writer owns (release job z1).
+shared_resources:
+  - "CHANGELOG.md"
+  - ".claude-plugin/plugin.json"
+  - ".claude-plugin/marketplace.json"
+  - ".github/workflows/validate.yml"
+
+jobs:
+  - id: a1-arbiter-2nd-family
+    title: "Arbiter: read-only Gemini (agy) 2nd-family poll + same-category confirm predicate"
+    type: large_isolated
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    write_allowed:
+      - "scripts/compound-v-epic-arbiter.py"
+    read_allowed:
+      - "scripts/**"
+      - "skills/backend-launcher/**"
+      - "docs/superpowers/specs/2026-07-14-v2.14-blockers-and-headless-design.md"
+      - "docs/superpowers/archaeology/2026-07-14-v2.14-blockers-and-headless.md"
+      - "docs/superpowers/library-audit/2026-07-14-v2.14-blockers-and-headless.md"
+    acceptance:
+      - "new agy_available(caps) single identity gate; build_agy_invocation emits `agy --print <prompt>` with explicit --model <resolved Gemini>, NO --dangerously-skip-permissions/--yolo; --agy-bin + COMPOUND_V_ARBITER_AGY_BIN test seam"
+      - "poll_agy reads STDOUT (no --output-last-message); reuses _parse_codex_verdict/redact/sanitize_ballot_fields/_build_codex_prompt/_read_capped_regular; runs under the timeout supervisor, stdin </dev/null"
+      - "ballot gains blocker_category (closed enum or null); _aggregate confirms only when >=2 distinct external families share the SAME category; family resolved from the explicit model string, fail-closed (unknown/non-external -> dropped ballot)"
+      - "selftest: 2-family same-category => confirmed:true families_agreeing [GPT,Gemini]; different-category => false; GPT-family agy stub => false; no-dangerous-flag + explicit-Gemini-model argv asserts; all green py3.9"
+
+  - id: a2-state-terminal
+    title: "State: derive confirmed from families_agreeing + done_with_blockers terminal + awaiting-final-review"
+    type: large_isolated
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    write_allowed:
+      - "scripts/compound-v-epic-state.py"
+    read_allowed:
+      - "scripts/**"
+      - "docs/superpowers/specs/2026-07-14-v2.14-blockers-and-headless-design.md"
+      - "docs/superpowers/archaeology/2026-07-14-v2.14-blockers-and-headless.md"
+    acceptance:
+      - "canonical known-external constant {GPT,Gemini,Grok} (capitalized, matches arbiter:97); confirmed = >=2 distinct known-external in families_agreeing, derived at the two confirmed:False literals + reactivation branch; raw --confirmed/--blocker-confirmed stay hard-rejected; new optional --blocker-category records on the ledger"
+      - "done_with_blockers branch in next_feature_autonomous: all features done OR blocked-with-confirmed-ledger, blocking_ids only status==blocked (abandoned => blocked_needing_human), no sample_audit_due, final_review passed; awaiting-final-review running_with_failures signal when final_review pending; reason prefix added to is_terminal"
+      - "checkpoint (non-marathon) path byte-identical; all selftests green py3.9 under LANG=C"
+
+  - id: a3-driver-prose
+    title: "Driver + reviewer prose: wire done_with_blockers auto-merge + confirmed-derivation wording"
+    type: standard
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [a1-arbiter-2nd-family, a2-state-terminal]
+    write_allowed:
+      - "commands/v-epic.md"
+      - "skills/compound-v/epic-mode.md"
+      - "agents/spec-reviewer.md"
+    read_allowed:
+      - "scripts/**"
+      - "commands/**"
+      - "skills/**"
+      - "agents/**"
+      - "docs/superpowers/specs/2026-07-14-v2.14-blockers-and-headless-design.md"
+    acceptance:
+      - "v-epic.md §2 adds done_with_blockers branch -> §8 final review + finishing-a-development-branch (auto-merge), NOT §7 halt-page; §5/§6 wording -> confirmed derived, pass --families-agreeing + --blocker-category; sample-audit ALWAYS over-samples confirmed-blocked; finish report surfaces blocked remainder"
+      - "epic-mode.md: panel polls Gemini, ledger confirmed derived, REMOVE the 'v2.10 never emits done_with_blockers' note (line 165), CLI table + is_terminal + terminal-states updated; honesty note frames >=2 families as the minimum defensible bar (~1.3-1.5 effective votes)"
+      - "spec-reviewer.md gains AC for the new terminal; lint-frontmatter clean"
+
+  - id: b1-headless-shim
+    title: "Headless launchd/cron resurrection shim generator (present-only)"
+    type: large_isolated
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    write_allowed:
+      - "scripts/compound-v-headless-shim.py"
+    read_allowed:
+      - "scripts/**"
+      - "docs/superpowers/specs/2026-07-14-v2.14-blockers-and-headless-design.md"
+      - "docs/superpowers/expert/2026-07-14-v2.14-blockers-and-headless.md"
+      - "docs/superpowers/library-audit/2026-07-14-v2.14-blockers-and-headless.md"
+    acceptance:
+      - "emit --os macos: valid-XML plist, StartCalendarInterval Minute 17/47 hourly, absolute claude path (fail emit if unresolved), StandardInPath /dev/null, StandardOutPath/ErrorPath log, --permission-mode dontAsk + non-empty --allowedTools, NO --dangerously-skip-permissions/--yolo; prints `launchctl bootstrap gui/$(id -u)` + bootout as USER steps"
+      - "emit --os linux: crontab 17,47 * * * * with absolute claude path + </dev/null + dontAsk+allowlist; prominent DO-NOT-bypass runbook block referencing the repo-deletion incident; honest wake/coalesce/dead-zone boundary"
+      - "NEVER shells out to launchctl/crontab and never runs the agent (asserted); --selftest covers both OSes + the positive dontAsk/allowlist + absolute-path + /dev/null asserts + malformed-arg refusal; green py3.9"
+
+  - id: b2-shim-docs
+    title: "Present-only shim pointer in onboard doctor + README"
+    type: docs
+    backend: claude
+    tier: light
+    effort: medium
+    isolation: worktree
+    run: parallel
+    depends_on: [b1-headless-shim]
+    write_allowed:
+      - "commands/v-onboard.md"
+      - "README.md"
+    read_allowed:
+      - "scripts/compound-v-headless-shim.py"
+      - "commands/**"
+      - "skills/compound-v/**"
+      - "docs/superpowers/specs/2026-07-14-v2.14-blockers-and-headless-design.md"
+    acceptance:
+      - "onboard doctor / README point to `compound-v-headless-shim.py emit` as a PRESENT-ONLY (never auto-installed) opt-in; states the honest boundary + no-bypass rule; does NOT touch epic-mode.md (owned by a3)"
+      - "lint-frontmatter clean; no scope-gate violation"
+
+  - id: z1-release
+    title: "Lockstep 2.14.0 bump + CHANGELOG + CI selftest wiring"
+    type: shared_foundation
+    backend: claude
+    tier: deep
+    effort: medium
+    isolation: direct
+    run: serial
+    depends_on: [a1-arbiter-2nd-family, a2-state-terminal, a3-driver-prose, b1-headless-shim, b2-shim-docs]
+    write_allowed:
+      - ".claude-plugin/plugin.json"
+      - ".claude-plugin/marketplace.json"
+      - "CHANGELOG.md"
+      - ".github/workflows/validate.yml"
+    read_allowed:
+      - "**"
+    acceptance:
+      - "plugin.json + marketplace.json lockstep 2.14.0; CHANGELOG '## [2.14.0] - 2026-07-14' naming A (confirmed blockers/2nd family) + B (headless shim) + C (doc refresh)"
+      - "validate.yml runs the new/updated selftests (arbiter, state, headless-shim) under Py3.9; manifest-validator + lint-frontmatter clean"
