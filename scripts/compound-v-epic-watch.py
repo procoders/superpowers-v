@@ -104,27 +104,65 @@ def _validate_state_path(value):
 
 
 def deterministic_id_prefix(epic_id):
-    """The per-epic prefix both arm and disarm reconcile against -- 'compound-v-watch-<epic_id>-'.
-    Tier-2's exact `taskId` is this prefix + 'tier2'; Tier-1's cron marker is this prefix +
-    'tier1'. The terminal-DISARM sweep (see PROMPT_TEMPLATE, and v-epic.md's "Watch disarm")
-    matches ANY provider-listed task whose id/marker starts with this prefix -- not only the
-    current tier1/tier2 suffixes -- so it also catches a task armed under an older naming
-    convention."""
+    """The shared textual prefix underlying both deterministic ids -- 'compound-v-watch-
+    <epic_id>-'. Tier-2's exact `taskId` is this prefix + 'tier2'.
+
+    v2.11 HIGH-1 fix: this prefix is INFORMATIONAL/derivational ONLY -- kept because
+    `deterministic_task_id` is built from it -- and MUST NEVER be used for matching/adopt/
+    disarm decisions. Epic ids legally contain hyphens (`ID_RE_OK` includes '-'), so this
+    prefix for epic "foo" ("compound-v-watch-foo-") is itself a literal STRING PREFIX of a
+    DIFFERENT epic "foo-bar"'s own id/marker ("compound-v-watch-foo-bar-tier2", or the
+    Tier-1 marker text) -- a prefix/substring sweep keyed on this value would wrongly treat
+    "foo-bar"'s watcher as "foo"'s own. Every operational match in this file uses either
+    EXACT equality (Tier-2's `taskId`, via `deterministic_task_id`) or the `|`-delimited
+    `tier1_marker` token instead -- see both docstrings."""
     return "compound-v-watch-%s-" % epic_id
 
 
+_TIER1_MARKER_TMPL = "[compound-v-watch|%s|tier1]"
+
+
+def tier1_marker(epic_id):
+    """v2.11 HIGH-1 fix: the UNAMBIGUOUS delimited token embedded in a Tier-1 (session cron)
+    task's own prompt text -- the ONLY string a CronList adopt/disarm sweep may match on for
+    Tier-1. Bounded by literal "|" on both sides of the epic id, so the id is matched
+    EXACTLY, never as a bare prefix/substring. That distinction matters because epic ids
+    legally contain hyphens (`ID_RE_OK` includes "-"): the OLD design's plain string prefix
+    "compound-v-watch-<epic_id>-" for epic "foo" IS itself a literal prefix of epic
+    "foo-bar"'s own id/marker text, so a prefix/substring sweep for epic "foo" would also
+    match (and delete) epic "foo-bar"'s Tier-1 watcher -- a genuine cross-epic collision.
+    Delimiting the id between two "|" characters closes that: "[compound-v-watch|foo|tier1]"
+    is never a substring of "[compound-v-watch|foo-bar|tier1]" or vice versa, regardless of
+    any shared hyphenated prefix between the two epic ids.
+
+    Safety of the delimiter itself: `_validate_epic_id` enforces the SAME fixed charset
+    (`_ID_RE_OK`) already used at `--init` (compound-v-epic-state.py's `ID_RE_OK`), which
+    never contains "|", whitespace, or "/" -- so no epic id that passes validation can ever
+    break out of, or collide with, this delimiting. The `assert` below is defense-in-depth
+    only (guards a future accidental charset widening), not the primary guard."""
+    epic_id = _validate_epic_id(epic_id)
+    assert "|" not in epic_id and "\n" not in epic_id  # _validate_epic_id already guarantees this
+    return _TIER1_MARKER_TMPL % (epic_id,)
+
+
 def deterministic_task_id(epic_id, provider):
-    """The deterministic per-(epic, tier) id/marker that BOTH arm and disarm reconcile
-    against the scheduler PROVIDER'S OWN LIST with -- the sole naming convention (not a
-    fallback). Tier-2 (scheduled-tasks): mcp__scheduled-tasks__create_scheduled_task
-    REQUIRES a caller-chosen `taskId` ("used as the directory name and storage key",
-    auto-sanitized) -- so this value IS the real taskId whenever this flow created it, and
-    list_scheduled_tasks will surface it under this exact id if it exists, closing the
-    crash window where a Tier-2 task could be created but never recorded. Tier-1 (session
-    CronCreate): the harness's cron-create schema does not document a caller-chosen id, so
-    this value is instead embedded verbatim as a MARKER substring inside the cron task's
-    own prompt text (see PROMPT_TEMPLATE) -- CronList reconciliation matches on that marker
-    substring, not on an assumed exact id field."""
+    """The deterministic per-(epic, tier) id -- the sole naming convention (not a fallback).
+
+    Tier-2 (scheduled-tasks): mcp__scheduled-tasks__create_scheduled_task REQUIRES a
+    caller-chosen `taskId` ("used as the directory name and storage key", auto-sanitized) --
+    so this value IS the real taskId whenever this flow created it, and
+    list_scheduled_tasks will surface it under this EXACT id if it exists. BOTH arm-adopt
+    and disarm match this value by EXACT string equality only (never startswith/contains) --
+    closing both the crash window where a Tier-2 task could be created but never recorded,
+    and (v2.11 HIGH-1 fix) the cross-epic collision a prefix/substring match would risk,
+    since epic ids can contain hyphens.
+
+    Tier-1 (session CronCreate): this return value is a DISPLAY-ONLY id ("compound-v-watch-
+    <epic_id>-tier1") -- the harness's cron-create schema does not document a caller-chosen
+    id, so Tier-1 never uses this string for matching. The OPERATIONAL Tier-1 identifier is
+    `tier1_marker(epic_id)` (the `|`-delimited token embedded verbatim in the cron task's
+    own prompt text via PROMPT_TEMPLATE) -- CronList reconciliation matches on that exact
+    delimited token, never on this function's plain, ambiguous-prefix return value."""
     if provider == "cron":
         return deterministic_id_prefix(epic_id) + "tier1"
     if provider == "scheduled-tasks":
@@ -219,36 +257,41 @@ BRANCH C -- claimed == false AND reason is "terminal" OR "resume-cap"
 ===============================================================================
 BRANCH C -- FULL DISARM (only when reason is "terminal" or "resume-cap")
 ===============================================================================
-Reconcile against each PROVIDER'S OWN LIST, keyed by this epic's deterministic id/marker
-prefix "{id_prefix}" -- NEVER against the epic-state.json watcher_registry alone, which is
-only a cache and cannot be trusted for existence. A task that was created but never
-recorded (a crash between the create call and --record-watcher-armed) is still found and
-deleted here, so there is no crash window where a task survives forever.
+Reconcile against each PROVIDER'S OWN LIST -- NEVER against the epic-state.json
+watcher_registry alone, which is only a cache and cannot be trusted for existence. A task
+that was created but never recorded (a crash between the create call and
+--record-watcher-armed) is still found and deleted here, so there is no crash window where
+a task survives forever.
+
+MATCH EXACTLY -- never a shared string prefix. Epic ids can contain hyphens, so a bare
+prefix/substring sweep is UNSAFE: it would also match (and delete) a DIFFERENT epic whose
+id happens to start with this epic's id plus a hyphen (e.g. this epic "{epic_id}" vs some
+other epic "{epic_id}-something-else"). Use exact equality / the exact delimited token
+below, nothing looser.
 
 1. Tier-2 sweep (scheduled-tasks): call mcp__scheduled-tasks__list_scheduled_tasks (it
-   takes no arguments -- it returns every scheduled task). For EACH returned task whose
-   "taskId" starts with "{id_prefix}" (this epic's Tier-2 id is exactly "{sched_id}"; the
-   prefix match also catches an older-convention id from before this fix):
-   - Delete it: mcp__scheduled-tasks__delete_scheduled_task, passing that "taskId".
+   takes no arguments -- it returns every scheduled task). Find the task whose "taskId" is
+   EXACTLY "{sched_id}" (exact string equality -- never startswith/contains):
+   - Delete it: mcp__scheduled-tasks__delete_scheduled_task, passing that exact "taskId".
    - Record the disarm:
 
        python3 scripts/compound-v-epic-state.py --record-watcher-disarmed \\
-         --state "{state_path}" --provider scheduled-tasks --task-id "<that taskId>"
+         --state "{state_path}" --provider scheduled-tasks --task-id "{sched_id}"
 
-   An empty list, or no taskId matching the prefix, is expected and harmless -- not a
-   failure.
+   No task with that exact taskId is expected and harmless -- not a failure.
 
 2. Tier-1 sweep (session cron): call CronList (it takes no arguments -- it returns every
-   session cron task). For EACH returned entry whose name/prompt/label contains
-   "{id_prefix}" (this epic's Tier-1 marker is exactly "{cron_id}"; the prefix match also
-   catches an older-convention marker from before this fix):
+   session cron task). Find EVERY returned entry whose name/prompt/label contains the exact
+   delimited marker token "{tier1_marker}" (the "|" delimiters on both sides bound the epic
+   id exactly, so no other epic's marker can ever match here as a substring -- do NOT match
+   on a bare prefix like "compound-v-watch-{epic_id}-"):
    - Delete it: CronDelete, passing that entry's id.
    - Record the disarm:
 
        python3 scripts/compound-v-epic-state.py --record-watcher-disarmed \\
          --state "{state_path}" --provider cron --task-id "<that entry's id>"
 
-   An empty list, or no entry containing the marker, is expected and harmless -- not a
+   No entry containing that exact delimited marker is expected and harmless -- not a
    failure.
 
 ===============================================================================
@@ -275,9 +318,8 @@ def build_resume_prompt(epic_id, state_path):
     return PROMPT_TEMPLATE.format(
         epic_id=epic_id,
         state_path=state_path,
-        id_prefix=deterministic_id_prefix(epic_id),
-        cron_id=deterministic_task_id(epic_id, "cron"),
         sched_id=deterministic_task_id(epic_id, "scheduled-tasks"),
+        tier1_marker=tier1_marker(epic_id),
     )
 
 
@@ -370,12 +412,48 @@ def _selftest():
         expect_raises("_validate_state_path rejects %r" % (bad,), _validate_state_path, bad)
 
     check("deterministic_id_prefix", deterministic_id_prefix("E1") == "compound-v-watch-E1-")
-    check("deterministic_task_id: cron -> tier1 marker",
+    check("deterministic_task_id: cron -> tier1 id (display only, NEVER matched on)",
           deterministic_task_id("E1", "cron") == "compound-v-watch-E1-tier1")
-    check("deterministic_task_id: scheduled-tasks -> tier2 taskId",
+    check("deterministic_task_id: scheduled-tasks -> tier2 EXACT taskId",
           deterministic_task_id("E1", "scheduled-tasks") == "compound-v-watch-E1-tier2")
     expect_raises("deterministic_task_id rejects an unknown provider",
                   deterministic_task_id, "E1", "bogus")
+
+    # ---- HIGH-1 fix: namespace-safe watcher ids -- epic "foo" vs epic "foo-bar" must NEVER
+    # collide on arm-adopt or disarm. Epic ids legally contain hyphens (ID_RE_OK includes
+    # "-"), so a bare prefix/substring match is unsafe: the OLD id_prefix for "foo" IS a
+    # literal string prefix of "foo-bar"'s own deterministic ids/markers -- demonstrated
+    # below as the documented reason the fix exists, NOT as behavior this file still uses
+    # for matching.
+    check("regression proof: the OLD id_prefix for 'foo' IS a substring of 'foo-bar''s "
+          "Tier-2 taskId (why a prefix sweep is unsafe and must never be used for matching)",
+          deterministic_task_id("foo-bar", "scheduled-tasks").startswith(deterministic_id_prefix("foo")))
+
+    check("tier1_marker: builds the delimited token", tier1_marker("foo") == "[compound-v-watch|foo|tier1]")
+    marker_foo = tier1_marker("foo")
+    marker_foobar = tier1_marker("foo-bar")
+    check("HIGH-1: tier1_marker('foo') is NOT a substring of tier1_marker('foo-bar')",
+          marker_foo not in marker_foobar)
+    check("HIGH-1: tier1_marker('foo-bar') is NOT a substring of tier1_marker('foo')",
+          marker_foobar not in marker_foo)
+    sched_foo = deterministic_task_id("foo", "scheduled-tasks")
+    sched_foobar = deterministic_task_id("foo-bar", "scheduled-tasks")
+    check("HIGH-1: Tier-2 exact taskIds for 'foo' and 'foo-bar' are different strings",
+          sched_foo != sched_foobar)
+    check("HIGH-1: an EXACT-equality Tier-2 match for 'foo' never matches 'foo-bar''s taskId "
+          "(the disarm/adopt check must use ==, never startswith/in)",
+          sched_foo != sched_foobar and sched_foo not in sched_foobar)
+
+    expect_raises("tier1_marker rejects a structurally unsafe epic-id",
+                  tier1_marker, "bad id\nwith newline")
+    for weird in ["a.b", "a_b", "a123"]:
+        check("tier1_marker accepts a valid, delimiter-safe epic-id %r" % (weird,),
+              "|" not in weird and tier1_marker(weird) == "[compound-v-watch|%s|tier1]" % (weird,))
+    # Defense in depth: NO character in the fixed ID_RE_OK charset can ever break the "|"
+    # delimiter -- confirms tier1_marker's own internal assert can never fire via a
+    # legitimately-validated epic id (the primary guard is _validate_epic_id's charset).
+    check("ID_RE_OK charset (what _validate_epic_id enforces) never contains '|'",
+          "|" not in _ID_RE_OK)
 
     # ---- unit: disable-cron detection ---------------------------------------------------
     check("_disable_cron_detected: unset -> False", _disable_cron_detected({}) is False)
@@ -414,17 +492,25 @@ def _selftest():
         check("emit-prompt contains %r" % (token,), token in prompt)
 
     # v2.11 crash-window fix: the terminal DISARM branch must sweep each PROVIDER'S OWN
-    # list (list_scheduled_tasks / CronList) keyed by this epic's deterministic id/marker
-    # prefix -- never the epic-state.json watcher_registry alone (that is only a cache and
-    # cannot be trusted for existence; a task created but never recorded would otherwise be
-    # invisible to a registry-only sweep, letting a Tier-2 task orphan forever).
+    # list (list_scheduled_tasks / CronList) -- never the epic-state.json watcher_registry
+    # alone (that is only a cache and cannot be trusted for existence; a task created but
+    # never recorded would otherwise be invisible to a registry-only sweep, letting a Tier-2
+    # task orphan forever).
     check("emit-prompt DISARM branch no longer keys off the registry's --list-watchers",
           "--list-watchers" not in prompt)
-    id_prefix = deterministic_id_prefix("epic-alpha")
-    check("emit-prompt names this epic's deterministic id/marker prefix %r" % (id_prefix,),
-          id_prefix in prompt)
-    check("emit-prompt names the Tier-2 exact taskId", deterministic_task_id("epic-alpha", "scheduled-tasks") in prompt)
-    check("emit-prompt names the Tier-1 marker", deterministic_task_id("epic-alpha", "cron") in prompt)
+
+    # v2.11 HIGH-1 fix: DISARM must match EXACT ids/markers, never a shared string prefix
+    # (epic ids can contain hyphens -- "foo" vs "foo-bar" collide on a prefix sweep).
+    sched_alpha = deterministic_task_id("epic-alpha", "scheduled-tasks")
+    marker_alpha = tier1_marker("epic-alpha")
+    check("emit-prompt names the Tier-2 EXACT taskId to match", sched_alpha in prompt)
+    check("emit-prompt names the Tier-1 delimited marker to match", marker_alpha in prompt)
+    check("emit-prompt's Tier-2 sweep instructs EXACT equality, not startswith/contains",
+          "EXACTLY" in prompt or "exact equality" in prompt.lower())
+    check("emit-prompt's Tier-1 sweep instructs matching the delimited marker, not a prefix",
+          "delimited marker" in prompt.lower())
+    check("emit-prompt no longer instructs a 'starts with'-style prefix sweep for DISARM",
+          "starts with" not in prompt.lower() and "prefix sweep" not in prompt.lower())
 
     # post-integration-review BLOCKER fix: the prompt must NEVER instruct a fresh session to
     # compute or pass its own OS pid -- there is no stable driver pid in this harness, which

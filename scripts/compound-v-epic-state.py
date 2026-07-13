@@ -191,17 +191,24 @@ epic-state.json (marathon + watch, v2.11, additive on top of v2.10's marathon sh
   --list-watchers --state S
     v2.11 Layer B (the V3 watcher registry, additive, watch-only): `watcher_registry` is a
     top-level list of `{"provider","task_id","armed_at","disarmed_at","status"}` entries,
-    created lazily (never present until the FIRST `--record-watcher-armed`, same
-    lazy-creation discipline as `lease`/`resume_count`) — so a watch-on epic that never arms
-    a watcher is unaffected, and a watch-off/checkpoint epic never carries this key at all.
-    `--record-watcher-armed` is IDEMPOTENT by `(provider, task_id)`: a replay preserves the
-    ORIGINAL `armed_at`, creates no duplicate, and bumps no heartbeat (arming is a registry
-    fact, not a liveness signal). `--record-watcher-disarmed` marks a matching entry
-    disarmed (idempotent re-disarm; an unknown pair is a controlled error). `--list-watchers`
-    is read-only and returns every armed-not-disarmed entry — the set a terminal-status
-    disarm sweep still needs to retry deleting. `validate_marathon_state` rejects a
-    structurally malformed registry at load time (non-list, non-object entry, invalid
-    provider/task_id/status, non-ISO timestamps).
+    created lazily (never present until the FIRST `--record-watcher-armed` OR
+    `--record-watcher-disarmed`, same lazy-creation discipline as `lease`/`resume_count`) —
+    so a watch-on epic that never arms a watcher is unaffected, and a watch-off/checkpoint
+    epic never carries this key at all. `--record-watcher-armed` is IDEMPOTENT by
+    `(provider, task_id)`: a replay against an already-`"armed"` entry preserves the ORIGINAL
+    `armed_at`, creates no duplicate, and bumps no heartbeat (arming is a registry fact, not
+    a liveness signal); a replay against a `"disarmed"` entry for the SAME pair instead
+    **REACTIVATES** it (`status` -> `"armed"`, `disarmed_at` -> `None`, `armed_at` refreshed —
+    v2.11 MEDIUM-5 fix, since a genuine re-arm legitimately reuses the same deterministic
+    taskId). `--record-watcher-disarmed` marks a matching entry disarmed (idempotent
+    re-disarm, original `disarmed_at` preserved); an UNKNOWN `(provider, task_id)` pair is a
+    controlled **no-op success** (v2.11 MEDIUM-4 fix — the provider-list disarm sweep
+    legitimately deletes tasks this registry never recorded, and a hard error there would
+    abort a multi-task sweep mid-way), recording a `"disarmed"` entry for it rather than
+    erroring. `--list-watchers` is read-only and returns every armed-not-disarmed entry — the
+    set a terminal-status disarm sweep still needs to retry deleting. `validate_marathon_state`
+    rejects a structurally malformed registry at load time (non-list, non-object entry,
+    invalid provider/task_id/status, non-ISO timestamps).
 
 is_terminal(state) -- the canonical terminal classifier (v2.11, shared by `--liveness`,
 `--claim-resume`, and `next_feature_autonomous`): True for done / breaker-tripped /
@@ -1698,12 +1705,18 @@ def record_watcher_armed(state, provider, task_id, now_dt=None):
     after a crash and re-entry, or a scheduler fires the same task twice) is a pure no-op — it
     returns the EXISTING entry unchanged, preserving the ORIGINAL `armed_at`, never creating a
     duplicate, and never bumping `last_progress_at` (arming is a registry FACT, not a liveness
-    signal; only `--claim-resume`/`--renew-lease` bump the heartbeat). This holds regardless of
-    the entry's current `status` — a replay against an already-DISARMED (provider, task_id) is
-    ALSO a no-op returning the disarmed record as-is, not a re-arm; the driver is expected to
-    mint a fresh `task_id` when it re-arms a new scheduler task (a real Cron/scheduled-tasks
-    create call always gets its own new id), so a genuine re-arm never needs to reuse an id
-    that was already disarmed.
+    signal; only `--claim-resume`/`--renew-lease` bump the heartbeat). This holds ONLY while the
+    entry's current `status` is already `"armed"`.
+
+    v2.11 MEDIUM-5 fix: a replay against an already-DISARMED (provider, task_id) REACTIVATES
+    it — `status` -> `"armed"`, `disarmed_at` -> `None`, `armed_at` refreshed to `now_dt` — it
+    is NOT treated as an inert no-op. The deterministic per-(epic, tier) taskId convention
+    (`compound-v-epic-watch.py`'s `deterministic_task_id`/Tier-1 marker) means a genuine re-arm
+    (e.g. the Tier-1 7-day refresh, or a driver re-entry after a terminal disarm was later
+    un-tripped) legitimately REUSES the same id — the registry must reflect that this exact
+    pair is armed again, not keep reporting a stale `"disarmed"` status that no longer matches
+    reality (a `--list-watchers` caller, or a later disarm sweep, would otherwise silently skip
+    a task that is actually live again).
 
     `state["watcher_registry"]` is created lazily (via `setdefault`) on the FIRST call — a
     watch-on epic that has never armed a watcher carries no `watcher_registry` key at all,
@@ -1722,7 +1735,13 @@ def record_watcher_armed(state, provider, task_id, now_dt=None):
     registry = state.setdefault("watcher_registry", [])
     for e in registry:
         if isinstance(e, dict) and e.get("provider") == provider and e.get("task_id") == task_id:
-            return True, None, e  # idempotent replay: no dup, no armed_at/heartbeat change
+            if e.get("status") == "disarmed":
+                # v2.11 MEDIUM-5: reactivate — this exact pair is armed again, not a replay.
+                e["status"] = "armed"
+                e["disarmed_at"] = None
+                e["armed_at"] = _now_iso(now_dt)
+                return True, None, e
+            return True, None, e  # idempotent replay: already armed, no dup, no field change
     entry = {"provider": provider, "task_id": task_id, "armed_at": _now_iso(now_dt),
              "disarmed_at": None, "status": "armed"}
     registry.append(entry)
@@ -1732,10 +1751,21 @@ def record_watcher_armed(state, provider, task_id, now_dt=None):
 def record_watcher_disarmed(state, provider, task_id, now_dt=None):
     """v2.11 Layer B: the counterpart to `record_watcher_armed` — marks a previously-armed
     (provider, task_id) as disarmed (`disarmed_at` set, `status` -> "disarmed"). Marathon+
-    watch-only. An unknown (provider, task_id) — one never armed — is a controlled error (you
-    cannot disarm what was never recorded). Re-disarming an ALREADY-disarmed entry is
-    idempotent: `ok=True`, the existing record is returned UNCHANGED (its original
-    `disarmed_at` is preserved, not bumped to `now_dt` again).
+    watch-only. Re-disarming an ALREADY-disarmed entry is idempotent: `ok=True`, the existing
+    record is returned UNCHANGED (its original `disarmed_at` is preserved, not bumped to
+    `now_dt` again).
+
+    v2.11 MEDIUM-4 fix: an unknown (provider, task_id) — one never armed through THIS
+    registry — is a controlled NO-OP, not an error. The terminal-disarm sweep (see
+    `compound-v-epic-watch.py`'s emit-prompt / `v-epic.md`'s "Watch disarm") reconciles
+    against each scheduler PROVIDER'S OWN LIST, which legitimately includes tasks this
+    registry never recorded — an older-naming-convention id from before a fix, or a create
+    call that crashed before its `--record-watcher-armed` write. Erroring on that pair would
+    abort a multi-task sweep loop mid-way (a caller that stops on first nonzero exit would
+    leave every LATER task in that same sweep un-swept and un-recorded), so this now records
+    a `"disarmed"` entry for the pair (armed_at defaults to `now_dt` too, since the true arm
+    time is unknown) and returns `ok=True` — idempotent by (provider, task_id) exactly like
+    every other path here, so sweeping the same never-recorded pair twice is still safe.
 
     Returns (ok, error|None, entry|None)."""
     if not _is_marathon(state):
@@ -1746,16 +1776,19 @@ def record_watcher_disarmed(state, provider, task_id, now_dt=None):
     err = _validate_provider_task(provider, task_id)
     if err:
         return False, err, None
-    registry = state.get("watcher_registry")
-    registry = registry if isinstance(registry, list) else []
+    now_dt = now_dt or datetime.now(timezone.utc)
+    registry = state.setdefault("watcher_registry", [])
     for e in registry:
         if isinstance(e, dict) and e.get("provider") == provider and e.get("task_id") == task_id:
             if e.get("status") != "disarmed":
                 e["status"] = "disarmed"
-                e["disarmed_at"] = _now_iso(now_dt or datetime.now(timezone.utc))
+                e["disarmed_at"] = _now_iso(now_dt)
             return True, None, e
-    return False, ("no watcher record for provider=%r task_id=%r — "
-                   "--record-watcher-armed first" % (provider, task_id)), None
+    # v2.11 MEDIUM-4: unrecorded pair — no-op success, not "no watcher record ... error".
+    entry = {"provider": provider, "task_id": task_id, "armed_at": _now_iso(now_dt),
+             "disarmed_at": _now_iso(now_dt), "status": "disarmed"}
+    registry.append(entry)
+    return True, None, entry
 
 
 def list_watchers(state):
@@ -3934,9 +3967,26 @@ def _selftest():
           "disarmed_at, still ok=True)",
           ok_wd1b and entry_wd1b["disarmed_at"] == _now_iso(t_new))
 
-    ok_wd_unknown, err_wd_unknown, _ = record_watcher_disarmed(wr_state, "cron", "no-such-task")
-    check("v2.11 Layer B: disarming an unknown (provider, task_id) -> controlled error",
-          ok_wd_unknown is False and "no watcher record" in err_wd_unknown)
+    # v2.11 MEDIUM-4 fix: disarming an unrecorded (provider, task_id) pair is a controlled
+    # NO-OP, not an error -- the provider-list disarm sweep legitimately deletes tasks that
+    # were never armed through this registry (an older-convention id, or a create that
+    # crashed before its --record-watcher-armed write), and a hard error there would abort
+    # a multi-task sweep loop mid-way, leaving later tasks in that same sweep undeleted.
+    ok_wd_unknown, err_wd_unknown, entry_wd_unknown = record_watcher_disarmed(
+        wr_state, "cron", "no-such-task", now_dt=t_new)
+    check("v2.11 MEDIUM-4: disarming an unknown (provider, task_id) succeeds as a no-op "
+          "(never a hard error)", ok_wd_unknown is True and err_wd_unknown is None)
+    check("v2.11 MEDIUM-4: the no-op disarm records a disarmed entry for future reference",
+          entry_wd_unknown is not None and entry_wd_unknown["provider"] == "cron"
+          and entry_wd_unknown["task_id"] == "no-such-task"
+          and entry_wd_unknown["status"] == "disarmed")
+    check("v2.11 MEDIUM-4: disarming the SAME unknown pair again is still idempotent (no dup)",
+          len([e for e in wr_state["watcher_registry"]
+               if e.get("provider") == "cron" and e.get("task_id") == "no-such-task"]) == 1)
+    ok_wd_unknown2, err_wd_unknown2, _ = record_watcher_disarmed(wr_state, "cron", "no-such-task")
+    check("v2.11 MEDIUM-4: re-disarming the same unknown pair is ALSO a no-op success "
+          "(sweep can safely process the same task twice)",
+          ok_wd_unknown2 is True and err_wd_unknown2 is None)
 
     ok_wa_badprov, err_wa_badprov, _ = record_watcher_armed(wr_state, "smoke-signal", "task-3")
     check("v2.11 Layer B: record_watcher_armed rejects an invalid --provider",
@@ -3952,6 +4002,34 @@ def _selftest():
     ok_wa_chk, err_wa_chk, _ = record_watcher_armed(wr_chk, "cron", "task-1")
     check("v2.11 Layer B: record_watcher_armed rejects a checkpoint epic",
           ok_wa_chk is False and "marathon" in err_wa_chk)
+
+    # v2.11 MEDIUM-5 fix: re-arming reuses the SAME deterministic taskId -- record_watcher_armed
+    # must REACTIVATE a matching (provider, task_id) that is currently "disarmed", not leave it
+    # disarmed forever (the old idempotent-replay behavior treated a disarmed match as an inert
+    # no-op, which let the registry keep lying about a watcher that is, in fact, newly armed).
+    wr_reactivate = build_state(v11_feats, "e", "E", stance="marathon",
+                                caps={"watch": True, "started_at": v11_live_started})
+    ok_ra1, err_ra1, entry_ra1 = record_watcher_armed(wr_reactivate, "cron", "reused-task", now_dt=t0)
+    check("v2.11 MEDIUM-5 setup: first arm of 'reused-task' succeeds",
+          ok_ra1 and entry_ra1["status"] == "armed")
+    ok_ra2, err_ra2, entry_ra2 = record_watcher_disarmed(wr_reactivate, "cron", "reused-task",
+                                                          now_dt=t_new)
+    check("v2.11 MEDIUM-5 setup: disarming 'reused-task' succeeds",
+          ok_ra2 and entry_ra2["status"] == "disarmed" and entry_ra2["disarmed_at"] is not None)
+    t_rearm = _parse_iso("2029-06-01T00:00:00+00:00")
+    ok_ra3, err_ra3, entry_ra3 = record_watcher_armed(wr_reactivate, "cron", "reused-task",
+                                                       now_dt=t_rearm)
+    check("v2.11 MEDIUM-5: re-arming the SAME (provider, task_id) REACTIVATES it to 'armed'",
+          ok_ra3 and entry_ra3["status"] == "armed")
+    check("v2.11 MEDIUM-5: reactivation clears disarmed_at",
+          entry_ra3["disarmed_at"] is None)
+    check("v2.11 MEDIUM-5: reactivation refreshes armed_at to the re-arm time",
+          entry_ra3["armed_at"] == _now_iso(t_rearm))
+    check("v2.11 MEDIUM-5: reactivation is the SAME registry entry, not a duplicate",
+          len(wr_reactivate["watcher_registry"]) == 1)
+    listed_reactivated = list_watchers(wr_reactivate)
+    check("v2.11 MEDIUM-5: list_watchers now reports the reactivated entry as armed",
+          len(listed_reactivated) == 1 and listed_reactivated[0]["task_id"] == "reused-task")
 
     # --- breaker_check / clear_breaker: the resume_count axis --------------------------------
     v11_bc = build_state(v11_feats, "e", "E", stance="marathon",
