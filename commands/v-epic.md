@@ -110,12 +110,22 @@ python3 scripts/compound-v-epic-state.py --next --autonomous \
 Prints `{"feature": <feature|null>, "reason": "...", "blocked_by": [ids]}`. Unlike the checkpoint `--next`, this is **DAG-aware**: an abandoned/failed/blocked feature removes only its *transitive dependents* from the runnable set — independent pending features stay runnable and are returned **before** any terminal escalation. Routing is driven entirely by **persisted state** — a `failed` feature is routed by its *stored* `disposition` (not an in-memory intent), which is what makes retries and mid-arbitration crashes recover correctly across a re-entry. `reason` embeds a literal terminal-state token as a prefix when there is nothing runnable to hand out:
 
 - `feature` non-null (`reason` is `"runnable"` or `"running_with_failures: runnable (...)"`) → §3. **A `failed` feature carrying a `retry_fix` disposition that is still under its retry cap is handed back here as runnable** — the driver runs it exactly like any other runnable feature (§3). This is the crash-safe retry path: the retry intent lives in the persisted `disposition`, so it survives a breaker trip or a hard crash between recording the verdict and re-running.
-- `"needs_arbitration: feature <id> ..."` — a `failed` feature with **no recorded disposition**: the arbiter exchange never completed (a crash mid-arbitration, or the loop was interrupted before §5 recorded a verdict). **Do NOT treat this as done or abandoned** — re-run the arbiter exchange (§5) for that feature now, from the top (`--prepare` re-issues idempotently for the same attempt; a previously-consumed challenge re-emits its persisted audit, so re-running is safe). Then act on the (re)recorded disposition (§6) and loop.
+- `"needs_arbitration: feature <id> ..."` — a `failed` feature with **no valid recorded disposition**: either the arbiter exchange never completed (a crash mid-arbitration), or a *stale* disposition was recorded against an earlier attempt (a disposition is attempt-bound — the state script only honors it when its `attempt` equals the feature's current `attempts`, so a re-run that bumped `attempts` invalidates the old verdict and this reason re-fires). **Do NOT treat this as done or abandoned** and **do NOT blindly restart from `--prepare`** — a crash can leave a challenge already `in_progress` or `consumed`, and `--prepare`/`--classify` reject a consumed/in-progress challenge, which would deadlock. Instead run the **idempotent recovery ladder first** — read the feature's current `attempts` (`--can-retry --feature <id>` → `attempts`), then:
+  ```
+  python3 scripts/compound-v-epic-arbiter.py --resume-challenge \
+    --state docs/superpowers/execution/epics/<epic-id>/epic-state.json \
+    --feature <id> --attempt <attempts>
+  ```
+  Prints `{"state":"absent"|"in_progress"|"consumed", "challenge_id"?, "prompt"?, "result"?}`. Branch on `state`:
+  - **`"consumed"`** — the arbiter already classified before the crash (crash-after-classify-before-record). The verdict is in the returned `result` — **no re-dispatch of Claude, no re-egress**. Record it straight from `result`: `--record-disposition --feature <id> --disposition <result.disposition> --reason "<result.reason>" [--families-agreeing <result.families_agreeing csv, omitted if empty>]`, commit (§9), then act on it (§6).
+  - **`"in_progress"`** — the challenge was issued (and Claude may or may not have replied) but never aggregated. Re-dispatch the fresh adversarial Claude Task on the returned `prompt`, write its ballot file, and resume at §5 **step 3** (`--classify` with the returned `challenge_id`) — the binding makes this idempotent; skip §5 steps 1–2.
+  - **`"absent"`** — no challenge exists for this attempt (the crash predated `--prepare`, or a stale disposition invalidated a prior attempt's challenge that doesn't match the current one). Run the arbiter exchange (§5) from the top, the normal first-time path.
+  Only after this recovery ladder resolves does the driver treat the failure as newly-arbitrated. Then act on the disposition (§6) and loop.
 - `"sample_audit_due: feature(s) <ids> ..."` — one or more `done` features were sampled for a PASS-integrity audit that has not completed (see §4). **Run the outstanding sample-audit(s) now** (§4 steps 1–4) before anything else — this reason is surfaced *before* `final_review`, and `--record-final-review passed` is **rejected while any audit is due**, so you cannot skip ahead to §8. Once every due audit clears, the next `--next --autonomous` advances normally.
 - `"done: ..."` — every feature is `done`, **no sample-audit is due**, **and** `final_review.status == "passed"`. → §8/terminal (success).
 - `"blocked_needing_human: ..."` — a tripped breaker, a `halt_epic` disposition, or exhausted reachable work (only blocked/failed features remain). → §7 (halt-page).
 - `"running_with_failures: all features done, awaiting final_review ..."` — every feature `done`, no audit due, review not yet passed. → §8.
-- `"epic needs reconcile: ..."` — a feature is stuck `running` from a prior crash. Same procedure as the checkpoint loop's step 6 (`/v:resume <run-id>`, or `--status pending`/`--status failed` if unrecoverable), then loop again.
+- `"epic needs reconcile: ..."` — a feature is stuck `running` from a prior crash. Recover the crashed run itself with `/v:resume <run-id>` (or, if unrecoverable, a full restart) exactly as the checkpoint loop's step 6 — **but do NOT use the checkpoint reconcile's terminal status write, which marks a recovered run `done` directly.** In marathon that would bypass §4's PASS-integrity sampling (the recovered run might be the invocation's first success, which MUST be sample-decided and have `--mark-sample-audit-due` persisted *before* `done`). Instead, route the outcome through the marathon handlers: a **recovered success** enters **§4's success handler** (run the sample decision, mark-due-before-done, then the audit) — it does not get a bare `--update --status done`; a **recovered failure** enters **§5** (mark `failed`, then the arbiter exchange); an unrecoverable run that can't even be classified falls back to `--status pending` (full restart on the next pass). Then loop again.
 
 ### 3. Run the feature
 
@@ -161,7 +171,13 @@ Then run the sample-audit for a sampled feature (also the entry point when `--ne
      --state docs/superpowers/execution/epics/<epic-id>/epic-state.json
    ```
    Loop back to §1.
-4. **On ISSUES** — the success was not real. Clear the obligation and route the feature back through the **failure path (§5)**: `--clear-sample-audit-due --feature <id>` then `--update --status failed --last-error "sample-audit ISSUES: <summary>"` (a `done`→`failed` update is allowed — only the `→running` transition is source-gated to pending/failed), commit, then the arbiter exchange as in §5. Reverting a `done` also invalidates a passed top-level `final_review` back to pending automatically, so a later regression can't slip through on a stale review.
+4. **On ISSUES** — the success was not real. Revert it with the SINGLE atomic command (never a clear-then-revert two-step — a crash between those two writes would leave the feature `done` with its obligation already cleared, so the bad `done` sticks silently):
+   ```
+   python3 scripts/compound-v-epic-state.py --record-audit-failed --feature <id> \
+     --last-error "sample-audit ISSUES: <summary>" \
+     --state docs/superpowers/execution/epics/<epic-id>/epic-state.json
+   ```
+   ONE atomic write: sets status `failed` + records `last_error` + clears `sample_audit_due` + invalidates a passed `final_review` back to pending — so there is no window where the feature is `done`-without-obligation, and a later regression can't slip through on a stale review. Commit (§9), then route the feature through the **failure path (§5)** (the arbiter exchange — the feature is already `failed`, so §5 skips its own initial `--update --status failed`).
 
 ### 5. On failure — arbiter panel before any retry decision
 
@@ -261,7 +277,7 @@ git add docs/superpowers/execution/epics/<epic-id>/epic-state.json \
 git commit -m "chore(v-epic): marathon <epic-id> <feature-id> -> <what happened>"
 ```
 
-(Omit the `arbiter/` path when nothing was written there — e.g. a bare `done` mark.) Trigger points: a feature reaching `done` — **committed together with its `--mark-sample-audit-due` when sampled, so `done` is never on disk without the obligation** (§4); a `--clear-sample-audit-due` on a passed audit (§4); a sample-audit that clears the obligation and reverts a `done` back to `failed` (§4); every `--record-disposition` + its accompanying `--update` (§5/§6 — `retry_fix`/`halt_feature`/`blocked_external`/`halt_epic`); every `--trip-breaker` (§1/§5/§7); every `--record-final-review` (§8); and once more, belt-and-suspenders, right before the halt-page (§7) or the terminal `done` report (§8).
+(Omit the `arbiter/` path when nothing was written there — e.g. a bare `done` mark.) Trigger points: a feature reaching `done` — **committed together with its `--mark-sample-audit-due` when sampled, so `done` is never on disk without the obligation** (§4); a `--clear-sample-audit-due` on a passed audit (§4); a `--record-audit-failed` reverting a failed sample-audit (§4); every `--record-disposition` + its accompanying `--update` (§5/§6 — `retry_fix`/`halt_feature`/`blocked_external`/`halt_epic`); a `--record-disposition` recovered from a `consumed` `--resume-challenge` (§2 `needs_arbitration`); every `--trip-breaker` (§1/§5/§7); every `--record-final-review` (§8); and once more, belt-and-suspenders, right before the halt-page (§7) or the terminal `done` report (§8).
 
 ### The honest v2.10 boundary
 
