@@ -253,6 +253,28 @@ at fire time, because this flag can go stale — `disableBundledSkills` /
 `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS` can hide the skill after `/v:init` ran. Absence
 never blocks recon; the engine ladder falls back to parallel WebSearch.
 
+### 1d-ter. Scheduler tiers for auto-resurrection (Cron + `scheduled-tasks` MCP) — v2.11, optional
+
+Marathon auto-resurrection (`epic.autonomy.watch`, Step 3c) needs at least one of two schedulers to
+actually re-invoke a stalled epic while you're away. Detect both, **presence-only** — this is
+Claude-Code/Desktop-specific tooling, not a shell probe, and mirrors the same
+available-tools-listing check as Step 1d-bis:
+
+- **Tier-1 (session `CronCreate`)** — present when `CronCreate` appears in your own available-tools
+  listing (a plain subagent shell may not have it).
+- **Tier-2 (`scheduled-tasks` MCP)** — present when `mcp__scheduled-tasks__create_scheduled_task`
+  appears in your own available-tools listing (the MCP server must be connected).
+
+Record both into the user-level capability cache (Step 4b) — **never** the committed
+`.claude/compound-v.json`, per the same v2.6.2 machine-local-vs-committed-policy split as every other
+capability here. **Fail closed on zero tiers**: if neither is present, tell the user
+auto-resurrection cannot arm on this machine and they should decline (or leave off) the
+`epic.autonomy.watch` offer in Step 3c — `watch` is worthless without a scheduler to fire it. One tier
+detected → note which, and that a single-tier arm is real but honestly degraded (state the boundary
+in Step 3c). Both present → full two-tier coverage. This is a presence flag only, like
+`deep_research` above — the driver re-confirms live availability at arm time in
+[`v-epic.md`](v-epic.md) §0c; a stale "yes" here never forces an arm.
+
 ### 1e. Wall-clock cap for external workers
 
 No probe needed: all three external workers (Codex, Antigravity, Cursor) run under the bundled
@@ -352,18 +374,44 @@ Two more structured choices — sensible defaults, reconfigurable any time:
   ([`epic-mode.md`](../skills/compound-v/epic-mode.md) "Marathon stance") that chews the whole
   runnable feature DAG in one invocation, routing failures through a Codex+Claude arbiter panel
   and staying bounded by hard global circuit breakers. Offer `marathon` only with the **honest
-  v2.10 boundary** stated plainly: it survives *within one live `/v:epic` invocation* (a soft
+  boundary** stated plainly: it survives *within one live `/v:epic` invocation* (a soft
   per-feature failure routes to the next runnable feature automatically) and is *human-resumable*
   after a hard death — quota, closed terminal, crashed machine — via a person re-invoking
   `/v:epic <epic-id>`, which is re-entrant. **There is no automatic resurrection while you're away
-  in v2.10** — an unattended overnight watcher that revives the epic on its own is deferred to
-  v2.11. `marathon` also needs the **global breaker caps** agreed up front (sensible defaults,
-  all tunable): `max_wall_clock_hours` (default **10**), `max_total_attempts` (default
-  `max(6, 3×features)`), and `max_no_progress_cycles` (default **3** — a full pass with no new
-  feature reaching `done` counts as one non-progressing cycle). These caps bound **counts and
-  wall-clock hours only** — never a fabricated cost or token number. `checkpoint` remains the
-  safe, unchanged default; only set `marathon` when the user explicitly wants unattended,
-  multi-feature autonomy and accepts the boundary above.
+  unless the epic also opts into `watch`** (the next bullet). `marathon` also needs the **global
+  breaker caps** agreed up front (sensible defaults, all tunable): `max_wall_clock_hours` (default
+  **10**), `max_total_attempts` (default `max(6, 3×features)`), and `max_no_progress_cycles`
+  (default **3** — a full pass with no new feature reaching `done` counts as one non-progressing
+  cycle). These caps bound **counts and wall-clock hours only** — never a fabricated cost or token
+  number. `checkpoint` remains the safe, unchanged default; only set `marathon` when the user
+  explicitly wants unattended, multi-feature autonomy and accepts the boundary above.
+- **Auto-resurrection — `epic.autonomy.watch`** (toggle, default **off**; marathon-only, v2.11):
+  whether a `marathon` epic ALSO arms a scheduler watcher that automatically re-invokes
+  `/v:epic <epic-id>` after a hard death, instead of waiting for a human to do it. Offer this only
+  when `marathon` (above) is also being chosen — `watch` is meaningless without it — and only after
+  Step 1d-ter found **at least one** scheduler tier available; with zero tiers, decline the offer
+  (or leave it off) and say why. State the **corrected honest boundary** plainly before offering it:
+  - **Tier-1 (session `CronCreate`)** pauses whenever the session is unavailable or busy, MISSES any
+    fire that elapses while paused (no catch-up), may resume on the next conversation turn if not yet
+    expired, and expires outright after **7 days** even in a continuously open session; its
+    ~30-minute cadence (`:17`/`:47`) is approximate, not exact — recurring fires carry jitter.
+  - **Tier-2 (`scheduled-tasks`, on-disk)** runs only while the desktop app is **open and the machine
+    is awake**; it performs exactly **one** catch-up for the most recent missed run on app
+    start/wake, within 7 days — it is not a truly always-on server.
+  - **"Survives quota exhaustion"** only holds if the quota has since **reset** and the session is
+    still **authenticated** — an expired OAuth token still needs a human.
+  - **A closed laptop needs remote infra**, not this feature: neither tier runs while the machine is
+    asleep. A local `launchd`/cron shim removes the app-open dependency but still does not fire
+    while the laptop sleeps — genuine machine-off execution needs remote infrastructure plus a
+    remotely-reachable state substrate, which is an optional user-side add-on, never claimed built-in
+    here.
+  - **Resurrection is bounded** — `max_resume_count` (script default **20**, set per-epic via
+    `--init --watch --max-resume-count N`) caps how many times the watcher may resurrect the epic; a
+    persistently-dying run halts at `blocked_needing_human` for a human, exactly like any other
+    tripped breaker.
+  `off` (the default) leaves marathon exactly as v2.10 — a human re-invokes `/v:epic <epic-id>`
+  after a hard death, same as always. Full design: [`epic-mode.md`](../skills/compound-v/epic-mode.md)
+  "Auto-resurrection watch".
 - **Cross-model review — `review.cross_model`** (default **off**): run an automatic Codex
   second opinion ([`/v:review-plan`](v-review-plan.md)) on high-stakes plans before dispatch.
   Off = run it manually when you want it; on = decorrelated review by default, at the cost of
@@ -468,6 +516,7 @@ was, in those two fields).
     "max_features": 1,
     "autonomy": {
       "stance": "checkpoint",
+      "watch": false,
       "max_wall_clock_hours": 10,
       "max_no_progress_cycles": 3
     }
@@ -541,6 +590,15 @@ identically to `balanced`. Only `cost-aware.claude.standard` differs: `sonnet`, 
   in advance. `max_attempts_per_feature` (per-feature retry cap, script default `2`) is likewise
   left to its script default unless a specific epic has a documented reason to raise it — set it
   per-epic at `--init`, not globally here.
+- **`epic.autonomy.watch`** (default `false`, v2.11) = the Step 3c auto-resurrection opt-in — policy
+  only, same shape as `epic.autonomy.stance` right above it: the driver re-confirms it against the
+  **persisted** `epic-state.json`'s own `autonomy.watch` before arming anything (a persisted "no"
+  wins even if this config later flips to `true`, and vice versa — arming requires **both** the
+  config AND the persisted state to say yes; see [`v-epic.md`](v-epic.md) §0c). Marathon-only —
+  `stance` must be `"marathon"` for `watch` to mean anything; a `checkpoint` epic ignores this key
+  entirely. `max_resume_count` (script default **20**) is deliberately left **unset** here — like
+  `max_attempts_per_feature` above, it is a per-epic choice made at `--init --watch
+  [--max-resume-count N]`, not a global policy.
 - **`review.cross_model`** (default `false`) = the Step 3c toggle; when `true`, high-stakes
   plans get an automatic Codex second opinion ([`/v:review-plan`](v-review-plan.md)) before
   dispatch.
@@ -614,6 +672,7 @@ The user-level cache of what this machine can do, reused across repos:
   "context7": { "available": true },
   "workflows": { "available": false },
   "deep_research": true,
+  "scheduler": { "tier1_cron": true, "tier2_scheduled_tasks": false },
   "checked_at": "<YYYY-MM-DD>"
 }
 ```
@@ -634,6 +693,13 @@ The user-level cache of what this machine can do, reused across repos:
   `adapter-opencode.md`).
 - `devin` and `opencode` are never added to any arbiter/review-panel capability block —
   they are **worker-only** in v1.
+- `scheduler.tier1_cron` / `scheduler.tier2_scheduled_tasks` reflect the Step 1d-ter presence
+  probes (`CronCreate` / `mcp__scheduled-tasks__create_scheduled_task` in your own available-tools
+  listing) — the machine-local capability `epic.autonomy.watch` (Step 3c, committed policy) needs at
+  least one of to actually arm anything; **never** written to the committed
+  `.claude/compound-v.json`, same v2.6.2 split as every other capability here. Like
+  `deep_research` below, this is an **advisory hint** — the driver re-confirms live availability at
+  arm time in [`v-epic.md`](v-epic.md) §0c, not just at `/v:init` time.
 - `deep_research` reflects the Step 1d-bis presence probe (is `deep-research` in the
   available-skills listing?) — an **advisory hint only**: Trigger 0 re-checks the live
   listing at fire time, because the flag can go stale (`disableBundledSkills` /
