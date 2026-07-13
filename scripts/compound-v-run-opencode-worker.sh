@@ -342,6 +342,15 @@ OPENCODE_CONFIG="$WT/opencode.json"
 OPENCODE_CONFIG_BACKUP="$ART/opencode.json.orig"
 _opencode_config_preexisted="false"
 
+# SECURITY: the BACKUP itself must be as symlink-safe as the config destination.
+# $ART is created by THIS script's own `mkdir -p "$ART"` above, but assert it is a
+# real, non-symlink directory before trusting it as a private scratch dir — if a
+# symlinked $ART (or a symlinked component) somehow pre-existed, every `cp`/`cat`
+# through it would follow the link out of the intended tree. This is belt-and-braces
+# on top of the deterministic $RUN_ID/$JOB_ID path already asserted under $TMPROOT.
+[ -L "$ART" ] && die "refusing: artifact dir is a symlink: $ART"
+[ -d "$ART" ] || die "artifact dir is missing or not a directory: $ART"
+
 # SECURITY: symlink-safety guard. A pre-existing $OPENCODE_CONFIG that is a symlink
 # (or any non-regular file) must NEVER be `cp`'d or redirected-into below — both
 # operations FOLLOW the link, so backing it up or overwriting it could read/write a
@@ -354,6 +363,18 @@ if [ -L "$OPENCODE_CONFIG" ]; then
 fi
 if [ -e "$OPENCODE_CONFIG" ] && [ ! -f "$OPENCODE_CONFIG" ]; then
   die "refusing: pre-existing opencode.json is not a regular file: $OPENCODE_CONFIG"
+fi
+
+# SECURITY: the BACKUP path must not pre-exist. The deterministic $RUN_ID/$JOB_ID
+# path is reused across idempotent re-dispatch, so a stale (or maliciously planted)
+# backup file/symlink could already sit here — and `cp SRC "$OPENCODE_CONFIG_BACKUP"`
+# would FOLLOW a symlink at that destination, writing the tracked config's content
+# through the link to an arbitrary external path. Remove any stale entry with
+# `rm -f` (removes the directory ENTRY, never follows a symlink to its target) so the
+# `cp` below always lands on a fresh, non-existent, in-$ART path.
+rm -f "$OPENCODE_CONFIG_BACKUP"
+if [ -e "$OPENCODE_CONFIG_BACKUP" ] || [ -L "$OPENCODE_CONFIG_BACKUP" ]; then
+  die "refusing: backup path still present after rm (unexpected): $OPENCODE_CONFIG_BACKUP"
 fi
 
 if [ -f "$OPENCODE_CONFIG" ]; then
@@ -372,6 +393,22 @@ restore_opencode_config() {
   # than once (explicit call below, plus the EXIT/INT/TERM trap as a safety net).
   rm -f "$OPENCODE_CONFIG"
   if [ "$_opencode_config_preexisted" = "true" ]; then
+    # SECURITY: the lower-trust worker runs BETWEEN backup and restore, so it could
+    # have swapped $OPENCODE_CONFIG_BACKUP for a symlink pointing outside $ART — and
+    # `cat "$OPENCODE_CONFIG_BACKUP"` would then FOLLOW that link, reading arbitrary
+    # external content back INTO the restored worktree config. Refuse to read the
+    # backup unless it is still a REGULAR file (never a symlink) immediately before
+    # the restore. A tampered backup is FAIL-CLOSED: skip the restore entirely rather
+    # than copy attacker-chosen content in. The `rm -f "$OPENCODE_CONFIG"` above has
+    # already deleted the scratch config, so the worktree is left with the tracked
+    # opencode.json DELETED (not restored) — the scope gate then sees that deletion as
+    # an out-of-scope change and BLOCKS the job. Blocking a job whose worker tampered
+    # with our private backup is the correct, safe outcome; the one thing we must
+    # never do is write the worker's redirected content back into the tree.
+    if [ -L "$OPENCODE_CONFIG_BACKUP" ] || [ ! -f "$OPENCODE_CONFIG_BACKUP" ]; then
+      echo "compound-v-run-opencode-worker: refusing to restore from a non-regular/symlinked backup (tampered mid-run): $OPENCODE_CONFIG_BACKUP" >&2
+      return 0
+    fi
     # Write a fresh REGULAR file from the backup's content. This never opens
     # $OPENCODE_CONFIG for read and never `cp`s onto it — redirection creates a
     # brand-new inode at a path that, thanks to the `rm -f` immediately above, is

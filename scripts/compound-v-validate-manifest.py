@@ -1737,22 +1737,27 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
             )
 
         # opencode provider/model shape: every EXPLICIT opencode model
-        # override must be a genuine non-empty "provider/model" string (a
+        # override must be a genuine non-empty "provider/model" STRING (a
         # bare name would silently pass here but fail opencode's own model
         # resolution / the worker's `-m` argument at run time). Only checked
-        # when a model is actually present — a tier-only job resolves through
-        # compound-v-resolve-model.py's own shape check at resolution time.
-        if backend_lc == "opencode":
+        # when a model key is actually present — a tier-only job resolves
+        # through compound-v-resolve-model.py's own shape check at resolution
+        # time. A NON-STRING model (int/list/dict from YAML) is itself a
+        # violation: it can never be a valid provider/model string and must
+        # NOT slip through by skipping the check.
+        if backend_lc == "opencode" and "model" in job:
             m_val = job.get("model")
+            _shaped = False
             if isinstance(m_val, str) and m_val.strip():
                 _prov, _sep, _rest = m_val.partition("/")
-                if not _sep or not _prov.strip() or not _rest.strip():
-                    problems.append(
-                        "job '%s' backend opencode has model '%s' which is "
-                        "not a valid 'provider/model' string (must be "
-                        "non-empty on both sides of exactly one '/')"
-                        % (jid, m_val)
-                    )
+                _shaped = bool(_sep) and bool(_prov.strip()) and bool(_rest.strip())
+            if not _shaped:
+                problems.append(
+                    "job '%s' backend opencode has model %r which is not a "
+                    "valid 'provider/model' string (must be a non-empty "
+                    "string, non-empty on both sides of exactly one '/')"
+                    % (jid, m_val)
+                )
 
         # Invariant 3: reviewers => deep/opus (strongest reasoning). Satisfied
         # by either tier: deep or model: opus.
@@ -2618,6 +2623,96 @@ jobs:
     type: large_isolated
     backend: opencode
     model: "anthropic/"
+    isolation: worktree
+    run: serial
+    write_allowed: [src/opencode/**]
+    read_allowed: [src/**]
+    acceptance: ["builds"]
+"""
+
+
+# A family of opencode jobs whose explicit `model` is a NON-STRING (int / inline list
+# / inline mapping). A non-string can never be a valid 'provider/model' string, and the
+# shape check must NOT skip it (an earlier version only ran the check for str models, so
+# a `model: 42` slipped through with zero violations). Each carries `tier: standard` so
+# the model override is present-but-invalid without also tripping the model-or-tier
+# requirement — isolating the shape violation as the guaranteed one.
+OPENCODE_INT_MODEL_MANIFEST = """
+run_id: 2026-07-13-opencode-int-model
+feature: "opencode-int-model"
+spec_path: docs/superpowers/specs/2026-07-13-opencode-int-model.md
+plan_path: docs/superpowers/plans/2026-07-13-opencode-int-model.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-13-opencode-int-model.md
+  domain: docs/superpowers/expert/2026-07-13-opencode-int-model.md
+  library: docs/superpowers/library-audit/2026-07-13-opencode-int-model.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-1-opencode-int
+    title: "opencode slice"
+    type: large_isolated
+    backend: opencode
+    model: 42
+    tier: standard
+    isolation: worktree
+    run: serial
+    write_allowed: [src/opencode/**]
+    read_allowed: [src/**]
+    acceptance: ["builds"]
+"""
+
+
+OPENCODE_LIST_MODEL_MANIFEST = """
+run_id: 2026-07-13-opencode-list-model
+feature: "opencode-list-model"
+spec_path: docs/superpowers/specs/2026-07-13-opencode-list-model.md
+plan_path: docs/superpowers/plans/2026-07-13-opencode-list-model.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-13-opencode-list-model.md
+  domain: docs/superpowers/expert/2026-07-13-opencode-list-model.md
+  library: docs/superpowers/library-audit/2026-07-13-opencode-list-model.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-1-opencode-list
+    title: "opencode slice"
+    type: large_isolated
+    backend: opencode
+    model: ["anthropic/claude-opus-4-6"]
+    tier: standard
+    isolation: worktree
+    run: serial
+    write_allowed: [src/opencode/**]
+    read_allowed: [src/**]
+    acceptance: ["builds"]
+"""
+
+
+OPENCODE_DICT_MODEL_MANIFEST = """
+run_id: 2026-07-13-opencode-dict-model
+feature: "opencode-dict-model"
+spec_path: docs/superpowers/specs/2026-07-13-opencode-dict-model.md
+plan_path: docs/superpowers/plans/2026-07-13-opencode-dict-model.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-13-opencode-dict-model.md
+  domain: docs/superpowers/expert/2026-07-13-opencode-dict-model.md
+  library: docs/superpowers/library-audit/2026-07-13-opencode-dict-model.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-1-opencode-dict
+    title: "opencode slice"
+    type: large_isolated
+    backend: opencode
+    model: {}
+    tier: standard
     isolation: worktree
     run: serial
     write_allowed: [src/opencode/**]
@@ -3713,6 +3808,26 @@ def _selftest():
         "malformed opencode model 'anthropic/' REJECTED (empty right side)",
         any("not a valid 'provider/model' string" in p
             for p in opencode_malformed_bad),
+    )
+    # NON-STRING opencode model (int / list / dict) must ALSO be rejected — it can
+    # never be a provider/model string and must not skip the shape check.
+    opencode_int_bad = validate_text(OPENCODE_INT_MODEL_MANIFEST)
+    expect(
+        "non-string opencode model (int 42) REJECTED",
+        any("not a valid 'provider/model' string" in p
+            for p in opencode_int_bad),
+    )
+    opencode_list_bad = validate_text(OPENCODE_LIST_MODEL_MANIFEST)
+    expect(
+        "non-string opencode model (list) REJECTED",
+        any("not a valid 'provider/model' string" in p
+            for p in opencode_list_bad),
+    )
+    opencode_dict_bad = validate_text(OPENCODE_DICT_MODEL_MANIFEST)
+    expect(
+        "non-string opencode model (dict) REJECTED",
+        any("not a valid 'provider/model' string" in p
+            for p in opencode_dict_bad),
     )
 
     # Reviewer satisfied by tier: deep (no model) — GOOD manifest task-3 uses
