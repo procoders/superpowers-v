@@ -236,3 +236,6 @@ jobs:
 
       - name: Run epic-arbiter.py selftest (Python 3.9 floor)
         run: python3 scripts/compound-v-epic-arbiter.py --selftest
+
+      - name: Run epic-watch.py selftest (Python 3.9 floor)
+        run: python3 scripts/compound-v-epic-watch.py --selftest

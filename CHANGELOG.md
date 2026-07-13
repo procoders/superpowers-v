@@ -4,6 +4,33 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [2.11.0] - 2026-07-13
+
+### Added — Auto-resurrection watch (opt-in, marathon-only)
+
+v2.10 shipped the Marathon Loop but deliberately deferred auto-resurrection: a hard death still needed a human to re-run `/v:epic <epic-id>`. v2.11 closes that gap with an ADDITIVE opt-in `watch` surface on top of marathon (`--watch` at `--init`, rejected without `--stance marathon`; no in-place upgrade of an existing epic, same rule as marathon itself). A watch-off marathon epic stays byte-identical to v2.10 — none of the fields below are ever written for it.
+
+- **V1 — atomic resume authority + liveness/lease** (`scripts/compound-v-epic-state.py`): `--claim-resume` is the crux — ONE `fcntl.flock`-guarded atomic transaction that decides whether a scheduler-fired session may resume a dead epic, returning `{"claimed","reason":"claimed|live-lease-held|terminal|resume-cap","resume_count"}`. A live, unexpired lease OR a recorded `owner_pid` that is still a live OS process defers the claim (`live-lease-held`) so a scheduler can never resurrect a marathon that never actually died. `--liveness` is a read-only watcher poll (`{"incomplete","stale","held","lease_expired","epic_status","terminal","resume_count"}`); `stale` requires incomplete, non-terminal, past a heartbeat threshold (default 45 min), AND a dead lease owner. `--renew-lease` is the live driver's own heartbeat (create-or-renew, only the current owner may call it). A new `resume_count` global breaker axis (`max_resume_count`, default 20) permits N resumes and blocks the (N+1)th, tripping the same `blocked_needing_human` latch as every other breaker; `--clear-breaker --reset-resume-count` re-arms it. Built directly on v2.10's crash-safe resume — nothing about the existing single-process marathon path changed.
+- **V2 — two-tier watcher** (`scripts/compound-v-epic-watch.py`, new): never talks to a scheduler directly and never re-implements any state-spine logic. `emit-prompt` prints a SELF-CONTAINED resume prompt for a scheduler to hand to a fresh, memoryless session — that session calls `--claim-resume`, branches on the result, and performs the full disarm inline on a terminal/resume-cap verdict (a cold-prompt design: no conversation history is assumed). `plan` reads `--liveness` and advises the two tiers' cadence (off-minute `:17`/`:47`, ~30 min apart) and whether to disarm. The driver (`/v:epic`, not this script) owns the real scheduler wiring — session `CronCreate`/`CronDelete` for Tier-1, `mcp__scheduled-tasks__create_scheduled_task`/`delete_scheduled_task` for Tier-2.
+- **V3 — idempotent watcher registry + driver arm/disarm + capability detection**: `--record-watcher-armed`/`--record-watcher-disarmed`/`--list-watchers` track scheduler tasks idempotently by `(provider, task-id)`, so a crash-and-replay during arming or disarming is a harmless no-op, never a duplicate or a leak. `/v:epic`'s marathon loop (`commands/v-epic.md` §0c "Watch-on marathon start" and "Watch disarm") acquires the lease and arms both tiers once at invocation start, re-arms a Tier-1 task past its ~7-day expiry, and disarms both tiers (plus a deterministic-id fallback) at every terminal exit. `/v:init` gained a capability-detection step for scheduler availability on this machine, feeding the `epic.autonomy.watch` config key (consulted only once, at a NEW epic's `--init`).
+- **CI**: `.github/workflows/validate.yml` now also runs `python3 scripts/compound-v-epic-watch.py --selftest` in the same Python 3.9 step as the existing `compound-v-epic-state.py`/`compound-v-epic-arbiter.py` selftests.
+
+### The corrected honest boundary (v2.11) — still not "survives while you sleep"
+
+Auto-resurrection is bounded and partial, not magic:
+
+- **Tier-1 (session `CronCreate`)** pauses while the session is unavailable or busy, MISSES any fire that elapses while paused (no catch-up), may restore on the next conversation turn while still unexpired, and expires after 7 days even inside a continuously open session.
+- **Tier-2 (`scheduled-tasks`, on-disk)** runs only while the desktop app is open and the machine is awake; it performs exactly ONE catch-up for the most recent missed run on app start/wake, within 7 days. It is not an always-on server.
+- **"Survives quota exhaustion"** holds only if the quota has since reset AND the session is still authenticated — an expired OAuth token still needs a human.
+- **A machine that is truly off (laptop closed, asleep) is not covered by either tier.** Genuine machine-off execution needs remote infrastructure, never claimed built-in here.
+- **Resurrection is bounded** by `max_resume_count` (default 20) — a persistently-dying run halts at `blocked_needing_human` for a human, same as any other tripped breaker.
+
+Opt-in (`epic.autonomy.watch`, default off); the default epic and a watch-off marathon are unchanged. No fabricated cost/token metrics anywhere in this surface.
+
+### Provenance
+
+Built on v2.10's crash-safe marathon resume. Cross-model reviewed by **Codex gpt-5.6-sol**.
+
 ## [2.10.0] — 2026-07-13
 
 ### Added — Marathon Loop (opt-in autonomous `/v:epic`, PHASED scope)
