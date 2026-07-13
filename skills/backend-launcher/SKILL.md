@@ -1,6 +1,6 @@
 ---
 name: backend-launcher
-description: Use when Compound V's dispatcher needs to run one file-scoped job on a chosen backend (Claude subagent, headless Codex worker, headless Antigravity worker, or headless Cursor worker) and get back a canonical job_result. The single job_spec → job_result contract every adapter implements; the orchestrator speaks only this contract and never sees backend-specific flags.
+description: Use when Compound V's dispatcher needs to run one file-scoped job on a chosen backend (Claude subagent, headless Codex worker, headless Antigravity worker, headless Cursor worker, headless Devin worker, or headless opencode worker) and get back a canonical job_result. The single job_spec → job_result contract every adapter implements; the orchestrator speaks only this contract and never sees backend-specific flags.
 ---
 
 # Backend Launcher
@@ -19,7 +19,7 @@ There is no skill-import API: an adapter is a sibling doc (`adapter-codex.md`, `
 
 ```jsonc
 {
-  "backend": "codex",                  // claude | codex | antigravity | cursor
+  "backend": "codex",                  // claude | codex | antigravity | cursor | devin | opencode
   "prompt": "…",                       // the worker prompt (opens with the planner/executor lock, below)
   "tier": "standard",                  // deep | standard | light — the routing INTENT (stable across model churn)
   "effort": "medium",                  // low | medium | high | xhigh — orthogonal reasoning-effort hint (optional; xhigh is codex-only)
@@ -109,7 +109,7 @@ This is the *instructed* half. The git-diff scope gate above is the *enforced* h
 
 ---
 
-## The three adapters (contract level)
+## The adapters (contract level)
 
 | Adapter | Backend | Mechanism | Isolation | Enforcement | Status |
 |---|---|---|---|---|---|
@@ -117,11 +117,15 @@ This is the *instructed* half. The git-diff scope gate above is the *enforced* h
 | `adapter-codex.md` | headless Codex | Bash-spawned `codex exec` (own process, own worktree) | `worktree` (mandatory) | git-diff scope gate | ships v1.0 |
 | `adapter-antigravity.md` | headless Antigravity | Bash-spawned `agy --print` (own process, own worktree) | `worktree` (mandatory) | git-diff scope gate | ships 1.1 — **lower-trust / opt-in (no kernel sandbox)** |
 | `adapter-cursor.md` | headless Cursor | Bash-spawned `cursor-agent -p -f` (own process, own worktree) | `worktree` (mandatory) | git-diff scope gate | ships 2.1 — **lower-trust / opt-in (no kernel sandbox)** |
+| `adapter-devin.md` | headless Devin | Bash-spawned `devin -p` (own process, own worktree) | `worktree` (mandatory) | git-diff scope gate | **lower-trust / opt-in, WORKER-ONLY** (Research-Preview `--sandbox`, unverified coverage; multi-vendor model broker — excluded from any arbiter panel) |
+| `adapter-opencode.md` | headless opencode | Bash-spawned `opencode run` (own process, own worktree) | `worktree` (mandatory) | git-diff scope gate | **lower-trust / opt-in, WORKER-ONLY** (no kernel sandbox; multi-provider `provider/model` router — excluded from any arbiter panel until family-dedup keys on the resolved model) |
 
 - **claude-subagent** — reuses today's `Task`-based dispatch with a `model` override and `maxTurns: 15`, optionally inside a worktree, and runs the **same** scope gate on return so enforcement is identical to Codex. Direct writes are gated against a baseline commit.
 - **codex** — a Bash-spawned `codex exec` worker in its own process and its own worktree (never an `agents/` entry, never the experimental `openai-codex` app-server broker, which is single-flight and can't fan out). Pinned flag set below.
 - **antigravity** — a Bash-spawned `agy --print` worker in its own process and its own worktree, mirroring Codex (worktree + git-diff scope gate, normalize → `job_result`). **Lower-trust / opt-in:** `agy` has **no kernel write-confinement** like Codex's `--sandbox workspace-write`, and headless writes require `--dangerously-skip-permissions` (arbitrary shell + out-of-worktree writes possible). The git-diff gate enforces file-scope *inside* the worktree but cannot *prevent* an out-of-worktree side-effect — so **prefer Codex for untrusted / high-stakes work**, and route to Antigravity only when the prompt/surface is trusted. Available only when `agy` is installed (env-aware routing). Runbook: [`adapter-antigravity.md`](adapter-antigravity.md); worker: [`scripts/compound-v-run-antigravity-worker.sh`](../../scripts/compound-v-run-antigravity-worker.sh).
 - **cursor** — a Bash-spawned `cursor-agent -p -f` worker in its own process and its own worktree, mirroring Antigravity (worktree + git-diff scope gate, normalize → `job_result`). **Lower-trust / opt-in (same tier as Antigravity):** cursor-agent has **no kernel write-confinement**, and a headless run **requires `-f`** (an untrusted dir is otherwise refused) which also grants arbitrary write+shell. Verified live (success + BLOCKED paths). Output is one JSON object — `.result` → summary, `.session_id` (a real UUID) → resumable via `cursor-agent --resume`. **Prefer Codex for untrusted / high-stakes work**; route to Cursor only when the prompt/surface is trusted (its editing models suit isolated build/UI work). Available only when `cursor-agent` is installed AND authenticated (env-aware routing). Runbook: [`adapter-cursor.md`](adapter-cursor.md); worker: [`scripts/compound-v-run-cursor-worker.sh`](../../scripts/compound-v-run-cursor-worker.sh).
+- **devin** — a Bash-spawned `devin -p` worker in its own process and its own worktree, mirroring Antigravity/Cursor (worktree + git-diff scope gate, normalize → `job_result`). **Lower-trust / opt-in, WORKER-ONLY (v1):** Devin has a real, live-confirmed kernel `--sandbox` flag (macOS Seatbelt / Linux bwrap+seccomp) — a genuine differentiator — but it is labelled "[Research Preview]" by Cognition, its coverage is scoped to "exec-tool processes" (non-shell tool coverage unverified), and network filtering is admitted-unstable, so this plugin treats it as no-confinement for v1 and relies on the worktree + git-diff gate exactly like Antigravity/Cursor. Devin is also a **multi-vendor model broker** (`--model` spans Claude/GPT/Gemini/Devin's own SWE family) — its resolved model family is data-dependent, so it is **excluded from any cross-model arbiter/review panel** until family-dedup keys on the resolved model rather than the backend name. Available only when `devin` is installed AND authenticated (`devin auth login` / `COGNITION_API_KEY`). Runbook: [`adapter-devin.md`](adapter-devin.md); worker script: draft only, not yet built (see the adapter for the pinned invocation).
+- **opencode** — a Bash-spawned `opencode run` worker in its own process and its own worktree, mirroring Antigravity/Cursor (worktree + git-diff scope gate, normalize → `job_result`). **Lower-trust / opt-in, WORKER-ONLY (v1):** opencode has **no kernel write-confinement at all** and, per its own docs, defaults to allowing all operations without explicit approval — the opposite default posture from Cursor/Antigravity's refuse-until-unlocked stance. opencode is **provider-agnostic** — every resolved model is a `provider/model` string, and the provider may differ per tier — so, like Devin, it is **excluded from any cross-model arbiter/review panel** until family-dedup keys on the resolved model. **Load-bearing safety caveat:** opencode can authenticate purely from inherited provider env vars (live-observed: it completed a real request with zero stored credentials via an ambient `ANTHROPIC_BASE_URL`) — the worker MUST scrub the dispatcher's own provider env vars rather than blindly inherit them (see the adapter). Available only when `opencode` is installed AND a provider is configured (stored credentials or an intentional env var). Runbook: [`adapter-opencode.md`](adapter-opencode.md); worker script: draft only, not yet built (see the adapter for the pinned invocation).
 
 ---
 

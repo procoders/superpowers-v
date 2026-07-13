@@ -36,8 +36,10 @@ All required fields per ``execution-manifest.md`` are checked first. Top-level:
 ``acceptance_criteria``, ``routing_stance``, ``max_parallel``. Per-job: ``id``,
 ``title``, ``type``, ``backend``, ``isolation``, ``run``, ``write_allowed``,
 ``read_allowed``, ``acceptance``, plus (``model`` OR ``tier``). Enums: ``backend``
-∈ {claude, codex, antigravity, cursor} (``none`` is the routing "return to planning"
-sentinel, NOT a dispatched job backend); ``isolation`` ∈ {direct, worktree};
+∈ {claude, codex, antigravity, cursor, devin, opencode} (``none`` is the routing
+"return to planning" sentinel, NOT a dispatched job backend; ``devin``/``opencode``
+are lower-trust, opt-in, WORKER-ONLY backends — see adapter-devin.md /
+adapter-opencode.md); ``isolation`` ∈ {direct, worktree};
 ``run`` ∈ {serial, parallel};
 ``routing_stance`` ∈ {balanced, conservative, cost-aware, claude-only};
 ``tier`` ∈ {deep, standard, light}; ``effort`` ∈ {low, medium, high, xhigh}
@@ -514,7 +516,7 @@ VALID_TIERS = ("deep", "standard", "light")
 VALID_EFFORTS = ("low", "medium", "high", "xhigh")
 
 # Enum vocabularies for required-field validation (per execution-manifest.md).
-VALID_BACKENDS = ("claude", "codex", "antigravity", "cursor")
+VALID_BACKENDS = ("claude", "codex", "antigravity", "cursor", "devin", "opencode")
 VALID_ISOLATIONS = ("direct", "worktree")
 VALID_RUNS = ("serial", "parallel")
 VALID_STANCES = ("balanced", "conservative", "cost-aware", "claude-only")
@@ -1697,19 +1699,64 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
             wa = []
         job_globs.append((jid, [str(g) for g in wa]))
 
-        # Invariant 2: codex => worktree, antigravity => worktree, cursor => worktree.
-        # All three are EXTERNAL workers. Codex has a kernel sandbox scoped to a directory;
-        # antigravity and cursor have NO kernel write-confinement at all (antigravity runs
-        # with --dangerously-skip-permissions; cursor's headless `-f` grants arbitrary
-        # write+shell), so worktree + git-diff is the ONLY file-scope enforcement they get.
+        # Invariant 2: codex => worktree, antigravity => worktree, cursor => worktree,
+        # devin => worktree, opencode => worktree. All five are EXTERNAL workers. Codex
+        # has a kernel sandbox scoped to a directory; antigravity and cursor have NO
+        # kernel write-confinement at all (antigravity runs with
+        # --dangerously-skip-permissions; cursor's headless `-f` grants arbitrary
+        # write+shell); devin has a live but Research-Preview `--sandbox` whose coverage
+        # is unverified (treated as no-confinement for enforcement purposes, v1); opencode
+        # has NO kernel write-confinement and defaults to allowing all operations. For all
+        # five, worktree + git-diff is the ONLY file-scope enforcement that actually holds.
         # A non-worktree external worker cannot be deterministically attributed and is rejected.
         backend_lc = str(job.get("backend", "")).lower()
-        if backend_lc in ("codex", "antigravity", "cursor"):
+        if backend_lc in ("codex", "antigravity", "cursor", "devin", "opencode"):
             if str(job.get("isolation", "")).lower() != "worktree":
                 problems.append(
                     "job '%s' uses backend %s but isolation is '%s' "
                     "(%s requires worktree)"
                     % (jid, backend_lc, job.get("isolation"), backend_lc)
+                )
+
+        # WORKER-ONLY enforcement: devin/opencode are lower-trust, opt-in
+        # backends (see adapter-devin.md / adapter-opencode.md) meant for
+        # IMPLEMENTER jobs only. A reviewer job routed to either would
+        # silently satisfy the Review Gate's opus/deep guarantee through a
+        # low-trust external router instead of Claude Opus, defeating the
+        # guarantee entirely. Reject unconditionally, independent of
+        # tier/model — a reviewer job must never carry backend: devin or
+        # backend: opencode, full stop.
+        if _is_reviewer(job) and backend_lc in ("devin", "opencode"):
+            problems.append(
+                "reviewer job '%s' uses backend '%s' — devin/opencode are "
+                "lower-trust, opt-in, WORKER-ONLY backends (see "
+                "adapter-devin.md / adapter-opencode.md) and must never be "
+                "used for a reviewer job; route reviewers to backend: "
+                "claude with tier: deep or model: opus"
+                % (jid, backend_lc)
+            )
+
+        # opencode provider/model shape: every EXPLICIT opencode model
+        # override must be a genuine non-empty "provider/model" STRING (a
+        # bare name would silently pass here but fail opencode's own model
+        # resolution / the worker's `-m` argument at run time). Only checked
+        # when a model key is actually present — a tier-only job resolves
+        # through compound-v-resolve-model.py's own shape check at resolution
+        # time. A NON-STRING model (int/list/dict from YAML) is itself a
+        # violation: it can never be a valid provider/model string and must
+        # NOT slip through by skipping the check.
+        if backend_lc == "opencode" and "model" in job:
+            m_val = job.get("model")
+            _shaped = False
+            if isinstance(m_val, str) and m_val.strip():
+                _prov, _sep, _rest = m_val.partition("/")
+                _shaped = bool(_sep) and bool(_prov.strip()) and bool(_rest.strip())
+            if not _shaped:
+                problems.append(
+                    "job '%s' backend opencode has model %r which is not a "
+                    "valid 'provider/model' string (must be a non-empty "
+                    "string, non-empty on both sides of exactly one '/')"
+                    % (jid, m_val)
                 )
 
         # Invariant 3: reviewers => deep/opus (strongest reasoning). Satisfied
@@ -2335,6 +2382,340 @@ jobs:
     isolation: direct
     run: serial
     write_allowed: [src/agy/**]
+    read_allowed: [src/**]
+    acceptance: ["builds"]
+"""
+
+
+# A complete, otherwise-valid manifest whose ONE defect is a devin job with
+# isolation: direct (devin's --sandbox is Research-Preview and unverified for this
+# plugin's purposes, so it is treated as no-confinement like antigravity/cursor and
+# MUST be worktree-isolated).
+DEVIN_DIRECT_MANIFEST = """
+run_id: 2026-07-13-devin
+feature: "devin"
+spec_path: docs/superpowers/specs/2026-07-13-devin.md
+plan_path: docs/superpowers/plans/2026-07-13-devin.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-13-devin.md
+  domain: docs/superpowers/expert/2026-07-13-devin.md
+  library: docs/superpowers/library-audit/2026-07-13-devin.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-1-devin
+    title: "devin slice"
+    type: large_isolated
+    backend: devin
+    tier: standard
+    isolation: direct
+    run: serial
+    write_allowed: [src/devin/**]
+    read_allowed: [src/**]
+    acceptance: ["builds"]
+"""
+
+
+# A complete, VALID manifest with a single devin job, worktree-isolated -- confirms
+# "devin" is accepted end-to-end (VALID_BACKENDS + the worktree invariant) once it is
+# NOT paired with isolation: direct.
+DEVIN_WORKTREE_MANIFEST = """
+run_id: 2026-07-13-devin-ok
+feature: "devin-ok"
+spec_path: docs/superpowers/specs/2026-07-13-devin-ok.md
+plan_path: docs/superpowers/plans/2026-07-13-devin-ok.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-13-devin-ok.md
+  domain: docs/superpowers/expert/2026-07-13-devin-ok.md
+  library: docs/superpowers/library-audit/2026-07-13-devin-ok.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-1-devin-ok
+    title: "devin slice"
+    type: large_isolated
+    backend: devin
+    tier: standard
+    isolation: worktree
+    run: serial
+    write_allowed: [src/devin/**]
+    read_allowed: [src/**]
+    acceptance: ["builds"]
+"""
+
+
+# A complete, otherwise-valid manifest whose ONE defect is an opencode job with
+# isolation: direct (opencode has NO kernel write-confinement and defaults to
+# allowing all operations, so worktree isolation is REQUIRED).
+OPENCODE_DIRECT_MANIFEST = """
+run_id: 2026-07-13-opencode
+feature: "opencode"
+spec_path: docs/superpowers/specs/2026-07-13-opencode.md
+plan_path: docs/superpowers/plans/2026-07-13-opencode.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-13-opencode.md
+  domain: docs/superpowers/expert/2026-07-13-opencode.md
+  library: docs/superpowers/library-audit/2026-07-13-opencode.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-1-opencode
+    title: "opencode slice"
+    type: large_isolated
+    backend: opencode
+    tier: standard
+    isolation: direct
+    run: serial
+    write_allowed: [src/opencode/**]
+    read_allowed: [src/**]
+    acceptance: ["builds"]
+"""
+
+
+# A complete, VALID manifest with a single opencode job, worktree-isolated -- confirms
+# "opencode" is accepted end-to-end (VALID_BACKENDS + the worktree invariant) once it
+# is NOT paired with isolation: direct. model is a genuine "provider/model" string,
+# matching the resolver's opencode convention.
+OPENCODE_WORKTREE_MANIFEST = """
+run_id: 2026-07-13-opencode-ok
+feature: "opencode-ok"
+spec_path: docs/superpowers/specs/2026-07-13-opencode-ok.md
+plan_path: docs/superpowers/plans/2026-07-13-opencode-ok.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-13-opencode-ok.md
+  domain: docs/superpowers/expert/2026-07-13-opencode-ok.md
+  library: docs/superpowers/library-audit/2026-07-13-opencode-ok.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-1-opencode-ok
+    title: "opencode slice"
+    type: large_isolated
+    backend: opencode
+    model: "anthropic/claude-sonnet-4-6"
+    isolation: worktree
+    run: serial
+    write_allowed: [src/opencode/**]
+    read_allowed: [src/**]
+    acceptance: ["builds"]
+"""
+
+
+# A complete, otherwise-valid manifest whose ONE defect is a REVIEWER job routed to
+# backend: devin. devin/opencode are lower-trust, opt-in, WORKER-ONLY backends (see
+# adapter-devin.md / adapter-opencode.md) -- a reviewer job must never resolve its
+# Review-Gate opus/deep guarantee through a low-trust external router. tier: deep +
+# isolation: worktree are otherwise satisfied, so ONLY the WORKER-ONLY violation fires.
+DEVIN_REVIEWER_MANIFEST = """
+run_id: 2026-07-13-devin-reviewer
+feature: "devin-reviewer"
+spec_path: docs/superpowers/specs/2026-07-13-devin-reviewer.md
+plan_path: docs/superpowers/plans/2026-07-13-devin-reviewer.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-13-devin-reviewer.md
+  domain: docs/superpowers/expert/2026-07-13-devin-reviewer.md
+  library: docs/superpowers/library-audit/2026-07-13-devin-reviewer.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-1-spec-review
+    title: "spec review pass"
+    type: spec_review
+    backend: devin
+    tier: deep
+    isolation: worktree
+    run: serial
+    write_allowed: []
+    read_allowed: [src/**]
+    acceptance: ["reviewed"]
+"""
+
+
+# Same defect, opencode backend (same rationale as DEVIN_REVIEWER_MANIFEST above).
+OPENCODE_REVIEWER_MANIFEST = """
+run_id: 2026-07-13-opencode-reviewer
+feature: "opencode-reviewer"
+spec_path: docs/superpowers/specs/2026-07-13-opencode-reviewer.md
+plan_path: docs/superpowers/plans/2026-07-13-opencode-reviewer.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-13-opencode-reviewer.md
+  domain: docs/superpowers/expert/2026-07-13-opencode-reviewer.md
+  library: docs/superpowers/library-audit/2026-07-13-opencode-reviewer.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-1-quality-review
+    title: "quality review pass"
+    type: quality_review
+    backend: opencode
+    tier: deep
+    isolation: worktree
+    run: serial
+    write_allowed: []
+    read_allowed: [src/**]
+    acceptance: ["reviewed"]
+"""
+
+
+# A complete, otherwise-valid manifest whose ONE defect is an opencode job with a BARE
+# (slash-less) explicit model override. opencode addresses models as a "provider/model"
+# string with no single-vendor default (see adapter-opencode.md); a bare name would
+# silently pass a naive validator but fail opencode's own model resolution / the
+# worker's `-m` argument at run time, so it must be rejected here, before dispatch.
+OPENCODE_BARE_MODEL_MANIFEST = """
+run_id: 2026-07-13-opencode-bare-model
+feature: "opencode-bare-model"
+spec_path: docs/superpowers/specs/2026-07-13-opencode-bare-model.md
+plan_path: docs/superpowers/plans/2026-07-13-opencode-bare-model.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-13-opencode-bare-model.md
+  domain: docs/superpowers/expert/2026-07-13-opencode-bare-model.md
+  library: docs/superpowers/library-audit/2026-07-13-opencode-bare-model.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-1-opencode-bare
+    title: "opencode slice"
+    type: large_isolated
+    backend: opencode
+    model: "gpt-5.6"
+    isolation: worktree
+    run: serial
+    write_allowed: [src/opencode/**]
+    read_allowed: [src/**]
+    acceptance: ["builds"]
+"""
+
+
+# Same defect, malformed shape variant: a trailing slash with an EMPTY model half
+# ("anthropic/") — the '/' is present but one side is empty, still not a valid
+# provider/model pair.
+OPENCODE_MALFORMED_MODEL_MANIFEST = """
+run_id: 2026-07-13-opencode-malformed-model
+feature: "opencode-malformed-model"
+spec_path: docs/superpowers/specs/2026-07-13-opencode-malformed-model.md
+plan_path: docs/superpowers/plans/2026-07-13-opencode-malformed-model.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-13-opencode-malformed-model.md
+  domain: docs/superpowers/expert/2026-07-13-opencode-malformed-model.md
+  library: docs/superpowers/library-audit/2026-07-13-opencode-malformed-model.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-1-opencode-malformed
+    title: "opencode slice"
+    type: large_isolated
+    backend: opencode
+    model: "anthropic/"
+    isolation: worktree
+    run: serial
+    write_allowed: [src/opencode/**]
+    read_allowed: [src/**]
+    acceptance: ["builds"]
+"""
+
+
+# A family of opencode jobs whose explicit `model` is a NON-STRING (int / inline list
+# / inline mapping). A non-string can never be a valid 'provider/model' string, and the
+# shape check must NOT skip it (an earlier version only ran the check for str models, so
+# a `model: 42` slipped through with zero violations). Each carries `tier: standard` so
+# the model override is present-but-invalid without also tripping the model-or-tier
+# requirement — isolating the shape violation as the guaranteed one.
+OPENCODE_INT_MODEL_MANIFEST = """
+run_id: 2026-07-13-opencode-int-model
+feature: "opencode-int-model"
+spec_path: docs/superpowers/specs/2026-07-13-opencode-int-model.md
+plan_path: docs/superpowers/plans/2026-07-13-opencode-int-model.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-13-opencode-int-model.md
+  domain: docs/superpowers/expert/2026-07-13-opencode-int-model.md
+  library: docs/superpowers/library-audit/2026-07-13-opencode-int-model.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-1-opencode-int
+    title: "opencode slice"
+    type: large_isolated
+    backend: opencode
+    model: 42
+    tier: standard
+    isolation: worktree
+    run: serial
+    write_allowed: [src/opencode/**]
+    read_allowed: [src/**]
+    acceptance: ["builds"]
+"""
+
+
+OPENCODE_LIST_MODEL_MANIFEST = """
+run_id: 2026-07-13-opencode-list-model
+feature: "opencode-list-model"
+spec_path: docs/superpowers/specs/2026-07-13-opencode-list-model.md
+plan_path: docs/superpowers/plans/2026-07-13-opencode-list-model.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-13-opencode-list-model.md
+  domain: docs/superpowers/expert/2026-07-13-opencode-list-model.md
+  library: docs/superpowers/library-audit/2026-07-13-opencode-list-model.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-1-opencode-list
+    title: "opencode slice"
+    type: large_isolated
+    backend: opencode
+    model: ["anthropic/claude-opus-4-6"]
+    tier: standard
+    isolation: worktree
+    run: serial
+    write_allowed: [src/opencode/**]
+    read_allowed: [src/**]
+    acceptance: ["builds"]
+"""
+
+
+OPENCODE_DICT_MODEL_MANIFEST = """
+run_id: 2026-07-13-opencode-dict-model
+feature: "opencode-dict-model"
+spec_path: docs/superpowers/specs/2026-07-13-opencode-dict-model.md
+plan_path: docs/superpowers/plans/2026-07-13-opencode-dict-model.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-13-opencode-dict-model.md
+  domain: docs/superpowers/expert/2026-07-13-opencode-dict-model.md
+  library: docs/superpowers/library-audit/2026-07-13-opencode-dict-model.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-1-opencode-dict
+    title: "opencode slice"
+    type: large_isolated
+    backend: opencode
+    model: {}
+    tier: standard
+    isolation: worktree
+    run: serial
+    write_allowed: [src/opencode/**]
     read_allowed: [src/**]
     acceptance: ["builds"]
 """
@@ -3375,6 +3756,78 @@ def _selftest():
         "antigravity+direct caught (antigravity requires worktree)",
         any("backend antigravity but isolation" in p
             and "antigravity requires worktree" in p for p in agy_bad),
+    )
+
+    # devin ⇒ worktree: same invariant, new backend (v1: worker-only, lower-trust).
+    devin_bad = validate_text(DEVIN_DIRECT_MANIFEST)
+    expect(
+        "devin+direct caught (devin requires worktree)",
+        any("backend devin but isolation" in p
+            and "devin requires worktree" in p for p in devin_bad),
+    )
+    devin_ok = validate_text(DEVIN_WORKTREE_MANIFEST)
+    expect("devin+worktree manifest is valid", devin_ok == [])
+
+    # opencode ⇒ worktree: same invariant, new backend (v1: worker-only, lower-trust).
+    opencode_bad = validate_text(OPENCODE_DIRECT_MANIFEST)
+    expect(
+        "opencode+direct caught (opencode requires worktree)",
+        any("backend opencode but isolation" in p
+            and "opencode requires worktree" in p for p in opencode_bad),
+    )
+    opencode_ok = validate_text(OPENCODE_WORKTREE_MANIFEST)
+    expect("opencode+worktree manifest is valid (provider/model string accepted)",
+           opencode_ok == [])
+
+    # WORKER-ONLY: a reviewer job MUST NEVER resolve to backend devin/opencode,
+    # even when tier: deep + isolation: worktree are otherwise satisfied.
+    devin_reviewer_bad = validate_text(DEVIN_REVIEWER_MANIFEST)
+    expect(
+        "devin reviewer job REJECTED (WORKER-ONLY)",
+        any("reviewer job 'task-1-spec-review'" in p
+            and "backend 'devin'" in p
+            and "WORKER-ONLY" in p for p in devin_reviewer_bad),
+    )
+    opencode_reviewer_bad = validate_text(OPENCODE_REVIEWER_MANIFEST)
+    expect(
+        "opencode reviewer job REJECTED (WORKER-ONLY)",
+        any("reviewer job 'task-1-quality-review'" in p
+            and "backend 'opencode'" in p
+            and "WORKER-ONLY" in p for p in opencode_reviewer_bad),
+    )
+
+    # opencode provider/model shape: a bare (slash-less) or malformed (empty-side)
+    # explicit model override is REJECTED before dispatch.
+    opencode_bare_bad = validate_text(OPENCODE_BARE_MODEL_MANIFEST)
+    expect(
+        "bare opencode model 'gpt-5.6' REJECTED (not provider/model)",
+        any("not a valid 'provider/model' string" in p for p in opencode_bare_bad),
+    )
+    opencode_malformed_bad = validate_text(OPENCODE_MALFORMED_MODEL_MANIFEST)
+    expect(
+        "malformed opencode model 'anthropic/' REJECTED (empty right side)",
+        any("not a valid 'provider/model' string" in p
+            for p in opencode_malformed_bad),
+    )
+    # NON-STRING opencode model (int / list / dict) must ALSO be rejected — it can
+    # never be a provider/model string and must not skip the shape check.
+    opencode_int_bad = validate_text(OPENCODE_INT_MODEL_MANIFEST)
+    expect(
+        "non-string opencode model (int 42) REJECTED",
+        any("not a valid 'provider/model' string" in p
+            for p in opencode_int_bad),
+    )
+    opencode_list_bad = validate_text(OPENCODE_LIST_MODEL_MANIFEST)
+    expect(
+        "non-string opencode model (list) REJECTED",
+        any("not a valid 'provider/model' string" in p
+            for p in opencode_list_bad),
+    )
+    opencode_dict_bad = validate_text(OPENCODE_DICT_MODEL_MANIFEST)
+    expect(
+        "non-string opencode model (dict) REJECTED",
+        any("not a valid 'provider/model' string" in p
+            for p in opencode_dict_bad),
     )
 
     # Reviewer satisfied by tier: deep (no model) — GOOD manifest task-3 uses

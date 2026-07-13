@@ -77,12 +77,46 @@ _ANTIGRAVITY = {"deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Lo
 # auto-ranked: it spans unrelated vendor families with no shared naming convention).
 # Lower-trust tier (no kernel sandbox; headless -f required).
 _CURSOR = {"deep": "auto", "standard": "auto", "light": "auto"}
+# Devin (devin-cli): multi-vendor model broker (like Cursor, unlike Codex/Antigravity's
+# single-family catalogs) -- `--model` is a free string, no `devin models`/`--list-models`
+# equivalent exists, so this curated map mirrors the Codex pattern (curated +
+# user-overridable roster). DOC-CLAIMED aliases (devin-cli 3000.1.27's own --help text
+# uses these exact strings as its examples, but no authenticated run has confirmed they
+# resolve -- see skills/backend-launcher/adapter-devin.md). Lower-trust tier: devin's
+# --sandbox is a live [Research Preview] kernel flag (unlike antigravity/cursor), but its
+# non-shell-tool coverage and network confinement are unverified, so it ships in the same
+# opt-in/lower-trust tier for v1. NEVER haiku.
+_DEVIN = {"deep": "claude-opus-4.6", "standard": "claude-sonnet-4", "light": "gpt-5.5"}
+# opencode (opencode-ai): provider-agnostic router -- every cell is a full "provider/model"
+# string (e.g. "anthropic/claude-opus-4-6"), and the provider is allowed to DIFFER per
+# cell (unlike every other backend's single-vendor map) -- this is the key design point
+# from the research: the resolver treats every model string as opaque, so no schema
+# change is needed. `light` legitimately points at one of opencode's own curated
+# credential-free models (VERIFIED live via `opencode models` with zero stored
+# credentials: opencode/mimo-v2.5-free et al) -- the one backend where a real free tier
+# exists out of the box. Lower-trust tier: opencode has NO kernel write-confinement and,
+# per its own docs, defaults to allowing all operations -- see
+# skills/backend-launcher/adapter-opencode.md for the mandatory env-scrub + pinned
+# opencode.json mitigation. NEVER haiku anywhere (light is a free model, not haiku).
+_OPENCODE = {
+    "deep": "anthropic/claude-opus-4-6",
+    "standard": "openai/gpt-5.6-terra",
+    "light": "opencode/mimo-v2.5-free",
+}
 
 
 def _stance_map(claude_map):
     """Assemble a full {backend -> {tier -> model}} map for one stance. Only the claude
-    sub-map varies by stance; codex/antigravity/cursor are shared (read-only)."""
-    return {"claude": claude_map, "codex": _CODEX, "antigravity": _ANTIGRAVITY, "cursor": _CURSOR}
+    sub-map varies by stance; codex/antigravity/cursor/devin/opencode are shared
+    (read-only)."""
+    return {
+        "claude": claude_map,
+        "codex": _CODEX,
+        "antigravity": _ANTIGRAVITY,
+        "cursor": _CURSOR,
+        "devin": _DEVIN,
+        "opencode": _OPENCODE,
+    }
 
 
 # Built-in default map, now keyed by STANCE.
@@ -96,7 +130,7 @@ DEFAULT_MODELS_BY_STANCE = {
 # working unchanged: balanced is the default stance.
 DEFAULT_MODELS = DEFAULT_MODELS_BY_STANCE["balanced"]
 
-BACKENDS = ("claude", "codex", "antigravity", "cursor")
+BACKENDS = ("claude", "codex", "antigravity", "cursor", "devin", "opencode")
 TIERS = ("deep", "standard", "light")
 # `xhigh` is valid iff backend == "codex": it maps to codex's kernel
 # model_reasoning_effort dimension, which live-accepts xhigh (verified
@@ -186,6 +220,19 @@ def _config_cell(config_models, stance, backend, tier):
     return None
 
 
+def _is_provider_model_shaped(model):
+    """True iff ``model`` is a genuine non-empty 'provider/model' string: exactly the
+    shape opencode's own `-m`/`--model` flag requires (see adapter-opencode.md). A
+    bare name (no '/') or a malformed value with an empty side ('anthropic/', '/x')
+    would silently resolve here but fail opencode's own model resolution at run
+    time, so every opencode resolution — regardless of source (explicit override,
+    config override, or the built-in default map) — is shape-checked."""
+    if not isinstance(model, str):
+        return False
+    provider, sep, rest = model.partition("/")
+    return bool(sep) and bool(provider.strip()) and bool(rest.strip())
+
+
 def resolve(backend, tier, effort=None, config_models=None, explicit_model=None, stance="balanced"):
     """Resolve to a concrete model. Precedence: explicit_model > config_models > the
     stance's built-in default map. Raises ValueError on unknown backend/tier/effort/stance
@@ -207,6 +254,13 @@ def resolve(backend, tier, effort=None, config_models=None, explicit_model=None,
     resolved_effort = effort if effort is not None else DEFAULT_EFFORT_FOR_TIER[tier]
 
     if explicit_model:
+        if backend == "opencode" and not _is_provider_model_shaped(explicit_model):
+            raise ValueError(
+                "opencode explicit model override '%s' is not a valid "
+                "'provider/model' string (must be non-empty on both sides of "
+                "exactly one '/'); bare or malformed model names are rejected"
+                % explicit_model
+            )
         return {"backend": backend, "tier": tier, "model": explicit_model, "effort": resolved_effort}
 
     model = _config_cell(config_models, stance, backend, tier)
@@ -217,6 +271,14 @@ def resolve(backend, tier, effort=None, config_models=None, explicit_model=None,
         raise ValueError(
             "cannot resolve a model for stance '%s' backend '%s' tier '%s' "
             "(no config override and no built-in default)" % (stance, backend, tier)
+        )
+
+    if backend == "opencode" and not _is_provider_model_shaped(model):
+        raise ValueError(
+            "opencode resolved to model '%s' (stance '%s' backend '%s' tier "
+            "'%s'), which is not a valid 'provider/model' string; a config "
+            "override that isn't shaped as provider/model is rejected"
+            % (model, stance, backend, tier)
         )
 
     return {"backend": backend, "tier": tier, "model": model, "effort": resolved_effort}
@@ -307,6 +369,70 @@ def _selftest():
         and resolve("antigravity", "deep")["effort"] == "high",
     )
 
+    # Devin (multi-vendor broker, curated DOC-CLAIMED aliases) resolves for every tier.
+    expect(
+        "devin/deep -> claude-opus-4.6",
+        resolve("devin", "deep")["model"] == "claude-opus-4.6",
+    )
+    expect(
+        "devin/standard -> claude-sonnet-4",
+        resolve("devin", "standard")["model"] == "claude-sonnet-4",
+    )
+    expect(
+        "devin/light -> gpt-5.5",
+        resolve("devin", "light")["model"] == "gpt-5.5",
+    )
+
+    # opencode (provider-agnostic router): every cell resolves, AND every cell is a
+    # genuine "provider/model" string (a bare name would silently pass --model but
+    # likely fail opencode's own model resolution) -- the key structural invariant
+    # from the design (resolve-model.py treats every cell as opaque; opencode is the
+    # one backend where that opaque string legitimately varies its provider prefix
+    # per tier).
+    expect(
+        "opencode/deep -> anthropic/claude-opus-4-6",
+        resolve("opencode", "deep")["model"] == "anthropic/claude-opus-4-6",
+    )
+    expect(
+        "opencode/light -> credential-free opencode/* model",
+        resolve("opencode", "light")["model"] == "opencode/mimo-v2.5-free",
+    )
+    expect(
+        "every opencode tier cell is a provider/model string",
+        all("/" in _OPENCODE[t] for t in TIERS),
+    )
+
+    # opencode provider/model shape enforcement: a bare or malformed model is
+    # REJECTED regardless of where it came from (explicit override or config
+    # override) — never silently accepted and passed to the worker's -m flag.
+    expect(
+        "opencode explicit bare model rejected",
+        raises(lambda: resolve("opencode", "deep", explicit_model="gpt-5.6")),
+    )
+    expect(
+        "opencode explicit malformed model rejected (empty right side)",
+        raises(lambda: resolve("opencode", "deep", explicit_model="anthropic/")),
+    )
+    expect(
+        "opencode explicit malformed model rejected (empty left side)",
+        raises(lambda: resolve("opencode", "deep", explicit_model="/claude-opus")),
+    )
+    expect(
+        "opencode config-override bare model rejected",
+        raises(lambda: resolve(
+            "opencode", "deep",
+            config_models={"opencode": {"deep": "gpt-5.6"}})),
+    )
+    expect(
+        "opencode explicit provider/model accepted",
+        resolve("opencode", "deep", explicit_model="anthropic/claude-opus-4-6")["model"]
+        == "anthropic/claude-opus-4-6",
+    )
+    expect(
+        "non-opencode backend is NOT shape-checked (bare model fine)",
+        resolve("codex", "deep", explicit_model="gpt-5.6")["model"] == "gpt-5.6",
+    )
+
     # No 'haiku' anywhere in any stance map.
     flat = json.dumps(DEFAULT_MODELS_BY_STANCE).lower()
     expect("no haiku in any stance map", "haiku" not in flat)
@@ -343,6 +469,14 @@ def _selftest():
     expect(
         "cursor+xhigh rejected",
         raises(lambda: resolve("cursor", "deep", effort="xhigh")),
+    )
+    expect(
+        "devin+xhigh rejected",
+        raises(lambda: resolve("devin", "deep", effort="xhigh")),
+    )
+    expect(
+        "opencode+xhigh rejected",
+        raises(lambda: resolve("opencode", "deep", effort="xhigh")),
     )
     _xhigh_msg = ""
     try:
