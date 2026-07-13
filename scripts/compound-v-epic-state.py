@@ -51,7 +51,10 @@ nonzero, no write); a negative/non-numeric cap is rejected at --init:
   --can-retry --feature F -> {"can_retry","attempts","cap"}                  (read-only)
   --record-disposition --feature F --disposition retry_fix|halt_feature|halt_epic|
     blocked_external [--reason R] [--families-agreeing a,b] [--confirmed true|false]
-    -> {"feature","disposition"}   (atomic write; --confirmed true is HARD-REJECTED in v2.10)
+    -> {"feature","disposition"}   (atomic write; --confirmed true is HARD-REJECTED in v2.10;
+    the stored disposition is stamped with the feature's CURRENT attempts count and is only
+    ever honored by `--next --autonomous` while that attempt is still current — a stale
+    disposition left over from a prior attempt is treated as no disposition at all)
   --update --status blocked --feature F [--blocker-reason R] [--blocker-confirmed true|false]
     [--families-agreeing a,b] [--evidence E]
     -> ledger append/REACTIVATE, idempotent by (feature, attempt), exactly one active entry
@@ -80,6 +83,12 @@ nonzero, no write); a negative/non-numeric cap is rejected at --init:
   --clear-disposition --feature F -> {"feature","disposition":null} (atomic write). Clears
     a feature's stored disposition (the override for a sticky halt_epic/halt_feature verdict)
     so `next_feature_autonomous` no longer short-circuits on it.
+  --record-audit-failed --feature F [--last-error "..."] -> {"feature","status",
+    "sample_audit_due","final_review","epic_status"}   (ONE atomic write; marathon-only) —
+    reverts a done feature's sample-audit-ISSUES verdict in a single state write: status ->
+    failed, sample_audit_due -> false, optional last_error, and a passed final_review ->
+    pending. Replaces the driver's old two-write clear-due-then-mark-failed sequence, whose
+    crash window between writes could leave a feature 'done' with no audit obligation.
 
 Usage:
   compound-v-epic-state.py --init --features features.json --epic-id E --title T --out S
@@ -544,6 +553,16 @@ def next_feature_autonomous(state):
         silently treated as settled. It halts ALL routing (not just its own dependents) with
         a dedicated "needs_arbitration" reason, so the driver re-runs the arbiter on resume
         instead of quietly handing out unrelated independent work over an untriaged failure.
+
+    FIX A (attempt-binding, v2.10 correctness follow-up): a stored disposition is honored
+    ONLY when `disposition.attempt == feature.attempts` — i.e. it was recorded for the
+    feature's CURRENT (still-failed) attempt, not a prior one. A disposition recorded at a
+    STALE attempt (the retry re-ran and failed again, or attempts otherwise advanced, without
+    a fresh arbiter verdict) is treated exactly like NO disposition at all — the same
+    needs_arbitration halt-all-routing path above. This applies uniformly to retry_fix,
+    halt_feature, halt_epic, and blocked_external: a stale verdict of ANY kind is not honored
+    — re-arbitrate, which is always safe. A legacy disposition with no stored `attempt` key
+    (pre-FIX-A data) is treated as attempt 0.
     """
     feats = [f for f in state.get("features", []) if isinstance(f, dict)]
     ids = {f.get("id") for f in feats}
@@ -563,7 +582,15 @@ def next_feature_autonomous(state):
         fid = f.get("id")
         disp = f.get("disposition")
         disp_kind = disp.get("disposition") if isinstance(disp, dict) else None
-        if disp_kind == "retry_fix":
+        # FIX A: a disposition only counts if it was recorded for the feature's CURRENT
+        # attempt (legacy dispositions with no stored "attempt" key are treated as attempt 0).
+        # A kind/attempt mismatch (no disposition at all, or a stale one from a prior attempt)
+        # is treated identically — the crash-in-arbitration needs_arbitration path below.
+        disp_attempt_matches = (isinstance(disp, dict)
+                                and disp.get("attempt", 0) == f.get("attempts", 0))
+        if disp_kind is None or not disp_attempt_matches:
+            needs_arb_ids.append(fid)
+        elif disp_kind == "retry_fix":
             info = can_retry_info(state, fid)
             if info and info.get("can_retry"):
                 retry_runnable.append(f)
@@ -575,9 +602,7 @@ def next_feature_autonomous(state):
             # than falling through to needs_arbitration.
             abandoned_ids.append(fid)
         elif disp_kind == "halt_epic":
-            pass  # handled by the unconditional halt_epic check below
-        else:
-            needs_arb_ids.append(fid)
+            pass  # handled by the unconditional (also attempt-gated) halt_epic check below
     retry_runnable.sort(key=lambda rf: rf.get("id") or "")
     abandoned_ids = sorted(abandoned_ids)
     needs_arb_ids = sorted(needs_arb_ids)
@@ -603,9 +628,14 @@ def next_feature_autonomous(state):
     # Whole-epic halt: an explicit breaker trip already recorded, or a halt_epic verdict.
     if state.get("status") == "blocked_needing_human":
         return None, "blocked_needing_human: epic halted (breaker tripped or halt_epic)", blocked_by
+    # FIX A: also attempt-gated — a halt_epic disposition recorded at a since-superseded
+    # attempt is stale and must not keep halting the whole epic (the cd1/clear-disposition
+    # selftest below covers the common case: a feature that never re-ran keeps attempts at
+    # its record-time value, so its halt_epic disposition still matches and still halts).
     halt_epic_ids = sorted(f["id"] for f in feats
                             if isinstance(f.get("disposition"), dict)
-                            and f["disposition"].get("disposition") == "halt_epic")
+                            and f["disposition"].get("disposition") == "halt_epic"
+                            and f["disposition"].get("attempt", 0) == f.get("attempts", 0))
     if halt_epic_ids:
         return None, ("blocked_needing_human: halt_epic disposition on %s"
                       % ", ".join(halt_epic_ids)), blocked_by
@@ -918,7 +948,14 @@ def record_disposition(state, feature_id, disposition, reason=None,
                         families_agreeing=None, confirmed=False, now_dt=None):
     """Store the arbiter's verdict on a feature (A4). `confirmed=True` is HARD-REJECTED in
     v2.10 (Sol-R4#2) — confirmation of a blocked_external verdict is derived from >=2 stored
-    known-family ballots elsewhere (Unit B), never asserted by the caller of this CLI."""
+    known-family ballots elsewhere (Unit B), never asserted by the caller of this CLI.
+
+    FIX A (attempt-binding, v2.10 correctness follow-up): the disposition is stamped with
+    `attempt` = the feature's CURRENT `attempts` count at record time. `next_feature_autonomous`
+    only honors a stored disposition when it was recorded for the feature's still-current
+    attempt — this is what stops a stale `retry_fix` (approved for a prior, already-retried
+    attempt) from being silently re-honored as an unapproved second retry after the retry
+    re-runs, fails again, and crashes before a fresh arbitration."""
     if disposition not in ("retry_fix", "halt_feature", "halt_epic", "blocked_external"):
         return False, "invalid --disposition %r" % (disposition,)
     if confirmed:
@@ -930,6 +967,7 @@ def record_disposition(state, feature_id, disposition, reason=None,
     now_dt = now_dt or datetime.now(timezone.utc)
     hit["disposition"] = {
         "disposition": disposition,
+        "attempt": hit.get("attempts", 0),
         "confirmed": False,
         "reason": reason or "",
         "families_agreeing": list(families_agreeing or []),
@@ -1241,6 +1279,49 @@ def clear_sample_audit_due(state, feature_id):
     return True, None
 
 
+def record_audit_failed(state, feature_id, last_error=None):
+    """FIX B (atomic audit-failed, v2.10 correctness follow-up): the driver's sample-audit-
+    ISSUES path used to be TWO separate CLI writes — clear_sample_audit_due(...) and a
+    separate --update --status failed — so a crash between them could leave a feature 'done'
+    with its sample_audit_due obligation already cleared, and `next_feature_autonomous` /
+    `record_final_review` / `_recompute_top_status` gate terminal completion ONLY on that
+    flag, not on the audit's actual verdict. A crash in that window silently loses the audit
+    finding: final_review could pass over a feature that never actually got fixed.
+
+    This performs every mutation of that sequence against ONE in-memory state object, so the
+    caller's single `_atomic_write_json` persists all of it in one write or none of it:
+      - feature.status -> "failed"
+      - feature.last_error (set iff `last_error` is supplied — same lifecycle as `apply_update`)
+      - feature.sample_audit_due -> False (the obligation this audit was discharging)
+      - a passed final_review is invalidated back to pending (same invariant `apply_update`
+        maintains: ANY real feature-state change invalidates a passed review)
+      - total_attempts / top-level status recomputed, exactly like every other mutator here
+
+    Deliberately does NOT touch `attempts` — reverting an audit-failed 'done' back to 'failed'
+    is not a new retry attempt (no ->running transition occurred), so incrementing attempts
+    here would over-count against max_attempts_per_feature for work that hasn't actually
+    re-run yet.
+
+    Marathon-only; an unknown feature is a controlled error. Returns (ok, error|None)."""
+    if not _is_marathon(state):
+        return False, "--record-audit-failed requires a marathon-stance epic"
+    hit = _find_feature(state, feature_id)
+    if hit is None:
+        return False, "no feature %r" % feature_id
+    prev_status = hit.get("status")
+    hit["status"] = "failed"
+    if last_error is not None:
+        hit["last_error"] = last_error
+    hit["sample_audit_due"] = False
+    if prev_status != "failed":
+        fr = state.get("final_review")
+        if isinstance(fr, dict) and fr.get("status") == "passed":
+            state["final_review"] = {"status": "pending"}
+    state["total_attempts"] = _total_attempts(state)  # recompute on every mutation (#9)
+    _recompute_top_status(state)
+    return True, None
+
+
 def validate_marathon_state(state):
     """Defensive integrity check for a LOADED marathon state (Codex review #10) — a legacy
     or hand-edited epic-state.json can carry corruption the builder would never produce.
@@ -1273,6 +1354,18 @@ def validate_marathon_state(state):
         if "sample_audit_due" in f and not isinstance(f.get("sample_audit_due"), bool):
             errs.append("feature %r has a malformed 'sample_audit_due' %r (want a bool or "
                         "absent)" % (f.get("id"), f.get("sample_audit_due")))
+        # FIX A: disposition is an object-or-null; when present its 'attempt' key is
+        # OPTIONAL (a legacy pre-FIX-A disposition with no 'attempt' key is accepted — treated
+        # as attempt 0 everywhere it's read, never a crash) but if present must be a
+        # non-negative int, exactly like a blocker_ledger entry's 'attempt' below.
+        disp = f.get("disposition")
+        if disp is not None:
+            if not isinstance(disp, dict):
+                errs.append("feature %r has a malformed 'disposition' %r (want an object or "
+                            "null)" % (f.get("id"), disp))
+            elif "attempt" in disp and not _is_nonneg_int(disp.get("attempt")):
+                errs.append("feature %r disposition has a malformed 'attempt' %r (want a "
+                            "non-negative int)" % (f.get("id"), disp.get("attempt")))
     npc = state.get("no_progress_cycles", 0)
     if not _is_nonneg_int(npc):
         errs.append("'no_progress_cycles' is malformed %r (want a non-negative int)" % (npc,))
@@ -1629,7 +1722,8 @@ def _selftest():
     st_f1 = build_state(fix1_feats, "e", "E", stance="marathon", caps={})
     st_f1["features"][0]["status"] = "failed"
     st_f1["features"][0]["attempts"] = 1  # < default cap (2) -> can_retry True
-    st_f1["features"][0]["disposition"] = {"disposition": "retry_fix"}
+    # FIX A: disposition.attempt must match the feature's current attempts to be honored.
+    st_f1["features"][0]["disposition"] = {"disposition": "retry_fix", "attempt": 1}
     f_f1, why_f1, blocked_by_f1 = next_feature_autonomous(st_f1)
     check("FIX1: retry_fix + can_retry -> the failed feature itself is runnable",
           f_f1 is not None and f_f1["id"] == "x" and why_f1 == "runnable")
@@ -1639,7 +1733,8 @@ def _selftest():
     st_f2 = build_state(fix1_feats, "e", "E", stance="marathon", caps={})
     st_f2["features"][0]["status"] = "failed"
     st_f2["features"][0]["attempts"] = 2  # == default cap (2) -> can_retry False
-    st_f2["features"][0]["disposition"] = {"disposition": "retry_fix"}
+    # FIX A: disposition.attempt must match the feature's current attempts to be honored.
+    st_f2["features"][0]["disposition"] = {"disposition": "retry_fix", "attempt": 2}
     f_f2, why_f2, blocked_by_f2 = next_feature_autonomous(st_f2)
     check("FIX1: retry_fix + cap exhausted -> abandoned, independent y still runnable",
           f_f2 is not None and f_f2["id"] == "y")
@@ -1663,6 +1758,65 @@ def _selftest():
           f_f4 is None and why_f4.startswith("needs_arbitration"))
     check("FIX1: needs_arbitration names the untriaged feature",
           "feature x failed without a recorded disposition" in why_f4)
+
+    # --- FIX A (attempt-binding, v2.10 correctness follow-up): a stored disposition is
+    # honored ONLY for the attempt it was recorded against; a stale disposition left over
+    # from a prior (already-retried) attempt is treated as no disposition at all --------
+    _T_FA = _parse_iso("2026-01-01T00:00:00+00:00")
+
+    fa_feats = [{"id": "a", "depends_on": []}]
+    st_fa1 = build_state(fa_feats, "e", "E", stance="marathon", caps={"max_attempts_per_feature": 5})
+    apply_update(st_fa1, "a", "running", now_dt=_T_FA)  # attempts -> 1
+    apply_update(st_fa1, "a", "failed", now_dt=_T_FA)
+    ok_fa1, _ = record_disposition(st_fa1, "a", "retry_fix", now_dt=_T_FA)  # attempt stamped = 1
+    check("FIX A: record_disposition stamps attempt = feature's current attempts",
+          ok_fa1 and st_fa1["features"][0]["disposition"]["attempt"] == 1)
+    f_fa1a, why_fa1a, _ = next_feature_autonomous(st_fa1)
+    check("FIX A: retry_fix recorded at the current attempt -> runnable",
+          f_fa1a is not None and f_fa1a["id"] == "a" and why_fa1a == "runnable")
+
+    # The driver re-runs the retry (attempts -> 2) and it fails AGAIN, crashing before a
+    # fresh arbitration — the disposition on disk is still stamped attempt=1, now stale.
+    apply_update(st_fa1, "a", "running", now_dt=_T_FA)  # attempts -> 2
+    apply_update(st_fa1, "a", "failed", now_dt=_T_FA)
+    f_fa1b, why_fa1b, _ = next_feature_autonomous(st_fa1)
+    check("FIX A: a stale retry_fix (attempt mismatch) after re-run -> needs_arbitration, "
+          "NOT a silently-honored second retry",
+          f_fa1b is None and why_fa1b.startswith("needs_arbitration"))
+    check("FIX A: needs_arbitration (stale disposition) names the untriaged feature",
+          "feature a failed without a recorded disposition" in why_fa1b)
+
+    fb_feats = [{"id": "a", "depends_on": []}, {"id": "b", "depends_on": []}]
+    st_fb = build_state(fb_feats, "e", "E", stance="marathon", caps={})
+    apply_update(st_fb, "a", "running", now_dt=_T_FA)  # attempts -> 1
+    apply_update(st_fb, "a", "failed", now_dt=_T_FA)
+    record_disposition(st_fb, "a", "halt_feature", now_dt=_T_FA)  # attempt stamped = 1
+    f_fb1, why_fb1, blocked_by_fb1 = next_feature_autonomous(st_fb)
+    check("FIX A: a matching halt_feature (attempt matches) -> abandoned, independent b runnable",
+          f_fb1 is not None and f_fb1["id"] == "b" and "running_with_failures" in why_fb1)
+
+    # Re-run + fail again WITHOUT a fresh disposition -> the recorded halt_feature is now stale.
+    apply_update(st_fb, "a", "running", now_dt=_T_FA)  # attempts -> 2
+    apply_update(st_fb, "a", "failed", now_dt=_T_FA)
+    f_fb2, why_fb2, _ = next_feature_autonomous(st_fb)
+    check("FIX A: an attempt-mismatch halt_feature -> needs_arbitration (stale verdict, "
+          "re-arbitrate), NOT a silent abandon",
+          f_fb2 is None and why_fb2.startswith("needs_arbitration"))
+
+    # --- FIX A: validate_marathon_state accepts a legacy disposition with no 'attempt' key
+    # (treated as attempt 0) but flags a malformed one --------------------------------------
+    st_fa_legacy = build_state(fa_feats, "e", "E", stance="marathon", caps={})
+    st_fa_legacy["features"][0]["disposition"] = {"disposition": "halt_feature"}  # no attempt key
+    check("FIX A: validate_marathon_state accepts a legacy disposition with no 'attempt' key",
+          validate_marathon_state(st_fa_legacy) == [])
+    st_fa_bad = build_state(fa_feats, "e", "E", stance="marathon", caps={})
+    st_fa_bad["features"][0]["disposition"] = {"disposition": "halt_feature", "attempt": -1}
+    check("FIX A: validate_marathon_state flags a malformed (negative) disposition.attempt",
+          validate_marathon_state(st_fa_bad) != [])
+    st_fa_bad2 = build_state(fa_feats, "e", "E", stance="marathon", caps={})
+    st_fa_bad2["features"][0]["disposition"] = "not-an-object"
+    check("FIX A: validate_marathon_state flags a non-object disposition",
+          validate_marathon_state(st_fa_bad2) != [])
 
     # --- A3: attempts + --can-retry + transition table -----------------------------------
     feats3 = [{"id": "a", "depends_on": []}]
@@ -1847,6 +2001,55 @@ def _selftest():
     bad_sa["features"][0]["sample_audit_due"] = "yes"
     check("FIX2: a non-bool sample_audit_due -> validation error",
           validate_marathon_state(bad_sa) != [])
+
+    # --- FIX B (atomic audit-failed, v2.10 correctness follow-up): --record-audit-failed
+    # reverts a done+due feature to failed, clears sample_audit_due, and invalidates a
+    # passed final_review, all in ONE state mutation — the driver's old two-write
+    # clear-due-then-mark-failed sequence had a crash window between the two writes that
+    # could leave a feature 'done' with no audit obligation at all. -----------------------
+    feats_raf = [{"id": "a", "depends_on": []}]
+    st_raf = build_state(feats_raf, "e", "E", stance="marathon", caps={})
+    apply_update(st_raf, "a", "running")
+    apply_update(st_raf, "a", "done")
+    mark_sample_audit_due(st_raf, "a")
+    record_final_review(st_raf, "passed")  # rejected (sample_audit_due) — stays pending
+    ok_raf, err_raf = record_audit_failed(st_raf, "a", last_error="sample audit found a regression")
+    check("FIX B: record_audit_failed ok", ok_raf and err_raf is None)
+    check("FIX B: single write yields status=failed", st_raf["features"][0]["status"] == "failed")
+    check("FIX B: single write yields sample_audit_due=False (never done-without-due)",
+          st_raf["features"][0]["sample_audit_due"] is False)
+    check("FIX B: last_error persisted", st_raf["features"][0]["last_error"]
+          == "sample audit found a regression")
+    check("FIX B: final_review is not 'passed' after the atomic revert",
+          st_raf["final_review"]["status"] != "passed")
+    check("FIX B: top-level status is not 'done'", st_raf["status"] != "done")
+    # No intermediate 'done-without-due' state was ever observable: this is the SAME state
+    # object that would be serialized in one _atomic_write_json call by the CLI, so there is
+    # only ever one post-write state to inspect (simulating "no crash window").
+    check("FIX B: never observes done-without-due (single atomic write, no split state)",
+          not (st_raf["features"][0]["status"] == "done"
+               and not st_raf["features"][0]["sample_audit_due"]))
+
+    # A feature that passed its audit cleanly (never marked done here, so its final_review is
+    # untouched pending) still gets reverted correctly when audit-failed is recorded directly
+    # from 'running' too (not just from 'done') — attempts are NOT bumped by this call.
+    st_raf2 = build_state(feats_raf, "e", "E", stance="marathon", caps={})
+    apply_update(st_raf2, "a", "running")
+    prior_attempts = st_raf2["features"][0]["attempts"]
+    ok_raf2, _ = record_audit_failed(st_raf2, "a")
+    check("FIX B: record_audit_failed does not touch attempts (not a new retry)",
+          ok_raf2 and st_raf2["features"][0]["attempts"] == prior_attempts)
+    check("FIX B: last_error left untouched when --last-error is not supplied",
+          st_raf2["features"][0]["last_error"] is None)
+
+    ok_raf_unk, err_raf_unk = record_audit_failed(st_raf, "does-not-exist")
+    check("FIX B: record_audit_failed on unknown feature -> controlled error",
+          ok_raf_unk is False and "no feature" in err_raf_unk)
+
+    st_raf_chk = build_state(feats_raf, "e", "E")  # checkpoint (non-marathon)
+    ok_raf_chk, err_raf_chk = record_audit_failed(st_raf_chk, "a")
+    check("FIX B: record_audit_failed on a checkpoint state -> controlled error",
+          ok_raf_chk is False and "marathon" in err_raf_chk)
 
     # --- A7: global breakers ------------------------------------------------------------------
     feats7 = [{"id": "a", "depends_on": []}, {"id": "b", "depends_on": []}]
@@ -2489,6 +2692,11 @@ def main(argv):
     p.add_argument("--clear-sample-audit-due", action="store_true",
                    help="(marathon) clear --feature F's sample-audit obligation once the "
                         "audit has passed")
+    p.add_argument("--record-audit-failed", action="store_true",
+                   help="(marathon) ONE atomic write: revert --feature F from done to failed, "
+                        "clear its sample_audit_due obligation, optionally set --last-error, "
+                        "and invalidate a passed final_review back to pending — the fix for a "
+                        "crash between the driver's separate clear-due/mark-failed writes")
     args = p.parse_args(argv)
 
     if args.selftest:
@@ -2691,6 +2899,23 @@ def main(argv):
         print(json.dumps({"feature": args.feature, "sample_audit_due": False}))
         return 0
 
+    if args.record_audit_failed:
+        if not _needs_marathon("--record-audit-failed"):
+            return 1
+        if not args.feature:
+            p.error("--record-audit-failed needs --feature")
+        ok, err = record_audit_failed(state, args.feature, last_error=args.last_error)
+        if not ok:
+            print("epic-audit-failed error: %s" % err, file=sys.stderr)
+            return 1
+        _atomic_write_json(args.state, state)
+        hit = _find_feature(state, args.feature)
+        print(json.dumps({"feature": args.feature, "status": hit["status"],
+                          "sample_audit_due": hit.get("sample_audit_due"),
+                          "final_review": state.get("final_review"),
+                          "epic_status": state["status"]}))
+        return 0
+
     if args.record_progress_cycle:
         if not _needs_marathon("--record-progress-cycle"):
             return 1
@@ -2796,8 +3021,8 @@ def main(argv):
     p.error("one of --init / --next / --update / --summary / --stats / --check-specs / "
            "--lint / --can-retry / --breaker-check / --trip-breaker / --clear-breaker / "
            "--record-progress-cycle / --record-disposition / --clear-disposition / "
-           "--mark-sample-audit-due / --clear-sample-audit-due / --record-final-review / "
-           "--selftest is required")
+           "--mark-sample-audit-due / --clear-sample-audit-due / --record-audit-failed / "
+           "--record-final-review / --selftest is required")
 
 
 if __name__ == "__main__":
