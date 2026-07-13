@@ -18,6 +18,13 @@ Design contract (v2.12 usage & advisor, anti-ruflo charter):
     unparseable — or the backend emits no machine-readable usage at all
     (agy/antigravity, claude Task subagent, devin) — emit measured:false
     with null token counts. A null is honest; a made-up number is not.
+  - A usage event contributes to the measured sum ONLY when BOTH required
+    token fields are present AND are non-negative JSON INTEGERS. A malformed
+    or incomplete usage event (empty `{}`, only one side present, string /
+    float / bool / negative value) contributes NOTHING — it is never
+    substituted with a zero. If no valid usage event is found, the token
+    counts stay null and measured stays false. A genuine well-formed 0 from a
+    real event is fine; an empty/absent usage object is NOT a real zero.
   - Non-JSON lines and error/deprecation event items are SKIPPED, never fatal.
   - `advisor_calls` is NOT extracted here. It is worker-COUNTED by the advisor
     executor (times it actually consulted the advisor) and folded in elsewhere.
@@ -42,7 +49,7 @@ import json
 import os
 import sys
 import tempfile
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # Backends that expose no machine-readable per-job token usage. For these we
 # always emit measured:false + null tokens (never a fabricated number).
@@ -75,18 +82,18 @@ def _iter_json_lines(path: str) -> List[Any]:
     return objs
 
 
-def _as_int(val: Any) -> Optional[int]:
-    """Coerce a JSON number to int; return None for anything non-numeric.
+def _valid_int(val: Any) -> Optional[int]:
+    """Return `val` iff it is a non-negative JSON INTEGER, else None.
 
-    bool is a subclass of int in Python but is never a valid token count, so it
-    is rejected explicitly.
+    Anti-ruflo: a token count is trustworthy only when it is a real,
+    non-negative integer. bool is an int subclass but never a valid count;
+    strings, floats (including truncated/partial), and negatives are all
+    rejected. Rejected/absent values must never be coerced into a zero.
     """
     if isinstance(val, bool):
         return None
-    if isinstance(val, int):
+    if isinstance(val, int) and val >= 0:
         return val
-    if isinstance(val, float):
-        return int(val)
     return None
 
 
@@ -125,12 +132,15 @@ def _extract_codex(objs: List[Any], backend: str) -> Dict[str, Any]:
         usage = obj.get("usage")
         if not isinstance(usage, dict):
             continue
-        i = _as_int(usage.get("input_tokens"))
-        o = _as_int(usage.get("output_tokens"))
-        # A turn.completed with a usage block counts as a measurement even if one
-        # side happens to be absent (treated as 0 for the sum).
-        total_in += i if i is not None else 0
-        total_out += o if o is not None else 0
+        i = _valid_int(usage.get("input_tokens"))
+        o = _valid_int(usage.get("output_tokens"))
+        # Contribute ONLY when BOTH sides are valid non-negative integers. A
+        # malformed/incomplete usage block (empty, one side missing, non-int,
+        # negative) contributes nothing — never a fabricated zero.
+        if i is None or o is None:
+            continue
+        total_in += i
+        total_out += o
         saw = True
     if not saw:
         return _unmeasured(backend)
@@ -151,10 +161,13 @@ def _extract_opencode(objs: List[Any], backend: str) -> Dict[str, Any]:
         tokens = part.get("tokens")
         if not isinstance(tokens, dict):
             continue
-        i = _as_int(tokens.get("input"))
-        o = _as_int(tokens.get("output"))
-        total_in += i if i is not None else 0
-        total_out += o if o is not None else 0
+        i = _valid_int(tokens.get("input"))
+        o = _valid_int(tokens.get("output"))
+        # Both sides must be valid non-negative integers; else contribute nothing.
+        if i is None or o is None:
+            continue
+        total_in += i
+        total_out += o
         saw = True
     if not saw:
         return _unmeasured(backend)
@@ -162,20 +175,26 @@ def _extract_opencode(objs: List[Any], backend: str) -> Dict[str, Any]:
 
 
 def _extract_cursor(objs: List[Any], backend: str) -> Dict[str, Any]:
-    """The FINAL type=="result" line's .usage.inputTokens / .outputTokens."""
-    last_usage = None  # type: Optional[Dict[str, Any]]
+    """The FINAL type=="result" line with a VALID .usage.inputTokens/outputTokens.
+
+    A result whose usage is malformed/incomplete (missing side, non-int,
+    negative) contributes nothing; we fall back to the last result that had
+    both sides valid. If none qualifies, honest unmeasured.
+    """
+    last_pair = None  # type: Optional[Tuple[int, int]]
     for obj in objs:
         if isinstance(obj, dict) and obj.get("type") == "result":
             usage = obj.get("usage")
-            if isinstance(usage, dict):
-                last_usage = usage
-    if last_usage is None:
+            if not isinstance(usage, dict):
+                continue
+            i = _valid_int(usage.get("inputTokens"))
+            o = _valid_int(usage.get("outputTokens"))
+            if i is None or o is None:
+                continue
+            last_pair = (i, o)
+    if last_pair is None:
         return _unmeasured(backend)
-    i = _as_int(last_usage.get("inputTokens"))
-    o = _as_int(last_usage.get("outputTokens"))
-    if i is None and o is None:
-        return _unmeasured(backend)
-    return _measured(backend, i if i is not None else 0, o if o is not None else 0)
+    return _measured(backend, last_pair[0], last_pair[1])
 
 
 def extract_usage(backend: str, events_log: Optional[str]) -> Dict[str, Any]:
@@ -296,6 +315,63 @@ def _selftest() -> int:
         os.remove(p)
     check("cursor.garbage.measured", u["measured"], False)
     check("cursor.garbage.output_tokens", u["output_tokens"], None)
+
+    # --- FIX 1: malformed / incomplete usage must NEVER become a measured 0 ---
+    # Each of these events is the ONLY relevant event in its log, so a correct
+    # extractor yields measured:false + null tokens (not measured:true + 0).
+    malformed_cases = [
+        # (backend, line, label)
+        ("codex", '{"type":"turn.completed","usage":{}}', "codex.empty_usage"),
+        ("codex", '{"type":"turn.completed","usage":{"input_tokens":"100","output_tokens":"40"}}', "codex.string_tokens"),
+        ("codex", '{"type":"turn.completed","usage":{"input_tokens":-5,"output_tokens":40}}', "codex.negative_tokens"),
+        ("codex", '{"type":"turn.completed","usage":{"input_tokens":12.5,"output_tokens":40.0}}', "codex.float_tokens"),
+        ("codex", '{"type":"turn.completed","usage":{"input_tokens":100}}', "codex.partial_input_only"),
+        ("codex", '{"type":"turn.completed","usage":{"output_tokens":40}}', "codex.partial_output_only"),
+        ("codex", '{"type":"turn.completed","usage":{"input_tokens":true,"output_tokens":false}}', "codex.bool_tokens"),
+        ("opencode", '{"type":"step_finish","part":{"tokens":{}}}', "opencode.empty_tokens"),
+        ("opencode", '{"type":"step_finish","part":{"tokens":{"input":"500","output":"120"}}}', "opencode.string_tokens"),
+        ("opencode", '{"type":"step_finish","part":{"tokens":{"input":-1,"output":120}}}', "opencode.negative_tokens"),
+        ("opencode", '{"type":"step_finish","part":{"tokens":{"input":5.5,"output":6.5}}}', "opencode.float_tokens"),
+        ("opencode", '{"type":"step_finish","part":{"tokens":{"input":500}}}', "opencode.partial_only"),
+        ("cursor", '{"type":"result","usage":{}}', "cursor.empty_usage"),
+        ("cursor", '{"type":"result","usage":{"inputTokens":"111","outputTokens":"22"}}', "cursor.string_tokens"),
+        ("cursor", '{"type":"result","usage":{"inputTokens":-3,"outputTokens":22}}', "cursor.negative_tokens"),
+        ("cursor", '{"type":"result","usage":{"inputTokens":1.5,"outputTokens":2.5}}', "cursor.float_tokens"),
+        ("cursor", '{"type":"result","usage":{"inputTokens":111}}', "cursor.partial_only"),
+    ]
+    for backend, line, label in malformed_cases:
+        p = _write_tmp([line])
+        try:
+            u = extract_usage(backend, p)
+        finally:
+            os.remove(p)
+        check("%s.measured" % label, u["measured"], False)
+        check("%s.input_tokens" % label, u["input_tokens"], None)
+        check("%s.output_tokens" % label, u["output_tokens"], None)
+
+    # --- FIX 1: a genuine well-formed 0 IS a real measurement (not fabricated) ---
+    p = _write_tmp(['{"type":"turn.completed","usage":{"input_tokens":0,"output_tokens":0}}'])
+    try:
+        u = extract_usage("codex", p)
+    finally:
+        os.remove(p)
+    check("codex.real_zero.measured", u["measured"], True)
+    check("codex.real_zero.input_tokens", u["input_tokens"], 0)
+    check("codex.real_zero.output_tokens", u["output_tokens"], 0)
+
+    # --- FIX 1: a malformed event must not poison a valid one in the same log ---
+    p = _write_tmp([
+        '{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":40}}',
+        '{"type":"turn.completed","usage":{"input_tokens":"bad"}}',
+        '{"type":"turn.completed","usage":{"input_tokens":200,"output_tokens":60}}',
+    ])
+    try:
+        u = extract_usage("codex", p)
+    finally:
+        os.remove(p)
+    check("codex.mixed.measured", u["measured"], True)
+    check("codex.mixed.input_tokens", u["input_tokens"], 300)
+    check("codex.mixed.output_tokens", u["output_tokens"], 100)
 
     if failures:
         sys.stdout.write("SELFTEST FAIL (%d):\n" % len(failures))

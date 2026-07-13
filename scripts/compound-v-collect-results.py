@@ -21,6 +21,14 @@ Design contract (PRD §4.2 #6, plan §3 / §4 Q6):
     be read, but its enforcement fields are IGNORED in favor of the scope verdict.
   - NO fabricated cost / token metrics. The schema has no cost field and this
     script never invents one (anti-ruflo charter, plan §7).
+  - `usage.advisor_calls` is SCRIPT-DERIVED (like the git-derived enforcement
+    fields), never worker-self-reported: it is the non-empty line count of the
+    conventional per-job advisor log `<run-dir>/logs/<job-id>.advisor.jsonl`
+    (appended one line per consult by compound-v-advisor-consult.sh). Present log
+    ⇒ set/overwrite advisor_calls to the count; absent/empty ⇒ leave it null
+    (fail-open, never fabricate). When the worker emitted no usage but a count was
+    derived, a minimal usage object {input_tokens:null, output_tokens:null,
+    advisor_calls:<count>, backend:<--backend>, measured:false} is synthesized.
 
 Inputs (all paths absolute or run-dir-relative):
 
@@ -132,6 +140,42 @@ def _union_preserve_order(primary: List[str], extra: List[str]) -> List[str]:
             seen.add(item)
             out.append(item)
     return out
+
+
+def _advisor_log_path(run_dir: Optional[str], job_id: str) -> Optional[str]:
+    """Conventional per-job advisor log: <run-dir>/logs/<job-id>.advisor.jsonl.
+
+    Mirrors the results/<id>.json convention the collector already uses to locate
+    output, so run-dir + job-id fully determine the log path. Returns None when no
+    run-dir is known (e.g. --out was given without --run-dir).
+    """
+    if not run_dir:
+        return None
+    return os.path.join(run_dir, "logs", "%s.advisor.jsonl" % job_id)
+
+
+def _count_advisor_calls(run_dir: Optional[str], job_id: str) -> Optional[int]:
+    """Script-DERIVED advisor-consult count from the per-job advisor JSONL log.
+
+    `compound-v-advisor-consult.sh` appends one JSON line per consult to
+    <run-dir>/logs/<job-id>.advisor.jsonl. We count its non-empty lines — an
+    honest, git/log-derived number (like the enforcement fields), never
+    self-reported by the worker. Fail-open: a missing/unreadable/empty log yields
+    None so advisor_calls stays null (never fabricate a count).
+    """
+    path = _advisor_log_path(run_dir, job_id)
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return None
+    count = 0
+    for line in lines:
+        if line.strip():
+            count += 1
+    return count if count > 0 else None
 
 
 def _coerce_summary(worker_text: str) -> str:
@@ -296,12 +340,32 @@ def build_result(args: argparse.Namespace) -> Dict[str, Any]:
     # OPTIONAL `usage` passthrough (informational / measured-only, worker-sourced
     # like `summary`). The usage object is extracted from the backend's own
     # structured events by compound-v-usage-extract.py and folded into the worker
-    # JSON. It is NOT enforcement data and NEVER fabricated here. Include the key
-    # ONLY when the worker actually provided a `usage` object; when absent, omit it
-    # entirely (usage is optional in the schema, so omission stays conformant).
+    # JSON. It is NOT enforcement data and NEVER fabricated here.
     worker_usage = wjson.get("usage")
-    if isinstance(worker_usage, dict):
-        result["usage"] = worker_usage
+    usage = dict(worker_usage) if isinstance(worker_usage, dict) else None
+
+    # advisor_calls is SCRIPT-DERIVED, never worker-self-reported: count the
+    # per-job advisor JSONL log (like the git-derived enforcement fields). When
+    # the log is present, overwrite/set advisor_calls to the derived count; when
+    # absent, leave it as the worker emitted (null). Fail-open on a missing log.
+    advisor_calls = _count_advisor_calls(args.run_dir, args.job_id)
+    if advisor_calls is not None:
+        if usage is None:
+            usage = {
+                "input_tokens": None,
+                "output_tokens": None,
+                "advisor_calls": advisor_calls,
+                "backend": args.backend or "",
+                "measured": False,
+            }
+        else:
+            usage["advisor_calls"] = advisor_calls
+
+    # Include `usage` ONLY when the worker provided one OR we derived advisor_calls;
+    # when neither, omit it entirely (usage is optional in the schema, so omission
+    # stays conformant).
+    if isinstance(usage, dict):
+        result["usage"] = usage
 
     return result
 
@@ -312,6 +376,61 @@ def build_result(args: argparse.Namespace) -> Dict[str, Any]:
 # additionalProperties:false, types, and the status enum. Not a general
 # JSON-Schema engine — just enough to catch a malformed result.
 # --------------------------------------------------------------------------
+_TYPE_MAP = {
+    "string": str,
+    "boolean": bool,
+    "integer": int,
+    "array": list,
+    "object": dict,
+}
+
+
+def _usage_conformance_errors(usage: Dict[str, Any],
+                              usage_schema: Dict[str, Any]) -> List[str]:
+    """TARGETED one-level check of the `usage` object against its sub-schema.
+
+    The top-level checker only tests that `usage` is an object, so a bogus payload
+    like {"bogus": 1} would slip through even though the real schema declares
+    additionalProperties:false and five typed fields. This validates JUST the usage
+    object (not a general recursive JSON-Schema engine): unknown keys are rejected,
+    input_tokens/output_tokens/advisor_calls must be int-or-null, backend a string,
+    measured a bool. Field types are read from the schema so they stay in sync.
+    """
+    errs = []  # type: List[str]
+    if not isinstance(usage_schema, dict):
+        return errs
+    uprops = usage_schema.get("properties", {})
+    uadditional = usage_schema.get("additionalProperties", True)
+
+    if uadditional is False:
+        for key in usage:
+            if key not in uprops:
+                errs.append(
+                    "usage has unexpected key (additionalProperties:false): %s" % key
+                )
+
+    for key, spec in uprops.items():
+        if key not in usage:
+            continue
+        want = spec.get("type")
+        val = usage[key]
+        want_list = want if isinstance(want, list) else ([want] if want else [])
+        if val is None:
+            if want_list and "null" not in want_list:
+                errs.append("usage key %s must be %s, got null"
+                            % (key, "/".join(want_list)))
+            continue
+        # bool is a subclass of int — reject a boolean for an int-only field.
+        if "integer" in want_list and "boolean" not in want_list and isinstance(val, bool):
+            errs.append("usage key %s must be integer, got boolean" % key)
+            continue
+        pytypes = tuple(_TYPE_MAP[t] for t in want_list if t in _TYPE_MAP)
+        if pytypes and not isinstance(val, pytypes):
+            errs.append("usage key %s must be %s, got %s"
+                        % (key, "/".join(want_list), type(val).__name__))
+    return errs
+
+
 def conformance_errors(result: Dict[str, Any], schema_path: str) -> List[str]:
     errs = []  # type: List[str]
     schema = _read_json(schema_path)
@@ -332,13 +451,7 @@ def conformance_errors(result: Dict[str, Any], schema_path: str) -> List[str]:
             if key not in props:
                 errs.append("unexpected key (additionalProperties:false): %s" % key)
 
-    type_map = {
-        "string": str,
-        "boolean": bool,
-        "integer": int,
-        "array": list,
-        "object": dict,
-    }
+    type_map = _TYPE_MAP
     for key, spec in props.items():
         if key not in result:
             continue
@@ -371,6 +484,12 @@ def conformance_errors(result: Dict[str, Any], schema_path: str) -> List[str]:
         enum = spec.get("enum")
         if enum is not None and val not in enum:
             errs.append("key %s value %r not in enum %s" % (key, val, enum))
+
+    # Deep-validate the `usage` object against its sub-schema. The top-level loop
+    # only confirms usage is an object; without this a schema-INVALID usage payload
+    # (unknown keys, wrong field types) would pass conformance.
+    if isinstance(result.get("usage"), dict):
+        errs.extend(_usage_conformance_errors(result["usage"], props.get("usage", {})))
     return errs
 
 
@@ -402,6 +521,9 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
                    help="Backend-failure class (from compound-v-classify-failure.py); omit on success")
     p.add_argument("--retry-after-seconds", type=int, default=0,
                    help="Seconds-until-retry from the provider, 0 if unknown")
+    p.add_argument("--backend",
+                   help="Job backend name (codex|opencode|cursor|agy|antigravity|claude|devin); "
+                        "labels a usage object synthesized purely from a derived advisor_calls count")
     p.add_argument("--files-changed", help="Comma-separated files_changed")
     p.add_argument("--violations", help="Comma-separated violations")
     blocked_grp = p.add_mutually_exclusive_group()
