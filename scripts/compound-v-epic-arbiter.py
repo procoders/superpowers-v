@@ -41,6 +41,22 @@ trusted, symlink-free, count+byte-bounded audit directory.
     Prints {disposition, confirmed:false, reason, evidence, ballots, families_present,
     families_agreeing, attempt, audit_path, ...}.
 
+  --resume-challenge --state S --feature F --attempt N [--now T]
+    A READ-ONLY, idempotent lookup of the persisted challenge/result for
+    (epic_id, feature, attempt). Fixes the --prepare resume DEADLOCK: if arbitration crashes
+    after --classify began, --prepare refuses to re-issue an in_progress/consumed challenge,
+    so a driver that always restarts a crashed arbitration from --prepare has no way back in.
+    This command lets the driver recover WITHOUT a second model egress and without that
+    deadlock. Never issues a challenge, never calls Codex/Claude. Prints exactly one of:
+      {"state": "absent"}                                 -- nothing issued; --prepare fresh
+      {"state": "in_progress", "challenge_id", "prompt"}   -- re-dispatch on `prompt`, then
+                                                                --classify (safe/idempotent —
+                                                                the challenge binding makes it so)
+      {"state": "consumed", "challenge_id", "result"}      -- the frozen persisted result,
+                                                                RE-EMITTED verbatim, no new call
+    A tampered/oversized/symlinked/inconsistent persisted record is refused with a controlled
+    ArbiterError (fail closed), never a fabricated resume state.
+
   --selftest
 
 Python 3.9-safe, stdlib only. No fabricated cost/token metrics. Requires a POSIX platform
@@ -1401,6 +1417,102 @@ def cmd_classify(args, p):
         os.close(arbiter_fd)
 
 
+# --------------------------------------------------------------------------------------- #
+# CLI: resume-challenge (idempotent, read-only crash-recovery lookup)
+# --------------------------------------------------------------------------------------- #
+
+def cmd_resume_challenge(args, p):
+    """Read-only, idempotent lookup of the persisted challenge/result for
+    (epic_id, feature, attempt). Fixes the --prepare resume DEADLOCK: --prepare refuses to
+    re-issue an in_progress/consumed challenge, so a driver that always restarts a crashed
+    arbitration from --prepare has no way back in once --classify has begun. This command
+    lets the driver ask "what actually happened?" first, with NO side effect other than the
+    ordinary idempotent lazy-create of the per-epic challenge key (unreachable here unless a
+    real record already exists, since --prepare always creates that key before it ever
+    writes a record) -- it never issues a challenge and never calls Codex/Claude.
+
+    Returns exactly one of:
+      {"state": "absent"}                                 -- nothing issued; --prepare fresh
+      {"state": "in_progress", "challenge_id", "prompt"}   -- re-dispatch on `prompt`, --classify
+      {"state": "consumed", "challenge_id", "result"}      -- the frozen persisted result, as-is
+
+    Uses the SAME containment as --prepare/--classify: the validated trusted-root epic dir,
+    id checks, O_NOFOLLOW dir_fd reads, and size-capped record probes (Finding 5/6)."""
+    if not args.feature:
+        p.error("--resume-challenge needs --feature")
+    if args.attempt is None:
+        p.error("--resume-challenge needs --attempt <int>")
+    if isinstance(args.attempt, bool) or not isinstance(args.attempt, int) or args.attempt < 0:
+        raise ArbiterError("--attempt must be a non-negative integer")
+    state = _read_state(args.state)
+    epic_id = state["epic_id"]
+    if not _id_ok(args.feature):
+        raise ArbiterError("invalid --feature id: %r" % (args.feature,))
+    if _find_feature(state, args.feature) is None:
+        raise ArbiterError("no feature %r in state" % args.feature)
+
+    epic_dir = validate_epic_dir(args.state, epic_id)
+    challenge_name = "%s-%s.challenge.json" % (args.feature, args.attempt)
+    audit_name = "%s-%s.json" % (args.feature, args.attempt)
+
+    try:
+        arbiter_fd = open_arbiter_dir_fd(epic_dir, create=False)
+    except OSError:
+        # No arbiter dir at all -> nothing has EVER been issued for this epic -- absent, with
+        # no directory-creation side effect (create=False).
+        print(json.dumps({"state": "absent"}))
+        return 0
+
+    try:
+        rstatus, record = _probe_record(arbiter_fd, challenge_name, CHALLENGE_RECORD_MAX_BYTES)
+        if rstatus == "absent":
+            print(json.dumps({"state": "absent"}))
+            return 0
+        if rstatus == "unreadable":
+            raise ArbiterError("challenge record for %s attempt %s is unreadable/oversized/"
+                               "symlinked -- refusing to resume from a tampered record "
+                               "(fail closed)" % (args.feature, args.attempt))
+
+        # Finding 4 (same idiom as --classify): only trust a record whose tuple -- including
+        # the KEYED challenge_id -- is internally consistent. A tampered record is refused,
+        # never silently trusted into a fabricated resume state.
+        key = get_challenge_key(arbiter_fd, injected=args.challenge_key)
+        expected = compute_challenge_id(key, epic_id, args.feature, args.attempt)
+        tuple_ok = (record.get("challenge_id") == expected
+                    and record.get("epic_id") == epic_id
+                    and record.get("feature") == args.feature
+                    and record.get("attempt") == args.attempt)
+        if not tuple_ok:
+            raise ArbiterError("challenge record for %s attempt %s has an inconsistent tuple "
+                               "-- refusing to resume from a tampered record (fail closed)"
+                               % (args.feature, args.attempt))
+
+        status = record.get("status")
+        if status in ("issued", "in_progress"):
+            # Both map to the SAME reported state: no result exists yet, so the driver must
+            # re-dispatch the Claude Task on this exact prompt and re-`--classify`. That is
+            # always safe/idempotent -- the challenge binding is what makes it so, and
+            # --classify's own crash-recovery fall-through (no audit yet) or re-emit
+            # (audit already written) handles either sub-case.
+            print(json.dumps({"state": "in_progress", "challenge_id": expected,
+                              "prompt": record.get("claude_prompt", "")}))
+            return 0
+        if status == "consumed":
+            # The verdict was already reached; RE-EMIT it verbatim -- no new Codex/Claude call.
+            astatus, audit = _probe_record(arbiter_fd, audit_name, AUDIT_MAX_ONE_BYTES)
+            if astatus != "ok" or not _audit_tuple_matches(audit, epic_id, args.feature,
+                                                            args.attempt, expected):
+                raise ArbiterError("challenge for %s attempt %s is consumed but its persisted "
+                                   "audit is missing/inconsistent -- refusing to resume (fail "
+                                   "closed)" % (args.feature, args.attempt))
+            print(json.dumps({"state": "consumed", "challenge_id": expected, "result": audit}))
+            return 0
+        raise ArbiterError("challenge record for %s attempt %s has an unexpected status %r"
+                           % (args.feature, args.attempt, status))
+    finally:
+        os.close(arbiter_fd)
+
+
 def _contained_audit_path(epic_dir, audit_name):
     """The absolute audit path, asserted realpath-contained under <epic_dir>/arbiter/.
     epic_dir is a realpath and the arbiter dir fd was opened O_NOFOLLOW, so this is a
@@ -2237,6 +2349,196 @@ def _selftest():
     finally:
         shutil.rmtree(r33, ignore_errors=True)
 
+    # =================================================================================== #
+    # C1 — --resume-challenge: idempotent read-only crash-recovery lookup (v2.10 fix)
+    # =================================================================================== #
+
+    # C1a — absent: no arbiter dir / no record at all -> {"state": "absent"}.
+    c1a = _tempfile.mkdtemp()
+    try:
+        epic_dir, state_path, state = _make_epic(c1a, attempts=1)
+        res, e, rc = run_cmd(cmd_resume_challenge,
+                             _args(state=state_path, feature="featA", attempt=1))
+        check("C1a: absent (no arbiter dir yet) -> {'state':'absent'}",
+              rc == 0 and res == {"state": "absent"})
+        # Also absent when the arbiter dir exists (from an unrelated prior attempt) but this
+        # exact (feature, attempt) record was never issued.
+        run_cmd(cmd_prepare, _args(state=state_path, feature="featA", attempt=1))
+        res_other, _, rc_other = run_cmd(cmd_resume_challenge,
+                                         _args(state=state_path, feature="featA", attempt=99))
+        check("C1a: absent for an unissued attempt even once the arbiter dir exists",
+              rc_other == 0 and res_other == {"state": "absent"})
+    finally:
+        shutil.rmtree(c1a, ignore_errors=True)
+
+    # C1b — issued -> reported "in_progress" with the SAME prompt --prepare issued.
+    c1b = _tempfile.mkdtemp()
+    try:
+        epic_dir, state_path, state = _make_epic(c1b, attempts=1)
+        out, _, _ = run_cmd(cmd_prepare, _args(state=state_path, feature="featA", attempt=1))
+        res, e, rc = run_cmd(cmd_resume_challenge,
+                             _args(state=state_path, feature="featA", attempt=1))
+        check("C1b: issued challenge -> state in_progress", rc == 0 and res["state"] == "in_progress")
+        check("C1b: in_progress carries the SAME challenge_id", res["challenge_id"] == out["challenge_id"])
+        check("C1b: in_progress carries the SAME prompt --prepare issued", res["prompt"] == out["prompt"])
+    finally:
+        shutil.rmtree(c1b, ignore_errors=True)
+
+    # C1c — a durably in_progress record (classify claimed it, crashed before an audit) also
+    # reports "in_progress" (the driver re-dispatches and re-classifies; --classify already
+    # handles that fall-through safely).
+    c1c = _tempfile.mkdtemp()
+    try:
+        epic_dir, state_path, state = _make_epic(c1c, attempts=1)
+        out, _, _ = run_cmd(cmd_prepare, _args(state=state_path, feature="featA", attempt=1))
+        arbiter_fd = open_arbiter_dir_fd(epic_dir, create=False)
+        try:
+            rec = _read_json_at(arbiter_fd, "featA-1.challenge.json", CHALLENGE_RECORD_MAX_BYTES)
+            rec["status"] = "in_progress"
+            _write_json_at(arbiter_fd, "featA-1.challenge.json", rec)
+        finally:
+            os.close(arbiter_fd)
+        res, _, rc = run_cmd(cmd_resume_challenge,
+                             _args(state=state_path, feature="featA", attempt=1))
+        check("C1c: in_progress-with-no-audit-yet -> state in_progress",
+              rc == 0 and res["state"] == "in_progress" and res["challenge_id"] == out["challenge_id"])
+    finally:
+        shutil.rmtree(c1c, ignore_errors=True)
+
+    # C1d — consumed -> re-emits the FROZEN persisted result verbatim, with ZERO model calls
+    # (asserted via monkeypatching poll_codex to fail loudly if ever invoked).
+    c1d = _tempfile.mkdtemp()
+    try:
+        epic_dir, state_path, state = _make_epic(c1d, attempts=1)
+        out, _, _ = run_cmd(cmd_prepare, _args(state=state_path, feature="featA", attempt=1))
+        cid = out["challenge_id"]
+        ballot = os.path.join(c1d, "b.json")
+        with open(ballot, "w") as fh:
+            json.dump({"epic_id": "epic1", "feature": "featA", "attempt": 1,
+                       "challenge_id": cid, "disposition": "retry_fix", "reason": "flaky"}, fh)
+        classified, _, _ = run_cmd(cmd_classify, _args(state=state_path, feature="featA",
+                                                       challenge=cid, claude_ballot=ballot))
+        with open(classified["audit_path"]) as fh:
+            persisted = json.load(fh)
+
+        module_ns = globals()
+        _orig_poll_codex = module_ns["poll_codex"]
+        _poll_called = {"v": False}
+
+        def _boom_poll_codex(*a, **kw):
+            _poll_called["v"] = True
+            raise AssertionError("poll_codex must NEVER be called by --resume-challenge")
+
+        module_ns["poll_codex"] = _boom_poll_codex
+        try:
+            res, e, rc = run_cmd(cmd_resume_challenge,
+                                 _args(state=state_path, feature="featA", attempt=1))
+        finally:
+            module_ns["poll_codex"] = _orig_poll_codex
+
+        check("C1d: consumed -> state consumed, no crash", rc == 0 and res is not None
+              and res["state"] == "consumed")
+        check("C1d: consumed carries the SAME challenge_id", res is not None and res["challenge_id"] == cid)
+        check("C1d: ZERO model calls on a consumed resume", _poll_called["v"] is False)
+        check("C1d: re-emitted result is the IDENTICAL frozen persisted result",
+              res is not None
+              and json.dumps(res["result"], sort_keys=True) == json.dumps(persisted, sort_keys=True))
+    finally:
+        shutil.rmtree(c1d, ignore_errors=True)
+
+    # C1e — a tampered / oversized / symlinked challenge record -> controlled ArbiterError,
+    # never a crash (traceback) and never a fabricated resume state.
+    c1e = _tempfile.mkdtemp()
+    try:
+        epic_dir, state_path, state = _make_epic(c1e, attempts=1)
+        run_cmd(cmd_prepare, _args(state=state_path, feature="featA", attempt=1))
+        arbiter_fd = open_arbiter_dir_fd(epic_dir, create=False)
+        try:
+            fd = os.open("featA-1.challenge.json", os.O_WRONLY | os.O_TRUNC, dir_fd=arbiter_fd)
+            os.write(fd, b"{ this is not valid json")
+            os.close(fd)
+        finally:
+            os.close(arbiter_fd)
+        _, e, rc = run_cmd(cmd_resume_challenge,
+                           _args(state=state_path, feature="featA", attempt=1))
+        check("C1e: corrupted-JSON record -> controlled ArbiterError, not a crash",
+              e is not None and e.startswith("ERR:") and rc == 1)
+    finally:
+        shutil.rmtree(c1e, ignore_errors=True)
+
+    c1f = _tempfile.mkdtemp()
+    try:
+        epic_dir, state_path, state = _make_epic(c1f, attempts=1)
+        run_cmd(cmd_prepare, _args(state=state_path, feature="featA", attempt=1))
+        arbiter_fd = open_arbiter_dir_fd(epic_dir, create=False)
+        try:
+            fd = os.open("featA-1.challenge.json", os.O_WRONLY | os.O_TRUNC, dir_fd=arbiter_fd)
+            os.write(fd, b'{"pad":"' + b"A" * (CHALLENGE_RECORD_MAX_BYTES + 1000) + b'"}')
+            os.close(fd)
+        finally:
+            os.close(arbiter_fd)
+        _, e, rc = run_cmd(cmd_resume_challenge,
+                           _args(state=state_path, feature="featA", attempt=1))
+        check("C1e: oversized record -> controlled ArbiterError, not a crash",
+              e is not None and e.startswith("ERR:") and rc == 1)
+    finally:
+        shutil.rmtree(c1f, ignore_errors=True)
+
+    c1g = _tempfile.mkdtemp()
+    try:
+        epic_dir, state_path, state = _make_epic(c1g, attempts=1)
+        run_cmd(cmd_prepare, _args(state=state_path, feature="featA", attempt=1))
+        outside_g = _tempfile.mkdtemp()
+        try:
+            decoy = os.path.join(outside_g, "decoy.json")
+            with open(decoy, "w") as fh:
+                json.dump({"status": "issued"}, fh)
+            rec_path = os.path.join(epic_dir, "arbiter", "featA-1.challenge.json")
+            os.unlink(rec_path)
+            os.symlink(decoy, rec_path)
+            _, e, rc = run_cmd(cmd_resume_challenge,
+                               _args(state=state_path, feature="featA", attempt=1))
+            check("C1e: symlinked record -> controlled ArbiterError, not a crash",
+                  e is not None and e.startswith("ERR:") and rc == 1)
+        finally:
+            shutil.rmtree(outside_g, ignore_errors=True)
+    finally:
+        shutil.rmtree(c1g, ignore_errors=True)
+
+    # C1h — a record whose tuple has been tampered with (fields don't match the filename's
+    # (feature, attempt) or the keyed challenge_id) is also refused, fail-closed.
+    c1h = _tempfile.mkdtemp()
+    try:
+        epic_dir, state_path, state = _make_epic(c1h, attempts=1)
+        run_cmd(cmd_prepare, _args(state=state_path, feature="featA", attempt=1))
+        arbiter_fd = open_arbiter_dir_fd(epic_dir, create=False)
+        try:
+            rec = _read_json_at(arbiter_fd, "featA-1.challenge.json", CHALLENGE_RECORD_MAX_BYTES)
+            rec["challenge_id"] = "ch-attacker0000000"
+            _write_json_at(arbiter_fd, "featA-1.challenge.json", rec)
+        finally:
+            os.close(arbiter_fd)
+        _, e, rc = run_cmd(cmd_resume_challenge,
+                           _args(state=state_path, feature="featA", attempt=1))
+        check("C1h: tuple-tampered record -> controlled ArbiterError, not a crash",
+              e is not None and e.startswith("ERR:") and rc == 1)
+    finally:
+        shutil.rmtree(c1h, ignore_errors=True)
+
+    # C1i — main() end-to-end wiring for the new flag: argparse recognizes --resume-challenge
+    # and dispatches to the same behavior (belt-and-suspenders on the CLI plumbing itself).
+    c1i = _tempfile.mkdtemp()
+    try:
+        epic_dir, state_path, state = _make_epic(c1i, attempts=1)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = main(["--resume-challenge", "--state", state_path, "--feature", "featA",
+                      "--attempt", "1", "--challenge-key", FIXED_KEY, "--now", NOW])
+        check("C1i: main() wires --resume-challenge through and exits 0",
+              rc == 0 and json.loads(buf.getvalue().strip()) == {"state": "absent"})
+    finally:
+        shutil.rmtree(c1i, ignore_errors=True)
+
     print("SELFTEST: %d ok, %d fail" % (ok, fail))
     return 0 if fail == 0 else 1
 
@@ -2254,6 +2556,7 @@ def main(argv):
     p = argparse.ArgumentParser(description="Compound V epic arbiter — Codex+Claude panel.")
     p.add_argument("--prepare", action="store_true")
     p.add_argument("--classify", action="store_true")
+    p.add_argument("--resume-challenge", action="store_true")
     p.add_argument("--selftest", action="store_true")
     p.add_argument("--state")
     p.add_argument("--feature")
@@ -2286,6 +2589,8 @@ def main(argv):
             return cmd_prepare(args, p)
         if args.classify:
             return cmd_classify(args, p)
+        if args.resume_challenge:
+            return cmd_resume_challenge(args, p)
     except ArbiterError as e:
         _log(str(e))
         return 1
@@ -2294,7 +2599,7 @@ def main(argv):
         # EACCES, …) into a controlled one-line error, never a raw traceback.
         _log("filesystem error: %s" % e)
         return 1
-    p.error("one of --prepare / --classify / --selftest is required")
+    p.error("one of --prepare / --classify / --resume-challenge / --selftest is required")
 
 
 if __name__ == "__main__":
