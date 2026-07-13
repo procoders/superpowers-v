@@ -290,17 +290,31 @@ if [ -n "$RUN_DIR" ] || [ -n "$JOB_ID" ]; then
     *) die "advisor log dir escapes --run-dir (containment): $_log_dir_real" ;;
   esac
   _log_file="$_log_dir_real/$JOB_ID.advisor.jsonl"
-  # Refuse an existing non-regular target or a symlink (no writing through a planted symlink).
-  if [ -e "$_log_file" ] || [ -L "$_log_file" ]; then
-    { [ -f "$_log_file" ] && [ ! -L "$_log_file" ]; } || die "advisor log target is not a regular file: $_log_file"
-  fi
-  jq -nc \
+  _line="$(jq -nc \
     --arg advisor_backend "$ADVISOR_BACKEND" \
     --arg advisor_model "$ADVISOR_MODEL" \
     --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --argjson advisor_calls 1 \
-    '{advisor_backend: $advisor_backend, advisor_model: $advisor_model, advisor_calls: $advisor_calls, ts: $ts}' \
-    >> "$_log_file" || die "cannot append to advisor log: $_log_file"
+    '{advisor_backend: $advisor_backend, advisor_model: $advisor_model, advisor_calls: $advisor_calls, ts: $ts}')" \
+    || die "cannot build advisor log line"
+  # Append ATOMICALLY with O_NOFOLLOW: if the final path component is a symlink, os.open fails
+  # (ELOOP) at open time — there is no check-then-use TOCTOU window (round-3: a prior `[ -L ]`
+  # pre-check + `>>` was racy). Intermediate-dir symlinks are already excluded by the realpath
+  # containment assertion above. O_APPEND makes the write atomic; the dir containment + O_NOFOLLOW
+  # together mean this read-only-advisor helper can never write through a planted link.
+  printf '%s\n' "$_line" | python3 -c 'import os, sys
+p = sys.argv[1]
+data = sys.stdin.buffer.read()
+try:
+    fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+except OSError as e:
+    sys.stderr.write("advisor-log open refused: %s\n" % e)
+    sys.exit(1)
+try:
+    os.write(fd, data)
+finally:
+    os.close(fd)' "$_log_file" \
+    || die "cannot append to advisor log (symlink refused or write error): $_log_file"
 fi
 
 # --- emit --------------------------------------------------------------------
