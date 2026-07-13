@@ -591,12 +591,15 @@ identically to `balanced`. Only `cost-aware.claude.standard` differs: `sonnet`, 
   left to its script default unless a specific epic has a documented reason to raise it — set it
   per-epic at `--init`, not globally here.
 - **`epic.autonomy.watch`** (default `false`, v2.11) = the Step 3c auto-resurrection opt-in — policy
-  only, same shape as `epic.autonomy.stance` right above it: the driver re-confirms it against the
-  **persisted** `epic-state.json`'s own `autonomy.watch` before arming anything (a persisted "no"
-  wins even if this config later flips to `true`, and vice versa — arming requires **both** the
-  config AND the persisted state to say yes; see [`v-epic.md`](v-epic.md) §0c). Marathon-only —
-  `stance` must be `"marathon"` for `watch` to mean anything; a `checkpoint` epic ignores this key
-  entirely. `max_resume_count` (script default **20**) is deliberately left **unset** here — like
+  only, same shape as `epic.autonomy.stance` right above it, but with a narrower scope: this config
+  key gates **only** the initial `--init --watch` call for a **NEW** epic — it decides whether that
+  ONE call passes `--watch`. Once an epic exists, the config key is never consulted again: the
+  epic's OWN **persisted** `epic-state.json` `autonomy.watch` (plus the watcher registry) is the
+  **sole** authority for arming, disarming, or any other watch command on it — a later config flip
+  does not retroactively turn watch on or off for an already-initialized epic, and does not suppress
+  a registry-gated disarm (see [`v-epic.md`](v-epic.md) §0c). Marathon-only — `stance` must be
+  `"marathon"` for `watch` to mean anything; a `checkpoint` epic ignores this key entirely.
+  `max_resume_count` (script default **20**) is deliberately left **unset** here — like
   `max_attempts_per_feature` above, it is a per-epic choice made at `--init --watch
   [--max-resume-count N]`, not a global policy.
 - **`review.cross_model`** (default `false`) = the Step 3c toggle; when `true`, high-stakes
