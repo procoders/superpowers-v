@@ -51,15 +51,19 @@ nonzero, no write); a negative/non-numeric cap is rejected at --init:
   --can-retry --feature F -> {"can_retry","attempts","cap"}                  (read-only)
   --record-disposition --feature F --disposition retry_fix|halt_feature|halt_epic|
     blocked_external [--reason R] [--families-agreeing a,b] [--confirmed true|false]
-    -> {"feature","disposition"}   (atomic write; --confirmed true is HARD-REJECTED in v2.10;
-    the stored disposition is stamped with the feature's CURRENT attempts count and is only
-    ever honored by `--next --autonomous` while that attempt is still current — a stale
-    disposition left over from a prior attempt is treated as no disposition at all)
+    -> {"feature","disposition"}   (atomic write; --confirmed true is HARD-REJECTED; the stored
+    `confirmed` is DERIVED from --families-agreeing (>=2 distinct known external families), never
+    the caller's boolean; the stored disposition is stamped with the feature's CURRENT attempts
+    count and is only ever honored by `--next --autonomous` while that attempt is still current —
+    a stale disposition left over from a prior attempt is treated as no disposition at all)
   --update --status blocked --feature F [--blocker-reason R] [--blocker-confirmed true|false]
-    [--families-agreeing a,b] [--evidence E]
+    [--families-agreeing a,b] [--evidence E] [--blocker-category C]
     -> ledger append/REACTIVATE, idempotent by (feature, attempt), exactly one active entry
-    per blocked feature; --blocker-confirmed true is HARD-REJECTED in v2.10 (a blocker is
-    always confirmed:false — SUSPECTED, never caller-confirmed). `blocked` is marathon-only.
+    per blocked feature; --blocker-confirmed true is HARD-REJECTED (v2.14: the ledger entry's
+    `confirmed` is DERIVED from --families-agreeing — >=2 distinct KNOWN external families
+    {GPT,Gemini,Grok} — never caller-asserted; fewer => confirmed:false, SUSPECTED). The agreed
+    --blocker-category is recorded on the ledger entry for the finish-summary/audit. `blocked`
+    is marathon-only.
   --update --status failed --feature F [--last-error "..."] -> persists last_error (cleared
     on a subsequent ->running retry or ->done)
   --update --status pending --feature F -> resolves that feature's active ledger entry
@@ -252,6 +256,24 @@ CHECKPOINT_STATUSES = ("pending", "running", "done", "failed")
 # Marathon superset. Module-level name STATUSES is kept (used in --status help text); it now
 # names the marathon set. Per-stance acceptance is enforced in `apply_update`.
 STATUSES = ("pending", "running", "done", "failed", "blocked")
+
+# v2.14: the external-confirming model families a CONFIRMED blocker is DERIVED from. This tuple
+# MUST match compound-v-epic-arbiter.py's `_EXTERNAL_CONFIRMING` (arbiter.py:97) EXACTLY —
+# same casing, same membership. The two scripts encode this vocabulary INDEPENDENTLY (no shared
+# import — YAGNI, one tuple does not warrant a third module), so a casing/membership drift
+# silently fabricates a NEGATIVE (a genuine 2nd-external-family confirmation never reaches
+# confirmed:true) and is co-reviewed as a contract pair. `Claude` is NOT external. `confirmed`
+# is DERIVED from the families-agreeing list, never a caller-asserted boolean (anti-ruflo).
+KNOWN_EXTERNAL_FAMILIES = ("GPT", "Gemini", "Grok")
+
+
+def _derive_confirmed(families_agreeing):
+    """v2.14: derive a CONFIRMED blocker from the families-agreeing list, never a caller boolean.
+    confirmed:true iff >=2 DISTINCT KNOWN external families are present. The arbiter only
+    populates `families_agreeing` with the same-`blocker_category` external agreers
+    (arbiter._aggregate), so this distinct-external length check is sound — it already encodes
+    category agreement. Fewer than 2 known external families => False (SUSPECTED)."""
+    return len({f for f in (families_agreeing or []) if f in KNOWN_EXTERNAL_FAMILIES}) >= 2
 
 # Documented cap defaults (fail-SAFE: a MISSING cap key falls back to these, NEVER to
 # unbounded — Codex review #4). max_total_attempts has a feature-count-derived default,
@@ -691,6 +713,17 @@ def _transitive_dependents(feats, feature_id):
     return sorted(_transitive_closure(reverse, reverse.get(feature_id, [])))
 
 
+def _active_confirmed_blocker(state, feature_id):
+    """v2.14: True iff `feature_id` has an ACTIVE blocker-ledger entry whose DERIVED
+    `confirmed` is True (>=2 distinct known external families agreed on the same category).
+    The exactly-one-active invariant (Codex review #6) guarantees at most one active entry per
+    feature. A SUSPECTED (confirmed:false) or absent entry => False."""
+    for e in (state.get("blocker_ledger") or []):
+        if e.get("feature") == feature_id and e.get("active") and e.get("confirmed") is True:
+            return True
+    return False
+
+
 def next_feature_autonomous(state):
     """Read-only autonomous routing (marathon `--next --autonomous`): DAG-transitive-
     dependent cascading instead of the default's whole-epic fail-fast. A failed/blocked
@@ -705,8 +738,9 @@ def next_feature_autonomous(state):
     Terminal-state resolution embeds the literal v2.10 token as a prefix of `reason` so
     callers can match on it exactly like the default function's callers match on
     "reconcile"/"complete"/"blocked": "done: ...", "blocked_needing_human: ...",
-    "running_with_failures: ...". v2.10 NEVER emits "done_with_blockers" (that terminal
-    state needs a 2nd safe external family — v2.11).
+    "running_with_failures: ...". v2.14 ADDS "done_with_blockers: ..." — emitted only when
+    every feature is done or a CONFIRMED (>=2 distinct external families) blocked feature, no
+    abandoned/halt work remains, no sample-audit is due, and final_review has passed.
 
     FIX 1 (crash/breaker-window resume safety, v2.10 follow-up): a `failed` feature is no
     longer blanket-treated as abandoned — it is routed BY its stored `disposition`:
@@ -880,6 +914,36 @@ def next_feature_autonomous(state):
                 return None, "done: all features done and final_review passed", blocked_by
             return None, ("running_with_failures: all features done, awaiting final_review "
                           "(status=%s) before 'done'" % fr.get("status", "pending")), blocked_by
+        # v2.14: done_with_blockers — every feature is `done` OR (`blocked` with a CONFIRMED
+        # active ledger entry). By this point needs_arbitration / needs_blocker_recording /
+        # retry_runnable / running have all returned above, so `blocking_ids` here is
+        # (blocked-status ids UNION abandoned_ids); requiring `not abandoned_ids` AND every
+        # non-done feature to be a confirmed-blocked one means the only blocking ids are
+        # `status==blocked` — an abandoned/halt_feature feature (or a SUSPECTED, i.e.
+        # confirmed:false, blocker) fails the guard and falls through to blocked_needing_human
+        # below (proven-external work only). A due sample-audit still gates (higher-stakes than
+        # a PASS), and final_review must have passed.
+        non_done = [f for f in feats if f.get("status") != "done"]
+        if (ids and non_done and not abandoned_ids
+                and all(f.get("status") == "blocked"
+                        and _active_confirmed_blocker(state, f.get("id"))
+                        for f in non_done)):
+            due_ids = sorted(f["id"] for f in feats if f.get("sample_audit_due") is True)
+            if due_ids:
+                return None, ("sample_audit_due: feature(s) %s awaiting sample-audit"
+                              % ", ".join(due_ids)), blocked_by
+            fr = state.get("final_review")
+            fr = fr if isinstance(fr, dict) else {}
+            if fr.get("status") == "passed":
+                blocked_list = ", ".join(sorted(f["id"] for f in non_done))
+                return None, ("done_with_blockers: all reachable features done; confirmed "
+                              "external blocker(s) on %s" % blocked_list), blocked_by
+            # Finding #10 pre-terminal: the guard holds but final_review is still pending —
+            # emit the awaiting-final-review signal (analogous to the all-done path above) so
+            # the driver actually RUNS the final review; otherwise done_with_blockers is
+            # unreachable. Deliberately NOT a terminal reason.
+            return None, ("running_with_failures: all reachable done, awaiting final_review "
+                          "(done_with_blockers pending)"), blocked_by
         if blocking_ids:
             return None, ("blocked_needing_human: no runnable feature — blocked/failed "
                           "feature(s) %s exhaust reachable work" % ", ".join(blocking_ids)), \
@@ -948,7 +1012,12 @@ def is_terminal(state):
         return False
     _, reason, _ = next_feature_autonomous(state)
     return (reason.startswith("done:") or reason.startswith("blocked_needing_human:")
-            or reason.startswith("epic blocked:"))
+            or reason.startswith("epic blocked:")
+            # v2.14: MANDATORY — the confirmed-blocker terminal. Without this the watcher
+            # (--liveness/--claim-resume/watch plan) would poll a settled done_with_blockers
+            # epic forever. The awaiting-final-review pre-terminal is a `running_with_failures:`
+            # reason and is deliberately NOT terminal.
+            or reason.startswith("done_with_blockers:"))
 
 
 def _now_iso(dt=None):
@@ -1116,7 +1185,8 @@ def _recompute_top_status(state):
 
 def apply_update(state, feature_id, status, run_id=None, now_dt=None,
                   blocker_reason=None, blocker_confirmed=False,
-                  families_agreeing=None, evidence=None, last_error=None):
+                  families_agreeing=None, evidence=None, last_error=None,
+                  blocker_category=None):
     """Mutate `state` in place for `--update`. Returns (ok, error|None).
 
     - checkpoint (non-marathon): rollup UNCHANGED — any failed -> blocked; all done -> done;
@@ -1155,6 +1225,8 @@ def apply_update(state, feature_id, status, run_id=None, now_dt=None,
             offenders.append("--families-agreeing")
         if blocker_confirmed:
             offenders.append("--blocker-confirmed")
+        if blocker_category is not None:
+            offenders.append("--blocker-category")
         if offenders:
             return False, ("%s %s marathon-only — not valid on a checkpoint-stance epic"
                            % (", ".join(offenders), "is" if len(offenders) == 1 else "are"))
@@ -1193,13 +1265,22 @@ def apply_update(state, feature_id, status, run_id=None, now_dt=None,
                 if not e.get("resolved_at"):
                     e["resolved_at"] = now_s
         if entry is None:
+            _fams = list(families_agreeing or [])
             ledger.append({
                 "feature": feature_id,
                 "attempt": attempt,
-                "confirmed": False,
+                # v2.14: DERIVED from the families-agreeing list (>=2 distinct known external
+                # families), NEVER the caller's --blocker-confirmed boolean (still hard-rejected
+                # above). The arbiter emits `families_agreeing` category-filtered, so a length
+                # check is sound. This is the ONLY path to confirmed:true.
+                "confirmed": _derive_confirmed(_fams),
                 "reason": blocker_reason or "",
                 "evidence": evidence,
-                "families_agreeing": list(families_agreeing or []),
+                "families_agreeing": _fams,
+                # v2.14: the agreed external blocker category (for the finish-summary/audit) —
+                # WHICH missing-fact category >=2 external families agreed on. Optional; null
+                # when not supplied.
+                "blocker_category": blocker_category,
                 "first_seen_at": now_s,
                 "blocks": _transitive_dependents(state.get("features", []), feature_id),
                 "active": True,
@@ -1216,6 +1297,12 @@ def apply_update(state, feature_id, status, run_id=None, now_dt=None,
                 entry["evidence"] = evidence
             if families_agreeing:
                 entry["families_agreeing"] = list(families_agreeing)
+            if blocker_category is not None:
+                entry["blocker_category"] = blocker_category
+            # v2.14: re-derive `confirmed` from whatever families list the entry now holds
+            # (the freshly-supplied list if one was passed, else the stored one) — never a
+            # caller boolean.
+            entry["confirmed"] = _derive_confirmed(entry.get("families_agreeing"))
         # else: already active for this attempt — idempotent replay, no change.
 
     if status == "pending" and marathon:
@@ -1286,12 +1373,15 @@ def record_disposition(state, feature_id, disposition, reason=None,
     if hit is None:
         return False, "no feature %r" % feature_id
     now_dt = now_dt or datetime.now(timezone.utc)
+    _disp_fams = list(families_agreeing or [])
     hit["disposition"] = {
         "disposition": disposition,
         "attempt": hit.get("attempts", 0),
-        "confirmed": False,
+        # v2.14: DERIVED (>=2 distinct known external families), never the caller's --confirmed
+        # boolean (still hard-rejected above). Derivation is the ONLY path to confirmed:true.
+        "confirmed": _derive_confirmed(_disp_fams),
         "reason": reason or "",
-        "families_agreeing": list(families_agreeing or []),
+        "families_agreeing": _disp_fams,
         "recorded_at": _now_iso(now_dt),
     }
     state["total_attempts"] = _total_attempts(state)  # recompute on every marathon mutation (#9)
@@ -1309,15 +1399,27 @@ def record_final_review(state, status, now_dt=None):
 
     FIX 2 (v2.10 follow-up): `passed` is ALSO rejected while any feature has
     `sample_audit_due == True` — a due sample-audit is a durable obligation that a passed
-    final_review must never gate past, breaker trip or not."""
+    final_review must never gate past, breaker trip or not.
+
+    v2.14: `passed` is accepted when every feature is `done` OR a CONFIRMED (>=2 distinct
+    external families) `blocked` feature — the SAME guard the `done_with_blockers` terminal
+    uses (see next_feature_autonomous). Otherwise the driver could never record the final
+    integration review for a done_with_blockers epic (its blocked feature is not `done`),
+    making that terminal unreachable in production. A SUSPECTED blocker, an abandoned/failed
+    feature, or any other non-done feature still blocks `passed` (checkpoint states have no
+    confirmed blockers, so this stays byte-identical to the all-done rule for them)."""
     if status not in ("pending", "passed", "failed"):
         return False, "--status must be one of: pending, passed, failed"
     if status == "passed":
         feats = [f for f in state.get("features", []) if isinstance(f, dict)]
-        not_done = [f.get("id") for f in feats if f.get("status") != "done"]
-        if not feats or not_done:
-            return False, ("cannot record final_review=passed while features are not done "
-                           "(not done: %s)" % (", ".join(map(str, not_done)) or "none"))
+        unfinished = [f.get("id") for f in feats
+                      if not (f.get("status") == "done"
+                              or (f.get("status") == "blocked"
+                                  and _active_confirmed_blocker(state, f.get("id"))))]
+        if not feats or unfinished:
+            return False, ("cannot record final_review=passed while features are neither done "
+                           "nor confirmed-blocked (unfinished: %s)"
+                           % (", ".join(map(str, unfinished)) or "none"))
         due_ids = sorted(f.get("id") for f in feats if f.get("sample_audit_due") is True)
         if due_ids:
             return False, ("cannot record final_review=passed while sample_audit_due is true "
@@ -2957,8 +3059,8 @@ def _selftest():
     apply_update(r1, "a", "running", now_dt=T0)
     apply_update(r1, "a", "done", now_dt=T0)  # b still pending
     okp, errp = record_final_review(r1, "passed")
-    check("#1: final_review=passed REJECTED unless all features done",
-          okp is False and "not done" in errp)
+    check("#1: final_review=passed REJECTED unless all features done (or confirmed-blocked)",
+          okp is False and "unfinished" in errp)
     check("#1: rejected review did not flip status to done", r1["status"] != "done")
     apply_update(r1, "b", "running", now_dt=T0)
     apply_update(r1, "b", "done", now_dt=T0)
@@ -3492,6 +3594,166 @@ def _selftest():
     it_dangle = build_state(it_dangle_feats, "e", "E", stance="marathon", caps={})
     check("v2.11 is_terminal fix 4: a dangling depends_on -> terminal (never resurrectable)",
           is_terminal(it_dangle) is True)
+
+    # ================================================================
+    # v2.14 — DERIVED confirmed + done_with_blockers terminal
+    # ================================================================
+
+    def _active_entry(st, fid):
+        for e in (st.get("blocker_ledger") or []):
+            if e.get("feature") == fid and e.get("active"):
+                return e
+        return None
+
+    # (a) confirmed is DERIVED from >=2 DISTINCT KNOWN external families -------------------
+    check("v2.14 constant: KNOWN_EXTERNAL_FAMILIES matches arbiter _EXTERNAL_CONFIRMING casing",
+          KNOWN_EXTERNAL_FAMILIES == ("GPT", "Gemini", "Grok"))
+    check("v2.14 derive: ['GPT','Gemini'] -> True", _derive_confirmed(["GPT", "Gemini"]) is True)
+    check("v2.14 derive: ['GPT'] -> False (only 1 external)", _derive_confirmed(["GPT"]) is False)
+    check("v2.14 derive: ['Claude','GPT'] -> False (Claude not external; only 1 external)",
+          _derive_confirmed(["Claude", "GPT"]) is False)
+    check("v2.14 derive: ['GPT','GPT'] -> False (not distinct)",
+          _derive_confirmed(["GPT", "GPT"]) is False)
+    check("v2.14 derive: [] and None -> False",
+          _derive_confirmed([]) is False and _derive_confirmed(None) is False)
+    check("v2.14 derive: lowercase 'gpt' does NOT confirm (casing must match arbiter)",
+          _derive_confirmed(["gpt", "gemini"]) is False)
+
+    st_dc = build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon", caps={})
+    apply_update(st_dc, "a", "blocked", blocker_reason="vendor",
+                 families_agreeing=["GPT", "Gemini"], blocker_category="credential", now_dt=T0)
+    e_dc = _active_entry(st_dc, "a")
+    check("v2.14 ledger: 2 distinct external families on a blocked feature => confirmed:true",
+          e_dc is not None and e_dc.get("confirmed") is True)
+    check("v2.14 ledger: agreed --blocker-category recorded on the entry",
+          e_dc.get("blocker_category") == "credential")
+
+    st_s1 = build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon", caps={})
+    apply_update(st_s1, "a", "blocked", blocker_reason="x", families_agreeing=["GPT"], now_dt=T0)
+    check("v2.14 ledger: single external family => confirmed:false (SUSPECTED)",
+          _active_entry(st_s1, "a").get("confirmed") is False)
+
+    st_s2 = build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon", caps={})
+    apply_update(st_s2, "a", "blocked", blocker_reason="x",
+                 families_agreeing=["Claude", "GPT"], now_dt=T0)
+    check("v2.14 ledger: ['Claude','GPT'] (1 external) => confirmed:false",
+          _active_entry(st_s2, "a").get("confirmed") is False)
+
+    st_rd = build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon", caps={})
+    apply_update(st_rd, "a", "running", now_dt=T0)
+    apply_update(st_rd, "a", "failed", now_dt=T0)
+    record_disposition(st_rd, "a", "blocked_external",
+                       families_agreeing=["GPT", "Gemini"], now_dt=T0)
+    check("v2.14 disposition: record_disposition derives confirmed:true from 2 distinct external",
+          st_rd["features"][0]["disposition"]["confirmed"] is True)
+
+    # reactivation re-derives confirmed from the new families list
+    st_re = build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon", caps={})
+    apply_update(st_re, "a", "blocked", families_agreeing=["GPT"], now_dt=T0)  # SUSPECTED, attempt 0
+    apply_update(st_re, "a", "pending", now_dt=T0)  # resolves -> inactive
+    apply_update(st_re, "a", "blocked", families_agreeing=["GPT", "Gemini"], now_dt=T0)  # reblock
+    check("v2.14 reactivation: re-derives confirmed:true from the new families list",
+          _active_entry(st_re, "a").get("confirmed") is True)
+
+    # (b) raw --confirmed / --blocker-confirmed booleans STILL hard-rejected ---------------
+    st_rb = build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon", caps={})
+    okrb, errrb = apply_update(st_rb, "a", "blocked", blocker_confirmed=True, now_dt=T0)
+    check("v2.14: --blocker-confirmed true STILL hard-rejected (derivation is the only path)",
+          not okrb and "confirm" in errrb.lower())
+    st_rb2 = build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon", caps={})
+    okrb2, errrb2 = record_disposition(st_rb2, "a", "blocked_external", confirmed=True, now_dt=T0)
+    check("v2.14: --confirmed true STILL hard-rejected (derivation is the only path)",
+          not okrb2 and "confirm" in errrb2.lower())
+
+    # --blocker-category is marathon-only (checkpoint rejects it as an offender)
+    st_bc = build_state([{"id": "a", "depends_on": []}], "e", "E")  # checkpoint
+    okbc, errbc = apply_update(st_bc, "a", "failed", blocker_category="infra")
+    check("v2.14: --blocker-category is marathon-only (rejected on a checkpoint state)",
+          not okbc and "blocker-category" in errbc)
+
+    def _dwb_state(final_status=None, extra=None):
+        """a=done, b=confirmed-blocked (+ optional extra feature). v2.14: record_final_review
+        (...,'passed') now ACCEPTS this state (b is confirmed-blocked, the same guard the
+        terminal uses — see case (g) below); tests (c)-(f) still assign final_review directly
+        to isolate the classifier from the gate under test."""
+        fl = [{"id": "a", "depends_on": []}, {"id": "b", "depends_on": []}]
+        if extra:
+            fl.append(extra)
+        st = build_state(fl, "e", "E", stance="marathon", caps={})
+        apply_update(st, "a", "running", now_dt=T0)
+        apply_update(st, "a", "done", now_dt=T0)
+        apply_update(st, "b", "blocked", blocker_reason="vendor",
+                     families_agreeing=["GPT", "Gemini"], blocker_category="infra", now_dt=T0)
+        if final_status is not None:
+            st["final_review"] = {"status": final_status}
+        return st
+
+    # (c) all done-or-confirmed-blocked + final_review passed + no abandoned => done_with_blockers
+    dwb = _dwb_state(final_status="passed")
+    f_dwb, why_dwb, _ = next_feature_autonomous(dwb)
+    check("v2.14 (c): done-or-confirmed-blocked + final_review passed => done_with_blockers reason",
+          f_dwb is None and why_dwb.startswith("done_with_blockers:"))
+    check("v2.14 (c): done_with_blockers => is_terminal True",
+          is_terminal(dwb) is True)
+
+    # (d) same state, final_review PENDING => awaiting-final-review pre-terminal (NOT terminal)
+    dwb_p = _dwb_state(final_status=None)  # build_state seeds final_review pending
+    f_p, why_p, _ = next_feature_autonomous(dwb_p)
+    check("v2.14 (d): final_review pending => awaiting-final-review running_with_failures",
+          f_p is None and why_p.startswith("running_with_failures:")
+          and "done_with_blockers pending" in why_p)
+    check("v2.14 (d): awaiting-final-review pre-terminal is NOT terminal",
+          is_terminal(dwb_p) is False)
+
+    # (e) same state + one ABANDONED (halt_feature) feature => blocked_needing_human
+    dwb_ab = _dwb_state(final_status="passed", extra={"id": "c", "depends_on": []})
+    apply_update(dwb_ab, "c", "running", now_dt=T0)
+    apply_update(dwb_ab, "c", "failed", now_dt=T0)
+    record_disposition(dwb_ab, "c", "halt_feature", now_dt=T0)  # attempt-matched -> abandoned
+    dwb_ab["final_review"] = {"status": "passed"}
+    f_ab, why_ab, _ = next_feature_autonomous(dwb_ab)
+    check("v2.14 (e): an abandoned/halt_feature feature => blocked_needing_human (not done_with_blockers)",
+          f_ab is None and why_ab.startswith("blocked_needing_human:"))
+
+    # (f) a SUSPECTED (confirmed:false) blocker with no runnable work => blocked_needing_human
+    dwb_s = build_state([{"id": "a", "depends_on": []}, {"id": "b", "depends_on": []}],
+                        "e", "E", stance="marathon", caps={})
+    apply_update(dwb_s, "a", "running", now_dt=T0)
+    apply_update(dwb_s, "a", "done", now_dt=T0)
+    apply_update(dwb_s, "b", "blocked", blocker_reason="vendor",
+                 families_agreeing=["GPT"], now_dt=T0)  # SUSPECTED
+    dwb_s["final_review"] = {"status": "passed"}
+    f_s, why_s, _ = next_feature_autonomous(dwb_s)
+    check("v2.14 (f): a SUSPECTED blocker => blocked_needing_human (not done_with_blockers)",
+          f_s is None and why_s.startswith("blocked_needing_human:"))
+
+    # (g) v2.14 record_final_review relaxation: `passed` is now settable via the API on a
+    # confirmed done_with_blockers epic (a done, b confirmed-blocked) — closing the seam that
+    # made the terminal unreachable in production. A SUSPECTED blocker still blocks `passed`.
+    dwb_api = _dwb_state(final_status=None)  # final_review pending
+    okg, errg = record_final_review(dwb_api, "passed")
+    check("v2.14 (g): record_final_review(passed) ACCEPTED on a confirmed done_with_blockers epic",
+          okg and errg is None and dwb_api["final_review"]["status"] == "passed")
+    fg, whyg, _ = next_feature_autonomous(dwb_api)
+    check("v2.14 (g): ...and the epic then reports done_with_blockers",
+          fg is None and whyg.startswith("done_with_blockers:"))
+    dwb_api_s = build_state([{"id": "a", "depends_on": []}, {"id": "b", "depends_on": []}],
+                            "e", "E", stance="marathon", caps={})
+    apply_update(dwb_api_s, "a", "running", now_dt=T0)
+    apply_update(dwb_api_s, "a", "done", now_dt=T0)
+    apply_update(dwb_api_s, "b", "blocked", blocker_reason="vendor",
+                 families_agreeing=["GPT"], now_dt=T0)  # SUSPECTED
+    okg2, errg2 = record_final_review(dwb_api_s, "passed")
+    check("v2.14 (g): record_final_review(passed) REJECTED when a blocker is SUSPECTED",
+          okg2 is False and "unfinished" in errg2)
+
+    # (g) checkpoint (non-marathon) path is unaffected by the terminal / derivation surface
+    dwb_chk = build_state([{"id": "a", "depends_on": []}], "e", "E")  # checkpoint
+    check("v2.14 (g): a checkpoint state is never terminal (is_terminal early-returns False)",
+          is_terminal(dwb_chk) is False)
+    okg, errg = apply_update(dwb_chk, "a", "blocked")
+    check("v2.14 (g): checkpoint --status blocked still rejected (marathon-only)",
+          not okg and "blocked" in errg)
 
     # --- build_state: v2.11 watch schema ---------------------------------------------------
     v11_feats = [{"id": "a", "depends_on": []}]
@@ -4263,6 +4525,10 @@ def main(argv):
     p.add_argument("--blocker-confirmed", choices=("true", "false"), default=None,
                    help="(with --update --status blocked) MUST be false in v2.10 — hard-rejected if true")
     p.add_argument("--evidence", help="(with --update --status blocked) the missing external fact, if known")
+    p.add_argument("--blocker-category", help="(with --update --status blocked, marathon-only) the "
+                                              "agreed external blocker category the confirming "
+                                              "families named — recorded on the ledger entry for the "
+                                              "finish-summary/audit")
     p.add_argument("--last-error", help="(with --update --status failed, marathon-only) persist the "
                                         "feature's last error; cleared on a retry/done")
     p.add_argument("--start-sha", help="(with --init --stance marathon) git rev-parse HEAD, "
@@ -4755,6 +5021,8 @@ def main(argv):
                 supplied.append("--families-agreeing")
             if args.blocker_confirmed is not None:
                 supplied.append("--blocker-confirmed")
+            if args.blocker_category is not None:
+                supplied.append("--blocker-category")
             if supplied:
                 print("epic-update error: %s %s marathon-only — not valid on a checkpoint-"
                       "stance epic" % (", ".join(supplied),
@@ -4765,7 +5033,8 @@ def main(argv):
                                blocker_reason=args.blocker_reason,
                                blocker_confirmed=(args.blocker_confirmed == "true"),
                                families_agreeing=_parse_csv_list(args.families_agreeing),
-                               evidence=args.evidence, last_error=args.last_error)
+                               evidence=args.evidence, last_error=args.last_error,
+                               blocker_category=args.blocker_category)
         if not ok:
             print("epic-update error: %s" % err, file=sys.stderr)
             return 1
