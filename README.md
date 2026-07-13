@@ -42,6 +42,18 @@ The fastest way to *get* what this plugin does. Three gamified episodes — **De
 
 ---
 
+## How it routes the work
+
+Compound V never lets a worker pick its own model. A **deterministic router** looks at each job — its type, the files it may touch, whether it is a review — and assigns the mode from code, not from a vibe. Two forks, three worker modes:
+
+![How Compound V decides who does the work](docs/routing.svg)
+
+- **Pre-Evaluation** splits the request first: trivially simple and low-impact takes a cheap **fast path** (one worker); anything real enters the full pipeline.
+- In the pipeline an **orchestrator** (a strong model) plans and splits the work, then the **router** assigns each job a mode: **full Opus** for risky / review / security / cross-cutting work, **Sonnet solo** for routine mechanical jobs, and — 🧪 *opt-in, in development* — **Sonnet + an on-demand Opus/Fable advisor** for medium, self-contained jobs (a cheap executor that calls a stronger model only for the hard sub-decisions, so most tokens stay cheap).
+- Everything runs in parallel, every write is checked against a git-derived scope gate, and an Opus reviewer gates "done".
+
+---
+
 ## Install
 
 In Claude Code:
