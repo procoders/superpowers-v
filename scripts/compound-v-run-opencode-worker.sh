@@ -81,18 +81,18 @@ DEFAULT_READ_ONLY=false
 # never fill the disk or block on a full pipe — see that script's docstring).
 MAX_OUTPUT_BYTES=5000000
 
-# The MANDATORY provider-credential scrub list (SAFETY, above). Every var here is a
-# known provider auth token / base-url override across opencode's supported vendors
-# (opencode is provider-agnostic and proxies many). Space-separated on purpose — this
-# loops into repeated `env -u NAME` flags below (bash 3.2-safe: no arrays).
-_SCRUB_VARS="ANTHROPIC_API_KEY ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN \
-OPENAI_API_KEY OPENAI_BASE_URL OPENAI_API_BASE OPENAI_ORG_ID \
-GOOGLE_API_KEY GOOGLE_GENERATIVE_AI_API_KEY GEMINI_API_KEY GOOGLE_APPLICATION_CREDENTIALS \
-AZURE_API_KEY AZURE_OPENAI_API_KEY AZURE_OPENAI_ENDPOINT \
-AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_BEARER_TOKEN_BEDROCK \
-OPENROUTER_API_KEY MISTRAL_API_KEY COHERE_API_KEY GROQ_API_KEY DEEPSEEK_API_KEY \
-XAI_API_KEY TOGETHER_API_KEY PERPLEXITY_API_KEY FIREWORKS_API_KEY CEREBRAS_API_KEY \
-OLLAMA_HOST"
+# The MANDATORY provider-credential scrub, as an ALLOWLIST (not a blacklist). A
+# blacklist enumerating known provider vars misses ANY unlisted credential — including
+# OPENCODE_API_KEY itself (opencode's own token was never in the old list) or a
+# brand-new provider's *_API_KEY the list was never updated for. `env -i` (below)
+# clears EVERY inherited variable, then only the names in $_SAFE_ENV_VARS are injected
+# back in with THEIR OWN parent values — so a credential can leak into the child ONLY
+# if it is explicitly named here, never by omission from a denylist. opencode's own
+# provider credentials come from its persisted auth store under $HOME (`opencode auth
+# login`), never from env vars, so HOME must pass through for that store to resolve;
+# nothing provider-specific needs to. Space-separated on purpose (bash 3.2-safe: no
+# arrays) — see the `set --`-based allow-list build below run_opencode().
+_SAFE_ENV_VARS="PATH HOME TMPDIR LANG LC_ALL TERM"
 
 # --- helpers -----------------------------------------------------------------
 
@@ -341,10 +341,50 @@ mkdir -p "$ART"
 OPENCODE_CONFIG="$WT/opencode.json"
 OPENCODE_CONFIG_BACKUP="$ART/opencode.json.orig"
 _opencode_config_preexisted="false"
+
+# SECURITY: symlink-safety guard. A pre-existing $OPENCODE_CONFIG that is a symlink
+# (or any non-regular file) must NEVER be `cp`'d or redirected-into below — both
+# operations FOLLOW the link, so backing it up or overwriting it could read/write a
+# path OUTSIDE the worktree entirely (a repo-tracked opencode.json symlink, or one
+# the lower-trust worker plants mid-run, could point anywhere on disk). Reject
+# BEFORE touching it at all — this is an environment/usage fault (die, exit 2), not
+# a job outcome, exactly like every other precondition check in this script.
+if [ -L "$OPENCODE_CONFIG" ]; then
+  die "refusing: pre-existing opencode.json is a symlink (cp/redirection would follow it out of the worktree): $OPENCODE_CONFIG"
+fi
+if [ -e "$OPENCODE_CONFIG" ] && [ ! -f "$OPENCODE_CONFIG" ]; then
+  die "refusing: pre-existing opencode.json is not a regular file: $OPENCODE_CONFIG"
+fi
+
 if [ -f "$OPENCODE_CONFIG" ]; then
   _opencode_config_preexisted="true"
   cp "$OPENCODE_CONFIG" "$OPENCODE_CONFIG_BACKUP"
 fi
+
+restore_opencode_config() {
+  # SECURITY: never `cp`/redirect ONTO $OPENCODE_CONFIG without first removing
+  # whatever is there. The lower-trust opencode worker could have replaced the file
+  # with a symlink pointing OUTSIDE the worktree during its run — `cp`/`>` onto a
+  # symlink FOLLOWS it, so a naive restore could write the original content (or the
+  # deletion) to that external target instead of the worktree. `rm -f` removes the
+  # directory ENTRY itself and never follows a symlink to reach its target, so this
+  # is safe regardless of what opencode left behind. Idempotent: safe to call more
+  # than once (explicit call below, plus the EXIT/INT/TERM trap as a safety net).
+  rm -f "$OPENCODE_CONFIG"
+  if [ "$_opencode_config_preexisted" = "true" ]; then
+    # Write a fresh REGULAR file from the backup's content. This never opens
+    # $OPENCODE_CONFIG for read and never `cp`s onto it — redirection creates a
+    # brand-new inode at a path that, thanks to the `rm -f` immediately above, is
+    # guaranteed not to exist yet (so it cannot be a symlink at write time).
+    cat "$OPENCODE_CONFIG_BACKUP" > "$OPENCODE_CONFIG"
+  fi
+}
+# Install the restoration trap BEFORE the worktree's opencode.json is ever
+# modified (the `cat > "$OPENCODE_CONFIG"` pin below is the first modification), so
+# ANY exit path — normal return, `die`, or a signal — restores the worktree to its
+# pre-run state, not just the single explicit call on the happy path further down.
+trap restore_opencode_config EXIT INT TERM
+
 # `permission: {"*": "ask"}` = deny-by-default; paired with `--auto` below (which
 # auto-approves exactly the non-denied subset), this is the "ask, but headlessly
 # auto-approved" posture documented as MANDATORY in adapter-opencode.md SAFETY — it
@@ -357,19 +397,11 @@ cat > "$OPENCODE_CONFIG" <<'JSONEOF'
 }
 JSONEOF
 
-restore_opencode_config() {
-  if [ "$_opencode_config_preexisted" = "true" ]; then
-    cp "$OPENCODE_CONFIG_BACKUP" "$OPENCODE_CONFIG"
-  else
-    rm -f "$OPENCODE_CONFIG"
-  fi
-}
-
 # --- run the headless opencode worker -----------------------------------------
 # Pinned invocation (opencode-ai 1.17.18 — RE-PROBE OFTEN per adapter-opencode.md, this
 # package ships new builds multiple times a day):
 #   opencode run --dir "$WT" --format json --auto -m "$MODEL" [--variant "$EFFORT"] \
-#     --title "compound-v-$JOB_ID" "$PROMPT" </dev/null
+#     --title "compound-v-$JOB_ID" -- "$PROMPT" </dev/null
 #
 # Load-bearing facts (adapter-opencode.md):
 #   * `--dir "$WT"` = opencode's real --cd-equivalent (unlike antigravity/cursor/devin).
@@ -382,35 +414,55 @@ restore_opencode_config() {
 #   * `-m "$MODEL"` = REQUIRED, must be a real `provider/model` string.
 #   * `--variant "$EFFORT"` = OPTIONAL, only appended when --effort was given.
 #   * `--title` = cosmetic correlation aid for `opencode session list`.
+#   * the `--` immediately before the prompt = the option terminator: `opencode run`'s
+#     positional `message` is yargs-parsed, so a prompt starting with `-` (e.g. "-foo
+#     bar") would otherwise be mis-parsed as a flag — LIVE-VERIFIED on opencode-ai
+#     1.17.18: without `--`, `opencode run --format json "-foo bar"` prints the CLI's
+#     own usage/help instead of running; with `--`, it correctly runs with "-foo bar"
+#     as the message. The shared timeout supervisor's own argparse `REMAINDER` keeps
+#     this embedded `--` byte-for-byte in the argv it execs (verified: it only strips
+#     ITS OWN leading `--`, never one further into the remainder).
 #   * stdin `</dev/null` — same non-negotiable rule as every other external worker.
 #
-# THE MANDATORY CREDENTIAL SCRUB (SAFETY, above): compound-v-run-with-timeout.py has no
-# `env=` parameter — it always inherits whatever environment ITS caller (this script) had.
-# So the scrub happens OUTSIDE the supervisor: `env -u NAME [-u NAME ...]` wraps the ENTIRE
-# `python3 "$SUPERVISOR" ...` invocation, stripping every var in $_SCRUB_VARS before python3
-# (and therefore its Popen'd opencode child, which inherits python3's ALREADY-scrubbed
-# os.environ) ever sees them. This is unquoted-by-design (word-splits into repeated `-u`
-# flags; every name in $_SCRUB_VARS is a bare identifier, never attacker-controlled).
+# THE MANDATORY CREDENTIAL SCRUB (SAFETY, above), now an ALLOWLIST: compound-v-run-
+# with-timeout.py has no `env=` parameter — it always inherits whatever environment ITS
+# caller (this script) had. So the scrub happens OUTSIDE the supervisor: `env -i
+# NAME=value ...` wraps the ENTIRE `python3 "$SUPERVISOR" ...` invocation with a
+# COMPLETELY EMPTY environment plus ONLY the names in $_SAFE_ENV_VARS injected back in
+# (each with ITS OWN parent value) before python3 (and therefore its Popen'd opencode
+# child, which inherits python3's already-allowlisted os.environ) ever runs. Unlike the
+# old `env -u DENYLIST` approach, an unlisted/future credential var can NEVER pass
+# through — it would have to be explicitly added to $_SAFE_ENV_VARS to leak.
 
 EVENTS_LOG="$ART/opencode_events.jsonl"
 STDERR_LOG="$ART/opencode_stderr.log"
 RESULT_TXT="$ART/job_result.txt"
 exit_code=0
 
-_ENV_SCRUB_ARGS=""
-for _v in $_SCRUB_VARS; do
-  _ENV_SCRUB_ARGS="$_ENV_SCRUB_ARGS -u $_v"
+# Build the `env -i` allow-list entries as POSITIONAL PARAMETERS, not a
+# concatenated-then-word-split string: bash 3.2 has no arrays, but `set --` preserves
+# each entry as ONE argument even if the underlying value contains spaces or other
+# shell-special characters (PATH segments with spaces, e.g. "/Applications/Some
+# App.app/...", are a real-world case a naive `VAR="$VAR"` string-splice would corrupt).
+# Only variables that are actually SET and non-empty in the parent are forwarded.
+set --
+for _v in $_SAFE_ENV_VARS; do
+  eval "_safe_val=\"\${$_v-}\""
+  if [ -n "$_safe_val" ]; then
+    set -- "$@" "$_v=$_safe_val"
+  fi
 done
 
 # run_opencode runs the pinned `opencode run` invocation UNDER (a) the mandatory
-# credential-scrub `env -u ...` wrapper and (b) the process-group timeout supervisor: on
-# expiry the supervisor killpg's the whole opencode tree (not just the direct child) and
-# returns 124. --stdout/--stderr are BOUNDED capture files (--max-output-bytes) so a
+# credential-scrub `env -i` allowlist wrapper (its args are the "$@" built above, passed
+# through explicitly since a bash function does NOT automatically inherit the caller's
+# positional parameters) and (b) the process-group timeout supervisor: on expiry the
+# supervisor killpg's the whole opencode tree (not just the direct child) and returns
+# 124. --stdout/--stderr are BOUNDED capture files (--max-output-bytes) so a
 # runaway/looping worker can never fill the disk or block on a full pipe.
 run_opencode() {
-  # shellcheck disable=SC2086
   if [ -n "$EFFORT" ]; then
-    env $_ENV_SCRUB_ARGS \
+    env -i "$@" \
       python3 "$SUPERVISOR" --timeout "$TIMEOUT_SEC" --grace 3 \
         --stdout "$EVENTS_LOG" --stderr "$STDERR_LOG" --max-output-bytes "$MAX_OUTPUT_BYTES" \
         -- opencode run \
@@ -420,9 +472,9 @@ run_opencode() {
         -m "$MODEL" \
         --variant "$EFFORT" \
         --title "compound-v-$JOB_ID" \
-        "$(cat "$PROMPT_FILE")" </dev/null
+        -- "$(cat "$PROMPT_FILE")" </dev/null
   else
-    env $_ENV_SCRUB_ARGS \
+    env -i "$@" \
       python3 "$SUPERVISOR" --timeout "$TIMEOUT_SEC" --grace 3 \
         --stdout "$EVENTS_LOG" --stderr "$STDERR_LOG" --max-output-bytes "$MAX_OUTPUT_BYTES" \
         -- opencode run \
@@ -431,19 +483,21 @@ run_opencode() {
         --auto \
         -m "$MODEL" \
         --title "compound-v-$JOB_ID" \
-        "$(cat "$PROMPT_FILE")" </dev/null
+        -- "$(cat "$PROMPT_FILE")" </dev/null
   fi
 }
 
 # `set +e` so a non-zero exit (incl. 124 when the timeout fires) is captured rather
 # than aborting the script — we must still produce a job_result either way.
 set +e
-run_opencode
+run_opencode "$@"
 exit_code=$?
 set -e
 
 # Restore the worktree to its pre-run state BEFORE anything below reads it — the scope
-# gate must never see our own scratch opencode.json as a job-authored write.
+# gate must never see our own scratch opencode.json as a job-authored write. This is
+# the primary (ordering-correct) restore call; the EXIT/INT/TERM trap installed above
+# is a safety net for abnormal termination and re-invokes the same idempotent function.
 restore_opencode_config
 
 # --- capture session_id + summary --------------------------------------------
@@ -455,11 +509,20 @@ restore_opencode_config
 # "degrade gracefully if the last event isn't the summary" requirement).
 #   * session_id ← the FIRST line that carries a non-empty `.sessionID` (adapter-opencode.md).
 #   * summary    ← the LAST non-empty `.part.text` from a `type:"text"` event.
+#   * _valid_event_count ← how many lines actually parsed as JSON (empty stdout, or a
+#     stream of pure garbage, leaves this at 0 — a false-success signal caught below).
 session_id=""
 summary=""
+_valid_event_count=0
 if [ -f "$EVENTS_LOG" ]; then
   while IFS= read -r _ev_line || [ -n "$_ev_line" ]; do
     [ -z "$_ev_line" ] && continue
+    if ! printf '%s' "$_ev_line" | jq -e . >/dev/null 2>&1; then
+      # Not valid JSON at all (truncated/garbage line) — contributes nothing, but
+      # does NOT count toward _valid_event_count either.
+      continue
+    fi
+    _valid_event_count=$((_valid_event_count + 1))
     _etype=$(printf '%s' "$_ev_line" | jq -r '.type? // empty' 2>/dev/null) || _etype=""
     if [ -z "$session_id" ]; then
       _sid=$(printf '%s' "$_ev_line" | jq -r '.sessionID? // empty' 2>/dev/null) || _sid=""
@@ -470,6 +533,16 @@ if [ -f "$EVENTS_LOG" ]; then
       if [ -n "$_txt" ]; then summary="$_txt"; fi
     fi
   done < "$EVENTS_LOG"
+fi
+
+# false-success guard: an exit-0 run with NO valid JSONL events at all, or with
+# events but no usable final text, must not be reported as success — it hides a
+# silent no-op (empty/malformed transcript) behind a placeholder summary. Computed
+# BEFORE the "(no summary...)" placeholder is substituted in below, so it reflects
+# what opencode ACTUALLY emitted, not the placeholder text.
+_summary_is_empty="false"
+if [ -z "$(printf '%s' "$summary" | tr -d '[:space:]')" ]; then
+  _summary_is_empty="true"
 fi
 
 # session_id shape gate: opencode's own token is `ses_...`-prefixed, NOT an RFC-4122 UUID
@@ -519,11 +592,19 @@ ALLOW_FILE="$ART/write_allowed.globs"
 : > "$ALLOW_FILE"
 _OLDIFS="$IFS"
 IFS=":"
+# `set -f` (noglob) around the unquoted split below: WRITE_ALLOWED entries are LITERAL
+# glob patterns destined for the scope gate's own matcher, not shell globs to be
+# expanded HERE. With globbing left on, a glob-char-bearing entry could expand against
+# files in the launcher's cwd and silently corrupt the allow-list before the gate ever
+# sees it — `set -f` makes the unquoted `for _glob in $WRITE_ALLOWED` split on IFS=":"
+# only, never pathname-expand the results.
+set -f
 for _glob in $WRITE_ALLOWED; do
   IFS="$_OLDIFS"
   [ -z "$_glob" ] && continue
   printf '%s\n' "$_glob" >> "$ALLOW_FILE"
 done
+set +f
 IFS="$_OLDIFS"
 
 # Run the gate. It prints a JSON verdict on stdout; exit 0 = pass, 1 = blocked,
@@ -558,7 +639,9 @@ fi
 # on top. A blocked verdict ALWAYS wins (a scope leak is terminal). Then: a gate
 # fault (rc 2 or unparseable) is an error; opencode timeout (124) is a timeout; any
 # other non-zero opencode exit is an error; an in-band `type:"error"` event (even on
-# exit 0) is an error (don't report a false success); otherwise success.
+# exit 0) is an error (don't report a false success); an exit-0 run with ZERO valid
+# JSONL events, or with events but no usable final text, is ALSO an error (a false
+# success would hide a silent no-op/empty-transcript run); otherwise success.
 
 blocked="false"
 status="success"
@@ -574,6 +657,8 @@ elif [ "$exit_code" = "$TIMEOUT_EXIT_CODE" ]; then
 elif [ "$exit_code" != "0" ]; then
   status="error"
 elif [ "$_opencode_saw_error" = "true" ]; then
+  status="error"
+elif [ "$_valid_event_count" -eq 0 ] || [ "$_summary_is_empty" = "true" ]; then
   status="error"
 fi
 

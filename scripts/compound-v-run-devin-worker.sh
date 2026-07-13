@@ -301,8 +301,7 @@ mkdir -p "$ART"
 # --- run the headless Devin worker --------------------------------------------
 # Pinned invocation (devin-cli 3000.1.27 — auth-free flags VERIFIED live, task-execution
 # behavior DOC-CLAIMED per adapter-devin.md):
-#   cd "$WT" && devin -p "$PROMPT" --permission-mode dangerous [--model "$MODEL"] \
-#     --export "$ART/devin_export.json" </dev/null
+#   cd "$WT" && devin -p "$PROMPT" --permission-mode dangerous [--model "$MODEL"] </dev/null
 #
 # Load-bearing facts (adapter-devin.md):
 #   * `-p, --print` = non-interactive; runs, prints the final response to stdout, exits.
@@ -314,13 +313,18 @@ mkdir -p "$ART"
 #   * No `--json`/`--output-format json` — stdout IS the final response text; captured
 #     via the supervisor's `--stdout` straight into $ART/job_result.txt (bounded by
 #     --max-output-bytes so a runaway worker can't fill the disk).
-#   * `--export` writes an ATIF conversation trace — captured for future/manual
-#     inspection, but NOT parsed here (session-id shape is auth-pending; see header).
 #   * `--model` is OPTIONAL — omitted when empty, letting devin use its configured default.
+#   * `--export` is DELIBERATELY NOT PASSED: it writes an ATIF conversation trace with
+#     no size cap of its own, outside `--max-output-bytes` (which only bounds the
+#     supervisor's own --stdout/--stderr captures) — an unbounded write a lower-trust
+#     worker fully controls the size of. This worker does not parse `--export`'s output
+#     either (session-id shape is auth-pending; see header), so there is no current
+#     consumer to justify the unbounded write. TODO(follow-on): reintroduce `--export`
+#     once (a) its output is actually parsed for session_id and (b) it is routed
+#     through a bounded capture (or devin ships its own size cap).
 
 RESULT_TXT="$ART/job_result.txt"
 STDERR_LOG="$ART/devin_stderr.log"
-EXPORT_FILE="$ART/devin_export.json"
 exit_code=0
 
 # run_devin runs the pinned `devin -p` invocation UNDER the process-group timeout
@@ -336,14 +340,12 @@ run_devin() {
       --stdout "$RESULT_TXT" --stderr "$STDERR_LOG" --max-output-bytes "$MAX_OUTPUT_BYTES" \
       -- devin -p "$(cat "$PROMPT_FILE")" \
       --permission-mode dangerous \
-      --model "$MODEL" \
-      --export "$EXPORT_FILE" </dev/null
+      --model "$MODEL" </dev/null
   else
     python3 "$SUPERVISOR" --timeout "$TIMEOUT_SEC" --grace 3 --cwd "$WT" \
       --stdout "$RESULT_TXT" --stderr "$STDERR_LOG" --max-output-bytes "$MAX_OUTPUT_BYTES" \
       -- devin -p "$(cat "$PROMPT_FILE")" \
-      --permission-mode dangerous \
-      --export "$EXPORT_FILE" </dev/null
+      --permission-mode dangerous </dev/null
   fi
 }
 
@@ -394,11 +396,19 @@ ALLOW_FILE="$ART/write_allowed.globs"
 : > "$ALLOW_FILE"
 _OLDIFS="$IFS"
 IFS=":"
+# `set -f` (noglob) around the unquoted split below: WRITE_ALLOWED entries are LITERAL
+# glob patterns destined for the scope gate's own matcher, not shell globs to be
+# expanded HERE. With globbing left on, a glob-char-bearing entry could expand against
+# files in the launcher's cwd and silently corrupt the allow-list before the gate ever
+# sees it — `set -f` makes the unquoted `for _glob in $WRITE_ALLOWED` split on IFS=":"
+# only, never pathname-expand the results.
+set -f
 for _glob in $WRITE_ALLOWED; do
   IFS="$_OLDIFS"
   [ -z "$_glob" ] && continue
   printf '%s\n' "$_glob" >> "$ALLOW_FILE"
 done
+set +f
 IFS="$_OLDIFS"
 
 # Run the gate. It prints a JSON verdict on stdout; exit 0 = pass, 1 = blocked,
