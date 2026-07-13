@@ -90,6 +90,88 @@ nonzero, no write); a negative/non-numeric cap is rejected at --init:
     pending. Replaces the driver's old two-write clear-due-then-mark-failed sequence, whose
     crash window between writes could leave a feature 'done' with no audit obligation.
 
+## CLI contract (v2.11 V1 — Scheduler Auto-Resurrection, epic-state.py component only)
+
+Everything below is OPT-IN on top of marathon: it requires BOTH `--stance marathon` AND the
+persisted `autonomy.watch` toggle (set only via `--init --stance marathon --watch`). A
+marathon epic initialized WITHOUT `--watch`, and every checkpoint epic, is untouched by any
+of this — no new top-level/`autonomy` key is ever written, so `--init`/`--update` stay
+byte-identical to v2.10. This is the CONTRACT that V2 (the watcher,
+`compound-v-epic-watch.py`) and V3 (driver/`/v:init` wiring) consume; do not change these
+shapes without updating both.
+
+epic-state.json (marathon + watch, v2.11, additive on top of v2.10's marathon shape):
+  top-level adds: "last_progress_at" (ISO `+00:00`, bumped on every marathon mutation while
+    watch is on), "lease" ({"owner_pid","claimed_at","expires_at"} | absent until the first
+    `--claim-resume`), "resume_count" (int, absent until the first `--claim-resume`).
+  `autonomy` adds: "watch": true (only ever written as `true` — a `--init` without `--watch`
+    never writes the key at all, so "absent" IS "false"), "max_resume_count" (int|null,
+    default 20, the new global breaker axis; also written only when watch is on).
+
+  --init --stance marathon --watch [--max-resume-count N]
+    Opts a marathon epic into the watch surface. `--max-resume-count` is REJECTED unless
+    `--watch` is also given (mirrors every other marathon-only-arg rejection discipline in
+    this file); a missing value defaults to 20; an explicit 'null'/'none' is unbounded
+    (same `_cap_arg` convention as the other caps).
+
+  --liveness --state S --now T [--stale-after-min 45]
+    -> {"incomplete","stale","held","lease_expired","epic_status","terminal","resume_count"}
+    (read-only; requires marathon+watch). This is the watcher's poll target. `terminal` is
+    `is_terminal(state)` (below). `incomplete` = status != "done". `held`/`lease_expired`
+    describe the CURRENT lease (`held` = a live, unexpired lease is on file; `lease_expired`
+    = a lease is on file but it is not live). `stale` = incomplete AND NOT terminal AND the
+    heartbeat (`last_progress_at`) is older than `stale_after_min` (missing/unparseable
+    FAILS SAFE as stale-eligible, mirroring `breaker_check`'s started_at fail-safe) AND the
+    lease's `owner_pid` is NOT a live OS process (belt-and-suspenders: a live owner always
+    defers the watcher even past the age threshold). Cross-reference: this is a DIFFERENT
+    granularity from the per-JOB `compound-v-liveness.py` (git+filesystem probe over a
+    dispatch run's `state.json`, one job at a time) — `--liveness` here is per-EPIC, driven
+    purely by the heartbeat + lease this file itself owns, never git/filesystem state.
+
+  --claim-resume --state S --owner-pid P --now T [--lease-ttl-min M]
+    -> {"claimed","reason":"claimed|live-lease-held|terminal|resume-cap","resume_count"}
+    THE CRUX (v2.11): ONE `fcntl.flock`-guarded atomic transaction against `<state>.lock`
+    (BLOCKING `LOCK_EX`, not `compound-v-memory.py`'s `LOCK_NB` loser-noop idiom — every
+    contender must evaluate on the merits so `reason` is always one of the four documented
+    values, never a fifth "lock busy" outcome; see `claim_resume`'s docstring for why this
+    deliberately diverges from the reused locking idiom). Inside the lock: reloads `state`
+    fresh from disk (never trusts a caller's in-memory copy), derives terminality via the
+    shared `is_terminal` classifier, uses OS time (`--now` is test-only, range-checked
+    against the real clock — see `_now_arg_in_range`), checks the lease (a live lease ⇒
+    lose, reason "live-lease-held") and `max_resume_count` (boundary: a cap of N allows
+    `resume_count` to advance 0->N across N successful claims and BLOCKS the (N+1)th —
+    mirrors `can_retry_info`'s `attempts < cap` convention elsewhere in this file; at the cap
+    the epic is ALSO tripped to `blocked_needing_human`, persisted before the lock releases,
+    so a later orphaned scheduler firing sees the terminal latch and is a harmless no-op),
+    else increments `resume_count`, records a fresh `lease` for `owner_pid`, bumps
+    `last_progress_at`, and writes atomically. A LOSING claim (`claimed: false`) is still a
+    SUCCESSFUL call (`ok`); the loser does not resume.
+
+  --renew-lease --state S --owner-pid P --now T [--lease-ttl-min M]
+    -> {"owner_pid","lease"} (atomic write). The lease holder's own periodic heartbeat —
+    extends `lease.expires_at` and bumps `last_progress_at`. Only the CURRENT recorded
+    `owner_pid` may renew; a mismatched/absent lease is a controlled error (claim first,
+    never silently take over via renew). Not flock-guarded like `--claim-resume`: only the
+    single already-claimed worker ever calls this on itself, so there is no multi-writer
+    race here. Call at an interval COMFORTABLY below `--stale-after-min` (default lease TTL
+    15min vs. the default 45min staleness threshold).
+
+  --clear-breaker ... [--reset-resume-count]
+    v2.10's human re-arm now also accepts `--reset-resume-count`, which zeroes
+    `resume_count` (re-arming the resume axis) exactly as `--reset-wall-clock` /
+    `--set-max-total-attempts` already re-arm their axes — the resume-cap breaker fits into
+    the SAME existing human-in-the-loop re-arm surface, not a parallel mechanism.
+
+is_terminal(state) -- the canonical terminal classifier (v2.11, shared by `--liveness`,
+`--claim-resume`, and `next_feature_autonomous`): True for done / breaker-tripped /
+halt_epic / exhausted-reachable-work->blocked_needing_human; False for every recoverable
+mid-epic state (needs_arbitration, needs_blocker_recording, running/reconcile,
+sample_audit_due, all-done-but-final-review-pending). Implemented as a thin wrapper over
+`next_feature_autonomous`'s own "done:"/"blocked_needing_human:" reason-token vocabulary
+(see its docstring for why: a single source of truth for the DAG-derived terminal states,
+zero risk of two independent classifiers silently drifting apart, and zero risk to
+`next_feature_autonomous`'s own already-selftested behavior, which is untouched).
+
 Usage:
   compound-v-epic-state.py --init --features features.json --epic-id E --title T --out S
   compound-v-epic-state.py --next  --state S
@@ -102,12 +184,13 @@ breakers bound counts and wall-clock hours only.
 """
 
 import argparse
+import fcntl
 import json
 import math
 import os
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 ID_RE_OK = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-"
 # Checkpoint (legacy/default) status set — UNCHANGED since v1.1. `blocked` is a MARATHON-only
@@ -125,10 +208,25 @@ _CAP_DEFAULTS = {
     "max_attempts_per_feature": 2,
     "max_no_progress_cycles": 3,
     "max_wall_clock_hours": 10,
+    "max_resume_count": 20,  # v2.11: new global breaker axis, watch-only (see build_state)
 }
 # Bound on the remembered processed-cycle-id set (Codex review #5) — global idempotency
 # without unbounded growth over an all-night run.
 _PROCESSED_CYCLE_CAP = 512
+
+# -- v2.11 (Scheduler Auto-Resurrection, V1) module-level constants -----------------------
+# Lease TTL: the default interval a --claim-resume/--renew-lease lease stays live for.
+# COMFORTABLY below _DEFAULT_STALE_AFTER_MIN so a live worker renewing on schedule never
+# lets the watcher see a stale heartbeat while it is still actively holding the lease.
+_DEFAULT_LEASE_TTL_MIN = 15
+# Staleness threshold for --liveness: set ABOVE the worst-case silent single-feature-
+# pipeline window (pre-flights + dispatch + review can legitimately run long).
+_DEFAULT_STALE_AFTER_MIN = 45
+# --now is TEST-ONLY (deterministic selftests / the concurrency selftest below) — production
+# callers never pass it, always using the real OS clock. This bounds how far --now may drift
+# from the real clock so it can never become a production lever for defeating staleness/
+# lease timing by injecting an arbitrary clock value.
+_NOW_ARG_MAX_SKEW_DAYS = 3650
 
 
 def _id_ok(s):
@@ -306,7 +404,7 @@ def build_state(features, epic_id, title, stance=None, caps=None):
         # negative/non-numeric cap up front, so it can never be persisted and then silently
         # mis-treated as unbounded at check time.
         for _cap_name in ("max_attempts_per_feature", "max_no_progress_cycles",
-                          "max_total_attempts", "max_wall_clock_hours"):
+                          "max_total_attempts", "max_wall_clock_hours", "max_resume_count"):
             if _cap_name in caps:
                 _err = _validate_cap_value(_cap_name, caps[_cap_name])
                 if _err:
@@ -335,6 +433,17 @@ def build_state(features, epic_id, title, stance=None, caps=None):
             if not isinstance(start_sha, str):
                 raise ValueError("start_sha must be a string (got %r)" % (start_sha,))
             state["autonomy"]["start_sha"] = start_sha
+        # v2.11 watch opt-in (V1): OMITTED entirely unless caps["watch"] is True — a plain
+        # marathon build_state(...) call (no caps["watch"]) keeps the existing autonomy
+        # schema AND the existing top-level key set byte-for-byte (golden tests assert this
+        # below). Only when watch is True do we add autonomy.watch/autonomy.max_resume_count
+        # and the top-level `last_progress_at` heartbeat (seeded to the same `started_at`
+        # so a freshly-initialized watch-on epic is never immediately "stale").
+        if caps.get("watch") is True:
+            state["autonomy"]["watch"] = True
+            state["autonomy"]["max_resume_count"] = _cap_or_default(
+                caps, "max_resume_count", _CAP_DEFAULTS["max_resume_count"])
+            state["last_progress_at"] = started_at
         state["final_review"] = {"status": "pending"}
         state["blocker_ledger"] = []
         state["no_progress_cycles"] = 0
@@ -738,6 +847,35 @@ def next_feature_autonomous(state):
                   % ", ".join(f["id"] for f in pending)), blocked_by
 
 
+def is_terminal(state):
+    """v2.11 (Plan-review corrections, BINDING #3): the CANONICAL terminal classifier,
+    shared by `--liveness`, `--claim-resume`, and (in spirit — see below) this file's own
+    routing. True iff the epic will never make autonomous progress again without a human:
+    done, breaker-tripped, halt_epic, or exhausted-reachable-work (all of which
+    `next_feature_autonomous` already reports via a "done: ..."/"blocked_needing_human: ..."
+    reason prefix). False for every recoverable mid-epic state: needs_arbitration,
+    needs_blocker_recording, running/reconcile, sample_audit_due, and all-done-but-
+    final-review-still-pending (that one is deliberately NOT terminal — a passed final_review
+    can still land and finish the epic without a human).
+
+    Implementation note (conservative reading of "refactor next_feature_autonomous to call
+    it"): `next_feature_autonomous`'s DAG-derived terminal facts (done/exhausted in
+    particular) are entangled with the SAME computation it needs anyway to find the next
+    runnable feature (blocking_ids, retry_runnable, due_ids, final_review...) — extracting an
+    independent is_terminal that computes all of that a SECOND time would create two places
+    that could silently drift apart on the exact same DAG walk, which is a worse outcome than
+    it not being literally the caller. Instead, is_terminal is DEFINED IN TERMS OF
+    next_feature_autonomous's already-selftested reason-token vocabulary: a single source of
+    truth, next_feature_autonomous's own body and behavior are UNTOUCHED (verified by its
+    full existing selftest suite still passing unmodified), and is_terminal can never disagree
+    with it because it IS it, read differently. `--claim-resume` and `--liveness` both call
+    is_terminal(state) directly, per the spec."""
+    if not _is_marathon(state):
+        return False
+    _, reason, _ = next_feature_autonomous(state)
+    return reason.startswith("done:") or reason.startswith("blocked_needing_human:")
+
+
 def _now_iso(dt=None):
     """Emit an ISO-8601 UTC timestamp with a `+00:00` offset (never a bare `Z`, which
     Python 3.9 cannot re-parse). An AWARE datetime in any zone is normalized to UTC
@@ -779,6 +917,68 @@ def _parse_csv_list(s):
 def _is_marathon(state):
     autonomy = state.get("autonomy")
     return isinstance(autonomy, dict) and autonomy.get("stance") == "marathon"
+
+
+def _watch_on(state):
+    """v2.11: is this marathon epic opted into the watch surface? Absent/false/not-marathon
+    are all indistinguishable — every one of them means "behave exactly like v2.10"."""
+    autonomy = state.get("autonomy")
+    return isinstance(autonomy, dict) and autonomy.get("watch") is True
+
+
+def _bump_last_progress(state, now_dt):
+    """v2.11: bump the top-level liveness heartbeat on every marathon mutation — but ONLY
+    when the epic has opted into `watch`. A pure no-op otherwise: never adds a
+    `last_progress_at` key that didn't already exist, which is the whole byte-identical
+    guarantee for a checkpoint state or a watch-off marathon."""
+    if _watch_on(state):
+        state["last_progress_at"] = _now_iso(now_dt)
+
+
+def _lease_live(state, now_dt):
+    """v2.11: a lease is 'live' iff one is recorded and `now_dt` has not yet reached its
+    `expires_at`. Fail-safe the other way from breaker_check's started_at handling: a
+    structurally malformed/missing lease can never PROVE liveness, so it is simply not
+    live — it does not block a claim (unlike a missing wall-clock started_at, which trips a
+    safety breaker; a missing lease just means nobody has claimed the epic yet)."""
+    lease = state.get("lease")
+    if not isinstance(lease, dict):
+        return False
+    exp = lease.get("expires_at")
+    if not isinstance(exp, str):
+        return False
+    try:
+        exp_dt = _parse_iso(exp)
+    except (ValueError, TypeError):
+        return False
+    return now_dt < exp_dt
+
+
+def _pid_alive(pid):
+    """POSIX liveness probe via a signal-0 kill (sends nothing — just checks whether the
+    process exists and is reachable). A permission error still means the process EXISTS
+    (owned by someone else) -> alive. Any other failure (no such process, bad pid) -> not
+    alive. Defensive against non-positive/non-int input (never raises)."""
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _now_arg_in_range(now_dt):
+    """v2.11: `--now` is test-only (deterministic selftests) — production callers of
+    --liveness/--claim-resume/--renew-lease always use the real OS clock. This sanity-bounds
+    an injected `--now` against the real clock so it can never become a production lever for
+    defeating staleness/lease timing by injecting an arbitrary value."""
+    skew_days = abs((now_dt - datetime.now(timezone.utc)).total_seconds()) / 86400.0
+    return skew_days <= _NOW_ARG_MAX_SKEW_DAYS
 
 
 def _find_feature(state, feature_id):
@@ -965,6 +1165,7 @@ def apply_update(state, feature_id, status, run_id=None, now_dt=None,
                 state["final_review"] = {"status": "pending"}
         state["total_attempts"] = _total_attempts(state)  # recompute, never trust a stale field
         _recompute_top_status(state)
+        _bump_last_progress(state, now_dt)  # v2.11: no-op unless watch is on
     else:
         sts = [f["status"] for f in state["features"]]
         if all(s == "done" for s in sts):
@@ -1006,10 +1207,11 @@ def record_disposition(state, feature_id, disposition, reason=None,
         "recorded_at": _now_iso(now_dt),
     }
     state["total_attempts"] = _total_attempts(state)  # recompute on every marathon mutation (#9)
+    _bump_last_progress(state, now_dt)  # v2.11: no-op unless watch is on
     return True, None
 
 
-def record_final_review(state, status):
+def record_final_review(state, status, now_dt=None):
     """A6: persist the final cross-feature re-verification gate. `next_feature_autonomous`
     (A2) only reports 'done' once all features are done AND this is 'passed'.
 
@@ -1035,6 +1237,7 @@ def record_final_review(state, status):
     state["final_review"] = {"status": status}
     state["total_attempts"] = _total_attempts(state)  # recompute on every marathon mutation (#9)
     _recompute_top_status(state)
+    _bump_last_progress(state, now_dt or datetime.now(timezone.utc))  # v2.11: watch-gated no-op
     return True, None
 
 
@@ -1074,11 +1277,18 @@ def _effective_cap(autonomy, name, default):
 
 def breaker_check(state, now_dt):
     """A7: READ-ONLY. {"tripped","which":[...],"detail":{...}}. Trips on
-    total_attempts>=max_total_attempts, no_progress_cycles>=max_no_progress_cycles, or
-    wall-clock(now - autonomy.started_at)>=max_wall_clock_hours. Counts and hours only —
-    never a fabricated cost. A non-marathon state (no `autonomy`) never trips. Caps are
-    resolved fail-SAFE: a missing cap key uses the documented default, not unbounded
-    (Codex review #4)."""
+    total_attempts>=max_total_attempts, no_progress_cycles>=max_no_progress_cycles,
+    wall-clock(now - autonomy.started_at)>=max_wall_clock_hours, or (v2.11)
+    resume_count>=max_resume_count. Counts and hours only — never a fabricated cost. A
+    non-marathon state (no `autonomy`) never trips. Caps are resolved fail-SAFE: a missing
+    cap key uses the documented default, not unbounded (Codex review #4).
+
+    v2.11: `resume_count`/`max_resume_count` are absent on every pre-v2.11 and every
+    watch-off state, so this new axis is a pure no-op for them (0 >= the default cap of 20
+    is always False) — `--claim-resume` is the primary writer of `resume_count`, but folding
+    the cap into `breaker_check`/`trip_breaker` too means `--breaker-check`/`--trip-breaker`
+    (and `--clear-breaker`'s fail-safe re-trip warning, which calls `breaker_check`
+    internally) stay the single source of truth for ALL four axes, not just three."""
     autonomy = state.get("autonomy") if isinstance(state.get("autonomy"), dict) else {}
     which = []
     detail = {}
@@ -1132,6 +1342,15 @@ def breaker_check(state, now_dt):
                 detail["max_wall_clock_hours"] = {"value": round(elapsed_hours, 4),
                                                   "cap": max_hours}
 
+    # v2.11: resume_count axis. Boundary mirrors can_retry_info's `attempts < cap`
+    # convention elsewhere in this file: a cap of N allows N successful claims (resume_count
+    # 0..N-1 at check time) and trips once resume_count has already reached N.
+    resume_count = state.get("resume_count", 0)
+    max_resume = _effective_cap(autonomy, "max_resume_count", _CAP_DEFAULTS["max_resume_count"])
+    if max_resume is not None and resume_count >= max_resume:
+        which.append("max_resume_count")
+        detail["max_resume_count"] = {"value": resume_count, "cap": max_resume}
+
     return {"tripped": bool(which), "which": which, "detail": detail}
 
 
@@ -1145,13 +1364,14 @@ def trip_breaker(state, now_dt):
         state["breaker_trip"] = {"which": result["which"], "detail": result["detail"],
                                  "tripped_at": _now_iso(now_dt)}
         state["total_attempts"] = _total_attempts(state)  # recompute on every mutation (#9)
+        _bump_last_progress(state, now_dt)  # v2.11: no-op unless watch is on
         result["mutated"] = True
     else:
         result["mutated"] = False
     return result
 
 
-def record_progress_cycle(state, cycle_id):
+def record_progress_cycle(state, cycle_id, now_dt=None):
     """A7: one atomic, idempotent progress-boundary marker keyed by `cycle_id`. Compares
     the current `done` count against the last-recorded count: more done -> reset
     no_progress_cycles to 0; same or fewer -> increment it.
@@ -1181,6 +1401,7 @@ def record_progress_cycle(state, cycle_id):
         processed = processed[-_PROCESSED_CYCLE_CAP:]
     state["processed_cycle_ids"] = processed
     state["total_attempts"] = _total_attempts(state)  # recompute on every marathon mutation (#9)
+    _bump_last_progress(state, now_dt or datetime.now(timezone.utc))  # v2.11: watch-gated no-op
     return {"cycle_id": cycle_id, "no_progress_cycles": state["no_progress_cycles"],
             "replayed": False}
 
@@ -1193,10 +1414,12 @@ _BREAKER_AXIS_HINTS = {
     "max_total_attempts": "raise the cap with --set-max-total-attempts",
     "max_wall_clock_hours": "restart the clock with --reset-wall-clock (or raise "
                              "autonomy.max_wall_clock_hours by hand)",
+    "max_resume_count": "re-arm with --clear-breaker --reset-resume-count",
 }
 
 
-def clear_breaker(state, now_dt, reset_wall_clock=False, set_max_total_attempts=_UNSET):
+def clear_breaker(state, now_dt, reset_wall_clock=False, set_max_total_attempts=_UNSET,
+                   reset_resume_count=False):
     """The human's re-arm after a breaker trip / halt (v2.10 resume support). Marathon-only.
 
     Clears the `blocked_needing_human` latch: removes any `breaker_trip` record, resets
@@ -1208,7 +1431,9 @@ def clear_breaker(state, now_dt, reset_wall_clock=False, set_max_total_attempts=
     `reset_wall_clock=True` restarts the wall-clock axis (`autonomy.started_at = now`).
     `set_max_total_attempts` (an int, None for explicit-unbounded, or the `_UNSET` sentinel
     for "leave it alone") re-arms that axis, validated with the same non-negative/finite
-    rules as --init.
+    rules as --init. `reset_resume_count=True` (v2.11) re-arms the resume axis by zeroing
+    `resume_count` — the SAME opt-in-flag shape as `reset_wall_clock`, since (unlike
+    `max_total_attempts`, a cap you raise) `resume_count` is a genuine counter you reset.
 
     Fail-safe: after clearing, `breaker_check` is re-run against the (possibly re-armed)
     state; if it would IMMEDIATELY re-trip (e.g. total_attempts is still >= max_total_attempts
@@ -1227,6 +1452,10 @@ def clear_breaker(state, now_dt, reset_wall_clock=False, set_max_total_attempts=
     prior_no_progress = state.get("no_progress_cycles", 0)
     state["no_progress_cycles"] = 0
 
+    prior_resume_count = state.get("resume_count", 0)
+    if reset_resume_count:
+        state["resume_count"] = 0
+
     autonomy = state.setdefault("autonomy", {})
     if reset_wall_clock:
         autonomy["started_at"] = _now_iso(now_dt)
@@ -1237,6 +1466,7 @@ def clear_breaker(state, now_dt, reset_wall_clock=False, set_max_total_attempts=
     # instead of its no-op early-return for 'blocked_needing_human'.
     state["status"] = "running"
     state["total_attempts"] = _total_attempts(state)  # recompute on every mutation (#9)
+    _bump_last_progress(state, now_dt)  # v2.11: no-op unless watch is on
     _recompute_top_status(state)
 
     summary = {
@@ -1245,6 +1475,8 @@ def clear_breaker(state, now_dt, reset_wall_clock=False, set_max_total_attempts=
         "wall_clock_reset": bool(reset_wall_clock),
         "max_total_attempts_set": (set_max_total_attempts
                                     if set_max_total_attempts is not _UNSET else None),
+        "resume_count_reset": bool(reset_resume_count),
+        "resume_count_reset_from": prior_resume_count if reset_resume_count else None,
         "epic_status": state["status"],
     }
 
@@ -1260,7 +1492,7 @@ def clear_breaker(state, now_dt, reset_wall_clock=False, set_max_total_attempts=
     return True, None, summary
 
 
-def clear_disposition(state, feature_id):
+def clear_disposition(state, feature_id, now_dt=None):
     """Clears a feature's stored `disposition` (v2.10 resume support). Marathon-only. This
     is the override for a sticky `halt_epic`/`halt_feature` verdict — once cleared,
     `next_feature_autonomous` no longer short-circuits on it (a fresh disposition can still
@@ -1272,10 +1504,11 @@ def clear_disposition(state, feature_id):
         return False, "no feature %r" % feature_id
     hit["disposition"] = None
     state["total_attempts"] = _total_attempts(state)  # recompute on every mutation (#9)
+    _bump_last_progress(state, now_dt or datetime.now(timezone.utc))  # v2.11: watch-gated no-op
     return True, None
 
 
-def mark_sample_audit_due(state, feature_id):
+def mark_sample_audit_due(state, feature_id, now_dt=None):
     """FIX 2 (v2.10 crash-safety follow-up): sets `feature.sample_audit_due = True` — a
     durable obligation recorded BEFORE the PASS sample-audit runs, so a breaker trip/crash
     in that window (after a sampled SUCCESS is marked 'done' but before its sample-audit
@@ -1293,10 +1526,11 @@ def mark_sample_audit_due(state, feature_id):
     # recorded) must not survive marking a sample-audit due — recompute now, not just at the
     # next unrelated mutation.
     _recompute_top_status(state)
+    _bump_last_progress(state, now_dt or datetime.now(timezone.utc))  # v2.11: watch-gated no-op
     return True, None
 
 
-def clear_sample_audit_due(state, feature_id):
+def clear_sample_audit_due(state, feature_id, now_dt=None):
     """The counterpart to `mark_sample_audit_due` — the sample-audit passed, so the
     obligation is cleared and terminal completion (and a passed final_review) can proceed
     again. Marathon-only. Returns (ok, error|None)."""
@@ -1308,10 +1542,11 @@ def clear_sample_audit_due(state, feature_id):
     hit["sample_audit_due"] = False
     state["total_attempts"] = _total_attempts(state)  # recompute on every mutation (#9)
     _recompute_top_status(state)
+    _bump_last_progress(state, now_dt or datetime.now(timezone.utc))  # v2.11: watch-gated no-op
     return True, None
 
 
-def record_audit_failed(state, feature_id, last_error=None):
+def record_audit_failed(state, feature_id, last_error=None, now_dt=None):
     """FIX B (atomic audit-failed, v2.10 correctness follow-up): the driver's sample-audit-
     ISSUES path used to be TWO separate CLI writes — clear_sample_audit_due(...) and a
     separate --update --status failed — so a crash between them could leave a feature 'done'
@@ -1351,6 +1586,7 @@ def record_audit_failed(state, feature_id, last_error=None):
             state["final_review"] = {"status": "pending"}
     state["total_attempts"] = _total_attempts(state)  # recompute on every mutation (#9)
     _recompute_top_status(state)
+    _bump_last_progress(state, now_dt or datetime.now(timezone.utc))  # v2.11: watch-gated no-op
     return True, None
 
 
@@ -1435,7 +1671,7 @@ def validate_marathon_state(state):
     autonomy = state.get("autonomy")
     if isinstance(autonomy, dict):
         for cap_name in ("max_attempts_per_feature", "max_no_progress_cycles",
-                         "max_total_attempts", "max_wall_clock_hours"):
+                         "max_total_attempts", "max_wall_clock_hours", "max_resume_count"):
             if cap_name in autonomy:
                 e = _validate_cap_value("autonomy.%s" % cap_name, autonomy[cap_name])
                 if e:
@@ -1458,14 +1694,225 @@ def validate_marathon_state(state):
         if "start_sha" in autonomy and not isinstance(autonomy["start_sha"], str):
             errs.append("autonomy.start_sha is malformed %r (want a string or absent)"
                         % (autonomy["start_sha"],))
+        # v2.11: watch is bool-or-absent — a hand-edited non-bool (e.g. "true" the string, or
+        # a truthy int) must be rejected, not silently coerced.
+        if "watch" in autonomy and not isinstance(autonomy["watch"], bool):
+            errs.append("autonomy.watch is malformed %r (want a bool or absent)"
+                        % (autonomy["watch"],))
+    # v2.11: last_progress_at is an ISO-8601 string-or-absent (absent = never bumped yet, or
+    # watch is off — not an error either way).
+    lpa = state.get("last_progress_at")
+    if lpa is not None:
+        if not isinstance(lpa, str):
+            errs.append("'last_progress_at' is malformed %r (want an ISO-8601 string or "
+                        "absent)" % (lpa,))
+        else:
+            try:
+                _parse_iso(lpa)
+            except (ValueError, TypeError):
+                errs.append("'last_progress_at' %r is not a valid ISO-8601 timestamp" % (lpa,))
+    # v2.11: resume_count is a non-negative int-or-absent (absent = never claimed yet).
+    rc = state.get("resume_count")
+    if rc is not None and not _is_nonneg_int(rc):
+        errs.append("'resume_count' is malformed %r (want a non-negative int or absent)" % (rc,))
+    # v2.11: lease is {"owner_pid": int>0, "claimed_at": ISO str, "expires_at": ISO str}, or
+    # absent entirely (never claimed yet) — every key is required together when present (a
+    # partial lease is exactly the kind of hand-edited corruption this validator exists for).
+    lease = state.get("lease")
+    if lease is not None:
+        if not isinstance(lease, dict):
+            errs.append("'lease' is malformed %r (want an object or absent)" % (lease,))
+        else:
+            owner_pid = lease.get("owner_pid")
+            if not (isinstance(owner_pid, int) and not isinstance(owner_pid, bool)
+                    and owner_pid > 0):
+                errs.append("lease.owner_pid is malformed %r (want a positive int)"
+                            % (owner_pid,))
+            for k in ("claimed_at", "expires_at"):
+                v = lease.get(k)
+                if not isinstance(v, str):
+                    errs.append("lease.%s is malformed %r (want an ISO-8601 string)" % (k, v))
+                else:
+                    try:
+                        _parse_iso(v)
+                    except (ValueError, TypeError):
+                        errs.append("lease.%s %r is not a valid ISO-8601 timestamp" % (k, v))
     return errs
+
+
+def liveness_check(state, now_dt, stale_after_min=_DEFAULT_STALE_AFTER_MIN):
+    """v2.11 `--liveness` (Plan-review corrections, V1 #2): the watcher's single read-only
+    poll target. Never mutates `state`. Returns exactly:
+      {"incomplete","stale","held","lease_expired","epic_status","terminal","resume_count"}
+
+    - `terminal` = `is_terminal(state)` — the shared classifier.
+    - `incomplete` = `state["status"] != "done"` (a `blocked_needing_human` epic is BOTH
+      terminal and incomplete — it halted before finishing successfully).
+    - `held` = a currently-live lease is on file (`_lease_live`).
+    - `lease_expired` = a lease is on file but it is NOT live (distinct from "no lease was
+      ever recorded", which is neither held nor expired — just unclaimed).
+    - `stale` = incomplete AND NOT terminal AND the heartbeat is past `stale_after_min` AND
+      the lease's `owner_pid` is not a live OS process (belt-and-suspenders: an alive owner
+      always defers the watcher, even past the age threshold — advisory only, this function
+      never itself decides to resume; that is `--claim-resume`'s job). A missing/unparseable
+      `last_progress_at` FAILS SAFE as stale-eligible (mirrors `breaker_check`'s
+      started_at fail-safe: an unproven heartbeat can never prove liveness)."""
+    terminal = is_terminal(state)
+    incomplete = state.get("status") != "done"
+    lease = state.get("lease") if isinstance(state.get("lease"), dict) else None
+    live = _lease_live(state, now_dt)
+    lease_expired = bool(lease) and not live
+    owner_pid = lease.get("owner_pid") if lease else None
+    owner_alive = _pid_alive(owner_pid) if isinstance(owner_pid, int) else False
+    lp = state.get("last_progress_at")
+    time_stale = True  # fail-safe default: an unproven heartbeat reads as stale-eligible
+    if isinstance(lp, str):
+        try:
+            age_min = (now_dt - _parse_iso(lp)).total_seconds() / 60.0
+            time_stale = age_min >= stale_after_min
+        except (ValueError, TypeError):
+            time_stale = True
+    stale = bool(incomplete and not terminal and time_stale and not owner_alive)
+    return {
+        "incomplete": incomplete,
+        "stale": stale,
+        "held": live,
+        "lease_expired": lease_expired,
+        "epic_status": state.get("status"),
+        "terminal": terminal,
+        "resume_count": state.get("resume_count", 0),
+    }
+
+
+def renew_lease(state, owner_pid, now_dt, lease_ttl_min=_DEFAULT_LEASE_TTL_MIN):
+    """v2.11 `--renew-lease`: the lease holder's own periodic heartbeat. Extends
+    `lease.expires_at` to `now + lease_ttl_min` and bumps `last_progress_at`. Only the
+    CURRENT recorded `owner_pid` may renew — a caller with no live lease, or a mismatched/
+    foreign `owner_pid`, must `--claim-resume` first; renew never silently takes over a lease
+    it doesn't already hold (that would defeat the whole point of the lease). Not
+    flock-guarded like `--claim-resume`: only the single already-claimed worker ever calls
+    this on itself, so there is no multi-writer race to arbitrate here — an ordinary
+    mutate-then-let-the-caller-atomic-write path (same as every other mutator in this file)
+    is sufficient. Returns (ok, error|None)."""
+    if not _is_marathon(state):
+        return False, "--renew-lease requires a marathon-stance epic"
+    if not _watch_on(state):
+        return False, ("--renew-lease requires the marathon epic's watch opt-in (re-init "
+                       "with --stance marathon --watch)")
+    lease = state.get("lease")
+    if not isinstance(lease, dict) or lease.get("owner_pid") != owner_pid:
+        return False, ("no lease held by owner_pid %r to renew — --claim-resume first"
+                       % (owner_pid,))
+    lease["expires_at"] = _now_iso(now_dt + timedelta(minutes=lease_ttl_min))
+    _bump_last_progress(state, now_dt)
+    return True, None
+
+
+def claim_resume(state_path, owner_pid, now_dt, lease_ttl_min=_DEFAULT_LEASE_TTL_MIN):
+    """v2.11 `--claim-resume` — THE CRUX (Plan-review corrections, V1 #1, BLOCKER). ONE
+    `fcntl.flock`-guarded atomic transaction against `<state_path>.lock`.
+
+    Deliberately diverges from the reused `compound-v-memory.py:542` idiom in ONE respect:
+    that idiom is `fcntl.flock(fd, LOCK_EX | LOCK_NB)` with a loser-noop (best-effort — "someone
+    else is already refreshing, just skip"). Here every contender MUST evaluate on the merits
+    so its `reason` is always one of the four documented values ("claimed", "live-lease-held",
+    "terminal", "resume-cap") — never a fifth "lock busy" outcome that the documented CLI
+    contract has no slot for. So this uses a BLOCKING `fcntl.flock(fd, LOCK_EX)` instead of
+    `LOCK_NB`. The underlying lock+unlock mechanism (`fcntl.flock` on a sidecar `.lock` file,
+    released via `LOCK_UN` in a `finally`) is the same idiom; only the NB/blocking choice
+    differs, for the reason above. A plain advisory POSIX flock tied to the open fd is
+    released automatically if this process dies while holding it, so a blocking wait here can
+    never deadlock past a crashed holder.
+
+    Inside the lock:
+      1. Reload `state_path` from disk (never trusts a caller's possibly-stale in-memory
+         copy — the whole point of taking the lock is to see the freshest on-disk truth).
+      2. Validate stance/watch/structure (marathon + watch required; `validate_marathon_state`
+         must be clean) — a structural problem is `ok=False`, no write.
+      3. `is_terminal(state)` -> lose with reason "terminal" (no write: nothing changed).
+      4. `_lease_live(state, now_dt)` -> lose with reason "live-lease-held" (no write).
+      5. `resume_count >= max_resume_count` (boundary: mirrors `can_retry_info`'s
+         `attempts < cap` convention elsewhere in this file — a cap of N allows N successful
+         claims and blocks the (N+1)th, which is what this check catches BEFORE incrementing)
+         -> trip to `blocked_needing_human` (same `breaker_trip` shape `trip_breaker` writes,
+         so `--clear-breaker` clears it uniformly), persist, lose with reason "resume-cap".
+         The persisted latch means a later orphaned scheduler firing sees a terminal state on
+         its own next `--claim-resume` and is a harmless no-op (reason "terminal").
+      6. Else: WIN — increment `resume_count`, record a fresh `lease` for `owner_pid`, bump
+         `last_progress_at`, atomic-write, reason "claimed".
+
+    Returns (ok, result|None, error|None):
+      - `ok=False` only for a structural problem (lock/read failure, non-marathon/non-watch
+        state, a `validate_marathon_state` error) — no write in that case.
+      - `ok=True` always carries a `result` dict {"claimed","reason","resume_count"}. A LOSING
+        claim is still `ok=True` — losing is an expected, successful outcome of the
+        transaction, not a script failure; the loser simply does not resume."""
+    lock_path = state_path + ".lock"
+    lock_dir = os.path.dirname(os.path.abspath(lock_path)) or "."
+    if not os.path.isdir(lock_dir):
+        os.makedirs(lock_dir)
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)  # BLOCKING — see docstring for why not LOCK_NB
+        try:
+            state = _read_json(state_path)
+        except (OSError, ValueError) as e:
+            return False, None, "could not read %r: %s" % (state_path, e)
+        if not _is_marathon(state):
+            return False, None, "--claim-resume requires a marathon-stance epic"
+        if not _watch_on(state):
+            return False, None, ("--claim-resume requires the marathon epic's watch opt-in "
+                                 "(re-init with --stance marathon --watch)")
+        merrs = validate_marathon_state(state)
+        if merrs:
+            return False, None, "epic-state error: %s" % "; ".join(merrs)
+
+        resume_count = state.get("resume_count", 0)
+
+        if is_terminal(state):
+            return True, {"claimed": False, "reason": "terminal",
+                          "resume_count": resume_count}, None
+
+        if _lease_live(state, now_dt):
+            return True, {"claimed": False, "reason": "live-lease-held",
+                          "resume_count": resume_count}, None
+
+        autonomy = state.get("autonomy", {})
+        max_resume = _effective_cap(autonomy, "max_resume_count",
+                                    _CAP_DEFAULTS["max_resume_count"])
+        if max_resume is not None and resume_count >= max_resume:
+            state["status"] = "blocked_needing_human"
+            state["breaker_trip"] = {"which": ["max_resume_count"],
+                                     "detail": {"value": resume_count, "cap": max_resume},
+                                     "tripped_at": _now_iso(now_dt)}
+            _bump_last_progress(state, now_dt)
+            _atomic_write_json(state_path, state)
+            return True, {"claimed": False, "reason": "resume-cap",
+                          "resume_count": resume_count}, None
+
+        new_count = resume_count + 1
+        state["resume_count"] = new_count
+        state["lease"] = {"owner_pid": owner_pid, "claimed_at": _now_iso(now_dt),
+                          "expires_at": _now_iso(now_dt + timedelta(minutes=lease_ttl_min))}
+        _bump_last_progress(state, now_dt)
+        _atomic_write_json(state_path, state)
+        return True, {"claimed": True, "reason": "claimed", "resume_count": new_count}, None
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
 
 def _atomic_write_json(path, obj):
     """Atomic state write: tmp file in the SAME directory + os.replace (mirrors the idiom
-    at compound-v-fastpath-run.py:704) — a reader can never observe a truncated write.
-    No cross-process lock in v2.10 (the marathon is single-process; see the design spec's
-    Global Constraints)."""
+    at compound-v-fastpath-run.py:704) — a reader can never observe a truncated write. No
+    cross-process lock HERE — the marathon is still single-writer-at-a-time by construction
+    for every v2.10 command (unchanged). v2.11's `--claim-resume` is the one exception that
+    genuinely needs multi-writer arbitration (a scheduler can fire concurrently with a still-
+    running worker); it wraps ITS OWN read-reload-write sequence in an external
+    `fcntl.flock`(see `claim_resume`) and still calls this same unlocked primitive for the
+    actual write, exactly like every other mutator in this file."""
     d = os.path.dirname(os.path.abspath(path)) or "."
     if not os.path.isdir(d):
         os.makedirs(d)
@@ -1485,6 +1932,22 @@ def _atomic_write_json(path, obj):
 def _read_json(path):
     with open(path, "r", errors="replace") as fh:
         return json.load(fh)
+
+
+def _cr_worker(state_path, owner_pid, now_iso, barrier, q):
+    """Module-level (picklable) worker for the --claim-resume concurrency selftest below —
+    must live at module scope for multiprocessing's 'spawn' start method (the macOS default)
+    to locate it in the freshly re-imported child. Waits on a shared Barrier so all N
+    processes call `claim_resume` at (as close to) the same instant as the OS scheduler
+    allows, exercising the real cross-process `fcntl.flock` contention path — not just
+    in-process threading, which Python's GIL could mask bugs under."""
+    try:
+        barrier.wait(timeout=10)
+        now_dt = _parse_iso(now_iso)
+        ok, result, err = claim_resume(state_path, owner_pid, now_dt)
+        q.put((ok, result, err))
+    except Exception as e:  # pragma: no cover - defensive; surfaces in the parent's queue
+        q.put((False, None, "worker exception: %r" % (e,)))
 
 
 def _selftest():
@@ -2707,6 +3170,505 @@ def _selftest():
     check("start-sha: checkpoint build_state carries no autonomy/start_sha (unaffected)",
           "autonomy" not in plain_sha)
 
+    # ================================================================
+    # v2.11 (Scheduler Auto-Resurrection, V1) — epic-state.py component
+    # ================================================================
+
+    # --- is_terminal: the canonical classifier --------------------------------------------
+    it_done = build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon", caps={})
+    apply_update(it_done, "a", "running", now_dt=T0)
+    apply_update(it_done, "a", "done", now_dt=T0)
+    record_final_review(it_done, "passed", now_dt=T0)
+    check("v2.11 is_terminal: done -> True", is_terminal(it_done) is True)
+
+    it_breaker = build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon", caps={})
+    it_breaker["status"] = "blocked_needing_human"
+    check("v2.11 is_terminal: breaker-tripped (status latch) -> True",
+          is_terminal(it_breaker) is True)
+
+    it_halt_feats = [{"id": "x", "depends_on": []}, {"id": "y", "depends_on": []}]
+    it_halt = build_state(it_halt_feats, "e", "E", stance="marathon", caps={})
+    it_halt["features"][0]["status"] = "failed"
+    it_halt["features"][0]["disposition"] = {"disposition": "halt_epic"}
+    check("v2.11 is_terminal: halt_epic disposition -> True", is_terminal(it_halt) is True)
+
+    it_exh_feats = [{"id": "x", "depends_on": []}, {"id": "z", "depends_on": ["x"]}]
+    it_exh = build_state(it_exh_feats, "e", "E", stance="marathon", caps={})
+    it_exh["features"][0]["status"] = "failed"
+    it_exh["features"][0]["disposition"] = {"disposition": "halt_feature"}
+    check("v2.11 is_terminal: exhausted-reachable-work -> True", is_terminal(it_exh) is True)
+
+    it_arb = build_state([{"id": "x", "depends_on": []}], "e", "E", stance="marathon", caps={})
+    it_arb["features"][0]["status"] = "failed"  # no disposition recorded
+    check("v2.11 is_terminal: needs_arbitration -> NOT terminal", is_terminal(it_arb) is False)
+
+    it_blkrec_feats = [{"id": "a", "depends_on": []}]
+    it_blkrec = build_state(it_blkrec_feats, "e", "E", stance="marathon", caps={})
+    apply_update(it_blkrec, "a", "running", now_dt=T0)
+    apply_update(it_blkrec, "a", "failed", now_dt=T0)
+    record_disposition(it_blkrec, "a", "blocked_external", now_dt=T0)
+    check("v2.11 is_terminal: needs_blocker_recording -> NOT terminal",
+          is_terminal(it_blkrec) is False)
+
+    it_run = build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon", caps={})
+    it_run["features"][0]["status"] = "running"
+    check("v2.11 is_terminal: running/reconcile -> NOT terminal", is_terminal(it_run) is False)
+
+    it_sa = build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon", caps={})
+    apply_update(it_sa, "a", "running", now_dt=T0)
+    apply_update(it_sa, "a", "done", now_dt=T0)
+    mark_sample_audit_due(it_sa, "a", now_dt=T0)
+    check("v2.11 is_terminal: sample_audit_due -> NOT terminal", is_terminal(it_sa) is False)
+
+    it_prfr = build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon", caps={})
+    apply_update(it_prfr, "a", "running", now_dt=T0)
+    apply_update(it_prfr, "a", "done", now_dt=T0)  # final_review still pending
+    check("v2.11 is_terminal: all-done-but-final-review-pending -> NOT terminal",
+          is_terminal(it_prfr) is False)
+
+    it_chk = build_state([{"id": "a", "depends_on": []}], "e", "E")  # checkpoint
+    check("v2.11 is_terminal: a checkpoint (non-marathon) state -> always False",
+          is_terminal(it_chk) is False)
+
+    # --- build_state: v2.11 watch schema ---------------------------------------------------
+    v11_feats = [{"id": "a", "depends_on": []}]
+    v11_watch_off = build_state(v11_feats, "e", "E", stance="marathon", caps={})
+    check("v2.11: watch-off marathon build_state has no 'watch' key in autonomy",
+          "watch" not in v11_watch_off["autonomy"])
+    check("v2.11: watch-off marathon build_state has no top-level 'last_progress_at' key",
+          "last_progress_at" not in v11_watch_off)
+    check("v2.11: watch-off marathon build_state has no 'lease'/'resume_count' keys",
+          "lease" not in v11_watch_off and "resume_count" not in v11_watch_off)
+    check("v2.11: watch-off marathon autonomy key set UNCHANGED from v2.10 (still exactly 6)",
+          set(v11_watch_off["autonomy"].keys()) == {
+              "stance", "max_attempts_per_feature", "max_no_progress_cycles",
+              "max_total_attempts", "max_wall_clock_hours", "started_at"})
+
+    v11_live_started = "2026-01-01T00:00:00+00:00"
+    v11_watch_on = build_state(v11_feats, "e", "E", stance="marathon",
+                               caps={"watch": True, "started_at": v11_live_started})
+    check("v2.11: watch-on marathon build_state autonomy.watch is True",
+          v11_watch_on["autonomy"]["watch"] is True)
+    check("v2.11: watch-on marathon build_state default max_resume_count == 20",
+          v11_watch_on["autonomy"]["max_resume_count"] == 20)
+    check("v2.11: watch-on marathon build_state seeds last_progress_at == started_at",
+          v11_watch_on["last_progress_at"] == v11_watch_on["autonomy"]["started_at"]
+          == v11_live_started)
+
+    v11_watch_on_cap = build_state(v11_feats, "e", "E", stance="marathon",
+                                   caps={"watch": True, "max_resume_count": 5})
+    check("v2.11: explicit --max-resume-count is honored",
+          v11_watch_on_cap["autonomy"]["max_resume_count"] == 5)
+
+    # --- Golden: byte-identical guarantees --------------------------------------------------
+    v11_chk = build_state(v11_feats, "e", "E")
+    check("v2.11 golden: checkpoint build_state exact top-level keys UNCHANGED",
+          set(v11_chk.keys()) == {"epic_id", "title", "status", "features"})
+
+    apply_update(v11_watch_off, "a", "running", now_dt=T0)
+    apply_update(v11_watch_off, "a", "done", now_dt=T0)
+    check("v2.11 golden: watch-off marathon --update adds NO last_progress_at/lease/"
+          "resume_count", "last_progress_at" not in v11_watch_off
+          and "lease" not in v11_watch_off and "resume_count" not in v11_watch_off)
+    check("v2.11 golden: watch-off marathon --update top-level key set UNCHANGED from v2.10",
+          set(v11_watch_off.keys()) == {"epic_id", "title", "status", "features", "autonomy",
+                                        "final_review", "blocker_ledger", "no_progress_cycles",
+                                        "total_attempts"})
+
+    # --- v2.11: watch-ON mutations bump last_progress_at (the mutation-path contract) ------
+    def _v11_fresh_watch_state():
+        return build_state(v11_feats, "e", "E", stance="marathon",
+                           caps={"watch": True, "started_at": "2020-01-01T00:00:00+00:00"})
+
+    t_new = _parse_iso("2027-01-01T00:00:00+00:00")
+
+    v11_bump = build_state(v11_feats, "e", "E", stance="marathon",
+                           caps={"watch": True, "started_at": v11_live_started})
+    t_before = v11_bump["last_progress_at"]
+    apply_update(v11_bump, "a", "running", now_dt=_parse_iso("2026-06-01T00:00:00+00:00"))
+    check("v2.11: watch-on apply_update bumps last_progress_at forward",
+          v11_bump["last_progress_at"] == "2026-06-01T00:00:00+00:00" != t_before)
+
+    s_rd = _v11_fresh_watch_state()
+    record_disposition(s_rd, "a", "retry_fix", now_dt=t_new)
+    check("v2.11: record_disposition bumps last_progress_at when watch is on",
+          s_rd["last_progress_at"] == _now_iso(t_new))
+
+    s_rfr = _v11_fresh_watch_state()
+    apply_update(s_rfr, "a", "running", now_dt=t_new)
+    apply_update(s_rfr, "a", "done", now_dt=t_new)
+    record_final_review(s_rfr, "passed", now_dt=t_new)
+    check("v2.11: record_final_review bumps last_progress_at when watch is on",
+          s_rfr["last_progress_at"] == _now_iso(t_new))
+
+    s_rpc = _v11_fresh_watch_state()
+    record_progress_cycle(s_rpc, "v11-c1", now_dt=t_new)
+    check("v2.11: record_progress_cycle bumps last_progress_at when watch is on",
+          s_rpc["last_progress_at"] == _now_iso(t_new))
+
+    s_tb = build_state(v11_feats, "e", "E", stance="marathon",
+                       caps={"watch": True, "max_total_attempts": 0,
+                             "started_at": "2020-01-01T00:00:00+00:00"})
+    trip_breaker(s_tb, t_new)
+    check("v2.11: trip_breaker bumps last_progress_at when it actually trips",
+          s_tb["last_progress_at"] == _now_iso(t_new))
+
+    s_cb = _v11_fresh_watch_state()
+    s_cb["status"] = "blocked_needing_human"
+    clear_breaker(s_cb, t_new)
+    check("v2.11: clear_breaker bumps last_progress_at when watch is on",
+          s_cb["last_progress_at"] == _now_iso(t_new))
+
+    s_cd = _v11_fresh_watch_state()
+    record_disposition(s_cd, "a", "halt_epic", now_dt=_parse_iso("2020-01-01T00:00:00+00:00"))
+    clear_disposition(s_cd, "a", now_dt=t_new)
+    check("v2.11: clear_disposition bumps last_progress_at when watch is on",
+          s_cd["last_progress_at"] == _now_iso(t_new))
+
+    s_ms = _v11_fresh_watch_state()
+    apply_update(s_ms, "a", "running", now_dt=_parse_iso("2020-01-01T00:00:00+00:00"))
+    apply_update(s_ms, "a", "done", now_dt=_parse_iso("2020-01-01T00:00:00+00:00"))
+    mark_sample_audit_due(s_ms, "a", now_dt=t_new)
+    check("v2.11: mark_sample_audit_due bumps last_progress_at when watch is on",
+          s_ms["last_progress_at"] == _now_iso(t_new))
+    t_clear = _parse_iso("2028-01-01T00:00:00+00:00")
+    clear_sample_audit_due(s_ms, "a", now_dt=t_clear)
+    check("v2.11: clear_sample_audit_due bumps last_progress_at when watch is on",
+          s_ms["last_progress_at"] == _now_iso(t_clear))
+
+    s_raf = _v11_fresh_watch_state()
+    apply_update(s_raf, "a", "running", now_dt=_parse_iso("2020-01-01T00:00:00+00:00"))
+    apply_update(s_raf, "a", "done", now_dt=_parse_iso("2020-01-01T00:00:00+00:00"))
+    record_audit_failed(s_raf, "a", now_dt=t_new)
+    check("v2.11: record_audit_failed bumps last_progress_at when watch is on",
+          s_raf["last_progress_at"] == _now_iso(t_new))
+
+    # --- _lease_live / _pid_alive ------------------------------------------------------------
+    check("v2.11 _lease_live: no lease -> False", _lease_live({}, t_new) is False)
+    check("v2.11 _lease_live: live lease (future expiry) -> True", _lease_live(
+        {"lease": {"owner_pid": 1,
+                  "expires_at": _now_iso(_parse_iso("2027-01-02T00:00:00+00:00"))}},
+        t_new) is True)
+    check("v2.11 _lease_live: expired lease -> False", _lease_live(
+        {"lease": {"owner_pid": 1,
+                  "expires_at": _now_iso(_parse_iso("2026-01-01T00:00:00+00:00"))}},
+        t_new) is False)
+    check("v2.11 _lease_live: malformed lease (non-dict) -> False",
+          _lease_live({"lease": "junk"}, t_new) is False)
+    check("v2.11 _lease_live: malformed expires_at -> False",
+          _lease_live({"lease": {"owner_pid": 1, "expires_at": 12345}}, t_new) is False)
+
+    check("v2.11 _pid_alive: the current process is alive", _pid_alive(os.getpid()) is True)
+    check("v2.11 _pid_alive: a very-unlikely-to-exist huge pid is not alive",
+          _pid_alive(999999999) is False)
+    check("v2.11 _pid_alive: non-positive/non-int/bool input never raises, returns False",
+          _pid_alive(0) is False and _pid_alive(-1) is False and _pid_alive("x") is False
+          and _pid_alive(None) is False and _pid_alive(True) is False)
+
+    # --- liveness_check ----------------------------------------------------------------------
+    t0 = _parse_iso(v11_live_started)
+    v11_live = build_state(v11_feats, "e", "E", stance="marathon",
+                           caps={"watch": True, "started_at": v11_live_started})
+    lv0 = liveness_check(v11_live, t0)
+    check("v2.11 liveness: a fresh watch-on epic is not stale",
+          lv0["stale"] is False and lv0["incomplete"] is True and lv0["terminal"] is False
+          and lv0["held"] is False and lv0["lease_expired"] is False
+          and lv0["resume_count"] == 0)
+
+    t_past = _parse_iso("2026-01-01T00:46:00+00:00")  # 46min > default 45min threshold
+    lv1 = liveness_check(v11_live, t_past)
+    check("v2.11 liveness: past the default 45min threshold with no live owner -> stale",
+          lv1["stale"] is True)
+
+    v11_live_leased = build_state(v11_feats, "e", "E", stance="marathon",
+                                  caps={"watch": True, "started_at": v11_live_started})
+    v11_live_leased["lease"] = {"owner_pid": os.getpid(), "claimed_at": v11_live_started,
+                                "expires_at": v11_live_started}  # already expired
+    lv2 = liveness_check(v11_live_leased, t_past)
+    check("v2.11 liveness: belt-and-suspenders -- a live OWNER process defers staleness even "
+          "past the age threshold, despite an expired lease",
+          lv2["stale"] is False and lv2["lease_expired"] is True)
+
+    v11_live_done = build_state(v11_feats, "e", "E", stance="marathon",
+                                caps={"watch": True, "started_at": v11_live_started})
+    apply_update(v11_live_done, "a", "running", now_dt=t0)
+    apply_update(v11_live_done, "a", "done", now_dt=t0)
+    record_final_review(v11_live_done, "passed", now_dt=t0)
+    lv3 = liveness_check(v11_live_done, t_past)
+    check("v2.11 liveness: a done epic is never stale regardless of age",
+          lv3["terminal"] is True and lv3["incomplete"] is False and lv3["stale"] is False)
+
+    v11_live_blocked = build_state(v11_feats, "e", "E", stance="marathon",
+                                   caps={"watch": True, "started_at": v11_live_started})
+    v11_live_blocked["status"] = "blocked_needing_human"
+    lv4 = liveness_check(v11_live_blocked, t_past)
+    check("v2.11 liveness: a terminal (blocked_needing_human) epic is never stale",
+          lv4["terminal"] is True and lv4["stale"] is False)
+
+    v11_live_missing_lpa = build_state(v11_feats, "e", "E", stance="marathon",
+                                       caps={"watch": True, "started_at": v11_live_started})
+    del v11_live_missing_lpa["last_progress_at"]
+    lv5 = liveness_check(v11_live_missing_lpa, t0)
+    check("v2.11 liveness: a missing last_progress_at FAILS SAFE as stale-eligible",
+          lv5["stale"] is True)
+
+    # --- claim_resume: THE CRUX (single-process scenarios) -----------------------------------
+    v11_cr_dir = _tempfile.mkdtemp()
+    try:
+        v11_cr_path = os.path.join(v11_cr_dir, "epic-state.json")
+        _atomic_write_json(v11_cr_path, build_state(v11_feats, "e", "E", stance="marathon",
+                                                     caps={"watch": True,
+                                                           "started_at": v11_live_started}))
+        t_claim = _parse_iso("2026-01-01T00:01:00+00:00")
+        ok_c1, res_c1, err_c1 = claim_resume(v11_cr_path, 111, t_claim)
+        check("v2.11 claim_resume: a fresh watch-on epic wins",
+              ok_c1 and res_c1["claimed"] is True and res_c1["reason"] == "claimed"
+              and res_c1["resume_count"] == 1)
+        on_disk1 = _read_json(v11_cr_path)
+        check("v2.11 claim_resume: lease persisted with the correct owner_pid",
+              on_disk1["lease"]["owner_pid"] == 111)
+        check("v2.11 claim_resume: lease.expires_at == claimed_at + default TTL",
+              on_disk1["lease"]["expires_at"]
+              == _now_iso(t_claim + timedelta(minutes=_DEFAULT_LEASE_TTL_MIN)))
+        check("v2.11 claim_resume: resume_count persisted", on_disk1["resume_count"] == 1)
+        check("v2.11 claim_resume: last_progress_at bumped",
+              on_disk1["last_progress_at"] == _now_iso(t_claim))
+
+        t_claim2 = _parse_iso("2026-01-01T00:02:00+00:00")  # still inside the 15min lease TTL
+        ok_c2, res_c2, err_c2 = claim_resume(v11_cr_path, 222, t_claim2)
+        check("v2.11 claim_resume: a second owner loses to a still-live lease",
+              ok_c2 and res_c2["claimed"] is False and res_c2["reason"] == "live-lease-held"
+              and res_c2["resume_count"] == 1)
+        on_disk2 = _read_json(v11_cr_path)
+        check("v2.11 claim_resume: a losing claim does NOT mutate resume_count/lease",
+              on_disk2["resume_count"] == 1 and on_disk2["lease"]["owner_pid"] == 111)
+
+        v11_cr_chk_path = os.path.join(v11_cr_dir, "chk.json")
+        _atomic_write_json(v11_cr_chk_path, build_state(v11_feats, "e", "E"))
+        ok_c3, res_c3, err_c3 = claim_resume(v11_cr_chk_path, 111, t_claim)
+        check("v2.11 claim_resume: a checkpoint state -> ok=False, marathon-only error",
+              ok_c3 is False and res_c3 is None and "marathon" in err_c3)
+
+        v11_cr_nowatch_path = os.path.join(v11_cr_dir, "nowatch.json")
+        _atomic_write_json(v11_cr_nowatch_path,
+                          build_state(v11_feats, "e", "E", stance="marathon", caps={}))
+        ok_c4, res_c4, err_c4 = claim_resume(v11_cr_nowatch_path, 111, t_claim)
+        check("v2.11 claim_resume: marathon-without-watch -> ok=False, watch-only error",
+              ok_c4 is False and res_c4 is None and "watch" in err_c4)
+
+        v11_cr_done_path = os.path.join(v11_cr_dir, "done.json")
+        v11_cr_done = build_state(v11_feats, "e", "E", stance="marathon",
+                                  caps={"watch": True, "started_at": v11_live_started})
+        apply_update(v11_cr_done, "a", "running", now_dt=t0)
+        apply_update(v11_cr_done, "a", "done", now_dt=t0)
+        record_final_review(v11_cr_done, "passed", now_dt=t0)
+        _atomic_write_json(v11_cr_done_path, v11_cr_done)
+        ok_c5, res_c5, err_c5 = claim_resume(v11_cr_done_path, 111, t_claim)
+        check("v2.11 claim_resume: a terminal (done) epic loses with reason 'terminal'",
+              ok_c5 and res_c5["claimed"] is False and res_c5["reason"] == "terminal")
+        on_disk5 = _read_json(v11_cr_done_path)
+        check("v2.11 claim_resume: a terminal loss does NOT write resume_count/lease",
+              "resume_count" not in on_disk5 and "lease" not in on_disk5)
+
+        v11_cr_cap_path = os.path.join(v11_cr_dir, "cap.json")
+        _atomic_write_json(v11_cr_cap_path,
+                          build_state(v11_feats, "e", "E", stance="marathon",
+                                     caps={"watch": True, "max_resume_count": 1,
+                                           "started_at": v11_live_started}))
+        ok_cap1, res_cap1, _ = claim_resume(v11_cr_cap_path, 333, t_claim)
+        check("v2.11 claim_resume resume-cap: the 1st claim (cap=1) succeeds",
+              ok_cap1 and res_cap1["claimed"] is True and res_cap1["resume_count"] == 1)
+        t_claim_late = t_claim + timedelta(minutes=_DEFAULT_LEASE_TTL_MIN + 1)
+        ok_cap2, res_cap2, _ = claim_resume(v11_cr_cap_path, 444, t_claim_late)
+        check("v2.11 claim_resume resume-cap: the 2nd claim (== cap) is BLOCKED, "
+              "reason resume-cap",
+              ok_cap2 and res_cap2["claimed"] is False and res_cap2["reason"] == "resume-cap")
+        on_disk_cap = _read_json(v11_cr_cap_path)
+        check("v2.11 claim_resume resume-cap: trips the epic to blocked_needing_human",
+              on_disk_cap["status"] == "blocked_needing_human"
+              and on_disk_cap["breaker_trip"]["which"] == ["max_resume_count"])
+        ok_cap3, res_cap3, _ = claim_resume(v11_cr_cap_path, 555, t_claim_late)
+        check("v2.11 claim_resume resume-cap: the persisted latch makes a 3rd attempt a "
+              "harmless no-op (reason 'terminal', not re-tripping)",
+              ok_cap3 and res_cap3["claimed"] is False and res_cap3["reason"] == "terminal")
+
+        cleared_state = _read_json(v11_cr_cap_path)
+        ok_clr, err_clr, sum_clr = clear_breaker(cleared_state, t_claim_late,
+                                                 reset_resume_count=True)
+        check("v2.11 clear_breaker --reset-resume-count: clears + reports the reset",
+              ok_clr and sum_clr["resume_count_reset"] is True
+              and sum_clr["resume_count_reset_from"] == 1
+              and cleared_state["resume_count"] == 0
+              and cleared_state["status"] != "blocked_needing_human")
+        _atomic_write_json(v11_cr_cap_path, cleared_state)
+        ok_cap4, res_cap4, _ = claim_resume(v11_cr_cap_path, 666, t_claim_late)
+        check("v2.11 claim_resume resume-cap: a claim succeeds again after "
+              "--reset-resume-count",
+              ok_cap4 and res_cap4["claimed"] is True and res_cap4["resume_count"] == 1)
+    finally:
+        shutil.rmtree(v11_cr_dir, ignore_errors=True)
+
+    # --- renew_lease ---------------------------------------------------------------------
+    v11_rl_dir = _tempfile.mkdtemp()
+    try:
+        v11_rl_path = os.path.join(v11_rl_dir, "epic-state.json")
+        _atomic_write_json(v11_rl_path, build_state(v11_feats, "e", "E", stance="marathon",
+                                                     caps={"watch": True,
+                                                           "started_at": v11_live_started}))
+        t_claim = _parse_iso("2026-01-01T00:01:00+00:00")
+        claim_resume(v11_rl_path, 777, t_claim)
+        rl_state = _read_json(v11_rl_path)
+        old_expiry = rl_state["lease"]["expires_at"]
+        t_renew = t_claim + timedelta(minutes=5)
+        ok_rl1, err_rl1 = renew_lease(rl_state, 777, t_renew)
+        check("v2.11 renew_lease: a matching owner_pid extends expires_at",
+              ok_rl1 and rl_state["lease"]["expires_at"] > old_expiry)
+        check("v2.11 renew_lease: bumps last_progress_at too",
+              rl_state["last_progress_at"] == _now_iso(t_renew))
+
+        ok_rl2, err_rl2 = renew_lease(rl_state, 888, t_renew)
+        check("v2.11 renew_lease: a mismatched owner_pid is rejected",
+              ok_rl2 is False and "no lease held" in err_rl2)
+
+        rl_no_lease = build_state(v11_feats, "e", "E", stance="marathon",
+                                  caps={"watch": True, "started_at": v11_live_started})
+        ok_rl3, err_rl3 = renew_lease(rl_no_lease, 777, t_renew)
+        check("v2.11 renew_lease: no lease on file at all is rejected",
+              ok_rl3 is False and "no lease held" in err_rl3)
+
+        rl_nowatch = build_state(v11_feats, "e", "E", stance="marathon", caps={})
+        ok_rl4, err_rl4 = renew_lease(rl_nowatch, 777, t_renew)
+        check("v2.11 renew_lease: marathon-without-watch is rejected",
+              ok_rl4 is False and "watch" in err_rl4)
+
+        rl_chk = build_state(v11_feats, "e", "E")
+        ok_rl5, err_rl5 = renew_lease(rl_chk, 777, t_renew)
+        check("v2.11 renew_lease: a checkpoint state is rejected",
+              ok_rl5 is False and "marathon" in err_rl5)
+    finally:
+        shutil.rmtree(v11_rl_dir, ignore_errors=True)
+
+    # --- validate_marathon_state: v2.11 fields ------------------------------------------------
+    v11_vm_good = build_state(v11_feats, "e", "E", stance="marathon",
+                              caps={"watch": True, "started_at": v11_live_started})
+    check("v2.11 validate: a well-formed watch-on state validates clean",
+          validate_marathon_state(v11_vm_good) == [])
+
+    v11_vm_bad_watch = build_state(v11_feats, "e", "E", stance="marathon", caps={})
+    v11_vm_bad_watch["autonomy"]["watch"] = "yes"
+    check("v2.11 validate: a non-bool autonomy.watch -> error",
+          any("watch" in e for e in validate_marathon_state(v11_vm_bad_watch)))
+
+    v11_vm_bad_rc = build_state(v11_feats, "e", "E", stance="marathon", caps={})
+    v11_vm_bad_rc["resume_count"] = -1
+    check("v2.11 validate: a negative resume_count -> error",
+          any("resume_count" in e for e in validate_marathon_state(v11_vm_bad_rc)))
+
+    v11_vm_bad_lpa = build_state(v11_feats, "e", "E", stance="marathon", caps={})
+    v11_vm_bad_lpa["last_progress_at"] = "not-a-timestamp"
+    check("v2.11 validate: a malformed last_progress_at -> error",
+          any("last_progress_at" in e for e in validate_marathon_state(v11_vm_bad_lpa)))
+
+    v11_vm_bad_lease1 = build_state(v11_feats, "e", "E", stance="marathon", caps={})
+    v11_vm_bad_lease1["lease"] = "junk"
+    check("v2.11 validate: a non-dict lease -> error",
+          any("lease" in e for e in validate_marathon_state(v11_vm_bad_lease1)))
+
+    v11_vm_bad_lease2 = build_state(v11_feats, "e", "E", stance="marathon", caps={})
+    v11_vm_bad_lease2["lease"] = {"owner_pid": -1, "claimed_at": "x", "expires_at": "y"}
+    check("v2.11 validate: a malformed lease (bad owner_pid + bad timestamps) -> multiple "
+          "errors", len([e for e in validate_marathon_state(v11_vm_bad_lease2)
+                        if "lease" in e]) >= 2)
+
+    v11_vm_good_lease = build_state(v11_feats, "e", "E", stance="marathon", caps={})
+    v11_vm_good_lease["lease"] = {"owner_pid": 123, "claimed_at": v11_live_started,
+                                  "expires_at": v11_live_started}
+    check("v2.11 validate: a well-formed lease validates clean",
+          validate_marathon_state(v11_vm_good_lease) == [])
+
+    v11_vm_bad_cap = build_state(v11_feats, "e", "E", stance="marathon", caps={"watch": True})
+    v11_vm_bad_cap["autonomy"]["max_resume_count"] = -5
+    check("v2.11 validate: a negative autonomy.max_resume_count -> error",
+          validate_marathon_state(v11_vm_bad_cap) != [])
+
+    # --- breaker_check / clear_breaker: the resume_count axis --------------------------------
+    v11_bc = build_state(v11_feats, "e", "E", stance="marathon",
+                         caps={"watch": True, "max_resume_count": 3,
+                               "started_at": v11_live_started})
+    v11_bc["resume_count"] = 2
+    check("v2.11 breaker_check: resume_count just under cap -> not tripped on this axis",
+          "max_resume_count" not in breaker_check(v11_bc, t0)["which"])
+    v11_bc["resume_count"] = 3
+    r_v11 = breaker_check(v11_bc, t0)
+    check("v2.11 breaker_check: resume_count >= cap trips",
+          r_v11["tripped"] and "max_resume_count" in r_v11["which"]
+          and r_v11["detail"]["max_resume_count"] == {"value": 3, "cap": 3})
+
+    v11_bc_null = build_state(v11_feats, "e", "E", stance="marathon",
+                              caps={"watch": True, "max_resume_count": None,
+                                    "started_at": v11_live_started})
+    v11_bc_null["resume_count"] = 999
+    check("v2.11 breaker_check: an explicit-null max_resume_count is unbounded",
+          "max_resume_count" not in breaker_check(v11_bc_null, t0)["which"])
+
+    v11_bc_missing = build_state(v11_feats, "e", "E", stance="marathon",
+                                 caps={"watch": True, "started_at": v11_live_started})
+    del v11_bc_missing["autonomy"]["max_resume_count"]
+    v11_bc_missing["resume_count"] = 20
+    r_v11missing = breaker_check(v11_bc_missing, t0)
+    check("v2.11 breaker_check: a MISSING max_resume_count key uses the documented default "
+          "(20), never unbounded",
+          r_v11missing["tripped"] and "max_resume_count" in r_v11missing["which"])
+
+    # --- _now_arg_in_range ---------------------------------------------------------------
+    check("v2.11 _now_arg_in_range: near-now is in range",
+          _now_arg_in_range(datetime.now(timezone.utc)) is True)
+    check("v2.11 _now_arg_in_range: 20 years off is OUT of range",
+          _now_arg_in_range(datetime.now(timezone.utc) - timedelta(days=365 * 20)) is False)
+
+    # --- claim_resume concurrency: exactly one of N wins under a REAL OS-level flock race
+    # (multiprocessing.Barrier synchronizes N separate PROCESSES, not just threads/coroutines,
+    # so this exercises the actual fcntl.flock contention path, not something the GIL could
+    # mask) ---------------------------------------------------------------------------------
+    import multiprocessing
+    cr_conc_dir = _tempfile.mkdtemp()
+    try:
+        cr_conc_path = os.path.join(cr_conc_dir, "epic-state.json")
+        _atomic_write_json(cr_conc_path, build_state(
+            v11_feats, "e", "E", stance="marathon",
+            caps={"watch": True, "started_at": v11_live_started}))
+        N = 8
+        barrier = multiprocessing.Barrier(N)
+        q = multiprocessing.Queue()
+        now_iso_conc = _now_iso(_parse_iso("2026-01-01T00:01:00+00:00"))
+        procs = [multiprocessing.Process(target=_cr_worker,
+                                         args=(cr_conc_path, 10000 + i, now_iso_conc,
+                                               barrier, q))
+                for i in range(N)]
+        for pr in procs:
+            pr.start()
+        for pr in procs:
+            pr.join(timeout=20)
+        results = [q.get(timeout=10) for _ in range(N)]
+        oks = [r for r in results if r[0]]
+        check("v2.11 claim_resume concurrency: all %d calls returned ok=True "
+              "(no lock/read errors)" % N, len(oks) == N)
+        winners = [r for r in results if r[0] and r[1] and r[1].get("claimed") is True]
+        check("v2.11 claim_resume concurrency: exactly ONE of %d concurrent claims wins" % N,
+              len(winners) == 1)
+        losers = [r for r in results if r[0] and r[1] and r[1].get("claimed") is False]
+        check("v2.11 claim_resume concurrency: the other %d all lose with a documented "
+              "reason" % (N - 1),
+              len(losers) == N - 1
+              and all(r[1]["reason"] in ("live-lease-held", "terminal", "resume-cap")
+                     for r in losers))
+        final_conc_state = _read_json(cr_conc_path)
+        check("v2.11 claim_resume concurrency: resume_count landed at exactly 1 "
+              "(one winner, no double-counting)",
+              final_conc_state.get("resume_count") == 1)
+    finally:
+        shutil.rmtree(cr_conc_dir, ignore_errors=True)
+
     print("SELFTEST: %d ok, %d fail" % (ok, fail))
     return 0 if fail == 0 else 1
 
@@ -2799,6 +3761,33 @@ def main(argv):
                         "clear its sample_audit_due obligation, optionally set --last-error, "
                         "and invalidate a passed final_review back to pending — the fix for a "
                         "crash between the driver's separate clear-due/mark-failed writes")
+    # -- v2.11 (Scheduler Auto-Resurrection, V1) flags --------------------------------------
+    p.add_argument("--watch", action="store_true",
+                   help="(with --init --stance marathon) opt into the v2.11 watch surface "
+                        "(last_progress_at/lease/resume_count); rejected without "
+                        "--stance marathon")
+    p.add_argument("--max-resume-count", type=_cap_arg(int), default=_UNSET,
+                   help="(with --init --stance marathon --watch) the new resume-count "
+                        "breaker axis; default 20; 'null'/'none' for unbounded; rejected "
+                        "without --watch")
+    p.add_argument("--liveness", action="store_true",
+                   help="(marathon + watch) read-only watcher poll -> {incomplete,stale,"
+                        "held,lease_expired,epic_status,terminal,resume_count}")
+    p.add_argument("--stale-after-min", type=float, default=None,
+                   help="(with --liveness) staleness threshold in minutes (default 45)")
+    p.add_argument("--claim-resume", action="store_true",
+                   help="(marathon + watch) THE CRUX: one flock-guarded atomic transaction "
+                        "-> {claimed,reason,resume_count}; needs --owner-pid")
+    p.add_argument("--renew-lease", action="store_true",
+                   help="(marathon + watch) the lease holder's own heartbeat; needs "
+                        "--owner-pid (must match the current lease)")
+    p.add_argument("--owner-pid", type=int,
+                   help="(with --claim-resume / --renew-lease) the calling process's pid")
+    p.add_argument("--lease-ttl-min", type=float, default=_DEFAULT_LEASE_TTL_MIN,
+                   help="(with --claim-resume / --renew-lease) lease TTL in minutes "
+                        "(default %g)" % _DEFAULT_LEASE_TTL_MIN)
+    p.add_argument("--reset-resume-count", action="store_true",
+                   help="(with --clear-breaker) re-arm the v2.11 resume-count axis to 0")
     args = p.parse_args(argv)
 
     if args.selftest:
@@ -2849,6 +3838,17 @@ def main(argv):
                 caps["started_at"] = args.now
             if args.start_sha:
                 caps["start_sha"] = args.start_sha
+            # v2.11: --watch is presence-based-opt-in; --max-resume-count is REJECTED unless
+            # --watch is also given (same rejection discipline as every other marathon-only
+            # arg in this file — never silently discarded).
+            if args.watch:
+                caps["watch"] = True
+                if args.max_resume_count is not _UNSET:
+                    caps["max_resume_count"] = args.max_resume_count
+            elif args.max_resume_count is not _UNSET:
+                print("epic-init error: --max-resume-count is watch-only — not valid "
+                      "without --watch", file=sys.stderr)
+                return 1
         elif args.start_sha:
             # Non-marathon --init must REJECT --start-sha (not silently discard it) — same
             # presence-based-rejection discipline as every other marathon-only arg in this
@@ -2856,6 +3856,11 @@ def main(argv):
             # reaches build_state with a caps dict at all).
             print("epic-init error: --start-sha is marathon-only — not valid without "
                   "--stance marathon", file=sys.stderr)
+            return 1
+        elif args.watch or args.max_resume_count is not _UNSET:
+            # v2.11: same discipline — --watch/--max-resume-count are marathon-only.
+            print("epic-init error: --watch/--max-resume-count are marathon-only — not "
+                  "valid without --stance marathon", file=sys.stderr)
             return 1
         try:
             state = build_state(feats, args.epic_id, args.title or args.epic_id,
@@ -2904,6 +3909,31 @@ def main(argv):
                   file=sys.stderr)
             return False
         return True
+
+    def _needs_watch(cmd):
+        """v2.11: the three new watch-only commands (--liveness, --claim-resume,
+        --renew-lease) require BOTH marathon stance AND the persisted watch opt-in — their
+        whole purpose (a heartbeat/lease that is never written unless watch is on) is
+        meaningless otherwise, so this rejects the same way `_needs_marathon` does."""
+        if not _needs_marathon(cmd):
+            return False
+        if not _watch_on(state):
+            print("epic error: %s requires the marathon epic's watch opt-in (re-init with "
+                  "--stance marathon --watch)" % cmd, file=sys.stderr)
+            return False
+        return True
+
+    def _resolve_now_ranged(cmd):
+        """v2.11: resolve --now (or the real clock) and range-check an EXPLICITLY supplied
+        --now against the real clock (_now_arg_in_range) — --now is test-only, this bounds it
+        so it can never become a production lever for defeating staleness/lease timing.
+        Returns the resolved datetime, or None on an out-of-range --now (caller returns 1)."""
+        now_dt = _resolve_now(args.now)
+        if args.now and not _now_arg_in_range(now_dt):
+            print("epic error: %s --now is test-only and must be within a sane range of "
+                  "the real clock" % cmd, file=sys.stderr)
+            return None
+        return now_dt
 
     if args.check_specs:
         errs = check_state_specs(state, base_dir=os.path.dirname(os.path.abspath(args.state)))
@@ -2954,7 +3984,8 @@ def main(argv):
         now_dt = _resolve_now(args.now)
         ok, err, summary = clear_breaker(state, now_dt,
                                          reset_wall_clock=args.reset_wall_clock,
-                                         set_max_total_attempts=args.set_max_total_attempts)
+                                         set_max_total_attempts=args.set_max_total_attempts,
+                                         reset_resume_count=args.reset_resume_count)
         if not ok:
             print("epic-clear-breaker error: %s" % err, file=sys.stderr)
             return 1
@@ -2967,7 +3998,7 @@ def main(argv):
             return 1
         if not args.feature:
             p.error("--clear-disposition needs --feature")
-        ok, err = clear_disposition(state, args.feature)
+        ok, err = clear_disposition(state, args.feature, now_dt=_resolve_now(args.now))
         if not ok:
             print("epic-clear-disposition error: %s" % err, file=sys.stderr)
             return 1
@@ -2980,7 +4011,7 @@ def main(argv):
             return 1
         if not args.feature:
             p.error("--mark-sample-audit-due needs --feature")
-        ok, err = mark_sample_audit_due(state, args.feature)
+        ok, err = mark_sample_audit_due(state, args.feature, now_dt=_resolve_now(args.now))
         if not ok:
             print("epic-sample-audit error: %s" % err, file=sys.stderr)
             return 1
@@ -2993,7 +4024,7 @@ def main(argv):
             return 1
         if not args.feature:
             p.error("--clear-sample-audit-due needs --feature")
-        ok, err = clear_sample_audit_due(state, args.feature)
+        ok, err = clear_sample_audit_due(state, args.feature, now_dt=_resolve_now(args.now))
         if not ok:
             print("epic-sample-audit error: %s" % err, file=sys.stderr)
             return 1
@@ -3006,7 +4037,8 @@ def main(argv):
             return 1
         if not args.feature:
             p.error("--record-audit-failed needs --feature")
-        ok, err = record_audit_failed(state, args.feature, last_error=args.last_error)
+        ok, err = record_audit_failed(state, args.feature, last_error=args.last_error,
+                                      now_dt=_resolve_now(args.now))
         if not ok:
             print("epic-audit-failed error: %s" % err, file=sys.stderr)
             return 1
@@ -3023,7 +4055,7 @@ def main(argv):
             return 1
         if not args.cycle_id:
             p.error("--record-progress-cycle needs --cycle-id")
-        result = record_progress_cycle(state, args.cycle_id)
+        result = record_progress_cycle(state, args.cycle_id, now_dt=_resolve_now(args.now))
         if not result.get("replayed"):
             _atomic_write_json(args.state, state)
         print(json.dumps(result))
@@ -3051,12 +4083,55 @@ def main(argv):
             return 1
         if not args.status:
             p.error("--record-final-review needs --status pending|passed|failed")
-        ok, err = record_final_review(state, args.status)
+        ok, err = record_final_review(state, args.status, now_dt=_resolve_now(args.now))
         if not ok:
             print("epic-final-review error: %s" % err, file=sys.stderr)
             return 1
         _atomic_write_json(args.state, state)
         print(json.dumps({"final_review": state["final_review"], "epic_status": state["status"]}))
+        return 0
+
+    if args.liveness:
+        if not _needs_watch("--liveness"):
+            return 1
+        now_dt = _resolve_now_ranged("--liveness")
+        if now_dt is None:
+            return 1
+        stale_after = (args.stale_after_min if args.stale_after_min is not None
+                      else _DEFAULT_STALE_AFTER_MIN)
+        print(json.dumps(liveness_check(state, now_dt, stale_after_min=stale_after)))
+        return 0
+
+    if args.claim_resume:
+        if not _needs_watch("--claim-resume"):
+            return 1
+        if args.owner_pid is None:
+            p.error("--claim-resume needs --owner-pid")
+        now_dt = _resolve_now_ranged("--claim-resume")
+        if now_dt is None:
+            return 1
+        ok, result, err = claim_resume(args.state, args.owner_pid, now_dt,
+                                       lease_ttl_min=args.lease_ttl_min)
+        if not ok:
+            print("epic-claim-resume error: %s" % err, file=sys.stderr)
+            return 1
+        print(json.dumps(result))
+        return 0
+
+    if args.renew_lease:
+        if not _needs_watch("--renew-lease"):
+            return 1
+        if args.owner_pid is None:
+            p.error("--renew-lease needs --owner-pid")
+        now_dt = _resolve_now_ranged("--renew-lease")
+        if now_dt is None:
+            return 1
+        ok, err = renew_lease(state, args.owner_pid, now_dt, lease_ttl_min=args.lease_ttl_min)
+        if not ok:
+            print("epic-renew-lease error: %s" % err, file=sys.stderr)
+            return 1
+        _atomic_write_json(args.state, state)
+        print(json.dumps({"owner_pid": args.owner_pid, "lease": state["lease"]}))
         return 0
 
     if args.want_next:
@@ -3124,7 +4199,8 @@ def main(argv):
            "--lint / --can-retry / --breaker-check / --trip-breaker / --clear-breaker / "
            "--record-progress-cycle / --record-disposition / --clear-disposition / "
            "--mark-sample-audit-due / --clear-sample-audit-due / --record-audit-failed / "
-           "--record-final-review / --selftest is required")
+           "--record-final-review / --liveness / --claim-resume / --renew-lease / "
+           "--selftest is required")
 
 
 if __name__ == "__main__":
