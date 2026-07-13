@@ -4,6 +4,22 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [2.12.0] - 2026-07-13
+
+### Added — Per-ticket usage capture + on-demand cross-brand advisor
+
+Two features, built as one dogfooded epic (`docs/superpowers/execution/2026-07-13-usage-and-advisor/`), grounded by three LIVE pre-flights that changed the design before a line was written.
+
+- **Feature A — measured usage on `job_result`.** A new optional `usage` object (`{input_tokens, output_tokens, advisor_calls, backend, measured}`) is threaded worker → collector → aggregator → `/v:status`, recording ONLY real measured backend output (anti-ruflo: never an estimate).
+  - `scripts/compound-v-usage-extract.py` (new) normalizes per-backend event streams (verified live, not from training data): codex `turn.completed.usage` summed across turns, opencode `step_finish.part.tokens`, cursor `result.usage`. Backends with no machine-readable usage (antigravity `agy`, claude-via-Task subagent, devin) emit `measured:false` + null tokens — fail-open, never a fabricated number.
+  - `scripts/compound-v-collect-results.py` `build_result()` now passes `usage` through (a pre-flight-caught blocking gap: the collector re-synthesizes every result and previously dropped it, so every measured value was silently discarded).
+  - `scripts/compound-v-usage-aggregate.py` (new) rolls usage up per ticket/feature/epic, counting `measured:false` jobs as "unmeasured" rather than zero. `/v:status` gains a degrade-safe usage column; the old blanket "no token metrics" line is reworded to permit MEASURED usage while still banning estimates.
+- **Feature B — on-demand cross-brand advisor (opt-in, subagent pattern).** A cheap Sonnet executor consults a stronger advisor of a preferably DIFFERENT brand (Codex if available, else Opus) only on a hard sub-decision.
+  - Live pre-flight REFUTED the assumed `claude -p --advisor` flag (it does not exist) and rejected the real `advisor_20260301` API tool (requires an API key + `anthropic` SDK, breaking the plugin's pure-stdlib/no-service/subscription ethos). Advisor is therefore a harness subagent pattern.
+  - `scripts/compound-v-resolve-model.py` exposes `advisor_eligible` (a standard/core-slice implementer OR a fast-path Claude worker) and a cross-brand advisor selector (codex > other non-claude > Opus fallback; never Haiku). `scripts/compound-v-validate-manifest.py` validates an optional per-job `advisor:` block and rejects it on ineligible job types; manifests without it stay valid.
+  - `scripts/compound-v-advisor-consult.sh` (new) runs ONE READ-ONLY advisory turn — `codex exec --sandbox read-only` or `claude -p --model opus --permission-mode plan`, and **NEVER `--dangerously-skip-permissions`**. A read-only advisor that cannot write files structurally forecloses the 2026-07-13 nested-bypass-agent incident. Proven by a fake-backend stub test with no live run.
+  - `scripts/compound-v-preeval.py` gains an `advisor_calls → escalate` sensor (a fail-open, escalation-only clone of the `churn_hot` triad): repeated advisor consults are a post-run signal that a job was harder than its tier.
+
 ## [2.11.0] - 2026-07-13
 
 ### Added — Auto-resurrection watch (opt-in, marathon-only)
