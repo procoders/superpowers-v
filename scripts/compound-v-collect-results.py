@@ -292,6 +292,17 @@ def build_result(args: argparse.Namespace) -> Dict[str, Any]:
         "failure_class": failure_class,
         "retry_after_seconds": retry_after_seconds,
     }  # type: Dict[str, Any]
+
+    # OPTIONAL `usage` passthrough (informational / measured-only, worker-sourced
+    # like `summary`). The usage object is extracted from the backend's own
+    # structured events by compound-v-usage-extract.py and folded into the worker
+    # JSON. It is NOT enforcement data and NEVER fabricated here. Include the key
+    # ONLY when the worker actually provided a `usage` object; when absent, omit it
+    # entirely (usage is optional in the schema, so omission stays conformant).
+    worker_usage = wjson.get("usage")
+    if isinstance(worker_usage, dict):
+        result["usage"] = worker_usage
+
     return result
 
 

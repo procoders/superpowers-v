@@ -84,6 +84,33 @@
     "retry_after_seconds": {
       "type": "integer",
       "description": "Seconds-until-retry parsed from the provider message (HTTP Retry-After, or a codex usage-limit countdown like 'try again in 5 days'), 0 when unknown. The dispatcher passes this to compound-v-failure-policy.py --retry-after so a retry honors the provider's stated wait instead of synthetic backoff."
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "OPTIONAL, INFORMATIONAL, MEASURED-ONLY token/advisor accounting for this job. Worker-sourced like `summary` (extracted from the backend's own structured usage events by compound-v-usage-extract.py), NEVER fabricated and NEVER used for enforcement. When a backend emits no machine-readable usage (agy/antigravity, claude Task subagent, devin) or the events log is missing/unparseable, `measured` is false and the token counts are null (anti-ruflo: a null is honest, a made-up number is not). Omitted entirely when the worker provided no usage object.",
+      "properties": {
+        "input_tokens": {
+          "type": ["integer", "null"],
+          "description": "Total input/prompt tokens consumed by the job, summed across the backend's usage events. null when not measured."
+        },
+        "output_tokens": {
+          "type": ["integer", "null"],
+          "description": "Total output/completion tokens produced by the job, summed across the backend's usage events. null when not measured."
+        },
+        "advisor_calls": {
+          "type": ["integer", "null"],
+          "description": "Number of times the executor actually consulted the read-only advisor subagent. Worker-COUNTED (not derived from CLI turn/iteration counts), set by the advisor worker, not by the usage extractor. null when unknown or not applicable."
+        },
+        "backend": {
+          "type": "string",
+          "description": "Backend name this usage was extracted for (codex | opencode | cursor | agy | antigravity | claude | devin)."
+        },
+        "measured": {
+          "type": "boolean",
+          "description": "True only when real token counts were extracted from the backend's structured usage events. False when the backend emits no machine-readable usage or the events log was absent/empty/unparseable; in that case the token counts are null."
+        }
+      }
     }
   }
 }
