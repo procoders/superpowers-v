@@ -114,6 +114,13 @@ Always show the **resolved** model (`backend · model (tier/effort)`), never the
    - **Full task text** copied from the plan/manifest (don't make the subagent re-read the plan).
    - **Design constraints** from all three audits, inline as MUST/MUST-NOT bullets.
    - **TDD requirement** (`superpowers:test-driven-development`) per behavior change; **self-review** before DONE.
+   - **Optional READ-ONLY advisor consult** — include this ONLY when the job is a `claude` executor whose manifest entry carries `advisor: {enabled: true}` AND the job is advisor-eligible (per [`routing-policy.md`](../skills/compound-v/routing-policy.md); the advisor is a cross-brand or Opus-fallback second opinion, never a lower-trust seat). Tell that executor: *"On a genuinely hard sub-decision you MAY consult a READ-ONLY cross-brand advisor (Codex if available, else Opus) — it advises, it never writes — by running:*
+     ```bash
+     scripts/compound-v-advisor-consult.sh --question "<the hard sub-decision>" \
+       [--context-path <glob>]... --executor claude --available "<run --available csv>" \
+       --run-dir docs/superpowers/execution/<run-id> --job-id <job-id>
+     ```
+     *Then decide and do the writing yourself."* Always pass `--run-dir <run-dir> --job-id <job-id>` (absolute run-dir when the executor runs from another cwd) — the consult builds the contained log path `<run-dir>/logs/<job-id>.advisor.jsonl` INTERNALLY (the executor never hands it a raw path — round-2 hardening closed an arbitrary-write hole) and appends one line per successful consult, and after the job [`compound-v-collect-results.py`](../scripts/compound-v-collect-results.py) DERIVES `usage.advisor_calls` by counting those lines (never model-self-reported; a worker-supplied `advisor_calls` is always discarded). A job with no advisor block, or one that never hit a hard sub-decision, produces no log and a null `advisor_calls`. The advisor is READ-ONLY by hard contract ([`adapter-advisor.md`](../skills/backend-launcher/adapter-advisor.md)); it never passes `--dangerously-skip-permissions`.
    - **Status report format**: `DONE` / `DONE_WITH_CONCERNS` / `NEEDS_CONTEXT` / `BLOCKED`.
 
 Mark each dispatched job `running` in `state.json` before the batch returns.

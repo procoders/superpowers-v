@@ -283,7 +283,8 @@ def estimate_t3_tokens(request_text, resolved_paths):
 # THE deterministic truth-table (spec §2). Pure function — no I/O, no model call.
 # --------------------------------------------------------------------------- #
 def score(localization, taxonomy, t3_category=None, *, tier2=None, churn_hot=False,
-          fan_out_threshold=1, token_cap=None, request_text="", build_t3_prompt=None):
+          advisor_hot=False, fan_out_threshold=1, token_cap=None, request_text="",
+          build_t3_prompt=None):
     """Score one request into a deterministic verdict (spec §2).
 
     Args:
@@ -295,6 +296,10 @@ def score(localization, taxonomy, t3_category=None, *, tier2=None, churn_hot=Fal
       tier2:        F1's tier2_lookup result (`{health,...}` calibrated | `{status:...}`), or
                     None. Corroborates `low` when calibrated-healthy; `unhealthy` RAISES.
       churn_hot:    True iff any resolved path is churn-`hot` (escalation-only, override #5).
+      advisor_hot:  True iff a completed run's `results/*.json usage.advisor_calls` shows the
+                    job outran its tier (escalation-only, override #7 — a POST-RUN reclassify
+                    signal, mirror of churn_hot; absence never escalates). Pure-function-safe:
+                    the file read happens only in caller-side `_advisor_hot_for`, never here.
       fan_out_threshold: Layer-B fan-out ceiling (config `pre_eval.fan_out_threshold`).
       token_cap:    whole-stage token budget; overrun at the T3 boundary → abort → FULL.
 
@@ -354,6 +359,19 @@ def score(localization, taxonomy, t3_category=None, *, tier2=None, churn_hot=Fal
     if churn_hot:
         return _verdict(DECISION_FULL, override=5, diff="high", imp="high",
                         tiers=tiers + ["churn"], min_sample=min_sample_status)
+
+    # #7 advisor-hot: a completed run's `usage.advisor_calls` shows the job outran its tier
+    # (escalation-only; a POST-RUN reclassification signal cloned from churn — absence never
+    # lowers). Evaluated positionally right after #5 with the other CHEAP escalation-only
+    # overrides (no model call); the id 7 is a NEW row appended to the spec's 1-6 space
+    # (numeric label ≠ eval order — #6 unknown-axis is still evaluated later, after the axes).
+    # override_fired=7 IS the audit trail here; no "advisor" tier tag is appended because the
+    # write-once record's `tiers_signalled` enum (schemas/pre-eval-record.schema.json) is a
+    # fixed set (T1/T2/T3/churn/localization) and the schema is out of this change's scope —
+    # an out-of-enum tier would make a reclassification record fail schema validation.
+    if advisor_hot:
+        return _verdict(DECISION_FULL, override=7, diff="high", imp="high",
+                        tiers=tiers, min_sample=min_sample_status)
 
     # -- Compute the two axes (conservative-max; may require the T3 fallback). ---------- #
     t1_diff = tax.max_band(
@@ -668,10 +686,78 @@ def _churn_hot_for(repo, resolved_paths):
     return any(cm.read_path(cache, p).get("hot") for p in resolved_paths)
 
 
+# Repeated advisor consults signal the job was harder than its tier: a fast-path/standard
+# worker that had to stop and consult a cross-brand advisor MORE than a couple of times is
+# evidence the work outran its classification. STRICTLY-greater-than gate (escalation-only —
+# it can only push the tier UP on reclassification, never down).
+ADVISOR_HOT_THRESHOLD = 2
+
+
+def _advisor_hot_for(repo, run_dir):
+    """Escalation-only advisor signal (mirror of `_churn_hot_for`): True iff any SUCCESSFUL
+    `results/*.json` for the run records `usage.advisor_calls` exceeding ADVISOR_HOT_THRESHOLD.
+    A POST-RUN reclassification read only — never called from the pure `score()`.
+
+    Only a result with `status == "success"` is counted (round-2: a failed/blocked/timeout job
+    that happened to consult the advisor before dying must NOT escalate a clean re-run — its
+    advisor_calls reflect a dead attempt, not genuine difficulty of a completed unit).
+
+    Absent/unreadable results dir, a missing/unreadable file, a non-success status, a
+    null/absent/non-int `advisor_calls`, or no run_dir at all => False (absence NEVER escalates),
+    fail-open exactly like churn. `run_dir` is the execution run directory
+    (`<run_dir>/results/*.json`); it may be absolute or repo-relative."""
+    if not run_dir:
+        return False
+    base = run_dir if os.path.isabs(run_dir) else os.path.join(repo or ".", run_dir)
+    results_dir = os.path.join(base, "results")
+    if not os.path.isdir(results_dir):
+        return False
+    try:
+        names = os.listdir(results_dir)
+    except OSError:
+        return False
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(results_dir, name), "r", encoding="utf-8") as fh:
+                obj = json.load(fh)
+        except (OSError, ValueError):
+            continue  # unreadable/malformed result → absence, never escalates
+        if not isinstance(obj, dict):
+            continue
+        if obj.get("status") != "success":
+            continue  # only a completed, successful unit signals genuine difficulty
+        usage = obj.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        calls = usage.get("advisor_calls")
+        # bool is an int subclass — exclude it so a stray True never counts as a call count.
+        if isinstance(calls, int) and not isinstance(calls, bool) \
+                and calls > ADVISOR_HOT_THRESHOLD:
+            return True
+    return False
+
+
+def _run_dir_contained(repo, run_dir):
+    """Path-containment guard for a caller-supplied ``--run-dir``: True iff it resolves
+    to a path inside the repo root (realpath-based, so a ``..`` traversal or an
+    escaping symlink is rejected, and an absolute path pointing OUTSIDE the repo fails).
+    ``run_dir`` may be repo-relative or absolute. Absence (falsy) => True (fail-open:
+    nothing to validate — the advisor sensor simply stays off)."""
+    if not run_dir:
+        return True
+    root_real = os.path.realpath(repo or ".")
+    base = run_dir if os.path.isabs(run_dir) else os.path.join(repo or ".", run_dir)
+    real = os.path.realpath(base)
+    prefix = root_real.rstrip(os.sep) + os.sep
+    return real == root_real or real.startswith(prefix)
+
+
 def run_preeval(request, repo=".", taxonomy_path=None, t3_category=None,
                 pre_eval_id=None, ts=None, config_values=None, tier2=None,
-                churn_hot=None, _localize=None, write_localization=True,
-                stream_path=None, append_predicted=True):
+                churn_hot=None, advisor_hot=None, run_dir=None, _localize=None,
+                write_localization=True, stream_path=None, append_predicted=True):
     """End-to-end Phase-P run. Writes intent → (localization) → taxonomy snapshot → record,
     then appends the `predicted` triage event. NEVER runs git (the orchestrator commits).
 
@@ -741,6 +827,12 @@ def run_preeval(request, repo=".", taxonomy_path=None, t3_category=None,
     if churn_hot is None:
         churn_hot = _churn_hot_for(repo, localization.get("resolved_paths", []))
 
+    # Advisor signal (escalation-only, POST-RUN reclassification) — computed if not supplied.
+    # In the common pre-dispatch case there is no run_dir/results yet, so this is False
+    # (absence never escalates); it only fires on a reclassification pass that hands a run_dir.
+    if advisor_hot is None:
+        advisor_hot = _advisor_hot_for(repo, run_dir)
+
     # HIGH-4(c): Tier-2 historical corroboration — resolved via the shared cohort lookup when
     # not injected. min_sample_count-gated (config floor); healthy corroborates `low`,
     # UNHEALTHY raises difficulty, insufficient = no signal (Iron-Invariant #3). Fail-closed:
@@ -754,7 +846,8 @@ def run_preeval(request, repo=".", taxonomy_path=None, t3_category=None,
 
     # Phase-P step 4: SCORE (deterministic; may return needs_t3).
     verdict = score(localization, taxonomy, t3_category=t3_category, tier2=tier2,
-                    churn_hot=churn_hot, fan_out_threshold=fan_out_threshold,
+                    churn_hot=churn_hot, advisor_hot=advisor_hot,
+                    fan_out_threshold=fan_out_threshold,
                     token_cap=token_cap, request_text=request)
 
     # HIGH-4(b): fast_path == "off" is a HARD kill-switch — no fast-path offer is EVER made.
@@ -828,6 +921,11 @@ def main(argv):
     ap.add_argument("--t3-category", dest="t3_category", choices=list(T3_CATEGORIES),
                     help="pre-resolved T3 enum (the engine never calls a model)")
     ap.add_argument("--pre-eval-id", dest="pre_eval_id", help="explicit pre_eval_id")
+    ap.add_argument("--run-dir", dest="run_dir", default=None,
+                    help="completed execution run directory (<run-dir>/results/*.json) for "
+                         "the POST-RUN advisor-hot reclassification sensor. Absent => the "
+                         "sensor is off (advisor_hot stays False; unchanged pre-dispatch "
+                         "behavior). Must resolve inside the repo root.")
     ap.add_argument("--score-only", action="store_true",
                     help="pure scoring from --localization-json, no writes")
     ap.add_argument("--localization-json", dest="localization_json",
@@ -852,8 +950,12 @@ def main(argv):
 
     if args.request is None:
         ap.error("--request is required (or use --selftest / --score-only)")
+    if args.run_dir is not None and not _run_dir_contained(args.repo, args.run_dir):
+        ap.error("--run-dir %r resolves outside the repo root (path-containment "
+                 "rejected)" % args.run_dir)
     result = run_preeval(args.request, repo=args.repo, taxonomy_path=args.taxonomy,
-                         t3_category=args.t3_category, pre_eval_id=args.pre_eval_id)
+                         t3_category=args.t3_category, pre_eval_id=args.pre_eval_id,
+                         run_dir=args.run_dir)
     print(json.dumps(result, indent=2, sort_keys=True, default=str))
     return 0
 
@@ -967,6 +1069,28 @@ def _selftest():
     v5 = score(_loc(["x.css"], flags=[]), taxonomy, churn_hot=True)
     expect("override #5: churn hot -> FULL", v5["override_fired"] == 5 and "churn" in
            v5["tiers_signalled"])
+
+    # #7 advisor-hot (escalation-only, cloned from churn). advisor_hot=True escalates a change
+    # that would otherwise be trivially FASTPATH_ELIGIBLE (low/low single literal path) -> FULL.
+    v7 = score(_loc(["src/ui/button.css"], flags=[], fan_out=1), taxonomy,
+               advisor_hot=True, request_text="tweak local button padding")
+    expect("override #7: advisor hot -> FULL", v7["override_fired"] == 7
+           and v7["decision"] == DECISION_FULL)
+    expect("override #7: escalation-only -> high/high axes", v7["difficulty"]["band"] == "high"
+           and v7["impact"]["band"] == "high")
+    # advisor_hot=False (the default, and absence) must NOT escalate: the same trivial change
+    # stays FASTPATH_ELIGIBLE. Escalation-only can only push UP, never down.
+    v7cold = score(_loc(["src/ui/button.css"], flags=[], fan_out=1), taxonomy,
+                   advisor_hot=False, request_text="tweak local button padding")
+    expect("advisor_hot=False does NOT escalate (stays FASTPATH)",
+           v7cold["decision"] == DECISION_FASTPATH and v7cold["override_fired"] is None)
+    v7absent = score(_loc(["src/ui/button.css"], flags=[], fan_out=1), taxonomy,
+                     request_text="tweak local button padding")
+    expect("advisor_hot default (absence) does NOT escalate",
+           v7absent["decision"] == DECISION_FASTPATH and v7absent["override_fired"] is None)
+    # churn precedes advisor when BOTH are hot (cheap override #5 wins; both -> identical FULL).
+    v7both = score(_loc(["x.css"], flags=[]), taxonomy, churn_hot=True, advisor_hot=True)
+    expect("churn (#5) precedes advisor (#7) when both hot", v7both["override_fired"] == 5)
 
     # #6 any axis unknown (unclassified path + T3 unknown).
     v6 = score(_loc(["weird/thing.xyz"], flags=[]), taxonomy, t3_category="unknown")
@@ -1306,6 +1430,111 @@ def _selftest():
                resu["decision"] == DECISION_FULL
                and resu["record"]["difficulty"]["band"] != "low"
                and "T2" in resu["record"]["tiers_signalled"])
+
+    # ============ B3: `_advisor_hot_for` reader — post-run, fail-open ================ #
+    def _write_result(results_dir, name, obj):
+        os.makedirs(results_dir, exist_ok=True)
+        with open(os.path.join(results_dir, name), "w", encoding="utf-8") as fh:
+            json.dump(obj, fh)
+
+    # Missing run_dir / missing results dir → False (absence NEVER escalates).
+    expect("advisor reader: run_dir=None -> False", _advisor_hot_for(".", None) is False)
+    with tempfile.TemporaryDirectory() as repo:
+        expect("advisor reader: absent results dir fail-opens to False",
+               _advisor_hot_for(repo, "docs/superpowers/execution/run-x") is False)
+
+    # advisor_calls OVER the threshold in any completed result → hot (True).
+    with tempfile.TemporaryDirectory() as repo:
+        rd = os.path.join("docs", "superpowers", "execution", "run-hot")
+        results = os.path.join(repo, rd, "results")
+        _write_result(results, "job1.json",
+                      {"status": "success", "usage": {"advisor_calls": 1}})
+        _write_result(results, "job2.json",
+                      {"status": "success",
+                       "usage": {"advisor_calls": ADVISOR_HOT_THRESHOLD + 1}})
+        expect("advisor reader: a job over threshold -> hot (True)",
+               _advisor_hot_for(repo, rd) is True)
+
+    # AT-threshold (not over) and null/absent/non-int → NOT hot (strictly-greater gate + fail-open).
+    with tempfile.TemporaryDirectory() as repo:
+        rd = os.path.join("docs", "superpowers", "execution", "run-cold")
+        results = os.path.join(repo, rd, "results")
+        _write_result(results, "at.json",
+                      {"status": "success", "usage": {"advisor_calls": ADVISOR_HOT_THRESHOLD}})
+        _write_result(results, "null.json",
+                      {"status": "success", "usage": {"advisor_calls": None}})
+        _write_result(results, "nousage.json", {"status": "success", "summary": "no usage block"})
+        _write_result(results, "bool.json",
+                      {"status": "success", "usage": {"advisor_calls": True}})
+        # A FAILED job that consulted the advisor OVER threshold must NOT escalate (round-2):
+        _write_result(results, "failed.json",
+                      {"status": "error", "usage": {"advisor_calls": ADVISOR_HOT_THRESHOLD + 9}})
+        _write_result(results, "blocked.json",
+                      {"status": "blocked", "usage": {"advisor_calls": ADVISOR_HOT_THRESHOLD + 9}})
+        _write_result(results, "bad.json", {})
+        with open(os.path.join(repo, rd, "results", "corrupt.json"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("{ not json")
+        expect("advisor reader: at-threshold/null/absent/bool/corrupt/non-success -> NOT hot",
+               _advisor_hot_for(repo, rd) is False)
+
+    # Absolute run_dir also works (dispatcher may hand an absolute path).
+    with tempfile.TemporaryDirectory() as repo:
+        abs_rd = os.path.join(repo, "run-abs")
+        _write_result(os.path.join(abs_rd, "results"), "j.json",
+                      {"status": "success",
+                       "usage": {"advisor_calls": ADVISOR_HOT_THRESHOLD + 5}})
+        expect("advisor reader: absolute run_dir -> hot", _advisor_hot_for(repo, abs_rd) is True)
+
+    # ==== FIX 8: --run-dir is actually threaded into run_preeval so the POST-RUN advisor
+    #      sensor FIRES (it was dead before — no CLI/kwarg path reached _advisor_hot_for). ==
+    with tempfile.TemporaryDirectory() as repo:
+        tax_dir = os.path.join(repo, ".claude")
+        os.makedirs(tax_dir, exist_ok=True)
+        with open(os.path.join(tax_dir, "compound-v-impact-taxonomy.yaml"), "w",
+                  encoding="utf-8") as fh:
+            fh.write(_EXAMPLE_TAXONOMY_TEXT)
+        stream = os.path.join(repo, "docs", "superpowers", "memory",
+                              "triage-outcomes.jsonl")
+        fk_fp = fake_localize_factory(_loc(["src/ui/button.css"], flags=[], fan_out=1))
+
+        # (a) No run_dir => advisor sensor OFF (fail-open) => trivial change stays FASTPATH
+        #     (unchanged normal pre-dispatch behavior).
+        res_norund = run_preeval("tweak local padding no rundir", repo=repo,
+                                 _localize=fk_fp, ts="2026-07-12T11:00:00Z",
+                                 stream_path=stream)
+        expect("FIX8: no run_dir => advisor sensor off => FASTPATH, no override",
+               res_norund["decision"] == DECISION_FASTPATH
+               and res_norund["override_fired"] is None)
+
+        # (b) A run_dir whose results record advisor_calls OVER threshold => _advisor_hot_for
+        #     is consulted on the reclassification path => override #7 fires => the SAME
+        #     otherwise-trivial change reclassifies to FULL_PIPELINE.
+        rd = os.path.join("docs", "superpowers", "execution", "run-adv")
+        _res_dir = os.path.join(repo, rd, "results")
+        os.makedirs(_res_dir, exist_ok=True)
+        with open(os.path.join(_res_dir, "j.json"), "w", encoding="utf-8") as fh:
+            json.dump({"status": "success",
+                       "usage": {"advisor_calls": ADVISOR_HOT_THRESHOLD + 1}}, fh)
+        res_rund = run_preeval("tweak local padding with rundir", repo=repo,
+                               _localize=fk_fp, run_dir=rd,
+                               ts="2026-07-12T11:01:00Z", stream_path=stream)
+        expect("FIX8: --run-dir over threshold => advisor_hot override #7 => FULL",
+               res_rund["decision"] == DECISION_FULL
+               and res_rund["override_fired"] == 7)
+
+    # (c) --run-dir path containment: inside is allowed; None fail-opens; a `..` escape and
+    #     an outside-repo absolute path are rejected (validated before the sensor reads).
+    with tempfile.TemporaryDirectory() as repo:
+        expect("FIX8: run_dir=None is contained (fail-open, nothing to validate)",
+               _run_dir_contained(repo, None) is True)
+        expect("FIX8: repo-relative run_dir is contained",
+               _run_dir_contained(repo, "docs/superpowers/execution/run-x") is True)
+        expect("FIX8: '..' escaping run_dir is rejected",
+               _run_dir_contained(repo, "../evil-run") is False)
+        _outside = os.path.join(os.path.dirname(os.path.realpath(repo)), "outside-run")
+        expect("FIX8: outside-repo absolute run_dir is rejected",
+               _run_dir_contained(repo, _outside) is False)
 
     if failures:
         print("\nSELFTEST FAILED: %d case(s)" % len(failures))

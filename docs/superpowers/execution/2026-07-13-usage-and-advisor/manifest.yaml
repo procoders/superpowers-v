@@ -1,0 +1,227 @@
+# Compound V execution manifest — v2.12 usage-capture + cross-brand advisor.
+# Materialized from the verified Partition Map + 3 live pre-flights. Validated by
+# scripts/compound-v-validate-manifest.py. One depends_on edge across features (B3 -> A0).
+
+run_id: 2026-07-13-usage-and-advisor
+feature: "Per-ticket usage capture + on-demand cross-brand advisor"
+spec_path: docs/superpowers/specs/2026-07-13-usage-and-advisor-design.md
+plan_path: docs/superpowers/specs/2026-07-13-usage-and-advisor-design.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-13-usage-and-advisor.md
+  domain: docs/superpowers/expert/2026-07-13-usage-and-advisor.md
+  library: docs/superpowers/library-audit/2026-07-13-usage-and-advisor.md
+
+acceptance_criteria:
+  - "job_result carries measured usage threaded worker -> collector -> aggregator; per-ticket/feature/epic totals with honest unmeasured count; zero fabricated numbers"
+  - "advisor mode is selectable, eligible on core-slice + fast path, prefers a cross-brand advisor, falls back to Opus, is READ-ONLY, proven by a stub test"
+  - "all selftests green under Python 3.9; 2.12.0 lockstep; scope gate clean on every job"
+  - "no write outside the partitioned file sets"
+
+routing_stance: claude-only
+max_parallel: 6
+
+# Files written by more than one candidate — pinned to a single serial writer (Z1).
+shared_resources:
+  - "CHANGELOG.md"
+  - ".claude-plugin/plugin.json"
+  - ".claude-plugin/marketplace.json"
+
+jobs:
+  - id: a0-foundation
+    title: "usage schema + extraction library + collector passthrough (shared foundation)"
+    type: shared_foundation
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: direct
+    run: serial
+    write_allowed:
+      - "schemas/job_result.schema.json"
+      - "scripts/compound-v-usage-extract.py"
+      - "scripts/compound-v-collect-results.py"
+    read_allowed:
+      - "scripts/**"
+      - "schemas/**"
+    acceptance:
+      - "usage added to schema properties only, never required, additionalProperties:false kept"
+      - "usage-extract.py normalizes per backend; selftest green under py3.9"
+      - "collect-results build_result passes usage through null-safe"
+
+  - id: a1-worker-hooks
+    title: "codex + opencode worker usage hooks"
+    type: bounded_crud
+    backend: claude
+    tier: standard
+    effort: medium
+    isolation: worktree
+    run: parallel
+    depends_on:
+      - a0-foundation
+    write_allowed:
+      - "scripts/compound-v-run-codex-worker.sh"
+      - "scripts/compound-v-run-opencode-worker.sh"
+    read_allowed:
+      - "scripts/**"
+      - "schemas/**"
+    acceptance:
+      - "emit_job_result gains usage from compound-v-usage-extract.py on $EVENTS_LOG"
+      - "stdout stays exactly one job_result JSON; absent data => measured:false"
+
+  - id: a2-aggregate-status
+    title: "usage aggregator + /v:status column"
+    type: bounded_crud
+    backend: claude
+    tier: standard
+    effort: medium
+    isolation: worktree
+    run: parallel
+    depends_on:
+      - a0-foundation
+    write_allowed:
+      - "scripts/compound-v-usage-aggregate.py"
+      - "commands/v-status.md"
+    read_allowed:
+      - "scripts/**"
+      - "docs/superpowers/execution/**"
+    acceptance:
+      - "aggregate sums usage per ticket/feature/epic; unmeasured counted, not zeroed"
+      - "v-status line ~78 reworded to permit MEASURED usage, ban estimates; column degrade-safe"
+
+  - id: a3-docs
+    title: "document the usage field in execution-manifest.md"
+    type: docs
+    backend: claude
+    tier: light
+    effort: low
+    isolation: worktree
+    run: parallel
+    depends_on:
+      - a0-foundation
+    write_allowed:
+      - "skills/compound-v/execution-manifest.md"
+    read_allowed:
+      - "schemas/**"
+      - "skills/**"
+    acceptance:
+      - "usage field documented as measured-only"
+
+  - id: b1-eligibility
+    title: "advisor eligibility + cross-brand selector"
+    type: bounded_crud
+    backend: claude
+    tier: standard
+    effort: medium
+    isolation: worktree
+    run: parallel
+    write_allowed:
+      - "scripts/compound-v-resolve-model.py"
+      - "scripts/compound-v-validate-manifest.py"
+    read_allowed:
+      - "scripts/**"
+      - "skills/**"
+    acceptance:
+      - "resolve-model exposes advisor_eligible + a cross-brand-preferring advisor selector (codex>non-claude>opus)"
+      - "validate-manifest accepts/validates an advisor: block; rejects on ineligible types; existing manifests stay valid"
+      - "selftests green under py3.9"
+
+  - id: b2-advisor-consult
+    title: "read-only cross-brand advisor consult script + adapter + stub test"
+    type: bounded_crud
+    backend: claude
+    tier: standard
+    effort: medium
+    isolation: worktree
+    run: parallel
+    depends_on:
+      - b1-eligibility
+    write_allowed:
+      - "scripts/compound-v-advisor-consult.sh"
+      - "skills/backend-launcher/adapter-advisor.md"
+      - "scripts/test-advisor-worker-stub.sh"
+    read_allowed:
+      - "scripts/**"
+      - "skills/**"
+    acceptance:
+      - "consult picks cross-brand advisor (codex exec --sandbox read-only) then opus fallback; NEVER writes; never --dangerously-skip-permissions"
+      - "advisor_calls is worker-counted; stub test proves selector + argv + parse; no live nested write run"
+
+  - id: b3-escalation-sensor
+    title: "advisor_calls -> escalate preeval sensor (clone churn_hot triad)"
+    type: bounded_crud
+    backend: claude
+    tier: standard
+    effort: medium
+    isolation: worktree
+    run: parallel
+    depends_on:
+      - a0-foundation
+      - b1-eligibility
+    write_allowed:
+      - "scripts/compound-v-preeval.py"
+      - "skills/compound-v/routing-policy.md"
+    read_allowed:
+      - "scripts/**"
+      - "docs/superpowers/execution/**"
+      - "skills/**"
+    acceptance:
+      - "score() gains advisor_hot kwarg + escalation-only override after #5; _advisor_hot_for reads completed results usage.advisor_calls; fail-open; selftest added"
+      - "routing-policy documents advisor vs classic dispatch"
+
+  - id: b4-surface
+    title: "flip advisor lane to shipped in README + routing.svg"
+    type: docs
+    backend: claude
+    tier: light
+    effort: low
+    isolation: worktree
+    run: parallel
+    write_allowed:
+      - "README.md"
+      - "docs/routing.svg"
+    read_allowed:
+      - "docs/**"
+      - "README.md"
+    acceptance:
+      - "advisor lane no longer says 'in development'; describes cross-brand read-only advisor"
+
+  - id: z1-integration-write
+    title: "CHANGELOG + version bump to 2.12.0 (lockstep, sole writer of shared files)"
+    type: shared_foundation
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: direct
+    run: serial
+    depends_on:
+      - a0-foundation
+      - a1-worker-hooks
+      - a2-aggregate-status
+      - a3-docs
+      - b1-eligibility
+      - b2-advisor-consult
+      - b3-escalation-sensor
+      - b4-surface
+    write_allowed:
+      - "CHANGELOG.md"
+      - ".claude-plugin/plugin.json"
+      - ".claude-plugin/marketplace.json"
+    read_allowed:
+      - "**"
+    acceptance:
+      - "CHANGELOG 2.12.0 entry; plugin.json + marketplace.json bumped in lockstep"
+
+  - id: z2-review
+    title: "spec-reviewer 3-pass over the whole diff"
+    type: review
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: direct
+    run: serial
+    depends_on:
+      - z1-integration-write
+    write_allowed: []
+    read_allowed:
+      - "**"
+    acceptance:
+      - "feature-level acceptance criteria met; no writes outside partitioned sets across jobs"

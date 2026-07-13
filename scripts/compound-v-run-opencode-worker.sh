@@ -109,7 +109,7 @@ die() {
 emit_job_result() {
   # $1 status  $2 blocked(true|false)  $3 files_json (JSON array)  $4 violations_json (JSON array)
   # $5 summary  $6 session_id  $7 worktree  $8 exit_code(int)  $9 failure_class ("" => null)
-  # ${10} retry_after_seconds(int, 0 when unknown)
+  # ${10} retry_after_seconds(int, 0 when unknown)  ${11} usage_json (JSON object)
   jq -n \
     --arg status "$1" \
     --argjson blocked "$2" \
@@ -121,6 +121,7 @@ emit_job_result() {
     --argjson exit_code "$8" \
     --arg failure_class "$9" \
     --argjson retry_after_seconds "${10}" \
+    --argjson usage "${11}" \
     '{
        status: $status,
        blocked: $blocked,
@@ -131,7 +132,8 @@ emit_job_result() {
        worktree: $worktree,
        exit_code: $exit_code,
        failure_class: (if $failure_class == "" then null else $failure_class end),
-       retry_after_seconds: $retry_after_seconds
+       retry_after_seconds: $retry_after_seconds,
+       usage: $usage
      }'
 }
 
@@ -719,6 +721,24 @@ if [ "$status" = "error" ] || [ "$status" = "timeout" ] || [ "$exit_code" != "0"
   failure_class="other"
 fi
 
+# --- measured usage (delegated to the usage extractor) -----------------------
+# Compute the canonical `usage` object from the opencode event stream ($EVENTS_LOG),
+# which the extractor SUMs over every `step_finish` line. The extractor prints EXACTLY
+# one JSON object on stdout — capture that stdout ONLY (it must never reach THIS
+# worker's stdout, which stays exactly one job_result JSON). Any stderr is discarded.
+# This is measurement, never fabrication: a missing/empty/unparseable events-log makes
+# the extractor emit measured:false with null token counts.
+#
+# GUARD: if the extractor output is not valid JSON (extractor crash, missing python
+# dep, etc.), fall back to an honest unmeasured object rather than break emit or
+# invent a number. Never a fabricated token count.
+usage_json=""
+usage_json=$(python3 "$SCRIPT_DIR/compound-v-usage-extract.py" \
+  --backend opencode --events-log "$EVENTS_LOG" 2>/dev/null) || usage_json=""
+if [ -z "$usage_json" ] || ! printf '%s' "$usage_json" | jq -e . >/dev/null 2>&1; then
+  usage_json='{"input_tokens":null,"output_tokens":null,"advisor_calls":null,"backend":"opencode","measured":false}'
+fi
+
 # --- emit --------------------------------------------------------------------
 # stdout = the canonical job_result JSON, and ONLY that. The caller (dispatcher)
 # parses this and decides whether to merge (index-based patch including new files)
@@ -734,6 +754,7 @@ emit_job_result \
   "$WT" \
   "$exit_code" \
   "$failure_class" \
-  "$retry_after"
+  "$retry_after" \
+  "$usage_json"
 
 exit 0

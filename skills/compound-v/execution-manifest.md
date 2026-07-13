@@ -230,6 +230,64 @@ rely on `_seg_is_literal` alone (that only rejects `*?[`, not traversal or symli
 
 ---
 
+## v2.12 — Optional `usage` on `job_result` (measured-only)
+
+Each job's `job_result` ([`schemas/job_result.schema.json`](../../schemas/job_result.schema.json)) MAY carry an
+optional `usage` object recording the job's token/advisor accounting. It is **worker-sourced and
+informational — exactly like `summary`, NEVER git-derived enforcement.** The scope gate and every DONE
+decision ignore it; nothing routes on it. It is a property only (never `required`), so pre-2.12
+results without it stay valid.
+
+```yaml
+usage:
+  input_tokens: 12480      # int | null
+  output_tokens: 3120      # int | null
+  advisor_calls: 1         # int | null
+  backend: codex           # string
+  measured: true           # bool
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `input_tokens` | int \| null | Total input/prompt tokens for the job, summed across the backend's own usage events. `null` when not measured. |
+| `output_tokens` | int \| null | Total output/completion tokens for the job, summed across the backend's own usage events. `null` when not measured. |
+| `advisor_calls` | int \| null | Times the executor actually consulted the read-only advisor subagent. **Worker-COUNTED** by the advisor worker (not derived from any CLI turn/iteration count, which is turns, not advisor consults), and set only when advisor mode ran; `null` otherwise. |
+| `backend` | string | Backend the usage was extracted for (`codex` \| `opencode` \| `cursor` \| `agy`/`antigravity` \| `claude` \| `devin`). |
+| `measured` | bool | `true` **only** when real token counts were extracted from the backend's structured usage events; `false` when the backend exposes nothing (see below). |
+
+### Measured-only contract (anti-ruflo)
+
+`usage` records **only REAL measured backend output** — never an estimate, never a fabricated or
+inferred number. Where a backend exposes no machine-readable usage, or its events log is
+absent/empty/unparseable, the worker emits `measured: false` with **null token counts** — a null is
+honest; a made-up number is not.
+
+| Backend | Measured? | Source |
+|---|---|---|
+| `codex` | **yes** | sum of `turn.completed.usage` across all turns (`--json`) |
+| `opencode` | **yes** | sum of `step_finish.part.tokens` (`--format json`) |
+| `cursor` | **yes** | `result.usage` (needs `-f`/trust) |
+| `agy` (antigravity) | **no** → `measured:false`, null tokens | no structured usage (`--print` only) |
+| `claude` via `Task` subagent | **no** → `measured:false`, null tokens | in-harness, returns text only |
+| `devin` | **no** → `measured:false`, null tokens | no machine-readable usage |
+
+The three measured backends (`codex`, `opencode`, `cursor`) each use a different casing/shape, so a
+single normalizer handles them. The worker's stdout stays EXACTLY one `job_result` JSON — the
+extractor reads the events log into a variable and never writes stdout.
+
+### Extraction and aggregation
+
+- [`scripts/compound-v-usage-extract.py`](../../scripts/compound-v-usage-extract.py) — `(backend,
+  events_log_path) → usage`. The per-backend normalizer the codex/opencode workers call before
+  emitting `job_result`; unknown/unmeasured backends and missing logs return `measured:false` + null
+  tokens. Ships with a `--selftest` over fixtures captured from real CLI output.
+- [`scripts/compound-v-usage-aggregate.py`](../../scripts/compound-v-usage-aggregate.py) — scans a
+  run's `results/*.json`, summing `usage` per ticket / feature / epic. `measured:false` jobs are
+  counted as **unmeasured** (an honest count), never folded in as zero. `/v:status` surfaces the
+  rollup in a usage column; degrade-safe (results absent ⇒ shows `—`, never breaks the table).
+
+---
+
 ## Relationship to the rest of the pipeline
 
 - **Phase 2 (disjoint partitioning)** emits this manifest (not only prose).

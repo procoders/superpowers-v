@@ -571,6 +571,105 @@ def _is_reviewer(job):
 
 
 # --------------------------------------------------------------------------- #
+# Optional per-job `advisor:` block (v2.12, Feature B1).
+#
+# The "cheap executor + on-demand cross-brand advisor" pattern lets a core-slice
+# implementer consult a DIFFERENT-brand advisor on a hard sub-decision. A job MAY
+# declare an optional advisor block:
+#
+#     advisor:
+#       enabled: <bool>            # optional; must be a boolean if present
+#       advisor_backend: <string>  # optional; must be a known backend if present
+#
+# Minimal, additive schema: unknown keys are rejected; a job WITHOUT `advisor:`
+# stays valid (backward compatible). Advisor-ELIGIBILITY is the EXACT mirror of
+# compound-v-resolve-model.py:advisor_eligible() — a job MAY carry an advisor iff its
+# type carries no ineligible token AND it is either a `standard`-tier implementer OR a
+# fast-path Claude worker. Any other (tier/type/backend/fast_path) combination — a
+# reviewer, a `docs`/`shared_foundation` job, OR any light-/deep-tier non-fast-path
+# implementer — is advisor-INELIGIBLE and its advisor block is rejected.
+# --------------------------------------------------------------------------- #
+ADVISOR_ALLOWED_KEYS = ("enabled", "advisor_backend")
+# Job-type tokens that are NEVER advisor-eligible (substring match). MUST stay in lockstep
+# with compound-v-resolve-model.py:ADVISOR_INELIGIBLE_TYPE_TOKENS — the two scripts are
+# standalone stdlib CLIs with no shared import (same house-style as VALID_STANCES).
+ADVISOR_INELIGIBLE_TYPE_TOKENS = ("review", "reviewer", "docs", "shared_foundation")
+
+
+def _advisor_eligible(tier, job_type, backend, fast_path):
+    """EXACT mirror of compound-v-resolve-model.py:advisor_eligible(). True iff a job
+    MAY carry an advisor block: no ineligible type token AND (a fast-path Claude worker
+    OR a `standard`-tier implementer)."""
+    jt = str(job_type or "").strip().lower()
+    for tok in ADVISOR_INELIGIBLE_TYPE_TOKENS:
+        if tok and tok in jt:
+            return False
+    b = str(backend or "").strip().lower()
+    t = str(tier or "").strip().lower()
+    if fast_path and b == "claude":
+        return True
+    if t == "standard":
+        return True
+    return False
+
+
+def _validate_advisor_block(job, jid, manifest_fast_path=False):
+    """Validate an optional per-job ``advisor:`` block. Returns a list of problem
+    strings (empty when the job has no advisor block or the block is well-formed on an
+    eligible job). Advisor-eligibility EXACTLY MIRRORS
+    compound-v-resolve-model.py:advisor_eligible() — a job carrying an advisor block on
+    an ineligible (tier/type/backend/fast_path) combination is REJECTED.
+    ``manifest_fast_path`` is True when the manifest has a top-level ``fast_path`` block
+    (its sole implementer is the fast-path worker; only a fast-path Claude worker earns
+    eligibility outside the standard tier)."""
+    problems = []
+    if "advisor" not in job:
+        return problems  # backward compatible: no advisor block => nothing to check
+
+    # Advisor-eligibility gate (mirror of advisor_eligible): reject the block on any
+    # ineligible job BEFORE shape checks, regardless of block shape.
+    if not _advisor_eligible(job.get("tier"), job.get("type"), job.get("backend"),
+                             manifest_fast_path):
+        problems.append(
+            "job '%s' (type '%s', tier '%s', backend '%s') carries an 'advisor' block "
+            "but is advisor-INELIGIBLE — only a standard-tier implementer or a fast-path "
+            "Claude worker may carry one; reviewer / docs / shared_foundation jobs and "
+            "any light-/deep-tier non-fast-path implementer are excluded (mirror of "
+            "compound-v-resolve-model.py:advisor_eligible); remove the advisor block or "
+            "retype/retier the job"
+            % (jid, job.get("type"), job.get("tier"), job.get("backend"))
+        )
+        return problems
+
+    adv = job.get("advisor")
+    if not isinstance(adv, dict):
+        problems.append(
+            "job '%s' advisor must be a mapping (e.g. {enabled: true})" % jid
+        )
+        return problems
+
+    for key in adv:
+        if key not in ADVISOR_ALLOWED_KEYS:
+            problems.append(
+                "job '%s' advisor has unknown key '%s' (allowed: %s)"
+                % (jid, key, ", ".join(ADVISOR_ALLOWED_KEYS))
+            )
+    if "enabled" in adv and not isinstance(adv.get("enabled"), bool):
+        problems.append(
+            "job '%s' advisor.enabled must be a boolean (got %r)"
+            % (jid, adv.get("enabled"))
+        )
+    if "advisor_backend" in adv:
+        ab = adv.get("advisor_backend")
+        if not isinstance(ab, str) or ab.strip().lower() not in VALID_BACKENDS:
+            problems.append(
+                "job '%s' advisor.advisor_backend %r is not a known backend "
+                "(expected one of %s)" % (jid, ab, ", ".join(VALID_BACKENDS))
+            )
+    return problems
+
+
+# --------------------------------------------------------------------------- #
 # v2.9 conditional fast-path support (only engaged when a top-level `fast_path`
 # block is present). Sibling scripts are loaded by path (their filenames have
 # hyphens, so they are not importable module names).
@@ -1556,6 +1655,11 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
         problems.append("manifest has no non-empty 'jobs' list")
         return problems
 
+    # A top-level `fast_path` block means the sole implementer is the fast-path worker —
+    # the one context in which a non-standard-tier Claude job earns advisor-eligibility.
+    manifest_fast_path = ("fast_path" in manifest
+                          and manifest.get("fast_path") is not None)
+
     # Structural sanity + collect per-job globs.
     seen_ids = set()
     job_globs = []  # (job_id, [globs])
@@ -1778,6 +1882,11 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
                     "shared_foundation job '%s' must run serial, got '%s'"
                     % (jid, job.get("run"))
                 )
+
+        # v2.12 (B1): optional per-job advisor block — validate shape + reject on any
+        # advisor-INELIGIBLE (tier/type/backend/fast_path) combination, exactly mirroring
+        # compound-v-resolve-model.py:advisor_eligible().
+        problems.extend(_validate_advisor_block(job, jid, manifest_fast_path))
 
     # Invariant 1: disjoint write scope across distinct jobs.
     for a_i in range(len(job_globs)):
@@ -2718,6 +2827,181 @@ jobs:
     write_allowed: [src/opencode/**]
     read_allowed: [src/**]
     acceptance: ["builds"]
+"""
+
+# v2.12 (B1): optional per-job advisor block. An eligible (standard-tier
+# bounded_crud implementer) job carrying a well-formed advisor block is VALID.
+ADVISOR_GOOD_MANIFEST = """
+run_id: 2026-07-13-advisor-good
+feature: "advisor-good"
+spec_path: docs/superpowers/specs/2026-07-13-advisor-good.md
+plan_path: docs/superpowers/plans/2026-07-13-advisor-good.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-13-advisor-good.md
+  domain: docs/superpowers/expert/2026-07-13-advisor-good.md
+  library: docs/superpowers/library-audit/2026-07-13-advisor-good.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-1-crud
+    title: "crud slice with advisor"
+    type: bounded_crud
+    backend: claude
+    tier: standard
+    isolation: worktree
+    run: parallel
+    write_allowed: [src/features/api/**]
+    read_allowed: [src/**]
+    acceptance: ["crud"]
+    advisor:
+      enabled: true
+      advisor_backend: codex
+"""
+
+# Advisor block on advisor-INELIGIBLE job types (review + docs + shared_foundation)
+# — each must be rejected.
+ADVISOR_INELIGIBLE_MANIFEST = """
+run_id: 2026-07-13-advisor-ineligible
+feature: "advisor-ineligible"
+spec_path: docs/superpowers/specs/2026-07-13-advisor-ineligible.md
+plan_path: docs/superpowers/plans/2026-07-13-advisor-ineligible.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-13-advisor-ineligible.md
+  domain: docs/superpowers/expert/2026-07-13-advisor-ineligible.md
+  library: docs/superpowers/library-audit/2026-07-13-advisor-ineligible.md
+routing_stance: balanced
+max_parallel: 2
+jobs:
+  - id: task-0-foundation
+    title: "shared foundation with advisor"
+    type: shared_foundation
+    backend: claude
+    tier: deep
+    isolation: direct
+    run: serial
+    write_allowed: [src/types/shared.ts]
+    read_allowed: [src/**]
+    acceptance: ["types"]
+    advisor:
+      enabled: true
+  - id: task-1-docs
+    title: "docs job with advisor"
+    type: docs
+    backend: claude
+    tier: light
+    isolation: worktree
+    run: parallel
+    write_allowed: [docs/x.md]
+    read_allowed: [src/**]
+    acceptance: ["documented"]
+    advisor:
+      enabled: true
+  - id: task-2-spec-review
+    title: "spec review gate with advisor"
+    type: review
+    backend: claude
+    tier: deep
+    isolation: worktree
+    run: parallel
+    write_allowed: [src/review/**]
+    read_allowed: [src/**]
+    acceptance: ["AC met"]
+    advisor:
+      enabled: true
+"""
+
+# Advisor block with a malformed SHAPE on an ELIGIBLE job — unknown key, a
+# non-boolean enabled, and an unknown advisor_backend are each rejected.
+ADVISOR_BAD_SHAPE_MANIFEST = """
+run_id: 2026-07-13-advisor-bad-shape
+feature: "advisor-bad-shape"
+spec_path: docs/superpowers/specs/2026-07-13-advisor-bad-shape.md
+plan_path: docs/superpowers/plans/2026-07-13-advisor-bad-shape.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-13-advisor-bad-shape.md
+  domain: docs/superpowers/expert/2026-07-13-advisor-bad-shape.md
+  library: docs/superpowers/library-audit/2026-07-13-advisor-bad-shape.md
+routing_stance: balanced
+max_parallel: 2
+jobs:
+  - id: task-1-crud
+    title: "crud slice with malformed advisor"
+    type: bounded_crud
+    backend: claude
+    tier: standard
+    isolation: worktree
+    run: parallel
+    write_allowed: [src/features/api/**]
+    read_allowed: [src/**]
+    acceptance: ["crud"]
+    advisor:
+      enabled: "yes"
+      advisor_backend: gemini
+      bogus_key: 1
+"""
+
+# FIX 7: a LIGHT-tier non-fast-path implementer carrying an advisor block is
+# advisor-INELIGIBLE (only standard-tier implementers / fast-path Claude workers may).
+ADVISOR_LIGHT_TIER_MANIFEST = """
+run_id: 2026-07-13-advisor-light
+feature: "advisor-light"
+spec_path: docs/superpowers/specs/2026-07-13-advisor-light.md
+plan_path: docs/superpowers/plans/2026-07-13-advisor-light.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-13-advisor-light.md
+  domain: docs/superpowers/expert/2026-07-13-advisor-light.md
+  library: docs/superpowers/library-audit/2026-07-13-advisor-light.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-1-crud
+    title: "light-tier crud slice with advisor"
+    type: bounded_crud
+    backend: claude
+    tier: light
+    isolation: worktree
+    run: parallel
+    write_allowed: [src/features/api/**]
+    read_allowed: [src/**]
+    acceptance: ["crud"]
+    advisor:
+      enabled: true
+      advisor_backend: codex
+"""
+
+# FIX 7: a DEEP-tier non-fast-path implementer carrying an advisor block is also
+# advisor-INELIGIBLE (deep tier already resolves to the strongest model — no advisor).
+ADVISOR_DEEP_TIER_MANIFEST = """
+run_id: 2026-07-13-advisor-deep
+feature: "advisor-deep"
+spec_path: docs/superpowers/specs/2026-07-13-advisor-deep.md
+plan_path: docs/superpowers/plans/2026-07-13-advisor-deep.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-13-advisor-deep.md
+  domain: docs/superpowers/expert/2026-07-13-advisor-deep.md
+  library: docs/superpowers/library-audit/2026-07-13-advisor-deep.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-1-crud
+    title: "deep-tier crud slice with advisor"
+    type: bounded_crud
+    backend: claude
+    tier: deep
+    isolation: worktree
+    run: parallel
+    write_allowed: [src/features/api/**]
+    read_allowed: [src/**]
+    acceptance: ["crud"]
+    advisor:
+      enabled: true
+      advisor_backend: codex
 """
 
 
@@ -3847,6 +4131,62 @@ def _selftest():
     expect("fallback parser: good manifest clean (%r)" % fb, fb == [])
     fb_bad = validate(_mini_yaml(BAD_MANIFEST))
     expect("fallback parser: bad manifest flagged", len(fb_bad) > 0)
+
+    # --- v2.12 (B1): optional per-job advisor block ---
+    # A job WITHOUT an advisor block stays valid (backward compat): GOOD_MANIFEST
+    # has none and is clean.
+    expect("good manifest (no advisor block) stays valid",
+           not any("advisor" in p for p in good))
+    # An eligible standard-tier implementer with a well-formed advisor block is valid.
+    adv_good = validate_text(ADVISOR_GOOD_MANIFEST)
+    expect("advisor block on eligible standard implementer: zero violations (%r)"
+           % adv_good, adv_good == [])
+    # Advisor on ineligible job types is rejected — one message per ineligible job.
+    adv_inelig = validate_text(ADVISOR_INELIGIBLE_MANIFEST)
+    expect("advisor on shared_foundation rejected",
+           any("task-0-foundation" in p and "advisor-INELIGIBLE" in p for p in adv_inelig))
+    expect("advisor on docs job rejected",
+           any("task-1-docs" in p and "advisor-INELIGIBLE" in p for p in adv_inelig))
+    expect("advisor on reviewer job rejected",
+           any("task-2-spec-review" in p and "advisor-INELIGIBLE" in p for p in adv_inelig))
+    # Malformed advisor SHAPE on an eligible job: each defect flagged.
+    adv_shape = validate_text(ADVISOR_BAD_SHAPE_MANIFEST)
+    expect("advisor.enabled non-boolean rejected",
+           any("advisor.enabled must be a boolean" in p for p in adv_shape))
+    expect("advisor unknown backend rejected",
+           any("advisor.advisor_backend" in p and "not a known backend" in p
+               for p in adv_shape))
+    expect("advisor unknown key rejected",
+           any("advisor has unknown key 'bogus_key'" in p for p in adv_shape))
+    # Fallback parser parity: the ineligible-advisor manifest is flagged there too.
+    expect("fallback parser: advisor-ineligible manifest flagged",
+           any("advisor-INELIGIBLE" in p
+               for p in validate(_mini_yaml(ADVISOR_INELIGIBLE_MANIFEST))))
+
+    # FIX 7: advisor-eligibility now EXACTLY mirrors advisor_eligible() — a light- or
+    # deep-tier NON-fast-path implementer carrying an advisor block is rejected (the old
+    # validator only checked ineligible TYPES and wrongly accepted these).
+    adv_light = validate_text(ADVISOR_LIGHT_TIER_MANIFEST)
+    expect("advisor on light-tier non-fast-path implementer rejected (%r)" % adv_light,
+           any("task-1-crud" in p and "advisor-INELIGIBLE" in p for p in adv_light))
+    adv_deep = validate_text(ADVISOR_DEEP_TIER_MANIFEST)
+    expect("advisor on deep-tier non-fast-path implementer rejected (%r)" % adv_deep,
+           any("task-1-crud" in p and "advisor-INELIGIBLE" in p for p in adv_deep))
+    # And the standard-tier implementer (ADVISOR_GOOD) stays valid — re-assert here so the
+    # eligible/ineligible boundary is pinned in one place.
+    expect("standard-tier implementer + advisor stays valid (boundary)",
+           validate_text(ADVISOR_GOOD_MANIFEST) == [])
+
+    # FIX 7: the run's OWN manifest (no advisor blocks) still validates cleanly — proves
+    # the tightened eligibility check is backward compatible with real, advisor-free jobs.
+    _own = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "docs", "superpowers", "execution",
+                        "2026-07-13-usage-and-advisor", "manifest.yaml")
+    if os.path.isfile(_own):
+        with open(_own, "r", encoding="utf-8") as _fh:
+            _own_problems = validate_text(_fh.read())
+        expect("run's own manifest (no advisor blocks) validates (%r)" % _own_problems,
+               _own_problems == [])
 
     # v2.9 conditional fast-path suite (on-disk fixtures).
     _selftest_fastpath(expect)
