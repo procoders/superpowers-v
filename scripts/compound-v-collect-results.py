@@ -345,21 +345,24 @@ def build_result(args: argparse.Namespace) -> Dict[str, Any]:
     usage = dict(worker_usage) if isinstance(worker_usage, dict) else None
 
     # advisor_calls is SCRIPT-DERIVED, never worker-self-reported: count the
-    # per-job advisor JSONL log (like the git-derived enforcement fields). When
-    # the log is present, overwrite/set advisor_calls to the derived count; when
-    # absent, leave it as the worker emitted (null). Fail-open on a missing log.
+    # per-job advisor JSONL log (like the git-derived enforcement fields). A
+    # worker-supplied advisor_calls is ALWAYS DISCARDED (round-2: a malicious /
+    # buggy worker could otherwise inject e.g. advisor_calls:999 with no log and
+    # have it survive). The derived value is the count when the log exists, else
+    # None (missing/unreadable/no-run-dir => null, fail-open, never fabricated).
     advisor_calls = _count_advisor_calls(args.run_dir, args.job_id)
-    if advisor_calls is not None:
-        if usage is None:
-            usage = {
-                "input_tokens": None,
-                "output_tokens": None,
-                "advisor_calls": advisor_calls,
-                "backend": args.backend or "",
-                "measured": False,
-            }
-        else:
-            usage["advisor_calls"] = advisor_calls
+    if usage is not None:
+        # Overwrite unconditionally, dropping any worker-reported count.
+        usage["advisor_calls"] = advisor_calls
+    elif advisor_calls is not None:
+        # No worker usage, but a real derived count: synthesize a minimal object.
+        usage = {
+            "input_tokens": None,
+            "output_tokens": None,
+            "advisor_calls": advisor_calls,
+            "backend": args.backend or "",
+            "measured": False,
+        }
 
     # Include `usage` ONLY when the worker provided one OR we derived advisor_calls;
     # when neither, omit it entirely (usage is optional in the schema, so omission

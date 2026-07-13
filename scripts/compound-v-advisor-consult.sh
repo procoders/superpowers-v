@@ -40,14 +40,18 @@
 #     --question "<text>" | --question-file <abs-path> \
 #     [--context-path <glob>]... \
 #     [--executor <backend>] [--available <csv>] [--advisor-backend <b>] \
-#     [--cd <dir>] [--timeout-sec <n>] [--calls-log <path>]
+#     [--cd <dir>] [--timeout-sec <n>] [--run-dir <dir> --job-id <id>]
 #
-# --calls-log <path> (optional): on each SUCCESSFUL consult, append exactly ONE compact JSON line
-#   (the consult result object) to <path>, creating its parent dir if needed (append, never
-#   truncate). This is the per-job advisor log — the dispatcher passes
-#   `<run-dir>/logs/<job-id>.advisor.jsonl`, and collect-results COUNTS the lines in that file to
-#   DERIVE usage.advisor_calls (honest, git/FS-derived, never model-self-reported). Omitting
-#   --calls-log preserves the prior behavior exactly (no logging). See adapter-advisor.md.
+# --run-dir <dir> --job-id <id> (optional, BOTH required together): on each SUCCESSFUL consult,
+#   append exactly ONE compact JSON line (the consult result object) to the per-job advisor log
+#   at `<run-dir>/logs/<job-id>.advisor.jsonl`. The path is CONSTRUCTED INTERNALLY from a
+#   validated run dir + a safe job id — the caller never supplies a raw output path, so this
+#   read-only-advisor helper can never be turned into an arbitrary-write primitive (round-2
+#   hardening: an earlier `--calls-log <path>` accepted any path incl. README.md/symlinks). The
+#   log dir is realpath-contained under <run-dir>, and an existing non-regular / symlink target
+#   is refused. collect-results COUNTS the lines in that file to DERIVE usage.advisor_calls
+#   (honest, FS-derived, never model-self-reported). Omitting both preserves the prior behavior
+#   (no logging). See adapter-advisor.md.
 #
 # Exit: 0 when advice was produced; non-zero (with a diagnostic on stderr) on a usage/environment
 # fault or an unsupported advisor backend.
@@ -64,6 +68,19 @@ die() {
   exit 2
 }
 
+# Validate an id against a strict safe-character allow-list before it becomes a PATH SEGMENT.
+# Allow only [A-Za-z0-9._-]; reject `.`, `..`, empty, and any separator. Mirrors the codex
+# worker's id_is_safe (bash 3.2-safe: case glob, no regex). Returns 0 when safe, 1 otherwise.
+id_is_safe() {
+  _id="$1"
+  [ -n "$_id" ] || return 1
+  case "$_id" in
+    .|..) return 1 ;;
+    *[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  return 0
+}
+
 # Directory of THIS script (resolves the sibling resolver + timeout supervisor).
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RESOLVE="$SCRIPT_DIR/compound-v-resolve-model.py"
@@ -78,7 +95,8 @@ AVAILABLE=""
 ADVISOR_OVERRIDE=""
 CD_DIR="$PWD"
 TIMEOUT_SEC="$DEFAULT_TIMEOUT_SEC"
-CALLS_LOG=""
+RUN_DIR=""
+JOB_ID=""
 # Indexed array of context globs (bash 3.2-safe).
 CONTEXT_PATHS=()
 
@@ -92,7 +110,8 @@ while [ $# -gt 0 ]; do
     --advisor-backend)  ADVISOR_OVERRIDE="$2"; shift 2 ;;
     --cd)               CD_DIR="$2"; shift 2 ;;
     --timeout-sec)      TIMEOUT_SEC="$2"; shift 2 ;;
-    --calls-log)        CALLS_LOG="$2"; shift 2 ;;
+    --run-dir)          RUN_DIR="$2"; shift 2 ;;
+    --job-id)           JOB_ID="$2"; shift 2 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -250,27 +269,43 @@ esac
 [ -n "$ADVICE" ] || die "advisor backend '$ADVISOR_BACKEND' returned no advice text"
 
 # --- record one line into the per-job advisor log (DERIVED count source) ------
-# On a SUCCESSFUL consult, append EXACTLY ONE compact JSON line to --calls-log (when given). The
-# dispatcher passes `<run-dir>/logs/<job-id>.advisor.jsonl`; collect-results COUNTS the lines to
-# DERIVE usage.advisor_calls — the honest, git/FS-derived count (never model-self-reported). We
-# reach here only after ADVICE was produced (a failed consult die()s earlier and never logs).
-# Append, never truncate; create the parent dir if needed. Omitting --calls-log => no logging
-# (backward compatible). This does NOT alter stdout — stdout stays exactly one JSON object.
-if [ -n "$CALLS_LOG" ]; then
-  _log_dir="$(dirname "$CALLS_LOG")"
-  [ -d "$_log_dir" ] || mkdir -p "$_log_dir" || die "cannot create --calls-log dir: $_log_dir"
+# On a SUCCESSFUL consult, append EXACTLY ONE compact JSON line to the per-job advisor log. The
+# path is CONSTRUCTED INTERNALLY as `<run-dir>/logs/<job-id>.advisor.jsonl` from a validated run
+# dir + safe job id — the caller never hands us a raw path, so this read-only-advisor helper can
+# never become an arbitrary-write primitive (round-2: `--calls-log <path>` was a HIGH — it would
+# append to any caller-writable file incl. README.md or through a symlink). We reach here only
+# after ADVICE was produced. collect-results COUNTS the lines to DERIVE usage.advisor_calls.
+# Both --run-dir and --job-id must be present to log; omitting both => no logging (backward compat).
+if [ -n "$RUN_DIR" ] || [ -n "$JOB_ID" ]; then
+  [ -n "$RUN_DIR" ] && [ -n "$JOB_ID" ] || die "--run-dir and --job-id must be given together"
+  id_is_safe "$JOB_ID" || die "--job-id has invalid characters (allowed: A-Za-z0-9._-, not . or ..): $JOB_ID"
+  [ -d "$RUN_DIR" ] || die "--run-dir is not an existing directory: $RUN_DIR"
+  # Realpath the run dir, then build the log dir strictly beneath it and assert containment.
+  _run_real="$(cd "$RUN_DIR" 2>/dev/null && pwd -P)" || die "cannot resolve --run-dir: $RUN_DIR"
+  _log_dir="$_run_real/logs"
+  mkdir -p "$_log_dir" || die "cannot create advisor log dir: $_log_dir"
+  _log_dir_real="$(cd "$_log_dir" 2>/dev/null && pwd -P)" || die "cannot resolve advisor log dir: $_log_dir"
+  case "$_log_dir_real/" in
+    "$_run_real"/*) : ;;
+    *) die "advisor log dir escapes --run-dir (containment): $_log_dir_real" ;;
+  esac
+  _log_file="$_log_dir_real/$JOB_ID.advisor.jsonl"
+  # Refuse an existing non-regular target or a symlink (no writing through a planted symlink).
+  if [ -e "$_log_file" ] || [ -L "$_log_file" ]; then
+    { [ -f "$_log_file" ] && [ ! -L "$_log_file" ]; } || die "advisor log target is not a regular file: $_log_file"
+  fi
   jq -nc \
     --arg advisor_backend "$ADVISOR_BACKEND" \
     --arg advisor_model "$ADVISOR_MODEL" \
     --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --argjson advisor_calls 1 \
     '{advisor_backend: $advisor_backend, advisor_model: $advisor_model, advisor_calls: $advisor_calls, ts: $ts}' \
-    >> "$CALLS_LOG" || die "cannot append to --calls-log: $CALLS_LOG"
+    >> "$_log_file" || die "cannot append to advisor log: $_log_file"
 fi
 
 # --- emit --------------------------------------------------------------------
 # advisor_calls on the stdout object is this-consult == 1. The RUN-LEVEL usage.advisor_calls is
-# DERIVED by collect-results counting the --calls-log lines, NOT summed from this field.
+# DERIVED by collect-results counting the per-job advisor-log lines, NOT summed from this field.
 jq -n \
   --arg advisor_backend "$ADVISOR_BACKEND" \
   --arg advisor_model "$ADVISOR_MODEL" \

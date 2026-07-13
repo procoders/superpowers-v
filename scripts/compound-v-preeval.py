@@ -694,14 +694,18 @@ ADVISOR_HOT_THRESHOLD = 2
 
 
 def _advisor_hot_for(repo, run_dir):
-    """Escalation-only advisor signal (mirror of `_churn_hot_for`): True iff any COMPLETED
+    """Escalation-only advisor signal (mirror of `_churn_hot_for`): True iff any SUCCESSFUL
     `results/*.json` for the run records `usage.advisor_calls` exceeding ADVISOR_HOT_THRESHOLD.
     A POST-RUN reclassification read only — never called from the pure `score()`.
 
-    Absent/unreadable results dir, a missing/unreadable file, a null/absent/non-int
-    `advisor_calls`, or no run_dir at all => False (absence NEVER escalates), fail-open exactly
-    like churn. `run_dir` is the execution run directory (`<run_dir>/results/*.json`); it may be
-    absolute or repo-relative."""
+    Only a result with `status == "success"` is counted (round-2: a failed/blocked/timeout job
+    that happened to consult the advisor before dying must NOT escalate a clean re-run — its
+    advisor_calls reflect a dead attempt, not genuine difficulty of a completed unit).
+
+    Absent/unreadable results dir, a missing/unreadable file, a non-success status, a
+    null/absent/non-int `advisor_calls`, or no run_dir at all => False (absence NEVER escalates),
+    fail-open exactly like churn. `run_dir` is the execution run directory
+    (`<run_dir>/results/*.json`); it may be absolute or repo-relative."""
     if not run_dir:
         return False
     base = run_dir if os.path.isabs(run_dir) else os.path.join(repo or ".", run_dir)
@@ -722,6 +726,8 @@ def _advisor_hot_for(repo, run_dir):
             continue  # unreadable/malformed result → absence, never escalates
         if not isinstance(obj, dict):
             continue
+        if obj.get("status") != "success":
+            continue  # only a completed, successful unit signals genuine difficulty
         usage = obj.get("usage")
         if not isinstance(usage, dict):
             continue
@@ -1441,9 +1447,11 @@ def _selftest():
     with tempfile.TemporaryDirectory() as repo:
         rd = os.path.join("docs", "superpowers", "execution", "run-hot")
         results = os.path.join(repo, rd, "results")
-        _write_result(results, "job1.json", {"usage": {"advisor_calls": 1}})
+        _write_result(results, "job1.json",
+                      {"status": "success", "usage": {"advisor_calls": 1}})
         _write_result(results, "job2.json",
-                      {"usage": {"advisor_calls": ADVISOR_HOT_THRESHOLD + 1}})
+                      {"status": "success",
+                       "usage": {"advisor_calls": ADVISOR_HOT_THRESHOLD + 1}})
         expect("advisor reader: a job over threshold -> hot (True)",
                _advisor_hot_for(repo, rd) is True)
 
@@ -1451,22 +1459,31 @@ def _selftest():
     with tempfile.TemporaryDirectory() as repo:
         rd = os.path.join("docs", "superpowers", "execution", "run-cold")
         results = os.path.join(repo, rd, "results")
-        _write_result(results, "at.json", {"usage": {"advisor_calls": ADVISOR_HOT_THRESHOLD}})
-        _write_result(results, "null.json", {"usage": {"advisor_calls": None}})
-        _write_result(results, "nousage.json", {"summary": "no usage block"})
-        _write_result(results, "bool.json", {"usage": {"advisor_calls": True}})
+        _write_result(results, "at.json",
+                      {"status": "success", "usage": {"advisor_calls": ADVISOR_HOT_THRESHOLD}})
+        _write_result(results, "null.json",
+                      {"status": "success", "usage": {"advisor_calls": None}})
+        _write_result(results, "nousage.json", {"status": "success", "summary": "no usage block"})
+        _write_result(results, "bool.json",
+                      {"status": "success", "usage": {"advisor_calls": True}})
+        # A FAILED job that consulted the advisor OVER threshold must NOT escalate (round-2):
+        _write_result(results, "failed.json",
+                      {"status": "error", "usage": {"advisor_calls": ADVISOR_HOT_THRESHOLD + 9}})
+        _write_result(results, "blocked.json",
+                      {"status": "blocked", "usage": {"advisor_calls": ADVISOR_HOT_THRESHOLD + 9}})
         _write_result(results, "bad.json", {})
         with open(os.path.join(repo, rd, "results", "corrupt.json"), "w",
                   encoding="utf-8") as fh:
             fh.write("{ not json")
-        expect("advisor reader: at-threshold + null/absent/bool/corrupt -> NOT hot",
+        expect("advisor reader: at-threshold/null/absent/bool/corrupt/non-success -> NOT hot",
                _advisor_hot_for(repo, rd) is False)
 
     # Absolute run_dir also works (dispatcher may hand an absolute path).
     with tempfile.TemporaryDirectory() as repo:
         abs_rd = os.path.join(repo, "run-abs")
         _write_result(os.path.join(abs_rd, "results"), "j.json",
-                      {"usage": {"advisor_calls": ADVISOR_HOT_THRESHOLD + 5}})
+                      {"status": "success",
+                       "usage": {"advisor_calls": ADVISOR_HOT_THRESHOLD + 5}})
         expect("advisor reader: absolute run_dir -> hot", _advisor_hot_for(repo, abs_rd) is True)
 
     # ==== FIX 8: --run-dir is actually threaded into run_preeval so the POST-RUN advisor
@@ -1497,7 +1514,8 @@ def _selftest():
         _res_dir = os.path.join(repo, rd, "results")
         os.makedirs(_res_dir, exist_ok=True)
         with open(os.path.join(_res_dir, "j.json"), "w", encoding="utf-8") as fh:
-            json.dump({"usage": {"advisor_calls": ADVISOR_HOT_THRESHOLD + 1}}, fh)
+            json.dump({"status": "success",
+                       "usage": {"advisor_calls": ADVISOR_HOT_THRESHOLD + 1}}, fh)
         res_rund = run_preeval("tweak local padding with rundir", repo=repo,
                                _localize=fk_fp, run_dir=rd,
                                ts="2026-07-12T11:01:00Z", stream_path=stream)
