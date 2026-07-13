@@ -264,6 +264,24 @@ Two more structured choices — sensible defaults, reconfigurable any time:
   before stopping at a human checkpoint. An epic is *N full v1.0 runs*, so this is the
   human-in-the-loop **cadence**, not a token meter. `1` checkpoints after every feature
   (safest); raise it for more autonomy per invocation.
+- **Marathon autonomy — `epic.autonomy.stance`** (options `checkpoint` / `marathon`; default
+  **`checkpoint`**): whether `/v:epic` stops at a human checkpoint after `max_features` (the
+  bullet above — always the default), or opts into the **v2.10 marathon loop**
+  ([`epic-mode.md`](../skills/compound-v/epic-mode.md) "Marathon stance") that chews the whole
+  runnable feature DAG in one invocation, routing failures through a Codex+Claude arbiter panel
+  and staying bounded by hard global circuit breakers. Offer `marathon` only with the **honest
+  v2.10 boundary** stated plainly: it survives *within one live `/v:epic` invocation* (a soft
+  per-feature failure routes to the next runnable feature automatically) and is *human-resumable*
+  after a hard death — quota, closed terminal, crashed machine — via a person re-invoking
+  `/v:epic <epic-id>`, which is re-entrant. **There is no automatic resurrection while you're away
+  in v2.10** — an unattended overnight watcher that revives the epic on its own is deferred to
+  v2.11. `marathon` also needs the **global breaker caps** agreed up front (sensible defaults,
+  all tunable): `max_wall_clock_hours` (default **10**), `max_total_attempts` (default
+  `max(6, 3×features)`), and `max_no_progress_cycles` (default **3** — a full pass with no new
+  feature reaching `done` counts as one non-progressing cycle). These caps bound **counts and
+  wall-clock hours only** — never a fabricated cost or token number. `checkpoint` remains the
+  safe, unchanged default; only set `marathon` when the user explicitly wants unattended,
+  multi-feature autonomy and accepts the boundary above.
 - **Cross-model review — `review.cross_model`** (default **off**): run an automatic Codex
   second opinion ([`/v:review-plan`](v-review-plan.md)) on high-stakes plans before dispatch.
   Off = run it manually when you want it; on = decorrelated review by default, at the cost of
@@ -364,7 +382,14 @@ was, in those two fields).
 {
   "stance": "balanced",
   "memory": { "embeddings": false, "auto_recall": true, "auto_tighten": false },
-  "epic":   { "max_features": 1 },
+  "epic":   {
+    "max_features": 1,
+    "autonomy": {
+      "stance": "checkpoint",
+      "max_wall_clock_hours": 10,
+      "max_no_progress_cycles": 3
+    }
+  },
   "review": { "cross_model": false },
   "brainstorm": {
     "deep_research": "ask",
@@ -413,6 +438,18 @@ identically to `balanced`. Only `cost-aware.claude.standard` differs: `sonnet`, 
   `false` = memory is a manual `/v:remember` lookup only.
 - **`epic.max_features`** (default `1`) = the Step 3c epic-autonomy cadence `/v:epic` reads as
   its per-invocation budget before a human checkpoint.
+- **`epic.autonomy.stance`** (default `"checkpoint"`) = the Step 3c marathon opt-in. `"checkpoint"`
+  is the unchanged default (the bullet above governs it). `"marathon"` engages the v2.10
+  autonomous loop in [`v-epic.md`](v-epic.md) ("Autonomous marathon loop") — but stance alone is
+  advisory config: the driver always re-confirms it against the **persisted**
+  `epic-state.json`'s own `autonomy.stance` before running any autonomous command (the state file
+  is authoritative, not this config). `max_wall_clock_hours` (default `10`) and
+  `max_no_progress_cycles` (default `3`) seed the marathon global breakers verbatim; leave
+  `max_total_attempts` **unset** here — its documented default is derived from the epic's actual
+  feature count at `--init` time (`max(6, 3×features)`), which this project-local file cannot know
+  in advance. `max_attempts_per_feature` (per-feature retry cap, script default `2`) is likewise
+  left to its script default unless a specific epic has a documented reason to raise it — set it
+  per-epic at `--init`, not globally here.
 - **`review.cross_model`** (default `false`) = the Step 3c toggle; when `true`, high-stakes
   plans get an automatic Codex second opinion ([`/v:review-plan`](v-review-plan.md)) before
   dispatch.

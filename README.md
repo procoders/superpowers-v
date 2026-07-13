@@ -28,6 +28,8 @@ The fastest way to *get* what this plugin does. Three gamified episodes — **De
 
 - **Epic mode** — feed it a whole PRD with many tasks and it builds feature by feature, in dependency order, on one branch. By default it checkpoints after each feature so you can review (raise the budget to let it run longer).
 
+- **Marathon Loop** 🧪 (opt-in, v2.10) — instead of stopping at every checkpoint, `/v:epic` can chew through the whole runnable feature DAG in one invocation. A failed feature goes to a cross-model **Arbiter Panel** (Codex + a fresh adversarial Claude) that decides retry / abandon / halt-the-epic; a suspected external blocker (an upstream API with no data, say) goes into a **Blocker Ledger** and gets isolated instead of halting the rest of the build; **global circuit breakers** (total attempts, wall-clock hours, no-progress cycles) keep the whole thing bounded. Honest limit: "survives a fall" means the loop keeps going automatically *within that one live session*, and a **human re-invoking `/v:epic`** after a hard death (closed terminal, crashed machine, quota) resumes it from where it stopped. There is **no automatic resurrection while you're away** — nothing wakes the epic back up on its own. That's a deferred, separate feature. Default epic mode is unchanged; marathon is opt-in per epic at `/v:epic` start time.
+
 - **V-memory** — project memory that builds up as you work: decisions made, bugs fixed, things that failed. It surfaces the relevant bits when you plan or review.
 
 - **Research-grounded brainstorming** 🧪 — before a brainstorm on an unfamiliar topic, a gated, bounded recon pass (off by one config key) writes an evidence doc the brainstorm reads first. And when the brainstorm has 3+ *independent* clarifying questions, it can batch them into one screen — the Visual Companion form if you've accepted it, else a structured question, else the usual one-at-a-time (dependent questions always stay sequential). Both are description-driven guidance, not hook-enforced.
@@ -85,6 +87,7 @@ That's it.
 - **Antigravity and Cursor are lower-trust** (no kernel sandbox). The scope check catches out-of-bounds writes *after the fact* but can't *prevent* them. For anything sensitive or untrusted, prefer **Codex** — it runs in a real workspace sandbox.
 - **Cursor on a Free plan** can only use its `auto` model (named models are paid).
 - **Epic mode is bounded by default** — it stops after each feature for a human checkpoint. It is *not* a fire-and-forget overnight build unless you raise the budget.
+- **Marathon mode (opt-in) is still not fire-and-forget-overnight.** It removes the per-feature checkpoint and adds an arbiter panel + blocker ledger + global breakers so it can run further unattended in one sitting — but it does not self-revive after a hard death. If the session dies, you re-run `/v:epic <epic-id>` yourself; it resumes from the last committed state. Auto-resurrection while you're away is a deferred, separate feature — not shipped here.
 - No daemon, no server, no MCP service, no made-up cost numbers. Everything is small, readable scripts.
 
 ---
