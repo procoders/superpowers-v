@@ -30,9 +30,17 @@ Two subcommands:
       scheduler tool (CronCreate's prompt / scheduled-tasks' prompt) so a FRESH, memoryless
       session can act on it with zero conversational context. It instructs that session to
       call V1's --claim-resume (the one atomic resume authority), branch on the result
-      (resume via /v:epic, no-op on a live foreign lease, or a full inline DISARM on a
-      terminal/resume-cap verdict), and carries the global model/commit/no-fabricated-
-      metrics constraints. Never touches epic-state.json itself -- it only prints text.
+      (resume via /v:epic, no-op on a live foreign lease, or an inline terminal handler on
+      a terminal/resume-cap verdict). Post-integration-review BLOCKER fix: that terminal
+      handler ONLY pauses its own Tier-2 task (mcp__scheduled-tasks__update_scheduled_task,
+      enabled: false) -- a scheduled firing can never delete the very task that launched it
+      (self-deletion is refused), and it never attempts a Tier-1 CronList/CronDelete sweep
+      either, since Tier-1 is session-scoped and, by the time ANY scheduled firing of this
+      prompt runs, the original session that might have held it is already gone. A full
+      hard-delete of both tiers happens only from a LIVE, non-scheduled driver session
+      (v-epic.md's own "Watch disarm"), never from this prompt. Also carries the global
+      model/commit/no-fabricated-metrics constraints. Never touches epic-state.json itself
+      -- it only prints text.
 
   plan --state S --now T [--stale-after-min N]
       Prints JSON: {"tier1":{"cron":<cron-expr>,"disarm":bool},
@@ -257,42 +265,46 @@ BRANCH C -- claimed == false AND reason is "terminal" OR "resume-cap"
 ===============================================================================
 BRANCH C -- FULL DISARM (only when reason is "terminal" or "resume-cap")
 ===============================================================================
-Reconcile against each PROVIDER'S OWN LIST -- NEVER against the epic-state.json
-watcher_registry alone, which is only a cache and cannot be trusted for existence. A task
-that was created but never recorded (a crash between the create call and
---record-watcher-armed) is still found and deleted here, so there is no crash window where
-a task survives forever.
+This SCHEDULED firing may have been launched by EITHER tier -- it never knows which for
+certain, and it must never assume it is "self" for a tier it did not verify. It ONLY ever
+PAUSES its own Tier-2 task below (never deletes anything, on either tier). A full
+hard-delete of both tiers happens separately, only from a LIVE, non-scheduled `/v:epic`
+driver session (its own "Watch disarm" section) -- never from this scheduled prompt.
 
 MATCH EXACTLY -- never a shared string prefix. Epic ids can contain hyphens, so a bare
-prefix/substring sweep is UNSAFE: it would also match (and delete) a DIFFERENT epic whose
-id happens to start with this epic's id plus a hyphen (e.g. this epic "{epic_id}" vs some
-other epic "{epic_id}-something-else"). Use exact equality / the exact delimited token
-below, nothing looser.
+prefix/substring sweep is UNSAFE: it would also match (and delete/pause) a DIFFERENT epic
+whose id happens to start with this epic's id plus a hyphen (e.g. this epic "{epic_id}" vs
+some other epic "{epic_id}-something-else"). Use exact equality below, nothing looser.
 
-1. Tier-2 sweep (scheduled-tasks): call mcp__scheduled-tasks__list_scheduled_tasks (it
+1. Tier-2 self-pause (scheduled-tasks): call mcp__scheduled-tasks__list_scheduled_tasks (it
    takes no arguments -- it returns every scheduled task). Find the task whose "taskId" is
-   EXACTLY "{sched_id}" (exact string equality -- never startswith/contains):
-   - Delete it: mcp__scheduled-tasks__delete_scheduled_task, passing that exact "taskId".
-   - Record the disarm:
+   EXACTLY "{sched_id}" (exact string equality -- never startswith/contains). If found:
+   - PAUSE it -- never delete it: mcp__scheduled-tasks__update_scheduled_task, passing that
+     exact "taskId" and enabled: false. A scheduled firing can never delete the very task
+     that launched it (the scheduler REFUSES self-deletion on delete_scheduled_task), so a
+     delete call here would simply fail and leave the task live forever; update with
+     enabled: false is allowed on self and permanently stops it from firing again, which is
+     everything a terminal epic needs from this tier.
+   - Record the disarm (a permanently paused task will never fire again, so the registry
+     treats it exactly like a deleted one):
 
        python3 scripts/compound-v-epic-state.py --record-watcher-disarmed \\
          --state "{state_path}" --provider scheduled-tasks --task-id "{sched_id}"
 
    No task with that exact taskId is expected and harmless -- not a failure.
 
-2. Tier-1 sweep (session cron): call CronList (it takes no arguments -- it returns every
-   session cron task). Find EVERY returned entry whose name/prompt/label contains the exact
-   delimited marker token "{tier1_marker}" (the "|" delimiters on both sides bound the epic
-   id exactly, so no other epic's marker can ever match here as a substring -- do NOT match
-   on a bare prefix like "compound-v-watch-{epic_id}-"):
-   - Delete it: CronDelete, passing that entry's id.
-   - Record the disarm:
-
-       python3 scripts/compound-v-epic-state.py --record-watcher-disarmed \\
-         --state "{state_path}" --provider cron --task-id "<that entry's id>"
-
-   No entry containing that exact delimited marker is expected and harmless -- not a
-   failure.
+2. Tier-1 (session cron): take NO action here -- do not list this session's cron tasks and
+   do not delete anything on this tier from this branch. Tier-1 is session-scoped -- if
+   THIS firing arrived via Tier-2, the ORIGINAL session that might have held a Tier-1
+   session-cron task for this epic is already gone (that is precisely what made this a
+   scheduled resurrection), and its Tier-1 task died with it; there is nothing left for
+   this cold, memoryless session to find. A LIVE, non-scheduled driver session performs the
+   real Tier-1 hard-delete when one still exists (see its "Watch disarm" section) -- never
+   a scheduled firing.
+   (Identification only, not an instruction: this epic's Tier-1 delimited marker is
+   "{tier1_marker}" -- it is embedded here only so that a LIVE driver's own session-cron
+   crash-reconciliation sweep can still find and adopt/remove an orphaned Tier-1 job by
+   this exact token; this firing itself never searches for or acts on it.)
 
 ===============================================================================
 GLOBAL CONSTRAINTS (apply to any work performed under BRANCH A)
@@ -476,10 +488,9 @@ def _selftest():
         "--now",
         "/v:epic epic-alpha",
         "reason == \"live\"",
-        "CronList",
         "mcp__scheduled-tasks__list_scheduled_tasks",
-        "CronDelete",
-        "mcp__scheduled-tasks__delete_scheduled_task",
+        "mcp__scheduled-tasks__update_scheduled_task",
+        "enabled: false",
         "--record-watcher-disarmed",
         "Opus",
         "Haiku",
@@ -491,11 +502,28 @@ def _selftest():
     for token in must_contain:
         check("emit-prompt contains %r" % (token,), token in prompt)
 
-    # v2.11 crash-window fix: the terminal DISARM branch must sweep each PROVIDER'S OWN
-    # list (list_scheduled_tasks / CronList) -- never the epic-state.json watcher_registry
-    # alone (that is only a cache and cannot be trusted for existence; a task created but
-    # never recorded would otherwise be invisible to a registry-only sweep, letting a Tier-2
-    # task orphan forever).
+    # BLOCKER 2 fix: a SCHEDULED Tier-2 firing can never delete the very task that
+    # launched it (mcp__scheduled-tasks__delete_scheduled_task REFUSES self-deletion) --
+    # the terminal branch must PAUSE its own Tier-2 task (update_scheduled_task,
+    # enabled: false), never attempt to delete it, and must never attempt a Tier-1 self
+    # cron delete either (a scheduled firing's own session never created Tier-1, and by
+    # the time ANY scheduled firing of this prompt runs, the ORIGINAL session that might
+    # have held a Tier-1 CronCreate task is already gone, taking that Tier-1 task with
+    # it -- session-only). Only a LIVE, non-scheduled driver session (v-epic.md's own
+    # "Watch disarm") still hard-deletes via delete_scheduled_task/CronDelete.
+    check("emit-prompt terminal branch does NOT attempt to delete its own Tier-2 task",
+          "mcp__scheduled-tasks__delete_scheduled_task" not in prompt)
+    check("emit-prompt terminal branch does NOT attempt a Tier-1 CronDelete",
+          "CronDelete" not in prompt)
+    check("emit-prompt terminal branch does NOT call CronList (nothing to sweep -- "
+          "Tier-1, if it ever existed, died with the original session)",
+          "CronList" not in prompt)
+
+    # v2.11 crash-window fix: the terminal branch's Tier-2 self-pause must reconcile
+    # against the PROVIDER'S OWN list (list_scheduled_tasks) -- never the epic-state.json
+    # watcher_registry alone (that is only a cache and cannot be trusted for existence; a
+    # task created but never recorded would otherwise be invisible to a registry-only
+    # check, letting a Tier-2 task orphan forever, live and unpaused).
     check("emit-prompt DISARM branch no longer keys off the registry's --list-watchers",
           "--list-watchers" not in prompt)
 
@@ -504,13 +532,21 @@ def _selftest():
     sched_alpha = deterministic_task_id("epic-alpha", "scheduled-tasks")
     marker_alpha = tier1_marker("epic-alpha")
     check("emit-prompt names the Tier-2 EXACT taskId to match", sched_alpha in prompt)
-    check("emit-prompt names the Tier-1 delimited marker to match", marker_alpha in prompt)
-    check("emit-prompt's Tier-2 sweep instructs EXACT equality, not startswith/contains",
+    check("emit-prompt's Tier-2 pause instructs EXACT equality, not startswith/contains",
           "EXACTLY" in prompt or "exact equality" in prompt.lower())
-    check("emit-prompt's Tier-1 sweep instructs matching the delimited marker, not a prefix",
-          "delimited marker" in prompt.lower())
     check("emit-prompt no longer instructs a 'starts with'-style prefix sweep for DISARM",
           "starts with" not in prompt.lower() and "prefix sweep" not in prompt.lower())
+
+    # BLOCKER 2 fix: the Tier-1 delimited marker is still embedded verbatim in the prompt
+    # (it IS the cron task's own prompt text, so a LIVE driver's later CronList
+    # crash-reconciliation sweep -- see v-epic.md's arming/"Watch disarm" -- can still find
+    # an orphaned Tier-1 job by this exact token), but this SCHEDULED firing's own terminal
+    # branch never instructs itself to search for or act on it -- see the CronList/CronDelete
+    # absence checks above. "delimited marker" documents the token for identification only.
+    check("emit-prompt still embeds the Tier-1 delimited marker (crash-reconciliation "
+          "identification only, never an instruction to this firing)", marker_alpha in prompt)
+    check("emit-prompt documents the marker as identification-only via the phrase "
+          "'delimited marker'", "delimited marker" in prompt.lower())
 
     # post-integration-review BLOCKER fix: the prompt must NEVER instruct a fresh session to
     # compute or pass its own OS pid -- there is no stable driver pid in this harness, which
