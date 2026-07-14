@@ -4,6 +4,26 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [2.14.0] - 2026-07-14
+
+### Added — Confirmed blockers (2nd external family) + headless resurrection shim
+
+Built as one dogfooded epic (`docs/superpowers/execution/2026-07-14-v2.14-blockers-and-headless/`), grounded by three LIVE pre-flights (archaeology · domain · library) that reshaped the design before a line was written, plus three user policy decisions.
+
+**Confirmed blockers — `done_with_blockers` now reachable via a genuine 2nd external family.**
+- The marathon arbiter panel (`compound-v-epic-arbiter.py`) now polls a **second, distinct external model family — Gemini via `agy`** — read-only, alongside Codex (GPT). The advisory poll passes an **explicit resolved Gemini `--model`** (family derived from that string, **fail-closed** — `agy` 1.1.1's catalog is no longer Gemini-only), reads stdout, reuses the Codex redaction/parse/security-boundary path, and passes **no** `--dangerously-skip-permissions` (verified live: `agy --print` answers read-only without it).
+- A blocker is **CONFIRMED only when ≥2 distinct external families agree on the SAME `blocker_category`** (closed enum: `credential | external-account | infra | third-party-data | legal-approval | human-decision`) — not merely the `blocked_external` label. This defends the correlated-oracle false-confirm (two LLMs hallucinating different missing facts under the same label).
+- `compound-v-epic-state.py` **derives** `confirmed` from `families_agreeing` (raw `--confirmed`/`--blocker-confirmed` booleans stay hard-rejected — derivation is the only path); adds the **`done_with_blockers`** terminal (a *successful*, auto-merging terminal) + an awaiting-final-review pre-terminal + the mandatory `is_terminal` prefix; records the agreed `--blocker-category` on the ledger; and relaxes `record_final_review(passed)` to accept an epic whose only non-`done` features are confirmed-blocked. An **abandoned/`halt_feature`** feature or a **SUSPECTED** (unconfirmed) blocker still halts to `blocked_needing_human`. The checkpoint (non-marathon) path is byte-identical.
+- `/v:epic` auto-merges `done_with_blockers` via the final integration review → `finishing-a-development-branch` (the chosen policy); a confirmed blocker is **always over-sampled** by the PASS-integrity audit; and the blocked remainder (feature · category · families · evidence) is **surfaced to the human, never silently dropped**. Framed honestly: ≥2 distinct families is the **minimum defensible bar** (correlated oracles ≈ 1.3–1.5 effective votes), not strong independent corroboration.
+
+**Headless resurrection shim — opt-in, present-only.**
+- New `compound-v-headless-shim.py emit --os macos|linux` **prints** a macOS `launchd` plist / Linux cron entry + runbook so a user can opt into resurrecting a marathon epic while the desktop app is closed. It is **present-only** — the plugin never `launchctl`/`crontab`-installs it (AST-asserted) and never runs the agent.
+- The emitted command uses **`--permission-mode dontAsk` + a curated `--allowedTools` allowlist** (runs read-only + allowlist, refuses everything else) — never a bypass flag. The runbook carries a prominent DO-NOT block referencing the repo-deletion incident. It bakes an **absolute** `claude` path (fails the emit if unresolved), `/dev/null` stdin, and prints `launchctl bootstrap gui/$UID` (modern) as the user's install step. Honest boundary: launchd fires on wake with one coalesced catch-up; it does not run while powered off/asleep, and a `gui/$UID` LaunchAgent needs a GUI login.
+
+### Changed
+- `.github/workflows/validate.yml` runs the new `compound-v-headless-shim.py --selftest` under the Python 3.9 floor alongside the existing epic-state/arbiter/watch selftests.
+- Architecture knowledge base (`docs/superpowers/architecture/*`, `CONVENTIONS.md`) refreshed against the post-2.14 code (cited-evidence staleness gate cleared).
+
 ## [2.12.0] - 2026-07-13
 
 ### Added — Per-ticket usage capture + on-demand cross-brand advisor
