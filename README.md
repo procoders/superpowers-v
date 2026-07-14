@@ -97,6 +97,7 @@ That's it.
 | `/v:epic <PRD or brief>` | Build a whole multi-feature PRD, feature by feature |
 | `/v:remember "<query>"` | Search the project memory |
 | `/v:status` · `/v:resume <id>` | Check progress / continue after a crash |
+| `/v:dashboard` (v2.15) | Open a **read-only** browser view of your runs/epics — `emit` a static HTML snapshot, or `serve` an ephemeral, localhost-only live view. Observe in the browser; control stays in the CLI |
 | `/v:models` | Refresh which model each backend uses |
 
 ---

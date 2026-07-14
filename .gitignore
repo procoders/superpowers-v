@@ -23,6 +23,10 @@ docs/superpowers/_runs/
 # Trigger 0 recon docs — defense-in-depth; must stay visible to the scope gate.
 !docs/superpowers/recon/
 
+# Generated observability dashboard (v2.15 `compound-v-dashboard.py emit`) — a build
+# artifact rendered from the run/epic JSON, not source. Regenerate on demand.
+docs/superpowers/execution/dashboard.html
+
 # Codex --json event streams: transient run telemetry (liveness reads them live);
 # large and full of prompts/tool-calls — never committed as run substrate.
 docs/superpowers/execution/*/logs/*.jsonl
