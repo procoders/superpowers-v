@@ -37,3 +37,17 @@ lethal-trifecta warning with its remedy; **plus third-party skills via `npx auto
 present-only, a gated `--dry-run` preview, never auto-installed), whether an `.mcp.json` diff was
 written (**only** on confirmation, merged additively), and that `/v:memory-refresh` re-indexed the
 committed docs.
+
+**Headless resurrection shim (present-only pointer — same ethos as `recommend-mcp` / `autoskills`).**
+For a *marathon* epic running with `autonomy.watch`, the doctor MAY point the user at an opt-in add-on
+they run themselves:
+`python3 scripts/compound-v-headless-shim.py emit --epic-id <id> --state <path>`. It **prints** (never
+installs) a macOS `launchd` plist or a Linux `crontab` line + runbook that resurrects the epic while the
+desktop app is **closed** — today's Tier-2 scheduler only fires while the app is open. Honest boundary:
+it removes the app-open dependency and fires on the `:17/:47` cadence while the machine is awake, running
+**one catch-up per wake** (missed slots coalesce); it does **not** run while the machine is powered off or
+asleep, and a `gui/$UID` LaunchAgent only loads once the user is logged into the GUI session. The emitted
+command uses `--permission-mode dontAsk` + a curated `--allowedTools` allowlist and **never** a bypass
+flag (`--dangerously-skip-permissions`/`--yolo`). It is **never** auto-installed — the plugin never shells
+out to `launchctl`/`crontab`; the user runs the printed `launchctl bootstrap` / `crontab -e` step. See
+`scripts/compound-v-headless-shim.py` for the full runbook.

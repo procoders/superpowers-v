@@ -104,6 +104,21 @@ Did the diff make a check pass by **weakening the check itself**, instead of mak
 
 Any such change → **ISSUE: REWARD_HACK** (file:line + which test/scorer + what changed + why it weakens the gate rather than fixing the code). A genuine, spec-justified relaxation (the task spec itself asked for a looser threshold, or a test was superseded by a *stronger* replacement in the same diff) is not a reward hack — cite the spec line that justifies it before waving this off.
 
+### 2.6 — Confirmed-blocker integrity (marathon `done_with_blockers`)
+
+This check runs whenever you are dispatched to review a marathon feature that reached a **CONFIRMED** `blocked_external` verdict, or the `done_with_blockers` terminal itself (`skills/compound-v/epic-mode.md`, `commands/v-epic.md` §2/§4/§6/§8). A CONFIRMED blocker makes the epic **AUTO-MERGE** at `done_with_blockers` — so "declare it externally blocked" is a higher-stakes reward-hack escape hatch than a gamed PASS (it skips real implementation work AND merges). Verify, from **deterministic on-disk evidence** (the blocker ledger in `epic-state.json` + the frozen arbiter audit `docs/superpowers/execution/epics/<epic-id>/arbiter/<feature>-<attempt>.json`), never from the driver's say-so:
+
+| Check | Evidence | Fail → ISSUE |
+|---|---|---|
+| The frozen audit's own **`confirmed == true`** | read `confirmed` verbatim from the on-disk frozen audit `arbiter/<feature>-<attempt>.json` — never the driver's say-so, never the ledger's CSV metadata; the ledger entry's derived `confirmed == true` must MATCH the audit | **BLOCKER_UNCONFIRMED** |
+| The confirmed blocker genuinely had **≥2 distinct known external families** (`GPT`/`Gemini`/`Grok`; Claude never counts) | the audit's `families_agreeing` has ≥2 distinct such families | **BLOCKER_UNCONFIRMED** |
+| Those families agreed on the **SAME `blocker_category`** (not merely the `blocked_external` label) | each confirming ballot in `ballots[]` carries the same `blocker_category` (one of the closed enum); a null/vague/mismatched category must NOT have confirmed | **BLOCKER_CATEGORY_MISMATCH** |
+| **No retry dissent** — `retry_n == 0` | NO ballot in the audit's `ballots[]` carries `disposition: "retry_fix"`; a single `retry_fix` dissent means the panel was not unanimous on "external", so the blocker must NOT have confirmed | **BLOCKER_RETRY_DISSENT** |
+| The blocked remainder is **surfaced for human eyes** (never silently dropped) | the §8 report + `finishing-a-development-branch` handoff lists each blocked feature · `blocker_category` · `families_agreeing` · evidence (the missing external fact), read verbatim from the ledger/audit | **BLOCKER_REMAINDER_HIDDEN** |
+| A **SUSPECTED** (fewer than 2 same-category external families, `confirmed:false`) blocker still **halts to `blocked_needing_human`** — it must NOT reach `done_with_blockers` | the routing (`--next --autonomous`) sends a SUSPECTED-only remainder to `blocked_needing_human`, never the success terminal | **SUSPECTED_BLOCKER_ESCALATED** |
+
+A blocker failing ANY of the above is **not `done_with_blockers`-eligible** — it must route to `blocked_needing_human`, never the auto-merge success terminal; a `done_with_blockers` terminal reached with such a blocker is a **reward-hack escape**, not a clean success — treat it exactly as a §2.5 REWARD_HACK for gating purposes. Remember `confirmed` is **derived from the FROZEN ARBITER AUDIT** the state script reads via `--audit-file` (≥2 distinct known external families on the same `blocker_category`, no `retry_fix` dissent), never from the `--families-agreeing` CSV (now recorded metadata only) and never a caller-asserted boolean (`--confirmed`/`--blocker-confirmed true` are hard-rejected), so a diff that reintroduces a caller-asserted or CSV-derived confirmation path is itself an ISSUE.
+
 ---
 
 ## PASS 3 — INTEGRATION (final, run-level — gates DONE)
@@ -189,7 +204,7 @@ APPROVED
 - DO order the passes: SPEC first, then QUALITY, then (run-level) INTEGRATION. Don't review quality of code that fails spec.
 - DO NOT approve with "minor issues, close enough." Compound V policy: if you found an issue, the implementer fixes it before the next pass. No "close enough."
 - DO NOT claim the build is green without running it (or observing its output). Evidence before assertion.
-- DO NOT skip the over-build check, the fabricated-metric check, or the reward-hacking check.
+- DO NOT skip the over-build check, the fabricated-metric check, or the reward-hacking check — and, when reviewing a marathon CONFIRMED blocker or a `done_with_blockers` terminal, DO NOT skip the §2.6 confirmed-blocker integrity check (an auto-merging blocker is higher-stakes than a gamed PASS).
 - DO NOT propose code or edit files. The implementer fixes; you re-review on the next round.
 - DO cite file:line (or the failing command) for every claim.
 

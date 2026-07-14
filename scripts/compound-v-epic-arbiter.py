@@ -130,6 +130,14 @@ TRUNC_MARKER = "\n...[TRUNCATED]"
 DEPRECATION_LINE = "[features].codex_hooks is deprecated"
 
 _FALLBACK_CODEX_MODEL = "gpt-5.6-sol"  # mirrors compound-v-resolve-model.py's codex/deep default
+_FALLBACK_AGY_MODEL = "Gemini 3.1 Pro (High)"  # mirrors compound-v-resolve-model.py's antigravity/deep default
+
+# Closed blocker-category enum (v2.14). A CONFIRMED external blocker requires the confirming
+# families to agree on the SAME missing-fact category, not merely the blocked_external label
+# (defends the correlated-oracle false-confirm). A vague/uncategorized blocker (null) or a
+# category MISMATCH downgrades to SUSPECTED.
+BLOCKER_CATEGORIES = ("credential", "external-account", "infra", "third-party-data",
+                      "legal-approval", "human-decision")
 
 # openat/renameat are REQUIRED — fail closed if the platform lacks them (rather than
 # silently degrading the symlink/TOCTOU containment).
@@ -480,6 +488,18 @@ def codex_available(caps):
     return codex.get("available") is True and codex.get("exec_flags_verified") is True
 
 
+def agy_available(caps):
+    """Usable iff `antigravity.available IS True` — a SINGLE gate, strict identity check, so a
+    truthy string ("false", "0", "no") or a 1/0 int can NEVER enable the agy egress (Finding
+    9). Asymmetric to codex_available's DOUBLE gate BY DESIGN: agy has no exec-flags concept
+    (the advisory `agy --print` poll passes no write/bypass flags), so there is nothing to
+    second-gate."""
+    agy = caps.get("antigravity") if isinstance(caps, dict) else None
+    if not isinstance(agy, dict):
+        return False
+    return agy.get("available") is True
+
+
 _FAMILY_NEEDLES = (
     ("gpt", "GPT"), ("gemini", "Gemini"), ("claude", "Claude"),
     ("opus", "Claude"), ("sonnet", "Claude"), ("grok", "Grok"),
@@ -492,6 +512,15 @@ def model_family(model_name):
         if needle in name:
             return fam
     return "unknown"
+
+
+def _normalize_blocker_category(v):
+    """A ballot's blocker_category is one of the closed BLOCKER_CATEGORIES enum or null. Any
+    other value (an unknown string, a wrong type, a vague label) normalizes to None — an
+    uncategorized blocker can never contribute to a CONFIRMED same-category agreement
+    (fail-closed); it merely downgrades the panel to SUSPECTED. (`v in tuple` compares by ==,
+    so a non-hashable value like a dict is simply False, never raises.)"""
+    return v if v in BLOCKER_CATEGORIES else None
 
 
 def _load_sibling_module(filename, modname):
@@ -521,6 +550,24 @@ def resolve_codex_model(config_path=None, explicit_model=None, tier="deep"):
     except Exception as e:  # noqa: BLE001 - degrade-safe
         _log("resolve-model.py failed (%s) — using fallback %r" % (e, _FALLBACK_CODEX_MODEL))
         return _FALLBACK_CODEX_MODEL
+
+
+def resolve_agy_model(config_path=None, explicit_model=None, tier="deep"):
+    """Resolve the EXPLICIT Gemini model the agy poll pins (mirrors resolve_codex_model). agy
+    1.1.1's live catalog is NO LONGER Gemini-only (it also serves Claude Opus/Sonnet 4.6 and
+    GPT-OSS 120B), so the poll must never ride agy's ambient default: it pins this resolved
+    string and resolves model_family() from THAT same string, fail-closed."""
+    if explicit_model:
+        return explicit_model
+    mod = _load_sibling_module("compound-v-resolve-model.py", "compound_v_resolve_model")
+    if mod is None:
+        return _FALLBACK_AGY_MODEL
+    try:
+        config_models = mod.load_config_models(config_path) if config_path else {}
+        return mod.resolve("antigravity", tier, config_models=config_models)["model"]
+    except Exception as e:  # noqa: BLE001 - degrade-safe
+        _log("resolve-model.py failed (%s) — using fallback %r" % (e, _FALLBACK_AGY_MODEL))
+        return _FALLBACK_AGY_MODEL
 
 
 # --------------------------------------------------------------------------------------- #
@@ -742,6 +789,8 @@ def _build_claude_prompt(epic_id, feature_id, attempt, challenge_id, feat):
         "Write your ballot as JSON with EXACTLY these keys (single-line reason/evidence):\n"
         '  {"epic_id": %s, "feature": %s, "attempt": %s, "challenge_id": %s,\n'
         '   "disposition": "<one of the four>", "reason": "<one line>",\n'
+        '   "blocker_category": "<if blocked_external, ONE of credential|external-account|'
+        'infra|third-party-data|legal-approval|human-decision; else null>",\n'
         '   "evidence": "<missing external fact if blocked_external, else null>"}\n\n'
         "Be conservative: on genuine doubt between retry_fix and a halt_*, prefer the halt."
         % (epic_id, feature_id, title, attempt, challenge_id,
@@ -761,6 +810,8 @@ def _build_codex_prompt(epic_id, feature_id, attempt, challenge_id, evidence_tex
         "reason/evidence:\n"
         '{"disposition": "retry_fix|halt_feature|halt_epic|blocked_external", '
         '"reason": "<one line>", '
+        '"blocker_category": "<if blocked_external, ONE of credential|external-account|infra|'
+        'third-party-data|legal-approval|human-decision; else null>", '
         '"evidence": "<missing external fact if blocked_external, else null>"}'
         % (epic_id, feature_id, attempt, challenge_id, ev))
     return _bound_text(body, CODEX_PROMPT_MAX_CHARS)
@@ -818,7 +869,12 @@ def _parse_codex_verdict(raw):
         return None
     if evidence is not None and (not isinstance(evidence, str) or "\n" in evidence or "\r" in evidence):
         return None
-    return {"disposition": disposition, "reason": reason, "evidence": evidence}
+    # v2.14: parse the OPTIONAL blocker_category (model-neutral — this ONE parser serves both
+    # the Codex and the agy poll). An absent/null/unknown value normalizes to None (fail-closed
+    # for confirmation); it never drops an otherwise-valid ballot.
+    category = _normalize_blocker_category(data.get("blocker_category"))
+    return {"disposition": disposition, "reason": reason, "evidence": evidence,
+            "blocker_category": category}
 
 
 def poll_codex(model, prompt, timeout_sec=DEFAULT_CODEX_TIMEOUT_SEC,
@@ -856,7 +912,80 @@ def poll_codex(model, prompt, timeout_sec=DEFAULT_CODEX_TIMEOUT_SEC,
         if fields is None:
             return None, "codex reply failed re-redaction/field checks — dropped (fail-closed)"
         reason, evidence = fields
-        return {"disposition": verdict["disposition"], "reason": reason, "evidence": evidence}, None
+        return {"disposition": verdict["disposition"], "reason": reason, "evidence": evidence,
+                "blocker_category": verdict.get("blocker_category")}, None
+
+
+# --------------------------------------------------------------------------------------- #
+# B2b — agy (Gemini) read-only poll — the 2nd external confirming family (v2.14)
+# --------------------------------------------------------------------------------------- #
+
+def build_agy_invocation(model, prompt, stdout_path, stderr_path,
+                         timeout_sec, max_output_bytes,
+                         agy_bin=None, supervisor_path=None, python_bin=None):
+    """Build the EXACT argv for the supervised, READ-ONLY agy poll, mirroring
+    build_codex_invocation. Deliberate DIFFERENCES (verified by archaeology + live probe):
+      * agy prints its answer to STDOUT — there is NO `--output-last-message` file (poll_agy
+        reads the supervisor's `--stdout` capture);
+      * the model is an EXPLICIT resolved Gemini string via `--model` (agy 1.1.1's catalog is
+        no longer Gemini-only, so the ambient default could resolve to Claude/GPT);
+      * there is NO `--sandbox`, NO `-c effort`, and CRITICALLY NO
+        `--dangerously-skip-permissions` / `--yolo` — that flag is the WRITER flag (it deleted
+        this repo in a live incident); the advisory poll writes nothing and `agy --print`
+        answers read-only without it (verified live 2026-07-14).
+    `--print` and the prompt are the FINAL tokens. agy_bin / supervisor_path / python_bin are
+    the injectable seam selftests use to substitute a fake agy / supervisor."""
+    agy_bin = agy_bin or os.environ.get("COMPOUND_V_ARBITER_AGY_BIN") or "agy"
+    python_bin = python_bin or sys.executable or "python3"
+    supervisor_path = supervisor_path or os.environ.get("COMPOUND_V_ARBITER_SUPERVISOR") or \
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "compound-v-run-with-timeout.py")
+    agy_argv = [agy_bin, "--model", model, "--print", prompt]
+    return ([python_bin, supervisor_path,
+             "--timeout", str(int(timeout_sec)),
+             "--max-output-bytes", str(int(max_output_bytes)),
+             "--stdout", stdout_path, "--stderr", stderr_path, "--"]
+            + agy_argv)
+
+
+def poll_agy(model, prompt, timeout_sec=DEFAULT_CODEX_TIMEOUT_SEC,
+             max_output_bytes=DEFAULT_MAX_OUTPUT_BYTES, agy_bin=None,
+             supervisor_path=None, python_bin=None, env=None):
+    """Run the agy advisory poll (READ-ONLY, 2nd external family) through the shared supervisor
+    inside a self-cleaning temp dir. Mirrors poll_codex but reads the verdict from STDOUT (agy
+    has no --output-last-message). Returns (verdict_dict|None, drop_reason|None). NEVER a
+    fabricated vote: drops on a nonzero supervisor exit, a missing/oversized stdout capture
+    (bounded via _read_capped_regular, which DELETES an oversized artifact inside our OWN
+    private TemporaryDirectory — never a user-owned file), an unparseable message, or a field
+    that fails re-redaction. Reuses _parse_codex_verdict / sanitize_ballot_fields verbatim —
+    no parallel parse/redaction path (the security-boundary header forbids it)."""
+    with tempfile.TemporaryDirectory(prefix="compound-v-arbiter-agy-") as work_dir:
+        stdout_path = os.path.join(work_dir, "agy_stdout.txt")
+        stderr_path = os.path.join(work_dir, "agy_stderr.log")
+        argv = build_agy_invocation(model, prompt, stdout_path, stderr_path,
+                                    timeout_sec, max_output_bytes, agy_bin=agy_bin,
+                                    supervisor_path=supervisor_path, python_bin=python_bin)
+        try:
+            proc = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, env=env)
+        except OSError as e:
+            return None, "failed to launch the agy poll supervisor: %s" % e
+        if proc.returncode != 0:
+            return None, ("agy poll supervisor exited %d — dropped, not a fabricated vote"
+                          % proc.returncode)
+        # stdout_path is inside our OWN private TemporaryDirectory, so deleting an oversized one
+        # is safe (never touches a user-owned file).
+        raw, err = _read_capped_regular(stdout_path, max_output_bytes, delete_oversized=True)
+        if raw is None:
+            return None, "agy stdout capture unusable (%s) — dropped" % err
+        verdict = _parse_codex_verdict(raw)
+        if verdict is None:
+            return None, "agy reply was not a strict single-object verdict — dropped"
+        fields = sanitize_ballot_fields(verdict["reason"], verdict["evidence"])
+        if fields is None:
+            return None, "agy reply failed re-redaction/field checks — dropped (fail-closed)"
+        reason, evidence = fields
+        return {"disposition": verdict["disposition"], "reason": reason, "evidence": evidence,
+                "blocker_category": verdict.get("blocker_category")}, None
 
 
 # --------------------------------------------------------------------------------------- #
@@ -892,7 +1021,8 @@ def load_claude_ballot(path, epic_id, feature_id, attempt, challenge_id):
         return None, "claude ballot fields failed re-redaction/checks (fail-closed)"
     reason, evidence = fields
     return {"source": "claude", "family": "Claude", "model": "claude", "valid": True,
-            "disposition": disposition, "reason": reason, "evidence": evidence}, None
+            "disposition": disposition, "reason": reason, "evidence": evidence,
+            "blocker_category": _normalize_blocker_category(data.get("blocker_category"))}, None
 
 
 # --------------------------------------------------------------------------------------- #
@@ -917,6 +1047,27 @@ def _collapse_same_family(ballots):
                 b["counted"] = False
                 b["collapse_note"] = ("same-family (%s) collapse: %r deferred to %r"
                                        % (fam, b.get("disposition"), winner.get("disposition")))
+    return out
+
+
+def _confirming_families(valid_ballots):
+    """The distinct external CONFIRMING families whose disposition is blocked_external AND
+    whose blocker_category equals a category shared by >=2 distinct external families
+    (same-category confirmation, spec A.2 §3). Fail-closed: a null/unknown/unshared category
+    never contributes, so this can only ever UNDER-count — it defends the correlated-oracle
+    false-confirm without risking a false positive (the set-dedup already prevents that). This
+    is the ONE source of truth for both `confirmed` and the emitted `families_agreeing`."""
+    cat_to_fams = {}
+    for b in valid_ballots:
+        if (b.get("disposition") == "blocked_external"
+                and b.get("family") in _EXTERNAL_CONFIRMING):
+            cat = b.get("blocker_category")
+            if cat in BLOCKER_CATEGORIES:  # non-null, KNOWN category only
+                cat_to_fams.setdefault(cat, set()).add(b.get("family"))
+    agreed = {cat for cat, fams in cat_to_fams.items() if len(fams) >= 2}
+    out = set()
+    for cat in agreed:
+        out |= cat_to_fams[cat]
     return out
 
 
@@ -964,12 +1115,14 @@ def aggregate_dispositions(valid_ballots):
 
     confirmed = False
     if d == "blocked_external":
-        confirming = {b["family"] for b in nonretry
-                      if b["disposition"] == "blocked_external" and b["family"] in _EXTERNAL_CONFIRMING}
+        # v2.14: a family counts toward CONFIRM only when it voted blocked_external AND its
+        # blocker_category matches the category shared by >=2 distinct external families —
+        # category agreement, not the bare label, is what confirms.
+        confirming = _confirming_families(nonretry)
         confirmed = len(confirming) >= 2 and retry_n == 0
         if not confirmed:
             reason += (" (SUSPECTED, not confirmed: needs >=2 distinct KNOWN external families "
-                       "with no retry_fix dissent)")
+                       "agreeing on the SAME blocker_category with no retry_fix dissent)")
 
     d, reason = _cap_no_external(d, reason)
     return d, confirmed, reason
@@ -1343,16 +1496,55 @@ def cmd_classify(args, p):
                 _log("codex ballot dropped: %s" % drop_reason)
                 ballots.append({"source": "codex", "family": family, "model": model, "valid": False,
                                 "disposition": None, "reason": _sanitize_diagnostic(drop_reason),
-                                "evidence": None})
+                                "evidence": None, "blocker_category": None})
             else:
                 ballots.append({"source": "codex", "family": family, "model": model, "valid": True,
                                 "disposition": verdict["disposition"], "reason": verdict["reason"],
-                                "evidence": verdict["evidence"]})
+                                "evidence": verdict["evidence"],
+                                "blocker_category": verdict.get("blocker_category")})
         else:
             ballots.append({"source": "codex", "family": None, "model": None, "valid": False,
                             "disposition": None,
                             "reason": "codex unavailable (capabilities absent/false) -- Claude-only",
-                            "evidence": None})
+                            "evidence": None, "blocker_category": None})
+
+        # ---- agy (Gemini) ballot — read-only 2nd external confirming family (v2.14) -------
+        # Purely ADDITIVE and gated on the single identity check; when antigravity is absent
+        # this block is skipped entirely and the panel is byte-identical to v2.11 (Codex-only).
+        # Uses the SAME redacted, prompt-embedded evidence as Codex (SECURITY BOUNDARY header).
+        if agy_available(caps):
+            agy_model = resolve_agy_model(config_path=args.config,
+                                          explicit_model=args.explicit_agy_model)
+            agy_family = model_family(agy_model)
+            agy_prompt = _build_codex_prompt(epic_id, args.feature, attempt, args.challenge,
+                                             evidence_text)
+            averdict, adrop = poll_agy(
+                agy_model, agy_prompt, timeout_sec=args.codex_timeout,
+                max_output_bytes=max_output_bytes, agy_bin=args.agy_bin,
+                supervisor_path=args.supervisor_path)
+            if averdict is None:
+                _log("agy ballot dropped: %s" % adrop)
+                ballots.append({"source": "agy", "family": agy_family, "model": agy_model,
+                                "valid": False, "disposition": None,
+                                "reason": _sanitize_diagnostic(adrop), "evidence": None,
+                                "blocker_category": None})
+            elif agy_family != "Gemini":
+                # 🔴 H5 fail-closed: agy is the Gemini 2nd external family. A resolved agy model
+                # of ANY other family (Claude/GPT/Grok/unknown) is NOT that family and contributes
+                # NOTHING — DROP the ballot entirely, never append a phantom valid:True ballot.
+                # Deferring to the downstream _EXTERNAL_CONFIRMING filter is NOT enough: a retained
+                # off-family ballot still perturbs aggregation (modal/majority disposition,
+                # same-family collapse), and the spec + driver prose promise "unknown/non-Gemini ->
+                # dropped ballot". The only safe contract is no-Gemini => no agy ballot at all. The
+                # Codex(GPT) ballot is untouched; anti-ruflo holds — no false positive (set-dedup
+                # already guarantees that) AND no aggregation drift from an off-family response.
+                _log("agy ballot dropped: resolved model %r is family %r, not Gemini "
+                     "(fail-closed, not a fabricated vote)" % (agy_model, agy_family))
+            else:
+                ballots.append({"source": "agy", "family": agy_family, "model": agy_model,
+                                "valid": True, "disposition": averdict["disposition"],
+                                "reason": averdict["reason"], "evidence": averdict["evidence"],
+                                "blocker_category": averdict.get("blocker_category")})
 
         # ---- Claude ballot ----------------------------------------------------------------
         if args.claude_ballot:
@@ -1390,8 +1582,14 @@ def cmd_classify(args, p):
                     break
 
         families_present = sorted({b.get("family") for b in valid_counted if b.get("family")})
-        families_agreeing = sorted({b.get("family") for b in valid_counted
-                                    if b.get("family") and b.get("disposition") == disposition})
+        if disposition == "blocked_external":
+            # v2.14: for a blocker, families_agreeing is EXACTLY the same-category confirming
+            # set — it already encodes category agreement, so the state-side derivation stays a
+            # simple length check (>=2 distinct known external families ⇒ confirmed).
+            families_agreeing = sorted(_confirming_families(valid_counted))
+        else:
+            families_agreeing = sorted({b.get("family") for b in valid_counted
+                                        if b.get("family") and b.get("disposition") == disposition})
         reason_text = agg_reason if not masked_note else ("%s; %s" % (agg_reason, masked_note))
 
         # ---- Finding 10: audit_path computed FIRST, then the FROZEN complete result -------
@@ -1629,9 +1827,11 @@ def _selftest():
         a.capabilities_path = os.path.join(_tempfile.gettempdir(), "no-such-caps.json")
         a.config = None
         a.explicit_codex_model = None
+        a.explicit_agy_model = None
         a.codex_timeout = 10
         a.max_output_bytes = 5000
         a.codex_bin = None
+        a.agy_bin = None
         a.supervisor_path = None
         for k, v in over.items():
             setattr(a, k, v)
@@ -1921,9 +2121,9 @@ def _selftest():
     # =================================================================================== #
     # B4 — truth table (complete), collapse, external-family cap (F7)
     # =================================================================================== #
-    def vb(family, disposition):
+    def vb(family, disposition, category=None):
         return {"source": "x", "family": family, "disposition": disposition, "valid": True,
-                "counted": True, "reason": "", "evidence": None}
+                "counted": True, "reason": "", "evidence": None, "blocker_category": category}
 
     d0, c0, _ = aggregate_dispositions([])
     check("B4: zero ballots -> halt_feature", d0 == "halt_feature" and c0 is False)
@@ -1949,10 +2149,31 @@ def _selftest():
         d, c, _ = aggregate_dispositions([vb("GPT", a1), vb("Gemini", a2)])
         check("B4 pair (%s,%s) -> %s" % (a1, a2, exp), d == exp)
 
-    d, c, _ = aggregate_dispositions([vb("GPT", "blocked_external"), vb("Gemini", "blocked_external")])
-    check("B4: 2 distinct external families blocked_external -> CONFIRMED", d == "blocked_external" and c is True)
-    d, c, _ = aggregate_dispositions([vb("GPT", "blocked_external"), vb("Claude", "blocked_external")])
-    check("B4: Codex+Claude blocked_external -> SUSPECTED (Claude excluded)", d == "blocked_external" and c is False)
+    # v2.14 same-category confirmation: the label alone no longer confirms.
+    d, c, _ = aggregate_dispositions([vb("GPT", "blocked_external", "credential"),
+                                      vb("Gemini", "blocked_external", "credential")])
+    check("B4: 2 distinct external families SAME blocker_category -> CONFIRMED",
+          d == "blocked_external" and c is True)
+    d, c, _ = aggregate_dispositions([vb("GPT", "blocked_external", "credential"),
+                                      vb("Gemini", "blocked_external", "infra")])
+    check("B4: 2 external families DIFFERENT blocker_category -> SUSPECTED",
+          d == "blocked_external" and c is False)
+    d, c, _ = aggregate_dispositions([vb("GPT", "blocked_external", "credential"),
+                                      vb("Gemini", "blocked_external", None)])
+    check("B4: one null blocker_category -> SUSPECTED (no category shared by >=2)",
+          d == "blocked_external" and c is False)
+    d, c, _ = aggregate_dispositions([vb("GPT", "blocked_external", "credential"),
+                                      vb("Claude", "blocked_external", "credential")])
+    check("B4: Codex+Claude same category -> SUSPECTED (Claude excluded from confirming)",
+          d == "blocked_external" and c is False)
+    # _confirming_families is the single source of truth: same category -> the 2-family set.
+    check("B4: _confirming_families returns the same-category external set",
+          _confirming_families([vb("GPT", "blocked_external", "credential"),
+                                vb("Gemini", "blocked_external", "credential")])
+          == {"GPT", "Gemini"})
+    check("B4: _confirming_families empty on a category mismatch",
+          _confirming_families([vb("GPT", "blocked_external", "credential"),
+                                vb("Gemini", "blocked_external", "infra")]) == set())
 
     # F7 — Claude-only / no-external fallback caps halt_epic AND blocked_external.
     d, c, _ = aggregate_dispositions([vb("Claude", "halt_epic")])
@@ -2654,6 +2875,176 @@ def _selftest():
     finally:
         shutil.rmtree(c1k, ignore_errors=True)
 
+    # =================================================================================== #
+    # v2.14 A.2 — agy (Gemini) read-only 2nd external family + same-category confirmation
+    # =================================================================================== #
+
+    # A2#gate — single identity gate (a truthy STRING must NOT enable the poll).
+    check("A2 gate: agy_available true only when antigravity.available IS True",
+          agy_available({"antigravity": {"available": True}}) is True)
+    check("A2 gate: a truthy-string available does NOT enable agy (identity, not truthiness)",
+          agy_available({"antigravity": {"available": "true"}}) is False
+          and agy_available({"antigravity": {"available": 1}}) is False)
+    check("A2 gate: absent/empty antigravity -> False (degrade-safe)",
+          agy_available({}) is False and agy_available({"antigravity": {}}) is False
+          and agy_available({"antigravity": "nope"}) is False)
+
+    # A2#d — the BUILT agy argv: explicit Gemini --model, print+prompt LAST, and NO dangerous
+    # / write / sandbox flags (pure unit assertion — no live model call).
+    _agy_argv = build_agy_invocation("Gemini 3.1 Pro (High)", "PROMPT-TEXT",
+                                     "/tmp/o.txt", "/tmp/e.log", 10, 5000, agy_bin="agy")
+    check("A2#d: agy argv passes an EXPLICIT --model with a Gemini string",
+          "--model" in _agy_argv
+          and _agy_argv[_agy_argv.index("--model") + 1] == "Gemini 3.1 Pro (High)")
+    check("A2#d: agy argv carries NO --dangerously-skip-permissions / --yolo (read-only)",
+          "--dangerously-skip-permissions" not in _agy_argv and "--yolo" not in _agy_argv)
+    check("A2#d: agy argv carries NO --sandbox / -c effort (asymmetric to codex)",
+          "--sandbox" not in _agy_argv and "-c" not in _agy_argv)
+    check("A2#d: --print and the prompt are the FINAL agy tokens",
+          _agy_argv[-2] == "--print" and _agy_argv[-1] == "PROMPT-TEXT")
+
+    # E2E harness: inject FAKE codex + agy backends (no live model call). The codex stub writes
+    # its JSON verdict to --output-last-message; the agy stub prints its JSON to STDOUT.
+    _BOTH_CAPS = {"codex": {"available": True, "exec_flags_verified": True},
+                  "antigravity": {"available": True}}
+    _CODEX_ONLY_CAPS = {"codex": {"available": True, "exec_flags_verified": True}}
+
+    def _write_exec(path, body):
+        with open(path, "w") as fh:
+            fh.write(body)
+        os.chmod(path, 0o755)
+
+    def _run_panel(tmp, codex_verdict, agy_verdict, caps,
+                   explicit_codex="gpt-5.6-sol", explicit_agy="Gemini 3.1 Pro (High)"):
+        codex_bin = os.path.join(tmp, "fake_codex")
+        _write_exec(codex_bin,
+                    "#!" + sys.executable + "\n"
+                    "import sys, json\n"
+                    "argv = sys.argv[1:]\n"
+                    "lm = argv[argv.index('--output-last-message') + 1]\n"
+                    "open(lm, 'w').write(json.dumps(%r))\n" % (codex_verdict,))
+        agy_bin = os.path.join(tmp, "fake_agy")
+        _write_exec(agy_bin,
+                    "#!" + sys.executable + "\n"
+                    "import sys, json\n"
+                    "sys.stdout.write(json.dumps(%r))\n" % (agy_verdict,))
+        caps_path = os.path.join(tmp, "caps.json")
+        with open(caps_path, "w") as fh:
+            json.dump(caps, fh)
+        epic_dir, state_path, state = _make_epic(tmp, attempts=1)
+        out, _, _ = run_cmd(cmd_prepare, _args(state=state_path, feature="featA", attempt=1))
+        cid = out["challenge_id"]
+        return run_cmd(cmd_classify, _args(
+            state=state_path, feature="featA", challenge=cid, capabilities_path=caps_path,
+            codex_bin=codex_bin, agy_bin=agy_bin,
+            explicit_codex_model=explicit_codex, explicit_agy_model=explicit_agy))
+
+    _BLK = "blocked_external"
+
+    # A2#a — 2 external families (GPT + Gemini) same blocker_category -> CONFIRMED.
+    ta = _tempfile.mkdtemp()
+    try:
+        cv = {"disposition": _BLK, "reason": "needs prod DB creds",
+              "blocker_category": "credential", "evidence": "DB_PASSWORD missing"}
+        av = {"disposition": _BLK, "reason": "external credential required",
+              "blocker_category": "credential", "evidence": "needs a human-supplied secret"}
+        res, e, rc = _run_panel(ta, cv, av, _BOTH_CAPS)
+        check("A2#a: panel classify exits 0 with both external backends", rc == 0 and res is not None)
+        check("A2#a: disposition blocked_external", res and res["disposition"] == _BLK)
+        check("A2#a: CONFIRMED true on same-category 2-family agreement", res and res["confirmed"] is True)
+        check("A2#a: families_agreeing == sorted(['GPT','Gemini'])",
+              res and res["families_agreeing"] == ["GPT", "Gemini"])
+        check("A2#a: a valid agy(Gemini) ballot is present in the panel",
+              res and any(b.get("source") == "agy" and b.get("valid")
+                          and b.get("family") == "Gemini" for b in res["ballots"]))
+    finally:
+        shutil.rmtree(ta, ignore_errors=True)
+
+    # A2#b — 2 external families, DIFFERENT blocker_category -> SUSPECTED (confirmed:false).
+    tb = _tempfile.mkdtemp()
+    try:
+        cv = {"disposition": _BLK, "reason": "creds", "blocker_category": "credential",
+              "evidence": "secret missing"}
+        av = {"disposition": _BLK, "reason": "infra", "blocker_category": "infra",
+              "evidence": "cluster missing"}
+        res, e, rc = _run_panel(tb, cv, av, _BOTH_CAPS)
+        check("A2#b: different blocker_category -> disposition still blocked_external",
+              rc == 0 and res and res["disposition"] == _BLK)
+        check("A2#b: different blocker_category -> confirmed:false (SUSPECTED)",
+              res and res["confirmed"] is False)
+        check("A2#b: no category shared by >=2 -> families_agreeing empty",
+              res and res["families_agreeing"] == [])
+    finally:
+        shutil.rmtree(tb, ignore_errors=True)
+
+    # A2#c — H5 fail-closed: a GPT-FAMILY agy verdict (valid JSON, but the resolved model is NOT
+    # Gemini) is DROPPED entirely — never appended as a phantom valid ballot. With Codex-GPT
+    # present the panel therefore carries only {GPT} -> confirmed:false, and the off-family agy
+    # response never appears in `ballots` (no aggregation perturbation).
+    tc = _tempfile.mkdtemp()
+    try:
+        cv = {"disposition": _BLK, "reason": "creds", "blocker_category": "credential",
+              "evidence": "secret missing"}
+        av = {"disposition": _BLK, "reason": "creds too", "blocker_category": "credential",
+              "evidence": "secret missing"}
+        res, e, rc = _run_panel(tc, cv, av, _BOTH_CAPS, explicit_agy="gpt-oss-120b")
+        check("A2#c: a GPT-family agy verdict is DROPPED -> NO agy ballot in the panel",
+              rc == 0 and res and not any(b.get("source") == "agy" for b in res["ballots"]))
+        check("A2#c: with the off-family agy dropped, only {GPT} remains -> confirmed:false",
+              res and res["confirmed"] is False)
+        check("A2#c: families_agreeing has <2 distinct external families",
+              res and len(res["families_agreeing"]) < 2)
+    finally:
+        shutil.rmtree(tc, ignore_errors=True)
+
+    # A2#f — H5 fail-closed: a CLAUDE-FAMILY agy verdict is likewise DROPPED. The dropped ballot
+    # appears in NEITHER `ballots` NOR `families_present` — families_present is exactly ["GPT"]
+    # (from Codex), never a phantom "Claude" contributed by the off-family agy response.
+    tf = _tempfile.mkdtemp()
+    try:
+        cv = {"disposition": _BLK, "reason": "creds", "blocker_category": "credential",
+              "evidence": "secret missing"}
+        av = {"disposition": _BLK, "reason": "creds too", "blocker_category": "credential",
+              "evidence": "secret missing"}
+        res, e, rc = _run_panel(tf, cv, av, _BOTH_CAPS, explicit_agy="claude-opus-4-6")
+        check("A2#f: a Claude-family agy verdict is DROPPED -> NO agy ballot in the panel",
+              rc == 0 and res and not any(b.get("source") == "agy" for b in res["ballots"]))
+        check("A2#f: dropped off-family agy is absent from families_present (== ['GPT'])",
+              res and res["families_present"] == ["GPT"])
+        check("A2#f: no phantom 2nd family -> confirmed:false",
+              res and res["confirmed"] is False)
+    finally:
+        shutil.rmtree(tf, ignore_errors=True)
+
+    # A2#e — degrade: antigravity absent ⇒ poll_agy is NEVER called and no agy ballot appears;
+    # the panel is Codex-only (byte-identical-by-construction — the agy block is gated behind
+    # agy_available, which is False here).
+    te = _tempfile.mkdtemp()
+    try:
+        module_ns = globals()
+        _orig_poll_agy = module_ns["poll_agy"]
+        _agy_called = {"v": False}
+
+        def _boom_poll_agy(*a, **kw):
+            _agy_called["v"] = True
+            raise AssertionError("poll_agy must NOT be called when antigravity is absent")
+
+        module_ns["poll_agy"] = _boom_poll_agy
+        try:
+            cv = {"disposition": _BLK, "reason": "creds", "blocker_category": "credential",
+                  "evidence": "secret missing"}
+            av = {"disposition": "retry_fix", "reason": "unused"}
+            res, e, rc = _run_panel(te, cv, av, _CODEX_ONLY_CAPS)
+        finally:
+            module_ns["poll_agy"] = _orig_poll_agy
+        check("A2#e: antigravity absent -> poll_agy NEVER called", _agy_called["v"] is False)
+        check("A2#e: antigravity absent -> no agy ballot in the panel",
+              rc == 0 and res and not any(b.get("source") == "agy" for b in res["ballots"]))
+        check("A2#e: codex-only single external blocked_external -> SUSPECTED (1 family)",
+              res and res["disposition"] == _BLK and res["confirmed"] is False)
+    finally:
+        shutil.rmtree(te, ignore_errors=True)
+
     print("SELFTEST: %d ok, %d fail" % (ok, fail))
     return 0 if fail == 0 else 1
 
@@ -2684,9 +3075,11 @@ def main(argv):
     p.add_argument("--capabilities-path")
     p.add_argument("--config")
     p.add_argument("--explicit-codex-model")
+    p.add_argument("--explicit-agy-model")
     p.add_argument("--codex-timeout", type=int, default=DEFAULT_CODEX_TIMEOUT_SEC)
     p.add_argument("--max-output-bytes", type=int, default=DEFAULT_MAX_OUTPUT_BYTES)
     p.add_argument("--codex-bin")
+    p.add_argument("--agy-bin")
     p.add_argument("--supervisor-path")
     args = p.parse_args(argv)
 
