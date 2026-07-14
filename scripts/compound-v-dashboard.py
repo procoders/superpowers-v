@@ -257,7 +257,10 @@ def _contained(path, root):
         cand = os.path.realpath(path)
     except OSError:
         return False
-    return cand == root or cand.startswith(root + os.sep)
+    # `root + os.sep` would double the separator when root is the filesystem root ("/"),
+    # wrongly rejecting every child; normalize so root=="/" (or any sep-terminated root) works.
+    prefix = root if root.endswith(os.sep) else root + os.sep
+    return cand == root or cand.startswith(prefix)
 
 
 def _shape_error(raw, existed, err):
@@ -283,12 +286,13 @@ def load_run(dirpath, root):
         manifest, m_err = read_yaml(man_path)
     else:
         manifest, m_err = None, None
-    m_err = _shape_error(manifest, os.path.isfile(man_path) and _contained(man_path, root), m_err)
+    # containment FIRST (short-circuit) so isfile never even stats an escaping symlink target
+    m_err = _shape_error(manifest, _contained(man_path, root) and os.path.isfile(man_path), m_err)
     rec["manifest"] = manifest if isinstance(manifest, dict) else None
     rec["manifest_error"] = m_err
 
     # has_state is honest AND contained: a symlink escaping the root is treated as "no state".
-    rec["has_state"] = os.path.isfile(state_path) and _contained(state_path, root)
+    rec["has_state"] = _contained(state_path, root) and os.path.isfile(state_path)
     state, s_err = (read_json(state_path) if rec["has_state"] else (None, None))
     s_err = _shape_error(state, rec["has_state"], s_err)
     rec["state"] = state if isinstance(state, dict) else None
@@ -297,7 +301,9 @@ def load_run(dirpath, root):
     # per-job results (results/<id>.json) -- each candidate realpath-contained before reading
     results = {}
     res_dir = os.path.join(dirpath, "results")
-    if os.path.isdir(res_dir):
+    # HIGH-1: contain the results DIR itself before listing it, so a symlinked `results/`
+    # pointing outside the root cannot leak external filenames (each file is contained too, below).
+    if _contained(res_dir, root) and os.path.isdir(res_dir):
         try:
             names = sorted(os.listdir(res_dir))
         except OSError:
@@ -352,7 +358,11 @@ def load_run(dirpath, root):
                 ts_field = str(rec["state"][key])
                 break
     rec["display_ts"] = ts_field
-    rec["sort_ts"] = max(_mtime(state_path), _mtime(man_path))
+    # HIGH-1: only read an mtime from a CONTAINED path -- never follow an escaping symlink,
+    # which would leak an out-of-root file's mtime into the rendered/sort timestamps.
+    st_ts = _mtime(state_path) if rec["has_state"] else 0.0
+    mn_ts = _mtime(man_path) if _contained(man_path, root) else 0.0
+    rec["sort_ts"] = max(st_ts, mn_ts)
     rec["feature"] = (rec["manifest"] or {}).get("feature") if rec["manifest"] else None
     return rec
 
@@ -398,7 +408,8 @@ def load_epic(dirpath, root):
         if auto.get("started_at"):
             ts_field = str(auto["started_at"])
     rec["display_ts"] = ts_field
-    rec["sort_ts"] = _mtime(es_path)
+    # HIGH-1: mtime only from a contained epic-state (never follow an escaping symlink).
+    rec["sort_ts"] = _mtime(es_path) if _contained(es_path, root) else 0.0
     return rec
 
 
@@ -912,8 +923,8 @@ class _ReadOnlyHandler(http.server.BaseHTTPRequestHandler):
 
         root = self.serve_root
         candidate = os.path.realpath(os.path.join(root, rel))
-        # realpath containment: rejects symlink escapes and any path outside the root
-        if not (candidate == root or candidate.startswith(root + os.sep)):
+        # realpath containment (shared gate): rejects symlink escapes and any path outside the root
+        if not _contained(candidate, root):
             self.send_error(403, "Forbidden")
             return
 
@@ -946,7 +957,11 @@ def _make_handler(serve_root, html_provider):
 
 def _build_server(serve_root, port):
     """Construct a loopback-bound server. Falls back to an OS-chosen free port if `port` is taken."""
-    handler = _make_handler(serve_root, lambda: render_html(serve_root, live=True))
+    # HIGH-1 (TOCTOU): resolve the root ONCE and thread the SAME realpath'd value into both the
+    # request handler AND the HTML provider, so a retargeted root symlink can never make direct
+    # file-serving and dashboard rendering operate on two different roots.
+    resolved_root = os.path.realpath(serve_root)
+    handler = _make_handler(resolved_root, lambda: render_html(resolved_root, live=True))
     server_cls = http.server.ThreadingHTTPServer
     try:
         return server_cls((BIND_HOST, port), handler)
@@ -1249,7 +1264,7 @@ def _selftest():
                     '{"phase": "DISPATCHED", "jobs": {"j1": {"status": "done"}, '
                     '"j2": {"status": "done"}, "j3": {"status": "done"}}}')
         cnt_html = render_html(root, live=False)
-        check("3/2" not in cnt_html, "render: impossible progress count (3/2) — denominator not unioned")
+        check("3/2" not in cnt_html, "render: impossible progress count (3/2) -- denominator not unioned")
 
         # ---- server binds loopback ONLY (introspect, no serve_forever, no public socket) ----
         srv = _build_server(root, 0)
