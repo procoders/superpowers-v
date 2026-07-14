@@ -4,6 +4,18 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [2.15.0] - 2026-07-14
+
+### Added — Local observability dashboard (present-only, read-only)
+
+Closes the plugin's biggest competitive gap (no observability UI) — while keeping the no-daemon / git-derived-control philosophy. New `scripts/compound-v-dashboard.py` renders `docs/superpowers/execution/**` (runs, epics, per-job status, scope-gate verdicts, usage, blocker ledger) as a browser view; wired through `/v:status --html|--serve` and the new `/v:dashboard` command.
+
+- **`emit`** — a **self-contained static HTML snapshot** (data inlined, offline, theme-aware — for sharing / audit), written to a git-ignored `docs/superpowers/execution/dashboard.html`.
+- **`serve`** — an **ephemeral, read-only, `127.0.0.1`-only** live viewer that auto-refreshes as a run/epic progresses (the local equivalent of a competitor's live agent UI). It is a foreground process you Ctrl-C; it never backgrounds, never auto-launches, binds loopback only, serves **GET/HEAD only** (any other method → 405), is realpath-contained to the execution root (traversal / symlink-escape → 403, non-`.json/.html/.yaml` → 404, no directory-listing leak), and writes nothing to any run dir.
+- **Read-only by design — observe in the browser, control via the CLI.** No merge/kill/retry buttons; the guarantees stay git-derived and human-gated (the moat, not a gap).
+- **Anti-ruflo — a dashboard that does not lie:** renders only what is in the state files — real counts (never a fabricated `%`-progress), measured-only usage (`—` when a backend reports none, never a fabricated `0`), and only real timestamps sourced from the state files. Degrade-safe: a run with only `manifest.yaml` shows "no state yet", malformed JSON shows "unparseable", an empty root shows "no runs yet" — never a crash.
+- Pure Python 3.9-safe stdlib (`http.server`, no Flask/CDN/npm); `--selftest` (auto-run in CI by the v2.14.1 all-selftest gate); security posture verified live (loopback bind, 405/403/404 on the attack cases).
+
 ## [2.14.1] - 2026-07-14
 
 ### Fixed — CI safety net & housekeeping (from a plugin health audit)
