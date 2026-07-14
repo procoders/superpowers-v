@@ -257,23 +257,84 @@ CHECKPOINT_STATUSES = ("pending", "running", "done", "failed")
 # names the marathon set. Per-stance acceptance is enforced in `apply_update`.
 STATUSES = ("pending", "running", "done", "failed", "blocked")
 
-# v2.14: the external-confirming model families a CONFIRMED blocker is DERIVED from. This tuple
-# MUST match compound-v-epic-arbiter.py's `_EXTERNAL_CONFIRMING` (arbiter.py:97) EXACTLY —
-# same casing, same membership. The two scripts encode this vocabulary INDEPENDENTLY (no shared
-# import — YAGNI, one tuple does not warrant a third module), so a casing/membership drift
-# silently fabricates a NEGATIVE (a genuine 2nd-external-family confirmation never reaches
-# confirmed:true) and is co-reviewed as a contract pair. `Claude` is NOT external. `confirmed`
-# is DERIVED from the families-agreeing list, never a caller-asserted boolean (anti-ruflo).
-KNOWN_EXTERNAL_FAMILIES = ("GPT", "Gemini", "Grok")
+# v2.14 (anti-ruflo C1+C2): a CONFIRMED blocker is bound to the arbiter's FROZEN AUDIT file,
+# NEVER a caller-supplied `--families-agreeing` CSV. The arbiter (compound-v-epic-arbiter.py)
+# writes exactly one frozen audit JSON per (feature, attempt) under <epic_dir>/arbiter/ whose
+# AUTHORITATIVE `confirmed` bool already respects BOTH retry dissent (any retry_fix ballot with
+# retry_n>0 => confirmed:false) AND same-category agreement. State never re-derives confirmation
+# from the families list — that CSV is recorded METADATA only. This closes C1 (a caller CSV that
+# still lists 2 externals while the arbiter returned confirmed:false on retry dissent) and C2 (a
+# renamed caller-controlled boolean: any CSV, with no audit and no category, forced confirmed).
+# No `--audit-file`, or a failing/invalid audit, => confirmed:false (SUSPECTED) — the fail-safe
+# default is never a fabricated confirmation.
+_AUDIT_MAX_BYTES = 1 << 20  # 1 MiB cap on a frozen-audit file we will json.load
 
 
-def _derive_confirmed(families_agreeing):
-    """v2.14: derive a CONFIRMED blocker from the families-agreeing list, never a caller boolean.
-    confirmed:true iff >=2 DISTINCT KNOWN external families are present. The arbiter only
-    populates `families_agreeing` with the same-`blocker_category` external agreers
-    (arbiter._aggregate), so this distinct-external length check is sound — it already encodes
-    category agreement. Fewer than 2 known external families => False (SUSPECTED)."""
-    return len({f for f in (families_agreeing or []) if f in KNOWN_EXTERNAL_FAMILIES}) >= 2
+def _arbiter_root_for(state_path):
+    """The realpath of <dir-of-state-file>/arbiter — the ONLY directory a frozen audit may live
+    in. Derived from the state file's OWN location (mirroring the arbiter's own
+    `epic_dir = realpath(dirname(realpath(state_path)))`). Returns None when no state path is
+    available (an in-memory-only caller cannot bind an audit and stays SUSPECTED)."""
+    if not state_path:
+        return None
+    epic_dir = os.path.realpath(os.path.dirname(os.path.realpath(state_path)))
+    return os.path.realpath(os.path.join(epic_dir, "arbiter"))
+
+
+def _load_frozen_audit(state, state_path, audit_file, feature_id):
+    """Containment-check, load, and VALIDATE the arbiter's frozen audit for `feature_id`.
+    Returns (audit_dict, None) on success or (None, why) on ANY rejection: no state path / no
+    audit path; a path escaping <epic_dir>/arbiter; a symlink; a non-regular file; an
+    oversized/unreadable/non-JSON file; or a field mismatch (epic_id / feature /
+    disposition!=blocked_external). Reuses the realpath + `startswith(root + os.sep)`
+    containment discipline `check_specs` uses elsewhere in this file."""
+    if not audit_file:
+        return None, "no --audit-file supplied"
+    root = _arbiter_root_for(state_path)
+    if root is None:
+        return None, "no --state path to derive the arbiter containment root"
+    # Symlink rejection on the supplied path's final component (mirrors the arbiter's O_NOFOLLOW
+    # discipline). A symlink ANYWHERE in the path that ESCAPES `root` is independently caught by
+    # the realpath containment check below, so this is belt-and-suspenders, not the sole guard.
+    if os.path.islink(audit_file):
+        return None, "audit path is a symlink"
+    resolved = os.path.realpath(audit_file)
+    if resolved != root and not resolved.startswith(root + os.sep):
+        return None, "audit path escapes the arbiter dir: %s" % audit_file
+    if not os.path.isfile(resolved):
+        return None, "audit path is not a regular file"
+    try:
+        if os.path.getsize(resolved) > _AUDIT_MAX_BYTES:
+            return None, "audit file exceeds the %d-byte cap" % _AUDIT_MAX_BYTES
+        with open(resolved, "r", encoding="utf-8") as fh:
+            audit = json.load(fh)
+    except (OSError, ValueError) as e:
+        return None, "cannot read/parse audit (%s)" % e
+    if not isinstance(audit, dict):
+        return None, "audit is not a JSON object"
+    if audit.get("epic_id") != state.get("epic_id"):
+        return None, ("audit epic_id %r != state epic_id %r"
+                      % (audit.get("epic_id"), state.get("epic_id")))
+    if audit.get("feature") != feature_id:
+        return None, ("audit feature %r != updated feature %r"
+                      % (audit.get("feature"), feature_id))
+    if audit.get("disposition") != "blocked_external":
+        return None, "audit disposition %r is not 'blocked_external'" % (audit.get("disposition"),)
+    return audit, None
+
+
+def _confirmed_from_audit(state, state_path, audit_file, feature_id):
+    """THE single source of a CONFIRMED blocker (anti-ruflo C1+C2). Returns True iff a valid,
+    contained, matching frozen audit whose OWN `confirmed` is exactly True is supplied;
+    otherwise False (SUSPECTED). A supplied-but-rejected audit WARNS on stderr and degrades to
+    False — a fail-safe: SUSPECTED is the conservative default, never a fabricated confirm."""
+    audit, why = _load_frozen_audit(state, state_path, audit_file, feature_id)
+    if audit is None:
+        if audit_file:
+            print("epic warning: --audit-file rejected (%s) — blocker stays SUSPECTED "
+                  "(confirmed:false)" % why, file=sys.stderr)
+        return False
+    return audit.get("confirmed") is True
 
 # Documented cap defaults (fail-SAFE: a MISSING cap key falls back to these, NEVER to
 # unbounded — Codex review #4). max_total_attempts has a feature-count-derived default,
@@ -908,6 +969,12 @@ def next_feature_autonomous(state):
             if due_ids:
                 return None, ("sample_audit_due: feature(s) %s awaiting sample-audit"
                               % ", ".join(due_ids)), blocked_by
+            # v2.14 (H3): a confirmed blocker's over-sample obligation gates terminal
+            # completion before final_review, exactly like sample_audit_due above.
+            blk_due_ids = sorted(f["id"] for f in feats if f.get("blocker_audit_due") is True)
+            if blk_due_ids:
+                return None, ("blocker_audit_due: feature(s) %s awaiting confirmed-blocker "
+                              "re-review" % ", ".join(blk_due_ids)), blocked_by
             fr = state.get("final_review")
             fr = fr if isinstance(fr, dict) else {}
             if fr.get("status") == "passed":
@@ -932,6 +999,12 @@ def next_feature_autonomous(state):
             if due_ids:
                 return None, ("sample_audit_due: feature(s) %s awaiting sample-audit"
                               % ", ".join(due_ids)), blocked_by
+            # v2.14 (H3): the confirmed blocker's DURABLE over-sample obligation gates the
+            # done_with_blockers terminal — unreachable until an approved re-review clears it.
+            blk_due_ids = sorted(f["id"] for f in feats if f.get("blocker_audit_due") is True)
+            if blk_due_ids:
+                return None, ("blocker_audit_due: feature(s) %s awaiting confirmed-blocker "
+                              "re-review" % ", ".join(blk_due_ids)), blocked_by
             fr = state.get("final_review")
             fr = fr if isinstance(fr, dict) else {}
             if fr.get("status") == "passed":
@@ -1177,7 +1250,11 @@ def _recompute_top_status(state):
     fr = state.get("final_review")
     fr = fr if isinstance(fr, dict) else {}
     audit_due = any(f.get("sample_audit_due") is True for f in feats)
-    if sts and all(s == "done" for s in sts) and fr.get("status") == "passed" and not audit_due:
+    # v2.14 (H3): a confirmed blocker's over-sample obligation keeps top-level status honest —
+    # never 'done' while a blocker re-review is still outstanding (mirrors sample_audit_due).
+    blocker_due = any(f.get("blocker_audit_due") is True for f in feats)
+    if (sts and all(s == "done" for s in sts) and fr.get("status") == "passed"
+            and not audit_due and not blocker_due):
         state["status"] = "done"
     else:
         state["status"] = "running"
@@ -1186,7 +1263,7 @@ def _recompute_top_status(state):
 def apply_update(state, feature_id, status, run_id=None, now_dt=None,
                   blocker_reason=None, blocker_confirmed=False,
                   families_agreeing=None, evidence=None, last_error=None,
-                  blocker_category=None):
+                  blocker_category=None, audit_file=None, state_path=None):
     """Mutate `state` in place for `--update`. Returns (ok, error|None).
 
     - checkpoint (non-marathon): rollup UNCHANGED — any failed -> blocked; all done -> done;
@@ -1196,8 +1273,11 @@ def apply_update(state, feature_id, status, run_id=None, now_dt=None,
       legal sources pending/failed only); a ->blocked transition appends/REACTIVATES an
       idempotent blocker-ledger entry keyed by (feature, attempt) — guaranteeing exactly one
       ACTIVE entry per currently-blocked feature (Codex review #6) — and HARD-REJECTS
-      blocker_confirmed=True (A4/A5, Sol-R4#2 — v2.10 blockers are always confirmed:false,
-      SUSPECTED not caller-asserted); a ->pending transition resolves that feature's active
+      blocker_confirmed=True (A4/A5, Sol-R4#2). v2.14 (C1+C2): the entry's `confirmed` is BOUND
+      to the arbiter's frozen audit (`audit_file`, containment-checked under <epic_dir>/arbiter/
+      and derived from `state_path`), NEVER the families CSV; no/invalid audit => confirmed:false
+      (SUSPECTED). A confirmed:true entry ALSO sets `feature.blocker_audit_due` in the same
+      mutation (H3 durable over-sample obligation). A ->pending transition resolves that active
       ledger entry; a ->failed persists `last_error` and ->running/->done clears it
       (Codex review #7); a ->done resets no_progress_cycles to 0 (Codex review #8);
       ANY marathon feature-state change INVALIDATES a passed final_review back to pending
@@ -1227,6 +1307,8 @@ def apply_update(state, feature_id, status, run_id=None, now_dt=None,
             offenders.append("--blocker-confirmed")
         if blocker_category is not None:
             offenders.append("--blocker-category")
+        if audit_file is not None:
+            offenders.append("--audit-file")
         if offenders:
             return False, ("%s %s marathon-only — not valid on a checkpoint-stance epic"
                            % (", ".join(offenders), "is" if len(offenders) == 1 else "are"))
@@ -1246,10 +1328,14 @@ def apply_update(state, feature_id, status, run_id=None, now_dt=None,
 
     if status == "blocked" and marathon:
         if blocker_confirmed:
-            return False, ("--blocker-confirmed true is rejected in v2.10 — confirmation is "
-                           "derived from >=2 stored known-family arbiter ballots, never "
-                           "caller-asserted; a v2.10 blocker is always confirmed:false "
+            return False, ("--blocker-confirmed true is rejected — confirmation is bound to the "
+                           "arbiter's frozen audit file (--audit-file), never caller-asserted; "
+                           "without a valid audit a blocker is always confirmed:false "
                            "(SUSPECTED)")
+        # v2.14 (C1+C2): confirmation is BOUND to the arbiter's frozen audit, computed ONCE
+        # here and used for both the ledger append AND a reblock reactivation. NEVER derived
+        # from the families CSV. No/invalid audit => False (SUSPECTED).
+        confirmed_val = _confirmed_from_audit(state, state_path, audit_file, feature_id)
         attempt = hit.get("attempts", 0)
         ledger = state.setdefault("blocker_ledger", [])
         # Exactly-one-active invariant (Codex review #6): deactivate every OTHER ledger entry
@@ -1269,11 +1355,11 @@ def apply_update(state, feature_id, status, run_id=None, now_dt=None,
             ledger.append({
                 "feature": feature_id,
                 "attempt": attempt,
-                # v2.14: DERIVED from the families-agreeing list (>=2 distinct known external
-                # families), NEVER the caller's --blocker-confirmed boolean (still hard-rejected
-                # above). The arbiter emits `families_agreeing` category-filtered, so a length
-                # check is sound. This is the ONLY path to confirmed:true.
-                "confirmed": _derive_confirmed(_fams),
+                # v2.14 (C1+C2): BOUND to the arbiter's frozen audit (--audit-file), NEVER the
+                # families CSV and NEVER the caller's --blocker-confirmed boolean (still hard-
+                # rejected above). No/invalid audit => confirmed:false. This is the ONLY path to
+                # confirmed:true.
+                "confirmed": confirmed_val,
                 "reason": blocker_reason or "",
                 "evidence": evidence,
                 "families_agreeing": _fams,
@@ -1299,11 +1385,20 @@ def apply_update(state, feature_id, status, run_id=None, now_dt=None,
                 entry["families_agreeing"] = list(families_agreeing)
             if blocker_category is not None:
                 entry["blocker_category"] = blocker_category
-            # v2.14: re-derive `confirmed` from whatever families list the entry now holds
-            # (the freshly-supplied list if one was passed, else the stored one) — never a
-            # caller boolean.
-            entry["confirmed"] = _derive_confirmed(entry.get("families_agreeing"))
+            # v2.14 (C1+C2): re-bind `confirmed` to the freshly-presented frozen audit (or
+            # False if none/invalid) — a reblock must re-present its audit to stay confirmed;
+            # it is NEVER re-derived from the stored families list, NEVER a caller boolean.
+            entry["confirmed"] = confirmed_val
         # else: already active for this attempt — idempotent replay, no change.
+
+        # v2.14 (H3): a CONFIRMED blocker carries a DURABLE over-sample obligation, set in the
+        # SAME in-memory mutation as the ledger entry — so a `confirmed`-blocked feature is
+        # never persisted (one atomic write) without its pending `blocker_audit_due`. Mirrors
+        # the `sample_audit_due` machinery; `record_final_review` and `next_feature_autonomous`
+        # both gate terminal completion on it, so `done_with_blockers` is unreachable until an
+        # APPROVED re-review clears it (--clear-blocker-audit-due).
+        if confirmed_val:
+            hit["blocker_audit_due"] = True
 
     if status == "pending" and marathon:
         for e in (state.get("blocker_ledger") or []):
@@ -1353,10 +1448,12 @@ def apply_update(state, feature_id, status, run_id=None, now_dt=None,
 
 
 def record_disposition(state, feature_id, disposition, reason=None,
-                        families_agreeing=None, confirmed=False, now_dt=None):
-    """Store the arbiter's verdict on a feature (A4). `confirmed=True` is HARD-REJECTED in
-    v2.10 (Sol-R4#2) — confirmation of a blocked_external verdict is derived from >=2 stored
-    known-family ballots elsewhere (Unit B), never asserted by the caller of this CLI.
+                        families_agreeing=None, confirmed=False, now_dt=None,
+                        audit_file=None, state_path=None):
+    """Store the arbiter's verdict on a feature (A4). The raw `confirmed=True` boolean is
+    HARD-REJECTED (Sol-R4#2) — v2.14 (C1+C2): the recorded `confirmed` is BOUND to the
+    arbiter's frozen audit file (`--audit-file`) and only for a `blocked_external` disposition;
+    every non-blocker verdict, and any missing/invalid audit, records confirmed:false.
 
     FIX A (attempt-binding, v2.10 correctness follow-up): the disposition is stamped with
     `attempt` = the feature's CURRENT `attempts` count at record time. `next_feature_autonomous`
@@ -1374,12 +1471,16 @@ def record_disposition(state, feature_id, disposition, reason=None,
         return False, "no feature %r" % feature_id
     now_dt = now_dt or datetime.now(timezone.utc)
     _disp_fams = list(families_agreeing or [])
+    # v2.14 (C1+C2): confirmed is BOUND to the frozen audit, and ONLY meaningful for a
+    # blocked_external verdict — a non-blocker disposition (retry_fix/halt_*) is never
+    # "confirmed". A missing/invalid audit => False (SUSPECTED). Never the caller's boolean
+    # (hard-rejected above), never the families CSV.
+    _disp_confirmed = (disposition == "blocked_external"
+                       and _confirmed_from_audit(state, state_path, audit_file, feature_id))
     hit["disposition"] = {
         "disposition": disposition,
         "attempt": hit.get("attempts", 0),
-        # v2.14: DERIVED (>=2 distinct known external families), never the caller's --confirmed
-        # boolean (still hard-rejected above). Derivation is the ONLY path to confirmed:true.
-        "confirmed": _derive_confirmed(_disp_fams),
+        "confirmed": bool(_disp_confirmed),
         "reason": reason or "",
         "families_agreeing": _disp_fams,
         "recorded_at": _now_iso(now_dt),
@@ -1424,6 +1525,13 @@ def record_final_review(state, status, now_dt=None):
         if due_ids:
             return False, ("cannot record final_review=passed while sample_audit_due is true "
                            "for feature(s) %s" % ", ".join(due_ids))
+        # v2.14 (H3): a CONFIRMED blocker's durable over-sample obligation gates `passed` the
+        # SAME way sample_audit_due does — so `done_with_blockers` is unreachable until the
+        # confirmed blocker has been re-reviewed and --clear-blocker-audit-due has run.
+        blk_due_ids = sorted(f.get("id") for f in feats if f.get("blocker_audit_due") is True)
+        if blk_due_ids:
+            return False, ("cannot record final_review=passed while blocker_audit_due is true "
+                           "for feature(s) %s" % ", ".join(blk_due_ids))
     state["final_review"] = {"status": status}
     state["total_attempts"] = _total_attempts(state)  # recompute on every marathon mutation (#9)
     _recompute_top_status(state)
@@ -1755,6 +1863,41 @@ def clear_sample_audit_due(state, feature_id, now_dt=None):
     return True, None
 
 
+def mark_blocker_audit_due(state, feature_id, now_dt=None):
+    """v2.14 (H3): sets `feature.blocker_audit_due = True` — the durable over-sample obligation
+    a CONFIRMED external blocker carries. `apply_update(--status blocked)` sets it atomically
+    when it records a confirmed:true ledger entry; this CLI mirror lets the driver RE-SET it on
+    resume (e.g. after reconciling a crash). `record_final_review(passed)` and
+    `next_feature_autonomous` both gate terminal completion on it, so `done_with_blockers` is
+    unreachable until an approved re-review clears it. Marathon-only. Returns (ok, error|None)."""
+    if not _is_marathon(state):
+        return False, "--mark-blocker-audit-due requires a marathon-stance epic"
+    hit = _find_feature(state, feature_id)
+    if hit is None:
+        return False, "no feature %r" % feature_id
+    hit["blocker_audit_due"] = True
+    state["total_attempts"] = _total_attempts(state)  # recompute on every mutation (#9)
+    _recompute_top_status(state)
+    _bump_last_progress(state, now_dt or datetime.now(timezone.utc))  # v2.11: watch-gated no-op
+    return True, None
+
+
+def clear_blocker_audit_due(state, feature_id, now_dt=None):
+    """The counterpart to `mark_blocker_audit_due` — the over-sample re-review of a CONFIRMED
+    blocker was APPROVED, so the obligation is cleared and `done_with_blockers` / a passed
+    final_review can proceed. Marathon-only. Returns (ok, error|None)."""
+    if not _is_marathon(state):
+        return False, "--clear-blocker-audit-due requires a marathon-stance epic"
+    hit = _find_feature(state, feature_id)
+    if hit is None:
+        return False, "no feature %r" % feature_id
+    hit["blocker_audit_due"] = False
+    state["total_attempts"] = _total_attempts(state)  # recompute on every mutation (#9)
+    _recompute_top_status(state)
+    _bump_last_progress(state, now_dt or datetime.now(timezone.utc))  # v2.11: watch-gated no-op
+    return True, None
+
+
 def record_audit_failed(state, feature_id, last_error=None, now_dt=None):
     """FIX B (atomic audit-failed, v2.10 correctness follow-up): the driver's sample-audit-
     ISSUES path used to be TWO separate CLI writes — clear_sample_audit_due(...) and a
@@ -1936,6 +2079,10 @@ def validate_marathon_state(state):
         if "sample_audit_due" in f and not isinstance(f.get("sample_audit_due"), bool):
             errs.append("feature %r has a malformed 'sample_audit_due' %r (want a bool or "
                         "absent)" % (f.get("id"), f.get("sample_audit_due")))
+        # v2.14 (H3): blocker_audit_due is bool-or-absent, same discipline as sample_audit_due.
+        if "blocker_audit_due" in f and not isinstance(f.get("blocker_audit_due"), bool):
+            errs.append("feature %r has a malformed 'blocker_audit_due' %r (want a bool or "
+                        "absent)" % (f.get("id"), f.get("blocker_audit_due")))
         # FIX A: disposition is an object-or-null; when present its 'attempt' key is
         # OPTIONAL (a legacy pre-FIX-A disposition with no 'attempt' key is accepted — treated
         # as attempt 0 everywhere it's read, never a crash) but if present must be a
@@ -3605,77 +3752,171 @@ def _selftest():
                 return e
         return None
 
-    # (a) confirmed is DERIVED from >=2 DISTINCT KNOWN external families -------------------
-    check("v2.14 constant: KNOWN_EXTERNAL_FAMILIES matches arbiter _EXTERNAL_CONFIRMING casing",
-          KNOWN_EXTERNAL_FAMILIES == ("GPT", "Gemini", "Grok"))
-    check("v2.14 derive: ['GPT','Gemini'] -> True", _derive_confirmed(["GPT", "Gemini"]) is True)
-    check("v2.14 derive: ['GPT'] -> False (only 1 external)", _derive_confirmed(["GPT"]) is False)
-    check("v2.14 derive: ['Claude','GPT'] -> False (Claude not external; only 1 external)",
-          _derive_confirmed(["Claude", "GPT"]) is False)
-    check("v2.14 derive: ['GPT','GPT'] -> False (not distinct)",
-          _derive_confirmed(["GPT", "GPT"]) is False)
-    check("v2.14 derive: [] and None -> False",
-          _derive_confirmed([]) is False and _derive_confirmed(None) is False)
-    check("v2.14 derive: lowercase 'gpt' does NOT confirm (casing must match arbiter)",
-          _derive_confirmed(["gpt", "gemini"]) is False)
+    # Helper: synthesize an arbiter FROZEN AUDIT JSON under <tmpdir>/arbiter/ (the containment
+    # root _confirmed_from_audit derives from the state file's own dir). Mirrors the arbiter's
+    # persisted field-set (epic_id/feature/attempt/disposition/confirmed/families_agreeing).
+    def _mk_audit(tmpdir, epic_id, feature, confirmed=True, disposition="blocked_external",
+                  attempt=0, families=("GPT", "Gemini"), name=None):
+        arb = os.path.join(tmpdir, "arbiter")
+        os.makedirs(arb, exist_ok=True)
+        path = os.path.join(arb, name or ("%s-%d.audit.json" % (feature, attempt)))
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"epic_id": epic_id, "feature": feature, "attempt": attempt,
+                       "disposition": disposition, "confirmed": confirmed,
+                       "families_agreeing": list(families)}, fh)
+        return path
 
-    st_dc = build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon", caps={})
-    apply_update(st_dc, "a", "blocked", blocker_reason="vendor",
-                 families_agreeing=["GPT", "Gemini"], blocker_category="credential", now_dt=T0)
-    e_dc = _active_entry(st_dc, "a")
-    check("v2.14 ledger: 2 distinct external families on a blocked feature => confirmed:true",
-          e_dc is not None and e_dc.get("confirmed") is True)
-    check("v2.14 ledger: agreed --blocker-category recorded on the entry",
-          e_dc.get("blocker_category") == "credential")
+    _v14_dir = _tempfile.mkdtemp()
+    _v14_sp = os.path.join(_v14_dir, "epic-state.json")  # need not exist (realpath of its dir)
 
-    st_s1 = build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon", caps={})
-    apply_update(st_s1, "a", "blocked", blocker_reason="x", families_agreeing=["GPT"], now_dt=T0)
-    check("v2.14 ledger: single external family => confirmed:false (SUSPECTED)",
-          _active_entry(st_s1, "a").get("confirmed") is False)
+    # (a / C2) --families-agreeing with NO --audit-file => confirmed:false (fabrication closed)
+    st_c2 = build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon", caps={})
+    apply_update(st_c2, "a", "blocked", blocker_reason="vendor",
+                 families_agreeing=["GPT", "Gemini"], blocker_category="credential",
+                 state_path=_v14_sp, now_dt=T0)  # NO audit_file
+    e_c2 = _active_entry(st_c2, "a")
+    check("v2.14 C2: --families-agreeing without --audit-file => confirmed:false (C2 closed)",
+          e_c2 is not None and e_c2.get("confirmed") is False)
+    check("v2.14 C2: the families CSV is STILL recorded as metadata",
+          e_c2.get("families_agreeing") == ["GPT", "Gemini"])
+    check("v2.14 C2: agreed --blocker-category still recorded on the entry",
+          e_c2.get("blocker_category") == "credential")
+    check("v2.14 H3: a SUSPECTED blocker does NOT set blocker_audit_due",
+          st_c2["features"][0].get("blocker_audit_due") is not True)
 
-    st_s2 = build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon", caps={})
-    apply_update(st_s2, "a", "blocked", blocker_reason="x",
-                 families_agreeing=["Claude", "GPT"], now_dt=T0)
-    check("v2.14 ledger: ['Claude','GPT'] (1 external) => confirmed:false",
-          _active_entry(st_s2, "a").get("confirmed") is False)
+    # (a / valid audit) confirmed:true audit => confirmed:true (and sets blocker_audit_due)
+    st_ct = build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon", caps={})
+    au_true = _mk_audit(_v14_dir, "e", "a", confirmed=True)
+    apply_update(st_ct, "a", "blocked", blocker_reason="vendor",
+                 families_agreeing=["GPT", "Gemini"], blocker_category="credential",
+                 state_path=_v14_sp, audit_file=au_true, now_dt=T0)
+    check("v2.14: a valid frozen audit with confirmed:true => confirmed:true",
+          _active_entry(st_ct, "a").get("confirmed") is True)
+    check("v2.14 H3: a confirmed blocker sets a durable blocker_audit_due obligation",
+          st_ct["features"][0].get("blocker_audit_due") is True)
 
+    # (a / C1) audit confirmed:false => confirmed:false EVEN THOUGH the CSV lists 2 externals
+    # (retry dissent: the arbiter already returned confirmed:false — state must NOT re-confirm).
+    st_c1_dir = _tempfile.mkdtemp()
+    st_c1_sp = os.path.join(st_c1_dir, "epic-state.json")
+    st_c1 = build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon", caps={})
+    au_false = _mk_audit(st_c1_dir, "e", "a", confirmed=False)
+    apply_update(st_c1, "a", "blocked", blocker_reason="vendor",
+                 families_agreeing=["GPT", "Gemini"],
+                 state_path=st_c1_sp, audit_file=au_false, now_dt=T0)
+    check("v2.14 C1: audit confirmed:false => confirmed:false despite 2 externals in the CSV",
+          _active_entry(st_c1, "a").get("confirmed") is False)
+    check("v2.14 C1: a confirmed:false blocker does NOT set blocker_audit_due",
+          st_c1["features"][0].get("blocker_audit_due") is not True)
+
+    # (a / rejected audits) each is treated as no audit => confirmed:false ------------------
+    def _blocked_with_audit(au, sp=_v14_sp, epic="e", feat="a"):
+        st = build_state([{"id": feat, "depends_on": []}], epic, "E", stance="marathon", caps={})
+        apply_update(st, feat, "blocked", state_path=sp, audit_file=au, now_dt=T0)
+        return _active_entry(st, feat)
+    #   wrong feature
+    au_wf = _mk_audit(_v14_dir, "e", "zzz", confirmed=True, name="wrongfeat.json")
+    check("v2.14: an audit for a DIFFERENT feature is rejected => confirmed:false",
+          _blocked_with_audit(au_wf).get("confirmed") is False)
+    #   wrong epic_id
+    au_we = _mk_audit(_v14_dir, "OTHER", "a", confirmed=True, name="wrongepic.json")
+    check("v2.14: an audit with a mismatched epic_id is rejected => confirmed:false",
+          _blocked_with_audit(au_we).get("confirmed") is False)
+    #   wrong disposition
+    au_wd = _mk_audit(_v14_dir, "e", "a", confirmed=True, disposition="retry_fix",
+                      name="wrongdisp.json")
+    check("v2.14: an audit whose disposition != blocked_external is rejected => confirmed:false",
+          _blocked_with_audit(au_wd).get("confirmed") is False)
+    #   containment escape (path OUTSIDE <epic_dir>/arbiter)
+    esc_dir = _tempfile.mkdtemp()
+    esc_path = os.path.join(esc_dir, "outside.json")
+    with open(esc_path, "w", encoding="utf-8") as _fh:
+        json.dump({"epic_id": "e", "feature": "a", "disposition": "blocked_external",
+                   "confirmed": True}, _fh)
+    check("v2.14: an audit path OUTSIDE the arbiter dir is rejected => confirmed:false",
+          _blocked_with_audit(esc_path).get("confirmed") is False)
+    #   symlink (rejected outright)
+    if hasattr(os, "symlink"):
+        try:
+            real_for_link = _mk_audit(_v14_dir, "e", "a", confirmed=True, name="real_target.json")
+            link_p = os.path.join(_v14_dir, "arbiter", "linked.json")
+            if not os.path.exists(link_p):
+                os.symlink(real_for_link, link_p)
+            check("v2.14: a symlinked audit path is rejected => confirmed:false",
+                  _blocked_with_audit(link_p).get("confirmed") is False)
+        except (OSError, NotImplementedError):
+            pass
+    #   no --state path to derive the containment root => confirmed:false
+    check("v2.14: an audit with no --state path (no containment root) => confirmed:false",
+          _blocked_with_audit(au_true, sp=None).get("confirmed") is False)
+
+    # reactivation re-binds confirmed to the freshly-presented audit (SUSPECTED -> confirmed)
+    st_re = build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon", caps={})
+    apply_update(st_re, "a", "blocked", state_path=_v14_sp, now_dt=T0)  # SUSPECTED, no audit
+    apply_update(st_re, "a", "pending", now_dt=T0)  # resolves -> inactive
+    apply_update(st_re, "a", "blocked", state_path=_v14_sp, audit_file=au_true, now_dt=T0)  # reblock
+    check("v2.14 reactivation: re-binds confirmed:true from the freshly-presented audit",
+          _active_entry(st_re, "a").get("confirmed") is True)
+
+    # record_disposition binds confirmed to the audit too (only for blocked_external)
     st_rd = build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon", caps={})
     apply_update(st_rd, "a", "running", now_dt=T0)
     apply_update(st_rd, "a", "failed", now_dt=T0)
-    record_disposition(st_rd, "a", "blocked_external",
-                       families_agreeing=["GPT", "Gemini"], now_dt=T0)
-    check("v2.14 disposition: record_disposition derives confirmed:true from 2 distinct external",
+    record_disposition(st_rd, "a", "blocked_external", families_agreeing=["GPT", "Gemini"],
+                       state_path=_v14_sp, audit_file=au_true, now_dt=T0)
+    check("v2.14 disposition: record_disposition confirmed:true from a valid frozen audit",
           st_rd["features"][0]["disposition"]["confirmed"] is True)
-
-    # reactivation re-derives confirmed from the new families list
-    st_re = build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon", caps={})
-    apply_update(st_re, "a", "blocked", families_agreeing=["GPT"], now_dt=T0)  # SUSPECTED, attempt 0
-    apply_update(st_re, "a", "pending", now_dt=T0)  # resolves -> inactive
-    apply_update(st_re, "a", "blocked", families_agreeing=["GPT", "Gemini"], now_dt=T0)  # reblock
-    check("v2.14 reactivation: re-derives confirmed:true from the new families list",
-          _active_entry(st_re, "a").get("confirmed") is True)
+    st_rd2 = build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon", caps={})
+    apply_update(st_rd2, "a", "running", now_dt=T0)
+    apply_update(st_rd2, "a", "failed", now_dt=T0)
+    record_disposition(st_rd2, "a", "blocked_external", families_agreeing=["GPT", "Gemini"],
+                       now_dt=T0)  # NO audit
+    check("v2.14 disposition: record_disposition without an audit => confirmed:false",
+          st_rd2["features"][0]["disposition"]["confirmed"] is False)
 
     # (b) raw --confirmed / --blocker-confirmed booleans STILL hard-rejected ---------------
     st_rb = build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon", caps={})
     okrb, errrb = apply_update(st_rb, "a", "blocked", blocker_confirmed=True, now_dt=T0)
-    check("v2.14: --blocker-confirmed true STILL hard-rejected (derivation is the only path)",
+    check("v2.14: --blocker-confirmed true STILL hard-rejected (audit is the only path)",
           not okrb and "confirm" in errrb.lower())
     st_rb2 = build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon", caps={})
     okrb2, errrb2 = record_disposition(st_rb2, "a", "blocked_external", confirmed=True, now_dt=T0)
-    check("v2.14: --confirmed true STILL hard-rejected (derivation is the only path)",
+    check("v2.14: --confirmed true STILL hard-rejected (audit is the only path)",
           not okrb2 and "confirm" in errrb2.lower())
 
-    # --blocker-category is marathon-only (checkpoint rejects it as an offender)
+    # --blocker-category / --audit-file are marathon-only (checkpoint rejects them as offenders)
     st_bc = build_state([{"id": "a", "depends_on": []}], "e", "E")  # checkpoint
     okbc, errbc = apply_update(st_bc, "a", "failed", blocker_category="infra")
     check("v2.14: --blocker-category is marathon-only (rejected on a checkpoint state)",
           not okbc and "blocker-category" in errbc)
+    okaf, erraf = apply_update(st_bc, "a", "failed", audit_file="/x/arbiter/a.json")
+    check("v2.14: --audit-file is marathon-only (rejected on a checkpoint state)",
+          not okaf and "audit-file" in erraf)
+
+    # (H3 mark/clear mirrors) -------------------------------------------------------------
+    ok_mb, err_mb = mark_blocker_audit_due(st_c2, "a")
+    check("v2.14 H3: mark_blocker_audit_due ok",
+          ok_mb and err_mb is None and st_c2["features"][0].get("blocker_audit_due") is True)
+    ok_cb, err_cb = clear_blocker_audit_due(st_c2, "a")
+    check("v2.14 H3: clear_blocker_audit_due ok",
+          ok_cb and err_cb is None and st_c2["features"][0].get("blocker_audit_due") is False)
+    ok_mbu, err_mbu = mark_blocker_audit_due(st_c2, "nope")
+    check("v2.14 H3: mark_blocker_audit_due on unknown feature -> controlled error",
+          not ok_mbu and err_mbu)
+    st_mb_chk = build_state([{"id": "a", "depends_on": []}], "e", "E")  # checkpoint
+    ok_mbc, err_mbc = mark_blocker_audit_due(st_mb_chk, "a")
+    check("v2.14 H3: mark_blocker_audit_due on a checkpoint state -> controlled error",
+          not ok_mbc and "marathon" in err_mbc)
+    ok_cbc, err_cbc = clear_blocker_audit_due(st_mb_chk, "a")
+    check("v2.14 H3: clear_blocker_audit_due on a checkpoint state -> controlled error",
+          not ok_cbc and "marathon" in err_cbc)
 
     def _dwb_state(final_status=None, extra=None):
-        """a=done, b=confirmed-blocked (+ optional extra feature). v2.14: record_final_review
-        (...,'passed') now ACCEPTS this state (b is confirmed-blocked, the same guard the
-        terminal uses — see case (g) below); tests (c)-(f) still assign final_review directly
-        to isolate the classifier from the gate under test."""
+        """a=done, b=CONFIRMED-blocked via a valid frozen audit (+ optional extra feature). The
+        confirmed blocker automatically carries a durable blocker_audit_due obligation (H3)."""
+        d = _tempfile.mkdtemp()
+        sp = os.path.join(d, "epic-state.json")
+        au = _mk_audit(d, "e", "b", confirmed=True)
         fl = [{"id": "a", "depends_on": []}, {"id": "b", "depends_on": []}]
         if extra:
             fl.append(extra)
@@ -3683,21 +3924,42 @@ def _selftest():
         apply_update(st, "a", "running", now_dt=T0)
         apply_update(st, "a", "done", now_dt=T0)
         apply_update(st, "b", "blocked", blocker_reason="vendor",
-                     families_agreeing=["GPT", "Gemini"], blocker_category="infra", now_dt=T0)
+                     families_agreeing=["GPT", "Gemini"], blocker_category="infra",
+                     state_path=sp, audit_file=au, now_dt=T0)
         if final_status is not None:
             st["final_review"] = {"status": final_status}
         return st
 
-    # (c) all done-or-confirmed-blocked + final_review passed + no abandoned => done_with_blockers
+    # (H3 surfacing + gating) a confirmed-blocked epic surfaces blocker_audit_due BEFORE
+    # final_review, and the done_with_blockers terminal is UNREACHABLE until it is cleared.
     dwb = _dwb_state(final_status="passed")
-    f_dwb, why_dwb, _ = next_feature_autonomous(dwb)
-    check("v2.14 (c): done-or-confirmed-blocked + final_review passed => done_with_blockers reason",
-          f_dwb is None and why_dwb.startswith("done_with_blockers:"))
-    check("v2.14 (c): done_with_blockers => is_terminal True",
-          is_terminal(dwb) is True)
+    check("v2.14 H3: the confirmed-blocked feature carries blocker_audit_due",
+          [f for f in dwb["features"] if f["id"] == "b"][0].get("blocker_audit_due") is True)
+    f_due, why_due, _ = next_feature_autonomous(dwb)
+    check("v2.14 H3: next_feature surfaces blocker_audit_due before final_review/terminal",
+          f_due is None and why_due.startswith("blocker_audit_due:"))
+    check("v2.14 H3: a blocker_audit_due epic is NOT terminal",
+          is_terminal(dwb) is False)
 
-    # (d) same state, final_review PENDING => awaiting-final-review pre-terminal (NOT terminal)
-    dwb_p = _dwb_state(final_status=None)  # build_state seeds final_review pending
+    # (H3 gate on record_final_review) rejected while outstanding, accepted after clear
+    dwb_fr = _dwb_state(final_status=None)
+    okfr, errfr = record_final_review(dwb_fr, "passed")
+    check("v2.14 H3: record_final_review(passed) REJECTED while blocker_audit_due outstanding",
+          okfr is False and "blocker_audit_due" in errfr)
+    clear_blocker_audit_due(dwb_fr, "b")
+    okfr2, errfr2 = record_final_review(dwb_fr, "passed")
+    check("v2.14 H3: record_final_review(passed) ACCEPTED after --clear-blocker-audit-due",
+          okfr2 and errfr2 is None and dwb_fr["final_review"]["status"] == "passed")
+
+    # (c) cleared obligation + final_review passed => done_with_blockers terminal
+    f_dwb, why_dwb, _ = next_feature_autonomous(dwb_fr)
+    check("v2.14 (c): cleared obligation + final_review passed => done_with_blockers reason",
+          f_dwb is None and why_dwb.startswith("done_with_blockers:"))
+    check("v2.14 (c): done_with_blockers => is_terminal True", is_terminal(dwb_fr) is True)
+
+    # (d) final_review PENDING (obligation cleared) => awaiting-final-review pre-terminal
+    dwb_p = _dwb_state(final_status=None)
+    clear_blocker_audit_due(dwb_p, "b")
     f_p, why_p, _ = next_feature_autonomous(dwb_p)
     check("v2.14 (d): final_review pending => awaiting-final-review running_with_failures",
           f_p is None and why_p.startswith("running_with_failures:")
@@ -3705,14 +3967,15 @@ def _selftest():
     check("v2.14 (d): awaiting-final-review pre-terminal is NOT terminal",
           is_terminal(dwb_p) is False)
 
-    # (e) same state + one ABANDONED (halt_feature) feature => blocked_needing_human
+    # (e) an ABANDONED (halt_feature) feature => blocked_needing_human (short-circuits the guard
+    # BEFORE the blocker_audit_due check, so this holds regardless of the obligation)
     dwb_ab = _dwb_state(final_status="passed", extra={"id": "c", "depends_on": []})
     apply_update(dwb_ab, "c", "running", now_dt=T0)
     apply_update(dwb_ab, "c", "failed", now_dt=T0)
     record_disposition(dwb_ab, "c", "halt_feature", now_dt=T0)  # attempt-matched -> abandoned
     dwb_ab["final_review"] = {"status": "passed"}
     f_ab, why_ab, _ = next_feature_autonomous(dwb_ab)
-    check("v2.14 (e): an abandoned/halt_feature feature => blocked_needing_human (not done_with_blockers)",
+    check("v2.14 (e): an abandoned/halt_feature feature => blocked_needing_human",
           f_ab is None and why_ab.startswith("blocked_needing_human:"))
 
     # (f) a SUSPECTED (confirmed:false) blocker with no runnable work => blocked_needing_human
@@ -3721,33 +3984,18 @@ def _selftest():
     apply_update(dwb_s, "a", "running", now_dt=T0)
     apply_update(dwb_s, "a", "done", now_dt=T0)
     apply_update(dwb_s, "b", "blocked", blocker_reason="vendor",
-                 families_agreeing=["GPT"], now_dt=T0)  # SUSPECTED
+                 families_agreeing=["GPT"], state_path=_v14_sp, now_dt=T0)  # SUSPECTED, no audit
     dwb_s["final_review"] = {"status": "passed"}
     f_s, why_s, _ = next_feature_autonomous(dwb_s)
     check("v2.14 (f): a SUSPECTED blocker => blocked_needing_human (not done_with_blockers)",
           f_s is None and why_s.startswith("blocked_needing_human:"))
 
-    # (g) v2.14 record_final_review relaxation: `passed` is now settable via the API on a
-    # confirmed done_with_blockers epic (a done, b confirmed-blocked) — closing the seam that
-    # made the terminal unreachable in production. A SUSPECTED blocker still blocks `passed`.
-    dwb_api = _dwb_state(final_status=None)  # final_review pending
-    okg, errg = record_final_review(dwb_api, "passed")
-    check("v2.14 (g): record_final_review(passed) ACCEPTED on a confirmed done_with_blockers epic",
-          okg and errg is None and dwb_api["final_review"]["status"] == "passed")
-    fg, whyg, _ = next_feature_autonomous(dwb_api)
-    check("v2.14 (g): ...and the epic then reports done_with_blockers",
-          fg is None and whyg.startswith("done_with_blockers:"))
-    dwb_api_s = build_state([{"id": "a", "depends_on": []}, {"id": "b", "depends_on": []}],
-                            "e", "E", stance="marathon", caps={})
-    apply_update(dwb_api_s, "a", "running", now_dt=T0)
-    apply_update(dwb_api_s, "a", "done", now_dt=T0)
-    apply_update(dwb_api_s, "b", "blocked", blocker_reason="vendor",
-                 families_agreeing=["GPT"], now_dt=T0)  # SUSPECTED
-    okg2, errg2 = record_final_review(dwb_api_s, "passed")
-    check("v2.14 (g): record_final_review(passed) REJECTED when a blocker is SUSPECTED",
+    # (g) record_final_review(passed) REJECTED when the blocker is SUSPECTED (not confirmed)
+    okg2, errg2 = record_final_review(dwb_s, "passed")
+    check("v2.14 (g): record_final_review(passed) REJECTED when the blocker is SUSPECTED",
           okg2 is False and "unfinished" in errg2)
 
-    # (g) checkpoint (non-marathon) path is unaffected by the terminal / derivation surface
+    # (g) checkpoint (non-marathon) path is unaffected by the terminal / audit surface
     dwb_chk = build_state([{"id": "a", "depends_on": []}], "e", "E")  # checkpoint
     check("v2.14 (g): a checkpoint state is never terminal (is_terminal early-returns False)",
           is_terminal(dwb_chk) is False)
@@ -4550,6 +4798,18 @@ def main(argv):
     p.add_argument("--clear-sample-audit-due", action="store_true",
                    help="(marathon) clear --feature F's sample-audit obligation once the "
                         "audit has passed")
+    p.add_argument("--audit-file", help="(with --update --status blocked / --record-disposition "
+                                        "blocked_external, marathon-only) path to the arbiter's "
+                                        "FROZEN audit JSON under <epic_dir>/arbiter/; its own "
+                                        "`confirmed` bool is the ONLY source of a CONFIRMED "
+                                        "blocker (no/invalid audit => confirmed:false)")
+    p.add_argument("--mark-blocker-audit-due", action="store_true",
+                   help="(marathon) (re)set the durable over-sample obligation on --feature F "
+                        "for a CONFIRMED blocker; gates done_with_blockers / a passed "
+                        "final_review until cleared")
+    p.add_argument("--clear-blocker-audit-due", action="store_true",
+                   help="(marathon) clear --feature F's confirmed-blocker over-sample "
+                        "obligation once the re-review is APPROVED")
     p.add_argument("--record-audit-failed", action="store_true",
                    help="(marathon) ONE atomic write: revert --feature F from done to failed, "
                         "clear its sample_audit_due obligation, optionally set --last-error, "
@@ -4845,6 +5105,32 @@ def main(argv):
         print(json.dumps({"feature": args.feature, "sample_audit_due": False}))
         return 0
 
+    if args.mark_blocker_audit_due:
+        if not _needs_marathon("--mark-blocker-audit-due"):
+            return 1
+        if not args.feature:
+            p.error("--mark-blocker-audit-due needs --feature")
+        ok, err = mark_blocker_audit_due(state, args.feature, now_dt=_resolve_now(args.now))
+        if not ok:
+            print("epic-blocker-audit error: %s" % err, file=sys.stderr)
+            return 1
+        _atomic_write_json(args.state, state)
+        print(json.dumps({"feature": args.feature, "blocker_audit_due": True}))
+        return 0
+
+    if args.clear_blocker_audit_due:
+        if not _needs_marathon("--clear-blocker-audit-due"):
+            return 1
+        if not args.feature:
+            p.error("--clear-blocker-audit-due needs --feature")
+        ok, err = clear_blocker_audit_due(state, args.feature, now_dt=_resolve_now(args.now))
+        if not ok:
+            print("epic-blocker-audit error: %s" % err, file=sys.stderr)
+            return 1
+        _atomic_write_json(args.state, state)
+        print(json.dumps({"feature": args.feature, "blocker_audit_due": False}))
+        return 0
+
     if args.record_audit_failed:
         if not _needs_marathon("--record-audit-failed"):
             return 1
@@ -4882,7 +5168,8 @@ def main(argv):
         now_dt = _resolve_now(args.now)
         ok, err = record_disposition(state, args.feature, args.disposition, reason=args.reason,
                                      families_agreeing=_parse_csv_list(args.families_agreeing),
-                                     confirmed=(args.confirmed == "true"), now_dt=now_dt)
+                                     confirmed=(args.confirmed == "true"), now_dt=now_dt,
+                                     audit_file=args.audit_file, state_path=args.state)
         if not ok:
             print("epic-disposition error: %s" % err, file=sys.stderr)
             return 1
@@ -5023,6 +5310,8 @@ def main(argv):
                 supplied.append("--blocker-confirmed")
             if args.blocker_category is not None:
                 supplied.append("--blocker-category")
+            if args.audit_file is not None:
+                supplied.append("--audit-file")
             if supplied:
                 print("epic-update error: %s %s marathon-only — not valid on a checkpoint-"
                       "stance epic" % (", ".join(supplied),
@@ -5034,7 +5323,8 @@ def main(argv):
                                blocker_confirmed=(args.blocker_confirmed == "true"),
                                families_agreeing=_parse_csv_list(args.families_agreeing),
                                evidence=args.evidence, last_error=args.last_error,
-                               blocker_category=args.blocker_category)
+                               blocker_category=args.blocker_category,
+                               audit_file=args.audit_file, state_path=args.state)
         if not ok:
             print("epic-update error: %s" % err, file=sys.stderr)
             return 1
@@ -5054,6 +5344,7 @@ def main(argv):
            "--lint / --can-retry / --breaker-check / --trip-breaker / --clear-breaker / "
            "--record-progress-cycle / --record-disposition / --clear-disposition / "
            "--mark-sample-audit-due / --clear-sample-audit-due / --record-audit-failed / "
+           "--mark-blocker-audit-due / --clear-blocker-audit-due / "
            "--record-final-review / --liveness / --claim-resume / --renew-lease / "
            "--record-watcher-armed / --record-watcher-disarmed / --list-watchers / "
            "--selftest is required")
