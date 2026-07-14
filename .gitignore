@@ -28,3 +28,6 @@ docs/superpowers/_runs/
 docs/superpowers/execution/*/logs/*.jsonl
 .v29-worktrees/
 docs/superpowers/execution/2026-07-11-v2.9-pre-evaluation/baselines/
+
+# stray CLI stderr captures (e.g. agy/models probes)
+*.err
