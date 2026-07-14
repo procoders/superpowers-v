@@ -22,7 +22,6 @@ Built as one dogfooded epic (`docs/superpowers/execution/2026-07-14-v2.14-blocke
 
 ### Changed
 - `.github/workflows/validate.yml` runs the new `compound-v-headless-shim.py --selftest` under the Python 3.9 floor alongside the existing epic-state/arbiter/watch selftests.
-- Architecture knowledge base (`docs/superpowers/architecture/*`, `CONVENTIONS.md`) refreshed against the post-2.14 code (cited-evidence staleness gate cleared).
 
 ## [2.12.0] - 2026-07-13
 
