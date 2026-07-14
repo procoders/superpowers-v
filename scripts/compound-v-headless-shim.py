@@ -19,14 +19,23 @@ Hard boundaries (each mirrors an acceptance criterion in the v2.14 spec, Feature
     subprocess argument. (--selftest asserts exactly one subprocess.run and that no
     subprocess line names launchctl/crontab.)
 
-  * SAFE POSTURE. The emitted `claude` invocation uses `--permission-mode dontAsk` plus a
-    NON-EMPTY, curated read-mostly `--allowedTools` allowlist (`ALLOWED_TOOLS`). A headless
-    `claude -p` under the user's INTERACTIVE posture STALLS on the first tool prompt (no
-    TTY); the naive "fix" `--dangerously-skip-permissions` is (a) the flag that DELETED
-    this very repo on 2026-07-13 and (b) not even the real headless flag (it still prompts
-    on first use). `dontAsk` runs read-only + the allowlist and REFUSES everything else --
-    it never blocks and never bypasses. The emitted command contains NO
-    `--dangerously-skip-permissions` / `--allow-dangerously-skip-permissions` / `--yolo`.
+  * SAFE POSTURE + HONEST BOUNDARY. The emitted `claude` invocation uses
+    `--permission-mode dontAsk` plus a NON-EMPTY, curated read-mostly `--allowedTools`
+    allowlist (`ALLOWED_TOOLS`). A headless `claude -p` under the user's INTERACTIVE posture
+    STALLS on the first tool prompt (no TTY); the naive "fix"
+    `--dangerously-skip-permissions` is (a) the flag that DELETED this very repo on
+    2026-07-13 and (b) not even the real headless flag (it still prompts on first use).
+    `dontAsk` runs read-only + the allowlist and REFUSES everything else -- it never blocks
+    and never bypasses. The default allowlist is deliberately the SAFE SUBSET: it covers the
+    resume CLAIM + liveness + read/report, but NOT the build. The resume prompt's Branch A
+    (/v:epic -> Task subagents + dispatch + git add/git commit) and Branch C
+    (mcp__scheduled-tasks__* self-disarm) are OFF the default list, so under it a fired
+    session claims + reports then STOPS, refusing the build/commit/re-arm steps -- the safety
+    system working BY DESIGN. Running a full marathon headless is an UNATTENDED-AUTONOMY
+    decision only the user can make: `emit --allow-build` bakes in exactly the wider
+    `BUILD_TOOLS` set (Task, git add/commit, scheduled-tasks). Neither posture ever emits
+    `--dangerously-skip-permissions` / `--allow-dangerously-skip-permissions` / `--yolo` /
+    blanket `Bash(*)`.
 
   * LAUNCHD TRAPS PRE-EMPTED (macOS). The plist bakes the ABSOLUTE `claude` path (resolved
     via shutil.which at emit time -- the emit FAILS with a clear stderr message + nonzero
@@ -55,8 +64,14 @@ Hard boundaries (each mirrors an acceptance criterion in the v2.14 spec, Feature
     nowhere.
 
 CLI:
-  compound-v-headless-shim.py emit --epic-id E --state S [--interval-min 30] [--os macos|linux]
+  compound-v-headless-shim.py emit --epic-id E --state S [--interval-min 30]
+      [--os macos|linux] [--allow-build]
   compound-v-headless-shim.py --selftest
+
+  --allow-build (OFF by default) ALSO bakes the wider build/commit/re-arm tools (Task,
+  git add, git commit, scheduled-tasks) into the emitted allowlist so the headless session
+  can run the FULL pipeline UNATTENDED -- an explicit unattended-autonomy opt-in. Without it,
+  the emitted artifact carries only the SAFE SUBSET (claim + liveness + report, then stops).
 
   --os defaults to auto-detection from sys.platform (darwin -> macos, linux -> linux).
   --interval-min is accepted but the schedule stays the off-minute :17/:47 twin cadence
@@ -98,22 +113,28 @@ CAL_MINUTES = (17, 47)
 
 # Safe non-interactive posture. dontAsk RUNS read-only + this allowlist and REFUSES
 # everything off-list -- it never stalls (unlike the user's interactive posture) and never
-# bypasses (unlike --dangerously-skip-permissions). The allowlist is scoped to EXACTLY what
-# the Tier-2 resume prompt (compound-v-epic-watch.py's PROMPT_TEMPLATE) actually issues, so
-# a resume never stalls on a refused tool before it can reach `--claim-resume`:
+# bypasses (unlike --dangerously-skip-permissions).
+#
+# HONEST BOUNDARY (this is the SAFE SUBSET, NOT the full resume surface). This default
+# allowlist deliberately covers ONLY the resume CLAIM + liveness + read/report -- the part
+# that is safe to run headless with no human present. It does NOT cover what the resume
+# prompt (compound-v-epic-watch.py's PROMPT_TEMPLATE) needs to actually COMPLETE a build:
+#   - BRANCH A drives `/v:epic`, which spawns `Task` subagents, dispatches the pipeline, and
+#     commits with `git add` / `git commit` -- NONE on this list.
+#   - BRANCH C calls the `mcp__scheduled-tasks__*` MCP tools to self-disarm -- NOT on this
+#     list.
+# So under this default a fired session runs Step 1 (--now), Step 2 (--claim-resume), reads
+# and REPORTS -- then STOPS, refusing the build/commit/re-arm steps. That refusal is the
+# safety system working BY DESIGN, not a bug (see BUILD_TOOLS + the runbook BOUNDARY block
+# for how a user consciously widens it). What the safe subset DOES cover:
 #   - `Bash(python3 -c:*)`                              STEP 1 computes the UTC --now value
-#   - `Bash(python3 scripts/compound-v-epic-state.py:*)` STEP 2 --claim-resume / BRANCH C
-#                                                          --record-watcher-disarmed
-#   - `Bash(python3 scripts/compound-v-epic-watch.py:*)`  BRANCH A's /v:epic driver may
-#                                                          re-emit/plan via epic-watch
-#   - Read,Grep,Glob                                    inspection the driver needs
+#   - `Bash(python3 scripts/compound-v-epic-state.py:*)` STEP 2 --claim-resume (the CLAIM)
+#   - `Bash(python3 scripts/compound-v-epic-watch.py:*)`  read/inspect the watcher liveness
+#   - Read,Grep,Glob                                    inspection + reporting
 #   - `Bash(git status:*)`,`Bash(git log:*)`            read-only VCS inspection
 # Under launchd/cron the cwd is set to the repo root (see resolve_repo_root), so these
 # RELATIVE `scripts/...` patterns match the commands the prompt runs verbatim. Comma-
-# separated so the space inside each Bash() specifier stays within one field. This stays a
-# CURATED allowlist -- a resume that needs a tool OUTSIDE it will REFUSE (the safety system
-# working); the user widens it DELIBERATELY (see the runbook), never by reaching for a
-# bypass flag.
+# separated so the space inside each Bash() specifier stays within one field.
 ALLOWED_TOOLS = (
     "Read,Grep,Glob,"
     "Bash(python3 -c:*),"
@@ -121,6 +142,34 @@ ALLOWED_TOOLS = (
     "Bash(python3 scripts/compound-v-epic-watch.py:*),"
     "Bash(git status:*),Bash(git log:*)"
 )
+
+# The wider patterns a FULL headless marathon needs but the safe default WITHHOLDS. Branch A
+# of the resume prompt spawns `Task` subagents + runs the dispatch pipeline + commits with
+# `git add`/`git commit`; Branch C calls the scheduled-tasks MCP tools to self-disarm.
+# Enabling these headless grants UNATTENDED AUTONOMOUS EXECUTION of the whole pipeline -- the
+# exact risk class behind this repo's 2026-07-13 deletion incident -- so they are OFF by
+# default and added ONLY when the user EXPLICITLY passes `emit --allow-build`. This set is a
+# NARROW, SPECIFIC widening: it NEVER includes any `--dangerously-*` / `--yolo` / blanket
+# `Bash(*)` (those stay banned regardless of --allow-build).
+BUILD_TOOLS = (
+    "Task,"
+    "Bash(git add:*),Bash(git commit:*),"
+    "mcp__scheduled-tasks__*"
+)
+
+# The exact widening list, human-readable, quoted once so the runbook + preamble + selftest
+# all reference the SAME literal string (no drift between doc text and the baked allowlist).
+WIDEN_LIST_TEXT = "Task, Bash(git add:*), Bash(git commit:*), mcp__scheduled-tasks__*"
+
+
+def allowed_tools_for(allow_build=False):
+    """The allowlist baked into an emitted artifact. Default = the SAFE SUBSET (claim +
+    liveness + report). With allow_build=True ALSO append BUILD_TOOLS (Task + git add/commit
+    + scheduled-tasks) so a user who has consciously accepted unattended autonomy gets a
+    working full-marathon artifact without hand-editing. NEVER adds a bypass flag."""
+    if allow_build:
+        return ALLOWED_TOOLS + "," + BUILD_TOOLS
+    return ALLOWED_TOOLS
 
 # Bypass tokens that must NEVER appear in an emitted artifact (the repo-deletion incident
 # class). Asserted absent by --selftest for both OSes.
@@ -317,7 +366,7 @@ def build_macos_runbook(epic_id, plist_path, log_path):
     label = label_for(epic_id)
     return RUNBOOK_MACOS_TMPL.format(
         epic_id=epic_id, label=label, plist_path=plist_path, log_path=log_path,
-        honesty=_HONESTY_BLOCK, donot=_DONOT_BLOCK)
+        boundary=_BOUNDARY_BLOCK, honesty=_HONESTY_BLOCK, donot=_DONOT_BLOCK)
 
 
 # --------------------------------------------------------------------------- Linux cron
@@ -358,7 +407,7 @@ def build_cron_line(epic_id, state, claude_abs, python_abs, watch_script, repo_r
 def build_linux_runbook(epic_id, cron_line, log_path):
     return RUNBOOK_LINUX_TMPL.format(
         epic_id=epic_id, cron_line=cron_line, log_path=log_path,
-        honesty=_HONESTY_BLOCK, donot=_DONOT_BLOCK)
+        boundary=_BOUNDARY_BLOCK, honesty=_HONESTY_BLOCK, donot=_DONOT_BLOCK)
 
 
 # --------------------------------------------------------------------------- runbook text
@@ -381,6 +430,27 @@ HONESTY -- what this actually buys you (and what it does not)
   infrastructure -- that is out of scope here and intentionally not claimed.
 """
 
+_BOUNDARY_BLOCK = """\
+BOUNDARY -- what the SHIPPED DEFAULT allowlist lets this headless session do
+----------------------------------------------------------------------------
+Under the default --allowedTools this artifact ships with, the fired headless session
+performs the resume CLAIM + liveness + read/report and then STOPS. It CANNOT complete a
+build: the resume prompt's Branch A drives /v:epic (which spawns Task subagents, dispatches
+the pipeline, and runs `git add` / `git commit`) and Branch C calls the scheduled-tasks MCP
+tools to self-disarm -- NONE of those are on the default allowlist, so the session REFUSES
+them and stops. That refusal is the safety system working BY DESIGN, not a failure.
+
+We ship the SAFE SUBSET that claims + reports. Completing a full marathon headless -- build,
+commit, and re-arm, all with NO human present -- requires YOU to consciously widen
+--allowedTools with EXACTLY these additional patterns:
+    Task, Bash(git add:*), Bash(git commit:*), mcp__scheduled-tasks__*
+Doing so grants UNATTENDED AUTONOMOUS EXECUTION of the whole pipeline: enabling the build
+steps headless is an unattended-autonomy decision only you can make, never the plugin's
+default. Widen at your own risk -- and still NEVER via --dangerously-skip-permissions (that
+is what deleted this repo; see the DO-NOT block below). Passing `--allow-build` to this
+shim's `emit` bakes exactly those patterns into the allowlist for you.
+"""
+
 _DONOT_BLOCK = """\
 !! DO NOT -- read before you "fix" a stall !!
 ---------------------------------------------
@@ -389,8 +459,8 @@ NO human present has deleted a repository in this project's own history (2026-07
 ALLOWLIST NOTE: under --permission-mode dontAsk the agent runs read-only plus the curated
 --allowedTools list and REFUSES anything off it. A resume that needs a tool outside the list
 will therefore refuse and stop -- that is the safety system working as designed, not a bug.
-The correct response is to WIDEN --allowedTools DELIBERATELY for the specific tool you need,
-never to bypass the permission system.
+The correct response is to WIDEN --allowedTools DELIBERATELY for the specific tools you need
+(the BOUNDARY block above names the exact set), never to bypass the permission system.
 """
 
 RUNBOOK_MACOS_TMPL = """\
@@ -419,6 +489,7 @@ TEARDOWN -- stop and unregister it:
 LOG -- diagnose a silent run here (StandardOut/StandardError are routed to it):
     {log_path}
 
+{boundary}
 {honesty}
 {donot}"""
 
@@ -445,18 +516,42 @@ LOG -- diagnose a silent run here (stdout/stderr are appended to it):
 Note: ensure the log directory exists before the first fire, e.g.:
     mkdir -p "$(dirname '{log_path}')"
 
+{boundary}
 {honesty}
 {donot}"""
 
 
 # --------------------------------------------------------------------------- emit
 
+def _artifact_preamble(allow_build):
+    """The loud, up-front boundary statement printed ABOVE the scheduler artifact (mirrors
+    the runbook BOUNDARY block so the boundary is stated in BOTH places, never buried). The
+    default preamble says the session claims + reports then STOPS; the --allow-build preamble
+    says the wider build tools are now baked in (unattended autonomy accepted)."""
+    if allow_build:
+        return (
+            "!! --allow-build: this artifact's --allowedTools ALSO bakes in the build/commit/"
+            "re-arm tools (%s). The fired headless session can run the FULL pipeline "
+            "UNATTENDED with no human present -- an autonomy decision you have accepted. It "
+            "still carries NO --dangerously-skip-permissions.\n\n" % WIDEN_LIST_TEXT)
+    return (
+        "NOTE: under this artifact's SHIPPED DEFAULT --allowedTools, the fired headless "
+        "session performs the resume CLAIM + liveness + report and then STOPS -- it REFUSES "
+        "the build/commit/re-arm steps (that refusal is the safety system, BY DESIGN). To run "
+        "a full marathon headless you must widen --allowedTools with EXACTLY: %s (unattended "
+        "autonomy -- your call, never --dangerously-skip-permissions). See the BOUNDARY "
+        "section in the runbook below.\n\n" % WIDEN_LIST_TEXT)
+
+
 def emit(epic_id, state, os_name, claude_bin=None, python_bin=None,
-         watch_script=None, env=None, interval_min=None):
+         watch_script=None, env=None, interval_min=None, allow_build=False):
     """Produce (artifact_text, error). On success artifact_text is the full stdout payload
-    (scheduler artifact + runbook); on failure error is a human-readable string. interval_min
-    is accepted for the CLI contract but never changes the :17/:47 twin cadence (coalescing
-    makes a finer interval meaningless for a wake-catch-up scheduler)."""
+    (boundary preamble + scheduler artifact + runbook); on failure error is a human-readable
+    string. interval_min is accepted for the CLI contract but never changes the :17/:47 twin
+    cadence (coalescing makes a finer interval meaningless for a wake-catch-up scheduler).
+    allow_build=False (default) bakes the SAFE SUBSET allowlist (claim + report); True ALSO
+    bakes BUILD_TOOLS (Task + git add/commit + scheduled-tasks) -- an explicit unattended-
+    autonomy opt-in, never a bypass flag."""
     try:
         epic_id = _validate_epic_id(epic_id)
         os_name = _normalize_os(os_name)
@@ -496,19 +591,22 @@ def emit(epic_id, state, os_name, claude_bin=None, python_bin=None,
     if prompt is None:
         return None, "could not capture the resume prompt: %s" % (perr,)
 
+    allowed_tools = allowed_tools_for(allow_build)
+    preamble = _artifact_preamble(allow_build)
+
     if os_name == "macos":
         log_path = macos_log_path(epic_id)
         plist_path = macos_plist_path(epic_id)
         try:
             plist_bytes = build_plist(epic_id, prompt, claude_abs, repo_root,
-                                      log_path=log_path)
+                                      allowed_tools=allowed_tools, log_path=log_path)
         except ValueError as exc:
             return None, str(exc)
         plist_xml = plist_bytes.decode("utf-8", "replace")
         runbook = build_macos_runbook(epic_id, plist_path, log_path)
         artifact = (
-            "----- BEGIN plist: %s -----\n%s----- END plist -----\n\n%s"
-            % (plist_path, plist_xml, runbook))
+            "%s----- BEGIN plist: %s -----\n%s----- END plist -----\n\n%s"
+            % (preamble, plist_path, plist_xml, runbook))
         return artifact, None
 
     # linux
@@ -517,24 +615,31 @@ def emit(epic_id, state, os_name, claude_bin=None, python_bin=None,
     script = os.path.abspath(watch_script or EPIC_WATCH_SCRIPT)
     try:
         cron_line = build_cron_line(epic_id, state, claude_abs, python_abs, script,
-                                    repo_root, log_path=log_path)
+                                    repo_root, allowed_tools=allowed_tools, log_path=log_path)
     except ValueError as exc:
         return None, str(exc)
     runbook = build_linux_runbook(epic_id, cron_line, log_path)
     artifact = (
-        "----- BEGIN crontab line -----\n%s\n----- END crontab line -----\n\n%s"
-        % (cron_line, runbook))
+        "%s----- BEGIN crontab line -----\n%s\n----- END crontab line -----\n\n%s"
+        % (preamble, cron_line, runbook))
     return artifact, None
 
 
 def cmd_emit(args):
     artifact, err = emit(
         args.epic_id, args.state, args.os,
-        interval_min=args.interval_min,
+        interval_min=args.interval_min, allow_build=args.allow_build,
     )
     if artifact is None:
         print("headless-shim emit error: %s" % err, file=sys.stderr)
         return 1
+    if args.allow_build:
+        print(
+            "headless-shim WARNING: --allow-build baked the build/commit/re-arm tools (%s) "
+            "into --allowedTools. The fired headless session can run the FULL pipeline "
+            "UNATTENDED with no human present -- this is your unattended-autonomy decision, "
+            "not the plugin's default. (No --dangerously-skip-permissions is ever added.)"
+            % WIDEN_LIST_TEXT, file=sys.stderr)
     print(artifact)
     return 0
 
@@ -607,16 +712,40 @@ def _selftest():
           resolve_claude(env={"COMPOUND_V_HEADLESS_CLAUDE_BIN": "/x/y/claude"}) == "/x/y/claude")
     check("ALLOWED_TOOLS is a non-empty allowlist", bool(ALLOWED_TOOLS.strip()))
     check("ALLOWED_TOOLS names dontAsk-compatible read tools", "Read" in ALLOWED_TOOLS)
-    # H4.2: the allowlist must cover EXACTLY what the resume prompt issues, or the resume
-    # refuses before it can reach --claim-resume.
-    check("ALLOWED_TOOLS covers the epic-state resume call (STEP 2 / BRANCH C)",
+    # The SAFE SUBSET covers the CLAIM + liveness + read/report the resume can do headless.
+    check("ALLOWED_TOOLS covers the epic-state --claim-resume call (STEP 2)",
           "Bash(python3 scripts/compound-v-epic-state.py:*)" in ALLOWED_TOOLS)
-    check("ALLOWED_TOOLS covers the epic-watch driver call (BRANCH A)",
+    check("ALLOWED_TOOLS covers the epic-watch liveness read",
           "Bash(python3 scripts/compound-v-epic-watch.py:*)" in ALLOWED_TOOLS)
     check("ALLOWED_TOOLS covers `python3 -c` (STEP 1 computes --now)",
           "Bash(python3 -c:*)" in ALLOWED_TOOLS)
     check("ALLOWED_TOOLS covers read-only git inspection",
           "Bash(git status:*)" in ALLOWED_TOOLS and "Bash(git log:*)" in ALLOWED_TOOLS)
+    # HONEST BOUNDARY: the DEFAULT allowlist must NOT contain the build/commit/re-arm tools --
+    # those belong to the resume prompt's Branch A (/v:epic -> Task + git commit) and Branch C
+    # (scheduled-tasks self-disarm), and are withheld unless the user opts in via --allow-build.
+    check("DEFAULT ALLOWED_TOOLS does NOT grant Task (Branch A subagent spawn)",
+          "Task" not in ALLOWED_TOOLS)
+    check("DEFAULT ALLOWED_TOOLS does NOT grant git add (Branch A commit)",
+          "git add" not in ALLOWED_TOOLS)
+    check("DEFAULT ALLOWED_TOOLS does NOT grant git commit (Branch A commit)",
+          "git commit" not in ALLOWED_TOOLS)
+    check("DEFAULT ALLOWED_TOOLS does NOT grant scheduled-tasks (Branch C disarm)",
+          "mcp__scheduled-tasks" not in ALLOWED_TOOLS)
+    # BUILD_TOOLS / allowed_tools_for: the wider opt-in set, and never a bypass.
+    check("BUILD_TOOLS grants Task", "Task" in BUILD_TOOLS)
+    check("BUILD_TOOLS grants git add + git commit",
+          "Bash(git add:*)" in BUILD_TOOLS and "Bash(git commit:*)" in BUILD_TOOLS)
+    check("BUILD_TOOLS grants scheduled-tasks MCP", "mcp__scheduled-tasks__*" in BUILD_TOOLS)
+    for _bad in ("--dangerously", "--yolo", "Bash(*)"):
+        check("BUILD_TOOLS never contains a bypass token %r" % (_bad,), _bad not in BUILD_TOOLS)
+    check("allowed_tools_for() default == the safe subset",
+          allowed_tools_for() == ALLOWED_TOOLS and allowed_tools_for(False) == ALLOWED_TOOLS)
+    check("allowed_tools_for(True) == safe subset + BUILD_TOOLS",
+          allowed_tools_for(True) == ALLOWED_TOOLS + "," + BUILD_TOOLS)
+    _abt = allowed_tools_for(True)
+    for _bad in ("--dangerously-skip-permissions", "--yolo", "Bash(*)"):
+        check("allowed_tools_for(True) never contains %r" % (_bad,), _bad not in _abt)
 
     # ---- REQ 1: present-only -- no launchctl/crontab subprocess in the code path -------
     # Robust structural proof via AST (ignores string-literal contents, so these very
@@ -743,6 +872,69 @@ def _selftest():
         check("REQ5: Linux runbook carries the prominent DO-NOT-bypass block",
               "DO NOT" in lin_art and "deleted a repository" in lin_art)
 
+    # ---- BLOCKER FIX: honest boundary (default = safe subset; --allow-build widens) -----
+    # Helper: extract just the emitted COMMAND (not the runbook, which deliberately names the
+    # wider tools + banned flags in its BOUNDARY/DO-NOT blocks -- so a negative assert on the
+    # command must never scan the runbook prose).
+    def _command_of(artifact, os_name):
+        if os_name == "macos":
+            return artifact[artifact.index("<?xml"):artifact.index("----- END plist -----")]
+        c = artifact.split("----- BEGIN crontab line -----\n", 1)[1]
+        return c.split("\n----- END crontab line -----", 1)[0]
+
+    def _runbook_of(artifact, os_name):
+        marker = "----- END plist -----" if os_name == "macos" else "----- END crontab line -----"
+        return artifact.split(marker, 1)[1]
+
+    _WIDER = ("Task", "Bash(git add:*)", "Bash(git commit:*)", "mcp__scheduled-tasks__*")
+    for _os in ("macos", "linux"):
+        # (1) DEFAULT emit -- command carries the safe subset and NONE of the wider patterns.
+        _def_art, _def_err = _emit(_os)
+        check("boundary: %s default emit succeeds" % _os,
+              _def_art is not None and _def_err is None)
+        if _def_art is not None:
+            _cmd = _command_of(_def_art, _os)
+            check("boundary: %s default command carries the safe-subset allowlist" % _os,
+                  ALLOWED_TOOLS in _cmd)
+            for _w in _WIDER:
+                check("boundary: %s default command does NOT contain %r" % (_os, _w),
+                      _w not in _cmd)
+            # (4) prior invariant: still no bypass token in the default command.
+            for _flag in _BANNED_FLAGS:
+                check("boundary: %s default command still contains NO %s" % (_os, _flag),
+                      _flag not in _cmd)
+            # (3) runbook states the boundary + the EXACT widening list.
+            _rb = _runbook_of(_def_art, _os)
+            check("boundary: %s runbook has the BOUNDARY section header" % _os, "BOUNDARY" in _rb)
+            check("boundary: %s runbook says it claims + reports then STOPS" % _os,
+                  "claims + reports" in _rb and "STOPS" in _rb)
+            check("boundary: %s runbook says widen at your own risk" % _os,
+                  "Widen at your own risk" in _rb)
+            check("boundary: %s runbook names the EXACT widening list" % _os,
+                  WIDEN_LIST_TEXT in _rb)
+            # preamble (stated loudly ABOVE the artifact too, not only in the runbook).
+            check("boundary: %s default preamble states the claim+report+stop boundary" % _os,
+                  "then STOPS" in _def_art.split("----- BEGIN", 1)[0]
+                  and WIDEN_LIST_TEXT in _def_art.split("----- BEGIN", 1)[0])
+
+        # (2) --allow-build emit -- command DOES carry the wider patterns, still no bypass.
+        _ab_art, _ab_err = _emit(_os, allow_build=True)
+        check("boundary: %s --allow-build emit succeeds" % _os,
+              _ab_art is not None and _ab_err is None)
+        if _ab_art is not None:
+            _cmd_ab = _command_of(_ab_art, _os)
+            check("boundary: %s --allow-build command carries the safe subset + BUILD_TOOLS" % _os,
+                  allowed_tools_for(True) in _cmd_ab)
+            for _w in _WIDER:
+                check("boundary: %s --allow-build command DOES contain %r" % (_os, _w),
+                      _w in _cmd_ab)
+            for _flag in list(_BANNED_FLAGS) + ["--yolo", "Bash(*)"]:
+                check("boundary: %s --allow-build command STILL contains NO %s" % (_os, _flag),
+                      _flag not in _cmd_ab)
+            check("boundary: %s --allow-build preamble warns of unattended autonomy" % _os,
+                  "--allow-build" in _ab_art.split("----- BEGIN", 1)[0]
+                  and "UNATTENDED" in _ab_art.split("----- BEGIN", 1)[0])
+
     # ---- REQ: unresolved claude fails the emit with a clear message, nonzero -----------
     art_noclaude, err_noclaude = emit("epic-x", "/tmp/s.json", "macos",
                                       claude_bin="", env={"PATH": ""})
@@ -796,6 +988,28 @@ def _selftest():
             check("CLI emit --os linux prints a crontab line",
                   "17,47 * * * *" in buf2.getvalue() and "crontab -e" in buf2.getvalue())
 
+            # CLI --allow-build: exits 0, bakes BUILD_TOOLS into the command, warns on stderr.
+            buf_ab = io.StringIO()
+            err_ab = io.StringIO()
+            with contextlib.redirect_stdout(buf_ab), contextlib.redirect_stderr(err_ab):
+                rc_ab = main(["emit", "--epic-id", "epic-cli", "--state", state_path,
+                              "--os", "macos", "--allow-build"])
+            check("CLI emit --allow-build exits 0", rc_ab == 0)
+            check("CLI emit --allow-build bakes the wider tools into the plist command",
+                  allowed_tools_for(True) in buf_ab.getvalue())
+            check("CLI emit --allow-build prints a prominent stderr autonomy warning",
+                  "WARNING" in err_ab.getvalue() and "UNATTENDED" in err_ab.getvalue())
+            buf_def = io.StringIO()
+            err_def = io.StringIO()
+            with contextlib.redirect_stdout(buf_def), contextlib.redirect_stderr(err_def):
+                main(["emit", "--epic-id", "epic-cli", "--state", state_path, "--os", "macos"])
+            check("CLI default emit prints NO autonomy WARNING on stderr",
+                  "WARNING" not in err_def.getvalue())
+            check("CLI default emit command carries only the safe subset (no Task)",
+                  "Task," not in buf_def.getvalue()[
+                      buf_def.getvalue().index("<?xml"):
+                      buf_def.getvalue().index("----- END plist -----")])
+
             # error path: unresolved claude via CLI -> nonzero, stderr message
             os.environ.pop("COMPOUND_V_HEADLESS_CLAUDE_BIN", None)
             old_path = os.environ.get("PATH")
@@ -841,6 +1055,11 @@ def build_parser():
                     help="accepted for the contract; cadence stays the off-minute :17/:47 twin")
     sp.add_argument("--os", dest="os", choices=["macos", "linux"], default=None,
                     help="target OS (default: auto-detect from sys.platform)")
+    sp.add_argument("--allow-build", dest="allow_build", action="store_true",
+                    help="ALSO bake the build/commit/re-arm tools (Task, git add, git commit, "
+                         "scheduled-tasks) into the allowlist so the headless session can run "
+                         "the FULL pipeline UNATTENDED -- an unattended-autonomy opt-in you "
+                         "accept. Never adds --dangerously-*/--yolo. Default: safe subset only")
     return p
 
 
