@@ -139,7 +139,7 @@ A `_DEVIN_RULES` table in [`scripts/compound-v-classify-failure.py`](../../scrip
 
 Following the exact shape of [`scripts/compound-v-run-codex-worker.sh`](../../scripts/compound-v-run-codex-worker.sh) / `-antigravity-worker.sh` / `-cursor-worker.sh`, [`scripts/compound-v-run-devin-worker.sh`](../../scripts/compound-v-run-devin-worker.sh) is a port of the Cursor worker's structure (worktree lifecycle, `write_allowed` expansion into an allow-file, `compound-v-scope-check.py` invocation, `emit_job_result` via `jq`) with three backend-specific differences: (1) no `-f`/`--dangerously-skip-permissions`-equivalent flag name (`--permission-mode dangerous` instead), (2) `summary` comes straight from captured stdout (no `.result` JSON field to parse — the Antigravity pattern, not the Cursor one), (3) `session_id` extraction is a **best-effort, unverified** `devin list --format json` parse rather than a confirmed JSON field. The script is shipped and Codex-hardened, but it stays **opt-in / lower-trust and unverified end-to-end**: the task-execution facts marked DOC-CLAIMED above (ATIF export field names, `--model` alias resolution, `-r` resume, and the best-effort session-id extraction path) still need an authenticated Cognition account to confirm. Treat it as auth-pending until that live verification lands.
 
-## Invoking the (future) script
+## Invoking the script
 
 ```bash
 scripts/compound-v-run-devin-worker.sh \
