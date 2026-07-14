@@ -245,25 +245,56 @@ def _fmt_mtime(ts):
     return datetime.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _contained(path, root):
+    """True iff `path`'s realpath is exactly `root` or strictly under it.
+
+    `root` MUST already be an os.path.realpath'd absolute directory. This is the single
+    containment gate: any candidate file whose real target escapes the resolved execution
+    root (via a symlink or otherwise) is refused -- it is never read, rendered, or inlined.
+    Fail-closed: an unresolvable path returns False rather than raising.
+    """
+    try:
+        cand = os.path.realpath(path)
+    except OSError:
+        return False
+    return cand == root or cand.startswith(root + os.sep)
+
+
+def _shape_error(raw, existed, err):
+    """Promote a structurally-wrong-but-valid document (e.g. a top-level list) to an
+    explicit 'invalid shape' error, so it renders as unparseable instead of a silent UNKNOWN."""
+    if err is None and existed and not isinstance(raw, dict):
+        return "unexpected top-level shape (expected an object)"
+    return err
+
+
 # ---------------------------------------------------------------------------
 # Model builders
 # ---------------------------------------------------------------------------
 
-def load_run(dirpath):
+def load_run(dirpath, root):
     rec = {"kind": "run", "id": os.path.basename(dirpath.rstrip("/")), "path": dirpath}
     man_path = os.path.join(dirpath, "manifest.yaml")
     state_path = os.path.join(dirpath, "state.json")
 
-    manifest, m_err = read_yaml(man_path)
+    # HIGH-1: every reader used to build the rendered model is realpath-contained to `root`.
+    # A file whose real target escapes the root is skipped (never read), not crashed on.
+    if _contained(man_path, root):
+        manifest, m_err = read_yaml(man_path)
+    else:
+        manifest, m_err = None, None
+    m_err = _shape_error(manifest, os.path.isfile(man_path) and _contained(man_path, root), m_err)
     rec["manifest"] = manifest if isinstance(manifest, dict) else None
     rec["manifest_error"] = m_err
 
-    rec["has_state"] = os.path.isfile(state_path)
+    # has_state is honest AND contained: a symlink escaping the root is treated as "no state".
+    rec["has_state"] = os.path.isfile(state_path) and _contained(state_path, root)
     state, s_err = (read_json(state_path) if rec["has_state"] else (None, None))
+    s_err = _shape_error(state, rec["has_state"], s_err)
     rec["state"] = state if isinstance(state, dict) else None
     rec["state_error"] = s_err
 
-    # per-job results (results/<id>.json)
+    # per-job results (results/<id>.json) -- each candidate realpath-contained before reading
     results = {}
     res_dir = os.path.join(dirpath, "results")
     if os.path.isdir(res_dir):
@@ -273,7 +304,10 @@ def load_run(dirpath):
             names = []
         for name in names:
             if name.endswith(".json"):
-                obj, err = read_json(os.path.join(res_dir, name))
+                cand = os.path.join(res_dir, name)
+                if not _contained(cand, root):
+                    continue
+                obj, err = read_json(cand)
                 results[name[:-5]] = {"obj": obj if isinstance(obj, dict) else None, "err": err}
     rec["results"] = results
 
@@ -287,11 +321,15 @@ def load_run(dirpath):
 
     # counts (real, never fabricated)
     state_jobs = rec["state"].get("jobs") if rec["state"] and isinstance(rec["state"].get("jobs"), dict) else {}
-    total = len(jobs) if jobs else len(state_jobs)
     done = 0
     for jid, jv in (state_jobs or {}).items():
         if isinstance(jv, dict) and str(jv.get("status", "")).lower() in DONE_JOB_STATES:
             done += 1
+    # MEDIUM-6: total is the UNION of manifest job ids and state.json job ids, so that a
+    # state-only job can never push `done` past `total` (no impossible "3/2 jobs done").
+    manifest_ids = [j.get("id") for j in jobs if isinstance(j, dict) and j.get("id")]
+    state_ids = list(state_jobs.keys()) if isinstance(state_jobs, dict) else []
+    total = len(set(manifest_ids) | set(state_ids))
     rec["total"] = total
     rec["done"] = done
     rec["state_jobs"] = state_jobs
@@ -319,10 +357,15 @@ def load_run(dirpath):
     return rec
 
 
-def load_epic(dirpath):
+def load_epic(dirpath, root):
     rec = {"kind": "epic", "id": os.path.basename(dirpath.rstrip("/")), "path": dirpath}
     es_path = os.path.join(dirpath, "epic-state.json")
-    state, err = read_json(es_path)
+    # HIGH-1: skip (do not read) an epic-state.json whose real target escapes the root.
+    if _contained(es_path, root):
+        state, err = read_json(es_path)
+        err = _shape_error(state, os.path.isfile(es_path), err)
+    else:
+        state, err = None, None
     rec["state"] = state if isinstance(state, dict) else None
     rec["state_error"] = err
 
@@ -360,15 +403,19 @@ def load_epic(dirpath):
 
 
 def build_records(root):
-    """Walk the execution root; a dir with manifest.yaml is a run, one with epic-state.json an epic."""
+    """Walk the execution root; a dir with manifest.yaml is a run, one with epic-state.json an epic.
+
+    `root` MUST be an os.path.realpath'd absolute directory (render_html resolves it once, at
+    startup): every reader below is realpath-contained to this exact root.
+    """
     records = []
     if not os.path.isdir(root):
         return records
     for dirpath, _dirnames, filenames in os.walk(root):
         if "epic-state.json" in filenames:
-            records.append(load_epic(dirpath))
+            records.append(load_epic(dirpath, root))
         if "manifest.yaml" in filenames:
-            records.append(load_run(dirpath))
+            records.append(load_run(dirpath, root))
     records.sort(key=lambda r: r.get("sort_ts", 0.0), reverse=True)
     return records
 
@@ -492,8 +539,6 @@ ul.ledger li{margin:0.25rem 0}
 
 POLL_JS = """
 (function(){
-  function stamp(){var e=document.getElementById('live-time');
-    if(e){e.textContent=new Date().toLocaleTimeString();}}
   function tick(){
     fetch(window.location.pathname+'?_t='+Date.now(),{cache:'no-store'})
       .then(function(r){return r.text();})
@@ -502,11 +547,14 @@ POLL_JS = """
         var fresh=doc.getElementById('dash-body');
         var cur=document.getElementById('dash-body');
         if(fresh&&cur){cur.innerHTML=fresh.innerHTML;}
-        stamp();
+        // MEDIUM-4: the header stamp is a real, file-sourced time from the fetched HTML
+        // (newest state-file mtime). NO viewer wall-clock is ever synthesised here.
+        var fs=doc.getElementById('page-stamp');
+        var cs=document.getElementById('page-stamp');
+        if(fs&&cs){cs.textContent=fs.textContent;}
       })
       .catch(function(){/* transient; keep polling */});
   }
-  stamp();
   setInterval(tick,3000);
 })();
 """.strip()
@@ -544,17 +592,26 @@ def _render_run_detail(rec):
         res = rec["results"].get(jid, {}) if rec.get("results") else {}
         robj = res.get("obj")
         rerr = res.get("err")
-        # scope gate
+        # scope gate -- MEDIUM-3: PASS is asserted ONLY on a complete, well-typed clean result.
+        # A partial ({}), a contradictory ({"blocked":false,"violations":[...]}), or a wrong-typed
+        # result renders UNKNOWN (never a false PASS); every len()/count is type-guarded so a
+        # scalar `violations`/`files_changed` cannot crash or be counted as characters.
         if rerr:
             gate = '<span class="pill pill-bad">UNPARSEABLE</span>'
             files_changed = MDASH
         elif isinstance(robj, dict):
-            if robj.get("blocked"):
-                nviol = len(robj.get("violations") or [])
+            blocked = robj.get("blocked")
+            violations = robj.get("violations")
+            viol_is_list = isinstance(violations, list)
+            if blocked is True or (viol_is_list and len(violations) > 0):
+                nviol = len(violations) if viol_is_list else 0
                 gate = '<span class="pill pill-bad">BLOCKED ({})</span>'.format(nviol)
-            else:
+            elif blocked is False and viol_is_list and len(violations) == 0:
                 gate = '<span class="pill pill-ok">PASS</span>'
-            files_changed = _esc(len(robj.get("files_changed") or []))
+            else:
+                gate = '<span class="pill pill-neutral">UNKNOWN</span>'
+            fc = robj.get("files_changed")
+            files_changed = _esc(len(fc)) if isinstance(fc, list) else MDASH
         else:
             gate = MDASH
             files_changed = MDASH
@@ -703,6 +760,9 @@ def _render_card(rec):
 
 
 def render_html(root, live=False):
+    # HIGH-1: resolve the execution root ONCE, here, and thread that SAME realpath'd root
+    # through every reader. Never render from an unresolved root (defeats containment/TOCTOU).
+    root = os.path.realpath(root)
     records = build_records(root)
     if records:
         newest = max(r.get("sort_ts", 0.0) for r in records)
@@ -711,8 +771,10 @@ def render_html(root, live=False):
         as_of = MDASH
 
     if live:
-        head_stamp = ('live &middot; last updated <span id="live-time"></span> '
-                      '&middot; data as of {}'.format(as_of))
+        # MEDIUM-4: NO client-side clock. The stamp is the newest state-file mtime -- a real,
+        # file-sourced time recomputed server-side on each poll -- or a bare "live" when none.
+        head_stamp = ("live" if as_of == MDASH
+                      else "live &middot; data as of {}".format(as_of))
         script = "<script>{}</script>".format(POLL_JS)
     else:
         head_stamp = "snapshot &middot; generated from files as of {}".format(as_of)
@@ -729,7 +791,7 @@ def render_html(root, live=False):
         "<title>Compound V dashboard</title><style>{css}</style></head>"
         "<body><div class=\"wrap\">"
         "<header class=\"top\"><h1>Compound V &middot; execution dashboard</h1>"
-        "<span class=\"stamp\">{stamp}</span></header>"
+        "<span class=\"stamp\" id=\"page-stamp\">{stamp}</span></header>"
         "<div id=\"dash-body\">{body}</div>"
         "</div>{script}</body></html>").format(
             css=CSS, stamp=head_stamp, body=body_inner, script=script)
@@ -795,6 +857,26 @@ class _ReadOnlyHandler(http.server.BaseHTTPRequestHandler):
     do_CONNECT = _reject
     do_TRACE = _reject
 
+    # MEDIUM-5: any verb other than GET/HEAD -- including unknown ones like BREW or a
+    # lowercase `post` -- resolves to _reject (405), never BaseHTTPRequestHandler's 501.
+    def __getattr__(self, name):
+        if name.startswith("do_"):
+            return self._reject
+        raise AttributeError(name)
+
+    # HIGH-2: reject DNS-rebinding. Only an exact loopback host+port (the one we bound) is
+    # accepted; a missing or foreign Host header is a same-origin attempt from a rebinding
+    # page and is refused before any file or the dashboard is served.
+    def _host_allowed(self):
+        host = self.headers.get("Host") if self.headers is not None else None
+        if not host:
+            return False
+        try:
+            port = self.server.server_address[1]
+        except Exception:  # noqa: BLE001 -- fail-closed if the port is unknowable
+            return False
+        return host in ("127.0.0.1:{}".format(port), "localhost:{}".format(port))
+
     def _send_bytes(self, code, content_type, payload, write_body):
         self.send_response(code)
         self.send_header("Content-Type", content_type)
@@ -805,6 +887,11 @@ class _ReadOnlyHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(payload)
 
     def _handle(self, write_body):
+        # HIGH-2: validate Host before serving ANYTHING (the dashboard or any file).
+        if not self._host_allowed():
+            self.send_error(403, "Forbidden")
+            return
+
         parsed = urllib.parse.urlsplit(self.path)
         raw = urllib.parse.unquote(parsed.path)
         if "\x00" in raw:
@@ -895,12 +982,21 @@ def cmd_serve(args):
 # Self-test
 # ---------------------------------------------------------------------------
 
-def _invoke_handler(handler_cls, method, path):
-    """Drive a handler without opening a socket: construct bare, set the request, dispatch."""
+class _FakeServer(object):
+    """Minimal stand-in so a bare handler can read the bound port for the Host check."""
+    def __init__(self, port=8787):
+        self.server_address = ("127.0.0.1", port)
+
+
+def _invoke_handler(handler_cls, method, path, host="127.0.0.1:8787"):
+    """Drive a handler without opening a socket: construct bare, set the request, dispatch.
+    `host` defaults to the exact loopback host+port the HIGH-2 Host gate accepts; pass a
+    foreign/None host to exercise the DNS-rebinding rejection."""
     h = handler_cls.__new__(handler_cls)
+    h.server = _FakeServer(8787)
     h.wfile = io.BytesIO()
     h.rfile = io.BytesIO()
-    h.headers = {}
+    h.headers = {"Host": host} if host is not None else {}
     h.command = method
     h.path = path
     h.client_address = ("127.0.0.1", 0)
@@ -1106,6 +1202,54 @@ def _selftest():
                   "serve: symlink escape not blocked")
         except (OSError, NotImplementedError):
             pass  # symlinks unsupported on this platform -> skip that assertion only
+
+        # HIGH-2 (DNS-rebinding): a foreign or missing Host -> 403 even for the dashboard root;
+        # only the exact loopback host+port the server bound is accepted.
+        check(_invoke_handler(handler_cls, "GET", "/", host="evil.example.com:8787") == 403,
+              "serve: foreign Host not rejected (DNS-rebinding)")
+        check(_invoke_handler(handler_cls, "GET", "/", host=None) == 403,
+              "serve: missing Host not rejected")
+        check(_invoke_handler(handler_cls, "GET", "/", host="localhost:8787") == 200,
+              "serve: exact localhost Host not accepted")
+
+        # MEDIUM-5 (blanket 405): an UNKNOWN verb and a lowercase verb -> 405, never 501.
+        check(_invoke_handler(handler_cls, "BREW", "/") == 405, "serve: unknown verb (BREW) not 405")
+        check(_invoke_handler(handler_cls, "get", "/") == 405, "serve: lowercase verb not 405")
+
+        # HIGH-1 (render-path containment): a run whose state.json symlinks OUTSIDE the root must
+        # be skipped by GET / (render_html), not read+rendered. Direct requests already 403 above.
+        leak_run = os.path.join(root, "2099-01-01-leakrun")
+        os.makedirs(leak_run)
+        _write_text(os.path.join(leak_run, "manifest.yaml"), "jobs: []\n")
+        secret = os.path.join(tmp, "render_secret.json")
+        _write_text(secret, '{"phase": "RENDER_LEAK_MARKER"}')
+        try:
+            os.symlink(secret, os.path.join(leak_run, "state.json"))
+            leaked = render_html(root, live=False)
+            check("RENDER_LEAK_MARKER" not in leaked,
+                  "render: out-of-root symlink content leaked via GET /")
+        except (OSError, NotImplementedError):
+            pass  # symlinks unsupported -> skip this assertion only
+
+        # MEDIUM-4 (no fabricated clock): neither static nor live HTML uses the viewer's clock.
+        static_html = render_html(root, live=False)
+        live_html = render_html(root, live=True)
+        check("new Date(" not in static_html and "toLocaleTimeString" not in static_html,
+              "render: static HTML uses a client-side clock (anti-ruflo)")
+        check("new Date(" not in live_html and "toLocaleTimeString" not in live_html,
+              "render: live HTML uses a client-side clock (anti-ruflo)")
+
+        # MEDIUM-6 (union denominator): 2 manifest jobs + a 3rd state-only done job must never
+        # render an impossible "3/2 done"; the denominator unions manifest + state job ids.
+        cnt_run = os.path.join(root, "2099-02-02-countrun")
+        os.makedirs(os.path.join(cnt_run, "results"))
+        _write_text(os.path.join(cnt_run, "manifest.yaml"),
+                    "jobs:\n  - id: j1\n  - id: j2\n")
+        _write_text(os.path.join(cnt_run, "state.json"),
+                    '{"phase": "DISPATCHED", "jobs": {"j1": {"status": "done"}, '
+                    '"j2": {"status": "done"}, "j3": {"status": "done"}}}')
+        cnt_html = render_html(root, live=False)
+        check("3/2" not in cnt_html, "render: impossible progress count (3/2) — denominator not unioned")
 
         # ---- server binds loopback ONLY (introspect, no serve_forever, no public socket) ----
         srv = _build_server(root, 0)
