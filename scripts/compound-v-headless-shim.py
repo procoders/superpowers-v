@@ -31,17 +31,28 @@ Hard boundaries (each mirrors an acceptance criterion in the v2.14 spec, Feature
   * LAUNCHD TRAPS PRE-EMPTED (macOS). The plist bakes the ABSOLUTE `claude` path (resolved
     via shutil.which at emit time -- the emit FAILS with a clear stderr message + nonzero
     exit if unresolved, never emitting a bare `claude` that launchd's minimal PATH would
-    fail to find), sets `StandardInPath` = /dev/null (else `claude -p` exits "no stdin
-    data received"), routes `StandardOutPath`/`StandardErrorPath` to a log file so a silent
-    failure is diagnosable, uses `StartCalendarInterval` = array of two dicts (Minute 17 /
-    Minute 47, NO Hour key => hourly), and sets `RunAtLoad` false (scheduled only). The
-    PRIMARY install command printed is `launchctl bootstrap gui/$(id -u) <plist>`
+    fail to find), sets `WorkingDirectory` = the epic's ABSOLUTE repo root (else launchd
+    starts in an unrelated cwd and the resume prompt's RELATIVE `scripts/...` calls fail),
+    sets `StandardInPath` = /dev/null (else `claude -p` exits "no stdin data received"),
+    routes `StandardOutPath`/`StandardErrorPath` to a log file so a silent failure is
+    diagnosable, uses `StartCalendarInterval` = array of two dicts (Minute 17 / Minute 47,
+    NO Hour key => hourly), and sets `RunAtLoad` false (scheduled only). The PRIMARY install
+    command printed is `launchctl bootstrap gui/$(id -u) <plist>`
     (+ `launchctl bootout gui/$(id -u)/<label>` teardown), with legacy `load`/`unload`
     noted as a fallback for old macOS -- always a USER step, never executed here.
 
   * LINUX CRON. A crontab line `17,47 * * * *` (matching compound-v-epic-watch.py's
-    TIER1_CRON_SCHEDULE) with the ABSOLUTE `claude` path, a `< /dev/null` redirect, and the
-    same `dontAsk` + allowlist posture. Installed by the USER via `crontab -e` / append.
+    TIER1_CRON_SCHEDULE) that `cd`s into the epic's ABSOLUTE repo root before running the
+    ABSOLUTE `claude` path (so the resume prompt's RELATIVE `scripts/...` calls resolve),
+    with a `< /dev/null` redirect and the same `dontAsk` + allowlist posture. Any path
+    landing on the command line is rejected if it contains a `%` (cron treats an unescaped
+    `%` as a newline/stdin separator that would corrupt the line). Installed by the USER via
+    `crontab -e` / append.
+
+  * REPO ROOT. Resolved deterministically at emit time (resolve_repo_root): walk up from the
+    --state file's directory to a `.git`, else fall back to this script's own location. If
+    neither yields a repo root the emit FAILS -- never emit an artifact that would cd
+    nowhere.
 
 CLI:
   compound-v-headless-shim.py emit --epic-id E --state S [--interval-min 30] [--os macos|linux]
@@ -87,14 +98,27 @@ CAL_MINUTES = (17, 47)
 
 # Safe non-interactive posture. dontAsk RUNS read-only + this allowlist and REFUSES
 # everything off-list -- it never stalls (unlike the user's interactive posture) and never
-# bypasses (unlike --dangerously-skip-permissions). The allowlist is scoped to the resume
-# driver's genuine needs: read/grep/glob for inspection, plus the exact epic-state resume
-# call the Tier-2 prompt makes. Comma-separated so the space inside the Bash() specifier
-# stays within one field. Users widen this DELIBERATELY (see the runbook) -- never by
-# reaching for a bypass flag.
+# bypasses (unlike --dangerously-skip-permissions). The allowlist is scoped to EXACTLY what
+# the Tier-2 resume prompt (compound-v-epic-watch.py's PROMPT_TEMPLATE) actually issues, so
+# a resume never stalls on a refused tool before it can reach `--claim-resume`:
+#   - `Bash(python3 -c:*)`                              STEP 1 computes the UTC --now value
+#   - `Bash(python3 scripts/compound-v-epic-state.py:*)` STEP 2 --claim-resume / BRANCH C
+#                                                          --record-watcher-disarmed
+#   - `Bash(python3 scripts/compound-v-epic-watch.py:*)`  BRANCH A's /v:epic driver may
+#                                                          re-emit/plan via epic-watch
+#   - Read,Grep,Glob                                    inspection the driver needs
+#   - `Bash(git status:*)`,`Bash(git log:*)`            read-only VCS inspection
+# Under launchd/cron the cwd is set to the repo root (see resolve_repo_root), so these
+# RELATIVE `scripts/...` patterns match the commands the prompt runs verbatim. Comma-
+# separated so the space inside each Bash() specifier stays within one field. This stays a
+# CURATED allowlist -- a resume that needs a tool OUTSIDE it will REFUSE (the safety system
+# working); the user widens it DELIBERATELY (see the runbook), never by reaching for a
+# bypass flag.
 ALLOWED_TOOLS = (
     "Read,Grep,Glob,"
+    "Bash(python3 -c:*),"
     "Bash(python3 scripts/compound-v-epic-state.py:*),"
+    "Bash(python3 scripts/compound-v-epic-watch.py:*),"
     "Bash(git status:*),Bash(git log:*)"
 )
 
@@ -125,6 +149,59 @@ def _validate_state_for_shell(value):
             "--state contains a shell-unsafe character (quote/backtick/$/newline); "
             "refusing to embed it in a crontab line (got %r)" % (value,))
     return value
+
+
+def _validate_shell_single_quoted(value, label):
+    """Reject any char that could break out of a single-quoted POSIX-shell field or inject a
+    command. Used for paths (repo root) embedded in the Linux cron `cd '<...>'` prefix."""
+    if not value:
+        raise ValueError("%s must be a non-empty path" % (label,))
+    if _STATE_SHELL_BAD.search(value):
+        raise ValueError(
+            "%s contains a shell-unsafe character (quote/backtick/$/newline); "
+            "refusing to embed it in a crontab line (got %r)" % (label, value))
+    return value
+
+
+def _reject_cron_percent(value, label):
+    """cron treats an unescaped `%` in the command specially (it becomes a newline/stdin
+    separator), so a path containing `%` would silently corrupt the crontab line. Reject it
+    with a clear message. Linux cron path ONLY -- the macOS plist is unaffected by `%`."""
+    if "%" in value:
+        raise ValueError(
+            "%s contains a '%%' character, which cron treats specially (it becomes a "
+            "newline/stdin separator and would corrupt the crontab line); refusing to embed "
+            "it -- rename the path to drop the '%%' (got %r)" % (label, value))
+    return value
+
+
+def _find_git_root(start_dir):
+    """Walk up from start_dir looking for a `.git` entry (a DIR normally, or a FILE in a git
+    worktree -- Compound V dispatches inside worktrees, so both must count). Returns the
+    absolute dir that contains it, or None. A pure path walk: it does NOT require start_dir
+    itself to exist, so it also resolves for a not-yet-created --state path."""
+    d = os.path.abspath(start_dir)
+    while True:
+        if os.path.exists(os.path.join(d, ".git")):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:  # reached the filesystem root
+            return None
+        d = parent
+
+
+def resolve_repo_root(state, here=None):
+    """Resolve the ABSOLUTE repo root the resume must run from. launchd and cron start in an
+    unrelated cwd, but the captured resume prompt invokes RELATIVE paths like
+    `scripts/compound-v-epic-state.py` -- so the emitted artifact MUST cd into the repo
+    first (plist WorkingDirectory / cron `cd '<root>' &&`). Deterministic resolution order:
+    (1) walk up from the --state file's directory to a `.git`; (2) fall back to walking up
+    from THIS script's own location (the plugin lives in the repo). Returns an absolute path
+    or None -- the caller FAILS the emit rather than emit a cd-nowhere artifact."""
+    state_root = _find_git_root(os.path.dirname(os.path.abspath(state)))
+    if state_root:
+        return state_root
+    return _find_git_root(here or HERE)
 
 
 def _normalize_os(value):
@@ -201,14 +278,20 @@ def _capture_resume_prompt(epic_id, state, python_bin=None, watch_script=None):
 
 # --------------------------------------------------------------------------- macOS plist
 
-def build_plist(epic_id, prompt, claude_abs, allowed_tools=ALLOWED_TOOLS,
+def build_plist(epic_id, prompt, claude_abs, working_dir, allowed_tools=ALLOWED_TOOLS,
                 log_path=None):
     """Build a valid-XML launchd plist (bytes) that runs the captured resume prompt headless
     on the :17/:47 twin cadence. The absolute claude path + dontAsk + allowlist + the
-    captured prompt live in ProgramArguments; StandardInPath=/dev/null and the log paths
-    pre-empt launchd's three silent-failure traps."""
+    captured prompt live in ProgramArguments; WorkingDirectory=<repo root> makes the
+    prompt's RELATIVE `scripts/...` calls resolve (launchd otherwise starts in an unrelated
+    cwd); StandardInPath=/dev/null and the log paths pre-empt launchd's silent-failure
+    traps."""
     if not (claude_abs and os.path.isabs(claude_abs)):
         raise ValueError("build_plist requires an absolute claude path (got %r)" % (claude_abs,))
+    if not (working_dir and os.path.isabs(working_dir)):
+        raise ValueError(
+            "build_plist requires an absolute working directory / repo root (got %r)"
+            % (working_dir,))
     log_path = log_path or macos_log_path(epic_id)
     program_args = [
         claude_abs,
@@ -220,6 +303,7 @@ def build_plist(epic_id, prompt, claude_abs, allowed_tools=ALLOWED_TOOLS,
     plist = {
         "Label": label_for(epic_id),
         "ProgramArguments": program_args,
+        "WorkingDirectory": working_dir,
         "StartCalendarInterval": [{"Minute": m} for m in CAL_MINUTES],
         "StandardInPath": "/dev/null",
         "StandardOutPath": log_path,
@@ -238,13 +322,16 @@ def build_macos_runbook(epic_id, plist_path, log_path):
 
 # --------------------------------------------------------------------------- Linux cron
 
-def build_cron_line(epic_id, state, claude_abs, python_abs, watch_script,
+def build_cron_line(epic_id, state, claude_abs, python_abs, watch_script, repo_root,
                     allowed_tools=ALLOWED_TOOLS, log_path=None):
     """Build the crontab line. The multi-line resume prompt cannot live literally on a
     single crontab line, so we regenerate it at fire time via a command substitution of
     epic-watch emit-prompt -- with ABSOLUTE python + watch-script paths so cron's minimal
-    PATH cannot break it. Absolute claude path + `< /dev/null` + dontAsk + allowlist as on
-    macOS."""
+    PATH cannot break it. The command is prefixed with `cd '<repo_root>' &&` so the resume
+    prompt's RELATIVE `scripts/...` calls resolve (cron otherwise starts in an unrelated
+    cwd). Absolute claude path + `< /dev/null` + dontAsk + allowlist as on macOS. Any path
+    embedded here is rejected if it contains a shell-unsafe char or a `%` (cron treats an
+    unescaped `%` as a newline/stdin separator that would corrupt the line)."""
     if not (claude_abs and os.path.isabs(claude_abs)):
         raise ValueError("build_cron_line requires an absolute claude path (got %r)" % (claude_abs,))
     if not (python_abs and os.path.isabs(python_abs)):
@@ -252,14 +339,20 @@ def build_cron_line(epic_id, state, claude_abs, python_abs, watch_script,
     if not os.path.isabs(watch_script):
         raise ValueError("build_cron_line requires an absolute watch-script path (got %r)"
                          % (watch_script,))
+    if not (repo_root and os.path.isabs(repo_root)):
+        raise ValueError("build_cron_line requires an absolute repo root (got %r)" % (repo_root,))
     _validate_state_for_shell(state)
+    _validate_shell_single_quoted(repo_root, "repo root")
     log_path = log_path or linux_log_path(epic_id)
+    # `%` hazard: reject it in EVERY path that lands on the cron command line.
+    for _val, _label in ((state, "--state"), (repo_root, "repo root"), (log_path, "log path")):
+        _reject_cron_percent(_val, _label)
     prompt_sub = "\"$('%s' '%s' emit-prompt --epic-id '%s' --state '%s')\"" % (
         python_abs, watch_script, epic_id, state)
     return (
-        "%s '%s' -p --permission-mode dontAsk --allowedTools '%s' %s "
+        "%s cd '%s' && '%s' -p --permission-mode dontAsk --allowedTools '%s' %s "
         "< /dev/null >> '%s' 2>&1"
-    ) % (CRON_SCHEDULE, claude_abs, allowed_tools, prompt_sub, log_path)
+    ) % (CRON_SCHEDULE, repo_root, claude_abs, allowed_tools, prompt_sub, log_path)
 
 
 def build_linux_runbook(epic_id, cron_line, log_path):
@@ -292,9 +385,10 @@ _DONOT_BLOCK = """\
 !! DO NOT -- read before you "fix" a stall !!
 ---------------------------------------------
 Never add --dangerously-skip-permissions / --yolo to this job. A headless bypass agent with
-NO human present has deleted a repository in this project's own history (2026-07-13). If
-resurrection ever STALLS, that is the safety system working as designed -- the agent hit a
-tool it is not allowed to run and refused, rather than silently doing something destructive.
+NO human present has deleted a repository in this project's own history (2026-07-13).
+ALLOWLIST NOTE: under --permission-mode dontAsk the agent runs read-only plus the curated
+--allowedTools list and REFUSES anything off it. A resume that needs a tool outside the list
+will therefore refuse and stop -- that is the safety system working as designed, not a bug.
 The correct response is to WIDEN --allowedTools DELIBERATELY for the specific tool you need,
 never to bypass the permission system.
 """
@@ -379,9 +473,21 @@ def emit(epic_id, state, os_name, claude_bin=None, python_bin=None,
             "be found -- install the Claude Code CLI, or set COMPOUND_V_HEADLESS_CLAUDE_BIN "
             "to its absolute path, then re-run.")
 
+    repo_root = resolve_repo_root(state)
+    if not repo_root:
+        return None, (
+            "could not resolve the repository root (no `.git` found walking up from the "
+            "--state path %r or from this script's location). launchd/cron start in an "
+            "unrelated cwd, but the resume prompt runs RELATIVE `scripts/...` commands, so "
+            "the artifact MUST cd into the repo first -- refusing to emit one that would cd "
+            "nowhere. Point --state at a path inside the epic's git repo, then re-run."
+            % (state,))
+
     if os_name == "linux":
         try:
             _validate_state_for_shell(state)
+            _reject_cron_percent(state, "--state")
+            _reject_cron_percent(repo_root, "repo root")
         except ValueError as exc:
             return None, str(exc)
 
@@ -394,7 +500,8 @@ def emit(epic_id, state, os_name, claude_bin=None, python_bin=None,
         log_path = macos_log_path(epic_id)
         plist_path = macos_plist_path(epic_id)
         try:
-            plist_bytes = build_plist(epic_id, prompt, claude_abs, log_path=log_path)
+            plist_bytes = build_plist(epic_id, prompt, claude_abs, repo_root,
+                                      log_path=log_path)
         except ValueError as exc:
             return None, str(exc)
         plist_xml = plist_bytes.decode("utf-8", "replace")
@@ -410,7 +517,7 @@ def emit(epic_id, state, os_name, claude_bin=None, python_bin=None,
     script = os.path.abspath(watch_script or EPIC_WATCH_SCRIPT)
     try:
         cron_line = build_cron_line(epic_id, state, claude_abs, python_abs, script,
-                                    log_path=log_path)
+                                    repo_root, log_path=log_path)
     except ValueError as exc:
         return None, str(exc)
     runbook = build_linux_runbook(epic_id, cron_line, log_path)
@@ -471,6 +578,25 @@ def _selftest():
         expect_raises("_validate_state_for_shell rejects %r" % (bad,),
                       _validate_state_for_shell, bad)
 
+    # H4.1: repo-root resolution + M6: `%` rejection unit coverage.
+    check("resolve_repo_root falls back to this repo when --state is outside any repo",
+          os.path.isabs(resolve_repo_root("/dev/null") or ""))
+    check("resolve_repo_root(this-file-dir) finds a .git-bearing root",
+          os.path.exists(os.path.join(resolve_repo_root("/dev/null") or "", ".git")))
+    with tempfile.TemporaryDirectory() as _td:
+        # a start dir with no .git anywhere above AND a here= with no .git => None.
+        check("resolve_repo_root returns None when neither state nor here has a .git",
+              resolve_repo_root(os.path.join(_td, "x/epic-state.json"), here="/") is None)
+    check("_reject_cron_percent accepts a %-free path",
+          _reject_cron_percent("/tmp/x/epic-state.json", "--state").endswith("epic-state.json"))
+    expect_raises("_reject_cron_percent rejects a path with %",
+                  _reject_cron_percent, "/tmp/we%rd.json", "--state")
+    check("_validate_shell_single_quoted accepts a normal repo path",
+          _validate_shell_single_quoted("/Users/x/repo", "repo root") == "/Users/x/repo")
+    for bad in ["has'quote", "has`tick", "has$var"]:
+        expect_raises("_validate_shell_single_quoted rejects %r" % (bad,),
+                      _validate_shell_single_quoted, bad, "repo root")
+
     check("_normalize_os: macos passthrough", _normalize_os("macos") == "macos")
     check("_normalize_os: linux passthrough", _normalize_os("linux") == "linux")
     expect_raises("_normalize_os rejects garbage", _normalize_os, "windows")
@@ -481,6 +607,16 @@ def _selftest():
           resolve_claude(env={"COMPOUND_V_HEADLESS_CLAUDE_BIN": "/x/y/claude"}) == "/x/y/claude")
     check("ALLOWED_TOOLS is a non-empty allowlist", bool(ALLOWED_TOOLS.strip()))
     check("ALLOWED_TOOLS names dontAsk-compatible read tools", "Read" in ALLOWED_TOOLS)
+    # H4.2: the allowlist must cover EXACTLY what the resume prompt issues, or the resume
+    # refuses before it can reach --claim-resume.
+    check("ALLOWED_TOOLS covers the epic-state resume call (STEP 2 / BRANCH C)",
+          "Bash(python3 scripts/compound-v-epic-state.py:*)" in ALLOWED_TOOLS)
+    check("ALLOWED_TOOLS covers the epic-watch driver call (BRANCH A)",
+          "Bash(python3 scripts/compound-v-epic-watch.py:*)" in ALLOWED_TOOLS)
+    check("ALLOWED_TOOLS covers `python3 -c` (STEP 1 computes --now)",
+          "Bash(python3 -c:*)" in ALLOWED_TOOLS)
+    check("ALLOWED_TOOLS covers read-only git inspection",
+          "Bash(git status:*)" in ALLOWED_TOOLS and "Bash(git log:*)" in ALLOWED_TOOLS)
 
     # ---- REQ 1: present-only -- no launchctl/crontab subprocess in the code path -------
     # Robust structural proof via AST (ignores string-literal contents, so these very
@@ -535,6 +671,11 @@ def _selftest():
                   any("/v:epic epic-alpha" in x for x in pa))
             check("REQ3: StartCalendarInterval is two Minute-only dicts (17/47, no Hour)",
                   parsed.get("StartCalendarInterval") == [{"Minute": 17}, {"Minute": 47}])
+            check("H4.1: WorkingDirectory is an ABSOLUTE repo path (cwd trap pre-empted)",
+                  bool(parsed.get("WorkingDirectory"))
+                  and os.path.isabs(parsed.get("WorkingDirectory")))
+            check("H4.1: WorkingDirectory resolves to a .git-bearing root",
+                  os.path.exists(os.path.join(parsed.get("WorkingDirectory") or "", ".git")))
             check("REQ3(e): StandardInPath is /dev/null (no-stdin trap pre-empted)",
                   parsed.get("StandardInPath") == "/dev/null")
             check("REQ3: StandardOutPath + StandardErrorPath set to a log path",
@@ -576,6 +717,12 @@ def _selftest():
         cron_only = cron_only.split("\n----- END crontab line -----", 1)[0]
         check("REQ4: crontab line uses the :17/:47 twin cadence",
               "17,47 * * * *" in lin_art)
+        # H4.1: the command cds into the repo root BEFORE running claude, so the resume
+        # prompt's relative scripts/... calls resolve under cron's unrelated cwd.
+        _repo = resolve_repo_root("/repo/exec/epic-alpha/epic-state.json")
+        check("H4.1: crontab command cds into the absolute repo root before claude",
+              _repo is not None and ("cd '%s' && " % _repo) in cron_only
+              and cron_only.index("cd '%s'" % _repo) < cron_only.index(fake_claude))
         check("REQ4: crontab line uses the ABSOLUTE claude path",
               ("'%s'" % fake_claude) in lin_art)
         check("REQ4: crontab line redirects stdin from /dev/null",
@@ -618,6 +765,16 @@ def _selftest():
                                         claude_bin=fake_claude)
     check("shell-unsafe --state is a clean refusal on linux",
           art_bad_state is None and err_bad_state is not None)
+    # M6: a `%` in the --state path corrupts a cron line -> clean refusal on linux.
+    art_pct, err_pct = emit("epic-ok", "/tmp/we%rd/epic-state.json", "linux",
+                            claude_bin=fake_claude)
+    check("M6: `%` in --state is cleanly refused on linux (never a corrupt cron line)",
+          art_pct is None and err_pct is not None and "%" in err_pct)
+    # ...and the SAME `%` path is harmless on macOS (the plist is unaffected by cron's `%`).
+    art_pct_mac, _ = emit("epic-ok", "/tmp/we%rd/epic-state.json", "macos",
+                          claude_bin=fake_claude)
+    check("M6: `%` in --state still emits fine on macOS (plist unaffected)",
+          art_pct_mac is not None)
 
     # ---- CLI wiring --------------------------------------------------------------------
     old_env = os.environ.get("COMPOUND_V_HEADLESS_CLAUDE_BIN")
