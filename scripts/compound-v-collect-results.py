@@ -73,7 +73,9 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sys
+import tempfile
 from typing import Any, Dict, List, Optional
 
 STATUS_VALUES = ("success", "blocked", "timeout", "error")
@@ -501,6 +503,129 @@ def _default_schema_path() -> str:
     return os.path.join(os.path.dirname(here), "schemas", "job_result.schema.json")
 
 
+# --------------------------------------------------------------------------
+# Selftest. Exercises the REAL conformance logic in-process (no workers, no
+# network, no filesystem writes outside a tmp dir): build_result (the canonical
+# builder), _derive_status, and _usage_conformance_errors (the targeted usage
+# sub-schema check). ADDITIVE — it never changes runtime behavior.
+# --------------------------------------------------------------------------
+_REQUIRED_KEYS = (
+    "status", "blocked", "files_changed", "violations", "summary",
+    "session_id", "worktree", "exit_code", "failure_class",
+    "retry_after_seconds",
+)
+
+
+def _mk_args(**kw: Any) -> argparse.Namespace:
+    """Build an args Namespace with the same defaults parse_args would set."""
+    defaults = dict(
+        job_id="job-1", run_dir=None, out=None, scope=None,
+        worker_output=None, schema=None, status=None, summary=None,
+        session_id=None, worktree=None, exit_code=None,
+        failure_class=None, retry_after_seconds=0, backend=None,
+        files_changed=None, violations=None, blocked=None,
+        print_result=False,
+    )
+    defaults.update(kw)
+    return argparse.Namespace(**defaults)
+
+
+def _selftest() -> int:
+    ok = [0]
+    fail = [0]
+    failures = []  # type: List[str]
+
+    def check(name: str, cond: bool) -> None:
+        if cond:
+            ok[0] += 1
+        else:
+            fail[0] += 1
+            failures.append(name)
+
+    # (a) A well-formed job produces a schema-shaped result with the 10 required
+    #     keys and passes the real conformance check.
+    res = build_result(_mk_args(files_changed="a.py,b.py", exit_code=0))
+    for k in _REQUIRED_KEYS:
+        check("wellformed.has_key.%s" % k, k in res)
+    check("wellformed.status_success", res["status"] == "success")
+    check("wellformed.files", res["files_changed"] == ["a.py", "b.py"])
+    errs = conformance_errors(res, _default_schema_path())
+    check("wellformed.conformant", errs == [])
+
+    # (b) A schema-VIOLATING usage object is caught by _usage_conformance_errors,
+    #     using the REAL usage sub-schema from job_result.schema.json.
+    schema = _read_json(_default_schema_path())
+    usage_schema = schema["properties"]["usage"] if isinstance(schema, dict) else {}
+    good_usage = {"input_tokens": 1, "output_tokens": 2, "advisor_calls": 0,
+                  "backend": "codex", "measured": True}
+    check("usage.good_clean", _usage_conformance_errors(dict(good_usage), usage_schema) == [])
+    extra = dict(good_usage)
+    extra["bogus"] = 1  # additionalProperties:false violation
+    check("usage.extra_key_caught", len(_usage_conformance_errors(extra, usage_schema)) > 0)
+    wrongtype = dict(good_usage)
+    wrongtype["input_tokens"] = "100"  # must be integer-or-null, not string
+    check("usage.wrong_type_caught", len(_usage_conformance_errors(wrongtype, usage_schema)) > 0)
+    boolint = dict(good_usage)
+    boolint["output_tokens"] = True  # bool must not satisfy an integer field
+    check("usage.bool_for_int_caught", len(_usage_conformance_errors(boolint, usage_schema)) > 0)
+    nulls = dict(good_usage)
+    nulls["input_tokens"] = None  # null IS allowed (["integer","null"])
+    check("usage.null_ok", _usage_conformance_errors(nulls, usage_schema) == [])
+
+    # (c) The "a successful job never carries a failure class" invariant: a
+    #     failure_class/retry passed alongside a success status is zeroed out.
+    res_c = build_result(_mk_args(files_changed="a.py", exit_code=0,
+                                  failure_class="rate_limited",
+                                  retry_after_seconds=30))
+    check("success_no_failure_class.status", res_c["status"] == "success")
+    check("success_no_failure_class.class", res_c["failure_class"] is None)
+    check("success_no_failure_class.retry", res_c["retry_after_seconds"] == 0)
+
+    # (d) usage.advisor_calls is SCRIPT-DERIVED: a worker-reported count is
+    #     ALWAYS discarded. With no advisor log -> null (fail-open); with an N-line
+    #     log -> N. Everything runs inside a tmp dir; no real filesystem touched.
+    d = tempfile.mkdtemp(prefix="cv-collect-selftest-")
+    try:
+        wo = os.path.join(d, "worker.txt")
+        with open(wo, "w") as fh:
+            json.dump({"summary": "did the thing",
+                       "usage": {"input_tokens": 10, "output_tokens": 5,
+                                 "advisor_calls": 999, "backend": "codex",
+                                 "measured": True}}, fh)
+        args_d = _mk_args(job_id="job-d", run_dir=d, worker_output=wo)
+        res_d = build_result(args_d)
+        check("advisor.usage_present", isinstance(res_d.get("usage"), dict))
+        check("advisor.worker_count_discarded", res_d["usage"]["advisor_calls"] is None)
+        check("advisor.tokens_preserved", res_d["usage"]["input_tokens"] == 10)
+        check("advisor.summary_from_worker", res_d["summary"] == "did the thing")
+
+        logs = os.path.join(d, "logs")
+        os.makedirs(logs, exist_ok=True)
+        with open(os.path.join(logs, "job-d.advisor.jsonl"), "w") as fh:
+            fh.write('{"consult":1}\n{"consult":2}\n{"consult":3}\n')
+        res_d2 = build_result(args_d)
+        check("advisor.derived_count", res_d2["usage"]["advisor_calls"] == 3)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+    # (e) Status derivation for success/blocked/timeout/error.
+    check("status.success", _derive_status(False, 0, None, False) == "success")
+    check("status.blocked", _derive_status(True, 0, None, False) == "blocked")
+    check("status.timeout_flag", _derive_status(False, 0, None, True) == "timeout")
+    check("status.timeout_124", _derive_status(False, 124, None, False) == "timeout")
+    check("status.error_exit", _derive_status(False, 1, None, False) == "error")
+    check("status.scope_forced_error", _derive_status(False, 0, "error", False) == "error")
+    # A block always wins over an explicit scope status.
+    check("status.block_wins", _derive_status(True, 0, "success", False) == "blocked")
+
+    sys.stdout.write("SELFTEST: %d ok, %d fail\n" % (ok[0], fail[0]))
+    if failures:
+        for name in failures:
+            sys.stdout.write("  - FAIL: %s\n" % name)
+        return 1
+    return 0
+
+
 def parse_args(argv: List[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Normalize one job's worker output into a canonical job_result.json"
@@ -537,10 +662,17 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
 
     p.add_argument("--print", dest="print_result", action="store_true",
                    help="Also print the result JSON to stdout")
+    p.add_argument("--selftest", action="store_true",
+                   help="Run inline conformance tests and exit 0 on success, non-zero on failure")
     return p.parse_args(argv)
 
 
 def main(argv: List[str]) -> int:
+    # --selftest short-circuits before the required-arg validation (it needs no
+    # --job-id / --run-dir and touches nothing outside a tmp dir).
+    if "--selftest" in argv:
+        return _selftest()
+
     args = parse_args(argv)
 
     # Validate --job-id BEFORE it is ever used to build a path. A `../x` (or any

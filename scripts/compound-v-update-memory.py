@@ -42,7 +42,9 @@ Python 3.9-safe, stdlib only. Exit 0 on a written line; exit 1 on a usage error.
 import argparse
 import json
 import os
+import shutil
 import sys
+import tempfile
 from typing import Any, Dict, List, Optional
 
 OUTCOMES_RELPATH = os.path.join("docs", "superpowers", "memory", "task-outcomes.jsonl")
@@ -128,6 +130,115 @@ def append_line(path: str, line_obj: Dict[str, Any]) -> None:
         fh.write(line + "\n")
 
 
+# --------------------------------------------------------------------------
+# Selftest. Exercises build_line (the outcome-line builder) and append_line
+# (JSONL append) in-process. Uses only a tmp dir — NEVER the real memory ledger.
+# No network, no subprocesses. ADDITIVE — runtime behavior is unchanged.
+# --------------------------------------------------------------------------
+_EXPECTED_KEYS = ("run_id", "type", "backend", "model", "status",
+                  "blocked", "rework_rounds")
+
+
+def _mk_args(**kw: Any) -> argparse.Namespace:
+    defaults = dict(
+        run_id="R1", type="shared_foundation", backend="claude", model="opus",
+        result=None, status=None, out=None, rework_rounds=None, blocked=None,
+    )
+    defaults.update(kw)
+    return argparse.Namespace(**defaults)
+
+
+def _selftest() -> int:
+    ok = [0]
+    fail = [0]
+    failures = []  # type: List[str]
+
+    def check(name: str, cond: bool) -> None:
+        if cond:
+            ok[0] += 1
+        else:
+            fail[0] += 1
+            failures.append(name)
+
+    # build_line: a well-formed explicit outcome yields exactly the fixed shape.
+    line = build_line(_mk_args(status="success", rework_rounds=2))
+    check("build.keys", set(line.keys()) == set(_EXPECTED_KEYS))
+    check("build.run_id", line["run_id"] == "R1")
+    check("build.status", line["status"] == "success")
+    check("build.blocked_type", isinstance(line["blocked"], bool))
+    check("build.blocked_default", line["blocked"] is False)
+    check("build.rework_type", isinstance(line["rework_rounds"], int))
+    check("build.rework_val", line["rework_rounds"] == 2)
+
+    # build_line: status + blocked read from a --result file when flags omit them.
+    d = tempfile.mkdtemp(prefix="cv-mem-selftest-")
+    try:
+        rp = os.path.join(d, "result.json")
+        with open(rp, "w", encoding="utf-8") as fh:
+            json.dump({"status": "blocked", "blocked": True}, fh)
+        rl = build_line(_mk_args(result=rp))
+        check("build.from_result.status", rl["status"] == "blocked")
+        check("build.from_result.blocked", rl["blocked"] is True)
+
+        # build_line: an invalid status raises ValueError.
+        raised = False
+        try:
+            build_line(_mk_args(status=None, result=None))
+        except ValueError:
+            raised = True
+        check("build.invalid_status_raises", raised)
+
+        # build_line: a negative rework count raises ValueError.
+        raised2 = False
+        try:
+            build_line(_mk_args(status="error", rework_rounds=-1))
+        except ValueError:
+            raised2 = True
+        check("build.negative_rework_raises", raised2)
+
+        # append_line: N appends -> N valid, newline-terminated JSON lines.
+        ledger = os.path.join(d, "task-outcomes.jsonl")
+        objs = [
+            build_line(_mk_args(run_id="R%d" % i, status="success", rework_rounds=i))
+            for i in range(3)
+        ]
+        for obj in objs:
+            append_line(ledger, obj)
+        with open(ledger, "r", encoding="utf-8") as fh:
+            raw = fh.read()
+        check("append.newline_terminated", raw.endswith("\n"))
+        lines = [ln for ln in raw.splitlines() if ln.strip()]
+        check("append.line_count", len(lines) == 3)
+        parsed_ok = True
+        for i, ln in enumerate(lines):
+            try:
+                obj = json.loads(ln)
+            except ValueError:
+                parsed_ok = False
+                break
+            if obj.get("run_id") != "R%d" % i or set(obj.keys()) != set(_EXPECTED_KEYS):
+                parsed_ok = False
+                break
+        check("append.all_valid_json", parsed_ok)
+
+        # append_line: the routing-lessons.md guard fires (never script-written).
+        guarded = False
+        try:
+            append_line(os.path.join(d, "routing-lessons.md"), objs[0])
+        except ValueError:
+            guarded = True
+        check("append.forbidden_basename_guard", guarded)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+    sys.stdout.write("SELFTEST: %d ok, %d fail\n" % (ok[0], fail[0]))
+    if failures:
+        for name in failures:
+            sys.stdout.write("  - FAIL: %s\n" % name)
+        return 1
+    return 0
+
+
 def parse_args(argv: List[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Append one outcome line to task-outcomes.jsonl"
@@ -143,10 +254,17 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     blk = p.add_mutually_exclusive_group()
     blk.add_argument("--blocked", dest="blocked", action="store_true", default=None)
     blk.add_argument("--no-blocked", dest="blocked", action="store_false")
+    p.add_argument("--selftest", action="store_true",
+                   help="Run inline tests and exit 0 on success, non-zero on failure")
     return p.parse_args(argv)
 
 
 def main(argv: List[str]) -> int:
+    # --selftest short-circuits before required-arg validation (needs no
+    # run/type/backend/model and touches only a tmp dir).
+    if "--selftest" in argv:
+        return _selftest()
+
     args = parse_args(argv)
     try:
         line_obj = build_line(args)
