@@ -52,16 +52,19 @@ nonzero, no write); a negative/non-numeric cap is rejected at --init:
   --record-disposition --feature F --disposition retry_fix|halt_feature|halt_epic|
     blocked_external [--reason R] [--families-agreeing a,b] [--confirmed true|false]
     -> {"feature","disposition"}   (atomic write; --confirmed true is HARD-REJECTED; the stored
-    `confirmed` is DERIVED from --families-agreeing (>=2 distinct known external families), never
-    the caller's boolean; the stored disposition is stamped with the feature's CURRENT attempts
+    `confirmed` is DERIVED from the frozen arbiter audit via --audit-file (v2.14 C1+C2; and only
+    for a blocked_external disposition), never the --families-agreeing CSV (recorded metadata
+    only) and never the caller's boolean; the stored disposition is stamped with the feature's CURRENT attempts
     count and is only ever honored by `--next --autonomous` while that attempt is still current —
     a stale disposition left over from a prior attempt is treated as no disposition at all)
   --update --status blocked --feature F [--blocker-reason R] [--blocker-confirmed true|false]
     [--families-agreeing a,b] [--evidence E] [--blocker-category C]
     -> ledger append/REACTIVATE, idempotent by (feature, attempt), exactly one active entry
-    per blocked feature; --blocker-confirmed true is HARD-REJECTED (v2.14: the ledger entry's
-    `confirmed` is DERIVED from --families-agreeing — >=2 distinct KNOWN external families
-    {GPT,Gemini,Grok} — never caller-asserted; fewer => confirmed:false, SUSPECTED). The agreed
+    per blocked feature; --blocker-confirmed true is HARD-REJECTED (v2.14 C1+C2: the ledger entry's
+    `confirmed` is DERIVED from the arbiter's FROZEN audit via --audit-file — its own `confirmed`
+    bool is the ONLY source of a CONFIRMED blocker; the --families-agreeing CSV is recorded
+    metadata only, never a confirmation source, and the caller's boolean is never trusted; no or
+    invalid audit => confirmed:false, SUSPECTED). The agreed
     --blocker-category is recorded on the ledger entry for the finish-summary/audit. `blocked`
     is marathon-only.
   --update --status failed --feature F [--last-error "..."] -> persists last_error (cleared
@@ -93,6 +96,15 @@ nonzero, no write); a negative/non-numeric cap is rejected at --init:
     failed, sample_audit_due -> false, optional last_error, and a passed final_review ->
     pending. Replaces the driver's old two-write clear-due-then-mark-failed sequence, whose
     crash window between writes could leave a feature 'done' with no audit obligation.
+  --record-blocker-audit-failed --feature F [--last-error "..."] -> {"feature","status",
+    "blocker_audit_due","final_review","epic_status"}   (ONE atomic write; marathon-only) —
+    the confirmed-blocker analogue of --record-audit-failed for a CONFIRMED-blocker re-review
+    that returned ISSUES: in ONE write it sets status -> failed (optional last_error),
+    DEACTIVATES the feature's active confirmed blocker ledger entry (the same resolution a
+    ->pending transition performs), clears blocker_audit_due -> false, and reverts a passed
+    final_review -> pending. Replaces the driver's §4b bare `--update --status failed`, which
+    left a stale blocker_audit_due (permanently rejecting a later final_review=passed) plus an
+    invalid still-active confirmed ledger entry. attempts is NOT touched (no ->running occurred).
 
 ## CLI contract (v2.11 V1 — Scheduler Auto-Resurrection, epic-state.py component only)
 
@@ -1939,6 +1951,68 @@ def record_audit_failed(state, feature_id, last_error=None, now_dt=None):
     state["total_attempts"] = _total_attempts(state)  # recompute on every mutation (#9)
     _recompute_top_status(state)
     _bump_last_progress(state, now_dt or datetime.now(timezone.utc))  # v2.11: watch-gated no-op
+    return True, None
+
+
+def record_blocker_audit_failed(state, feature_id, last_error=None, now_dt=None):
+    """DEFECT H3 (atomic confirmed-blocker audit-failed, v2.14): the analogue of
+    `record_audit_failed` for the CONFIRMED-blocker over-sample re-review. When that re-review
+    returns ISSUES, the driver's §4b path used to do a bare `--update --status failed`. But on a
+    marathon state `failed` does NOT clear `blocker_audit_due` (only `--clear-blocker-audit-due`
+    does) and does NOT deactivate the active confirmed blocker ledger entry (only a ->pending
+    transition resolves it). So a bare `failed` left the feature failed-but-still-obligated AND
+    ledger-active: a later retry->done would then hit a stale `blocker_audit_due:true` that
+    PERMANENTLY rejects `record_final_review(passed)`, plus an invalid still-active confirmed
+    ledger entry counted by `_active_confirmed_blocker`/the `done_with_blockers` terminal.
+
+    This performs every mutation of the correct revert against ONE in-memory state object, so the
+    caller's single `_atomic_write_json` persists all of it in one write or none of it — there is
+    NO window where the feature is failed-but-still-obligated or failed-but-ledger-active:
+      - feature.status -> "failed"
+      - feature.last_error (set iff `last_error` is supplied — same lifecycle as `apply_update`)
+      - the feature's ACTIVE blocker-ledger entry is deactivated (active -> False,
+        resolved_at -> now) exactly the way a ->pending transition resolves it, so it no longer
+        counts as an active confirmed blocker
+      - feature.blocker_audit_due -> False (the confirmed-blocker over-sample obligation this
+        re-review was discharging — a REJECTED audit must not leave it outstanding)
+      - a passed final_review is invalidated back to pending (same invariant `apply_update` /
+        `record_audit_failed` maintain: ANY real feature-state change invalidates a passed review)
+      - total_attempts / top-level status recomputed, exactly like every other mutator here
+
+    Deliberately does NOT touch `attempts` — reverting a confirmed-blocked feature to 'failed' is
+    not a new retry attempt (no ->running transition occurred), so incrementing attempts here
+    would over-count against max_attempts_per_feature for work that hasn't actually re-run yet
+    (mirrors `record_audit_failed`).
+
+    Marathon-only; an unknown feature is a controlled error. Returns (ok, error|None)."""
+    if not _is_marathon(state):
+        return False, "--record-blocker-audit-failed requires a marathon-stance epic"
+    hit = _find_feature(state, feature_id)
+    if hit is None:
+        return False, "no feature %r" % feature_id
+    prev_status = hit.get("status")
+    now_dt = now_dt or datetime.now(timezone.utc)
+    now_s = _now_iso(now_dt)
+    hit["status"] = "failed"
+    if last_error is not None:
+        hit["last_error"] = last_error
+    # Deactivate the active blocker-ledger entry for this feature — the SAME resolution a
+    # ->pending transition performs (apply_update), so it stops counting as an active confirmed
+    # blocker for `_active_confirmed_blocker`/the `done_with_blockers` terminal.
+    for e in (state.get("blocker_ledger") or []):
+        if e.get("feature") == feature_id and e.get("active"):
+            e["active"] = False
+            e["resolved_at"] = now_s
+    # Clear the durable over-sample obligation — a REJECTED confirmed-blocker re-review must not
+    # leave `blocker_audit_due:true` (which would permanently reject a later final_review=passed).
+    hit["blocker_audit_due"] = False
+    if prev_status != "failed":
+        fr = state.get("final_review")
+        if isinstance(fr, dict) and fr.get("status") == "passed":
+            state["final_review"] = {"status": "pending"}
+    state["total_attempts"] = _total_attempts(state)  # recompute on every mutation (#9)
+    _recompute_top_status(state)
+    _bump_last_progress(state, now_dt)  # v2.11: watch-gated no-op
     return True, None
 
 
@@ -4003,6 +4077,50 @@ def _selftest():
     check("v2.14 (g): checkpoint --status blocked still rejected (marathon-only)",
           not okg and "blocked" in errg)
 
+    # --- DEFECT H3 (atomic confirmed-blocker audit-failed): record_blocker_audit_failed -----
+    # The confirmed-blocker re-review returned ISSUES. ONE call must, in ONE state object:
+    # flip status -> failed, DEACTIVATE the active confirmed ledger entry, clear the
+    # blocker_audit_due obligation, and revert a passed final_review -> pending — leaving NO
+    # window where the feature is failed-but-still-obligated or failed-but-ledger-active.
+    dwb_rbf = _dwb_state(final_status="passed")  # a=done, b=CONFIRMED-blocked, b.blocker_audit_due
+    check("v2.14 H3: precondition — b is an active CONFIRMED blocker before the revert",
+          _active_confirmed_blocker(dwb_rbf, "b") is True
+          and [f for f in dwb_rbf["features"] if f["id"] == "b"][0].get("blocker_audit_due") is True)
+    ok_rbf, err_rbf = record_blocker_audit_failed(dwb_rbf, "b", last_error="blocker re-review found ISSUES")
+    b_rbf = [f for f in dwb_rbf["features"] if f["id"] == "b"][0]
+    check("v2.14 H3: record_blocker_audit_failed ok", ok_rbf and err_rbf is None)
+    check("v2.14 H3: single write yields status=failed", b_rbf["status"] == "failed")
+    check("v2.14 H3: last_error persisted", b_rbf["last_error"] == "blocker re-review found ISSUES")
+    check("v2.14 H3: blocker_audit_due obligation cleared in the same write",
+          b_rbf.get("blocker_audit_due") is False)
+    check("v2.14 H3: the confirmed ledger entry is no longer active-confirmed after the revert",
+          _active_confirmed_blocker(dwb_rbf, "b") is False
+          and _active_entry(dwb_rbf, "b") is None)
+    check("v2.14 H3: a passed final_review is reverted to pending by the atomic revert",
+          dwb_rbf["final_review"]["status"] == "pending")
+    # No failed-but-still-obligated and no failed-but-ledger-active state is ever observable:
+    # this is the SAME object the CLI serializes in ONE _atomic_write_json (no crash window).
+    check("v2.14 H3: never observes failed-but-obligated/ledger-active (single atomic write)",
+          not (b_rbf["status"] == "failed"
+               and (b_rbf.get("blocker_audit_due") or _active_confirmed_blocker(dwb_rbf, "b"))))
+
+    # (H3 scenario CLOSED) after the revert, a later retry->done reaches a state where
+    # record_final_review(passed) is ACCEPTED — no stale obligation permanently rejects it.
+    apply_update(dwb_rbf, "b", "running", now_dt=T0)  # legal: failed -> running retry
+    apply_update(dwb_rbf, "b", "done", now_dt=T0)
+    ok_h3, err_h3 = record_final_review(dwb_rbf, "passed")
+    check("v2.14 H3 CLOSED: retry->done then record_final_review(passed) is ACCEPTED (no stale obligation)",
+          ok_h3 and err_h3 is None and dwb_rbf["final_review"]["status"] == "passed")
+
+    # (rejections) unknown feature + checkpoint state are controlled errors
+    ok_rbf_unk, err_rbf_unk = record_blocker_audit_failed(dwb_rbf, "does-not-exist")
+    check("v2.14 H3: record_blocker_audit_failed on unknown feature -> controlled error",
+          ok_rbf_unk is False and "no feature" in err_rbf_unk)
+    st_rbf_chk = build_state([{"id": "a", "depends_on": []}], "e", "E")  # checkpoint
+    ok_rbf_chk, err_rbf_chk = record_blocker_audit_failed(st_rbf_chk, "a")
+    check("v2.14 H3: record_blocker_audit_failed on a checkpoint state -> controlled error",
+          ok_rbf_chk is False and "marathon" in err_rbf_chk)
+
     # --- build_state: v2.11 watch schema ---------------------------------------------------
     v11_feats = [{"id": "a", "depends_on": []}]
     v11_watch_off = build_state(v11_feats, "e", "E", stance="marathon", caps={})
@@ -4815,6 +4933,12 @@ def main(argv):
                         "clear its sample_audit_due obligation, optionally set --last-error, "
                         "and invalidate a passed final_review back to pending — the fix for a "
                         "crash between the driver's separate clear-due/mark-failed writes")
+    p.add_argument("--record-blocker-audit-failed", action="store_true",
+                   help="(marathon) ONE atomic write for a CONFIRMED-blocker re-review that "
+                        "returned ISSUES: set --feature F to failed, DEACTIVATE its active "
+                        "confirmed blocker ledger entry, clear its blocker_audit_due obligation, "
+                        "optionally set --last-error, and invalidate a passed final_review back "
+                        "to pending — so a later retry->done leaves no stale obligation/ledger")
     # -- v2.11 (Scheduler Auto-Resurrection) flags ------------------------------------------
     # Post-integration-review BLOCKER fix: --owner-pid and --lease-ttl-min are REMOVED from
     # --claim-resume/--renew-lease entirely (no stable driver pid exists in this harness —
@@ -5149,6 +5273,24 @@ def main(argv):
                           "epic_status": state["status"]}))
         return 0
 
+    if args.record_blocker_audit_failed:
+        if not _needs_marathon("--record-blocker-audit-failed"):
+            return 1
+        if not args.feature:
+            p.error("--record-blocker-audit-failed needs --feature")
+        ok, err = record_blocker_audit_failed(state, args.feature, last_error=args.last_error,
+                                              now_dt=_resolve_now(args.now))
+        if not ok:
+            print("epic-blocker-audit-failed error: %s" % err, file=sys.stderr)
+            return 1
+        _atomic_write_json(args.state, state)
+        hit = _find_feature(state, args.feature)
+        print(json.dumps({"feature": args.feature, "status": hit["status"],
+                          "blocker_audit_due": hit.get("blocker_audit_due"),
+                          "final_review": state.get("final_review"),
+                          "epic_status": state["status"]}))
+        return 0
+
     if args.record_progress_cycle:
         if not _needs_marathon("--record-progress-cycle"):
             return 1
@@ -5345,6 +5487,7 @@ def main(argv):
            "--record-progress-cycle / --record-disposition / --clear-disposition / "
            "--mark-sample-audit-due / --clear-sample-audit-due / --record-audit-failed / "
            "--mark-blocker-audit-due / --clear-blocker-audit-due / "
+           "--record-blocker-audit-failed / "
            "--record-final-review / --liveness / --claim-resume / --renew-lease / "
            "--record-watcher-armed / --record-watcher-disarmed / --list-watchers / "
            "--selftest is required")
