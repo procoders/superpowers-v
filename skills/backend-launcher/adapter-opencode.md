@@ -1,6 +1,6 @@
 # Adapter: opencode (headless `opencode run` worker)
 
-> Read the contract in [`SKILL.md`](SKILL.md) first — this adapter implements that `job_spec → job_result` interface. This file is the backend-specific runbook; the wiring would live in `scripts/compound-v-run-opencode-worker.sh` (**not yet built** — see "Worker script" below).
+> Read the contract in [`SKILL.md`](SKILL.md) first — this adapter implements that `job_spec → job_result` interface. This file is the backend-specific runbook; the wiring lives in [`scripts/compound-v-run-opencode-worker.sh`](../../scripts/compound-v-run-opencode-worker.sh) (**built, but auth-pending / coverage-unverified** — see "Worker script" below).
 
 The opencode backend is a **Bash-spawned `opencode run` worker** — its own process, its own git worktree. It mirrors the Antigravity / Cursor adapters step-for-step ([`adapter-antigravity.md`](adapter-antigravity.md), [`adapter-cursor.md`](adapter-cursor.md)): worktree isolation, a git-derived scope gate, normalize → `job_result`, caller merges. UNLIKE every other backend, opencode is **provider-agnostic / multi-provider** — its resolved `model` is always a `provider/model` string (e.g. `anthropic/claude-opus-4-6`), never a bare model name.
 
@@ -26,7 +26,7 @@ Verified live against **opencode-ai 1.17.18** (npm, installed via `npm install -
 
 ---
 
-## The 6 load-bearing steps (draft — worker script not yet built)
+## The 6 load-bearing steps (worker script built; env-scrub safety not yet live-verified end-to-end)
 
 ```
 1. ISOLATE   git -C <repo> worktree add <WT> HEAD          # clean diff baseline (NO kernel sandbox)
@@ -157,11 +157,11 @@ opencode emits `{"type":"error","error":{"name":...,"data":{"message":...}}}` as
 
 ---
 
-## Worker script — draft only, not yet built
+## Worker script — built, auth-pending / coverage-unverified
 
-Following the exact shape of [`scripts/compound-v-run-codex-worker.sh`](../../scripts/compound-v-run-codex-worker.sh) / `-antigravity-worker.sh` / `-cursor-worker.sh`, a `scripts/compound-v-run-opencode-worker.sh` would be a straightforward port of the Cursor worker's structure (worktree lifecycle, `write_allowed` expansion, `compound-v-scope-check.py` invocation, `emit_job_result` via `jq`) with FOUR backend-specific differences that make it more than a copy-paste: (1) it must **write a pinned, restrictive `opencode.json` into `$WT`** before invoking `opencode run` (Safety); (2) it must **explicitly scrub the dispatcher's own provider environment variables** before exec'ing `opencode` (the ambient-credential-leak finding — pick an `env -i` + allow-list shape or explicit `unset`s, and prove live that the worker still authenticates correctly with only the intended credential path); (3) `session_id` extraction parses the FIRST JSONL line's `.sessionID` and validates against a `ses_`-prefixed safe-charset pattern, NOT the Codex worker's UUID regex; (4) `summary` is built by concatenating every `.part.text` from `type:"text"` events, since there is no `--output-last-message` file. Given (2) is security-load-bearing and untested end-to-end, **this v1 change documents the invocation here rather than shipping the worker script** — building it now without live-verifying the env-scrub actually prevents credential leakage would risk encoding a false sense of safety. Building the script is real, scoped, buildable follow-on work.
+Following the exact shape of [`scripts/compound-v-run-codex-worker.sh`](../../scripts/compound-v-run-codex-worker.sh) / `-antigravity-worker.sh` / `-cursor-worker.sh`, [`scripts/compound-v-run-opencode-worker.sh`](../../scripts/compound-v-run-opencode-worker.sh) is a port of the Cursor worker's structure (worktree lifecycle, `write_allowed` expansion, `compound-v-scope-check.py` invocation, `emit_job_result` via `jq`) with FOUR backend-specific differences that make it more than a copy-paste: (1) it **writes a pinned, restrictive `opencode.json` into `$WT`** before invoking `opencode run` (Safety); (2) it **explicitly scrubs the dispatcher's own provider environment variables** before exec'ing `opencode` (the ambient-credential-leak finding — an `env -i` + allow-list shape or explicit `unset`s); (3) `session_id` extraction parses the FIRST JSONL line's `.sessionID` and validates against a `ses_`-prefixed safe-charset pattern, NOT the Codex worker's UUID regex; (4) `summary` is built by concatenating every `.part.text` from `type:"text"` events, since there is no `--output-last-message` file. The script is shipped and Codex-hardened, but it stays **opt-in / lower-trust and unverified end-to-end**: difference (2) is security-load-bearing and the env-scrub has **not yet been live-verified** to actually prevent the ambient-credential leak, and opencode's flag set churns daily — treat it as auth-pending / coverage-unverified and re-probe at `/v:init` before relying on it.
 
-## Invoking the (future) script
+## Invoking the script
 
 ```bash
 scripts/compound-v-run-opencode-worker.sh \

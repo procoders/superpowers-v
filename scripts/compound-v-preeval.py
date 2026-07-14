@@ -125,10 +125,6 @@ def _here():
     return os.path.dirname(os.path.abspath(__file__))
 
 
-def _repo_root_default():
-    return os.path.dirname(_here())
-
-
 _MOD_CACHE = {}
 
 

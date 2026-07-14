@@ -1,6 +1,6 @@
 # Adapter: Devin (headless `devin -p` worker)
 
-> Read the contract in [`SKILL.md`](SKILL.md) first — this adapter implements that `job_spec → job_result` interface. This file is the backend-specific runbook; the wiring would live in `scripts/compound-v-run-devin-worker.sh` (**not yet built** — see "Worker script" below).
+> Read the contract in [`SKILL.md`](SKILL.md) first — this adapter implements that `job_spec → job_result` interface. This file is the backend-specific runbook; the wiring lives in [`scripts/compound-v-run-devin-worker.sh`](../../scripts/compound-v-run-devin-worker.sh) (**built, but auth-pending / coverage-unverified** — see "Worker script" below).
 
 The Devin backend is a **Bash-spawned `devin -p` worker** — its own process, its own git worktree. It mirrors the Antigravity / Cursor adapters step-for-step ([`adapter-antigravity.md`](adapter-antigravity.md), [`adapter-cursor.md`](adapter-cursor.md)): worktree isolation, a git-derived scope gate, normalize → `job_result`, caller merges. It does **not** mirror the Codex adapter, because Devin's `--sandbox` is Research-Preview and its coverage/network-confinement claims are unverified for this plugin's purposes (see SAFETY).
 
@@ -23,7 +23,7 @@ Verified live against **devin-cli 3000.1.27 (0d4bf12e)** on stock macOS. The aut
 
 ---
 
-## The 6 load-bearing steps (draft — worker script not yet built)
+## The 6 load-bearing steps (worker script built; task-execution behavior auth-pending / unverified)
 
 The worker script would perform steps 1–5; the **caller** (dispatcher) performs step 6 — identical division of labor to every other adapter.
 
@@ -135,11 +135,11 @@ A `_DEVIN_RULES` table in [`scripts/compound-v-classify-failure.py`](../../scrip
 
 ---
 
-## Worker script — draft only, not yet built
+## Worker script — built, auth-pending / coverage-unverified
 
-Following the exact shape of [`scripts/compound-v-run-codex-worker.sh`](../../scripts/compound-v-run-codex-worker.sh) / `-antigravity-worker.sh` / `-cursor-worker.sh`, a `scripts/compound-v-run-devin-worker.sh` would be a straightforward port of the Cursor worker's structure (worktree lifecycle, `write_allowed` expansion into an allow-file, `compound-v-scope-check.py` invocation, `emit_job_result` via `jq`) with three backend-specific differences: (1) no `-f`/`--dangerously-skip-permissions`-equivalent flag name (`--permission-mode dangerous` instead), (2) `summary` comes straight from captured stdout (no `.result` JSON field to parse — the Antigravity pattern, not the Cursor one), (3) `session_id` extraction is a **best-effort, unverified** `devin list --format json` parse rather than a confirmed JSON field. Given (3) is unverified without a live account, **this v1 change documents the invocation here rather than shipping the worker script** — building it now would encode an unverified session-id extraction path as if it were proven. Building the script is real, scoped, buildable follow-on work once a Cognition account is available to verify the task-execution facts marked DOC-CLAIMED above.
+Following the exact shape of [`scripts/compound-v-run-codex-worker.sh`](../../scripts/compound-v-run-codex-worker.sh) / `-antigravity-worker.sh` / `-cursor-worker.sh`, [`scripts/compound-v-run-devin-worker.sh`](../../scripts/compound-v-run-devin-worker.sh) is a port of the Cursor worker's structure (worktree lifecycle, `write_allowed` expansion into an allow-file, `compound-v-scope-check.py` invocation, `emit_job_result` via `jq`) with three backend-specific differences: (1) no `-f`/`--dangerously-skip-permissions`-equivalent flag name (`--permission-mode dangerous` instead), (2) `summary` comes straight from captured stdout (no `.result` JSON field to parse — the Antigravity pattern, not the Cursor one), (3) `session_id` extraction is a **best-effort, unverified** `devin list --format json` parse rather than a confirmed JSON field. The script is shipped and Codex-hardened, but it stays **opt-in / lower-trust and unverified end-to-end**: the task-execution facts marked DOC-CLAIMED above (ATIF export field names, `--model` alias resolution, `-r` resume, and the best-effort session-id extraction path) still need an authenticated Cognition account to confirm. Treat it as auth-pending until that live verification lands.
 
-## Invoking the (future) script
+## Invoking the script
 
 ```bash
 scripts/compound-v-run-devin-worker.sh \

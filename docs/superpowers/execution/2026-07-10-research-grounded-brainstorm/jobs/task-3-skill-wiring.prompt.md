@@ -9,7 +9,7 @@ SCOPE LOCK — write_allowed (any other write = BLOCKED):
 - `hooks/session-banner.sh`
 - `hooks/plan-saved-nudge.sh`
 
-Notes: link the two new docs as `[phase-0-recon.md](phase-0-recon.md)` and `[brainstorm-elicitation.md](brainstorm-elicitation.md)` — sibling jobs create them; the links resolve at merge (do NOT create those files yourself; they are outside your scope). Add the Phase 0 announcement line beside the existing three.
+Notes: link the two new docs as `[phase-0-recon.md](../../../../../skills/compound-v/phase-0-recon.md)` and `[brainstorm-elicitation.md](../../../../../skills/compound-v/brainstorm-elicitation.md)` — sibling jobs create them; the links resolve at merge (do NOT create those files yourself; they are outside your scope). Add the Phase 0 announcement line beside the existing three.
 
 VERIFY inside the worktree: `python3 scripts/lint-frontmatter.py` passes (it enforces the 500-char cap); `bash -n hooks/session-banner.sh hooks/plan-saved-nudge.sh` clean; report the exact final character count of the description.
 

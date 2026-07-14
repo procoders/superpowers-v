@@ -107,7 +107,7 @@ grep -m1 -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md | tr -d '#[] '  # →
 
 **Files:** Create `skills/compound-v/phase-0-recon.md` · Modify `skills/compound-v/skill-escalation.md`
 
-**Interfaces — Consumes:** Shared Interface Contract (gate order, engine ladder, recon doc template, offer copy). **Produces:** the authority doc Task 3's SKILL.md links to as `[phase-0-recon.md](phase-0-recon.md)`.
+**Interfaces — Consumes:** Shared Interface Contract (gate order, engine ladder, recon doc template, offer copy). **Produces:** the authority doc Task 3's SKILL.md links to as `[phase-0-recon.md](../../../skills/compound-v/phase-0-recon.md)`.
 
 - [ ] **Step 1:** Author `skills/compound-v/phase-0-recon.md` (~120–170 lines) with these sections, in order:
   1. **Purpose + honesty boundary** — recon grounds the brainstorm; it is *evidence to widen questions*, never an approach-selector, never a routing input. State plainly: description-driven, **zero hook backstop** (fires before any file exists), weaker than Triggers 1–3.
@@ -125,7 +125,7 @@ grep -m1 -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md | tr -d '#[] '  # →
 
 **Files:** Create `skills/compound-v/brainstorm-elicitation.md`
 
-**Interfaces — Consumes:** Shared Interface Contract (batch gate, tiebreak, fallback ladder). **Produces:** the doc Task 3's SKILL.md links to as `[brainstorm-elicitation.md](brainstorm-elicitation.md)`.
+**Interfaces — Consumes:** Shared Interface Contract (batch gate, tiebreak, fallback ladder). **Produces:** the doc Task 3's SKILL.md links to as `[brainstorm-elicitation.md](../../../skills/compound-v/brainstorm-elicitation.md)`.
 
 - [ ] **Step 1:** Author `skills/compound-v/brainstorm-elicitation.md` (~100–150 lines):
   1. **The classification rule** — dependent chain vs independent batch; independence judged on *answer interaction* (could any answer change, contradict, or over-subscribe another — including via an unshown shared budget?), not surface topic; **when unsure → sequential**. Include ≥3 verbatim misclassification examples from the 1B audit §4 list (name-vs-CLI-prefix, format-vs-schema, the coupled-toggles budget case at minimum).
@@ -146,7 +146,7 @@ grep -m1 -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md | tr -d '#[] '  # →
 
 - [ ] **Step 1:** SKILL.md `description:` (L3) — add the Trigger-0 clause while keeping **total ≤500 chars**. Recommended rewrite of the opening (saves chars, adds the trigger): `Use when superpowers:brainstorming is about to begin (pre-brainstorm recon), OR has produced a spec, OR when superpowers:writing-plans has produced a plan, OR when about to invoke superpowers:subagent-driven-development or superpowers:executing-plans. Sidekick that intercepts these four Superpowers transitions — …` Verify with `python3 scripts/lint-frontmatter.py` (must pass) before committing.
 - [ ] **Step 2:** SKILL.md body edits (slots per archaeology §3a):
-  - "When This Skill Fires": new **Trigger 0** subsection ABOVE Trigger 1 (~L75): fires when a brainstorm is about to begin; gate order one-liner; link `[phase-0-recon.md](phase-0-recon.md)`; the honesty note (description-driven, zero hook backstop, weaker than Triggers 1–3). Add an upstream node to the mermaid graph (`Z[recon (Trigger 0)] --> A`).
+  - "When This Skill Fires": new **Trigger 0** subsection ABOVE Trigger 1 (~L75): fires when a brainstorm is about to begin; gate order one-liner; link `[phase-0-recon.md](../../../skills/compound-v/phase-0-recon.md)`; the honesty note (description-driven, zero hook backstop, weaker than Triggers 1–3). Add an upstream node to the mermaid graph (`Z[recon (Trigger 0)] --> A`).
   - Overrides table (~L97): two new rows — `Brainstorm starts cold on unfamiliar topics` → `Trigger 0: gated, bounded recon doc read before the first question`; `Clarifying questions strictly one-at-a-time` → `≥3 independent questions may batch into one Visual Companion form (dependent chains stay sequential) — see brainstorm-elicitation.md`.
   - Output Directory Conventions tree (~L179-203): add `recon/` node with one-line comment (`# Trigger 0 output — evidence for the brainstorm, read by 1B/1C first`).
   - Integration table row `superpowers:brainstorming` (L234): now reads that Trigger 0 fires *before* it starts (gated recon), the skill itself still runs unchanged, and on completion Trigger 1 fires.

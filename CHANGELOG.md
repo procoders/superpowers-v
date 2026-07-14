@@ -4,6 +4,18 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [2.14.1] - 2026-07-14
+
+### Fixed — CI safety net & housekeeping (from a plugin health audit)
+
+A 5-dimension health audit (dead-code · CI/test-coverage · doc/skill-drift · contract-consistency · safety) found the plugin CODE clean (all safety invariants hold, contracts tight) but two real holes in the CI safety net that let regressions ship green.
+
+- **CI ran only 4 of 29 script `--selftest`s.** `validate.yml` now runs **every** `scripts/*.py --selftest` (dynamic discovery) under the Python 3.9 floor — previously only the marathon quartet (epic-state/arbiter/watch/headless-shim) was defended, leaving the scope gate (`compound-v-scope-check.py`), model resolver, pre-eval, usage, memory, and the collector uncovered. It also validates **every** tracked run-manifest (not just the example) and hard-fails if the validator script is missing.
+- **The intra-plugin dead-link guard was a silent no-op.** Its `fail=1` was set inside a piped `while` subshell and never propagated, so the guard printed dead links but never failed the build. It now accumulates hits in a temp file, covers `.py/.sh/.json/.yml` link targets (not just `.md`), and strips `:line` suffixes. Fixed the 10 dead cross-refs it now catches.
+- **Test coverage:** added `--selftest` to `compound-v-collect-results.py` (33 checks over the real job_result conformance logic CI previously only checked via a drift-prone reimplementation) and `compound-v-update-memory.py` (15 checks).
+- **Cleanup:** removed two dead helpers (`_split_lines`, `_repo_root_default`) and a stray `models.err` (now gitignored).
+- **Docs:** corrected the stale "devin/opencode worker not yet built" claim (both scripts are built; auth-pending/unverified), added `/v:adr` to the AGENTS.md command table, and documented the v2.14 headless `--allow-build` opt-in.
+
 ## [2.14.0] - 2026-07-14
 
 ### Added — Confirmed blockers (2nd external family) + headless resurrection shim

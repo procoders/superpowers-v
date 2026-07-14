@@ -118,15 +118,6 @@ def _git(cwd, args):
     return proc.returncode, proc.stdout, proc.stderr
 
 
-def _split_lines(blob):
-    out = []
-    for line in blob.splitlines():
-        line = line.strip()
-        if line:
-            out.append(line)
-    return out
-
-
 def _split_nul(blob):
     """Split git ``-z`` (NUL-delimited) output into paths.
 
