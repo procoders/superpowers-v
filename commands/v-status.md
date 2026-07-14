@@ -74,6 +74,19 @@ These renderings are additive and **degrade-safe**: if `docs/superpowers/pre-eva
    - `precision` is computed from the fast-path **PARENT** outcome only (`review_passed ∧ not escalated`), `escalation_rate` from `escalated / n`, where `n` = fast-path parents **with a terminal `actual`** (a pre-merge `merge_pending`/absent actual is excluded and reported in `excluded_no_terminal_actual`, never counted).
    - When the script returns `{"status": "insufficient", …}` (n = 0, or n below the `min_sample_count` floor), print **"insufficient samples (n=N, need ≥floor)"** — do **not** print a precision percentage. This floor exists precisely so a two-run history never masquerades as a calibrated rate. Show the sample size `n` alongside any figure you do print.
 
+## Dashboard (v2.15) — `--html` / `--serve`
+
+The same read-only state this command renders as text can be rendered as a **browser dashboard** via
+[`scripts/compound-v-dashboard.py`](../scripts/compound-v-dashboard.py) — a **present-only** generator (no daemon,
+no persistent service, no control surface; observe in the browser, act via the CLI). Both modes are read-only and
+render **only** what is in the state files — measured-only usage (`—` when unmeasured), real counts (never a
+fabricated `%`-progress), real timestamps only.
+
+- **`/v:status --html [run-id]`** → `python3 scripts/compound-v-dashboard.py emit [--execution-root docs/superpowers/execution] [--out docs/superpowers/execution/dashboard.html]`. Writes a **self-contained static HTML snapshot** (data inlined, offline, theme-aware — good for sharing / audit) of every run + epic, and prints the file path to open (`file://…`). The generated `dashboard.html` is git-ignored (a build artifact).
+- **`/v:status --serve [--port N]`** → `python3 scripts/compound-v-dashboard.py serve [--port 8787]`. Starts an **ephemeral, read-only, `127.0.0.1`-only** live viewer (GET/HEAD only, realpath-contained to the execution root, no directory-listing leak) that auto-refreshes as a run/epic progresses — the local, read-only equivalent of a competitor's live agent UI. It is a **foreground** process you Ctrl-C when done; it never backgrounds, never auto-launches, and writes nothing to any run dir. Control (merge/kill/retry) stays in the CLI by design.
+
+The discoverable alias is [`/v:dashboard`](v-dashboard.md).
+
 ## Notes
 
 - This command never mutates the run. To recover an interrupted run, use [`/v:resume`](v-resume.md).
