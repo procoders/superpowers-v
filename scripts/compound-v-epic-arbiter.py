@@ -1528,11 +1528,19 @@ def cmd_classify(args, p):
                                 "valid": False, "disposition": None,
                                 "reason": _sanitize_diagnostic(adrop), "evidence": None,
                                 "blocker_category": None})
+            elif agy_family != "Gemini":
+                # 🔴 H5 fail-closed: agy is the Gemini 2nd external family. A resolved agy model
+                # of ANY other family (Claude/GPT/Grok/unknown) is NOT that family and contributes
+                # NOTHING — DROP the ballot entirely, never append a phantom valid:True ballot.
+                # Deferring to the downstream _EXTERNAL_CONFIRMING filter is NOT enough: a retained
+                # off-family ballot still perturbs aggregation (modal/majority disposition,
+                # same-family collapse), and the spec + driver prose promise "unknown/non-Gemini ->
+                # dropped ballot". The only safe contract is no-Gemini => no agy ballot at all. The
+                # Codex(GPT) ballot is untouched; anti-ruflo holds — no false positive (set-dedup
+                # already guarantees that) AND no aggregation drift from an off-family response.
+                _log("agy ballot dropped: resolved model %r is family %r, not Gemini "
+                     "(fail-closed, not a fabricated vote)" % (agy_model, agy_family))
             else:
-                # 🔴 fail-closed: family resolves from the EXPLICIT model string. An agy model
-                # whose family is unknown/unmappable or NOT in _EXTERNAL_CONFIRMING simply
-                # never joins the confirming set (aggregate filters on _EXTERNAL_CONFIRMING),
-                # so it can never be assumed Gemini — a false NEGATIVE, never a false positive.
                 ballots.append({"source": "agy", "family": agy_family, "model": agy_model,
                                 "valid": True, "disposition": averdict["disposition"],
                                 "reason": averdict["reason"], "evidence": averdict["evidence"],
@@ -2969,8 +2977,10 @@ def _selftest():
     finally:
         shutil.rmtree(tb, ignore_errors=True)
 
-    # A2#c — a GPT-FAMILY agy stub dedups with Codex to {GPT} -> confirmed:false (fail-closed,
-    # no false positive from a mislabeled 2nd family).
+    # A2#c — H5 fail-closed: a GPT-FAMILY agy verdict (valid JSON, but the resolved model is NOT
+    # Gemini) is DROPPED entirely — never appended as a phantom valid ballot. With Codex-GPT
+    # present the panel therefore carries only {GPT} -> confirmed:false, and the off-family agy
+    # response never appears in `ballots` (no aggregation perturbation).
     tc = _tempfile.mkdtemp()
     try:
         cv = {"disposition": _BLK, "reason": "creds", "blocker_category": "credential",
@@ -2978,15 +2988,33 @@ def _selftest():
         av = {"disposition": _BLK, "reason": "creds too", "blocker_category": "credential",
               "evidence": "secret missing"}
         res, e, rc = _run_panel(tc, cv, av, _BOTH_CAPS, explicit_agy="gpt-oss-120b")
-        check("A2#c: a GPT-family agy resolves to family GPT (from the explicit model string)",
-              res and any(b.get("source") == "agy" and b.get("family") == "GPT"
-                          for b in res["ballots"]))
-        check("A2#c: same-family dedup to {GPT} -> confirmed:false (no false positive)",
-              rc == 0 and res and res["confirmed"] is False)
+        check("A2#c: a GPT-family agy verdict is DROPPED -> NO agy ballot in the panel",
+              rc == 0 and res and not any(b.get("source") == "agy" for b in res["ballots"]))
+        check("A2#c: with the off-family agy dropped, only {GPT} remains -> confirmed:false",
+              res and res["confirmed"] is False)
         check("A2#c: families_agreeing has <2 distinct external families",
               res and len(res["families_agreeing"]) < 2)
     finally:
         shutil.rmtree(tc, ignore_errors=True)
+
+    # A2#f — H5 fail-closed: a CLAUDE-FAMILY agy verdict is likewise DROPPED. The dropped ballot
+    # appears in NEITHER `ballots` NOR `families_present` — families_present is exactly ["GPT"]
+    # (from Codex), never a phantom "Claude" contributed by the off-family agy response.
+    tf = _tempfile.mkdtemp()
+    try:
+        cv = {"disposition": _BLK, "reason": "creds", "blocker_category": "credential",
+              "evidence": "secret missing"}
+        av = {"disposition": _BLK, "reason": "creds too", "blocker_category": "credential",
+              "evidence": "secret missing"}
+        res, e, rc = _run_panel(tf, cv, av, _BOTH_CAPS, explicit_agy="claude-opus-4-6")
+        check("A2#f: a Claude-family agy verdict is DROPPED -> NO agy ballot in the panel",
+              rc == 0 and res and not any(b.get("source") == "agy" for b in res["ballots"]))
+        check("A2#f: dropped off-family agy is absent from families_present (== ['GPT'])",
+              res and res["families_present"] == ["GPT"])
+        check("A2#f: no phantom 2nd family -> confirmed:false",
+              res and res["confirmed"] is False)
+    finally:
+        shutil.rmtree(tf, ignore_errors=True)
 
     # A2#e — degrade: antigravity absent ⇒ poll_agy is NEVER called and no agy ballot appears;
     # the panel is Codex-only (byte-identical-by-construction — the agy block is gated behind
