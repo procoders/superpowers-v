@@ -48,6 +48,10 @@ it removes the app-open dependency and fires on the `:17/:47` cadence while the 
 **one catch-up per wake** (missed slots coalesce); it does **not** run while the machine is powered off or
 asleep, and a `gui/$UID` LaunchAgent only loads once the user is logged into the GUI session. The emitted
 command uses `--permission-mode dontAsk` + a curated `--allowedTools` allowlist and **never** a bypass
-flag (`--dangerously-skip-permissions`/`--yolo`). It is **never** auto-installed — the plugin never shells
+flag (`--dangerously-skip-permissions`/`--yolo`). By default the allowlist is narrow (claim + report only);
+`compound-v-headless-shim.py emit --allow-build` is an **opt-in** flag that widens `--allowedTools` to add
+`Task`/`git`/scheduled-tasks so the unattended session can run the **full marathon** (dispatch + build), not
+just claim-and-report — carrying the same unattended-autonomy warning (it is the user's trust decision, and
+it is still **never** a bypass flag). It is **never** auto-installed — the plugin never shells
 out to `launchctl`/`crontab`; the user runs the printed `launchctl bootstrap` / `crontab -e` step. See
 `scripts/compound-v-headless-shim.py` for the full runbook.

@@ -83,6 +83,7 @@ All reviewers/agents carry `model: opus`. Manifest `backend`/`model` values (`gp
 | `/v:epic <brief>` | Chain several features into one autonomous, resumable, dependency-ordered build on a single branch; each feature runs the full pipeline in topological order, ending with a cross-feature integration review |
 | `/v:archaeology <topic>` | (unchanged) Phase 1A only |
 | `/v:remember <query>` | Recall search over `docs/superpowers/**` prose (V-memory) — evidence for planning + review, not a routing input |
+| `/v:adr <decision>` | Capture one genuine architecture decision as a thin, human-confirmed ADR (`docs/superpowers/adr/NNNN-slug.md`) — decision + alternatives + consequences, references verified to exist, draft→confirm→commit, then FTS5-recallable via `/v:remember` |
 | `/v:memory-refresh` | (Re)index the FTS5 recall lane; `--bootstrap` provisions the opt-in dense embeddings venv |
 | `/v:onboard` | Scan the repo and build a trusted, citation-verified knowledge base (`docs/superpowers/architecture/*`) plus an `AGENTS.md`/`CLAUDE.md` bridge, behind a human approval gate; `--refresh` re-checks staleness |
 | `/v:pr-review [url\|number]` | Deep two-axis (Standards ⊥ Spec) code review of a PR/MR or local diff — review-only, never edits; GitHub (`gh`), GitLab (`glab`), or a hostless local branch |
