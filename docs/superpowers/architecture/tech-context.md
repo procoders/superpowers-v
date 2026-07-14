@@ -17,12 +17,12 @@ is no application runtime, build system, or package manager lockfile in the repo
 
 - **Python (stdlib only).** The deterministic toolkits are Python scripts that avoid third-party
   dependencies. The scope gate is explicitly "Python 3.9-safe, stdlib only. Targets stock-macOS
-  python3 3.9.6." (`scripts/compound-v-scope-check.py:69`) V-memory describes itself as "pure-stdlib
+  python3 3.9.6." (`scripts/compound-v-scope-check.py:98`) V-memory describes itself as "pure-stdlib
   core, offline, `--selftest`'d." (`skills/compound-v/memory.md:10-11`)
-- **Bash hooks and worker scripts.** Hooks under `hooks/*.sh` are shellcheck-linted in CI and must be
-  executable. (`.github/workflows/validate.yml:152-166`)
+- **Bash hooks and worker scripts.** Hooks under `hooks/*.sh` must be executable and are
+  shellcheck-linted in CI (the headless workers `scripts/compound-v-run-*-worker.sh` are bash too). (`.github/workflows/validate.yml:181-195`)
 - **Markdown skills / commands / agents.** Skills live under `skills/*/SKILL.md`, agents under
-  `agents/*.md`, commands under `commands/`; CI verifies each has `name`/`description` frontmatter. (`.github/workflows/validate.yml:54-78`)
+  `agents/*.md`, commands under `commands/`; CI verifies each has `name`/`description` frontmatter. (`.github/workflows/validate.yml:83-107`)
 
 ## Plugin manifest and CI
 
@@ -35,27 +35,41 @@ with `marketplace.json`. (`.github/workflows/validate.yml:19-52`)
 Deterministic scripts ship with built-in self-tests invoked by `--selftest` that build throwaway git
 repos in `$TMPDIR` and run offline. The scope gate's `_selftest()` covers glob semantics plus git
 integration cases — good/bad scope, `**` recursion, worktree mode, the committed-inside-worktree
-baseline case, the preexisting-snapshot case, ignored files, and unusual filenames. (`scripts/compound-v-scope-check.py:397-401`, `scripts/compound-v-scope-check.py:566-644`)
+baseline case, the preexisting-snapshot case, ignored files, and the escaping-symlink exploits. (`scripts/compound-v-scope-check.py:537-571`, `scripts/compound-v-scope-check.py:574-946`)
 The onboard toolkit's `--selftest` is the entry point that runs its self-tests instead of a
-subcommand. (`scripts/compound-v-onboard.py:368-371`)
+subcommand. (`scripts/compound-v-onboard.py:1185-1186`) CI additionally runs the epic-state,
+epic-arbiter, epic-watch, and headless-shim self-tests under a **Python 3.9 floor** — the documented
+minimum for the marathon scripts. (`.github/workflows/validate.yml:225-244`)
 
 ## Key scripts
 
 - `scripts/compound-v-scope-check.py` — the git-derived scope gate the dispatcher calls after every
   job; emits a JSON verdict (`pass`/`blocked`) with exit codes 0 = pass, 1 = blocked, 2 = usage/git
-  error. (`scripts/compound-v-scope-check.py:60-67`)
+  error. (`scripts/compound-v-scope-check.py:92-96`)
 - `scripts/compound-v-onboard.py` — the `/v:onboard` deterministic toolkit (stdlib only) whose
-  subcommands are `pack`, `verify-citations`, `staleness`, `design-lint`, `detect-ui`, and
-  `scan-output`. (`scripts/compound-v-onboard.py:1-2`, `scripts/compound-v-onboard.py:347-365`) It
+  subcommands are `pack`, `verify-citations`, `staleness`, `design-lint`, `detect-ui`, `scan-output`,
+  `recommend-mcp`, `recommend-autoskills`, and `draft-taxonomy`. (`scripts/compound-v-onboard.py:1-2`, `scripts/compound-v-onboard.py:1145-1166`) It
   reuses the engine's canonical secret-pattern families (`SECRET_RE`, `PEM_RE`) from
   `compound-v-memory.py` rather than forking a second list. (`scripts/compound-v-onboard.py:5-9`)
 - `scripts/lint-frontmatter.py` — parses every markdown file's YAML frontmatter and validates it
-  against the plugin spec and project conventions. (`scripts/lint-frontmatter.py:1-17`)
+  against the plugin spec and project conventions. (`scripts/lint-frontmatter.py:3-6`)
 - `scripts/compound-v-memory.py` — the V-memory recall engine (FTS5 core + opt-in embeddings). (`skills/compound-v/memory.md:8`)
+- `scripts/compound-v-resolve-model.py` — the model broker that resolves `(backend, tier, effort)` →
+  a concrete model, so routing survives model churn without editing call sites. (`scripts/compound-v-resolve-model.py:2-4`)
+- `scripts/compound-v-preeval.py` — the v2.9 Pre-Evaluation scorer (two axes: difficulty ⊥ impact)
+  that gates the proportionate fast-path. (`scripts/compound-v-preeval.py:2-5`)
+- `scripts/compound-v-epic-state.py` · `-epic-arbiter.py` · `-epic-watch.py` — the epic spine
+  (topological state), the marathon cross-model failure arbiter, and the v2.11 auto-resurrection
+  watcher. (`scripts/compound-v-epic-state.py:2-5`, `scripts/compound-v-epic-arbiter.py:2-3`, `scripts/compound-v-epic-watch.py:2-5`)
+- `scripts/compound-v-headless-shim.py` — a v2.14 present-only generator that prints (never installs)
+  a launchd/crontab artifact for OS-level headless resurrection. (`scripts/compound-v-headless-shim.py:2-5`)
+- `scripts/compound-v-usage-extract.py` · `-usage-aggregate.py` — v2.12 measured-only usage:
+  extract a canonical per-job `usage` object from a backend's own events log, then aggregate honest
+  per-run totals. (`scripts/compound-v-usage-extract.py:2-8`, `scripts/compound-v-usage-aggregate.py:2-7`)
 
 ## Doc placement convention
 
-Compound V writes to a flat, predictable structure under `docs/superpowers/`: `archaeology/`,
-`expert/`, `library-audit/`, `execution/<run-id>/`, `memory/`, `specs/`, and `plans/`. (`skills/compound-v/SKILL.md:177-203`)
+Compound V writes to a flat, predictable structure under `docs/superpowers/`: `recon/`, `archaeology/`,
+`expert/`, `library-audit/`, `execution/<run-id>/`, `memory/`, `specs/`, and `plans/`. (`skills/compound-v/SKILL.md:197-225`)
 The onboarding pipeline extends this with `docs/superpowers/architecture/*` plus root
 `CONVENTIONS.md`/`AGENTS.md`/`CLAUDE.md` and a conditional `DESIGN.md`. (`skills/compound-v/onboarding.md:9-13`)

@@ -12,37 +12,39 @@ Deltas from default practice that this repo actually enforces.
 ## Python: stdlib only
 
 - Write helper scripts in **pure Python standard library** — no third-party runtime deps. The scope
-  gate is "Python 3.9-safe, stdlib only. Targets stock-macOS python3 3.9.6." (`scripts/compound-v-scope-check.py:69`)
-- Ship a built-in **`--selftest`** that runs offline (builds throwaway git repos in `$TMPDIR`). (`scripts/compound-v-scope-check.py:397-401`, `scripts/compound-v-onboard.py:368-371`)
+  gate is "Python 3.9-safe, stdlib only. Targets stock-macOS python3 3.9.6." (`scripts/compound-v-scope-check.py:98`)
+- Ship a built-in **`--selftest`** that runs offline (builds throwaway git repos in `$TMPDIR`). (`scripts/compound-v-scope-check.py:514-516`, `scripts/compound-v-onboard.py:1185-1186`) CI runs the
+  epic-state / epic-arbiter / epic-watch / headless-shim self-tests under a **Python 3.9 floor**. (`.github/workflows/validate.yml:225-244`)
 - Reuse canonical shared constants instead of forking a second copy (e.g. secret-pattern families are
   imported from `compound-v-memory.py`, not redefined). (`scripts/compound-v-onboard.py:5-9`)
 
 ## Markdown frontmatter
 
 - Every skill (`skills/*/SKILL.md`) and agent (`agents/*.md`) needs `name` and `description`
-  frontmatter; commands are exempt (name = filename). (`scripts/lint-frontmatter.py:58-64`)
-- Keep `description` ≤ 500 chars (soft) and total frontmatter ≤ 1024 chars (hard). (`scripts/lint-frontmatter.py:23-24`, `scripts/lint-frontmatter.py:42-45`)
-- Quote any `paths` value containing glob chars (`{}[]`) — unquoted globs break YAML. (`scripts/lint-frontmatter.py:77-82`)
+  frontmatter; commands are exempt (name = filename). (`scripts/lint-frontmatter.py:110-115`)
+- Keep `description` ≤ 500 chars (soft) and total frontmatter ≤ 1024 chars (hard). (`scripts/lint-frontmatter.py:33-34`)
+- Quote any `paths` value containing glob chars (`{}[]`) — unquoted globs break YAML. (`scripts/lint-frontmatter.py:137-142`)
 
 ## Model policy — NEVER Haiku
 
 - **Opus by default**, Sonnet only for the narrow junior-task carve-out; **Haiku is forbidden.** The
-  frontmatter linter rejects any `model:` containing `haiku`. (`scripts/lint-frontmatter.py:72-75`)
-  CI enforces the same on agent files. (`.github/workflows/validate.yml:62-66`)
+  frontmatter linter rejects any `model:` containing `haiku` (`scripts/lint-frontmatter.py:124-126`)
+  and additionally requires `model: opus` on every `agents/*.md`. (`scripts/lint-frontmatter.py:128-134`)
+  CI enforces the no-Haiku rule on agent files too. (`.github/workflows/validate.yml:92-97`)
 - Execution-layer model values (`gpt-5.5`, etc.) are NEVER placed in any frontmatter — they live only
   in the manifest/job_spec. (`skills/backend-launcher/SKILL.md:37`)
 
 ## No fabricated metrics (anti-ruflo)
 
 - Do not print token-cost / savings numbers you cannot measure. CI greps `scripts/` and `docs/` for
-  fabricated-metric phrasing (e.g. "tokens saved", "cost savings: N") and fails the build on a hit. (`.github/workflows/validate.yml:127-150`)
+  fabricated-metric phrasing (e.g. "tokens saved", "cost savings: N") and fails the build on a hit. (`.github/workflows/validate.yml:156-179`)
 - No daemon, no MCP server, no external vector-DB service, no fabricated cost metrics — the anti-ruflo
-  charter. (`skills/compound-v/SKILL.md:35`)
+  charter. (`skills/compound-v/SKILL.md:44`)
 
 ## Doc placement
 
 - Generated/working docs live under `docs/superpowers/**` in a flat, predictable layout
-  (`archaeology/`, `expert/`, `library-audit/`, `execution/<run-id>/`, `memory/`, `specs/`, `plans/`). (`skills/compound-v/SKILL.md:177-203`)
+  (`recon/`, `archaeology/`, `expert/`, `library-audit/`, `execution/<run-id>/`, `memory/`, `specs/`, `plans/`). (`skills/compound-v/SKILL.md:197-225`)
 - Onboarding output goes to `docs/superpowers/architecture/*` + root `CONVENTIONS.md`/`AGENTS.md`/`CLAUDE.md`. (`skills/compound-v/onboarding.md:9-13`)
 
 ## cclint scope

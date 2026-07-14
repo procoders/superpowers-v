@@ -10,9 +10,9 @@ NOTE: this file is generated. Every claim below carries a file:line citation to 
 
 Compound V is a **sidekick to Superpowers**: a transparent interceptor between Superpowers phases
 and, as of v1.0, a lightweight execution orchestrator that is the default execution path. (`skills/compound-v/SKILL.md:10`)
-It is not invoked directly — it auto-fires at three Superpowers transitions (after brainstorming,
-inside writing-plans, at execution), injecting pre-flight audits, partitioning, dispatch, scope
-enforcement, review, and memory. (`skills/compound-v/SKILL.md:10-17`)
+It is not invoked directly — it auto-fires at four Superpowers transitions (a gated pre-brainstorm
+recon, after brainstorming, inside writing-plans, at execution), injecting recon, pre-flight audits,
+partitioning, dispatch, scope enforcement, review, and memory. (`skills/compound-v/SKILL.md:10-14`)
 
 ## The domain: multi-model coding orchestration
 
@@ -23,26 +23,27 @@ Cursor workers), git-diff scope enforcement, crash-resumable runs, adaptive tier
 mode for multi-feature builds, V-memory local-first semantic+lexical recall." (`.claude-plugin/plugin.json:3`)
 
 It dispatches across multiple model backends through one uniform contract: the orchestrator hands a
-`job_spec` to whichever adapter the manifest's `backend` names (claude | codex | antigravity | cursor)
-and gets back a canonical `job_result` of identical shape — so the orchestrator speaks only this
-contract and never sees backend-specific flags. (`skills/backend-launcher/SKILL.md:3`, `skills/backend-launcher/SKILL.md:10`)
+`job_spec` to whichever adapter the manifest's `backend` names (claude | codex | antigravity | cursor |
+devin | opencode) and gets back a canonical `job_result` of identical shape — so the orchestrator speaks
+only this contract and never sees backend-specific flags. (`skills/backend-launcher/SKILL.md:3`, `skills/backend-launcher/SKILL.md:10`, `skills/backend-launcher/SKILL.md:22`)
 
 ## Why three pre-flights
 
 The value proposition is catching three classes of mistake before any code is written, each via a
 different lookup path: 1A catches "the building is 200m², not 500m²" (existing-code reality), 1B
 catches a domain mismatch like designing OAuth when the target API uses Basic auth, and 1C catches a
-stale/abandoned dependency that the model's training data would have suggested. (`skills/compound-v/SKILL.md:39-42`)
+stale/abandoned dependency that the model's training data would have suggested. (`skills/compound-v/SKILL.md:49-51`)
 The skyscraper metaphor frames it: without pre-flight you build a 500m² hat on a 200m² tower; with the
-audits you add proper floors that fit both the building and the building code. (`skills/compound-v/SKILL.md:48`)
+audits you add proper floors that fit both the building and the building code. (`skills/compound-v/SKILL.md:57`)
 
 ## Domain scope and boundaries
 
 Compound V **extends** Superpowers rather than replacing it: each Superpowers skill maps to a Compound
-V action, and brainstorming/writing-plans run unchanged with Compound V intercepting the transitions. (`skills/compound-v/SKILL.md:230-244`)
+V action, and brainstorming/writing-plans run unchanged with Compound V intercepting the transitions. (`skills/compound-v/SKILL.md:252-266`)
 The orchestrator is deliberately minimal — "No daemon, no MCP server, no external vector DB service,
-no fabricated cost metrics — the anti-ruflo charter." (`skills/compound-v/SKILL.md:35`)
+no fabricated cost metrics — the anti-ruflo charter." (`skills/compound-v/SKILL.md:44`)
 
 Epic mode (v1.1) is the one-level-up domain: a single run executes one plan (one feature); an epic
 chains several features through the full pipeline in dependency order, accumulating onto one branch —
-"build a whole app." (`skills/compound-v/SKILL.md:37`)
+"build a whole app." Its v2.10 **marathon** stance and v2.11 **watch** opt-in make that build resumable
+and self-resurrecting. (`skills/compound-v/SKILL.md:46`, `skills/compound-v/epic-mode.md:172`)

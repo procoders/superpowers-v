@@ -8,14 +8,17 @@ NOTE: this file is generated. Every claim below carries a file:line citation to 
 
 Compound V is a **transparent interceptor** that sits between Superpowers phases and, as of v1.0, a
 **lightweight execution orchestrator** that is now the default execution path. It is not invoked
-directly; it fires at three Superpowers transitions: after `brainstorming` (before `writing-plans`),
-inside `writing-plans`, and at execution. (`skills/compound-v/SKILL.md:10-17`)
+directly; it fires automatically at **four** Superpowers transitions: a gated pre-brainstorm recon
+(Trigger 0), after `brainstorming` (before `writing-plans`), inside `writing-plans`, and at execution.
+A v2.9 **Pre-Evaluation** stage runs even before Trigger 0 and — only when a change is provably trivial
+and low-impact — may OFFER a proportionate fast-path; it never auto-routes. (`skills/compound-v/SKILL.md:10-14`)
 
 ## The unified pipeline
 
-The end-to-end flow is: `brainstorm → spec` → auto-fire three parallel pre-flights → `writing-plans`
-+ Partition Map → **MANIFEST** → **DISPATCH** → **COLLECT + SCOPE GATE** → **REVIEW** → **MEMORY** →
-`finishing-a-development-branch`, with `state.json` written after every phase. (`skills/compound-v/SKILL.md:21-33`)
+The end-to-end flow is: (optional Pre-Eval fast-path) → gated `RECON` → `brainstorm → spec` → auto-fire
+three parallel pre-flights → `writing-plans` + Partition Map → **MANIFEST** → **DISPATCH** → **COLLECT +
+SCOPE GATE** → **REVIEW** → **MEMORY** → `finishing-a-development-branch`, with `state.json` written after
+every phase. (`skills/compound-v/SKILL.md:22-42`)
 
 The run advances through seven phase states plus one terminal failure state:
 `SPEC_READY → PREFLIGHT_DONE → PARTITION_VERIFIED → DISPATCHED → COLLECTED → REVIEWED → MERGED`,
@@ -27,7 +30,7 @@ After brainstorming produces a spec, three independent pre-flights run **in one 
 concurrent Task calls** before writing-plans: 1A code-archaeology (existing-code reality), 1B
 domain-expert advisor (product/domain reality, web-searched if thin), and 1C library/doc validator
 (dependency currency via Context7 MCP). They have different failure modes and no shared state, so
-they dispatch concurrently. (`skills/compound-v/SKILL.md:12-16`, `skills/compound-v/SKILL.md:39-44`)
+they dispatch concurrently. (`skills/compound-v/SKILL.md:15-18`, `skills/compound-v/SKILL.md:53`)
 
 A 🔴 critical pre-flight finding HALTs the run before `PREFLIGHT_DONE` advances. (`skills/compound-v/state-machine.md:22`)
 
@@ -35,7 +38,7 @@ A 🔴 critical pre-flight finding HALTs the run before `PREFLIGHT_DONE` advance
 
 Inside writing-plans, every file the implementation will touch is mapped and assigned to exactly one
 task (no file in two tasks); shared resources (lockfiles, generated code, migrations, barrels, type
-files) go to a serial pre-phase, Task 0. (`skills/compound-v/SKILL.md:138-142`) The partition is
+files) go to a serial pre-phase, Task 0. (`skills/compound-v/SKILL.md:158-164`) The partition is
 gated by `partition-reviewer`, which returns PASS and materializes `manifest.yaml`; a partition FAIL
 HALTs the run. (`skills/compound-v/state-machine.md:23`)
 
@@ -47,8 +50,10 @@ batch, with strict scope locks and per-job isolation; after every job the scope 
 parallel limit is 4-6 Task calls per message; larger plans are batched 4-6 at a time. (`skills/compound-v/phase-3-parallel-opus-dispatch.md:13-15`)
 
 Backends are unified behind the **backend-launcher** contract: the orchestrator hands a `job_spec` to
-whichever adapter the manifest's `backend` names (claude | codex | antigravity | cursor) and gets
-back a canonical `job_result` of identical shape across every backend. (`skills/backend-launcher/SKILL.md:10`, `skills/backend-launcher/SKILL.md:22`)
+whichever adapter the manifest's `backend` names (claude | codex | antigravity | cursor | devin |
+opencode) and gets back a canonical `job_result` of identical shape across every backend. The last four
+are lower-trust / opt-in headless workers; devin and opencode are worker-only and excluded from any
+cross-model arbiter panel until family-dedup keys on the resolved model. (`skills/backend-launcher/SKILL.md:10`, `skills/backend-launcher/SKILL.md:22`, `skills/backend-launcher/SKILL.md:120-121`)
 
 Per-job isolation: disjoint in-harness Claude jobs write `direct` to the active workspace; Codex and
 other external/overlap-prone jobs run in a `worktree`. The Codex backend is **always** worktree, and
@@ -63,14 +68,16 @@ authority is `scripts/compound-v-scope-check.py`: it computes the changed set pu
 union of three NUL-delimited probes — tracked diff vs a baseline, untracked-new, and ignored-new —
 then matches each path against `write_allowed`; any changed file matching no allowed glob is a
 violation, and one or more violations ⇒ BLOCKED (non-zero exit), and a BLOCKED job must never be
-merged. (`scripts/compound-v-scope-check.py:10-35`)
+merged. (`scripts/compound-v-scope-check.py:10-19`, `scripts/compound-v-scope-check.py:58-60`)
 
 Only `write_allowed` is enforced; `read_allowed` is advisory, because the gate is git-derived and git
-tracks writes, not reads. (`skills/backend-launcher/SKILL.md:73`) Two defenses are deliberately
+tracks writes, not reads. (`skills/backend-launcher/SKILL.md:73`) Three defenses are deliberately
 built in: the three probes split on NUL (`\0`), the one byte that cannot appear in a POSIX path, so a
-filename containing a newline cannot smuggle additional paths past the gate (`scripts/compound-v-scope-check.py:99-111`);
-and the tracked-diff term baselines against the pre-`worktree add` SHA rather than a moving HEAD, so a
-worker that COMMITS inside its worktree to fake a clean tree is still caught. (`scripts/compound-v-scope-check.py:114-135`)
+filename containing a newline cannot smuggle additional paths past the gate (`scripts/compound-v-scope-check.py:17-19`);
+the tracked-diff term baselines against the pre-`worktree add` SHA rather than a moving HEAD (and uses
+`--no-renames`), so a worker that COMMITS inside its worktree to fake a clean tree is still caught
+(`scripts/compound-v-scope-check.py:20-24`); and a v2.8 escaping-symlink scan flags any symlink under the
+gate root whose target resolves outside it, regardless of `write_allowed`. (`scripts/compound-v-scope-check.py:34-44`, `scripts/compound-v-scope-check.py:301-307`)
 
 ## Review Gate (three passes, AC-gated)
 
@@ -93,6 +100,29 @@ file pattern `F` and `N ≥ k` (default k=2) prior `job_result` records on `F` c
 worktree isolation, add a review pass, or fold `F` into Task 0; it **never** reroutes to a lower-trust
 backend and **never** loosens. (`skills/compound-v/memory.md:70-80`)
 
+## Trigger 0 recon + the autonomous epic layer
+
+**Trigger 0 — gated pre-brainstorm recon.** Before a brainstorm begins, a gated, bounded
+deep-research/WebSearch pass writes an anti-anchoring recon doc to `docs/superpowers/recon/` — evidence
+to widen the brainstorm's questions, never a conclusion to converge on, and never a routing input. Gate
+order, first match wins: plumbing-skip → V-memory strong hit → `brainstorm.deep_research` config
+(`ask`/`auto`/`off`). It is description-driven with a reminder-only hook backstop, so it is the weakest
+of the four triggers. (`skills/compound-v/SKILL.md:14`, `skills/compound-v/SKILL.md:86-87`)
+
+**Epic / marathon / watch — the autonomous multi-feature layer.** A single run executes one feature; an
+**epic** chains several through the full pipeline in dependency order onto one branch, driven by a
+deterministic topological spine (`epic-state.json` via `scripts/compound-v-epic-state.py`).
+(`skills/compound-v/SKILL.md:46`, `scripts/compound-v-epic-state.py:2-5`) The v2.10 **marathon** stance
+adds a resumable no-daemon loop with a cross-model **arbiter** panel that classifies a feature failure
+(`scripts/compound-v-epic-arbiter.py:2-3`); v2.11 **watch** arms a two-tier scheduler watcher for
+automatic resurrection of a hard death, bounded by a resume cap (`scripts/compound-v-epic-watch.py:2-5`,
+`skills/compound-v/epic-mode.md:172`); and v2.14 adds a present-only headless shim that prints — never
+installs — a launchd/crontab artifact for OS-level resurrection (`scripts/compound-v-headless-shim.py:2-5`).
+A **confirmed**-blocker feature — a blocker proven external by ≥2 distinct model families agreeing on the
+same category, bound to the frozen arbiter audit — lets an epic reach the **`done_with_blockers`** success
+terminal and auto-merge; an unconfirmed (SUSPECTED) blocker resolves to `blocked_needing_human` instead.
+(`skills/compound-v/epic-mode.md:166`)
+
 ## Onboarding flow (the new /v:onboard pipeline)
 
 `/v:onboard` studies an existing repository and builds a trusted, citation-verified knowledge base
@@ -107,4 +137,4 @@ COMMIT → INDEX`. (`skills/compound-v/onboarding.md:49-51`) Generation is read-
 two-tier citation gate where Tier 1 (path + range) runs on 100% of claims and is blocking, and Tier 2
 (do the cited lines support the claim?) runs on 100% of load-bearing claims where an unsupported
 load-bearing claim is BLOCKING. (`skills/compound-v/onboarding.md:92-105`) The command itself
-(`commands/v-onboard.md`) is a thin loader that branches on args and defers to this authority doc. (`commands/v-onboard.md:5-11`)
+(`commands/v-onboard.md`) is a thin loader that branches on args and defers to this authority doc. (`commands/v-onboard.md:5-13`)

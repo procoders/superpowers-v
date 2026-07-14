@@ -1,41 +1,61 @@
 {
-  "generated": "2026-06-30",
+  "generated": "2026-07-14",
   "docs": {
     "docs/superpowers/architecture/architecture.md": {
       "cited": {
-        "commands/v-onboard.md": "d2cb43e4159944cd5ecad785a877ac3bfe2777ccd9cce8623c07f24219d3eb79",
-        "scripts/compound-v-scope-check.py": "7a4ff1abdd305421031c27c72af5f22353dfbb59dc17cc03db53706e3133bbf5",
-        "skills/backend-launcher/SKILL.md": "b8ce354e8455d2d3a97e8f78b9b14767bdd168012ab03051454e23f488cd1eb8",
-        "skills/compound-v/SKILL.md": "948f4e8eedd8528b51f3bf5f77ff9929527e09ac18cc6ecdbaf2aec43f17a22c",
-        "skills/compound-v/memory.md": "2a23e77e553a17f029d662ba67649ea92034b462013387517a2e81f7a65ed755",
-        "skills/compound-v/onboarding.md": "108dfe0511449df7dd5672f33457e44fd9214af142744fb6ed39602b89da9942",
-        "skills/compound-v/phase-3-parallel-opus-dispatch.md": "7ff0374a22441f573a19f50c0ddf2d63ed7f96bf1b2d26a4b76f1bbdeb8cad06",
-        "skills/compound-v/state-machine.md": "315d4db3815e9a7376cad9c60ea400fa7fca97103d8ab5659b6b75c4450d5aa0"
+        "commands/v-onboard.md": "2fd00cffb3c157a847ffb1e84a3e3d181ba3843137fdc0cd338e077029d4ff36",
+        "scripts/compound-v-epic-arbiter.py": "296d383fffdd102a5cccf98193922c974e2ed23511e7dfe4b439c1076119eeb0",
+        "scripts/compound-v-epic-state.py": "82ba06e68775f9e569aec7b2388978cd2f4c36bd22c7241cf532f536977e4963",
+        "scripts/compound-v-epic-watch.py": "3e4e5eec32ffdc4e5fb8ac5ac385270a05b6da2bef1765b470149c05d1fe51bb",
+        "scripts/compound-v-headless-shim.py": "dc113461f3916225b45fed1ccf2766e06bdbf6ebb5c6dd0ed5bd20a0f4eef53b",
+        "scripts/compound-v-scope-check.py": "e266f56b35541536fa747f062506486ccb2f8c60a5fba3dde20af187d32bb23f",
+        "skills/backend-launcher/SKILL.md": "28da54f8406f09f6a4849e12d823a73b15da8511741d5aff9193a4717a397528",
+        "skills/compound-v/SKILL.md": "b10d813f3ca34537dbd5d06a22dc2afce6267a7fe577ccf9f990703fe78fbdaf",
+        "skills/compound-v/epic-mode.md": "097e0579bbff67cd6df84cc62aafae7359a7a164237f09d0c091c70fe6aa8190",
+        "skills/compound-v/memory.md": "c5814118c1c7b717ea15cc3c7fe7f07c5fcda1fd56c624c9e2d90771c2d37a7f",
+        "skills/compound-v/onboarding.md": "0e4254364de8901cf36daeac61ab8304245d1d4c284dcc21c7fad5b7eed56480",
+        "skills/compound-v/phase-3-parallel-opus-dispatch.md": "5c245b1dc3e36338bf9f8ed798e04e70abec076092a3c9112d7fcdd2dad2ee15",
+        "skills/compound-v/state-machine.md": "3aac7006dd965c200a285cd8434cb18dd809c7d3244304896a0986bcaf01b11c"
       }
     },
     "docs/superpowers/architecture/business-logic.md": {
       "cited": {
-        ".claude-plugin/plugin.json": "2165fe97631bbbd3ecb70c90dfe074886f8429a20728d569bb6feeb4e8ec0340",
-        "skills/backend-launcher/SKILL.md": "b8ce354e8455d2d3a97e8f78b9b14767bdd168012ab03051454e23f488cd1eb8",
-        "skills/compound-v/SKILL.md": "948f4e8eedd8528b51f3bf5f77ff9929527e09ac18cc6ecdbaf2aec43f17a22c"
+        ".claude-plugin/plugin.json": "d4b6f7646dadb31be565f04efffd98fe54801595cb9f4ec15ed8e3eafba8b612",
+        "skills/backend-launcher/SKILL.md": "28da54f8406f09f6a4849e12d823a73b15da8511741d5aff9193a4717a397528",
+        "skills/compound-v/SKILL.md": "b10d813f3ca34537dbd5d06a22dc2afce6267a7fe577ccf9f990703fe78fbdaf",
+        "skills/compound-v/epic-mode.md": "097e0579bbff67cd6df84cc62aafae7359a7a164237f09d0c091c70fe6aa8190"
       }
     },
     "docs/superpowers/architecture/tech-context.md": {
       "cited": {
-        ".github/workflows/validate.yml": "77d378ecede9845e0e507107f67286e03f156fc61d583e487ba19a5cf5c9ee55",
-        "scripts/compound-v-onboard.py": "89a8ee567f548998dbdd801deec40960e7ef4b76959e1aed237e0bc959c2bcda",
-        "scripts/compound-v-scope-check.py": "7a4ff1abdd305421031c27c72af5f22353dfbb59dc17cc03db53706e3133bbf5",
-        "scripts/lint-frontmatter.py": "95c6c2569ea0facc1093acff045d5e8642ad1eebf599776b9be81181b0185372",
-        "skills/compound-v/SKILL.md": "948f4e8eedd8528b51f3bf5f77ff9929527e09ac18cc6ecdbaf2aec43f17a22c"
+        ".claude-plugin/plugin.json": "d4b6f7646dadb31be565f04efffd98fe54801595cb9f4ec15ed8e3eafba8b612",
+        ".github/workflows/validate.yml": "9ebc4021907ed38b266c2cc1cc3997cf9516ebfb3795bb121febbc99900e5740",
+        "scripts/compound-v-epic-arbiter.py": "296d383fffdd102a5cccf98193922c974e2ed23511e7dfe4b439c1076119eeb0",
+        "scripts/compound-v-epic-state.py": "82ba06e68775f9e569aec7b2388978cd2f4c36bd22c7241cf532f536977e4963",
+        "scripts/compound-v-epic-watch.py": "3e4e5eec32ffdc4e5fb8ac5ac385270a05b6da2bef1765b470149c05d1fe51bb",
+        "scripts/compound-v-headless-shim.py": "dc113461f3916225b45fed1ccf2766e06bdbf6ebb5c6dd0ed5bd20a0f4eef53b",
+        "scripts/compound-v-onboard.py": "876318023e5a4c2bcd35475a55e969af80d0fba45942eea30e42cd7125253d74",
+        "scripts/compound-v-preeval.py": "5f8b0f1f5e96ed67b1ce779c156204164cdfc1879520e89ebd5a5865d828c83f",
+        "scripts/compound-v-resolve-model.py": "98e83575b0eee00999b4754a510c5308eed0caada7cd220ce00dd740a2da5188",
+        "scripts/compound-v-scope-check.py": "e266f56b35541536fa747f062506486ccb2f8c60a5fba3dde20af187d32bb23f",
+        "scripts/compound-v-usage-aggregate.py": "d6e82d9d1089f1774ac352826bd91e3914fe96caed020065e0bd4204a45e9e69",
+        "scripts/compound-v-usage-extract.py": "fa37ceb9f4057ac6dc787a69b0a202a2187ebc5c20ee07a03e94f0cb5221ee72",
+        "scripts/lint-frontmatter.py": "38a7631c91c6b0a4dd8b6b7cfa6a969789904eb821a1eab86629fc7c23a1208e",
+        "skills/compound-v/SKILL.md": "b10d813f3ca34537dbd5d06a22dc2afce6267a7fe577ccf9f990703fe78fbdaf",
+        "skills/compound-v/memory.md": "c5814118c1c7b717ea15cc3c7fe7f07c5fcda1fd56c624c9e2d90771c2d37a7f",
+        "skills/compound-v/onboarding.md": "0e4254364de8901cf36daeac61ab8304245d1d4c284dcc21c7fad5b7eed56480"
       }
     },
     "CONVENTIONS.md": {
       "cited": {
         ".cclintrc.json": "8ac23a19d14a834e5fb062fe4c3962e2a2398386311bcfaa77bd5c08c03652dc",
-        ".github/workflows/validate.yml": "77d378ecede9845e0e507107f67286e03f156fc61d583e487ba19a5cf5c9ee55",
-        "scripts/compound-v-scope-check.py": "7a4ff1abdd305421031c27c72af5f22353dfbb59dc17cc03db53706e3133bbf5",
-        "scripts/lint-frontmatter.py": "95c6c2569ea0facc1093acff045d5e8642ad1eebf599776b9be81181b0185372",
-        "skills/backend-launcher/SKILL.md": "b8ce354e8455d2d3a97e8f78b9b14767bdd168012ab03051454e23f488cd1eb8"
+        ".github/workflows/validate.yml": "9ebc4021907ed38b266c2cc1cc3997cf9516ebfb3795bb121febbc99900e5740",
+        "scripts/compound-v-onboard.py": "876318023e5a4c2bcd35475a55e969af80d0fba45942eea30e42cd7125253d74",
+        "scripts/compound-v-scope-check.py": "e266f56b35541536fa747f062506486ccb2f8c60a5fba3dde20af187d32bb23f",
+        "scripts/lint-frontmatter.py": "38a7631c91c6b0a4dd8b6b7cfa6a969789904eb821a1eab86629fc7c23a1208e",
+        "skills/backend-launcher/SKILL.md": "28da54f8406f09f6a4849e12d823a73b15da8511741d5aff9193a4717a397528",
+        "skills/compound-v/SKILL.md": "b10d813f3ca34537dbd5d06a22dc2afce6267a7fe577ccf9f990703fe78fbdaf",
+        "skills/compound-v/onboarding.md": "0e4254364de8901cf36daeac61ab8304245d1d4c284dcc21c7fad5b7eed56480"
       }
     }
   }
