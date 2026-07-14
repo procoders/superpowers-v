@@ -117,17 +117,21 @@ jobs:
       - name: Run frontmatter linter (description length, missing fields, no-Haiku policy)
         run: python3 scripts/lint-frontmatter.py .
 
-      - name: Validate example manifest against manifest invariants
+      - name: Validate every manifest against the invariant gate
         run: |
           set -e
-          # The deterministic manifest validator is built in Batch A. Run it against
-          # the committed example fixture so CI exercises the gate on real data.
-          if [ -f scripts/compound-v-validate-manifest.py ]; then
-            python3 scripts/compound-v-validate-manifest.py examples/manifest.example.yaml
-            echo "✅ example manifest passes the invariant gate"
-          else
-            echo "⚠️  scripts/compound-v-validate-manifest.py not present yet (Batch A) — skipping"
-          fi
+          # The deterministic manifest validator is the partition gate. A missing
+          # validator is a HARD failure (a rename must never silently drop the gate).
+          test -f scripts/compound-v-validate-manifest.py || { echo "❌ scripts/compound-v-validate-manifest.py is missing — the partition gate would silently vanish"; exit 1; }
+          python3 scripts/compound-v-validate-manifest.py examples/manifest.example.yaml
+          echo "✅ example manifest passes the invariant gate"
+          # Also validate every tracked run-manifest — exercise the gate on real data,
+          # not just one curated fixture.
+          for m in docs/superpowers/execution/*/manifest.yaml; do
+            [ -f "$m" ] || continue
+            python3 scripts/compound-v-validate-manifest.py "$m"
+            echo "✅ $m passes the invariant gate"
+          done
 
       - name: Validate example job_result against the schema
         run: |
@@ -199,28 +203,37 @@ jobs:
       - name: Check for dead intra-plugin cross-refs
         run: |
           set -e
-          # Find every (path).md link and verify the target exists
-          # Allow external links and absolute /docs/ links
-          fail=0
+          # Verify every markdown link to an intra-repo file (.md/.py/.sh/.json/.yml/.yaml)
+          # resolves. Dead links are accumulated into a real FILE, not a shell variable:
+          # the inner `grep | … | while` runs in a SUBSHELL, so a `fail=1` assignment there
+          # never propagates to the outer scope (the historical bug that made this guard a
+          # silent no-op). Appending to a temp file survives the subshell.
+          deadfile="$(mktemp)"
           while IFS= read -r -d '' file; do
-            grep -oE '\]\([^)]+\.md[^)]*\)' "$file" 2>/dev/null | sed 's/^](//;s/)$//' | while read -r link; do
-              # Strip anchor
+            dir=$(dirname "$file")
+            grep -oE '\]\([^)]+\.(md|py|sh|json|ya?ml)[^)]*\)' "$file" 2>/dev/null | sed 's/^](//;s/)$//' | while IFS= read -r link; do
+              # Strip a #anchor and a :LINE / :LINE-LINE suffix (file:line refs are clickable
+              # links, not filenames — the target is the bare file).
               path="${link%%#*}"
+              path="$(printf '%s' "$path" | sed -E 's/:[0-9]+(-[0-9]+)?$//')"
               # Skip URLs and absolute /docs paths
               case "$path" in
                 http*|/docs/*|""|"#"*) continue ;;
               esac
               # Resolve relative to the source file's dir
-              dir=$(dirname "$file")
               target="$dir/$path"
               if [ ! -f "$target" ]; then
                 echo "❌ Dead link in $file → $path (resolved: $target)"
-                fail=1
+                echo x >> "$deadfile"
               fi
             done
           done < <(find . -name "*.md" -not -path "./node_modules/*" -not -path "./.git/*" -print0)
-          [ "$fail" = "0" ] || exit 1
-          echo "✅ All intra-plugin .md links resolve"
+          if [ -s "$deadfile" ]; then
+            n=$(wc -l < "$deadfile" | tr -d ' '); rm -f "$deadfile"
+            echo "❌ $n dead intra-plugin link(s) — see above"; exit 1
+          fi
+          rm -f "$deadfile"
+          echo "✅ All intra-plugin links resolve"
 
       # Marathon-mode (v2.10) selftests run under Python 3.9 — the documented floor for
       # scripts/compound-v-epic-state.py and scripts/compound-v-epic-arbiter.py (both pure
@@ -242,3 +255,26 @@ jobs:
 
       - name: Run headless-shim.py selftest (Python 3.9 floor)
         run: python3 scripts/compound-v-headless-shim.py --selftest
+
+      # The four steps above run the resurrection-critical quartet under a CLEAN 3.9 (no
+      # third-party deps) to prove they stay pure-stdlib. This step then covers EVERY other
+      # script that ships a --selftest, so a regression anywhere in the routing / scope-gate /
+      # model-resolution / usage / memory / collector surface is caught (previously only the
+      # quartet was defended). Discovery is dynamic — a new script with a --selftest is picked
+      # up automatically. pyyaml + jsonschema are the only third-party deps any selftest needs
+      # (the memory dense-lane degrades to FTS5-only without its out-of-repo venv).
+      - name: Run ALL script selftests (Python 3.9 floor)
+        run: |
+          set -e
+          python3 -m pip install --quiet pyyaml jsonschema
+          rc=0
+          for s in scripts/*.py; do
+            if grep -q -- '--selftest' "$s"; then
+              echo "── $s --selftest"
+              if ! LANG=C python3 "$s" --selftest; then
+                echo "❌ SELFTEST FAILED: $s"; rc=1
+              fi
+            fi
+          done
+          [ "$rc" = "0" ] || { echo "❌ one or more selftests failed"; exit 1; }
+          echo "✅ all script selftests pass under Python 3.9"
