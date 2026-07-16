@@ -98,6 +98,7 @@ That's it.
 | `/v:remember "<query>"` | Search the project memory |
 | `/v:status` · `/v:resume <id>` | Check progress / continue after a crash |
 | `/v:dashboard` (v2.15) | Open a **read-only** browser view of your runs/epics — `emit` a static HTML snapshot, or `serve` an ephemeral, localhost-only live view. Observe in the browser; control stays in the CLI |
+| `/v:preferences` (v2.16) | Your own dated past-brainstorm reasoning, as **falsifiable memory + a challenge** — `stats` / `distill` / `show` / `purge`. `marked` mode badges the option matching your history (never pre-selects it); raw log stays local, the scrubbed distillate is `/v:remember`-able |
 | `/v:models` | Refresh which model each backend uses |
 
 ---
