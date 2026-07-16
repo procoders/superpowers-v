@@ -53,6 +53,20 @@ PRE_EVAL_DEFAULTS = {
 }
 _FAST_PATH_VALUES = ("ask", "off")
 
+# ---------------------------------------------------------------------------- #
+# brainstorm.* declared keys + fail-closed defaults (v2.16 decision-preferences).
+# `preferences` governs the decision memory+challenge surface in the elicitation
+# driver: `off` = nothing; `on-demand` (default, least-intrusive) = the human PULLS
+# past history, no unsolicited surface; `marked` = a *qualifying* fork carries a
+# falsifiable dated BADGE (never a pre-selected default) always paired with the
+# mandatory divergent challenge. The safe default is `on-demand` — a pull can't nudge.
+# This is the FIRST Python reader of a `brainstorm.*` key in this module (by design).
+# ---------------------------------------------------------------------------- #
+BRAINSTORM_DEFAULTS = {
+    "preferences": "on-demand",   # off | on-demand | marked — on-demand is the safe default
+}
+_PREFERENCES_VALUES = ("off", "on-demand", "marked")
+
 
 def load_config_file(config_path):
     """Return the parsed config object for ``config_path``.
@@ -91,6 +105,9 @@ def load_project_config(repo):
     pre_eval = cfg.get("pre_eval")
     if pre_eval is not None and not isinstance(pre_eval, dict):
         raise ValueError("config 'pre_eval' is not an object: %s" % config_path_for_repo(repo))
+    brainstorm = cfg.get("brainstorm")
+    if brainstorm is not None and not isinstance(brainstorm, dict):
+        raise ValueError("config 'brainstorm' is not an object: %s" % config_path_for_repo(repo))
     return cfg
 
 
@@ -175,6 +192,37 @@ def resolve_pre_eval(cfg):
     return values, warnings
 
 
+def resolve_brainstorm(cfg):
+    """Return ``(values, warnings)``: the effective ``brainstorm`` config with every
+    missing/invalid key coerced to its declared default, plus human-readable warnings
+    for the caller to surface once. Mirrors ``resolve_pre_eval`` exactly — NEVER raises
+    on a bad per-key value; a bad ``preferences`` value can only DEGRADE to the safe
+    ``on-demand`` default (a pull can't nudge), never silently enable ``marked``.
+    """
+    values = dict(BRAINSTORM_DEFAULTS)   # fresh copy — never share the module-level dict
+    warnings = []
+    raw = {}
+    if isinstance(cfg, dict) and isinstance(cfg.get("brainstorm"), dict):
+        raw = cfg["brainstorm"]
+
+    # preferences: off | on-demand | marked
+    if "preferences" in raw:
+        v = raw["preferences"]
+        # bool is an int subclass in Python and would `in`-compare falsely against
+        # nothing here, but guard it explicitly so a JSON `true` never masquerades
+        # as a value — mirrors the pre_eval int-knob bool guard.
+        if isinstance(v, bool):
+            warnings.append("brainstorm.preferences must be one of %s; using default %r"
+                            % (_PREFERENCES_VALUES, BRAINSTORM_DEFAULTS["preferences"]))
+        elif isinstance(v, str) and v in _PREFERENCES_VALUES:
+            values["preferences"] = v
+        else:
+            warnings.append("brainstorm.preferences must be one of %s; using default %r"
+                            % (_PREFERENCES_VALUES, BRAINSTORM_DEFAULTS["preferences"]))
+
+    return values, warnings
+
+
 def main(argv):
     if "--selftest" in argv[1:]:
         return _selftest()
@@ -188,8 +236,10 @@ def main(argv):
         print(json.dumps({"error": str(e)}), file=sys.stderr)
         return 1
     values, warnings = resolve_pre_eval(cfg)
+    bvalues, bwarnings = resolve_brainstorm(cfg)
     print(json.dumps({"models": get_models(cfg), "pre_eval": values,
-                      "warnings": warnings}, indent=2))
+                      "brainstorm": bvalues,
+                      "warnings": warnings + bwarnings}, indent=2))
     return 0
 
 
@@ -219,6 +269,10 @@ def _selftest():
         expect("missing config -> pre_eval all defaults", v == dict(PRE_EVAL_DEFAULTS))
         expect("missing config -> no warnings", w == [])
         expect("missing config -> models {}", get_models(load_project_config(td)) == {})
+        bv, bw = resolve_brainstorm(load_project_config(td))
+        expect("missing config -> brainstorm default on-demand",
+               bv == dict(BRAINSTORM_DEFAULTS) and bv["preferences"] == "on-demand")
+        expect("missing config -> brainstorm no warnings", bw == [])
 
         cfgdir = os.path.join(td, ".claude")
         os.makedirs(cfgdir)
@@ -240,6 +294,8 @@ def _selftest():
         expect("non-object models raises", raises(lambda: load_project_config(td)))
         write({"pre_eval": "not-an-object"})
         expect("non-object pre_eval raises", raises(lambda: load_project_config(td)))
+        write({"brainstorm": "not-an-object"})
+        expect("non-object brainstorm raises", raises(lambda: load_project_config(td)))
 
         # Valid config round-trips models + pre_eval.
         write({
@@ -277,6 +333,39 @@ def _selftest():
         v2["remember"]["x"] = "fastpath"
         expect("remember default is not shared mutable state",
                PRE_EVAL_DEFAULTS["remember"] == {})
+
+        # -- brainstorm.preferences resolver (mirrors resolve_pre_eval) --
+        # absent brainstorm block -> default on-demand, no warnings.
+        write({"pre_eval": {"fast_path": "off"}})
+        bv, bw = resolve_brainstorm(load_project_config(td))
+        expect("absent brainstorm block -> default on-demand",
+               bv["preferences"] == "on-demand" and bw == [])
+        # each valid value passes untouched, no warning.
+        for good in _PREFERENCES_VALUES:
+            write({"brainstorm": {"preferences": good}})
+            bv, bw = resolve_brainstorm(load_project_config(td))
+            expect("valid preferences %r passes clean" % good,
+                   bv["preferences"] == good and bw == [])
+        # a bad string coerces to on-demand + warns (never raises, never auto-enables).
+        write({"brainstorm": {"preferences": "always-on"}})
+        cfg = load_project_config(td)
+        bv, bw = resolve_brainstorm(cfg)
+        expect("bad preferences -> coerced to on-demand", bv["preferences"] == "on-demand")
+        expect("bad preferences -> produces a warning", len(bw) == 1)
+        # a JSON bool must NOT pass as a value (bool-is-int-subclass guard) -> coerce+warn.
+        write({"brainstorm": {"preferences": True}})
+        bv, bw = resolve_brainstorm(load_project_config(td))
+        expect("bool preferences -> coerced to on-demand (not accepted as value)",
+               bv["preferences"] == "on-demand" and len(bw) == 1)
+        # brainstorm defaults are a FRESH dict (never shared module state).
+        bv3, _ = resolve_brainstorm({})
+        bv3["preferences"] = "marked"
+        expect("brainstorm default is not shared mutable state",
+               BRAINSTORM_DEFAULTS["preferences"] == "on-demand")
+        # non-object brainstorm raises structurally (parity with pre_eval).
+        write({"brainstorm": [1, 2, 3]})
+        expect("non-object brainstorm (list) raises",
+               raises(lambda: load_project_config(td)))
 
     if failures:
         print("\nSELFTEST FAILED: %d case(s)" % len(failures))
