@@ -4,6 +4,18 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [2.16.0] - 2026-07-15
+
+### Added — Decision memory + challenge (recall your own past reasoning, always challenged)
+
+During the brainstorm/elicitation phase Compound V already intercepts, it now **remembers your own dated past decisions** and surfaces them as *falsifiable history* — **always paired with a divergent counter-move**, so a recall triggers re-examination, not autopilot. New `scripts/compound-v-preferences.py` (`recall`/`capture`/`distill`/`stats`/`purge`) + `/v:preferences` + a `brainstorm.preferences` config key. Grounded by three pre-flights whose **domain audit reframed the feature**: the original "let the brainstorm reason as the creator" clone was rated high-hazard (choice-blindness confabulation, default-nudge dark patterns, echo chamber, opposing this project's own anti-anchoring moat), so v1 ships the safe **memory + challenge** framing instead.
+
+- **Three modes** `off | on-demand (default) | marked`. **`marked`** puts a soft, falsifiable dated badge (`↩ your past pick: N/M · date`) beside the matching option — a **label, never a pre-selected default** (a mark is information; a pre-tick is an answer you must override — the audit's red line). Every surfacing is challenge-paired or suppressed (`no-challenge`).
+- **The "why" is captured UNPROMPTED** (free-text first); a tapped candidate is a weaker `borrowed` class, excluded from the distilled "your reasoning" — never an inferred rationale.
+- **Anti-anchoring:** suppressed on recon-touched / high-novelty forks (never fires where Trigger-0 widens). **Drift honesty:** recency-weighted last-K disagreement demotes + banners a shifting pattern; a holdout probe records un-nudged choices; patterns auto-expire.
+- **Split storage:** the raw `decisions.jsonl` stays **LOCAL** (`~/.claude/compound-v/preferences/`, private, `purge`-able); the distilled `preferences.md` is written **in-repo** (`docs/superpowers/preferences/`, git-tracked → V-memory, `/v:remember`-able) and is **secret+PII-scrubbed before write**.
+- **Anti-ruflo:** counts only (`4/5 similar forks`), never a fabricated confidence `%`; recall is evidence, never an authority — the brainstorm human-gate is untouched. Pure Python 3.9 stdlib (reuses V-memory's `fts5_escape` + `redact` and `append_line` by import); `--selftest` auto-run by the CI all-selftest gate.
+
 ## [2.15.0] - 2026-07-14
 
 ### Added — Local observability dashboard (present-only, read-only)

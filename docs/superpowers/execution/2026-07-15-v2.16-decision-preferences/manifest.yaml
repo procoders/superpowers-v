@@ -1,0 +1,114 @@
+# Compound V execution manifest — v2.16 decision memory+challenge (falsifiable past-reasoning aid).
+# Materialized from the reframed spec (memory+challenge, NOT clone) + 3 pre-flights.
+# LOCAL storage (~/.claude), in-process FTS5 over decisions.jsonl, marked=label-not-default.
+
+run_id: 2026-07-15-v2.16-decision-preferences
+feature: "Decision memory + challenge (recall my own dated past reasoning, always challenge-paired)"
+spec_path: docs/superpowers/specs/2026-07-15-v2.16-decision-preferences-design.md
+plan_path: docs/superpowers/specs/2026-07-15-v2.16-decision-preferences-design.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-15-v2.16-decision-preferences.md
+  domain: docs/superpowers/expert/2026-07-16-v2.16-decision-preferences.md
+  library: docs/superpowers/library-audit/2026-07-15-v2.16-decision-preferences.md
+
+acceptance_criteria:
+  - "SPLIT storage: raw decisions.jsonl LOCAL under ~/.claude/compound-v/preferences/ (never committed); distilled preferences.md IN-REPO docs/superpowers/preferences/ (git-tracked, V-memory-indexed), secret+PII-SCRUBBED before write (local jsonl keeps full). recall builds in-process FTS5 over the LOCAL jsonl (immediate, fts5_escape on every user string); reuses memory.py fts5_escape/redact/SECRET_RE + update-memory.py append_line by import, never forked"
+  - "no pre-tick/default in ANY mode; off|on-demand(default)|marked; marked returns marked_option as a LABEL (badge count+date) beside a NEUTRAL option, never pre-selected; every shown recall (and every marked_option) is challenge-paired (else shown:false suppressed_reason no-challenge)"
+  - "why captured UNPROMPTED free-text first (skippable->null); candidates only after as why_class 'borrowed', weighted down + excluded from the 'your reasoning' distillation; never an inferred rationale; output has no % (counts only)"
+  - "suppressed on recon-touched/high-novelty forks (top FTS5 score below floor -> shown:false); recency-weighted last-K disagreement demotes+banners a drifting pattern; holdout probe records un-nudged choices; auto-expiry; /v:preferences purge; secret+PII scan refuses a credential/PII-shaped record"
+  - "resolve_brainstorm added to project-config.py mirroring resolve_pre_eval (valid off|on-demand|marked, default on-demand, coerce+warn, never raise); tz-aware datetime now(timezone.utc), never utcnow(); Py3.9-safe; --selftest green under LANG=C (auto-run by the CI all-selftest gate)"
+  - "2.16.0 lockstep; scope gate clean on every job; no write outside the partitioned file sets; no .gitignore change (raw jsonl under ~/.claude; in-repo preferences.md tracked by default -> V-memory-visible)"
+
+routing_stance: claude-only
+max_parallel: 4
+
+shared_resources:
+  - "CHANGELOG.md"
+  - ".claude-plugin/plugin.json"
+  - ".claude-plugin/marketplace.json"
+  - "README.md"
+
+jobs:
+  - id: p1-spine
+    title: "compound-v-preferences.py — recall/capture/distill/stats/purge over LOCAL decisions.jsonl"
+    type: large_isolated
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    write_allowed:
+      - "scripts/compound-v-preferences.py"
+    read_allowed:
+      - "scripts/**"
+      - "docs/superpowers/specs/2026-07-15-v2.16-decision-preferences-design.md"
+      - "docs/superpowers/archaeology/2026-07-15-v2.16-decision-preferences.md"
+      - "docs/superpowers/library-audit/2026-07-15-v2.16-decision-preferences.md"
+    acceptance:
+      - "recall: in-process FTS5 over LOCAL ~/.claude/compound-v/preferences/decisions.jsonl via imported fts5_escape; returns {shown,evidence,challenge,marked_option,sample_n,disagreement_rate,suppressed_reason}; marked_option populated only in marked mode as a LABEL (never a selection); no pre_select/default field; challenge-paired or shown:false"
+      - "capture: unprompted why first (why_class unprompted|borrowed|none), never inferred; append via imported append_line (LANG=C utf-8); secret+PII scan (reuse SECRET_RE/PEM_RE/redact); records recall_shown/challenged/changed_after_recall/suppressed_reason"
+      - "distill: writes IN-REPO docs/superpowers/preferences/preferences.md (secret+PII-scrubbed before write; a PII why is FULL in the local jsonl but REDACTED in the committed MD) with dated patterns, unprompted whys only, first_seen/last_confirmed/expires_at, recency-weighted last-K disagreement + stale/demoted banner; suppression on recon/high-novelty (FTS5 score floor); holdout probe; purge wipes the LOCAL raw dir"
+      - "selftest green LANG=C Py3.9: capture->recall immediate roundtrip; no % anywhere; borrowed excluded from 'your reasoning'; marked_option is a label not pre-selected; novelty/recon suppression; drift demotion; purge; secret/PII refusal; tz-aware datetime never utcnow"
+
+  - id: p2-authority-elicitation
+    title: "decision-preferences.md authority + brainstorm-elicitation.md wiring (pull recall + capture)"
+    type: standard
+    backend: claude
+    tier: standard
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [p1-spine]
+    write_allowed:
+      - "skills/compound-v/decision-preferences.md"
+      - "skills/compound-v/brainstorm-elicitation.md"
+    read_allowed:
+      - "scripts/**"
+      - "skills/**"
+      - "docs/superpowers/specs/2026-07-15-v2.16-decision-preferences-design.md"
+      - "docs/superpowers/expert/2026-07-16-v2.16-decision-preferences.md"
+    acceptance:
+      - "decision-preferences.md: authority doc (memory+challenge framing, off|on-demand|marked, marked=label-not-default always challenge-paired, unprompted why, recon/novelty suppression, LOCAL storage, drift/holdout/expiry/purge, anti-ruflo)"
+      - "brainstorm-elicitation.md: wire the PULL recall at the pre-fork checkpoint (after batch gate ~95, before ladder ~105) and capture at reconciliation (~178); never add a rung or alter gate/ladder logic; surfacing always challenge-paired; human gate inviolable"
+      - "lint-frontmatter clean; no scope-gate violation"
+
+  - id: p3-command-config
+    title: "/v:preferences command + resolve_brainstorm in project-config.py"
+    type: standard
+    backend: claude
+    tier: standard
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [p1-spine]
+    write_allowed:
+      - "commands/v-preferences.md"
+      - "scripts/compound-v-project-config.py"
+    read_allowed:
+      - "scripts/**"
+      - "commands/**"
+      - "docs/superpowers/specs/2026-07-15-v2.16-decision-preferences-design.md"
+    acceptance:
+      - "resolve_brainstorm(cfg)->(values,warnings) mirrors resolve_pre_eval EXACTLY (fresh-dict guard, bool-is-int guard, coerce bad->default+warn, never raise); valid {off,on-demand,marked}, default on-demand; the FIRST Python brainstorm.* reader; project-config selftest extended"
+      - "v-preferences.md: /v:preferences stats|distill|purge|show over the LOCAL model; read-only observe, control-via-CLI framing"
+      - "lint-frontmatter clean; project-config --selftest green py3.9"
+
+  - id: z1-release
+    title: "Lockstep 2.16.0 + CHANGELOG + README"
+    type: shared_foundation
+    backend: claude
+    tier: deep
+    effort: medium
+    isolation: direct
+    run: serial
+    depends_on: [p1-spine, p2-authority-elicitation, p3-command-config]
+    write_allowed:
+      - ".claude-plugin/plugin.json"
+      - ".claude-plugin/marketplace.json"
+      - "CHANGELOG.md"
+      - "README.md"
+    read_allowed:
+      - "**"
+    acceptance:
+      - "plugin.json + marketplace.json lockstep 2.16.0; CHANGELOG '## [2.16.0]' naming the memory+challenge feature honestly (recall my own reasoning, marked=label-not-default, challenge-paired, LOCAL storage); README /v:preferences one-liner"
+      - "manifest-validator + lint-frontmatter clean"

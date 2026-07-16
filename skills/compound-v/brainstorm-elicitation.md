@@ -102,6 +102,52 @@ Form-shape rules for any batch, on any surface:
   in the terminal" option — so the listed choices never frame out the true answer.
 - One screen (or call) per batch; answering is never mandatory — the terminal reply wins.
 
+## Decision-preference recall — surfaced only when the mode invites it (never a rung)
+
+At the **pre-fork checkpoint** — after the batch gate has decided *what* renders but before the
+surface ladder decides *where* — the maker's **own dated past reasoning** for the fork about to be
+shown *may* be surfaced, always paired with a divergent challenge. **Whether it surfaces at all is
+decided entirely by the mode below** — and the default mode surfaces **nothing** unless the human
+asks. This is a memory aid, never a nudge; the full authority is
+[decision-preferences.md](decision-preferences.md). It runs at the **checkpoint seam**, is
+**surface-agnostic**, and **adds no rung** — it annotates whatever the ladder renders and survives a
+runtime rung-drop unchanged.
+
+**Resolve `brainstorm.preferences`** (`.claude/compound-v.json`, resolved by `resolve_brainstorm` in
+`scripts/compound-v-project-config.py`; default `on-demand`). The three modes are not variations on
+one behavior — **only one of them ever surfaces history without being asked:**
+
+- **`off`** → do nothing. No recall call, no evidence, no badge. The feature is dark.
+- **`on-demand` (the default)** → a genuine **PULL, never a push**: history surfaces **only when the
+  human explicitly asks for it** at this fork ("have I decided this before?", "what did I pick last
+  time?", "past?", or any equivalent request). Absent that request the default experience shows **NO
+  history at all** — nothing is pulled, nothing is annotated, and **no "you picked X before" ever
+  appears before the human chooses.** The default does not anchor. When (and only when) the human
+  asks, call `recall --question … --option … --mode on-demand`; on `shown:true` surface the dated
+  `evidence` + its mandatory `challenge`, evidence-only (`marked_option` is `null` in this mode).
+- **`marked` (opt-in)** → the **one** auto-annotating mode. At a *qualifying* fork, call
+  `recall … --mode marked` without waiting to be asked; on `shown:true` place the returned
+  `marked_option.badge` (`↩ your past pick: N/M · date`) beside its **NEUTRAL** option, **always**
+  rendered together with the `challenge`. A soft, low-urgency label — **never a pre-selected
+  control**. A fork that does not qualify (no `marked_option`) annotates nothing.
+
+Independent of `batch_elicitation`: recall behaves the same whether the fork renders as a batch, a
+single question, or a terminal turn.
+
+- **Suppress where recon widens.** On a **recon-touched** or **high-novelty** fork, do not surface
+  even in `marked` — pass `--recon-touched` when Phase-0 recon touched this fork
+  ([phase-0-recon.md](phase-0-recon.md)); the spine also self-suppresses low-similarity/novel forks.
+  `recall` returning `shown:false` (any `suppressed_reason`) ⇒ render nothing. Recon-widen and
+  preference-narrow never co-fire on one fork.
+- **ALWAYS render the `challenge`** alongside any surfaced evidence or badge — a recall without its
+  divergent counter-move never appears (the spine already enforces this by suppressing `no-challenge`).
+- **NEVER pre-select, never pre-tick, never add or reorder a ladder rung.** Any surfaced history is an
+  annotation on an option the human still picks from a neutral state; the challenge and the
+  evidence/badge always render together.
+- **The inviolable human gate still holds** — verbatim from the batch gate above:
+  *"answering is never mandatory — the terminal reply wins."* A mark or an evidence line is input, never
+  an answer; the terminal reply overrides every annotation exactly as it overrides every click.
+
 ## The surface ladder — where a gated batch renders
 
 A batch that clears the gate renders on the highest available rung:
@@ -177,6 +223,25 @@ never an authority. Resolve each group independently:
 | Is ambiguous for the group (unclear which option; contradicts the clicks unclearly) | **Re-ask that group, sequentially** |
 | Group has no events and no terminal mention | **Never infer a default** — ask it sequentially, or record it as explicitly deferred with the user's consent |
 
+### Capture the resolved decision (memory, not authority)
+
+Reconciliation is the one place the resolved answer is **authoritative**, so it is where — and only
+where — a preference fork is captured. Gate on `brainstorm.preferences` (`off` ⇒ skip entirely); skip
+too on the recon-touched / high-novelty forks where recall was suppressed. Capture runs in **both**
+`on-demand` and `marked`, and is independent of whether any history was surfaced at the fork. For a
+resolved preference-eligible group:
+
+- **Prompt the UNPROMPTED `why` FIRST** — free text, or an explicit skip (`--why` omitted ⇒ stored
+  `null`). Candidate rationales may be offered only *after* the human's own attempt and are stored
+  `--why-class borrowed` (weighted down, excluded from "your reasoning"). Never infer a rationale.
+- **Capture** with `compound-v-preferences.py capture --question … --option … --chosen <resolved>`
+  plus the `--why`. Pass **only** the resolved fork — do **not** compare the outcome against any
+  `marked_option`, and do **not** hand-set any drift or holdout flag. The spine accrues honest drift
+  and the deterministic holdout itself from the accumulating log, in every mode; the caller's job ends
+  at recording the resolved `chosen` and the unprompted `why`.
+- This appends to the LOCAL raw log only; the in-repo distillate is refreshed by `distill`
+  (`/v:preferences`). See [decision-preferences.md](decision-preferences.md) for the full contract.
+
 ## The upstream override, stated honestly
 
 Upstream routes text questions to the terminal. Verbatim, from the
@@ -198,6 +263,7 @@ caveat (nothing enforces it — see SKILL.md's auto-fire caveat). Not overridden
 
 - The main skill (overrides table + auto-fire caveat): [SKILL.md](SKILL.md)
 - The sibling surface, pre-brainstorm recon: [phase-0-recon.md](phase-0-recon.md)
+- Decision-preference recall/capture (memory + challenge) authority: [decision-preferences.md](decision-preferences.md)
 - Config key `brainstorm.batch_elicitation`: [/v:init](../../commands/v-init.md)
 - Misclassification evidence + batching thresholds: [2026-07-10 expert audit](../../docs/superpowers/expert/2026-07-10-research-grounded-brainstorm.md)
 - Checkpoint + transactional hardening evidence (C1 21–27, C2 6–7): [2026-07-11 expert audit](../../docs/superpowers/expert/2026-07-11-v2-8-hardening.md)

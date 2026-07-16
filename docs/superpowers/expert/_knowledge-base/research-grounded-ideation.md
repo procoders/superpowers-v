@@ -43,3 +43,22 @@ Maintained by Compound V Phase 1B advisor. Append at the bottom on each pass.
 
 Structure: **FACTS/CONSTRAINTS (anchor-safe) → QUESTIONS-TO-ASK (framed as mistakes-to-avoid) →
 SUGGESTED DIRECTIONS (anchor-unsafe, ≥2–3 divergent, non-exhaustive) → SOURCES.**
+
+---
+
+## Updated 2026-07-16 — self-model recall is anchoring PLUS a feedback loop (decision-preferences audit)
+
+Front-loaded *research* anchors once. A **self-preference model surfaced at a fork** is worse: it is the same
+design-fixation anchor ("the first idea drops an anchor; most circle it") AND a compounding **feedback loop**.
+
+- **Lock-in Hypothesis** ([arXiv 2506.06166](https://arxiv.org/abs/2506.06166)): a human↔model loop where
+  "models learn human beliefs … reinforce … reabsorb … feed them back … again and again" produces "sudden and
+  sustained drops in diversity." A capture→distill→recall→highlight→capture preference lane IS this loop.
+- **Direct conflict with Trigger-0.** Recon exists to *widen* a fork (≥2–3 divergent directions); a preference
+  lane *narrows* toward past choices. Surfacing "you picked X before" on a fork recon just widened **cancels
+  the widening** — the more expensive feature loses. Prose claiming the two are "aligned" is not a structural
+  fix.
+- **Guardrail (reusable):** on any **recon-touched or high-novelty/low-similarity fork**, suppress preferences
+  (evidence-on-demand at most, never pre-select). Recon-widen and preference-narrow must never both fire on the
+  same fork. When a self-model surfaces a past choice, pair it with the strongest **divergent** alternative so
+  recall triggers challenge, not convergence. Fuller treatment: `preference-modeling-choice-architecture.md`.
