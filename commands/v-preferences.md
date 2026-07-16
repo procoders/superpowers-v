@@ -48,8 +48,10 @@ Args: `{{args}}` — one of `stats` (default) · `distill` · `show` · `purge`.
   ```
   cat docs/superpowers/preferences/preferences.md
   ```
-  If it is absent, say so and suggest running `distill` first (it only writes once at least one decision has
-  been captured). This is the shared, aggregated model — the raw per-decision log is never shown here.
+  If it is absent, say so and suggest running `distill` first. `distill` always writes the in-repo
+  `preferences.md` — a placeholder (`_No decisions captured yet._`) when the local log is empty, or the
+  distilled, PII-scrubbed pattern model once decisions exist. This is the shared, aggregated model — the raw
+  per-decision log (local `~/.claude`) is never shown here.
 
 - **`purge`** — wipe the **LOCAL** raw `decisions.jsonl` in one command. **State that it is IRREVERSIBLE**
   (per the base rule for destructive actions — say WHY and confirm intent before running): it deletes the full
