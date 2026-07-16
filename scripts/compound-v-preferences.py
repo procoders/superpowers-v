@@ -136,10 +136,14 @@ PII_RE = re.compile(
 )
 
 # Absolute/local filesystem paths (H7): free-form NAMES in `why` aren't stdlib-detectable, but a
-# structured path (/Users/alice/…, /home/…, ~/…, Windows X:\…) is — redact it before the shipped
-# distillate. HONEST RESIDUAL LIMIT: this catches structured PII + paths, NOT arbitrary names.
+# structured path is — redact it before the shipped distillate. We match ANY absolute POSIX path of
+# >= 2 segments (/var/tmp/client.txt, /etc/hosts, /Users/alice/…), plus ~/… home paths and Windows
+# X:\… drive paths. OVER-redacting a path-like token in the SHIPPED distillate is the SAFE direction
+# (the raw jsonl keeps the full text); a stray URL path being redacted is acceptable. HONEST
+# RESIDUAL LIMIT: this catches structured PII + paths, NOT arbitrary free-form personal names.
 PATH_RE = re.compile(
-    r"(?:~|/Users|/home|/root)/[^\s\"'(),\]]+"          # unix home / user-scoped absolute paths
+    r"~/[^\s\"'(),\]]+"                                    # ~ home-relative absolute paths
+    r"|(?:/[\w.\-]+){2,}/?"                                # ANY absolute POSIX path, >= 2 segments
     r"|[A-Za-z]:\\[^\s\"'(),\]]+"                          # Windows drive-letter path
 )
 
@@ -171,9 +175,11 @@ def scrub(text):
     """Secret-redact (reused) THEN PII-redact THEN path-redact. Before any in-repo/shipped write.
 
     Order: reused `redact` (PEM key blocks + secret tokens) -> PII_RE (email/SSN/card) ->
-    PATH_RE (absolute/local filesystem paths). HONEST LIMIT: catches structured secrets/PII and
-    filesystem paths; free-form personal NAMES are NOT stdlib-detectable and are not scrubbed —
-    which is exactly why the RAW `why` stays in the LOCAL, never-committed, purgeable log.
+    PATH_RE (ANY absolute POSIX path >= 2 segments, ~/… home paths, Windows X:\…). OVER-redacting
+    a path-like token here is the SAFE direction — the SHIPPED distillate errs toward [REDACTED
+    PATH] while the raw local jsonl keeps the full text. HONEST LIMIT: catches structured
+    secrets/PII and filesystem paths; free-form personal NAMES are NOT stdlib-detectable and are
+    not scrubbed — which is exactly why the RAW `why` stays in the LOCAL, never-committed, log.
     """
     if text is None:
         return None
@@ -195,18 +201,38 @@ def is_flagged(text):
 def assert_home_outside_repo(home_root):
     """REFUSE (H6) any LOCAL raw root that resolves INSIDE this git repo / under its toplevel.
 
-    The raw `decisions.jsonl` is the PII-prone, never-committed store; a root of `.` (repo root)
-    or any repo subpath would drop it into the tree. We refuse those (clear ValueError). We scope
-    the check to THIS repo's toplevel (via reused memory.find_repo_root) — NOT a generic .git
-    ancestor walk — so the legitimate default ~/.claude/... (which may itself be version-tracked)
-    is still accepted. Returns the realpath on success.
+    FAIL-CLOSED. The raw `decisions.jsonl` is the PII-prone, never-committed store; a root of `.`
+    (repo root) or any repo subpath would drop it into the tree. Containment can only be verified
+    when repo detection SUCCEEDS, so we distinguish three cases:
+
+      (a) detection succeeds, home is NOT under the repo toplevel -> ACCEPT (return realpath);
+      (b) detection succeeds, home IS the repo root or under it     -> REFUSE (in-tree raw log);
+      (c) detection RAISES or returns nothing (root undetermined)   -> REFUSE (can't verify).
+
+    Case (c) is the fail-closed fix: a detection failure must NOT silently accept the path (the
+    old behaviour let the repo root itself through when detection was forced to fail). We scope the
+    check to THIS repo's toplevel (via reused memory.find_repo_root) — NOT a generic .git ancestor
+    walk — so the legitimate default ~/.claude/... (which may itself be version-tracked) is still
+    accepted in case (a).
     """
     home_abs = os.path.realpath(os.path.expanduser(home_root))
     try:
-        repo_real = os.path.realpath(_cv_memory.find_repo_root(_SCRIPTS_DIR))
-    except Exception:  # noqa: BLE001 — never let repo detection crash a legitimate resolve
-        repo_real = None
-    if repo_real and (home_abs == repo_real or home_abs.startswith(repo_real + os.sep)):
+        detected = _cv_memory.find_repo_root(_SCRIPTS_DIR)
+    except Exception as e:  # noqa: BLE001 — detection FAILED: cannot verify => refuse (fail-closed)
+        raise ValueError(
+            "refusing a preferences home because repo containment could NOT be verified "
+            "(repo detection failed: " + str(e) + "): " + home_abs
+            + " — the raw decisions log must NEVER risk landing in the tree. Fix repo detection, "
+            "or pass an explicit path known to be outside any repo."
+        )
+    if not detected:
+        raise ValueError(
+            "refusing a preferences home because the repo root could not be determined "
+            "(detection returned nothing): " + home_abs
+            + " — containment is unverifiable, so we fail closed. Pass an explicit outside path."
+        )
+    repo_real = os.path.realpath(detected)
+    if home_abs == repo_real or home_abs.startswith(repo_real + os.sep):
         raise ValueError(
             "refusing a preferences home inside the git repo: " + home_abs
             + " (repo: " + repo_real + ") — the raw decisions log must NEVER be writable into "
@@ -410,29 +436,21 @@ def disagreement(records, dominant_choice, k):
 
 
 def _is_holdout(question, fraction):
-    """Deterministic per-FORK holdout for RECALL suppression: a fixed fraction of forks are held
-    out (recall suppressed) so we can observe the un-nudged choice. Per-question => a given fork is
-    always/never held out. fraction<=0 disables."""
+    """ONE deterministic holdout decision — the SINGLE source of truth for BOTH recall + capture (C3).
+
+    The holdout decision is a pure function of (fork identity) + one fraction. Fork identity is the
+    `question` (the fork), exactly what `recall` keys on, so a fixed fraction of FORKS are held out.
+    `recall` calls this to decide `suppressed_reason:"holdout"` (suppress the surface); `capture`
+    calls this — same key, same fraction — to LABEL the record clean/un-nudged. Because both sides
+    call this one function identically, a record is labelled holdout/clean IFF recall would have
+    suppressed the surface for that fork: no fabricated "clean un-nudged holdout" can ever be
+    recorded for a fork whose surface recall actually showed. fraction<=0 disables; >=1 holds all."""
     if fraction <= 0.0:
         return False
     if fraction >= 1.0:
         return True
     import hashlib
     bucket = int(hashlib.sha256((question or "").encode("utf-8")).hexdigest(), 16) % 1000
-    return bucket < int(fraction * 1000)
-
-
-def _is_holdout_record(question, captured_at, fraction):
-    """Deterministic per-CAPTURE holdout FLAG (C3): a fixed fraction of individual captures are
-    recorded as clean, un-nudged holdout samples. Keyed on (question|captured_at) so repeated
-    captures of the SAME fork still split a deterministic fraction into the holdout set."""
-    if fraction <= 0.0:
-        return False
-    if fraction >= 1.0:
-        return True
-    import hashlib
-    key = (question or "") + "|" + (captured_at or "")
-    bucket = int(hashlib.sha256(key.encode("utf-8")).hexdigest(), 16) % 1000
     return bucket < int(fraction * 1000)
 
 
@@ -464,11 +482,23 @@ def build_challenges(options, dominant_choice, matched):
                 "changed that makes it the stronger move now?"
             )
         else:
-            # TRUE: it WAS chosen, just less often than the dominant. Never claim it wasn't.
-            divergent.append(
-                "You have chosen '" + str(o) + "' before, but '" + str(dominant_choice)
-                + "' more often — is that still the right call here?"
-            )
+            # It WAS chosen. "more often" is ONLY truthful when the dominant's count is STRICTLY
+            # greater than this option's count (H5). On a TIE (equal counts) the dominant is only
+            # via deterministic tie-break, so "more often" would be a FALSE frequency claim — emit
+            # a neutral, truthful phrasing instead. Never state a frequency comparison that is false.
+            dom_ct = chosen_counts.get(dominant_choice, 0)
+            o_ct = chosen_counts.get(o, 0)
+            if dom_ct > o_ct:
+                divergent.append(
+                    "You have chosen '" + str(o) + "' before, but '" + str(dominant_choice)
+                    + "' more often — is that still the right call here?"
+                )
+            else:
+                # Equal counts: no "more often". State the true equal-frequency fact.
+                divergent.append(
+                    "You have chosen both '" + str(o) + "' and '" + str(dominant_choice)
+                    + "' equally often at similar forks — the past does not favour either here."
+                )
     distinct = sorted(str(c) for c in chosen_set)
     if len(distinct) > 1:
         divergent.append(
@@ -500,7 +530,8 @@ def build_challenges(options, dominant_choice, matched):
 # recall (PULL)
 # --------------------------------------------------------------------------- #
 def recall(jsonl, question, options, context_tags, mode,
-           recon_touched=False, novelty_floor=NOVELTY_FLOOR, holdout_fraction=0.0,
+           recon_touched=False, novelty_floor=NOVELTY_FLOOR,
+           holdout_fraction=DEFAULT_HOLDOUT_FRACTION,
            k=DRIFT_K, demote_threshold=DRIFT_DEMOTE_THRESHOLD,
            staleness_days=STALENESS_DAYS, now=None):
     """Return the recall dict. NEVER marks an option chosen/default in any mode."""
@@ -545,7 +576,9 @@ def recall(jsonl, question, options, context_tags, mode,
     sample_n = len(matched)
     base["sample_n"] = sample_n
 
-    # 3) holdout — deliberately suppress + let the caller record the un-nudged choice.
+    # 3) holdout — deliberately suppress + let capture record the un-nudged choice. The SAME
+    #    `_is_holdout(question, holdout_fraction)` (single source of truth) that capture uses to
+    #    label the record, so suppress-here and label-there agree for this fork (C3).
     if _is_holdout(question, holdout_fraction):
         base["suppressed_reason"] = "holdout"
         return base
@@ -628,8 +661,10 @@ def capture(jsonl, question, options, chosen, why, why_class, context_tags,
         the PRIOR records for this fork (the exact recall matching) and setting
         `changed_after_recall = (chosen != dominant_past_choice)`. So drift accrues in EVERY mode,
         decoupled from what was shown/marked. An explicit bool still overrides (injectable tests).
-      * `holdout` — when None, capture decides it deterministically INSIDE the spine via
-        `holdout_fraction` (default ~0.15, injectable), recording a clean un-nudged sample.
+      * `holdout` — when None, capture decides it via the SINGLE source of truth
+        `_is_holdout(question, holdout_fraction)` — the exact function/key/fraction `recall` uses
+        to suppress — so the "clean un-nudged" label agrees with recall's suppression for that fork
+        (default fraction ~0.15, injectable). Never a fabricated clean sample for a surfaced fork.
 
     The `why` is UNPROMPTED free-text first (or null). A tapped candidate is `borrowed`.
     A secret/PII-shaped record is FLAGGED (kept full locally — the local log is the private
@@ -654,9 +689,12 @@ def capture(jsonl, question, options, chosen, why, why_class, context_tags,
     else:
         changed_after_recall = bool(changed_after_recall)
 
-    # Self-sufficient holdout: a deterministic fraction of captures are clean un-nudged samples.
+    # Self-sufficient holdout (C3): decided by the SINGLE source of truth `_is_holdout(question,
+    # fraction)` — the exact function + key + fraction `recall` uses. So a record is labelled
+    # clean/un-nudged holdout IFF recall would have suppressed the surface for this fork; never a
+    # fabricated clean sample for a fork recall actually surfaced. Explicit caller value wins.
     if holdout is None:
-        holdout = _is_holdout_record(question, now, holdout_fraction)
+        holdout = _is_holdout(question, holdout_fraction)
     else:
         holdout = bool(holdout)
 
@@ -870,7 +908,10 @@ def main(argv):
     pr.add_argument("--mode", choices=list(VALID_MODES), default="on-demand")
     pr.add_argument("--recon-touched", dest="recon_touched", action="store_true")
     pr.add_argument("--novelty-floor", dest="novelty_floor", type=float, default=NOVELTY_FLOOR)
-    pr.add_argument("--holdout-fraction", dest="holdout_fraction", type=float, default=0.0)
+    pr.add_argument("--holdout-fraction", dest="holdout_fraction", type=float,
+                    default=DEFAULT_HOLDOUT_FRACTION,
+                    help="deterministic holdout fraction (spine-decided; MUST match capture's "
+                         "so recall-suppress and capture-label agree; default ~0.15)")
     pr.add_argument("--k-window", dest="k", type=int, default=DRIFT_K)
     pr.add_argument("--demote-threshold", dest="demote_threshold", type=float,
                     default=DRIFT_DEMOTE_THRESHOLD)
@@ -1005,7 +1046,7 @@ def _selftest():
             ["safety", "default-vs-power"], recall_shown=True, challenged=True,
             changed_after_recall=False, suppressed_reason=None, holdout=False, now=T1)
 
-    r = recall(jsonl, Q, OPTS, ["safety"], "on-demand", now=T1)
+    r = recall(jsonl, Q, OPTS, ["safety"], "on-demand", holdout_fraction=0.0, now=T1)
     expect("roundtrip: recall finds the captured pattern immediately", r["shown"] is True)
     expect("roundtrip: sample_n counts both captures", r["sample_n"] == 2)
     expect("roundtrip: evidence carries dated past decisions", len(r["evidence"]) == 2)
@@ -1019,12 +1060,12 @@ def _selftest():
     expect("fts5_escape handles ./-/OR (no OperationalError)", threw is False)
 
     # ---- no % anywhere in any recall/stats/distill output ----
-    r_marked = recall(jsonl, Q, OPTS, [], "marked", now=T1)
+    r_marked = recall(jsonl, Q, OPTS, [], "marked", holdout_fraction=0.0, now=T1)
     blob = json.dumps(r_marked, ensure_ascii=False)
     expect("no '%' char in marked recall output", "%" not in blob)
 
     # ---- on-demand returns marked_option null; marked populates it as a LABEL ----
-    r_od = recall(jsonl, Q, OPTS, [], "on-demand", now=T1)
+    r_od = recall(jsonl, Q, OPTS, [], "on-demand", holdout_fraction=0.0, now=T1)
     expect("on-demand: marked_option is null", r_od["marked_option"] is None)
     expect("marked: marked_option populated (qualifying pattern)",
            r_marked["marked_option"] is not None)
@@ -1064,7 +1105,8 @@ def _selftest():
     capture(jsonl_nc, "release cadence choice", ["ship weekly"], "ship weekly",
             "steady", "unprompted", ["cadence"], recall_shown=False, challenged=False,
             changed_after_recall=False, suppressed_reason=None, holdout=False, now=T1)
-    r_nc = recall(jsonl_nc, "release cadence choice", ["ship weekly"], [], "on-demand", now=T1)
+    r_nc = recall(jsonl_nc, "release cadence choice", ["ship weekly"], [], "on-demand",
+                  holdout_fraction=0.0, now=T1)
     expect("no divergent counter -> shown:false no-challenge",
            r_nc["shown"] is False and r_nc["suppressed_reason"] == "no-challenge")
 
@@ -1075,7 +1117,7 @@ def _selftest():
 
     # ---- expiry suppression ----
     r_exp = recall(jsonl, Q, OPTS, [], "on-demand", staleness_days=0,
-                   now="2026-06-01T10:00:00Z")
+                   holdout_fraction=0.0, now="2026-06-01T10:00:00Z")
     expect("stale pattern -> shown:false expired",
            r_exp["shown"] is False and r_exp["suppressed_reason"] == "expired")
 
@@ -1092,7 +1134,8 @@ def _selftest():
         capture(jsonl_dr, QD, ODS, "antigravity", "trying the alt", "unprompted", ["backend"],
                 recall_shown=True, challenged=True, changed_after_recall=True,
                 suppressed_reason=None, holdout=False, now="2026-01-%sT10:00:00Z" % day)
-    r_dr = recall(jsonl_dr, QD, ODS, [], "marked", now="2026-01-08T10:00:00Z")
+    r_dr = recall(jsonl_dr, QD, ODS, [], "marked", holdout_fraction=0.0,
+                  now="2026-01-08T10:00:00Z")
     expect("rising disagreement -> shown:false demoted",
            r_dr["shown"] is False and r_dr["suppressed_reason"] == "demoted")
     expect("demotion carries a drift banner", bool(r_dr["banner"]))
@@ -1174,7 +1217,7 @@ def _selftest():
     expect("C2: unrelated fork sharing one generic token -> shown:false high-novelty",
            r_c2["shown"] is False and r_c2["suppressed_reason"] == "high-novelty")
     # sanity: the SAME topic (A) still matches (the gate isn't just suppressing everything).
-    r_c2_same = recall(jsonl_c2, QA, OA, ["backend"], "on-demand", now=T1)
+    r_c2_same = recall(jsonl_c2, QA, OA, ["backend"], "on-demand", holdout_fraction=0.0, now=T1)
     expect("C2: the genuinely-similar fork still matches", r_c2_same["shown"] is True)
 
     # ---- H5: no mark for an ABSENT dominant; no FALSE 'you did not pick X' claim ----
@@ -1185,7 +1228,8 @@ def _selftest():
         capture(jsonl_h5, QH5, ["A", "B", "C"], ch, "reason", "unprompted", ["statestore"],
                 recall_shown=False, challenged=False, changed_after_recall=False,
                 suppressed_reason=None, holdout=False, now="2026-01-%sT10:00:00Z" % day)
-    r_h5 = recall(jsonl_h5, QH5, ["B", "C"], ["statestore"], "marked", now=T1)   # A absent
+    r_h5 = recall(jsonl_h5, QH5, ["B", "C"], ["statestore"], "marked",
+                  holdout_fraction=0.0, now=T1)   # A absent
     expect("H5: absent dominant A is NOT marked", r_h5["marked_option"] is None)
     expect("H5: recall still shown with a grounded challenge", r_h5["shown"] is True)
     _ch_blob = " ".join(r_h5["challenge"])
@@ -1194,6 +1238,38 @@ def _selftest():
            and "not chosen 'B'" not in _ch_blob)
     expect("H5: C (never chosen) may be honestly flagged as not-yet-picked",
            "not chosen 'C'" in _ch_blob)
+
+    # ---- H5: NEVER claim "more often" on a TIE; allowed only on a real (strict) majority ----
+    home_tie = os.path.join(tmp, "home_tie")
+    jsonl_tie = decisions_path(home_tie)
+    QT = "cache layer choice for the api gateway"
+    OT = ["A", "B"]
+    # TIE: A once, B once -> the dominant is only a deterministic tie-break, NOT "more often".
+    capture(jsonl_tie, QT, OT, "A", "r", "unprompted", ["cachelayer"], recall_shown=False,
+            challenged=False, changed_after_recall=False, suppressed_reason=None,
+            holdout=False, now="2026-01-01T10:00:00Z")
+    capture(jsonl_tie, QT, OT, "B", "r", "unprompted", ["cachelayer"], recall_shown=False,
+            challenged=False, changed_after_recall=False, suppressed_reason=None,
+            holdout=False, now="2026-01-02T10:00:00Z")
+    r_tie = recall(jsonl_tie, QT, OT, ["cachelayer"], "on-demand", holdout_fraction=0.0,
+                   now="2026-01-03T10:00:00Z")
+    tie_blob = " ".join(r_tie["challenge"])
+    expect("H5: a TIE never emits a false 'more often' claim",
+           r_tie["shown"] is True and "more often" not in tie_blob)
+    expect("H5: a TIE states the true equal-frequency fact instead", "equally often" in tie_blob)
+
+    # real strict majority A,A,B -> 'more often' IS a truthful claim for B.
+    home_maj = os.path.join(tmp, "home_maj")
+    jsonl_maj = decisions_path(home_maj)
+    for day, ch in (("01", "A"), ("02", "A"), ("03", "B")):
+        capture(jsonl_maj, QT, OT, ch, "r", "unprompted", ["cachelayer"], recall_shown=False,
+                challenged=False, changed_after_recall=False, suppressed_reason=None,
+                holdout=False, now="2026-01-%sT10:00:00Z" % day)
+    r_maj = recall(jsonl_maj, QT, OT, ["cachelayer"], "on-demand", holdout_fraction=0.0,
+                   now="2026-01-04T10:00:00Z")
+    maj_blob = " ".join(r_maj["challenge"])
+    expect("H5: a real strict majority MAY claim 'more often'",
+           r_maj["shown"] is True and "more often" in maj_blob)
 
     # ---- H4: a recent contradictory pick does NOT refresh confirmation -> can still expire ----
     home_h4 = os.path.join(tmp, "home_h4")
@@ -1210,7 +1286,7 @@ def _selftest():
     # staleness 60d: strict last-confirmed 2026-01-04 -> expired by 2026-06-02; the newer loose
     # (a contradiction, not a confirmation) must NOT keep the strict pattern fresh.
     r_h4 = recall(jsonl_h4, QH4, OH4, ["lint"], "on-demand", staleness_days=60,
-                  now="2026-06-02T10:00:00Z")
+                  holdout_fraction=0.0, now="2026-06-02T10:00:00Z")
     expect("H4: contradictory recent pick does not refresh -> pattern EXPIRES",
            r_h4["shown"] is False and r_h4["suppressed_reason"] == "expired")
     st_h4 = stats(jsonl_h4, staleness_days=60, now="2026-06-02T10:00:00Z")
@@ -1231,26 +1307,57 @@ def _selftest():
     recs_c3 = load_records(jsonl_c3)
     expect("C3: spine set changed_after_recall on the switched picks (no caller input)",
            any(r["changed_after_recall"] for r in recs_c3))
-    r_c3 = recall(jsonl_c3, QC3, OC3, [], "marked", now="2026-02-07T10:00:00Z")
+    r_c3 = recall(jsonl_c3, QC3, OC3, [], "marked", holdout_fraction=0.0,
+                  now="2026-02-07T10:00:00Z")
     expect("C3: default-mode captures accrue drift -> demoted + banner",
            r_c3["shown"] is False and r_c3["suppressed_reason"] == "demoted"
            and bool(r_c3["banner"]))
 
-    # ---- C3: a holdout fraction of captures is recorded as clean un-nudged samples ----
+    # ---- C3: ONE source of truth — recall's holdout decision and capture's recorded holdout flag
+    #      AGREE for every fork; a deterministic fraction of FORKS are held out (some, not all);
+    #      and a record is NEVER labelled clean-holdout when recall would have surfaced it. ----
     home_hf = os.path.join(tmp, "home_hf")
-    jsonl_hf = decisions_path(home_hf)
-    QHF = "which css framework for the marketing page"
-    n_hf = 20
+    FRAC_HF = 0.5
+    QUESTIONS_HF = ["marketing page fork variant number %d choice" % i for i in range(40)]
     holdout_n = 0
-    for i in range(1, n_hf + 1):
-        rec_hf = capture(jsonl_hf, QHF, ["tailwind", "vanilla"],
+    agree = True
+    for i, qhf in enumerate(QUESTIONS_HF):
+        jhf = decisions_path(os.path.join(home_hf, "q%d" % i))
+        rec_hf = capture(jhf, qhf, ["tailwind", "vanilla"],
                          "tailwind" if i % 2 else "vanilla", "r", "unprompted", ["css"],
                          recall_shown=False, challenged=False,
-                         now="2026-03-%02dT10:00:00Z" % i, holdout_fraction=0.5)
-        if rec_hf["holdout"]:
+                         now="2026-03-01T10:00:00Z", holdout_fraction=FRAC_HF)
+        # `_is_holdout(qhf, FRAC_HF)` IS recall's holdout decision (single source of truth).
+        if rec_hf["holdout"] != _is_holdout(qhf, FRAC_HF):
+            agree = False
+    for qhf in QUESTIONS_HF:
+        if _is_holdout(qhf, FRAC_HF):
             holdout_n += 1
-    expect("C3: a deterministic fraction of captures are holdout (some, not all)",
-           0 < holdout_n < n_hf)
+    expect("C3: capture's holdout flag AGREES with recall's holdout decision for every fork", agree)
+    expect("C3: a deterministic fraction of FORKS are holdout (some, not all)",
+           0 < holdout_n < len(QUESTIONS_HF))
+
+    # end-to-end: a holdout fork -> capture labels clean AND recall suppresses with 'holdout';
+    #             a surfaced fork -> capture does NOT label clean AND recall does not suppress holdout.
+    holdout_fork = next(q for q in QUESTIONS_HF if _is_holdout(q, FRAC_HF))
+    surfaced_fork = next(q for q in QUESTIONS_HF if not _is_holdout(q, FRAC_HF))
+    j_hold = decisions_path(os.path.join(home_hf, "e2e-hold"))
+    rec_hold = capture(j_hold, holdout_fork, ["a", "b"], "a", "r", "unprompted", ["css"],
+                       recall_shown=False, challenged=False, now="2026-03-02T10:00:00Z",
+                       holdout_fraction=FRAC_HF)
+    rc_hold = recall(j_hold, holdout_fork, ["a", "b"], ["css"], "on-demand",
+                     holdout_fraction=FRAC_HF, now="2026-03-03T10:00:00Z")
+    expect("C3: holdout fork -> capture clean-labels AND recall suppresses with 'holdout'",
+           rec_hold["holdout"] is True and rc_hold["shown"] is False
+           and rc_hold["suppressed_reason"] == "holdout")
+    j_surf = decisions_path(os.path.join(home_hf, "e2e-surf"))
+    rec_surf = capture(j_surf, surfaced_fork, ["a", "b"], "a", "r", "unprompted", ["css"],
+                       recall_shown=False, challenged=False, now="2026-03-02T10:00:00Z",
+                       holdout_fraction=FRAC_HF)
+    rc_surf = recall(j_surf, surfaced_fork, ["a", "b"], ["css"], "on-demand",
+                     holdout_fraction=FRAC_HF, now="2026-03-03T10:00:00Z")
+    expect("C3: surfaced fork -> capture never clean-labels AND recall does not suppress holdout",
+           rec_surf["holdout"] is False and rc_surf["suppressed_reason"] != "holdout")
 
     # ---- H6: a home root INSIDE the git repo is refused; a tmp dir outside is accepted ----
     repo_root_for_test = _cv_memory.find_repo_root(_SCRIPTS_DIR)
@@ -1271,22 +1378,58 @@ def _selftest():
         accepted = False
     expect("H6: a tmp home root outside the repo is accepted", accepted)
 
+    # H6 FAIL-CLOSED: if repo detection RAISES (or returns nothing), containment is unverifiable,
+    # so the path must be REFUSED — not accepted (the old fail-open bug let the repo root through).
+    def _raise_detection(*_a, **_k):
+        raise RuntimeError("forced repo-detection failure")
+
+    _orig_frr = _cv_memory.find_repo_root
+    refused_raise = False
+    try:
+        _cv_memory.find_repo_root = _raise_detection
+        try:
+            assert_home_outside_repo(os.path.join(tmp, "outside-home-fc"))
+        except ValueError:
+            refused_raise = True
+    finally:
+        _cv_memory.find_repo_root = _orig_frr
+    expect("H6: forced repo-detection FAILURE -> path REFUSED (fail-closed, not accepted)",
+           refused_raise)
+
+    refused_none = False
+    try:
+        _cv_memory.find_repo_root = lambda *_a, **_k: None
+        try:
+            assert_home_outside_repo(os.path.join(tmp, "outside-home-none"))
+        except ValueError:
+            refused_none = True
+    finally:
+        _cv_memory.find_repo_root = _orig_frr
+    expect("H6: repo detection returning None -> path REFUSED (fail-closed)", refused_none)
+
     # ---- H7: an absolute local path in `why` is FULL locally but REDACTED in the distillate ----
     home_h7 = os.path.join(tmp, "home_h7")
     jsonl_h7 = decisions_path(home_h7)
     repo_md_h7 = os.path.join(tmp, "repo_h7", "preferences.md")
-    path_why = "kept the notes at /Users/alice/private/client.txt for reference"
+    path_why = ("kept notes at /var/tmp/client.txt copied /etc/hosts and "
+                "/Users/alice/private/secret.txt for reference")
     capture(jsonl_h7, "where to store the working notes", ["local file", "shared drive"],
             "local file", path_why, "unprompted", ["notes"], recall_shown=False,
             challenged=False, changed_after_recall=False, suppressed_reason=None,
             holdout=False, now=T0)
     raw_h7 = open(jsonl_h7, encoding="utf-8").read()
-    expect("H7: absolute path is FULL in the local jsonl",
-           "/Users/alice/private/client.txt" in raw_h7)
+    expect("H7: general + bare + home absolute paths are ALL FULL in the local jsonl",
+           "/var/tmp/client.txt" in raw_h7 and "/etc/hosts" in raw_h7
+           and "/Users/alice/private/secret.txt" in raw_h7)
     distill(jsonl_h7, repo_md_h7, now=T0)
     md_h7 = open(repo_md_h7, encoding="utf-8").read()
-    expect("H7: distillate REDACTS the absolute local path",
-           "/Users/alice/private/client.txt" not in md_h7 and "REDACTED PATH" in md_h7)
+    expect("H7: distillate REDACTS a general absolute POSIX path (/var/tmp/client.txt)",
+           "/var/tmp/client.txt" not in md_h7)
+    expect("H7: distillate REDACTS a bare 2-segment path (/etc/hosts)",
+           "/etc/hosts" not in md_h7)
+    expect("H7: distillate REDACTS the home-scoped path (/Users/...)",
+           "/Users/alice/private/secret.txt" not in md_h7)
+    expect("H7: distillate carries the [REDACTED PATH] marker", "REDACTED PATH" in md_h7)
 
     # ---- purge wipes the local raw dir ----
     p = purge(home)
