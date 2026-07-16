@@ -37,9 +37,11 @@ Hard invariants (each mirrors a spec Global Constraint / acceptance criterion):
     cannot produce a genuine divergent counter returns `shown:false,
     suppressed_reason:"no-challenge"`, so a mark can never appear without its challenge.
 
-  * NEVER FIRES WHERE RECON WIDENS. A recon-touched or high-novelty fork (top FTS5 similarity
-    below the novelty floor, or no match at all) returns `shown:false` with the matching
-    `suppressed_reason`. Trigger-0 recon (widen) and preference recall (narrow) never co-fire.
+  * NEVER FIRES WHERE RECON WIDENS. A recon-touched or high-novelty fork returns `shown:false`
+    with the matching `suppressed_reason`. High-novelty is a MEANINGFUL gate, not a bare bm25
+    floor: a hit must share >= MIN_MATCH_TOKENS distinct NON-stopword tokens with the WHOLE fork
+    (question + option labels + context_tags), so a single shared generic word ("default") on an
+    unrelated fork does NOT match. Trigger-0 recon (widen) and preference recall (narrow) never co-fire.
 
   * UNPROMPTED WHY, NEVER FABRICATED. `capture` stores the human's free-text `why` verbatim
     (or null when skipped, `why_class:"none"`); a candidate the human tapped is stored
@@ -101,11 +103,29 @@ append_line = _cv_update.append_line          # LANG=C utf-8 append + forbidden-
 # Tunables (all overridable via CLI for deterministic, injectable tests).
 # --------------------------------------------------------------------------- #
 MARK_MIN_COUNT = 2            # "two is a pattern" — a mark needs >= this dominant count
-NOVELTY_FLOOR = 0.0          # top (-bm25) similarity below this => high-novelty suppression
+# High-novelty gate. A bare bm25 floor of 0.0 is NOT meaningful — FTS5 MATCH ORs the query
+# tokens, so a single shared common word ("default") scores as a "match" on an unrelated fork.
+# The MEANINGFUL gate is token-overlap: a hit must share at least MIN_MATCH_TOKENS distinct
+# NON-stopword tokens with the whole fork (question + option labels + context_tags), not one
+# generic word. NOVELTY_FLOOR remains a per-hit bm25 floor on top (a real match yields > 0).
+NOVELTY_FLOOR = 0.0          # per-hit (-bm25) floor; the real novelty gate is MIN_MATCH_TOKENS
+MIN_MATCH_TOKENS = 2         # a hit must share >= this many distinct non-stopword fork tokens
 DRIFT_K = 5                  # recency window for the last-K disagreement rate
 DRIFT_DEMOTE_THRESHOLD = 0.5  # recency-weighted disagreement >= this => demote + banner
 STALENESS_DAYS = 180         # a pattern un-confirmed past this window auto-expires
+DEFAULT_HOLDOUT_FRACTION = 0.15  # spine-decided holdout fraction (injectable); caller doesn't manage it
 VALID_MODES = ("off", "on-demand", "marked")
+
+# Generic/stopword tokens that must NOT, by themselves, make two forks "match". Standard English
+# function words + a few generic decision words ("default", "option", …). Kept deliberately small
+# so meaningful domain tokens (headless, backend, keychain, …) still drive relevance.
+STOPWORDS = frozenset("""
+a an and or the of for to in on at by is are be it its this that these those with without
+what which how why when where who whom should could would may might will shall do does did done
+not no nor yes if then else than as into onto over under up down out off about
+we you i they he she them our your my me us their his her from per via each any all some
+default choice choices choose choosing pick picks option options vs versus use using used setup
+""".split())
 
 # Light PII families (ADDITIVE to the reused SECRET_RE/PEM_RE — not a fork of the secret list):
 # email, US-SSN-shaped, and a 13-16 digit card-shaped run.
@@ -113,6 +133,14 @@ PII_RE = re.compile(
     r"([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
     r"|\b\d{3}[-.\s]?\d{2}[-.\s]?\d{4}\b"
     r"|\b(?:\d[ -]?){13,16}\b)"
+)
+
+# Absolute/local filesystem paths (H7): free-form NAMES in `why` aren't stdlib-detectable, but a
+# structured path (/Users/alice/…, /home/…, ~/…, Windows X:\…) is — redact it before the shipped
+# distillate. HONEST RESIDUAL LIMIT: this catches structured PII + paths, NOT arbitrary names.
+PATH_RE = re.compile(
+    r"(?:~|/Users|/home|/root)/[^\s\"'(),\]]+"          # unix home / user-scoped absolute paths
+    r"|[A-Za-z]:\\[^\s\"'(),\]]+"                          # Windows drive-letter path
 )
 
 
@@ -140,10 +168,19 @@ def _date_only(iso):
 # secret + PII scrub (reuse redact; add the light PII pass on top)
 # --------------------------------------------------------------------------- #
 def scrub(text):
-    """Secret-redact (reused) THEN PII-redact. Used before any in-repo/shipped write."""
+    """Secret-redact (reused) THEN PII-redact THEN path-redact. Before any in-repo/shipped write.
+
+    Order: reused `redact` (PEM key blocks + secret tokens) -> PII_RE (email/SSN/card) ->
+    PATH_RE (absolute/local filesystem paths). HONEST LIMIT: catches structured secrets/PII and
+    filesystem paths; free-form personal NAMES are NOT stdlib-detectable and are not scrubbed —
+    which is exactly why the RAW `why` stays in the LOCAL, never-committed, purgeable log.
+    """
     if text is None:
         return None
-    return PII_RE.sub("[REDACTED PII]", redact(text))
+    t = redact(text)                              # PEM blocks + secret token families (reused)
+    t = PII_RE.sub("[REDACTED PII]", t)           # email / SSN-shaped / card-shaped
+    t = PATH_RE.sub("[REDACTED PATH]", t)         # absolute/local filesystem paths
+    return t
 
 
 def is_flagged(text):
@@ -155,14 +192,44 @@ def is_flagged(text):
 # --------------------------------------------------------------------------- #
 # storage roots (injectable)
 # --------------------------------------------------------------------------- #
+def assert_home_outside_repo(home_root):
+    """REFUSE (H6) any LOCAL raw root that resolves INSIDE this git repo / under its toplevel.
+
+    The raw `decisions.jsonl` is the PII-prone, never-committed store; a root of `.` (repo root)
+    or any repo subpath would drop it into the tree. We refuse those (clear ValueError). We scope
+    the check to THIS repo's toplevel (via reused memory.find_repo_root) — NOT a generic .git
+    ancestor walk — so the legitimate default ~/.claude/... (which may itself be version-tracked)
+    is still accepted. Returns the realpath on success.
+    """
+    home_abs = os.path.realpath(os.path.expanduser(home_root))
+    try:
+        repo_real = os.path.realpath(_cv_memory.find_repo_root(_SCRIPTS_DIR))
+    except Exception:  # noqa: BLE001 — never let repo detection crash a legitimate resolve
+        repo_real = None
+    if repo_real and (home_abs == repo_real or home_abs.startswith(repo_real + os.sep)):
+        raise ValueError(
+            "refusing a preferences home inside the git repo: " + home_abs
+            + " (repo: " + repo_real + ") — the raw decisions log must NEVER be writable into "
+            "the tree. Use a path outside the repo, or the default ~/.claude/compound-v/preferences."
+        )
+    return home_abs
+
+
 def resolve_home_root(arg_home):
-    """LOCAL raw dir. Precedence: --home-root > COMPOUND_V_PREFS_HOME > ~/.claude/..."""
+    """LOCAL raw dir. Precedence: --home-root > COMPOUND_V_PREFS_HOME > ~/.claude/...
+
+    Whatever the source, the resolved root is repo-containment-checked (H6) before use.
+    """
     if arg_home:
-        return os.path.abspath(os.path.expanduser(arg_home))
-    env = os.environ.get("COMPOUND_V_PREFS_HOME")
-    if env:
-        return os.path.abspath(os.path.expanduser(env))
-    return os.path.join(os.path.expanduser("~"), ".claude", "compound-v", "preferences")
+        root = os.path.abspath(os.path.expanduser(arg_home))
+    else:
+        env = os.environ.get("COMPOUND_V_PREFS_HOME")
+        if env:
+            root = os.path.abspath(os.path.expanduser(env))
+        else:
+            root = os.path.join(os.path.expanduser("~"), ".claude", "compound-v", "preferences")
+    assert_home_outside_repo(root)
+    return root
 
 
 def decisions_path(home_root):
@@ -205,10 +272,31 @@ def _mint_id(question, captured_at):
 # --------------------------------------------------------------------------- #
 # in-process FTS5 over the LOCAL decisions.jsonl (reusing fts5_escape)
 # --------------------------------------------------------------------------- #
+def _tokens(text):
+    return re.findall(r"\w+", (text or "").lower(), re.UNICODE)
+
+
+def _content_tokens(text):
+    """Distinct NON-stopword tokens (len > 1). The unit of genuine fork overlap."""
+    return set(t for t in _tokens(text) if len(t) > 1 and t not in STOPWORDS)
+
+
+def _fork_text(question, options, context_tags):
+    """The WHOLE fork as one string: question + option labels + context tags (C2).
+
+    Matching on the whole fork (not one question word) is what makes a match reflect the fork.
+    """
+    parts = [str(question or "")]
+    parts += [str(o) for o in (options or [])]
+    parts += [str(t) for t in (context_tags or [])]
+    return " ".join(p for p in parts if p)
+
+
 def _record_body(r):
     parts = [
         str(r.get("question") or ""),
-        " ".join(r.get("context_tags") or []),
+        " ".join(str(o) for o in (r.get("options") or [])),   # option labels indexed too (C2)
+        " ".join(str(t) for t in (r.get("context_tags") or [])),
         str(r.get("chosen") or ""),
         str(r.get("why") or ""),
     ]
@@ -227,11 +315,14 @@ def build_index(records):
     return conn, True
 
 
-def fts_match(conn, ok, question, limit=50):
-    """Return [(record_index, similarity)], similarity = -bm25 (higher = better)."""
+def fts_match(conn, ok, text, limit=50):
+    """Return [(record_index, similarity)], similarity = -bm25 (higher = better).
+
+    `text` is the WHOLE fork string (question + options + tags), not just the question.
+    """
     if not ok:
         return []
-    m = fts5_escape(question)          # route EVERY user string through the escaper
+    m = fts5_escape(text)              # route EVERY user string through the escaper
     if not m:
         return []
     try:
@@ -242,6 +333,26 @@ def fts_match(conn, ok, question, limit=50):
     except sqlite3.OperationalError:   # the #1 crash class — never let it escape
         return []
     return [(int(rid) - 1, -float(score)) for (rid, score) in rows]
+
+
+def relevant_hits(conn, ok, records, question, options, context_tags,
+                  novelty_floor=NOVELTY_FLOOR, min_tokens=MIN_MATCH_TOKENS):
+    """FTS5 candidates FILTERED by genuine fork overlap (C2).
+
+    A raw FTS5 hit can be a single shared generic word. We keep a hit ONLY if it shares at least
+    `min_tokens` DISTINCT non-stopword tokens with the whole fork AND clears the bm25 floor. This
+    is the meaningful high-novelty gate: an unrelated fork that merely shares "default" is dropped.
+    """
+    fork_text = _fork_text(question, options, context_tags)
+    fork_toks = _content_tokens(fork_text)
+    out = []
+    for (i, sim) in fts_match(conn, ok, fork_text):
+        if sim < novelty_floor:
+            continue
+        shared = fork_toks & _content_tokens(_record_body(records[i]))
+        if len(shared) >= min_tokens:
+            out.append((i, sim))
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -259,6 +370,18 @@ def _dominant(records):
         return None, 0
     best = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0]
     return best[0], best[1]
+
+
+def _last_confirmed(records, dominant_choice):
+    """Newest record that ACTUALLY confirmed the dominant choice (H4).
+
+    A contradictory record (chosen != dominant) is NOT a confirmation and must not refresh the
+    pattern's freshness/expiry — otherwise 4×A(old)+1×B(new) would falsely date the A-pattern as
+    fresh. Returns "" when nothing confirms the dominant (e.g. dominant is None).
+    """
+    confirming = [(r.get("captured_at") or "")
+                  for r in records if r.get("chosen") == dominant_choice]
+    return max(confirming) if confirming else ""
 
 
 def disagreement(records, dominant_choice, k):
@@ -287,38 +410,89 @@ def disagreement(records, dominant_choice, k):
 
 
 def _is_holdout(question, fraction):
-    """Deterministic holdout: hash(question) in the held-out fraction. fraction<=0 disables."""
+    """Deterministic per-FORK holdout for RECALL suppression: a fixed fraction of forks are held
+    out (recall suppressed) so we can observe the un-nudged choice. Per-question => a given fork is
+    always/never held out. fraction<=0 disables."""
     if fraction <= 0.0:
         return False
     if fraction >= 1.0:
         return True
     import hashlib
-    bucket = int(hashlib.sha256(question.encode("utf-8")).hexdigest(), 16) % 1000
+    bucket = int(hashlib.sha256((question or "").encode("utf-8")).hexdigest(), 16) % 1000
+    return bucket < int(fraction * 1000)
+
+
+def _is_holdout_record(question, captured_at, fraction):
+    """Deterministic per-CAPTURE holdout FLAG (C3): a fixed fraction of individual captures are
+    recorded as clean, un-nudged holdout samples. Keyed on (question|captured_at) so repeated
+    captures of the SAME fork still split a deterministic fraction into the holdout set."""
+    if fraction <= 0.0:
+        return False
+    if fraction >= 1.0:
+        return True
+    import hashlib
+    key = (question or "") + "|" + (captured_at or "")
+    bucket = int(hashlib.sha256(key.encode("utf-8")).hexdigest(), 16) % 1000
     return bucket < int(fraction * 1000)
 
 
 def build_challenges(options, dominant_choice, matched):
-    """Divergent counter-moves. Empty ONLY when no genuine divergent element exists
-    (single option that IS the past pick, no historical divergence) — that empties the
-    list and forces the no-challenge suppression, so a mark never appears bare."""
-    challenges = []
+    """History-GROUNDED divergent counter-moves (H5b). NEVER states a falsehood.
+
+    Every claim is checked against ACTUAL history (`matched`): we never say "you did not pick X"
+    unless the record truly shows X was never chosen at a matched fork. The list is empty ONLY
+    when no genuine divergent element exists (single option that IS the past pick, no historical
+    divergence) — which forces the no-challenge suppression, so a mark never appears bare.
+    """
+    chosen_counts = {}
+    for r in matched:
+        c = r.get("chosen")
+        if c is not None:
+            chosen_counts[c] = chosen_counts.get(c, 0) + 1
+    total = sum(chosen_counts.values())
+    chosen_set = set(chosen_counts)
+
+    # The genuine divergent counter-moves (each TRUE by construction against `chosen_set`).
+    divergent = []
     for o in options:
-        if o != dominant_choice:
-            challenges.append(
-                "You did not pick '" + str(o) + "' last time — has anything changed that "
-                "makes it the stronger move now?"
+        if o == dominant_choice:
+            continue
+        if o not in chosen_set:
+            # TRUE: this option was never chosen at a matched fork.
+            divergent.append(
+                "You have not chosen '" + str(o) + "' at a similar fork before — has anything "
+                "changed that makes it the stronger move now?"
             )
-    distinct = sorted(set(r.get("chosen") for r in matched if r.get("chosen")))
+        else:
+            # TRUE: it WAS chosen, just less often than the dominant. Never claim it wasn't.
+            divergent.append(
+                "You have chosen '" + str(o) + "' before, but '" + str(dominant_choice)
+                + "' more often — is that still the right call here?"
+            )
+    distinct = sorted(str(c) for c in chosen_set)
     if len(distinct) > 1:
-        challenges.append(
+        divergent.append(
             "Your past choices on similar forks diverged (" + ", ".join(distinct) + ") — "
             "the pattern may not hold here."
         )
-    if challenges:
+
+    if not divergent:
+        return []
+
+    # Prepend a GROUNDED framing of the actual pattern (true by construction), then the
+    # divergent counters, then the falsifiable-evidence reminder.
+    challenges = []
+    if dominant_choice is not None and total:
         challenges.append(
-            "This fork may differ from the past ones — treat the history as falsifiable "
-            "evidence, not a rule."
+            "Your dominant past pick on similar forks was '" + str(dominant_choice) + "' ("
+            + str(chosen_counts.get(dominant_choice, 0)) + "/" + str(total)
+            + ") — treat it as falsifiable evidence, not a rule."
         )
+    challenges.extend(divergent)
+    challenges.append(
+        "This fork may differ from the past ones — treat the history as falsifiable "
+        "evidence, not a rule."
+    )
     return challenges
 
 
@@ -356,10 +530,13 @@ def recall(jsonl, question, options, context_tags, mode,
 
     records = load_records(jsonl)
     conn, ok = build_index(records)
-    hits = fts_match(conn, ok, question)
+    hits = relevant_hits(conn, ok, records, question, options, context_tags,
+                         novelty_floor=novelty_floor)
 
-    # 2) high-novelty — no match, or top similarity below the novelty floor.
-    if not hits or hits[0][1] < novelty_floor:
+    # 2) high-novelty — no match, or no hit shares enough of the WHOLE fork (C2). A single shared
+    #    generic token ("default") is NOT a match; a real hit must overlap >= MIN_MATCH_TOKENS
+    #    distinct non-stopword fork tokens AND clear the bm25 floor (both enforced in relevant_hits).
+    if not hits:
         base["suppressed_reason"] = "high-novelty"
         return base
 
@@ -373,8 +550,10 @@ def recall(jsonl, question, options, context_tags, mode,
         base["suppressed_reason"] = "holdout"
         return base
 
-    # 4) auto-expiry — a pattern un-confirmed past its staleness window stops surfacing.
-    last_confirmed = max((r.get("captured_at") or "") for r in matched)
+    # 4) auto-expiry — a pattern un-CONFIRMED past its staleness window stops surfacing (H4).
+    #    Freshness dates from the newest record that ACTUALLY confirmed the dominant choice, so a
+    #    later contradictory pick does NOT refresh the pattern (4×A old + 1×B new can still expire).
+    last_confirmed = _last_confirmed(matched, dominant_choice)
     lc_dt = _parse_ts(last_confirmed)
     now_dt = _parse_ts(now)
     if lc_dt and now_dt and now_dt > lc_dt + datetime.timedelta(days=staleness_days):
@@ -416,9 +595,12 @@ def recall(jsonl, question, options, context_tags, mode,
     base["challenge"] = challenges
     base["shown"] = True
 
-    # marked_option: a dated LABEL, ONLY in `marked` mode when the pattern qualifies.
+    # marked_option: a dated LABEL, ONLY in `marked` mode when the pattern qualifies AND the
+    # dominant past choice is ACTUALLY PRESENT among the current options (H5a). If the dominant
+    # pick isn't a live option, marking it would be a fabricated label — so no mark.
     # It is NEVER a selection/default and carries no chosen/selected/default key.
-    if mode == "marked" and dominant_choice is not None and dominant_count >= MARK_MIN_COUNT:
+    if (mode == "marked" and dominant_choice is not None
+            and dominant_count >= MARK_MIN_COUNT and dominant_choice in options):
         base["marked_option"] = {
             "option": dominant_choice,
             "count": dominant_count,
@@ -434,9 +616,20 @@ def recall(jsonl, question, options, context_tags, mode,
 # capture
 # --------------------------------------------------------------------------- #
 def capture(jsonl, question, options, chosen, why, why_class, context_tags,
-            recall_shown, challenged, changed_after_recall, suppressed_reason,
-            holdout, now=None):
+            recall_shown, challenged, changed_after_recall=None, suppressed_reason=None,
+            holdout=None, now=None, holdout_fraction=DEFAULT_HOLDOUT_FRACTION,
+            novelty_floor=NOVELTY_FLOOR, k=DRIFT_K):
     """Append one fork outcome to the LOCAL raw jsonl (full text, private + purgeable).
+
+    SELF-SUFFICIENT drift + holdout (C3). The caller does NOT need to pass either, and in the
+    default on-demand mode (where nothing is marked) it cannot compute drift anyway:
+
+      * `changed_after_recall` — when None (the default), capture computes it ITSELF by matching
+        the PRIOR records for this fork (the exact recall matching) and setting
+        `changed_after_recall = (chosen != dominant_past_choice)`. So drift accrues in EVERY mode,
+        decoupled from what was shown/marked. An explicit bool still overrides (injectable tests).
+      * `holdout` — when None, capture decides it deterministically INSIDE the spine via
+        `holdout_fraction` (default ~0.15, injectable), recording a clean un-nudged sample.
 
     The `why` is UNPROMPTED free-text first (or null). A tapped candidate is `borrowed`.
     A secret/PII-shaped record is FLAGGED (kept full locally — the local log is the private
@@ -447,6 +640,25 @@ def capture(jsonl, question, options, chosen, why, why_class, context_tags,
         why_class = "none"
     elif why_class not in ("unprompted", "borrowed"):
         why_class = "unprompted"
+
+    # Self-sufficient drift: derive the past dominant for THIS fork from prior records (same
+    # matching as recall) and set disagreement ourselves. Explicit caller value wins if given.
+    if changed_after_recall is None:
+        prior = load_records(jsonl)
+        conn, ok = build_index(prior)
+        hits = relevant_hits(conn, ok, prior, question, options, context_tags,
+                             novelty_floor=novelty_floor)
+        matched = [prior[i] for (i, _sim) in hits]
+        dom, _dc = _dominant(matched)
+        changed_after_recall = bool(dom is not None and chosen != dom)
+    else:
+        changed_after_recall = bool(changed_after_recall)
+
+    # Self-sufficient holdout: a deterministic fraction of captures are clean un-nudged samples.
+    if holdout is None:
+        holdout = _is_holdout_record(question, now, holdout_fraction)
+    else:
+        holdout = bool(holdout)
 
     flagged = is_flagged(question or "") or is_flagged(why or "")
     if flagged:
@@ -467,9 +679,9 @@ def capture(jsonl, question, options, chosen, why, why_class, context_tags,
         "why_class": why_class,           # unprompted | borrowed | none
         "recall_shown": bool(recall_shown),
         "challenged": bool(challenged),
-        "changed_after_recall": bool(changed_after_recall),
+        "changed_after_recall": changed_after_recall,   # spine-computed unless explicitly injected
         "suppressed_reason": suppressed_reason,
-        "holdout": bool(holdout),
+        "holdout": holdout,               # spine-decided unless explicitly injected
         "flagged": flagged,
     }
     append_line(jsonl, rec)
@@ -495,7 +707,8 @@ def cluster(records):
     for sig, recs in sorted(groups.items()):
         dominant_choice, dominant_count = _dominant(recs)
         first_seen = min((r.get("captured_at") or "") for r in recs)
-        last_confirmed = max((r.get("captured_at") or "") for r in recs)
+        # H4: freshness = newest record that ACTUALLY confirmed the dominant, not newest overall.
+        last_confirmed = _last_confirmed(recs, dominant_choice)
         rate, dcount, window = disagreement(recs, dominant_choice, DRIFT_K)
         out.append({
             "signature": sig,
@@ -675,9 +888,12 @@ def main(argv):
     pc.add_argument("--context-tag", dest="context_tags", action="append", default=[])
     pc.add_argument("--recall-shown", dest="recall_shown", action="store_true")
     pc.add_argument("--challenged", action="store_true")
-    pc.add_argument("--changed-after-recall", dest="changed_after_recall", action="store_true")
+    # Drift + holdout are SPINE-computed (C3): the caller does NOT pass them. The only knob is the
+    # (injectable) holdout fraction; changed_after_recall is derived from the prior fork pattern.
+    pc.add_argument("--holdout-fraction", dest="holdout_fraction", type=float,
+                    default=DEFAULT_HOLDOUT_FRACTION,
+                    help="deterministic clean-sample fraction (spine-decided; default ~0.15)")
     pc.add_argument("--suppressed-reason", dest="suppressed_reason", default=None)
-    pc.add_argument("--holdout", action="store_true")
     pc.add_argument("--now", default=None)
 
     pd = sub.add_parser("distill", help="regenerate the in-repo preferences.md (scrubbed)")
@@ -705,7 +921,11 @@ def main(argv):
         ap.print_help()
         return 1
 
-    home_root = resolve_home_root(getattr(args, "home_root", None))
+    try:
+        home_root = resolve_home_root(getattr(args, "home_root", None))
+    except ValueError as e:   # H6: repo-contained home root is refused, fail-closed
+        sys.stderr.write("ERROR: " + str(e) + "\n")
+        return 1
     jsonl = decisions_path(home_root)
 
     if args.cmd == "recall":
@@ -718,10 +938,11 @@ def main(argv):
         return 0
 
     if args.cmd == "capture":
+        # changed_after_recall + holdout are spine-computed (left as None) — C3.
         rec = capture(jsonl, args.question, args.options, args.chosen, args.why,
                       args.why_class, args.context_tags, args.recall_shown, args.challenged,
-                      args.changed_after_recall, args.suppressed_reason, args.holdout,
-                      now=args.now)
+                      suppressed_reason=args.suppressed_reason, now=args.now,
+                      holdout_fraction=args.holdout_fraction)
         print(json.dumps(rec, ensure_ascii=False, indent=2))
         return 0
 
@@ -820,7 +1041,9 @@ def _selftest():
            bool(r_marked["marked_option"]) and bool(r_marked["challenge"]))
 
     # ---- high-novelty suppression: unrelated question AND score-below-floor ----
-    r_nov1 = recall(jsonl, "quantum banana teleportation recipe", OPTS, [], "on-demand", now=T1)
+    # A genuinely unrelated fork has unrelated OPTIONS too (matching folds the whole fork now).
+    r_nov1 = recall(jsonl, "quantum banana teleportation recipe",
+                    ["teleport now", "abort the jump"], [], "on-demand", now=T1)
     expect("unrelated fork -> shown:false high-novelty",
            r_nov1["shown"] is False and r_nov1["suppressed_reason"] == "high-novelty")
     r_nov2 = recall(jsonl, Q, OPTS, [], "on-demand", novelty_floor=9999.0, now=T1)
@@ -935,6 +1158,135 @@ def _selftest():
     # ---- off mode disables entirely ----
     r_off = recall(jsonl, Q, OPTS, [], "off", now=T1)
     expect("off mode -> shown:false, no surface", r_off["shown"] is False)
+
+    # ---- C2: a novel fork sharing only ONE generic token does NOT match (high-novelty) ----
+    home_c2 = os.path.join(tmp, "home_c2")
+    jsonl_c2 = decisions_path(home_c2)
+    QA = "safe default for a headless worker"          # topic A: infra/backend
+    OA = ["codex", "antigravity"]
+    for day in ("01", "02"):
+        capture(jsonl_c2, QA, OA, "codex", "kernel write-confinement", "unprompted",
+                ["backend"], recall_shown=False, challenged=False, changed_after_recall=False,
+                suppressed_reason=None, holdout=False, now="2026-01-%sT10:00:00Z" % day)
+    # topic B shares exactly one GENERIC token ("default") with topic A — nothing else.
+    r_c2 = recall(jsonl_c2, "default typography for a birthday invitation",
+                  ["serif font", "script font"], ["design"], "on-demand", now=T1)
+    expect("C2: unrelated fork sharing one generic token -> shown:false high-novelty",
+           r_c2["shown"] is False and r_c2["suppressed_reason"] == "high-novelty")
+    # sanity: the SAME topic (A) still matches (the gate isn't just suppressing everything).
+    r_c2_same = recall(jsonl_c2, QA, OA, ["backend"], "on-demand", now=T1)
+    expect("C2: the genuinely-similar fork still matches", r_c2_same["shown"] is True)
+
+    # ---- H5: no mark for an ABSENT dominant; no FALSE 'you did not pick X' claim ----
+    home_h5 = os.path.join(tmp, "home_h5")
+    jsonl_h5 = decisions_path(home_h5)
+    QH5 = "state store choice for the widget layer"
+    for day, ch in (("01", "A"), ("02", "B"), ("03", "A")):   # history A,B,A -> dominant A
+        capture(jsonl_h5, QH5, ["A", "B", "C"], ch, "reason", "unprompted", ["statestore"],
+                recall_shown=False, challenged=False, changed_after_recall=False,
+                suppressed_reason=None, holdout=False, now="2026-01-%sT10:00:00Z" % day)
+    r_h5 = recall(jsonl_h5, QH5, ["B", "C"], ["statestore"], "marked", now=T1)   # A absent
+    expect("H5: absent dominant A is NOT marked", r_h5["marked_option"] is None)
+    expect("H5: recall still shown with a grounded challenge", r_h5["shown"] is True)
+    _ch_blob = " ".join(r_h5["challenge"])
+    expect("H5: no false 'you did not pick B' claim (B WAS chosen)",
+           "not pick 'B'" not in _ch_blob and "did not pick 'B'" not in _ch_blob
+           and "not chosen 'B'" not in _ch_blob)
+    expect("H5: C (never chosen) may be honestly flagged as not-yet-picked",
+           "not chosen 'C'" in _ch_blob)
+
+    # ---- H4: a recent contradictory pick does NOT refresh confirmation -> can still expire ----
+    home_h4 = os.path.join(tmp, "home_h4")
+    jsonl_h4 = decisions_path(home_h4)
+    QH4 = "linting posture for the shared package"
+    OH4 = ["strict", "loose"]
+    for day in ("01", "02", "03", "04"):                       # 4x strict (OLD)
+        capture(jsonl_h4, QH4, OH4, "strict", "consistency", "unprompted", ["lint"],
+                recall_shown=False, challenged=False, changed_after_recall=False,
+                suppressed_reason=None, holdout=False, now="2026-01-%sT10:00:00Z" % day)
+    capture(jsonl_h4, QH4, OH4, "loose", "one-off", "unprompted", ["lint"],   # 1x loose (NEW)
+            recall_shown=False, challenged=False, changed_after_recall=False,
+            suppressed_reason=None, holdout=False, now="2026-06-01T10:00:00Z")
+    # staleness 60d: strict last-confirmed 2026-01-04 -> expired by 2026-06-02; the newer loose
+    # (a contradiction, not a confirmation) must NOT keep the strict pattern fresh.
+    r_h4 = recall(jsonl_h4, QH4, OH4, ["lint"], "on-demand", staleness_days=60,
+                  now="2026-06-02T10:00:00Z")
+    expect("H4: contradictory recent pick does not refresh -> pattern EXPIRES",
+           r_h4["shown"] is False and r_h4["suppressed_reason"] == "expired")
+    st_h4 = stats(jsonl_h4, staleness_days=60, now="2026-06-02T10:00:00Z")
+    expect("H4: stats dates last_confirmed to the genuine (old) confirmation",
+           st_h4["patterns"][0]["last_confirmed"][:10] == "2026-01-04")
+
+    # ---- C3: default-mode capture (no drift/holdout flags) self-accrues drift -> demote ----
+    home_c3 = os.path.join(tmp, "home_c3")
+    jsonl_c3 = decisions_path(home_c3)
+    QC3 = "primary worker backend for the epic build"
+    OC3 = ["codex", "devin"]
+    for day, ch in (("01", "codex"), ("02", "codex"), ("03", "codex"),
+                    ("04", "devin"), ("05", "devin"), ("06", "devin")):
+        # NOTE: no changed_after_recall / holdout passed -> spine computes drift ITSELF.
+        capture(jsonl_c3, QC3, OC3, ch, "reason", "unprompted", ["c3backend"],
+                recall_shown=False, challenged=False,
+                now="2026-02-%sT10:00:00Z" % day, holdout_fraction=0.0)
+    recs_c3 = load_records(jsonl_c3)
+    expect("C3: spine set changed_after_recall on the switched picks (no caller input)",
+           any(r["changed_after_recall"] for r in recs_c3))
+    r_c3 = recall(jsonl_c3, QC3, OC3, [], "marked", now="2026-02-07T10:00:00Z")
+    expect("C3: default-mode captures accrue drift -> demoted + banner",
+           r_c3["shown"] is False and r_c3["suppressed_reason"] == "demoted"
+           and bool(r_c3["banner"]))
+
+    # ---- C3: a holdout fraction of captures is recorded as clean un-nudged samples ----
+    home_hf = os.path.join(tmp, "home_hf")
+    jsonl_hf = decisions_path(home_hf)
+    QHF = "which css framework for the marketing page"
+    n_hf = 20
+    holdout_n = 0
+    for i in range(1, n_hf + 1):
+        rec_hf = capture(jsonl_hf, QHF, ["tailwind", "vanilla"],
+                         "tailwind" if i % 2 else "vanilla", "r", "unprompted", ["css"],
+                         recall_shown=False, challenged=False,
+                         now="2026-03-%02dT10:00:00Z" % i, holdout_fraction=0.5)
+        if rec_hf["holdout"]:
+            holdout_n += 1
+    expect("C3: a deterministic fraction of captures are holdout (some, not all)",
+           0 < holdout_n < n_hf)
+
+    # ---- H6: a home root INSIDE the git repo is refused; a tmp dir outside is accepted ----
+    repo_root_for_test = _cv_memory.find_repo_root(_SCRIPTS_DIR)
+    bad_home = os.path.join(repo_root_for_test, "x-cv-selftest-must-not-exist")
+    refused = False
+    try:
+        resolve_home_root(bad_home)
+    except ValueError:
+        refused = True
+    expect("H6: a repo-internal home root is refused (raw log never in the tree)", refused)
+    expect("H6: the refused repo path was never created",
+           not os.path.exists(bad_home))
+    accepted = False
+    try:
+        resolve_home_root(os.path.join(tmp, "outside-home"))   # tmp is outside the repo
+        accepted = True
+    except ValueError:
+        accepted = False
+    expect("H6: a tmp home root outside the repo is accepted", accepted)
+
+    # ---- H7: an absolute local path in `why` is FULL locally but REDACTED in the distillate ----
+    home_h7 = os.path.join(tmp, "home_h7")
+    jsonl_h7 = decisions_path(home_h7)
+    repo_md_h7 = os.path.join(tmp, "repo_h7", "preferences.md")
+    path_why = "kept the notes at /Users/alice/private/client.txt for reference"
+    capture(jsonl_h7, "where to store the working notes", ["local file", "shared drive"],
+            "local file", path_why, "unprompted", ["notes"], recall_shown=False,
+            challenged=False, changed_after_recall=False, suppressed_reason=None,
+            holdout=False, now=T0)
+    raw_h7 = open(jsonl_h7, encoding="utf-8").read()
+    expect("H7: absolute path is FULL in the local jsonl",
+           "/Users/alice/private/client.txt" in raw_h7)
+    distill(jsonl_h7, repo_md_h7, now=T0)
+    md_h7 = open(repo_md_h7, encoding="utf-8").read()
+    expect("H7: distillate REDACTS the absolute local path",
+           "/Users/alice/private/client.txt" not in md_h7 and "REDACTED PATH" in md_h7)
 
     # ---- purge wipes the local raw dir ----
     p = purge(home)
