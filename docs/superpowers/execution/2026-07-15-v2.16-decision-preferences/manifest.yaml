@@ -12,12 +12,12 @@ audits:
   library: docs/superpowers/library-audit/2026-07-15-v2.16-decision-preferences.md
 
 acceptance_criteria:
-  - "recall builds an in-process FTS5 index over LOCAL ~/.claude/compound-v/preferences/decisions.jsonl (immediate roundtrip, no shared corpus, fts5_escape on every user string); reuses memory.py fts5_escape/redact/SECRET_RE + update-memory.py append_line by import, never forked"
+  - "SPLIT storage: raw decisions.jsonl LOCAL under ~/.claude/compound-v/preferences/ (never committed); distilled preferences.md IN-REPO docs/superpowers/preferences/ (git-tracked, V-memory-indexed), secret+PII-SCRUBBED before write (local jsonl keeps full). recall builds in-process FTS5 over the LOCAL jsonl (immediate, fts5_escape on every user string); reuses memory.py fts5_escape/redact/SECRET_RE + update-memory.py append_line by import, never forked"
   - "no pre-tick/default in ANY mode; off|on-demand(default)|marked; marked returns marked_option as a LABEL (badge count+date) beside a NEUTRAL option, never pre-selected; every shown recall (and every marked_option) is challenge-paired (else shown:false suppressed_reason no-challenge)"
   - "why captured UNPROMPTED free-text first (skippable->null); candidates only after as why_class 'borrowed', weighted down + excluded from the 'your reasoning' distillation; never an inferred rationale; output has no % (counts only)"
   - "suppressed on recon-touched/high-novelty forks (top FTS5 score below floor -> shown:false); recency-weighted last-K disagreement demotes+banners a drifting pattern; holdout probe records un-nudged choices; auto-expiry; /v:preferences purge; secret+PII scan refuses a credential/PII-shaped record"
   - "resolve_brainstorm added to project-config.py mirroring resolve_pre_eval (valid off|on-demand|marked, default on-demand, coerce+warn, never raise); tz-aware datetime now(timezone.utc), never utcnow(); Py3.9-safe; --selftest green under LANG=C (auto-run by the CI all-selftest gate)"
-  - "2.16.0 lockstep; scope gate clean on every job; no write outside the partitioned file sets; no .gitignore change (data is under ~/.claude, not the repo)"
+  - "2.16.0 lockstep; scope gate clean on every job; no write outside the partitioned file sets; no .gitignore change (raw jsonl under ~/.claude; in-repo preferences.md tracked by default -> V-memory-visible)"
 
 routing_stance: claude-only
 max_parallel: 4
@@ -47,7 +47,7 @@ jobs:
     acceptance:
       - "recall: in-process FTS5 over LOCAL ~/.claude/compound-v/preferences/decisions.jsonl via imported fts5_escape; returns {shown,evidence,challenge,marked_option,sample_n,disagreement_rate,suppressed_reason}; marked_option populated only in marked mode as a LABEL (never a selection); no pre_select/default field; challenge-paired or shown:false"
       - "capture: unprompted why first (why_class unprompted|borrowed|none), never inferred; append via imported append_line (LANG=C utf-8); secret+PII scan (reuse SECRET_RE/PEM_RE/redact); records recall_shown/challenged/changed_after_recall/suppressed_reason"
-      - "distill: LOCAL preferences.md with dated patterns, unprompted whys only, first_seen/last_confirmed/expires_at, recency-weighted last-K disagreement + stale/demoted banner; suppression on recon/high-novelty (FTS5 score floor); holdout probe; purge wipes local dir"
+      - "distill: writes IN-REPO docs/superpowers/preferences/preferences.md (secret+PII-scrubbed before write; a PII why is FULL in the local jsonl but REDACTED in the committed MD) with dated patterns, unprompted whys only, first_seen/last_confirmed/expires_at, recency-weighted last-K disagreement + stale/demoted banner; suppression on recon/high-novelty (FTS5 score floor); holdout probe; purge wipes the LOCAL raw dir"
       - "selftest green LANG=C Py3.9: capture->recall immediate roundtrip; no % anywhere; borrowed excluded from 'your reasoning'; marked_option is a label not pre-selected; novelty/recon suppression; drift demotion; purge; secret/PII refusal; tz-aware datetime never utcnow"
 
   - id: p2-authority-elicitation
