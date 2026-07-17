@@ -217,6 +217,76 @@ def detect_ui(repo: str) -> bool:
     return False
 
 
+# Operations-file taxonomy, kept as named signal sets so the surface is documented in ONE place and
+# widening coverage is a data edit, not new control flow. Two literal kinds, matched by _ops_category:
+#   _OPS_PATH_FILES  — full repo-relative path (root-anchored configs like .circleci/config.yml)
+#   _OPS_BASE_FILES  — exact basename, at any depth (Jenkinsfile, Procfile, ...)
+# The remaining signals are shape-based (prefix/suffix/path-segment) and live in the predicates below.
+_YAML_EXT = (".yml", ".yaml")
+_OPS_PATH_FILES = {
+    "ci_cd": frozenset((".gitlab-ci.yml", ".circleci/config.yml", ".travis.yml",
+                        "azure-pipelines.yml", "bitbucket-pipelines.yml")),
+}
+_OPS_BASE_FILES = {
+    "ci_cd":      frozenset(("jenkinsfile",)),
+    "containers": frozenset(("kustomization.yaml", "chart.yaml")),
+    "deploy":     frozenset(("procfile", "fly.toml", "vercel.json", "netlify.toml",
+                             "render.yaml", "serverless.yml", "app.yaml")),
+}
+
+
+def _is_ci_cd(low, base):
+    return (base in _OPS_BASE_FILES["ci_cd"]
+            or low in _OPS_PATH_FILES["ci_cd"]
+            or (low.startswith(".github/workflows/") and low.endswith(_YAML_EXT)))
+
+
+def _is_containers(low, base):
+    return (base == "dockerfile" or base.startswith("dockerfile.")
+            or base in _OPS_BASE_FILES["containers"]
+            or low.endswith((".tf", ".tfvars"))
+            or ((base.startswith("docker-compose") or base.startswith("compose.")) and low.endswith(_YAML_EXT))
+            # k8s: filename/dir heuristic — it cannot see manifest content.
+            or low.startswith("k8s/") or "/k8s/" in low)
+
+
+def _is_deploy(low, base):
+    return (base in _OPS_BASE_FILES["deploy"]
+            or (base.startswith("deploy") and base.endswith(".sh")))
+
+
+# Evaluated in order; the first category whose predicate matches wins.
+_OPS_RULES = (("ci_cd", _is_ci_cd), ("containers", _is_containers), ("deploy", _is_deploy))
+
+
+def _ops_category(rel: str):
+    """Classify a repo-relative path into an operations category (ci_cd | containers | deploy),
+    or None. Signal surface lives in the _OPS_* sets and the _is_* predicates above."""
+    low = rel.lower()
+    base = low.rsplit("/", 1)[-1]
+    for category, matches in _OPS_RULES:
+        if matches(low, base):
+            return category
+    return None
+
+
+def detect_ops(repo: str) -> dict:
+    """Inventory CI/CD + container/infra + deploy files. Walks the filesystem (excluding VENDOR_DIRS)
+    so it works on non-git trees too. `present` is True iff any category matched."""
+    found = {"ci_cd": [], "containers": [], "deploy": []}
+    for dirpath, dirnames, filenames in os.walk(repo):
+        dirnames[:] = [d for d in dirnames if d not in VENDOR_DIRS]
+        for fn in filenames:
+            rel = os.path.relpath(os.path.join(dirpath, fn), repo).replace(os.sep, "/")
+            cat = _ops_category(rel)
+            if cat:
+                found[cat].append(rel)
+    for k in ("ci_cd", "containers", "deploy"):
+        found[k].sort()
+    found["present"] = any(found[k] for k in ("ci_cd", "containers", "deploy"))
+    return found
+
+
 def _design_result_ok(result: dict) -> bool:
     return int(result.get("summary", {}).get("errors", 1)) == 0
 
@@ -892,6 +962,22 @@ def _selftest() -> int:
         shutil.rmtree(d5, ignore_errors=True)
     check("detect_ui false on bare", detect_ui(tempfile.mkdtemp()) is False)
 
+    # detect_ops: CI/CD + container + deploy inventory (walks fs, not git — selftest dirs aren't repos).
+    d5b = tempfile.mkdtemp()
+    try:
+        os.makedirs(os.path.join(d5b, ".github", "workflows"))
+        with open(os.path.join(d5b, ".github", "workflows", "ci.yml"), "w") as fh: fh.write("on: push\n")
+        with open(os.path.join(d5b, "Dockerfile"), "w") as fh: fh.write("FROM alpine\n")
+        with open(os.path.join(d5b, "fly.toml"), "w") as fh: fh.write("app='x'\n")
+        r_ops = detect_ops(d5b)
+        check("detect_ops present true on ci+docker", r_ops["present"] is True)
+        check("detect_ops finds ci_cd workflow", ".github/workflows/ci.yml" in r_ops["ci_cd"])
+        check("detect_ops finds container Dockerfile", "Dockerfile" in r_ops["containers"])
+        check("detect_ops finds deploy fly.toml", "fly.toml" in r_ops["deploy"])
+    finally:
+        shutil.rmtree(d5b, ignore_errors=True)
+    check("detect_ops present false on bare", detect_ops(tempfile.mkdtemp())["present"] is False)
+
     # OUTPUT-side secret gate: blocks a secret in a GENERATED doc, passes clean prose.
     d6 = tempfile.mkdtemp()
     try:
@@ -1153,6 +1239,7 @@ def build_parser():
     sp = sub.add_parser("design-lint")
     sp.add_argument("--file", required=True); sp.add_argument("--json", action="store_true")
     sp = sub.add_parser("detect-ui"); sp.add_argument("--repo", default=".")
+    sp = sub.add_parser("detect-ops"); sp.add_argument("--repo", default="."); sp.add_argument("--json", action="store_true")
     sp = sub.add_parser("scan-output")
     sp.add_argument("--files", nargs="+", required=True)
     sp.add_argument("--repo", default="."); sp.add_argument("--json", action="store_true")
@@ -1197,6 +1284,13 @@ def main(argv) -> int:
         return 0 if result["ok"] else 2
     if args.cmd == "detect-ui":
         print("ui" if detect_ui(os.path.abspath(args.repo)) else "no-ui")
+        return 0
+    if args.cmd == "detect-ops":
+        result = detect_ops(os.path.abspath(args.repo))
+        if args.json:
+            print(json.dumps(result, indent=2))
+        else:
+            print("ops" if result["present"] else "no-ops")
         return 0
     if args.cmd == "scan-output":
         result = scan_output_files(os.path.abspath(args.repo), args.files)

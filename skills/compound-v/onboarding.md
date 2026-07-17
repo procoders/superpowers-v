@@ -55,6 +55,17 @@ Inventory the ground truth, write nothing:
 - **Existing instruction files** (treat per the cardinal rule above), stack, git remote origin.
 - **UI presence** via `python3 scripts/compound-v-onboard.py detect-ui --repo .` → `ui` / `no-ui`.
   This is the only thing that decides whether the DESIGN.md branch runs (step 9 / §DESIGN below).
+- **Operations / Deployment presence** via `python3 scripts/compound-v-onboard.py detect-ops
+  --repo . --json` → `{present, ci_cd[], containers[], deploy[]}`. Inventories CI/CD
+  (`.github/workflows/*`, `.gitlab-ci.yml`, `.circleci/config.yml`, `Jenkinsfile`,
+  `azure-pipelines.yml`, `.travis.yml`, `bitbucket-pipelines.yml`), container/infra
+  (`Dockerfile*`, `docker-compose*`/`compose.*`, `*.tf`/`*.tfvars`, and k8s heuristics —
+  `k8s/`, `kustomization.yaml`, Helm `Chart.yaml`), and deploy/PaaS (`Procfile`, `fly.toml`,
+  `vercel.json`, `netlify.toml`, `render.yaml`, `serverless.yml`, `app.yaml`, `deploy*.sh`).
+  Silent inventory like `detect-ui` — the *include-it?* ask lives at the GATE (§6), not here.
+  `present: true` is what gates the operations.md branch (§operations.md below). k8s detection
+  is a filename/dir heuristic (it cannot see manifest content) — stated as such here and in the
+  operations.md doc section.
 - **Style configs**: eslint / prettier / ruff / editorconfig / tsconfig / lockfiles — the
   deterministic evidence `CONVENTIONS.md` is later derived from.
 - **Cross-tool signal** for the bridge decision: presence of `.cursor*`, `.windsurf*`, `GEMINI.md`,
@@ -82,12 +93,19 @@ load-bearing.
 Generation is **read-then-cite**: open the files, claim only what you actually read, and attach a
 `file:line` citation to every architecture / business-logic claim. Emit a **claims file** in the
 schema VERIFY consumes (locked in "Shared Interfaces"): each claim carries `text`, `type`
-(`architecture | business-logic | tech-context | convention`), `citations[{path,startLine,endLine}]`,
+(`architecture | business-logic | tech-context | convention | operations`), `citations[{path,startLine,endLine}]`,
 `load_bearing` + `load_bearing_reason` (`security | fail-closed | concurrency | other`), `confidence`,
 and `target_doc_section`.
 
 A claim is **load-bearing** when it concerns **security, fail-closed behavior, or concurrency** —
 the claims where being confidently wrong is dangerous.
+
+`operations` claims (CI/CD, container topology, deploy target, runbook pointers) target
+`operations.md` and are emitted **only when DETECT's `detect-ops` reported `present: true`**. The
+load-bearing rule still bites: a deploy-secret path, a production/branch deploy gate, or a
+fail-closed CI check is **load-bearing** (`security` / `fail-closed`) and blocks on unsupported
+per the two-tier gate (§4) like any other load-bearing claim. `type` is free-form to
+`verify-citations`, so this adds no schema change.
 
 ### 4. VERIFY — the two-tier citation gate
 Hand the claims file to `python3 scripts/compound-v-onboard.py verify-citations --claims FILE
@@ -136,6 +154,14 @@ Also flag drift from `python3 scripts/compound-v-onboard.py staleness --repo .` 
 Present, for approval, a **per-artifact AND per-section diff**, alongside confidence/staleness and
 the diagnosis. **Nothing is written before explicit approval** — no auto-apply, ever.
 
+When `detect-ops` reported `present: true`, present `operations.md` as its **own explicit
+per-artifact confirm**, framed with the detected inventory: *"DevOps/deployment tooling detected —
+`<ci_cd / containers / deploy counts + paths>` — include `operations.md`?"* Declining drops the doc
+and writes nothing for it; this is the *"ask the user whether to take DevOps into account"* decision.
+A fully autonomous / unattended run (auto-approve / `--permission-mode dontAsk` — today the headless
+marathon, or any future autonomous onboarding cycle) approves it like every other artifact, so ops
+is taken into account **without asking** — no separate code path is needed.
+
 Critically, the diff **expands every `@import` target** (to the 4-hop limit). `@import` is **not a
 token optimization** — an imported file loads in **full** at launch; only path-scoped rules and
 skills defer. So an approver must see *what actually loads after this change*, not just the literal
@@ -163,7 +189,8 @@ section before proceeding. **This** is the gate that enforces "no credential rea
 committed file" — not the advisory input pack scan (§2), which would over-block on benign fixtures.
 
 Write **only** what was approved, and **only** within the v1 write surface:
-`docs/superpowers/architecture/*`, root `CONVENTIONS.md`, root `DESIGN.md` (UI repos), `AGENTS.md`,
+`docs/superpowers/architecture/*` (including `operations.md` — **only when the ops gate was approved**,
+§6), root `CONVENTIONS.md`, root `DESIGN.md` (UI repos), `AGENTS.md`,
 the thin `CLAUDE.md` bridge, `.onboard-manifest.json`, and — **only when the user confirms the diff** —
 `.mcp.json` (from `mcp_json_config`: merged **additively**, never clobbering an existing server; CLI
 recommendations like `gh` are surfaced as setup instructions, **not** `.mcp.json` entries). `.claude/rules/*.md`
@@ -246,6 +273,15 @@ explore → ask → propose → write.
   green). Therefore the gate states **"token pairs pass WCAG AA structurally"** — **never
   "accessible."** Document the linter's blindness in the gate output, and flag multi-theme / arbitrary
   Tailwind class colors as "partial capture" rather than implying full coverage.
+- **`operations.md`** (`docs/superpowers/architecture/`, ops repos) is generated **only when
+  `detect-ops` reported `present: true`.** On a repo with no CI/CD, container, or deploy files it
+  is **skipped** (verify this negative path on a non-ops dogfood, mirroring the DESIGN.md negative
+  path). Read-then-cite from the real workflow / Docker / compose / Terraform / deploy files
+  DETECT inventoried — never from the model's prior. Cover: container topology (services, ports,
+  volumes), CI/CD stages (build → test → deploy triggers and branch/environment gates), the deploy
+  target + production domain, and runbook pointers. **No credential is ever extracted into the
+  doc** — the blocking `scan-output` gate (§7) refuses a generated file that contains one, and a
+  deploy-secret reference is documented by *path*, not value.
 
 ---
 
@@ -255,7 +291,8 @@ explore → ask → propose → write.
 
 - `--refresh` re-extracts **only files whose content hash changed** since generation, flags any doc
   whose **cited files** changed, runs the **same human gate**, commits, then auto-runs
-  `/v:memory-refresh`.
+  `/v:memory-refresh`. `operations.md` is a normal cited arch doc, so it rides this same `.onboard-manifest.json`
+  cited-evidence staleness machinery with no new gate.
 - **Staleness is deterministic** ("cited-evidence staleness," not full doc freshness):
   `python3 scripts/compound-v-onboard.py staleness --repo .` reports drift from
   `.onboard-manifest.json` — a cited file whose hash changed (`cited-changed`), a cited file deleted
