@@ -61,6 +61,19 @@ does not claim to ship. *Triggered by an event / schedule · ends when it decide
 
 ---
 
+## Commands per loop
+
+Which of the 17 `/v:*` commands drives each loop:
+
+- **01 · turn-based** — most of the toolbelt: [`/v:dispatch`](../../commands/v-dispatch.md), [`/v:orchestrate`](../../commands/v-orchestrate.md), [`/v:collect`](../../commands/v-collect.md), [`/v:status`](../../commands/v-status.md), [`/v:resume`](../../commands/v-resume.md), [`/v:remember`](../../commands/v-remember.md), [`/v:preferences`](../../commands/v-preferences.md), [`/v:dashboard`](../../commands/v-dashboard.md), [`/v:onboard`](../../commands/v-onboard.md), [`/v:pr-review`](../../commands/v-pr-review.md), [`/v:review-plan`](../../commands/v-review-plan.md), [`/v:adr`](../../commands/v-adr.md), [`/v:archaeology`](../../commands/v-archaeology.md), [`/v:init`](../../commands/v-init.md), [`/v:models`](../../commands/v-models.md), [`/v:memory-refresh`](../../commands/v-memory-refresh.md) — plus [`/v:epic`](../../commands/v-epic.md) in the checkpoint stance.
+- **02 · goal-based** — `/v:epic --stance marathon`.
+- **03 · time-based** — `/v:epic --watch` (arms the scheduler) + the headless shim.
+- **04 · proactive** — `/v:epic --watch` left unattended + `/v:resume` (scheduler-fired).
+
+**One command climbs all four:** `/v:epic` ladders up one autonomy level with each flag —
+checkpoint (`MAX_FEATURES=1`, *turn*) → `--stance marathon` (*goal*) → `--watch` (*time*) → left
+unattended (*proactive*). The other 16 commands are turn-based tools you invoke and review.
+
 ## The through-line
 
 Compound V covers all four loops, but its distinctive value is in the two autonomous ones: the **evaluator**
