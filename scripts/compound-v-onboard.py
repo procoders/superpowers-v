@@ -217,35 +217,56 @@ def detect_ui(repo: str) -> bool:
     return False
 
 
+# Operations-file taxonomy, kept as named signal sets so the surface is documented in ONE place and
+# widening coverage is a data edit, not new control flow. Two literal kinds, matched by _ops_category:
+#   _OPS_PATH_FILES  — full repo-relative path (root-anchored configs like .circleci/config.yml)
+#   _OPS_BASE_FILES  — exact basename, at any depth (Jenkinsfile, Procfile, ...)
+# The remaining signals are shape-based (prefix/suffix/path-segment) and live in the predicates below.
+_YAML_EXT = (".yml", ".yaml")
+_OPS_PATH_FILES = {
+    "ci_cd": frozenset((".gitlab-ci.yml", ".circleci/config.yml", ".travis.yml",
+                        "azure-pipelines.yml", "bitbucket-pipelines.yml")),
+}
+_OPS_BASE_FILES = {
+    "ci_cd":      frozenset(("jenkinsfile",)),
+    "containers": frozenset(("kustomization.yaml", "chart.yaml")),
+    "deploy":     frozenset(("procfile", "fly.toml", "vercel.json", "netlify.toml",
+                             "render.yaml", "serverless.yml", "app.yaml")),
+}
+
+
+def _is_ci_cd(low, base):
+    return (base in _OPS_BASE_FILES["ci_cd"]
+            or low in _OPS_PATH_FILES["ci_cd"]
+            or (low.startswith(".github/workflows/") and low.endswith(_YAML_EXT)))
+
+
+def _is_containers(low, base):
+    return (base == "dockerfile" or base.startswith("dockerfile.")
+            or base in _OPS_BASE_FILES["containers"]
+            or low.endswith((".tf", ".tfvars"))
+            or ((base.startswith("docker-compose") or base.startswith("compose.")) and low.endswith(_YAML_EXT))
+            # k8s: filename/dir heuristic — it cannot see manifest content.
+            or low.startswith("k8s/") or "/k8s/" in low)
+
+
+def _is_deploy(low, base):
+    return (base in _OPS_BASE_FILES["deploy"]
+            or (base.startswith("deploy") and base.endswith(".sh")))
+
+
+# Evaluated in order; the first category whose predicate matches wins.
+_OPS_RULES = (("ci_cd", _is_ci_cd), ("containers", _is_containers), ("deploy", _is_deploy))
+
+
 def _ops_category(rel: str):
-    """Classify a repo-relative path as an operations file, or None. Deterministic signal set;
-    k8s detection is a filename/dir heuristic (documented as such — it cannot see manifest content)."""
+    """Classify a repo-relative path into an operations category (ci_cd | containers | deploy),
+    or None. Signal surface lives in the _OPS_* sets and the _is_* predicates above."""
     low = rel.lower()
     base = low.rsplit("/", 1)[-1]
-    # --- CI/CD ---
-    if low.startswith(".github/workflows/") and low.endswith((".yml", ".yaml")):
-        return "ci_cd"
-    if low in (".gitlab-ci.yml", ".circleci/config.yml", ".travis.yml",
-               "azure-pipelines.yml", "bitbucket-pipelines.yml"):
-        return "ci_cd"
-    if base == "jenkinsfile":
-        return "ci_cd"
-    # --- containers / infra ---
-    if base == "dockerfile" or base.startswith("dockerfile."):
-        return "containers"
-    if (base.startswith("docker-compose") or base.startswith("compose.")) \
-            and low.endswith((".yml", ".yaml")):
-        return "containers"
-    if low.endswith((".tf", ".tfvars")):
-        return "containers"
-    if base in ("kustomization.yaml", "chart.yaml") or low.startswith("k8s/") or "/k8s/" in low:
-        return "containers"
-    # --- deploy / PaaS ---
-    if base in ("procfile", "fly.toml", "vercel.json", "netlify.toml",
-                "render.yaml", "serverless.yml", "app.yaml"):
-        return "deploy"
-    if base.startswith("deploy") and base.endswith(".sh"):
-        return "deploy"
+    for category, matches in _OPS_RULES:
+        if matches(low, base):
+            return category
     return None
 
 
