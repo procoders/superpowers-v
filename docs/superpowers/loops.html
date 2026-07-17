@@ -1,0 +1,225 @@
+<h2 class="sr-only">The four types of agentic loops — turn-based, goal-based, time-based and proactive — each shown as an animated loop with a circulating token, mapped to the Compound V feature that runs it.</h2>
+
+<style>
+  :root{
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --bg:#F3F5F8; --surface:#FFFFFF; --text:#1A1D23; --muted:#6A727E; --line:#E3E7ED; --faint:#F7F9FB;
+    --l1:#6E61E6; --l2:#357FC7; --l3:#189E76; --l4:#C6871F;   /* turn · goal · time · proactive */
+    --ok:#189E76;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#131519; --surface:#1A1D23; --text:#E9EBEF; --muted:#98A0AC; --line:#2A2F38; --faint:#1E2229;
+      --l1:#8B7EFF; --l2:#5AA0E6; --l3:#2CB98D; --l4:#E0A23F; --ok:#2CB98D; }
+  }
+  :root[data-theme="dark"]{ --bg:#131519; --surface:#1A1D23; --text:#E9EBEF; --muted:#98A0AC; --line:#2A2F38; --faint:#1E2229;
+    --l1:#8B7EFF; --l2:#5AA0E6; --l3:#2CB98D; --l4:#E0A23F; --ok:#2CB98D; }
+  :root[data-theme="light"]{ --bg:#F3F5F8; --surface:#FFFFFF; --text:#1A1D23; --muted:#6A727E; --line:#E3E7ED; --faint:#F7F9FB;
+    --l1:#6E61E6; --l2:#357FC7; --l3:#189E76; --l4:#C6871F; --ok:#189E76; }
+
+  *{ box-sizing:border-box; }
+  .sr-only{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0 0 0 0); border:0; }
+  .wrap{ font-family:var(--mono); color:var(--text); background:var(--bg); max-width:920px; margin:0 auto;
+    padding:34px 22px 40px; line-height:1.5; -webkit-font-smoothing:antialiased; }
+
+  .eyebrow{ font-size:11px; letter-spacing:.22em; text-transform:uppercase; color:var(--muted); margin:0 0 10px; }
+  h1{ font-size:clamp(26px,5vw,40px); font-weight:700; letter-spacing:-.02em; margin:0; text-wrap:balance; }
+  h1 .v{ color:var(--l3); }
+  .lede{ color:var(--muted); font-size:14px; margin:10px 0 0; max-width:60ch; }
+
+  .legend{ display:flex; flex-wrap:wrap; gap:14px 18px; margin:20px 0 4px; padding-top:18px; border-top:1px solid var(--line); font-size:12px; }
+  .legend span{ display:inline-flex; align-items:center; gap:7px; color:var(--muted); }
+  .legend i{ width:9px; height:9px; border-radius:50%; }
+
+  .loop{ display:grid; grid-template-columns:1fr; gap:6px 26px; padding:22px 0; border-top:1px solid var(--line); }
+  @media (min-width:660px){ .loop{ grid-template-columns:300px 1fr; align-items:center; } }
+  .meta .idx{ font-size:12px; letter-spacing:.14em; color:var(--hue); font-weight:700; }
+  .meta h2{ font-size:19px; font-weight:700; margin:4px 0 2px; letter-spacing:-.01em; }
+  .meta .tag{ color:var(--muted); font-size:13px; font-style:normal; margin:0 0 10px; }
+  .meta dl{ margin:0; font-size:12.5px; display:grid; grid-template-columns:auto 1fr; gap:3px 10px; }
+  .meta dt{ color:var(--muted); text-transform:uppercase; letter-spacing:.08em; font-size:10.5px; padding-top:2px; }
+  .meta dd{ margin:0; color:var(--text); }
+  .meta .feat{ margin-top:11px; font-size:12.5px; }
+  .meta .feat b{ color:var(--hue); font-weight:700; }
+  .meta .ver{ color:var(--muted); }
+
+  .cmds{ display:flex; flex-wrap:wrap; gap:6px; margin-top:11px; align-items:center; }
+  .cmds .k{ font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin-right:2px; }
+  .cmd{ font-size:11.5px; padding:2px 8px; border-radius:6px; border:1px solid color-mix(in srgb,var(--hue) 45%,var(--line));
+    color:var(--text); background:var(--faint); white-space:nowrap; }
+  .cmd.epic{ background:color-mix(in srgb,var(--hue) 16%,var(--surface)); border-color:var(--hue); font-weight:700; color:var(--hue); }
+  .cmd.more{ border-style:dashed; color:var(--muted); }
+
+  .ladder{ margin-top:26px; padding:18px 20px; border:1px solid var(--line); border-radius:12px; background:var(--faint); }
+  .ladder h3{ margin:0 0 4px; font-size:13px; letter-spacing:-.01em; }
+  .ladder h3 code{ color:var(--l3); font-weight:700; }
+  .ladder p{ margin:0 0 14px; font-size:12.5px; color:var(--muted); }
+  .rungs{ display:flex; flex-wrap:wrap; align-items:stretch; gap:8px; }
+  .rung{ flex:1 1 150px; min-width:140px; border:1px solid var(--rc); border-left:4px solid var(--rc); border-radius:8px;
+    padding:9px 11px; background:var(--surface); }
+  .rung .n{ font-size:10px; letter-spacing:.12em; color:var(--rc); font-weight:700; }
+  .rung .c{ font-size:12px; margin-top:3px; color:var(--text); }
+  .rung .c b{ color:var(--rc); }
+  .rung .w{ font-size:11px; color:var(--muted); margin-top:2px; }
+  .rarrow{ align-self:center; color:var(--muted); font-size:15px; }
+  @media (max-width:620px){ .rarrow{ transform:rotate(90deg); } }
+
+  .diagram{ overflow-x:auto; }
+  .diagram svg{ width:100%; min-width:380px; height:auto; display:block; }
+  .node rect{ fill:color-mix(in srgb, var(--hue) 13%, var(--surface)); stroke:var(--hue); stroke-width:1.5; }
+  .node text{ fill:var(--text); font:600 12px var(--mono); }
+  .arr,.ret{ fill:none; stroke:var(--muted); stroke-width:1.5; }
+  .ret{ stroke-dasharray:4 5; opacity:.75; }
+  .lbl{ fill:var(--muted); font:11px var(--mono); }
+  .tok{ fill:var(--hue); offset-path:path("M63 38 L200 38 L337 38 L337 92 L63 92 Z"); offset-rotate:0deg;
+    animation:orbit var(--d,6s) linear infinite; }
+  @keyframes orbit{ to{ offset-distance:100%; } }
+  @media (prefers-reduced-motion: reduce){ .tok{ animation:none; offset-distance:8%; } }
+
+  .foot{ margin-top:26px; padding-top:20px; border-top:1px solid var(--line); font-size:13px; color:var(--muted); max-width:66ch; }
+  .foot b{ color:var(--text); font-weight:700; }
+  .foot .k{ color:var(--l3); }
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">Compound&middot;V // loop topology</p>
+  <h1>Four types of <span class="v">loops</span></h1>
+  <p class="lede">Four ways to structure agentic work — what pulls the trigger, what ends it, and which Compound&nbsp;V feature runs on each. A token rides every loop; the dashed leg is the return.</p>
+
+  <div class="legend">
+    <span><i style="background:var(--l1)"></i>turn-based</span>
+    <span><i style="background:var(--l2)"></i>goal-based</span>
+    <span><i style="background:var(--l3)"></i>time-based</span>
+    <span><i style="background:var(--l4)"></i>proactive</span>
+  </div>
+
+  <!-- shared arrowhead -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M1 1 L9 5 L1 9" fill="none" stroke="var(--muted)" stroke-width="1.6"/>
+    </marker>
+  </defs></svg>
+
+  <!-- 01 TURN-BASED -->
+  <section class="loop" style="--hue:var(--l1)">
+    <div class="meta">
+      <div class="idx">01</div>
+      <h2>Turn-based</h2>
+      <p class="tag">you steer every move</p>
+      <dl>
+        <dt>trigger</dt><dd>your prompt</dd>
+        <dt>ends</dt><dd>you review</dd>
+      </dl>
+      <p class="feat"><b>checkpoint epic</b> <span class="ver">(MAX_FEATURES=1)</span> + the brainstorm HARD-gate</p>
+      <div class="cmds"><span class="k">cmds</span>
+        <span class="cmd">/v:dispatch</span><span class="cmd">/v:status</span><span class="cmd">/v:resume</span><span class="cmd">/v:preferences</span><span class="cmd epic">/v:epic</span><span class="cmd more">+12 tools</span>
+      </div>
+    </div>
+    <div class="diagram"><svg viewBox="0 0 400 108" role="img" aria-label="prompt to act to reply, returning to prompt">
+      <g class="node"><rect x="8" y="18" width="110" height="40" rx="9"/><text x="63" y="42" text-anchor="middle">prompt</text></g>
+      <g class="node"><rect x="145" y="18" width="110" height="40" rx="9"/><text x="200" y="42" text-anchor="middle">act</text></g>
+      <g class="node"><rect x="282" y="18" width="110" height="40" rx="9"/><text x="337" y="42" text-anchor="middle">reply</text></g>
+      <line class="arr" x1="118" y1="38" x2="143" y2="38" marker-end="url(#ah)"/>
+      <line class="arr" x1="255" y1="38" x2="280" y2="38" marker-end="url(#ah)"/>
+      <path class="ret" d="M337 58 L337 92 L63 92 L63 60" marker-end="url(#ah)"/>
+      <text class="lbl" x="200" y="88" text-anchor="middle">you write the next prompt</text>
+      <circle class="tok" r="4.5" style="--d:6s"/>
+    </svg></div>
+  </section>
+
+  <!-- 02 GOAL-BASED -->
+  <section class="loop" style="--hue:var(--l2)">
+    <div class="meta">
+      <div class="idx">02</div>
+      <h2>Goal-based</h2>
+      <p class="tag">it checks itself</p>
+      <dl>
+        <dt>trigger</dt><dd>/v:epic + breaker budget</dd>
+        <dt>ends</dt><dd>the evaluator passes</dd>
+      </dl>
+      <p class="feat"><b>Marathon Loop</b> <span class="ver">v2.10</span> — evaluator = cross-model arbiter (Codex + Gemini), not self-eval</p>
+      <div class="cmds"><span class="k">cmds</span>
+        <span class="cmd epic">/v:epic --stance marathon</span>
+      </div>
+    </div>
+    <div class="diagram"><svg viewBox="0 0 400 108" role="img" aria-label="claude works to cross-model eval to goal met, else back to work">
+      <g class="node"><rect x="8" y="18" width="110" height="40" rx="9"/><text x="63" y="42" text-anchor="middle">claude works</text></g>
+      <g class="node"><rect x="145" y="18" width="110" height="40" rx="9"/><text x="200" y="42" text-anchor="middle">x-model eval</text></g>
+      <g class="node"><rect x="282" y="18" width="110" height="40" rx="9"/><text x="337" y="42" text-anchor="middle">goal met</text></g>
+      <line class="arr" x1="118" y1="38" x2="143" y2="38" marker-end="url(#ah)"/>
+      <line class="arr" x1="255" y1="38" x2="280" y2="38" marker-end="url(#ah)"/>
+      <path class="ret" d="M337 58 L337 92 L63 92 L63 60" marker-end="url(#ah)"/>
+      <text class="lbl" x="200" y="88" text-anchor="middle">no &rarr; back to work (retry_fix)</text>
+      <circle class="tok" r="4.5" style="--d:7s"/>
+    </svg></div>
+  </section>
+
+  <!-- 03 TIME-BASED -->
+  <section class="loop" style="--hue:var(--l3)">
+    <div class="meta">
+      <div class="idx">03</div>
+      <h2>Time-based</h2>
+      <p class="tag">the clock triggers it</p>
+      <dl>
+        <dt>trigger</dt><dd>an interval fires</dd>
+        <dt>ends</dt><dd>it waits for the tick</dd>
+      </dl>
+      <p class="feat"><b>Auto-Resurrection Watch</b> <span class="ver">v2.11</span> (:17/:47) + the headless shim <span class="ver">v2.14</span></p>
+      <div class="cmds"><span class="k">cmds</span>
+        <span class="cmd epic">/v:epic --watch</span><span class="cmd">headless-shim (launchd/cron)</span>
+      </div>
+    </div>
+    <div class="diagram"><svg viewBox="0 0 400 108" role="img" aria-label="interval fires to check and fix CI, then waits for the next interval">
+      <g class="node"><rect x="8" y="18" width="110" height="40" rx="9"/><text x="63" y="42" text-anchor="middle">:17/:47 tick</text></g>
+      <g class="node"><rect x="145" y="18" width="110" height="40" rx="9"/><text x="200" y="42" text-anchor="middle">check &middot; fix</text></g>
+      <g class="node"><rect x="282" y="18" width="110" height="40" rx="9"/><text x="337" y="42" text-anchor="middle">waits</text></g>
+      <line class="arr" x1="118" y1="38" x2="143" y2="38" marker-end="url(#ah)"/>
+      <line class="arr" x1="255" y1="38" x2="280" y2="38" marker-end="url(#ah)"/>
+      <path class="ret" d="M337 58 L337 92 L63 92 L63 60" marker-end="url(#ah)"/>
+      <text class="lbl" x="200" y="88" text-anchor="middle">waits for next interval</text>
+      <circle class="tok" r="4.5" style="--d:5.2s"/>
+    </svg></div>
+  </section>
+
+  <!-- 04 PROACTIVE -->
+  <section class="loop" style="--hue:var(--l4)">
+    <div class="meta">
+      <div class="idx">04</div>
+      <h2>Proactive</h2>
+      <p class="tag">no human present</p>
+      <dl>
+        <dt>trigger</dt><dd>an event / schedule</dd>
+        <dt>ends</dt><dd>it decides &mdash; bounded</dd>
+      </dl>
+      <p class="feat"><b>marathon + watch + arbiter</b> &mdash; the whole triage&rarr;fix&rarr;judge&rarr;close contour, but a halt / breaker / suspected blocker <b class="ver">pages you</b></p>
+      <div class="cmds"><span class="k">cmds</span>
+        <span class="cmd epic">/v:epic --watch</span><span class="cmd">/v:resume</span><span class="cmd more">scheduler-fired</span>
+      </div>
+    </div>
+    <div class="diagram"><svg viewBox="0 0 400 108" role="img" aria-label="triage to fix and review to judge and close, then reopen or next task">
+      <g class="node"><rect x="8" y="18" width="110" height="40" rx="9"/><text x="63" y="42" text-anchor="middle">triage</text></g>
+      <g class="node"><rect x="145" y="18" width="110" height="40" rx="9"/><text x="200" y="42" text-anchor="middle">fix &middot; review</text></g>
+      <g class="node"><rect x="282" y="18" width="110" height="40" rx="9"/><text x="337" y="42" text-anchor="middle">judge &middot; close</text></g>
+      <line class="arr" x1="118" y1="38" x2="143" y2="38" marker-end="url(#ah)"/>
+      <line class="arr" x1="255" y1="38" x2="280" y2="38" marker-end="url(#ah)"/>
+      <path class="ret" d="M337 58 L337 92 L63 92 L63 60" marker-end="url(#ah)"/>
+      <text class="lbl" x="200" y="88" text-anchor="middle">reopen / next &mdash; or pages you</text>
+      <circle class="tok" r="4.5" style="--d:8s"/>
+    </svg></div>
+  </section>
+
+  <div class="ladder">
+    <h3>One command climbs all four: <code>/v:epic</code></h3>
+    <p>Most of the 17 <code>/v:*</code> commands are turn-based tools. <code>/v:epic</code> is the one that ladders up an autonomy level with each flag you add.</p>
+    <div class="rungs">
+      <div class="rung" style="--rc:var(--l1)"><div class="n">01 · TURN</div><div class="c"><b>/v:epic</b> (MAX_FEATURES=1)</div><div class="w">you checkpoint each feature</div></div>
+      <div class="rarrow">&rarr;</div>
+      <div class="rung" style="--rc:var(--l2)"><div class="n">02 · GOAL</div><div class="c">+ <b>--stance marathon</b></div><div class="w">arbiter + breaker budget gate it</div></div>
+      <div class="rarrow">&rarr;</div>
+      <div class="rung" style="--rc:var(--l3)"><div class="n">03 · TIME</div><div class="c">+ <b>--watch</b></div><div class="w">a scheduler resurrects it</div></div>
+      <div class="rarrow">&rarr;</div>
+      <div class="rung" style="--rc:var(--l4)"><div class="n">04 · PROACTIVE</div><div class="c">leave it <b>unattended</b></div><div class="w">it decides &mdash; or pages you</div></div>
+    </div>
+  </div>
+
+  <p class="foot">The through-line: Compound&nbsp;V covers all four, but the value sits in the two autonomous ones — the <b>evaluator</b> (02) and the <b>judge</b> (04) are <span class="k">cross-vendor</span> and <span class="k">git-derived</span>, not a single model grading itself, and every loop carries a real stop — a human gate or a circuit breaker — never a blind autopilot.</p>
+</div>
