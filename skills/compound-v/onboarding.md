@@ -64,7 +64,8 @@ Inventory the ground truth, write nothing:
   `vercel.json`, `netlify.toml`, `render.yaml`, `serverless.yml`, `app.yaml`, `deploy*.sh`).
   Silent inventory like `detect-ui` — the *include-it?* ask lives at the GATE (§6), not here.
   `present: true` is what gates the operations.md branch (§operations.md below). k8s detection
-  is a filename/dir heuristic and is stated as such at the gate.
+  is a filename/dir heuristic (it cannot see manifest content) — stated as such here and in the
+  operations.md doc section.
 - **Style configs**: eslint / prettier / ruff / editorconfig / tsconfig / lockfiles — the
   deterministic evidence `CONVENTIONS.md` is later derived from.
 - **Cross-tool signal** for the bridge decision: presence of `.cursor*`, `.windsurf*`, `GEMINI.md`,

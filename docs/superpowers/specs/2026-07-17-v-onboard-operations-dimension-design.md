@@ -71,7 +71,9 @@ detect_ops(repo) -> {
 }
 ```
 
-Signal set (documented in-code; matched against `_git_tracked(repo)` + well-known paths):
+Signal set (documented in-code; matched by walking the filesystem, excluding `VENDOR_DIRS` —
+not `git ls-files`, so the non-git `--selftest` temp trees also detect. Ops files are effectively
+always tracked, so this does not diverge from the git-tracked PACK/scope-gate in practice):
 
 - **CI/CD:** `.github/workflows/*.yml|*.yaml`, `.gitlab-ci.yml`, `.circleci/config.yml`,
   `Jenkinsfile`, `azure-pipelines.yml`, `.travis.yml`, `bitbucket-pipelines.yml`.
