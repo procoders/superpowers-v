@@ -1,0 +1,114 @@
+# Compound V execution manifest — v2.17 co-change advisory + bounded evidence packing.
+# Materialized from the r2 spec (post-archaeology). Ideas from repowise; NO code copied (AGPL-3.0).
+
+run_id: 2026-07-25-v2.17-cochange
+feature: "Co-change advisory (inverse scope gate) + failures-first bounded evidence packing"
+spec_path: docs/superpowers/specs/2026-07-25-v2.17-cochange-and-evidence-packing-design.md
+plan_path: docs/superpowers/specs/2026-07-25-v2.17-cochange-and-evidence-packing-design.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-25-v2.17-cochange.md
+  # 1B domain + 1C library deliberately NOT run: no user-facing/regulated surface and
+  # zero dependencies (pure stdlib over the git CLI). Recorded in the archaeology doc.
+
+acceptance_criteria:
+  - "co-change is GIT-DERIVED and model-free: pairs computed from `git log --no-merges -M --name-only` routed through compound-v-run-with-timeout.py (never subprocess.run(timeout=) on git); -M is REQUIRED because without rename detection a rename fabricates a 100%-confidence pair; pure-format commits dropped via imported _is_format_subject; excludes imported from load_churn_config (single-sourced; resolves to ZERO on this repo and that is stated, not implied); glob_match IMPORTED from compound-v-taxonomy.py, never forked (a third copy is forbidden)"
+  - "ADVISORY ONLY, never a gate: the ONLY consumption point is agents/partition-reviewer.md, as a new step after Step 6 emitting `WARN: COCHANGE_PARTNER_MISSING`, rendered OUTSIDE the FAIL block (the WARN: BATCHING_MISSING precedent at :93/:121-123); agents/spec-reviewer.md is NOT touched (it has no WARN vocabulary — every ISSUE: hard-blocks DONE); no BLOCKED verdict is ever returned; both existing CI lockstep guards (validate.yml:43-52 and :54-81) remain unmodified and passing"
+  - "anti-ruflo: counts + measured conditional frequencies only, NEVER a fabricated risk score or confidence %; every warning carries n, BOTH directions, and the sample window; a pair below the bar is SILENT, never guessed; a non-zero git exit is surfaced visibly, never flattened into 'no pairs'; partners deleted at HEAD are filtered out"
+  - "pack_evidence(): failures/tracebacks NEVER dropped; runs BEFORE redact() with PATH-FREE `[cv-omitted: N lines]` markers (so nothing in a marker needs scrubbing and no repo path egresses to Codex/agy); NEVER raises — returns its input unchanged on any internal error (redact() fails closed, so a raise would degrade EVERY arbiter ballot to the evidence-free placeholder); called with the same budget the downstream cap uses so _bound_text becomes a no-op; small inputs are byte-identical passthrough; collect-results.py's CLI contract (exit codes + stdout) is UNCHANGED"
+  - "no cache file and no committed artifact (the churn-cache.json precedent does not exist in this repo); CONVENTIONS.md is NOT edited (it is /v:onboard-generated) — the limits rule becomes ADR 0002 instead"
+  - "Py3.9-safe stdlib-only; --selftest present as a LITERAL string (CI auto-discovery), ASCII-safe under LANG=C, offline, GIT_CONFIG_GLOBAL/SYSTEM pinned to os.devnull, no real taxonomy needed; selftest MUST include a rename fixture proving -M kills the fabricated self-pair, and a --max-files fixture (it drops 0 of 372 real commits so real data cannot exercise it); tz-aware datetime.now(timezone.utc), never utcnow(); deterministic JSON (indent=2, sort_keys=True, ensure_ascii=True, trailing newline)"
+  - "2.17.0 lockstep across plugin.json + marketplace.json + CHANGELOG.md; scope gate clean on every job; no write outside the partitioned file sets"
+
+routing_stance: claude-only
+max_parallel: 3
+
+shared_resources:
+  - "CHANGELOG.md"
+  - ".claude-plugin/plugin.json"
+  - ".claude-plugin/marketplace.json"
+  - "README.md"
+
+jobs:
+  - id: p1-cochange-engine
+    title: "compound-v-cochange.py — git-derived co-change pairs + missing-partner check"
+    type: large_isolated
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    write_allowed:
+      - "scripts/compound-v-cochange.py"
+    read_allowed:
+      - "scripts/**"
+      - "docs/superpowers/specs/2026-07-25-v2.17-cochange-and-evidence-packing-design.md"
+      - "CONVENTIONS.md"
+    acceptance:
+      - "pairs subcommand: --repo/--since/--min-n/--min-conf/--max-files; git log --no-merges -M --name-only routed through compound-v-run-with-timeout.py with stdin=DEVNULL + byte cap; honors the `capped` truncation flag (drop a truncated trailing line); non-zero git exit surfaced, NOT flattened to empty; drops pure-format commits via IMPORTED _is_format_subject/_compile_format_patterns from compound-v-churn.py; excludes via IMPORTED load_churn_config; glob_match IMPORTED from compound-v-taxonomy.py (never fork _glob_match — that would be a third copy)"
+      - "check subcommand: --files <list> returns partners missing from that set, each with n + BOTH conditional frequencies + the window; partners that no longer exist at HEAD are filtered out; output is JSON, deterministic (indent=2, sort_keys=True, ensure_ascii=True, trailing newline); no risk score, no %-confidence, counts + measured frequencies only"
+      - "on this repo `pairs --since 2026-01-01 --min-n 5 --min-conf 0.70` reproduces EXACTLY three pairs: plugin.json<->marketplace.json (n=34), commands/v-epic.md<->skills/compound-v/epic-mode.md (n=17), AGENTS.md<->GEMINI.md (n=8)"
+      - "--selftest (literal string, ASCII under LANG=C, offline, no real taxonomy) with a tempfile fixture repo OUTSIDE the worktree, GIT_CONFIG_GLOBAL/SYSTEM=os.devnull and pinned author/committer/dates: MUST include (a) a RENAME fixture proving -M prevents the fabricated old<->new self-pair, (b) a --max-files fixture (0 of 372 real commits exercise it), (c) a format-commit-dropped case, (d) a deleted-at-HEAD partner filtered, (e) a non-zero-git-exit surfaced; Py3.9-safe stdlib-only, tz-aware datetime, never utcnow()"
+
+  - id: p2-evidence-packing
+    title: "pack_evidence() — failures-first, path-free, never-raising evidence packer"
+    type: standard
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    write_allowed:
+      - "scripts/compound-v-collect-results.py"
+      - "scripts/compound-v-epic-arbiter.py"
+    read_allowed:
+      - "scripts/**"
+      - "docs/superpowers/specs/2026-07-25-v2.17-cochange-and-evidence-packing-design.md"
+    acceptance:
+      - "pack_evidence(text, budget_chars, section_label) in collect-results.py: failure/error/traceback lines NEVER dropped (passing noise trimmed instead); emits PATH-FREE `[cv-omitted: N lines]` markers (never a file path or line range); small inputs byte-identical passthrough; reports the real pre-trim size; marker vocabulary reconciled with the existing TRUNC_MARKER, not a third dialect"
+      - "NEVER raises: the entire body is guarded and returns its input UNCHANGED on any internal error — redact() fails closed (epic-arbiter.py:646,:665-666) so a raise would silently degrade every ballot to the evidence-free placeholder at :803-804"
+      - "arbiter wiring: imported through the EXISTING _load_sibling_module seam (epic-arbiter.py:526-541), no new loader; called BEFORE redact() (:1477) so no path egresses to Codex (:1489) or agy (:1519); called with the SAME budget the downstream cap uses so _bound_text (:770-774) becomes a no-op; the four existing None-branches for evidence_text (:1462-1479) still behave identically"
+      - "collect-results.py main() (:670-718) exit codes and stdout UNCHANGED; no import-time side effects; new cases added to the EXISTING _selftest() (:533-626) using its check(name, cond) idiom; the arbiter's own ~1100-line selftest still passes"
+
+  - id: p3-advisory-wiring-adr
+    title: "partition-reviewer advisory step + ADR 0002 (limits ship with the claim)"
+    type: standard
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [p1-cochange-engine]
+    write_allowed:
+      - "agents/partition-reviewer.md"
+      - "docs/superpowers/adr/0002-limits-ship-with-the-claim.md"
+    read_allowed:
+      - "agents/**"
+      - "scripts/**"
+      - "docs/superpowers/adr/**"
+      - "docs/superpowers/specs/2026-07-25-v2.17-cochange-and-evidence-packing-design.md"
+    acceptance:
+      - "partition-reviewer.md: a NEW step AFTER Step 6 that runs compound-v-cochange.py check over the union of every job's write_allowed and emits `WARN: COCHANGE_PARTNER_MISSING` with n + both directions + the window; rendered in the PASS template (:126-133) and explicitly OUTSIDE the FAIL block that begins at :105 — follow the `WARN: BATCHING_MISSING` precedent at :93/:121-123 VERBATIM in shape; the verdict vocabulary (PASS/FAIL) is UNCHANGED and a WARN can never become a FAIL"
+      - "agents/spec-reviewer.md is NOT touched (out of write_allowed by design — it has no WARN vocabulary and any ISSUE: hard-blocks DONE via :14/:203 and commands/v-collect.md:41)"
+      - "ADR 0002 follows the shape of docs/superpowers/adr/0001-fts5-not-vector-db.md exactly (same headings/frontmatter): the decision is that any published number ships with a 'What this does not show' note in the same document; alternatives considered + consequences; every reference verified to exist; CONVENTIONS.md is NOT edited (it is /v:onboard-generated and would be overwritten)"
+      - "lint-frontmatter clean; no scope-gate violation"
+
+  - id: z1-release
+    title: "Lockstep 2.17.0 + CHANGELOG + README"
+    type: shared_foundation
+    backend: claude
+    tier: deep
+    effort: medium
+    isolation: direct
+    run: serial
+    depends_on: [p1-cochange-engine, p2-evidence-packing, p3-advisory-wiring-adr]
+    write_allowed:
+      - ".claude-plugin/plugin.json"
+      - ".claude-plugin/marketplace.json"
+      - "CHANGELOG.md"
+      - "README.md"
+    read_allowed:
+      - "**"
+    acceptance:
+      - "plugin.json + marketplace.json + the CHANGELOG top heading ALL at 2.17.0 (the two CI lockstep guards at validate.yml:43-52 and :54-81 must pass unmodified — this is the very pair the feature studies)"
+      - "CHANGELOG '## [2.17.0]' describing both features HONESTLY: co-change is ADVISORY and never blocks; it does NOT replace either existing CI lockstep guard (the CHANGELOG<->plugin.json pair measures min(P)=0.59, below the bar); pack_evidence is failures-first and never-lossy; credit the ideas to repowise with NO code copied (AGPL-3.0)"
+      - "README one-liner for the co-change advisory; manifest-validator + lint-frontmatter clean"
