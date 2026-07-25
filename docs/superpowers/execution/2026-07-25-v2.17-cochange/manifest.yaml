@@ -1,8 +1,8 @@
 # Compound V execution manifest — v2.17 co-change advisory + bounded evidence packing.
-# Materialized from the r2 spec (post-archaeology). Ideas from repowise; NO code copied (AGPL-3.0).
+# Materialized from the r4 spec (post-archaeology + 2 Codex rounds). Ideas from repowise; NO code copied (AGPL-3.0).
 
 run_id: 2026-07-25-v2.17-cochange
-feature: "Co-change advisory (inverse scope gate) + failures-first bounded evidence packing"
+feature: "Co-change advisory (inverse scope gate) + failure-prioritized, explicitly-lossy evidence packing"
 spec_path: docs/superpowers/specs/2026-07-25-v2.17-cochange-and-evidence-packing-design.md
 plan_path: docs/superpowers/specs/2026-07-25-v2.17-cochange-and-evidence-packing-design.md
 audits:
@@ -22,6 +22,15 @@ acceptance_criteria:
   - "no cache file, no committed artifact; CONVENTIONS.md NOT edited (it is /v:onboard-generated) — the limits rule becomes ADR 0002"
   - "Py3.9-safe stdlib-only; --selftest as a LITERAL string, ASCII-safe under LANG=C, offline, GIT_CONFIG_GLOBAL/SYSTEM=os.devnull, no real taxonomy needed; tz-aware datetime.now(timezone.utc) never utcnow(); deterministic JSON (indent=2, sort_keys=True, ensure_ascii=True, trailing newline)"
   - "2.17.0 lockstep across plugin.json + marketplace.json + CHANGELOG.md; both existing CI lockstep guards pass UNMODIFIED; scope gate clean on every job"
+
+  - "[r4] rules normal output contains ONLY firing rules; rejected candidates are visible ONLY via an explicit --explain-rejections diagnostic mode that check never invokes; a byte-capped git scan or too-short history yields complete:false with an insufficient_history/scan_incomplete reason and NO rules at all — a caller must be able to tell 'no missing partners' from 'we could not tell'; the <=10-file narrow width is a DECLARED portability limit (young/squash/monorepo repos legitimately yield no rules), thresholds deliberately NOT tunable in v1"
+  - "[r4] check takes --manifest or --patterns (GLOBS), never a literal --files list: write_allowed holds globs like scripts/**, so literal files miss pattern-covered antecedents and shell expansion misses not-yet-existing files; antecedents tested with the IMPORTED glob_match; selftest covers exact, *, ** and a path absent at HEAD"
+  - "[r4] the advisory guarantee is ordering-bound, not exit-code-bound: partition-reviewer determines and WRITES VERDICT BEFORE the co-change step runs, and that step may only APPEND to WARNINGS — a verdict already on the page cannot be revised by a correlation"
+  - "[r4] redact_uncapped() catches conversion+substitution+unclosed-block failures and returns None; redact() propagates None unchanged and SEPARATELY catches cap exceptions; regression tests inject a substitution failure AND a cap failure and cover an unclosed PEM block and a quoted secret"
+  - "[r4] a TOTAL loss hierarchy applied in order until it fits: drop non-failure spans -> context radius 0 -> truncate oversized failure spans with a marker -> truncate headers -> drop markers -> fixed placeholder '[evidence omitted: budget exhausted]' -> the arbiter OMITS the evidence rather than emitting an over-budget prompt. Every rung reachable and tested"
+  - "[r4] prioritization is deterministic: fixed section_label enum members, a documented failure-matcher list, span = matched line + a FIXED context radius, allocation in ORIGINAL document order highest-priority first, byte-length then document-position tie-break — the output must be a function of the input"
+  - "[r4] the template is split into prefix+suffix, both rendered and encoded FIRST, the exact remaining budget derived from them, packed once, assembled once; marker_margin defined and NOT double-counted; the final size check is an explicit runtime comparison, NEVER a Python assert (it vanishes under -O)"
+  - "[r4] the spec's contradictory 'scope gate is the only hard gate' line is DELETED; the single accurate statement is 'co-change adds no new hard gate'"
 
 routing_stance: claude-only
 max_parallel: 3
@@ -55,7 +64,7 @@ jobs:
       - "--selftest (literal, ASCII under LANG=C, offline, no real taxonomy) with a tempdir fixture repo OUTSIDE the worktree, GIT_CONFIG_GLOBAL/SYSTEM=os.devnull, pinned identity+dates: covers (a) default rename behaviour asserted at the PRODUCTION --min-support, (b) a below-50%-similarity move that -M does NOT unify, (c) built-in subject defaults with no taxonomy, (d) a bulk-confounded pair rejected by narrow support, (e) a small-sample pair rejected by the Wilson bound, (f) deleted-at-HEAD partner filtered, (g) non-zero git exit surfaced, (h) check exits 0 WITH findings; Py3.9 stdlib-only, tz-aware datetime"
 
   - id: p2-evidence-packing
-    title: "pack_evidence() — failures-first, path-free, never-raising evidence packer"
+    title: "pack_evidence() — failure-prioritized, original-order, explicitly-lossy evidence packer"
     type: standard
     backend: claude
     tier: deep
