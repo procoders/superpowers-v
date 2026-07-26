@@ -126,6 +126,52 @@ MAX_ID_LEN = 100
 CLAUDE_PROMPT_MAX_CHARS = 4000
 CODEX_PROMPT_MAX_CHARS = 6000
 
+# v2.17 — the external-judge prompt budget is enforced in BYTES, end to end.
+# `redact` budgets UTF-8 BYTES while `_bound_text` caps CHARACTERS, so non-ASCII evidence
+# could satisfy the character budget, blow the byte budget, and get tail-cut downstream --
+# amputating the JSON response instructions the ballot depends on. Encoded length is always
+# >= character length, so a prompt inside this BYTE limit is necessarily inside the character
+# cap too, which makes `_bound_text` a no-op for prompts built through the byte path.
+CODEX_PROMPT_MAX_BYTES = CODEX_PROMPT_MAX_CHARS
+
+# The bounded, FIXED placeholders that may stand in for the evidence block. Every one of
+# them is a constant: no path, no model text, no unbounded input can reach a prompt here.
+EVIDENCE_FAILCLOSED_PLACEHOLDER = (
+    "(evidence omitted — redaction could not complete safely, fail-closed)")
+EVIDENCE_PACKING_FAILED_PLACEHOLDER = "[evidence omitted: packing failed]"
+EVIDENCE_BUDGET_EXHAUSTED_PLACEHOLDER = "[evidence omitted: budget exhausted]"
+
+# marker_margin, defined explicitly: the room reserved so that substituting ANY of the
+# bounded placeholders above for the packed evidence STILL fits the prompt limit. It does
+# NOT double-count the omission markers `pack_evidence` already charges inside
+# evidence_budget_bytes -- those live under the evidence budget, this sits outside it.
+EVIDENCE_MARKER_MARGIN_BYTES = max(
+    len(p.encode("utf-8")) for p in (EVIDENCE_FAILCLOSED_PLACEHOLDER,
+                                     EVIDENCE_PACKING_FAILED_PLACEHOLDER,
+                                     EVIDENCE_BUDGET_EXHAUSTED_PLACEHOLDER))
+
+# Which fixed `pack_evidence` section label the arbiter's --evidence-file carries. The
+# evidence is the failing quality gate's own output, so `review_notes` is the accurate
+# enum member. The enum is closed precisely so a label can never smuggle a path.
+ARBITER_EVIDENCE_SECTION = "review_notes"
+
+
+class _EvidenceOmitted(object):
+    """Loss-hierarchy rung 7: a DISTINCT sentinel meaning 'remove the evidence block from
+    the prompt entirely'. It cannot be `None`: `_build_codex_prompt` turns None into a
+    non-empty placeholder that KEEPS the evidence framing, so omitting via None would still
+    emit a block (and could still overflow when fixed template overhead alone exhausts the
+    limit). Branching on this sentinel BEFORE the None conversion leaves None behaviour
+    byte-identical for every existing caller."""
+
+    __slots__ = ()
+
+    def __repr__(self):
+        return "EVIDENCE_OMITTED"
+
+
+EVIDENCE_OMITTED = _EvidenceOmitted()
+
 TRUNC_MARKER = "\n...[TRUNCATED]"
 DEPRECATION_LINE = "[features].codex_hooks is deprecated"
 
@@ -638,11 +684,23 @@ def _has_unescaped_quote(s, start, quote):
     return False
 
 
-def redact(text, max_bytes):
-    """Conservative secret redaction. Returns the redacted (and byte-capped) string, or None
-    to signal FAIL CLOSED — the caller must then OMIT the evidence entirely. Fails closed on
-    any internal exception AND on an UNCLOSED private-key/PGP block (a secret whose end we
-    can't see, so we can't be sure a later pattern caught all of it)."""
+def redact_uncapped(text):
+    """Conservative secret redaction WITHOUT the byte cap (v2.17).
+
+    Returns the sanitized string, or None to signal FAIL CLOSED — the caller must then OMIT
+    the evidence entirely. Fails closed on a conversion failure, on ANY substitution failure,
+    and on an UNCLOSED private-key/PGP block or unclosed quoted labelled secret (a secret
+    whose end we can't see, so we can't be sure a later pattern caught all of it).
+
+    WHY THIS IS SPLIT OUT: `pack_evidence` must run on ALREADY-SANITIZED text. Packing first
+    would be a real egress hole — a packer that keeps `ERROR: <short secret>` while dropping
+    the surrounding BEGIN/END or label lines destroys the multi-line structure these patterns
+    match on, and a short secret then also evades the >=32-char opaque-token regex. Packing
+    only DELETES lines from sanitized text, so it can never un-redact anything.
+
+    THE EXCEPTION BOUNDARY IS DELIBERATE: this function owns conversion + substitution +
+    unclosed-block failures. The byte cap is NOT inside it, so a cap exception cannot be
+    mistaken for a redaction failure and a None can never be fed into the cap."""
     try:
         s = "" if text is None else str(text)
         s = _CLOSED_KEY_RE.sub("[REDACTED:PRIVATE_KEY]", s)
@@ -661,8 +719,25 @@ def redact(text, max_bytes):
         s = _LABELLED_SECRET_RE.sub(r"\1\2[REDACTED]", s)
         s = _JWT_RE.sub("[REDACTED:JWT]", s)
         s = _TOKEN_RE.sub("[REDACTED:TOKEN]", s)
-        return _cap_bytes_with_marker(s, max_bytes)
+        return s
     except Exception:  # noqa: BLE001 - never leak a half-redacted string
+        return None
+
+
+def redact(text, max_bytes):
+    """Conservative secret redaction. Returns the redacted (and byte-capped) string, or None
+    to signal FAIL CLOSED — the caller must then OMIT the evidence entirely.
+
+    SIGNATURE AND BEHAVIOUR ARE UNCHANGED for every existing caller (v2.17 only factored the
+    substitutions out into `redact_uncapped`). A None from `redact_uncapped` propagates
+    unchanged; a cap failure is caught SEPARATELY here, so the two failure modes cannot be
+    confused for one another."""
+    s = redact_uncapped(text)
+    if s is None:
+        return None
+    try:
+        return _cap_bytes_with_marker(s, max_bytes)
+    except Exception:  # noqa: BLE001 - never leak a half-capped string
         return None
 
 
@@ -799,22 +874,93 @@ def _build_claude_prompt(epic_id, feature_id, attempt, challenge_id, feat):
     return _bound_text(body, CLAUDE_PROMPT_MAX_CHARS)
 
 
-def _build_codex_prompt(epic_id, feature_id, attempt, challenge_id, evidence_text):
-    ev = evidence_text if evidence_text is not None else (
-        "(evidence omitted — redaction could not complete safely, fail-closed)")
-    body = (
-        "Compound V marathon arbiter -- advisory read-only classification.\n"
-        "epic_id: %s\nfeature: %s\nattempt: %s\nchallenge_id: %s\n\n"
-        "A feature attempt FAILED its quality gate. Redacted evidence follows:\n---\n%s\n---\n\n"
+def _codex_prompt_parts(epic_id, feature_id, attempt, challenge_id, with_evidence=True):
+    """The external-judge prompt template split into PREFIX and SUFFIX around the evidence
+    slot. Single-sourced ON PURPOSE: the evidence budget is derived from these exact strings
+    and the prompt is assembled from these exact strings, so the two can never drift apart
+    (that drift is how a 'budgeted' prompt still overflows)."""
+    head = ("Compound V marathon arbiter -- advisory read-only classification.\n"
+            "epic_id: %s\nfeature: %s\nattempt: %s\nchallenge_id: %s\n\n"
+            % (epic_id, feature_id, attempt, challenge_id))
+    instructions = (
         "Reply with ONLY a single JSON object, no prose before or after, single-line "
         "reason/evidence:\n"
         '{"disposition": "retry_fix|halt_feature|halt_epic|blocked_external", '
         '"reason": "<one line>", '
         '"blocker_category": "<if blocked_external, ONE of credential|external-account|infra|'
         'third-party-data|legal-approval|human-decision; else null>", '
-        '"evidence": "<missing external fact if blocked_external, else null>"}'
-        % (epic_id, feature_id, attempt, challenge_id, ev))
-    return _bound_text(body, CODEX_PROMPT_MAX_CHARS)
+        '"evidence": "<missing external fact if blocked_external, else null>"}')
+    if not with_evidence:
+        # Rung 7: the evidence block is REMOVED, not replaced by an empty one.
+        return (head + "A feature attempt FAILED its quality gate. No evidence could be "
+                       "included within the prompt budget.\n\n" + instructions), ""
+    return (head + "A feature attempt FAILED its quality gate. Redacted evidence "
+                   "follows:\n---\n",
+            "\n---\n\n" + instructions)
+
+
+def _evidence_budget_bytes(epic_id, feature_id, attempt, challenge_id, hard_cap=None):
+    """BYTES end-to-end, with NO circularity: prefix and suffix are rendered and encoded
+    FIRST, and the evidence budget is what the limit leaves after them and the explicit
+    marker margin. Evidence is then packed ONCE and assembled ONCE."""
+    prefix, suffix = _codex_prompt_parts(epic_id, feature_id, attempt, challenge_id, True)
+    overhead = (len(prefix.encode("utf-8", errors="replace"))
+                + len(suffix.encode("utf-8", errors="replace")))
+    budget = CODEX_PROMPT_MAX_BYTES - overhead - EVIDENCE_MARKER_MARGIN_BYTES
+    if hard_cap is not None:
+        budget = min(budget, hard_cap)
+    return budget
+
+
+def _prompt_over_budget(prompt):
+    """An ORDINARY runtime comparison with an explicit over-budget branch at the call site --
+    never a Python `assert`, which vanishes under -O."""
+    return len(prompt.encode("utf-8", errors="replace")) > CODEX_PROMPT_MAX_BYTES
+
+
+def _pack_evidence_for_prompt(sanitized_text, epic_id, feature_id, attempt, challenge_id,
+                              hard_cap=None):
+    """Pack ALREADY-SANITIZED evidence for the judge prompt.
+
+    Returns a bounded string, or EVIDENCE_OMITTED (rung 7) meaning the caller must drop the
+    evidence block. UNBOUNDED INPUT IS NEVER RETURNED: handing back the oversized original
+    on failure would silently restore tail-drop with no signal that prioritization was lost,
+    so any packing failure becomes the bounded fixed placeholder instead, logged LOCALLY."""
+    budget = _evidence_budget_bytes(epic_id, feature_id, attempt, challenge_id, hard_cap)
+    try:
+        mod = _load_sibling_module("compound-v-collect-results.py",
+                                   "compound_v_collect_results")
+        if mod is None:
+            raise ArbiterError("collect-results sibling module could not be loaded")
+        packed = mod.pack_evidence(sanitized_text, budget, ARBITER_EVIDENCE_SECTION)
+        if packed.omit:
+            _log("evidence packing hit loss-hierarchy rung 7 (%d bytes did not fit a "
+                 "%d-byte budget) -- the evidence block is OMITTED"
+                 % (packed.original_bytes, budget))
+            return EVIDENCE_OMITTED
+        if len(packed.text.encode("utf-8", errors="replace")) > max(budget, 0):
+            raise ArbiterError("packed evidence exceeded its own budget")
+        if packed.rung:
+            _log("evidence packed at loss-hierarchy rung %d (%d -> %d bytes, budget %d)"
+                 % (packed.rung, packed.original_bytes, packed.packed_bytes, budget))
+        return packed.text
+    except Exception as e:  # noqa: BLE001 - any packing failure -> bounded placeholder
+        _log("evidence packing failed (%s) -- substituting the bounded placeholder"
+             % _sanitize_diagnostic("%s: %s" % (type(e).__name__, e)))
+        return EVIDENCE_PACKING_FAILED_PLACEHOLDER
+
+
+def _build_codex_prompt(epic_id, feature_id, attempt, challenge_id, evidence_text):
+    # Rung 7 is branched BEFORE the None conversion below, so `None` keeps its exact
+    # existing behaviour (a placeholder INSIDE the evidence framing) for every caller.
+    if evidence_text is EVIDENCE_OMITTED:
+        prefix, suffix = _codex_prompt_parts(epic_id, feature_id, attempt, challenge_id,
+                                             with_evidence=False)
+        return _bound_text(prefix + suffix, CODEX_PROMPT_MAX_CHARS)
+    ev = evidence_text if evidence_text is not None else EVIDENCE_FAILCLOSED_PLACEHOLDER
+    prefix, suffix = _codex_prompt_parts(epic_id, feature_id, attempt, challenge_id,
+                                         with_evidence=True)
+    return _bound_text(prefix + ev + suffix, CODEX_PROMPT_MAX_CHARS)
 
 
 # --------------------------------------------------------------------------------------- #
@@ -1474,9 +1620,17 @@ def cmd_classify(args, p):
                 if raw is None:
                     _log("evidence rejected: %s" % err)
                 else:
-                    evidence_text = redact(raw, max_output_bytes)
-                    if evidence_text is None:
+                    # ORDER IS A SECURITY PROPERTY: redact FIRST, fail closed on None, and
+                    # only THEN pack. Packing before redaction would let a packer drop the
+                    # BEGIN/END or label lines the patterns match on, and a short secret
+                    # would then also evade the >=32-char opaque-token regex.
+                    sanitized = redact_uncapped(raw)
+                    if sanitized is None:
                         _log("secret redaction could not complete -- evidence OMITTED (fail-closed)")
+                    else:
+                        evidence_text = _pack_evidence_for_prompt(
+                            sanitized, epic_id, args.feature, attempt, args.challenge,
+                            hard_cap=max_output_bytes)
 
         ballots = []
 
@@ -1488,10 +1642,18 @@ def cmd_classify(args, p):
             family = model_family(model)
             codex_prompt = _build_codex_prompt(epic_id, args.feature, attempt, args.challenge,
                                                evidence_text)
-            verdict, drop_reason = poll_codex(
-                model, codex_prompt, timeout_sec=args.codex_timeout,
-                max_output_bytes=max_output_bytes, codex_bin=args.codex_bin,
-                supervisor_path=args.supervisor_path)
+            if _prompt_over_budget(codex_prompt):
+                # Even the fixed template exceeds the limit. SKIP the poll: a missing ballot
+                # is honest, whereas an over-budget prompt is a silent truncation of what
+                # the judge votes on.
+                verdict, drop_reason = None, (
+                    "codex poll SKIPPED -- the assembled prompt exceeds the %d-byte limit"
+                    % CODEX_PROMPT_MAX_BYTES)
+            else:
+                verdict, drop_reason = poll_codex(
+                    model, codex_prompt, timeout_sec=args.codex_timeout,
+                    max_output_bytes=max_output_bytes, codex_bin=args.codex_bin,
+                    supervisor_path=args.supervisor_path)
             if verdict is None:
                 _log("codex ballot dropped: %s" % drop_reason)
                 ballots.append({"source": "codex", "family": family, "model": model, "valid": False,
@@ -1518,10 +1680,15 @@ def cmd_classify(args, p):
             agy_family = model_family(agy_model)
             agy_prompt = _build_codex_prompt(epic_id, args.feature, attempt, args.challenge,
                                              evidence_text)
-            averdict, adrop = poll_agy(
-                agy_model, agy_prompt, timeout_sec=args.codex_timeout,
-                max_output_bytes=max_output_bytes, agy_bin=args.agy_bin,
-                supervisor_path=args.supervisor_path)
+            if _prompt_over_budget(agy_prompt):
+                averdict, adrop = None, (
+                    "agy poll SKIPPED -- the assembled prompt exceeds the %d-byte limit"
+                    % CODEX_PROMPT_MAX_BYTES)
+            else:
+                averdict, adrop = poll_agy(
+                    agy_model, agy_prompt, timeout_sec=args.codex_timeout,
+                    max_output_bytes=max_output_bytes, agy_bin=args.agy_bin,
+                    supervisor_path=args.supervisor_path)
             if averdict is None:
                 _log("agy ballot dropped: %s" % adrop)
                 ballots.append({"source": "agy", "family": agy_family, "model": agy_model,
@@ -2033,6 +2200,190 @@ def _selftest():
     r_cap = redact("B" * 5000, 100)
     check("F2 redact: byte cap RESERVES marker room (final <= cap)",
           len(r_cap.encode("utf-8")) <= 100)
+
+    # =================================================================================== #
+    # v2.17 — the redact()/redact_uncapped() split, and the SECURITY ORDERING it exists for
+    # =================================================================================== #
+    def _b(s):
+        return len(s.encode("utf-8"))
+
+    # redact_uncapped keeps every substitution and every fail-closed rule, minus the cap.
+    check("v2.17 redact_uncapped: closed PEM key still collapses",
+          "[REDACTED:PRIVATE_KEY]" in redact_uncapped(
+              "x\n-----BEGIN RSA PRIVATE KEY-----\nMII\n-----END RSA PRIVATE KEY-----\ny"))
+    check("v2.17 redact_uncapped: UNCLOSED PEM block -> FAIL CLOSED (None)",
+          redact_uncapped("secret start\n-----BEGIN RSA PRIVATE KEY-----\nMIInoEnd") is None)
+    check("v2.17 redact_uncapped: UNCLOSED quoted labelled secret -> FAIL CLOSED (None)",
+          redact_uncapped('token="shortsecret\ncontinued') is None)
+    check("v2.17 redact_uncapped: CLOSED quoted labelled secret is redacted, not dropped",
+          redact_uncapped('token="quotedsecret"') is not None
+          and "quotedsecret" not in redact_uncapped('token="quotedsecret"'))
+    check("v2.17 redact_uncapped: escaped closing quote is NOT a close -> FAIL CLOSED",
+          redact_uncapped('token="secret\\"') is None)
+    _uncapped_src = "\n".join("plain log line %d" % i for i in range(500))
+    check("v2.17 redact_uncapped: does NOT cap (that is redact's job)",
+          _b(redact_uncapped(_uncapped_src)) == _b(_uncapped_src)
+          and _b(redact(_uncapped_src, 100)) <= 100)
+    check("v2.17 redact_uncapped: FAIL CLOSED on a conversion exception",
+          redact_uncapped(_Boom()) is None)
+
+    # An INJECTED SUBSTITUTION failure must fail closed in BOTH functions...
+    _saved_token_re = _TOKEN_RE
+
+    class _RaisingRe(object):
+        def sub(self, *_a, **_kw):
+            raise RuntimeError("injected substitution failure")
+
+        def search(self, *_a, **_kw):
+            return None
+
+        def finditer(self, *_a, **_kw):
+            return iter(())
+
+    try:
+        globals()["_TOKEN_RE"] = _RaisingRe()
+        check("v2.17 injected SUBSTITUTION failure -> redact_uncapped None",
+              redact_uncapped("harmless text") is None)
+        check("v2.17 injected SUBSTITUTION failure -> redact propagates None",
+              redact("harmless text", 1000) is None)
+    finally:
+        globals()["_TOKEN_RE"] = _saved_token_re
+    check("v2.17 substitution injection fully restored", redact("plain", 1000) == "plain")
+
+    # ...and an INJECTED CAP failure must be caught SEPARATELY, by redact only: the
+    # sanitized text is fine, it is the cap that broke.
+    _saved_cap = _cap_bytes_with_marker
+
+    def _raising_cap(_s, _max_bytes):
+        raise RuntimeError("injected cap failure")
+
+    try:
+        globals()["_cap_bytes_with_marker"] = _raising_cap
+        check("v2.17 injected CAP failure -> redact returns None", redact("plain", 10) is None)
+        check("v2.17 injected CAP failure does NOT reach redact_uncapped",
+              redact_uncapped("plain") == "plain")
+    finally:
+        globals()["_cap_bytes_with_marker"] = _saved_cap
+    check("v2.17 cap injection fully restored", redact("plain", 1000) == "plain")
+
+    # ---- the seam: pack_evidence is imported through the EXISTING sibling loader --------
+    _cr = _load_sibling_module("compound-v-collect-results.py", "compound_v_collect_results")
+    check("v2.17 seam: collect-results loads through _load_sibling_module", _cr is not None)
+    check("v2.17 seam: pack_evidence is exposed", callable(getattr(_cr, "pack_evidence", None)))
+    # The marker vocabulary is RECONCILED with the existing dialect, not a third one.
+    check("v2.17 marker vocabulary reconciled with TRUNC_MARKER",
+          _cr.TRUNC_MARKER == TRUNC_MARKER)
+    check("v2.17 placeholder strings agree across the seam",
+          _cr.PACKING_FAILED_PLACEHOLDER == EVIDENCE_PACKING_FAILED_PLACEHOLDER
+          and _cr.BUDGET_EXHAUSTED_PLACEHOLDER == EVIDENCE_BUDGET_EXHAUSTED_PLACEHOLDER)
+    check("v2.17 the arbiter's section label is a member of the fixed enum",
+          ARBITER_EVIDENCE_SECTION in _cr.EVIDENCE_SECTION_LABELS)
+
+    # ---- THE ORDERING HAZARD, asserted directly ----------------------------------------
+    # A private-key block whose BEGIN/END lines packing WOULD drop is fully redacted,
+    # because packing runs on already-sanitized text.
+    _key_body = "\n".join("MIIsecretkeyline%03d" % i for i in range(60))
+    _pem = ("filler line one\n-----BEGIN RSA PRIVATE KEY-----\n" + _key_body
+            + "\n-----END RSA PRIVATE KEY-----\nERROR: the gate failed after the key")
+    _san = redact_uncapped(_pem)
+    _packed = _cr.pack_evidence(_san, 200, ARBITER_EVIDENCE_SECTION)
+    check("v2.17 ORDERING: sanitize-then-pack leaves NO private-key material",
+          "MIIsecretkeyline" not in _packed.text and "MIIsecretkeyline" not in _san)
+
+    # The same hazard shown to be REAL rather than theoretical: with the order REVERSED,
+    # a short secret whose label line was dropped survives redaction. This is why
+    # "pack before redact" is forbidden, not merely discouraged.
+    _leaky = ('filler zero\ntoken="topsecret\nERROR: MOREsecretvalue"\nfiller three')
+    check("v2.17 ORDERING: redact-then-pack removes the multi-line quoted secret",
+          "MOREsecretvalue" not in _cr.pack_evidence(
+              redact_uncapped(_leaky), 120, ARBITER_EVIDENCE_SECTION).text)
+    _wrong = _cr.pack_evidence(_leaky, 60, ARBITER_EVIDENCE_SECTION).text
+    check("v2.17 ORDERING: pack-then-redact WOULD leak (the hazard is real)",
+          "MOREsecretvalue" in _wrong
+          and "MOREsecretvalue" in (redact_uncapped(_wrong) or ""))
+
+    # ---- BYTES end-to-end: budget derivation, assembly, and the over-budget branch ------
+    _ids = ("epic1", "featA", 3, "chal123")
+    _pre, _suf = _codex_prompt_parts(*_ids, with_evidence=True)
+    _budget = _evidence_budget_bytes(*_ids)
+    check("v2.17 budget = limit - encoded(prefix+suffix) - marker_margin",
+          _budget == CODEX_PROMPT_MAX_BYTES - _b(_pre) - _b(_suf)
+          - EVIDENCE_MARKER_MARGIN_BYTES)
+    check("v2.17 marker_margin covers every bounded placeholder",
+          EVIDENCE_MARKER_MARGIN_BYTES >= max(
+              _b(EVIDENCE_FAILCLOSED_PLACEHOLDER),
+              _b(EVIDENCE_PACKING_FAILED_PLACEHOLDER),
+              _b(EVIDENCE_BUDGET_EXHAUSTED_PLACEHOLDER)))
+    check("v2.17 hard cap still applies to the evidence budget",
+          _evidence_budget_bytes(*_ids, hard_cap=500) == 500)
+
+    # A NON-ASCII fixture: the assembled prompt fits the BYTE limit, so no downstream tail
+    # cut can amputate the JSON response instructions the ballot depends on.
+    _na = "\n".join(["ERROR: échec du téléchargement " + "é" * 60
+                     for _ in range(400)])
+    _na_ev = _pack_evidence_for_prompt(redact_uncapped(_na), *_ids)
+    _na_prompt = _build_codex_prompt(_ids[0], _ids[1], _ids[2], _ids[3], _na_ev)
+    check("v2.17 non-ASCII fixture really is multi-byte", _b(_na) > len(_na))
+    check("v2.17 non-ASCII: assembled prompt is within the BYTE limit",
+          not _prompt_over_budget(_na_prompt))
+    check("v2.17 non-ASCII: the JSON response instructions survive intact",
+          _na_prompt.endswith('"evidence": "<missing external fact if blocked_external, '
+                              'else null>"}'))
+    check("v2.17 non-ASCII: _bound_text never had to cut (byte limit is the binding one)",
+          len(_na_prompt) <= CODEX_PROMPT_MAX_CHARS
+          and "[TRUNCATED to stay bounded]" not in _na_prompt)
+    check("v2.17 non-ASCII: evidence was packed, not tail-dropped",
+          "[cv-omitted" in _na_prompt or "[evidence omitted" in _na_prompt)
+
+    # ---- packing failure is handled AT THE CALLER, with a BOUNDED placeholder -----------
+    check("v2.17 packing failure -> bounded placeholder (never unbounded input)",
+          _pack_evidence_for_prompt("x" * 100000, "epic1", "featA", 3, "chal123",
+                                    hard_cap=None) is not None)
+    _bad_label = ARBITER_EVIDENCE_SECTION
+    try:
+        globals()["ARBITER_EVIDENCE_SECTION"] = "not_a_member_of_the_enum"
+        _failed = _pack_evidence_for_prompt("ERROR: boom\n" + "x" * 50000, *_ids)
+        check("v2.17 injected packing failure -> the fixed placeholder",
+              _failed == EVIDENCE_PACKING_FAILED_PLACEHOLDER)
+        check("v2.17 injected packing failure NEVER returns the oversized input",
+              _b(_failed) <= EVIDENCE_MARKER_MARGIN_BYTES)
+    finally:
+        globals()["ARBITER_EVIDENCE_SECTION"] = _bad_label
+
+    # ---- rung 7: a DISTINCT sentinel that REMOVES the evidence block --------------------
+    _omit = _pack_evidence_for_prompt("ERROR: " + "z" * 4000, *_ids, hard_cap=20)
+    check("v2.17 rung 7 -> the EVIDENCE_OMITTED sentinel", _omit is EVIDENCE_OMITTED)
+    _p_omit = _build_codex_prompt(_ids[0], _ids[1], _ids[2], _ids[3], EVIDENCE_OMITTED)
+    check("v2.17 rung 7 prompt drops the evidence FRAMING entirely",
+          "---" not in _p_omit and "Redacted evidence follows" not in _p_omit)
+    check("v2.17 rung 7 prompt keeps the ballot instructions",
+          '"disposition"' in _p_omit and not _prompt_over_budget(_p_omit))
+    # None must keep its EXISTING behaviour for all four current evidence_text branches:
+    # a placeholder INSIDE the evidence framing, not an omitted block.
+    _p_none = _build_codex_prompt(_ids[0], _ids[1], _ids[2], _ids[3], None)
+    check("v2.17 None behaviour is UNCHANGED (placeholder inside the framing)",
+          "Redacted evidence follows" in _p_none
+          and EVIDENCE_FAILCLOSED_PLACEHOLDER in _p_none and "---" in _p_none)
+    check("v2.17 a plain string still renders inside the framing",
+          "PACKED-EVIDENCE-HERE" in _build_codex_prompt(
+              _ids[0], _ids[1], _ids[2], _ids[3], "PACKED-EVIDENCE-HERE"))
+
+    # ---- the over-budget branch is an ORDINARY comparison, not an `assert` --------------
+    check("v2.17 over-budget detection is a runtime comparison (survives -O)",
+          _prompt_over_budget("x" * (CODEX_PROMPT_MAX_BYTES + 1))
+          and not _prompt_over_budget("x" * CODEX_PROMPT_MAX_BYTES))
+    check("v2.17 over-budget detection counts BYTES, not characters",
+          _prompt_over_budget("é" * (CODEX_PROMPT_MAX_BYTES // 2 + 1)))
+
+    # ---- an end-to-end packed prompt is inside the limit, evidence intact ---------------
+    _big = "\n".join(["filler %d" % i for i in range(2000)]
+                     + ["Traceback (most recent call last):", "AssertionError: gate failed"])
+    _ev = _pack_evidence_for_prompt(redact_uncapped(_big), *_ids)
+    _prompt = _build_codex_prompt(_ids[0], _ids[1], _ids[2], _ids[3], _ev)
+    check("v2.17 e2e: a large evidence blob yields an in-budget prompt",
+          not _prompt_over_budget(_prompt))
+    check("v2.17 e2e: the FAILURE content is what survived, not the head filler",
+          "AssertionError: gate failed" in _prompt and "filler 0\nfiller 1" not in _prompt)
 
     # sanitize_ballot_fields
     check("F2 sanitize: multiline reason -> drop", sanitize_ballot_fields("a\nb", None) is None)

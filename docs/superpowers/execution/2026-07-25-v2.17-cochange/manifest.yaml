@@ -1,0 +1,132 @@
+# Compound V execution manifest — v2.17 co-change advisory + bounded evidence packing.
+# Materialized from the r6 spec (post-archaeology + 2 Codex rounds). Ideas from repowise; NO code copied (AGPL-3.0).
+
+run_id: 2026-07-25-v2.17-cochange
+feature: "Co-change advisory (inverse scope gate) + failure-prioritized, explicitly-lossy evidence packing"
+spec_path: docs/superpowers/specs/2026-07-25-v2.17-cochange-and-evidence-packing-design.md
+plan_path: docs/superpowers/specs/2026-07-25-v2.17-cochange-and-evidence-packing-design.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-25-v2.17-cochange.md
+  # 1B domain + 1C library deliberately NOT run: no user-facing/regulated surface and
+  # zero dependencies (pure stdlib over the git CLI). Recorded in the archaeology doc.
+
+acceptance_criteria:
+  - "ORDERED RULES, not symmetric pairs: a rule A->B fires only when support>=8 AND P(B|A)>=0.70 AND the 95% Wilson LOWER BOUND >=0.50 AND narrow-support>=3 (co-changes in non-release, non-format commits touching <=10 files); release/bulk counts are reported, never hidden; every output carries provenance (head_sha, since/until, eligible-commit count, active filter config); no fabricated risk score, no confidence %"
+  - "reproduces the measured HEAD table EXACTLY, including the two REJECTIONS: GEMINI.md->AGENTS.md rejected on narrow-support (2<3, bulk-confounded) and AGENTS.md->GEMINI.md rejected on Wilson lower bound (0.43<0.50). An unpaired historical touch is NEVER called a verified defect"
+  - "STRUCTURALLY advisory: `check` EXITS 0 whether or not findings exist (non-zero reserved for operational errors only — a selftest asserts this); partition-reviewer.md gains an UNCONDITIONAL `WARNINGS` section rendered for BOTH PASS and FAIL, structurally separate from the FAIL codes; the doc states explicitly that neither a finding nor an unavailable scan may change VERDICT; agents/spec-reviewer.md is NOT touched; co-change adds NO NEW hard gate (the validator, lockstep guards and selftest loop remain the existing ones)"
+  - "REDACT FIRST, THEN PACK: redact_uncapped(text) is extracted from redact() with all substitutions and fail-closed semantics intact and redact()'s existing signature/behaviour UNCHANGED for every current caller; the arbiter does redact_uncapped -> fail closed on None -> pack_evidence on ALREADY-SANITIZED text. Packing before redaction is FORBIDDEN: dropping BEGIN/END or label lines destroys the structure redact() matches on and a short secret then evades the >=32-char token regex"
+  - "pack_evidence is FAILURE-PRIORITIZED AND EXPLICITLY LOSSY (never 'bounded AND never drops a failure line' — impossible): ORIGINAL ORDER preserved with section headers, markers at the original gaps, NO reordering; section_label is a FIXED ENUM; overflow follows the TOTAL LOSS HIERARCHY below verbatim; BYTES end-to-end; the final size check is an ORDINARY RUNTIME COMPARISON with an explicit over-budget branch — NEVER a Python assert (it vanishes under -O)"
+  - "packing failure is handled AT THE CALLER: the arbiter substitutes the bounded fixed placeholder `[evidence omitted: packing failed]` and logs locally; UNBOUNDED INPUT IS NEVER RETURNED (returning the oversized original silently restores tail-drop with no signal)"
+  - "IMPORT, never fork: churn's _run_git (explicitly loaded and called, not re-implemented), load_churn_config, _is_format_subject/_compile_format_patterns, taxonomy's glob_match, and the arbiter's existing _load_sibling_module seam. Built-in DEFAULT release/format subject patterns ship and are tested, because with no taxonomy load_churn_config returns EMPTY format patterns too and an imported matcher with an empty list rejects nothing"
+  - "-M is passed for HERMETICITY only (verified: bare `git log --name-only` already resolves renames since diff.renames defaults true; only --no-renames creates the two-path artifact) — the r2 'fabricated pair' claim is DOWNGRADED, and the selftest asserts at the PRODUCTION --min-support, not a lowered threshold"
+  - "no cache file, no committed artifact; CONVENTIONS.md NOT edited (it is /v:onboard-generated) — the limits rule becomes ADR 0002"
+  - "Py3.9-safe stdlib-only; --selftest as a LITERAL string, ASCII-safe under LANG=C, offline, GIT_CONFIG_GLOBAL/SYSTEM=os.devnull, no real taxonomy needed; tz-aware datetime.now(timezone.utc) never utcnow(); deterministic JSON (indent=2, sort_keys=True, ensure_ascii=True, trailing newline)"
+  - "2.17.0 lockstep across plugin.json + marketplace.json + CHANGELOG.md; both existing CI lockstep guards pass UNMODIFIED; scope gate clean on every job"
+
+  - "[r4] rules normal output contains ONLY firing rules; rejected candidates are visible ONLY via an explicit --explain-rejections diagnostic mode that check never invokes; a byte-capped git scan or too-short history yields complete:false with an insufficient_history/scan_incomplete reason and NO rules at all — a caller must be able to tell 'no missing partners' from 'we could not tell'; the <=10-file narrow width is a DECLARED portability limit (young/squash/monorepo repos legitimately yield no rules), thresholds deliberately NOT tunable in v1"
+  - "[r4] check takes --manifest or --patterns (GLOBS), never a literal --files list: write_allowed holds globs like scripts/**, so literal files miss pattern-covered antecedents and shell expansion misses not-yet-existing files; antecedents tested with the IMPORTED glob_match; selftest covers exact, *, ** and a path absent at HEAD"
+  - "[r4] the advisory guarantee is ordering-bound, not exit-code-bound: partition-reviewer determines and WRITES VERDICT BEFORE the co-change step runs, and that step may only APPEND to WARNINGS — a verdict already on the page cannot be revised by a correlation"
+  - "[r4] redact_uncapped() catches conversion+substitution+unclosed-block failures and returns None; redact() propagates None unchanged and SEPARATELY catches cap exceptions; regression tests inject a substitution failure AND a cap failure and cover an unclosed PEM block and a quoted secret"
+  - "[r4] a TOTAL loss hierarchy applied in order until it fits: drop non-failure spans -> context radius 0 -> truncate oversized failure spans with a marker -> truncate headers -> drop markers -> fixed placeholder '[evidence omitted: budget exhausted]' -> the arbiter OMITS the evidence rather than emitting an over-budget prompt. Every rung reachable and tested"
+  - "[r4] prioritization is deterministic: fixed section_label enum members, a documented failure-matcher list, span = matched line + a FIXED context radius, allocation in ORIGINAL document order highest-priority first, byte-length then document-position tie-break — the output must be a function of the input"
+  - "[r4] the template is split into prefix+suffix, both rendered and encoded FIRST, the exact remaining budget derived from them, packed once, assembled once; marker_margin defined and NOT double-counted; the final size check is an explicit runtime comparison, NEVER a Python assert (it vanishes under -O)"
+  - "[r4] the spec's contradictory 'scope gate is the only hard gate' line is DELETED; the single accurate statement is 'co-change adds no new hard gate'"
+
+routing_stance: claude-only
+max_parallel: 3
+
+shared_resources:
+  - "CHANGELOG.md"
+  - ".claude-plugin/plugin.json"
+  - ".claude-plugin/marketplace.json"
+  - "README.md"
+
+jobs:
+  - id: p1-cochange-engine
+    title: "compound-v-cochange.py — git-derived co-change pairs + missing-partner check"
+    type: large_isolated
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    write_allowed:
+      - "scripts/compound-v-cochange.py"
+    read_allowed:
+      - "scripts/**"
+      - "docs/superpowers/specs/2026-07-25-v2.17-cochange-and-evidence-packing-design.md"
+      - "CONVENTIONS.md"
+    acceptance:
+      - "rules subcommand: --repo/--since/--min-support 8/--min-rate 0.70/--min-wilson 0.50/--min-narrow 3/--narrow-max-files 10; emits ORDERED rules with support, P, 95% Wilson lower bound, narrow support, release+bulk counts, and a provenance block (head_sha, since/until, eligible-commit count, active filter config); git log --no-merges -M --name-only executed by calling churn's IMPORTED _run_git (never re-implemented, never subprocess.run(timeout=) on git); honors the `capped` flag; a non-zero git exit is SURFACED, not flattened to empty"
+      - "check subcommand: takes --manifest <path> OR --patterns <globs> — NEVER a literal --files list (write_allowed holds globs like scripts/**, so literal files miss pattern-covered antecedents and shell expansion misses not-yet-existing files); antecedents tested with the IMPORTED glob_match; selftest covers an exact path, *, ** and a path absent at HEAD; EXITS 0 whether or not findings exist (non-zero ONLY for operational errors — asserted in the selftest, it is what structurally prevents gating); partners deleted at HEAD filtered; deterministic JSON (indent=2, sort_keys=True, ensure_ascii=True, trailing newline); counts + measured frequencies only, no risk score, no %"
+      - "on this repo at HEAD, NORMAL `rules` output emits ONLY the six firing ordered rules (marketplace->plugin 1.00/LB0.90, plugin->marketplace 0.94/LB0.82, plugin->CHANGELOG 0.92/LB0.78, marketplace->CHANGELOG 0.91/LB0.77, epic-mode->v-epic 0.94/LB0.74, v-epic->epic-mode 0.81/LB0.60) and NOTHING sub-threshold; `rules --explain-rejections` — a diagnostic mode `check` never invokes — additionally reproduces BOTH AGENTS/GEMINI directions with their rejection reasons (narrow-support 2<3; Wilson 0.43<0.50)"
+      - "ships TESTED built-in default release/format subject patterns unioned with any taxonomy patterns (load_churn_config returns EMPTY format patterns with no taxonomy, so an imported matcher alone rejects nothing); imports load_churn_config, _is_format_subject/_compile_format_patterns, and taxonomy glob_match — never forks _glob_match (that would be a third copy)"
+      - "--selftest (literal, ASCII under LANG=C, offline, no real taxonomy) with a tempdir fixture repo OUTSIDE the worktree, GIT_CONFIG_GLOBAL/SYSTEM=os.devnull, pinned identity+dates: covers (a) default rename behaviour asserted at the PRODUCTION --min-support, (b) a below-50%-similarity move that -M does NOT unify, (c) built-in subject defaults with no taxonomy, (d) a bulk-confounded pair rejected by narrow support, (e) a small-sample pair rejected by the Wilson bound, (f) deleted-at-HEAD partner filtered, (g) non-zero git exit surfaced, (h) check exits 0 WITH findings; Py3.9 stdlib-only, tz-aware datetime"
+
+  - id: p2-evidence-packing
+    title: "pack_evidence() — failure-prioritized, original-order, explicitly-lossy evidence packer"
+    type: standard
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    write_allowed:
+      - "scripts/compound-v-collect-results.py"
+      - "scripts/compound-v-epic-arbiter.py"
+    read_allowed:
+      - "scripts/**"
+      - "docs/superpowers/specs/2026-07-25-v2.17-cochange-and-evidence-packing-design.md"
+    acceptance:
+      - "redact_uncapped(text) EXTRACTED from redact() in epic-arbiter.py with every substitution and the fail-closed-on-exception AND fail-closed-on-unclosed-key-block semantics intact; redact()'s existing SIGNATURE AND BEHAVIOUR are UNCHANGED for all current callers (the arbiter's existing ~1100-line selftest must still pass unmodified)"
+      - "pack_evidence(sanitized_text, budget_bytes, section_label) in collect-results.py, called ONLY on already-redacted text: the arbiter does redact_uncapped -> fail closed on None -> pack. A selftest asserts the ordering hazard directly — a private-key block whose BEGIN/END lines packing would drop is FULLY redacted because packing runs after sanitization"
+      - "DETERMINISTIC SELECTION — the constants are fixed here, not left to the implementer, because two implementations retaining different spans would elicit different judge VOTES: section_label enum = {job_stderr, job_stdout, test_output, scope_gate, review_notes, diff_summary}; failure matcher list (case-insensitive, anchored at line start after whitespace) = {Traceback (most recent call last), ERROR, FAILED, FAIL:, AssertionError, Exception, panic:, fatal:, E   }; priority rank = traceback-block > FAILED/FAIL: > ERROR/Exception > panic/fatal > remaining matches; span = the matched line + a context radius of EXACTLY 3 lines each side; OVERLAPPING/adjacent spans are COALESCED into one before allocation; allocation walks priority ranks high-to-low and, WITHIN a rank, ORIGINAL DOCUMENT ORDER (earliest first); allocation walks ranks high-to-low and, WITHIN a rank, ORIGINAL MATCH POSITION (earliest first) is the SOLE comparator — position is unique so no further tie-break exists; encoded byte length is NOT a selection input [r6 retraction of the r4 two-comparator wording]; retained spans are EMITTED in original document order with their section headers and markers at the original gaps"
+      - "TOTAL LOSS HIERARCHY applied IN ORDER until the result fits: (1) drop non-failure spans; (2) shrink context radius to 0; (3) truncate oversized failure spans with a marker; (4) truncate headers; (5) drop markers; (6) at a non-positive budget emit the fixed placeholder `[evidence omitted: budget exhausted]`; (7) if even that does not fit, the arbiter OMITS THE EVIDENCE BLOCK ENTIRELY. Every rung is reachable and individually tested; the final size check is an ORDINARY RUNTIME COMPARISON with an explicit over-budget branch, NEVER a Python assert"
+      - "BYTES end-to-end with NO circularity: the prompt template is split into PREFIX and SUFFIX, both rendered and encoded FIRST, evidence_budget_bytes = prompt_limit_bytes - encoded(prefix+suffix) - marker_margin (marker_margin defined explicitly and NOT double-counting markers already charged inside pack_evidence); packed once, assembled once, then an explicit runtime length check. A non-ASCII fixture proves no downstream cut amputates the JSON response instructions"
+      - "packing failure handled AT THE CALLER: the arbiter wraps the call and substitutes the bounded fixed placeholder `[evidence omitted: packing failed]`, logging locally; UNBOUNDED INPUT IS NEVER RETURNED; a selftest injects a packing failure and asserts the placeholder"
+      - "imported through the EXISTING _load_sibling_module seam (:526-541), no new loader; the four existing evidence_text None-branches (:1462-1479) behave identically; collect-results.py main() (:670-718) exit codes and stdout UNCHANGED, no import-time side effects; new cases in the EXISTING _selftest() (:533-626) using its check(name, cond) idiom"
+
+  - id: p3-advisory-wiring-adr
+    title: "partition-reviewer advisory step + ADR 0002 (limits ship with the claim)"
+    type: standard
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [p1-cochange-engine]
+    write_allowed:
+      - "agents/partition-reviewer.md"
+      - "docs/superpowers/adr/0002-limits-ship-with-the-claim.md"
+    read_allowed:
+      - "agents/**"
+      - "scripts/**"
+      - "docs/superpowers/adr/**"
+      - "docs/superpowers/specs/2026-07-25-v2.17-cochange-and-evidence-packing-design.md"
+    acceptance:
+      - "partition-reviewer.md: an UNCONDITIONAL `WARNINGS` section in the output template rendered for BOTH PASS and FAIL, structurally SEPARATE from the FAIL codes — note the r2 misreading that this fixes: the existing `WARN: BATCHING_MISSING` (:93) actually sits INSIDE the `[If FAIL...]` region before `[If PASS:]`, so a WARN was never structurally outside it; the new step runs compound-v-cochange.py check over the union of every job's write_allowed and lists each missing partner with support + P + Wilson LB + narrow count + the window"
+      - "the doc states EXPLICITLY that neither a co-change finding nor an UNAVAILABLE co-change scan may change VERDICT; the verdict vocabulary stays PASS|FAIL derived solely from the validator and the existing failure codes; `check` exiting non-zero means an operational error and is reported as such, NEVER as a FAIL"
+      - "agents/spec-reviewer.md is NOT touched (out of write_allowed by design — it has no WARN vocabulary and any ISSUE: hard-blocks DONE via :14/:203 and commands/v-collect.md:41)"
+      - "ADR 0002 follows docs/superpowers/adr/0001-fts5-not-vector-db.md's shape exactly: any published number ships with a 'What this does not show' note in the same document; alternatives + consequences; every reference verified to exist; CONVENTIONS.md NOT edited (it is /v:onboard-generated and would be overwritten)"
+      - "lint-frontmatter clean; no scope-gate violation"
+
+  - id: z1-release
+    title: "Lockstep 2.17.0 + CHANGELOG + README"
+    type: shared_foundation
+    backend: claude
+    tier: deep
+    effort: medium
+    isolation: direct
+    run: serial
+    depends_on: [p1-cochange-engine, p2-evidence-packing, p3-advisory-wiring-adr]
+    write_allowed:
+      - ".claude-plugin/plugin.json"
+      - ".claude-plugin/marketplace.json"
+      - "CHANGELOG.md"
+      - "README.md"
+    read_allowed:
+      - "**"
+    acceptance:
+      - "plugin.json + marketplace.json + the CHANGELOG top heading ALL at 2.17.0 (the two CI lockstep guards at validate.yml:43-52 and :54-81 must pass unmodified — this is the very pair the feature studies)"
+      - "CHANGELOG '## [2.17.0]' describing both features HONESTLY: co-change emits ORDERED rules, is ADVISORY, adds NO NEW hard gate, and does NOT replace either existing CI lockstep guard (CI enforces exactly at push time; this advises statistically at partition time); pack_evidence is FAILURE-PRIORITIZED AND EXPLICITLY LOSSY (never claim 'never drops a failure line'); state that it runs AFTER redaction; credit the ideas to repowise with NO code copied (AGPL-3.0). No fabricated metric, no unadjudicated 'violation' claim"
+      - "README one-liner for the co-change advisory; manifest-validator + lint-frontmatter clean"
