@@ -8,7 +8,7 @@ loop keeps an honesty guardrail (a human gate or a circuit breaker), never a bli
 
 | # | Loop | Triggered by | Ends when | Compound V feature |
 |---|---|---|---|---|
-| 01 | **Turn-based** — you steer every move | your prompt | you review | the default + **checkpoint epic** (`MAX_FEATURES=1`) + the brainstorm HARD-GATE |
+| 01 | **Turn-based** — you steer every move | your prompt | you review | the default + **checkpoint epic** (`MAX_FEATURES=1`) + the brainstorm HARD-GATE (upstream, prose) |
 | 02 | **Goal-based** — it checks itself | `/v:epic` + breaker budget | the evaluator passes | **Marathon Loop** (v2.10) — evaluator = 3-pass review + cross-model arbiter |
 | 03 | **Time-based** — the clock triggers it | an interval fires | it waits for the tick | **Auto-Resurrection Watch** (v2.11, `:17/:47`) + the **headless shim** (v2.14) |
 | 04 | **Proactive** — no human present | an event / schedule | it decides (bounded) | marathon + watch + arbiter, **honestly bounded** |
@@ -20,7 +20,10 @@ loop keeps an honesty guardrail (a human gate or a circuit breaker), never a bli
 The default Claude Code interaction, and Compound V's **checkpoint** stance. You prompt, it acts, it replies,
 you write the next prompt. The human is in the loop at every gate: the partition-review gate before dispatch,
 the 3-pass Review Gate after, the brainstorming HARD-GATE (no implementation without your explicit design
-approval — [`skills/compound-v/SKILL.md`](../../skills/compound-v/SKILL.md)), and the v2.16
+approval — this gate lives **upstream in the Superpowers brainstorming skill**, not in Compound V; an earlier
+version of this doc miscited it to `skills/compound-v/SKILL.md`, which contains no such gate. It is also
+prose upstream, not a mechanism — see [ADR 0002](adr/0002-limits-ship-with-the-claim.md) on stating limits
+with claims), and the v2.16
 [`/v:preferences`](../../commands/v-preferences.md) recall (evidence for you, never an answer). A checkpoint
 epic ([`skills/compound-v/epic-mode.md`](../../skills/compound-v/epic-mode.md)) builds one feature, reports
 `--stats`, and stops for you. *Triggered by your prompt · ends when you review.*

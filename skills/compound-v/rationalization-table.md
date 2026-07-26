@@ -132,6 +132,14 @@ Don't half-do it. Half-Velocity-Mode produces the worst of both worlds — the c
 
 ---
 
+## On skipping the pipeline entirely (the most common real-world bypass)
+
+| Excuse | Reality |
+|--------|---------|
+| **"The design was already settled with the user, so I implemented it directly."** | **Design approval releases the upstream brainstorming HARD-GATE. It does not release the Compound V pipeline** — the pipeline *begins* where design approval ends. This excuse is dangerous precisely because it is literally compliant with the strongest gate in the stack, which is why it must be refuted here instead. The sanctioned shortcut exists and has a name: the **v2.9 fast-path**, which requires `compound-v-preeval.py` to score it AND a human OFFER that the human accepts. It never auto-routes. Ad-hoc direct implementation is not the fast-path — it is the fast-path with the evidence and the human removed. Observed in the wild, self-reported by the agent that did it. |
+| "The change is obvious, the pipeline is overhead for it." | Proportionality is a real principle and it has a mechanism — run `compound-v-preeval.py` and let the score say so. "Obvious to me right now" is a judgment made by the party that benefits from skipping; the pre-eval is the party that does not. If it genuinely scores low, you lose thirty seconds and gain a record. |
+| "I'll run it through the pipeline afterwards for the record." | A pipeline run after the code exists cannot do the two things it is for: partition the work before it is written, and let a reviewer reject a design before it is built. Retroactively minting a record for a decision already made is the fabricated-evidence pattern, not an audit trail. |
+
 ## When Compound V Genuinely Doesn't Apply
 
 Honest cases for skipping the whole thing:
