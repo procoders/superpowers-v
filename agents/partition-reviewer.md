@@ -116,7 +116,7 @@ python3 scripts/compound-v-cochange.py check --patterns 'scripts/**' 'agents/par
 **How to read the JSON it writes to stdout:**
 
 - `complete: true` + `findings: []` → the scan ran and found no missing partners. Say so plainly.
-- `complete: true` + non-empty `findings` → one `WARN: COCHANGE_MISSING_PARTNER` line per finding. For **each** finding report, verbatim from the JSON: `missing_partner`, `support` / `antecedent_commits`, `rate`, `wilson_lower`, `narrow_support`, and the sample window from `provenance` (`since`, `until`, `eligible_commits`, `head_sha`). Never summarize these into a score, a percentage-confidence, or a "risk level" — the numbers ARE the finding.
+- `complete: true` + non-empty `findings` → one `WARN: COCHANGE_MISSING_PARTNER` line per finding. For **each** finding report, verbatim from the JSON: `missing_partner`, `support` / `antecedent_commits`, `rate`, `wilson_lower`, `narrow_support`, and the sample window from `provenance` (`since`, `until`, `eligible_commits`, `head_sha`, **`dropped_oversized_commits`**). Report `dropped_oversized_commits` even when it is `0`: a commit dropped by the pair-explosion guard is excluded from `eligible_commits` while `complete` stays `true`, so on a wide monorepo a silently narrowed scan would otherwise read to a human as a complete one. Never summarize these into a score, a percentage-confidence, or a "risk level" — the numbers ARE the finding.
 - `complete: false` → the scan could **not** tell. It carries a `reason` (`insufficient_history` — history too short to clear the support bar; or `scan_incomplete` — git output was byte-capped) and a `detail`, and it deliberately emits **no** rules. Report this as `NOTE: COCHANGE_INCOMPLETE` phrased as *"could not tell"*. **An incomplete scan is never a clean bill of health** — do not write "no missing partners" for it.
 - **Exit 0** is returned whether or not findings exist. **Exit 2 is an OPERATIONAL ERROR** (bad arguments, unreadable manifest, a non-zero git exit) with a JSON `{"error": ..., "command": ...}` on stderr. Report it as `NOTE: COCHANGE_UNAVAILABLE` with the error text. It is **not** a FAIL and **not** evidence of a partition problem — it means the advisory did not run.
 - Script missing entirely (older checkout) → `NOTE: COCHANGE_UNAVAILABLE — scripts/compound-v-cochange.py not present`. Continue; the verdict is untouched.
@@ -128,7 +128,7 @@ python3 scripts/compound-v-cochange.py check --patterns 'scripts/**' 'agents/par
 3. There is **no** `FAIL: COCHANGE_*` code and you must not invent one. If you find yourself wanting to fail a partition because of a co-change finding, the answer is no: report it, and let the human or the planner decide.
 4. Co-change adds **no new hard gate**. The hard gates are the ones that already exist — the manifest validator, the CI lockstep guards, and the selftest loop.
 
-A finding is a genuinely useful prompt — *"a job owns `plugin.json`, but no job owns `CHANGELOG.md`, which moved with it in 33 of `plugin.json`'s 36 commits"* is worth a planner's second look. But it is a prompt, not a verdict, and the planner may well have a good reason.
+A finding is a genuinely useful prompt — *"a job owns `plugin.json`, but no job owns `CHANGELOG.md`, which moved with it in <support> of `plugin.json`'s <antecedent_commits> commits"* is worth a planner's second look. But it is a prompt, not a verdict, and the planner may well have a good reason.
 
 ## Output
 
@@ -187,7 +187,7 @@ WARNINGS
     - <antecedent> (matched by <job-id>'s pattern <matched_pattern>) historically moves with
       <missing_partner>, which no job owns: support <support>/<antecedent_commits>,
       rate <rate>, Wilson lower bound <wilson_lower>, narrow support <narrow_support>
-      (window: since=<since> until=<until>, <eligible_commits> eligible commits, HEAD <head_sha>)
+      (window: since=<since> until=<until>, <eligible_commits> eligible commits, <dropped_oversized_commits> dropped oversized, HEAD <head_sha>)
     → Advisory. Confirm the omission is intentional, or add the partner to a job's write_allowed.
 
   NOTE: COCHANGE_INCOMPLETE

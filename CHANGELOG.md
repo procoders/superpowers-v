@@ -29,7 +29,7 @@ Two approaches internalized from a critical read of the [`repowise`](https://git
 
 ### Verification
 
-Selftests under `LANG=C` on the Python 3.9 floor: `compound-v-cochange.py` 68 cases; `compound-v-collect-results.py` 94 checks; `compound-v-epic-arbiter.py` 237 checks (was 196 — the original 196 are untouched); `compound-v-scope-check.py` passing; frontmatter lint clean. Run against this repo's own history, the engine emits **six firing ordered rules** and nothing sub-threshold.
+Selftests under `LANG=C` on the Python 3.9 floor: `compound-v-cochange.py` 69 cases; `compound-v-collect-results.py` 94 checks; `compound-v-epic-arbiter.py` 237 checks (was 196 — the original 196 are untouched); `compound-v-scope-check.py` passing; frontmatter lint clean. Run against this repo's own history, the engine emits **six firing ordered rules** and nothing sub-threshold.
 
 #### What this does not show
 
