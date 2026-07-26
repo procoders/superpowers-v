@@ -264,7 +264,13 @@ def git_head_sha(repo):
 
 
 def git_head_files(repo):
-    """Every path present in the HEAD tree — used to filter partners deleted at HEAD."""
+    """Every path present in the HEAD tree — used to filter partners deleted at HEAD.
+
+    Returns (paths, capped). The `capped` flag MUST be propagated by callers: a
+    truncated HEAD set filters REAL consequents as "deleted at HEAD", which would
+    otherwise surface as `complete: true, findings: []` — a false clean scan, which
+    is exactly the fabricated-evidence failure this tool exists to avoid.
+    """
     rc, out, capped = _git(
         repo, ["git", "-c", "core.quotePath=false", "ls-tree", "-r", "--name-only", "HEAD"])
     if rc != 0:
@@ -273,7 +279,7 @@ def git_head_files(repo):
     lines = out.split("\n")
     if capped and lines and not out.endswith("\n"):
         lines = lines[:-1]
-    return set(line for line in lines if line)
+    return set(line for line in lines if line), capped
 
 
 def collect_commits(repo, since=None, until=None):
@@ -459,7 +465,6 @@ def mine_rules(repo, since=None, until=None, taxonomy_path=None,
         "until": until,
         "eligible_commits": eligible,
         "dropped_oversized_commits": dropped,
-        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "filters": {
             "min_support": min_support,
             "min_rate": min_rate,
@@ -553,7 +558,17 @@ def check_partition(repo, patterns, **kwargs):
         out["detail"] = mined["detail"]
         return out
 
-    head_files = git_head_files(os.path.abspath(repo))
+    head_files, head_capped = git_head_files(os.path.abspath(repo))
+    if head_capped:
+        # A truncated HEAD tree would filter REAL consequents as "deleted at HEAD"
+        # and yield findings:[] with complete:true — a FALSE clean scan. Refuse.
+        out["complete"] = False
+        out["reason"] = "scan_incomplete"
+        out["detail"] = (
+            "the HEAD tree listing was byte-capped, so partners cannot be reliably "
+            "distinguished from files deleted at HEAD; no findings are reported")
+        return out
+
     for rule in mined["rules"]:
         matched = None
         for pattern in patterns:

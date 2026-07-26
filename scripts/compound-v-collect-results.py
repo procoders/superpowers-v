@@ -876,6 +876,13 @@ def pack_evidence(sanitized_text: str, budget_bytes: int,
         return PackedEvidence(sanitized_text, 0, False, original_bytes, original_bytes)
 
     lines = sanitized_text.split("\n")
+    # A trailing newline yields a synthetic empty final element. Left in place it can be
+    # selected as the "tail span" by the no-match fallback, so a 30 KB unmatched line
+    # packs to a marker and ZERO retained content, and at a tiny budget rung 5 returns an
+    # empty string instead of descending to the rung-6 placeholder. It carries no evidence
+    # either way — drop it. (Codex code-review finding #1.)
+    if len(lines) > 1 and lines[-1] == "":
+        lines = lines[:-1]
     header = "[section: %s]" % section_label
 
     def _done(text: str, rung: int) -> PackedEvidence:
