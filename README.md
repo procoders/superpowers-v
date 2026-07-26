@@ -39,6 +39,8 @@ The fastest way to *get* what this plugin does. Three gamified episodes — **De
 
 - **V-memory** — project memory that builds up as you work: decisions made, bugs fixed, things that failed. It surfaces the relevant bits when you plan or review.
 
+- **Co-change advisory** (v2.17) — before dispatch, the partition reviewer asks this repo's own git history which files almost always move together, and warns when a plan owns one but forgot its usual partner. Pure `git log`, no model involved. It is **advisory**: it only appends a warning, never changes the PASS/FAIL verdict, and adds no new gate. On a short or squash-merged history it will legitimately find nothing — and it says "could not tell" rather than "all clear".
+
 - **Research-grounded brainstorming** 🧪 — before a brainstorm on an unfamiliar topic, a gated, bounded recon pass (off by one config key) writes an evidence doc the brainstorm reads first. And when the brainstorm has 3+ *independent* clarifying questions, it can batch them into one screen — the Visual Companion form if you've accepted it, else a structured question, else the usual one-at-a-time (dependent questions always stay sequential). Both are description-driven guidance, not hook-enforced.
 
 ---
