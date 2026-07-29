@@ -226,6 +226,42 @@ epic-state.json (marathon + watch, v2.11, additive on top of v2.10's marathon sh
     rejects a structurally malformed registry at load time (non-list, non-object entry,
     invalid provider/task_id/status, non-ISO timestamps).
 
+  --arm-goal --state S --condition all_features_done|final_review_passed
+    --session-id ID --max-continues N [--replace-arm]
+  --disarm-goal --state S
+  --goal-status --state S
+    v2.18 Feature A (the armed goal condition a `Stop` hook reads to decide whether to hold
+    the turn open). `goal_arm` is a top-level `{"condition","session_id","arm_id",
+    "max_continues"}` record, marathon-only and **LAZILY CREATED** — absent until the first
+    `--arm-goal`, and POPPED entirely by `--disarm-goal`, so a never-armed epic's key set is
+    byte-identical to v2.17's (the three golden key-set selftests are what enforce this).
+    **This file writes the armed record; it does NOT own the continue counter.** The counter
+    and the enforcement once-marker live in the hook's OWN store outside this file — the hook
+    reads `epic-state.json` and never writes it, because `_atomic_write_json` is not
+    flock-guarded and a second writer would break that invariant.
+      - `--condition` accepts exactly TWO values. `no_incomplete_jobs` is REFUSED with an
+        explanation rather than silently rejected: it is RUN-scoped, lives in a
+        `docs/superpowers/execution/<run-id>/state.json` this module never opens, and a naive
+        read of it would be WRONG rather than merely missing — a job marked `done` whose files
+        are not in git is not done (the git-wins reconcile).
+      - An EMPTY `--session-id` is REFUSED: an empty stored id disables session isolation, so
+        the hook would hold EVERY session in the project open, not just the arming one.
+      - `--max-continues` must be an integer > 0. **`0` is INVALID, not "unlimited"** — there
+        is no unlimited setting.
+      - `arm_id` is a fresh `uuid4().hex` minted on EVERY arm, including a `--replace-arm`.
+        It is never reused, because the hook's store is keyed partly on it: an inherited id
+        would let a sequential second epic inherit the first epic's continue count.
+      - AT MOST ONE armed goal per epic-state: a second `--arm-goal` is REFUSED naming the
+        existing arm, unless `--replace-arm` is given — which replaces it EXPLICITLY and says
+        so on stderr, never silently. (Cross-FILE "at most one armed epic per project" is the
+        hook's discovery job — this module only sees the one state file it is pointed at.)
+      - `--goal-status` is READ-ONLY (it is the only one of the three not gated on marathon
+        stance, so the hook can poll any epic-state without an error path) ->
+        `{"armed","condition","session_id","arm_id","max_continues","met","category",
+          "terminal","reason","should_continue"}`. `met` is the strictly honest answer to
+        "did the goal happen?"; `should_continue` is `armed AND NOT met AND NOT terminal` —
+        an epic that STOPPED without finishing is not a reason to keep burning the counter.
+
 is_terminal(state) -- the canonical terminal classifier (v2.11, shared by `--liveness`,
 `--claim-resume`, and `next_feature_autonomous`): True for done / breaker-tripped /
 halt_epic / exhausted-reachable-work->blocked_needing_human / (V1-review fix 4) a
@@ -239,6 +275,18 @@ thin wrapper over `next_feature_autonomous`'s own "done:"/"blocked_needing_human
 truth for the DAG-derived terminal states, zero risk of two independent classifiers
 silently drifting apart, and zero risk to `next_feature_autonomous`'s own already-selftested
 behavior, which is untouched).
+
+completion_category(state) -- v2.18 Feature A: THE canonical COMPLETION classifier, and a
+DIFFERENT question from `is_terminal`. `is_terminal` answers "will this epic ever progress
+again without a human?" -- which is ALSO true for a tripped breaker, a `halt_epic` verdict,
+exhausted reachable work and a structurally unsatisfiable DAG. Resolving a goal condition of
+"all features are done" through `is_terminal` would therefore report SUCCESS at the exact
+moment the epic FAILED: a fabricated completion claim. `completion_category` returns one of
+`COMPLETION_CATEGORIES` -- "all_features_done", "done_with_confirmed_blockers",
+"halted_needing_human", "unsatisfiable_dag", or "in_progress" -- and BOTH classifiers are
+derived from the SAME `_TERMINAL_REASON_CATEGORIES` table, so they can never drift apart:
+adding a terminal reason prefix changes both at once, and a selftest asserts every category
+in the table is reachable from a real state.
 
 Usage:
   compound-v-epic-state.py --init --features features.json --epic-id E --title T --out S
@@ -258,6 +306,7 @@ import math
 import os
 import sys
 import tempfile
+import uuid
 from datetime import datetime, timedelta, timezone
 
 ID_RE_OK = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-"
@@ -1055,6 +1104,54 @@ def next_feature_autonomous(state):
                   % ", ".join(f["id"] for f in pending)), blocked_by
 
 
+# --- v2.18 Feature A: the ONE terminal-reason vocabulary table -----------------------------
+#
+# `is_terminal` AND `completion_category` are both derived from this tuple, so the two can
+# never silently drift: a terminal reason prefix added here changes both classifiers at once,
+# and a selftest asserts every category below is reachable from a REAL state produced by
+# `next_feature_autonomous`.
+#
+# WHY A SECOND CLASSIFIER EXISTS AT ALL. `is_terminal` is NOT a completion classifier — its
+# own docstring says it is true whenever the epic will never progress again WITHOUT A HUMAN,
+# which includes a tripped breaker, a `halt_epic` verdict, exhausted reachable work and a
+# structurally unsatisfiable DAG. A goal condition of "all features are done" resolved through
+# `is_terminal` would therefore declare the goal MET at the exact moment the epic FAILED — a
+# fabricated completion claim, and precisely the kind of thing this project's review gate
+# exists to catch. `completion_category` keeps the single source of truth (this table, over
+# `next_feature_autonomous`'s already-selftested reason vocabulary) while telling COMPLETED
+# apart from TERMINAL-FOR-OTHER-REASONS.
+#
+# ORDER MATTERS: this is a FIRST-MATCH-WINS prefix scan, and "done_with_blockers:" is listed
+# ahead of "done:" so the narrower category can never be swallowed by the broader one. They do
+# not collide today ("done_with_blockers:" does not start with "done:"), but the ordering makes
+# that a property of the table rather than a coincidence of the current spelling.
+_TERMINAL_REASON_CATEGORIES = (
+    ("done_with_blockers:", "done_with_confirmed_blockers"),
+    ("done:", "all_features_done"),
+    ("blocked_needing_human:", "halted_needing_human"),
+    ("epic blocked:", "unsatisfiable_dag"),
+)
+# The one NON-terminal category: the epic can still make autonomous progress — or it is not a
+# marathon at all, which `completion_category` reports here for exactly the same reason
+# `is_terminal` short-circuits to False on it (a checkpoint epic has no autonomous routing).
+COMPLETION_IN_PROGRESS = "in_progress"
+COMPLETION_CATEGORIES = tuple([c for _, c in _TERMINAL_REASON_CATEGORIES]
+                              + [COMPLETION_IN_PROGRESS])
+
+
+def _completion_category_for_reason(reason):
+    """Map ONE `next_feature_autonomous` reason string to its terminal completion category, or
+    None when the reason is not terminal at all. Total and side-effect-free: a non-string
+    reason (a caller that had no reason to compute, a hand-edited value) reads as NOT terminal
+    rather than raising — the fail direction that stops autonomy instead of faking a finish."""
+    if not isinstance(reason, str):
+        return None
+    for prefix, category in _TERMINAL_REASON_CATEGORIES:
+        if reason.startswith(prefix):
+            return category
+    return None
+
+
 def is_terminal(state):
     """v2.11 (Plan-review corrections, BINDING #3): the CANONICAL terminal classifier,
     shared by `--liveness`, `--claim-resume`, and (in spirit — see below) this file's own
@@ -1092,17 +1189,57 @@ def is_terminal(state):
     truth, next_feature_autonomous's own body and behavior are UNTOUCHED (verified by its
     full existing selftest suite still passing unmodified), and is_terminal can never disagree
     with it because it IS it, read differently. `--claim-resume` and `--liveness` both call
-    is_terminal(state) directly, per the spec."""
+    is_terminal(state) directly, per the spec.
+
+    v2.18: the four terminal reason prefixes this used to spell out inline
+    ("done:", "blocked_needing_human:", "epic blocked:", and v2.14's MANDATORY
+    "done_with_blockers:" — without which the watcher would poll a settled confirmed-blocker
+    epic forever) now live in `_TERMINAL_REASON_CATEGORIES`, shared verbatim with
+    `completion_category`. The classification is UNCHANGED — same four prefixes, same
+    non-marathon short-circuit — it just cannot drift from the completion classifier any more,
+    because both read the one table. The awaiting-final-review pre-terminal is a
+    `running_with_failures:` reason and is still deliberately NOT terminal."""
     if not _is_marathon(state):
         return False
     _, reason, _ = next_feature_autonomous(state)
-    return (reason.startswith("done:") or reason.startswith("blocked_needing_human:")
-            or reason.startswith("epic blocked:")
-            # v2.14: MANDATORY — the confirmed-blocker terminal. Without this the watcher
-            # (--liveness/--claim-resume/watch plan) would poll a settled done_with_blockers
-            # epic forever. The awaiting-final-review pre-terminal is a `running_with_failures:`
-            # reason and is deliberately NOT terminal.
-            or reason.startswith("done_with_blockers:"))
+    return _completion_category_for_reason(reason) is not None
+
+
+def completion_category(state):
+    """v2.18 Feature A: THE canonical COMPLETION-category classifier — the one place that
+    answers "did this epic FINISH, or did it merely STOP?". Read-only; never mutates `state`.
+
+    Returns exactly one of `COMPLETION_CATEGORIES`:
+
+      "all_features_done"            every feature is done AND final_review passed
+                                     (`next_feature_autonomous`'s "done:" terminal)
+      "done_with_confirmed_blockers" all REACHABLE features are done, the rest are `blocked`
+                                     with a CONFIRMED (>=2 external families) ledger entry.
+                                     TERMINAL and legitimate — but NOT "all features done":
+                                     a confirmed-blocked feature is not a done feature, and
+                                     reporting otherwise is the same class of fabricated claim
+                                     as reporting it for a tripped breaker.
+      "halted_needing_human"         breaker tripped / halt_epic verdict / no runnable feature
+                                     left because blocked-or-abandoned work exhausted it
+      "unsatisfiable_dag"            a dependency cycle or a dangling depends_on among still-
+                                     pending features — never resolvable without a human edit
+      "in_progress"                  everything else: genuinely still runnable, or a
+                                     RECOVERABLE stop (needs_arbitration,
+                                     needs_blocker_recording, running/reconcile,
+                                     sample_audit_due, blocker_audit_due, and all-done-but-
+                                     final-review-still-pending). Also what a NON-marathon
+                                     (checkpoint) state reports, mirroring `is_terminal`'s own
+                                     non-marathon short-circuit exactly — a checkpoint epic has
+                                     no autonomous routing to derive a category from, and
+                                     that is why `--arm-goal` REFUSES a checkpoint epic up
+                                     front rather than arming a goal that could never be met.
+
+    `is_terminal(state)` is exactly `completion_category(state) != COMPLETION_IN_PROGRESS`,
+    by construction — both read `_TERMINAL_REASON_CATEGORIES`."""
+    if not _is_marathon(state):
+        return COMPLETION_IN_PROGRESS
+    _, reason, _ = next_feature_autonomous(state)
+    return _completion_category_for_reason(reason) or COMPLETION_IN_PROGRESS
 
 
 def _now_iso(dt=None):
@@ -2121,6 +2258,184 @@ def list_watchers(state):
     return [e for e in registry if isinstance(e, dict) and e.get("status") == "armed"]
 
 
+# --- v2.18 Feature A: the armed goal condition ---------------------------------------------
+#
+# Exactly TWO conditions ship. Both are resolved DETERMINISTICALLY from on-disk state, never
+# by model judgment — the whole point of this release is replacing prose with mechanism, and a
+# goal a model gets to decide it has met is prose again.
+GOAL_CONDITIONS = ("all_features_done", "final_review_passed")
+
+# Conditions that are REFUSED with a specific explanation rather than the generic "not one
+# of" message. A refusal a caller does not understand gets worked around; a refusal that says
+# WHY gets respected.
+_GOAL_CONDITION_REFUSALS = {
+    "no_incomplete_jobs": (
+        "--condition no_incomplete_jobs is REFUSED. It is RUN-scoped, not epic-scoped: it "
+        "lives in docs/superpowers/execution/<run-id>/state.json, a file this module never "
+        "opens. And a naive read of it would be WRONG rather than merely missing — a job "
+        "marked `done` whose files are not in git is NOT done (the git-wins reconcile in "
+        "/v:resume is what settles that), so a goal armed on it would report completion over "
+        "work that never landed. Use all_features_done or final_review_passed."),
+}
+
+
+def _goal_condition_met(state, condition, category):
+    """Deterministic evaluation of ONE armed goal condition against on-disk state. `category`
+    is the already-computed `completion_category(state)`, passed in so a caller evaluating a
+    goal walks the DAG once rather than twice. Fail-CLOSED: an unknown/hand-edited condition
+    is never "met" — the failure direction that stops autonomy instead of faking a finish."""
+    if condition == "all_features_done":
+        # STRICTLY the "done:" terminal — every feature done AND final_review passed.
+        # `done_with_confirmed_blockers` deliberately does NOT satisfy this: a confirmed-
+        # blocked feature is not a done feature. That epic is still TERMINAL, so `goal_status`
+        # sets `should_continue` false and the caller stops — it just stops WITHOUT claiming
+        # the epic finished, which is the whole distinction this helper exists to draw.
+        return category == "all_features_done"
+    if condition == "final_review_passed":
+        # `record_final_review` already refuses to record `passed` while any feature is
+        # neither done nor confirmed-blocked, or while any sample-audit / confirmed-blocker
+        # re-review obligation is outstanding — so reading the stored status here inherits
+        # every one of those gates instead of re-deriving (and possibly weakening) them.
+        fr = state.get("final_review")
+        fr = fr if isinstance(fr, dict) else {}
+        return fr.get("status") == "passed"
+    return False
+
+
+def arm_goal(state, condition, session_id, max_continues, replace=False):
+    """v2.18 Feature A `--arm-goal`: record the goal condition a `Stop` hook will hold this
+    session open for. Marathon-only. Returns (ok, error|None, result|None).
+
+    `state["goal_arm"]` is created LAZILY on the first successful arm — a never-armed epic
+    carries no such key at all, exactly like `watcher_registry`/`resume_count`/`lease`. This
+    is not cosmetic: three golden selftests assert the EXACT top-level and autonomy key sets
+    of a checkpoint state, a watch-off marathon state and a marathon autonomy block, and an
+    unconditionally-written field would fail all three.
+
+    The record holds exactly four fields — {condition, session_id, arm_id, max_continues} —
+    and NOT the counter. `continue_count` lives in the hook's own store outside this file,
+    because the hook must never write `epic-state.json`: `_atomic_write_json` has ~35 call
+    sites documented as "not flock-guarded — only the single live driver calls this", and a
+    lock inside it would self-deadlock `claim_resume`, which already calls it while holding
+    the lock.
+
+    Every refusal below is a fail-CLOSED guard against a specific, named failure — see each
+    message. `arm_id` is a fresh uuid4 hex on EVERY arm, including a `--replace-arm`: the
+    hook's store is keyed partly on it, so an inherited id would let a sequential second epic
+    silently inherit the first epic's continue count.
+
+    "At most one armed epic" has two halves. THIS half — at most one armed goal per
+    epic-state file — is enforced here, by refusal or by an EXPLICIT `replace`, never
+    silently. The cross-FILE half (at most one armed epic per project) belongs to the hook's
+    discovery walk, which is the only party that sees more than one state file."""
+    if not _is_marathon(state):
+        return False, ("--arm-goal requires a marathon-stance epic — the goal condition is "
+                       "resolved from `--next --autonomous`'s terminal vocabulary, which a "
+                       "checkpoint epic has no autonomous routing to produce, so an armed "
+                       "goal there could never be met (re-init with --stance marathon)"), None
+    if condition in _GOAL_CONDITION_REFUSALS:
+        return False, _GOAL_CONDITION_REFUSALS[condition], None
+    if condition not in GOAL_CONDITIONS:
+        return False, ("--condition must be one of: %s (got %r)"
+                       % (", ".join(GOAL_CONDITIONS), condition)), None
+    if not isinstance(session_id, str) or not session_id.strip():
+        return False, ("--session-id must be a non-empty string (got %r). An EMPTY stored "
+                       "session id disables session isolation entirely: the hook compares the "
+                       "stored id to the one on stdin, so an empty one matches nothing "
+                       "meaningfully and the guard falls through — holding EVERY session in "
+                       "this project open, not just the one that armed the goal"
+                       % (session_id,)), None
+    # `bool` is an int subclass in Python, so `--max-continues True` would otherwise land as 1.
+    if isinstance(max_continues, bool) or not isinstance(max_continues, int):
+        return False, ("--max-continues must be an integer (got %r)" % (max_continues,)), None
+    if max_continues <= 0:
+        return False, ("--max-continues must be > 0 (got %r) — 0 is INVALID, not "
+                       "'unlimited'. There is no unlimited setting: our own continue counter "
+                       "is THE bound on this feature, and a zero that read as unbounded would "
+                       "remove it" % (max_continues,)), None
+    existing = state.get("goal_arm")
+    existing = existing if isinstance(existing, dict) else None
+    if existing is not None and not replace:
+        return False, ("a goal is already armed on this epic (condition=%r arm_id=%r) — at "
+                       "most ONE armed goal per epic-state. Disarm it first (--disarm-goal), "
+                       "or pass --replace-arm to replace it EXPLICITLY; a replacement mints a "
+                       "fresh arm_id, which abandons the previous arm's continue counter "
+                       "rather than inheriting it"
+                       % (existing.get("condition"), existing.get("arm_id"))), None
+    record = {"condition": condition, "session_id": session_id,
+              "arm_id": uuid.uuid4().hex, "max_continues": max_continues}
+    state["goal_arm"] = record
+    # Deliberately NO `_bump_last_progress` here: arming is a stored FACT, not a liveness
+    # signal — the same reasoning `record_watcher_armed` documents. Bumping the heartbeat
+    # would also make a watch-off marathon state stop being byte-identical.
+    return True, None, {"armed": record, "replaced": existing}
+
+
+def disarm_goal(state):
+    """v2.18 Feature A `--disarm-goal`: REMOVE the armed record entirely, returning the state
+    to its lazily-uncreated shape (a popped key, not a `None` placeholder — a placeholder
+    would defeat the golden key-set guarantee arming was built to preserve). Marathon-only.
+
+    Idempotent: disarming when nothing is armed is a clean success with `mutated: false`, so
+    the caller writes nothing at all. Returns (ok, error|None, result|None)."""
+    if not _is_marathon(state):
+        return False, ("--disarm-goal requires a marathon-stance epic (this state has no "
+                       "'autonomy' block, so it can never have carried an armed goal)"), None
+    if "goal_arm" not in state:
+        return True, None, {"disarmed": False, "mutated": False, "arm_id": None}
+    existing = state.pop("goal_arm")
+    return True, None, {"disarmed": True, "mutated": True,
+                        "arm_id": (existing.get("arm_id")
+                                   if isinstance(existing, dict) else None)}
+
+
+def goal_status(state):
+    """v2.18 Feature A `--goal-status`: THE read path the `Stop` hook calls. STRICTLY
+    READ-ONLY — it never mutates `state` and its CLI caller never writes the file, which is
+    what lets the hook use it without becoming a second writer of `epic-state.json`.
+
+    Deliberately NOT gated on marathon stance (unlike arm/disarm): the hook should be able to
+    poll any epic-state and get a clean `armed: false` rather than an error path it would have
+    to distinguish from a real fault. A non-marathon state can never carry an armed record
+    anyway, because `arm_goal` refuses it.
+
+    Returns {"armed","condition","session_id","arm_id","max_continues","met","category",
+             "terminal","reason","should_continue"}:
+
+      met             the STRICTLY honest answer to "did the armed goal actually happen?".
+                      False for a breaker-tripped, halted or unsatisfiable epic — those
+                      stopped, they did not finish.
+      terminal        `is_terminal(state)`, derived from the SAME single DAG walk as
+                      `category` (they are the same computation read two ways).
+      should_continue `armed AND NOT met AND NOT terminal` — the one boolean a hook needs.
+                      A terminal-but-unmet epic yields FALSE: nothing further will happen
+                      without a human, so continuing would burn the counter against a dead
+                      epic. A caller that wants "did it FINISH?" must read `met`, never
+                      `should_continue` — that conflation is the fabricated-completion bug
+                      this whole helper exists to prevent."""
+    record = state.get("goal_arm")
+    record = record if isinstance(record, dict) else None
+    reason = None
+    if _is_marathon(state):
+        _, reason, _ = next_feature_autonomous(state)
+    category = _completion_category_for_reason(reason) or COMPLETION_IN_PROGRESS
+    # Identical to `is_terminal(state)` by construction (both read the one table), computed
+    # from the walk already done above instead of walking the DAG a second time.
+    terminal = category != COMPLETION_IN_PROGRESS
+    out = {"armed": record is not None, "condition": None, "session_id": None,
+           "arm_id": None, "max_continues": None, "met": False, "category": category,
+           "terminal": terminal, "reason": reason, "should_continue": False}
+    if record is None:
+        return out
+    out["condition"] = record.get("condition")
+    out["session_id"] = record.get("session_id")
+    out["arm_id"] = record.get("arm_id")
+    out["max_continues"] = record.get("max_continues")
+    out["met"] = _goal_condition_met(state, out["condition"], category)
+    out["should_continue"] = bool(not out["met"] and not terminal)
+    return out
+
+
 def validate_marathon_state(state):
     """Defensive integrity check for a LOADED marathon state (Codex review #10) — a legacy
     or hand-edited epic-state.json can carry corruption the builder would never produce.
@@ -2304,6 +2619,33 @@ def validate_marathon_state(state):
                         except (ValueError, TypeError):
                             errs.append("watcher_registry entry at index %d disarmed_at %r "
                                         "is not a valid ISO-8601 timestamp" % (j, dv))
+    # v2.18 Feature A: `goal_arm` is an object-or-ABSENT. Absent is the normal case — the
+    # record is lazily created by `--arm-goal` and popped entirely by `--disarm-goal`. When
+    # present, every field is policed at load time rather than trusted, because each one is a
+    # value `arm_goal` already refuses and a hand edit is the only way it could get here: an
+    # empty session_id would silently disable the hook's session isolation, a max_continues of
+    # 0 would read as "unlimited" to a naive caller, and an unknown condition would be
+    # evaluated fail-closed forever (never met) with no explanation.
+    ga = state.get("goal_arm")
+    if ga is not None:
+        if not isinstance(ga, dict):
+            errs.append("'goal_arm' is malformed %r (want an object or absent)" % (ga,))
+        else:
+            if ga.get("condition") not in GOAL_CONDITIONS:
+                errs.append("goal_arm.condition is invalid %r (want one of: %s)"
+                            % (ga.get("condition"), ", ".join(GOAL_CONDITIONS)))
+            sid = ga.get("session_id")
+            if not isinstance(sid, str) or not sid.strip():
+                errs.append("goal_arm.session_id is malformed %r (want a non-empty string — "
+                            "an empty id disables session isolation)" % (sid,))
+            aid = ga.get("arm_id")
+            if not isinstance(aid, str) or not aid.strip():
+                errs.append("goal_arm.arm_id is malformed %r (want a non-empty string)"
+                            % (aid,))
+            mc = ga.get("max_continues")
+            if isinstance(mc, bool) or not isinstance(mc, int) or mc <= 0:
+                errs.append("goal_arm.max_continues is malformed %r (want an integer > 0 — "
+                            "0 is invalid, not 'unlimited')" % (mc,))
     return errs
 
 
@@ -4825,6 +5167,411 @@ def _selftest():
     finally:
         shutil.rmtree(cr_conc_dir, ignore_errors=True)
 
+    # === v2.18 Feature A: completion category + the armed goal condition ==================
+    # --- (1) the anti-drift structure of the shared reason-vocabulary table ---------------
+    check("v2.18 A: COMPLETION_CATEGORIES is exactly the table's categories + in_progress",
+          set(COMPLETION_CATEGORIES)
+          == set(c for _, c in _TERMINAL_REASON_CATEGORIES) | {COMPLETION_IN_PROGRESS})
+    check("v2.18 A: no duplicate category token in the table",
+          len(set(c for _, c in _TERMINAL_REASON_CATEGORIES))
+          == len(_TERMINAL_REASON_CATEGORIES))
+    check("v2.18 A: no duplicate reason PREFIX in the table",
+          len(set(pfx for pfx, _ in _TERMINAL_REASON_CATEGORIES))
+          == len(_TERMINAL_REASON_CATEGORIES))
+    check("v2.18 A: every table prefix classifies as terminal (is_terminal and "
+          "completion_category read the SAME table, so neither can drift from the other)",
+          all(_completion_category_for_reason(pfx + " detail") == cat
+              for pfx, cat in _TERMINAL_REASON_CATEGORIES))
+    check("v2.18 A: 'done_with_blockers:' is NOT swallowed by the broader 'done:' entry",
+          _completion_category_for_reason("done_with_blockers: x")
+          == "done_with_confirmed_blockers"
+          and _completion_category_for_reason("done: x") == "all_features_done")
+    check("v2.18 A: every RECOVERABLE reason maps to no category (not terminal)",
+          all(_completion_category_for_reason(r) is None for r in
+              ("runnable", "running_with_failures: x", "needs_arbitration: x",
+               "needs_blocker_recording: x", "sample_audit_due: x", "blocker_audit_due: x",
+               "epic needs reconcile: x", "epic complete: all features done")))
+    check("v2.18 A: a non-string reason reads as NOT terminal rather than raising",
+          _completion_category_for_reason(None) is None
+          and _completion_category_for_reason(17) is None)
+
+    # --- (2) EVERY terminal reason prefix, exercised against a REAL state ------------------
+    def _v218_state(fids=("a",)):
+        return build_state([{"id": i, "depends_on": []} for i in fids], "e", "E",
+                           stance="marathon", caps={})
+
+    # (a) "done:" -> all_features_done
+    g_done = _v218_state()
+    apply_update(g_done, "a", "running", now_dt=T0)
+    apply_update(g_done, "a", "done", now_dt=T0)
+    record_final_review(g_done, "passed", now_dt=T0)
+    _, g_done_why, _ = next_feature_autonomous(g_done)
+    check("v2.18 A prefix 'done:' -> category all_features_done (terminal AND completed)",
+          g_done_why.startswith("done:")
+          and completion_category(g_done) == "all_features_done"
+          and is_terminal(g_done) is True)
+
+    # (b) "done_with_blockers:" -> done_with_confirmed_blockers. TERMINAL, legitimate, and
+    # still NOT "all features done": the blocked feature is not a done feature.
+    g_dwb = _dwb_state(final_status=None)
+    clear_blocker_audit_due(g_dwb, "b")
+    record_final_review(g_dwb, "passed", now_dt=T0)
+    _, g_dwb_why, _ = next_feature_autonomous(g_dwb)
+    check("v2.18 A prefix 'done_with_blockers:' -> category done_with_confirmed_blockers, "
+          "terminal but NOT 'all features done'",
+          g_dwb_why.startswith("done_with_blockers:")
+          and completion_category(g_dwb) == "done_with_confirmed_blockers"
+          and is_terminal(g_dwb) is True
+          and _goal_condition_met(g_dwb, "all_features_done",
+                                  completion_category(g_dwb)) is False)
+
+    # (c) "blocked_needing_human:" -> halted_needing_human. THE headline case.
+    g_brk = _v218_state(("a", "b"))
+    g_brk["autonomy"]["max_wall_clock_hours"] = 1
+    g_brk["autonomy"]["started_at"] = "2026-01-01T00:00:00+00:00"
+    apply_update(g_brk, "a", "running", now_dt=T0)
+    apply_update(g_brk, "a", "done", now_dt=T0)
+    g_brk_trip = trip_breaker(g_brk, _parse_iso("2026-01-01T09:00:00+00:00"))
+    check("v2.18 A: the wall-clock breaker genuinely tripped the fixture (not a stubbed flag)",
+          g_brk_trip.get("tripped") is True
+          and g_brk["status"] == "blocked_needing_human")
+    _, g_brk_why, _ = next_feature_autonomous(g_brk)
+    check("v2.18 A prefix 'blocked_needing_human:' -> category halted_needing_human",
+          g_brk_why.startswith("blocked_needing_human:")
+          and completion_category(g_brk) == "halted_needing_human")
+    check("v2.18 A HEADLINE: a BREAKER-TRIPPED epic is is_terminal TRUE yet is NOT 'all "
+          "features done' — resolving the goal through is_terminal would have declared "
+          "success at the exact moment the epic FAILED (a fabricated completion claim), and "
+          "feature b never ran at all",
+          is_terminal(g_brk) is True
+          and completion_category(g_brk) != "all_features_done"
+          and _goal_condition_met(g_brk, "all_features_done",
+                                  completion_category(g_brk)) is False
+          and [f for f in g_brk["features"] if f["id"] == "b"][0]["status"] == "pending")
+
+    # (c2) the OTHER "blocked_needing_human:" producer: exhausted reachable work (halt_feature)
+    g_exh = _v218_state(("a", "b"))
+    apply_update(g_exh, "a", "running", now_dt=T0)
+    apply_update(g_exh, "a", "failed", now_dt=T0)
+    record_disposition(g_exh, "a", "halt_feature", now_dt=T0)
+    apply_update(g_exh, "b", "running", now_dt=T0)
+    apply_update(g_exh, "b", "done", now_dt=T0)
+    _, g_exh_why, _ = next_feature_autonomous(g_exh)
+    check("v2.18 A: exhausted-reachable-work also -> halted_needing_human, NOT completed",
+          g_exh_why.startswith("blocked_needing_human:")
+          and completion_category(g_exh) == "halted_needing_human"
+          and _goal_condition_met(g_exh, "all_features_done",
+                                  completion_category(g_exh)) is False)
+
+    # (d) "epic blocked:" -> unsatisfiable_dag (a dangling depends_on a hand edit can carry)
+    g_uns = _v218_state()
+    g_uns["features"][0]["depends_on"] = ["ghost"]
+    _, g_uns_why, _ = next_feature_autonomous(g_uns)
+    check("v2.18 A prefix 'epic blocked:' -> category unsatisfiable_dag, NOT completed",
+          g_uns_why.startswith("epic blocked:")
+          and completion_category(g_uns) == "unsatisfiable_dag"
+          and is_terminal(g_uns) is True
+          and _goal_condition_met(g_uns, "all_features_done",
+                                  completion_category(g_uns)) is False)
+
+    # (e) the non-terminal category, including the two recoverable stops most easily mistaken
+    # for completion
+    g_fresh = _v218_state()
+    check("v2.18 A: a fresh marathon epic is in_progress and not terminal",
+          completion_category(g_fresh) == COMPLETION_IN_PROGRESS
+          and is_terminal(g_fresh) is False)
+    g_afr = _v218_state()
+    apply_update(g_afr, "a", "running", now_dt=T0)
+    apply_update(g_afr, "a", "done", now_dt=T0)
+    check("v2.18 A: all-features-done-but-final-review-PENDING is in_progress, NOT completed "
+          "(a passed review can still land without a human)",
+          completion_category(g_afr) == COMPLETION_IN_PROGRESS
+          and is_terminal(g_afr) is False
+          and _goal_condition_met(g_afr, "all_features_done",
+                                  completion_category(g_afr)) is False)
+    check("v2.18 A: a checkpoint epic reports in_progress — mirrors is_terminal's own "
+          "non-marathon short-circuit exactly",
+          completion_category(build_state([{"id": "a", "depends_on": []}], "e", "E"))
+          == COMPLETION_IN_PROGRESS)
+
+    # (f) COVERAGE: every category the table declares is produced by a real state above, so a
+    # category added to the table without a fixture fails here rather than going untested.
+    check("v2.18 A: EVERY completion category is exercised by a real state in this suite",
+          {completion_category(s) for s in (g_done, g_dwb, g_brk, g_uns, g_fresh)}
+          == set(COMPLETION_CATEGORIES))
+    check("v2.18 A: is_terminal == (category != in_progress) on every fixture above",
+          all(is_terminal(s) == (completion_category(s) != COMPLETION_IN_PROGRESS)
+              for s in (g_done, g_dwb, g_brk, g_exh, g_uns, g_fresh, g_afr)))
+
+    # --- (3) --arm-goal: the lazily-created record ----------------------------------------
+    check("v2.18 A golden: build_state emits NO goal_arm key on ANY stance — the three "
+          "golden key-set selftests above are unaffected",
+          all("goal_arm" not in s for s in (
+              build_state([{"id": "a", "depends_on": []}], "e", "E"),
+              build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon",
+                          caps={}),
+              build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon",
+                          caps={"watch": True}))))
+
+    g_arm = _v218_state()
+    g_arm_keys_before = set(g_arm.keys())
+    ok_ag, err_ag, res_ag = arm_goal(g_arm, "all_features_done", "sess-1", 5)
+    check("v2.18 A: --arm-goal stores EXACTLY the four contracted fields",
+          ok_ag and err_ag is None
+          and set(g_arm["goal_arm"].keys()) == {"condition", "session_id", "arm_id",
+                                                "max_continues"})
+    check("v2.18 A: arming adds EXACTLY ONE lazily-created top-level key and nothing else",
+          set(g_arm.keys()) - g_arm_keys_before == {"goal_arm"}
+          and g_arm_keys_before - set(g_arm.keys()) == set())
+    check("v2.18 A: the armed record round-trips its fields",
+          g_arm["goal_arm"]["condition"] == "all_features_done"
+          and g_arm["goal_arm"]["session_id"] == "sess-1"
+          and g_arm["goal_arm"]["max_continues"] == 5
+          and isinstance(g_arm["goal_arm"]["arm_id"], str)
+          and len(g_arm["goal_arm"]["arm_id"]) > 0)
+    check("v2.18 A: arming bumps NO heartbeat (a goal is a stored fact, not a liveness "
+          "signal — same reasoning as record_watcher_armed)",
+          "last_progress_at" not in g_arm and res_ag["replaced"] is None)
+    check("v2.18 A: an armed marathon state still validates clean",
+          validate_marathon_state(g_arm) == [])
+
+    # --- (4) every refusal --------------------------------------------------------------
+    ok_nij, err_nij, _ = arm_goal(_v218_state(), "no_incomplete_jobs", "s", 5)
+    check("v2.18 A REFUSAL: no_incomplete_jobs is refused WITH the reason — run-scoped, in a "
+          "file this module never opens, and a naive read would be WRONG (a `done` job whose "
+          "files are not in git is not done)",
+          not ok_nij and "no_incomplete_jobs" in err_nij and "RUN-scoped" in err_nij
+          and "never opens" in err_nij and "not in git" in err_nij)
+    g_nij_nowrite = _v218_state()
+    arm_goal(g_nij_nowrite, "no_incomplete_jobs", "s", 5)
+    check("v2.18 A: a REFUSED arm writes nothing at all",
+          "goal_arm" not in g_nij_nowrite)
+    ok_uc, err_uc, _ = arm_goal(_v218_state(), "vibes", "s", 5)
+    check("v2.18 A REFUSAL: an unknown condition is refused, naming the two that ship",
+          not ok_uc and "must be one of" in err_uc
+          and all(c in err_uc for c in GOAL_CONDITIONS))
+    for bad_sid, sid_label in (("", "empty"), ("   ", "whitespace-only"),
+                               (None, "missing"), (7, "non-string")):
+        ok_sid, err_sid, _ = arm_goal(_v218_state(), "all_features_done", bad_sid, 5)
+        check("v2.18 A REFUSAL: a %s session id is refused (an empty stored id disables "
+              "session isolation and would hold EVERY session in the project open)"
+              % sid_label,
+              not ok_sid and "--session-id" in err_sid and "isolation" in err_sid)
+    ok_mc0, err_mc0, _ = arm_goal(_v218_state(), "all_features_done", "s", 0)
+    check("v2.18 A REFUSAL: max_continues 0 is INVALID, explicitly NOT 'unlimited'",
+          not ok_mc0 and "0 is INVALID" in err_mc0 and "unlimited" in err_mc0)
+    ok_mcn, err_mcn, _ = arm_goal(_v218_state(), "all_features_done", "s", -3)
+    check("v2.18 A REFUSAL: a negative max_continues is refused",
+          not ok_mcn and "must be > 0" in err_mcn)
+    ok_mcb, err_mcb, _ = arm_goal(_v218_state(), "all_features_done", "s", True)
+    check("v2.18 A REFUSAL: a BOOL max_continues is refused (bool is an int subclass, so "
+          "True would otherwise land as a silent 1)",
+          not ok_mcb and "must be an integer" in err_mcb)
+    ok_mcf, err_mcf, _ = arm_goal(_v218_state(), "all_features_done", "s", 2.5)
+    check("v2.18 A REFUSAL: a float max_continues is refused",
+          not ok_mcf and "must be an integer" in err_mcf)
+    g_chk_arm = build_state([{"id": "a", "depends_on": []}], "e", "E")
+    ok_chk, err_chk, _ = arm_goal(g_chk_arm, "all_features_done", "s", 5)
+    check("v2.18 A REFUSAL: a CHECKPOINT epic cannot arm — it has no autonomous routing, so "
+          "the goal could never be met",
+          not ok_chk and "marathon" in err_chk and "goal_arm" not in g_chk_arm)
+    ok_dchk, err_dchk, _ = disarm_goal(build_state([{"id": "a", "depends_on": []}], "e", "E"))
+    check("v2.18 A: --disarm-goal also rejects a checkpoint epic",
+          not ok_dchk and "marathon" in err_dchk)
+
+    # --- (5) at most one armed goal; replacement is explicit and never inherits -----------
+    g_one = _v218_state()
+    arm_goal(g_one, "all_features_done", "sess-1", 5)
+    g_one_first_id = g_one["goal_arm"]["arm_id"]
+    ok_two, err_two, _ = arm_goal(g_one, "final_review_passed", "sess-2", 9)
+    check("v2.18 A: a SECOND arm is REFUSED (at most one armed goal per epic-state) and the "
+          "existing record is left completely untouched",
+          not ok_two and "already armed" in err_two
+          and g_one["goal_arm"]["arm_id"] == g_one_first_id
+          and g_one["goal_arm"]["condition"] == "all_features_done"
+          and g_one["goal_arm"]["session_id"] == "sess-1")
+    ok_rep, err_rep, res_rep = arm_goal(g_one, "final_review_passed", "sess-2", 9,
+                                        replace=True)
+    check("v2.18 A: --replace-arm replaces EXPLICITLY and reports exactly what it replaced "
+          "(never silently)",
+          ok_rep and err_rep is None and isinstance(res_rep.get("replaced"), dict)
+          and res_rep["replaced"]["arm_id"] == g_one_first_id
+          and res_rep["replaced"]["condition"] == "all_features_done"
+          and g_one["goal_arm"]["condition"] == "final_review_passed")
+    check("v2.18 A: a REPLACEMENT mints a FRESH arm_id — the hook's store is keyed partly on "
+          "arm_id, so inheriting it would carry the previous arm's continue count forward",
+          g_one["goal_arm"]["arm_id"] != g_one_first_id)
+
+    # --- (6) disarm + the SEQUENTIAL re-arm that must not inherit a counter ---------------
+    g_seq = _v218_state()
+    arm_goal(g_seq, "all_features_done", "sess-1", 3)
+    g_seq_id1 = g_seq["goal_arm"]["arm_id"]
+    ok_ds, err_ds, res_ds = disarm_goal(g_seq)
+    check("v2.18 A: --disarm-goal POPS the key entirely, back to the lazily-uncreated shape "
+          "(not a null placeholder, which would defeat the golden key-set guarantee)",
+          ok_ds and res_ds["disarmed"] is True and res_ds["mutated"] is True
+          and res_ds["arm_id"] == g_seq_id1 and "goal_arm" not in g_seq)
+    arm_goal(g_seq, "all_features_done", "sess-1", 3)
+    check("v2.18 A: a SEQUENTIAL re-arm (same session, same condition) mints a NEW arm_id — "
+          "a reused id would let epic #2 inherit epic #1's continue count",
+          g_seq["goal_arm"]["arm_id"] != g_seq_id1)
+    ok_dn, err_dn, res_dn = disarm_goal(_v218_state())
+    check("v2.18 A: disarming when nothing is armed is a clean no-op with mutated=False "
+          "(so the CLI writes nothing)",
+          ok_dn and res_dn["disarmed"] is False and res_dn["mutated"] is False
+          and res_dn["arm_id"] is None)
+    g_arm_ids = set()
+    for _ in range(64):
+        _g_u = _v218_state()
+        arm_goal(_g_u, "all_features_done", "s", 1)
+        g_arm_ids.add(_g_u["goal_arm"]["arm_id"])
+    check("v2.18 A: arm_id is unique across 64 arms", len(g_arm_ids) == 64)
+
+    # --- (7) goal_status: the hook's read path -------------------------------------------
+    gs_unarmed = goal_status(_v218_state())
+    check("v2.18 A goal_status: unarmed -> armed False, met False, should_continue False",
+          gs_unarmed["armed"] is False and gs_unarmed["met"] is False
+          and gs_unarmed["should_continue"] is False
+          and gs_unarmed["category"] == COMPLETION_IN_PROGRESS)
+    check("v2.18 A goal_status: the response key set is the documented contract",
+          set(gs_unarmed.keys()) == {"armed", "condition", "session_id", "arm_id",
+                                     "max_continues", "met", "category", "terminal",
+                                     "reason", "should_continue"})
+    gs_run = _v218_state()
+    arm_goal(gs_run, "all_features_done", "sess-x", 4)
+    r_run = goal_status(gs_run)
+    check("v2.18 A goal_status: armed + still runnable -> met False, should_continue True, "
+          "and the record is echoed back for the hook's session/arm keying",
+          r_run["armed"] is True and r_run["met"] is False and r_run["terminal"] is False
+          and r_run["should_continue"] is True
+          and r_run["condition"] == "all_features_done"
+          and r_run["session_id"] == "sess-x" and r_run["max_continues"] == 4
+          and r_run["arm_id"] == gs_run["goal_arm"]["arm_id"])
+    gs_done = _v218_state()
+    arm_goal(gs_done, "all_features_done", "s", 4)
+    apply_update(gs_done, "a", "running", now_dt=T0)
+    apply_update(gs_done, "a", "done", now_dt=T0)
+    record_final_review(gs_done, "passed", now_dt=T0)
+    r_done = goal_status(gs_done)
+    check("v2.18 A goal_status: the goal genuinely MET -> met True, should_continue False",
+          r_done["met"] is True and r_done["terminal"] is True
+          and r_done["should_continue"] is False
+          and r_done["category"] == "all_features_done")
+    gs_brk = _v218_state(("a", "b"))
+    gs_brk["autonomy"]["max_wall_clock_hours"] = 1
+    gs_brk["autonomy"]["started_at"] = "2026-01-01T00:00:00+00:00"
+    arm_goal(gs_brk, "all_features_done", "s", 4)
+    trip_breaker(gs_brk, _parse_iso("2026-01-01T09:00:00+00:00"))
+    r_brk = goal_status(gs_brk)
+    check("v2.18 A goal_status HEADLINE: a BREAKER-TRIPPED armed epic reports met=False "
+          "(never a fabricated completion) AND should_continue=False (terminal — do not burn "
+          "the counter against a dead epic)",
+          r_brk["armed"] is True and r_brk["met"] is False and r_brk["terminal"] is True
+          and r_brk["should_continue"] is False
+          and r_brk["category"] == "halted_needing_human")
+    gs_dwb = _dwb_state(final_status=None)
+    clear_blocker_audit_due(gs_dwb, "b")
+    record_final_review(gs_dwb, "passed", now_dt=T0)
+    arm_goal(gs_dwb, "all_features_done", "s", 4)
+    r_dwb = goal_status(gs_dwb)
+    check("v2.18 A goal_status: done_with_confirmed_blockers -> met False (not all features "
+          "are done) but should_continue False (terminal) — it stops WITHOUT claiming a finish",
+          r_dwb["met"] is False and r_dwb["terminal"] is True
+          and r_dwb["should_continue"] is False
+          and r_dwb["category"] == "done_with_confirmed_blockers")
+    gs_frp = _dwb_state(final_status=None)
+    clear_blocker_audit_due(gs_frp, "b")
+    record_final_review(gs_frp, "passed", now_dt=T0)
+    arm_goal(gs_frp, "final_review_passed", "s", 4)
+    check("v2.18 A goal_status: condition final_review_passed is MET on a passed review",
+          goal_status(gs_frp)["met"] is True)
+    gs_frp2 = _v218_state()
+    apply_update(gs_frp2, "a", "running", now_dt=T0)
+    apply_update(gs_frp2, "a", "done", now_dt=T0)
+    arm_goal(gs_frp2, "final_review_passed", "s", 4)
+    r_frp2 = goal_status(gs_frp2)
+    check("v2.18 A goal_status: final_review_passed is NOT met while the review is pending, "
+          "and the epic is still continuable",
+          r_frp2["met"] is False and r_frp2["should_continue"] is True)
+    gs_bad = _v218_state()
+    gs_bad["goal_arm"] = {"condition": "hand_edited", "session_id": "s", "arm_id": "i",
+                          "max_continues": 1}
+    check("v2.18 A goal_status: an unknown/hand-edited condition is FAIL-CLOSED — never met",
+          goal_status(gs_bad)["met"] is False)
+    gs_ro = _v218_state()
+    arm_goal(gs_ro, "all_features_done", "s", 2)
+    gs_ro_snapshot = json.dumps(gs_ro, sort_keys=True)
+    goal_status(gs_ro)
+    completion_category(gs_ro)
+    check("v2.18 A: goal_status and completion_category are strictly READ-ONLY (state is "
+          "byte-identical after both calls) — this is what lets the hook read without ever "
+          "becoming a second writer of epic-state.json",
+          json.dumps(gs_ro, sort_keys=True) == gs_ro_snapshot)
+    check("v2.18 A goal_status: safe and quiet on a CHECKPOINT state (armed False, no error "
+          "path for the hook to disambiguate)",
+          goal_status(build_state([{"id": "a", "depends_on": []}], "e", "E"))["armed"]
+          is False)
+
+    # --- (8) a hand-edited goal_arm is rejected at LOAD time ------------------------------
+    for ga_bad, ga_label in (
+            ({"condition": "nope", "session_id": "s", "arm_id": "i", "max_continues": 1},
+             "condition"),
+            ({"condition": "all_features_done", "session_id": "", "arm_id": "i",
+              "max_continues": 1}, "empty session_id"),
+            ({"condition": "all_features_done", "session_id": "s", "arm_id": "",
+              "max_continues": 1}, "empty arm_id"),
+            ({"condition": "all_features_done", "session_id": "s", "arm_id": "i",
+              "max_continues": 0}, "max_continues 0"),
+            ({"condition": "all_features_done", "session_id": "s", "arm_id": "i",
+              "max_continues": True}, "bool max_continues"),
+            ("not-an-object", "non-object goal_arm")):
+        _g_v = _v218_state()
+        _g_v["goal_arm"] = ga_bad
+        check("v2.18 A validate: a hand-edited goal_arm with a bad %s is REJECTED at load"
+              % ga_label,
+              any("goal_arm" in e for e in validate_marathon_state(_g_v)))
+
+    # --- (9) disk round-trip + the breaker fail-safes are untouched -----------------------
+    g_disk_dir = _tempfile.mkdtemp()
+    try:
+        g_disk_path = os.path.join(g_disk_dir, "epic-state.json")
+        g_disk = _v218_state()
+        _atomic_write_json(g_disk_path, g_disk)
+        check("v2.18 A golden: an un-armed marathon epic carries NO goal_arm key ON DISK",
+              "goal_arm" not in _read_json(g_disk_path))
+        arm_goal(g_disk, "all_features_done", "sess-disk", 7)
+        _atomic_write_json(g_disk_path, g_disk)
+        g_disk_read = _read_json(g_disk_path)
+        check("v2.18 A: the armed record round-trips through _atomic_write_json and reloads "
+              "clean",
+              g_disk_read["goal_arm"]["session_id"] == "sess-disk"
+              and g_disk_read["goal_arm"]["max_continues"] == 7
+              and g_disk_read["goal_arm"]["condition"] == "all_features_done"
+              and validate_marathon_state(g_disk_read) == [])
+        check("v2.18 A: goal_status agrees across the disk round-trip",
+              goal_status(g_disk_read)["arm_id"] == g_disk["goal_arm"]["arm_id"])
+    finally:
+        shutil.rmtree(g_disk_dir, ignore_errors=True)
+
+    g_fs_missing = build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon",
+                               caps={"max_wall_clock_hours": 10,
+                                     "started_at": "2026-01-01T00:00:00+00:00"})
+    arm_goal(g_fs_missing, "all_features_done", "s", 5)
+    g_fs_missing["autonomy"]["started_at"] = None
+    check("v2.18 A: with a goal ARMED, a MISSING started_at still TRIPS the wall-clock "
+          "breaker fail-safe — the new record changes no safety path",
+          breaker_check(g_fs_missing, T0)["tripped"] is True
+          and "max_wall_clock_hours" in breaker_check(g_fs_missing, T0)["which"])
+    g_fs_bad = build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon",
+                           caps={"max_wall_clock_hours": 10,
+                                 "started_at": "2026-01-01T00:00:00+00:00"})
+    arm_goal(g_fs_bad, "all_features_done", "s", 5)
+    g_fs_bad["autonomy"]["started_at"] = "garbage"
+    check("v2.18 A: with a goal ARMED, an UNPARSEABLE started_at still TRIPS the wall-clock "
+          "breaker fail-safe",
+          breaker_check(g_fs_bad, T0)["tripped"] is True
+          and "max_wall_clock_hours" in breaker_check(g_fs_bad, T0)["which"])
+
     print("SELFTEST: %d ok, %d fail" % (ok, fail))
     return 0 if fail == 0 else 1
 
@@ -4984,6 +5731,32 @@ def main(argv):
     p.add_argument("--task-id", help="(with --record-watcher-armed / "
                                      "--record-watcher-disarmed) the scheduler's own opaque "
                                      "task identifier")
+    # -- v2.18 Feature A (the armed goal condition the Stop hook reads) flags ---------------
+    p.add_argument("--arm-goal", action="store_true",
+                   help="(marathon) arm a goal condition -> a lazily-created goal_arm record "
+                        "{condition,session_id,arm_id,max_continues}; needs --condition, "
+                        "--session-id and --max-continues")
+    p.add_argument("--disarm-goal", action="store_true",
+                   help="(marathon) remove the armed goal record entirely; idempotent")
+    p.add_argument("--goal-status", action="store_true",
+                   help="READ-ONLY -> {armed,condition,session_id,arm_id,max_continues,met,"
+                        "category,terminal,reason,should_continue} — the Stop hook's read path")
+    # Deliberately NO argparse `choices=` here: `no_incomplete_jobs` must reach `arm_goal` so
+    # it is refused with the explanation of WHY (run-scoped, another file, and a naive read
+    # would be wrong), not with argparse's generic "invalid choice".
+    p.add_argument("--condition",
+                   help="(with --arm-goal) %s" % "|".join(GOAL_CONDITIONS))
+    p.add_argument("--session-id",
+                   help="(with --arm-goal) the harness session id the armed goal is bound to; "
+                        "an EMPTY value is refused (it would disable session isolation)")
+    # `type=int` keeps a non-numeric value a controlled argparse error; 0 and negatives parse
+    # fine here on purpose, so `arm_goal` can refuse them with the real reason.
+    p.add_argument("--max-continues", type=int, default=None,
+                   help="(with --arm-goal) the immutable, finite, POSITIVE continue bound; "
+                        "0 is INVALID, not 'unlimited'")
+    p.add_argument("--replace-arm", action="store_true",
+                   help="(with --arm-goal) replace an existing arm EXPLICITLY — a fresh "
+                        "arm_id is minted, abandoning the previous arm's continue counter")
     args = p.parse_args(argv)
 
     if args.selftest:
@@ -5415,6 +6188,47 @@ def main(argv):
         print(json.dumps(list_watchers(state)))
         return 0
 
+    if args.arm_goal:
+        if not _needs_marathon("--arm-goal"):
+            return 1
+        # `is None`, not falsiness: an explicitly-supplied empty --session-id must REACH
+        # arm_goal so it is refused with the session-isolation explanation, and a supplied
+        # --max-continues 0 must reach it so it is refused with the "0 is not unlimited" one.
+        if not args.condition or args.session_id is None or args.max_continues is None:
+            p.error("--arm-goal needs --condition, --session-id and --max-continues")
+        ok, err, result = arm_goal(state, args.condition, args.session_id,
+                                   args.max_continues, replace=args.replace_arm)
+        if not ok:
+            print("epic-arm-goal error: %s" % err, file=sys.stderr)
+            return 1
+        if result.get("replaced"):
+            # Never silent: a replacement abandons the previous arm's continue counter.
+            print("epic-arm-goal: REPLACED the previously armed goal (condition=%s arm_id=%s)"
+                  " — a fresh arm_id was minted, so the hook's continue counter for this epic "
+                  "starts at 0 again" % (result["replaced"].get("condition"),
+                                         result["replaced"].get("arm_id")), file=sys.stderr)
+        _atomic_write_json(args.state, state)
+        print(json.dumps(result))
+        return 0
+
+    if args.disarm_goal:
+        if not _needs_marathon("--disarm-goal"):
+            return 1
+        ok, err, result = disarm_goal(state)
+        if not ok:
+            print("epic-disarm-goal error: %s" % err, file=sys.stderr)
+            return 1
+        if result.get("mutated"):
+            _atomic_write_json(args.state, state)
+        print(json.dumps(result))
+        return 0
+
+    if args.goal_status:
+        # Deliberately NOT marathon-gated: read-only, and the hook wants a clean
+        # `armed: false` from any epic-state rather than an error it must tell from a fault.
+        print(json.dumps(goal_status(state)))
+        return 0
+
     if args.want_next:
         if args.autonomous:
             if not _needs_marathon("--next --autonomous"):
@@ -5490,6 +6304,7 @@ def main(argv):
            "--record-blocker-audit-failed / "
            "--record-final-review / --liveness / --claim-resume / --renew-lease / "
            "--record-watcher-armed / --record-watcher-disarmed / --list-watchers / "
+           "--arm-goal / --disarm-goal / --goal-status / "
            "--selftest is required")
 
 
