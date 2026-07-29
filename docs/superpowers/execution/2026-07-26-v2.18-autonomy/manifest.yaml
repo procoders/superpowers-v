@@ -1,0 +1,179 @@
+# Compound V execution manifest — v2.18 arm the autonomy.
+# Materialized from the r7 spec (clean rewrite after 1C contract audit + 1A archaeology + 4 Codex rounds).
+
+run_id: 2026-07-26-v2.18-autonomy
+feature: "Restore the Stop hook (goal-condition + off-by-default enforcement), wire the shim, make timeout_sec real, move the Iron Five out of the truncation zone"
+spec_path: docs/superpowers/specs/2026-07-26-v2.18-autonomy-mechanisms-design.md
+plan_path: docs/superpowers/specs/2026-07-26-v2.18-autonomy-mechanisms-design.md
+audits:
+  library: docs/superpowers/library-audit/2026-07-26-v2.18-autonomy-mechanisms.md
+  # 1A archaeology was run and is quoted throughout the spec; 1B domain deliberately NOT run
+  # (no user-facing or regulated surface — this is harness plumbing).
+
+acceptance_criteria:
+  - "HIGHEST BLAST RADIUS IN THE PROJECT: this hook runs in EVERY Claude Code session of every user with the plugin installed. It MUST gate on hook_event_name == 'Stop' BEFORE any state access and exit 0 for SubagentStop/StopFailure/unknown/missing — the harness converts a Stop registration to SubagentStop for subagents and Compound V dispatches them constantly; without the gate a subagent passes session isolation, is continued repeatedly, and burns the main counter"
+  - "FAIL-OPEN IS MECHANICAL, TWO INDEPENDENT MECHANISMS: registered as \"<script>\" || true in hooks.json AND the script is an unconditional-exit-0 wrapper. A block is expressed ONLY by valid JSON, NEVER by an exit code — a non-zero exit from a Stop hook IS a block, so any ordinary bash failure would wedge the user's session. Every pipeline guarded (under set -euo pipefail a no-match grep aborts the script); missing jq exits 0"
+  - "THE HOOK NEVER WRITES epic-state.json — a selftest asserts zero writes. That file has 35 _atomic_write_json call sites, most documented 'not flock-guarded, only the single live driver calls this'; a second writer breaks the invariant and a lock inside _atomic_write_json would self-deadlock claim_resume. The armed record (condition, session_id, arm_id, max_continues) is written ONLY by /v:epic and is LAZILY created so the three golden key-set selftests still pass; continue_count and the enforcement marker live in the hook's own store"
+  - "HOOK STORE KEY = digest(canonical project root) + session_id + arm_id, all three required: root because keying on session alone lets project A suppress project B; arm_id because disarm/rearm in one live session would otherwise reuse the slot and a SEQUENTIAL second epic would inherit the first epic's count. A sequential re-arm starts at 0 (tested)"
+  - "max_continues immutable/finite/positive (0 is INVALID, not unlimited); continue_count persisted BEFORE the block is emitted; a failed persist OPENS the hook; a MISSING STORE during an active arm FAILS OPEN and never recreates the counter at zero (recreating would silently grant another full tranche beyond max_continues). Reads stop_hook_active, logs it, does NOT return on it (the flag is set on the first block and never cleared, so returning would cap the feature at one block while a synthetic selftest still passed)"
+  - "COMPLETION USES A NEW CANONICAL HELPER, NOT is_terminal — is_terminal is also true for a tripped breaker, halt_epic, exhausted work and an unsatisfiable DAG, so using it would declare the goal met AT THE MOMENT THE EPIC FAILED (a fabricated completion claim). Every terminal reason prefix tested. Exactly TWO conditions ship (all_features_done, final_review_passed); no_incomplete_jobs is REFUSED at arm time with a reason. Arming refuses an empty session id; at most one armed epic per project; discovery fails open on zero or multiple matches"
+  - "PRECEDENCE: one Stop event produces exactly ONE state update and exactly ONE JSON response. Order: event gate -> goal rule (if armed, unmet, under the counter: increment, persist, block, DONE) -> enforcement (only if the goal rule did not block) -> exit 0. Tested with both eligible"
+  - "ENFORCEMENT IS OFF BY DEFAULT, config-gated; detection is git-derived and EXCLUDES docs/superpowers/** and the hook store itself; the documented guarantee is 'at most once WHILE THE MARKER SURVIVES' (a temp sweep can happen mid-session) and NO criterion claims it is unbypassable — the runtime silently discards a Stop block on several turn-end paths"
+  - "timeout_sec: integer seconds, min 60, max 21600, DEFAULT 900 UNCHANGED so every existing manifest behaves identically; documented in the per-job table; validated and bounded; ACTUALLY PASSED to the worker (today it is silently accepted and silently ignored). NO unknown-key rejection is added — that would retroactively invalidate ten committed manifests. The dispatcher doc states the 600s FOREGROUND ceiling, the mandatory background path above it, and outer > timeout_sec + grace; the residual (this rule is prose-enforced, not guaranteed) is stated"
+  - "shim: /v:epic --watch OFFERS the artifact, NOTHING is installed; the wiring lives in /v:epic prose because the shim's AST selftest asserts exactly ONE subprocess.* call in that file; the offer NEVER pre-fills --allow-build"
+  - "Iron Five ONLY move so the block ENDS at or before line 150 (a 9-line block inserts at ~142); content unchanged; the shift zone and the affected-citation set are COMPUTED against the actual insertion point (16 line-anchored citations exist across four files) and every affected one re-anchored; onboard staleness re-run"
+  - "SAFETY POSTURE UNCHANGED: never emit the permission-bypass flag, keep --allow-build opt-in, keep the scope gate and cross-vendor arbiter, no auto-arming of any scheduler. 2.18.0 lockstep; all selftests green LANG=C on 3.9; scope gate clean; NO claim of improved duty cycle, working-time budgeting, usage-limit waiting, or detached workers"
+
+routing_stance: claude-only
+max_parallel: 3
+
+shared_resources:
+  - "CHANGELOG.md"
+  - ".claude-plugin/plugin.json"
+  - ".claude-plugin/marketplace.json"
+  - "README.md"
+
+jobs:
+  - id: p1-epic-state-arming
+    title: "epic-state: arm/disarm a goal + the canonical completion helper"
+    type: large_isolated
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    write_allowed:
+      - "scripts/compound-v-epic-state.py"
+    read_allowed:
+      - "scripts/**"
+      - "docs/superpowers/specs/2026-07-26-v2.18-autonomy-mechanisms-design.md"
+      - "CONVENTIONS.md"
+    acceptance:
+      - "NEW canonical completion-category helper distinguishing COMPLETED from terminal-for-other-reasons, reused by routing and exported for the hook. is_terminal is NOT reused for completion (it is true for a tripped breaker, halt_epic, exhausted work, unsatisfiable DAG). A selftest covers EVERY terminal reason prefix and asserts a breaker-tripped epic is NOT 'all features done'"
+      - "--arm-goal / --disarm-goal CLI writing a LAZILY-created record into epic-state.json: {condition, session_id, arm_id, max_continues}. Arming REFUSES an empty session id, REFUSES no_incomplete_jobs with a message saying why (run-scoped, lives in a file this module never opens, and a naive read is WRONG because a done job whose files are not in git is not done), REFUSES max_continues <= 0, and refuses-or-explicitly-replaces an existing arm (at most one per project). arm_id is unique and immutable per arm"
+      - "the three golden key-set selftests (autonomy keys, watch-off marathon keys, top-level state keys) STILL PASS unmodified — the new record must be lazily created, never written unconditionally"
+      - "--selftest green LANG=C on 3.9; tz-aware datetime, never utcnow(); no new unconditional field; existing breaker fail-safes (missing/unparseable started_at both TRIP) untouched"
+
+  - id: p2-timeout-sec
+    title: "timeout_sec becomes a real, validated, actually-passed manifest field"
+    type: standard
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    write_allowed:
+      - "scripts/compound-v-validate-manifest.py"
+      - "skills/compound-v/execution-manifest.md"
+      - "agents/parallel-dispatcher.md"
+    read_allowed:
+      - "scripts/**"
+      - "skills/**"
+      - "agents/**"
+      - "docs/superpowers/specs/2026-07-26-v2.18-autonomy-mechanisms-design.md"
+    acceptance:
+      - "validator: per-job timeout_sec is an INTEGER, min 60, max 21600, default 900 UNCHANGED; a bool is rejected (bool is an int subclass in Python); out-of-range is rejected with a clear message; ABSENT is valid. NO unknown-key rejection is introduced — ten committed manifests must still validate. Selftest covers valid/too-small/too-large/bool/absent"
+      - "execution-manifest.md: timeout_sec documented in the PER-JOB field table (currently absent there) with its domain, default, and the note that it applies to worker-script backends"
+      - "parallel-dispatcher.md: the dispatcher ACTUALLY PASSES --timeout-sec to the worker script; states the harness Bash FOREGROUND ceiling of 600s, that a job above it MUST use the background path, and that the outer bound must exceed timeout_sec PLUS the supervisor grace so the result can still be written; states plainly that this rule is prose-enforced, not guaranteed"
+      - "manifest-validator + lint-frontmatter clean; every existing manifest under docs/superpowers/execution/ still validates"
+
+  - id: p3-iron-five-move
+    title: "Move the Iron Five out of the compaction truncation zone + re-anchor citations"
+    type: standard
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    write_allowed:
+      - "skills/compound-v/SKILL.md"
+      - "CONVENTIONS.md"
+      - "docs/superpowers/architecture/architecture.md"
+      - "docs/superpowers/architecture/business-logic.md"
+      - "docs/superpowers/architecture/tech-context.md"
+    read_allowed:
+      - "skills/**"
+      - "docs/superpowers/**"
+      - "scripts/**"
+    acceptance:
+      - "the Iron Five block (heading + rules + closer) moves so its FINAL LINE is at or before 150; content BYTE-IDENTICAL apart from position; nothing is deleted; ONLY the Iron Five moves (do NOT move any of the three candidate 'phase-trigger' tables — two are already inside the first 150 lines and the third is deliberately out of scope)"
+      - "COMPUTE the shift zone from the ACTUAL insertion point, then re-anchor EVERY affected line-anchored citation. COUNT THEM YOURSELF at implementation time — an earlier figure in the spec was wrong (16 counted grep LINES; there are 18 OCCURRENCES, because some lines carry two anchors). Enumerate every `compound-v/SKILL.md:<line>` occurrence across the four files you own, verify each against the post-move file, and fix the ones whose target moved. A stated count is a trap; the enumeration is the contract"
+      - "run `python3 scripts/compound-v-onboard.py staleness --repo .` after the move and report its output; lint-frontmatter clean; the CI dead-link scan's targets still resolve"
+
+  - id: p4-hook
+    title: "hooks/epic-goal-stop.sh — the Stop hook (goal + enforcement), registered fail-open"
+    type: large_isolated
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [p1-epic-state-arming]
+    write_allowed:
+      - "hooks/epic-goal-stop.sh"
+      - "hooks/hooks.json"
+      - "tests/test-epic-goal-stop.sh"
+      - ".github/workflows/validate.yml"
+    read_allowed:
+      - "hooks/**"
+      - "scripts/**"
+      - "docs/superpowers/specs/2026-07-26-v2.18-autonomy-mechanisms-design.md"
+      - "docs/superpowers/library-audit/2026-07-26-v2.18-autonomy-mechanisms.md"
+    acceptance:
+      - "EVENT GATE FIRST: proceed only when hook_event_name == 'Stop'; exit 0 for SubagentStop, StopFailure, unknown, or missing — BEFORE any state read or write. Tested. This is the difference between working and trapping every subagent Compound V dispatches"
+      - "FAIL-OPEN MECHANICALLY: registered in hooks.json as \"$CLAUDE_PLUGIN_ROOT/hooks/epic-goal-stop.sh\" || true (Stop takes NO matcher), and the script is an unconditional-exit-0 wrapper around all fallible logic. A block is ONLY ever valid JSON {\"decision\":\"block\",\"reason\":...}. `command -v jq >/dev/null 2>&1 || exit 0`. EVERY pipeline guarded with || true. Fault-injection tests: unreadable state, malformed stdin, absent jq, failed store write, deliberately broken script — none may emit a non-zero exit"
+      - "READS epic-state.json, NEVER WRITES IT (a selftest asserts zero writes). continue_count + the enforcement marker live in a store under the OS temp dir keyed by digest(canonical project root from the hook's cwd) + session_id + arm_id. A sequential re-arm starts at 0; two projects in one session do not share a slot; a MISSING store during an active arm FAILS OPEN without recreating the counter at zero"
+      - "increment persisted BEFORE the block is emitted; failed persist opens. Session isolation by session_id with exit 0 on mismatch. Reads stop_hook_active and logs it but does NOT return on it. Our own counter is the bound; the harness cap is a backstop we do not rely on"
+      - "PRECEDENCE: exactly ONE state update and ONE JSON response per event — event gate -> goal rule (blocks and stops) -> enforcement (only if the goal did not block) -> exit 0. Enforcement is OFF by default, config-gated, git-derived detection EXCLUDING docs/superpowers/** and the store itself, guarantee documented as 'at most once while the marker survives', and NOTHING claims it is unbypassable"
+      - "shellcheck-clean, executable bit set (CI enforces both), hooks.json valid JSON (CI runs jq empty), bash 3.2 compatible"
+      - "THE TEST HOME IS tests/test-epic-goal-stop.sh (repo precedent: tests/test-session-banner-staleness.sh tests hooks/session-banner.sh; no existing hook ships an inline --selftest). It feeds SYNTHETIC STDIN and covers every row of the decision table: absent armed record; session mismatch; hook_event_name SubagentStop / StopFailure / unknown / missing; goal met (exit 0); goal unmet under the counter (block); counter exhausted (exit 0); corrupt state; absent jq; failed store write; missing store during an active arm; sequential re-arm starts at 0; two projects one session; and BOTH rules eligible (exactly one JSON response, goal first)"
+      - "ADD ONE CI STEP running that test — `tests/` is currently NOT executed by CI at all and the selftest sweep globs `scripts/*.py` only, so without this the tests would be dead weight. That is precisely the v2.14.1 false-green we already fixed once (25 of 29 selftests silently never ran). Add the step MINIMALLY: do not reorder, rename or touch any existing step, and verify the workflow still parses"
+
+  - id: p5-commands-wiring
+    title: "/v:epic arm+disarm+shim offer, /v:status shows the arm, /v:init enforcement key"
+    type: standard
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [p1-epic-state-arming, p4-hook]
+    write_allowed:
+      - "commands/v-epic.md"
+      - "commands/v-status.md"
+      - "commands/v-init.md"
+      - "skills/compound-v/epic-mode.md"
+    read_allowed:
+      - "commands/**"
+      - "skills/**"
+      - "hooks/**"
+      - "scripts/**"
+      - "docs/superpowers/specs/2026-07-26-v2.18-autonomy-mechanisms-design.md"
+    acceptance:
+      - "/v:epic documents arming and disarming a goal with the REAL CLI p1 shipped (run it — do not guess the flags), including the refusals (empty session id, no_incomplete_jobs, max_continues<=0, an existing arm) and what each refusal message says"
+      - "/v:epic --watch OFFERS the headless-shim artifact and prints it; NOTHING is installed; the offer NEVER pre-fills --allow-build; the wiring is prose here, NOT a new call inside compound-v-headless-shim.py (its AST selftest asserts exactly one subprocess.* call in that file — verify that selftest still passes)"
+      - "/v:status surfaces whether a goal is armed and its continue_count — note /v:status is EPIC-BLIND today (zero references to epic-state.json), so this is a new read path; keep it read-only"
+      - "/v:init documents the enforcement config key, DEFAULT OFF, with the honest caveat that a Stop block is silently discarded on several turn-end paths so it raises the cost of skipping the pipeline rather than preventing it"
+      - "epic-mode.md: the goal-arm surface added to the epic-state CLI contract table; the honest cost recorded (goal-condition-only covers fewer marathon shapes than a continue-budget; expect longer runs with a ceiling, not eight hours); lint-frontmatter clean"
+
+  - id: z1-release
+    title: "Lockstep 2.18.0 + CHANGELOG + README"
+    type: shared_foundation
+    backend: claude
+    tier: deep
+    effort: medium
+    isolation: direct
+    run: serial
+    depends_on: [p1-epic-state-arming, p2-timeout-sec, p3-iron-five-move, p4-hook, p5-commands-wiring]
+    write_allowed:
+      - ".claude-plugin/plugin.json"
+      - ".claude-plugin/marketplace.json"
+      - "CHANGELOG.md"
+      - "README.md"
+    read_allowed:
+      - "**"
+    acceptance:
+      - "plugin.json + marketplace.json + the CHANGELOG top heading all at 2.18.0; both CI lockstep guards pass unmodified"
+      - "CHANGELOG '## [2.18.0]' HONEST: we restored a Stop hook we had removed on a FACTUALLY WRONG premise; the goal condition is deterministic from disk, never model judgment; enforcement is OFF by default and BEST-EFFORT (the runtime discards a Stop block on several turn-end paths); timeout_sec was silently accepted and silently ignored before. State plainly what did NOT change: the resurrection duty cycle is NOT improved (Feature E dropped), there is no working-time budgeting or usage-limit waiting (deferred to v2.19), and no detached workers. NO fabricated hours-of-autonomy figure — nothing was measured"
+      - "README: one line for the goal-armed Stop hook and one for timeout_sec, advisory-framed; no overclaim of unattended hours"
+      - "manifest-validator + lint-frontmatter clean"
