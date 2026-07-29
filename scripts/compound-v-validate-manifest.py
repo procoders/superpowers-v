@@ -521,6 +521,15 @@ VALID_ISOLATIONS = ("direct", "worktree")
 VALID_RUNS = ("serial", "parallel")
 VALID_STANCES = ("balanced", "conservative", "cost-aware", "claude-only")
 
+# Optional per-job `timeout_sec`: integer SECONDS handed to the worker script's
+# existing `--timeout-sec`. ABSENT is valid and means the worker script's own
+# DEFAULT_TIMEOUT_SEC=900 — unchanged, so every already-committed manifest keeps
+# behaving identically. The floor keeps a typo (`timeout_sec: 6`) from killing a
+# worker before it can even start; the ceiling (6 hours) keeps a runaway job from
+# being declared immortal.
+TIMEOUT_SEC_MIN = 60
+TIMEOUT_SEC_MAX = 21600
+
 # Top-level required fields (per execution-manifest.md "Top-level fields").
 TOPLEVEL_REQUIRED = (
     "run_id",
@@ -1795,6 +1804,28 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
                 % (jid, job.get("backend"))
             )
 
+        # Optional `timeout_sec` (only when present). ABSENT is valid and means
+        # the worker script's own DEFAULT_TIMEOUT_SEC=900 — untouched, so every
+        # existing manifest behaves exactly as it did. NO unknown-key rejection is
+        # introduced anywhere in this validator: adding one would retroactively
+        # invalidate the manifests already committed under
+        # docs/superpowers/execution/.
+        if "timeout_sec" in job and job.get("timeout_sec") is not None:
+            ts = job.get("timeout_sec")
+            # bool is an int subclass in Python; a YAML true/false here is wrong
+            # (same guard as `max_parallel` above).
+            if not isinstance(ts, int) or isinstance(ts, bool):
+                problems.append(
+                    "job '%s' timeout_sec must be an integer number of seconds "
+                    "(got %r)" % (jid, ts)
+                )
+            elif ts < TIMEOUT_SEC_MIN or ts > TIMEOUT_SEC_MAX:
+                problems.append(
+                    "job '%s' timeout_sec %d out of range (must be between %d "
+                    "and %d seconds inclusive)"
+                    % (jid, ts, TIMEOUT_SEC_MIN, TIMEOUT_SEC_MAX)
+                )
+
         wa = job.get("write_allowed")
         if wa is None:
             wa = []
@@ -2463,6 +2494,38 @@ jobs:
     read_allowed: [src/**]
     acceptance: ["builds"]
 """
+
+def _timeout_manifest(timeout_line):
+    """A complete, otherwise-valid single-codex-job manifest whose ONLY variable is
+    the optional `timeout_sec` line. Pass "" to omit the field entirely (the ABSENT
+    case, which must stay valid — that is what every already-committed manifest
+    looks like)."""
+    return """
+run_id: 2026-07-26-timeout
+feature: "timeout"
+spec_path: docs/superpowers/specs/2026-07-26-timeout.md
+plan_path: docs/superpowers/plans/2026-07-26-timeout.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-07-26-timeout.md
+  domain: docs/superpowers/expert/2026-07-26-timeout.md
+  library: docs/superpowers/library-audit/2026-07-26-timeout.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-1-timeout
+    title: "timeout slice"
+    type: large_isolated
+    backend: codex
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+%s    write_allowed: [src/features/**]
+    read_allowed: [src/**]
+    acceptance: ["builds"]
+""" % (("    timeout_sec: %s\n" % timeout_line) if timeout_line != "" else "")
 
 
 # A complete, otherwise-valid manifest whose ONE defect is an antigravity job with
@@ -3989,6 +4052,44 @@ def _selftest():
     expect(
         "bad: parallel+direct caught",
         "run: parallel with isolation: direct" in joined,
+    )
+
+    # timeout_sec: optional, integer seconds, bounded [60, 21600]. ABSENT is valid
+    # and leaves the worker script's DEFAULT_TIMEOUT_SEC=900 in force.
+    ts_absent = validate_text(_timeout_manifest(""))
+    expect("timeout_sec absent: manifest valid (%r)" % ts_absent, ts_absent == [])
+    ts_ok = validate_text(_timeout_manifest("1800"))
+    expect("timeout_sec 1800: manifest valid (%r)" % ts_ok, ts_ok == [])
+    for _edge in (TIMEOUT_SEC_MIN, TIMEOUT_SEC_MAX):
+        _e = validate_text(_timeout_manifest(str(_edge)))
+        expect("timeout_sec %d (inclusive bound) valid (%r)" % (_edge, _e), _e == [])
+    ts_small = validate_text(_timeout_manifest(str(TIMEOUT_SEC_MIN - 1)))
+    expect(
+        "timeout_sec too small caught",
+        any("timeout_sec 59 out of range" in p and "60" in p and "21600" in p
+            for p in ts_small),
+    )
+    ts_large = validate_text(_timeout_manifest(str(TIMEOUT_SEC_MAX + 1)))
+    expect(
+        "timeout_sec too large caught",
+        any("timeout_sec 21601 out of range" in p and "60" in p and "21600" in p
+            for p in ts_large),
+    )
+    ts_bool = validate_text(_timeout_manifest("true"))
+    expect(
+        "timeout_sec bool caught (bool is an int subclass)",
+        any("timeout_sec must be an integer number of seconds" in p
+            for p in ts_bool),
+    )
+    ts_str = validate_text(_timeout_manifest('"900"'))
+    expect(
+        "timeout_sec string caught",
+        any("timeout_sec must be an integer number of seconds" in p
+            for p in ts_str),
+    )
+    expect(
+        "no unknown-key rejection introduced (good manifest still clean)",
+        not any("unknown" in p.lower() for p in good),
     )
 
     # never-Haiku policy: a model: haiku execution-layer override is INVALID.
