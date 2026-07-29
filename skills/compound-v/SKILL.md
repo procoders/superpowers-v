@@ -116,6 +116,18 @@ flowchart LR
 
 ---
 
+## Hard Rules (the Iron Five)
+
+1. **No plan without a Phase 1A archaeology audit** if any audit-trigger applies.
+2. **No plan without a Phase 1B domain-expert audit** if the spec has any user-facing or domain-specific surface.
+3. **No plan without a Phase 1C library/doc audit** if the spec mentions or implies any library/SDK/framework.
+4. **No execution without a verified Partition Map** in the plan.
+5. **No sequential implementer dispatch** when the Partition Map shows N≥2 parallel-safe tasks.
+
+Violating any of these = stop, fix, restart the phase.
+
+---
+
 ## The Phases — Quick Reference
 
 ### Phase 0: Pre-Brainstorm Recon (gated — Trigger 0)
@@ -177,18 +189,6 @@ When the plan is ready:
 At the review gate, run `recall-check --files <diff's files>` over V-memory: if the same file pattern carries N≥k prior `blocked`/`error`/`timeout` or scope-violation records (default k=2), it returns the conservative-only verdict **tighten** (force worktree / add a review pass / fold into Task 0) — evidence that escalates, never reroutes or loosens. Whether it auto-applies (`memory.auto_tighten`) vs is surfaced advisory, and whether recall auto-fires at all (`memory.auto_recall`), is the `/v:init` choice read from `.claude/compound-v.json`. Separately, when `review.cross_model` is enabled (a `/v:init` default), run an automatic [`/v:review-plan`](../../commands/v-review-plan.md) Codex second opinion on high-stakes plans before dispatch. See [memory.md](memory.md).
 
 **Per-job isolation.** Disjoint Claude jobs write directly to the active workspace (partitioning prevents collisions); Codex/external workers and overlap-prone jobs run in a worktree under `$TMPDIR/compound-v/<run-id>/<job-id>`, merged back on PASS via an index-based patch that includes new files (`git -C <wt> add -A && git -C <wt> diff --cached --binary HEAD | (cd <repo> && git apply --index)`; a plain `git diff HEAD | git apply` would drop allowed untracked additions). The `git diff` scope gate runs on every job either way; a BLOCKED job never merges. See `phase-3-parallel-opus-dispatch.md` and [backend-launcher/SKILL.md](../backend-launcher/SKILL.md).
-
----
-
-## Hard Rules (the Iron Five)
-
-1. **No plan without a Phase 1A archaeology audit** if any audit-trigger applies.
-2. **No plan without a Phase 1B domain-expert audit** if the spec has any user-facing or domain-specific surface.
-3. **No plan without a Phase 1C library/doc audit** if the spec mentions or implies any library/SDK/framework.
-4. **No execution without a verified Partition Map** in the plan.
-5. **No sequential implementer dispatch** when the Partition Map shows N≥2 parallel-safe tasks.
-
-Violating any of these = stop, fix, restart the phase.
 
 ---
 
