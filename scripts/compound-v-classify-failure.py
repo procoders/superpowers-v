@@ -116,6 +116,39 @@ _ANTIGRAVITY_RULES = [
 # SPECIFIC needles (login/plan phrasing) are PROVISIONAL — refine them against a real
 # cursor-agent failure sample; the provider-error needles below are the reliable backbone.
 # Quota/credit needles come BEFORE rate_limited (a hard plan/quota cap must not be retried).
+# z.ai / GLM Coding Plan (backend `zai`). UNLIKE every other backend here, the provider
+# PUBLISHES its full error surface (docs.z.ai/api-reference/api-code), so these needles are
+# documented codes rather than field-collected guesses. ALL of them are HTTP 429, in the
+# envelope {"error":{"code":"XXXX","message":"..."}}.
+#
+# Two facts drive the policy that consumes this, and both are recorded in
+# skills/backend-launcher/adapter-zai.md:
+#   * NO Retry-After header is documented anywhere -- the reset time is embedded in the
+#     message TEXT -- so backoff must be bounded and self-derived, never header-driven.
+#   * ENFORCEMENT throttling is INDISTINGUISHABLE on the wire from ordinary rate limiting
+#     (z.ai's April 2026 enforcement wave surfaced in this same code range). Aggressive retry
+#     against a provider that penalises repeat offences is itself the hazard, so the retry
+#     ceiling stays low and the breaker opens early.
+#
+# This branch is NOT optional politeness: classify()'s final `else` is _CODEX_RULES, so a zai
+# job without it would be classified with OpenAI's needles -- an unrecognised GLM error would
+# come back as `auth` telling the operator to run `codex login`.
+_ZAI_RULES = [
+    ("out_of_credits", [
+        '"1113"', "[1113]", "insufficient balance", "no resource package",
+        "insufficient_balance",
+    ]),
+    ("rate_limited", [
+        '"1302"', '"1305"', '"1308"', '"1310"', '"1311"', '"1316"', '"1317"',
+        "[1302]", "[1305]", "[1308]", "[1310]", "[1311]", "[1316]", "[1317]",
+        "rate limit reached", "concurrency limit", "quota exhausted",
+    ]),
+    ("auth", [
+        "invalid api key", "invalid_api_key", "unauthorized", "authentication failed",
+        "401",
+    ]),
+]
+
 _CURSOR_RULES = [
     ("out_of_credits", [
         "hit your usage limit", "usage limit reached", "monthly limit", "plan limit",
@@ -246,6 +279,8 @@ def classify(backend, exit_code, stderr):
         rules = _ANTIGRAVITY_RULES
     elif backend == "cursor":
         rules = _CURSOR_RULES
+    elif backend == "zai":
+        rules = _ZAI_RULES
     else:
         rules = _CODEX_RULES
     for cls, needles in rules:
@@ -262,6 +297,25 @@ def _result(cls, matched, retry_after):
 
 def _selftest():
     cases = [
+        # --- zai: z.ai PUBLISHES its whole error surface, so these are documented codes,
+        # not guesses (docs.z.ai/api-reference/api-code). Every one of them is HTTP 429.
+        ("zai", 0, "", "none"),
+        ("zai", 124, "", "timeout"),
+        ("zai", 1, '{"error":{"code":"1113","message":"Insufficient balance or no resource package"}}',
+         "out_of_credits"),
+        ("zai", 1, '{"error":{"code":"1302","message":"API request rate limit reached"}}', "rate_limited"),
+        ("zai", 1, '{"error":{"code":"1305","message":"Request rate limit reached"}}', "rate_limited"),
+        ("zai", 1, '{"error":{"code":"1308","message":"Concurrency limit reached"}}', "rate_limited"),
+        ("zai", 1, '{"error":{"code":"1310","message":"Rate limit reached"}}', "rate_limited"),
+        ("zai", 1, '{"error":{"code":"1311","message":"Quota exhausted"}}', "rate_limited"),
+        ("zai", 1, '{"error":{"code":"1316","message":"Rate limit reached"}}', "rate_limited"),
+        ("zai", 1, '{"error":{"code":"1317","message":"Rate limit reached"}}', "rate_limited"),
+        # The 1211 config fault seen live is NOT a quota problem.
+        ("zai", 1, "API Error: 400 [1211][Unknown Model, please check the model code.]", "other"),
+        # An unrecognised payload must fail closed to `other`. This case is load-bearing:
+        # classify()'s final `else` is _CODEX_RULES, so a zai backend WITHOUT its own branch
+        # would classify this as `auth` and tell the operator to run `codex login`.
+        ("zai", 1, "not logged in, please run `codex login`", "other"),
         # backend, exit, stderr, expected_class
         ("codex", 0, "", "none"),
         ("codex", 124, "", "timeout"),
@@ -331,7 +385,12 @@ def _selftest():
 
 def main(argv):
     p = argparse.ArgumentParser(description="Classify a backend failure.")
-    p.add_argument("--backend", choices=["codex", "claude", "antigravity", "cursor"])
+    # NOTE: `devin` and `opencode` are absent here even though both are VALID_BACKENDS in the
+    # manifest validator — a pre-existing gap: their workers cannot call this CLI at all.
+    # Deliberately not fixed in the zai change; classify() already falls back to _CODEX_RULES
+    # for them, which is its own (separate) problem.
+    p.add_argument("--backend",
+                   choices=["codex", "claude", "antigravity", "cursor", "zai"])
     p.add_argument("--exit-code", type=int)
     p.add_argument("--stderr-file")
     p.add_argument("--selftest", action="store_true")
