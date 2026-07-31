@@ -4,6 +4,58 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [2.18.0] - 2026-08-01
+
+### Added — `zai`, a headless GLM worker backend (lower-trust, opt-in, WORKER-ONLY)
+
+A sixth dispatch backend, so codex, claude and z.ai can run jobs concurrently on separate
+quotas. It is a Bash-spawned `claude -p` process pointed at z.ai's Anthropic-compatible
+endpoint, in its own git worktree, under the process-group supervisor, with the dispatcher's
+provider credentials scrubbed by `env -i` and `HOME`/`CLAUDE_CONFIG_DIR` redirected to a
+scratch directory. z.ai ships no headless CLI of its own; Claude Code is a tier-1 officially
+supported tool for the GLM Coding Plan, so driving the genuine binary is the compliant path.
+
+Enforcement is unchanged — the existing git-derived scope gate. **There is no kernel
+write-confinement**: the worktree plus `git diff` detects an in-worktree scope leak but cannot
+prevent an out-of-worktree side effect, the same trust tier as antigravity and cursor. `zai`
+is worker-only: never a reviewer (rejected by the manifest validator) and never an arbiter
+seat (`model_family()` carries no `glm` needle, so a GLM ballot would bucket as `unknown`).
+
+- `scripts/compound-v-run-zai-worker.sh`, `skills/backend-launcher/adapter-zai.md`.
+- Tier map `deep`/`standard` → `glm-5.2`, `light` → `glm-5-turbo`. `light` is chosen on a
+  head-to-head measurement, not the multiplier table: turbo is 16% faster and glm-4.7 only 7%
+  cheaper in practice, because glm-4.7 emits ~60% more output.
+- `job_result.usage` carries **real** token counts from z.ai's own response (`measured: true`).
+  The CLI's `total_cost_usd` is never carried — it is computed from Anthropic's price table for
+  a model that never ran.
+- Failure classification uses z.ai's **published** 429 codes (`1113, 1302, 1305, 1308, 1310,
+  1311, 1316, 1317`). No `Retry-After` header exists, and enforcement throttling is
+  indistinguishable on the wire from ordinary rate limiting, so the retry ceiling stays low and
+  the breaker opens early.
+- Default `max_parallel` for zai is 4. Six concurrent jobs measured clean, but z.ai publishes
+  no concurrency limit and adjusts it by plan tier.
+
+### Fixed
+
+- **A z.ai quota wall no longer halts a run.** `FALLBACK` in `compound-v-failure-policy.py`
+  had no `zai` key; a missing key reads as `None`, which the policy turns into `halt`. (`devin`
+  and `opencode` are still absent from that table — pre-existing, untouched here.)
+- **`compound-v-usage-extract.py` now parses `--output-format json` as a JSON document.**
+  Line-wise parsing silently yielded nothing the moment the document was pretty-printed.
+
+### CI
+
+Two gates that did not exist are now enforced: `shellcheck` over `scripts/*.sh` (it covered
+only `hooks/*.sh`, leaving every worker script unlinted) and a step that runs the
+`scripts/test-*.sh` suites (nothing ran them; the sweep covered `scripts/*.py` only).
+
+A new `scripts/test-zai-wire-smoke.sh` runs the **real** `claude` binary against a local stub
+HTTP server — no network, no key, no quota — and asserts the tool set that actually reaches
+the wire. That check exists because argv assertions cannot catch this class of defect:
+`--allowedTools` decides which tools run unprompted, `--tools` decides which tools exist, and
+an earlier draft of this backend pinned only the former and shipped a worker with `Bash` it
+meant to withhold and no `Write` at all.
+
 ## [2.17.0] - 2026-07-26
 
 ### Added — Co-change advisory (ordered, git-derived) + failure-prioritized evidence packing
