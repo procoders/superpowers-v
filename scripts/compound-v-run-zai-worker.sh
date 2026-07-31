@@ -93,7 +93,7 @@ unmeasured_usage() {
 
 # --- arguments ---------------------------------------------------------------
 
-RUN_ID=""; JOB_ID=""; REPO=""; PROMPT_FILE=""; MODEL=""
+RUN_ID=""""; JOB_ID=""; REPO=""; PROMPT_FILE=""; MODEL=""
 WRITE_ALLOWED=""; TIMEOUT_SEC=""; EFFORT=""; READ_ONLY="false"; NETWORK="false"
 EVENTS_LOG_OVERRIDE=""
 
@@ -114,6 +114,12 @@ while [ $# -gt 0 ]; do
     *) die "unknown argument: $1" ;;
   esac
 done
+
+# NETWORK is accepted for CLI parity with the codex worker and then deliberately DISCARDED:
+# this backend has no kernel sandbox, so there is no network toggle to map it onto. Referenced
+# here so the discard is explicit rather than an oversight — never claim enforcement that does
+# not exist.
+: "$NETWORK"
 
 [ -n "$RUN_ID" ]      || die "--run-id is required"
 [ -n "$JOB_ID" ]      || die "--job-id is required"
@@ -184,6 +190,12 @@ mkdir -p "$(dirname "$EVENTS_LOG")"
 # and silently corrupts the allow-list. (The cursor worker omits this; do not copy it.)
 ALLOW_FILE="$ART/write_allowed.globs"
 : > "$ALLOW_FILE"
+# --read-only is enforced POST-HOC, exactly as the contract says: an EMPTY allow-file makes the
+# gate treat EVERY changed path as a violation, so a read-only job that writes anything is
+# correctly BLOCKED. No kernel flag is involved and none is claimed.
+if [ "$READ_ONLY" = "true" ]; then
+  WRITE_ALLOWED=""
+fi
 _old_ifs="$IFS"
 set -f
 IFS=":"

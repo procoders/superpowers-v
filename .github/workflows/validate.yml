@@ -193,10 +193,24 @@ jobs:
             echo "✅ $hook is executable"
           done
 
-      - name: Lint hook scripts with shellcheck
+      - name: Lint hook and worker scripts with shellcheck
         run: |
           sudo apt-get install -y shellcheck
           shellcheck hooks/*.sh
+          # scripts/*.sh was NEVER linted before v2.18 — the worker scripts and their test
+          # harnesses, the largest shell surface in the repo, had no static analysis at all.
+          shellcheck scripts/*.sh
+
+      - name: Run bash test suites
+        run: |
+          # No CI step ran any scripts/test-*.sh before v2.18: the selftest sweep below covers
+          # scripts/*.py only, so every bash-level proof in this repo was manual-only.
+          # Tests that need a CLI this runner does not have exit 0 with SKIP.
+          set -e
+          for t in scripts/test-*.sh; do
+            echo "--- $t"
+            bash "$t"
+          done
 
       # FINAL step — run the repo-wide dead-link scan only after every file exists,
       # so cross-refs to files authored by later batches resolve at integration time.

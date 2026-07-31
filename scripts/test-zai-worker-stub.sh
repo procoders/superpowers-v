@@ -93,7 +93,7 @@ run_worker() {
 }
 
 echo "== argv, environment and cwd =="
-RESULT="$(run_worker success "allowed.txt" 60 glm-5.2)"
+run_worker success "allowed.txt" 60 glm-5.2 >/dev/null
 
 argv_has() { grep -qxF -- "$1" "$ARGV_OUT" && echo yes || echo no; }
 
@@ -159,7 +159,7 @@ check "usage is measured with real counts" \
       "$([ "$(printf '%s' "$R" | jq -r '.usage.input_tokens')" = 123 ] && \
          [ "$(printf '%s' "$R" | jq -r '.usage.measured')" = true ] && echo yes || echo no)"
 check "no cost value anywhere in the result" \
-      "$(printf '%s' "$R" | tr 'A-Z' 'a-z' | grep -q cost && echo no || echo yes)"
+      "$(printf '%s' "$R" | tr '[:upper:]' '[:lower:]' | grep -q cost && echo no || echo yes)"
 
 R="$(run_worker blocked "allowed.txt" 60 glm-5.2)"
 check "out-of-scope write is BLOCKED" \
