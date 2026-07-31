@@ -55,8 +55,14 @@ PER_CLASS_MAX = {
 
 # Backend fallback chain — every external backend reroutes to claude (always available); claude
 # itself has no further local fallback. Mirrors routing-policy's env-aware reroute. The lower-trust
-# external workers (antigravity, cursor) reroute UP to claude on a circuit-break, never down.
-FALLBACK = {"codex": "claude", "antigravity": "claude", "cursor": "claude", "claude": None}
+# external workers (antigravity, cursor, zai) reroute UP to claude on a circuit-break, never down.
+#
+# A MISSING key yields None, which decide() reads as "nowhere to reroute" and turns into `halt` —
+# stopping the whole run. That is why zai is listed explicitly. NOTE: `devin` and `opencode` are
+# still absent and therefore still halt a run on a credit wall; that is a pre-existing gap,
+# deliberately not changed here.
+FALLBACK = {"codex": "claude", "antigravity": "claude", "cursor": "claude",
+            "zai": "claude", "claude": None}
 
 BACKOFF_BASE = 2
 BACKOFF_CAP = 60
@@ -139,6 +145,13 @@ def _selftest():
     check("none", d["action"], "proceed")
     d = decide("out_of_credits", "codex", 0, 0, 12)
     check("ooc-codex", d["action"], "reroute", d["reroute_to"] == "claude" and d["circuit_break"])
+    # zai reroutes UP to claude like every other external worker. Without a FALLBACK entry
+    # the table yields None and this returns `halt`, stopping the WHOLE run on the first
+    # z.ai credit wall.
+    d = decide("out_of_credits", "zai", 0, 0, 12)
+    check("ooc-zai", d["action"], "reroute", d["reroute_to"] == "claude" and d["circuit_break"])
+    d = decide("rate_limited", "zai", 0, 0, 12)
+    check("ratelimit-zai retries", d["action"], "retry")
     d = decide("out_of_credits", "claude", 0, 0, 12)
     check("ooc-claude", d["action"], "halt", d["circuit_break"])
     d = decide("auth", "codex", 0, 0, 12)
