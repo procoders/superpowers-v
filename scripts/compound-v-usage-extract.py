@@ -38,6 +38,11 @@ Per-backend token sources (field names are exact, from the library audit):
               .part.tokens.input and .part.tokens.output.
   cursor    : JSONL. The final `type=="result"` line's
               .usage.inputTokens and .usage.outputTokens.
+  zai       : ONE JSON DOCUMENT (claude -p --output-format json), not JSONL.
+              .usage.input_tokens and .usage.output_tokens. total_cost_usd and
+              modelUsage[*].costUSD are IGNORED: both are computed from Anthropic's
+              price table for a model that never ran, and job_result.usage has no
+              cost field anyway.
   agy/antigravity, claude, devin : no machine-readable usage -> measured:false.
 
 Python 3.9-safe, stdlib only. Exit 0 on a printed usage object; the --selftest
@@ -197,11 +202,34 @@ def _extract_cursor(objs: List[Any], backend: str) -> Dict[str, Any]:
     return _measured(backend, last_pair[0], last_pair[1])
 
 
+def _read_json_document(path: Optional[str]) -> List[Any]:
+    """Parse a WHOLE file as one JSON document; [] when absent/empty/unparseable.
+
+    `claude -p --output-format json` emits one JSON *document*, not JSONL — and nothing
+    guarantees it stays on a single line. Line-wise parsing silently yields nothing the
+    moment the document is pretty-printed, so the document parse is tried first and the
+    line-wise scan is only the fallback (a stream that happens to be JSONL still works)."""
+    if not path or not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r") as fh:
+            text = fh.read()
+    except (IOError, OSError):
+        return []
+    text = text.strip()
+    if not text:
+        return []
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        return _iter_json_lines(path)
+    return doc if isinstance(doc, list) else [doc]
+
+
 def _extract_zai(objs: List[Any], backend: str) -> Dict[str, Any]:
     """zai runs `claude -p --output-format json`, which emits ONE terminal object rather
     than a JSONL stream, so this reads `usage.input_tokens` / `usage.output_tokens` from the
-    first object that carries them (_iter_json_lines already yields a one-element list for a
-    single-object file, and returns [] for a missing one).
+    first object that carries them.
 
     `total_cost_usd` and `modelUsage[*].costUSD` are deliberately IGNORED: the CLI computes
     both from Anthropic's price table for a model that never ran, and job_result.usage has no
@@ -234,7 +262,8 @@ def extract_usage(backend: str, events_log: Optional[str]) -> Dict[str, Any]:
     if backend == "cursor":
         return _extract_cursor(objs, backend)
     if backend == "zai":
-        return _extract_zai(objs, backend)
+        # zai's capture is a JSON DOCUMENT, not JSONL — parse it as one.
+        return _extract_zai(_read_json_document(events_log), backend)
     # Unknown backend: honest unmeasured, never a fabricated count.
     return _unmeasured(backend)
 
@@ -274,6 +303,14 @@ def _selftest() -> int:
     check("zai backend label", zai_got["backend"], "zai")
     check("zai carries no cost anywhere", "cost" in json.dumps(zai_got).lower(), False)
     os.unlink(zai_path)
+    # A PRETTY-PRINTED document must parse too: --output-format json emits one JSON
+    # document, and nothing guarantees it stays on one line. Line-wise parsing would
+    # silently return nothing here.
+    zai_multiline = _write_tmp([
+        '{"type":"result",', '"usage":{"input_tokens":7,', '"output_tokens":9}}'
+    ])
+    check("zai multi-line document parses", extract_usage("zai", zai_multiline)["input_tokens"], 7)
+    os.unlink(zai_multiline)
     # Missing capture must be honest, never a fabricated zero-as-measured.
     check("zai missing file is unmeasured", extract_usage("zai", None)["measured"], False)
 
