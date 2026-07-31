@@ -197,6 +197,29 @@ def _extract_cursor(objs: List[Any], backend: str) -> Dict[str, Any]:
     return _measured(backend, last_pair[0], last_pair[1])
 
 
+def _extract_zai(objs: List[Any], backend: str) -> Dict[str, Any]:
+    """zai runs `claude -p --output-format json`, which emits ONE terminal object rather
+    than a JSONL stream, so this reads `usage.input_tokens` / `usage.output_tokens` from the
+    first object that carries them (_iter_json_lines already yields a one-element list for a
+    single-object file, and returns [] for a missing one).
+
+    `total_cost_usd` and `modelUsage[*].costUSD` are deliberately IGNORED: the CLI computes
+    both from Anthropic's price table for a model that never ran, and job_result.usage has no
+    cost field to hold a number anyway (anti-ruflo). The token counts, by contrast, come from
+    z.ai's own response and are real -- which is why `zai` is NOT in UNMEASURED_BACKENDS."""
+    for obj in objs:
+        if not isinstance(obj, dict):
+            continue
+        u = obj.get("usage")
+        if not isinstance(u, dict):
+            continue
+        inp = u.get("input_tokens")
+        out = u.get("output_tokens")
+        if isinstance(inp, int) and isinstance(out, int):
+            return _measured(backend, inp, out)
+    return _unmeasured(backend)
+
+
 def extract_usage(backend: str, events_log: Optional[str]) -> Dict[str, Any]:
     """Dispatch to the per-backend normalizer; fail-open to unmeasured."""
     backend = (backend or "").strip()
@@ -210,6 +233,8 @@ def extract_usage(backend: str, events_log: Optional[str]) -> Dict[str, Any]:
         return _extract_opencode(objs, backend)
     if backend == "cursor":
         return _extract_cursor(objs, backend)
+    if backend == "zai":
+        return _extract_zai(objs, backend)
     # Unknown backend: honest unmeasured, never a fabricated count.
     return _unmeasured(backend)
 
@@ -232,6 +257,25 @@ def _selftest() -> int:
     def check(name: str, got: Any, want: Any) -> None:
         if got != want:
             failures.append("%s: got %r, want %r" % (name, got, want))
+
+    # --- zai: ONE terminal JSON object (claude -p --output-format json), NOT a JSONL
+    # stream. The object also carries total_cost_usd / modelUsage[*].costUSD, both computed
+    # from Anthropic's price table for a model that never ran -- they must never surface.
+    zai_path = _write_tmp([
+        '{"type":"result","subtype":"success","is_error":false,"result":"done",'
+        '"session_id":"ce0ba7c7-bb9a-421f-b926-9973806d506f","total_cost_usd":0.332329,'
+        '"usage":{"input_tokens":658,"output_tokens":281},'
+        '"modelUsage":{"glm-5.2":{"inputTokens":658,"outputTokens":281,"costUSD":0.332329}}}'
+    ])
+    zai_got = extract_usage("zai", zai_path)
+    check("zai input tokens", zai_got["input_tokens"], 658)
+    check("zai output tokens", zai_got["output_tokens"], 281)
+    check("zai is measured", zai_got["measured"], True)
+    check("zai backend label", zai_got["backend"], "zai")
+    check("zai carries no cost anywhere", "cost" in json.dumps(zai_got).lower(), False)
+    os.unlink(zai_path)
+    # Missing capture must be honest, never a fabricated zero-as-measured.
+    check("zai missing file is unmeasured", extract_usage("zai", None)["measured"], False)
 
     # --- codex: SUM across turn.completed; skip non-JSON + error/deprecation ---
     codex_lines = [
