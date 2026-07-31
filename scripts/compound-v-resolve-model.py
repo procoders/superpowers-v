@@ -114,11 +114,27 @@ _OPENCODE = {
     "standard": "openai/gpt-5.6-terra",
     "light": "opencode/mimo-v2.5-free",
 }
+# z.ai / GLM Coding Plan, driven through a headless `claude -p` worker against z.ai's
+# Anthropic-compatible endpoint. SINGLE-VENDOR: every cell is a BARE GLM model name, never a
+# "provider/model" string (contrast opencode), so no shape check applies. Names VERIFIED live
+# against the subscription endpoint 2026-07-31 -- an invented name returns
+# `400 [1211][Unknown Model, please check the model code.]`, so this map is checked, not guessed.
+#
+# deep+standard = glm-5.2, the strongest model on the plan. light = glm-5-turbo on a
+# HEAD-TO-HEAD MEASUREMENT, not on the multiplier table: three runs each on one task gave turbo
+# 8.5s / 2.56 credits against glm-4.7's 10.1s / 2.38 -- 16% faster for 7% more, because glm-4.7
+# emits ~60% more output and eats its own lower multiplier. Do not "fix" this back to the
+# cheaper-looking multiplier. glm-4.7 stays a documented config override for anyone squeezing
+# the weekly window.
+#
+# Lower-trust tier: no kernel write-confinement, so worktree + git-diff is the ONLY file-scope
+# enforcement -- see skills/backend-launcher/adapter-zai.md. NEVER haiku.
+_ZAI = {"deep": "glm-5.2", "standard": "glm-5.2", "light": "glm-5-turbo"}
 
 
 def _stance_map(claude_map):
     """Assemble a full {backend -> {tier -> model}} map for one stance. Only the claude
-    sub-map varies by stance; codex/antigravity/cursor/devin/opencode are shared
+    sub-map varies by stance; codex/antigravity/cursor/devin/opencode/zai are shared
     (read-only)."""
     return {
         "claude": claude_map,
@@ -127,6 +143,7 @@ def _stance_map(claude_map):
         "cursor": _CURSOR,
         "devin": _DEVIN,
         "opencode": _OPENCODE,
+        "zai": _ZAI,
     }
 
 
@@ -141,7 +158,7 @@ DEFAULT_MODELS_BY_STANCE = {
 # working unchanged: balanced is the default stance.
 DEFAULT_MODELS = DEFAULT_MODELS_BY_STANCE["balanced"]
 
-BACKENDS = ("claude", "codex", "antigravity", "cursor", "devin", "opencode")
+BACKENDS = ("claude", "codex", "antigravity", "cursor", "devin", "opencode", "zai")
 TIERS = ("deep", "standard", "light")
 # `xhigh` is valid iff backend == "codex": it maps to codex's kernel
 # model_reasoning_effort dimension, which live-accepts xhigh (verified
@@ -585,6 +602,39 @@ def _selftest():
     # No 'haiku' anywhere in any stance map.
     flat = json.dumps(DEFAULT_MODELS_BY_STANCE).lower()
     expect("no haiku in any stance map", "haiku" not in flat)
+
+    # --- zai: single-vendor GLM map, identical in every stance -----------------
+    for _stance in DEFAULT_MODELS_BY_STANCE:
+        expect(
+            "zai deep is glm-5.2 in %s" % _stance,
+            resolve("zai", "deep", stance=_stance)["model"] == "glm-5.2",
+        )
+        expect(
+            "zai standard is glm-5.2 in %s" % _stance,
+            resolve("zai", "standard", stance=_stance)["model"] == "glm-5.2",
+        )
+        expect(
+            "zai light is glm-5-turbo in %s" % _stance,
+            resolve("zai", "light", stance=_stance)["model"] == "glm-5-turbo",
+        )
+    # xhigh stays codex-only (documented rule; see the spec's Job contract section).
+    expect("zai rejects xhigh", raises(lambda: resolve("zai", "light", effort="xhigh")))
+    # zai is single-vendor: a BARE GLM name is valid (contrast opencode's provider/model).
+    expect(
+        "zai bare model override passes",
+        resolve("zai", "deep", explicit_model="glm-4.7")["model"] == "glm-4.7",
+    )
+    # zai has NO consult adapter, so it must NEVER be selected as an advisor -- registering a
+    # backend must not silently widen advisor eligibility.
+    expect("zai is not advisor-consultable", "zai" not in ADVISOR_CONSULTABLE_NONCLAUDE)
+    expect(
+        "zai executor falls back to the opus advisor",
+        select_advisor("zai", ["zai", "claude"])["advisor_backend"] == "claude",
+    )
+    expect(
+        "an available zai is never chosen as advisor",
+        select_advisor("claude", ["zai", "claude"])["advisor_backend"] == "claude",
+    )
 
     # Default effort pairing when --effort omitted.
     expect("deep default effort high", resolve("claude", "deep")["effort"] == "high")
