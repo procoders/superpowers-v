@@ -19,7 +19,7 @@ There is no skill-import API: an adapter is a sibling doc (`adapter-codex.md`, `
 
 ```jsonc
 {
-  "backend": "codex",                  // claude | codex | antigravity | cursor | devin | opencode
+  "backend": "codex",                  // claude | codex | antigravity | cursor | devin | opencode | zai
   "prompt": "…",                       // the worker prompt (opens with the planner/executor lock, below)
   "tier": "standard",                  // deep | standard | light — the routing INTENT (stable across model churn)
   "effort": "medium",                  // low | medium | high | xhigh — orthogonal reasoning-effort hint (optional; xhigh is codex-only)
@@ -118,6 +118,7 @@ This is the *instructed* half. The git-diff scope gate above is the *enforced* h
 | `adapter-antigravity.md` | headless Antigravity | Bash-spawned `agy --print` (own process, own worktree) | `worktree` (mandatory) | git-diff scope gate | ships 1.1 — **lower-trust / opt-in (no kernel sandbox)** |
 | `adapter-cursor.md` | headless Cursor | Bash-spawned `cursor-agent -p -f` (own process, own worktree) | `worktree` (mandatory) | git-diff scope gate | ships 2.1 — **lower-trust / opt-in (no kernel sandbox)** |
 | `adapter-devin.md` | headless Devin | Bash-spawned `devin -p` (own process, own worktree) | `worktree` (mandatory) | git-diff scope gate | **lower-trust / opt-in, WORKER-ONLY** (Research-Preview `--sandbox`, unverified coverage; multi-vendor model broker — excluded from any arbiter panel) |
+| `adapter-zai.md` | headless z.ai (GLM) | Bash-spawned `claude -p` against z.ai's Anthropic endpoint (own process, own worktree) | `worktree` (mandatory) | git-diff scope gate | **lower-trust / opt-in, WORKER-ONLY** (no kernel sandbox; a headless Claude Code pointed at a third-party endpoint — the only path, since z.ai ships no headless CLI) |
 | `adapter-opencode.md` | headless opencode | Bash-spawned `opencode run` (own process, own worktree) | `worktree` (mandatory) | git-diff scope gate | **lower-trust / opt-in, WORKER-ONLY** (no kernel sandbox; multi-provider `provider/model` router — excluded from any arbiter panel until family-dedup keys on the resolved model) |
 
 - **claude-subagent** — reuses today's `Task`-based dispatch with a `model` override and `maxTurns: 15`, optionally inside a worktree, and runs the **same** scope gate on return so enforcement is identical to Codex. Direct writes are gated against a baseline commit.

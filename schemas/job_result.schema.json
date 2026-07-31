@@ -104,7 +104,7 @@
         },
         "backend": {
           "type": "string",
-          "description": "Backend name this usage was extracted for (codex | opencode | cursor | agy | antigravity | claude | devin)."
+          "description": "Backend name this usage was extracted for (codex | opencode | cursor | agy | antigravity | claude | devin | zai)."
         },
         "measured": {
           "type": "boolean",

@@ -166,6 +166,23 @@ devin auth status </dev/null 2>&1 | head -3   # or: [ -n "$COGNITION_API_KEY" ]
 > the resolved model rather than the backend name. See
 > [`adapter-devin.md`](../skills/backend-launcher/adapter-devin.md).
 
+### 1a-sexies. z.ai / GLM Coding Plan (`zai`) — optional, lower-trust, WORKER-ONLY backend
+
+Detection is a **key check, not a binary check**: z.ai ships no headless CLI of its own, so the
+backend is a `claude -p` worker pointed at z.ai's Anthropic-compatible endpoint. `claude` is
+already a prerequisite of this plugin; what gates availability is the subscription key.
+
+```bash
+[ -n "${ZAI_API_KEY:-}" ] && echo "zai: key present" || echo "zai: not available"
+```
+
+If `ZAI_API_KEY` is unset → zai is **not available** (record it; routing never offers it). If set,
+record `zai` as available and note `max_parallel: 4` as its default cap (see
+[`adapter-zai.md`](../skills/backend-launcher/adapter-zai.md) — z.ai publishes no concurrency
+limit and adjusts it by plan tier; six concurrent jobs measured clean, the default sits below
+that). zai is **lower-trust, opt-in, WORKER-ONLY**: no kernel sandbox, always `worktree`, never a
+reviewer or an arbiter seat. Never write the key into the config file — only the variable name.
+
 ### 1a-quinquies. opencode CLI (`opencode`) — optional, lower-trust, WORKER-ONLY, multi-provider backend
 
 ```bash

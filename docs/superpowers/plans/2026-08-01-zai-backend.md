@@ -762,7 +762,7 @@ Also update the `backend` enum comment in the `job_spec` block near line 22 to
 Without this row nothing tells the dispatcher which script to run. Insert after the `cursor` row:
 
 ```markdown
-| `zai` | [`adapter-zai.md`](../skills/backend-launcher/adapter-zai.md) | Bash-spawned `claude -p` worker via [`scripts/compound-v-run-zai-worker.sh`](../scripts/compound-v-run-zai-worker.sh) (`--model <resolved GLM>`; effort advisory); **always** `worktree`. **Lower-trust / opt-in, WORKER-ONLY** (no kernel sandbox); only when `ZAI_API_KEY` is set. (2.18) |
+| `zai` | [`adapter-zai.md`](../../../skills/backend-launcher/adapter-zai.md) | Bash-spawned `claude -p` worker via [`scripts/compound-v-run-zai-worker.sh`](../../../scripts/compound-v-run-zai-worker.sh) (`--model <resolved GLM>`; effort advisory); **always** `worktree`. **Lower-trust / opt-in, WORKER-ONLY** (no kernel sandbox); only when `ZAI_API_KEY` is set. (2.18) |
 ```
 
 Note in the commit body that `devin` and `opencode` are still missing from this table — a

@@ -1,5 +1,5 @@
 ---
-description: Refresh the Compound V tier→model map — discover the concrete models each backend (claude, codex, antigravity, cursor, devin, opencode) currently offers, show them, let you assign deep/standard/light, and write the result into .claude/compound-v.json so intent-based routing survives model churn without touching any call site.
+description: Refresh the Compound V tier→model map — discover the concrete models each backend (claude, codex, antigravity, cursor, devin, opencode, zai) currently offers, show them, let you assign deep/standard/light, and write the result into .claude/compound-v.json so intent-based routing survives model churn without touching any call site.
 disable-model-invocation: true
 ---
 
@@ -15,8 +15,14 @@ at dispatch time, so refreshing the map here is the *only* thing you ever touch
 when models churn.
 
 Argument (optional): `{{args}}` may name a single backend to refresh in isolation
-(`claude` | `codex` | `antigravity` | `cursor` | `devin` | `opencode`); otherwise walk
-all of them. `devin` and `opencode` are **worker-only** backends (v1) — their model
+(`claude` | `codex` | `antigravity` | `cursor` | `devin` | `opencode` | `zai`); otherwise walk
+all of them. `zai` has **no list endpoint** — z.ai publishes no model-discovery API — so its map is
+curated + user-overridable, exactly like codex's. The Coding Plan documents three models:
+`glm-5.2`, `glm-5-turbo`, `glm-4.7`. The endpoint also accepts `glm-5.1`, `glm-5`, `glm-4.6`
+and `glm-4.5-air`, but z.ai publishes no credit multiplier for those, so their burn is
+unpredictable — offer them only as explicit overrides, labelled unverified.
+
+`devin`, `opencode` and `zai` are **worker-only** backends (v1) — their model
 maps drive dispatch only, never any arbiter/review panel seat.
 
 **This is the "skill picks the models and offers you the options" surface.** Do the
