@@ -516,7 +516,7 @@ VALID_TIERS = ("deep", "standard", "light")
 VALID_EFFORTS = ("low", "medium", "high", "xhigh")
 
 # Enum vocabularies for required-field validation (per execution-manifest.md).
-VALID_BACKENDS = ("claude", "codex", "antigravity", "cursor", "devin", "opencode")
+VALID_BACKENDS = ("claude", "codex", "antigravity", "cursor", "devin", "opencode", "zai")
 VALID_ISOLATIONS = ("direct", "worktree")
 VALID_RUNS = ("serial", "parallel")
 VALID_STANCES = ("balanced", "conservative", "cost-aware", "claude-only")
@@ -1810,11 +1810,13 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
         # --dangerously-skip-permissions; cursor's headless `-f` grants arbitrary
         # write+shell); devin has a live but Research-Preview `--sandbox` whose coverage
         # is unverified (treated as no-confinement for enforcement purposes, v1); opencode
-        # has NO kernel write-confinement and defaults to allowing all operations. For all
-        # five, worktree + git-diff is the ONLY file-scope enforcement that actually holds.
+        # has NO kernel write-confinement and defaults to allowing all operations; zai is a
+        # headless `claude -p` pointed at a third-party endpoint and likewise has NO kernel
+        # write-confinement. For all six, worktree + git-diff is the ONLY file-scope
+        # enforcement that actually holds.
         # A non-worktree external worker cannot be deterministically attributed and is rejected.
         backend_lc = str(job.get("backend", "")).lower()
-        if backend_lc in ("codex", "antigravity", "cursor", "devin", "opencode"):
+        if backend_lc in ("codex", "antigravity", "cursor", "devin", "opencode", "zai"):
             if str(job.get("isolation", "")).lower() != "worktree":
                 problems.append(
                     "job '%s' uses backend %s but isolation is '%s' "
@@ -1830,13 +1832,13 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
         # guarantee entirely. Reject unconditionally, independent of
         # tier/model — a reviewer job must never carry backend: devin or
         # backend: opencode, full stop.
-        if _is_reviewer(job) and backend_lc in ("devin", "opencode"):
+        if _is_reviewer(job) and backend_lc in ("devin", "opencode", "zai"):
             problems.append(
-                "reviewer job '%s' uses backend '%s' — devin/opencode are "
+                "reviewer job '%s' uses backend '%s' — devin/opencode/zai are "
                 "lower-trust, opt-in, WORKER-ONLY backends (see "
-                "adapter-devin.md / adapter-opencode.md) and must never be "
-                "used for a reviewer job; route reviewers to backend: "
-                "claude with tier: deep or model: opus"
+                "adapter-devin.md / adapter-opencode.md / adapter-zai.md) and "
+                "must never be used for a reviewer job; route reviewers to "
+                "backend: claude with tier: deep or model: opus"
                 % (jid, backend_lc)
             )
 
@@ -2555,6 +2557,52 @@ jobs:
     read_allowed: [src/**]
     acceptance: ["builds"]
 """
+
+
+# A complete, otherwise-valid manifest whose ONE defect is a zai job with
+# isolation: direct. zai is a headless `claude -p` pointed at a third-party endpoint --
+# no kernel write-confinement at all -- so worktree isolation is REQUIRED.
+ZAI_DIRECT_MANIFEST = """
+run_id: 2026-08-01-zai
+feature: "zai"
+spec_path: docs/superpowers/specs/2026-08-01-zai.md
+plan_path: docs/superpowers/plans/2026-08-01-zai.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-08-01-zai.md
+  domain: docs/superpowers/expert/2026-08-01-zai.md
+  library: docs/superpowers/library-audit/2026-08-01-zai.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-1-zai
+    title: "zai slice"
+    type: implementer
+    backend: zai
+    tier: standard
+    isolation: direct
+    run: serial
+    write_allowed: [src/zai/**]
+    read_allowed: [src/**]
+    acceptance: ["builds"]
+"""
+
+
+# The same manifest with the ONE defect fixed -- confirms "zai" is accepted end-to-end
+# (VALID_BACKENDS + the worktree invariant) once it is NOT paired with isolation: direct.
+# zai is SINGLE-VENDOR: a bare GLM name, never a "provider/model" string.
+ZAI_WORKTREE_MANIFEST = ZAI_DIRECT_MANIFEST.replace(
+    "isolation: direct", "isolation: worktree"
+).replace("run_id: 2026-08-01-zai", "run_id: 2026-08-01-zai-ok")
+
+
+# WORKER-ONLY: the ONE defect is a REVIEWER job routed to zai. zai is a lower-trust
+# external worker with no kernel confinement; a reviewer routed there would satisfy the
+# Review Gate's opus/deep guarantee through a third-party endpoint instead of Claude Opus.
+ZAI_REVIEWER_MANIFEST = ZAI_WORKTREE_MANIFEST.replace(
+    "id: task-1-zai", "id: task-1-spec-review"
+).replace("type: implementer", "type: reviewer").replace("tier: standard", "tier: deep")
 
 
 # A complete, otherwise-valid manifest whose ONE defect is an opencode job with
@@ -4062,6 +4110,24 @@ def _selftest():
     opencode_ok = validate_text(OPENCODE_WORKTREE_MANIFEST)
     expect("opencode+worktree manifest is valid (provider/model string accepted)",
            opencode_ok == [])
+
+    # zai: same worktree invariant. No kernel confinement, so worktree + git-diff is the
+    # ONLY file-scope enforcement that holds.
+    zai_bad = validate_text(ZAI_DIRECT_MANIFEST)
+    expect(
+        "zai+direct caught (zai requires worktree)",
+        any("backend zai but isolation" in p
+            and "zai requires worktree" in p for p in zai_bad),
+    )
+    zai_ok = validate_text(ZAI_WORKTREE_MANIFEST)
+    expect("zai+worktree manifest is valid (bare GLM model accepted)", zai_ok == [])
+    zai_reviewer_bad = validate_text(ZAI_REVIEWER_MANIFEST)
+    expect(
+        "zai reviewer job REJECTED (WORKER-ONLY)",
+        any("reviewer job 'task-1-spec-review'" in p
+            and "backend 'zai'" in p
+            and "WORKER-ONLY" in p for p in zai_reviewer_bad),
+    )
 
     # WORKER-ONLY: a reviewer job MUST NEVER resolve to backend devin/opencode,
     # even when tier: deep + isolation: worktree are otherwise satisfied.
