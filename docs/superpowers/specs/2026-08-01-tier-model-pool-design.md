@@ -82,11 +82,13 @@ map is what lets the plugin survive model churn, and `/v:models` refreshes `mode
 manifests. A pool is already keyed by tier, so the existing resolver derives the model from
 `(backend, tier, stance)`.
 
-**`weight` is an optional positive integer, default 1.** Expansion is deterministic: a member of
-weight *n* occupies *n* consecutive slots in the expanded ring. With every weight at 1 the
-sequence is plain rotation, so the simple case is unchanged and no randomness enters anywhere.
-Shipping weights now avoids a schema break later, and they are the only way to express the
-`claude` case below.
+**`weight` is an optional positive integer from 1 through 100, default 1.** Expansion is
+deterministic: a member of weight *n* occupies *n* consecutive slots in the expanded ring. One
+tier's expanded ring is capped at 256 slots. Both limits are fail-closed memory-safety bounds: the
+resolver materializes positional slots, so accepting an arbitrary JSON integer would turn config
+parsing into a deterministic memory-exhaustion path. With every weight at 1 the sequence is plain
+rotation, so the simple case is unchanged and no randomness enters anywhere. Shipping weights now
+avoids a schema break later, and they are the only way to express the `claude` case below.
 
 **Config-reader conventions this must follow** (all three were missed in the first draft):
 `load_project_config` type-checks every known top-level key and raises on a bad value, so

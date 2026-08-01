@@ -61,7 +61,8 @@ stance's block) and leave the other backends exactly as they are.
 Also snapshot both the **presence/absence** and value of the sibling `pools` and
 `backend_max_parallel` blocks before changing anything. They are operator-owned routing policy,
 **not** discovery output. `/v:models` never normalizes, reorders, regenerates, creates, or deletes
-them; it preserves every existing member, weight, and optional member `model` override unchanged,
+them; it preserves every existing member, bounded weight (1–100; expanded tier ring at most 256
+slots), and optional member `model` override unchanged,
 and preserves exact absence when either key was absent. A pool member without `model` will
 automatically use the refreshed `models.<stance>.<backend>.<tier>` cell; a member with `model` is an
 intentional pin and remains untouched.
@@ -341,7 +342,8 @@ committed in the plugin repo (it is documented in
 
 The pool schema is deliberately separate and per-stance only:
 `pools.<stance>.<tier>[]`, where each member has required `backend`, optional `model`, and optional
-positive-integer `weight` (default `1`). Do not infer or migrate a legacy flat pool shape. The
+bounded positive-integer `weight` (1–100, default `1`; expanded tier ring at most 256 slots). Do
+not infer or migrate a legacy flat pool shape. The
 shipped Codex + zai pools and their `backend_max_parallel.zai` ceiling depend on prerequisite PR 1
 (`feat/zai-backend`, PR #5), and this pool release must not merge before it. Claude is omitted by
 default and remains an explicit operator opt-in because its quota is shared with the live operator

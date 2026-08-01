@@ -123,12 +123,14 @@ The exact path is `pools.<stance>.<tier>[]`. Each member is an object with:
 - required non-empty `backend` naming a concrete worker backend;
 - optional non-empty `model`, used as that member's explicit model override; when absent, the
   enclosing tier resolves through the ordinary `models.<stance>.<backend>.<tier>` map;
-- optional `weight`, a positive, non-boolean integer; default `1`. Weight *n* occupies *n*
-  consecutive slots in the deterministic ring.
+- optional `weight`, a non-boolean integer from `1` through `100`; default `1`. Weight *n*
+  occupies *n* consecutive slots in the deterministic ring. The expanded ring for one tier is
+  capped at `256` slots so hostile or accidental JSON integers cannot force unbounded allocation.
 
 `pools` and top-level `backend_max_parallel` must be objects when present; a structural type error
 fails closed. Pool normalization drops malformed/duplicate members with a surfaced warning, rejects
-non-positive or boolean weights, and never guesses a legacy flat shape. Each
+non-positive, boolean, or greater-than-100 weights and any member that would exceed 256 expanded
+slots for its tier, and never guesses a legacy flat shape. Each
 `backend_max_parallel.<backend>` value must likewise be a positive, non-boolean integer. It is a
 documented batch ceiling the prose dispatcher respects; validation proves its **shape**, not that a
 new scheduler or semaphore enforces it. Either top-level key may be absent and then normalizes to

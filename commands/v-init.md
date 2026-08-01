@@ -662,8 +662,9 @@ identically to `balanced`. Only `cost-aware.claude.standard` differs: `sonnet`, 
 - **`pools` — SEED the per-stance, per-tier Codex + zai worker rings shown above.** The only
   accepted shape is `{<stance>: {<tier>: [{backend, optional model, optional weight}]}}`; unlike
   `models`, there is no legacy flat pool shape and no auto-detection. `backend` is required;
-  `model` is an optional non-empty override; `weight` is an optional positive, non-boolean integer
-  (default `1`). The `standard` example therefore rotates manifest-order job counts
+  `model` is an optional non-empty override; `weight` is an optional non-boolean integer from 1
+  through 100 (default `1`), and one tier's expanded ring may contain at most 256 slots. The
+  `standard` example therefore rotates manifest-order job counts
   `codex, codex, zai, …`, while `light` alternates. Config presence does **not** activate routing:
   a planner still emits `backend: pool` only as an explicit operator choice for an eligible
   standard/light implementer. Conservative and Claude-only have no shipped pool entries.

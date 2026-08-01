@@ -13,7 +13,7 @@
 - PR 1 (`feat/zai-backend`, GitHub PR #5) is a merge prerequisite; do not merge this branch first.
 - Pools rotate job counts by manifest ordinal; never claim equal tokens, credits, messages, wall-clock, savings, or balance scores.
 - `claude` is excluded from shipped pools by default; membership remains explicit opt-in.
-- Pool members are per-stance and per-tier; `model` is optional, `weight` is a positive integer with default 1.
+- Pool members are per-stance and per-tier; `model` is optional, `weight` is an integer from 1 through 100 with default 1, and an expanded tier ring is capped at 256 slots.
 - Pool jobs require `worktree`, may not be reviewers or sensitive deep-only jobs, and may not use `effort: xhigh` because a pool can select a non-Codex backend.
 - A member is resolved through the existing `resolve()` entry point so stance rules, optional model precedence, Opencode shape checks, and never-Haiku enforcement remain active.
 - Eligible expanded members and concrete assignments are frozen in `state.json`; config edits and dispatch timing cannot change them.
@@ -58,7 +58,7 @@
 
 - [ ] **Step 1: Add failing config selftests**
 
-  Extend `_selftest()` to prove structural non-object `pools`/`backend_max_parallel` raise; malformed entries warn and drop; absent keys normalize to `{}`; `model` is optional; duplicate backends and non-positive/bool weights warn and drop; `backend_max_parallel` accepts only positive non-bool integers.
+  Extend `_selftest()` to prove structural non-object `pools`/`backend_max_parallel` raise; malformed entries warn and drop; absent keys normalize to `{}`; `model` is optional; duplicate backends, non-positive/bool/greater-than-100 weights, and members that would push an expanded tier ring past 256 slots warn and drop; `backend_max_parallel` accepts only positive non-bool integers.
 
 - [ ] **Step 2: Run the config selftest and verify RED**
 
@@ -239,7 +239,7 @@
 
 - [ ] **Step 1: Document exact config and manifest shapes**
 
-  Add per-stance `pools.<stance>.<tier>[]`, optional member `model`, positive `weight`, top-level `backend_max_parallel`, `backend: pool` restrictions, concrete state fields, and merge dependency on PR 1. State that `/v:models` refreshes `models` and preserves pool overrides rather than rewriting them.
+  Add per-stance `pools.<stance>.<tier>[]`, optional member `model`, bounded `weight` (1–100; expanded tier ring ≤256 slots), top-level `backend_max_parallel`, `backend: pool` restrictions, concrete state fields, and merge dependency on PR 1. State that `/v:models` refreshes `models` and preserves pool overrides rather than rewriting them.
 
 - [ ] **Step 2: Document routing/trust policy**
 

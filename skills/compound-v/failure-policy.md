@@ -112,7 +112,7 @@ Borrowed from LiteLLM / OpenRouter, realized as **static state**, not a process.
 |---|---|---|
 | `attempts` | `{ "<job-id>": { "<failure-class>": n } }` | retries per **(job, failure_class)** — the policy's `--attempts` is `attempts[job][class]`, so one class's budget doesn't starve another (reset/fork on backend re-route or class change) |
 | `cooldowns` | `{ "<backend>": "<iso-ts>" }` | a transient-failed backend is **deprioritized** until this timestamp (retryable next batch) |
-| `circuit_open` | `{ "<concrete-backend>": { "open": bool, "reason": "out_of_credits\|auth", "opened_at": "<iso-ts>", "cleared_by": null } }` | the one canonical breaker map. Values are objects, never booleans; `pool` is never a key. `reason` lets `/v:resume` reconcile correctly; `cleared_by` records what closed it (`null` while open). |
+| `circuit_open` | `{ "<concrete-backend>": { "open": bool, "reason": "out_of_credits\|auth", "opened_at": "<iso-ts>", "cleared_by": null } }` | the one canonical breaker map. Values are objects, never booleans; `pool` is never a key. `cleared_by` is `null` while open; a closed `auth` entry requires `reauth`, while closed `out_of_credits` requires `top_up` or `probe`. Mismatched recovery reasons fail closed. |
 | `total_retries` | `int` | run-wide retry counter (the policy's `--total-retries`) |
 | `max_total_retries` | `int` (default 12) | run-level retry budget — the anti retry-storm cap |
 | `earliest_reset_observed_at` | ISO timestamp or `null` | dispatcher observation time paired with the policy's relative seconds |
