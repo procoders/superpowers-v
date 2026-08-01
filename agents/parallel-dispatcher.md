@@ -241,7 +241,10 @@ The worktree-recreate invariant above is the default: every dispatch — first a
 > Before any git or breaker reconciliation, if the manifest contains a job whose routing token is `backend: pool`, validate the complete recorded state with `python3 scripts/compound-v-pool-state.py validate` using `{"state": <state.json>, "jobs": <manifest jobs>}`; any error HALTS resume.
 > Then obtain only that job's concrete pair with `python3 scripts/compound-v-pool-state.py resume` using `{"state": <state.json>, "job_id": "<id>"}`; the helper returns only `assigned_backend` and `assigned_model`.
 > Read `assignment_source`, `pool_index`, `pool_tier`, and `worktree` directly from the already-validated `state.json jobs[<id>]` record and reuse all six recorded values for reconciliation.
-> Never reload current pool config, recompute a manifest ordinal, rerun freeze, or call the model resolver for that recorded assignment. A transient retry preserves it byte-for-byte; only an `out_of_credits` policy decision may replace it, and the replacement MUST be written and validated before relaunch.
+> Never reload current pool config, recompute a manifest ordinal, rerun freeze, or call the model resolver for that recorded assignment. A same-assignment retry preserves it byte-for-byte; any replacement authorized by policy intent is selected only by `transition` and MUST be written and validated before relaunch.
+
+> **Pool-assignment replacement rule (Shared Interface Contract — copy byte-identically into dispatcher and resume runbooks).**
+> Assignment replacement is transition-owned: `out_of_credits` opens the permanent circuit and selects the frozen-ring or concrete fallback; a second short transient or a transient with a known wait over 60 seconds opens a cooldown and advances; `usage_window_exhausted` opens its cooldown and advances immediately; and `model_unavailable` excludes only the exact backend/model pair before selection. Persist and validate every resulting assignment and health-state mutation before relaunch.
 
 > **Resume-eligibility rule (Shared Interface Contract — byte-identical in `commands/v-resume.md` and `agents/parallel-dispatcher.md`).**
 > A codex worktree job may be resumed via `codex exec resume <captured-uuid>` **IFF** its `failure_class` is
