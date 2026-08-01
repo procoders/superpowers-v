@@ -60,7 +60,82 @@ Audit: `docs/superpowers/library-audit/2026-08-01-tier-model-pool.md`.
 Same audit, revised after the Phase 1A archaeologist pushed back. Recorded because the **method**
 error is the reusable lesson.
 
-### Method: `git grep` / `git ls-files` are branch-local — never report repo-wide absence from them
+### Method: never write down an absence claim without a ref sweep — and verify the sweep
+
+- **2026-08-01, learned twice in one session.** The rule is **not** "check the spec across refs". It
+  is: *any* absence claim about *any* path needs a ref sweep first. An absence claim is a positive
+  claim about every ref. I stated the narrow version of this rule and then broke it one message
+  later on a different path (`skills/backend-launcher/adapter-zai.md`, which exists on
+  `feat/zai-backend` at commit `ed309ad`).
+- **The sweep itself can lie.** Under **zsh**, `"$ref:path/to/file"` is parsed as a **parameter
+  modifier**, not a git revision spec. My sweep reported the file present on *every* ref, including
+  branches that predate it. Heuristic: a sweep returning "present everywhere" or "absent everywhere"
+  is a bug until proven otherwise; spot-check one ref that obviously should not have the file.
+- **Form that works** (bash, `ls-tree`, exact-match):
+  ```bash
+  /bin/bash -c 'git for-each-ref --format="%(refname)" refs/heads refs/remotes | while read -r r; do
+    git ls-tree -r --name-only "$r" -- "$P" | grep -qx "$P" && echo "PRESENT: $r"; done'
+  ```
+
+### General rule: a uniform result means suspect the harness, not the codebase
+
+- **2026-08-01.** Three separate shell-quirk failures in one session, all producing a *uniform*
+  answer that looked like a clean verdict:
+  1. **zsh parameter modifier** — `"$ref:path/to/file"` is not a revision spec in zsh. Reported a
+     file PRESENT on every ref, including branches predating it.
+  2. **zsh subshell PATH loss** — `while … done < <(find …)` lost `PATH`; `dirname`, `sed`, `wc` and
+     `tr` all vanished, and the dead-link loop printed an empty count. An empty count reads as
+     "0 dead links, clean". Hit independently by both Phase 1A and Phase 1C in this session.
+  3. Same shape both times: **the harness broke, the output still looked like an answer.**
+- **Rule:** when a check returns everything-present, everything-absent, or nothing-found, suspect
+  the harness before believing the finding. Spot-check one case that *must* come out the other way
+  — a ref that cannot have the file, a link that is known-broken. If the check cannot produce a
+  negative, it is not yet a check.
+- **Practical mitigation used here:** port the gate's own regex into Python and run it directly,
+  rather than reproducing a shell pipeline. Python has no PATH dependency and no word-splitting or
+  modifier surprises.
+
+#### How to report a passing check
+
+- **2026-08-01.** *A passing check is only as trustworthy as its denominator and its ability to
+  fail.* `0 dead links` is not a result. **`601 links checked, 0 dead, control detects a planted
+  one`** is. Always report all three: how many cases the check actually examined, the verdict, and
+  evidence the check can still produce a failure.
+- **The negative control must not mutate the tree.** Inject the planted failure **in memory** —
+  append it to the file's text inside the scan function — never by writing to a working file. A
+  control that edits the repo to prove a point is its own hazard, and a crash mid-run leaves the
+  tree dirty. Verified form: real run 601/0; control run 602 checked / 1 dead, the extra one being
+  an injected markdown link whose target is a filename known not to exist; tree unmodified
+  throughout.
+
+  > **Caught by this very rule, same day.** The first draft of this bullet spelled that injected
+  > link out **literally** — creating a real dead link in this knowledge-base file, inside the
+  > paragraph warning against exactly that. The next scan found it: `602 links checked, 1 dead`.
+  > **Third** occurrence of this mistake in one session, and the first one that a human reviewer
+  > would plausibly have shipped. **Describe a broken link; never spell it.** Prose plus a bare
+  > backticked filename, always — and re-run the scan after editing any doc *about* the scan.
+  >
+  > **The general form, and the reason:** *the file most likely to break rule X is the file
+  > documenting rule X.* Writing about a construct is the one context that **requires** reproducing
+  > it, so a doc explaining a gate is the highest-risk place to violate that gate. This is not
+  > specific to dead links — it applies to any lint, any forbidden pattern, any policy with a
+  > checker. Phase 1A's audit escaped it only by accident (backticked paths, chosen for line-number
+  > citations, not from reasoning about the gate). Treat "I am documenting a rule" as a trigger to
+  > run that rule's checker before committing.
+
+- **Scope the injection to exactly one file.** My control matched on `path.endswith(basename)`,
+  which hit **two** files with the same basename in different directories, so the counts came out
+  `605/4` instead of `602/1` and the control self-reported FAIL. That failure was the control
+  working: an assertion tight enough to catch its own sloppiness. Match on the full relative path.
+- **A control that only happened to fire does not count.** Phase 1A's first scan legitimately found
+  the 3 known-bad links — but only because it ran *before* the fix. Run the same scanner after the
+  fix and you get a bare `0` with no way to tell "clean" from "broken". **The control belongs in
+  the method, not in the timeline.**
+- **Cross-implementation agreement is the strongest form.** Phase 1A and Phase 1C ported the gate
+  independently and agreed on **both** the denominator (601) and the verdict (0). Agreement on the
+  verdict alone would have been much weaker — two blind scanners also both report 0.
+
+### `git grep` / `git ls-files` are branch-local — never report repo-wide absence from them
 
 - **2026-08-01:** I reported `docs/superpowers/specs/2026-07-31-zai-backend-design.md` as *"does not
   exist, tracked or untracked"* on the strength of `git ls-files | grep -i zai` and `git grep -l`.
@@ -114,3 +189,25 @@ Independent measurement against a real GLM Coding Plan subscription, `claude 2.1
 - **Does not change the header conclusion above:** per-job token counts come back in the CLI's own
   JSON output, but no HTTP rate-limit header is exposed to the orchestrator. Quota-aware routing is
   explicitly deferred to **PR 3** ("rate-limit rerouting").
+
+### Guidance for PR 3 — do not build on the undocumented quota endpoint
+
+- **2026-08-01:** `{base}/api/monitor/usage/quota/limit` is real but **reverse-engineered and absent
+  from z.ai's published docs**, with no compatibility promise. Designing rate-limit rerouting on it
+  buys a number at the cost of a dependency that can change or vanish silently.
+- The durable reason to avoid quota-aware balancing is architectural and provider-independent:
+  **workers are CLI processes, so no provider's rate-limit headers reach the dispatcher at all** —
+  including Anthropic's and OpenAI's, both of which publish rich header families. Lead with that;
+  cite the endpoint as "exists, unsupported", never as a capability.
+- z.ai's **error** surface is a different matter and is genuinely published (`1113, 1302, 1305,
+  1308, 1310, 1311, 1316, 1317`, all HTTP 429) — safe to depend on, and PR 1 already does.
+
+### `max_parallel` for zai is documented but not enforced
+
+- **2026-08-01:** `adapter-zai.md` line 112 sets a default `max_parallel` of **4** for zai (six
+  concurrent jobs measured clean; 4 is a deliberate margin; lower on Lite). **It is prose in a
+  runbook with no consuming code** — a job's `max_parallel` comes from the manifest, so nothing
+  reads that 4.
+- Consequence for any pooling/round-robin work: a pool can concentrate several concurrent jobs on
+  one member, which is exactly when an unenforced per-backend ceiling matters. A
+  `backend_max_parallel` config key is what would make the documented default real.

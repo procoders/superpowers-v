@@ -3,12 +3,28 @@
 **Spec audited:** [`docs/superpowers/specs/2026-08-01-tier-model-pool-design.md`](../specs/2026-08-01-tier-model-pool-design.md)
 **Date:** 2026-08-01 · **Branch:** `feat/tier-model-pool`
 
-> **Revised 2026-08-01** after the Phase 1A archaeologist challenged finding #1. Two of my verdicts
-> were wrong and are corrected in place (§5, §5a, §8.1, §8.4, table rows 1 and 3); one new finding
-> was added (row 13). Root cause of both errors: I checked for the zai design doc with `git ls-files`
-> and `git grep`, which see **only the current branch**, then reported repo-wide absence. It exists
-> on `feat/zai-backend`. Corrected method for anything in this PR series: `git cat-file -e <ref>:<path>`
-> across `git for-each-ref`, not the working index.
+> **Revised twice on 2026-08-01**, both times after the Phase 1A archaeologist challenged a finding.
+> Corrections are in place at §5, §5a, §5a-bis, §8.1, §8.4, §7.10 and table rows 1, 2, 3; row 13 is new.
+>
+> **Root cause, stated once because it recurred:** I twice asserted a file's absence from
+> branch-local evidence. First the zai design doc (`git ls-files` / `git grep` see only the current
+> branch), then — in the very message where I wrote the rule against it — `adapter-zai.md`, which I
+> called nonexistent without checking at all. Both are on `feat/zai-backend`.
+>
+> **The rule is not "verify the spec across refs".** It is: *any* absence claim about *any* path
+> needs a ref sweep before it is written down. An absence claim is a positive claim about every ref,
+> and needs evidence from every ref.
+>
+> **And verify the sweep itself.** My first corrected sweep was silently broken: under zsh,
+> `"$r:skills/backend-launcher/adapter-zai.md"` is parsed as a **parameter modifier**, not a
+> revision spec, and reported the file PRESENT on every ref including branches predating it. A
+> sweep that returns "present everywhere" or "absent everywhere" is a bug until proven otherwise.
+> The form that works:
+>
+> ```bash
+> /bin/bash -c 'git for-each-ref --format="%(refname)" refs/heads refs/remotes | while read -r r; do
+>   git ls-tree -r --name-only "$r" -- "$PATH_" | grep -qx "$PATH_" && echo "PRESENT: $r"; done'
+> ```
 
 **Scope note, stated plainly.** This spec adds **no dependency, no lockfile entry, and no new CLI
 invocation**. There is therefore **nothing to audit** in the usual Phase-1C sense — no abandoned
@@ -240,15 +256,24 @@ adapter. Having read `2026-07-31-zai-backend-design.md` on `feat/zai-backend`, m
 fact substantiated there — by live probes dated 2026-07-31/08-01 against `claude 2.1.207` and
 `codex-cli 0.144.4`. They are unresolvable **from this branch**, which is not the same as unfounded.
 
-- §5: *"`zai` defaults to 4, per its adapter"* — ✅ **substantiated.** PR 1 states: *"`max_parallel`
-  for `zai` is **configurable, default 4**. Six concurrent real jobs were measured clean, but z.ai
-  publishes no concurrency limit, states that limits adjust dynamically with plan tier, and its
-  usage policy recommends one project on Lite and one to two on Pro. The default sits below the
-  measured ceiling; anyone on Lite should lower it."* That is a measured ceiling plus a deliberate
-  safety margin, not a guess. My independent finding — that z.ai publishes no fixed concurrency
-  number and adjusts dynamically by plan tier — **corroborates** PR 1 rather than contradicting it.
-  Remaining nit only: the pool spec says *"per its adapter"*, but the number is currently stated in
-  PR 1's **spec**; the adapter doc is still to be written. Cite the spec, or write the adapter first.
+- §5: *"`zai` defaults to 4, per its adapter"* — ✅ **substantiated, and the citation is correct.**
+  `skills/backend-launcher/adapter-zai.md` **does exist** on `feat/zai-backend` (commit `ed309ad`).
+  Line 112 verbatim: *"Six concurrent real jobs completed clean with zero 429s. z.ai publishes no
+  concurrency limit and states limits adjust dynamically with plan tier; its usage policy recommends
+  one project on Lite and one to two on Pro, and one field report claims a concurrent limit of 1 on
+  Pro (not reproduced here). Default `max_parallel` for zai is **4** — below the measured ceiling.
+  Lower it on Lite."* A measured ceiling with a deliberate margin, in the adapter, exactly where the
+  pool spec says it is. My independent finding — no published concurrency number, adjusts by plan
+  tier — **corroborates** it.
+
+  > **Retracted.** My revision claimed *"no adapter doc exists yet"* and filed a nit that the spec
+  > mis-cites its own source. Both wrong: I asserted the adapter's absence without a ref sweep — the
+  > same error I had just written a rule against, one message earlier, on a different path.
+
+  **What genuinely survives, and it is the useful part:** line 112 is **prose in a runbook with no
+  consuming code**. A zai job's `max_parallel` comes from the manifest, not from that sentence. So
+  when PR 2 pools a tier across providers, **nothing reads the 4** — which is precisely the gap
+  spec §5's `backend_max_parallel` proposes to close. The default is documented but not enforced.
 - §4: *"`codex`, `cursor`, `antigravity`, `devin`, `opencode` and `zai` must run in a worktree."* —
   ✅ **substantiated.** PR 1: *"`isolation: worktree` is **mandatory**, a new entry beside the
   existing `codex|antigravity|cursor|devin|opencode ⇒ worktree` invariant"*, with zai placed in the
@@ -260,11 +285,28 @@ fact substantiated there — by live probes dated 2026-07-31/08-01 against `clau
 - AC 5: *"with `zai` absent, a three-member pool alternates between the remaining two"* — still not
   runnable until PR 1 lands, but that is ordinary branch sequencing, not a defect.
 
-**The one thing that genuinely does not change:** the spec's example config and example pool
+### 5a-bis. Exact status of PR 1, since it sets what PR 2 may assume
+
+PR 1 is **complete work, release-stamped, and not merged.** Both halves matter, so stated precisely:
+
+| Check | Result |
+|---|---|
+| `git branch -a --contains de78826` (the `release: v2.18.0 — zai backend` commit) | `feat/zai-backend` and `fork/feat/zai-backend` **only** |
+| `git merge-base --is-ancestor de78826 main` | **no** |
+| `git merge-base --is-ancestor de78826 HEAD` | **no** |
+| `git rev-list --count main..feat/zai-backend` | **14** |
+| `plugin.json` version | `main` **2.17.0** · `feat/tier-model-pool` **2.17.0** · `feat/zai-backend` **2.18.0** |
+| tags matching `v2.17*`/`v2.18*` | `v2.17.0` only — no `v2.18.0` tag |
+
+So "PR 1 is unlanded design" **is** stale — it is implemented, tested, and version-stamped. But
+"PR 1 has shipped" would also mislead a planner: it is 14 commits on a side branch, and **`main`
+does not have it.** The accurate framing for PR 2's plan is *complete but unmerged*.
+
+**The consequence that does not change:** the spec's example config and example pool
 **fail `compound-v-validate-manifest.py` on this branch** — `zai` is in neither `BACKENDS` nor
-`VALID_BACKENDS` here. If PR 2 is meant to merge independently of PR 1 (its own §"Independent of
-PR 1" says it is), its *examples* must not require PR 1. That is a documentation-sequencing point,
-not a claim about zai's soundness.
+`VALID_BACKENDS` here, and `adapter-zai.md` is not in this tree. If PR 2 is meant to merge
+independently of PR 1 (its own §"Independent of PR 1" says it is), its *examples* must not require
+PR 1. That is a documentation-sequencing point, not a claim about zai's soundness.
 
 ### 5b. `backend: pool` as an enum value leaks into a second check ⚠️
 
@@ -366,8 +408,10 @@ only."*
    examples and mention zai as a future member, or drop the independence claim and declare PR 1 a
    merge prerequisite. Pick one — the spec currently does both.
 10. Do **not** justify the no-quota-balancing Non-goal on "z.ai does not expose quota
-    introspection" — z.ai does expose an undocumented one, and the real reason (the CLI-process
-    boundary) is stronger.
+    introspection". Lead with the CLI-process boundary — it is provider-independent and permanent.
+    And do **not** let PR 3 build rate-limit rerouting on `{base}/api/monitor/usage/quota/limit`:
+    an undocumented, reverse-engineered endpoint carries no compatibility promise, so it buys a
+    number at the price of a dependency that can vanish without notice.
 
 ---
 
@@ -397,8 +441,8 @@ only."*
 | # | Severity | Where | Claim as written | Correction |
 |---|---|---|---|---|
 | 1 | ✅ **RESOLVED** | §"Independent of PR 1", line 16 | a markdown link *"the zai backend"* targeting `2026-07-31-zai-backend-design.md` | ~~The file does not exist.~~ **Corrected:** it exists on `feat/zai-backend`; this was a **cross-branch** reference, and my "does not exist" was branch-local evidence overstated as repo-wide. Fixed in `9ca9059` — dependency kept as prose, no link. Repo dead-link count now 0. |
-| 2 | 🔴 | §Risks, "A pool hides an unbalanced burn" | *"per-backend quota introspection that z.ai, for one, does not expose"* | **Refuted.** z.ai exposes `{base}/api/monitor/usage/quota/limit` (5-hour / weekly / MCP percentages). Replace the reason with the architectural one: workers are CLI processes, so no provider's rate-limit headers — Anthropic's or OpenAI's included — ever reach the dispatcher; `classify-failure.py` already works from stderr text, not headers. |
-| 3 | 🟢 | §5 | *"`zai` defaults to 4, per its adapter"* | ~~UNVERIFIABLE-AS-WRITTEN~~ → **corrected: substantiated.** PR 1 measured six concurrent jobs clean and set 4 as a margin below that, with a "lower it on Lite" note. My independent finding (no published concurrency number; adjusts by plan tier) corroborates it. Editorial nit only: attribute it to PR 1's spec, since no adapter doc exists yet. |
+| 2 | 🔴 **BLOCKING** | §Risks, "A pool hides an unbalanced burn" | *"per-backend quota introspection that z.ai, for one, does not expose"* | **Wrong reason for a right conclusion.** Replace it with the architectural one: workers are **CLI processes**, so no provider's rate-limit headers reach the dispatcher — Anthropic's and OpenAI's included, both of which publish rich header families. `classify-failure.py` already works from stderr text, not headers. That reason is provider-independent and does not expire. *(Footnote, not the argument: z.ai does have a quota endpoint, `{base}/api/monitor/usage/quota/limit` — but it is undocumented and reverse-engineered, so it is a liability to design against, not an asset. Cite it as "exists, unsupported", never as a capability.)* |
+| 3 | 🟠 *(re-aimed)* | §5 | *"`zai` defaults to 4, per its adapter"* | ~~UNVERIFIABLE-AS-WRITTEN~~ ~~→ nit: no adapter doc exists~~ → **both retracted.** `adapter-zai.md` line 112 says exactly this; the citation is correct and the number is measured. **The real finding:** that line is prose in a runbook with **no consuming code** — a zai job's `max_parallel` comes from the manifest, so nothing reads the 4. Spec §5's `backend_max_parallel` is what would make it enforceable; say so, since a pool concentrating three jobs on one member is exactly when the unenforced default bites. |
 | 4 | 🟠 | AC 9 | *"the failure policy chooses the next backend"* | Does not describe `failure-policy.py`. `FALLBACK` reroutes every external backend to `claude`, and `rate_limited` is classified retry-same-backend, not reroute. State the intended new behaviour explicitly. |
 | 5 | 🟠 | §1, "Pool members inherit the map's rules, and add none" | Implies a pool entry and a `models` cell are the same shape | They are not (object vs bare string). Restate as: pool resolution goes **through** `resolve()`, so the map's precedence and the `opencode` `provider/model` guard apply unchanged. |
 | 6 | 🟠 | §1 config block | `pools` added with no fail-closed reader specified | Repo convention is a structural raise in `load_project_config` plus a per-key-coercing `resolve_<block>` returning warnings. Spec must say `pools` follows it, and define behaviour for a malformed member (distinct from AC 6's *empty filtered* pool). |
