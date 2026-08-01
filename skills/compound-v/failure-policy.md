@@ -24,7 +24,7 @@ The classifier returns `failure_class`, `retryable`, `matched`, `retry_after`, `
 
 The policy consumes a concrete backend, normalized failure evidence, retry counters/budgets, and known provider timing. It returns intent fields including `cooldown_backend`, `cooldown_reason`, `cooldown_until`, `advance_pool`, `exclude_backend`, `exclude_model`, `network_pause`, and `next_retry_at`, together with the legacy action fields. It does not accept responsibility for choosing a ring member.
 
-Exact model exclusion is narrower than backend exclusion: `model_unavailable` excludes only the failed concrete backend/model pair, allowing another model on that backend. Auth or permanent quota exhaustion opens the existing permanent backend circuit. Transient throttling, overload, and provider-reported transport evidence create a backend-wide cooldown.
+Exact model exclusion is narrower than backend exclusion: `model_unavailable` excludes only the failed concrete backend/model pair, allowing another model on that backend. Auth or permanent quota exhaustion opens the existing permanent backend circuit. Only policy-qualified transient evidence—such as a second short throttle/overload or a known long reset—creates a backend-wide cooldown; the first bounded retry does not.
 
 That backend-wide cooldown is intentionally conservative. CLI-process output does not identify the credential, organization, or limiter bucket, so a cooldown can temporarily sideline a healthy model or credential on the same backend. This prevents retry herds; it is **not** quota balancing. Compound V does not poll balances, estimate remaining percentages, dynamically change weights, or optimize credits.
 
@@ -42,17 +42,21 @@ Known provider timing survives per-class or total retry-budget exhaustion. An ex
 | Second short `rate_limited`/`overloaded` failure | Open backend cooldown with the current attempt id and advance intent | Transition selects another viable member; preserve known reset time |
 | Explicit usage-window exhaustion | Open cooldown immediately, even on the first observation | Advance without an inline retry; at an exhausted total budget persist timing without consuming/advancing |
 | Provider reset over 60s | Persist cooldown through the absolute reset | Do not sleep; reroute, or halt with `next_retry_at` |
-| Provider overload | Backend-wide transient cooldown | Continue on another viable member; later recovery uses one probe |
+| Repeated overload, or overload with a known wait over 60s | Backend-wide transient cooldown | Continue on another viable member; later recovery uses one probe |
 | Exact model unavailable | Exclude the backend/model pair | Other models on that backend remain eligible |
 | Confirmed auth/permanent credits failure | Open canonical permanent circuit | Exclude backend until explicit recovery; never transient-probe it |
 | Stale success from an older attempt | Retain as stale evidence | It cannot clear a cooldown, network pause, or publish the current result |
 | One `no_response` network fault | Record the observation without cooldown/advance | Perform the bounded same-assignment retry; do not pause the whole run |
-| Correlated `no_response` faults | Open global network pause with distinct-backend/batch evidence | Stop ordinary launches until its leaseable recovery probe is due |
+| Correlated `no_response` faults with no live success veto | Open global network pause with distinct-backend/batch evidence | Stop ordinary launches until its leaseable recovery probe is due |
 | Expired cooldown | Lease exactly one backend probe to one job/attempt | Other jobs keep that backend idle until probe completion/lease expiry |
 | Completed leased probe success | Clear only the cooldown/pause owned by that exact attempt | Backend/network returns to normal eligibility |
 | All three providers unavailable | Preserve reasons and earliest precise retry | Halt resumably; do not spin or silently select an open route |
 
 When an expired global network pause and backend cooldowns coexist, transition leases the single global network probe first; backend probes remain idle. One attempt may not own both probe types. A lease is represented in state, not inferred from a running process.
+
+A completed success persists in `network_successes` as a veto for that same `batch_id` throughout the
+60-second correlation window. Later failures in that batch cannot open a network pause while the
+success remains live; correlation may begin again only after the success ages out.
 
 ## Attempts, results, and crash recovery
 
