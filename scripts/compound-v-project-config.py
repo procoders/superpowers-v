@@ -13,8 +13,9 @@ Fail-closed contract
 - **Missing file** is NOT an error — the built-in defaults cover it (an
   un-onboarded repo still routes with the default model map and pre-eval defaults).
   ``load_config_file`` returns ``{}``.
-- **Structural malformation** (not valid JSON, root not an object, ``models`` present
-  but not an object, ``pre_eval`` present but not an object) → **raise** ``ValueError``
+- **Structural malformation** (not valid JSON, root not an object, or a known
+  object block such as ``models`` / ``pre_eval`` / ``pools`` /
+  ``backend_max_parallel`` present but not an object) → **raise** ``ValueError``
   so the CALLER can warn-once and fall back to all-defaults. A malformed config is
   NEVER silently treated as an auto-route (Iron-Invariant #5 / #4).
 - **Per-key invalid values inside ``pre_eval``** (e.g. ``fast_path: "banana"``,
@@ -67,6 +68,20 @@ BRAINSTORM_DEFAULTS = {
 }
 _PREFERENCES_VALUES = ("off", "on-demand", "marked")
 
+# Tier-pool vocabulary is duplicated intentionally in this standalone stdlib
+# reader. ``zai`` is part of the PR-1 merge prerequisite for this feature; a
+# branch without that prerequisite can normalize the config but model resolution
+# still fails closed until the backend exists in the resolver.
+VALID_POOL_STANCES = ("balanced", "conservative", "cost-aware", "claude-only")
+VALID_POOL_TIERS = ("deep", "standard", "light")
+VALID_POOL_BACKENDS = (
+    "claude", "codex", "antigravity", "cursor", "devin", "opencode", "zai",
+)
+# Deterministic safety bounds: weights are expanded into in-memory positional
+# rings, so both the per-member and per-tier totals are capped before expansion.
+MAX_POOL_WEIGHT = 100
+MAX_EXPANDED_POOL_SLOTS = 256
+
 
 def load_config_file(config_path):
     """Return the parsed config object for ``config_path``.
@@ -90,25 +105,27 @@ def config_path_for_repo(repo):
     return os.path.join(repo or ".", CONFIG_RELPATH)
 
 
+def load_project_config_path(config_path):
+    """Fail-closed load of one project-config path with the full shared verdict."""
+    cfg = load_config_file(config_path)
+    for key in ("models", "pre_eval", "brainstorm", "pools",
+                "backend_max_parallel"):
+        value = cfg.get(key)
+        if value is not None and not isinstance(value, dict):
+            raise ValueError("config '%s' is not an object: %s" % (key, config_path))
+    return cfg
+
+
 def load_project_config(repo):
     """Fail-closed load of ``<repo>/.claude/compound-v.json`` -> dict.
 
-    Structural sanity is checked here so every consumer shares one verdict:
-    ``models`` and ``pre_eval``, when present, MUST be objects (else raise). The raw
-    dict is returned unchanged otherwise; use ``get_models`` / ``resolve_pre_eval``
-    to extract normalized views.
+    Structural sanity is checked by ``load_project_config_path`` so path-based
+    and repo-based consumers share one verdict. Known object blocks, including
+    ``models``, ``pre_eval``, ``pools``, and ``backend_max_parallel``, MUST be
+    objects when present (else raise). The raw dict is returned unchanged
+    otherwise; use the block readers below to extract normalized views.
     """
-    cfg = load_config_file(config_path_for_repo(repo))
-    models = cfg.get("models")
-    if models is not None and not isinstance(models, dict):
-        raise ValueError("config 'models' is not an object: %s" % config_path_for_repo(repo))
-    pre_eval = cfg.get("pre_eval")
-    if pre_eval is not None and not isinstance(pre_eval, dict):
-        raise ValueError("config 'pre_eval' is not an object: %s" % config_path_for_repo(repo))
-    brainstorm = cfg.get("brainstorm")
-    if brainstorm is not None and not isinstance(brainstorm, dict):
-        raise ValueError("config 'brainstorm' is not an object: %s" % config_path_for_repo(repo))
-    return cfg
+    return load_project_config_path(config_path_for_repo(repo))
 
 
 def get_models(cfg):
@@ -126,6 +143,115 @@ def get_models(cfg):
     if not isinstance(models, dict):
         raise ValueError("config 'models' is not an object")
     return models
+
+
+def resolve_pools(cfg):
+    """Return ``(normalized, warnings)`` for per-stance weighted tier pools.
+
+    The only accepted shape is ``{stance: {tier: [member, ...]}}``. A member
+    requires one known backend, accepts an optional non-empty model override,
+    and defaults ``weight`` to 1. Nested malformation warns and drops; a
+    present-but-non-object top-level ``pools`` value is structural and raises.
+    """
+    raw = {}
+    if isinstance(cfg, dict):
+        candidate = cfg.get("pools")
+        if candidate is not None and not isinstance(candidate, dict):
+            raise ValueError("config 'pools' is not an object")
+        if isinstance(candidate, dict):
+            raw = candidate
+
+    normalized = {}
+    warnings = []
+    for stance, stance_value in raw.items():
+        if stance not in VALID_POOL_STANCES:
+            warnings.append("pools.%s is not a known stance; ignored" % stance)
+            continue
+        if not isinstance(stance_value, dict):
+            warnings.append("pools.%s must be an object keyed by tier; ignored" % stance)
+            continue
+        tiers = {}
+        for tier, members in stance_value.items():
+            path = "pools.%s.%s" % (stance, tier)
+            if tier not in VALID_POOL_TIERS:
+                warnings.append("%s is not a known tier; ignored" % path)
+                continue
+            if not isinstance(members, list):
+                warnings.append("%s must be a list of member objects; ignored" % path)
+                continue
+            clean = []
+            seen_backends = set()
+            expanded_slots = 0
+            for index, member in enumerate(members):
+                member_path = "%s[%d]" % (path, index)
+                if not isinstance(member, dict):
+                    warnings.append("%s must be an object; ignored" % member_path)
+                    continue
+                backend = member.get("backend")
+                if (not isinstance(backend, str)
+                        or backend not in VALID_POOL_BACKENDS):
+                    warnings.append("%s.backend must be one of %s; ignored"
+                                    % (member_path, VALID_POOL_BACKENDS))
+                    continue
+                model = member.get("model")
+                if "model" in member and (
+                        not isinstance(model, str) or not model.strip()):
+                    warnings.append("%s.model must be a non-empty string; ignored"
+                                    % member_path)
+                    continue
+                weight = member.get("weight", 1)
+                if (not isinstance(weight, int) or isinstance(weight, bool)
+                        or weight <= 0 or weight > MAX_POOL_WEIGHT):
+                    warnings.append(
+                        "%s.weight must be a positive integer <= %d; ignored"
+                        % (member_path, MAX_POOL_WEIGHT)
+                    )
+                    continue
+                if expanded_slots + weight > MAX_EXPANDED_POOL_SLOTS:
+                    warnings.append(
+                        "%s would exceed the %d-slot expanded pool limit; ignored"
+                        % (member_path, MAX_EXPANDED_POOL_SLOTS)
+                    )
+                    continue
+                if backend in seen_backends:
+                    warnings.append("%s duplicates backend %r; ignored"
+                                    % (member_path, backend))
+                    continue
+                seen_backends.add(backend)
+                expanded_slots += weight
+                clean_member = {"backend": backend, "weight": weight}
+                if model is not None:
+                    clean_member["model"] = model.strip()
+                clean.append(clean_member)
+            tiers[tier] = clean
+        if tiers:
+            normalized[stance] = tiers
+    return normalized, warnings
+
+
+def resolve_backend_max_parallel(cfg):
+    """Return normalized concrete-backend concurrency hints plus warnings."""
+    raw = {}
+    if isinstance(cfg, dict):
+        candidate = cfg.get("backend_max_parallel")
+        if candidate is not None and not isinstance(candidate, dict):
+            raise ValueError("config 'backend_max_parallel' is not an object")
+        if isinstance(candidate, dict):
+            raw = candidate
+
+    normalized = {}
+    warnings = []
+    for backend, value in raw.items():
+        if backend not in VALID_POOL_BACKENDS:
+            warnings.append("backend_max_parallel.%s is not a known backend; ignored"
+                            % backend)
+            continue
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            warnings.append("backend_max_parallel.%s must be a positive integer; ignored"
+                            % backend)
+            continue
+        normalized[backend] = value
+    return normalized, warnings
 
 
 def resolve_pre_eval(cfg):
@@ -237,9 +363,14 @@ def main(argv):
         return 1
     values, warnings = resolve_pre_eval(cfg)
     bvalues, bwarnings = resolve_brainstorm(cfg)
+    pools, pool_warnings = resolve_pools(cfg)
+    backend_max_parallel, cap_warnings = resolve_backend_max_parallel(cfg)
     print(json.dumps({"models": get_models(cfg), "pre_eval": values,
                       "brainstorm": bvalues,
-                      "warnings": warnings + bwarnings}, indent=2))
+                      "pools": pools,
+                      "backend_max_parallel": backend_max_parallel,
+                      "warnings": warnings + bwarnings + pool_warnings + cap_warnings},
+                     indent=2))
     return 0
 
 
@@ -296,6 +427,109 @@ def _selftest():
         expect("non-object pre_eval raises", raises(lambda: load_project_config(td)))
         write({"brainstorm": "not-an-object"})
         expect("non-object brainstorm raises", raises(lambda: load_project_config(td)))
+        write({"pools": ["not", "an", "object"]})
+        expect("non-object pools raises", raises(lambda: load_project_config(td)))
+        write({"backend_max_parallel": "not-an-object"})
+        expect("non-object backend_max_parallel raises",
+               raises(lambda: load_project_config(td)))
+
+        # Tier-pool config is per-stance only. Structural errors raise above;
+        # malformed nested entries fail closed by warning + dropping the entry.
+        _pool_reader = globals().get("resolve_pools")
+        _cap_reader = globals().get("resolve_backend_max_parallel")
+
+        def read_pools(obj):
+            if not callable(_pool_reader):
+                return None, None
+            return _pool_reader(obj)
+
+        def read_caps(obj):
+            if not callable(_cap_reader):
+                return None, None
+            return _cap_reader(obj)
+
+        pools, pool_warnings = read_pools({})
+        expect("absent pools normalizes to empty object",
+               pools == {} and pool_warnings == [])
+        caps, cap_warnings = read_caps({})
+        expect("absent backend_max_parallel normalizes to empty object",
+               caps == {} and cap_warnings == [])
+
+        valid_pool_cfg = {
+            "pools": {
+                "balanced": {
+                    "light": [
+                        {"backend": "codex"},
+                        {"backend": "claude", "model": "sonnet", "weight": 2},
+                    ],
+                    "standard": [],
+                }
+            }
+        }
+        pools, pool_warnings = read_pools(valid_pool_cfg)
+        expect("pool members normalize with optional model and default weight", pools == {
+            "balanced": {
+                "light": [
+                    {"backend": "codex", "weight": 1},
+                    {"backend": "claude", "model": "sonnet", "weight": 2},
+                ],
+                "standard": [],
+            }
+        } and pool_warnings == [])
+
+        bad_pool_cfg = {
+            "pools": {
+                "balanced": {
+                    "light": [
+                        {"backend": "codex"},
+                        {"backend": "codex", "model": "duplicate"},
+                        {"model": "missing-backend"},
+                        {"backend": "unknown-provider"},
+                        {"backend": "claude", "model": ""},
+                        {"backend": "antigravity", "weight": 0},
+                        {"backend": "cursor", "weight": -1},
+                        {"backend": "devin", "weight": True},
+                        {"backend": "opencode", "weight": "2"},
+                        "not-an-object",
+                    ],
+                    "turbo": [{"backend": "claude"}],
+                },
+                "unknown-stance": {"light": [{"backend": "claude"}]},
+                "cost-aware": "not-an-object",
+            }
+        }
+        pools, pool_warnings = read_pools(bad_pool_cfg)
+        expect("malformed and duplicate pool entries warn and drop",
+               pools == {"balanced": {"light": [
+                   {"backend": "codex", "weight": 1}
+               ]}} and isinstance(pool_warnings, list) and len(pool_warnings) == 12)
+
+        caps, cap_warnings = read_caps({
+            "backend_max_parallel": {
+                "codex": 3,
+                "claude": 1,
+                "antigravity": 0,
+                "cursor": -1,
+                "devin": True,
+                "opencode": "2",
+                "unknown-provider": 4,
+            }
+        })
+        expect("backend_max_parallel keeps only positive non-bool backend integers",
+               caps == {"codex": 3, "claude": 1}
+               and isinstance(cap_warnings, list) and len(cap_warnings) == 5)
+
+        limited_pools, limit_warnings = read_pools({"pools": {"balanced": {"light": [
+            {"backend": "codex", "weight": 101},
+            {"backend": "claude", "weight": 100},
+            {"backend": "cursor", "weight": 100},
+            {"backend": "devin", "weight": 100},
+        ]}}})
+        expect("pool weights and aggregate expansion are deterministically bounded",
+               limited_pools == {"balanced": {"light": [
+                   {"backend": "claude", "weight": 100},
+                   {"backend": "cursor", "weight": 100},
+               ]}} and isinstance(limit_warnings, list) and len(limit_warnings) == 2)
 
         # Valid config round-trips models + pre_eval.
         write({

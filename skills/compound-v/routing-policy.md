@@ -31,7 +31,7 @@ lessons → routing — a deterministic order, not a learned model.
 > **V-memory (v2.0) does not change this order.** The new prose-recall layer
 > (see [`memory.md`](memory.md)) is **evidence for planning + review, not a routing
 > input.** Routing stays the deterministic v1.1 order — lessons → stance table →
-> scorecard → fallback → invariants — exactly as above; recall never reorders it. The
+> scorecard → fallback → explicit pool policy → invariants — exactly as above; recall never reorders it. The
 > one bridge from recall back into action is **conservative-only**: `recall-check
 > --files <glob>` counts prior structured `job_result` records (`blocked`/`error`/`timeout`
 > / scope violation) on the same file pattern, and `N≥k` returns a single verdict
@@ -150,6 +150,68 @@ never the gate.
 > implementers run on Sonnet here — while `deep` (architecture, sensitive surfaces,
 > **all reviewers**) stays Opus. Only the `standard` Claude cell shifts; `light` is
 > `sonnet` in every stance, and `codex`/`antigravity`/`cursor` are identical across stances.
+
+---
+
+## Opt-in tier pools — deterministic job-count rotation
+
+A tier pool is an **explicit operator-configured exception to the single-backend stance row**, not
+an automatic fallback, scorecard downgrade, or new trust heuristic. Configuration lives at
+`pools.<stance>.<tier>[]` in `.claude/compound-v.json`; the planner emits `backend: pool` only when
+the operator has elected pooled routing for that eligible job/run. A configured pool sitting idle
+changes nothing.
+
+The shipped pool policy uses Codex + zai for `standard` and `light` implementers and omits Claude.
+This release must not merge before prerequisite PR 1 (`feat/zai-backend`, PR #5). Claude membership
+is always explicit opt-in because Claude/Claude Code usage is shared with the operator's live
+session; pooling a Claude job also forces worktree isolation, making that seat more expensive than
+an otherwise-eligible serial direct job. Operators who still want Claude in the ring add it
+deliberately and express a smaller relative share by giving the other members larger integer
+weights.
+
+Eligibility is deliberately narrow and validator-backed:
+
+- implementers only; every reviewer remains on `deep`/Opus;
+- `tier: standard` or `tier: light` only—never `deep`;
+- no security, auth, payment, PII, or a11y job;
+- `isolation: worktree` always;
+- no explicit manifest `model` and no `effort: xhigh`;
+- `pool` is valid only as `job.backend`, never as an advisor backend.
+
+This explicit operator choice does not weaken scorecard semantics: a scorecard can still only
+escalate automatically. It never creates a pool, adds a lower-trust member, changes weights, or
+turns a concrete stance-table job into `backend: pool`. Once a pool job is assigned, scorecards,
+outcome memory, usage, advisor selection, and failure handling key on its concrete
+`assigned_backend`, never on the routing token `pool`.
+
+At dispatch, weights expand to consecutive slots and the ordinal is the job's position in manifest
+order among pool jobs of the same tier. The expanded ring and each slot's availability verdict are
+frozen once in `state.json`; config edits, batch filling, completion order, and resume cannot change
+the assignment. Unavailable or open-circuit slots are skipped without resizing the ring, so their
+positions still advance the ordinal. The dispatcher records `assigned_backend` and
+`assigned_model` before launch and every downstream component sees only those concrete values.
+
+`rate_limited` is transient: retry the recorded backend with the existing backoff. A confirmed
+`out_of_credits` opens the concrete member's circuit, advances to the next viable frozen member,
+consumes the run-level retry budget, and records the new assignment before relaunch. Only after the
+pool is exhausted does the ordinary concrete-backend fallback chain apply. A terminal halt reports
+the earliest known reset time across members when one is available. Reassignment is announced; the
+dispatcher never silently substitutes a cheaper or more expensive seat.
+
+### What the rotation does—and does not—show
+
+Weights allocate **manifest job counts within one tier**. For weights `2:1`, six jobs map
+`A, A, B, A, A, B`; this is deterministic integer rotation, not measurement. A docs edit and a
+large feature slice each count as one job regardless of tokens or duration.
+
+Do not call this quota balancing and do not report percentages or a balance score. It does not
+measure or equalize tokens, credits, messages, wall-clock, savings, or provider quota. The meters
+are heterogeneous, Claude consumption is unmeasured by this repository, and zai's off-peak credit
+rate is half its peak rate (peak Mon–Fri 14:00–18:00 UTC+8). The same manifest can therefore consume
+different zai credits at different times. This release performs no quota-aware or time-of-day
+routing; `/v:status` reports integer assignment counts such as `codex 3 · zai 2`, full stop.
+
+The full config/member/state schema is in [`execution-manifest.md`](execution-manifest.md).
 
 ---
 
@@ -306,16 +368,20 @@ These hold in **every** stance and are checked by `compound-v-validate-manifest.
    zai is **4**: six concurrent jobs were measured clean, but z.ai publishes no concurrency
    limit and adjusts it dynamically by plan tier, so the default sits below the measured
    ceiling. Lower it on Lite.
-3. **Unclear scope ⇒ return to planning.** A job whose scope the planner cannot pin
+3. **Pool ⇒ restricted worktree implementer.** `backend: pool` is legal only for an explicitly
+   configured `standard`/`light`, non-reviewer, non-sensitive implementer in a worktree. It rejects
+   manifest `model`, `effort: xhigh`, and `security|auth|payment|pii|a11y` job types. The routing
+   token is resolved and recorded before launch; no worker or backend-keyed subsystem sees it.
+4. **Unclear scope ⇒ return to planning.** A job whose scope the planner cannot pin
    never dispatches with a guessed partition — it goes back to writing-plans.
-4. **Model OR tier.** Every job MUST carry at least one of `model` or `tier`. A job
+5. **Model OR tier.** Every job MUST carry at least one of `model` or `tier`. A job
    with neither gives the resolver nothing to route on and fails validation.
-5. **Tier / effort enums.** When present, `tier ∈ {deep, standard, light}` and
+6. **Tier / effort enums.** When present, `tier ∈ {deep, standard, light}` and
    `effort ∈ {low, medium, high, xhigh}`. `xhigh` is valid **iff** `backend: codex`;
    every other backend rejects it with a clear error naming the rule (use `high`
    instead). NEVER `haiku` anywhere — not in the map, not as a model override, not
    in frontmatter.
-6. **Parallel ⇒ worktree.** A `run: parallel` job MUST be `isolation: worktree`;
+7. **Parallel ⇒ worktree.** A `run: parallel` job MUST be `isolation: worktree`;
    `isolation: direct` is valid only with `run: serial`. A repo-wide `git diff`
    cannot attribute a parallel direct job's writes, so per-job isolation is
    mandatory for parallel work. The validator rejects parallel+direct.
@@ -368,11 +434,15 @@ is the agent's model and is unrelated to this execution-layer tier resolution.)
    justification; if `watch`, keep the default but note it; if `healthy` /
    `insufficient_data`, keep the default unchanged.
 5. Apply the env-aware fallback (rewrite Codex rows if Codex is absent).
-6. Validate the result against the invariants (the validator is the backstop).
-7. If the type is "unclear scope," **stop and return to planning** — do not guess.
-8. At **dispatch** (not planning), resolve `(backend, tier, effort)` → a concrete
-   `model` via [`compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py)
-   against the project `models` map. An explicit manifest `model` skips this step.
+6. If—and only if—the operator explicitly selected a configured pool for an eligible
+   `standard`/`light` implementer, emit `backend: pool`. Never synthesize pool membership from
+   scorecards, availability, or recall.
+7. Validate the result against the invariants (the validator is the backstop).
+8. If the type is "unclear scope," **stop and return to planning** — do not guess.
+9. At **dispatch** (not planning), either resolve a concrete `(backend, tier, effort)` normally or,
+   for `backend: pool`, freeze and record `assigned_backend` / `assigned_model` from the configured
+   stance/tier ring. An explicit manifest `model` skips normal resolution and is forbidden on pool
+   jobs.
 
 ---
 

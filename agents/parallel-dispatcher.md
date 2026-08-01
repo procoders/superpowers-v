@@ -39,11 +39,34 @@ If the input is a bare plan path (no `manifest.yaml`):
 3. Re-run partition-reviewer against the materialized manifest. It must PASS (its validator gate must be clean) before you proceed.
 4. Write the initial `state.json` (`phase: PARTITION_VERIFIED`, every job `pending`).
 
-A plan that was already validated as a Partition Map still flows through this — you never dispatch off raw prose. From here on, **everything reads the manifest**, never re-decides backend/model/isolation.
+A plan that was already validated as a Partition Map still flows through this — you never dispatch off raw prose. From here on, the manifest remains the routing-intent authority. A non-pool job resolves from that intent as before; a `backend: pool` job uses only its frozen concrete assignment from `state.json`.
+
+### Step 0a — Freeze every pool assignment once, before any launch
+
+Do this once at run start, after the initial `state.json` exists and before Task 0 or any batch launches. Run the shared config reader once:
+
+```bash
+python3 scripts/compound-v-project-config.py "$REPO"
+# -> {models, pools, backend_max_parallel, warnings, ...}
+```
+
+Treat an error as a hard pre-flight failure. Keep that output as the run-start config snapshot; do not reload it between jobs. Copy its normalized `backend_max_parallel` object into `state.backend_max_parallel` now (preserve an already-recorded value on resume). If the manifest contains any `backend: pool` job, build one JSON request with that current `state`, the manifest's `jobs` array in its original order, snapshot `pools`, manifest `routing_stance` (default `balanced`), and snapshot `models`, then freeze atomically:
+
+```bash
+python3 scripts/compound-v-pool-state.py freeze < "$FREEZE_REQUEST" > "$FROZEN_STATE"
+# request = {"state":...,"jobs":...,"pools":...,"stance":...,"config_models":...}
+# success result replaces state.json atomically; command failure means NO dispatch
+python3 scripts/compound-v-pool-state.py validate < "$VALIDATE_REQUEST"
+# request = {"state":<the frozen state>,"jobs":<the manifest jobs array>}
+```
+
+`freeze` expands weights, evaluates the narrow member-availability preconditions once, and writes `pool_members` plus each pool job's `assigned_backend`, `assigned_model`, `pool_index`, and `pool_tier`. Its ordinal is computed from **manifest order among `backend: pool` jobs of the same tier**; launch order, dependency readiness, batching, and retries never participate. An unavailable or circuit-open slot is skipped without shrinking the ring, so later ordinals keep their original positions. If `pool_members` already exists, do not replace it from current config: config edits after this point cannot change the run.
+
+Both helper commands are fail-closed. Do not hand-edit or partially reconstruct their fields; no job launches until `validate` exits 0.
 
 ## Dispatch Sequence
 
-Honor the manifest's `depends_on`, `run`, and `max_parallel`. For each job you build a `job_spec` and hand it to the adapter named by `backend`, through the one [`backend-launcher`](../skills/backend-launcher/SKILL.md) contract — you speak only that contract and never see backend-specific flags. You get back a canonical `job_result` ([`schemas/job_result.schema.json`](../schemas/job_result.schema.json)).
+Honor the manifest's `depends_on`, `run`, and `max_parallel`. For each job you build a `job_spec` and hand it to the concrete adapter named by the resolved/frozen backend, through the one [`backend-launcher`](../skills/backend-launcher/SKILL.md) contract — you speak only that contract and never see backend-specific flags. You get back a canonical `job_result` ([`schemas/job_result.schema.json`](../schemas/job_result.schema.json)). The routing token `pool` has no adapter.
 
 | `backend` | Adapter | Mechanism |
 |---|---|---|
@@ -51,13 +74,17 @@ Honor the manifest's `depends_on`, `run`, and `max_parallel`. For each job you b
 | `codex` | [`adapter-codex.md`](../skills/backend-launcher/adapter-codex.md) | Bash-spawned `codex exec` worker via [`scripts/compound-v-run-codex-worker.sh`](../scripts/compound-v-run-codex-worker.sh) (`--model <resolved>` + `--effort <effort>`); **always** `worktree` |
 | `antigravity` | [`adapter-antigravity.md`](../skills/backend-launcher/adapter-antigravity.md) | Bash-spawned `agy --print` worker via [`scripts/compound-v-run-antigravity-worker.sh`](../scripts/compound-v-run-antigravity-worker.sh) (`--model <resolved>`, omitted when empty; no effort flag); **always** `worktree`. **Lower-trust / opt-in** (no kernel sandbox); only when `agy` is installed. (1.1) |
 | `cursor` | [`adapter-cursor.md`](../skills/backend-launcher/adapter-cursor.md) | Bash-spawned `cursor-agent -p -f` worker via [`scripts/compound-v-run-cursor-worker.sh`](../scripts/compound-v-run-cursor-worker.sh) (`--model <resolved>`, default `auto`; no effort flag); **always** `worktree`. **Lower-trust / opt-in** (no kernel sandbox); only when `cursor-agent` is installed AND authenticated. (2.1) |
+| `devin` | [`adapter-devin.md`](../skills/backend-launcher/adapter-devin.md) | Devin worker through its adapter; **always** `worktree`. Pool assignment does not weaken its reviewer/scope restrictions. |
+| `opencode` | [`adapter-opencode.md`](../skills/backend-launcher/adapter-opencode.md) | Opencode worker through its adapter; **always** `worktree`. Its resolved model retains the required `provider/model` shape. |
+| `zai` | `adapter-zai.md` from prerequisite PR 1 | z.ai worker via `compound-v-run-zai-worker.sh`; **always** `worktree`. The pool PR does not merge before that concrete adapter/worker exists. |
+| `pool` | **none** | Routing instruction only. Step 0a freezes a concrete `assigned_backend` / `assigned_model`; every adapter and backend-keyed consumer receives that pair, never `pool`. |
 
 | `zai` | [`adapter-zai.md`](../skills/backend-launcher/adapter-zai.md) | Bash-spawned `claude -p` worker via [`scripts/compound-v-run-zai-worker.sh`](../scripts/compound-v-run-zai-worker.sh) pointed at z.ai's Anthropic endpoint (`--model <resolved GLM>`; effort advisory); **always** `worktree`. **Lower-trust / opt-in, WORKER-ONLY** (no kernel sandbox); only when `ZAI_API_KEY` is set. (2.18) |
 
 ### Step 1 — Task 0 (Serial Pre-Phase)
 
 If the manifest has a `type: shared_foundation`, `run: serial` job:
-- Dispatch ONE job by its manifest backend, resolving its model first via `compound-v-resolve-model.py` (Task 0 routes `claude · tier: deep · direct` ⇒ **opus** in every stance — cheap models miscall shared types/migrations).
+- Dispatch ONE job. For a non-pool Task 0, use its manifest backend and resolve its model via `compound-v-resolve-model.py` (the usual `claude · tier: deep · direct` route ⇒ **opus** in every stance — cheap models miscall shared types/migrations). **Serial pool jobs** use the already-frozen `assigned_backend` and `assigned_model` exactly like parallel pool jobs; do not pass `pool` to an adapter or resolve again.
 - On return, run the **scope gate** (Step 2b) and write `state.json`.
 - Wait for completion. Dispatch one spec-reviewer (`compound-v:spec-reviewer`) and one code-quality reviewer, both Opus. Address feedback; re-dispatch Task 0's implementer if reviewers found issues.
 - **Verify Task 0's result is actually COMMITTED before proceeding — do not assume it.** For `worktree` isolation, merge-back only *stages* the change (`git apply --index` does not commit) — the caller must `git commit` it. For `direct` isolation, the subagent writes in place but is **not guaranteed** to commit its own work ([`adapter-claude.md`](../skills/backend-launcher/adapter-claude.md) establishes only that it writes against the main tree, gated by a baseline commit for the scope gate — not that it commits) — check `git status`/`git log` and commit it yourself if it didn't. This is not optional either way: every `run: parallel` job `depends_on` Task 0 and gets a **fresh worktree at current HEAD**, which only contains Task 0's work if that work is an actual commit, not merely staged or dirty in the working tree.
@@ -65,9 +92,9 @@ If the manifest has a `type: shared_foundation`, `run: serial` job:
 
 ### Step 2 — Parallel Implementer Batch(es)
 
-Group `run: parallel` jobs into batches of **4-6 max per message** — the manifest's `max_parallel`, capped by the phase-3 concurrency reality (4-6 foreground Task calls, 5-10 background). If a batch exceeds `max_parallel`, split it; `depends_on` + batch grouping define the order. (Background `run_in_background: true` is acceptable when workspace permissions are pre-granted; background subagents do NOT carry cwd state between Bash calls, so every path in a prompt and every Codex worktree path is absolute.)
+Group dependency-ready `run: parallel` jobs, in manifest order, into batches of **4-6 max per message**. A batch may contain no more than the manifest's `max_parallel`, the phase-3 concurrency reality (4-6 foreground Task calls, 5-10 background), or the snapshot config's `backend_max_parallel[assigned_backend]` jobs for any concrete backend. For non-pool jobs, `assigned_backend` here means the normal concrete manifest backend; for pool jobs it is the frozen state field. When adding the next job would exceed that concrete backend's configured ceiling, defer it to a later batch. An absent backend ceiling adds no extra cap. This remains an executable dispatcher batching instruction, not a claim that a new scheduler/semaphore gate exists. (Background `run_in_background: true` is acceptable when workspace permissions are pre-granted; background subagents do NOT carry cwd state between Bash calls, so every path in a prompt and every Codex worktree path is absolute.)
 
-For each batch, dispatch all implementers in **one message with concurrent calls**. Each dispatch is built **from the manifest** — never re-decide backend/model/isolation here:
+For each batch, dispatch all implementers in **one message with concurrent calls**. Isolation, tier, effort, dependencies, and scope come from the manifest. Backend/model come from the manifest resolver for a non-pool job and from the frozen state assignment for a pool job; never re-decide either path here.
 
 **Announce the batch tree first — with the resolved model.** Before dispatching a batch, resolve every job's model (step 1 below) and print a short tree so the human sees *what runs on which model* up front — e.g.:
 
@@ -79,7 +106,11 @@ For each batch, dispatch all implementers in **one message with concurrent calls
 
 Always show the **resolved** model (`backend · model (tier/effort)`), never the bare tier or a placeholder. The same annotation surfaces in [`/v:status`](../commands/v-status.md), so the model each job runs on is visible whether you watch the dispatch live or check status after.
 
-1. **Backend + tier/effort from the manifest job entry; resolve the concrete model BEFORE dispatch.** The manifest carries the routing **intent** (`tier` ∈ {deep, standard, light}, optional `effort` ∈ {low, medium, high, xhigh} — `xhigh` is valid **iff** `backend: codex`; every other backend rejects it with a clear error naming the rule (use `high` instead)), not a hardcoded model — so the plugin survives model churn. Before invoking the backend for a job, resolve the concrete model with [`scripts/compound-v-resolve-model.py`](../scripts/compound-v-resolve-model.py):
+1. **Select the concrete backend + model BEFORE dispatch.** For a non-pool job, take backend + tier/effort from the manifest and resolve exactly as below. The manifest carries the routing **intent** (`tier` ∈ {deep, standard, light}, optional `effort` ∈ {low, medium, high, xhigh} — `xhigh` is valid **iff** the concrete backend is `codex`; every other backend rejects it with a clear error naming the rule (use `high` instead)), not a hardcoded model — so the plugin survives model churn.
+
+   For a `backend: pool` job, **do not call the model resolver and do not read current pool config**. Read `assigned_backend` and `assigned_model` from `state.json jobs[<id>]`; those are the frozen concrete pair. Also retain that record's `pool_index` and `pool_tier` for failure-policy input. Missing or malformed fields are a hard stop through `compound-v-pool-state.py validate`, never a reason to re-derive.
+
+   For a non-pool job, resolve the concrete model with [`scripts/compound-v-resolve-model.py`](../scripts/compound-v-resolve-model.py):
 
    ```bash
    # Resolve (backend, tier, effort, config) -> concrete model.
@@ -109,14 +140,14 @@ Always show the **resolved** model (`backend · model (tier/effort)`), never the
    A `claude` job resolves `deep`→opus, `standard`→opus (sonnet under `cost-aware`), `light`→sonnet — `"sonnet"` for a `standard`-tier job only under the `cost-aware` stance, and otherwise ONLY where the manifest routed the job `light` AND partition-reviewer's PASS confirmed it. Reviewer jobs always resolve to `tier: deep` (⇒ opus). The resolution above is **execution-layer** and unrelated to this agent's own `model: opus` frontmatter.
 2. **Isolation from the manifest** — `direct` for clean in-harness Claude jobs (gated against a baseline commit), `worktree` for risky/broad-surface Claude jobs and **always** for Codex/Antigravity/Cursor. **Never patch an existing worktree's git state, and never ask the external worker to fix its own worktree's git base (rebase/reset/fetch) — that is a caller-side operation, not the worker's** (mechanism + rationale: [`backend-launcher/SKILL.md`](../skills/backend-launcher/SKILL.md) §Worktree git-base fixes). Every dispatch — first attempt **or retry** — MUST go through the backend's full worker-script lifecycle (create → run → observe → merge/remove), which recreates the worktree **fresh at current HEAD** every time; never shortcut by re-invoking the CLI directly against a worktree left over from a prior attempt. If a job's task genuinely depends on another job's *already-landed* output, model that as `depends_on` in the manifest — do not let a job discover the dependency mid-run and try to patch its own base. **`depends_on` only works if the prerequisite's merge-back was committed** — merge-back stages the change (`git apply --index`) but does not commit, so `HEAD` doesn't move; `git worktree add <WT> HEAD` checks out the last *commit*, not the caller's staged state. Commit a prerequisite's merged result before creating any worktree for a job that `depends_on` it (see Step 1 below).
 3. **Turn/time bound** — `maxTurns: 15` on Claude Task calls; `timeout_sec` in the `job_spec` for Codex workers. A job that hasn't finished in 15 turns is usually stuck and needs re-dispatch with more *context*, not more turns.
-4. **`job_spec`** — `{ backend, prompt, tier, effort?, model (resolved or explicit override), cwd (absolute), write_allowed, read_only, timeout_sec, network, output_schema? }`, exactly the [`backend-launcher`](../skills/backend-launcher/SKILL.md) input. The `model` is the value the resolver returned in step 1 (or the explicit manifest override); `tier`/`effort` carry the intent forward.
+4. **`job_spec`** — `{ backend, prompt, tier, effort?, model (resolved, explicit override, or frozen assignment), cwd (absolute), write_allowed, read_only, timeout_sec, network, output_schema? }`, exactly the [`backend-launcher`](../skills/backend-launcher/SKILL.md) input. For a pool job, `backend = assigned_backend` and `model = assigned_model`; `pool` must not appear in the object. `tier`/`effort` carry the intent forward.
 5. **Prompt content** (captured verbatim to `jobs/<id>.prompt.md` for resume) must include:
    - The **planner/executor lock** (verbatim-in-spirit): *"You are an implementation worker, NOT the planner. Do not change architecture. Do not write outside WRITE_ALLOWED. If the task needs a forbidden file, STOP and report BLOCKED."*
    - The **SCOPE LOCK** block declaring WRITE-allowed (the job's `write_allowed`) and READ-allowed (Task 0 outputs + the three audits + the plan section). This is the *instructed* half; Step 2b is the *enforced* half.
    - **Full task text** copied from the plan/manifest (don't make the subagent re-read the plan).
    - **Design constraints** from all three audits, inline as MUST/MUST-NOT bullets.
    - **TDD requirement** (`superpowers:test-driven-development`) per behavior change; **self-review** before DONE.
-   - **Optional READ-ONLY advisor consult** — include this ONLY when the job is a `claude` executor whose manifest entry carries `advisor: {enabled: true}` AND the job is advisor-eligible (per [`routing-policy.md`](../skills/compound-v/routing-policy.md); the advisor is a cross-brand or Opus-fallback second opinion, never a lower-trust seat). Tell that executor: *"On a genuinely hard sub-decision you MAY consult a READ-ONLY cross-brand advisor (Codex if available, else Opus) — it advises, it never writes — by running:*
+   - **Optional READ-ONLY advisor consult** — include this ONLY when the job's concrete executor is `claude` (manifest backend for a non-pool job, `assigned_backend` for a pool job), its manifest entry carries `advisor: {enabled: true}`, AND the job is advisor-eligible (per [`routing-policy.md`](../skills/compound-v/routing-policy.md); compute eligibility with the concrete executor, never `pool`). The advisor is a cross-brand or Opus-fallback second opinion, never a lower-trust seat. Tell that executor: *"On a genuinely hard sub-decision you MAY consult a READ-ONLY cross-brand advisor (Codex if available, else Opus) — it advises, it never writes — by running:*
      ```bash
      scripts/compound-v-advisor-consult.sh --question "<the hard sub-decision>" \
        [--context-path <glob>]... --executor claude --available "<run --available csv>" \
@@ -125,7 +156,7 @@ Always show the **resolved** model (`backend · model (tier/effort)`), never the
      *Then decide and do the writing yourself."* Always pass `--run-dir <run-dir> --job-id <job-id>` (absolute run-dir when the executor runs from another cwd) — the consult builds the contained log path `<run-dir>/logs/<job-id>.advisor.jsonl` INTERNALLY (the executor never hands it a raw path — round-2 hardening closed an arbitrary-write hole) and appends one line per successful consult, and after the job [`compound-v-collect-results.py`](../scripts/compound-v-collect-results.py) DERIVES `usage.advisor_calls` by counting those lines (never model-self-reported; a worker-supplied `advisor_calls` is always discarded). A job with no advisor block, or one that never hit a hard sub-decision, produces no log and a null `advisor_calls`. The advisor is READ-ONLY by hard contract ([`adapter-advisor.md`](../skills/backend-launcher/adapter-advisor.md)); it never passes `--dangerously-skip-permissions`.
    - **Status report format**: `DONE` / `DONE_WITH_CONCERNS` / `NEEDS_CONTEXT` / `BLOCKED`.
 
-Mark each dispatched job `running` in `state.json` before the batch returns.
+For every serial or parallel job, write `status: dispatched` to `state.json` **after** its concrete backend/model is validated and **before** invoking the adapter. Once launch succeeds, write `status: running`. Persist both transitions; a crash between them is why resume treats either status as in-flight and applies git-wins.
 
 ### Step 2b — Scope gate + state.json — after EVERY job returns (wiring, not prose)
 
@@ -149,7 +180,7 @@ python3 scripts/compound-v-scope-check.py --repo "$CWD" --baseline "$BASE" \
 ```
 
 The gate computes what the job *actually* changed purely from git —
-`git diff --name-only <baseline>` ∪ `git ls-files --others --exclude-standard` ∪ the gitignored set, minus the direct-mode pre-existing snapshot — and matches each path against `write_allowed`. Diffing against the recorded baseline SHA (not a live `HEAD`) means a worker that COMMITS inside its worktree to fake a clean tree is still caught. The `files_changed` / `violations` / `blocked` enforcement fields are **git-derived, never model-self-reported**; the worker's return text feeds only the human `summary`. Fold the verdict into the canonical `job_result` with [`scripts/compound-v-collect-results.py`](../scripts/compound-v-collect-results.py) (writing `results/<id>.json`), then update `state.json`:
+`git diff --name-only <baseline>` ∪ `git ls-files --others --exclude-standard` ∪ the gitignored set, minus the direct-mode pre-existing snapshot — and matches each path against `write_allowed`. Diffing against the recorded baseline SHA (not a live `HEAD`) means a worker that COMMITS inside its worktree to fake a clean tree is still caught. The `files_changed` / `violations` / `blocked` enforcement fields are **git-derived, never model-self-reported**; the worker's return text feeds only the human `summary`. Fold the verdict into the canonical `job_result` with [`scripts/compound-v-collect-results.py`](../scripts/compound-v-collect-results.py) (writing `results/<id>.json`). Any backend field supplied to the worker result, collector, or scope-gate bookkeeping is the concrete backend (`assigned_backend` for a pool job), never `pool`. Then update `state.json`:
 
 - **PASS** (exit 0, no violations) → job `status: done`. For a worktree job, merge back with an **index-based patch that includes new files** (`git -C "$WT" add -A && git -C "$WT" diff --cached --binary HEAD | (cd "$CWD" && git apply --index)`), then `git worktree remove -f`. A plain `git diff HEAD | git apply` would silently DROP allowed new files. Direct jobs are already in the tree.
 - **BLOCKED** (exit 1, any path outside `write_allowed`) → job `status: blocked`, advance the run `phase` to terminal **BLOCKED**, surface the offending paths, and **do NOT merge** — leave the worktree for inspection. **A BLOCKED job HALTS the run.** It is not silently re-dispatched; you stop and surface it to the human.
@@ -161,14 +192,14 @@ Write `state.json` after every per-job transition, so a crash never loses more t
 
 A `job_result.status` that is **not** `success` and **not** `blocked` is a backend failure (rate-limit, overload, out-of-credits, auth, context-length, timeout, network). (The worker **fails closed**: an `error`/`timeout` status never carries `failure_class: none`, so a genuine failure can't masquerade as success.) Do **not** guess and do **not** blindly retry — run the deterministic two-stage pipeline, exactly as [`skills/compound-v/failure-policy.md`](../skills/compound-v/failure-policy.md) specifies. The circuit breaker is the `state.json` fields read at batch boundaries — no daemon: `attempts` (keyed **per (job, failure_class)**), `cooldowns`, `circuit_open` (a per-backend **object** with `open`/`reason`/`opened_at`/`cleared_by`), `total_retries`, `max_total_retries`.
 
-1. **Classify.** Read the job's `failure_class` from the `job_result` (the Codex worker emits it; `null` on success/blocked). If absent — e.g. a `claude` job — recompute it by running the classifier with the backend's exit code + captured stderr (for `claude`, pass `--backend claude`; the classifier reads the stream-json `api_retry.error` enum — see [`adapter-claude.md`](../skills/backend-launcher/adapter-claude.md)):
+1. **Classify.** Set `$BACKEND` to the concrete executor (`assigned_backend` for a pool job), never the routing token. Read the job's `failure_class` from the `job_result` (the Codex worker emits it; `null` on success/blocked). If absent — e.g. a `claude` job — recompute it by running the classifier with the concrete backend's exit code + captured stderr (for `claude`, pass `--backend claude`; the classifier reads the stream-json `api_retry.error` enum — see [`adapter-claude.md`](../skills/backend-launcher/adapter-claude.md)):
 
    ```bash
    python3 scripts/compound-v-classify-failure.py --backend "$BACKEND" \
      --exit-code "$EXIT" --stderr-file "$STDERR"   # → {failure_class, retryable, matched}
    ```
 
-2. **Decide.** Feed the class + the job's **per-(job, class)** attempts + the run-level retry counters to the decision table, plus the three round-2 inputs (provider wait, fallback health, current tier). Use the **per-class** attempt count — `attempts[<job>][<failure_class>]` — not a per-job total, so a budget burned by one class doesn't starve another:
+2. **Decide.** Feed the class + the job's **per-(job, class)** attempts + the run-level retry counters to the decision table, plus provider wait, fallback health, current tier, and (for a pool job) its complete frozen pool context. Use the **per-class** attempt count — `attempts[<job>][<failure_class>]` — not a per-job total, so a budget burned by one class doesn't starve another. `$BACKEND` is still the concrete executor:
 
    ```bash
    # ATTEMPTS = state.attempts[<job>][<CLASS>] (per (job, failure_class)); 0 if absent.
@@ -181,28 +212,49 @@ A `job_result.status` that is **not** `success` and **not** `blocked` is a backe
           --current-tier "$TIER"
    [ -n "$RETRY_AFTER" ] && [ "$RETRY_AFTER" -gt 0 ] && set -- "$@" --retry-after "$RETRY_AFTER"
    [ "$FALLBACK_OPEN" = "1" ] && set -- "$@" --fallback-open
+   if [ "$MANIFEST_BACKEND" = "pool" ] && [ "$ASSIGNMENT_SOURCE" != "fallback" ]; then
+     set -- "$@" \
+       --pool-members "$POOL_MEMBERS_JSON" \
+       --current-pool-index "$POOL_INDEX" \
+       --circuit-open "$CIRCUIT_OPEN_JSON"
+   fi
    python3 scripts/compound-v-failure-policy.py "$@"
-   # → {action, reason, backoff_seconds, reroute_to, escalate_tier, circuit_break}
+   # → {action, reason, backoff_seconds, reroute_to, escalate_tier,
+   #      circuit_break, circuit_break_backend, next_pool_index,
+   #      consume_total_retry, earliest_reset_seconds, clear_assignment}
    ```
 
    - `--retry-after <job_result.retry_after_seconds>` — honor the provider's stated wait; it **overrides** the computed backoff.
    - `--fallback-open` — set it when `circuit_open[<fallback-backend>].open` is `true`, so an `out_of_credits` whose only fallback is already exhausted yields **`halt`** (both causes surfaced) instead of a doomed reroute.
    - `--current-tier <resolved tier>` — so a `context_length` failure escalates to a bigger tier **unless already at the deepest tier** (`deep`), where it returns `halt` (split the job) rather than escalating into a model that doesn't exist.
+   - For a pool job whose `assignment_source` is `pool` (or missing on legacy state), `POOL_MEMBERS_JSON = state.pool_members[state.jobs[<id>].pool_tier]`, `POOL_INDEX = state.jobs[<id>].pool_index`, and `CIRCUIT_OPEN_JSON = state.circuit_open` (default `{}`). Pass the entire ordered frozen ring; do not filter unavailable/open members or change their positions. The policy validates that the current slot's backend equals `$BACKEND`. For `assignment_source: fallback`, omit pool context and use the ordinary concrete fallback policy from the recorded fallback backend.
 
 3. **Act** on `action`:
-   - **`retry`** → **first record the cooldown so resume/half-open is deterministic**: write `cooldowns[<backend>] = <now + backoff_seconds>` (epoch/ISO) in `state.json` — this is the timestamp the half-open/`/v:resume` logic reads, so the retry path MUST produce it. Bump `attempts[<job>][<failure_class>]` (the per-class counter) and `total_retries`. Then **sleep `backoff_seconds`** (the policy's value — already the provider's `retry-after` when one was passed) and re-dispatch the **same** backend (replay `jobs/<id>.prompt.md`) **through the full worker-script lifecycle** — for an external worker (Codex/Antigravity/Cursor) this means the worktree is removed and recreated fresh at current HEAD before the retry runs, exactly as the adapter's create step already does; never resume by poking the CLI at the job's old worktree directly. Re-run the scope gate on return.
-   - **`reroute`** with `circuit_break: true` (out_of_credits) → open the breaker **object** `circuit_open[<backend>] = {"open": true, "reason": "out_of_credits", "opened_at": "<iso-ts>", "cleared_by": null}` and re-route **this job AND every remaining same-backend job** in the run via the env-aware **codex→claude** rewrite ([`routing-policy.md`](../skills/compound-v/routing-policy.md) §Env-aware Claude-only fallback) — the SAME rewrite `/v:init` uses when Codex is absent, here at runtime. **Announce it loudly** (see Output): never silently swap a cheap backend for an expensive one.
+   - **`retry`** → **first record the cooldown so resume/half-open is deterministic**: write `cooldowns[<concrete-backend>] = <now + backoff_seconds>` (epoch/ISO) in `state.json` — this is the timestamp the half-open/`/v:resume` logic reads, so the retry path MUST produce it. If `consume_total_retry` is true, bump `total_retries`; also bump `attempts[<job>][<failure_class>]`. Preserve every assignment field (`assigned_backend`, `assigned_model`, `assignment_source`, `pool_index`, `pool_tier`) unchanged. Then **sleep `backoff_seconds`** (the policy's value — already the provider's `retry-after` when one was passed) and re-dispatch the **same concrete backend/model** (replay `jobs/<id>.prompt.md`) **through the full worker-script lifecycle** — for an external worker (Codex/Antigravity/Cursor) this means the worktree is removed and recreated fresh at current HEAD before the retry runs, exactly as the adapter's create step already does; never resume by poking the CLI at the job's old worktree directly. Re-run the scope gate on return.
+   - **`reroute`** with `circuit_break: true` (out_of_credits) → first open the canonical breaker object under the policy's concrete `circuit_break_backend`: `circuit_open[<concrete-backend>] = {"open": true, "reason": "out_of_credits", "opened_at": "<iso-ts>", "cleared_by": null}`. If `consume_total_retry` is true, increment `total_retries` **before** relaunch; this run-level budget persists across member changes.
+     - **`next_pool_index` is an integer:** select that frozen slot with `python3 scripts/compound-v-pool-state.py select` using `{"state": <state.json>, "tier": <pool_tier>, "index": <next_pool_index>}`. Before relaunch, atomically replace the job's `assigned_backend`, `assigned_model`, and `pool_index` from the result, keep `pool_tier`, set `assignment_source: "pool"`, and validate the whole state. Relaunch only after the new concrete assignment is durable. Do not bulk-reroute other pool jobs: their own frozen assignments remain unchanged until their own policy result says otherwise.
+     - **`next_pool_index` is null and `reroute_to` is concrete:** the pool is exhausted, so use the ordinary concrete-backend fallback chain. Resolve the fallback's model through the normal resolver for this tier/stance, atomically record that concrete pair with `assignment_source: "fallback"` while retaining the originating `pool_tier` and `pool_index`, validate the whole state, then relaunch. A fallback assignment is load-bearing resume state, not permission to re-read current pool config. Announce the concrete cost/trust change loudly.
    - **`reroute`** with `escalate_tier: true` (context_length, not yet at the deepest tier) → re-resolve the job at a **bigger tier** via `compound-v-resolve-model.py` and re-dispatch. When the job is re-routed to a different backend or its class changes, **reset/fork** its per-class attempt counter.
    - **`halt`** → mark the job `failed` in `state.json`, keep the run **`/v:resume`-able**, and **continue other independent jobs** (ralph-tui-style: a sibling's 429 must not kill unrelated jobs). Two round-2 cases also return `halt` and must be honored, not retried:
      - **out_of_credits with a dead fallback** (`--fallback-open` was set ⇒ the fallback backend is itself circuit-open) — both causes are surfaced; open this backend's breaker, leave the jobs `failed`, and stop dispatching to it. The run stops dead when the **last viable backend** is exhausted.
      - **context_length already at the deepest tier** (`--current-tier deep`) — no bigger model exists, so **split the job → back to planning/partition**; do not loop on escalation.
      - **auth** — the policy returns `halt` + `circuit_break: true`. As with **any** `circuit_break: true` result (out_of_credits OR auth), **open the breaker object** `circuit_open[<backend>] = {"open": true, "reason": "<failure_class>", "opened_at": "<iso-ts>", "cleared_by": null}` — for auth, cleared only by re-auth (`/v:init`) on `/v:resume`. Opening the breaker is keyed on `circuit_break: true`, not on the action being `reroute`.
 
-**Circuit-break is check-before-launch.** Before dispatching each job in a batch, check `circuit_open[<job.backend>]`; if it is open, do NOT launch the job — defer it to reroute/halt. A break discovered mid-batch cannot un-launch jobs already in flight on that backend (there is no daemon) — those complete and **fail fast** (an `out_of_credits` returns immediately). So "re-route the remaining jobs" means the remaining **unlaunched** jobs; in-flight ones are not force-killed.
+When the policy returns a positive `earliest_reset_seconds`, atomically persist the pair `state.earliest_reset_observed_at = <now-iso-ts>` and `state.earliest_reset_seconds = <policy value>`. Compare candidates by absolute instant (`observed_at + seconds`) and retain the earliest. The seconds value is relative to its observation time, never to the next status read. Clear both fields when the associated out-of-credits breaker is resolved (if other out-of-credits breakers remain, retain/recompute only from fresh observations). `/v:status` renders a fresh reset instant/duration and never converts it to a percentage.
+
+**Circuit-break is check-before-launch.** Before dispatching each job in a batch, check `circuit_open[<concrete-backend>]` (`assigned_backend` for a pool job, manifest backend otherwise); if it is open, do NOT launch the job — run its policy path to reroute/halt. The canonical map is always keyed by concrete backend and each value is the object shape above; never create `circuit_open.pool` or use a bare boolean. A break discovered mid-batch cannot un-launch jobs already in flight on that backend (there is no daemon) — those complete and **fail fast** (an `out_of_credits` returns immediately). In-flight ones are not force-killed.
 
 Write `state.json` after every transition. "Deprioritize, don't remove": a transient failure gets a short `cooldowns[<backend>]` timestamp (probed half-open next batch), only a confirmed `out_of_credits`/`auth` opens the breaker **object** for the run (which [`/v:resume`](../commands/v-resume.md) reconciles by `reason` — top-up/probe for credits, re-auth for auth — never a silent re-dispatch). **Never** retry `out_of_credits`/`auth`; cap retries by **count AND wall-clock** (per-(job,class) ceiling *and* `max_total_retries`); classify by error **TYPE**, not HTTP status.
 
-The worktree-recreate invariant above is the default: every dispatch — first attempt or live retry — goes through the full worker-script lifecycle and recreates the worktree **fresh at HEAD**. The single, narrow, contract-defined case where `codex exec resume` is used instead — never by cwd filtering, always by the captured UUID — is the Shared Interface Contract's resume-eligibility rule, stated here verbatim so it matches [`commands/v-resume.md`](../commands/v-resume.md) word-for-word (this reconciles the archaeology-flagged contradiction between the two docs):
+**Concrete-consumer invariant.** After Step 0a, every backend-keyed consumer receives the concrete pair: the adapter/worker `job_spec`, advisor eligibility and `--executor`, classifier `--backend`, failure-policy `--backend`, cooldown and canonical circuit keys, batch caps, scope/collector result metadata, usage extraction/aggregation, liveness bookkeeping, `task-outcomes.jsonl`, scorecard queries/updates, memory, batch announcements, `/v:status`, and the final report. A pool job skips model resolution because its concrete model is already frozen; an ordinary fallback is resolved once and recorded. No adapter, worker, classifier, usage extractor, memory row, or scorecard key may receive or persist `pool`.
+
+The worktree-recreate invariant above is the default: every dispatch — first attempt or live retry — goes through the full worker-script lifecycle and recreates the worktree **fresh at HEAD**. On resume, a `dispatched` / `running` job that git-wins found not landed is incomplete and must flow through the rules below; neither status may be stranded. The single, narrow, contract-defined case where `codex exec resume` is used instead — never by cwd filtering, always by the captured UUID — is the Shared Interface Contract's resume-eligibility rule, stated here verbatim so it matches [`commands/v-resume.md`](../commands/v-resume.md) word-for-word (this reconciles the archaeology-flagged contradiction between the two docs):
+
+> **Pool-assignment resume rule (Shared Interface Contract — byte-identical in `commands/v-resume.md`, `agents/parallel-dispatcher.md`, and `skills/compound-v/state-machine.md`).**
+> Before any git or breaker reconciliation, if the manifest contains a job whose routing token is `backend: pool`, validate the complete recorded state with `python3 scripts/compound-v-pool-state.py validate` using `{"state": <state.json>, "jobs": <manifest jobs>}`; any error HALTS resume.
+> Then obtain only that job's concrete pair with `python3 scripts/compound-v-pool-state.py resume` using `{"state": <state.json>, "job_id": "<id>"}`; the helper returns only `assigned_backend` and `assigned_model`.
+> Read `assignment_source`, `pool_index`, `pool_tier`, and `worktree` directly from the already-validated `state.json jobs[<id>]` record and reuse all six recorded values for reconciliation.
+> Never reload current pool config, recompute a manifest ordinal, rerun freeze, or call the model resolver for that recorded assignment. A transient retry preserves it byte-for-byte; only an `out_of_credits` policy decision may replace it, and the replacement MUST be written and validated before relaunch.
 
 > **Resume-eligibility rule (Shared Interface Contract — byte-identical in `commands/v-resume.md` and `agents/parallel-dispatcher.md`).**
 > A codex worktree job may be resumed via `codex exec resume <captured-uuid>` **IFF** its `failure_class` is
@@ -307,6 +359,8 @@ After the run settles, append one outcome line per job to
 [`scripts/compound-v-update-memory.py`](../scripts/compound-v-update-memory.py), then
 refresh the machine-generated scorecard:
 
+For every pool-routed outcome, record `backend = state.jobs[<id>].assigned_backend` and the recorded `assigned_model`; never copy the manifest's `backend: pool`. The same concrete backend is the input to usage extraction and any scorecard query.
+
 ```bash
 python3 scripts/compound-v-scorecard.py --update
 # regenerates docs/superpowers/memory/worker-performance.jsonl
@@ -357,6 +411,7 @@ COMPOUND V DISPATCH COMPLETE: <run-id>  (manifest: <manifest-path>)
 Phase totals:
   Task 0:          DONE on opus (Y reviewer rounds)
   Parallel batch:  N jobs across M batches
+    pool assignments: codex K · zai P             # integer job counts only
     claude·opus:     K (list job IDs)
     claude·sonnet:   P (list job IDs + justifications)
     codex·<model>:   C (list job IDs — all worktree)
@@ -376,7 +431,7 @@ Do **not** print token-cost or token-savings numbers — they are not measurable
 ## Constraints on YOU
 
 - DO NOT dispatch if partition-reviewer returned FAIL. Refuse.
-- DO NOT re-decide backend / tier / isolation — they come from the manifest (routed by `routing-policy.md`). Honor them. The concrete **model** is resolved from `(backend, tier, effort, config)` via `compound-v-resolve-model.py` before dispatch — do NOT hardcode model strings; an explicit manifest `model:` override skips resolution and wins.
+- DO NOT re-decide tier / isolation — they come from the manifest (routed by `routing-policy.md`). Honor them. For a non-pool job, concrete backend comes from the manifest and model is resolved from `(backend, tier, effort, config)` via `compound-v-resolve-model.py`; an explicit manifest `model:` override skips resolution and wins. For a pool job, concrete backend/model come only from its validated frozen `state.json` assignment; never re-resolve them from current config.
 - DO NOT silently use Sonnet for a job not justified in the manifest, or run a Codex job `direct` (codex⇒worktree is a hard invariant).
 - DO NOT skip the scope gate after any job, and DO NOT merge a BLOCKED job. HALT and surface it.
 - DO NOT improvise on a backend failure — run the classify→policy loop (Step 2c) and act on its `action`. NEVER retry `out_of_credits`/`auth`; NEVER hammer a circuit-open backend; NEVER silently re-route a failed cheap backend to an expensive one — announce every re-route/circuit-break with the cost direction.
