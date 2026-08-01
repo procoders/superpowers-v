@@ -47,6 +47,15 @@ NETWORK_EVIDENCE_FIELDS = frozenset((
 ))
 NETWORK_PAUSE_FIELDS = frozenset(("opened_at", "until", "evidence", "probe"))
 NETWORK_CORRELATION_SECONDS = 60
+POLICY_ACTIONS = ("proceed", "retry", "reroute", "halt")
+POLICY_FAILURE_CLASSES = (
+    "none", "auth", "out_of_credits", "model_unavailable",
+    "usage_window_exhausted", "context_length", "rate_limited",
+    "overloaded", "network", "timeout", "other",
+)
+RETRYABLE_FAILURE_CLASSES = (
+    "rate_limited", "overloaded", "network", "timeout", "other",
+)
 
 
 def _provider_time_module():
@@ -88,6 +97,29 @@ def _idle_probe():
         "owner_attempt_id": None,
         "lease_until": None,
     }
+
+
+def _generation_errors(state_jobs, job_id, attempt_id, path, batch_id=None):
+    """Relate persisted health evidence to a known, already-minted generation."""
+    errors = []
+    parsed_job, separator, generation = attempt_id.rpartition(":")
+    effective_job = job_id if job_id is not None else parsed_job
+    record = state_jobs.get(effective_job) if isinstance(state_jobs, dict) else None
+    if separator != ":" or parsed_job != effective_job \
+            or not generation.isdigit() or int(generation) < 1:
+        return ["%s is not a valid positive job generation" % path]
+    if not isinstance(record, dict):
+        return ["%s references an unknown job" % path]
+    counter = record.get("attempt_counter")
+    if counter is not None and (
+            not isinstance(counter, int) or isinstance(counter, bool)
+            or int(generation) > counter):
+        errors.append("%s exceeds the job's persisted attempt counter" % path)
+    recorded_batch = record.get("batch_id")
+    if batch_id is not None and recorded_batch is not None \
+            and batch_id != recorded_batch:
+        errors.append("%s batch_id does not match the job's persisted batch" % path)
+    return errors
 
 
 def _probe_errors(probe, path, state_jobs, opened_at=None):
@@ -150,6 +182,10 @@ def _cooldown_errors(cooldowns, state_jobs):
         attempt_id = entry.get("opened_by_attempt_id")
         if not isinstance(attempt_id, str) or not attempt_id:
             errors.append("%s.opened_by_attempt_id must be non-empty" % path)
+        else:
+            errors.extend(_generation_errors(
+                state_jobs, None, attempt_id, "%s.opened_by_attempt_id" % path,
+            ))
         opened = None
         until = None
         try:
@@ -197,13 +233,11 @@ def _network_evidence_errors(evidence, path="state.network_evidence", state_jobs
                 errors.append("%s.%s must be non-empty" % (row_path, field))
         job_id = row.get("job_id")
         attempt_id = row.get("attempt_id")
-        if state_jobs is not None and job_id not in state_jobs:
-            errors.append("%s.job_id does not exist in state.jobs" % row_path)
         if isinstance(job_id, str) and isinstance(attempt_id, str):
-            prefix = "%s:" % job_id
-            suffix = attempt_id[len(prefix):] if attempt_id.startswith(prefix) else ""
-            if not suffix.isdigit() or int(suffix) < 1:
-                errors.append("%s.attempt_id is not a valid job generation" % row_path)
+            errors.extend(_generation_errors(
+                state_jobs, job_id, attempt_id, "%s.attempt_id" % row_path,
+                batch_id=row.get("batch_id"),
+            ))
         try:
             _parse_canonical_timestamp(
                 row.get("observed_at"), "%s.observed_at" % row_path)
@@ -260,6 +294,12 @@ def _network_pause_errors(pause, state_jobs):
         if observed and (max(observed) - min(observed)).total_seconds() \
                 > NETWORK_CORRELATION_SECONDS:
             errors.append("%s evidence exceeds the 60-second correlation window" % path)
+        if opened is not None:
+            for value in observed:
+                age = (opened - value).total_seconds()
+                if age < 0 or age > NETWORK_CORRELATION_SECONDS:
+                    errors.append("%s evidence is not causal to opened_at" % path)
+                    break
     errors.extend(_probe_errors(pause.get("probe"), "%s.probe" % path,
                                 state_jobs, opened_at=opened))
     return errors
@@ -820,11 +860,23 @@ def migrate_legacy_cooldowns(state, now):
         until_value = _parse_timestamp(entry, "legacy cooldown %s" % backend)
         if until_value < now_value:
             until_value = now_value
+        candidates = []
+        for job_id, record in replacement.get("jobs", {}).items():
+            if not isinstance(record, dict) or record.get("assigned_backend") != backend:
+                continue
+            attempt_id = record.get("attempt_id")
+            if isinstance(attempt_id, str) and not _generation_errors(
+                    replacement.get("jobs"), job_id, attempt_id,
+                    "legacy cooldown opener"):
+                candidates.append(attempt_id)
+        if not candidates:
+            raise ValueError(
+                "legacy cooldown for %s has no attributable persisted attempt" % backend)
         migrated[backend] = {
             "until": _format_timestamp(until_value),
             "reason": "rate_limited",
             "opened_at": _format_timestamp(now_value),
-            "opened_by_attempt_id": "legacy:migration:%s" % backend,
+            "opened_by_attempt_id": sorted(candidates)[-1],
             "probe": _idle_probe(),
         }
     replacement["cooldowns"] = migrated
@@ -1072,11 +1124,55 @@ def _normalized_policy_intent(state, job_id, intent):
     current_attempt, _unused = _current_attempt(record, job_id)
     if not isinstance(attempt_id, str) or not attempt_id:
         raise ValueError("policy intent requires the current non-empty attempt_id")
-    if attempt_id != current_attempt:
-        raise ValueError("policy attempt_id is not the current persisted attempt")
     failure_class = intent.get("failure_class")
-    if not isinstance(failure_class, str) or not failure_class:
-        raise ValueError("policy intent requires failure_class")
+    action = intent.get("action")
+    if action not in POLICY_ACTIONS:
+        raise ValueError("policy intent has unknown action %r" % action)
+    if failure_class not in POLICY_FAILURE_CLASSES:
+        raise ValueError("policy intent has unknown failure_class %r" % failure_class)
+    charged = state.get("charged_attempt_ids", [])
+    replay = attempt_id in charged
+    if replay:
+        generation_errors = _generation_errors(
+            state.get("jobs"), job_id, attempt_id, "policy attempt_id",
+        )
+        if generation_errors:
+            raise ValueError("; ".join(generation_errors))
+    elif attempt_id != current_attempt:
+        raise ValueError("policy attempt_id is not the current persisted attempt")
+
+    result = intent.get("result")
+    if failure_class == "none":
+        if action != "proceed" or result is not None:
+            raise ValueError("none policy intent must proceed without a result")
+    elif result != "failure":
+        raise ValueError("failure policy intent must carry result: failure")
+    allowed_actions = {
+        "auth": ("halt",),
+        "out_of_credits": ("reroute", "halt"),
+        "model_unavailable": ("reroute", "halt"),
+        "usage_window_exhausted": ("reroute", "halt"),
+        "context_length": ("reroute", "halt"),
+        "rate_limited": ("retry", "reroute", "halt"),
+        "overloaded": ("retry", "reroute", "halt"),
+        "network": ("retry", "reroute", "halt"),
+        "timeout": ("retry", "reroute", "halt"),
+        "other": ("retry", "reroute", "halt"),
+    }
+    if failure_class != "none" and action not in allowed_actions[failure_class]:
+        raise ValueError("policy action is inconsistent with failure_class")
+    consumes_retry = intent.get("consume_total_retry") is True
+    if action == "retry" and not consumes_retry:
+        raise ValueError("retry policy intent must consume the retry budget")
+    if consumes_retry and action not in ("retry", "reroute"):
+        raise ValueError("retry charge requires retry or reroute action")
+    if intent.get("advance_pool") is True and action != "reroute":
+        raise ValueError("pool advance requires reroute action")
+    if intent.get("network_scope") is not None and failure_class != "network":
+        raise ValueError("network_scope requires network failure_class")
+    if failure_class == "network" and intent.get("network_scope") not in (
+            "no_response", "provider_reported"):
+        raise ValueError("network policy intent requires a known network_scope")
 
     cooldown_backend = intent.get("cooldown_backend")
     cooldown_fields = (
@@ -1089,6 +1185,8 @@ def _normalized_policy_intent(state, job_id, intent):
     if cooldown_backend is not None \
             and cooldown_backend != record.get("assigned_backend"):
         raise ValueError("cooldown backend is not the current persisted assignment")
+    if cooldown_backend is not None and intent.get("cooldown_reason") != failure_class:
+        raise ValueError("cooldown reason must match failure_class")
 
     circuit_backend = intent.get("circuit_break_backend")
     if intent.get("circuit_break") is True:
@@ -1096,6 +1194,8 @@ def _normalized_policy_intent(state, job_id, intent):
             raise ValueError("circuit backend is not the current persisted assignment")
         if failure_class not in CIRCUIT_REASONS:
             raise ValueError("permanent circuit intent requires auth or out_of_credits")
+    elif failure_class in CIRCUIT_REASONS:
+        raise ValueError("auth and out_of_credits require permanent circuit intent")
 
     exclude_assignment = intent.get("exclude_assignment")
     if exclude_assignment is not None and (
@@ -1105,6 +1205,12 @@ def _normalized_policy_intent(state, job_id, intent):
             or not isinstance(exclude_assignment.get("model"), str)
             or not exclude_assignment.get("model")):
         raise ValueError("exact exclusion requires concrete backend and model")
+    if exclude_assignment is not None and failure_class != "model_unavailable":
+        raise ValueError("exact exclusion requires model_unavailable")
+    if exclude_assignment is not None and not replay and (
+            exclude_assignment.get("backend") != record.get("assigned_backend")
+            or exclude_assignment.get("model") != record.get("assigned_model")):
+        raise ValueError("exact exclusion must name the failed assignment")
 
     fallback = intent.get("fallback_assignment")
     fallback_valid = False
@@ -1135,6 +1241,7 @@ def _normalized_policy_intent(state, job_id, intent):
         "fallback_assignment": fallback if fallback_valid else None,
         "fallback_supplied": fallback is not None,
         "fallback_valid": fallback_valid,
+        "replay": replay,
     }
 
 
@@ -1186,8 +1293,9 @@ def _apply_result(state, job_id, intent, now_value, batch_id):
         if exact_network_probe:
             state.pop("network_pause", None)
             changed = True
-        # A completed success vetoes only earlier evidence in the same live
-        # batch. Later failures begin a fresh correlation sequence.
+        # A completed success removes earlier evidence and remains a live veto
+        # for this batch's full 60-second window; later failures cannot restart
+        # correlation until the persisted success ages out.
         evidence = state.get("network_evidence", [])
         retained = [row for row in evidence if row.get("batch_id") != batch_id]
         if retained != evidence:
@@ -1298,12 +1406,12 @@ def transition_state(state, jobs, job_id, intent, now, batch_id,
 
     is_policy_intent = "action" in intent and "failure_class" in intent
     consumes_retry = is_policy_intent and intent.get("consume_total_retry") is True
+    policy_intent = _normalized_policy_intent(replacement, job_id, intent)
     if consumes_retry:
-        attempt_id = intent.get("attempt_id")
         charged = replacement.get("charged_attempt_ids")
         if not isinstance(charged, list):
             raise ValueError("retry-consuming policy intent requires canonical retry budget state")
-        if attempt_id in charged:
+        if policy_intent.get("replay"):
             return {
                 "state": replacement, "action": "state_updated",
                 "assignment": None, "next_retry_at": None,
@@ -1313,11 +1421,6 @@ def transition_state(state, jobs, job_id, intent, now, batch_id,
                 "state": replacement, "action": "halt",
                 "assignment": None, "next_retry_at": None,
             }
-
-    policy_intent = _normalized_policy_intent(replacement, job_id, intent)
-    if consumes_retry:
-        replacement["total_retries"] += 1
-        replacement["charged_attempt_ids"].append(policy_intent["attempt_id"])
 
     # A normalized policy decision carries the completed failure fact and its
     # next action together. Apply the fact first, then continue through the
@@ -1418,6 +1521,9 @@ def transition_state(state, jobs, job_id, intent, now, batch_id,
             policy_intent["fallback_assignment"],
         )
         next_retry_at = None
+    if assignment is not None and consumes_retry:
+        replacement["total_retries"] += 1
+        replacement["charged_attempt_ids"].append(policy_intent["attempt_id"])
     action = "launch" if assignment is not None else "halt"
     errors = validate_state(replacement, jobs)
     if errors:
@@ -2029,7 +2135,46 @@ def _selftest():
     expect("persisted cooldown timestamps require normalized terminal Z",
            any("canonical UTC" in error for error in offset_errors))
 
+    causal_state = json.loads(json.dumps(route_state))
+    causal_state["jobs"]["job-a"].update({
+        "attempt_counter": 2, "attempt_id": "job-a:2", "batch_id": "batch-c",
+    })
+    causal_state["jobs"]["job-b"].update({
+        "attempt_counter": 1, "attempt_id": "job-b:1", "batch_id": "batch-c",
+    })
+    future_cooldown = json.loads(json.dumps(causal_state))
+    future_cooldown["cooldowns"] = {"codex": dict(
+        canonical_cooldown, opened_by_attempt_id="job-a:3")}
+    forged_evidence = json.loads(json.dumps(causal_state))
+    forged_evidence["network_evidence"] = [{
+        "backend": "codex", "job_id": "job-a", "attempt_id": "job-a:3",
+        "batch_id": "batch-c", "observed_at": "2026-08-01T07:20:00Z",
+    }]
+    wrong_batch_success = json.loads(json.dumps(causal_state))
+    wrong_batch_success["network_successes"] = [{
+        "backend": "codex", "job_id": "job-a", "attempt_id": "job-a:2",
+        "batch_id": "other-batch", "observed_at": "2026-08-01T07:20:00Z",
+    }]
+    impossible_pause = json.loads(json.dumps(causal_state))
+    impossible_pause["network_pause"] = {
+        "opened_at": "2026-08-01T07:20:00Z",
+        "until": "2026-08-01T07:21:00Z",
+        "evidence": [
+            {"backend": "codex", "job_id": "job-a", "attempt_id": "job-a:2",
+             "batch_id": "batch-c", "observed_at": "2026-08-01T07:20:01Z"},
+            {"backend": "claude", "job_id": "job-b", "attempt_id": "job-b:1",
+             "batch_id": "batch-c", "observed_at": "2026-08-01T07:20:00Z"},
+        ],
+        "probe": dict(idle_probe),
+    }
+    expect("health evidence rejects future generations wrong batches and future observations",
+           all(validate(item, route_jobs) for item in (
+               future_cooldown, forged_evidence, wrong_batch_success, impossible_pause)))
+
     bare_cooldown_state = json.loads(json.dumps(route_state))
+    bare_cooldown_state["jobs"]["job-a"].update({
+        "attempt_counter": 1, "attempt_id": "job-a:1", "batch_id": "batch-m",
+    })
     bare_cooldown_state["cooldowns"] = {"codex": "2026-08-01T07:30:00Z"}
     bare_cooldown_errors = validate(bare_cooldown_state, route_jobs) \
         if validate else []
@@ -2041,7 +2186,14 @@ def _selftest():
     expect("explicit legacy migration writes canonical cooldown once",
            isinstance(migrated, dict)
            and isinstance(migrated.get("cooldowns", {}).get("codex"), dict)
+           and migrated.get("cooldowns", {}).get("codex", {}).get(
+               "opened_by_attempt_id") == "job-a:1"
            and validate(migrated, route_jobs) == [])
+    unattributed_legacy = json.loads(json.dumps(route_state))
+    unattributed_legacy["cooldowns"] = {"codex": "2026-08-01T07:30:00Z"}
+    expect("legacy cooldown migration rejects an unattributed opener",
+           raises_value(lambda: migrate(
+               unattributed_legacy, "2026-08-01T07:20:00Z")))
 
     malformed_cooldown = json.loads(json.dumps(canonical_state))
     malformed_cooldown["cooldowns"]["codex"]["probe"]["owner_job_id"] = "job-a"
@@ -2563,6 +2715,27 @@ def _selftest():
         "attempt_counter": 1, "attempt_id": "job-b:1", "batch_id": "batch-i",
     })
 
+    malformed_policy_intents = []
+    unknown_action = real_policy_intent(
+        "rate_limited", integration_base, "job-a", 0)
+    unknown_action["action"] = "teleport"
+    malformed_policy_intents.append(unknown_action)
+    unknown_class = real_policy_intent(
+        "rate_limited", integration_base, "job-a", 0)
+    unknown_class["failure_class"] = "mystery"
+    malformed_policy_intents.append(unknown_class)
+    inconsistent_action = real_policy_intent(
+        "rate_limited", integration_base, "job-a", 0)
+    inconsistent_action["action"] = "halt"
+    malformed_policy_intents.append(inconsistent_action)
+    expect("normalized policy rejects unknown and inconsistent intent before mutation",
+           all(raises_value(lambda item=item: transition(
+               integration_base, route_jobs, "job-a", item,
+               "2026-08-01T07:20:00Z", "batch-i", 300, 3,
+           )) for item in malformed_policy_intents)
+           and integration_base.get("total_retries") == 0
+           and integration_base.get("cooldowns") == {})
+
     legacy_transition_state = json.loads(json.dumps(integration_base))
     legacy_transition_state.pop("retry_budget_legacy_base")
     legacy_transition_state.pop("charged_attempt_ids")
@@ -2709,6 +2882,12 @@ def _selftest():
            and missing_fallback.get("action") == "halt"
            and isinstance(mismatched_fallback, dict)
            and mismatched_fallback.get("action") == "halt")
+    expect("ring exhaustion persists health but does not charge a retry",
+           isinstance(missing_fallback, dict)
+           and missing_fallback.get("state", {}).get("circuit_open", {}).get(
+               "codex", {}).get("reason") == "out_of_credits"
+           and missing_fallback.get("state", {}).get("total_retries") == 0
+           and missing_fallback.get("state", {}).get("charged_attempt_ids") == [])
 
     auth_halt = value_or_none(lambda: transition(
         integration_base, route_jobs, "job-a",

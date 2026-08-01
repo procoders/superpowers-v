@@ -98,6 +98,38 @@ unmeasured_usage() {
     '{input_tokens: null, output_tokens: null, advisor_calls: null, backend: $b, measured: false}'
 }
 
+run_scope_gate() {
+  # Return git-derived enforcement facts in global FILES_JSON/VIOL_JSON/BLOCKED.
+  # The allow-list remains in this parent process; the lower-trust child cannot edit it.
+  set --
+  _old_ifs="$IFS"
+  set -f
+  IFS=":"
+  for _glob in $WRITE_ALLOWED; do
+    [ -n "$_glob" ] || continue
+    set -- "$@" --allow "$_glob"
+  done
+  IFS="$_old_ifs"
+  set +f
+
+  SCOPE_JSON=""
+  gate_rc=0
+  set +e
+  SCOPE_JSON="$(python3 "$SCOPE_CHECK" --worktree "$WT" --baseline "$BASELINE_SHA" \
+    "$@" 2>"$ART/scope_check.err")"
+  gate_rc=$?
+  set -e
+  if [ "$gate_rc" -gt 1 ] || [ -z "$SCOPE_JSON" ] \
+     || ! printf '%s' "$SCOPE_JSON" | jq -e . >/dev/null 2>&1; then
+    die "scope gate failed (rc=$gate_rc): $(head -c 300 "$ART/scope_check.err")"
+  fi
+
+  FILES_JSON="$(printf '%s' "$SCOPE_JSON" | jq -c '.files_changed // .changed // []')"
+  VIOL_JSON="$(printf '%s' "$SCOPE_JSON" | jq -c '.violations // []')"
+  BLOCKED="$(printf '%s' "$SCOPE_JSON" | jq -r \
+    'if ((.violations // []) | length) > 0 then "true" else "false" end')"
+}
+
 # --- arguments ---------------------------------------------------------------
 
 RUN_ID=""""; JOB_ID=""; REPO=""; PROMPT_FILE=""; MODEL=""
@@ -271,13 +303,6 @@ USAGE_JSON="$(python3 "$USAGE_EXTRACT" --backend zai --events-log "$EVENTS_LOG" 
   || USAGE_JSON="$(unmeasured_usage)"
 [ -n "$USAGE_JSON" ] || USAGE_JSON="$(unmeasured_usage)"
 
-# Supervisor timeout: killpg'd the whole process tree, exit 124.
-if [ "$exit_code" = "124" ]; then
-  emit_job_result "timeout" false '[]' '[]' \
-    "worker exceeded ${TIMEOUT_SEC}s and was terminated" "" "$WT" 124 "timeout" 0 "$USAGE_JSON"
-  exit 0
-fi
-
 SUMMARY="$(jq -r '.result // ""' "$EVENTS_LOG" 2>/dev/null || echo "")"
 SESSION_ID="$(jq -r '.session_id // ""' "$EVENTS_LOG" 2>/dev/null || echo "")"
 # Same UUID anchor the codex worker uses — `claude -p` emits a real RFC-4122 UUID.
@@ -292,11 +317,30 @@ esac
 # actually came from. A non-GLM model means the request did not reach z.ai, and the job fails
 # rather than letting an unnoticed charge land on some other credential.
 SERVED_MODEL="$(jq -r '(.modelUsage // {}) | keys | .[0] // ""' "$EVENTS_LOG" 2>/dev/null || echo "")"
+
+# Every terminal worker outcome crosses the git-derived gate. BLOCKED has precedence over
+# timeout, provider/model mismatch, and nonzero exit because out-of-scope writes must never be
+# hidden behind an execution failure with fabricated empty enforcement fields.
+run_scope_gate
+if [ "$BLOCKED" = "true" ]; then
+  emit_job_result "blocked" true "$FILES_JSON" "$VIOL_JSON" \
+    "$SUMMARY" "$SESSION_ID" "$WT" "$exit_code" "" 0 "$USAGE_JSON"
+  exit 0
+fi
+
+# Supervisor timeout: killpg'd the whole process tree, exit 124. The clean scope facts remain
+# real even though the timeout itself stays the terminal failure classification.
+if [ "$exit_code" = "124" ]; then
+  emit_job_result "timeout" false "$FILES_JSON" "$VIOL_JSON" \
+    "worker exceeded ${TIMEOUT_SEC}s and was terminated" "" "$WT" 124 "timeout" 0 "$USAGE_JSON"
+  exit 0
+fi
+
 if [ "$exit_code" = "0" ]; then
   case "$SERVED_MODEL" in
     glm-*) : ;;
     *)
-      emit_job_result "error" false '[]' '[]' \
+      emit_job_result "error" false "$FILES_JSON" "$VIOL_JSON" \
         "response came from model '$SERVED_MODEL', not a GLM — the request did not reach z.ai" \
         "$SESSION_ID" "$WT" 1 "other" 0 "$USAGE_JSON"
       exit 0
@@ -312,60 +356,9 @@ if [ "$exit_code" != "0" ]; then
   RETRY_AT="$(printf '%s' "$FAIL_JSON" | jq -r '.retry_at // ""' 2>/dev/null || echo '')"
   NETWORK_SCOPE="$(printf '%s' "$FAIL_JSON" | jq -r '.network_scope // ""' 2>/dev/null || echo '')"
   ERR_TEXT="$(head -c 500 "$STDERR_LOG" 2>/dev/null || echo "")"
-  emit_job_result "error" false '[]' '[]' \
+  emit_job_result "error" false "$FILES_JSON" "$VIOL_JSON" \
     "worker exited $exit_code: $ERR_TEXT" "$SESSION_ID" "$WT" "$exit_code" \
     "$FAILURE_CLASS" "$RETRY_AFTER" "$USAGE_JSON" "$RETRY_AT" "$NETWORK_SCOPE"
-  exit 0
-fi
-
-# --- the git-derived scope gate ----------------------------------------------
-# Deterministic authority. Never re-implement glob matching in bash, and never read what the
-# model said it changed.
-#
-# The allow-list is passed as REPEATED --allow ARGUMENTS, built HERE in the parent shell,
-# rather than through a file on disk. The other five workers write the list to
-# "$ART/write_allowed.globs" before the child starts and read it back after the child exits —
-# but that path is predictable, and the child has Bash + Write with no kernel confinement, so a
-# job can overwrite its own allow-list before the gate ever reads it (reproduced: a child that
-# writes an out-of-scope file and then appends `**` to that file gets back a clean PASS).
-# Positional parameters live in THIS process only; the child has no handle on them and no way to
-# reach them. `--allow-file` stays supported by the gate itself for other callers — only this
-# worker's transport changes. `set -f` (noglob) stays mandatory around the unquoted split:
-# entries are literal globs, not paths to expand against the launcher's cwd.
-set --
-_old_ifs="$IFS"
-set -f
-IFS=":"
-for _glob in $WRITE_ALLOWED; do
-  [ -n "$_glob" ] || continue
-  set -- "$@" --allow "$_glob"
-done
-IFS="$_old_ifs"
-set +f
-
-# The gate signals its VERDICT through the exit code: 0 = clean, 1 = BLOCKED, 2 = a usage or
-# git fault in the gate itself. Only 2 (or unparseable output) is fatal — treating 1 as a
-# crash would turn every blocked job into a dead worker instead of a `blocked` job_result.
-SCOPE_JSON=""
-gate_rc=0
-set +e
-SCOPE_JSON="$(python3 "$SCOPE_CHECK" --worktree "$WT" --baseline "$BASELINE_SHA" \
-  "$@" 2>"$ART/scope_check.err")"
-gate_rc=$?
-set -e
-if [ "$gate_rc" -gt 1 ] || [ -z "$SCOPE_JSON" ] \
-   || ! printf '%s' "$SCOPE_JSON" | jq -e . >/dev/null 2>&1; then
-  die "scope gate failed (rc=$gate_rc): $(head -c 300 "$ART/scope_check.err")"
-fi
-
-FILES_JSON="$(printf '%s' "$SCOPE_JSON" | jq -c '.files_changed // .changed // []')"
-VIOL_JSON="$(printf '%s' "$SCOPE_JSON" | jq -c '.violations // []')"
-BLOCKED="$(printf '%s' "$SCOPE_JSON" | jq -r 'if ((.violations // []) | length) > 0 then "true" else "false" end')"
-
-if [ "$BLOCKED" = "true" ]; then
-  # Leave the worktree for inspection; the caller must NOT merge.
-  emit_job_result "blocked" true "$FILES_JSON" "$VIOL_JSON" \
-    "$SUMMARY" "$SESSION_ID" "$WT" 0 "" 0 "$USAGE_JSON"
   exit 0
 fi
 

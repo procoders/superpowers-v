@@ -51,9 +51,11 @@ env > "$ENV_OUT"
 printf '%s\n' "\$PWD" > "$CWD_OUT"
 case "$1" in
   hang)     sleep 30 ;;
+  hang_oos) printf 'stray\n' > ./NOT_ALLOWED.txt; sleep 30 ;;
   blocked)  printf 'stray\n' > ./NOT_ALLOWED.txt ;;
   success)  printf 'ok\n' > ./allowed.txt ;;
   nonglm)   : ;;
+  nonglm_oos) printf 'stray\n' > ./NOT_ALLOWED.txt ;;
   reset_window)
     echo '[1318] Usage limit reached for the current window; next_flush_time: 2026-08-05T00:00:00Z' >&2
     exit 1 ;;
@@ -61,6 +63,7 @@ case "$1" in
     echo '[1234] Network error' >&2
     exit 1 ;;
   crash)    echo "boom" >&2; exit 1 ;;
+  crash_oos) printf 'stray\n' > ./NOT_ALLOWED.txt; echo "boom" >&2; exit 1 ;;
 esac
 cat <<'JSON'
 {"type":"result","subtype":"success","is_error":false,"result":"stub did the thing",
@@ -183,11 +186,33 @@ check "a hung worker yields status timeout" \
 check "timeout carries failure_class timeout" \
       "$([ "$(printf '%s' "$R" | jq -r .failure_class)" = timeout ] && echo yes || echo no)"
 
+R="$(run_worker hang_oos "allowed.txt" 2 glm-5.2)"
+check "out-of-scope timeout is BLOCKED before timeout classification" \
+      "$([ "$(printf '%s' "$R" | jq -r .status)" = blocked ] && echo yes || echo no)"
+check "out-of-scope timeout reports real changed and violating files" \
+      "$(printf '%s' "$R" | jq -e \
+         '(.files_changed | index("NOT_ALLOWED.txt")) and (.violations | index("NOT_ALLOWED.txt"))' \
+         >/dev/null && echo yes || echo no)"
+
 R="$(run_worker nonglm "allowed.txt" 60 claude-opus-4-8)"
 check "a non-GLM response fails the job" \
       "$([ "$(printf '%s' "$R" | jq -r .status)" = error ] && echo yes || echo no)"
 check "the non-GLM failure says why" \
       "$(printf '%s' "$R" | jq -r .summary | grep -q 'did not reach z.ai' && echo yes || echo no)"
+
+R="$(run_worker nonglm_oos "allowed.txt" 60 claude-opus-4-8)"
+check "out-of-scope non-GLM response is BLOCKED" \
+      "$([ "$(printf '%s' "$R" | jq -r .status)" = blocked ] && echo yes || echo no)"
+check "out-of-scope non-GLM response reports violation" \
+      "$(printf '%s' "$R" | jq -e '.violations | index("NOT_ALLOWED.txt")' \
+         >/dev/null && echo yes || echo no)"
+
+R="$(run_worker crash_oos "allowed.txt" 60 glm-5.2)"
+check "out-of-scope nonzero worker is BLOCKED" \
+      "$([ "$(printf '%s' "$R" | jq -r .status)" = blocked ] && echo yes || echo no)"
+check "out-of-scope nonzero worker reports violation" \
+      "$(printf '%s' "$R" | jq -e '.violations | index("NOT_ALLOWED.txt")' \
+         >/dev/null && echo yes || echo no)"
 
 R="$(run_worker reset_window "allowed.txt" 60 glm-5.2)"
 check "reset-window class is preserved" \
