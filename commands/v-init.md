@@ -551,7 +551,18 @@ was, in those two fields).
       "devin":       { "deep": "claude-opus-4.6",        "standard": "claude-sonnet-4",        "light": "gpt-5.5" },
       "opencode":    { "deep": "anthropic/claude-opus-4-6", "standard": "openai/gpt-5.6-terra", "light": "opencode/mimo-v2.5-free" }
     }
-  }
+  },
+  "pools": {
+    "balanced": {
+      "light":    [ { "backend": "codex" }, { "backend": "zai" } ],
+      "standard": [ { "backend": "codex", "weight": 2 }, { "backend": "zai" } ]
+    },
+    "cost-aware": {
+      "light":    [ { "backend": "codex" }, { "backend": "zai" } ],
+      "standard": [ { "backend": "codex", "weight": 2 }, { "backend": "zai" } ]
+    }
+  },
+  "backend_max_parallel": { "zai": 4 }
 }
 ```
 
@@ -648,6 +659,32 @@ identically to `balanced`. Only `cost-aware.claude.standard` differs: `sonnet`, 
   claude uses native tier aliases. Tell the user they can refresh or customize this map any time
   with [`/v:models`](v-models.md) — they do **not** need to hand-edit JSON. The map
   is project-local config; it is documented but not committed in the plugin repo.
+- **`pools` — SEED the per-stance, per-tier Codex + zai worker rings shown above.** The only
+  accepted shape is `{<stance>: {<tier>: [{backend, optional model, optional weight}]}}`; unlike
+  `models`, there is no legacy flat pool shape and no auto-detection. `backend` is required;
+  `model` is an optional non-empty override; `weight` is an optional positive, non-boolean integer
+  (default `1`). The `standard` example therefore rotates manifest-order job counts
+  `codex, codex, zai, …`, while `light` alternates. Config presence does **not** activate routing:
+  a planner still emits `backend: pool` only as an explicit operator choice for an eligible
+  standard/light implementer. Conservative and Claude-only have no shipped pool entries.
+- **Claude is intentionally absent from shipped pools.** Its Claude/Claude Code quota is shared
+  with the operator's live session; add `{ "backend": "claude" }` only as a deliberate opt-in.
+  To down-weight Claude, keep it at weight `1` and give Codex/zai larger integer weights. Never add
+  Claude implicitly because another member is unavailable.
+- **`backend_max_parallel` is a top-level map of concrete backend → positive, non-boolean integer.**
+  It is shape-validated and the prose dispatcher respects it while filling batches; this does not
+  create or claim a new deterministic scheduler/semaphore gate. The shipped `zai: 4` value depends
+  on prerequisite PR 1 (`feat/zai-backend`, PR #5). This pool release MUST NOT merge before PR 1;
+  do not add a cross-branch markdown link because the repository's dead-link guard is line-based.
+- Both new blocks are committed team **policy**, not machine-local capability. `pools` and
+  `backend_max_parallel` must be objects when present; structural malformation fails closed in the
+  shared project-config loader. Per-member/per-limit mistakes are dropped with surfaced warnings,
+  never silently interpreted as a different route. Runtime availability is evaluated and frozen
+  separately when a pool run starts; do not add availability fields here.
+- [`/v:models`](v-models.md) refreshes only `models`. It MUST preserve `pools`,
+  `backend_max_parallel`, weights, and optional member `model` overrides unchanged. Members without
+  `model` follow the refreshed tier map automatically; explicit pool-member pins remain
+  operator-owned.
 
 ### 4b. User capability cache → `~/.claude/compound-v-capabilities.json` (uncommitted)
 
@@ -719,7 +756,10 @@ capability still missing (with the exact next step). If Codex came back
 version-incompatible, say so plainly and recommend updating it. Mention that the
 default tier→model `models` map was seeded into `.claude/compound-v.json`, and that
 [`/v:models`](v-models.md) refreshes or customizes it whenever a backend ships new
-models.
+models while preserving pool policy. Also report that the shipped Codex + zai `pools` and
+`backend_max_parallel.zai` ceiling were seeded, that config alone does not activate pooled jobs,
+and that Claude membership remains explicit opt-in. Describe weights as deterministic job-count
+rotation only—never as balanced tokens, credits, messages, time, savings, or quota.
 
 - **Next:** run `/v:onboard` to build the project knowledge base (architecture docs + AGENTS.md bridge). This is a suggestion, not automatic.
 
