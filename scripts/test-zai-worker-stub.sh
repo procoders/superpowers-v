@@ -3,7 +3,8 @@
 # test-zai-worker-stub.sh — stub-first proof for scripts/compound-v-run-zai-worker.sh.
 # A FAKE `claude` is placed first on PATH; the real binary is NEVER run, no network, no key.
 #
-# What this test CAN prove: the pinned argv, the credential scrub, and the four result paths.
+# What this test CAN prove: the pinned argv, the credential scrub, and the five result paths
+# (success, blocked, timeout, non-GLM, crash).
 # What it CANNOT prove: how the real binary INTERPRETS that argv. The defect that broke the
 # first draft of this backend — `--allowedTools` not defining the tool set — passed every
 # conceivable argv assertion. That class is covered by test-zai-wire-smoke.sh instead.
@@ -178,6 +179,19 @@ check "a non-GLM response fails the job" \
       "$([ "$(printf '%s' "$R" | jq -r .status)" = error ] && echo yes || echo no)"
 check "the non-GLM failure says why" \
       "$(printf '%s' "$R" | jq -r .summary | grep -q 'did not reach z.ai' && echo yes || echo no)"
+
+# The `crash` mode was declared in make_stub() but never invoked by any run_worker call, so
+# the worker's entire exit_code != 0 branch (the classifier call, failure_class,
+# retry_after_seconds, ERR_TEXT) had ZERO test coverage. Wire it up.
+R="$(run_worker crash "allowed.txt" 60 glm-5.2)"
+check "a crashing worker yields status error" \
+      "$([ "$(printf '%s' "$R" | jq -r .status)" = error ] && echo yes || echo no)"
+check "a crashing worker is not blocked" \
+      "$([ "$(printf '%s' "$R" | jq -r .blocked)" = false ] && echo yes || echo no)"
+check "a crashing worker carries the real exit code" \
+      "$([ "$(printf '%s' "$R" | jq -r .exit_code)" = 1 ] && echo yes || echo no)"
+check "a crashing worker gets a classified failure_class (not null)" \
+      "$([ "$(printf '%s' "$R" | jq -r .failure_class)" = other ] && echo yes || echo no)"
 
 echo
 echo "SELFTEST: $PASS ok, $FAILED fail"
