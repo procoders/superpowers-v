@@ -17,9 +17,9 @@ Actions:
 Key rules (grounded in the research):
   * out_of_credits / auth          -> NEVER retry (retrying burns time + rate-limits harder)
   * out_of_credits                 -> circuit-break the backend for the run + re-route the
-                                      remaining jobs to the fallback (codex -> claude), the
-                                      SAME env-aware rewrite used when codex is absent. If
-                                      no fallback -> halt (resumable).
+                                      job to the next viable frozen pool member when pool
+                                      context exists, otherwise use the concrete backend's
+                                      env-aware fallback. If no fallback -> halt (resumable).
   * rate_limited/overloaded/network/timeout -> retry SAME backend, exp backoff + jitter,
                                       honoring retry-after; capped per class AND by a
                                       run-level max_total_retries (anti retry-storm).
@@ -28,10 +28,16 @@ Key rules (grounded in the research):
 Usage:
   compound-v-failure-policy.py --failure-class rate_limited --backend codex --attempts 1
       [--total-retries 0] [--max-total-retries 12] [--retry-after 0] [--no-jitter]
+      [--pool-members '[{"backend":"codex"},{"backend":"zai"}]']
+      [--current-pool-index 0]
+      [--circuit-open '{"zai":{"open":true,"reason":"out_of_credits",
+        "opened_at":"2026-08-01T00:00:00Z","cleared_by":null}}']
   compound-v-failure-policy.py --selftest
 
 Output (stdout): JSON {action, reason, backoff_seconds, reroute_to, escalate_tier,
-circuit_break}. Exit 0 (the decision IS the result); 2 on usage error.
+circuit_break, next_pool_index, consume_total_retry, earliest_reset_seconds,
+clear_assignment, circuit_break_backend}. Exit 0 (the decision IS the result); 2 on
+usage error.
 
 Python 3.9-safe, stdlib only.
 """
@@ -55,11 +61,21 @@ PER_CLASS_MAX = {
 
 # Backend fallback chain — every external backend reroutes to claude (always available); claude
 # itself has no further local fallback. Mirrors routing-policy's env-aware reroute. The lower-trust
-# external workers (antigravity, cursor) reroute UP to claude on a circuit-break, never down.
-FALLBACK = {"codex": "claude", "antigravity": "claude", "cursor": "claude", "claude": None}
+# external workers (antigravity, cursor, zai) reroute UP to claude on a circuit-break, never down.
+# Devin/opencode retain their existing no-fallback behavior.
+FALLBACK = {"codex": "claude", "antigravity": "claude", "cursor": "claude",
+            "zai": "claude", "claude": None}
+
+CONCRETE_BACKENDS = (
+    "codex", "claude", "antigravity", "cursor", "devin", "opencode", "zai",
+)
 
 BACKOFF_BASE = 2
 BACKOFF_CAP = 60
+RESET_FIELDS = ("reset_seconds", "retry_after_seconds", "resets_in_seconds")
+CIRCUIT_REASONS = ("out_of_credits", "auth")
+CIRCUIT_CLEARED_BY = ("top_up", "reauth", "probe")
+CIRCUIT_ENTRY_FIELDS = frozenset(("open", "reason", "opened_at", "cleared_by"))
 
 
 def _backoff(attempts, retry_after, jitter):
@@ -71,11 +87,149 @@ def _backoff(attempts, retry_after, jitter):
     return round(min(base, BACKOFF_CAP), 2)
 
 
+def _member_backend(member):
+    if isinstance(member, str):
+        return member
+    if isinstance(member, dict):
+        value = member.get("backend")
+        if isinstance(value, str):
+            return value
+    return None
+
+
+def _canonical_breaker_is_open(member, circuit_open):
+    backend = _member_backend(member)
+    return (
+        isinstance(circuit_open, dict)
+        and backend in circuit_open
+        and circuit_open[backend].get("open") is True
+    )
+
+
+def _member_is_viable(member, exhausted_backend, circuit_open):
+    backend = _member_backend(member)
+    if not backend or backend == "pool" or backend == exhausted_backend:
+        return False
+    if isinstance(member, dict) and member.get("available") is False:
+        return False
+    return not _canonical_breaker_is_open(member, circuit_open)
+
+
+def _next_pool_member(pool_members, current_pool_index, exhausted_backend,
+                      circuit_open):
+    if not isinstance(pool_members, (list, tuple)) or not pool_members:
+        return None, None
+    if (not isinstance(current_pool_index, int)
+            or isinstance(current_pool_index, bool)
+            or current_pool_index < 0
+            or current_pool_index >= len(pool_members)):
+        return None, None
+    for offset in range(1, len(pool_members) + 1):
+        index = (current_pool_index + offset) % len(pool_members)
+        member = pool_members[index]
+        if _member_is_viable(member, exhausted_backend, circuit_open):
+            return index, _member_backend(member)
+    return None, None
+
+
+def _validate_pool_context(backend, pool_members, current_pool_index,
+                           circuit_open):
+    supplied_members = pool_members is not None
+    supplied_index = current_pool_index is not None
+    if supplied_members != supplied_index:
+        raise ValueError("pool_members and current_pool_index must be supplied together")
+    if circuit_open is not None and not isinstance(circuit_open, dict):
+        raise ValueError("circuit_open must be an object keyed by concrete backend")
+    if isinstance(circuit_open, dict):
+        for breaker_backend, entry in circuit_open.items():
+            if breaker_backend not in CONCRETE_BACKENDS:
+                raise ValueError("circuit_open key must be a concrete backend (got %r)"
+                                 % breaker_backend)
+            if not isinstance(entry, dict):
+                raise ValueError("circuit_open[%s] must be an object"
+                                 % breaker_backend)
+            if frozenset(entry.keys()) != CIRCUIT_ENTRY_FIELDS:
+                raise ValueError("circuit_open[%s] must contain exactly open, reason, "
+                                 "opened_at, cleared_by" % breaker_backend)
+            is_open = entry.get("open")
+            reason = entry.get("reason")
+            opened_at = entry.get("opened_at")
+            cleared_by = entry.get("cleared_by")
+            if not isinstance(is_open, bool):
+                raise ValueError("circuit_open[%s].open must be true/false"
+                                 % breaker_backend)
+            if is_open is True and reason not in CIRCUIT_REASONS:
+                raise ValueError("circuit_open[%s].reason must be out_of_credits or "
+                                 "auth while open" % breaker_backend)
+            if is_open is not True and reason not in CIRCUIT_REASONS + (None,):
+                raise ValueError("circuit_open[%s].reason must be out_of_credits, auth, "
+                                 "or null" % breaker_backend)
+            if not isinstance(opened_at, str) or not opened_at:
+                raise ValueError("circuit_open[%s].opened_at must be a non-empty string"
+                                 % breaker_backend)
+            if cleared_by is not None and cleared_by not in CIRCUIT_CLEARED_BY:
+                raise ValueError("circuit_open[%s].cleared_by must be null, top_up, "
+                                 "reauth, or probe" % breaker_backend)
+            if is_open is True and cleared_by is not None:
+                raise ValueError("circuit_open[%s].cleared_by must be null while open"
+                                 % breaker_backend)
+    if not supplied_members:
+        return False
+    if not isinstance(pool_members, (list, tuple)) or not pool_members:
+        raise ValueError("pool_members must be a non-empty ordered array")
+    if (not isinstance(current_pool_index, int)
+            or isinstance(current_pool_index, bool)
+            or current_pool_index < 0
+            or current_pool_index >= len(pool_members)):
+        raise ValueError("current_pool_index is outside pool_members")
+    for member in pool_members:
+        candidate = _member_backend(member)
+        if candidate not in CONCRETE_BACKENDS:
+            raise ValueError("pool candidate backend must be concrete (got %r)"
+                             % candidate)
+        if isinstance(member, dict):
+            if "available" in member and not isinstance(member["available"], bool):
+                raise ValueError("pool candidate available must be boolean")
+            if "circuit_open" in member:
+                raise ValueError("pool member circuit_open is invalid; use canonical "
+                                 "top-level circuit_open state")
+    if _member_backend(pool_members[current_pool_index]) != backend:
+        raise ValueError("current pool member does not match assigned backend %r" % backend)
+    return True
+
+
+def _earliest_reset_seconds(pool_members, retry_after):
+    values = []
+    if isinstance(retry_after, (int, float)) and not isinstance(retry_after, bool):
+        if retry_after > 0:
+            values.append(retry_after)
+    if isinstance(pool_members, (list, tuple)):
+        for member in pool_members:
+            if not isinstance(member, dict):
+                continue
+            for field in RESET_FIELDS:
+                value = member.get(field)
+                if (isinstance(value, (int, float))
+                        and not isinstance(value, bool) and value > 0):
+                    values.append(value)
+    return min(values) if values else None
+
+
 def decide(failure_class, backend, attempts, total_retries, max_total_retries,
-           retry_after=0, jitter=True, fallback_available=True, current_tier=None):
+           retry_after=0, jitter=True, fallback_available=True, current_tier=None,
+           pool_members=None, current_pool_index=None, circuit_open=None):
+    if backend not in CONCRETE_BACKENDS:
+        raise ValueError("backend must be concrete (got %r)" % backend)
+    in_pool = _validate_pool_context(
+        backend, pool_members, current_pool_index, circuit_open)
+    earliest_reset = _earliest_reset_seconds(pool_members, retry_after)
+
     def out(action, reason, **kw):
         d = {"action": action, "reason": reason, "backoff_seconds": 0,
-             "reroute_to": None, "escalate_tier": False, "circuit_break": False}
+             "reroute_to": None, "escalate_tier": False, "circuit_break": False,
+             "next_pool_index": None, "consume_total_retry": False,
+             "earliest_reset_seconds": earliest_reset, "clear_assignment": False,
+             "circuit_break_backend": None}
         d.update(kw)
         return d
 
@@ -85,19 +239,40 @@ def decide(failure_class, backend, attempts, total_retries, max_total_retries,
     if failure_class == "auth":
         # Auth won't self-heal by retrying; stop and let the human re-auth (/v:init).
         return out("halt", "auth failure on %s — fix the key/login (e.g. /v:init), then "
-                   "/v:resume" % backend, circuit_break=True)
+                   "/v:resume" % backend, circuit_break=True,
+                   circuit_break_backend=backend)
 
     if failure_class == "out_of_credits":
+        if in_pool and total_retries >= max_total_retries:
+            return out("halt", "run-level retry budget exhausted (%d/%d) while %s "
+                       "was out of credits — anti retry-storm cap; /v:resume"
+                       % (total_retries, max_total_retries, backend),
+                       circuit_break=True, circuit_break_backend=backend)
+
+        if in_pool:
+            next_index, next_backend = _next_pool_member(
+                pool_members, current_pool_index, backend, circuit_open)
+            if next_backend:
+                return out("reroute", "%s out of credits — circuit-break only it and "
+                           "re-route this job to next pool member %s (announce the cost "
+                           "change)" % (backend, next_backend),
+                           reroute_to=next_backend, circuit_break=True,
+                           circuit_break_backend=backend,
+                           next_pool_index=next_index, consume_total_retry=True,
+                           clear_assignment=True)
+
         # Re-route ONLY if a fallback exists AND it is actually viable (not itself
         # circuit-open / out-of-credits / unauthenticated). Caller passes that health in.
         fb = FALLBACK.get(backend)
         if fb and fallback_available:
             return out("reroute", "%s out of credits — circuit-break it and re-route "
                        "remaining jobs to %s (announce the cost change)" % (backend, fb),
-                       reroute_to=fb, circuit_break=True)
+                       reroute_to=fb, circuit_break=True,
+                       circuit_break_backend=backend,
+                       consume_total_retry=in_pool, clear_assignment=in_pool)
         return out("halt", "%s out of credits and the fallback (%s) is unavailable too — "
                    "top up / fix the fallback, then /v:resume" % (backend, fb or "none"),
-                   circuit_break=True)
+                   circuit_break=True, circuit_break_backend=backend)
 
     if failure_class == "context_length":
         # Escalate to a bigger tier — UNLESS we are already at the deepest tier, in which
@@ -118,7 +293,8 @@ def decide(failure_class, backend, attempts, total_retries, max_total_retries,
                        "storm cap; /v:resume" % (total_retries, max_total_retries))
         return out("retry", "%s on %s — retry (attempt %d/%d)"
                    % (failure_class, backend, attempts + 1, cap),
-                   backoff_seconds=_backoff(attempts, retry_after, jitter))
+                   backoff_seconds=_backoff(attempts, retry_after, jitter),
+                   consume_total_retry=True)
 
     return out("halt", "unclassified failure on %s" % backend)
 
@@ -169,6 +345,221 @@ def _selftest():
     bcap = _backoff(10, 0, False)  # exercise the ceiling directly (policy caps attempts first)
     check("backoff-grows", True, True, b1 > b0)
     check("backoff-capped", True, True, bcap == BACKOFF_CAP)
+
+    # Pool-aware quota semantics. These call the public decide() API exactly as the
+    # dispatcher does: members are ordered frozen slots and the backend argument is
+    # always the concrete current assignment, never the routing token ``pool``.
+    members = [
+        {"backend": "codex", "model": "gpt-5.6", "reset_seconds": 300},
+        {"backend": "zai", "model": "glm-5.2", "reset_seconds": 120},
+        {"backend": "cursor", "model": "composer-2"},
+    ]
+    try:
+        d = decide("rate_limited", "codex", 0, 0, 12, jitter=False,
+                   pool_members=members, current_pool_index=0)
+        check("pool-rate-limit-preserves-assignment", d["action"], "retry",
+              d.get("reroute_to") is None
+              and d.get("next_pool_index") is None
+              and d.get("clear_assignment") is False)
+    except (TypeError, KeyError) as e:
+        check("pool-rate-limit-preserves-assignment", "error", "retry", str(e))
+
+    try:
+        d = decide("out_of_credits", "codex", 0, 0, 12,
+                   pool_members=members, current_pool_index=0)
+        check("pool-ooc-advances", d["action"], "reroute",
+              d.get("reroute_to") == "zai"
+              and d.get("next_pool_index") == 1
+              and d.get("circuit_break_backend") == "codex"
+              and d.get("consume_total_retry") is True
+              and d.get("clear_assignment") is True)
+    except (TypeError, KeyError) as e:
+        check("pool-ooc-advances", "error", "reroute", str(e))
+
+    skipped = [
+        {"backend": "codex"},
+        {"backend": "zai", "available": False},
+        {"backend": "cursor"},
+        {"backend": "antigravity"},
+    ]
+    try:
+        d = decide("out_of_credits", "codex", 0, 1, 12,
+                   pool_members=skipped, current_pool_index=0,
+                   circuit_open={"cursor": {
+                       "open": True, "reason": "out_of_credits",
+                       "opened_at": "2026-08-01T00:00:00Z", "cleared_by": None,
+                   }})
+        check("pool-ooc-skips-unavailable-and-open", d["action"], "reroute",
+              d.get("reroute_to") == "antigravity"
+              and d.get("next_pool_index") == 3)
+    except (TypeError, KeyError) as e:
+        check("pool-ooc-skips-unavailable-and-open", "error", "reroute", str(e))
+
+    exhausted = [
+        {"backend": "codex", "reset_seconds": 300},
+        {"backend": "zai", "resets_in_seconds": 120},
+    ]
+    try:
+        d = decide("out_of_credits", "codex", 0, 1, 12,
+                   pool_members=exhausted, current_pool_index=0,
+                   circuit_open={"zai": {
+                       "open": True, "reason": "out_of_credits",
+                       "opened_at": "2026-08-01T00:00:00Z", "cleared_by": None,
+                   }})
+        check("pool-exhaustion-uses-concrete-fallback", d["action"], "reroute",
+              d.get("reroute_to") == "claude"
+              and d.get("next_pool_index") is None
+              and d.get("consume_total_retry") is True)
+        d = decide("out_of_credits", "codex", 0, 12, 12, retry_after=200,
+                   fallback_available=False, pool_members=exhausted,
+                   current_pool_index=0,
+                   circuit_open={"zai": {
+                       "open": True, "reason": "out_of_credits",
+                       "opened_at": "2026-08-01T00:00:00Z", "cleared_by": None,
+                   }})
+        check("pool-terminal-halt-reset-and-budget", d["action"], "halt",
+              d.get("earliest_reset_seconds") == 120
+              and d.get("consume_total_retry") is False)
+    except (TypeError, KeyError) as e:
+        check("pool-exhaustion-and-terminal-reset", "error", "reroute", str(e))
+
+    check("pool-never-enters-concrete-fallback-table", True, True,
+          "pool" not in FALLBACK)
+    try:
+        d = decide("out_of_credits", "zai", 0, 1, 12,
+                   pool_members=[{"backend": "zai"},
+                                 {"backend": "codex"}],
+                   current_pool_index=0,
+                   circuit_open={"codex": {
+                       "open": True, "reason": "out_of_credits",
+                       "opened_at": "2026-08-01T00:00:00Z", "cleared_by": None,
+                   }})
+        check("pool-zai-exhaustion-uses-ordinary-fallback", d["action"], "reroute",
+              d.get("reroute_to") == "claude")
+    except (TypeError, KeyError, ValueError) as e:
+        check("pool-zai-exhaustion-uses-ordinary-fallback", "error", "reroute", str(e))
+    try:
+        decide("rate_limited", "pool", 0, 0, 12)
+        check("policy-rejects-routing-token", "retry", "error", False)
+    except ValueError:
+        check("policy-rejects-routing-token", "error", "error")
+    try:
+        d = decide(
+            "out_of_credits", "codex", 0, 0, 12,
+            pool_members=[{"backend": "codex"}, {"backend": "zai"},
+                          {"backend": "cursor"}],
+            current_pool_index=0,
+            circuit_open={"zai": {
+                "open": True, "reason": "out_of_credits",
+                "opened_at": "2026-08-01T00:00:00Z", "cleared_by": None,
+            }},
+        )
+        check("pool-skips-canonical-open-breaker", d["action"], "reroute",
+              d.get("reroute_to") == "cursor" and d.get("next_pool_index") == 2)
+    except (TypeError, KeyError, ValueError) as e:
+        check("pool-skips-canonical-open-breaker", "error", "reroute", str(e))
+    try:
+        decide("out_of_credits", "codex", 0, 0, 12,
+               pool_members=[{"backend": "codex"}, {"backend": "mystery"}],
+               current_pool_index=0)
+        check("pool-rejects-unknown-candidate", "reroute", "error", False)
+    except ValueError:
+        check("pool-rejects-unknown-candidate", "error", "error")
+    malformed_contexts = [
+        {"pool_members": [{"backend": "codex"}]},
+        {"current_pool_index": 0},
+        {"pool_members": "codex,zai", "current_pool_index": 0},
+        {"pool_members": [{"backend": "codex"}], "current_pool_index": 3},
+    ]
+    malformed_rejected = True
+    for context in malformed_contexts:
+        try:
+            decide("out_of_credits", "codex", 0, 0, 12, **context)
+            malformed_rejected = False
+        except ValueError:
+            pass
+    check("pool-rejects-partial-or-malformed-context", "error", "error",
+          malformed_rejected)
+    try:
+        d = decide(
+            "out_of_credits", "codex", 0, 12, 12, fallback_available=False,
+            pool_members=[
+                {"backend": "codex", "reset_seconds": 300,
+                 "retry_after_seconds": 60, "resets_in_seconds": 180},
+                {"backend": "zai", "reset_seconds": 120},
+            ],
+            current_pool_index=0,
+            circuit_open={"zai": {
+                "open": True, "reason": "out_of_credits",
+                "opened_at": "2026-08-01T00:00:00Z", "cleared_by": None,
+            }},
+        )
+        check("pool-reset-minimum-considers-every-field", d["action"], "halt",
+              d.get("earliest_reset_seconds") == 60)
+    except (TypeError, KeyError, ValueError) as e:
+        check("pool-reset-minimum-considers-every-field", "error", "halt", str(e))
+    invalid_breaker_maps = [
+        {"codex": True},
+        {"codex": {}},
+        {"codex": {"open": "yes"}},
+        {"pool": {"open": True}},
+        {"mystery": {"open": True}},
+    ]
+    invalid_breakers_rejected = True
+    for breakers in invalid_breaker_maps:
+        try:
+            decide("out_of_credits", "codex", 0, 0, 12,
+                   pool_members=[{"backend": "codex"}, {"backend": "zai"}],
+                   current_pool_index=0, circuit_open=breakers)
+            invalid_breakers_rejected = False
+        except ValueError:
+            pass
+    check("canonical-breakers-reject-booleans-malformed-and-unknown-keys",
+          "error", "error", invalid_breakers_rejected)
+    try:
+        decide("out_of_credits", "codex", 0, 0, 12,
+               pool_members=[{"backend": "codex"},
+                             {"backend": "zai", "circuit_open": True}],
+               current_pool_index=0)
+        check("member-local-breaker-is-rejected", "reroute", "error", False)
+    except ValueError:
+        check("member-local-breaker-is-rejected", "error", "error")
+    exact_contract_rejected = True
+    for breakers in [
+        {"codex": {"open": False}},
+        {"codex": {"open": True, "reason": "bogus",
+                   "opened_at": "2026-08-01T00:00:00Z", "cleared_by": None}},
+        {"codex": {"open": True, "reason": "auth",
+                   "opened_at": "2026-08-01T00:00:00Z", "cleared_by": "reauth"}},
+        {"codex": {"open": False, "reason": "bogus",
+                   "opened_at": "2026-08-01T00:00:00Z", "cleared_by": None}},
+        {"codex": {"open": False, "reason": None,
+                   "opened_at": "", "cleared_by": "probe"}},
+        {"codex": {"open": False, "reason": None,
+                   "opened_at": "2026-08-01T00:00:00Z", "cleared_by": "manual"}},
+    ]:
+        try:
+            decide("out_of_credits", "codex", 0, 0, 12,
+                   pool_members=[{"backend": "codex"}, {"backend": "zai"}],
+                   current_pool_index=0, circuit_open=breakers)
+            exact_contract_rejected = False
+        except ValueError:
+            pass
+    check("canonical-breaker-exact-fields-and-reason-contract",
+          "error", "error", exact_contract_rejected)
+    try:
+        d = decide(
+            "rate_limited", "codex", 0, 0, 12, jitter=False,
+            pool_members=[{"backend": "codex"}, {"backend": "zai"}],
+            current_pool_index=0,
+            circuit_open={"zai": {
+                "open": False, "reason": None,
+                "opened_at": "2026-08-01T00:00:00Z", "cleared_by": "probe",
+            }},
+        )
+        check("canonical-closed-breaker-valid-combination", d["action"], "retry")
+    except ValueError as e:
+        check("canonical-closed-breaker-valid-combination", "error", "retry", str(e))
     print("SELFTEST: %d ok, %d fail" % (ok, fail))
     return 0 if fail == 0 else 1
 
@@ -176,7 +567,7 @@ def _selftest():
 def main(argv):
     p = argparse.ArgumentParser(description="Decide the action for a classified failure.")
     p.add_argument("--failure-class")
-    p.add_argument("--backend", default="codex")
+    p.add_argument("--backend", choices=CONCRETE_BACKENDS, default="codex")
     p.add_argument("--attempts", type=int, default=0,
                    help="how many times THIS job has already been retried")
     p.add_argument("--total-retries", type=int, default=0,
@@ -189,6 +580,12 @@ def main(argv):
                    help="set when the fallback backend is itself circuit-open/unavailable")
     p.add_argument("--current-tier", choices=["deep", "standard", "light"],
                    help="the job's current tier (for context_length escalation)")
+    p.add_argument("--pool-members", type=json.loads,
+                   help="ordered frozen pool member JSON array")
+    p.add_argument("--current-pool-index", type=int,
+                   help="current assignment's index in --pool-members")
+    p.add_argument("--circuit-open", type=json.loads,
+                   help="canonical state.json circuit_open object")
     p.add_argument("--no-jitter", action="store_true")
     p.add_argument("--selftest", action="store_true")
     args = p.parse_args(argv)
@@ -201,7 +598,9 @@ def main(argv):
     d = decide(args.failure_class, args.backend, args.attempts, args.total_retries,
                args.max_total_retries, retry_after=args.retry_after,
                jitter=not args.no_jitter, fallback_available=not args.fallback_open,
-               current_tier=args.current_tier)
+               current_tier=args.current_tier, pool_members=args.pool_members,
+               current_pool_index=args.current_pool_index,
+               circuit_open=args.circuit_open)
     print(json.dumps(d))
     return 0
 

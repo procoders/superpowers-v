@@ -38,6 +38,10 @@ import sys
 
 TIMEOUT_EXIT_CODE = 124
 
+CONCRETE_BACKENDS = (
+    "codex", "claude", "antigravity", "cursor", "devin", "opencode", "zai",
+)
+
 RETRYABLE = {"rate_limited", "overloaded", "timeout", "network", "other"}
 
 # Substring signatures, checked in PRIORITY ORDER (most specific first). Lowercased
@@ -229,6 +233,8 @@ def _extract_retry_after(text):
 
 def classify(backend, exit_code, stderr):
     """Return (failure_class, matched_signature_or_None, retry_after_seconds)."""
+    if backend not in CONCRETE_BACKENDS:
+        raise ValueError("backend must be concrete (got %r)" % backend)
     if exit_code == 0:
         return "none", None, 0
     if exit_code == TIMEOUT_EXIT_CODE:
@@ -325,16 +331,51 @@ def _selftest():
     assert _extract_retry_after("Retry-After: 30") == 30
     assert _extract_retry_after("please try again in 5 days") == 5 * 86400
     assert classify("codex", 1, "rate limited, retry-after: 12")[2] == 12
+
+    # The CLI accepts every concrete worker backend shipped after PR 1, while the
+    # manifest-only routing token ``pool`` remains structurally unclassifiable.
+    concrete = ("claude", "codex", "antigravity", "cursor", "devin", "opencode", "zai")
+    try:
+        parser = _build_parser()
+        for backend in concrete:
+            parser.parse_args(["--backend", backend, "--exit-code", "1"])
+        import contextlib
+        import io
+        rejected_pool = False
+        with contextlib.redirect_stderr(io.StringIO()):
+            try:
+                parser.parse_args(["--backend", "pool", "--exit-code", "1"])
+            except SystemExit as e:
+                rejected_pool = e.code == 2
+        if rejected_pool:
+            ok += 1
+        else:
+            fail += 1
+            print("  FAIL classifier CLI accepted routing token 'pool'")
+    except (NameError, SystemExit) as e:
+        fail += 1
+        print("  FAIL classifier concrete-backend CLI coverage: %s" % e)
+    try:
+        classify("pool", 1, "429 insufficient_quota")
+        fail += 1
+        print("  FAIL classify() accepted routing token 'pool'")
+    except ValueError:
+        ok += 1
     print("SELFTEST: %d ok, %d fail" % (ok, fail))
     return 0 if fail == 0 else 1
 
 
-def main(argv):
+def _build_parser():
     p = argparse.ArgumentParser(description="Classify a backend failure.")
-    p.add_argument("--backend", choices=["codex", "claude", "antigravity", "cursor"])
+    p.add_argument("--backend", choices=CONCRETE_BACKENDS)
     p.add_argument("--exit-code", type=int)
     p.add_argument("--stderr-file")
     p.add_argument("--selftest", action="store_true")
+    return p
+
+
+def main(argv):
+    p = _build_parser()
     args = p.parse_args(argv)
 
     if args.selftest:
