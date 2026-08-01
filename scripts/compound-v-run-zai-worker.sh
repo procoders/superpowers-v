@@ -285,9 +285,12 @@ env -i "$@" \
 #
 #  4. `--bare` is deliberately NOT used. In bare mode the built-in set is exactly
 #     Bash,Edit,Read — `Write` does not exist and cannot be restored by --tools — so a bare
-#     worker cannot create a new file. HOME/CLAUDE_CONFIG_DIR redirection buys the same
-#     isolation (no operator hooks, plugins, skills catalogue or CLAUDE.md in the request,
-#     and ~/.claude/.credentials.json out of reach) while keeping Write.
+#     worker cannot create a new file. HOME/CLAUDE_CONFIG_DIR redirection buys ONLY the
+#     USER-LEVEL half of bare's isolation (no operator hooks, plugins, skills catalogue,
+#     ~/.claude/.credentials.json out of reach) while keeping Write. It does NOT exclude
+#     CLAUDE.md: $WT is a checkout of this repo, so the PROJECT-level CLAUDE.md and
+#     .claude/settings.json are still live and reach z.ai on every job — measured with a
+#     marker file, see adapter-zai.md's Compliance section for the disclosure.
 
 USAGE_JSON="$(python3 "$USAGE_EXTRACT" --backend zai --events-log "$EVENTS_LOG" 2>/dev/null)" \
   || USAGE_JSON="$(unmeasured_usage)"

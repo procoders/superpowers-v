@@ -83,7 +83,7 @@ env -i PATH="$PATH" TMPDIR="$TMPDIR" LANG="$LANG" \
 
 - **`--tools` and `--allowedTools` are DIFFERENT THINGS and BOTH are required.** `--tools` decides which built-in tools *exist*; `--allowedTools` decides which run *without asking*. Measured: with only `--allowedTools` the wire carried `Bash, Edit, Read` — no `Write`, and `Bash` present despite being "withheld"; with only `--tools`, `dontAsk` refused the write. `Grep` and `Glob` **do not exist** as tools in this CLI version at all (absent from both the 3-tool bare set and the 53-tool full set) — searching goes through `Bash`.
 - **`--` before the prompt is mandatory.** `--tools` and `--allowedTools` are variadic and swallow the positional prompt without it.
-- **`--bare` must NOT be used.** In bare mode the built-in set is exactly `Bash, Edit, Read` — `Write` does not exist and `--tools` cannot restore it, so a bare worker cannot create a new file. `HOME`/`CLAUDE_CONFIG_DIR` redirection buys the same isolation while keeping `Write`.
+- **`--bare` must NOT be used.** In bare mode the built-in set is exactly `Bash, Edit, Read` — `Write` does not exist and `--tools` cannot restore it, so a bare worker cannot create a new file. `HOME`/`CLAUDE_CONFIG_DIR` redirection buys only the **user-level** half of bare's isolation (no operator hooks, plugins, skills catalogue, `~/.claude/.credentials.json` out of reach) while keeping `Write` — it does **not** exclude `CLAUDE.md`. `$WT` is a checkout of this repo, so the project's own `CLAUDE.md` and `.claude/settings.json` are still live and reach z.ai on every job (measured with a marker file). See **Compliance** below.
 - **`ANTHROPIC_AUTH_TOKEN`, not `ANTHROPIC_API_KEY`.** The former sends `Authorization: Bearer`, the latter sends `x-api-key` with no `Authorization`. Both were observed working against z.ai, but z.ai documents only the Bearer form.
 - **All four model slots carry the same GLM model.** `ANTHROPIC_DEFAULT_HAIKU_MODEL` is a Claude Code *slot name*, not a model choice — the plugin's never-Haiku policy is untouched. z.ai's own integration guide sets every slot; an unset small/fast slot sends an Anthropic identifier and earns `400 [1211][Unknown Model]`.
 - **`--exclude-dynamic-system-prompt-sections`** moves `cwd`, environment info and `git status` out of the cached system block. Without it the cacheable prefix diverges for every worker by construction, since each runs in a different worktree. With it, the `tools` and `system` blocks are byte-identical across worktrees — asserted by the wire smoke test.
@@ -169,6 +169,8 @@ Three z.ai clauses bear on **how** this is used and must be respected by the ope
 - **"resell, sub-resell, repackage, aggregate, proxy"** is prohibited.
 
 A single operator dispatching their own jobs is inside those lines. Sharing one key across a team is not — do not ship a configuration that does.
+
+**Data egress, not a licensing question.** Every zai job sends the project's own `CLAUDE.md` and `.claude/settings.json` to z.ai as part of the request (see the `--bare` note above) — `HOME`/`CLAUDE_CONFIG_DIR` redirection isolates the operator's *user-level* config, not the repo's *project-level* config, and `$WT` is a checkout of this repo. Do not route a job at a repo whose `CLAUDE.md` or settings carry anything that should not leave the operator's control.
 
 ## Invoking the script
 
