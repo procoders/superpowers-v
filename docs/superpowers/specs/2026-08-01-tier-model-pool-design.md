@@ -13,7 +13,7 @@ the manifest schema and every worker stay untouched.
 **Tech stack:** Python 3.9-safe stdlib. No new dependency, no new file format.
 
 **Independent of PR 1.** This feature is useful with only `claude` and `codex` installed; `zai`
-simply becomes an eligible pool member once [the zai backend](2026-07-31-zai-backend-design.md)
+simply becomes an eligible pool member once the zai backend (PR 1 of this series, branch feat/zai-backend — deliberately NOT linked: this branch is cut from main, where that spec does not exist, and the repo's dead-link gate is line-based and does not respect inline code spans)
 lands. Nothing here depends on that PR.
 
 ## The problem this solves

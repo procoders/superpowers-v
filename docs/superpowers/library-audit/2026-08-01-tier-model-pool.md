@@ -1,0 +1,384 @@
+# Library & doc validation — tier model pools (Phase 1C)
+
+**Spec audited:** [`docs/superpowers/specs/2026-08-01-tier-model-pool-design.md`](../specs/2026-08-01-tier-model-pool-design.md)
+**Date:** 2026-08-01 · **Branch:** `feat/tier-model-pool`
+
+**Scope note, stated plainly.** This spec adds **no dependency, no lockfile entry, and no new CLI
+invocation**. There is therefore **nothing to audit** in the usual Phase-1C sense — no abandoned
+package, no version drift, no changed method signature. The five sections below cover only what
+actually carries risk here: three model-name strings, three providers' quota surfaces, one config
+schema, and one language floor. Sections that would normally exist (Libraries Mentioned, API
+Signatures Verified, Critical/High/Medium library findings) are collapsed into
+[§1 Nothing-to-validate](#1-nothing-to-validate--stated-explicitly) rather than padded.
+
+---
+
+## 0. Tools available
+
+| Tool | Status |
+|---|---|
+| Context7 MCP | ❌ **not used** — no library in scope is in a package index. Every verdict below is a live doc/registry URL. |
+| WebSearch / WebFetch | ✅ used for all provider verdicts |
+| Local CLIs | ✅ `codex-cli 0.144.4`, `claude 2.1.207`; `agy` and `cursor-agent` absent on this machine |
+| Dependency manifests | **none exist** — this repo ships no `package.json` / `requirements.txt` / `pyproject.toml`. Its runtime dependency surface is: Python stdlib, `pyyaml` + `jsonschema` (CI-installed only, per `.github/workflows/validate.yml:269`), and external CLIs discovered at run time. |
+
+---
+
+## 1. Nothing-to-validate — stated explicitly
+
+Items a Phase-1C audit would normally produce, and why each is empty here:
+
+- **New libraries / SDKs:** none. The spec's "Tech stack" line is `Python 3.9-safe stdlib. No new
+  dependency, no new file format.` — verified accurate against the spec text; nothing in §§1–5
+  implies an import beyond `json`/`os` and integer arithmetic.
+- **Changed API signatures:** none. No worker script, adapter, or `job_result` field changes
+  (spec §"What does not change"). The one signature that *would* change is internal Python
+  (`compound-v-resolve-model.py`'s entry point), which is repo code, not a third-party API.
+- **Abandoned / deprecated packages:** none in scope.
+- **Version-behind findings:** none in scope.
+
+Everything that follows is model-name currency, provider-surface fact-checking, config-schema
+precedent, and language-floor checking.
+
+---
+
+## 2. Model names in the spec's example pool
+
+| Name in spec | Backend | Repo map says | Provider says (live) | Verdict |
+|---|---|---|---|---|
+| `sonnet` | claude | `_CLAUDE_DEFAULT["light"] = "sonnet"` and `_CLAUDE_COST_AWARE["standard"/"light"] = "sonnet"` (`compound-v-resolve-model.py:70-71`) | `sonnet` is a documented Claude Code alias → **Sonnet 5** on the Anthropic API | 🟢 **matches, current** |
+| `gpt-5.6-luna` | codex | `_CODEX["light"] = "gpt-5.6-luna"` (`compound-v-resolve-model.py:76`) | GPT-5.6 Sol/Terra/Luna reached Codex GA **2026-07-09**; `codex -m gpt-5.6-luna` is the documented invocation | 🟢 **matches, current** |
+| `glm-5-turbo` | zai | **no `zai` backend exists in this repo** (see §5) | `glm-5-turbo` is the exact API model id on z.ai; GLM-5-Turbo is in the current Coding Plan lineup alongside GLM-5.2 and GLM-4.7 | 🟢 **name correct** / 🔴 **backend does not exist** |
+
+Sources: [Claude Code model configuration](https://code.claude.com/docs/en/model-config) ·
+[Claude rate limits (model roster)](https://platform.claude.com/docs/en/api/rate-limits) ·
+[OpenAI GPT-5.6 announcement](https://openai.com/index/gpt-5-6/) ·
+[GPT-5.6 in Codex, GA 2026-07-09](https://github.blog/changelog/2026-07-09-openais-gpt-5-6-sol-terra-and-luna-are-now-available-in-github-copilot/) ·
+[z.ai GLM-5-Turbo model doc](https://docs.z.ai/guides/llm/glm-5-turbo) ·
+[z.ai GLM Coding Plan](https://z.ai/subscribe) ·
+[z.ai devpack overview](https://docs.z.ai/devpack/overview)
+
+### 2a. Drift found — the `opus` alias moved under the repo's feet 🟡
+
+Not in the spec's pool, but directly load-bearing for the spec's reviewer guarantee.
+
+`compound-v-resolve-model.py` maps `deep → "opus"` in every stance, and the spec's
+§"What does not change" leans on that: *"a reviewer must resolve to `deep`/opus deterministically,
+and a pool cannot promise that."*
+
+Live doc: the `opus` **alias is not version-deterministic**. Per
+[model-config](https://code.claude.com/docs/en/model-config):
+
+> Before v2.1.219, `opus` resolved to Opus 4.8 on the Anthropic API from v2.1.154 […]
+
+and the current provider table gives `opus → Opus 5` on the Anthropic API. **The local
+`claude` is 2.1.207**, so on this machine `opus` still resolves to **Opus 4.8**, and the same
+manifest on a 2.1.219+ machine resolves to **Opus 5**.
+
+The spec's claim is true at the level of the *string* `"opus"` and false at the level of the
+*model*. That is fine for the reviewer invariant as written (the guarantee is "not a weaker
+tier", not "one exact checkpoint"), but the spec should not use the word "deterministically"
+without saying which layer it means. See correction #4.
+
+### 2b. Drift between repo map and providers — none found elsewhere
+
+Checked every cell of `_CODEX` and both `claude` stance maps against the live rosters:
+`gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna` are all current Codex-selectable models, and
+`opus` / `sonnet` are both current Claude Code aliases. The repo's own inline comment
+("verified live 2026-07-10 on codex-cli 0.144.1") is consistent with local `codex-cli 0.144.4`.
+No stale cell.
+
+---
+
+## 3. Provider rate-limit and quota surfaces
+
+The spec's Risks section says token-aware balancing *"would need per-backend quota introspection
+that z.ai, for one, does not expose."* That is the factual basis for a Non-goal, so it was
+checked directly.
+
+| Provider | Rate-limit response headers | Programmatic quota read | Verdict vs spec |
+|---|---|---|---|
+| **Anthropic** | ✅ Full family, documented: `retry-after`, `anthropic-ratelimit-{requests,tokens,input-tokens,output-tokens}-{limit,remaining,reset}`, plus `anthropic-priority-*-{limit,remaining,reset}` on Priority Tier. Returned on normal responses, not only 429. | ✅ Also a dedicated **Rate Limits API** (`/docs/en/manage-claude/rate-limits-api`) for reading configured org/workspace limits. | spec is silent on Anthropic — correct to be, see §3a |
+| **OpenAI** | ✅ `x-ratelimit-limit-requests`, `x-ratelimit-limit-tokens`, `x-ratelimit-remaining-requests`, `x-ratelimit-remaining-tokens`, `x-ratelimit-reset-requests`, `x-ratelimit-reset-tokens`; `Retry-After` on some 429s. | ✅ via the same headers | spec is silent — correct to be |
+| **z.ai** | ⚠️ **Not documented.** `docs.z.ai/devpack/faq` documents no `X-RateLimit-*` family; it points users at the **web** subscription dashboard for quota progress. | ⚠️ **A quota endpoint DOES exist** — `{base}/api/monitor/usage/quota/limit` (`https://api.z.ai` global, `https://open.bigmodel.cn` CN), returning 5-hour-window / weekly / monthly-MCP consumption percentages. Auth is the raw token in `Authorization` with **no `Bearer` prefix**. It is **not in z.ai's own published docs** — it is reverse-engineered and depended on by third-party plugins. | ❌ **spec's stated reason is wrong as written** |
+
+Sources: [Anthropic rate limits — Response headers table](https://platform.claude.com/docs/en/api/rate-limits) ·
+[OpenAI rate limits](https://platform.openai.com/docs/guides/rate-limits) ·
+[z.ai devpack FAQ](https://docs.z.ai/devpack/faq) ·
+[z.ai devpack overview (5-hour + weekly credit tiers)](https://docs.z.ai/devpack/overview) ·
+[opencode-glm-quota — the endpoint + auth-header shape](https://github.com/guyinwonder168/opencode-glm-quota)
+
+### 3a. The stronger reason the spec should be using
+
+**All three header families are invisible to Compound V, and always will be under this
+architecture.** The dispatcher does not speak HTTP to any provider. It spawns CLI processes —
+`codex exec`, a Claude subagent, `agy --print`, `cursor-agent -p -f` — and reads their **stdout,
+stderr, and exit code**. An HTTP response header never reaches the orchestrator.
+
+The repo already encodes exactly this. [`scripts/compound-v-classify-failure.py`](../../../scripts/compound-v-classify-failure.py)
+classifies `rate_limited` vs `out_of_credits` from **stderr text needles** — literally matching
+strings like `"exceeded retry limit, last status: 429 Too Many Requests"` and
+`"You've hit your usage limit. Try again in 5 days."` (lines 268-271). There is no header
+parsing anywhere in `scripts/`.
+
+So: the spec reaches the **right conclusion** (don't build token-aware balancing in this PR) from
+a **wrong premise**. z.ai's introspection gap is not the blocker; the CLI-process boundary is —
+and that boundary applies to Anthropic and OpenAI too, both of which *do* publish rich headers.
+Rewriting the sentence makes the Non-goal stronger and provider-independent. See correction #2.
+
+---
+
+## 4. Config schema precedent for a top-level `pools` key
+
+**A top-level sibling is consistent with the file's existing shape.** ✅
+
+`.claude/compound-v.json` is already a flat bag of independent top-level blocks. Documented and/or
+read today: `stance`, `models`, `pre_eval`, `brainstorm`, `memory`, `epic`, `review`,
+`workflows_accelerator`. [`commands/v-models.md:246-252`](../../../commands/v-models.md) makes the
+sibling convention explicit — *"Merge the confirmed assignments into the config's `models` block.
+**Preserve every other key** in the file (`stance`, `memory`, `epic`, `review`,
+`workflows_accelerator`, …)."* A new `pools` sibling is preserved automatically by `/v:models` and
+violates nothing structural.
+
+Four gaps where the spec is silent about a convention the repo actually has:
+
+**4a. `load_project_config` type-checks every known top-level key; `pools` must join that list.** 🟠
+[`scripts/compound-v-project-config.py:101-111`](../../../scripts/compound-v-project-config.py)
+raises `ValueError` when `models`, `pre_eval`, or `brainstorm` is present-but-not-an-object. The
+spec adds `pools` without adding it to that fail-closed check. Without it, `"pools": "banana"`
+silently becomes "no pools", which is a **fail-open** read of a routing key.
+
+**4b. There is no precedent for a *list* in this config, and no `resolve_pools` is specified.** 🟠
+Both existing blocks follow one pattern: a `resolve_<block>(cfg) -> (values, warnings)` function
+that coerces each bad per-key value to a declared safe default and **returns** warnings rather than
+raising (`resolve_pre_eval`, `resolve_brainstorm`). Every value they handle is a scalar or a flat
+`{str: str}` map. A pool is a **list of objects** — a shape neither resolver has ever seen. The
+spec never says what happens to `[{"backend": "codex"}]` (no `model`), `[{"model": "x"}]`
+(no `backend`), `[]`, or a duplicated member. Acceptance criterion 6 covers an *empty filtered*
+pool but not a *malformed* one.
+
+**4c. `pools` freezes concrete model strings that `/v:models` will not refresh.** 🟠 *(the real one)*
+The `models` map exists precisely so model churn is absorbed by refreshing one map instead of
+editing manifests — [`execution-manifest.md:65-67`](../../../skills/compound-v/execution-manifest.md):
+*"This is what lets the plugin survive model churn: when models change, refresh the map
+(`/v:models`), not the manifests."* And `/v:models` says of itself: *"only `models` is this
+command's responsibility"*. So a `pools` block containing `"model": "gpt-5.6-luna"` **re-introduces
+exactly the rot the tier vocabulary was built to eliminate**, in a key nothing refreshes.
+
+The fix is available for free in the spec's own shape: **a pool is already keyed by tier.**
+`{"backend": "codex"}` plus the enclosing `light` key is sufficient — the existing resolver derives
+the model from `(stance, backend, tier)`. Making `model` an *optional* per-member override, rather
+than a required field, keeps pools churn-proof and matches the map's precedence rules. See
+correction #1.
+
+**4d. Pool members must route *through* `resolve()`, not around it.** 🟠
+The spec says *"Pool members inherit the map's rules, and add none. Whatever a `models` cell
+accepts today, a pool entry accepts."* That is imprecise — a `models` cell is a bare string; a pool
+entry is an object. More concretely, `resolve()` enforces a backend-specific guard that a pool
+would bypass if `assigned_model` went straight to a worker:
+[`compound-v-resolve-model.py:234-244, 295-301`](../../../scripts/compound-v-resolve-model.py)
+rejects any `opencode` model that is not a well-formed `provider/model` string, from *every*
+source including an explicit override. A pool member `{"backend": "opencode", "model": "gpt-5.6"}`
+must fail the same way. Route pool resolution through
+`resolve(backend, tier, stance=…, explicit_model=<pool member's model or None>)` and the guard
+holds for free.
+
+**4e. `backend_max_parallel` has no stated location.** 🟡 Spec §5 says *"Add an optional
+`backend_max_parallel` map to the config (`{"zai": 4}`)"* without saying whether it is a top-level
+sibling, a key inside `pools`, or per-stance. Every other config block in this file has a stated
+path. Name it.
+
+---
+
+## 5. `zai` does not exist in this repo — and the spec's link to it is dead 🔴 BLOCKING
+
+`git grep` over all tracked files: the string `zai` appears in exactly **two** files — a July
+research doc and this spec itself. Concretely:
+
+- `docs/superpowers/specs/2026-07-31-zai-backend-design.md` — **does not exist**, tracked or
+  untracked. Spec line 16 carries a markdown link with the text *"the zai backend"* whose target is
+  that filename.
+
+  > *(This audit deliberately does not reproduce that link verbatim — a live `](…)` pointing at the
+  > missing file would make this very file fail the same CI gate.)*
+- `BACKENDS` in `compound-v-resolve-model.py:144` = `("claude", "codex", "antigravity", "cursor", "devin", "opencode")` — no `zai`.
+- `VALID_BACKENDS` in `compound-v-validate-manifest.py:519` — identical list, no `zai`.
+- `FALLBACK` in `compound-v-failure-policy.py:59` = `{"codex": "claude", "antigravity": "claude", "cursor": "claude", "claude": None}` — no `zai` (and, separately, no `devin`/`opencode` either).
+- `compound-v-classify-failure.py` has per-backend needle sets for codex/claude/antigravity/cursor — none for zai.
+- No `skills/backend-launcher/adapter-zai.md`.
+
+**This fails CI today.** `.github/workflows/validate.yml:203-236` runs a repo-wide dead-link scan
+over every `*.md`. Reproduced locally against the exact CI logic: **1 dead link in the entire
+repo, and it is this one.**
+
+```
+DEAD LINKS: 1
+  docs/superpowers/specs/2026-08-01-tier-model-pool-design.md -> 2026-07-31-zai-backend-design.md
+```
+
+The spec file is already tracked on `feat/tier-model-pool`, so a PR to `main` fails the
+**Check for dead intra-plugin cross-refs** step. Either land the zai design doc first or make
+the reference a plain-text forward reference with no `](…)` link.
+
+### 5a. Claims that depend on the missing zai adapter
+
+These are stated as fact about a system that has no implementation in this repo:
+
+- §5: *"Backends with their own ceiling — `zai` defaults to 4, per its adapter"*. There is no zai
+  adapter. **UNVERIFIABLE-AS-WRITTEN.** z.ai's own docs confirm concurrency limits exist and are
+  *"tied to the plan tier and can be adjusted dynamically based on resource availability"* — i.e.
+  the real number is plan-dependent and mutable, so a hardcoded `4` needs its own citation.
+- §4: *"`codex`, `cursor`, `antigravity`, `devin`, `opencode` and `zai` must run in a worktree."*
+  True and enforced for the first five; for zai it is an assertion about an unwritten adapter.
+- AC 5: *"with `zai` absent, a three-member pool alternates between the remaining two"*. Not
+  testable until `zai` can be present.
+- The example config in §1 and the pool in §1 would **fail `compound-v-validate-manifest.py`
+  today** on the unknown backend.
+
+### 5b. `backend: pool` as an enum value leaks into a second check ⚠️
+
+Spec §2: *"`backend: pool` is a new enum value in the manifest validator."* If implemented as
+"append `pool` to `VALID_BACKENDS`", it also becomes valid at
+`compound-v-validate-manifest.py:664`, which validates `advisor.advisor_backend` against the same
+tuple. `select_advisor` has no `pool` path (`ADVISOR_CONSULTABLE_NONCLAUDE = ("codex",)`), so
+`advisor_backend: pool` would pass validation and then die at dispatch. Scope the new value to
+`job.backend` only. *(Flagged here because it is an enum/contract fact; the deeper call-site sweep
+is Phase 1A's.)*
+
+### 5c. AC 9 does not describe the existing failure policy 🟠
+
+AC 9: *"A job that failed with `rate_limited` or `out_of_credits` has its assignment cleared on
+resume, and **the failure policy chooses the next backend**."* The existing failure policy does not
+choose "the next backend" — `FALLBACK` is a fixed map in which *every* external backend reroutes to
+**`claude`** (`compound-v-failure-policy.py:56-59`). Under a pool, "next" should plausibly mean the
+next *pool member*, which is a behaviour change to `failure-policy.py`, not a reuse of it. Also
+note `rate_limited` is classified **retryable on the same backend** with backoff
+(`RETRYABLE` at line 41), not a reroute — so clearing the assignment on `rate_limited` contradicts
+the current policy for that class. Say which behaviour is intended.
+
+---
+
+## 6. Python floor
+
+**CI floor is still 3.9 — confirmed.** ✅ `.github/workflows/validate.yml` installs Python 3.12 for
+the PyYAML-dependent steps, then re-pins to **3.9** at the end (lines 242-245) and runs
+**every** `--selftest` script under it (lines 266-281: *"✅ all script selftests pass under Python
+3.9"*). Any new pool code with a `--selftest` is automatically covered.
+
+**Local skew to be aware of:** this machine's `python3` is **3.14.6**. 3.10+ syntax will run
+clean locally and fail only in CI.
+
+Constructs a round-robin counter implementation would plausibly reach for, and which of them 3.9
+does not have:
+
+| Construct | Added in | 3.9-safe? | Why it is tempting here |
+|---|---|---|---|
+| `itertools.batched(iterable, n)` | 3.12 | ❌ | filling a batch under `backend_max_parallel` |
+| `zip(a, b, strict=True)` | 3.10 | ❌ | pairing jobs to pool members |
+| `match` / `case` | 3.10 | ❌ | branching on `backend == "pool"` vs a real backend |
+| `X \| Y` in annotations (PEP 604) | 3.10 | ❌ | `def assign(...) -> dict \| None` |
+| `enum.StrEnum` | 3.11 | ❌ | a `Backend`/`Tier` enum |
+| `typing.Self` | 3.11 | ❌ | a counter class |
+| `itertools.pairwise` | 3.10 | ❌ | walking the assignment sequence in a test |
+| `int.bit_count()` | 3.10 | ❌ | — |
+| `dataclass(slots=True)` | 3.10 | ❌ | a `PoolMember` record |
+| `list[dict]` / `dict[str, int]` annotations | 3.9 (PEP 585) | ✅ | — |
+| `d1 \| d2` dict merge (PEP 584) | 3.9 | ✅ | merging config over defaults |
+| `str.removeprefix` / `removesuffix` | 3.9 | ✅ | — |
+| `functools.cache` | 3.9 | ✅ | — |
+| `itertools.cycle` | ancient | ✅ *(but see below)* | the obvious round-robin idiom |
+
+**`itertools.cycle` is 3.9-safe and still the wrong tool.** It is an iterator with no readable
+index, so it cannot be serialized into `state.json` and cannot be reconstructed after a crash —
+which is the entire point of spec §3's "frozen into `state.json`" and AC 8's "resuming a run whose
+counter state was lost". The implementation wants a plain integer per tier and
+`members[n % len(members)]`. Flagging it because it is the idiom a reviewer would expect and a
+model would write. Note also that the repo's own house rule is stricter than the floor:
+`compound-v-resolve-model.py:54` declares *"Python 3.9-safe (no match, no X|Y unions), stdlib
+only."*
+
+---
+
+## 7. Design constraints for the plan
+
+**MUST**
+
+1. Add `pools` (and `backend_max_parallel`, wherever it lands) to the structural type check in
+   `load_project_config` — present-but-wrong-type must **raise**, matching `models` / `pre_eval` /
+   `brainstorm`.
+2. Add a `resolve_pools(cfg) -> (values, warnings)` in the same fail-closed style as
+   `resolve_pre_eval` / `resolve_brainstorm`: a malformed member is dropped with a warning and the
+   job falls back to the `models` cell — never a crash, never a silent wrong route.
+3. Resolve every pool member **through** `compound-v-resolve-model.py:resolve()`, passing the
+   member's `model` (if any) as `explicit_model`, so the `opencode` `provider/model` guard and the
+   stance/tier precedence rules keep firing.
+4. Keep the round-robin counter a **plain integer per tier**, persisted in `state.json` alongside
+   the per-job assignment. No `itertools.cycle`, no iterator state.
+5. Stay inside the Python 3.9 subset the repo already declares — no `match`, no `X | Y`
+   annotations, no `zip(strict=)`, no `itertools.batched`, no `StrEnum`. Local `python3` is 3.14
+   and will not catch these; only CI will.
+6. Scope the new `pool` enum value to `job.backend`. It must not become a legal
+   `advisor.advisor_backend`.
+7. Fix the dead link to `2026-07-31-zai-backend-design.md` before any PR to `main`, or CI fails.
+
+**MUST NOT**
+
+8. Do **not** require `model` on a pool member. A tier-keyed pool already has enough information;
+   requiring a concrete string re-creates the churn problem the `models` map exists to solve, in a
+   key `/v:models` does not refresh.
+9. Do **not** ship the spec's example config as-is. `{"backend": "zai", ...}` fails
+   `compound-v-validate-manifest.py` today. Use `claude` + `codex` (+ `antigravity`) in every
+   example until a zai adapter lands, and mention zai only as a future member.
+10. Do **not** justify the no-quota-balancing Non-goal on "z.ai does not expose quota
+    introspection" — z.ai does expose an undocumented one, and the real reason (the CLI-process
+    boundary) is stronger.
+
+---
+
+## 8. Open questions for the human
+
+1. **Is `2026-07-31-zai-backend-design.md` supposed to exist?** It is referenced as if written but
+   is absent from the repo. Is it unpushed, in another branch, or was the reference aspirational?
+   This determines whether the spec's zai examples are documentation of a sibling PR or fiction.
+2. **Should a pool member carry a `model` at all?** Recommendation is "optional override only" (see
+   MUST NOT #8), but if the operator's intent is *"pin exactly these three checkpoints for this
+   run"*, the required-`model` shape is defensible — it just needs a stated policy for who
+   refreshes it when a provider retires a model.
+3. **What does "the failure policy picks the next backend" mean under a pool** — the next pool
+   member, or the existing fixed `→ claude` fallback? And should `rate_limited` clear the
+   assignment at all, given the current policy retries it on the same backend with backoff?
+4. **Is `backend_max_parallel: {"zai": 4}` a real measured number or a placeholder?** z.ai
+   documents concurrency as plan-tier-dependent and dynamically adjustable, so a fixed 4 needs
+   either a citation or an explicit "conservative default, operator-tunable" label.
+
+---
+
+## 9. Ranked corrections needed to the spec
+
+| # | Severity | Where | Claim as written | Correction |
+|---|---|---|---|---|
+| 1 | 🔴 **BLOCKING** | §"Independent of PR 1", line 16 | a markdown link *"the zai backend"* targeting `2026-07-31-zai-backend-design.md` | The file does not exist. This is the **only** dead link in the repo and it fails the CI dead-link gate. Land the doc, or drop the link and leave the filename as plain text. |
+| 2 | 🔴 | §Risks, "A pool hides an unbalanced burn" | *"per-backend quota introspection that z.ai, for one, does not expose"* | **Refuted.** z.ai exposes `{base}/api/monitor/usage/quota/limit` (5-hour / weekly / MCP percentages). Replace the reason with the architectural one: workers are CLI processes, so no provider's rate-limit headers — Anthropic's or OpenAI's included — ever reach the dispatcher; `classify-failure.py` already works from stderr text, not headers. |
+| 3 | 🟠 | §5 | *"`zai` defaults to 4, per its adapter"* | **UNVERIFIABLE-AS-WRITTEN** — no zai adapter exists. z.ai documents concurrency as plan-tier-dependent and dynamically adjusted. Cite or label as a conservative default. |
+| 4 | 🟠 | AC 9 | *"the failure policy chooses the next backend"* | Does not describe `failure-policy.py`. `FALLBACK` reroutes every external backend to `claude`, and `rate_limited` is classified retry-same-backend, not reroute. State the intended new behaviour explicitly. |
+| 5 | 🟠 | §1, "Pool members inherit the map's rules, and add none" | Implies a pool entry and a `models` cell are the same shape | They are not (object vs bare string). Restate as: pool resolution goes **through** `resolve()`, so the map's precedence and the `opencode` `provider/model` guard apply unchanged. |
+| 6 | 🟠 | §1 config block | `pools` added with no fail-closed reader specified | Repo convention is a structural raise in `load_project_config` plus a per-key-coercing `resolve_<block>` returning warnings. Spec must say `pools` follows it, and define behaviour for a malformed member (distinct from AC 6's *empty filtered* pool). |
+| 7 | 🟠 | §1 config block | `"model": "gpt-5.6-luna"` required per member | Freezes a concrete model in a key `/v:models` does not refresh, defeating the tier vocabulary's stated purpose. Make `model` an optional override; the tier key already resolves. |
+| 8 | 🟡 | §"What does not change" | *"a reviewer must resolve to `deep`/opus deterministically"* | `opus` is an alias, not a pin: it resolved to Opus 4.8 before Claude Code 2.1.219 and to Opus 5 after. Deterministic *string*, floating *model*. Say which you mean. |
+| 9 | 🟡 | §2 | *"`backend: pool` is a new enum value in the manifest validator"* | Scope it to `job.backend`. The same tuple validates `advisor.advisor_backend`, which has no pool path. |
+| 10 | 🟡 | §5 | *"Add an optional `backend_max_parallel` map to the config"* | No path given. Every other block in this file has one. Say top-level vs nested vs per-stance. |
+| 11 | 🟡 | §1 | *"Per-stance, exactly like `models`"* | `models` accepts **two** shapes (per-stance, and legacy flat, auto-discriminated by "all top-level keys are stance names"). Say whether `pools` accepts a flat shape too. Tier names and stance names are disjoint, so the same discriminator works — but it needs stating. |
+| 12 | 🟢 | §"Tech stack" | *"Python 3.9-safe stdlib"* | **Accurate**, and CI still enforces 3.9. Optionally name the traps (§6 table) so an implementer on a 3.12+ machine does not discover them in CI. |
+
+**BLOCKING for merge:** #1 (CI-failing today) and, for anything that actually dispatches, #2 — the
+Non-goal's stated justification is factually wrong and would mislead the next person who revisits
+the decision.
+
+---
+
+## 10. Knowledge base updates
+
+Created `docs/superpowers/library-audit/_knowledge-base/model-routing-and-provider-quotas.md` with
+the 2026-08-01 entry: the three model-name verdicts, the `opus` alias-drift note, the full
+Anthropic / OpenAI / z.ai quota-surface comparison including the undocumented z.ai endpoint, and
+the CLI-process-boundary conclusion.
