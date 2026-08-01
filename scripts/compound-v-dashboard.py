@@ -1281,9 +1281,11 @@ def _selftest():
             "updated_at": "2099-06-01T12:00:00Z",
             "jobs": {
                 "task-0-base": {"status": "done", "isolation": "direct",
-                                "attempt_counter": 1, "attempt_id": "task-0-base:1"},
+                                "attempt_counter": 2, "attempt_id": "task-0-base:2",
+                                "batch_id": "network-recovery"},
                 "task-1-ui": {"status": "done", "isolation": "worktree",
-                              "attempt_counter": 1, "attempt_id": "task-1-ui:1"},
+                              "attempt_counter": 2, "attempt_id": "task-1-ui:2",
+                              "batch_id": "cooldown-recovery"},
             },
             "pool_members": {},
             "cooldowns": {
@@ -1293,7 +1295,7 @@ def _selftest():
                     "opened_at": "2099-06-01T12:00:00Z",
                     "opened_by_attempt_id": "task-1-ui:1",
                     "probe": {"status": "leased", "owner_job_id": "task-1-ui",
-                              "owner_attempt_id": "task-1-ui:1",
+                              "owner_attempt_id": "task-1-ui:2",
                               "lease_until": "2099-06-03T12:05:00Z"},
                 },
             },
@@ -1302,8 +1304,8 @@ def _selftest():
                           "opened_at": "2099-06-01T12:00:00Z", "cleared_by": None},
             },
             "network_pause": {
-                "opened_at": "2099-06-01T12:00:00Z",
-                "until": "2099-06-01T12:01:00Z",
+                "opened_at": "2099-06-01T12:00:30Z",
+                "until": "2099-06-01T12:01:30Z",
                 "evidence": [
                     {"backend": "codex", "job_id": "task-0-base",
                      "attempt_id": "task-0-base:1", "batch_id": "batch-1",
@@ -1313,7 +1315,7 @@ def _selftest():
                      "observed_at": "2099-06-01T12:00:30Z"},
                 ],
                 "probe": {"status": "leased", "owner_job_id": "task-0-base",
-                          "owner_attempt_id": "task-0-base:1",
+                          "owner_attempt_id": "task-0-base:2",
                           "lease_until": "2099-06-01T12:05:00Z"},
             },
             "total_retries": 4,
@@ -1459,13 +1461,13 @@ def _selftest():
         # consumer behavior: deleting cooldown/circuit/network rendering must fail here.
         check("resettable usage window" in html_text.lower(),
               "failure-state: resettable usage-window label missing")
-        check("task-1-ui:1" in html_text,
+        check("task-1-ui:2" in html_text,
               "failure-state: half-open probe owner missing")
         check("permanent circuit breaker" in html_text.lower(),
               "failure-state: permanent circuit-breaker label missing")
         check("correlated network pause" in html_text.lower(),
               "failure-state: correlated network pause missing")
-        check("task-0-base:1" in html_text,
+        check("task-0-base:2" in html_text,
               "failure-state: canonical nested network probe owner missing")
         check("/v:resume --clear-cooldown zai" in html_text,
               "failure-state: exact far-future recovery command missing")
