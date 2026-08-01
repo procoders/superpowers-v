@@ -473,6 +473,22 @@ def _usage_cell(result_obj):
     return "in {i} / out {o}".format(i=it_txt, o=ot_txt)
 
 
+def _display_backend(job_backend, state_job):
+    """`pool` is a routing token, never a concrete backend (see agents/parallel-dispatcher.md
+    and skills/compound-v/routing-policy.md): every consumer of job data must see the frozen
+    `assigned_backend`, never the literal string "pool". Uses this repo's established
+    case/whitespace-insensitive `.strip().lower()` normalization (matches
+    compound-v-pool-state.py's own convention) so a job cannot dodge this by casing alone.
+    Falls back to the raw manifest backend when the job isn't a pool job, or when it is but
+    has no state record yet (not dispatched) / no assigned_backend recorded there."""
+    normalized = job_backend.strip().lower() if isinstance(job_backend, str) else job_backend
+    if normalized == "pool" and isinstance(state_job, dict):
+        assigned = state_job.get("assigned_backend")
+        if isinstance(assigned, str) and assigned:
+            return assigned
+    return job_backend
+
+
 CSS = """
 :root{
   --bg:#f7f8fa; --fg:#1b1f24; --muted:#5a6472; --card:#ffffff; --border:#d8dee6;
@@ -630,7 +646,7 @@ def _render_run_detail(rec):
             "<tr><td class=\"mono\">{id}</td><td>{backend}</td><td>{tier}</td>"
             "<td>{status}</td><td>{gate}</td><td>{fc}</td><td>{usage}</td></tr>".format(
                 id=_esc(jid),
-                backend=_esc(j.get("backend")),
+                backend=_esc(_display_backend(j.get("backend"), sj)),
                 tier=_esc(j.get("tier") or j.get("model")),
                 status=_pill(status) if status else MDASH,
                 gate=gate,
@@ -1054,7 +1070,12 @@ def _selftest():
             "    depends_on:\n"
             "      - task-0-base\n"
             "    write_allowed:\n"
-            "      - \"src/ui/**\"\n"))
+            "      - \"src/ui/**\"\n"
+            "  - id: task-2-pool\n"
+            "    backend: pool\n"
+            "    tier: light\n"
+            "    write_allowed:\n"
+            "      - \"src/pool.ts\"\n"))
         _write_text(os.path.join(run_dir, "state.json"), json.dumps({
             "run_id": "2099-06-01-fullrun",
             "phase": "MERGED",
@@ -1062,6 +1083,13 @@ def _selftest():
             "jobs": {
                 "task-0-base": {"status": "done", "isolation": "direct"},
                 "task-1-ui": {"status": "done", "isolation": "worktree"},
+                # pool routing: the manifest job says "pool", but this state record has
+                # frozen the concrete pair -- the dashboard must show assigned_backend,
+                # never the literal "pool" token (agents/parallel-dispatcher.md invariant).
+                "task-2-pool": {"status": "done", "isolation": "worktree",
+                                "assigned_backend": "codex", "assigned_model": "gpt-5.6",
+                                "assignment_source": "pool", "pool_index": 0,
+                                "pool_tier": "light"},
             },
         }))
         # measured-usage result
@@ -1152,6 +1180,15 @@ def _selftest():
         check(MDASH in html_text, "anti-ruflo: em-dash placeholder missing")
         # the unmeasured job must NOT render a fabricated 0 usage
         check("in 0 / out 0" not in html_text, "anti-ruflo: fabricated 0 usage rendered")
+
+        # pool routing: `backend: pool` is a routing instruction, never a concrete backend
+        # (agents/parallel-dispatcher.md, skills/compound-v/routing-policy.md). Once the
+        # state record freezes assigned_backend, the job row must show THAT, never the
+        # literal manifest string "pool".
+        check('<td class="mono">task-2-pool</td><td>codex</td>' in html_text,
+              "pool: backend cell does not show the resolved assigned_backend")
+        check('<td class="mono">task-2-pool</td><td>pool</td>' not in html_text,
+              "pool: backend cell leaked the literal routing token \"pool\"")
 
         # NO percent-progress anywhere in the document (zero '%' chars)
         check("%" not in html_text, "anti-ruflo: '%' present (possible fabricated progress)")

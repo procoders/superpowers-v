@@ -11,12 +11,15 @@ into `state.json` at first dispatch, and honoured verbatim by `/v:resume`. Enfor
 **Tech stack:** Python 3.9-safe stdlib. No new dependency, no new file format, no new CLI.
 
 **PR 1 is a declared merge prerequisite.** The *code* here is independent — the resolver, the
-validator and the assignment logic are exercised by fixtures and need no real backend. But every
-shipped example needs `zai`, and with `claude` excluded from pools by default (§2) a pool without
-it degenerates to a single member. So this PR does not merge before the zai backend does. That
-backend lives on branch feat/zai-backend and is deliberately not linked here: the repo's
-dead-link gate is line-based and does not respect inline code spans, so a quoted path fails CI
-on a branch cut from `main`.
+validator and the assignment logic are exercised by fixtures and need no real backend, and no
+tracked *manifest* example references `zai` (they all validate clean against `main` today). The
+dependency lives one layer up, in the shipped `pools` **config** examples (`/v:init`'s seeded
+default, and the config snippets in `execution-manifest.md`/`state-machine.md`), which do name
+`zai`; with `claude` excluded from pools by default (§2) a pool without it degenerates to a single
+member — or, if `ZAI_API_KEY` happens to be set before the zai backend exists, fails outright at
+run start. So this PR does not merge before the zai backend does. That backend lives on branch
+feat/zai-backend and is deliberately not linked here: the repo's dead-link gate is line-based and
+does not respect inline code spans, so a quoted path fails CI on a branch cut from `main`.
 
 > **Revision note.** Rewritten 2026-08-01 after three pre-flights
 > (`docs/superpowers/archaeology/2026-08-01-tier-model-pool.md`,

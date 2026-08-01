@@ -189,7 +189,7 @@ At run start, before any job launches, the dispatcher runs `compound-v-project-c
 | `jobs[id].assigned_model` | non-empty string | Concrete model supplied to the worker and status/memory rows. |
 | `jobs[id].assignment_source` | `"pool"` or `"fallback"` | `pool` means the pair matches the frozen slot. `fallback` is the recorded ordinary concrete fallback after ring exhaustion; it may differ from the originating slot. Missing on legacy state is treated as `pool`. |
 | `jobs[id].pool_index` | non-negative integer | Current/originating index in the exact expanded frozen tier ring. It is the manifest-order ordinal modulo the ring, advanced across unavailable/open slots without shrinking. A fallback retains the originating index. |
-| `jobs[id].pool_tier` | `deep`, `standard`, or `light` | Frozen tier lookup key; must match the manifest tier. |
+| `jobs[id].pool_tier` | `standard` or `light` — never `deep` | Frozen tier lookup key; must match the manifest tier. Pooling `deep` is a stated Non-goal; `compound-v-validate-manifest.py` rejects any `backend: pool` job at `tier: deep` before it can reach `state.json`, matching [`routing-policy.md`](routing-policy.md) and [`execution-manifest.md`](execution-manifest.md). |
 | `backend_max_parallel` | `{ "<concrete-backend>": positive-int }` | Normalized run-start batching ceilings copied from config so resume does not change them after a config edit. Prose-enforced batching contract, not a semaphore claim. |
 
 `assignment_source: "pool"` requires the recorded backend/model to match the exact available frozen slot at `pool_members[pool_tier][pool_index]`. `assignment_source: "fallback"` permits a different known-concrete backend/model while still requiring a valid originating tier/index. Unknown source/backend, a missing model, or malformed ring context fails closed. `compound-v-pool-state.py resume` validates and returns the recorded concrete pair; it never derives from config or a counter.
@@ -263,7 +263,7 @@ The run-level `phase` and the per-job `status` map are distinct: `phase` is the 
 
 Both Codex resume inputs live in `state.json jobs[<id>]`. A job with an empty `session_id` has no session to resume ⇒ recreate fresh regardless.
 
-> **Resume-eligibility rule (Shared Interface Contract — byte-identical in `commands/v-resume.md` and `agents/parallel-dispatcher.md`).**
+> **Resume-eligibility rule (Shared Interface Contract — byte-identical in `commands/v-resume.md`, `agents/parallel-dispatcher.md`, and `skills/compound-v/state-machine.md`).**
 > A codex worktree job may be resumed via `codex exec resume <captured-uuid>` **IFF** its `failure_class` is
 > environmental (`timeout` | `network`) **AND** its worktree still exists at the recorded path.
 > Every other case recreates the worktree **fresh at HEAD** — the parallel-dispatcher worktree-recreate invariant.

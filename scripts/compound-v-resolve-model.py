@@ -672,6 +672,30 @@ def _selftest():
            pool_raises("light", 0, "balanced", {"balanced": {"light": [
                {"backend": "codex", "weight": 101},
            ]}}, {}))
+    expect("pool rejects weight=0",
+           pool_raises("light", 0, "balanced", {"balanced": {"light": [
+               {"backend": "codex", "weight": 0},
+           ]}}, {}))
+    expect("pool rejects weight=-5 (negative)",
+           pool_raises("light", 0, "balanced", {"balanced": {"light": [
+               {"backend": "codex", "weight": -5},
+           ]}}, {}))
+    expect("pool rejects weight=True (bool is not a valid weight)",
+           pool_raises("light", 0, "balanced", {"balanced": {"light": [
+               {"backend": "codex", "weight": True},
+           ]}}, {}))
+    expect("pool rejects weight=False (bool is not a valid weight)",
+           pool_raises("light", 0, "balanced", {"balanced": {"light": [
+               {"backend": "codex", "weight": False},
+           ]}}, {}))
+    expect("pool rejects weight=2.5 (float is not a valid weight)",
+           pool_raises("light", 0, "balanced", {"balanced": {"light": [
+               {"backend": "codex", "weight": 2.5},
+           ]}}, {}))
+    expect("pool rejects weight='3' (string is not a valid weight)",
+           pool_raises("light", 0, "balanced", {"balanced": {"light": [
+               {"backend": "codex", "weight": "3"},
+           ]}}, {}))
     expect("pool rejects aggregate expanded slots above the deterministic cap",
            pool_raises("light", 0, "balanced", {"balanced": {"light": [
                {"backend": "codex", "weight": 100},

@@ -2,12 +2,12 @@
 """
 Compound V — liveness probe (hang detector).
 
-Classifies each `running` job in a run's `state.json` from GIT + FILESYSTEM signals only —
+Classifies each `running`/`dispatched` job in a run's `state.json` from GIT + FILESYSTEM signals only —
 never model-self-report (same ethos as the scope gate). Turns silent forever-waits into
 detected, acted-upon states so the dispatcher (and `/v:status`) can stop guessing whether a
 job is alive.
 
-Classes (per running job):
+Classes (per running/dispatched job):
   LIKELY-DONE : the job's worktree HEAD is a commit PAST its recorded `baseline` — the work
                 landed, only the completion notification is stuck. (The exact case that forced
                 a human to nudge the dispatcher by hand.) Checked FIRST.
@@ -34,7 +34,7 @@ Usage:
   compound-v-liveness.py --selftest
 
 Exit: 0 if nothing is STALE/DEAD (LIKELY-DONE is exit 0 — it is good news: collect it);
-      3 if any running job is STALE or DEAD (attention needed);
+      3 if any running/dispatched job is STALE or DEAD (attention needed);
       2 on usage / unreadable-state error.
 """
 import argparse
@@ -209,9 +209,15 @@ def classify_job(job, now, stale_sec):
     return ("UNKNOWN", "no worktree, pid, or log to probe", None)
 
 
+LIVE_STATUSES = ("running", "dispatched")
+
+
 def probe(run_dir, stale_sec, now):
-    """Classify every `running` job in <run-dir>/state.json. Returns
-    {job_id: {liveness, evidence, last_progress_s}}. Raises ValueError on unreadable state."""
+    """Classify every `running`/`dispatched` job in <run-dir>/state.json. `dispatched` is the
+    assignment-written-launch-about-to-happen status (before the worker process is confirmed
+    running) — a crash in that window is exactly the hang this probe exists to catch, so it
+    must not be skipped. Returns {job_id: {liveness, evidence, last_progress_s}}. Raises
+    ValueError on unreadable state."""
     state_path = os.path.join(run_dir, "state.json")
     try:
         with open(state_path) as fh:
@@ -221,7 +227,7 @@ def probe(run_dir, stale_sec, now):
 
     results = {}
     for jid, job in (state.get("jobs") or {}).items():
-        if not isinstance(job, dict) or job.get("status") != "running":
+        if not isinstance(job, dict) or job.get("status") not in LIVE_STATUSES:
             continue
         liveness, evidence, last_prog = classify_job(job, now, stale_sec)
         results[jid] = {"liveness": liveness, "evidence": evidence, "last_progress_s": last_prog}
@@ -230,7 +236,7 @@ def probe(run_dir, stale_sec, now):
 
 def _render(results):
     if not results:
-        return "no running jobs (nothing to probe)"
+        return "no running/dispatched jobs (nothing to probe)"
     lines = []
     for jid in sorted(results):
         r = results[jid]
@@ -392,7 +398,43 @@ def _selftest():
     check("UNKNOWN: live pid but no FS signal",
           cls({"status": "running", "pid": os.getpid()}) == "UNKNOWN")
 
-    # --- probe(): only running jobs; exit-code aggregation ---
+    # --- dispatched jobs get the SAME classification sweep as running jobs (this is the bug
+    # fix: the crash window between "assignment written" and "worker confirmed running" is
+    # exactly what `dispatched` exists to name, and it must not be invisible to STALE/DEAD) ---
+    with tempfile.TemporaryDirectory() as dd:
+        with open(os.path.join(dd, "a.txt"), "w") as fh:
+            fh.write("x")
+        check("dispatched: freshly-dispatched job within stale_sec is NOT flagged (WORKING)",
+              cls({"status": "dispatched", "worktree": dd, "baseline": "deadbeef"}) == "WORKING")
+
+        old = now - 4000
+        for root, dirs, files in os.walk(dd):
+            for name in files:
+                os.utime(os.path.join(root, name), (old, old))
+        check("dispatched: no progress past stale_sec is caught as STALE",
+              cls({"status": "dispatched", "worktree": dd, "baseline": "deadbeef"}, stale=600) == "STALE")
+        check("dispatched: stale-but-pid-less job stays STALE, not DEAD (no pid ⇒ never DEAD, "
+              "same guard as a running job — see classify_job's `pid is not None` checks)",
+              cls({"status": "dispatched", "worktree": dd, "baseline": "deadbeef"}, stale=600) != "DEAD")
+
+    # --- probe(): dispatched jobs are now included in the sweep (the bug this fix closes —
+    # previously only `status == "running"` was classified, leaving the dispatched-but-not-yet-
+    # running crash window invisible to STALE/DEAD detection); `done` stays skipped ---
+    with tempfile.TemporaryDirectory() as rundir2:
+        state2 = {"jobs": {
+            "j-done":       {"status": "done"},
+            "j-dispatched": {"status": "dispatched"},     # no worktree/pid/log yet ⇒ UNKNOWN
+        }}
+        with open(os.path.join(rundir2, "state.json"), "w") as fh:
+            json.dump(state2, fh)
+        res2 = probe(rundir2, DEFAULT_STALE_SEC, now)
+        check("probe includes dispatched jobs, not just running",
+              list(res2.keys()) == ["j-dispatched"])
+        check("a freshly-dispatched job with no worktree/pid/log classifies UNKNOWN, not DEAD "
+              "(absence of a pid must never read as DEAD on its own)",
+              res2["j-dispatched"]["liveness"] == "UNKNOWN")
+
+    # --- probe(): only running/dispatched jobs; exit-code aggregation ---
     with tempfile.TemporaryDirectory() as rundir:
         state = {"jobs": {
             "j-done":    {"status": "done"},
@@ -401,7 +443,7 @@ def _selftest():
         with open(os.path.join(rundir, "state.json"), "w") as fh:
             json.dump(state, fh)
         res = probe(rundir, DEFAULT_STALE_SEC, now)
-        check("probe skips non-running jobs", list(res.keys()) == ["j-run"])
+        check("probe skips non-running/dispatched jobs", list(res.keys()) == ["j-run"])
         check("exit 0 when nothing STALE/DEAD", _exit_code(res) == 0)
         check("exit 3 when a STALE is present",
               _exit_code({"x": {"liveness": "STALE"}}) == 3)

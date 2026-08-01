@@ -123,7 +123,13 @@ jobs:
           # The deterministic manifest validator is the partition gate. A missing
           # validator is a HARD failure (a rename must never silently drop the gate).
           test -f scripts/compound-v-validate-manifest.py || { echo "❌ scripts/compound-v-validate-manifest.py is missing — the partition gate would silently vanish"; exit 1; }
-          python3 scripts/compound-v-validate-manifest.py examples/manifest.example.yaml
+          # examples/compound-v.example.json seeds a pools.balanced.light entry
+          # (codex + cursor — neither needs a secret/env var to resolve) so
+          # task-3-docs's `backend: pool` job exercises the real pool
+          # validation path in CI, not only the script's own --selftest
+          # fixtures. Scoped to this one file via --config; every other
+          # tracked manifest below is validated with no config, unaffected.
+          python3 scripts/compound-v-validate-manifest.py --config examples/compound-v.example.json examples/manifest.example.yaml
           echo "✅ example manifest passes the invariant gate"
           # Also validate every tracked run-manifest — exercise the gate on real data,
           # not just one curated fixture.

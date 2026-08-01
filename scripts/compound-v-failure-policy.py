@@ -73,6 +73,9 @@ CONCRETE_BACKENDS = (
 BACKOFF_BASE = 2
 BACKOFF_CAP = 60
 RESET_FIELDS = ("reset_seconds", "retry_after_seconds", "resets_in_seconds")
+# Kept in sync by hand with the identical canonical-breaker constants/rules in
+# compound-v-pool-state.py (_circuit_open_errors); verified semantically
+# equivalent by review — re-diff both if either changes.
 CIRCUIT_REASONS = ("out_of_credits", "auth")
 CIRCUIT_CLEARED_BY = ("top_up", "reauth", "probe")
 CIRCUIT_ENTRY_FIELDS = frozenset(("open", "reason", "opened_at", "cleared_by"))
@@ -248,7 +251,12 @@ def decide(failure_class, backend, attempts, total_retries, max_total_retries,
         d = {"action": action, "reason": reason, "backoff_seconds": 0,
              "reroute_to": None, "escalate_tier": False, "circuit_break": False,
              "next_pool_index": None, "consume_total_retry": False,
-             "earliest_reset_seconds": earliest_reset, "clear_assignment": False,
+             # earliest_reset_seconds describes the terminal exhausted-pool halt
+             # (what /v:status renders); stamping it onto proceed/retry/reroute
+             # results too would let an ordinary retry's Retry-After leak into a
+             # field nothing but the halt path ever clears.
+             "earliest_reset_seconds": earliest_reset if action == "halt" else None,
+             "clear_assignment": False,
              "circuit_break_backend": None}
         d.update(kw)
         return d
@@ -300,8 +308,16 @@ def decide(failure_class, backend, attempts, total_retries, max_total_retries,
         if current_tier == "deep":
             return out("halt", "context too large for %s even at the deepest tier — split "
                        "the job (back to planning); no bigger tier exists" % backend)
+        # A pool-routed job that escalates tier leaves its pool ring: the frozen
+        # slot it holds was resolved for the OLD (smaller) tier, and pools do
+        # not cover `deep` (a Non-goal), so the recorded pool assignment can no
+        # longer describe where this job is about to run. Clear it exactly like
+        # out_of_credits does, so the dispatcher re-resolves at the new tier and
+        # records the result as an ordinary assignment_source: fallback pair —
+        # never leaving a stale pool_index the validator would then reject.
         return out("reroute", "context too large for %s at tier %s — escalate to a bigger "
-                   "tier" % (backend, current_tier or "?"), escalate_tier=True)
+                   "tier" % (backend, current_tier or "?"), escalate_tier=True,
+                   clear_assignment=in_pool)
 
     if failure_class in RETRYABLE:
         cap = PER_CLASS_MAX.get(failure_class, 1)
@@ -359,6 +375,19 @@ def _selftest():
     check("ctx-deep", d["action"], "halt")
     d = decide("context_length", "codex", 0, 0, 12, current_tier="standard")
     check("ctx-standard", d["action"], "reroute", d["escalate_tier"])
+    check("ctx-standard-non-pool-keeps-its-recorded-assignment",
+          True, True, d["clear_assignment"] is False)
+    d = decide("context_length", "codex", 0, 0, 12, current_tier="light",
+               pool_members=[{"backend": "codex"}, {"backend": "zai"}],
+               current_pool_index=0)
+    check("ctx-pool-clears-the-now-stale-pool-assignment", d["action"], "reroute",
+          d["escalate_tier"] is True and d["clear_assignment"] is True)
+    d = decide("none", "codex", 0, 0, 12, retry_after=30)
+    check("earliest-reset-not-leaked-onto-proceed", d["action"], "proceed",
+          d.get("earliest_reset_seconds") is None)
+    d = decide("rate_limited", "codex", 0, 0, 12, retry_after=30, jitter=False)
+    check("earliest-reset-not-leaked-onto-an-ordinary-retry", d["action"], "retry",
+          d.get("earliest_reset_seconds") is None)
     # backoff is capped and grows
     b0 = decide("rate_limited", "codex", 0, 0, 99, jitter=False)["backoff_seconds"]
     b1 = decide("rate_limited", "codex", 1, 0, 99, jitter=False)["backoff_seconds"]
@@ -445,6 +474,21 @@ def _selftest():
 
     check("pool-never-enters-concrete-fallback-table", True, True,
           "pool" not in FALLBACK)
+    try:
+        # Regression guard for the anti retry-storm cap itself: an exhausted
+        # run-level budget must HALT even when the pool still has a live,
+        # non-circuit-open member to reroute to — the cap exists precisely to
+        # stop a pool from papering over an exhausted budget forever.
+        d = decide("out_of_credits", "codex", 0, 12, 12,
+                   pool_members=[{"backend": "codex"}, {"backend": "zai"}],
+                   current_pool_index=0)
+        check("pool-budget-exhaustion-halts-despite-a-viable-member",
+              d["action"], "halt",
+              d.get("circuit_break") is True
+              and d.get("reroute_to") is None
+              and d.get("next_pool_index") is None)
+    except (TypeError, KeyError, ValueError) as e:
+        check("pool-budget-exhaustion-halts-despite-a-viable-member", "error", "halt", str(e))
     try:
         d = decide("out_of_credits", "zai", 0, 1, 12,
                    pool_members=[{"backend": "zai"},

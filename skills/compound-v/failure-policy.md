@@ -76,17 +76,20 @@ The retryable set is exactly `{rate_limited, overloaded, timeout, network, other
 | `failure_class` | `action` | Effect | Caps |
 |---|---|---|---|
 | `none` | `proceed` | nothing to do | — |
-| `out_of_credits` (pool has next viable member) | `reroute` | circuit-break only the exhausted concrete backend; return `next_pool_index` + `reroute_to`; consume one run-level retry; record the new frozen pair before launch | never retried on exhausted member |
-| `out_of_credits` (pool exhausted, ordinary fallback viable) | `reroute` | circuit-break exhausted concrete backend; `next_pool_index: null`; resolve and record ordinary concrete fallback with `assignment_source: fallback`; consume one run-level retry | never retried on exhausted member |
+| `out_of_credits` (ordinary, non-pool job; fallback viable) | `reroute` | circuit-break the exhausted concrete backend; reroute to `FALLBACK[backend]` (always `claude`); `consume_total_retry`/`clear_assignment` are **false** — this job carries no pool context, so nothing pool-shaped is ever written | never retried on exhausted backend |
+| `out_of_credits` (pool job; pool has next viable member) | `reroute` | circuit-break only the exhausted concrete backend; return `next_pool_index` + `reroute_to`; consume one run-level retry; record the new frozen pair before launch | never retried on exhausted member |
+| `out_of_credits` (pool job; pool exhausted, ordinary fallback viable) | `reroute` | circuit-break exhausted concrete backend; `next_pool_index: null`; resolve and record ordinary concrete fallback with `assignment_source: fallback`; consume one run-level retry | never retried on exhausted member |
 | `out_of_credits` (no fallback, dead fallback, or run budget exhausted) | `halt` | `circuit_break`; causes surfaced in `reason`; persist `earliest_reset_observed_at` with the returned `earliest_reset_seconds`; run stays resumable — top up / fix fallback, then `/v:resume` | never retried |
 | `auth` | `halt` | `circuit_break`; human re-auths via `/v:init`, then `/v:resume` | never retried |
-| `context_length` (tier `<` deepest) | `reroute` | `escalate_tier` — re-resolve at a bigger tier | never retried |
+| `context_length` (tier `<` deepest) | `reroute` | `escalate_tier` — re-resolve at a bigger tier. For a pool job, also `clear_assignment: true` — the frozen slot was resolved for the old tier and pools never cover `deep`, so the job leaves the ring and its new pair is recorded as `assignment_source: fallback` | never retried |
 | `context_length` (`--current-tier deep`) | `halt` | no bigger model exists — **split the job** → back to planning | never retried |
 | `rate_limited` | `retry` → `halt` | retry SAME backend, exp backoff + jitter, honor `retry-after` | per-class **3**, then run-level `max_total_retries` |
 | `overloaded` | `retry` → `halt` | same | per-class **2**, then run-level |
 | `network` | `retry` → `halt` | same | per-class **2**, then run-level |
 | `timeout` | `retry` → `halt` | retry once, longer | per-class **1**, then run-level |
 | `other` | `retry` → `halt` | retry once, then stop | per-class **1**, then run-level |
+
+`earliest_reset_seconds` is populated only on the terminal exhausted-pool/exhausted-backend `halt` — every other action (`proceed`/`retry`/non-terminal `reroute`) always returns it as `null`, so an ordinary retry's own `retry-after` never leaks into the field `/v:status` renders as "earliest reset."
 
 **Backoff:** exponential (`base 2 · 2^attempts`, jittered to de-sync siblings, capped at **60s**); a provider `retry-after` (passed as `--retry-after <job_result.retry_after_seconds>`) **overrides** the computed value. Retries are capped **twice** — per-(job, failure_class) (the counts above, against `attempts[job][class]`) **and** by the run-level `max_total_retries` (default 12), the anti retry-storm guard. Whichever ceiling hits first → `halt`. A class's budget is independent: a job that exhausts `rate_limited` can still spend its `network` budget. A pool member change may reset/fork the per-class counter, but never the run-level budget: every policy result with `consume_total_retry: true` increments `total_retries` before relaunch.
 
@@ -141,7 +144,7 @@ See [`state-machine.md`](state-machine.md) for the resume behavior built on thes
 ## Anti-patterns (do NOT)
 
 - ❌ **Retry `out_of_credits` or `auth`.** They never self-heal by retrying; you only burn time and rate-limit harder. Circuit-break (+ re-route for credits) or halt.
-- ❌ **Cap retries by count alone.** Cap by **count AND wall-clock** — per-class ceiling *and* the run-level `max_total_retries`. One job spinning on 429s must not exhaust the whole run.
+- ❌ **Cap retries by count alone.** Cap by **count AND wall-clock** — per-class ceiling *and* the run-level `max_total_retries`. One job spinning on 429s on a single, non-pooled backend must not exhaust the whole run — its per-class cap (3/2/2/1/1) stops it long before the run-level budget could. **A pool-routed job is a deliberate exception**: because its per-class attempt counter resets on every member change (spec-required, so a fresh member gets a fresh chance) while the run-level budget does not, one persistently failing pool job *can* legitimately spend the entire run-level budget across enough members — e.g. 3 retries × 3 members = 9, plus 3 reroutes, against the default 12. That job's own failures then halt every other job in the run (the anti retry-storm cap in `decide()` fires regardless of which job is asking). This is accepted, spec-mandated behavior, not a bug — but it means a pool with more members than `max_total_retries` can absorb is a real footgun; size pools and `max_total_retries` with that interaction in mind, and `/v:resume` after raising the budget if it happens.
 - ❌ **Hammer a quota-exhausted backend.** Once the breaker is open, stop dispatching to it for the run.
 - ❌ **Classify by HTTP status.** Classify by error **TYPE**: OpenAI `insufficient_quota` and a throttle are both 429; the Anthropic credit error is a **400/402, not a 429**. The status alone will mis-route you.
 - ❌ **Silently swap backends.** Announce every re-route/circuit-break at event time and in the run summary, with the cost direction called out. `/v:status` reports only current recorded assignment counts and never reconstructs history.
