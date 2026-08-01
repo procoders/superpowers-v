@@ -25,7 +25,9 @@ TMP="$(mktemp -d)"
 PORT="${ZAI_SMOKE_PORT:-8799}"
 SERVER_PID=""
 cleanup() {
-  [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
+  if [ -n "$SERVER_PID" ]; then
+    kill "$SERVER_PID" 2>/dev/null || true
+  fi
   rm -rf "$TMP"
 }
 trap cleanup EXIT

@@ -107,7 +107,9 @@ a1="$(printf '%s' "$OUT1" | jq -r '.advice')"
 c1="$(printf '%s' "$OUT1" | jq -r '.advisor_calls')"
 
 [ "$b1" = "codex" ] || { echo "  FAIL: expected advisor_backend=codex, got '$b1'"; fail=1; }
-[ -n "$m1" ] && [ "$m1" != "null" ] || { echo "  FAIL: expected a concrete advisor_model, got '$m1'"; fail=1; }
+if [ -z "$m1" ] || [ "$m1" = "null" ]; then
+  echo "  FAIL: expected a concrete advisor_model, got '$m1'"; fail=1
+fi
 [ "$a1" = "$CANNED" ] || { echo "  FAIL: advice mismatch (codex): got '$a1'"; fail=1; }
 [ "$c1" = "1" ] || { echo "  FAIL: expected advisor_calls=1 (codex), got '$c1'"; fail=1; }
 # Safety flags on the codex argv.
