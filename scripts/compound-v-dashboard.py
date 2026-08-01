@@ -334,10 +334,9 @@ def _provider_state_errors(state, jobs=None):
     its canonical persisted shapes so a dashboard built before/after parallel
     task integration fails closed instead of presenting malformed state as health.
     """
-    has_provider_state = (
-        bool(state.get("cooldowns")) or bool(state.get("circuit_open"))
-        or state.get("network_pause") is not None
-        or "total_retries" in state or "max_total_retries" in state)
+    has_provider_state = any(key in state for key in (
+        "cooldowns", "circuit_open", "network_pause",
+        "total_retries", "max_total_retries"))
     if not has_provider_state:
         return []
     manifest_jobs = jobs if isinstance(jobs, list) else []
@@ -1359,6 +1358,8 @@ def _selftest():
 
         # --- fixtures 4-7: valid JSON but invalid provider state must fail closed ---
         invalid_provider_states = {
+            "nullcooldowns": {"cooldowns": None},
+            "listcircuit": {"circuit_open": []},
             "badcooldown": {
                 "cooldowns": {"zai": {"until": "not-a-time", "reason": "mystery"}},
             },
@@ -1479,7 +1480,7 @@ def _selftest():
                   and "permanent circuit breaker" not in invalid_html.lower()
                   and "correlated network pause" not in invalid_html.lower(),
                   "failure-state: malformed %s rendered partial health" % suffix)
-        check(invalid_count == 4,
+        check(invalid_count == 6,
               "failure-state: malformed provider states did not all fail closed "
               "(rendered %d invalid warnings)" % invalid_count)
         check("mystery until" not in html_text,
@@ -1501,6 +1502,7 @@ def _selftest():
               "integration-doc: status lacks fail-closed pool-state validation")
         for required_text in (
                 "attempt_counter", "jobs[<id>].attempt_id", "jobs[<id>].batch_id",
+                "jobs[<id>].launch_binding", "stale-results/",
                 "result binding is dispatcher-owned metadata",
                 "mismatched or stale result"):
             check(required_text in dispatcher_contract,
