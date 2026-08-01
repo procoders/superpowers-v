@@ -234,17 +234,29 @@ def _extract_zai(objs: List[Any], backend: str) -> Dict[str, Any]:
     `total_cost_usd` and `modelUsage[*].costUSD` are deliberately IGNORED: the CLI computes
     both from Anthropic's price table for a model that never ran, and job_result.usage has no
     cost field to hold a number anyway (anti-ruflo). The token counts, by contrast, come from
-    z.ai's own response and are real -- which is why `zai` is NOT in UNMEASURED_BACKENDS."""
+    z.ai's own response and are real -- which is why `zai` is NOT in UNMEASURED_BACKENDS.
+
+    `measured: true` is additionally gated on a NON-EMPTY `modelUsage`, not on `usage` alone.
+    A failed job's captured document has `usage.input_tokens` / `usage.output_tokens` as
+    well-formed ZEROS while `modelUsage` is `{}` (reproduced: a real captured z.ai error
+    response has `"is_error":true,...,"modelUsage":{},"usage":{"input_tokens":0,
+    "output_tokens":0}`) -- docs/superpowers/library-audit/_knowledge-base/claude-code-cli-
+    flags.md warned about exactly this. Without the gate, every hard failure records
+    measured:true with zero tokens, indistinguishable from a real free response."""
     for obj in objs:
         if not isinstance(obj, dict):
+            continue
+        model_usage = obj.get("modelUsage")
+        if not isinstance(model_usage, dict) or not model_usage:
             continue
         u = obj.get("usage")
         if not isinstance(u, dict):
             continue
-        inp = u.get("input_tokens")
-        out = u.get("output_tokens")
-        if isinstance(inp, int) and isinstance(out, int):
-            return _measured(backend, inp, out)
+        inp = _valid_int(u.get("input_tokens"))
+        out = _valid_int(u.get("output_tokens"))
+        if inp is None or out is None:
+            continue
+        return _measured(backend, inp, out)
     return _unmeasured(backend)
 
 
@@ -307,12 +319,36 @@ def _selftest() -> int:
     # document, and nothing guarantees it stays on one line. Line-wise parsing would
     # silently return nothing here.
     zai_multiline = _write_tmp([
-        '{"type":"result",', '"usage":{"input_tokens":7,', '"output_tokens":9}}'
+        '{"type":"result",', '"usage":{"input_tokens":7,', '"output_tokens":9},',
+        '"modelUsage":{"glm-5.2":{"inputTokens":7,"outputTokens":9}}}'
     ])
     check("zai multi-line document parses", extract_usage("zai", zai_multiline)["input_tokens"], 7)
     os.unlink(zai_multiline)
     # Missing capture must be honest, never a fabricated zero-as-measured.
     check("zai missing file is unmeasured", extract_usage("zai", None)["measured"], False)
+    # A FAILED job (reproduced: real captured z.ai error response) has well-formed ZERO
+    # usage.{input,output}_tokens but an EMPTY modelUsage -- measured must gate on modelUsage
+    # being non-empty, not on usage alone, or a hard 400/429 records a fabricated zero as a
+    # real measurement.
+    zai_failed = _write_tmp([
+        '{"type":"result","subtype":"success","is_error":true,"api_error_status":400,'
+        '"modelUsage":{},"usage":{"input_tokens":0,"output_tokens":0}}'
+    ])
+    zai_failed_got = extract_usage("zai", zai_failed)
+    check("zai failed job is unmeasured despite well-formed zero usage",
+          zai_failed_got["measured"], False)
+    check("zai failed job input_tokens stays null (not a fabricated 0)",
+          zai_failed_got["input_tokens"], None)
+    check("zai failed job output_tokens stays null (not a fabricated 0)",
+          zai_failed_got["output_tokens"], None)
+    os.unlink(zai_failed)
+    # A malformed modelUsage (not a dict) must also fail open to unmeasured, never crash.
+    zai_bad_model_usage = _write_tmp([
+        '{"type":"result","modelUsage":"not-a-dict","usage":{"input_tokens":5,"output_tokens":5}}'
+    ])
+    check("zai non-dict modelUsage is unmeasured",
+          extract_usage("zai", zai_bad_model_usage)["measured"], False)
+    os.unlink(zai_bad_model_usage)
 
     # --- codex: SUM across turn.completed; skip non-JSON + error/deprecation ---
     codex_lines = [
