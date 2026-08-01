@@ -116,10 +116,12 @@ def _generation_errors(state_jobs, job_id, attempt_id, path, batch_id=None):
     elif int(generation) > counter:
         errors.append("%s exceeds the job's persisted attempt counter" % path)
     recorded_batch = record.get("batch_id")
-    if (batch_id is not None and recorded_batch is not None
-            and isinstance(counter, int) and not isinstance(counter, bool)
-            and int(generation) == counter and batch_id != recorded_batch):
-        errors.append("%s batch_id does not match the job's persisted batch" % path)
+    if (batch_id is not None and isinstance(counter, int)
+            and not isinstance(counter, bool) and int(generation) == counter):
+        if not isinstance(recorded_batch, str) or not recorded_batch:
+            errors.append("%s current generation requires a persisted batch_id" % path)
+        elif batch_id != recorded_batch:
+            errors.append("%s batch_id does not match the job's persisted batch" % path)
     return errors
 
 
@@ -2159,6 +2161,12 @@ def _selftest():
         "backend": "codex", "job_id": "job-a", "attempt_id": "job-a:2",
         "batch_id": "other-batch", "observed_at": "2026-08-01T07:20:00Z",
     }]
+    missing_current_batch = json.loads(json.dumps(causal_state))
+    missing_current_batch["jobs"]["job-a"].pop("batch_id")
+    missing_current_batch["network_evidence"] = [{
+        "backend": "codex", "job_id": "job-a", "attempt_id": "job-a:2",
+        "batch_id": "batch-c", "observed_at": "2026-08-01T07:20:00Z",
+    }]
     impossible_pause = json.loads(json.dumps(causal_state))
     impossible_pause["network_pause"] = {
         "opened_at": "2026-08-01T07:20:00Z",
@@ -2178,7 +2186,7 @@ def _selftest():
     expect("health evidence rejects future generations wrong batches and future observations",
            all(validate(item, route_jobs) for item in (
                future_cooldown, forged_evidence, wrong_batch_success, impossible_pause,
-               missing_counter_cooldown)))
+               missing_counter_cooldown, missing_current_batch)))
 
     bare_cooldown_state = json.loads(json.dumps(route_state))
     bare_cooldown_state["jobs"]["job-a"].update({
