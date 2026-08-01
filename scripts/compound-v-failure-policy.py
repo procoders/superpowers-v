@@ -188,6 +188,12 @@ def decide(failure_class, backend, attempts, total_retries, max_total_retries,
     def cooldown_advance(reason, until):
         exhausted = budget_exhausted("before pool advance")
         if exhausted is not None:
+            exhausted.update({
+                "cooldown_backend": backend,
+                "cooldown_reason": reason,
+                "cooldown_until": until,
+                "next_retry_at": until,
+            })
             return exhausted
         return out(
             "reroute",
@@ -332,16 +338,6 @@ def decide(failure_class, backend, attempts, total_retries, max_total_retries,
 
     if failure_class in RETRYABLE:
         cap = PER_CLASS_MAX.get(failure_class, 1)
-        if attempts >= cap:
-            return out(
-                "halt",
-                "%s: per-class retries exhausted (%d/%d) — /v:resume after the "
-                "condition clears" % (failure_class, attempts, cap),
-            )
-        exhausted = budget_exhausted()
-        if exhausted is not None:
-            return exhausted
-
         wait = _candidate_wait(
             attempts, retry_after, jitter, jitter_seconds,
             include_provider_jitter=pool_routed)
@@ -363,6 +359,16 @@ def decide(failure_class, backend, attempts, total_retries, max_total_retries,
                 % (failure_class, backend, until),
                 next_retry_at=until,
             )
+
+        if attempts >= cap:
+            return out(
+                "halt",
+                "%s: per-class retries exhausted (%d/%d) — /v:resume after the "
+                "condition clears" % (failure_class, attempts, cap),
+            )
+        exhausted = budget_exhausted()
+        if exhausted is not None:
+            return exhausted
 
         # A pooled short throttle/overload gets exactly one same-assignment retry.
         if pool_routed and failure_class in SHORT_POOL_TRANSIENTS and attempts >= 1:
@@ -511,6 +517,20 @@ def _selftest():
           d["backoff_seconds"] == 0
           and d["next_retry_at"] == "2026-08-01T07:21:01Z")
 
+    d = decide("rate_limited", "zai", 3, 0, 12, retry_after=3600,
+               pool_routed=False, jitter=False, now=now)
+    check("known-long-reset-survives-per-class-exhaustion",
+          d["action"], "halt",
+          d["backoff_seconds"] == 0
+          and d["next_retry_at"] == "2026-08-01T08:20:00Z")
+
+    d = decide("rate_limited", "zai", 0, 12, 12, retry_after=3600,
+               pool_routed=False, jitter=False, now=now)
+    check("known-long-reset-survives-run-budget-exhaustion",
+          d["action"], "halt",
+          d["backoff_seconds"] == 0
+          and d["next_retry_at"] == "2026-08-01T08:20:00Z")
+
     d = decide("rate_limited", "zai", 0, 0, 12, retry_after=60,
                pool_routed=False, jitter=False, now=now)
     check("exactly-60-seconds-remains-inline", d["action"], "retry",
@@ -590,6 +610,19 @@ def _selftest():
     check("run-budget-exhaustion-halts-before-pool-advance",
           d["action"], "halt",
           not d["advance_pool"] and not d["consume_total_retry"])
+
+    d = decide("usage_window_exhausted", "zai", 0, 12, 12,
+               retry_at="2026-08-05T00:00:00Z", pool_routed=True,
+               assigned_model="glm-5.2", attempt_id="task-h:3",
+               now=now, jitter=False)
+    check("budget-halt-still-persists-explicit-usage-window",
+          d["action"], "halt",
+          d["backoff_seconds"] == 0
+          and d["cooldown_backend"] == "zai"
+          and d["cooldown_reason"] == "usage_window_exhausted"
+          and d["cooldown_until"] == "2026-08-05T00:00:00Z"
+          and d["next_retry_at"] == "2026-08-05T00:00:00Z"
+          and not d["advance_pool"] and not d["consume_total_retry"])
 
     legacy_keys = {
         "action", "reason", "backoff_seconds", "reroute_to", "escalate_tier",
