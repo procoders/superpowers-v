@@ -130,8 +130,6 @@ def _probe_errors(probe, path, state_jobs, opened_at=None):
 
 def _cooldown_errors(cooldowns, state_jobs):
     """Return errors for canonical transient backend cooldowns."""
-    if cooldowns is None:
-        return []
     if not isinstance(cooldowns, dict):
         return ["state.cooldowns must be an object map"]
     errors = []
@@ -178,8 +176,6 @@ def _cooldown_errors(cooldowns, state_jobs):
 
 
 def _network_evidence_errors(evidence, path="state.network_evidence", state_jobs=None):
-    if evidence is None:
-        return []
     if not isinstance(evidence, list):
         return ["%s must be a list" % path]
     errors = []
@@ -269,15 +265,49 @@ def _network_pause_errors(pause, state_jobs):
     return errors
 
 
+def _cross_family_probe_errors(state):
+    """Reject one persisted attempt leasing more than one health-state family."""
+    owners = {}
+    errors = []
+    cooldowns = state.get("cooldowns")
+    if isinstance(cooldowns, dict):
+        for backend, entry in cooldowns.items():
+            probe = entry.get("probe") if isinstance(entry, dict) else None
+            if isinstance(probe, dict) and probe.get("status") == "leased":
+                attempt_id = probe.get("owner_attempt_id")
+                if isinstance(attempt_id, str):
+                    owners.setdefault(attempt_id, []).append(
+                        "state.cooldowns[%r].probe" % backend)
+    pause = state.get("network_pause")
+    if isinstance(pause, dict):
+        probe = pause.get("probe")
+        if isinstance(probe, dict) and probe.get("status") == "leased":
+            attempt_id = probe.get("owner_attempt_id")
+            if isinstance(attempt_id, str):
+                owners.setdefault(attempt_id, []).append("state.network_pause.probe")
+    for attempt_id, paths in owners.items():
+        if len(paths) > 1:
+            errors.append("duplicate probe ownership for attempt %r across %s"
+                          % (attempt_id, ", ".join(paths)))
+    return errors
+
+
 def _transient_state_errors(state):
     if not isinstance(state, dict):
         return ["state root must be an object"]
     state_jobs = state.get("jobs")
     errors = _attempt_identity_errors(state_jobs)
-    errors.extend(_cooldown_errors(state.get("cooldowns"), state_jobs))
-    errors.extend(_network_evidence_errors(
-        state.get("network_evidence"), state_jobs=state_jobs))
+    if "cooldowns" in state:
+        errors.extend(_cooldown_errors(state.get("cooldowns"), state_jobs))
+    if "network_evidence" in state:
+        errors.extend(_network_evidence_errors(
+            state.get("network_evidence"), state_jobs=state_jobs))
+    if "network_successes" in state:
+        errors.extend(_network_evidence_errors(
+            state.get("network_successes"), path="state.network_successes",
+            state_jobs=state_jobs))
     errors.extend(_network_pause_errors(state.get("network_pause"), state_jobs))
+    errors.extend(_cross_family_probe_errors(state))
     return errors
 
 
@@ -329,8 +359,10 @@ def _circuit_open_errors(circuit_open):
             errors.append("%s.open must be true/false" % path)
         if reason not in CIRCUIT_REASONS:
             errors.append("%s.reason must be out_of_credits or auth" % path)
-        if not isinstance(opened_at, str) or not opened_at:
-            errors.append("%s.opened_at must be a non-empty string" % path)
+        try:
+            _parse_canonical_timestamp(opened_at, "%s.opened_at" % path)
+        except ValueError as error:
+            errors.append(str(error))
         if cleared_by is not None and cleared_by not in CIRCUIT_CLEARED_BY:
             errors.append("%s.cleared_by must be null, top_up, reauth, or probe" % path)
         if is_open is True and cleared_by is not None:
@@ -766,7 +798,7 @@ def _next_attempt(record, job_id):
     return "%s:%d" % (job_id, next_counter), next_counter
 
 
-def _validate_result_attempt(state, job_id, intent):
+def _validate_result_attempt(state, job_id, intent, batch_id):
     backend = intent.get("backend")
     attempt_id = intent.get("attempt_id")
     if backend not in VALID_CONCRETE_BACKENDS:
@@ -779,6 +811,10 @@ def _validate_result_attempt(state, job_id, intent):
     current_attempt, _unused = _current_attempt(record, job_id)
     if current_attempt != attempt_id:
         raise ValueError("result attempt_id is not the job's current persisted attempt")
+    if record.get("assigned_backend") != backend:
+        raise ValueError("result backend is not the job's current persisted assignment")
+    if record.get("batch_id") != batch_id:
+        raise ValueError("result batch_id is not the job's current persisted launch batch")
     return backend, attempt_id
 
 
@@ -866,7 +902,7 @@ def _lease_probe(entry, job_id, attempt_id, now_value,
     }
 
 
-def _launch_assignment(state, jobs, job_id, start_index, now_value,
+def _launch_assignment(state, jobs, job_id, batch_id, start_index, now_value,
                        job_timeout_seconds, grace_seconds,
                        exclude_assignment=None, network_probe=False):
     """Perform the sole bounded frozen-ring scan and atomically lease/assign."""
@@ -932,12 +968,13 @@ def _launch_assignment(state, jobs, job_id, start_index, now_value,
     slot_index, backend, model = selected
     record["attempt_counter"] = attempt_counter
     record["attempt_id"] = attempt_id
+    record["batch_id"] = batch_id
     record["assigned_backend"] = backend
     record["assigned_model"] = model
     record["pool_index"] = slot_index
     record["assignment_source"] = "pool"
     record["status"] = "dispatched"
-    if selected_cooldown is not None:
+    if selected_cooldown is not None and not network_probe:
         _lease_probe(selected_cooldown, job_id, attempt_id, now_value,
                      job_timeout_seconds, grace_seconds)
     if network_probe:
@@ -948,13 +985,15 @@ def _launch_assignment(state, jobs, job_id, start_index, now_value,
         "assigned_model": model,
         "pool_index": slot_index,
         "attempt_id": attempt_id,
-        "probe_backend": backend if selected_cooldown is not None else None,
+        "probe_backend": (backend
+                          if selected_cooldown is not None and not network_probe
+                          else None),
         "network_probe": bool(network_probe),
     }, None
 
 
 def _apply_result(state, job_id, intent, now_value, batch_id):
-    backend, attempt_id = _validate_result_attempt(state, job_id, intent)
+    backend, attempt_id = _validate_result_attempt(state, job_id, intent, batch_id)
     result = intent.get("result")
     if result not in ("success", "failure"):
         raise ValueError("result intent must be success or failure")
@@ -987,6 +1026,18 @@ def _apply_result(state, job_id, intent, now_value, batch_id):
         if retained != evidence:
             state["network_evidence"] = retained
             changed = True
+        successes = _prune_network_evidence(
+            state.get("network_successes", []), batch_id, now_value,
+        )
+        success_row = {
+            "backend": backend, "job_id": job_id, "attempt_id": attempt_id,
+            "batch_id": batch_id, "observed_at": _format_timestamp(now_value),
+        }
+        success_key = (backend, attempt_id)
+        if not any((item.get("backend"), item.get("attempt_id")) == success_key
+                   for item in successes):
+            successes.append(success_row)
+        state["network_successes"] = successes
         return "complete" if changed else "complete"
 
     failure_class = intent.get("failure_class")
@@ -1027,6 +1078,10 @@ def _apply_result(state, job_id, intent, now_value, batch_id):
         evidence = _prune_network_evidence(
             state.get("network_evidence", []), batch_id, now_value,
         )
+        successes = _prune_network_evidence(
+            state.get("network_successes", []), batch_id, now_value,
+        )
+        state["network_successes"] = successes
         row = {
             "backend": backend, "job_id": job_id, "attempt_id": attempt_id,
             "batch_id": batch_id, "observed_at": _format_timestamp(now_value),
@@ -1036,7 +1091,8 @@ def _apply_result(state, job_id, intent, now_value, batch_id):
                    for item in evidence):
             evidence.append(row)
         state["network_evidence"] = evidence
-        if len({item["backend"] for item in evidence}) >= 2:
+        if (len({item["backend"] for item in evidence}) >= 2
+                and not successes):
             state["network_pause"] = {
                 "opened_at": _format_timestamp(now_value),
                 "until": _format_timestamp(
@@ -1134,7 +1190,7 @@ def transition_state(state, jobs, job_id, intent, now, batch_id,
     if intent.get("advance_pool") is True:
         start_index += 1
     assignment, next_retry_at = _launch_assignment(
-        replacement, jobs, job_id, start_index, now_value,
+        replacement, jobs, job_id, batch_id, start_index, now_value,
         job_timeout_seconds, grace_seconds,
         exclude_assignment=intent.get("exclude_assignment"),
         network_probe=network_probe,
@@ -1414,6 +1470,10 @@ def _selftest():
         ("empty opened_at", {"codex": {
             "open": True, "reason": "auth", "opened_at": "", "cleared_by": None,
         }}),
+        ("naive opened_at", {"codex": dict(
+            canonical_breaker, opened_at="2026-08-01T00:00:00")}),
+        ("non-canonical UTC offset opened_at", {"codex": dict(
+            canonical_breaker, opened_at="2026-08-01T02:00:00+02:00")}),
         ("invalid cleared_by", {"codex": {
             "open": False, "reason": "auth", "opened_at": "now", "cleared_by": "manual",
         }}),
@@ -1690,6 +1750,21 @@ def _selftest():
     expect("canonical cooldown object validates",
            bool(validate) and validate(canonical_state, route_jobs) == [])
 
+    null_cooldowns = json.loads(json.dumps(route_state))
+    null_cooldowns["cooldowns"] = None
+    null_evidence = json.loads(json.dumps(route_state))
+    null_evidence["network_evidence"] = None
+    missing_legacy_transient = json.loads(json.dumps(route_state))
+    missing_legacy_transient.pop("cooldowns", None)
+    missing_legacy_transient.pop("network_evidence", None)
+    expect("present null cooldowns fail closed while a missing legacy key remains valid",
+           any("cooldowns" in error for error in validate(
+               null_cooldowns, route_jobs))
+           and validate(missing_legacy_transient, route_jobs) == [])
+    expect("present null network evidence fails closed",
+           any("network_evidence" in error for error in validate(
+               null_evidence, route_jobs)))
+
     offset_cooldown_state = json.loads(json.dumps(canonical_state))
     offset_cooldown_state["cooldowns"]["codex"]["until"] = \
         "2026-08-01T09:30:00+02:00"
@@ -1775,6 +1850,28 @@ def _selftest():
            and second_launch.get("assignment", {}).get("attempt_id") == "job-a:2"
            and second_launch.get("state", {}).get("jobs", {}).get("job-a", {}).get(
                "attempt_id") == "job-a:2")
+    expect("launch persists the exact current batch beside its attempt",
+           isinstance(first_launch, dict)
+           and first_launch.get("state", {}).get("jobs", {}).get(
+               "job-a", {}).get("batch_id") == "batch-1")
+    expect("result backend must match the persisted concrete assignment",
+           isinstance(first_launch, dict) and bool(transition)
+           and raises_value(lambda: transition(
+               first_launch["state"], route_jobs, "job-a", {
+                   "result": "failure", "failure_class": "network",
+                   "network_scope": "no_response", "backend": "zai",
+                   "attempt_id": "job-a:1",
+               }, "2026-08-01T07:21:30Z", "batch-1", 300, 3,
+           )))
+    expect("result batch must match the persisted current launch batch",
+           isinstance(first_launch, dict) and bool(transition)
+           and raises_value(lambda: transition(
+               first_launch["state"], route_jobs, "job-a", {
+                   "result": "failure", "failure_class": "network",
+                   "network_scope": "no_response", "backend": "codex",
+                   "attempt_id": "job-a:1",
+               }, "2026-08-01T07:21:30Z", "forged-batch", 300, 3,
+           )))
     malformed_attempt_state = json.loads(json.dumps(first_launch["state"])) \
         if isinstance(first_launch, dict) else {}
     if malformed_attempt_state:
@@ -1838,10 +1935,11 @@ def _selftest():
 
     stale_probe_state = json.loads(json.dumps(route_state))
     stale_probe_state["jobs"]["job-a"].update({
-        "attempt_counter": 1, "attempt_id": "job-a:1",
+        "attempt_counter": 1, "attempt_id": "job-a:1", "batch_id": "batch-2",
     })
     stale_probe_state["jobs"]["job-b"].update({
         "attempt_counter": 1, "attempt_id": "job-b:1",
+        "batch_id": "batch-2",
         "assigned_backend": "codex", "assigned_model": "model-a",
         "pool_index": 0,
     })
@@ -1921,10 +2019,10 @@ def _selftest():
 
     network_base = json.loads(json.dumps(route_state))
     network_base["jobs"]["job-a"].update({
-        "attempt_counter": 1, "attempt_id": "job-a:1",
+        "attempt_counter": 1, "attempt_id": "job-a:1", "batch_id": "batch-net",
     })
     network_base["jobs"]["job-b"].update({
-        "attempt_counter": 1, "attempt_id": "job-b:1",
+        "attempt_counter": 1, "attempt_id": "job-b:1", "batch_id": "batch-net",
     })
     network_one = value_or_none(lambda: transition(
         network_base, route_jobs, "job-a", {
@@ -1986,13 +2084,19 @@ def _selftest():
            and stale_network.get("state", {}).get("network_pause") is None
            and len(stale_network.get("state", {}).get("network_evidence", [])) == 1)
 
+    provider_reported_state = json.loads(json.dumps(network_one["state"])) \
+        if isinstance(network_one, dict) else None
+    if isinstance(provider_reported_state, dict):
+        provider_reported_state["jobs"]["job-b"].update({
+            "assigned_backend": "zai", "assigned_model": "model-c", "pool_index": 2,
+        })
     provider_reported = value_or_none(lambda: transition(
-        network_one["state"], route_jobs, "job-b", {
+        provider_reported_state, route_jobs, "job-b", {
             "result": "failure", "failure_class": "network",
             "network_scope": "provider_reported", "backend": "zai",
             "attempt_id": "job-b:1",
         }, "2026-08-01T07:20:20Z", "batch-net", 300, 3,
-    )) if isinstance(network_one, dict) and transition else None
+    )) if isinstance(provider_reported_state, dict) and transition else None
     expect("provider-reported z.ai 1234 cannot count as offline evidence",
            isinstance(provider_reported, dict)
            and provider_reported.get("state", {}).get("network_pause") is None
@@ -2021,6 +2125,40 @@ def _selftest():
            and vetoed.get("state", {}).get("network_pause") is None
            and len(vetoed.get("state", {}).get("network_evidence", [])) == 1)
 
+    success_first_state = json.loads(json.dumps(network_base))
+    success_first = value_or_none(lambda: transition(
+        success_first_state, route_jobs, "job-a", {
+            "result": "success", "backend": "codex", "attempt_id": "job-a:1",
+        }, "2026-08-01T07:20:00Z", "batch-net", 300, 3,
+    )) if transition else None
+    first_after_success_state = json.loads(json.dumps(success_first["state"])) \
+        if isinstance(success_first, dict) else None
+    if isinstance(first_after_success_state, dict):
+        first_after_success_state["jobs"]["job-a"].update({
+            "attempt_counter": 2, "attempt_id": "job-a:2",
+        })
+    first_after_success = value_or_none(lambda: transition(
+        first_after_success_state, route_jobs, "job-a", {
+            "result": "failure", "failure_class": "network",
+            "network_scope": "no_response", "backend": "codex",
+            "attempt_id": "job-a:2",
+        }, "2026-08-01T07:20:10Z", "batch-net", 300, 3,
+    )) if isinstance(first_after_success_state, dict) and transition else None
+    second_after_success = value_or_none(lambda: transition(
+        first_after_success["state"], route_jobs, "job-b", {
+            "result": "failure", "failure_class": "network",
+            "network_scope": "no_response", "backend": "claude",
+            "attempt_id": "job-b:1",
+        }, "2026-08-01T07:20:20Z", "batch-net", 300, 3,
+    )) if isinstance(first_after_success, dict) and transition else None
+    expect("persisted completed success vetoes two later failures in its batch window",
+           isinstance(success_first, dict)
+           and len(success_first.get("state", {}).get("network_successes", [])) == 1
+           and isinstance(second_after_success, dict)
+           and second_after_success.get("state", {}).get("network_pause") is None
+           and len(second_after_success.get("state", {}).get(
+               "network_evidence", [])) == 2)
+
     paused_launch = value_or_none(lambda: transition(
         network_two["state"], route_jobs, "job-a", {"launch": True},
         "2026-08-01T07:20:40Z", "batch-net", 300, 3,
@@ -2043,6 +2181,41 @@ def _selftest():
                "probe", {}).get("owner_attempt_id") == "job-a:2"
            and isinstance(competing_network_probe, dict)
            and competing_network_probe.get("action") == "halt")
+
+    dual_probe_state = json.loads(json.dumps(network_probe["state"])) \
+        if isinstance(network_probe, dict) else None
+    if isinstance(dual_probe_state, dict):
+        dual_probe_state["cooldowns"] = {"codex": dict(
+            canonical_cooldown,
+            probe={
+                "status": "leased", "owner_job_id": "job-a",
+                "owner_attempt_id": "job-a:2",
+                "lease_until": "2026-08-01T07:26:34Z",
+            },
+        )}
+    expect("one attempt cannot own cooldown and network probes simultaneously",
+           isinstance(dual_probe_state, dict)
+           and any("probe ownership" in error for error in validate(
+               dual_probe_state, route_jobs)))
+
+    simultaneous_expiry = json.loads(json.dumps(network_two["state"])) \
+        if isinstance(network_two, dict) else None
+    if isinstance(simultaneous_expiry, dict):
+        simultaneous_expiry["cooldowns"] = {"codex": dict(
+            canonical_cooldown, until="2026-08-01T07:20:00Z",
+        )}
+    single_family_probe = value_or_none(lambda: transition(
+        simultaneous_expiry, route_jobs, "job-a", {"launch": True},
+        "2026-08-01T07:21:31Z", "batch-net", 300, 3,
+    )) if isinstance(simultaneous_expiry, dict) and transition else None
+    expect("network recovery acquisition leaves an expired cooldown probe idle",
+           isinstance(single_family_probe, dict)
+           and single_family_probe.get("state", {}).get(
+               "network_pause", {}).get("probe", {}).get("status") == "leased"
+           and single_family_probe.get("state", {}).get(
+               "cooldowns", {}).get("codex", {}).get("probe") == idle_probe
+           and single_family_probe.get("assignment", {}).get("probe_backend") is None
+           and single_family_probe.get("assignment", {}).get("network_probe") is True)
 
     renewed_network = value_or_none(lambda: transition(
         network_probe["state"], route_jobs, "job-a", {
