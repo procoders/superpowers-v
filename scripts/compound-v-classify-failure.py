@@ -121,6 +121,27 @@ _ANTIGRAVITY_RULES = [
 # documented codes rather than field-collected guesses. ALL of them are HTTP 429, in the
 # envelope {"error":{"code":"XXXX","message":"..."}}.
 #
+# CRITICAL: that raw envelope is NOT what reaches this classifier. `claude -p` renders API
+# errors as `API Error: <status> <message>` in its own JSON result's `.result` field — MEASURED
+# 2026-08-01 against a live HTTP 400 sample (docs/superpowers/reviews/2026-08-01-zai-backend-
+# codex-review.md, finding #7). `error.code` is NEVER surfaced as a separate token there; the
+# numeric code survives in the rendered text only when z.ai happens to embed it IN the message
+# string itself — observed for exactly one case outside this table (the 1211 config fault
+# below). Whether the documented 429 codes ALSO render with a bracketed code is UNCONFIRMED —
+# the domain-expert audit calls it "suggestive, not verified" — so the PRIMARY match for every
+# code below is the documented MESSAGE TEXT, which the rendering is confirmed to preserve
+# verbatim; bracketed forms are kept only as a secondary, harmless-if-never-matched signal. The
+# old needle set matched on quoted/bracketed CODES ONLY and never reached stderr through this
+# rendering — four of eight documented codes silently fell through to `other` (halts the run)
+# instead of their real class.
+#
+# Two of the eight documented messages share a substring ("Usage limit reached for the past N
+# {hours,days}. Insufficient balance for extra usage...") spanning BOTH a rate_limited code
+# (1316, 5 hours) and an out_of_credits code (1317, 7 days) — a bare "insufficient balance"
+# needle in out_of_credits used to swallow BOTH before either reached its own needle. Every
+# needle below is specific enough to avoid that collision; see _selftest for the fixtures that
+# pin it down (rebuilt from the documented templates, not from whatever made the test pass).
+#
 # Two facts drive the policy that consumes this, and both are recorded in
 # skills/backend-launcher/adapter-zai.md:
 #   * NO Retry-After header is documented anywhere -- the reset time is embedded in the
@@ -135,17 +156,37 @@ _ANTIGRAVITY_RULES = [
 # come back as `auth` telling the operator to run `codex login`.
 _ZAI_RULES = [
     ("out_of_credits", [
-        '"1113"', "[1113]", "insufficient balance", "no resource package",
-        "insufficient_balance",
+        # 1113 — Insufficient balance or no resource package. Please recharge.
+        "insufficient balance or no resource package", "no resource package", "[1113]",
+        # 1310 — Weekly/Monthly Limit Exhausted. Your limit will reset at {next_flush_time}
+        "weekly/monthly limit exhausted", "[1310]",
+        # 1317 — Usage limit reached for the past 7 DAYS. Matched on "past 7 days", NOT on
+        # "insufficient balance" — that phrase is ALSO in 1316's message (rate_limited) and
+        # must not steal it.
+        "reached for the past 7 days", "[1317]",
+    ]),
+    ("overloaded", [
+        # 1305 — The service may be temporarily overloaded, please try again later
+        "temporarily overloaded", "[1305]",
     ]),
     ("rate_limited", [
-        '"1302"', '"1305"', '"1308"', '"1310"', '"1311"', '"1316"', '"1317"',
-        "[1302]", "[1305]", "[1308]", "[1310]", "[1311]", "[1316]", "[1317]",
-        "rate limit reached", "concurrency limit", "quota exhausted",
+        # 1302 — Rate limit reached for requests
+        "rate limit reached for requests", "rate limit reached", "[1302]",
+        # 1308 — Usage limit reached for {number} {unit}. Your limit will reset at ...
+        "usage limit reached", "[1308]",
+        # 1316 — Usage limit reached for the past 5 HOURS. Already covered by the "usage
+        # limit reached" needle above; kept explicit so this rule survives if that one is
+        # ever narrowed.
+        "reached for the past 5 hours", "[1316]",
+        "concurrency limit", "quota exhausted",
     ]),
     ("auth", [
-        "invalid api key", "invalid_api_key", "unauthorized", "authentication failed",
-        "401",
+        "invalid api key", "invalid_api_key", "unauthorized", "authentication failed", "401",
+        # 1311 — Your current subscription plan does not yet include access to ${model_name}.
+        # The expert audit calls this "auth / other" — ambiguous — but retrying never helps
+        # (the plan itself lacks the model), closer to auth's "halt, human fixes it" than
+        # other's "retry once, then halt".
+        "does not yet include access", "[1311]",
     ]),
 ]
 
@@ -297,20 +338,57 @@ def _result(cls, matched, retry_after):
 
 def _selftest():
     cases = [
-        # --- zai: z.ai PUBLISHES its whole error surface, so these are documented codes,
-        # not guesses (docs.z.ai/api-reference/api-code). Every one of them is HTTP 429.
+        # --- zai: z.ai PUBLISHES its whole error surface, so these are documented codes, not
+        # guesses (docs.z.ai/api-reference/api-code). Every one of them is HTTP 429. Fixtures
+        # are shaped like what the worker ACTUALLY feeds this classifier: the whole captured
+        # JSON document from `claude -p --output-format json`, whose `.result` field renders
+        # as `API Error: <status> <message>` — MEASURED 2026-08-01 against a live HTTP 400
+        # sample (docs/superpowers/reviews/2026-08-01-zai-backend-codex-review.md, finding
+        # #7) — using the EXACT documented message text, not invented wording that happens to
+        # dodge the needle collisions (that was the bug: 53 ok / 0 fail while four of eight
+        # codes silently misclassified, because the old fixtures never matched what the CLI
+        # actually renders).
         ("zai", 0, "", "none"),
         ("zai", 124, "", "timeout"),
-        ("zai", 1, '{"error":{"code":"1113","message":"Insufficient balance or no resource package"}}',
+        ("zai", 1,
+         '{"is_error":true,"api_error_status":429,"result":'
+         '"API Error: 429 Insufficient balance or no resource package. Please recharge."}',
          "out_of_credits"),
-        ("zai", 1, '{"error":{"code":"1302","message":"API request rate limit reached"}}', "rate_limited"),
-        ("zai", 1, '{"error":{"code":"1305","message":"Request rate limit reached"}}', "rate_limited"),
-        ("zai", 1, '{"error":{"code":"1308","message":"Concurrency limit reached"}}', "rate_limited"),
-        ("zai", 1, '{"error":{"code":"1310","message":"Rate limit reached"}}', "rate_limited"),
-        ("zai", 1, '{"error":{"code":"1311","message":"Quota exhausted"}}', "rate_limited"),
-        ("zai", 1, '{"error":{"code":"1316","message":"Rate limit reached"}}', "rate_limited"),
-        ("zai", 1, '{"error":{"code":"1317","message":"Rate limit reached"}}', "rate_limited"),
-        # The 1211 config fault seen live is NOT a quota problem.
+        ("zai", 1,
+         '{"is_error":true,"api_error_status":429,"result":'
+         '"API Error: 429 Rate limit reached for requests"}',
+         "rate_limited"),
+        ("zai", 1,
+         '{"is_error":true,"api_error_status":429,"result":'
+         '"API Error: 429 The service may be temporarily overloaded, please try again later"}',
+         "overloaded"),
+        ("zai", 1,
+         '{"is_error":true,"api_error_status":429,"result":'
+         '"API Error: 429 Usage limit reached for 100 requests. '
+         'Your limit will reset at 2026-08-01T18:00:00Z"}',
+         "rate_limited"),
+        ("zai", 1,
+         '{"is_error":true,"api_error_status":429,"result":'
+         '"API Error: 429 Weekly/Monthly Limit Exhausted. '
+         'Your limit will reset at 2026-08-08T00:00:00Z"}',
+         "out_of_credits"),
+        ("zai", 1,
+         '{"is_error":true,"api_error_status":429,"result":'
+         '"API Error: 429 Your current subscription plan does not yet include access to glm-5.2"}',
+         "auth"),
+        ("zai", 1,
+         '{"is_error":true,"api_error_status":429,"result":'
+         '"API Error: 429 Usage limit reached for the past 5 hours. '
+         'Insufficient balance for extra usage this cycle."}',
+         "rate_limited"),
+        ("zai", 1,
+         '{"is_error":true,"api_error_status":429,"result":'
+         '"API Error: 429 Usage limit reached for the past 7 days. '
+         'Insufficient balance for extra usage this cycle."}',
+         "out_of_credits"),
+        # The 1211 config fault seen live is NOT a quota problem, and its message happens to
+        # embed the bracketed code — the one confirmed case of that rendering, kept as a
+        # regression guard for the bracket-form needles.
         ("zai", 1, "API Error: 400 [1211][Unknown Model, please check the model code.]", "other"),
         # An unrecognised payload must fail closed to `other`. This case is load-bearing:
         # classify()'s final `else` is _CODEX_RULES, so a zai backend WITHOUT its own branch
