@@ -119,3 +119,77 @@ manifest's declared job order) and persist both the frozen member list and each 
   fix version.) One live probe settles it.
 - Does `GET https://api.z.ai/api/monitor/usage/quota/limit` respond as documented by the
   third-party plugin? ISOLATED single source; needs one live call.
+
+---
+
+## Updated 2026-08-01 — cooldown causality and correlated-network evidence
+
+Source audit: [`../2026-08-01-rate-limit-rerouting.md`](../2026-08-01-rate-limit-rerouting.md)
+
+### Rule — cooldown recovery is causal, not collection-ordered
+
+Concurrent workers finish out of order. A success from a request launched before a newer failure
+opened a cooldown must not clear that cooldown merely because its result was collected later.
+Only the leased half-open probe, or a successful attempt whose recorded generation/start is newer
+than the cooldown generation, may clear it. Pre-cooldown successes remain valid job results but
+are not recovery evidence.
+
+This is the same invariant as "exactly one half-open probe": permitting an older ordinary worker
+to clear state would create an unleased second probe through result reordering.
+
+### Rule — provider-reported `network` is not common-path outage evidence
+
+z.ai code `1234` is a business error returned with HTTP 500, so receiving it proves the provider
+sent a response. It can describe a provider-side transport/process problem, but cannot prove the
+caller's DNS, VPN, proxy, or internet path is down. Source:
+<https://docs.z.ai/api-reference/api-code>.
+
+Keep two machine-readable scopes even if the UI groups both as network failures:
+
+- `no_response`: locally observed DNS/TLS/connect/reset/timeout before a valid provider response;
+- `provider_reported`: provider error envelope or completed stream reports an internal network
+  failure.
+
+Only independent `no_response` observations can contribute to a correlated global network pause.
+Evidence must be deduplicated by backend + attempt, carry batch id + observed UTC time, and fall
+inside a bounded correlation window. "Same batch" without a time bound is not correlation.
+
+Anthropic notes that SSE errors can occur after HTTP 200; z.ai notes that streaming failures may
+appear in `finish_reason` rather than the normal error envelope. A provider success therefore means
+a completed successful worker, not connection establishment or first token. Sources:
+<https://platform.claude.com/docs/en/api/errors>,
+<https://docs.z.ai/api-reference/api-code>.
+
+### Rule — a retry hint is a minimum, never a delay to truncate
+
+Anthropic says retrying earlier than `retry-after` will fail. OpenAI defines `Retry-After` as a
+minimum and recommends added jitter. If `provider minimum + jitter` exceeds an inline-wait cap,
+park/reroute the work; do not retry at the cap. Missing/invalid hints use bounded non-zero
+exponential backoff with jitter. Sources:
+<https://platform.claude.com/docs/en/api/rate-limits>,
+<https://developers.openai.com/api/docs/guides/rate-limits>.
+
+Official Anthropic SDKs retry eligible transient errors twice by default, and OpenAI SDKs also
+retry eligible rate limits. An orchestrator-level attempt counter is therefore a worker-launch
+budget, not a physical provider-request counter. Keep that distinction visible.
+
+### Rule — backend-wide cooldown is conservative, not provider truth
+
+Anthropic API limits apply by model class; OpenAI limits vary by model and some model families
+share a limiter. If a CLI does not expose limiter identity, a backend-wide cooldown is a
+defensible fail-closed anti-storm choice, but it may suppress unrelated healthy models. Document
+that availability trade-off and keep known assignment-specific failures such as model access out
+of the backend-wide breaker. Sources:
+<https://platform.claude.com/docs/en/api/rate-limits>,
+<https://developers.openai.com/api/docs/guides/rate-limits>.
+
+### Update — z.ai quota query now has an official Personal-plan surface
+
+The previous open lead that z.ai usage introspection was only a reverse-engineered endpoint is no
+longer the whole picture. z.ai now documents an official `glm-plan-usage` Claude Code plugin that
+queries current Personal-plan quota and usage:
+<https://docs.z.ai/devpack/extension/usage-query-plugin>.
+
+This does not make percentage-driven cross-provider routing sound: the other providers' coding
+subscription meters remain heterogeneous, and PR3's CLI-process contract need not install or poll
+the plugin. Treat it as an observability option, not a routing signal.
