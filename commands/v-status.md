@@ -47,12 +47,23 @@ The run-id (optional) is `{{args}}`.
 
 5. **Render backend health (the circuit breaker).** From `state.json`, surface graceful-failure state so re-routes and credit-exhaustion are never silent (the fields are defined in [`state-machine.md`](../skills/compound-v/state-machine.md), the policy in [`failure-policy.md`](../skills/compound-v/failure-policy.md)):
    - **Circuit-open backends** — any canonical `circuit_open[<concrete-backend>].open == true` object (out for the run — out-of-credits or auth). A `pool` key or bare boolean is invalid state; call it out rather than interpreting it.
-   - **Cooldowns** — any `cooldowns[<backend>]` timestamp still in the future (a transiently-failed backend deprioritized until then; probed half-open next batch).
+   - **Transient cooldowns / usage windows** — each canonical
+     `cooldowns[<backend>] = {until, reason, opened_at, opened_by_attempt_id, probe}`: render the
+     concrete backend, reason, absolute `until`, and leased probe owner. Expiry means probe
+     eligibility, not health. For every far-future or suspicious value show the exact recovery
+     command `/v:resume --clear-cooldown <backend>`; it clears only transient state through the
+     validator, never a permanent circuit. Do not recommend hand-editing JSON.
+   - **Correlated network pause** — render whether `network_pause` is active, its absolute retry
+     time, and its sole probe owner. Explain that only two distinct same-batch `no_response`
+     failures within 60 seconds and no completed provider success can open it; provider-reported
+     failures such as z.ai 1234 do not. Recovery is one real-job probe, never fan-out.
    - **Run-level retries** — `total_retries` / `max_total_retries` (the anti retry-storm budget).
    - **Current pool assignments** — derive only the current integer counts from each pool job's recorded `assigned_backend`. State carries no assignment history, so do **not** claim a historical source/destination, number of advances, or number of jobs rerouted.
    - **Earliest reset** — only when both `state.earliest_reset_observed_at` and a positive `state.earliest_reset_seconds` exist, derive the absolute reset instant as `observed_at + seconds` and display that instant (plus a remaining duration only if still future). If the instant has passed, label it stale/passed and request a fresh probe; never restart the countdown from the status-read time. These paired fields clear when the associated out-of-credits condition resolves and no other such breaker remains. Never turn them into a quota percentage.
 
-   If none of these fields are present (an older run, or no failures yet), skip this section.
+   Distinguish these labels exactly: **transient cooldown**, **resettable usage window**,
+   **permanent circuit breaker**, and **correlated network pause**. If none of these fields are
+   present (an older run, or no failures yet), skip this section.
 
 6. **Summarize.** Counts by status (e.g. "3 done, 1 running, 1 pending"). Also group manifest pool jobs by their **current** recorded concrete `assigned_backend` and print integer job counts only, for example `Pool assignments: codex 3 · zai 2`; never percentages, token shares, credit shares, balance scores, savings, fallback annotations, or an inferred routing history. If `phase` is `BLOCKED` or any job is `blocked`/`failed`, or any canonical breaker object is open, point the user at `/v:resume {{args}}` to reconcile and re-dispatch the incomplete jobs (for an out-of-credits circuit-break, the user tops up credits first — see [`failure-policy.md`](../skills/compound-v/failure-policy.md)).
 

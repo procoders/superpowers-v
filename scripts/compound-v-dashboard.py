@@ -645,6 +645,50 @@ def _render_run_detail(rec):
         "</tr></thead><tbody>{}</tbody></table></div>".format("".join(rows)))
     parts.append(table)
 
+    state = rec.get("state") if isinstance(rec.get("state"), dict) else {}
+    failure_lines = []
+    cooldowns = state.get("cooldowns")
+    if isinstance(cooldowns, dict):
+        for backend in sorted(cooldowns):
+            item = cooldowns.get(backend)
+            if not isinstance(item, dict):
+                continue
+            probe = item.get("probe") if isinstance(item.get("probe"), dict) else {}
+            probe_owner = probe.get("owner_attempt_id") or MDASH
+            failure_lines.append(
+                "<li><strong>transient cooldown</strong> {backend}: {reason} until "
+                "<code>{until}</code>; probe <code>{probe}</code>; recovery "
+                "<code>/v:resume --clear-cooldown {backend}</code></li>".format(
+                    backend=_esc(backend), reason=_esc(item.get("reason")),
+                    until=_esc(item.get("until")), probe=_esc(probe_owner)))
+    circuits = state.get("circuit_open")
+    if isinstance(circuits, dict):
+        for backend in sorted(circuits):
+            item = circuits.get(backend)
+            if isinstance(item, dict) and item.get("open") is True:
+                failure_lines.append(
+                    "<li><strong>permanent circuit</strong> {backend}: {reason}, opened "
+                    "<code>{opened}</code></li>".format(
+                        backend=_esc(backend), reason=_esc(item.get("reason")),
+                        opened=_esc(item.get("opened_at"))))
+    network_pause = state.get("network_pause")
+    if isinstance(network_pause, dict) and network_pause.get("status") == "active":
+        owner = network_pause.get("probe_owner_attempt_id") or MDASH
+        failure_lines.append(
+            "<li><strong>network pause</strong>: active until <code>{until}</code>; "
+            "probe <code>{owner}</code></li>".format(
+                until=_esc(network_pause.get("until")), owner=_esc(owner)))
+    total_retries = state.get("total_retries")
+    max_total_retries = state.get("max_total_retries")
+    if (isinstance(total_retries, int) and not isinstance(total_retries, bool)
+            and isinstance(max_total_retries, int)
+            and not isinstance(max_total_retries, bool)):
+        failure_lines.append("<li><strong>run retry budget</strong>: {} / {}</li>".format(
+            _esc(total_retries), _esc(max_total_retries)))
+    if failure_lines:
+        parts.append('<h3 class="sect">provider failure state</h3><ul class="deps">{}</ul>'.format(
+            "".join(failure_lines)))
+
     # depends_on edges as a simple textual list (no graph lib)
     dep_lines = []
     for j in jobs:
@@ -1027,8 +1071,10 @@ def _selftest():
     import tempfile
 
     failures = []
+    checked = [0]
 
     def check(cond, msg):
+        checked[0] += 1
         if not cond:
             failures.append(msg)
 
@@ -1063,6 +1109,27 @@ def _selftest():
                 "task-0-base": {"status": "done", "isolation": "direct"},
                 "task-1-ui": {"status": "done", "isolation": "worktree"},
             },
+            "cooldowns": {
+                "zai": {
+                    "until": "2099-06-03T12:00:00Z",
+                    "reason": "usage_window_exhausted",
+                    "opened_at": "2099-06-01T12:00:00Z",
+                    "opened_by_attempt_id": "attempt-zai-1",
+                    "probe": {"status": "leased", "owner_job_id": "task-1-ui",
+                              "owner_attempt_id": "attempt-zai-probe",
+                              "lease_until": "2099-06-03T12:05:00Z"},
+                },
+            },
+            "circuit_open": {
+                "codex": {"open": True, "reason": "out_of_credits",
+                          "opened_at": "2099-06-01T12:00:00Z", "cleared_by": None},
+            },
+            "network_pause": {
+                "status": "active", "until": "2099-06-01T12:01:00Z",
+                "probe_owner_job_id": None, "probe_owner_attempt_id": None,
+            },
+            "total_retries": 4,
+            "max_total_retries": 12,
         }))
         # measured-usage result
         _write_text(os.path.join(run_dir, "results", "task-0-base.json"), json.dumps({
@@ -1152,6 +1219,24 @@ def _selftest():
         check(MDASH in html_text, "anti-ruflo: em-dash placeholder missing")
         # the unmeasured job must NOT render a fabricated 0 usage
         check("in 0 / out 0" not in html_text, "anti-ruflo: fabricated 0 usage rendered")
+
+        # Canonical provider-failure state is explicit and actionable. These strings are
+        # consumer behavior: deleting cooldown/circuit/network rendering must fail here.
+        check("usage_window_exhausted" in html_text,
+              "failure-state: resettable usage-window reason missing")
+        check("attempt-zai-probe" in html_text,
+              "failure-state: half-open probe owner missing")
+        check("out_of_credits" in html_text,
+              "failure-state: permanent circuit reason missing")
+        check("network pause" in html_text.lower(),
+              "failure-state: correlated network pause missing")
+        check("/v:resume --clear-cooldown zai" in html_text,
+              "failure-state: exact far-future recovery command missing")
+        check("4 / 12" in html_text,
+              "failure-state: real retry budget missing")
+        for forbidden in ("health score", "quota remaining", "estimated savings"):
+            check(forbidden not in html_text.lower(),
+                  "anti-ruflo: fabricated provider metric rendered: " + forbidden)
 
         # NO percent-progress anywhere in the document (zero '%' chars)
         check("%" not in html_text, "anti-ruflo: '%' present (possible fabricated progress)")
@@ -1308,7 +1393,7 @@ def _selftest():
         for f in failures:
             print("  - " + f)
         return 1
-    print("SELFTEST PASSED")
+    print("SELFTEST PASSED (%d checked, 0 failed)" % checked[0])
     return 0
 
 

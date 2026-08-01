@@ -18,6 +18,18 @@ Resume is **Engine-A-owned**: it does not rely on Workflows (whose resume is sam
 > Read `assignment_source`, `pool_index`, `pool_tier`, and `worktree` directly from the already-validated `state.json jobs[<id>]` record and reuse all six recorded values for reconciliation.
 > Never reload current pool config, recompute a manifest ordinal, rerun freeze, or call the model resolver for that recorded assignment. A transient retry preserves it byte-for-byte; only an `out_of_credits` policy decision may replace it, and the replacement MUST be written and validated before relaunch.
 
+**Cooldown/network gate before git reconciliation.** Validate the complete state with
+`compound-v-pool-state.py validate`. Reconcile any recorded probe owner against process liveness
+and git-wins before reclaiming an expired lease. An unexpired cooldown or active network pause
+forbids launch; expiry grants eligibility for one serialized real-job probe, never automatic
+health or fan-out. Preserve run `total_retries` exactly.
+
+`/v:resume --clear-cooldown <backend>` is the only manual recovery for a wrongly far-future
+transient cooldown. Pass the existing state and backend to `compound-v-pool-state.py
+clear-cooldown`; the helper validates a known concrete backend, clears transient cooldown only,
+never clears `circuit_open`, validates the replacement, and the caller atomically persists it.
+Hand-editing `state.json` is forbidden.
+
 3. **Reconcile against git reality (git-wins).** For each job, derive what actually landed using the same git signal the scope gate uses:
    - `git -C <worktree-or-repo> diff --name-only HEAD` ∪ `git -C <worktree-or-repo> ls-files --others --exclude-standard`.
    - When `state.json` and git disagree, **git wins**:
@@ -27,7 +39,15 @@ Resume is **Engine-A-owned**: it does not rely on Workflows (whose resume is sam
 4. **Reconcile the circuit breaker (neither a silent retry nor a permanent lockout).** The already-run pool-state validation has checked the one canonical map keyed by **concrete backend** — `{ "<backend>": { "open": bool, "reason": "out_of_credits|auth", "opened_at": "<iso-ts>", "cleared_by": null } }` (see [`state-machine.md`](../skills/compound-v/state-machine.md)). It rejects `circuit_open.pool`, bare booleans, incomplete/extra fields, and invalid open/reason/cleared-by combinations; a pool job consults its recorded `assigned_backend`. For each valid entry, decide whether to keep it open or clear it **before** any re-dispatch:
    - **`reason == "out_of_credits"`** → keep the breaker **OPEN** unless the user confirms a credit top-up, **or** a cheap liveness probe — a tiny "reply ok" call to that backend — returns success. Only then set `cleared_by` (`"top_up"` or `"probe"`) and re-dispatch that backend's `failed` jobs. Clear `earliest_reset_observed_at` + `earliest_reset_seconds` when that exhausted condition is resolved and no other out-of-credits breaker remains; otherwise retain/recompute the pair only from a fresh observation. The run-level `total_retries` budget persists across the resume.
    - **`reason == "auth"`** → keep the breaker **OPEN** until the user re-authenticates (point them at [`/v:init`](v-init.md)). Only after re-auth set `cleared_by: "reauth"` and re-dispatch its `failed` jobs.
-   - **Cooldown-only (no open breaker)** → a backend whose `cooldowns[backend]` timestamp has merely **expired** is **half-opened**: probe it **once** before full re-dispatch. A clean probe clears the cooldown; a repeat failure re-cools it via the policy.
+   - **Cooldown-only (no open breaker)** → `cooldowns[backend]` is the canonical object
+     `{until, reason, opened_at, opened_by_attempt_id, probe}`. Expiry may lease one real pending
+     job as the half-open probe. Only final success from that exact leased `attempt_id` clears it;
+     stale pre-cooldown success cannot, transient failure renews it, and permanent failure opens
+     its reason-specific breaker.
+   - **Correlated network pause** → only deduplicated `no_response` evidence from two distinct
+     providers in the same batch within 60 seconds, with no completed provider success, can open
+     it. z.ai 1234 is provider-reported and never counts. Recovery leases one real job; all other
+     launches remain paused until that probe completes.
    - **Never silently re-dispatch to a still-open breaker.** If neither the top-up/probe (credits) nor the re-auth (auth) has happened, leave the breaker open, leave its jobs `failed`, and report exactly what the user must do to unblock — do not retry behind their back.
    - Update `circuit_open[backend].cleared_by` and write `state.json` for every breaker transition.
 
