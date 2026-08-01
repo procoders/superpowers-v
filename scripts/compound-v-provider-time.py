@@ -8,6 +8,55 @@ import os
 import sys
 
 
+def _draft7_subset_valid(instance, schema):
+    """Evaluate the Draft-07 keywords used by the omission-rule fixtures.
+
+    CI installs ``jsonschema`` and the selftest prefers its real Draft7Validator.
+    This dependency-free subset keeps the same negative fixtures executable in
+    minimal local checkouts; the fixtures are otherwise-valid canonical results,
+    so only required/properties/enum + if/then/not/anyOf/allOf decide them.
+    """
+    if not isinstance(schema, dict):
+        return True
+    required = schema.get("required", [])
+    if any(key not in instance for key in required):
+        return False
+    enum = schema.get("enum")
+    if enum is not None and instance not in enum:
+        return False
+    properties = schema.get("properties", {})
+    if isinstance(instance, dict):
+        for key, subschema in properties.items():
+            if key in instance and not _draft7_subset_valid(instance[key], subschema):
+                return False
+    if "not" in schema and _draft7_subset_valid(instance, schema["not"]):
+        return False
+    if "anyOf" in schema:
+        if not any(_draft7_subset_valid(instance, sub)
+                   for sub in schema["anyOf"]):
+            return False
+    if "allOf" in schema:
+        if not all(_draft7_subset_valid(instance, sub)
+                   for sub in schema["allOf"]):
+            return False
+    condition = schema.get("if")
+    if condition is not None:
+        branch = schema.get("then") if _draft7_subset_valid(instance, condition) \
+            else schema.get("else")
+        if branch is not None and not _draft7_subset_valid(instance, branch):
+            return False
+    return True
+
+
+def _draft7_fixture_valid(instance, schema):
+    """Use the real Draft7Validator when installed; otherwise the narrow subset."""
+    try:
+        from jsonschema import Draft7Validator
+    except ImportError:
+        return _draft7_subset_valid(instance, schema)
+    return Draft7Validator(schema).is_valid(instance)
+
+
 def parse_utc_timestamp(value, field):
     """Parse one timezone-aware ISO-8601 string and normalize it to UTC.
 
@@ -167,6 +216,19 @@ def _selftest():
           example.get("status") == "success" and "retry_at" not in example)
     check("success example omits network_scope",
           example.get("status") == "success" and "network_scope" not in example)
+
+    # Negative Draft-07 fixtures: both optional failure-evidence properties are
+    # forbidden (not merely null) on both non-failure terminal statuses.
+    for status in ("success", "blocked"):
+        for field, value in (
+                ("retry_at", "2026-08-01T07:20:00Z"),
+                ("network_scope", "no_response")):
+            fixture = dict(example)
+            fixture["status"] = status
+            fixture["blocked"] = status == "blocked"
+            fixture[field] = value
+            check("Draft-07 rejects %s on status %s" % (field, status),
+                  not _draft7_fixture_valid(fixture, schema))
 
     with open(contract_path, "r", encoding="utf-8") as fh:
         contract = fh.read()

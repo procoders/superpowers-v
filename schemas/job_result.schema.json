@@ -17,6 +17,39 @@
     "failure_class",
     "retry_after_seconds"
   ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "success",
+              "blocked"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "retry_at"
+              ]
+            },
+            {
+              "required": [
+                "network_scope"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ],
   "properties": {
     "status": {
       "type": "string",
