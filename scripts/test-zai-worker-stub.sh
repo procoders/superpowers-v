@@ -172,6 +172,10 @@ check "out-of-scope write is BLOCKED" \
       "$([ "$(printf '%s' "$R" | jq -r .status)" = blocked ] && echo yes || echo no)"
 check "the offending path is listed in violations" \
       "$(printf '%s' "$R" | jq -e '.violations | index("NOT_ALLOWED.txt")' >/dev/null && echo yes || echo no)"
+check "blocked clears failure_class" \
+      "$(printf '%s' "$R" | jq -e '.failure_class == null' >/dev/null && echo yes || echo no)"
+check "blocked clears retry_after_seconds" \
+      "$(printf '%s' "$R" | jq -e '.retry_after_seconds == 0' >/dev/null && echo yes || echo no)"
 
 R="$(run_worker hang "allowed.txt" 2 glm-5.2)"
 check "a hung worker yields status timeout" \

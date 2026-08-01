@@ -79,11 +79,13 @@ emit_job_result() {
        files_changed: $files,
        violations: $violations,
        summary: $summary,
-       failure_class: (if $failure_class == "" then null else $failure_class end),
+       failure_class: (if ($status == "success" or $status == "blocked" or $failure_class == "")
+                       then null else $failure_class end),
        session_id: $session_id,
        worktree: $worktree,
        exit_code: $exit_code,
-       retry_after_seconds: $retry_after_seconds,
+       retry_after_seconds: (if ($status == "success" or $status == "blocked")
+                             then 0 else $retry_after_seconds end),
        usage: $usage
      } + (if ($status != "success" and $status != "blocked" and $retry_at != "")
           then {retry_at: $retry_at} else {} end)

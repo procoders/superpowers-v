@@ -100,8 +100,10 @@ emit_job_result() {
        session_id: $session_id,
        worktree: $worktree,
        exit_code: $exit_code,
-       failure_class: (if $failure_class == "" then null else $failure_class end),
-       retry_after_seconds: $retry_after_seconds
+       failure_class: (if ($status == "success" or $status == "blocked" or $failure_class == "")
+                       then null else $failure_class end),
+       retry_after_seconds: (if ($status == "success" or $status == "blocked")
+                             then 0 else $retry_after_seconds end)
      } + (if ($status != "success" and $status != "blocked" and $retry_at != "")
           then {retry_at: $retry_at} else {} end)
        + (if ($status != "success" and $status != "blocked" and $network_scope != "")

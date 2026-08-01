@@ -148,28 +148,42 @@ _ZAI_RULES = [
         "[1318]", "[1319]", "[1320]", "[1321]",
         "usage limit reached for the current window",
         "usage limit reached for the past 5 hours",
+        "usage limit reached for the past 7 days",
+        "weekly/monthly limit exhausted. your limit will reset at",
+        "extra usage is not available due to monthly spend limit. resets at",
+        "your limit will reset at",
     ]),
     ("out_of_credits", [
         '"1113"', '"1309"', '"1314"', "[1113]", "[1309]", "[1314]",
         "insufficient balance", "no resource package", "insufficient_balance",
         "coding plan package has expired", "enterprise resource package has expired",
+        "glm coding plan package has expired", "enterprise package has expired",
     ]),
     ("model_unavailable", [
         '"1311"', "[1311]", "current plan does not support this model",
+        "current subscription plan does not yet include access to",
     ]),
     ("auth", [
         '"1313"', '"1315"', "[1313]", "[1315]", "restricted by fair use policy",
+        "does not comply with the fair usage policy",
+        "api key is limited to enterprise coding package scenarios",
         "not a coding plan api key", "invalid api key", "invalid_api_key",
         "unauthorized", "authentication failed", "401",
     ]),
     ("rate_limited", [
         '"1302"', "[1302]", "api request rate limit reached",
+        "rate limit reached for requests",
     ]),
     ("overloaded", [
         '"1305"', "[1305]", "service is temporarily overloaded",
+        "service may be temporarily overloaded",
     ]),
     ("network", [
         '"1234"', "[1234]", "provider returned a network error",
+        "network error, error id:",
+        "connection reset", "econnreset", "connection refused", "could not connect",
+        "network is unreachable", "dns", "getaddrinfo", "tls handshake",
+        "temporary failure in name resolution",
     ]),
 ]
 
@@ -277,6 +291,9 @@ _RETRY_AT_RES = [
     re.compile(r"(?:reset|retry)\s+at\s+"
                r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))",
                re.I),
+    re.compile(r"(?:resets at|limit will reset at)\s+"
+               r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))",
+               re.I),
 ]
 _UNIT_SECONDS = {"second": 1, "sec": 1, "minute": 60, "min": 60, "hour": 3600, "day": 86400}
 
@@ -321,7 +338,8 @@ def _network_scope(backend, failure_class, matched):
     if failure_class != "network":
         return None
     if backend == "zai" and matched in ('"1234"', "[1234]",
-                                         "provider returned a network error"):
+                                         "provider returned a network error",
+                                         "network error, error id:"):
         return "provider_reported"
     return "no_response"
 
@@ -545,7 +563,55 @@ def _selftest():
          "Could not connect to api.cursor.sh", "network", None, "no_response"),
         ("reset no response", "antigravity",
          "ECONNRESET before response headers", "network", None, "no_response"),
+        # Verbatim official z.ai table messages, with documented placeholders
+        # replaced only by representative runtime values where applicable.
+        ("official codeless 1302", "zai", "Rate limit reached for requests",
+         "rate_limited", None, None),
+        ("official codeless 1305", "zai",
+         "The service may be temporarily overloaded, please try again later",
+         "overloaded", None, None),
+        ("official codeless 1308", "zai",
+         "Usage limit reached for 5 hours. Your limit will reset at "
+         "2026-08-05T00:00:00Z", "usage_window_exhausted",
+         "2026-08-05T00:00:00Z", None),
+        ("official codeless 1310", "zai",
+         "Weekly/Monthly Limit Exhausted. Your limit will reset at "
+         "2026-08-05T00:00:00Z", "usage_window_exhausted",
+         "2026-08-05T00:00:00Z", None),
+        ("official codeless 1311", "zai",
+         "Your current subscription plan does not yet include access to glm-5",
+         "model_unavailable", None, None),
+        ("official codeless 1313", "zai",
+         "Your account’s current usage pattern does not comply with the Fair Usage Policy, "
+         "and your request frequency has been limited. For details, please refer to the "
+         "Subscription Service Agreement. To restore access, please submit a request.",
+         "auth", None, None),
+        ("official codeless 1314", "zai",
+         "Your enterprise package has expired. Please contact your enterprise administrator.",
+         "out_of_credits", None, None),
+        ("official codeless 1315", "zai",
+         "This API Key is limited to enterprise coding package scenarios. Please go to the "
+         "official website to replace the API Key of the corresponding product type.",
+         "auth", None, None),
+        ("official codeless 1234", "zai",
+         "Network error, error id: err-42, please try again later",
+         "network", None, "provider_reported"),
+        ("zai DNS truly received no response", "zai",
+         "getaddrinfo ENOTFOUND api.z.ai", "network", None, "no_response"),
     ])
+    for code, period in ((1316, "5 hours"), (1317, "7 days")):
+        evidence_cases.append((
+            "official codeless %d" % code, "zai",
+            "Usage limit reached for the past %s. Insufficient balance for extra usage. "
+            "Resets at 2026-08-05T00:00:00Z." % period,
+            "usage_window_exhausted", "2026-08-05T00:00:00Z", None))
+    for code, period in ((1318, "5 hours"), (1319, "7 days"),
+                         (1320, "5 hours"), (1321, "7 days")):
+        evidence_cases.append((
+            "official codeless %d" % code, "zai",
+            "Usage limit reached for the past %s. Extra usage is not available due to "
+            "monthly spend limit. Resets at 2026-08-05T00:00:00Z." % period,
+            "usage_window_exhausted", "2026-08-05T00:00:00Z", None))
     for name, backend, message, want_class, want_retry_at, want_scope in evidence_cases:
         details_fn = globals().get("_classify_result")
         details = (details_fn(backend, 1, message)

@@ -334,8 +334,12 @@ def build_result(args: argparse.Namespace) -> Dict[str, Any]:
     # the normalized result for EVERY backend must include them.
     failure_class = args.failure_class or None
     provider_time = _provider_time_module()
+    retry_after_seconds = args.retry_after_seconds
+    if (not isinstance(retry_after_seconds, int)
+            or isinstance(retry_after_seconds, bool)):
+        raise ValueError("retry_after_seconds must be a non-negative integer")
     retry_after_seconds = provider_time.parse_delay(
-        args.retry_after_seconds, "retry_after_seconds")
+        retry_after_seconds, "retry_after_seconds")
     retry_at_value = getattr(args, "retry_at", None)
     retry_at = None
     if retry_at_value is not None:
@@ -344,7 +348,7 @@ def build_result(args: argparse.Namespace) -> Dict[str, Any]:
     network_scope = getattr(args, "network_scope", None)
     if network_scope not in (None, "no_response", "provider_reported"):
         raise ValueError("network_scope must be no_response or provider_reported")
-    if status == "success":
+    if status in ("success", "blocked"):
         failure_class = None
         retry_after_seconds = 0
     if status in ("success", "blocked"):
@@ -1054,8 +1058,11 @@ def _selftest() -> int:
     check("failure_evidence.network_scope_passthrough",
           error_evidence.get("network_scope") == "provider_reported")
     blocked_evidence = build_result(_mk_args(
-        status="blocked", blocked=True, retry_at="2026-08-05T00:00:00Z",
+        status="blocked", blocked=True, failure_class="rate_limited",
+        retry_after_seconds=30, retry_at="2026-08-05T00:00:00Z",
         network_scope="no_response"))
+    check("blocked_clears.failure_class", blocked_evidence["failure_class"] is None)
+    check("blocked_clears.retry_after", blocked_evidence["retry_after_seconds"] == 0)
     check("blocked_omits.retry_at", "retry_at" not in blocked_evidence)
     check("blocked_omits.network_scope", "network_scope" not in blocked_evidence)
 
@@ -1074,6 +1081,8 @@ def _selftest() -> int:
           rejects(retry_after_seconds=-1))
     check("failure_evidence.rejects_boolean_retry_after",
           rejects(retry_after_seconds=True))
+    check("failure_evidence.rejects_fractional_retry_after",
+          rejects(retry_after_seconds=1.5))
 
     # (d) usage.advisor_calls is SCRIPT-DERIVED: a worker-reported count is
     #     ALWAYS discarded. With no advisor log -> null (fail-open); with an N-line
@@ -1339,7 +1348,7 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
                             "usage_window_exhausted", "model_unavailable", "auth",
                             "context_length", "timeout", "network", "other"],
                    help="Backend-failure class (from compound-v-classify-failure.py); omit on success")
-    p.add_argument("--retry-after-seconds", type=float, default=0,
+    p.add_argument("--retry-after-seconds", type=int, default=0,
                    help="Seconds-until-retry from the provider, 0 if unknown")
     p.add_argument("--retry-at",
                    help="Absolute timezone-aware provider reset timestamp")
