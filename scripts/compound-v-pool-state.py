@@ -292,22 +292,41 @@ def _cross_family_probe_errors(state):
     return errors
 
 
-def _retry_budget_errors(state):
-    """Validate the optional canonical run-wide retry ledger."""
-    fields = ("total_retries", "max_total_retries", "charged_attempt_ids")
+def _retry_budget_errors(state, state_jobs):
+    """Validate the legacy pair or canonical run-wide retry ledger."""
+    base_fields = ("total_retries", "max_total_retries")
+    ledger_fields = ("retry_budget_legacy_base", "charged_attempt_ids")
+    fields = base_fields + ledger_fields
     if not any(field in state for field in fields):
         return []
-    if not all(field in state for field in fields):
-        return ["retry budget state requires total_retries, max_total_retries, "
-                "and charged_attempt_ids together"]
+    if not all(field in state for field in base_fields):
+        return ["retry budget state requires total_retries and max_total_retries together"]
+    has_ledger = any(field in state for field in ledger_fields)
+    if has_ledger and not all(field in state for field in ledger_fields):
+        return ["canonical retry budget requires retry_budget_legacy_base and "
+                "charged_attempt_ids together"]
     total = state.get("total_retries")
     maximum = state.get("max_total_retries")
-    charged = state.get("charged_attempt_ids")
     errors = []
     if (not isinstance(total, int) or isinstance(total, bool) or total < 0):
         errors.append("state.total_retries must be a non-negative integer")
     if (not isinstance(maximum, int) or isinstance(maximum, bool) or maximum <= 0):
         errors.append("state.max_total_retries must be a positive integer")
+    if (isinstance(total, int) and not isinstance(total, bool)
+            and isinstance(maximum, int) and not isinstance(maximum, bool)
+            and total > maximum):
+        errors.append("state.total_retries must not exceed max_total_retries")
+    if not has_ledger:
+        return errors
+
+    legacy_base = state.get("retry_budget_legacy_base")
+    charged = state.get("charged_attempt_ids")
+    if (not isinstance(legacy_base, int) or isinstance(legacy_base, bool)
+            or legacy_base < 0):
+        errors.append("state.retry_budget_legacy_base must be a non-negative integer")
+    elif isinstance(total, int) and not isinstance(total, bool) \
+            and legacy_base > total:
+        errors.append("state.retry_budget_legacy_base must not exceed total_retries")
     if not isinstance(charged, list):
         errors.append("state.charged_attempt_ids must be a list")
     else:
@@ -315,10 +334,30 @@ def _retry_budget_errors(state):
             errors.append("state.charged_attempt_ids must contain non-empty strings")
         if len(set(charged)) != len(charged):
             errors.append("state.charged_attempt_ids must not contain duplicates")
-        if isinstance(total, int) and not isinstance(total, bool) \
-                and total < len(charged):
-            errors.append("state.total_retries cannot be smaller than its charge ledger")
+        known_jobs = set(state_jobs) if isinstance(state_jobs, dict) else set()
+        for item in charged:
+            if not isinstance(item, str):
+                continue
+            charged_job, separator, generation = item.rpartition(":")
+            if (separator != ":" or charged_job not in known_jobs
+                    or not generation.isdigit() or int(generation) < 1):
+                errors.append("state.charged_attempt_ids contains an invalid or unknown "
+                              "job generation %r" % item)
+        if (isinstance(total, int) and not isinstance(total, bool)
+                and isinstance(legacy_base, int) and not isinstance(legacy_base, bool)
+                and total != legacy_base + len(charged)):
+            errors.append("state.total_retries must equal retry_budget_legacy_base plus "
+                          "unique charged attempts")
     return errors
+
+
+def _normalize_retry_budget(state):
+    """Materialize the canonical ledger on the first transition of legacy state."""
+    if ("total_retries" in state and "max_total_retries" in state
+            and "retry_budget_legacy_base" not in state
+            and "charged_attempt_ids" not in state):
+        state["retry_budget_legacy_base"] = state["total_retries"]
+        state["charged_attempt_ids"] = []
 
 
 def _transient_state_errors(state):
@@ -326,7 +365,7 @@ def _transient_state_errors(state):
         return ["state root must be an object"]
     state_jobs = state.get("jobs")
     errors = _attempt_identity_errors(state_jobs)
-    errors.extend(_retry_budget_errors(state))
+    errors.extend(_retry_budget_errors(state, state_jobs))
     if "cooldowns" in state:
         errors.extend(_cooldown_errors(state.get("cooldowns"), state_jobs))
     if "network_evidence" in state:
@@ -1252,6 +1291,7 @@ def transition_state(state, jobs, job_id, intent, now, batch_id,
         raise ValueError("; ".join(current_errors))
     replacement = copy.deepcopy(state)
     replacement.setdefault("cooldowns", {})
+    _normalize_retry_budget(replacement)
     _release_dead_expired_probes(
         replacement, now_value, intent.get("dead_attempt_ids", []),
     )
@@ -1918,6 +1958,7 @@ def _selftest():
         "cooldowns": {},
         "total_retries": 0,
         "max_total_retries": 12,
+        "retry_budget_legacy_base": 0,
         "charged_attempt_ids": [],
     }
     idle_probe = {
@@ -1935,6 +1976,36 @@ def _selftest():
     canonical_state["cooldowns"] = {"codex": canonical_cooldown}
     expect("canonical cooldown object validates",
            bool(validate) and validate(canonical_state, route_jobs) == [])
+
+    legacy_budget_state = json.loads(json.dumps(route_state))
+    legacy_budget_state.pop("retry_budget_legacy_base")
+    legacy_budget_state.pop("charged_attempt_ids")
+    legacy_budget_state["total_retries"] = 3
+    expect("legacy retry budget validates and resumes before ledger migration",
+           validate(legacy_budget_state, route_jobs) == []
+           and value_or_none(lambda: resume(legacy_budget_state, "job-a"))
+               == {"assigned_backend": "codex", "assigned_model": "model-a"})
+
+    invalid_budget_states = []
+    over_max = json.loads(json.dumps(route_state))
+    over_max.update({"total_retries": 13, "max_total_retries": 12,
+                     "retry_budget_legacy_base": 13,
+                     "charged_attempt_ids": []})
+    invalid_budget_states.append(over_max)
+    malformed_charge = json.loads(json.dumps(route_state))
+    malformed_charge.update({"total_retries": 1, "retry_budget_legacy_base": 0,
+                             "charged_attempt_ids": ["job-a:not-a-generation"]})
+    invalid_budget_states.append(malformed_charge)
+    ghost_charge = json.loads(json.dumps(route_state))
+    ghost_charge.update({"total_retries": 1, "retry_budget_legacy_base": 0,
+                         "charged_attempt_ids": ["ghost:1"]})
+    invalid_budget_states.append(ghost_charge)
+    inconsistent_charge = json.loads(json.dumps(route_state))
+    inconsistent_charge.update({"total_retries": 7, "retry_budget_legacy_base": 3,
+                                "charged_attempt_ids": ["job-a:1"]})
+    invalid_budget_states.append(inconsistent_charge)
+    expect("canonical retry budget rejects over-max malformed ghost and inconsistent ledgers",
+           all(validate(item, route_jobs) for item in invalid_budget_states))
 
     null_cooldowns = json.loads(json.dumps(route_state))
     null_cooldowns["cooldowns"] = None
@@ -2492,6 +2563,22 @@ def _selftest():
         "attempt_counter": 1, "attempt_id": "job-b:1", "batch_id": "batch-i",
     })
 
+    legacy_transition_state = json.loads(json.dumps(integration_base))
+    legacy_transition_state.pop("retry_budget_legacy_base")
+    legacy_transition_state.pop("charged_attempt_ids")
+    legacy_transition_state["total_retries"] = 3
+    migrated_budget = value_or_none(lambda: transition(
+        legacy_transition_state, route_jobs, "job-a",
+        real_policy_intent("rate_limited", legacy_transition_state, "job-a", 0),
+        "2026-08-01T07:20:00Z", "batch-i", 300, 3,
+    )) if decide and transition else None
+    expect("first legacy retry transition materializes canonical charge ledger",
+           isinstance(migrated_budget, dict)
+           and migrated_budget.get("state", {}).get("total_retries") == 4
+           and migrated_budget.get("state", {}).get("retry_budget_legacy_base") == 3
+           and migrated_budget.get("state", {}).get("charged_attempt_ids")
+               == ["job-a:1"])
+
     first_transient = value_or_none(lambda: transition(
         integration_base, route_jobs, "job-a",
         real_policy_intent("rate_limited", integration_base, "job-a", 0),
@@ -2526,6 +2613,7 @@ def _selftest():
     exhausted_budget_state = json.loads(json.dumps(integration_base))
     exhausted_budget_state.update({
         "total_retries": 12, "max_total_retries": 12,
+        "retry_budget_legacy_base": 12,
         "charged_attempt_ids": [],
     })
     exhausted_budget = value_or_none(lambda: transition(
