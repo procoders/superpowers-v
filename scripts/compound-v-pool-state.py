@@ -14,6 +14,7 @@ The JSON CLI reads one request object from stdin and prints one result object:
 """
 
 import copy
+import datetime
 import importlib.util
 import json
 import os
@@ -32,6 +33,276 @@ MAX_EXPANDED_POOL_SLOTS = 256
 CIRCUIT_REASONS = ("out_of_credits", "auth")
 CIRCUIT_CLEARED_BY = ("top_up", "reauth", "probe")
 CIRCUIT_ENTRY_FIELDS = frozenset(("open", "reason", "opened_at", "cleared_by"))
+COOLDOWN_REASONS = (
+    "rate_limited", "overloaded", "usage_window_exhausted", "network",
+)
+COOLDOWN_ENTRY_FIELDS = frozenset((
+    "until", "reason", "opened_at", "opened_by_attempt_id", "probe",
+))
+PROBE_FIELDS = frozenset((
+    "status", "owner_job_id", "owner_attempt_id", "lease_until",
+))
+NETWORK_EVIDENCE_FIELDS = frozenset((
+    "backend", "job_id", "attempt_id", "batch_id", "observed_at",
+))
+NETWORK_PAUSE_FIELDS = frozenset(("opened_at", "until", "evidence", "probe"))
+NETWORK_CORRELATION_SECONDS = 60
+
+
+def _provider_time_module():
+    """Load the shared Python 3.9-safe timestamp contract."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "compound-v-provider-time.py")
+    spec = importlib.util.spec_from_file_location("compound_v_provider_time_pool", path)
+    if spec is None or spec.loader is None:
+        raise ValueError("cannot load sibling provider time helper: %s" % path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _parse_timestamp(value, field):
+    return _provider_time_module().parse_utc_timestamp(value, field)
+
+
+def _format_timestamp(value):
+    return _provider_time_module().format_utc_timestamp(value)
+
+
+def _parse_nonnegative(value, field):
+    return _provider_time_module().parse_delay(value, field)
+
+
+def _parse_canonical_timestamp(value, field):
+    """Parse persisted state time and require its single normalized UTC form."""
+    parsed = _parse_timestamp(value, field)
+    if value != _format_timestamp(parsed):
+        raise ValueError("%s must use canonical UTC with terminal Z" % field)
+    return parsed
+
+
+def _idle_probe():
+    return {
+        "status": "idle",
+        "owner_job_id": None,
+        "owner_attempt_id": None,
+        "lease_until": None,
+    }
+
+
+def _probe_errors(probe, path, state_jobs, opened_at=None):
+    """Validate one idle/leased probe without using wall-clock time."""
+    if not isinstance(probe, dict):
+        return ["%s must be an object" % path]
+    if frozenset(probe.keys()) != PROBE_FIELDS:
+        return ["%s must contain exactly status, owner_job_id, "
+                "owner_attempt_id, lease_until" % path]
+    errors = []
+    status = probe.get("status")
+    owner_job_id = probe.get("owner_job_id")
+    owner_attempt_id = probe.get("owner_attempt_id")
+    lease_until = probe.get("lease_until")
+    if status not in ("idle", "leased"):
+        errors.append("%s.status must be idle or leased" % path)
+    elif status == "idle":
+        if any(value is not None for value in (
+                owner_job_id, owner_attempt_id, lease_until)):
+            errors.append("%s idle probe must have null owner, attempt, and lease" % path)
+    else:
+        if not isinstance(owner_job_id, str) or not owner_job_id:
+            errors.append("%s leased probe requires owner_job_id" % path)
+        if not isinstance(owner_attempt_id, str) or not owner_attempt_id:
+            errors.append("%s leased probe requires owner_attempt_id" % path)
+        owner = state_jobs.get(owner_job_id) if isinstance(state_jobs, dict) else None
+        if not isinstance(owner, dict):
+            errors.append("%s owner job does not exist in state.jobs" % path)
+        elif owner.get("attempt_id") != owner_attempt_id:
+            errors.append("%s owner attempt is not the job's current attempt" % path)
+        try:
+            lease_value = _parse_canonical_timestamp(
+                lease_until, "%s.lease_until" % path)
+            if opened_at is not None and lease_value < opened_at:
+                errors.append("%s.lease_until precedes the state opening time" % path)
+        except ValueError as error:
+            errors.append(str(error))
+    return errors
+
+
+def _cooldown_errors(cooldowns, state_jobs):
+    """Return errors for canonical transient backend cooldowns."""
+    if cooldowns is None:
+        return []
+    if not isinstance(cooldowns, dict):
+        return ["state.cooldowns must be an object map"]
+    errors = []
+    leased_attempts = set()
+    for backend, entry in cooldowns.items():
+        path = "state.cooldowns[%r]" % backend
+        if backend not in VALID_CONCRETE_BACKENDS:
+            errors.append("%s uses an unknown concrete backend key" % path)
+        if not isinstance(entry, dict):
+            errors.append("%s must be a canonical object, never a bare timestamp" % path)
+            continue
+        if frozenset(entry.keys()) != COOLDOWN_ENTRY_FIELDS:
+            errors.append("%s must contain exactly until, reason, opened_at, "
+                          "opened_by_attempt_id, probe" % path)
+            continue
+        if entry.get("reason") not in COOLDOWN_REASONS:
+            errors.append("%s.reason is not a transient cooldown reason" % path)
+        attempt_id = entry.get("opened_by_attempt_id")
+        if not isinstance(attempt_id, str) or not attempt_id:
+            errors.append("%s.opened_by_attempt_id must be non-empty" % path)
+        opened = None
+        until = None
+        try:
+            opened = _parse_canonical_timestamp(
+                entry.get("opened_at"), "%s.opened_at" % path)
+        except ValueError as error:
+            errors.append(str(error))
+        try:
+            until = _parse_canonical_timestamp(entry.get("until"), "%s.until" % path)
+        except ValueError as error:
+            errors.append(str(error))
+        if opened is not None and until is not None and until < opened:
+            errors.append("%s.until must not precede opened_at" % path)
+        errors.extend(_probe_errors(entry.get("probe"), "%s.probe" % path,
+                                    state_jobs, opened_at=opened))
+        probe = entry.get("probe")
+        if isinstance(probe, dict) and probe.get("status") == "leased":
+            owner_attempt = probe.get("owner_attempt_id")
+            if owner_attempt in leased_attempts:
+                errors.append("%s duplicates probe ownership for attempt %r"
+                              % (path, owner_attempt))
+            leased_attempts.add(owner_attempt)
+    return errors
+
+
+def _network_evidence_errors(evidence, path="state.network_evidence", state_jobs=None):
+    if evidence is None:
+        return []
+    if not isinstance(evidence, list):
+        return ["%s must be a list" % path]
+    errors = []
+    seen = set()
+    for index, row in enumerate(evidence):
+        row_path = "%s[%d]" % (path, index)
+        if not isinstance(row, dict):
+            errors.append("%s must be an object" % row_path)
+            continue
+        if frozenset(row.keys()) != NETWORK_EVIDENCE_FIELDS:
+            errors.append("%s must contain exactly backend, job_id, attempt_id, "
+                          "batch_id, observed_at" % row_path)
+            continue
+        backend = row.get("backend")
+        if backend not in VALID_CONCRETE_BACKENDS:
+            errors.append("%s.backend is unknown" % row_path)
+        for field in ("job_id", "attempt_id", "batch_id"):
+            if not isinstance(row.get(field), str) or not row.get(field):
+                errors.append("%s.%s must be non-empty" % (row_path, field))
+        job_id = row.get("job_id")
+        attempt_id = row.get("attempt_id")
+        if state_jobs is not None and job_id not in state_jobs:
+            errors.append("%s.job_id does not exist in state.jobs" % row_path)
+        if isinstance(job_id, str) and isinstance(attempt_id, str):
+            prefix = "%s:" % job_id
+            suffix = attempt_id[len(prefix):] if attempt_id.startswith(prefix) else ""
+            if not suffix.isdigit() or int(suffix) < 1:
+                errors.append("%s.attempt_id is not a valid job generation" % row_path)
+        try:
+            _parse_canonical_timestamp(
+                row.get("observed_at"), "%s.observed_at" % row_path)
+        except ValueError as error:
+            errors.append(str(error))
+        dedupe = (backend, row.get("attempt_id"))
+        if dedupe in seen:
+            errors.append("%s duplicates backend plus attempt_id evidence" % row_path)
+        seen.add(dedupe)
+    return errors
+
+
+def _network_pause_errors(pause, state_jobs):
+    if pause is None:
+        return []
+    path = "state.network_pause"
+    if not isinstance(pause, dict):
+        return ["%s must be an object" % path]
+    if frozenset(pause.keys()) != NETWORK_PAUSE_FIELDS:
+        return ["%s must contain exactly opened_at, until, evidence, probe" % path]
+    errors = []
+    opened = None
+    until = None
+    try:
+        opened = _parse_canonical_timestamp(
+            pause.get("opened_at"), "%s.opened_at" % path)
+    except ValueError as error:
+        errors.append(str(error))
+    try:
+        until = _parse_canonical_timestamp(pause.get("until"), "%s.until" % path)
+    except ValueError as error:
+        errors.append(str(error))
+    if opened is not None and until is not None and until < opened:
+        errors.append("%s.until must not precede opened_at" % path)
+    evidence = pause.get("evidence")
+    errors.extend(_network_evidence_errors(
+        evidence, "%s.evidence" % path, state_jobs=state_jobs))
+    if isinstance(evidence, list):
+        batches = {row.get("batch_id") for row in evidence if isinstance(row, dict)}
+        backends = {row.get("backend") for row in evidence if isinstance(row, dict)}
+        if len(evidence) < 2 or len(backends) < 2:
+            errors.append("%s requires evidence from two distinct providers" % path)
+        if len(batches) != 1:
+            errors.append("%s evidence must share exactly one batch_id" % path)
+        observed = []
+        for index, row in enumerate(evidence):
+            if not isinstance(row, dict):
+                continue
+            try:
+                observed.append(_parse_canonical_timestamp(
+                    row.get("observed_at"), "%s.evidence[%d].observed_at" % (path, index)))
+            except ValueError:
+                pass
+        if observed and (max(observed) - min(observed)).total_seconds() \
+                > NETWORK_CORRELATION_SECONDS:
+            errors.append("%s evidence exceeds the 60-second correlation window" % path)
+    errors.extend(_probe_errors(pause.get("probe"), "%s.probe" % path,
+                                state_jobs, opened_at=opened))
+    return errors
+
+
+def _transient_state_errors(state):
+    if not isinstance(state, dict):
+        return ["state root must be an object"]
+    state_jobs = state.get("jobs")
+    errors = _attempt_identity_errors(state_jobs)
+    errors.extend(_cooldown_errors(state.get("cooldowns"), state_jobs))
+    errors.extend(_network_evidence_errors(
+        state.get("network_evidence"), state_jobs=state_jobs))
+    errors.extend(_network_pause_errors(state.get("network_pause"), state_jobs))
+    return errors
+
+
+def _attempt_identity_errors(state_jobs):
+    """Validate optional persisted launch generations on every state job."""
+    if not isinstance(state_jobs, dict):
+        return []
+    errors = []
+    seen = set()
+    for job_id, record in state_jobs.items():
+        if not isinstance(record, dict):
+            continue
+        attempt_id = record.get("attempt_id")
+        counter = record.get("attempt_counter")
+        if attempt_id is None and counter is None:
+            continue
+        path = "state.jobs[%r]" % job_id
+        if (not isinstance(counter, int) or isinstance(counter, bool) or counter < 1
+                or attempt_id != "%s:%d" % (job_id, counter)):
+            errors.append("%s has invalid persisted attempt identity" % path)
+            continue
+        if attempt_id in seen:
+            errors.append("%s duplicates persisted attempt identity" % path)
+        seen.add(attempt_id)
+    return errors
 
 
 def _circuit_open_errors(circuit_open):
@@ -147,6 +418,9 @@ def freeze_pool_members(state, pools, stance, config_models, env=None, which=Non
     circuit_errors = _circuit_open_errors(frozen_state.get("circuit_open"))
     if circuit_errors:
         raise ValueError("; ".join(circuit_errors))
+    transient_errors = _transient_state_errors(frozen_state)
+    if transient_errors:
+        raise ValueError("; ".join(transient_errors))
     if "pool_members" in frozen_state:
         if not isinstance(frozen_state["pool_members"], dict):
             raise ValueError("state.pool_members must be an object")
@@ -192,8 +466,8 @@ def freeze_pool_members(state, pools, stance, config_models, env=None, which=Non
     return frozen_state
 
 
-def select_frozen_member(state, tier, index):
-    """Select from the frozen ring, skipping unavailable/open slots without resize."""
+def select_frozen_member(state, tier, index, now=None, exclude_assignment=None):
+    """Select a healthy slot without mutation; probes are acquired by transition."""
     if tier not in VALID_POOL_TIERS:
         raise ValueError("unknown frozen tier '%s'" % tier)
     if not isinstance(index, int) or isinstance(index, bool) or index < 0:
@@ -206,6 +480,21 @@ def select_frozen_member(state, tier, index):
     circuit_errors = _circuit_open_errors(circuit_open)
     if circuit_errors:
         raise ValueError("; ".join(circuit_errors))
+    transient_errors = _transient_state_errors(state)
+    if transient_errors:
+        raise ValueError("; ".join(transient_errors))
+    cooldowns = state.get("cooldowns", {})
+    if cooldowns and now is None:
+        raise ValueError("current aware UTC time is required when cooldowns exist")
+    if now is not None:
+        _parse_timestamp(now, "now")
+    if exclude_assignment is not None:
+        if (not isinstance(exclude_assignment, dict)
+                or frozenset(exclude_assignment.keys()) != frozenset(("backend", "model"))
+                or exclude_assignment.get("backend") not in VALID_CONCRETE_BACKENDS
+                or not isinstance(exclude_assignment.get("model"), str)
+                or not exclude_assignment.get("model")):
+            raise ValueError("exclude_assignment must be an exact backend/model object")
 
     start = index % len(members)
     for offset in range(len(members)):
@@ -218,9 +507,15 @@ def select_frozen_member(state, tier, index):
             raise ValueError("unknown concrete backend '%s' in frozen pool" % backend)
         breaker = circuit_open.get(backend)
         breaker_is_open = isinstance(breaker, dict) and breaker.get("open") is True
-        if member.get("available") is not True or breaker_is_open:
-            continue
         model = member.get("model")
+        exact_excluded = (isinstance(exclude_assignment, dict)
+                          and exclude_assignment.get("backend") == backend
+                          and exclude_assignment.get("model") == model)
+        # A cooldown remains unavailable to this read-only selector even after
+        # expiry: only transition_state may atomically lease the half-open probe.
+        if (member.get("available") is not True or breaker_is_open
+                or backend in cooldowns or exact_excluded):
+            continue
         if not isinstance(backend, str) or not backend or backend == "pool":
             raise ValueError("frozen pool member has no concrete backend")
         if not isinstance(model, str) or not model:
@@ -345,6 +640,7 @@ def validate_state(state, jobs):
     if not isinstance(state_jobs, dict):
         return ["state.jobs must be an object"]
     errors.extend(_circuit_open_errors(state.get("circuit_open")))
+    errors.extend(_transient_state_errors(state))
     pool_members = state.get("pool_members")
     if not isinstance(pool_members, dict):
         errors.append("state.pool_members must be an object")
@@ -385,6 +681,9 @@ def resume_assignment(state, job_id):
     circuit_errors = _circuit_open_errors(circuit_open)
     if circuit_errors:
         raise ValueError("; ".join(circuit_errors))
+    transient_errors = _transient_state_errors(state)
+    if transient_errors:
+        raise ValueError("; ".join(transient_errors))
     jobs = state.get("jobs") if isinstance(state, dict) else None
     record = jobs.get(job_id) if isinstance(jobs, dict) else None
     if not isinstance(record, dict):
@@ -397,6 +696,474 @@ def resume_assignment(state, job_id):
         "assigned_backend": record["assigned_backend"],
         "assigned_model": record["assigned_model"],
     }
+
+
+def migrate_legacy_cooldowns(state, now):
+    """Explicitly convert legacy backend->timestamp entries exactly once."""
+    if not isinstance(state, dict):
+        raise ValueError("state root must be an object")
+    now_value = _parse_timestamp(now, "now")
+    replacement = copy.deepcopy(state)
+    cooldowns = replacement.get("cooldowns", {})
+    if not isinstance(cooldowns, dict):
+        raise ValueError("state.cooldowns must be an object map")
+    migrated = {}
+    for backend, entry in cooldowns.items():
+        if backend not in VALID_CONCRETE_BACKENDS:
+            raise ValueError("legacy cooldown uses unknown backend %r" % backend)
+        if isinstance(entry, dict):
+            migrated[backend] = entry
+            continue
+        if not isinstance(entry, str):
+            raise ValueError("legacy cooldown for %s must be a timestamp string" % backend)
+        until_value = _parse_timestamp(entry, "legacy cooldown %s" % backend)
+        if until_value < now_value:
+            until_value = now_value
+        migrated[backend] = {
+            "until": _format_timestamp(until_value),
+            "reason": "rate_limited",
+            "opened_at": _format_timestamp(now_value),
+            "opened_by_attempt_id": "legacy:migration:%s" % backend,
+            "probe": _idle_probe(),
+        }
+    replacement["cooldowns"] = migrated
+    errors = _transient_state_errors(replacement)
+    if errors:
+        raise ValueError("; ".join(errors))
+    return replacement
+
+
+def _manifest_job_ids(jobs):
+    if not isinstance(jobs, list):
+        raise ValueError("manifest jobs must be provided as an explicit list")
+    result = set()
+    for job in jobs:
+        if not isinstance(job, dict):
+            raise ValueError("manifest job must be an object")
+        job_id = job.get("id")
+        if not isinstance(job_id, str) or not job_id:
+            raise ValueError("manifest job requires a non-empty id")
+        if job_id in result:
+            raise ValueError("manifest job ids must be unique")
+        result.add(job_id)
+    return result
+
+
+def _current_attempt(record, job_id):
+    attempt_id = record.get("attempt_id")
+    counter = record.get("attempt_counter")
+    if attempt_id is None and counter is None:
+        return None, 0
+    if (not isinstance(counter, int) or isinstance(counter, bool) or counter < 1
+            or attempt_id != "%s:%d" % (job_id, counter)):
+        raise ValueError("state job '%s' has invalid persisted attempt identity" % job_id)
+    return attempt_id, counter
+
+
+def _next_attempt(record, job_id):
+    _unused, counter = _current_attempt(record, job_id)
+    next_counter = counter + 1
+    return "%s:%d" % (job_id, next_counter), next_counter
+
+
+def _validate_result_attempt(state, job_id, intent):
+    backend = intent.get("backend")
+    attempt_id = intent.get("attempt_id")
+    if backend not in VALID_CONCRETE_BACKENDS:
+        raise ValueError("result backend must be a known concrete backend")
+    if not isinstance(attempt_id, str) or not attempt_id:
+        raise ValueError("result attempt_id must be non-empty")
+    record = state.get("jobs", {}).get(job_id)
+    if not isinstance(record, dict):
+        raise ValueError("state has no job '%s'" % job_id)
+    current_attempt, _unused = _current_attempt(record, job_id)
+    if current_attempt != attempt_id:
+        raise ValueError("result attempt_id is not the job's current persisted attempt")
+    return backend, attempt_id
+
+
+def _canonical_cooldown(backend, reason, until, now, attempt_id):
+    if backend not in VALID_CONCRETE_BACKENDS:
+        raise ValueError("cooldown backend must be a known concrete backend")
+    if reason not in COOLDOWN_REASONS:
+        raise ValueError("cooldown reason is not transient")
+    if not isinstance(attempt_id, str) or not attempt_id:
+        raise ValueError("cooldown attempt_id must be non-empty")
+    now_value = _parse_timestamp(now, "now")
+    until_value = _parse_timestamp(until, "cooldown_until")
+    if until_value < now_value:
+        until_value = now_value
+    return {
+        "until": _format_timestamp(until_value),
+        "reason": reason,
+        "opened_at": _format_timestamp(now_value),
+        "opened_by_attempt_id": attempt_id,
+        "probe": _idle_probe(),
+    }
+
+
+def _earliest_timestamp(values):
+    parsed = []
+    for value in values:
+        if value is not None:
+            parsed.append((_parse_timestamp(value, "next retry time"), value))
+    if not parsed:
+        return None
+    return _format_timestamp(min(item[0] for item in parsed))
+
+
+def _prune_network_evidence(rows, batch_id, now_value):
+    """Keep only current-batch no-response rows inside the live 60s window."""
+    kept = []
+    for row in rows:
+        if row.get("batch_id") != batch_id:
+            continue
+        observed = _parse_canonical_timestamp(
+            row.get("observed_at"), "network observed_at")
+        age = (now_value - observed).total_seconds()
+        if 0 <= age <= NETWORK_CORRELATION_SECONDS:
+            kept.append(row)
+    return kept
+
+
+def _release_dead_expired_probes(state, now_value, dead_attempt_ids):
+    """Reclaim only leases whose owner liveness was explicitly reconciled dead."""
+    if dead_attempt_ids is None:
+        dead_attempt_ids = []
+    if (not isinstance(dead_attempt_ids, list)
+            or any(not isinstance(item, str) or not item for item in dead_attempt_ids)):
+        raise ValueError("dead_attempt_ids must be a list of non-empty attempt ids")
+    dead = set(dead_attempt_ids)
+    for entry in state.get("cooldowns", {}).values():
+        probe = entry.get("probe")
+        if (isinstance(probe, dict) and probe.get("status") == "leased"
+                and probe.get("owner_attempt_id") in dead
+                and _parse_canonical_timestamp(
+                    probe.get("lease_until"), "probe lease_until")
+                    <= now_value):
+            entry["probe"] = _idle_probe()
+    pause = state.get("network_pause")
+    if isinstance(pause, dict):
+        probe = pause.get("probe")
+        if (probe.get("status") == "leased"
+                and probe.get("owner_attempt_id") in dead
+                and _parse_canonical_timestamp(
+                    probe.get("lease_until"), "network probe lease_until")
+                    <= now_value):
+            pause["probe"] = _idle_probe()
+
+
+def _lease_probe(entry, job_id, attempt_id, now_value,
+                 job_timeout_seconds, grace_seconds):
+    timeout = _parse_nonnegative(job_timeout_seconds, "job_timeout_seconds")
+    grace = _parse_nonnegative(grace_seconds, "grace_seconds")
+    lease_until = now_value + datetime.timedelta(seconds=timeout + grace)
+    entry["probe"] = {
+        "status": "leased",
+        "owner_job_id": job_id,
+        "owner_attempt_id": attempt_id,
+        "lease_until": _format_timestamp(lease_until),
+    }
+
+
+def _launch_assignment(state, jobs, job_id, start_index, now_value,
+                       job_timeout_seconds, grace_seconds,
+                       exclude_assignment=None, network_probe=False):
+    """Perform the sole bounded frozen-ring scan and atomically lease/assign."""
+    record = state.get("jobs", {}).get(job_id)
+    if not isinstance(record, dict):
+        raise ValueError("state has no job '%s'" % job_id)
+    tier = record.get("pool_tier")
+    members = state.get("pool_members", {}).get(tier)
+    if not isinstance(members, list) or not members:
+        raise ValueError("state has no frozen pool members for tier '%s'" % tier)
+    if exclude_assignment is not None:
+        if (not isinstance(exclude_assignment, dict)
+                or frozenset(exclude_assignment.keys()) != frozenset(("backend", "model"))
+                or exclude_assignment.get("backend") not in VALID_CONCRETE_BACKENDS
+                or not isinstance(exclude_assignment.get("model"), str)
+                or not exclude_assignment.get("model")):
+            raise ValueError("exclude_assignment must be an exact backend/model object")
+
+    attempt_id, attempt_counter = _next_attempt(record, job_id)
+    earliest = []
+    selected = None
+    selected_cooldown = None
+    start = start_index % len(members)
+    for offset in range(len(members)):
+        slot_index = (start + offset) % len(members)
+        member = members[slot_index]
+        if not isinstance(member, dict):
+            raise ValueError("frozen pool member must be an object")
+        backend = member.get("backend")
+        model = member.get("model")
+        if backend not in VALID_CONCRETE_BACKENDS:
+            raise ValueError("unknown concrete backend %r in frozen pool" % backend)
+        if not isinstance(model, str) or not model:
+            raise ValueError("frozen pool member '%s' has no concrete model" % backend)
+        breaker = state.get("circuit_open", {}).get(backend)
+        excluded = (isinstance(exclude_assignment, dict)
+                    and exclude_assignment.get("backend") == backend
+                    and exclude_assignment.get("model") == model)
+        if (member.get("available") is not True or excluded
+                or (isinstance(breaker, dict) and breaker.get("open") is True)):
+            continue
+        cooldown = state.get("cooldowns", {}).get(backend)
+        if isinstance(cooldown, dict):
+            until = _parse_canonical_timestamp(
+                cooldown.get("until"), "cooldown.until")
+            probe = cooldown.get("probe")
+            if until > now_value:
+                earliest.append(cooldown.get("until"))
+                continue
+            if probe.get("status") == "leased":
+                lease_until = _parse_canonical_timestamp(
+                    probe.get("lease_until"), "cooldown probe lease_until")
+                if lease_until > now_value:
+                    earliest.append(probe.get("lease_until"))
+                continue
+            selected_cooldown = cooldown
+        selected = (slot_index, backend, model)
+        break
+
+    if selected is None:
+        return None, _earliest_timestamp(earliest)
+
+    slot_index, backend, model = selected
+    record["attempt_counter"] = attempt_counter
+    record["attempt_id"] = attempt_id
+    record["assigned_backend"] = backend
+    record["assigned_model"] = model
+    record["pool_index"] = slot_index
+    record["assignment_source"] = "pool"
+    record["status"] = "dispatched"
+    if selected_cooldown is not None:
+        _lease_probe(selected_cooldown, job_id, attempt_id, now_value,
+                     job_timeout_seconds, grace_seconds)
+    if network_probe:
+        _lease_probe(state["network_pause"], job_id, attempt_id, now_value,
+                     job_timeout_seconds, grace_seconds)
+    return {
+        "assigned_backend": backend,
+        "assigned_model": model,
+        "pool_index": slot_index,
+        "attempt_id": attempt_id,
+        "probe_backend": backend if selected_cooldown is not None else None,
+        "network_probe": bool(network_probe),
+    }, None
+
+
+def _apply_result(state, job_id, intent, now_value, batch_id):
+    backend, attempt_id = _validate_result_attempt(state, job_id, intent)
+    result = intent.get("result")
+    if result not in ("success", "failure"):
+        raise ValueError("result intent must be success or failure")
+    changed = False
+
+    cooldown = state.get("cooldowns", {}).get(backend)
+    cooldown_probe = cooldown.get("probe") if isinstance(cooldown, dict) else None
+    exact_cooldown_probe = (isinstance(cooldown_probe, dict)
+                            and cooldown_probe.get("status") == "leased"
+                            and cooldown_probe.get("owner_job_id") == job_id
+                            and cooldown_probe.get("owner_attempt_id") == attempt_id)
+    pause = state.get("network_pause")
+    pause_probe = pause.get("probe") if isinstance(pause, dict) else None
+    exact_network_probe = (isinstance(pause_probe, dict)
+                           and pause_probe.get("status") == "leased"
+                           and pause_probe.get("owner_job_id") == job_id
+                           and pause_probe.get("owner_attempt_id") == attempt_id)
+
+    if result == "success":
+        if exact_cooldown_probe:
+            del state["cooldowns"][backend]
+            changed = True
+        if exact_network_probe:
+            state.pop("network_pause", None)
+            changed = True
+        # A completed success vetoes only earlier evidence in the same live
+        # batch. Later failures begin a fresh correlation sequence.
+        evidence = state.get("network_evidence", [])
+        retained = [row for row in evidence if row.get("batch_id") != batch_id]
+        if retained != evidence:
+            state["network_evidence"] = retained
+            changed = True
+        return "complete" if changed else "complete"
+
+    failure_class = intent.get("failure_class")
+    if exact_cooldown_probe and failure_class in COOLDOWN_REASONS:
+        retry_at = intent.get("retry_at")
+        state["cooldowns"][backend] = _canonical_cooldown(
+            backend, failure_class, retry_at, _format_timestamp(now_value), attempt_id,
+        )
+        changed = True
+    elif exact_cooldown_probe and failure_class in CIRCUIT_REASONS:
+        del state["cooldowns"][backend]
+        state.setdefault("circuit_open", {})[backend] = {
+            "open": True,
+            "reason": failure_class,
+            "opened_at": _format_timestamp(now_value),
+            "cleared_by": None,
+        }
+        changed = True
+
+    if failure_class == "network":
+        scope = intent.get("network_scope")
+        if scope not in ("no_response", "provider_reported"):
+            raise ValueError("network failure requires a known network_scope")
+        if exact_network_probe:
+            if scope == "no_response":
+                pause["until"] = _format_timestamp(
+                    now_value + datetime.timedelta(seconds=NETWORK_CORRELATION_SECONDS))
+                # Preserve the original two-provider evidence that justified
+                # the pause. The exact leased real-job probe is the authority
+                # for renewal; it does not need to fabricate a second outage
+                # observation in a later correlation window.
+                pause["probe"] = _idle_probe()
+            else:
+                state.pop("network_pause", None)
+            return "state_updated"
+        if scope == "provider_reported":
+            return "state_updated"
+        evidence = _prune_network_evidence(
+            state.get("network_evidence", []), batch_id, now_value,
+        )
+        row = {
+            "backend": backend, "job_id": job_id, "attempt_id": attempt_id,
+            "batch_id": batch_id, "observed_at": _format_timestamp(now_value),
+        }
+        dedupe = (backend, attempt_id)
+        if not any((item.get("backend"), item.get("attempt_id")) == dedupe
+                   for item in evidence):
+            evidence.append(row)
+        state["network_evidence"] = evidence
+        if len({item["backend"] for item in evidence}) >= 2:
+            state["network_pause"] = {
+                "opened_at": _format_timestamp(now_value),
+                "until": _format_timestamp(
+                    now_value + datetime.timedelta(seconds=NETWORK_CORRELATION_SECONDS)),
+                "evidence": copy.deepcopy(evidence),
+                "probe": _idle_probe(),
+            }
+            state["network_evidence"] = []
+            return "network_paused"
+    return "state_updated" if changed or result == "failure" else "complete"
+
+
+def transition_state(state, jobs, job_id, intent, now, batch_id,
+                     job_timeout_seconds, grace_seconds):
+    """Validate, mutate, bounded-scan, and return one atomic launch decision."""
+    if not isinstance(state, dict) or not isinstance(intent, dict):
+        raise ValueError("state and intent must be objects")
+    if not isinstance(job_id, str) or not job_id:
+        raise ValueError("job_id must be non-empty")
+    if not isinstance(batch_id, str) or not batch_id:
+        raise ValueError("batch_id must be non-empty")
+    if job_id not in _manifest_job_ids(jobs):
+        raise ValueError("job_id is not present in manifest jobs")
+    now_value = _parse_timestamp(now, "now")
+    _parse_nonnegative(job_timeout_seconds, "job_timeout_seconds")
+    _parse_nonnegative(grace_seconds, "grace_seconds")
+    current_errors = validate_state(state, jobs)
+    if current_errors:
+        raise ValueError("; ".join(current_errors))
+    replacement = copy.deepcopy(state)
+    replacement.setdefault("cooldowns", {})
+    _release_dead_expired_probes(
+        replacement, now_value, intent.get("dead_attempt_ids", []),
+    )
+
+    if "result" in intent:
+        action = _apply_result(replacement, job_id, intent, now_value, batch_id)
+        errors = validate_state(replacement, jobs)
+        if errors:
+            raise ValueError("; ".join(errors))
+        return {
+            "state": replacement, "action": action,
+            "assignment": None, "next_retry_at": None,
+        }
+
+    if "cooldown_backend" in intent:
+        record = replacement.get("jobs", {}).get(job_id)
+        current_attempt, _unused = _current_attempt(record, job_id)
+        attempt_id = intent.get("attempt_id")
+        if current_attempt != attempt_id:
+            raise ValueError("cooldown attempt_id is not the current persisted attempt")
+        backend = intent.get("cooldown_backend")
+        if record.get("assigned_backend") != backend:
+            raise ValueError("cooldown backend is not the current persisted assignment")
+        replacement["cooldowns"][backend] = _canonical_cooldown(
+            backend, intent.get("cooldown_reason"), intent.get("cooldown_until"),
+            _format_timestamp(now_value), attempt_id,
+        )
+
+    wants_launch = intent.get("launch") is True or intent.get("advance_pool") is True
+    if not wants_launch:
+        errors = validate_state(replacement, jobs)
+        if errors:
+            raise ValueError("; ".join(errors))
+        return {
+            "state": replacement, "action": "state_updated",
+            "assignment": None, "next_retry_at": None,
+        }
+
+    pause = replacement.get("network_pause")
+    network_probe = False
+    if isinstance(pause, dict):
+        pause_until = _parse_canonical_timestamp(
+            pause.get("until"), "network_pause.until")
+        probe = pause.get("probe")
+        if pause_until > now_value:
+            return {
+                "state": replacement, "action": "halt", "assignment": None,
+                "next_retry_at": _format_timestamp(pause_until),
+            }
+        if probe.get("status") == "leased":
+            lease_until = _parse_canonical_timestamp(
+                probe.get("lease_until"), "network probe lease_until")
+            return {
+                "state": replacement, "action": "halt", "assignment": None,
+                "next_retry_at": (probe.get("lease_until")
+                                  if lease_until > now_value else None),
+            }
+        network_probe = True
+
+    record = replacement.get("jobs", {}).get(job_id)
+    start_index = record.get("pool_index")
+    if not isinstance(start_index, int) or isinstance(start_index, bool):
+        raise ValueError("job has no valid current pool_index")
+    if intent.get("advance_pool") is True:
+        start_index += 1
+    assignment, next_retry_at = _launch_assignment(
+        replacement, jobs, job_id, start_index, now_value,
+        job_timeout_seconds, grace_seconds,
+        exclude_assignment=intent.get("exclude_assignment"),
+        network_probe=network_probe,
+    )
+    action = "launch" if assignment is not None else "halt"
+    errors = validate_state(replacement, jobs)
+    if errors:
+        raise ValueError("; ".join(errors))
+    return {
+        "state": replacement, "action": action,
+        "assignment": assignment, "next_retry_at": next_retry_at,
+    }
+
+
+def clear_cooldown(state, jobs, backend, now):
+    """Remove one known transient cooldown without touching permanent circuits."""
+    if backend not in VALID_CONCRETE_BACKENDS:
+        raise ValueError("clear-cooldown requires a known concrete backend")
+    _parse_timestamp(now, "now")
+    current_errors = validate_state(state, jobs)
+    if current_errors:
+        raise ValueError("; ".join(current_errors))
+    replacement = copy.deepcopy(state)
+    cooldowns = replacement.setdefault("cooldowns", {})
+    cooldowns.pop(backend, None)
+    errors = validate_state(replacement, jobs)
+    if errors:
+        raise ValueError("; ".join(errors))
+    return replacement
 
 
 def handle_request(action, payload, env=None, which=None):
@@ -417,6 +1184,19 @@ def handle_request(action, payload, env=None, which=None):
     if action == "select":
         return select_frozen_member(
             payload.get("state"), payload.get("tier"), payload.get("index"),
+            now=payload.get("now"),
+            exclude_assignment=payload.get("exclude_assignment"),
+        )
+    if action == "transition":
+        return transition_state(
+            payload.get("state"), payload.get("jobs"), payload.get("job_id"),
+            payload.get("intent"), payload.get("now"), payload.get("batch_id"),
+            payload.get("job_timeout_seconds"), payload.get("grace_seconds"),
+        )
+    if action == "clear-cooldown":
+        return clear_cooldown(
+            payload.get("state"), payload.get("jobs"), payload.get("backend"),
+            payload.get("now"),
         )
     raise ValueError("unknown action '%s'" % action)
 
@@ -863,6 +1643,459 @@ def _selftest():
            and nonlist_jobs_result.get("valid") is False
            and any("jobs" in error for error in nonlist_jobs_result.get("errors", [])))
 
+    # PR3 canonical cooldown/network transition contract. These fixtures are
+    # deliberately literal: each expectation names a state-machine mutation
+    # whose removal or broadening must fail the selftest.
+    transition = function("transition_state")
+    migrate = function("migrate_legacy_cooldowns")
+    clear = function("clear_cooldown")
+    route_jobs = [
+        {"id": "job-a", "backend": "pool", "tier": "light"},
+        {"id": "job-b", "backend": "pool", "tier": "light"},
+    ]
+    route_state = {
+        "jobs": {
+            "job-a": {
+                "status": "failed", "assigned_backend": "codex",
+                "assigned_model": "model-a", "pool_index": 0,
+                "pool_tier": "light", "assignment_source": "pool",
+            },
+            "job-b": {
+                "status": "failed", "assigned_backend": "claude",
+                "assigned_model": "model-b", "pool_index": 1,
+                "pool_tier": "light", "assignment_source": "pool",
+            },
+        },
+        "pool_members": {"light": [
+            {"backend": "codex", "model": "model-a", "available": True},
+            {"backend": "claude", "model": "model-b", "available": True},
+            {"backend": "zai", "model": "model-c", "available": True},
+        ]},
+        "circuit_open": {},
+        "cooldowns": {},
+    }
+    idle_probe = {
+        "status": "idle", "owner_job_id": None,
+        "owner_attempt_id": None, "lease_until": None,
+    }
+    canonical_cooldown = {
+        "until": "2026-08-01T07:30:00Z",
+        "reason": "rate_limited",
+        "opened_at": "2026-08-01T07:20:00Z",
+        "opened_by_attempt_id": "job-a:1",
+        "probe": dict(idle_probe),
+    }
+    canonical_state = json.loads(json.dumps(route_state))
+    canonical_state["cooldowns"] = {"codex": canonical_cooldown}
+    expect("canonical cooldown object validates",
+           bool(validate) and validate(canonical_state, route_jobs) == [])
+
+    offset_cooldown_state = json.loads(json.dumps(canonical_state))
+    offset_cooldown_state["cooldowns"]["codex"]["until"] = \
+        "2026-08-01T09:30:00+02:00"
+    offset_errors = validate(offset_cooldown_state, route_jobs) if validate else []
+    expect("persisted cooldown timestamps require normalized terminal Z",
+           any("canonical UTC" in error for error in offset_errors))
+
+    bare_cooldown_state = json.loads(json.dumps(route_state))
+    bare_cooldown_state["cooldowns"] = {"codex": "2026-08-01T07:30:00Z"}
+    bare_cooldown_errors = validate(bare_cooldown_state, route_jobs) \
+        if validate else []
+    expect("new bare-string cooldown fails closed",
+           any("cooldown" in error for error in bare_cooldown_errors))
+    migrated = value_or_none(lambda: migrate(
+        bare_cooldown_state, "2026-08-01T07:20:00Z"
+    )) if migrate else None
+    expect("explicit legacy migration writes canonical cooldown once",
+           isinstance(migrated, dict)
+           and isinstance(migrated.get("cooldowns", {}).get("codex"), dict)
+           and validate(migrated, route_jobs) == [])
+
+    malformed_cooldown = json.loads(json.dumps(canonical_state))
+    malformed_cooldown["cooldowns"]["codex"]["probe"]["owner_job_id"] = "job-a"
+    malformed_errors = validate(malformed_cooldown, route_jobs) if validate else []
+    expect("idle probe rejects a non-null owner",
+           any("probe" in error for error in malformed_errors))
+
+    two_cooling = json.loads(json.dumps(route_state))
+    two_cooling["cooldowns"] = {
+        "codex": dict(canonical_cooldown),
+        "claude": dict(canonical_cooldown,
+                       opened_by_attempt_id="job-b:1"),
+    }
+    advanced = value_or_none(lambda: transition(
+        two_cooling, route_jobs, "job-a", {"advance_pool": True},
+        "2026-08-01T07:21:00Z", "batch-1", 300, 3,
+    )) if transition else None
+    expect("two cooling providers select the healthy frozen slot",
+           isinstance(advanced, dict)
+           and advanced.get("action") == "launch"
+           and advanced.get("assignment", {}).get("assigned_backend") == "zai"
+           and advanced.get("assignment", {}).get("pool_index") == 2
+           and len(advanced.get("state", {}).get("pool_members", {}).get("light", [])) == 3)
+
+    exact_excluded = value_or_none(lambda: transition(
+        route_state, route_jobs, "job-a", {
+            "advance_pool": True,
+            "exclude_assignment": {"backend": "claude", "model": "model-b"},
+        }, "2026-08-01T07:21:00Z", "batch-1", 300, 3,
+    )) if transition else None
+    expect("exact backend-model exclusion skips only that frozen slot",
+           isinstance(exact_excluded, dict)
+           and exact_excluded.get("assignment", {}).get("assigned_backend") == "zai")
+
+    all_cooling = json.loads(json.dumps(route_state))
+    all_cooling["cooldowns"] = {
+        "codex": dict(canonical_cooldown, until="2026-08-01T07:29:00Z"),
+        "claude": dict(canonical_cooldown, until="2026-08-01T07:27:00Z",
+                       opened_by_attempt_id="job-b:1"),
+        "zai": dict(canonical_cooldown, until="2026-08-01T07:28:00Z",
+                    opened_by_attempt_id="job-a:2"),
+    }
+    halted = value_or_none(lambda: transition(
+        all_cooling, route_jobs, "job-a", {"advance_pool": True},
+        "2026-08-01T07:21:00Z", "batch-1", 300, 3,
+    )) if transition else None
+    expect("one bounded scan halts with earliest absolute retry",
+           isinstance(halted, dict) and halted.get("action") == "halt"
+           and halted.get("assignment") is None
+           and halted.get("next_retry_at") == "2026-08-01T07:27:00Z")
+
+    first_launch = value_or_none(lambda: transition(
+        route_state, route_jobs, "job-a", {"launch": True},
+        "2026-08-01T07:21:00Z", "batch-1", 300, 3,
+    )) if transition else None
+    second_launch = value_or_none(lambda: transition(
+        first_launch["state"], route_jobs, "job-a", {"launch": True},
+        "2026-08-01T07:22:00Z", "batch-1", 300, 3,
+    )) if isinstance(first_launch, dict) and transition else None
+    expect("each persisted launch receives a unique monotonic attempt id",
+           isinstance(second_launch, dict)
+           and first_launch.get("assignment", {}).get("attempt_id") == "job-a:1"
+           and second_launch.get("assignment", {}).get("attempt_id") == "job-a:2"
+           and second_launch.get("state", {}).get("jobs", {}).get("job-a", {}).get(
+               "attempt_id") == "job-a:2")
+    malformed_attempt_state = json.loads(json.dumps(first_launch["state"])) \
+        if isinstance(first_launch, dict) else {}
+    if malformed_attempt_state:
+        malformed_attempt_state["jobs"]["job-a"]["attempt_id"] = "job-a:99"
+    malformed_attempt_errors = validate(malformed_attempt_state, route_jobs) \
+        if validate and malformed_attempt_state else []
+    expect("malformed persisted attempt identity fails closed",
+           any("attempt identity" in error for error in malformed_attempt_errors))
+
+    opened_and_advanced = value_or_none(lambda: transition(
+        first_launch["state"], route_jobs, "job-a", {
+            "cooldown_backend": "codex",
+            "cooldown_reason": "usage_window_exhausted",
+            "cooldown_until": "2026-08-01T12:00:00Z",
+            "attempt_id": "job-a:1", "advance_pool": True,
+        }, "2026-08-01T07:21:30Z", "batch-1", 300, 3,
+    )) if isinstance(first_launch, dict) and transition else None
+    expect("cooldown intent persists canonical generation then advances once",
+           isinstance(opened_and_advanced, dict)
+           and opened_and_advanced.get("state", {}).get("cooldowns", {}).get(
+               "codex", {}).get("opened_by_attempt_id") == "job-a:1"
+           and opened_and_advanced.get("assignment", {}).get("assigned_backend") == "claude"
+           and opened_and_advanced.get("assignment", {}).get("attempt_id") == "job-a:2")
+    expect("cooldown intent cannot target a backend other than its persisted attempt",
+           bool(transition) and isinstance(first_launch, dict)
+           and raises_value(lambda: transition(
+               first_launch["state"], route_jobs, "job-a", {
+                   "cooldown_backend": "zai", "cooldown_reason": "rate_limited",
+                   "cooldown_until": "2026-08-01T07:30:00Z",
+                   "attempt_id": "job-a:1",
+               }, "2026-08-01T07:21:30Z", "batch-1", 300, 3,
+           )))
+
+    expired_probe_state = json.loads(json.dumps(route_state))
+    expired_probe_state["pool_members"]["light"] = [
+        {"backend": "codex", "model": "model-a", "available": True},
+    ]
+    expired_probe_state["cooldowns"] = {
+        "codex": dict(canonical_cooldown, until="2026-08-01T07:20:00Z"),
+    }
+    probe_launch = value_or_none(lambda: transition(
+        expired_probe_state, route_jobs[:1], "job-a", {"launch": True},
+        "2026-08-01T07:21:00Z", "batch-2", 300, 3,
+    )) if transition else None
+    probe_entry = probe_launch.get("state", {}).get("cooldowns", {}).get("codex", {}) \
+        if isinstance(probe_launch, dict) else {}
+    expect("expired cooldown grants one real-job half-open lease",
+           probe_launch is not None and probe_launch.get("action") == "launch"
+           and probe_entry.get("probe", {}).get("status") == "leased"
+           and probe_entry.get("probe", {}).get("owner_attempt_id") == "job-a:1"
+           and probe_entry.get("probe", {}).get("lease_until")
+               == "2026-08-01T07:26:03Z")
+
+    second_probe = value_or_none(lambda: transition(
+        probe_launch["state"], route_jobs[:1], "job-a", {"launch": True},
+        "2026-08-01T07:22:00Z", "batch-2", 300, 3,
+    )) if isinstance(probe_launch, dict) and transition else None
+    expect("active half-open lease prevents a second probe launch",
+           isinstance(second_probe, dict) and second_probe.get("action") == "halt"
+           and second_probe.get("assignment") is None)
+
+    stale_probe_state = json.loads(json.dumps(route_state))
+    stale_probe_state["jobs"]["job-a"].update({
+        "attempt_counter": 1, "attempt_id": "job-a:1",
+    })
+    stale_probe_state["jobs"]["job-b"].update({
+        "attempt_counter": 1, "attempt_id": "job-b:1",
+        "assigned_backend": "codex", "assigned_model": "model-a",
+        "pool_index": 0,
+    })
+    stale_probe_state["cooldowns"] = {"codex": dict(
+        canonical_cooldown,
+        until="2026-08-01T07:20:00Z",
+        opened_by_attempt_id="job-b:1",
+        probe={
+            "status": "leased", "owner_job_id": "job-b",
+            "owner_attempt_id": "job-b:1",
+            "lease_until": "2026-08-01T07:26:03Z",
+        },
+    )}
+    stale_success = value_or_none(lambda: transition(
+        stale_probe_state, route_jobs, "job-a", {
+            "result": "success", "backend": "codex", "attempt_id": "job-a:1",
+        }, "2026-08-01T07:22:00Z", "batch-2", 300, 3,
+    )) if transition else None
+    expect("stale in-flight success cannot clear a newer cooldown",
+           isinstance(stale_success, dict)
+           and "codex" in stale_success.get("state", {}).get("cooldowns", {}))
+
+    exact_success = value_or_none(lambda: transition(
+        probe_launch["state"], route_jobs[:1], "job-a", {
+            "result": "success", "backend": "codex", "attempt_id": "job-a:1",
+        }, "2026-08-01T07:22:00Z", "batch-2", 300, 3,
+    )) if isinstance(probe_launch, dict) and transition else None
+    expect("only exact leased probe success clears backend cooldown",
+           isinstance(exact_success, dict)
+           and "codex" not in exact_success.get("state", {}).get("cooldowns", {}))
+
+    renewed_probe = value_or_none(lambda: transition(
+        probe_launch["state"], route_jobs[:1], "job-a", {
+            "result": "failure", "failure_class": "overloaded",
+            "backend": "codex", "attempt_id": "job-a:1",
+            "retry_at": "2026-08-01T07:32:00Z",
+        }, "2026-08-01T07:22:00Z", "batch-2", 300, 3,
+    )) if isinstance(probe_launch, dict) and transition else None
+    expect("matching transient probe failure renews cooldown and releases lease",
+           isinstance(renewed_probe, dict)
+           and renewed_probe.get("state", {}).get("cooldowns", {}).get(
+               "codex", {}).get("until") == "2026-08-01T07:32:00Z"
+           and renewed_probe.get("state", {}).get("cooldowns", {}).get(
+               "codex", {}).get("probe") == idle_probe)
+
+    permanent_probe = value_or_none(lambda: transition(
+        probe_launch["state"], route_jobs[:1], "job-a", {
+            "result": "failure", "failure_class": "out_of_credits",
+            "backend": "codex", "attempt_id": "job-a:1",
+        }, "2026-08-01T07:22:00Z", "batch-2", 300, 3,
+    )) if isinstance(probe_launch, dict) and transition else None
+    expect("permanent probe failure removes cooldown and opens existing circuit family",
+           isinstance(permanent_probe, dict)
+           and "codex" not in permanent_probe.get("state", {}).get("cooldowns", {})
+           and permanent_probe.get("state", {}).get("circuit_open", {}).get(
+               "codex", {}).get("open") is True)
+
+    dead_lease_state = json.loads(json.dumps(probe_launch["state"])) \
+        if isinstance(probe_launch, dict) else {}
+    if dead_lease_state:
+        dead_lease_state["cooldowns"]["codex"]["probe"]["lease_until"] = \
+            "2026-08-01T07:20:30Z"
+    unreconciled = value_or_none(lambda: transition(
+        dead_lease_state, route_jobs[:1], "job-a", {"launch": True},
+        "2026-08-01T07:22:00Z", "batch-2", 300, 3,
+    )) if dead_lease_state and transition else None
+    reclaimed = value_or_none(lambda: transition(
+        dead_lease_state, route_jobs[:1], "job-a", {
+            "launch": True, "dead_attempt_ids": ["job-a:1"],
+        }, "2026-08-01T07:22:00Z", "batch-2", 300, 3,
+    )) if dead_lease_state and transition else None
+    expect("expired probe lease is not reclaimed before liveness reconciliation",
+           isinstance(unreconciled, dict) and unreconciled.get("action") == "halt"
+           and unreconciled.get("next_retry_at") is None
+           and isinstance(reclaimed, dict) and reclaimed.get("action") == "launch"
+           and reclaimed.get("assignment", {}).get("attempt_id") == "job-a:2")
+
+    network_base = json.loads(json.dumps(route_state))
+    network_base["jobs"]["job-a"].update({
+        "attempt_counter": 1, "attempt_id": "job-a:1",
+    })
+    network_base["jobs"]["job-b"].update({
+        "attempt_counter": 1, "attempt_id": "job-b:1",
+    })
+    network_one = value_or_none(lambda: transition(
+        network_base, route_jobs, "job-a", {
+            "result": "failure", "failure_class": "network",
+            "network_scope": "no_response", "backend": "codex",
+            "attempt_id": "job-a:1",
+        }, "2026-08-01T07:20:00Z", "batch-net", 300, 3,
+    )) if transition else None
+    expect("one no-response failure records evidence without global pause",
+           isinstance(network_one, dict)
+           and network_one.get("action") == "state_updated"
+           and network_one.get("state", {}).get("network_pause") is None
+           and len(network_one.get("state", {}).get("network_evidence", [])) == 1)
+    forged_evidence_state = json.loads(json.dumps(network_one["state"])) \
+        if isinstance(network_one, dict) else {}
+    if forged_evidence_state:
+        forged_evidence_state["network_evidence"][0].update({
+            "job_id": "missing-job", "attempt_id": "somebody-else:9",
+        })
+    forged_errors = validate(forged_evidence_state, route_jobs) \
+        if validate and forged_evidence_state else []
+    expect("network evidence rejects unknown job or forged attempt generation",
+           any("network_evidence" in error for error in forged_errors))
+
+    duplicate_network = value_or_none(lambda: transition(
+        network_one["state"], route_jobs, "job-a", {
+            "result": "failure", "failure_class": "network",
+            "network_scope": "no_response", "backend": "codex",
+            "attempt_id": "job-a:1",
+        }, "2026-08-01T07:20:10Z", "batch-net", 300, 3,
+    )) if isinstance(network_one, dict) and transition else None
+    expect("network evidence deduplicates backend plus attempt id",
+           isinstance(duplicate_network, dict)
+           and len(duplicate_network.get("state", {}).get("network_evidence", [])) == 1
+           and duplicate_network.get("state", {}).get("network_pause") is None)
+
+    network_two = value_or_none(lambda: transition(
+        network_one["state"], route_jobs, "job-b", {
+            "result": "failure", "failure_class": "network",
+            "network_scope": "no_response", "backend": "claude",
+            "attempt_id": "job-b:1",
+        }, "2026-08-01T07:20:30Z", "batch-net", 300, 3,
+    )) if isinstance(network_one, dict) and transition else None
+    expect("two providers in one batch inside 60 seconds open network pause",
+           isinstance(network_two, dict)
+           and network_two.get("action") == "network_paused"
+           and len(network_two.get("state", {}).get(
+               "network_pause", {}).get("evidence", [])) == 2)
+
+    stale_network = value_or_none(lambda: transition(
+        network_one["state"], route_jobs, "job-b", {
+            "result": "failure", "failure_class": "network",
+            "network_scope": "no_response", "backend": "claude",
+            "attempt_id": "job-b:1",
+        }, "2026-08-01T07:21:01Z", "batch-net", 300, 3,
+    )) if isinstance(network_one, dict) and transition else None
+    expect("network evidence older than correlation window is discarded",
+           isinstance(stale_network, dict)
+           and stale_network.get("state", {}).get("network_pause") is None
+           and len(stale_network.get("state", {}).get("network_evidence", [])) == 1)
+
+    provider_reported = value_or_none(lambda: transition(
+        network_one["state"], route_jobs, "job-b", {
+            "result": "failure", "failure_class": "network",
+            "network_scope": "provider_reported", "backend": "zai",
+            "attempt_id": "job-b:1",
+        }, "2026-08-01T07:20:20Z", "batch-net", 300, 3,
+    )) if isinstance(network_one, dict) and transition else None
+    expect("provider-reported z.ai 1234 cannot count as offline evidence",
+           isinstance(provider_reported, dict)
+           and provider_reported.get("state", {}).get("network_pause") is None
+           and len(provider_reported.get("state", {}).get("network_evidence", [])) == 1)
+
+    after_success = value_or_none(lambda: transition(
+        network_one["state"], route_jobs, "job-b", {
+            "result": "success", "backend": "claude", "attempt_id": "job-b:1",
+        }, "2026-08-01T07:20:15Z", "batch-net", 300, 3,
+    )) if isinstance(network_one, dict) and transition else None
+    after_success_state = json.loads(json.dumps(after_success["state"])) \
+        if isinstance(after_success, dict) else None
+    if isinstance(after_success_state, dict):
+        after_success_state["jobs"]["job-b"].update({
+            "attempt_counter": 2, "attempt_id": "job-b:2",
+        })
+    vetoed = value_or_none(lambda: transition(
+        after_success_state, route_jobs, "job-b", {
+            "result": "failure", "failure_class": "network",
+            "network_scope": "no_response", "backend": "claude",
+            "attempt_id": "job-b:2",
+        }, "2026-08-01T07:20:30Z", "batch-net", 300, 3,
+    )) if isinstance(after_success, dict) and transition else None
+    expect("completed same-window success vetoes prior outage evidence",
+           isinstance(vetoed, dict)
+           and vetoed.get("state", {}).get("network_pause") is None
+           and len(vetoed.get("state", {}).get("network_evidence", [])) == 1)
+
+    paused_launch = value_or_none(lambda: transition(
+        network_two["state"], route_jobs, "job-a", {"launch": True},
+        "2026-08-01T07:20:40Z", "batch-net", 300, 3,
+    )) if isinstance(network_two, dict) and transition else None
+    expect("active network pause prohibits provider launch",
+           isinstance(paused_launch, dict) and paused_launch.get("action") == "halt"
+           and paused_launch.get("next_retry_at") == "2026-08-01T07:21:30Z")
+
+    network_probe = value_or_none(lambda: transition(
+        network_two["state"], route_jobs, "job-a", {"launch": True},
+        "2026-08-01T07:21:31Z", "batch-net", 300, 3,
+    )) if isinstance(network_two, dict) and transition else None
+    competing_network_probe = value_or_none(lambda: transition(
+        network_probe["state"], route_jobs, "job-b", {"launch": True},
+        "2026-08-01T07:21:32Z", "batch-net", 300, 3,
+    )) if isinstance(network_probe, dict) and transition else None
+    expect("network recovery leases exactly one real-job probe",
+           isinstance(network_probe, dict) and network_probe.get("action") == "launch"
+           and network_probe.get("state", {}).get("network_pause", {}).get(
+               "probe", {}).get("owner_attempt_id") == "job-a:2"
+           and isinstance(competing_network_probe, dict)
+           and competing_network_probe.get("action") == "halt")
+
+    renewed_network = value_or_none(lambda: transition(
+        network_probe["state"], route_jobs, "job-a", {
+            "result": "failure", "failure_class": "network",
+            "network_scope": "no_response", "backend": "codex",
+            "attempt_id": "job-a:2",
+        }, "2026-08-01T07:22:00Z", "batch-net", 300, 3,
+    )) if isinstance(network_probe, dict) and transition else None
+    expect("matching network probe failure renews pause without fan-out",
+           isinstance(renewed_network, dict)
+           and renewed_network.get("state", {}).get("network_pause", {}).get(
+               "until") == "2026-08-01T07:23:00Z"
+           and renewed_network.get("state", {}).get("network_pause", {}).get(
+               "probe") == idle_probe)
+
+    cleared_network = value_or_none(lambda: transition(
+        network_probe["state"], route_jobs, "job-a", {
+            "result": "success", "backend": "codex", "attempt_id": "job-a:2",
+        }, "2026-08-01T07:22:00Z", "batch-net", 300, 3,
+    )) if isinstance(network_probe, dict) and transition else None
+    expect("exact network probe success clears run pause",
+           isinstance(cleared_network, dict)
+           and cleared_network.get("state", {}).get("network_pause") is None)
+
+    clear_state = json.loads(json.dumps(canonical_state))
+    clear_state["circuit_open"] = {"claude": dict(canonical_breaker)}
+    cleared = value_or_none(lambda: clear(
+        clear_state, route_jobs, "codex", "2026-08-01T07:21:00Z"
+    )) if clear else None
+    expect("clear-cooldown removes only transient state and preserves circuits",
+           isinstance(cleared, dict)
+           and "codex" not in cleared.get("cooldowns", {})
+           and cleared.get("circuit_open") == clear_state.get("circuit_open"))
+    expect("clear-cooldown rejects an unknown concrete backend",
+           bool(clear) and raises_value(lambda: clear(
+               clear_state, route_jobs, "mystery", "2026-08-01T07:21:00Z"
+           )))
+    handled_transition = value_or_none(lambda: handle("transition", {
+        "state": route_state, "jobs": route_jobs, "job_id": "job-a",
+        "intent": {"launch": True}, "now": "2026-08-01T07:21:00Z",
+        "batch_id": "batch-cli", "job_timeout_seconds": 300,
+        "grace_seconds": 3,
+    })) if handle else None
+    handled_clear = value_or_none(lambda: handle("clear-cooldown", {
+        "state": canonical_state, "jobs": route_jobs, "backend": "codex",
+        "now": "2026-08-01T07:21:00Z",
+    })) if handle else None
+    expect("JSON handler exposes transition and clear-cooldown",
+           isinstance(handled_transition, dict)
+           and handled_transition.get("action") == "launch"
+           and isinstance(handled_clear, dict)
+           and "codex" not in handled_clear.get("cooldowns", {}))
+
     if failures:
         print("\nSELFTEST: %d ok, %d fail" % (checked[0] - len(failures), len(failures)))
         return 1
@@ -873,10 +2106,11 @@ def _selftest():
 def main(argv):
     if "--selftest" in argv[1:]:
         return _selftest()
-    if len(argv) != 2 or argv[1] not in ("freeze", "validate", "resume", "select"):
+    if len(argv) != 2 or argv[1] not in (
+            "freeze", "validate", "resume", "select", "transition", "clear-cooldown"):
         sys.stderr.write(
             "usage: compound-v-pool-state.py "
-            "{freeze|validate|resume|select} < request.json\n"
+            "{freeze|validate|resume|select|transition|clear-cooldown} < request.json\n"
             "       compound-v-pool-state.py --selftest\n"
         )
         return 2
