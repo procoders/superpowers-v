@@ -292,11 +292,41 @@ def _cross_family_probe_errors(state):
     return errors
 
 
+def _retry_budget_errors(state):
+    """Validate the optional canonical run-wide retry ledger."""
+    fields = ("total_retries", "max_total_retries", "charged_attempt_ids")
+    if not any(field in state for field in fields):
+        return []
+    if not all(field in state for field in fields):
+        return ["retry budget state requires total_retries, max_total_retries, "
+                "and charged_attempt_ids together"]
+    total = state.get("total_retries")
+    maximum = state.get("max_total_retries")
+    charged = state.get("charged_attempt_ids")
+    errors = []
+    if (not isinstance(total, int) or isinstance(total, bool) or total < 0):
+        errors.append("state.total_retries must be a non-negative integer")
+    if (not isinstance(maximum, int) or isinstance(maximum, bool) or maximum <= 0):
+        errors.append("state.max_total_retries must be a positive integer")
+    if not isinstance(charged, list):
+        errors.append("state.charged_attempt_ids must be a list")
+    else:
+        if any(not isinstance(item, str) or not item for item in charged):
+            errors.append("state.charged_attempt_ids must contain non-empty strings")
+        if len(set(charged)) != len(charged):
+            errors.append("state.charged_attempt_ids must not contain duplicates")
+        if isinstance(total, int) and not isinstance(total, bool) \
+                and total < len(charged):
+            errors.append("state.total_retries cannot be smaller than its charge ledger")
+    return errors
+
+
 def _transient_state_errors(state):
     if not isinstance(state, dict):
         return ["state root must be an object"]
     state_jobs = state.get("jobs")
     errors = _attempt_identity_errors(state_jobs)
+    errors.extend(_retry_budget_errors(state))
     if "cooldowns" in state:
         errors.extend(_cooldown_errors(state.get("cooldowns"), state_jobs))
     if "network_evidence" in state:
@@ -1226,7 +1256,28 @@ def transition_state(state, jobs, job_id, intent, now, batch_id,
         replacement, now_value, intent.get("dead_attempt_ids", []),
     )
 
+    is_policy_intent = "action" in intent and "failure_class" in intent
+    consumes_retry = is_policy_intent and intent.get("consume_total_retry") is True
+    if consumes_retry:
+        attempt_id = intent.get("attempt_id")
+        charged = replacement.get("charged_attempt_ids")
+        if not isinstance(charged, list):
+            raise ValueError("retry-consuming policy intent requires canonical retry budget state")
+        if attempt_id in charged:
+            return {
+                "state": replacement, "action": "state_updated",
+                "assignment": None, "next_retry_at": None,
+            }
+        if replacement.get("total_retries") >= replacement.get("max_total_retries"):
+            return {
+                "state": replacement, "action": "halt",
+                "assignment": None, "next_retry_at": None,
+            }
+
     policy_intent = _normalized_policy_intent(replacement, job_id, intent)
+    if consumes_retry:
+        replacement["total_retries"] += 1
+        replacement["charged_attempt_ids"].append(policy_intent["attempt_id"])
 
     # A normalized policy decision carries the completed failure fact and its
     # next action together. Apply the fact first, then continue through the
@@ -1865,6 +1916,9 @@ def _selftest():
         ]},
         "circuit_open": {},
         "cooldowns": {},
+        "total_retries": 0,
+        "max_total_retries": 12,
+        "charged_attempt_ids": [],
     }
     idle_probe = {
         "status": "idle", "owner_job_id": None,
@@ -2448,6 +2502,53 @@ def _selftest():
            and first_transient.get("action") == "launch"
            and first_transient.get("assignment", {}).get("assigned_backend") == "codex"
            and first_transient.get("state", {}).get("cooldowns") == {})
+    expect("retry charge and replacement assignment share one returned state",
+           isinstance(first_transient, dict)
+           and first_transient.get("state", {}).get("total_retries") == 1
+           and first_transient.get("state", {}).get("charged_attempt_ids")
+               == ["job-a:1"]
+           and first_transient.get("state", {}).get("jobs", {}).get(
+               "job-a", {}).get("attempt_id") == "job-a:2")
+
+    replayed_transient = value_or_none(lambda: transition(
+        first_transient["state"], route_jobs, "job-a",
+        real_policy_intent("rate_limited", integration_base, "job-a", 0),
+        "2026-08-01T07:20:01Z", "batch-i", 300, 3,
+    )) if isinstance(first_transient, dict) else None
+    expect("replaying one charged failed attempt is idempotent",
+           isinstance(replayed_transient, dict)
+           and replayed_transient.get("action") == "state_updated"
+           and replayed_transient.get("assignment") is None
+           and replayed_transient.get("state", {}).get("total_retries") == 1
+           and replayed_transient.get("state", {}).get("charged_attempt_ids")
+               == ["job-a:1"])
+
+    exhausted_budget_state = json.loads(json.dumps(integration_base))
+    exhausted_budget_state.update({
+        "total_retries": 12, "max_total_retries": 12,
+        "charged_attempt_ids": [],
+    })
+    exhausted_budget = value_or_none(lambda: transition(
+        exhausted_budget_state, route_jobs, "job-a",
+        real_policy_intent("rate_limited", exhausted_budget_state, "job-a", 0),
+        "2026-08-01T07:20:00Z", "batch-i", 300, 3,
+    )) if decide and transition else None
+    expect("exhausted run retry budget halts before assignment or charge",
+           isinstance(exhausted_budget, dict)
+           and exhausted_budget.get("action") == "halt"
+           and exhausted_budget.get("assignment") is None
+           and exhausted_budget.get("state", {}).get("total_retries") == 12
+           and exhausted_budget.get("state", {}).get("jobs", {}).get(
+               "job-a", {}).get("attempt_id") == "job-a:1")
+
+    resumed_budget_state = json.loads(json.dumps(first_transient["state"])) \
+        if isinstance(first_transient, dict) else None
+    resumed_budget_assignment = value_or_none(lambda: resume(
+        resumed_budget_state, "job-a")) if resumed_budget_state else None
+    expect("resume preserves retry total and charged-attempt ledger",
+           isinstance(resumed_budget_assignment, dict)
+           and resumed_budget_state.get("total_retries") == 1
+           and resumed_budget_state.get("charged_attempt_ids") == ["job-a:1"])
 
     second_transient = value_or_none(lambda: transition(
         first_transient["state"], route_jobs, "job-a",
