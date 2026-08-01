@@ -38,14 +38,15 @@ Known provider timing survives per-class or total retry-budget exhaustion. An ex
 
 | Observation | Persisted transition | Next behavior |
 |---|---|---|
-| First transient failure | Open/extend backend cooldown with reason and exact attempt id | Use another viable frozen member; no immediate probe |
-| Second transient failure | Apply the script's class/budget intent; preserve known reset time | Reroute or halt resumably; never hide timing behind a generic budget error |
+| First short `rate_limited`/`overloaded` failure (wait ≤60s) | No cooldown or ring advance | Retry the same concrete assignment exactly once after the bounded wait |
+| Second short `rate_limited`/`overloaded` failure | Open backend cooldown with the current attempt id and advance intent | Transition selects another viable member; preserve known reset time |
+| Explicit usage-window exhaustion | Open cooldown immediately, even on the first observation | Advance without an inline retry; at an exhausted total budget persist timing without consuming/advancing |
 | Provider reset over 60s | Persist cooldown through the absolute reset | Do not sleep; reroute, or halt with `next_retry_at` |
 | Provider overload | Backend-wide transient cooldown | Continue on another viable member; later recovery uses one probe |
 | Exact model unavailable | Exclude the backend/model pair | Other models on that backend remain eligible |
 | Confirmed auth/permanent credits failure | Open canonical permanent circuit | Exclude backend until explicit recovery; never transient-probe it |
 | Stale success from an older attempt | Retain as stale evidence | It cannot clear a cooldown, network pause, or publish the current result |
-| One `no_response` network fault | Record single-backend evidence | Cool only that route as directed; do not pause the whole run |
+| One `no_response` network fault | Record the observation without cooldown/advance | Perform the bounded same-assignment retry; do not pause the whole run |
 | Correlated `no_response` faults | Open global network pause with distinct-backend/batch evidence | Stop ordinary launches until its leaseable recovery probe is due |
 | Expired cooldown | Lease exactly one backend probe to one job/attempt | Other jobs keep that backend idle until probe completion/lease expiry |
 | Completed leased probe success | Clear only the cooldown/pause owned by that exact attempt | Backend/network returns to normal eligibility |
