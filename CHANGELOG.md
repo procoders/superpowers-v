@@ -4,6 +4,20 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [Unreleased]
+
+### Added — deterministic weighted tier model pools
+
+A manifest job may now route through `backend: pool` for `standard` or `light` work. Pools are configured per stance and tier, rotate by manifest-order job ordinal, support positive integer weights, and resolve every member through the existing tier model map. The eligible weighted ring and each concrete backend/model assignment are frozen into `state.json`, so dispatch timing, config edits, and `/v:resume` cannot silently move an in-flight job.
+
+Pool routing remains inside the existing safety boundary: pooled jobs require worktree isolation; reviewers, deep-tier work, sensitive surfaces, `xhigh`, explicit manifest models, and `advisor_backend: pool` are rejected. The dispatcher passes only the resolved concrete backend/model to adapters, failure classification, usage, memory, scorecards, and status. `rate_limited` preserves the recorded assignment; confirmed `out_of_credits` advances to the next viable frozen slot while consuming the run retry budget, then uses the ordinary concrete fallback after the ring is exhausted. Canonical breaker state and resume assignments are validated fail-closed.
+
+`claude` is not included in the shipped pool example because its usage limit is shared with the operator's interactive Claude/Claude Code session; adding it is an explicit opt-in. This change is merge-dependent on the z.ai backend in PR #5, but does not claim that PR is already merged.
+
+#### What this does not show
+
+Weighted rotation distributes **job counts**, not tokens, credits, messages, wall-clock time, quota burn, savings, or provider capacity. Those meters are heterogeneous and are not visible through Compound V's CLI-process transport; no balance percentage or improvement metric is produced. z.ai's credit multiplier also varies by time of day, so equal job counts can consume unequal credits even on the same provider.
+
 ## [2.17.0] - 2026-07-26
 
 ### Added — Co-change advisory (ordered, git-derived) + failure-prioritized evidence packing
