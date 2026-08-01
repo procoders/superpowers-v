@@ -121,7 +121,7 @@ Only models with a **published multiplier** are in the default map. The endpoint
 
 ## Backend-failure classification
 
-z.ai **publishes its full error surface**, so the needle set is documented codes rather than field guesses: `1113, 1302, 1305, 1308, 1310, 1311, 1316, 1317`, all HTTP 429, in the envelope `{"error":{"code":"XXXX","message":"…"}}`. [`compound-v-classify-failure.py --backend zai`](../../scripts/compound-v-classify-failure.py) maps them; anything unrecognised fails closed to `other`.
+z.ai **publishes its full error surface**, so the needle set is built from documented message TEXT rather than field guesses: `1113, 1302, 1305, 1308, 1310, 1311, 1316, 1317`, all HTTP 429, in the envelope `{"error":{"code":"XXXX","message":"…"}}`. That envelope is not what the classifier sees — `claude -p` renders API errors as `API Error: <status> <message>`, never surfacing `error.code` as its own token (measured), so needles match the documented message text, not the code; bracketed code forms are kept only as a secondary, harmless-if-unmatched signal. [`compound-v-classify-failure.py --backend zai`](../../scripts/compound-v-classify-failure.py) maps them; anything unrecognised fails closed to `other`.
 
 That branch is **not optional**: the function's final `else` is `_CODEX_RULES`, so a zai job without it would be classified with OpenAI's needles — an unrecognised GLM error came back as `auth`, advising the operator to run `codex login`.
 
