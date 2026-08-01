@@ -150,6 +150,11 @@ def decide(failure_class, backend, attempts, total_retries, max_total_retries,
 
     def out(action, reason, **kw):
         result = {
+            # Causal facts consumed by the pool-state transition authority.
+            "failure_class": failure_class,
+            "attempt_id": attempt_id,
+            "result": (None if failure_class == "none" else "failure"),
+            "backend": backend,
             # Legacy output keys stay present for existing consumers.
             "action": action,
             "reason": reason,
@@ -167,10 +172,12 @@ def decide(failure_class, backend, attempts, total_retries, max_total_retries,
             "cooldown_reason": None,
             "cooldown_until": None,
             "advance_pool": False,
-            "exclude_backend": None,
-            "exclude_model": None,
             "network_pause": False,
             "next_retry_at": None,
+            # Normalized pool-state transition facts. The dispatcher resolves
+            # fallback_assignment when the frozen ring may exhaust.
+            "network_scope": network_scope,
+            "exclude_assignment": None,
         }
         result.update(kw)
         return result
@@ -203,7 +210,6 @@ def decide(failure_class, backend, attempts, total_retries, max_total_retries,
             cooldown_reason=reason,
             cooldown_until=until,
             advance_pool=True,
-            exclude_backend=backend,
             consume_total_retry=True,
             clear_assignment=True,
         )
@@ -235,7 +241,6 @@ def decide(failure_class, backend, attempts, total_retries, max_total_retries,
                 circuit_break=True,
                 circuit_break_backend=backend,
                 advance_pool=True,
-                exclude_backend=backend,
                 consume_total_retry=True,
                 clear_assignment=True,
             )
@@ -274,8 +279,7 @@ def decide(failure_class, backend, attempts, total_retries, max_total_retries,
             "model %s is unavailable on %s — advance this pool job only"
             % (assigned_model, backend),
             advance_pool=True,
-            exclude_backend=backend,
-            exclude_model=assigned_model,
+            exclude_assignment={"backend": backend, "model": assigned_model},
             consume_total_retry=True,
             clear_assignment=True,
         )
@@ -466,8 +470,7 @@ def _selftest():
           and d["cooldown_backend"] == "zai"
           and d["cooldown_reason"] == "rate_limited"
           and d["cooldown_until"] == "2026-08-01T07:20:30Z"
-          and d["advance_pool"] and d["exclude_backend"] == "zai"
-          and d["consume_total_retry"])
+          and d["advance_pool"] and d["consume_total_retry"])
 
     d = decide("overloaded", "codex", 1, 1, 12, pool_routed=True,
                assigned_model="gpt-5.6-terra", attempt_id="task-a:3",
@@ -498,8 +501,9 @@ def _selftest():
                attempt_id="task-c:1", now=now)
     check("model-unavailable-excludes-exact-assignment-only",
           d["action"], "reroute",
-          d["advance_pool"] and d["exclude_backend"] == "zai"
-          and d["exclude_model"] == "glm-5.2"
+          d["advance_pool"]
+          and d["exclude_assignment"] == {
+              "backend": "zai", "model": "glm-5.2"}
           and d["cooldown_backend"] is None and not d["circuit_break"])
 
     d = decide("rate_limited", "zai", 0, 0, 12, retry_after=61,
@@ -557,8 +561,7 @@ def _selftest():
     check("pool-credit-failure-preserves-permanent-breaker-intent",
           d["action"], "reroute",
           d["circuit_break"] and d["circuit_break_backend"] == "zai"
-          and d["advance_pool"] and d["exclude_backend"] == "zai"
-          and d["cooldown_backend"] is None)
+          and d["advance_pool"] and d["cooldown_backend"] is None)
 
     d = decide("auth", "zai", 0, 0, 12, pool_routed=True,
                assigned_model="glm-5.2", attempt_id="task-e:2", now=now)
@@ -625,13 +628,14 @@ def _selftest():
           and not d["advance_pool"] and not d["consume_total_retry"])
 
     legacy_keys = {
+        "failure_class", "attempt_id", "result", "backend",
         "action", "reason", "backoff_seconds", "reroute_to", "escalate_tier",
         "circuit_break", "next_pool_index", "consume_total_retry",
         "earliest_reset_seconds", "clear_assignment", "circuit_break_backend",
     }
     intent_keys = {
         "cooldown_backend", "cooldown_reason", "cooldown_until", "advance_pool",
-        "exclude_backend", "exclude_model", "network_pause", "next_retry_at",
+        "network_pause", "next_retry_at", "network_scope", "exclude_assignment",
     }
     check("output-retains-legacy-and-adds-intent-keys", True, True,
           legacy_keys | intent_keys == set(d.keys()))

@@ -992,6 +992,104 @@ def _launch_assignment(state, jobs, job_id, batch_id, start_index, now_value,
     }, None
 
 
+def _normalized_policy_intent(state, job_id, intent):
+    """Validate one failure-policy decision against its persisted attempt."""
+    if "action" not in intent or "failure_class" not in intent:
+        return None
+    record = state.get("jobs", {}).get(job_id)
+    if not isinstance(record, dict):
+        raise ValueError("state has no job '%s'" % job_id)
+    attempt_id = intent.get("attempt_id")
+    current_attempt, _unused = _current_attempt(record, job_id)
+    if not isinstance(attempt_id, str) or not attempt_id:
+        raise ValueError("policy intent requires the current non-empty attempt_id")
+    if attempt_id != current_attempt:
+        raise ValueError("policy attempt_id is not the current persisted attempt")
+    failure_class = intent.get("failure_class")
+    if not isinstance(failure_class, str) or not failure_class:
+        raise ValueError("policy intent requires failure_class")
+
+    cooldown_backend = intent.get("cooldown_backend")
+    cooldown_fields = (
+        cooldown_backend, intent.get("cooldown_reason"),
+        intent.get("cooldown_until"),
+    )
+    if any(value is not None for value in cooldown_fields) \
+            and not all(value is not None for value in cooldown_fields):
+        raise ValueError("active cooldown intent requires backend, reason, and until")
+    if cooldown_backend is not None \
+            and cooldown_backend != record.get("assigned_backend"):
+        raise ValueError("cooldown backend is not the current persisted assignment")
+
+    circuit_backend = intent.get("circuit_break_backend")
+    if intent.get("circuit_break") is True:
+        if circuit_backend != record.get("assigned_backend"):
+            raise ValueError("circuit backend is not the current persisted assignment")
+        if failure_class not in CIRCUIT_REASONS:
+            raise ValueError("permanent circuit intent requires auth or out_of_credits")
+
+    exclude_assignment = intent.get("exclude_assignment")
+    if exclude_assignment is not None and (
+            not isinstance(exclude_assignment, dict)
+            or frozenset(exclude_assignment.keys()) != frozenset(("backend", "model"))
+            or exclude_assignment.get("backend") not in VALID_CONCRETE_BACKENDS
+            or not isinstance(exclude_assignment.get("model"), str)
+            or not exclude_assignment.get("model")):
+        raise ValueError("exact exclusion requires concrete backend and model")
+
+    fallback = intent.get("fallback_assignment")
+    fallback_valid = False
+    if fallback is not None:
+        reroute_to = intent.get("reroute_to")
+        tier = record.get("pool_tier")
+        if (isinstance(fallback, dict)
+                and frozenset(fallback.keys()) == frozenset(("backend", "model"))
+                and fallback.get("backend") in VALID_CONCRETE_BACKENDS
+                and fallback.get("backend") == reroute_to
+                and isinstance(fallback.get("model"), str)
+                and fallback.get("model")
+                and "haiku" not in fallback.get("model").lower()):
+            try:
+                _resolver_module().resolve(
+                    backend=fallback["backend"], tier=tier,
+                    explicit_model=fallback["model"],
+                )
+                fallback_valid = True
+            except ValueError:
+                fallback_valid = False
+    return {
+        "record": record,
+        "attempt_id": attempt_id,
+        "failure_class": failure_class,
+        "cooldown_backend": cooldown_backend,
+        "exclude_assignment": exclude_assignment,
+        "fallback_assignment": fallback if fallback_valid else None,
+        "fallback_supplied": fallback is not None,
+        "fallback_valid": fallback_valid,
+    }
+
+
+def _launch_fallback_assignment(state, job_id, batch_id, fallback):
+    """Persist one prevalidated external assignment after frozen-ring exhaustion."""
+    record = state["jobs"][job_id]
+    attempt_id, attempt_counter = _next_attempt(record, job_id)
+    record["attempt_counter"] = attempt_counter
+    record["attempt_id"] = attempt_id
+    record["batch_id"] = batch_id
+    record["assigned_backend"] = fallback["backend"]
+    record["assigned_model"] = fallback["model"]
+    record["assignment_source"] = "fallback"
+    record["status"] = "dispatched"
+    return {
+        "assigned_backend": fallback["backend"],
+        "assigned_model": fallback["model"],
+        "pool_index": record["pool_index"],
+        "attempt_id": attempt_id,
+        "probe_backend": None,
+        "network_probe": False,
+    }
+
+
 def _apply_result(state, job_id, intent, now_value, batch_id):
     backend, attempt_id = _validate_result_attempt(state, job_id, intent, batch_id)
     result = intent.get("result")
@@ -1128,23 +1226,31 @@ def transition_state(state, jobs, job_id, intent, now, batch_id,
         replacement, now_value, intent.get("dead_attempt_ids", []),
     )
 
-    if "result" in intent:
-        action = _apply_result(replacement, job_id, intent, now_value, batch_id)
-        errors = validate_state(replacement, jobs)
-        if errors:
-            raise ValueError("; ".join(errors))
-        return {
-            "state": replacement, "action": action,
-            "assignment": None, "next_retry_at": None,
-        }
+    policy_intent = _normalized_policy_intent(replacement, job_id, intent)
 
-    if "cooldown_backend" in intent:
+    # A normalized policy decision carries the completed failure fact and its
+    # next action together. Apply the fact first, then continue through the
+    # same atomic mutation/selection transaction. Standalone result events keep
+    # their original result-only return contract.
+    if intent.get("result") is not None:
+        action = _apply_result(replacement, job_id, intent, now_value, batch_id)
+        if policy_intent is None:
+            errors = validate_state(replacement, jobs)
+            if errors:
+                raise ValueError("; ".join(errors))
+            return {
+                "state": replacement, "action": action,
+                "assignment": None, "next_retry_at": None,
+            }
+
+    cooldown_backend = intent.get("cooldown_backend")
+    if cooldown_backend is not None:
         record = replacement.get("jobs", {}).get(job_id)
         current_attempt, _unused = _current_attempt(record, job_id)
         attempt_id = intent.get("attempt_id")
         if current_attempt != attempt_id:
             raise ValueError("cooldown attempt_id is not the current persisted attempt")
-        backend = intent.get("cooldown_backend")
+        backend = cooldown_backend
         if record.get("assigned_backend") != backend:
             raise ValueError("cooldown backend is not the current persisted assignment")
         replacement["cooldowns"][backend] = _canonical_cooldown(
@@ -1152,14 +1258,31 @@ def transition_state(state, jobs, job_id, intent, now, batch_id,
             _format_timestamp(now_value), attempt_id,
         )
 
-    wants_launch = intent.get("launch") is True or intent.get("advance_pool") is True
+    if intent.get("circuit_break") is True:
+        replacement.setdefault("circuit_open", {})[
+            intent.get("circuit_break_backend")
+        ] = {
+            "open": True,
+            "reason": intent.get("failure_class"),
+            "opened_at": _format_timestamp(now_value),
+            "cleared_by": None,
+        }
+
+    wants_launch = (intent.get("launch") is True
+                    or intent.get("advance_pool") is True
+                    or (policy_intent is not None and intent.get("action") == "retry"))
     if not wants_launch:
         errors = validate_state(replacement, jobs)
         if errors:
             raise ValueError("; ".join(errors))
+        halt = policy_intent is not None and intent.get("action") == "halt"
+        retry_at = intent.get("next_retry_at") if halt else None
+        pause = replacement.get("network_pause")
+        if isinstance(pause, dict):
+            retry_at = pause.get("until")
         return {
-            "state": replacement, "action": "state_updated",
-            "assignment": None, "next_retry_at": None,
+            "state": replacement, "action": ("halt" if halt else "state_updated"),
+            "assignment": None, "next_retry_at": retry_at,
         }
 
     pause = replacement.get("network_pause")
@@ -1192,9 +1315,18 @@ def transition_state(state, jobs, job_id, intent, now, batch_id,
     assignment, next_retry_at = _launch_assignment(
         replacement, jobs, job_id, batch_id, start_index, now_value,
         job_timeout_seconds, grace_seconds,
-        exclude_assignment=intent.get("exclude_assignment"),
+        exclude_assignment=(policy_intent.get("exclude_assignment")
+                            if policy_intent is not None
+                            else intent.get("exclude_assignment")),
         network_probe=network_probe,
     )
+    if (assignment is None and policy_intent is not None
+            and policy_intent.get("fallback_valid")):
+        assignment = _launch_fallback_assignment(
+            replacement, job_id, batch_id,
+            policy_intent["fallback_assignment"],
+        )
+        next_retry_at = None
     action = "launch" if assignment is not None else "halt"
     errors = validate_state(replacement, jobs)
     if errors:
@@ -2268,6 +2400,154 @@ def _selftest():
            and handled_transition.get("action") == "launch"
            and isinstance(handled_clear, dict)
            and "codex" not in handled_clear.get("cooldowns", {}))
+
+    # Cross-module contract: consume the real failure-policy decision rather
+    # than a hand-shaped transition fixture. The dispatcher adds only the
+    # persisted current attempt and an already-resolved exact fallback pair.
+    policy_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "compound-v-failure-policy.py")
+    policy_spec = importlib.util.spec_from_file_location(
+        "compound_v_failure_policy_pool_contract", policy_path)
+    policy_module = importlib.util.module_from_spec(policy_spec) \
+        if policy_spec and policy_spec.loader else None
+    if policy_module is not None:
+        policy_spec.loader.exec_module(policy_module)
+    decide = getattr(policy_module, "decide", None)
+
+    def real_policy_intent(failure_class, state_value, job_id, attempts,
+                           correlated=0, fallback_assignment=None):
+        record = state_value["jobs"][job_id]
+        decision = decide(
+            failure_class, record["assigned_backend"], attempts, 0, 12,
+            jitter=False, pool_routed=True,
+            assigned_model=record["assigned_model"],
+            now="2026-08-01T07:20:00Z",
+            network_scope=("no_response" if failure_class == "network" else None),
+            correlated_network_failures=correlated,
+        )
+        decision["attempt_id"] = record["attempt_id"]
+        if fallback_assignment is not None:
+            decision["fallback_assignment"] = fallback_assignment
+        return decision
+
+    integration_base = json.loads(json.dumps(route_state))
+    integration_base["jobs"]["job-a"].update({
+        "attempt_counter": 1, "attempt_id": "job-a:1", "batch_id": "batch-i",
+    })
+    integration_base["jobs"]["job-b"].update({
+        "attempt_counter": 1, "attempt_id": "job-b:1", "batch_id": "batch-i",
+    })
+
+    first_transient = value_or_none(lambda: transition(
+        integration_base, route_jobs, "job-a",
+        real_policy_intent("rate_limited", integration_base, "job-a", 0),
+        "2026-08-01T07:20:00Z", "batch-i", 300, 3,
+    )) if decide and transition else None
+    expect("real policy nullable cooldown is a no-op and first transient retries",
+           isinstance(first_transient, dict)
+           and first_transient.get("action") == "launch"
+           and first_transient.get("assignment", {}).get("assigned_backend") == "codex"
+           and first_transient.get("state", {}).get("cooldowns") == {})
+
+    second_transient = value_or_none(lambda: transition(
+        first_transient["state"], route_jobs, "job-a",
+        real_policy_intent("rate_limited", first_transient["state"], "job-a", 1),
+        "2026-08-01T07:20:10Z", "batch-i", 300, 3,
+    )) if isinstance(first_transient, dict) else None
+    expect("real policy second transient cools backend and advances bounded ring",
+           isinstance(second_transient, dict)
+           and second_transient.get("action") == "launch"
+           and second_transient.get("assignment", {}).get("assigned_backend") == "claude"
+           and second_transient.get("state", {}).get("cooldowns", {}).get(
+               "codex", {}).get("reason") == "rate_limited")
+
+    exact_model_state = json.loads(json.dumps(integration_base))
+    exact_model_state["pool_members"]["light"] = [
+        {"backend": "codex", "model": "model-a", "available": True},
+        {"backend": "codex", "model": "model-alt", "available": True},
+        {"backend": "claude", "model": "model-b", "available": True},
+    ]
+    exact_model = value_or_none(lambda: transition(
+        exact_model_state, route_jobs[:1], "job-a",
+        real_policy_intent("model_unavailable", exact_model_state, "job-a", 0),
+        "2026-08-01T07:20:00Z", "batch-i", 300, 3,
+    )) if decide and transition else None
+    expect("real policy model-unavailable excludes only exact backend/model",
+           isinstance(exact_model, dict)
+           and exact_model.get("assignment", {}).get("assigned_backend") == "codex"
+           and exact_model.get("assignment", {}).get("assigned_model") == "model-alt")
+
+    permanent = value_or_none(lambda: transition(
+        integration_base, route_jobs, "job-a",
+        real_policy_intent("out_of_credits", integration_base, "job-a", 0),
+        "2026-08-01T07:20:00Z", "batch-i", 300, 3,
+    )) if decide and transition else None
+    expect("real policy out-of-credits opens canonical circuit before ring advance",
+           isinstance(permanent, dict)
+           and permanent.get("assignment", {}).get("assigned_backend") == "claude"
+           and permanent.get("state", {}).get("circuit_open", {}).get(
+               "codex", {}).get("reason") == "out_of_credits")
+
+    exhausted_base = json.loads(json.dumps(integration_base))
+    exhausted_base["pool_members"]["light"] = [
+        {"backend": "codex", "model": "model-a", "available": True},
+    ]
+    exact_fallback = {"backend": "claude", "model": "sonnet"}
+    fallback_launch = value_or_none(lambda: transition(
+        exhausted_base, route_jobs[:1], "job-a",
+        real_policy_intent("out_of_credits", exhausted_base, "job-a", 0,
+                           fallback_assignment=exact_fallback),
+        "2026-08-01T07:20:00Z", "batch-i", 300, 3,
+    )) if decide and transition else None
+    missing_fallback = value_or_none(lambda: transition(
+        exhausted_base, route_jobs[:1], "job-a",
+        real_policy_intent("out_of_credits", exhausted_base, "job-a", 0),
+        "2026-08-01T07:20:00Z", "batch-i", 300, 3,
+    )) if decide and transition else None
+    mismatched_fallback = value_or_none(lambda: transition(
+        exhausted_base, route_jobs[:1], "job-a",
+        real_policy_intent(
+            "out_of_credits", exhausted_base, "job-a", 0,
+            fallback_assignment={"backend": "zai", "model": "wrong"}),
+        "2026-08-01T07:20:00Z", "batch-i", 300, 3,
+    )) if decide and transition else None
+    expect("pool exhaustion uses only explicit exact matching fallback assignment",
+           isinstance(fallback_launch, dict)
+           and fallback_launch.get("assignment", {}).get("assigned_backend") == "claude"
+           and fallback_launch.get("state", {}).get("jobs", {}).get(
+               "job-a", {}).get("assignment_source") == "fallback"
+           and isinstance(missing_fallback, dict)
+           and missing_fallback.get("action") == "halt"
+           and isinstance(mismatched_fallback, dict)
+           and mismatched_fallback.get("action") == "halt")
+
+    auth_halt = value_or_none(lambda: transition(
+        integration_base, route_jobs, "job-a",
+        real_policy_intent("auth", integration_base, "job-a", 0),
+        "2026-08-01T07:20:00Z", "batch-i", 300, 3,
+    )) if decide and transition else None
+    expect("real policy auth halt persists canonical permanent breaker",
+           isinstance(auth_halt, dict) and auth_halt.get("action") == "halt"
+           and auth_halt.get("state", {}).get("circuit_open", {}).get(
+               "codex", {}).get("reason") == "auth")
+
+    first_network = value_or_none(lambda: transition(
+        integration_base, route_jobs, "job-a",
+        real_policy_intent("network", integration_base, "job-a", 0, correlated=1),
+        "2026-08-01T07:20:00Z", "batch-i", 300, 3,
+    )) if decide and transition else None
+    second_network = value_or_none(lambda: transition(
+        first_network["state"], route_jobs, "job-b",
+        real_policy_intent("network", first_network["state"], "job-b", 0,
+                           correlated=2),
+        "2026-08-01T07:20:20Z", "batch-i", 300, 3,
+    )) if isinstance(first_network, dict) else None
+    expect("real policy network pause remains backed by causal provider evidence",
+           isinstance(second_network, dict)
+           and second_network.get("action") == "halt"
+           and {row.get("backend") for row in second_network.get(
+               "state", {}).get("network_pause", {}).get("evidence", [])}
+               == {"codex", "claude"})
 
     if failures:
         print("\nSELFTEST: %d ok, %d fail" % (checked[0] - len(failures), len(failures)))
