@@ -386,6 +386,13 @@ def _retry_budget_errors(state, state_jobs):
                     or not generation.isdigit() or int(generation) < 1):
                 errors.append("state.charged_attempt_ids contains an invalid or unknown "
                               "job generation %r" % item)
+                continue
+            record = state_jobs.get(charged_job)
+            counter = record.get("attempt_counter") if isinstance(record, dict) else None
+            if (not isinstance(counter, int) or isinstance(counter, bool)
+                    or int(generation) > counter):
+                errors.append("state.charged_attempt_ids contains an unminted future "
+                              "job generation %r" % item)
         if (isinstance(total, int) and not isinstance(total, bool)
                 and isinstance(legacy_base, int) and not isinstance(legacy_base, bool)
                 and total != legacy_base + len(charged)):
@@ -1248,7 +1255,9 @@ def _normalized_policy_intent(state, job_id, intent):
     }
 
 
-def _launch_fallback_assignment(state, job_id, batch_id, fallback):
+def _launch_fallback_assignment(state, job_id, batch_id, fallback,
+                                now_value, job_timeout_seconds, grace_seconds,
+                                cooldown_probe=None, network_probe=False):
     """Persist one prevalidated external assignment after frozen-ring exhaustion."""
     record = state["jobs"][job_id]
     attempt_id, attempt_counter = _next_attempt(record, job_id)
@@ -1259,13 +1268,19 @@ def _launch_fallback_assignment(state, job_id, batch_id, fallback):
     record["assigned_model"] = fallback["model"]
     record["assignment_source"] = "fallback"
     record["status"] = "dispatched"
+    if cooldown_probe is not None:
+        _lease_probe(cooldown_probe, job_id, attempt_id, now_value,
+                     job_timeout_seconds, grace_seconds)
+    if network_probe:
+        _lease_probe(state["network_pause"], job_id, attempt_id, now_value,
+                     job_timeout_seconds, grace_seconds)
     return {
         "assigned_backend": fallback["backend"],
         "assigned_model": fallback["model"],
         "pool_index": record["pool_index"],
         "attempt_id": attempt_id,
-        "probe_backend": None,
-        "network_probe": False,
+        "probe_backend": fallback["backend"] if cooldown_probe is not None else None,
+        "network_probe": bool(network_probe),
     }
 
 
@@ -1320,7 +1335,12 @@ def _apply_result(state, job_id, intent, now_value, batch_id):
 
     failure_class = intent.get("failure_class")
     if exact_cooldown_probe and failure_class in COOLDOWN_REASONS:
-        retry_at = intent.get("retry_at")
+        retry_at = intent.get("cooldown_until") or intent.get("retry_at")
+        if retry_at is None:
+            backoff = intent.get("backoff_seconds")
+            if isinstance(backoff, (int, float)) and not isinstance(backoff, bool):
+                retry_at = _format_timestamp(
+                    now_value + datetime.timedelta(seconds=max(0, backoff)))
         state["cooldowns"][backend] = _canonical_cooldown(
             backend, failure_class, retry_at, _format_timestamp(now_value), attempt_id,
         )
@@ -1519,11 +1539,38 @@ def transition_state(state, jobs, job_id, intent, now, batch_id,
     )
     if (assignment is None and policy_intent is not None
             and policy_intent.get("fallback_valid")):
-        assignment = _launch_fallback_assignment(
-            replacement, job_id, batch_id,
-            policy_intent["fallback_assignment"],
-        )
-        next_retry_at = None
+        fallback = policy_intent["fallback_assignment"]
+        fallback_backend = fallback["backend"]
+        breaker = replacement.get("circuit_open", {}).get(fallback_backend)
+        fallback_cooldown = replacement.get("cooldowns", {}).get(fallback_backend)
+        eligible = not (isinstance(breaker, dict) and breaker.get("open") is True)
+        cooldown_probe = None
+        if eligible and isinstance(fallback_cooldown, dict):
+            until = _parse_canonical_timestamp(
+                fallback_cooldown.get("until"), "fallback cooldown.until")
+            probe = fallback_cooldown.get("probe")
+            if until > now_value:
+                next_retry_at = _earliest_timestamp(
+                    (next_retry_at, fallback_cooldown.get("until")))
+                eligible = False
+            elif probe.get("status") == "leased":
+                lease_until = _parse_canonical_timestamp(
+                    probe.get("lease_until"), "fallback cooldown probe lease_until")
+                if lease_until > now_value:
+                    next_retry_at = _earliest_timestamp(
+                        (next_retry_at, probe.get("lease_until")))
+                eligible = False
+            else:
+                cooldown_probe = fallback_cooldown
+        if cooldown_probe is not None and network_probe:
+            cooldown_probe = None
+        if eligible:
+            assignment = _launch_fallback_assignment(
+                replacement, job_id, batch_id, fallback,
+                now_value, job_timeout_seconds, grace_seconds,
+                cooldown_probe=cooldown_probe, network_probe=network_probe,
+            )
+            next_retry_at = None
     if assignment is not None and consumes_retry:
         replacement["total_retries"] += 1
         replacement["charged_attempt_ids"].append(policy_intent["attempt_id"])
@@ -2116,6 +2163,10 @@ def _selftest():
     inconsistent_charge.update({"total_retries": 7, "retry_budget_legacy_base": 3,
                                 "charged_attempt_ids": ["job-a:1"]})
     invalid_budget_states.append(inconsistent_charge)
+    future_charge = json.loads(json.dumps(route_state))
+    future_charge.update({"total_retries": 1, "retry_budget_legacy_base": 0,
+                          "charged_attempt_ids": ["job-a:999"]})
+    invalid_budget_states.append(future_charge)
     expect("canonical retry budget rejects over-max malformed ghost and inconsistent ledgers",
            all(validate(item, route_jobs) for item in invalid_budget_states))
 
@@ -2401,7 +2452,7 @@ def _selftest():
         probe_launch["state"], route_jobs[:1], "job-a", {
             "result": "failure", "failure_class": "overloaded",
             "backend": "codex", "attempt_id": "job-a:1",
-            "retry_at": "2026-08-01T07:32:00Z",
+            "cooldown_until": "2026-08-01T07:32:00Z",
         }, "2026-08-01T07:22:00Z", "batch-2", 300, 3,
     )) if isinstance(probe_launch, dict) and transition else None
     expect("matching transient probe failure renews cooldown and releases lease",
@@ -2901,6 +2952,19 @@ def _selftest():
                            fallback_assignment=exact_fallback),
         "2026-08-01T07:20:00Z", "batch-i", 300, 3,
     )) if decide and transition else None
+    unhealthy_fallback_state = json.loads(json.dumps(exhausted_base))
+    unhealthy_fallback_state["circuit_open"] = {
+        "claude": {
+            "open": True, "reason": "auth",
+            "opened_at": "2026-08-01T07:10:00Z", "cleared_by": None,
+        },
+    }
+    unhealthy_fallback = value_or_none(lambda: transition(
+        unhealthy_fallback_state, route_jobs[:1], "job-a",
+        real_policy_intent("out_of_credits", unhealthy_fallback_state, "job-a", 0,
+                           fallback_assignment=exact_fallback),
+        "2026-08-01T07:20:00Z", "batch-i", 300, 3,
+    )) if decide and transition else None
     missing_fallback = value_or_none(lambda: transition(
         exhausted_base, route_jobs[:1], "job-a",
         real_policy_intent("out_of_credits", exhausted_base, "job-a", 0),
@@ -2922,6 +2986,10 @@ def _selftest():
            and missing_fallback.get("action") == "halt"
            and isinstance(mismatched_fallback, dict)
            and mismatched_fallback.get("action") == "halt")
+    expect("explicit fallback cannot bypass target backend health",
+           isinstance(unhealthy_fallback, dict)
+           and unhealthy_fallback.get("action") == "halt"
+           and unhealthy_fallback.get("assignment") is None)
     expect("ring exhaustion persists health but does not charge a retry",
            isinstance(missing_fallback, dict)
            and missing_fallback.get("state", {}).get("circuit_open", {}).get(
@@ -2956,6 +3024,39 @@ def _selftest():
            and {row.get("backend") for row in second_network.get(
                "state", {}).get("network_pause", {}).get("evidence", [])}
                == {"codex", "claude"})
+
+    dual_recovery_state = json.loads(json.dumps(exhausted_base))
+    dual_recovery_state["network_pause"] = {
+        "opened_at": "2026-08-01T07:20:20Z",
+        "until": "2026-08-01T07:21:20Z",
+        "evidence": [
+            {"backend": "codex", "job_id": "job-a", "attempt_id": "job-a:1",
+             "batch_id": "batch-i", "observed_at": "2026-08-01T07:20:00Z"},
+            {"backend": "claude", "job_id": "job-b", "attempt_id": "job-b:1",
+             "batch_id": "batch-i", "observed_at": "2026-08-01T07:20:20Z"},
+        ],
+        "probe": dict(idle_probe),
+    }
+    dual_recovery_state["cooldowns"]["claude"] = dict(
+        canonical_cooldown,
+        until="2026-08-01T07:21:00Z",
+        opened_by_attempt_id="job-b:1",
+    )
+    dual_recovery = transition(
+        dual_recovery_state, route_jobs[:1], "job-a",
+        real_policy_intent("out_of_credits", dual_recovery_state, "job-a", 0,
+                           fallback_assignment=exact_fallback),
+        "2026-08-01T07:22:00Z", "batch-i", 300, 3,
+    )
+    expect("global network probe outranks simultaneous fallback cooldown probe",
+           isinstance(dual_recovery, dict)
+           and dual_recovery.get("action") == "launch"
+           and dual_recovery.get("assignment", {}).get("assigned_backend") == "claude"
+           and dual_recovery.get("assignment", {}).get("network_probe") is True
+           and dual_recovery.get("state", {}).get("network_pause", {}).get(
+               "probe", {}).get("status") == "leased"
+           and dual_recovery.get("state", {}).get("cooldowns", {}).get(
+               "claude", {}).get("probe") == idle_probe)
 
     if failures:
         print("\nSELFTEST: %d ok, %d fail" % (checked[0] - len(failures), len(failures)))

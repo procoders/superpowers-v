@@ -89,4 +89,3 @@ None. The approved spec already chooses bounded fallback for unknown reset forma
 
 - Appended `Updated 2026-08-01 — PR3 cooldown timestamp compatibility` to
   `docs/superpowers/library-audit/_knowledge-base/model-routing-and-provider-quotas.md`.
-
