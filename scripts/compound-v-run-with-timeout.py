@@ -24,13 +24,25 @@ Pure stdlib, Python 3.9-safe. Reusable by every external worker.
 
 Usage:
   compound-v-run-with-timeout.py --timeout <sec> [--grace <sec>] [--cwd <dir>]
-      [--stdout <file>] [--stderr <file>] [--max-output-bytes <N>] -- <command> [args...]
+      [--stdout <file>] [--stderr <file>] [--max-output-bytes <N>] [--env-only NAME[,NAME...]]
+      -- <command> [args...]
   compound-v-run-with-timeout.py --selftest
 
 ``--max-output-bytes N`` (CR5-8) is an enforced bounded output sink: each captured
 stream (``--stdout`` / ``--stderr`` file) retains AT MOST N bytes; the overflow is
 drained and discarded so a runaway worker cannot fill the disk or block on a full
 pipe. Omit it for the original direct-fd behaviour (byte-for-byte unchanged).
+
+``--env-only NAME[,NAME...]`` builds the command's environment FROM SCRATCH out of exactly
+those names' CURRENT values in the supervisor's own environment, discarding everything else —
+including anything the supervisor's own runtime injects that a caller's `env -i` upstream never
+put there (observed: a macOS Python.framework build adds `SDKROOT`/`CPATH`/`LIBRARY_PATH`/
+`__CF_USER_TEXT_ENCODING` and more to its own process on some installs, regardless of how it was
+launched; those are never in a caller's explicit allow-list and must not reach the command
+either). Omit it for the original behaviour: the command inherits this process's environment
+unfiltered, byte-for-byte unchanged. A caller that already scrubs its OWN environment before
+invoking this supervisor (`env -i` upstream) still needs `--env-only` if the supervisor's
+runtime itself can add things back — inheritance alone cannot be trusted to stay clean.
 
 Exit: 124 on timeout (GNU `timeout` convention); 127 if the command does not exist (shell
 convention, with a clean one-line message instead of a Popen traceback); otherwise the
@@ -97,7 +109,7 @@ def _kill_tree(pgid, proc, grace):
         pass
 
 
-def run(timeout, grace, cwd, stdout_path, stderr_path, cmd, max_output_bytes=None):
+def run(timeout, grace, cwd, stdout_path, stderr_path, cmd, max_output_bytes=None, env_only=None):
     """Run ``cmd`` under a hard wall-clock cap with process-group teardown.
 
     ``max_output_bytes`` (CR5-8): when set (an int >= 0), any captured stream
@@ -107,8 +119,17 @@ def run(timeout, grace, cwd, stdout_path, stderr_path, cmd, max_output_bytes=Non
     original direct-fd behaviour is preserved EXACTLY (the parent holds no pipe;
     a hung child cannot hold a capture pipe open). A stream WITHOUT a file path is
     unaffected by the cap (it stays inherited).
+
+    ``env_only`` (an iterable of names, or ``None``): when given, the CHILD's environment is
+    built from SCRATCH — exactly those names, read from THIS process's ``os.environ`` — instead
+    of the default full inheritance. A name absent from ``os.environ`` is silently skipped
+    (never fabricated). ``None`` (the default) preserves the original behaviour byte-for-byte:
+    ``env=None`` on ``Popen`` inherits this process's environment unfiltered.
     """
     capped = max_output_bytes is not None
+    child_env = None
+    if env_only is not None:
+        child_env = {name: os.environ[name] for name in env_only if name in os.environ}
     out = err = None
     pump_threads = []
     try:
@@ -132,6 +153,7 @@ def run(timeout, grace, cwd, stdout_path, stderr_path, cmd, max_output_bytes=Non
                 stdout=stdout_dst,
                 stderr=stderr_dst,
                 start_new_session=True,   # setsid: command leads a new session + process group
+                env=child_env,            # None => inherit unfiltered (default, unchanged)
             )
         except FileNotFoundError:
             # A9: nonexistent command — report cleanly and use the shell convention
@@ -287,6 +309,42 @@ def _selftest():
         check("bounded + timeout returns promptly (<4s)", time.time() - t0b < 4)
         check("bounded + timeout: file still capped", os.path.getsize(of) <= 1000)
 
+    # --env-only: the child sees EXACTLY the named vars, nothing this process itself
+    # inherited or picked up ambiently — reproduces the macOS Python.framework leak
+    # (SDKROOT/CPATH/__CF_USER_TEXT_ENCODING/... land in os.environ regardless of how this
+    # interpreter was launched) and proves the filter defeats it, not just the one named var.
+    with tempfile.TemporaryDirectory() as td:
+        of = os.path.join(td, "envonly")
+        old = os.environ.get("CV_SELFTEST_NOISE")
+        os.environ["CV_SELFTEST_NOISE"] = "should-not-leak"
+        os.environ["CV_SELFTEST_KEEP"] = "should-survive"
+        try:
+            run(5, 1, None, of, None, ["sh", "-c", "env"], env_only=["CV_SELFTEST_KEEP"])
+            with open(of) as fh:
+                seen = fh.read()
+        finally:
+            del os.environ["CV_SELFTEST_KEEP"]
+            if old is None:
+                os.environ.pop("CV_SELFTEST_NOISE", None)
+            else:
+                os.environ["CV_SELFTEST_NOISE"] = old
+        check("env-only: named var reaches the child", "CV_SELFTEST_KEEP=should-survive" in seen)
+        check("env-only: unnamed var does NOT reach the child (incl. this process's own noise)",
+              "CV_SELFTEST_NOISE" not in seen)
+
+    # --env-only omitted (None, the default): unchanged full-inheritance behaviour.
+    with tempfile.TemporaryDirectory() as td:
+        of = os.path.join(td, "inherit")
+        os.environ["CV_SELFTEST_NOISE"] = "should-be-inherited-by-default"
+        try:
+            run(5, 1, None, of, None, ["sh", "-c", "env"])
+            with open(of) as fh:
+                seen = fh.read()
+        finally:
+            os.environ.pop("CV_SELFTEST_NOISE", None)
+        check("env-only omitted: default behaviour still inherits unfiltered",
+              "CV_SELFTEST_NOISE=should-be-inherited-by-default" in seen)
+
     print("\n%d failed" % len(fails))
     if fails:
         print("FAILED: " + ", ".join(fails))
@@ -310,6 +368,14 @@ def main(argv):
         "disk; excess is drained and discarded so a runaway worker cannot fill the "
         "disk or block on a full pipe. Omit for the direct-fd (unbounded) behaviour.",
     )
+    ap.add_argument(
+        "--env-only",
+        default=None,
+        help="comma-separated variable NAMEs; the command's environment is built from "
+        "exactly these (read from this process's own environment), discarding everything "
+        "else. Omit for the default: the command inherits this process's environment "
+        "unfiltered.",
+    )
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("cmd", nargs=argparse.REMAINDER)
     args = ap.parse_args(argv)
@@ -330,8 +396,11 @@ def main(argv):
         ap.error("--cwd not a directory: %s" % args.cwd)
     if args.max_output_bytes is not None and args.max_output_bytes < 0:
         ap.error("--max-output-bytes must be >= 0")
+    env_only = None
+    if args.env_only is not None:
+        env_only = [n for n in args.env_only.split(",") if n]
     return run(args.timeout, args.grace, args.cwd, args.stdout, args.stderr, cmd,
-               max_output_bytes=args.max_output_bytes)
+               max_output_bytes=args.max_output_bytes, env_only=env_only)
 
 
 if __name__ == "__main__":

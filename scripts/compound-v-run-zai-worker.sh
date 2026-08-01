@@ -209,24 +209,53 @@ done
 
 PROMPT_TEXT="$(cat "$PROMPT_FILE")"
 
+# The names `claude` is allowed to receive, comma-joined for --env-only below. Static list,
+# not conditioned on which are actually set — an absent name is silently skipped downstream
+# (compound-v-run-with-timeout.py's --env-only reads from ITS OWN environment; nothing here
+# ever forwards a value that was never in $_SAFE_ENV_VARS to begin with).
+ENV_ONLY_NAMES="$(printf '%s' "$_SAFE_ENV_VARS" | tr ' ' ',')"
+ENV_ONLY_NAMES="$ENV_ONLY_NAMES,HOME,CLAUDE_CONFIG_DIR,ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN"
+ENV_ONLY_NAMES="$ENV_ONLY_NAMES,ANTHROPIC_MODEL,ANTHROPIC_DEFAULT_OPUS_MODEL"
+ENV_ONLY_NAMES="$ENV_ONLY_NAMES,ANTHROPIC_DEFAULT_SONNET_MODEL,ANTHROPIC_DEFAULT_HAIKU_MODEL"
+ENV_ONLY_NAMES="$ENV_ONLY_NAMES,API_TIMEOUT_MS,CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
+
 exit_code=0
 # `claude` has no --cd/--workdir equivalent (contrast `codex exec --cd`), so the worktree is
 # entered with a SUBSHELL cd. Without it the worker would edit files in the LAUNCHER's cwd —
 # the repo root — and the scope gate, which diffs the worktree, would see an empty diff and
 # wave through a job that changed nothing where it was supposed to.
+#
+# `env -i` wraps the SUPERVISOR here, not `claude` directly — load-bearing for the credential.
+# `env` builds the child's environment from its operands and then EXECS into it, replacing its
+# own process image; whatever briefly held the token in argv stops existing within a fork/exec
+# instant. The python3 supervisor is the opposite: it stays running for the WHOLE job to
+# enforce the wall-clock timeout, so a value passed as one of ITS OWN arguments sits in that
+# long-lived process's argv — world-readable via `ps`/`/proc/<pid>/cmdline` — for the entire
+# job. Measured: with the token nested inside the supervisor's own `--` command argument (the
+# previous shape), `ps -eo command` on a live worker showed `ANTHROPIC_AUTH_TOKEN=<key>`,
+# readable by sibling workers of OTHER backends in the same run even though the credential
+# scrub deliberately never gave it to them. Wrapping the supervisor instead keeps every var off
+# any long-lived process's command line.
+#
+# `--env-only "$ENV_ONLY_NAMES"` is load-bearing too, and not redundant with the outer `env -i`:
+# measured, this machine's python3 (a macOS Python.framework build) adds SDKROOT / CPATH /
+# LIBRARY_PATH / MANPATH / __CF_USER_TEXT_ENCODING and more to ITS OWN process on startup,
+# regardless of how it was launched — Popen's default (inherit-everything) behaviour would
+# hand all of that to `claude` too. `--env-only` builds `claude`'s environment from scratch out
+# of exactly the named list, discarding anything the supervisor's own runtime added.
 ( cd "$WT" && \
-python3 "$SUPERVISOR" --timeout "$TIMEOUT_SEC" --grace 3 -- \
-  env -i "$@" \
-      HOME="$SCRATCH" \
-      CLAUDE_CONFIG_DIR="$SCRATCH/.claude" \
-      ANTHROPIC_BASE_URL="$ZAI_BASE_URL" \
-      ANTHROPIC_AUTH_TOKEN="$ZAI_KEY" \
-      ANTHROPIC_MODEL="$MODEL" \
-      ANTHROPIC_DEFAULT_OPUS_MODEL="$MODEL" \
-      ANTHROPIC_DEFAULT_SONNET_MODEL="$MODEL" \
-      ANTHROPIC_DEFAULT_HAIKU_MODEL="$MODEL" \
-      API_TIMEOUT_MS="$((TIMEOUT_SEC * 1000))" \
-      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+env -i "$@" \
+    HOME="$SCRATCH" \
+    CLAUDE_CONFIG_DIR="$SCRATCH/.claude" \
+    ANTHROPIC_BASE_URL="$ZAI_BASE_URL" \
+    ANTHROPIC_AUTH_TOKEN="$ZAI_KEY" \
+    ANTHROPIC_MODEL="$MODEL" \
+    ANTHROPIC_DEFAULT_OPUS_MODEL="$MODEL" \
+    ANTHROPIC_DEFAULT_SONNET_MODEL="$MODEL" \
+    ANTHROPIC_DEFAULT_HAIKU_MODEL="$MODEL" \
+    API_TIMEOUT_MS="$((TIMEOUT_SEC * 1000))" \
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+  python3 "$SUPERVISOR" --timeout "$TIMEOUT_SEC" --grace 3 --env-only "$ENV_ONLY_NAMES" -- \
     claude -p \
       --permission-mode dontAsk \
       --tools "Read,Edit,Write,Bash" \

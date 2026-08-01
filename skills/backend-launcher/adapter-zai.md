@@ -53,17 +53,19 @@ That is the *instructed* half; the scope gate is the *enforced* half.
 
 ```bash
 ( cd "$WT" && \
-python3 scripts/compound-v-run-with-timeout.py --timeout "$timeout_sec" --grace 3 -- \
-  env -i PATH="$PATH" TMPDIR="$TMPDIR" LANG="$LANG" \
-      HOME="$SCRATCH" CLAUDE_CONFIG_DIR="$SCRATCH/.claude" \
-      ANTHROPIC_BASE_URL="https://api.z.ai/api/anthropic" \
-      ANTHROPIC_AUTH_TOKEN="$ZAI_API_KEY" \
-      ANTHROPIC_MODEL="$model" \
-      ANTHROPIC_DEFAULT_OPUS_MODEL="$model" \
-      ANTHROPIC_DEFAULT_SONNET_MODEL="$model" \
-      ANTHROPIC_DEFAULT_HAIKU_MODEL="$model" \
-      API_TIMEOUT_MS="$((timeout_sec * 1000))" \
-      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+env -i PATH="$PATH" TMPDIR="$TMPDIR" LANG="$LANG" \
+    HOME="$SCRATCH" CLAUDE_CONFIG_DIR="$SCRATCH/.claude" \
+    ANTHROPIC_BASE_URL="https://api.z.ai/api/anthropic" \
+    ANTHROPIC_AUTH_TOKEN="$ZAI_API_KEY" \
+    ANTHROPIC_MODEL="$model" \
+    ANTHROPIC_DEFAULT_OPUS_MODEL="$model" \
+    ANTHROPIC_DEFAULT_SONNET_MODEL="$model" \
+    ANTHROPIC_DEFAULT_HAIKU_MODEL="$model" \
+    API_TIMEOUT_MS="$((timeout_sec * 1000))" \
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+  python3 scripts/compound-v-run-with-timeout.py --timeout "$timeout_sec" --grace 3 \
+    --env-only PATH,TMPDIR,LANG,LC_ALL,TERM,HOME,CLAUDE_CONFIG_DIR,ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN,ANTHROPIC_MODEL,ANTHROPIC_DEFAULT_OPUS_MODEL,ANTHROPIC_DEFAULT_SONNET_MODEL,ANTHROPIC_DEFAULT_HAIKU_MODEL,API_TIMEOUT_MS,CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC \
+    -- \
     claude -p \
       --permission-mode dontAsk \
       --tools "Read,Edit,Write,Bash" \
@@ -72,6 +74,10 @@ python3 scripts/compound-v-run-with-timeout.py --timeout "$timeout_sec" --grace 
       --output-format json \
       -- "$prompt" </dev/null >"$events_log" 2>"$stderr_log" )
 ```
+
+**`env -i` wraps the supervisor, not `claude` directly.** `env` builds the child's environment from its operands and then execs into it, replacing its own process image — the credential is in an argv only for a fork/exec instant. The python3 supervisor is the one process that stays alive for the WHOLE job (it enforces the wall-clock timeout), so a value passed as one of *its own* arguments — the previous shape, `env -i ... claude` nested inside the supervisor's `--` command — sat in that long-lived process's argv, world-readable via `ps` / `/proc/<pid>/cmdline`, for the entire job. Measured live: `ps -eo command` on a running worker showed `ANTHROPIC_AUTH_TOKEN=<key>`, readable by sibling workers of *other* backends in the same run even though the credential scrub deliberately never gave it to them.
+
+**`--env-only` is not redundant with the outer `env -i`.** Measured: on a macOS Python.framework build, `python3` adds `SDKROOT` / `CPATH` / `LIBRARY_PATH` / `MANPATH` / `__CF_USER_TEXT_ENCODING` and more to its own process at startup, regardless of how it was launched — the supervisor's *own* environment is not trustworthy as-is. Without `--env-only`, `claude` would inherit that supervisor-runtime noise on top of the intended vars (`subprocess.Popen`'s default). `--env-only` builds `claude`'s environment from scratch out of exactly the named list, reading each from the supervisor's own environment and discarding everything else — the one CLI feature `compound-v-run-with-timeout.py` gained for this fix, purely additive (`None`/omitted preserves the original full-inheritance behaviour byte for byte; every other backend's worker omits it, unaffected).
 
 **Verified facts — load-bearing, do not re-derive:**
 
