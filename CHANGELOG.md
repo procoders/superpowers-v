@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added — three-provider cooldown recovery
+
+Pool dispatch now persists backend cooldowns, exact-model exclusions, correlated no-response network
+pauses, leased recovery probes, and attempt-specific launch bindings across Codex, Claude, and z.ai.
+Provider waits above 60 seconds reroute or halt resumably; only the exact leased attempt's completed
+normalized success clears health state.
+
+Cooldowns are deliberately backend-wide because CLI output does not expose limiter identity. This
+may temporarily sideline a healthy model or credential, but prevents retry herds. It is not quota
+balancing: Compound V does not poll balances, infer percentages, or dynamically adjust pool weights.
+
 ### Added — deterministic weighted tier model pools
 
 A manifest job may now route through `backend: pool` for `standard` or `light` work. Pools are configured per stance and tier, rotate by manifest-order job ordinal, support positive integer weights, and resolve every member through the existing tier model map. The eligible weighted ring and each concrete backend/model assignment are frozen into `state.json`, so dispatch timing, config edits, and `/v:resume` cannot silently move an in-flight job.

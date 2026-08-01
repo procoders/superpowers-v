@@ -157,7 +157,7 @@ docs/superpowers/execution/<run-id>/
   "earliest_reset_observed_at": "2026-06-26T14:32:55Z",
   "earliest_reset_seconds": 120,
   "backend_max_parallel": { "zai": 4 },
-  "cooldowns": { "codex": "2026-06-26T14:33:10Z" },
+  "cooldowns": { "codex": { "until": "2026-06-26T14:33:10Z", "reason": "rate_limited", "opened_at": "2026-06-26T14:32:55Z", "opened_by_attempt_id": "task-2-api:2", "probe": { "status": "idle", "owner_job_id": null, "owner_attempt_id": null, "lease_until": null } } },
   "circuit_open": {
     "codex": { "open": true, "reason": "out_of_credits", "opened_at": "2026-06-26T14:32:55Z", "cleared_by": null }
   },
@@ -205,7 +205,7 @@ These run-level fields are how graceful backend-failure handling persists across
 | Field | Shape | Meaning |
 |---|---|---|
 | `attempts` | `{ "<job-id>": { "<failure-class>": n } }` | retries this job has had **per failure-class**, so a budget burned by one class doesn't starve another. The dispatcher feeds `attempts[job][class]` as `--attempts` (per-class cap). Absent class ⇒ 0; reset/fork the counter when the job is re-routed to a different backend or the class changes. |
-| `cooldowns` | `{ "<backend>": "<iso-ts>" }` | a transient-failed backend is **deprioritized** until this timestamp (eligible again next batch). |
+| `cooldowns` | `{ "<backend>": {until, reason, opened_at, opened_by_attempt_id, probe} }` | Validated backend-wide transient health; `probe` is exactly `{status, owner_job_id, owner_attempt_id, lease_until}`. |
 | `circuit_open` | `{ "<concrete-backend>": { "open": bool, "reason": "out_of_credits\|auth", "opened_at": "<iso-ts>", "cleared_by": null } }` | the one canonical per-concrete-backend breaker map. Values are objects, never bare booleans; `pool` is never a key. `open: true` ⇒ the backend is **out for the run**; only a confirmed `out_of_credits` or `auth` opens it. `reason` distinguishes the two so `/v:resume` can reconcile correctly (top-up vs re-auth); `cleared_by` records what closed it (`"top_up"` / `"reauth"` / `"probe"`), `null` while still open. |
 | `total_retries` | `int` | run-wide retry counter — the policy's `--total-retries`. |
 | `max_total_retries` | `int` (default 12) | run-level retry budget — the anti retry-storm cap (`--max-total-retries`). |
@@ -213,6 +213,14 @@ These run-level fields are how graceful backend-failure handling persists across
 | `earliest_reset_seconds` | positive number or `null` | Provider-relative reset delay observed at `earliest_reset_observed_at`. Compare/reset using the derived absolute instant; clear both fields when the associated exhaustion is resolved. `/v:status` never renders it as a percentage. |
 
 "Deprioritize, don't remove": a 429/5xx/timeout gets a short **cooldown** (open next batch), only a confirmed `out_of_credits`/`auth` opens the breaker object for the whole run.
+
+### Cooldown and crash-recovery contract
+
+Failure policy emits intent only. `compound-v-pool-state.py` is the sole ring-scan/state-mutation authority, applied as classify → decide → transition → validate → atomic persist → launch. A global `network_pause` is exactly `{opened_at, until, evidence, probe}`; evidence rows are exactly `{backend, job_id, attempt_id, batch_id, observed_at}`. Only correlated `network_scope: no_response` evidence from distinct backends can pause the run; `provider_reported` remains backend-scoped.
+
+Attempts use monotonic `attempt_counter`, `attempt_id: "<job-id>:<counter>"`, and `batch_id`. Before launch, persist `jobs[id].launch_binding` exactly as `{job_id, attempt_id, batch_id, backend, result_path}`, with `attempt-results/<job-id>/<attempt-id>.json`. Matching accepted results publish to `results/<job-id>.json`; mismatches remain at `stale-results/<job-id>/<attempt-id>.json` and cannot clear health.
+
+An expired cooldown leases exactly one probe. If a network pause also expires, its single global probe has priority and backend probes remain idle; one attempt cannot own both. Only final normalized `status: success` from the exact leased attempt clears its cooldown/pause—not a connection, first token, intermediate event, or stale success. `clear-cooldown` removes transient state only and preserves permanent circuits.
 
 ### Per-job `status`
 

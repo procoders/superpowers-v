@@ -250,10 +250,18 @@ Those verdicts are not re-probed after freeze, including on resume.
 Adapters, workers, advisor selection, failure classification/policy, usage extraction, outcome
 memory, and scorecards receive only those concrete assignment fields—never the routing token
 `pool`. `/v:resume` reuses the recorded assignment and worktree without consulting edited config.
-`rate_limited` retries that same assignment. Only `out_of_credits` advances to the next viable
-frozen member, consumes the run-level retry budget, records the replacement assignment before
-relaunch, and uses the existing concrete-backend fallback chain after the pool is exhausted. A
-terminal exhausted-pool halt carries `earliest_reset_seconds` when any member exposed a reset time.
+Failure policy emits intent only; `compound-v-pool-state.py transition` alone scans the frozen ring,
+leases probes, and selects the next viable assignment. Dispatch order is classify → decide →
+transition → validate → atomic persist → launch. Results require `failure_class` and integer
+`retry_after_seconds`; failures may add `retry_at` and `network_scope` (`provider_reported` or
+`no_response`). Success/blocked omit those optional fields, and success means the final normalized
+worker result—not a connection, SSE event, or first token.
+
+A provider minimum plus jitter may wait inline only through 60 seconds. Longer waits persist cooldown
+timing and reroute, or halt a non-pool/no-viable route resumably with `next_retry_at`. Every launch
+first persists `{job_id, attempt_id, batch_id, backend, result_path}`; only a matching result may
+transition health or publish. Concrete non-pool manifests omit ring context and retain their existing
+fallback behavior while sharing these timing, validation, and stale-result protections.
 
 Weighted rotation balances **manifest job counts per tier only**. It does not measure or equalize
 tokens, credits, messages, wall-clock, savings, or provider quota. Jobs can differ radically in

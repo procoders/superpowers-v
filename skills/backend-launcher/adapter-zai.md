@@ -181,3 +181,11 @@ scripts/compound-v-run-zai-worker.sh \
 ```
 
 All paths MUST be absolute. `--write-allowed` is a **colon-separated** glob list; an **empty** value is a read-only/review job (any change ⇒ BLOCKED). `ZAI_API_KEY` must be set in the dispatcher's environment — the worker refuses to start without it and never reads a key from a file inside the repo.
+
+## Cooldown result contract
+
+z.ai code `1234` is `network` with `network_scope: provider_reported`; it does not prove a local network
+failure. DNS/TLS/connect/reset before a response is `no_response` and may contribute to a correlated
+global pause. Failures require integer `retry_after_seconds` and may carry `retry_at` plus the scope;
+success/blocked omit optional fields. Success is the final normalized result, not an HTTP/SSE connection
+or first token. Known waits above 60 seconds are persisted and rerouted or halted resumably, never slept.

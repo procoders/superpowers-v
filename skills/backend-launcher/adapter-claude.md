@@ -129,3 +129,11 @@ python3 scripts/compound-v-classify-failure.py --backend claude \
 ## Why this adapter is the simple one
 
 No process spawn, no sandbox flags, no `--output-last-message` parsing, no `codex_hooks` stderr to suppress, no session UUID to capture. The subagent runs inside the harness with a model override and a turn cap. The contract holds anyway because **enforcement does not live in the backend** — it lives in the caller's git-diff scope gate, which is identical whether the worker was an in-harness `Task` or a Bash-spawned `codex exec`. Same syringe, same finish-line check.
+
+## Cooldown result contract
+
+Classifier output adds `retry_at` and `network_scope` to the existing fields. Failures require integer
+`job_result.retry_after_seconds` and may include those optional fields. `provider_reported` is provider
+evidence; DNS/TLS/connect/reset without a response is `no_response`. Success means the final normalized
+Task result, never a stream event, and success/blocked omit both optional fields. Waits above 60 seconds
+are persisted for reroute or precise resumable non-pool halt, never slept inline.

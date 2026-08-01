@@ -179,3 +179,11 @@ scripts/compound-v-run-codex-worker.sh \
 - **Exit 0** means a `job_result` was produced (even for BLOCKED / timeout / error — those live in `status`). A non-zero exit means a usage/environment fault prevented producing a result at all.
 
 The script targets stock-macOS **bash 3.2** (no associative arrays / `mapfile` / `${var,,}`) and uses only `git` + `jq`. It is shellcheck-clean and `chmod +x`.
+
+## Cooldown result contract
+
+Failures require `failure_class` and integer `retry_after_seconds`, and may include `retry_at` and
+`network_scope`. `provider_reported` is provider evidence; DNS/TLS/connect/reset before a response is
+`no_response`. Completed success is the final normalized result—not `thread.started`, a connection, or
+first output—and success/blocked omit optional fields. Known waits above 60 seconds are persisted and
+rerouted, or produce a precise resumable non-pool/no-viable halt; they are never slept inline.
