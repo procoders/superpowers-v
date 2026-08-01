@@ -111,13 +111,14 @@ def _generation_errors(state_jobs, job_id, attempt_id, path, batch_id=None):
     if not isinstance(record, dict):
         return ["%s references an unknown job" % path]
     counter = record.get("attempt_counter")
-    if counter is not None and (
-            not isinstance(counter, int) or isinstance(counter, bool)
-            or int(generation) > counter):
+    if not isinstance(counter, int) or isinstance(counter, bool) or counter < 1:
+        errors.append("%s requires a persisted positive attempt counter" % path)
+    elif int(generation) > counter:
         errors.append("%s exceeds the job's persisted attempt counter" % path)
     recorded_batch = record.get("batch_id")
-    if batch_id is not None and recorded_batch is not None \
-            and batch_id != recorded_batch:
+    if (batch_id is not None and recorded_batch is not None
+            and isinstance(counter, int) and not isinstance(counter, bool)
+            and int(generation) == counter and batch_id != recorded_batch):
         errors.append("%s batch_id does not match the job's persisted batch" % path)
     return errors
 
@@ -2054,6 +2055,9 @@ def _selftest():
                 "assigned_model": "model-b", "pool_index": 1,
                 "pool_tier": "light", "assignment_source": "pool",
             },
+            "health-history": {
+                "attempt_counter": 9, "attempt_id": "health-history:9",
+            },
         },
         "pool_members": {"light": [
             {"backend": "codex", "model": "model-a", "available": True},
@@ -2075,7 +2079,7 @@ def _selftest():
         "until": "2026-08-01T07:30:00Z",
         "reason": "rate_limited",
         "opened_at": "2026-08-01T07:20:00Z",
-        "opened_by_attempt_id": "job-a:1",
+        "opened_by_attempt_id": "health-history:1",
         "probe": dict(idle_probe),
     }
     canonical_state = json.loads(json.dumps(route_state))
@@ -2167,9 +2171,14 @@ def _selftest():
         ],
         "probe": dict(idle_probe),
     }
+    missing_counter_cooldown = json.loads(json.dumps(causal_state))
+    missing_counter_cooldown["jobs"]["missing-counter"] = {}
+    missing_counter_cooldown["cooldowns"] = {"codex": dict(
+        canonical_cooldown, opened_by_attempt_id="missing-counter:1")}
     expect("health evidence rejects future generations wrong batches and future observations",
            all(validate(item, route_jobs) for item in (
-               future_cooldown, forged_evidence, wrong_batch_success, impossible_pause)))
+               future_cooldown, forged_evidence, wrong_batch_success, impossible_pause,
+               missing_counter_cooldown)))
 
     bare_cooldown_state = json.loads(json.dumps(route_state))
     bare_cooldown_state["jobs"]["job-a"].update({
@@ -2205,7 +2214,7 @@ def _selftest():
     two_cooling["cooldowns"] = {
         "codex": dict(canonical_cooldown),
         "claude": dict(canonical_cooldown,
-                       opened_by_attempt_id="job-b:1"),
+                       opened_by_attempt_id="health-history:2"),
     }
     advanced = value_or_none(lambda: transition(
         two_cooling, route_jobs, "job-a", {"advance_pool": True},
@@ -2232,9 +2241,9 @@ def _selftest():
     all_cooling["cooldowns"] = {
         "codex": dict(canonical_cooldown, until="2026-08-01T07:29:00Z"),
         "claude": dict(canonical_cooldown, until="2026-08-01T07:27:00Z",
-                       opened_by_attempt_id="job-b:1"),
+                       opened_by_attempt_id="health-history:2"),
         "zai": dict(canonical_cooldown, until="2026-08-01T07:28:00Z",
-                    opened_by_attempt_id="job-a:2"),
+                    opened_by_attempt_id="health-history:3"),
     }
     halted = value_or_none(lambda: transition(
         all_cooling, route_jobs, "job-a", {"advance_pool": True},
@@ -2480,6 +2489,29 @@ def _selftest():
            and network_two.get("action") == "network_paused"
            and len(network_two.get("state", {}).get(
                "network_pause", {}).get("evidence", [])) == 2)
+
+    historical_pause = json.loads(json.dumps(network_two["state"])) \
+        if isinstance(network_two, dict) else None
+    if isinstance(historical_pause, dict):
+        historical_pause["jobs"]["job-a"].update({
+            "attempt_counter": 2, "attempt_id": "job-a:2",
+            "batch_id": "batch-recovery",
+        })
+        historical_pause["jobs"]["job-b"].update({
+            "attempt_counter": 2, "attempt_id": "job-b:2",
+            "batch_id": "batch-after-pause",
+        })
+    historical_probe = value_or_none(lambda: transition(
+        historical_pause, route_jobs, "job-a", {"launch": True},
+        "2026-08-01T07:21:31Z", "batch-recovery", 300, 3,
+    )) if isinstance(historical_pause, dict) and transition else None
+    expect("historical pause evidence survives a later-batch recovery probe",
+           isinstance(historical_pause, dict)
+           and validate(historical_pause, route_jobs) == []
+           and isinstance(historical_probe, dict)
+           and historical_probe.get("action") == "launch"
+           and historical_probe.get("assignment", {}).get("attempt_id") == "job-a:3"
+           and validate(historical_probe.get("state"), route_jobs) == [])
 
     stale_network = value_or_none(lambda: transition(
         network_one["state"], route_jobs, "job-b", {
