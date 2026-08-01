@@ -28,7 +28,7 @@ Verified live against **claude 2.1.207** on 2026-07-31/08-01, with a real GLM Co
 1. ISOLATE   git -C <repo> worktree add <WT> HEAD          # clean diff baseline (NO kernel sandbox)
 2. RUN       cd <WT> && env -i … claude -p … -- "<prompt>"  # see the pinned invocation
 3. ASSERT    the response's modelUsage key is a GLM model, else fail the job
-4. OBSERVE   compound-v-scope-check.py --worktree <WT> --baseline <sha> --allow-file <globs>
+4. OBSERVE   compound-v-scope-check.py --worktree <WT> --baseline <sha> --allow <glob> [--allow <glob> ...]
 5. ENFORCE   every changed path ∉ write_allowed ⇒ violation ⇒ blocked  (do NOT merge)
 6. MERGE     caller, on PASS only
 ```
@@ -136,7 +136,7 @@ Two facts shape the retry policy:
 
 ## Worktree lifecycle and merge-back
 
-Identical in shape to [`adapter-cursor.md`](adapter-cursor.md). The baseline SHA is captured **before** `worktree add`. Worktrees live outside the repo under `${TMPDIR}/compound-v/<run-id>/<job-id>`; scratch (captured result, stderr, the expanded allow-globs, the worker's `HOME`) lives in `$WT.art`, **outside** the worktree so the diff stays pristine. Idempotent on resume.
+Differs from `adapter-cursor.md` in one respect: the allow-list is never written to `$WT.art` — see the scope-gate note above. Otherwise identical in shape. The baseline SHA is captured **before** `worktree add`. Worktrees live outside the repo under `${TMPDIR}/compound-v/<run-id>/<job-id>`; scratch (captured result, stderr, the worker's `HOME`) lives in `$WT.art`, **outside** the worktree so the diff stays pristine. Idempotent on resume.
 
 ```bash
 # PASS

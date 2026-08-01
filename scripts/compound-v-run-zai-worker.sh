@@ -184,27 +184,14 @@ EVENTS_LOG="${EVENTS_LOG_OVERRIDE:-$ART/zai_result.json}"
 STDERR_LOG="$ART/zai_stderr.log"
 mkdir -p "$(dirname "$EVENTS_LOG")"
 
-# Expand the colon-separated --write-allowed into a one-glob-per-line file for the gate.
-# `set -f` (noglob) is MANDATORY around the unquoted split: entries are LITERAL globs meant
-# for the gate, and without noglob the shell pathname-expands them against the LAUNCHER's cwd
-# and silently corrupts the allow-list. (The cursor worker omits this; do not copy it.)
-ALLOW_FILE="$ART/write_allowed.globs"
-: > "$ALLOW_FILE"
-# --read-only is enforced POST-HOC, exactly as the contract says: an EMPTY allow-file makes the
+# --read-only is enforced POST-HOC, exactly as the contract says: an EMPTY allow-list makes the
 # gate treat EVERY changed path as a violation, so a read-only job that writes anything is
 # correctly BLOCKED. No kernel flag is involved and none is claimed.
 if [ "$READ_ONLY" = "true" ]; then
   WRITE_ALLOWED=""
 fi
-_old_ifs="$IFS"
-set -f
-IFS=":"
-for _glob in $WRITE_ALLOWED; do
-  [ -n "$_glob" ] || continue
-  printf '%s\n' "$_glob" >> "$ALLOW_FILE"
-done
-IFS="$_old_ifs"
-set +f
+# NOTE: unlike the other five workers, the allow-list is NOT written to a file here. See the
+# scope-gate invocation below for why — it is built as --allow arguments instead.
 
 # --- run ---------------------------------------------------------------------
 
@@ -325,6 +312,27 @@ fi
 # --- the git-derived scope gate ----------------------------------------------
 # Deterministic authority. Never re-implement glob matching in bash, and never read what the
 # model said it changed.
+#
+# The allow-list is passed as REPEATED --allow ARGUMENTS, built HERE in the parent shell,
+# rather than through a file on disk. The other five workers write the list to
+# "$ART/write_allowed.globs" before the child starts and read it back after the child exits —
+# but that path is predictable, and the child has Bash + Write with no kernel confinement, so a
+# job can overwrite its own allow-list before the gate ever reads it (reproduced: a child that
+# writes an out-of-scope file and then appends `**` to that file gets back a clean PASS).
+# Positional parameters live in THIS process only; the child has no handle on them and no way to
+# reach them. `--allow-file` stays supported by the gate itself for other callers — only this
+# worker's transport changes. `set -f` (noglob) stays mandatory around the unquoted split:
+# entries are literal globs, not paths to expand against the launcher's cwd.
+set --
+_old_ifs="$IFS"
+set -f
+IFS=":"
+for _glob in $WRITE_ALLOWED; do
+  [ -n "$_glob" ] || continue
+  set -- "$@" --allow "$_glob"
+done
+IFS="$_old_ifs"
+set +f
 
 # The gate signals its VERDICT through the exit code: 0 = clean, 1 = BLOCKED, 2 = a usage or
 # git fault in the gate itself. Only 2 (or unparseable output) is fatal — treating 1 as a
@@ -333,7 +341,7 @@ SCOPE_JSON=""
 gate_rc=0
 set +e
 SCOPE_JSON="$(python3 "$SCOPE_CHECK" --worktree "$WT" --baseline "$BASELINE_SHA" \
-  --allow-file "$ALLOW_FILE" 2>"$ART/scope_check.err")"
+  "$@" 2>"$ART/scope_check.err")"
 gate_rc=$?
 set -e
 if [ "$gate_rc" -gt 1 ] || [ -z "$SCOPE_JSON" ] \
