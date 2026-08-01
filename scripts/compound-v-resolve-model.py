@@ -151,6 +151,8 @@ EFFORTS = ("low", "medium", "high", "xhigh")
 # Stance vocabulary — DUPLICATED on purpose from compound-v-validate-manifest.py:VALID_STANCES.
 # Both scripts are standalone, stdlib-only CLIs; do NOT introduce a shared import. Keep in sync.
 VALID_STANCES = ("balanced", "conservative", "cost-aware", "claude-only")
+MAX_POOL_WEIGHT = 100
+MAX_EXPANDED_POOL_SLOTS = 256
 
 # Default effort pairing when --effort is omitted. Independently tunable per
 # task-type by passing --effort explicitly; this is only the fallback.
@@ -352,8 +354,12 @@ def resolve_pool(tier, index, stance, pools, config_models, effort=None,
                              % (stance, tier))
         weight = member.get("weight", 1)
         if (not isinstance(weight, int) or isinstance(weight, bool)
-                or weight <= 0):
-            raise ValueError("pool member weight must be a positive integer")
+                or weight <= 0 or weight > MAX_POOL_WEIGHT):
+            raise ValueError("pool member weight must be a positive integer <= %d"
+                             % MAX_POOL_WEIGHT)
+        if len(expanded) + weight > MAX_EXPANDED_POOL_SLOTS:
+            raise ValueError("expanded pool exceeds the %d-slot limit"
+                             % MAX_EXPANDED_POOL_SLOTS)
         expanded.extend([member] * weight)
 
     start = index % len(expanded)
@@ -662,6 +668,16 @@ def _selftest():
         ]}},
         {},
     ))
+    expect("pool rejects a member weight above the deterministic cap",
+           pool_raises("light", 0, "balanced", {"balanced": {"light": [
+               {"backend": "codex", "weight": 101},
+           ]}}, {}))
+    expect("pool rejects aggregate expanded slots above the deterministic cap",
+           pool_raises("light", 0, "balanced", {"balanced": {"light": [
+               {"backend": "codex", "weight": 100},
+               {"backend": "claude", "weight": 100},
+               {"backend": "cursor", "weight": 100},
+           ]}}, {}))
 
     _haiku_result = pool_call(
         "light", 0, "balanced",

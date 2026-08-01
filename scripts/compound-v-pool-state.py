@@ -27,6 +27,8 @@ VALID_CONCRETE_BACKENDS = (
     "claude", "codex", "antigravity", "cursor", "devin", "opencode", "zai",
 )
 VALID_ASSIGNMENT_SOURCES = ("pool", "fallback")
+MAX_POOL_WEIGHT = 100
+MAX_EXPANDED_POOL_SLOTS = 256
 CIRCUIT_REASONS = ("out_of_credits", "auth")
 CIRCUIT_CLEARED_BY = ("top_up", "reauth", "probe")
 CIRCUIT_ENTRY_FIELDS = frozenset(("open", "reason", "opened_at", "cleared_by"))
@@ -54,16 +56,20 @@ def _circuit_open_errors(circuit_open):
         cleared_by = entry.get("cleared_by")
         if not isinstance(is_open, bool):
             errors.append("%s.open must be true/false" % path)
-        if is_open is True and reason not in CIRCUIT_REASONS:
-            errors.append("%s.reason must be out_of_credits or auth while open" % path)
-        if is_open is not True and reason not in CIRCUIT_REASONS + (None,):
-            errors.append("%s.reason must be out_of_credits, auth, or null" % path)
+        if reason not in CIRCUIT_REASONS:
+            errors.append("%s.reason must be out_of_credits or auth" % path)
         if not isinstance(opened_at, str) or not opened_at:
             errors.append("%s.opened_at must be a non-empty string" % path)
         if cleared_by is not None and cleared_by not in CIRCUIT_CLEARED_BY:
             errors.append("%s.cleared_by must be null, top_up, reauth, or probe" % path)
         if is_open is True and cleared_by is not None:
             errors.append("%s.cleared_by must be null while the breaker is open" % path)
+        if is_open is False and reason == "auth" and cleared_by != "reauth":
+            errors.append("%s auth breaker may clear only via reauth" % path)
+        if (is_open is False and reason == "out_of_credits"
+                and cleared_by not in ("top_up", "probe")):
+            errors.append("%s out_of_credits breaker may clear only via top_up or probe"
+                          % path)
     return errors
 
 
@@ -88,8 +94,12 @@ def expand_members(members):
             raise ValueError("pool member must be an object")
         weight = member.get("weight", 1)
         if (not isinstance(weight, int) or isinstance(weight, bool)
-                or weight <= 0):
-            raise ValueError("pool member weight must be a positive integer")
+                or weight <= 0 or weight > MAX_POOL_WEIGHT):
+            raise ValueError("pool member weight must be a positive integer <= %d"
+                             % MAX_POOL_WEIGHT)
+        if len(expanded) + weight > MAX_EXPANDED_POOL_SLOTS:
+            raise ValueError("expanded pool exceeds the %d-slot limit"
+                             % MAX_EXPANDED_POOL_SLOTS)
         for _unused in range(weight):
             slot = dict(member)
             slot["weight"] = 1
@@ -307,6 +317,20 @@ def _assignment_errors(state, record, tier, job_id):
     if (assignment_source != "fallback"
             and (backend != slot.get("backend") or model != slot.get("model"))):
         errors.append("%s backend/model pair does not match its frozen slot" % prefix)
+    if (assignment_source == "fallback" and tier in VALID_POOL_TIERS
+            and backend in VALID_CONCRETE_BACKENDS
+            and isinstance(model, str) and model):
+        if "haiku" in model.lower():
+            errors.append("%s fallback model must never resolve to Haiku" % prefix)
+        else:
+            try:
+                _resolver_module().resolve(
+                    backend=backend,
+                    tier=tier,
+                    explicit_model=model,
+                )
+            except ValueError as error:
+                errors.append("%s fallback model is invalid: %s" % (prefix, error))
     return errors
 
 
@@ -442,6 +466,16 @@ def _selftest():
         {"backend": "codex", "weight": 1},
         {"backend": "claude", "weight": 1},
     ])
+    expect("expansion rejects a member weight above the deterministic cap",
+           bool(expand) and raises_value(lambda: expand([
+               {"backend": "codex", "weight": 101},
+           ])))
+    expect("expansion rejects aggregate slots above the deterministic cap",
+           bool(expand) and raises_value(lambda: expand([
+               {"backend": "codex", "weight": 100},
+               {"backend": "claude", "weight": 100},
+               {"backend": "cursor", "weight": 100},
+           ])))
 
     manifest_jobs = [
         {"id": "light-1", "backend": "pool", "tier": "light"},
@@ -623,6 +657,35 @@ def _selftest():
     expect("canonical reconciled circuit entry validates",
            validate(closed_circuit_state, manifest_jobs) == [] if validate else False)
 
+    incompatible_circuits = [
+        ("auth cleared by top_up", "auth", "top_up"),
+        ("auth cleared by probe", "auth", "probe"),
+        ("credits cleared by reauth", "out_of_credits", "reauth"),
+        ("closed breaker with null cleared_by", "out_of_credits", None),
+    ]
+    for circuit_name, circuit_reason, circuit_cleared_by in incompatible_circuits:
+        incompatible_state = json.loads(json.dumps(assigned))
+        incompatible_state["circuit_open"] = {"codex": {
+            "open": False,
+            "reason": circuit_reason,
+            "opened_at": "2026-08-01T00:00:00Z",
+            "cleared_by": circuit_cleared_by,
+        }}
+        incompatible_errors = validate(incompatible_state, manifest_jobs) if validate else []
+        expect("circuit_open rejects %s" % circuit_name,
+               any("circuit_open" in error for error in incompatible_errors))
+
+    for token in ("top_up", "probe"):
+        reconciled_state = json.loads(json.dumps(assigned))
+        reconciled_state["circuit_open"] = {"codex": {
+            "open": False,
+            "reason": "out_of_credits",
+            "opened_at": "2026-08-01T00:00:00Z",
+            "cleared_by": token,
+        }}
+        expect("out_of_credits may reconcile via %s" % token,
+               validate(reconciled_state, manifest_jobs) == [] if validate else False)
+
     bare_bool_state = json.loads(json.dumps(assigned))
     bare_bool_state["circuit_open"] = {"codex": True}
     expect("resume validates circuit_open before returning assignment",
@@ -668,6 +731,20 @@ def _selftest():
     contextless_errors = validate(contextless_fallback, manifest_jobs) if validate else []
     expect("fallback requires its originating pool index context",
            any("pool_index" in error for error in contextless_errors))
+
+    fallback_haiku = json.loads(json.dumps(fallback_state))
+    fallback_haiku["jobs"]["light-1"]["assigned_backend"] = "claude"
+    fallback_haiku["jobs"]["light-1"]["assigned_model"] = "claude-haiku"
+    fallback_haiku_errors = validate(fallback_haiku, manifest_jobs) if validate else []
+    expect("fallback model validation rejects haiku",
+           any("fallback model" in error for error in fallback_haiku_errors))
+
+    fallback_bad_opencode = json.loads(json.dumps(fallback_state))
+    fallback_bad_opencode["jobs"]["light-1"]["assigned_backend"] = "opencode"
+    fallback_bad_opencode["jobs"]["light-1"]["assigned_model"] = "bare-model"
+    fallback_opencode_errors = validate(fallback_bad_opencode, manifest_jobs) if validate else []
+    expect("fallback model validation preserves opencode provider/model shape",
+           any("fallback model" in error for error in fallback_opencode_errors))
 
     missing_index = json.loads(json.dumps(assigned)) if isinstance(assigned, dict) else {}
     missing_index.get("jobs", {}).get("light-1", {}).pop("pool_index", None)
@@ -757,6 +834,12 @@ def _selftest():
            ) == {
                "assigned_backend": "cursor", "assigned_model": "auto",
            })
+    expect("resume rejects fallback haiku before returning it",
+           bool(resume) and raises_value(lambda: resume(fallback_haiku, "light-1")))
+    expect("resume rejects malformed opencode fallback before returning it",
+           bool(resume) and raises_value(
+               lambda: resume(fallback_bad_opencode, "light-1")
+           ))
     expect("standalone resume rejects unknown frozen tier vocabulary",
            bool(resume) and raises_value(lambda: resume(turbo_state, "light-1")))
     expect("standalone resume rejects unknown concrete backend vocabulary",

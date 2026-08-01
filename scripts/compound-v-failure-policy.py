@@ -161,9 +161,6 @@ def _validate_pool_context(backend, pool_members, current_pool_index,
             if is_open is True and reason not in CIRCUIT_REASONS:
                 raise ValueError("circuit_open[%s].reason must be out_of_credits or "
                                  "auth while open" % breaker_backend)
-            if is_open is not True and reason not in CIRCUIT_REASONS + (None,):
-                raise ValueError("circuit_open[%s].reason must be out_of_credits, auth, "
-                                 "or null" % breaker_backend)
             if not isinstance(opened_at, str) or not opened_at:
                 raise ValueError("circuit_open[%s].opened_at must be a non-empty string"
                                  % breaker_backend)
@@ -173,6 +170,18 @@ def _validate_pool_context(backend, pool_members, current_pool_index,
             if is_open is True and cleared_by is not None:
                 raise ValueError("circuit_open[%s].cleared_by must be null while open"
                                  % breaker_backend)
+            if is_open is False:
+                if reason == "auth" and cleared_by != "reauth":
+                    raise ValueError("circuit_open[%s] closed auth breaker must be "
+                                     "cleared_by reauth" % breaker_backend)
+                if (reason == "out_of_credits"
+                        and cleared_by not in ("top_up", "probe")):
+                    raise ValueError("circuit_open[%s] closed out_of_credits breaker "
+                                     "must be cleared_by top_up or probe"
+                                     % breaker_backend)
+                if reason not in CIRCUIT_REASONS:
+                    raise ValueError("circuit_open[%s] closed reason must be "
+                                     "out_of_credits or auth" % breaker_backend)
     if not supplied_members:
         return False
     if not isinstance(pool_members, (list, tuple)) or not pool_members:
@@ -215,11 +224,22 @@ def _earliest_reset_seconds(pool_members, retry_after):
     return min(values) if values else None
 
 
+def _validate_retry_counters(attempts, total_retries, max_total_retries):
+    for name, value in (("attempts", attempts), ("total_retries", total_retries)):
+        if (not isinstance(value, int) or isinstance(value, bool) or value < 0):
+            raise ValueError("%s must be a non-negative integer" % name)
+    if (not isinstance(max_total_retries, int)
+            or isinstance(max_total_retries, bool)
+            or max_total_retries <= 0):
+        raise ValueError("max_total_retries must be a positive integer")
+
+
 def decide(failure_class, backend, attempts, total_retries, max_total_retries,
            retry_after=0, jitter=True, fallback_available=True, current_tier=None,
            pool_members=None, current_pool_index=None, circuit_open=None):
     if backend not in CONCRETE_BACKENDS:
         raise ValueError("backend must be concrete (got %r)" % backend)
+    _validate_retry_counters(attempts, total_retries, max_total_retries)
     in_pool = _validate_pool_context(
         backend, pool_members, current_pool_index, circuit_open)
     earliest_reset = _earliest_reset_seconds(pool_members, retry_after)
@@ -553,13 +573,72 @@ def _selftest():
             pool_members=[{"backend": "codex"}, {"backend": "zai"}],
             current_pool_index=0,
             circuit_open={"zai": {
-                "open": False, "reason": None,
+                "open": False, "reason": "out_of_credits",
                 "opened_at": "2026-08-01T00:00:00Z", "cleared_by": "probe",
             }},
         )
         check("canonical-closed-breaker-valid-combination", d["action"], "retry")
     except ValueError as e:
         check("canonical-closed-breaker-valid-combination", "error", "retry", str(e))
+    try:
+        d = decide(
+            "rate_limited", "codex", 0, 0, 12, jitter=False,
+            pool_members=[{"backend": "codex"}, {"backend": "zai"}],
+            current_pool_index=0,
+            circuit_open={"zai": {
+                "open": False, "reason": "auth",
+                "opened_at": "2026-08-01T00:00:00Z", "cleared_by": "reauth",
+            }},
+        )
+        check("canonical-closed-auth-reauth-valid", d["action"], "retry")
+    except ValueError as e:
+        check("canonical-closed-auth-reauth-valid", "error", "retry", str(e))
+    mismatched_transitions_rejected = True
+    for reason, cleared_by in [
+        ("auth", "top_up"),
+        ("auth", "probe"),
+        ("out_of_credits", "reauth"),
+        ("auth", None),
+        ("out_of_credits", None),
+        (None, None),
+        (None, "probe"),
+    ]:
+        try:
+            decide(
+                "rate_limited", "codex", 0, 0, 12, jitter=False,
+                pool_members=[{"backend": "codex"}, {"backend": "zai"}],
+                current_pool_index=0,
+                circuit_open={"zai": {
+                    "open": False, "reason": reason,
+                    "opened_at": "2026-08-01T00:00:00Z", "cleared_by": cleared_by,
+                }},
+            )
+            mismatched_transitions_rejected = False
+        except ValueError:
+            pass
+    check("closed-breaker-reason-must-match-clear-transition",
+          "error", "error", mismatched_transitions_rejected)
+    corrupt_counters_rejected = True
+    for attempts, total_retries, max_total_retries in [
+        (-100, 0, 12),
+        (0, -100, 12),
+        (0, 0, -100),
+        (True, 0, 12),
+        (0, False, 12),
+        (0, 0, True),
+        (0.5, 0, 12),
+        (0, 0.5, 12),
+        (0, 0, 12.5),
+        (0, 0, 0),
+    ]:
+        try:
+            decide("rate_limited", "codex", attempts, total_retries,
+                   max_total_retries, jitter=False)
+            corrupt_counters_rejected = False
+        except ValueError:
+            pass
+    check("retry-counters-reject-negative-bool-noninteger-and-zero-max",
+          "error", "error", corrupt_counters_rejected)
     print("SELFTEST: %d ok, %d fail" % (ok, fail))
     return 0 if fail == 0 else 1
 

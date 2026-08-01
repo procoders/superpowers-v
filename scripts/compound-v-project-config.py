@@ -77,6 +77,10 @@ VALID_POOL_TIERS = ("deep", "standard", "light")
 VALID_POOL_BACKENDS = (
     "claude", "codex", "antigravity", "cursor", "devin", "opencode", "zai",
 )
+# Deterministic safety bounds: weights are expanded into in-memory positional
+# rings, so both the per-member and per-tier totals are capped before expansion.
+MAX_POOL_WEIGHT = 100
+MAX_EXPANDED_POOL_SLOTS = 256
 
 
 def load_config_file(config_path):
@@ -177,6 +181,7 @@ def resolve_pools(cfg):
                 continue
             clean = []
             seen_backends = set()
+            expanded_slots = 0
             for index, member in enumerate(members):
                 member_path = "%s[%d]" % (path, index)
                 if not isinstance(member, dict):
@@ -196,15 +201,24 @@ def resolve_pools(cfg):
                     continue
                 weight = member.get("weight", 1)
                 if (not isinstance(weight, int) or isinstance(weight, bool)
-                        or weight <= 0):
-                    warnings.append("%s.weight must be a positive integer; ignored"
-                                    % member_path)
+                        or weight <= 0 or weight > MAX_POOL_WEIGHT):
+                    warnings.append(
+                        "%s.weight must be a positive integer <= %d; ignored"
+                        % (member_path, MAX_POOL_WEIGHT)
+                    )
+                    continue
+                if expanded_slots + weight > MAX_EXPANDED_POOL_SLOTS:
+                    warnings.append(
+                        "%s would exceed the %d-slot expanded pool limit; ignored"
+                        % (member_path, MAX_EXPANDED_POOL_SLOTS)
+                    )
                     continue
                 if backend in seen_backends:
                     warnings.append("%s duplicates backend %r; ignored"
                                     % (member_path, backend))
                     continue
                 seen_backends.add(backend)
+                expanded_slots += weight
                 clean_member = {"backend": backend, "weight": weight}
                 if model is not None:
                     clean_member["model"] = model.strip()
@@ -504,6 +518,18 @@ def _selftest():
         expect("backend_max_parallel keeps only positive non-bool backend integers",
                caps == {"codex": 3, "claude": 1}
                and isinstance(cap_warnings, list) and len(cap_warnings) == 5)
+
+        limited_pools, limit_warnings = read_pools({"pools": {"balanced": {"light": [
+            {"backend": "codex", "weight": 101},
+            {"backend": "claude", "weight": 100},
+            {"backend": "cursor", "weight": 100},
+            {"backend": "devin", "weight": 100},
+        ]}}})
+        expect("pool weights and aggregate expansion are deterministically bounded",
+               limited_pools == {"balanced": {"light": [
+                   {"backend": "claude", "weight": 100},
+                   {"backend": "cursor", "weight": 100},
+               ]}} and isinstance(limit_warnings, list) and len(limit_warnings) == 2)
 
         # Valid config round-trips models + pre_eval.
         write({

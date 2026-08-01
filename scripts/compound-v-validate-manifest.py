@@ -1715,6 +1715,7 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
         )
         problems.extend(pool_context_problems)
     pool_ordinals = {}
+    validated_pool_member_sets = set()
 
     # Structural sanity + collect per-job globs.
     seen_ids = set()
@@ -1925,6 +1926,56 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
                     % (jid, job.get("model"))
                 )
 
+            # Validate EVERY normalized member in a used stance+tier pool, not
+            # only the slot selected by this manifest ordinal. An alternate
+            # (or later frozen-unavailable) member is still executable routing
+            # configuration and must not hide Haiku or a backend-specific bad
+            # model such as a malformed Opencode provider/model override.
+            pool_stance = str(stance or "balanced").lower()
+            member_set_key = (pool_stance, tier_lc)
+            if (pool_rm is not None and normalized_pools is not None
+                    and tier_lc in ("standard", "light")
+                    and member_set_key not in validated_pool_member_sets):
+                validated_pool_member_sets.add(member_set_key)
+                stance_pools = normalized_pools.get(pool_stance)
+                members = (stance_pools.get(tier_lc)
+                           if isinstance(stance_pools, dict) else None)
+                if isinstance(members, list):
+                    for member_index, member in enumerate(members):
+                        try:
+                            member_resolution = pool_rm.resolve(
+                                backend=member.get("backend"),
+                                tier=tier_lc,
+                                config_models=pool_config_models,
+                                explicit_model=member.get("model"),
+                                stance=pool_stance,
+                                job_type=job.get("type"),
+                            )
+                            member_model = (member_resolution.get("model")
+                                            if isinstance(member_resolution, dict)
+                                            else None)
+                            if (not isinstance(member_model, str)
+                                    or not member_model.strip()):
+                                problems.append(
+                                    "pool member %d for stance '%s' tier '%s' "
+                                    "resolved no concrete model — fail-closed"
+                                    % (member_index, pool_stance, tier_lc)
+                                )
+                            elif "haiku" in member_model.lower():
+                                problems.append(
+                                    "pool member %d for stance '%s' tier '%s' "
+                                    "resolved model '%s', which violates the "
+                                    "never-Haiku policy"
+                                    % (member_index, pool_stance, tier_lc,
+                                       member_model)
+                                )
+                        except Exception as e:  # noqa: BLE001 - fail closed
+                            problems.append(
+                                "pool member %d for stance '%s' tier '%s' "
+                                "failed concrete model resolution: %s"
+                                % (member_index, pool_stance, tier_lc, e)
+                            )
+
             # Resolve this job's manifest-order ordinal through Task 1's pure
             # resolver. This preserves stance rules, optional-member-model
             # precedence, Opencode provider/model checks, and exposes the
@@ -1936,7 +1987,7 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
                     pool_resolution = pool_rm.resolve_pool(
                         tier=tier_lc,
                         index=pool_index,
-                        stance=str(stance or "balanced").lower(),
+                        stance=pool_stance,
                         pools=normalized_pools,
                         config_models=pool_config_models,
                         effort=(effort_lc if effort_lc else None),
@@ -1949,12 +2000,6 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
                         problems.append(
                             "job '%s' pool resolution returned no concrete model "
                             "— fail-closed" % jid
-                        )
-                    elif "haiku" in resolved_model.lower():
-                        problems.append(
-                            "job '%s' pool resolved model '%s' violates the "
-                            "never-Haiku policy (no Haiku as an execution-layer "
-                            "model)" % (jid, resolved_model)
                         )
                 except Exception as e:  # noqa: BLE001 - routing must fail closed
                     problems.append(
@@ -4318,6 +4363,20 @@ def _selftest():
         expect("pool: resolved Haiku rejected by execution-layer policy",
                any("resolved model" in p and "never-Haiku" in p
                    for p in pool_haiku))
+
+        alternate_haiku_path = pool_config("alternate-haiku", {
+            "balanced": {
+                "light": [
+                    {"backend": "codex"},
+                    {"backend": "claude", "model": "claude-haiku-alternate"},
+                ]
+            }
+        })
+        alternate_haiku = validate_text(
+            _pool_manifest_fixture(), config_path=alternate_haiku_path)
+        expect("pool: unselected alternate member resolved to Haiku is rejected",
+               any("pool member 1" in p and "claude-haiku-alternate" in p
+                   and "never-Haiku" in p for p in alternate_haiku))
 
         malformed_caps_path = project_config("malformed-caps", {
             "pools": {
