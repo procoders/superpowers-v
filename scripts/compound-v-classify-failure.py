@@ -32,7 +32,9 @@ Python 3.9-safe, stdlib only.
 """
 
 import argparse
+import importlib.util
 import json
+import os
 import re
 import sys
 
@@ -138,18 +140,36 @@ _ANTIGRAVITY_RULES = [
 # job without it would be classified with OpenAI's needles -- an unrecognised GLM error would
 # come back as `auth` telling the operator to run `codex login`.
 _ZAI_RULES = [
-    ("out_of_credits", [
-        '"1113"', "[1113]", "insufficient balance", "no resource package",
-        "insufficient_balance",
+    # Specific reset-window messages precede permanent balance language: the
+    # provider can append "insufficient balance for extra usage" to a window.
+    ("usage_window_exhausted", [
+        '"1308"', '"1310"', '"1316"', '"1317"', '"1318"', '"1319"',
+        '"1320"', '"1321"', "[1308]", "[1310]", "[1316]", "[1317]",
+        "[1318]", "[1319]", "[1320]", "[1321]",
+        "usage limit reached for the current window",
+        "usage limit reached for the past 5 hours",
     ]),
-    ("rate_limited", [
-        '"1302"', '"1305"', '"1308"', '"1310"', '"1311"', '"1316"', '"1317"',
-        "[1302]", "[1305]", "[1308]", "[1310]", "[1311]", "[1316]", "[1317]",
-        "rate limit reached", "concurrency limit", "quota exhausted",
+    ("out_of_credits", [
+        '"1113"', '"1309"', '"1314"', "[1113]", "[1309]", "[1314]",
+        "insufficient balance", "no resource package", "insufficient_balance",
+        "coding plan package has expired", "enterprise resource package has expired",
+    ]),
+    ("model_unavailable", [
+        '"1311"', "[1311]", "current plan does not support this model",
     ]),
     ("auth", [
-        "invalid api key", "invalid_api_key", "unauthorized", "authentication failed",
-        "401",
+        '"1313"', '"1315"', "[1313]", "[1315]", "restricted by fair use policy",
+        "not a coding plan api key", "invalid api key", "invalid_api_key",
+        "unauthorized", "authentication failed", "401",
+    ]),
+    ("rate_limited", [
+        '"1302"', "[1302]", "api request rate limit reached",
+    ]),
+    ("overloaded", [
+        '"1305"', "[1305]", "service is temporarily overloaded",
+    ]),
+    ("network", [
+        '"1234"', "[1234]", "provider returned a network error",
     ]),
 ]
 
@@ -194,7 +214,7 @@ _CLAUDE_RULES = [
                         "context window exceeded", "context_length_exceeded"]),
     ("rate_limited", ["rate_limit", "too many requests"]),
     ("overloaded", ["overloaded_error", "529 overloaded", "server_error"]),
-    ("network", ["econnreset", "getaddrinfo", "connection refused"]),
+    ("network", ["econnreset", "getaddrinfo", "connection refused", "tls handshake"]),
 ]
 
 # Exact `api_retry.error` enum values -> class (claude headless stream-json).
@@ -246,8 +266,17 @@ def _parse_claude_json(text):
 
 
 _RETRY_AFTER_RES = [
+    re.compile(r"(?:try again in|retry[- ]after[:=\s]+)\s*"
+               r"(\d+)\s*(second|sec|minute|min|hour|day)s?", re.I),
     re.compile(r"retry[- ]after[:=\s]+(\d+)", re.I),
-    re.compile(r"try again in\s+(\d+)\s*(second|sec|minute|min|hour|day)s?", re.I),
+]
+_RETRY_AT_RES = [
+    re.compile(r"next_flush_time\s*[:=]\s*"
+               r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))",
+               re.I),
+    re.compile(r"(?:reset|retry)\s+at\s+"
+               r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))",
+               re.I),
 ]
 _UNIT_SECONDS = {"second": 1, "sec": 1, "minute": 60, "min": 60, "hour": 3600, "day": 86400}
 
@@ -262,6 +291,39 @@ def _extract_retry_after(text):
                 return n * _UNIT_SECONDS.get(m.group(2).lower().rstrip("s"), 1)
             return n
     return 0
+
+
+def _provider_time_module():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "compound-v-provider-time.py")
+    spec = importlib.util.spec_from_file_location("compound_v_provider_time", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _extract_retry_at(text):
+    """Best-effort strict absolute reset; unknown provider renderings stay absent."""
+    for rx in _RETRY_AT_RES:
+        matched = rx.search(text)
+        if not matched:
+            continue
+        try:
+            time_module = _provider_time_module()
+            parsed = time_module.parse_utc_timestamp(matched.group(1), "retry_at")
+            return time_module.format_utc_timestamp(parsed)
+        except (OSError, ValueError):
+            return None
+    return None
+
+
+def _network_scope(backend, failure_class, matched):
+    if failure_class != "network":
+        return None
+    if backend == "zai" and matched in ('"1234"', "[1234]",
+                                         "provider returned a network error"):
+        return "provider_reported"
+    return "no_response"
 
 
 def classify(backend, exit_code, stderr):
@@ -296,9 +358,16 @@ def classify(backend, exit_code, stderr):
     return "other", None, retry_after
 
 
-def _result(cls, matched, retry_after):
+def _result(cls, matched, retry_after, retry_at=None, network_scope=None):
     return {"failure_class": cls, "retryable": cls in RETRYABLE, "matched": matched,
-            "retry_after": retry_after}
+            "retry_after": retry_after, "retry_at": retry_at,
+            "network_scope": network_scope}
+
+
+def _classify_result(backend, exit_code, stderr):
+    cls, matched, retry_after = classify(backend, exit_code, stderr)
+    return _result(cls, matched, retry_after, _extract_retry_at(stderr or ""),
+                   _network_scope(backend, cls, matched))
 
 
 def _selftest():
@@ -310,12 +379,12 @@ def _selftest():
         ("zai", 1, '{"error":{"code":"1113","message":"Insufficient balance or no resource package"}}',
          "out_of_credits"),
         ("zai", 1, '{"error":{"code":"1302","message":"API request rate limit reached"}}', "rate_limited"),
-        ("zai", 1, '{"error":{"code":"1305","message":"Request rate limit reached"}}', "rate_limited"),
-        ("zai", 1, '{"error":{"code":"1308","message":"Concurrency limit reached"}}', "rate_limited"),
-        ("zai", 1, '{"error":{"code":"1310","message":"Rate limit reached"}}', "rate_limited"),
-        ("zai", 1, '{"error":{"code":"1311","message":"Quota exhausted"}}', "rate_limited"),
-        ("zai", 1, '{"error":{"code":"1316","message":"Rate limit reached"}}', "rate_limited"),
-        ("zai", 1, '{"error":{"code":"1317","message":"Rate limit reached"}}', "rate_limited"),
+        ("zai", 1, '{"error":{"code":"1305","message":"Request rate limit reached"}}', "overloaded"),
+        ("zai", 1, '{"error":{"code":"1308","message":"Concurrency limit reached"}}', "usage_window_exhausted"),
+        ("zai", 1, '{"error":{"code":"1310","message":"Rate limit reached"}}', "usage_window_exhausted"),
+        ("zai", 1, '{"error":{"code":"1311","message":"Quota exhausted"}}', "model_unavailable"),
+        ("zai", 1, '{"error":{"code":"1316","message":"Rate limit reached"}}', "usage_window_exhausted"),
+        ("zai", 1, '{"error":{"code":"1317","message":"Rate limit reached"}}', "usage_window_exhausted"),
         # The 1211 config fault seen live is NOT a quota problem.
         ("zai", 1, "API Error: 400 [1211][Unknown Model, please check the model code.]", "other"),
         # An unrecognised payload must fail closed to `other`. This case is load-bearing:
@@ -386,6 +455,119 @@ def _selftest():
     assert _extract_retry_after("please try again in 5 days") == 5 * 86400
     assert classify("codex", 1, "rate limited, retry-after: 12")[2] == 12
 
+    # PR3 contract fixtures use complete provider-rendered messages. Each z.ai
+    # semantic family is tested both with and without its numeric business code
+    # because claude -p may omit the envelope/code while preserving the message.
+    evidence_cases = [
+        ("zai 1302 coded throttle", "zai",
+         '[1302] API request rate limit reached, please try again later.',
+         "rate_limited", None, None),
+        ("zai codeless throttle", "zai",
+         "API request rate limit reached, please try again later.",
+         "rate_limited", None, None),
+        ("zai 1305 coded overload", "zai",
+         '[1305] The service is temporarily overloaded, please try again later.',
+         "overloaded", None, None),
+        ("zai codeless overload", "zai",
+         "The service is temporarily overloaded, please try again later.",
+         "overloaded", None, None),
+        ("zai 1113 coded credits", "zai",
+         '[1113] Insufficient balance or no resource package.',
+         "out_of_credits", None, None),
+        ("zai codeless credits", "zai",
+         "Insufficient balance or no resource package.",
+         "out_of_credits", None, None),
+        ("zai 1309 coded expiry", "zai",
+         '[1309] Your Coding Plan package has expired.',
+         "out_of_credits", None, None),
+        ("zai codeless expiry", "zai",
+         "Your Coding Plan package has expired.",
+         "out_of_credits", None, None),
+        ("zai 1314 coded enterprise expiry", "zai",
+         '[1314] Your enterprise resource package has expired.',
+         "out_of_credits", None, None),
+        ("zai codeless enterprise expiry", "zai",
+         "Your enterprise resource package has expired.",
+         "out_of_credits", None, None),
+        ("zai 1311 coded model unavailable", "zai",
+         '[1311] The current plan does not support this model.',
+         "model_unavailable", None, None),
+        ("zai codeless model unavailable", "zai",
+         "The current plan does not support this model.",
+         "model_unavailable", None, None),
+        ("zai 1313 coded policy action", "zai",
+         '[1313] Your account is restricted by Fair Use policy; request restoration.',
+         "auth", None, None),
+        ("zai codeless policy action", "zai",
+         "Your account is restricted by Fair Use policy; request restoration.",
+         "auth", None, None),
+        ("zai 1315 coded product mismatch", "zai",
+         '[1315] This API key is not a Coding Plan API key.',
+         "auth", None, None),
+        ("zai codeless product mismatch", "zai",
+         "This API key is not a Coding Plan API key.",
+         "auth", None, None),
+        ("zai 1234 provider network", "zai", '[1234] Network error',
+         "network", None, "provider_reported"),
+        ("zai codeless provider network", "zai",
+         "The provider returned a network error while processing the request.",
+         "network", None, "provider_reported"),
+    ]
+    reset_codes = (1308, 1310, 1316, 1317, 1318, 1319, 1320, 1321)
+    for code in reset_codes:
+        evidence_cases.extend([
+            ("zai %d coded reset window" % code, "zai",
+             "[%d] Usage limit reached for the current window; next_flush_time: "
+             "2026-08-05T00:00:00+00:00." % code,
+             "usage_window_exhausted", "2026-08-05T00:00:00Z", None),
+            ("zai %d codeless reset window" % code, "zai",
+             "Usage limit reached for the current window; next_flush_time: "
+             "2026-08-05T00:00:00+00:00.",
+             "usage_window_exhausted", "2026-08-05T00:00:00Z", None),
+        ])
+    evidence_cases.extend([
+        ("window wins over insufficient balance", "zai",
+         "Usage limit reached for the past 5 hours; insufficient balance for extra "
+         "usage; next_flush_time: 2026-08-05T00:00:00Z",
+         "usage_window_exhausted", "2026-08-05T00:00:00Z", None),
+        ("codex retry-after seconds", "codex",
+         "429 rate limit reached; Retry-After: 37", "rate_limited", None, None),
+        ("claude retry-after seconds", "claude",
+         "rate_limit_error; retry after 2 minutes", "rate_limited", None, None),
+        ("openai absolute reset", "codex",
+         "rate limited; reset at 2026-08-05T00:00:00-04:00",
+         "rate_limited", "2026-08-05T04:00:00Z", None),
+        ("dns no response", "codex",
+         "getaddrinfo ENOTFOUND api.openai.com", "network", None, "no_response"),
+        ("tls no response", "claude",
+         "TLS handshake failed before a provider response", "network", None, "no_response"),
+        ("connect no response", "cursor",
+         "Could not connect to api.cursor.sh", "network", None, "no_response"),
+        ("reset no response", "antigravity",
+         "ECONNRESET before response headers", "network", None, "no_response"),
+    ])
+    for name, backend, message, want_class, want_retry_at, want_scope in evidence_cases:
+        details_fn = globals().get("_classify_result")
+        details = (details_fn(backend, 1, message)
+                   if callable(details_fn) else {})
+        checks = (
+            details.get("failure_class") == want_class
+            and details.get("retry_at") == want_retry_at
+            and details.get("network_scope") == want_scope)
+        if checks:
+            ok += 1
+        else:
+            fail += 1
+            print("  FAIL %s -> %r" % (name, details))
+    retry_details = (globals().get("_classify_result") or
+                     (lambda *_args: {}))("claude", 1,
+                                          "rate_limit_error; retry after 2 minutes")
+    if retry_details.get("retry_after") == 120:
+        ok += 1
+    else:
+        fail += 1
+        print("  FAIL retry-after unit transport -> %r" % retry_details)
+
     # The CLI accepts every concrete worker backend shipped after PR 1, while the
     # manifest-only routing token ``pool`` remains structurally unclassifiable.
     concrete = ("claude", "codex", "antigravity", "cursor", "devin", "opencode", "zai")
@@ -447,8 +629,7 @@ def main(argv):
     else:
         stderr = "" if sys.stdin.isatty() else sys.stdin.read()
 
-    cls, matched, retry_after = classify(args.backend, args.exit_code, stderr)
-    print(json.dumps(_result(cls, matched, retry_after)))
+    print(json.dumps(_classify_result(args.backend, args.exit_code, stderr)))
     return 0
 
 

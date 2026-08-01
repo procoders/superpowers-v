@@ -72,6 +72,7 @@ on a usage error or schema-conformance failure.
 import argparse
 import bisect
 import collections
+import importlib.util
 import json
 import os
 import re
@@ -235,6 +236,15 @@ def _derive_status(blocked: bool, exit_code: int, scope_status: Optional[str],
     return "success"
 
 
+def _provider_time_module() -> Any:
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "compound-v-provider-time.py")
+    spec = importlib.util.spec_from_file_location("compound_v_provider_time", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def build_result(args: argparse.Namespace) -> Dict[str, Any]:
     scope = _read_json(args.scope) if args.scope else None
     if not isinstance(scope, dict):
@@ -323,10 +333,23 @@ def build_result(args: argparse.Namespace) -> Dict[str, Any]:
     # A successful job never carries a failure class. These are REQUIRED by the schema, so
     # the normalized result for EVERY backend must include them.
     failure_class = args.failure_class or None
-    retry_after_seconds = args.retry_after_seconds or 0
+    provider_time = _provider_time_module()
+    retry_after_seconds = provider_time.parse_delay(
+        args.retry_after_seconds, "retry_after_seconds")
+    retry_at_value = getattr(args, "retry_at", None)
+    retry_at = None
+    if retry_at_value is not None:
+        retry_at = provider_time.format_utc_timestamp(
+            provider_time.parse_utc_timestamp(retry_at_value, "retry_at"))
+    network_scope = getattr(args, "network_scope", None)
+    if network_scope not in (None, "no_response", "provider_reported"):
+        raise ValueError("network_scope must be no_response or provider_reported")
     if status == "success":
         failure_class = None
         retry_after_seconds = 0
+    if status in ("success", "blocked"):
+        retry_at = None
+        network_scope = None
 
     result = {
         "status": status,
@@ -340,6 +363,10 @@ def build_result(args: argparse.Namespace) -> Dict[str, Any]:
         "failure_class": failure_class,
         "retry_after_seconds": retry_after_seconds,
     }  # type: Dict[str, Any]
+    if retry_at is not None:
+        result["retry_at"] = retry_at
+    if network_scope is not None:
+        result["network_scope"] = network_scope
 
     # OPTIONAL `usage` passthrough (informational / measured-only, worker-sourced
     # like `summary`). The usage object is extracted from the backend's own
@@ -497,6 +524,11 @@ def conformance_errors(result: Dict[str, Any], schema_path: str) -> List[str]:
     # (unknown keys, wrong field types) would pass conformance.
     if isinstance(result.get("usage"), dict):
         errs.extend(_usage_conformance_errors(result["usage"], props.get("usage", {})))
+    if result.get("status") in ("success", "blocked"):
+        for key in ("retry_at", "network_scope"):
+            if key in result:
+                errs.append("key %s must be omitted for status %s"
+                            % (key, result.get("status")))
     return errs
 
 
@@ -950,6 +982,7 @@ def _mk_args(**kw: Any) -> argparse.Namespace:
         worker_output=None, schema=None, status=None, summary=None,
         session_id=None, worktree=None, exit_code=None,
         failure_class=None, retry_after_seconds=0, backend=None,
+        retry_at=None, network_scope=None,
         files_changed=None, violations=None, blocked=None,
         print_result=False,
     )
@@ -1007,6 +1040,40 @@ def _selftest() -> int:
     check("success_no_failure_class.status", res_c["status"] == "success")
     check("success_no_failure_class.class", res_c["failure_class"] is None)
     check("success_no_failure_class.retry", res_c["retry_after_seconds"] == 0)
+    check("success_omits.retry_at", "retry_at" not in res_c)
+    check("success_omits.network_scope", "network_scope" not in res_c)
+
+    # (c2) Optional provider evidence is strict and failure-only. Error results
+    # preserve supplied canonical values exactly; success/blocked omit the keys.
+    error_evidence = build_result(_mk_args(
+        exit_code=1, failure_class="usage_window_exhausted",
+        retry_after_seconds=123, retry_at="2026-08-05T00:00:00Z",
+        network_scope="provider_reported"))
+    check("failure_evidence.retry_at_passthrough",
+          error_evidence.get("retry_at") == "2026-08-05T00:00:00Z")
+    check("failure_evidence.network_scope_passthrough",
+          error_evidence.get("network_scope") == "provider_reported")
+    blocked_evidence = build_result(_mk_args(
+        status="blocked", blocked=True, retry_at="2026-08-05T00:00:00Z",
+        network_scope="no_response"))
+    check("blocked_omits.retry_at", "retry_at" not in blocked_evidence)
+    check("blocked_omits.network_scope", "network_scope" not in blocked_evidence)
+
+    def rejects(**kwargs: Any) -> bool:
+        try:
+            build_result(_mk_args(exit_code=1, **kwargs))
+        except ValueError:
+            return True
+        return False
+
+    check("failure_evidence.rejects_naive_retry_at",
+          rejects(retry_at="2026-08-05T00:00:00"))
+    check("failure_evidence.rejects_unknown_network_scope",
+          rejects(network_scope="global_offline"))
+    check("failure_evidence.rejects_negative_retry_after",
+          rejects(retry_after_seconds=-1))
+    check("failure_evidence.rejects_boolean_retry_after",
+          rejects(retry_after_seconds=True))
 
     # (d) usage.advisor_calls is SCRIPT-DERIVED: a worker-reported count is
     #     ALWAYS discarded. With no advisor log -> null (fail-open); with an N-line
@@ -1269,10 +1336,15 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     p.add_argument("--exit-code", type=int, help="Force exit_code")
     p.add_argument("--failure-class",
                    choices=["none", "out_of_credits", "rate_limited", "overloaded",
-                            "auth", "context_length", "timeout", "network", "other"],
+                            "usage_window_exhausted", "model_unavailable", "auth",
+                            "context_length", "timeout", "network", "other"],
                    help="Backend-failure class (from compound-v-classify-failure.py); omit on success")
-    p.add_argument("--retry-after-seconds", type=int, default=0,
+    p.add_argument("--retry-after-seconds", type=float, default=0,
                    help="Seconds-until-retry from the provider, 0 if unknown")
+    p.add_argument("--retry-at",
+                   help="Absolute timezone-aware provider reset timestamp")
+    p.add_argument("--network-scope", choices=["no_response", "provider_reported"],
+                   help="Whether a network failure lacked any provider response")
     p.add_argument("--backend",
                    help="Job backend name (codex|opencode|cursor|agy|antigravity|claude|devin); "
                         "labels a usage object synthesized purely from a derived advisor_calls count")
