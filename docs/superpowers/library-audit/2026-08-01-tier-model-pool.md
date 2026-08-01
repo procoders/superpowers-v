@@ -3,6 +3,13 @@
 **Spec audited:** [`docs/superpowers/specs/2026-08-01-tier-model-pool-design.md`](../specs/2026-08-01-tier-model-pool-design.md)
 **Date:** 2026-08-01 · **Branch:** `feat/tier-model-pool`
 
+> **Revised 2026-08-01** after the Phase 1A archaeologist challenged finding #1. Two of my verdicts
+> were wrong and are corrected in place (§5, §5a, §8.1, §8.4, table rows 1 and 3); one new finding
+> was added (row 13). Root cause of both errors: I checked for the zai design doc with `git ls-files`
+> and `git grep`, which see **only the current branch**, then reported repo-wide absence. It exists
+> on `feat/zai-backend`. Corrected method for anything in this PR series: `git cat-file -e <ref>:<path>`
+> across `git for-each-ref`, not the working index.
+
 **Scope note, stated plainly.** This spec adds **no dependency, no lockfile entry, and no new CLI
 invocation**. There is therefore **nothing to audit** in the usual Phase-1C sense — no abandoned
 package, no version drift, no changed method signature. The five sections below cover only what
@@ -48,7 +55,7 @@ precedent, and language-floor checking.
 |---|---|---|---|---|
 | `sonnet` | claude | `_CLAUDE_DEFAULT["light"] = "sonnet"` and `_CLAUDE_COST_AWARE["standard"/"light"] = "sonnet"` (`compound-v-resolve-model.py:70-71`) | `sonnet` is a documented Claude Code alias → **Sonnet 5** on the Anthropic API | 🟢 **matches, current** |
 | `gpt-5.6-luna` | codex | `_CODEX["light"] = "gpt-5.6-luna"` (`compound-v-resolve-model.py:76`) | GPT-5.6 Sol/Terra/Luna reached Codex GA **2026-07-09**; `codex -m gpt-5.6-luna` is the documented invocation | 🟢 **matches, current** |
-| `glm-5-turbo` | zai | **no `zai` backend exists in this repo** (see §5) | `glm-5-turbo` is the exact API model id on z.ai; GLM-5-Turbo is in the current Coding Plan lineup alongside GLM-5.2 and GLM-4.7 | 🟢 **name correct** / 🔴 **backend does not exist** |
+| `glm-5-turbo` | zai | no `zai` backend on **this** branch; PR 1 on `feat/zai-backend` maps `light → glm-5-turbo` (see §5) | `glm-5-turbo` is the exact API model id on z.ai; GLM-5-Turbo is in the current Coding Plan lineup alongside GLM-5.2 and GLM-4.7 | 🟢 **name correct, and matches PR 1's map** |
 
 Sources: [Claude Code model configuration](https://code.claude.com/docs/en/model-config) ·
 [Claude rate limits (model roster)](https://platform.claude.com/docs/en/api/rate-limits) ·
@@ -190,50 +197,74 @@ path. Name it.
 
 ---
 
-## 5. `zai` does not exist in this repo — and the spec's link to it is dead 🔴 BLOCKING
+## 5. `zai` is a cross-branch reference — the link was dead on this branch ✅ RESOLVED
 
-`git grep` over all tracked files: the string `zai` appears in exactly **two** files — a July
-research doc and this spec itself. Concretely:
+> **Corrected 2026-08-01, after the Phase 1A archaeologist pushed back.** My first draft said the
+> zai design doc *"does not exist, tracked or untracked."* **That was wrong, and the method was
+> wrong.** I checked with `git ls-files` and `git grep`, which only ever see the **current
+> branch's** index — I never queried other refs, and I stated a repo-wide absence on branch-local
+> evidence.
+>
+> The file **does exist**, at `docs/superpowers/specs/2026-07-31-zai-backend-design.md` on
+> `feat/zai-backend` (and `fork/feat/zai-backend`). Verified with
+> `git cat-file -e feat/zai-backend:<path>` and a sweep of every ref. It is absent *here* only
+> because `feat/tier-model-pool` is cut from `main`.
+>
+> That makes this a **cross-branch reference**, not a broken one — a different defect with a
+> different correct fix. Deleting the link would have been wrong: the PR-1 dependency is real and
+> load-bearing for a PR 2 of 3.
+>
+> **Already fixed.** Commit `9ca9059` *"fix(pool): drop a cross-branch link that fails the
+> dead-link gate"* (an ancestor of `HEAD`) rewrote spec line 16 to keep the dependency as prose and
+> record why it is deliberately not a link. Repo-wide dead-link count is now **0**. No action left.
+>
+> **Standing rule for the rest of this series:** any doc on a branch cut from `main` that
+> references PR 1 hits this gate. The shape that works is a prose branch-dependency note plus a
+> bare backticked filename — never the `](…)` sequence, and backticks alone do **not** protect it.
 
-- `docs/superpowers/specs/2026-07-31-zai-backend-design.md` — **does not exist**, tracked or
-  untracked. Spec line 16 carries a markdown link with the text *"the zai backend"* whose target is
-  that filename.
-
-  > *(This audit deliberately does not reproduce that link verbatim — a live `](…)` pointing at the
-  > missing file would make this very file fail the same CI gate.)*
+What remains true, and is what actually matters for the plan: **`zai` is not a usable backend on
+this branch.** Concretely, on `feat/tier-model-pool`:
 - `BACKENDS` in `compound-v-resolve-model.py:144` = `("claude", "codex", "antigravity", "cursor", "devin", "opencode")` — no `zai`.
 - `VALID_BACKENDS` in `compound-v-validate-manifest.py:519` — identical list, no `zai`.
 - `FALLBACK` in `compound-v-failure-policy.py:59` = `{"codex": "claude", "antigravity": "claude", "cursor": "claude", "claude": None}` — no `zai` (and, separately, no `devin`/`opencode` either).
 - `compound-v-classify-failure.py` has per-backend needle sets for codex/claude/antigravity/cursor — none for zai.
 - No `skills/backend-launcher/adapter-zai.md`.
 
-**This fails CI today.** `.github/workflows/validate.yml:203-236` runs a repo-wide dead-link scan
-over every `*.md`. Reproduced locally against the exact CI logic: **1 dead link in the entire
-repo, and it is this one.**
+The gate history, for the record: before `9ca9059` the repo-wide scan (CI logic reproduced locally)
+found **1** dead link and it was spec line 16. After `9ca9059`: **0**.
 
-```
-DEAD LINKS: 1
-  docs/superpowers/specs/2026-08-01-tier-model-pool-design.md -> 2026-07-31-zai-backend-design.md
-```
+### 5a. Claims that reference the zai adapter — re-checked against PR 1
 
-The spec file is already tracked on `feat/tier-model-pool`, so a PR to `main` fails the
-**Check for dead intra-plugin cross-refs** step. Either land the zai design doc first or make
-the reference a plain-text forward reference with no `](…)` link.
+**Corrected.** My first draft filed these as UNVERIFIABLE-AS-WRITTEN because I could not see a zai
+adapter. Having read `2026-07-31-zai-backend-design.md` on `feat/zai-backend`, most of them are in
+fact substantiated there — by live probes dated 2026-07-31/08-01 against `claude 2.1.207` and
+`codex-cli 0.144.4`. They are unresolvable **from this branch**, which is not the same as unfounded.
 
-### 5a. Claims that depend on the missing zai adapter
+- §5: *"`zai` defaults to 4, per its adapter"* — ✅ **substantiated.** PR 1 states: *"`max_parallel`
+  for `zai` is **configurable, default 4**. Six concurrent real jobs were measured clean, but z.ai
+  publishes no concurrency limit, states that limits adjust dynamically with plan tier, and its
+  usage policy recommends one project on Lite and one to two on Pro. The default sits below the
+  measured ceiling; anyone on Lite should lower it."* That is a measured ceiling plus a deliberate
+  safety margin, not a guess. My independent finding — that z.ai publishes no fixed concurrency
+  number and adjusts dynamically by plan tier — **corroborates** PR 1 rather than contradicting it.
+  Remaining nit only: the pool spec says *"per its adapter"*, but the number is currently stated in
+  PR 1's **spec**; the adapter doc is still to be written. Cite the spec, or write the adapter first.
+- §4: *"`codex`, `cursor`, `antigravity`, `devin`, `opencode` and `zai` must run in a worktree."* —
+  ✅ **substantiated.** PR 1: *"`isolation: worktree` is **mandatory**, a new entry beside the
+  existing `codex|antigravity|cursor|devin|opencode ⇒ worktree` invariant"*, with zai placed in the
+  lower-trust tier alongside antigravity and cursor.
+- `light → glm-5-turbo` — ✅ **matches PR 1's map exactly** (`deep`/`standard → glm-5.2`,
+  `light → glm-5-turbo`). PR 1 also probed the subscription's accepted model ids directly and
+  confirms `glm-5-turbo` is accepted (rejected siblings include `glm-5-fast`, `glm-5-flash`,
+  `glm-5.2-turbo`), and picked it for `light` on measured latency/credit, not on the price table.
+- AC 5: *"with `zai` absent, a three-member pool alternates between the remaining two"* — still not
+  runnable until PR 1 lands, but that is ordinary branch sequencing, not a defect.
 
-These are stated as fact about a system that has no implementation in this repo:
-
-- §5: *"Backends with their own ceiling — `zai` defaults to 4, per its adapter"*. There is no zai
-  adapter. **UNVERIFIABLE-AS-WRITTEN.** z.ai's own docs confirm concurrency limits exist and are
-  *"tied to the plan tier and can be adjusted dynamically based on resource availability"* — i.e.
-  the real number is plan-dependent and mutable, so a hardcoded `4` needs its own citation.
-- §4: *"`codex`, `cursor`, `antigravity`, `devin`, `opencode` and `zai` must run in a worktree."*
-  True and enforced for the first five; for zai it is an assertion about an unwritten adapter.
-- AC 5: *"with `zai` absent, a three-member pool alternates between the remaining two"*. Not
-  testable until `zai` can be present.
-- The example config in §1 and the pool in §1 would **fail `compound-v-validate-manifest.py`
-  today** on the unknown backend.
+**The one thing that genuinely does not change:** the spec's example config and example pool
+**fail `compound-v-validate-manifest.py` on this branch** — `zai` is in neither `BACKENDS` nor
+`VALID_BACKENDS` here. If PR 2 is meant to merge independently of PR 1 (its own §"Independent of
+PR 1" says it is), its *examples* must not require PR 1. That is a documentation-sequencing point,
+not a claim about zai's soundness.
 
 ### 5b. `backend: pool` as an enum value leaks into a second check ⚠️
 
@@ -319,16 +350,21 @@ only."*
    and will not catch these; only CI will.
 6. Scope the new `pool` enum value to `job.backend`. It must not become a legal
    `advisor.advisor_backend`.
-7. Fix the dead link to `2026-07-31-zai-backend-design.md` before any PR to `main`, or CI fails.
+7. ~~Fix the dead link to `2026-07-31-zai-backend-design.md` before any PR to `main`, or CI fails.~~
+   → **done 2026-08-01 in `9ca9059`.** Standing rule for the rest of the series: reference PR 1 as
+   prose plus a bare backticked filename. The gate is line-based and backticks do not protect a
+   `](…)` sequence.
 
 **MUST NOT**
 
 8. Do **not** require `model` on a pool member. A tier-keyed pool already has enough information;
    requiring a concrete string re-creates the churn problem the `models` map exists to solve, in a
    key `/v:models` does not refresh.
-9. Do **not** ship the spec's example config as-is. `{"backend": "zai", ...}` fails
-   `compound-v-validate-manifest.py` today. Use `claude` + `codex` (+ `antigravity`) in every
-   example until a zai adapter lands, and mention zai only as a future member.
+9. Do **not** ship the spec's example config as-is **if PR 2 may merge before PR 1**.
+   `{"backend": "zai", …}` fails `compound-v-validate-manifest.py` on this branch, and the spec's
+   own §"Independent of PR 1" claims PR 2 stands alone. Either use `claude` + `codex` in the
+   examples and mention zai as a future member, or drop the independence claim and declare PR 1 a
+   merge prerequisite. Pick one — the spec currently does both.
 10. Do **not** justify the no-quota-balancing Non-goal on "z.ai does not expose quota
     introspection" — z.ai does expose an undocumented one, and the real reason (the CLI-process
     boundary) is stronger.
@@ -337,9 +373,10 @@ only."*
 
 ## 8. Open questions for the human
 
-1. **Is `2026-07-31-zai-backend-design.md` supposed to exist?** It is referenced as if written but
-   is absent from the repo. Is it unpushed, in another branch, or was the reference aspirational?
-   This determines whether the spec's zai examples are documentation of a sibling PR or fiction.
+1. ~~**Is `2026-07-31-zai-backend-design.md` supposed to exist?**~~ → **answered 2026-08-01.** Yes;
+   it is on `feat/zai-backend`. Replacement question: **must PR 1 merge before PR 2?** The spec
+   says PR 2 is "Independent of PR 1", yet every example it ships needs `zai` to be a valid
+   backend. Independence and the examples cannot both stand — see MUST NOT #9.
 2. **Should a pool member carry a `model` at all?** Recommendation is "optional override only" (see
    MUST NOT #8), but if the operator's intent is *"pin exactly these three checkpoints for this
    run"*, the required-`model` shape is defensible — it just needs a stated policy for who
@@ -347,9 +384,11 @@ only."*
 3. **What does "the failure policy picks the next backend" mean under a pool** — the next pool
    member, or the existing fixed `→ claude` fallback? And should `rate_limited` clear the
    assignment at all, given the current policy retries it on the same backend with backoff?
-4. **Is `backend_max_parallel: {"zai": 4}` a real measured number or a placeholder?** z.ai
-   documents concurrency as plan-tier-dependent and dynamically adjustable, so a fixed 4 needs
-   either a citation or an explicit "conservative default, operator-tunable" label.
+4. ~~**Is `backend_max_parallel: {"zai": 4}` a real measured number or a placeholder?**~~ →
+   **answered 2026-08-01.** Measured: PR 1 ran six concurrent jobs clean and set 4 as a deliberate
+   margin below that ceiling, noting Lite users should lower it. Remaining question is only
+   editorial — PR 2 attributes the number to "its adapter", but it currently lives in PR 1's spec
+   and no adapter doc exists yet.
 
 ---
 
@@ -357,9 +396,9 @@ only."*
 
 | # | Severity | Where | Claim as written | Correction |
 |---|---|---|---|---|
-| 1 | 🔴 **BLOCKING** | §"Independent of PR 1", line 16 | a markdown link *"the zai backend"* targeting `2026-07-31-zai-backend-design.md` | The file does not exist. This is the **only** dead link in the repo and it fails the CI dead-link gate. Land the doc, or drop the link and leave the filename as plain text. |
+| 1 | ✅ **RESOLVED** | §"Independent of PR 1", line 16 | a markdown link *"the zai backend"* targeting `2026-07-31-zai-backend-design.md` | ~~The file does not exist.~~ **Corrected:** it exists on `feat/zai-backend`; this was a **cross-branch** reference, and my "does not exist" was branch-local evidence overstated as repo-wide. Fixed in `9ca9059` — dependency kept as prose, no link. Repo dead-link count now 0. |
 | 2 | 🔴 | §Risks, "A pool hides an unbalanced burn" | *"per-backend quota introspection that z.ai, for one, does not expose"* | **Refuted.** z.ai exposes `{base}/api/monitor/usage/quota/limit` (5-hour / weekly / MCP percentages). Replace the reason with the architectural one: workers are CLI processes, so no provider's rate-limit headers — Anthropic's or OpenAI's included — ever reach the dispatcher; `classify-failure.py` already works from stderr text, not headers. |
-| 3 | 🟠 | §5 | *"`zai` defaults to 4, per its adapter"* | **UNVERIFIABLE-AS-WRITTEN** — no zai adapter exists. z.ai documents concurrency as plan-tier-dependent and dynamically adjusted. Cite or label as a conservative default. |
+| 3 | 🟢 | §5 | *"`zai` defaults to 4, per its adapter"* | ~~UNVERIFIABLE-AS-WRITTEN~~ → **corrected: substantiated.** PR 1 measured six concurrent jobs clean and set 4 as a margin below that, with a "lower it on Lite" note. My independent finding (no published concurrency number; adjusts by plan tier) corroborates it. Editorial nit only: attribute it to PR 1's spec, since no adapter doc exists yet. |
 | 4 | 🟠 | AC 9 | *"the failure policy chooses the next backend"* | Does not describe `failure-policy.py`. `FALLBACK` reroutes every external backend to `claude`, and `rate_limited` is classified retry-same-backend, not reroute. State the intended new behaviour explicitly. |
 | 5 | 🟠 | §1, "Pool members inherit the map's rules, and add none" | Implies a pool entry and a `models` cell are the same shape | They are not (object vs bare string). Restate as: pool resolution goes **through** `resolve()`, so the map's precedence and the `opencode` `provider/model` guard apply unchanged. |
 | 6 | 🟠 | §1 config block | `pools` added with no fail-closed reader specified | Repo convention is a structural raise in `load_project_config` plus a per-key-coercing `resolve_<block>` returning warnings. Spec must say `pools` follows it, and define behaviour for a malformed member (distinct from AC 6's *empty filtered* pool). |
@@ -369,10 +408,12 @@ only."*
 | 10 | 🟡 | §5 | *"Add an optional `backend_max_parallel` map to the config"* | No path given. Every other block in this file has one. Say top-level vs nested vs per-stance. |
 | 11 | 🟡 | §1 | *"Per-stance, exactly like `models`"* | `models` accepts **two** shapes (per-stance, and legacy flat, auto-discriminated by "all top-level keys are stance names"). Say whether `pools` accepts a flat shape too. Tier names and stance names are disjoint, so the same discriminator works — but it needs stating. |
 | 12 | 🟢 | §"Tech stack" | *"Python 3.9-safe stdlib"* | **Accurate**, and CI still enforces 3.9. Optionally name the traps (§6 table) so an implementer on a 3.12+ machine does not discover them in CI. |
+| 13 | 🟠 *(new, 2026-08-01)* | §"Independent of PR 1" vs every example | *"Independent of PR 1 […] useful with only `claude` and `codex` installed"* | Contradicted by the spec's own examples: the config block, the pool, and AC 5 all require `zai`, which fails `compound-v-validate-manifest.py` on this branch. Either make the examples `claude` + `codex` only, or declare PR 1 a merge prerequisite and drop the independence claim. |
 
-**BLOCKING for merge:** #1 (CI-failing today) and, for anything that actually dispatches, #2 — the
-Non-goal's stated justification is factually wrong and would mislead the next person who revisits
-the decision.
+**BLOCKING for merge:** **#2 only.** The Non-goal's stated justification is factually wrong and
+would mislead whoever revisits the decision — which matters because PR 3 of this series is
+explicitly *"rate-limit rerouting"*, so the next person to touch it is already scheduled.
+#1 is resolved (`9ca9059`). #13 is the highest-value remaining item after #2.
 
 ---
 

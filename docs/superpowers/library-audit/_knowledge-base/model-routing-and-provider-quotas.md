@@ -52,3 +52,65 @@ Audit: `docs/superpowers/library-audit/2026-08-01-tier-model-pool.md`.
 - 3.9 does **not** have: `itertools.batched` (3.12), `enum.StrEnum` (3.11), `typing.Self` (3.11), `zip(strict=)` (3.10), `match`/`case` (3.10), `X | Y` annotations (3.10), `itertools.pairwise` (3.10), `int.bit_count` (3.10), `dataclass(slots=True)` (3.10).
 - 3.9 **does** have: PEP 585 builtin generics (`list[str]`), PEP 584 dict `|` merge, `str.removeprefix`/`removesuffix`, `functools.cache`, `graphlib`.
 - Caveat: a dev machine on Python 3.12+/3.14 will run 3.10-only syntax cleanly. Only CI catches it.
+
+---
+
+## Updated 2026-08-01 (later) — corrections after cross-branch verification
+
+Same audit, revised after the Phase 1A archaeologist pushed back. Recorded because the **method**
+error is the reusable lesson.
+
+### Method: `git grep` / `git ls-files` are branch-local — never report repo-wide absence from them
+
+- **2026-08-01:** I reported `docs/superpowers/specs/2026-07-31-zai-backend-design.md` as *"does not
+  exist, tracked or untracked"* on the strength of `git ls-files | grep -i zai` and `git grep -l`.
+  Both read **only the current branch's** index. The file exists on `feat/zai-backend` and
+  `fork/feat/zai-backend`.
+- **Correct check for a multi-PR series:** `git cat-file -e <ref>:<path>` looped over
+  `git for-each-ref --format='%(refname)' refs/heads refs/remotes`. Use this before calling any
+  cross-referenced doc missing.
+- **Consequence for diagnosis, not just wording:** "missing file" and "cross-branch reference" have
+  different correct fixes. Deleting the link would have destroyed a real, load-bearing PR-1
+  dependency. The fix that landed (`9ca9059`) kept the dependency as prose and recorded why it is
+  deliberately not a link.
+
+### The dead-link gate is line-based and code spans do not protect you
+
+- **2026-08-01:** `.github/workflows/validate.yml` ("Check for dead intra-plugin cross-refs") greps
+  `\]\([^)]+\.(md|py|sh|json|ya?ml)[^)]*\)` line by line over every `*.md`. It does **not** respect
+  inline code spans — quoting a broken link in backticks still trips it. Only `http*` and `/docs/*`
+  targets are skipped. Fenced code blocks are safe only because they rarely contain `](`.
+- Practical shape for any doc on a branch cut from `main` that must reference a sibling PR: prose
+  branch-dependency note **plus a bare backticked filename**, never the `](…)` sequence.
+- This bit two audit files before it was noticed. Cheap to re-check: reproduce the gate's regex in
+  Python and run it repo-wide before committing any doc.
+
+### z.ai facts corroborated by PR 1's live probes (`feat/zai-backend`, dated 2026-07-31/08-01)
+
+Independent measurement against a real GLM Coding Plan subscription, `claude 2.1.207` /
+`codex-cli 0.144.4`. These **agree with** the doc-derived findings recorded earlier above:
+
+- **Concurrency:** two, four and six simultaneous requests all completed with **zero** 429s.
+  `max_parallel` for zai set to a **configurable default of 4** — a deliberate margin below the
+  measured ceiling, with guidance to lower it on Lite. Confirms that z.ai publishes no fixed
+  concurrency number and adjusts by plan tier.
+- **Accepted model ids on the subscription** (probed, not guessed): `glm-5.2`, `glm-5.1`, `glm-5`,
+  `glm-5-turbo`, `glm-4.7`, `glm-4.6`, `glm-4.6v`, `glm-4.5-air`, plus Anthropic aliases such as
+  `claude-opus-4-8`. **Rejected:** `glm-5.2-air`, `glm-4.6-air`, `glm-5-fast`, `glm-5.2-fast`,
+  `glm-5-flash`, `glm-4.6-flash`, `glm-5.2-turbo` — unknown model → `400 [1211]`. Note the
+  subscription accepts **more** models than the Coding Plan docs list (docs name only GLM-5.2,
+  GLM-5-Turbo, GLM-4.7).
+- **zai tier map:** `deep`/`standard` → `glm-5.2`, `light` → `glm-5-turbo`. `light` chosen on
+  measured latency/credit, not the multiplier table.
+- **Quota error surface is fully published** — `1113, 1302, 1305, 1308, 1310, 1311, 1316, 1317`, all
+  HTTP 429, each with a message template. (Distinct from the *quota introspection* endpoint noted
+  earlier, which remains undocumented.)
+- **Credit formula:** `(input × Mi + cached × Mc + output × Mo) / 10 000`. Multipliers: glm-5.2
+  `6.9 / 1.7 / 24`, glm-5-turbo `5.7 / 1.5 / 21`, glm-4.7 `4.6 / 1.2 / 16`, glm-4.6v `1.2 / 0.3 / 2.7`.
+- **Transport:** the zai adapter is `claude -p` with `ANTHROPIC_BASE_URL` pointed at z.ai's
+  Anthropic-compatible endpoint, in a git worktree, with `HOME`/`CLAUDE_CONFIG_DIR` on scratch. All
+  four `ANTHROPIC_*_MODEL` slots take the same resolved GLM name — `…_HAIKU_MODEL` is a Claude Code
+  **variable** name filled with a GLM model, so the never-Haiku policy is untouched.
+- **Does not change the header conclusion above:** per-job token counts come back in the CLI's own
+  JSON output, but no HTTP rate-limit header is exposed to the orchestrator. Quota-aware routing is
+  explicitly deferred to **PR 3** ("rate-limit rerouting").

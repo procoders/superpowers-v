@@ -14,7 +14,7 @@ Stated up front because they invalidate parts of §2, §3 and §5 of the spec.
 **[C] There is no availability list in `.claude/compound-v.json`.** `commands/v-init.md:507` says verbatim: *"Do not add a `backends` or `checked_at` field here; they were removed in v2.6.2 for exactly this reason."* Availability lives in the **uncommitted, user-home** cache `~/.claude/compound-v-capabilities.json` (`commands/v-init.md:652-681`). The **only** machine-readable consumer of that file in the whole repo is `scripts/compound-v-epic-arbiter.py:517-525` (`load_capabilities`), which exposes exactly two strict-identity predicates — `codex_available` (`:529-536`, double gate on `available` **and** `exec_flags_verified`) and `agy_available` (`:539-548`). **There is no `available(backend)` function for cursor / devin / opencode**, and none for a future `zai`. So AC-5 ("an unavailable member is filtered before the counter") has no existing mechanism to call.
 
 **(b) "`zai` defaults to 4, per its adapter."** — spec §5, line 113.
-**[C] That number is prose on a different branch.** `git show feat/zai-backend:skills/backend-launcher/adapter-zai.md` line 112 reads *"Default `max_parallel` for zai is **4** — below the measured ceiling."* It is a doc recommendation with **no consuming code**. Also **[C]** the spec's own cross-reference link the spec's link to the zai design doc (spec line 16) is **dead on this branch** — `docs/superpowers/specs/2026-07-31-zai-backend-design.md` does not exist here; it exists only on `feat/zai-backend`.
+**[C] That number is prose on a different branch.** `git show feat/zai-backend:skills/backend-launcher/adapter-zai.md` line 112 reads *"Default `max_parallel` for zai is **4** — below the measured ceiling."* It is a doc recommendation with **no consuming code**. Also **[C]** the spec's own cross-reference to the zai design doc (spec line 16) is **dead on this branch** — `docs/superpowers/specs/2026-07-31-zai-backend-design.md` does not exist here; it exists only on `feat/zai-backend`.
 
 ---
 
@@ -354,7 +354,7 @@ AC-4 requires the sequence `0,1,2,0,1,2` *"asserted deterministically, with no r
 14. **Say what the dispatcher records in `task-outcomes.jsonl`.** `scorecard.py:75-77` keys on `(backend, type)`; recording `"pool"` collapses every pooled job into one meaningless health row and blinds the scorecard-aware routing at `routing-policy.md:387`.
 15. **Concede that `backend_max_parallel` is prose, not enforcement.** `max_parallel` is only presence- and int-checked (`validate-manifest.py:1627-1631`); batching is an LLM instruction (`parallel-dispatcher.md:66`). Reword AC-10 to something a gate can actually check, or mark it advisory.
 16. **Amend `parallel-dispatcher.md:377` explicitly.** *"DO NOT re-decide backend / tier / isolation — they come from the manifest"* currently forbids exactly what this feature does. Silence here guarantees a dispatcher that refuses to pool.
-17. **Fix the dead cross-reference.** the spec's link to the zai design doc (spec line 16) resolves to nothing on this branch. Either drop the link or state the branch dependency plainly.
+17. **Fix the dead cross-reference.** The spec's link to the zai design doc (spec line 16) resolves to nothing on this branch. Either drop the link or state the branch dependency plainly.
 18. **Nothing validates `state.json`.** AC-7 is currently unverifiable and the field is load-bearing for AC-8 and for the breaker. Either add a minimal check or state that the risk is accepted.
 
 ---
