@@ -190,7 +190,25 @@ Write `state.json` after every per-job transition, so a crash never loses more t
 
 ### Step 2c — Backend-failure transition — classify → decide → transition → validate → persist → launch
 
-A non-success/non-blocked `job_result` enters one deterministic sequence. `$BACKEND` is always the concrete executor. Persist a unique `attempt_id` before every launch and a `batch_id` shared by launches in one batch; evidence without those identities fails closed. A provider success exists only after the canonical worker result is final `status: success`—HTTP 200, an opened SSE stream, or a first token is not success.
+A non-success/non-blocked `job_result` enters one deterministic sequence. `$BACKEND` is always the concrete executor. A provider success exists only after the canonical worker result is final `status: success`—HTTP 200, an opened SSE stream, or a first token is not success.
+
+**Attempt/batch identity lifecycle.** At batch formation, mint one non-empty `batch_id` and
+atomically persist that same value into every member's `jobs[<id>].batch_id` before any member
+launches. For every launch—including initial, same-assignment retry, reroute, and recovery
+probe—increment that job's persisted integer `attempt_counter`; the canonical attempt is exactly
+`<job_id>:<attempt_counter>` and is persisted as `jobs[<id>].attempt_id`. For a pool launch,
+`compound-v-pool-state.py transition` performs this increment and returns the same `attempt_id`;
+for a non-pool launch, the dispatcher performs the identical increment under the same serialized
+state-write lock. Validate and atomically persist the complete state before spawning the worker.
+
+Capture `{job_id, attempt_id, batch_id, concrete backend, result path}` with the spawned process.
+The **result binding is dispatcher-owned metadata** rather than worker/model self-report: after
+the final canonical `job_result` is collected, copy the captured `attempt_id` and `batch_id` into
+the result intent passed to `compound-v-pool-state.py transition`. Immediately before transition,
+re-read validated state and require both values to equal `jobs[<id>].attempt_id` and
+`jobs[<id>].batch_id`; a **mismatched or stale result** is retained for audit but rejected from
+health mutation, retry accounting, cooldown clearing, network evidence, and relaunch. Thus an old
+in-flight completion cannot act as the current attempt or leased probe.
 
 1. **Classify** the captured failure into `failure_class`, `retry_after`, `retry_at`, and `network_scope`. Only DNS/TLS/connect/reset with no valid provider response is `no_response`; provider-returned z.ai 1234 is `provider_reported` and cannot contribute to a global pause.
 2. **Decide** with `compound-v-failure-policy.py`, passing the concrete assignment, per-(job,class) attempts, monotonic run `total_retries`, reset hints, and summarized same-batch network facts. The policy emits intent only; it MUST NOT receive or scan `pool_members`.

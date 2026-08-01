@@ -45,7 +45,16 @@ The run-id (optional) is `{{args}}`.
 
    **Usage (measured-only).** Populate the `Usage` column from [`scripts/compound-v-usage-aggregate.py`](../scripts/compound-v-usage-aggregate.py) `--run-dir <run-dir>` — it reads each job's OPTIONAL `usage` object out of `<run-dir>/results/*.json` (worker-sourced, git-collected) and returns a per-job list plus measured-only totals. Pool results and usage rows must be keyed by the recorded concrete `assigned_backend`, never `pool`. For a job whose `usage.measured == true`, show its real token counts (e.g. `in=12.3k out=4.1k`, and `+Nadv` when `advisor_calls > 0`). For any job that is **unmeasured** — `measured:false` (a backend with no machine-readable usage: agy/antigravity, claude Task subagent, devin), or no `usage` key at all — show `—`. **Measured only, never estimated:** never derive, guess, or back-fill a token number the backend did not report; an honest `—` beats a fabricated count (anti-ruflo). **Degrade-safe:** when `results/` is absent (a pending run) the aggregator returns empty totals with a `note` and exits 0 — show `—` for every row and never break the table (same rule as the Liveness column above). Optionally add a run-level total line to the summary (step 6) from the aggregator's `--format text` output (e.g. `measured: in=1.2M out=340k advisor_calls=3 | 4 measured, 2 unmeasured`) — it already reports the honest unmeasured count, so a partially-instrumented run is never dressed up as a complete one.
 
-5. **Render backend health (the circuit breaker).** From `state.json`, surface graceful-failure state so re-routes and credit-exhaustion are never silent (the fields are defined in [`state-machine.md`](../skills/compound-v/state-machine.md), the policy in [`failure-policy.md`](../skills/compound-v/failure-policy.md)):
+5. **Validate, then render backend health (the circuit breaker).** Before reading any provider
+   failure field, run `python3 scripts/compound-v-pool-state.py validate` with
+   `{"state": <state.json>, "jobs": <manifest jobs>}`. Only a `valid:true` result permits the
+   health rendering below. On any validation error—including malformed cooldown/circuit/network
+   evidence or duplicate probe ownership—show **`INVALID PROVIDER STATE`**, point to `/v:resume`,
+   and render no partial cooldown, circuit, pause, owner, recovery, or retry-budget details. This
+   fail-closed gate prevents malformed JSON state from being presented as trustworthy health.
+   After validation, surface graceful-failure state so re-routes and credit-exhaustion are never
+   silent (the fields are defined in [`state-machine.md`](../skills/compound-v/state-machine.md),
+   the policy in [`failure-policy.md`](../skills/compound-v/failure-policy.md)):
    - **Circuit-open backends** — any canonical `circuit_open[<concrete-backend>].open == true` object (out for the run — out-of-credits or auth). A `pool` key or bare boolean is invalid state; call it out rather than interpreting it.
    - **Transient cooldowns / usage windows** — each canonical
      `cooldowns[<backend>] = {until, reason, opened_at, opened_by_attempt_id, probe}`: render the

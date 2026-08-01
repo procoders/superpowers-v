@@ -47,6 +47,7 @@ import ast
 import datetime
 import html
 import http.server
+import importlib.util
 import inspect
 import io
 import json
@@ -269,6 +270,170 @@ def _shape_error(raw, existed, err):
     if err is None and existed and not isinstance(raw, dict):
         return "unexpected top-level shape (expected an object)"
     return err
+
+
+_PROVIDER_BACKENDS = frozenset(
+    ("claude", "codex", "antigravity", "cursor", "devin", "opencode", "zai"))
+_COOLDOWN_REASONS = frozenset(
+    ("rate_limited", "overloaded", "usage_window_exhausted", "network"))
+
+
+def _aware_timestamp(value):
+    if not isinstance(value, str) or not value:
+        return None
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.datetime.fromisoformat(normalized)
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(datetime.timezone.utc)
+
+
+def _probe_errors(probe, path):
+    fields = frozenset(("status", "owner_job_id", "owner_attempt_id", "lease_until"))
+    if not isinstance(probe, dict) or frozenset(probe) != fields:
+        return [path + " must contain exactly status, owner_job_id, owner_attempt_id, lease_until"]
+    status = probe.get("status")
+    owner_job = probe.get("owner_job_id")
+    owner_attempt = probe.get("owner_attempt_id")
+    lease_until = probe.get("lease_until")
+    if status == "idle":
+        return ([] if owner_job is None and owner_attempt is None and lease_until is None
+                else [path + " idle probe must have null owner and lease"])
+    if status != "leased":
+        return [path + ".status must be idle or leased"]
+    errors = []
+    if not isinstance(owner_job, str) or not owner_job:
+        errors.append(path + ".owner_job_id must be non-empty while leased")
+    if not isinstance(owner_attempt, str) or not owner_attempt:
+        errors.append(path + ".owner_attempt_id must be non-empty while leased")
+    if _aware_timestamp(lease_until) is None:
+        errors.append(path + ".lease_until must be an aware timestamp while leased")
+    return errors
+
+
+def _pool_state_errors(state, jobs):
+    """Run the mutation authority's complete validator before health projection."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "compound-v-pool-state.py")
+    try:
+        spec = importlib.util.spec_from_file_location("compound_v_pool_state_dashboard", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return list(module.validate_state(state, jobs))
+    except (AttributeError, OSError, TypeError, ValueError) as exc:
+        return ["pool-state validation failed: %s" % exc]
+
+
+def _provider_state_errors(state, jobs=None):
+    """Validate the provider-health projection before rendering any of it.
+
+    Pool-state remains the mutation authority. This read-side gate mirrors only
+    its canonical persisted shapes so a dashboard built before/after parallel
+    task integration fails closed instead of presenting malformed state as health.
+    """
+    has_provider_state = (
+        bool(state.get("cooldowns")) or bool(state.get("circuit_open"))
+        or state.get("network_pause") is not None
+        or "total_retries" in state or "max_total_retries" in state)
+    if not has_provider_state:
+        return []
+    manifest_jobs = jobs if isinstance(jobs, list) else []
+    errors = _pool_state_errors(state, manifest_jobs)
+    probe_owners = set()
+    cooldowns = state.get("cooldowns", {})
+    if not isinstance(cooldowns, dict):
+        errors.append("cooldowns must be an object map")
+    else:
+        expected = frozenset(("until", "reason", "opened_at",
+                              "opened_by_attempt_id", "probe"))
+        for backend, item in cooldowns.items():
+            path = "cooldowns[%r]" % backend
+            if backend not in _PROVIDER_BACKENDS:
+                errors.append(path + " has unknown backend")
+            if not isinstance(item, dict) or frozenset(item) != expected:
+                errors.append(path + " has non-canonical fields")
+                continue
+            opened = _aware_timestamp(item.get("opened_at"))
+            until = _aware_timestamp(item.get("until"))
+            if opened is None or until is None:
+                errors.append(path + " timestamps must be timezone-aware")
+            if item.get("reason") not in _COOLDOWN_REASONS:
+                errors.append(path + " has unknown reason")
+            if not isinstance(item.get("opened_by_attempt_id"), str) \
+                    or not item.get("opened_by_attempt_id"):
+                errors.append(path + " has invalid opening attempt")
+            errors.extend(_probe_errors(item.get("probe"), path + ".probe"))
+            probe = item.get("probe") if isinstance(item.get("probe"), dict) else {}
+            owner = probe.get("owner_attempt_id")
+            if probe.get("status") == "leased" and isinstance(owner, str):
+                if owner in probe_owners:
+                    errors.append("duplicate probe owner attempt %r" % owner)
+                probe_owners.add(owner)
+
+    circuits = state.get("circuit_open", {})
+    circuit_fields = frozenset(("open", "reason", "opened_at", "cleared_by"))
+    if not isinstance(circuits, dict):
+        errors.append("circuit_open must be an object map")
+    else:
+        for backend, item in circuits.items():
+            path = "circuit_open[%r]" % backend
+            if backend not in _PROVIDER_BACKENDS:
+                errors.append(path + " has unknown backend")
+            if not isinstance(item, dict) or frozenset(item) != circuit_fields:
+                errors.append(path + " has non-canonical fields")
+                continue
+            if not isinstance(item.get("open"), bool):
+                errors.append(path + ".open must be boolean")
+            if item.get("reason") not in ("out_of_credits", "auth"):
+                errors.append(path + " has unknown reason")
+            if _aware_timestamp(item.get("opened_at")) is None:
+                errors.append(path + ".opened_at must be aware")
+            if item.get("open") is True and item.get("cleared_by") is not None:
+                errors.append(path + " open circuit cannot be cleared")
+
+    pause = state.get("network_pause")
+    if pause is not None:
+        pause_fields = frozenset(("opened_at", "until", "evidence", "probe"))
+        if not isinstance(pause, dict) or frozenset(pause) != pause_fields:
+            errors.append("network_pause has non-canonical fields")
+        else:
+            if _aware_timestamp(pause.get("opened_at")) is None \
+                    or _aware_timestamp(pause.get("until")) is None:
+                errors.append("network_pause timestamps must be aware")
+            evidence = pause.get("evidence")
+            evidence_fields = frozenset(
+                ("backend", "job_id", "attempt_id", "batch_id", "observed_at"))
+            seen = set()
+            if not isinstance(evidence, list) or len(evidence) < 2:
+                errors.append("network_pause evidence must contain two observations")
+            else:
+                for index, row in enumerate(evidence):
+                    path = "network_pause.evidence[%d]" % index
+                    if not isinstance(row, dict) or frozenset(row) != evidence_fields:
+                        errors.append(path + " has non-canonical fields")
+                        continue
+                    key = (row.get("backend"), row.get("attempt_id"))
+                    if row.get("backend") not in _PROVIDER_BACKENDS:
+                        errors.append(path + " has unknown backend")
+                    if key in seen:
+                        errors.append(path + " duplicates backend/attempt evidence")
+                    seen.add(key)
+                    if _aware_timestamp(row.get("observed_at")) is None:
+                        errors.append(path + ".observed_at must be aware")
+                    for field in ("job_id", "attempt_id", "batch_id"):
+                        if not isinstance(row.get(field), str) or not row.get(field):
+                            errors.append(path + "." + field + " must be non-empty")
+            errors.extend(_probe_errors(pause.get("probe"), "network_pause.probe"))
+            probe = pause.get("probe") if isinstance(pause.get("probe"), dict) else {}
+            owner = probe.get("owner_attempt_id")
+            if probe.get("status") == "leased" and isinstance(owner, str):
+                if owner in probe_owners:
+                    errors.append("duplicate probe owner attempt %r" % owner)
+                probe_owners.add(owner)
+    return errors
 
 
 # ---------------------------------------------------------------------------
@@ -647,44 +812,54 @@ def _render_run_detail(rec):
 
     state = rec.get("state") if isinstance(rec.get("state"), dict) else {}
     failure_lines = []
-    cooldowns = state.get("cooldowns")
-    if isinstance(cooldowns, dict):
+    provider_errors = _provider_state_errors(state, jobs)
+    if provider_errors:
+        failure_lines.append(
+            "<li><strong>INVALID PROVIDER STATE</strong>: validation failed; "
+            "run <code>/v:resume</code>. No provider health details were rendered.</li>")
+    else:
+        cooldowns = state.get("cooldowns", {})
         for backend in sorted(cooldowns):
-            item = cooldowns.get(backend)
-            if not isinstance(item, dict):
-                continue
-            probe = item.get("probe") if isinstance(item.get("probe"), dict) else {}
-            probe_owner = probe.get("owner_attempt_id") or MDASH
+            item = cooldowns[backend]
+            probe_owner = item["probe"].get("owner_attempt_id") or MDASH
+            label = ("resettable usage window"
+                     if item.get("reason") == "usage_window_exhausted"
+                     else "transient cooldown")
+            until = _aware_timestamp(item.get("until"))
+            now = datetime.datetime.now(datetime.timezone.utc)
+            recovery = ""
+            if until is not None and until > now + datetime.timedelta(days=365):
+                recovery = ("; recovery <code>/v:resume --clear-cooldown "
+                            "{}</code>".format(_esc(backend)))
             failure_lines.append(
-                "<li><strong>transient cooldown</strong> {backend}: {reason} until "
-                "<code>{until}</code>; probe <code>{probe}</code>; recovery "
-                "<code>/v:resume --clear-cooldown {backend}</code></li>".format(
-                    backend=_esc(backend), reason=_esc(item.get("reason")),
-                    until=_esc(item.get("until")), probe=_esc(probe_owner)))
-    circuits = state.get("circuit_open")
-    if isinstance(circuits, dict):
+                "<li><strong>{label}</strong> {backend}: {reason} until "
+                "<code>{until}</code>; probe <code>{probe}</code>{recovery}</li>".format(
+                    label=label, backend=_esc(backend), reason=_esc(item.get("reason")),
+                    until=_esc(item.get("until")), probe=_esc(probe_owner),
+                    recovery=recovery))
+        circuits = state.get("circuit_open", {})
         for backend in sorted(circuits):
-            item = circuits.get(backend)
-            if isinstance(item, dict) and item.get("open") is True:
+            item = circuits[backend]
+            if item.get("open") is True:
                 failure_lines.append(
-                    "<li><strong>permanent circuit</strong> {backend}: {reason}, opened "
-                    "<code>{opened}</code></li>".format(
+                    "<li><strong>permanent circuit breaker</strong> {backend}: {reason}, "
+                    "opened <code>{opened}</code></li>".format(
                         backend=_esc(backend), reason=_esc(item.get("reason")),
                         opened=_esc(item.get("opened_at"))))
-    network_pause = state.get("network_pause")
-    if isinstance(network_pause, dict) and network_pause.get("status") == "active":
-        owner = network_pause.get("probe_owner_attempt_id") or MDASH
-        failure_lines.append(
-            "<li><strong>network pause</strong>: active until <code>{until}</code>; "
-            "probe <code>{owner}</code></li>".format(
-                until=_esc(network_pause.get("until")), owner=_esc(owner)))
-    total_retries = state.get("total_retries")
-    max_total_retries = state.get("max_total_retries")
-    if (isinstance(total_retries, int) and not isinstance(total_retries, bool)
-            and isinstance(max_total_retries, int)
-            and not isinstance(max_total_retries, bool)):
-        failure_lines.append("<li><strong>run retry budget</strong>: {} / {}</li>".format(
-            _esc(total_retries), _esc(max_total_retries)))
+        network_pause = state.get("network_pause")
+        if isinstance(network_pause, dict):
+            owner = network_pause["probe"].get("owner_attempt_id") or MDASH
+            failure_lines.append(
+                "<li><strong>correlated network pause</strong>: active until "
+                "<code>{until}</code>; probe <code>{owner}</code></li>".format(
+                    until=_esc(network_pause.get("until")), owner=_esc(owner)))
+        total_retries = state.get("total_retries")
+        max_total_retries = state.get("max_total_retries")
+        if (isinstance(total_retries, int) and not isinstance(total_retries, bool)
+                and isinstance(max_total_retries, int)
+                and not isinstance(max_total_retries, bool)):
+            failure_lines.append("<li><strong>run retry budget</strong>: {} / {}</li>".format(
+                _esc(total_retries), _esc(max_total_retries)))
     if failure_lines:
         parts.append('<h3 class="sect">provider failure state</h3><ul class="deps">{}</ul>'.format(
             "".join(failure_lines)))
@@ -1106,17 +1281,20 @@ def _selftest():
             "phase": "MERGED",
             "updated_at": "2099-06-01T12:00:00Z",
             "jobs": {
-                "task-0-base": {"status": "done", "isolation": "direct"},
-                "task-1-ui": {"status": "done", "isolation": "worktree"},
+                "task-0-base": {"status": "done", "isolation": "direct",
+                                "attempt_counter": 1, "attempt_id": "task-0-base:1"},
+                "task-1-ui": {"status": "done", "isolation": "worktree",
+                              "attempt_counter": 1, "attempt_id": "task-1-ui:1"},
             },
+            "pool_members": {},
             "cooldowns": {
                 "zai": {
                     "until": "2099-06-03T12:00:00Z",
                     "reason": "usage_window_exhausted",
                     "opened_at": "2099-06-01T12:00:00Z",
-                    "opened_by_attempt_id": "attempt-zai-1",
+                    "opened_by_attempt_id": "task-1-ui:1",
                     "probe": {"status": "leased", "owner_job_id": "task-1-ui",
-                              "owner_attempt_id": "attempt-zai-probe",
+                              "owner_attempt_id": "task-1-ui:1",
                               "lease_until": "2099-06-03T12:05:00Z"},
                 },
             },
@@ -1125,8 +1303,19 @@ def _selftest():
                           "opened_at": "2099-06-01T12:00:00Z", "cleared_by": None},
             },
             "network_pause": {
-                "status": "active", "until": "2099-06-01T12:01:00Z",
-                "probe_owner_job_id": None, "probe_owner_attempt_id": None,
+                "opened_at": "2099-06-01T12:00:00Z",
+                "until": "2099-06-01T12:01:00Z",
+                "evidence": [
+                    {"backend": "codex", "job_id": "task-0-base",
+                     "attempt_id": "task-0-base:1", "batch_id": "batch-1",
+                     "observed_at": "2099-06-01T12:00:00Z"},
+                    {"backend": "zai", "job_id": "task-1-ui",
+                     "attempt_id": "task-1-ui:1", "batch_id": "batch-1",
+                     "observed_at": "2099-06-01T12:00:30Z"},
+                ],
+                "probe": {"status": "leased", "owner_job_id": "task-0-base",
+                          "owner_attempt_id": "task-0-base:1",
+                          "lease_until": "2099-06-01T12:05:00Z"},
             },
             "total_retries": 4,
             "max_total_retries": 12,
@@ -1167,6 +1356,51 @@ def _selftest():
         _write_text(os.path.join(badrun, "manifest.yaml"),
                     "run_id: 2099-04-01-badjson\nfeature: \"Bad json\"\njobs:\n  - id: task-y\n    backend: claude\n")
         _write_text(os.path.join(badrun, "state.json"), "{ this is not valid json ")
+
+        # --- fixtures 4-7: valid JSON but invalid provider state must fail closed ---
+        invalid_provider_states = {
+            "badcooldown": {
+                "cooldowns": {"zai": {"until": "not-a-time", "reason": "mystery"}},
+            },
+            "badcircuit": {"circuit_open": {"codex": True}},
+            "doubleprobe": {
+                "cooldowns": {
+                    "zai": {"until": "2099-06-03T12:00:00Z", "reason": "rate_limited",
+                            "opened_at": "2099-06-01T12:00:00Z",
+                            "opened_by_attempt_id": "a1",
+                            "probe": {"status": "leased", "owner_job_id": "j1",
+                                      "owner_attempt_id": "same-probe",
+                                      "lease_until": "2099-06-03T12:05:00Z"}},
+                    "codex": {"until": "2099-06-03T12:00:00Z", "reason": "overloaded",
+                              "opened_at": "2099-06-01T12:00:00Z",
+                              "opened_by_attempt_id": "a2",
+                              "probe": {"status": "leased", "owner_job_id": "j1",
+                                        "owner_attempt_id": "same-probe",
+                                        "lease_until": "2099-06-03T12:05:00Z"}},
+                },
+            },
+            "badevidence": {
+                "network_pause": {
+                    "opened_at": "2099-06-01T12:00:00Z",
+                    "until": "2099-06-01T12:01:00Z",
+                    "evidence": [{"backend": "zai", "job_id": "j1",
+                                  "attempt_id": "a1", "batch_id": "batch-1"}],
+                    "probe": {"status": "idle", "owner_job_id": None,
+                              "owner_attempt_id": None, "lease_until": None},
+                },
+            },
+        }
+        for suffix, fragment in invalid_provider_states.items():
+            invalid_dir = os.path.join(root, "2099-03-01-" + suffix)
+            os.makedirs(invalid_dir)
+            _write_text(os.path.join(invalid_dir, "manifest.yaml"),
+                        "run_id: invalid\nfeature: invalid\njobs:\n"
+                        "  - id: j1\n    backend: codex\n    tier: standard\n")
+            state = {"run_id": "invalid", "phase": "DISPATCHED",
+                     "jobs": {"j1": {"status": "failed"}},
+                     "pool_members": {}, "circuit_open": {}}
+            state.update(fragment)
+            _write_text(os.path.join(invalid_dir, "state.json"), json.dumps(state))
 
         # --- fixture 4: an epic with a confirmed + a SUSPECTED blocker ---
         epic_dir = os.path.join(root, "epics", "2099-07-01-epicfix")
@@ -1222,21 +1456,55 @@ def _selftest():
 
         # Canonical provider-failure state is explicit and actionable. These strings are
         # consumer behavior: deleting cooldown/circuit/network rendering must fail here.
-        check("usage_window_exhausted" in html_text,
-              "failure-state: resettable usage-window reason missing")
-        check("attempt-zai-probe" in html_text,
+        check("resettable usage window" in html_text.lower(),
+              "failure-state: resettable usage-window label missing")
+        check("task-1-ui:1" in html_text,
               "failure-state: half-open probe owner missing")
-        check("out_of_credits" in html_text,
-              "failure-state: permanent circuit reason missing")
-        check("network pause" in html_text.lower(),
+        check("permanent circuit breaker" in html_text.lower(),
+              "failure-state: permanent circuit-breaker label missing")
+        check("correlated network pause" in html_text.lower(),
               "failure-state: correlated network pause missing")
+        check("task-0-base:1" in html_text,
+              "failure-state: canonical nested network probe owner missing")
         check("/v:resume --clear-cooldown zai" in html_text,
               "failure-state: exact far-future recovery command missing")
         check("4 / 12" in html_text,
               "failure-state: real retry budget missing")
+        invalid_count = 0
+        for suffix in invalid_provider_states:
+            invalid_dir = os.path.join(root, "2099-03-01-" + suffix)
+            invalid_html = _render_run_detail(load_run(invalid_dir, os.path.realpath(root)))
+            invalid_count += invalid_html.count("INVALID PROVIDER STATE")
+            check("transient cooldown" not in invalid_html.lower()
+                  and "permanent circuit breaker" not in invalid_html.lower()
+                  and "correlated network pause" not in invalid_html.lower(),
+                  "failure-state: malformed %s rendered partial health" % suffix)
+        check(invalid_count == 4,
+              "failure-state: malformed provider states did not all fail closed "
+              "(rendered %d invalid warnings)" % invalid_count)
+        check("mystery until" not in html_text,
+              "failure-state: invalid cooldown rendered as trustworthy health")
+        check(_provider_state_errors({"jobs": {"legacy": {"status": "done"}}}) == [],
+              "failure-state: legacy state without provider fields lost compatibility")
         for forbidden in ("health score", "quota remaining", "estimated savings"):
             check(forbidden not in html_text.lower(),
                   "anti-ruflo: fabricated provider metric rendered: " + forbidden)
+
+        # Integration docs are executable orchestration contracts. Guard the
+        # validation gate and exact identity/result binding against prose drift.
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        status_contract = _read_text(os.path.join(repo_root, "commands", "v-status.md"))
+        dispatcher_contract = _read_text(
+            os.path.join(repo_root, "agents", "parallel-dispatcher.md"))
+        check("compound-v-pool-state.py validate" in status_contract
+              and "INVALID PROVIDER STATE" in status_contract,
+              "integration-doc: status lacks fail-closed pool-state validation")
+        for required_text in (
+                "attempt_counter", "jobs[<id>].attempt_id", "jobs[<id>].batch_id",
+                "result binding is dispatcher-owned metadata",
+                "mismatched or stale result"):
+            check(required_text in dispatcher_contract,
+                  "integration-doc: dispatcher identity lifecycle missing " + required_text)
 
         # NO percent-progress anywhere in the document (zero '%' chars)
         check("%" not in html_text, "anti-ruflo: '%' present (possible fabricated progress)")
