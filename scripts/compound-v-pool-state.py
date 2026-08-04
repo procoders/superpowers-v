@@ -576,7 +576,7 @@ def backend_available(backend, env=None, which=None, platform=None):
         # precondition is the key AND a working sandbox provider. Falling through to the
         # `return True` default below would freeze a qwen slot onto a machine that cannot
         # sandbox it, leaving "the sandbox is mandatory" unenforced at routing time.
-        if not environment.get("BAILIAN_CODING_PLAN_API_KEY"):
+        if not environment.get("BAILIAN_TOKEN_PLAN_API_KEY"):
             return False
         if plat == "darwin":
             return bool(find_binary("sandbox-exec"))
@@ -1831,16 +1831,16 @@ def _selftest():
                              platform="darwin") is False)
     expect("qwen with a key but no sandbox provider is unavailable",
            backend_available("qwen",
-                             env={"BAILIAN_CODING_PLAN_API_KEY": "sk-sp-x"},
+                             env={"BAILIAN_TOKEN_PLAN_API_KEY": "sk-sp-x"},
                              which=lambda b: None, platform="darwin") is False)
     expect("qwen on macOS with sandbox-exec is available",
            backend_available("qwen",
-                             env={"BAILIAN_CODING_PLAN_API_KEY": "sk-sp-x"},
+                             env={"BAILIAN_TOKEN_PLAN_API_KEY": "sk-sp-x"},
                              which=lambda b: "/usr/bin/sandbox-exec" if b == "sandbox-exec" else None,
                              platform="darwin") is True)
     expect("qwen on linux with docker is available",
            backend_available("qwen",
-                             env={"BAILIAN_CODING_PLAN_API_KEY": "sk-sp-x"},
+                             env={"BAILIAN_TOKEN_PLAN_API_KEY": "sk-sp-x"},
                              which=lambda b: "/usr/bin/docker" if b == "docker" else None,
                              platform="linux") is True)
     expect("an unavailable qwen pool member degrades the pool instead of failing the run",
