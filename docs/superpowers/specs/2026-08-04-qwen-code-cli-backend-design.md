@@ -623,9 +623,11 @@ switch. **New:** `scripts/compound-v-run-qwen-worker.sh`, `skills/backend-launch
   every backend's resolution.
 - `scripts/compound-v-validate-manifest.py` — `VALID_BACKENDS`, the worktree-required tuple, **the
   reviewer block-list tuple** (the corrected, load-bearing edit this draft's first version missed),
-  **the opt-in acknowledgment gate**, **the `qwen` ⇒ `max_parallel ≤ 2` invariant**, docstring, new
-  `QWEN_*` selftest fixtures. Backs the partition-reviewer agent; CI-run against every tracked
-  historical manifest.
+  **the opt-in acknowledgment gate**, docstring, new `QWEN_*` selftest fixtures. Backs the
+  partition-reviewer agent; CI-run against every tracked historical manifest. **No
+  `max_parallel ≤ 2` invariant** — an earlier revision of this list demanded one, contradicting
+  this spec's own Model-resolution section, Non-goals, and AC 7d, all of which correctly use the
+  existing `backend_max_parallel` config key instead. The config key wins; the invariant is not built.
 - `scripts/compound-v-classify-failure.py` — `_QWEN_RULES` seeded with the real needles above,
   `classify()` branch, `--backend` choices, a selftest guard against the codex-fallthrough bug.
 - `scripts/compound-v-failure-policy.py` — `FALLBACK` entry and **`CONCRETE_BACKENDS`** (a second
@@ -759,10 +761,12 @@ reality — a pre-existing bug, not introduced by this spec, and not this PR's t
     record never holds the API key, and lives in gitignored operator-local config.
 7d. The seeded config carries `backend_max_parallel.qwen = 2` (the existing PR #6 key — no new
     validator invariant), documented as a dispatcher-respected ceiling, **not** as an enforced bound.
-7e. `qwen` appears in the shipped default pool beside `codex` and `zai`, and
-    `backend_available("qwen")` returns false when either the key or a working sandbox provider is
-    missing — proven by a freeze test that records `available: false` and continues with the
-    documented warning rather than failing the run.
+7e. `qwen` appears as a pool member in the **documented example** in `execution-manifest.md`, beside
+    `codex` and `zai`. **This PR does not modify `.claude/compound-v.json`** — the operator's live
+    rotation (committed as `claude + zai`) is changed only by a deliberate, separate act after this
+    PR merges. And `backend_available("qwen")` returns false when either the key or a working
+    sandbox provider is missing — proven by a freeze test that records `available: false` and
+    continues with the documented warning rather than failing the run.
 8. A worker that writes outside `write_allowed` yields `blocked: true` with offending paths in
    `violations`; the caller does not merge.
 9. `compound-v-classify-failure.py --backend qwen` maps `THROTTLING.userQPSLimit` and the
