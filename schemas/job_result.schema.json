@@ -160,7 +160,7 @@
         },
         "backend": {
           "type": "string",
-          "description": "Backend name this usage was extracted for (codex | opencode | cursor | agy | antigravity | claude | devin | zai)."
+          "description": "Backend name this usage was extracted for (codex | opencode | cursor | agy | antigravity | claude | devin | zai | qwen)."
         },
         "measured": {
           "type": "boolean",

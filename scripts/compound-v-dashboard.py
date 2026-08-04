@@ -273,7 +273,7 @@ def _shape_error(raw, existed, err):
 
 
 _PROVIDER_BACKENDS = frozenset(
-    ("claude", "codex", "antigravity", "cursor", "devin", "opencode", "zai"))
+    ("claude", "codex", "antigravity", "cursor", "devin", "opencode", "zai", "qwen"))
 _COOLDOWN_REASONS = frozenset(
     ("rate_limited", "overloaded", "usage_window_exhausted", "network"))
 

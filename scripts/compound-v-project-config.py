@@ -75,7 +75,7 @@ _PREFERENCES_VALUES = ("off", "on-demand", "marked")
 VALID_POOL_STANCES = ("balanced", "conservative", "cost-aware", "claude-only")
 VALID_POOL_TIERS = ("deep", "standard", "light")
 VALID_POOL_BACKENDS = (
-    "claude", "codex", "antigravity", "cursor", "devin", "opencode", "zai",
+    "claude", "codex", "antigravity", "cursor", "devin", "opencode", "zai", "qwen",
 )
 # Deterministic safety bounds: weights are expanded into in-memory positional
 # rings, so both the per-member and per-tier totals are capped before expansion.

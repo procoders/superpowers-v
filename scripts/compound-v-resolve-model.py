@@ -130,11 +130,31 @@ _OPENCODE = {
 # Lower-trust tier: no kernel write-confinement, so worktree + git-diff is the ONLY file-scope
 # enforcement -- see skills/backend-launcher/adapter-zai.md. NEVER haiku.
 _ZAI = {"deep": "glm-5.2", "standard": "glm-5.2", "light": "glm-5-turbo"}
+# Alibaba Bailian "Coding Plan" (backend `qwen`), driven through the genuine Qwen Code CLI.
+# Catalog VERIFIED 2026-08-04 against Alibaba's own Model Studio help page: qwen3.7-plus,
+# qwen3.6-plus, qwen3.5-plus, qwen3-max-2026-01-23, qwen3-coder-next, qwen3-coder-plus,
+# MiniMax-M2.5, glm-5, glm-4.7, kimi-k2.5 are all reachable on one key.
+#
+# All three tiers deliberately carry the SAME model. Per-tier differentiation needs live
+# measurement on a real Coding Plan key (`/v:models` rewrites this map), and inventing a
+# ranking from a catalog listing would be a fabricated metric. `qwen3-coder-plus` is the
+# coding-specialised, documented default. NOT "auto": unlike cursor (which resolves "auto"
+# internally), the qwen worker passes --model straight to the endpoint, so a placeholder
+# would be sent literally and rejected.
+#
+# Qwen3.8-Max (launched 2026-08-03) is NOT in the Coding Plan catalog — do not add it here
+# until it appears there.
+#
+# Lower-trust tier in the sense that no reviewer/arbiter seat is permitted, but UNLIKE
+# antigravity/cursor/zai this backend REQUIRES a kernel sandbox (QWEN_SANDBOX) — see
+# skills/backend-launcher/adapter-qwen.md. NEVER haiku.
+_QWEN = {"deep": "qwen3-coder-plus", "standard": "qwen3-coder-plus",
+         "light": "qwen3-coder-plus"}
 
 
 def _stance_map(claude_map):
     """Assemble a full {backend -> {tier -> model}} map for one stance. Only the claude
-    sub-map varies by stance; codex/antigravity/cursor/devin/opencode/zai are shared
+    sub-map varies by stance; codex/antigravity/cursor/devin/opencode/zai/qwen are shared
     (read-only)."""
     return {
         "claude": claude_map,
@@ -144,6 +164,7 @@ def _stance_map(claude_map):
         "devin": _DEVIN,
         "opencode": _OPENCODE,
         "zai": _ZAI,
+        "qwen": _QWEN,
     }
 
 
@@ -158,7 +179,7 @@ DEFAULT_MODELS_BY_STANCE = {
 # working unchanged: balanced is the default stance.
 DEFAULT_MODELS = DEFAULT_MODELS_BY_STANCE["balanced"]
 
-BACKENDS = ("claude", "codex", "antigravity", "cursor", "devin", "opencode", "zai")
+BACKENDS = ("claude", "codex", "antigravity", "cursor", "devin", "opencode", "zai", "qwen")
 TIERS = ("deep", "standard", "light")
 # `xhigh` is valid iff backend == "codex": it maps to codex's kernel
 # model_reasoning_effort dimension, which live-accepts xhigh (verified
@@ -847,6 +868,20 @@ def _selftest():
         "an available zai is never chosen as advisor",
         select_advisor("claude", ["zai", "claude"])["advisor_backend"] == "claude",
     )
+
+    # --- qwen: Alibaba Bailian Coding Plan, one model across all three tiers ----
+    expect("qwen resolves deep to a real catalog model",
+           resolve("qwen", "deep")["model"] == "qwen3-coder-plus")
+    expect("qwen resolves light to a real catalog model (never 'auto')",
+           resolve("qwen", "light")["model"] == "qwen3-coder-plus")
+    expect("qwen is in BACKENDS", "qwen" in BACKENDS)
+    expect("qwen is identical across stances",
+           DEFAULT_MODELS_BY_STANCE["cost-aware"]["qwen"]
+           == DEFAULT_MODELS_BY_STANCE["balanced"]["qwen"])
+    expect("qwen rejects xhigh (codex-only rule)",
+           raises(lambda: resolve("qwen", "deep", effort="xhigh")))
+    expect("qwen is NOT advisor-consultable in v1",
+           "qwen" not in ADVISOR_CONSULTABLE_NONCLAUDE)
 
     # Default effort pairing when --effort omitted.
     expect("deep default effort high", resolve("claude", "deep")["effort"] == "high")
