@@ -260,6 +260,28 @@ def _extract_zai(objs: List[Any], backend: str) -> Dict[str, Any]:
     return _unmeasured(backend)
 
 
+def _extract_qwen(objs: List[Any], backend: str) -> Dict[str, Any]:
+    """qwen runs `qwen --output-format json`, which buffers an ARRAY of message objects and
+    emits it once at the end -- a third shape, distinct from codex's JSONL and zai's single
+    document. Usage lives on the terminal `result` element.
+
+    An empty-but-well-formed usage object yields measured=False with null counts, never a
+    fabricated 0 (the anti-ruflo rule; the same trap already fixed once for zai)."""
+    inp = out = None
+    for obj in objs if isinstance(objs, list) else []:
+        if not isinstance(obj, dict) or obj.get("type") != "result":
+            continue
+        usage = obj.get("usage")
+        if isinstance(usage, dict):
+            i, o = usage.get("input_tokens"), usage.get("output_tokens")
+            if isinstance(i, int) or isinstance(o, int):
+                inp, out = i, o
+    if inp is None and out is None:
+        return _unmeasured(backend)
+    return {"input_tokens": inp, "output_tokens": out,
+            "advisor_calls": 0, "backend": backend, "measured": True}
+
+
 def extract_usage(backend: str, events_log: Optional[str]) -> Dict[str, Any]:
     """Dispatch to the per-backend normalizer; fail-open to unmeasured."""
     backend = (backend or "").strip()
@@ -276,6 +298,9 @@ def extract_usage(backend: str, events_log: Optional[str]) -> Dict[str, Any]:
     if backend == "zai":
         # zai's capture is a JSON DOCUMENT, not JSONL — parse it as one.
         return _extract_zai(_read_json_document(events_log), backend)
+    if backend == "qwen":
+        # qwen's capture is a buffered JSON ARRAY, not JSONL — parse it as one document.
+        return _extract_qwen(_read_json_document(events_log), backend)
     # Unknown backend: honest unmeasured, never a fabricated count.
     return _unmeasured(backend)
 
@@ -349,6 +374,35 @@ def _selftest() -> int:
     check("zai non-dict modelUsage is unmeasured",
           extract_usage("zai", zai_bad_model_usage)["measured"], False)
     os.unlink(zai_bad_model_usage)
+
+    # --- qwen: a buffered JSON ARRAY (not JSONL, not a single object) ---
+    qwen_path = _write_tmp([
+        '[{"type":"system","subtype":"session_start","session_id":"a","model":"qwen3-coder-plus"},',
+        ' {"type":"assistant","message":{"usage":{"input_tokens":100,"output_tokens":40}}},',
+        ' {"type":"result","subtype":"success","is_error":false,"result":"done",',
+        '  "usage":{"input_tokens":412,"output_tokens":96}}]',
+    ])
+    qwen_got = extract_usage("qwen", qwen_path)
+    check("qwen input tokens come from the terminal result", qwen_got["input_tokens"], 412)
+    check("qwen output tokens come from the terminal result", qwen_got["output_tokens"], 96)
+    check("qwen is measured", qwen_got["measured"], True)
+    check("qwen backend label", qwen_got["backend"], "qwen")
+    check("qwen carries no cost anywhere", "cost" in json.dumps(qwen_got).lower(), False)
+    os.unlink(qwen_path)
+
+    # anti-ruflo: a failed job with a well-formed but EMPTY usage object must be unmeasured,
+    # never a fabricated 0. This is the a091185 bug class, already fixed once for zai.
+    qwen_failed = _write_tmp([
+        '[{"type":"result","subtype":"error","is_error":true,"usage":{}}]',
+    ])
+    qwen_failed_got = extract_usage("qwen", qwen_failed)
+    check("qwen failed job is unmeasured despite a well-formed usage object",
+          qwen_failed_got["measured"], False)
+    check("qwen failed job input_tokens stays null (not a fabricated 0)",
+          qwen_failed_got["input_tokens"], None)
+    os.unlink(qwen_failed)
+
+    check("qwen missing file is unmeasured", extract_usage("qwen", None)["measured"], False)
 
     # --- codex: SUM across turn.completed; skip non-JSON + error/deprecation ---
     codex_lines = [
