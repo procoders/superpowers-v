@@ -161,8 +161,11 @@ an automatic fallback, scorecard downgrade, or new trust heuristic. Configuratio
 the operator has elected pooled routing for that eligible job/run. A configured pool sitting idle
 changes nothing.
 
-The shipped pool policy uses Codex + zai for `standard` and `light` implementers and omits Claude.
-This release must not merge before prerequisite PR 1 (`feat/zai-backend`, PR #5). Claude membership
+The shipped pool policy uses Codex + zai + qwen for `standard` and `light` implementers and omits
+Claude. `qwen` additionally needs its own operator-local terms acknowledgment (see the invariants
+below) beyond the general "operator elected pooled routing" opt-in — a pool configured with `qwen`
+as a member still will not dispatch a `qwen` job until that acknowledgment is current. This release
+must not merge before prerequisite PR 1 (`feat/zai-backend`, PR #5). Claude membership
 is always explicit opt-in because Claude/Claude Code usage is shared with the operator's live
 session; pooling a Claude job also forces worktree isolation, making that seat more expensive than
 an otherwise-eligible serial direct job. Operators who still want Claude in the ring add it
@@ -206,10 +209,15 @@ large feature slice each count as one job regardless of tokens or duration.
 
 Do not call this quota balancing and do not report percentages or a balance score. It does not
 measure or equalize tokens, credits, messages, wall-clock, savings, or provider quota. The meters
-are heterogeneous, Claude consumption is unmeasured by this repository, and zai's off-peak credit
-rate is half its peak rate (peak Mon–Fri 14:00–18:00 UTC+8). The same manifest can therefore consume
-different zai credits at different times. This release performs no quota-aware or time-of-day
-routing; `/v:status` reports integer assignment counts such as `codex 3 · zai 2`, full stop.
+are heterogeneous, Claude consumption is unmeasured by this repository, zai's off-peak credit
+rate is half its peak rate (peak Mon–Fri 14:00–18:00 UTC+8), and qwen meters against a fixed-fee
+Token Plan subscription with rolling credit windows (12,000 credits / 5h, 40,000 / 7 days) consumed
+by "the model, token count, thinking mode, and tool calls" — a third, incompatible unit again, and
+one whose credits-per-token ratio is unpublished and NOT estimated here. The same manifest can
+therefore consume different zai credits at different times, and an equal-looking qwen job can cost a
+different number of credits depending on its tool set alone. This release performs no quota-aware or
+time-of-day routing; `/v:status` reports integer assignment counts such as `codex 3 · zai 2 · qwen 1`,
+full stop.
 
 The full config/member/state schema is in [`execution-manifest.md`](execution-manifest.md).
 
@@ -348,19 +356,22 @@ These hold in **every** stance and are checked by `compound-v-validate-manifest.
    tier — `tier: deep` **OR** an explicit `model: opus`. (`deep` resolves to `opus`
    for claude, so this mirrors the frontmatter rule that reviewers/agents always
    carry `model: opus`.)
-2. **Codex / Antigravity / Cursor / Devin / opencode / zai ⇒ worktree.** Any `backend: codex`,
-   `backend: antigravity`, `backend: cursor`, `backend: devin`, `backend: opencode`, **or** `backend: zai`
-   job MUST be `isolation: worktree`. All five are external workers with no per-file
-   enforcement of their own: Codex's sandbox restricts writes only to a *directory*;
-   Antigravity, Cursor, opencode and zai have **no kernel sandbox at all** (Cursor's headless
-   `-f` grants arbitrary write+shell; opencode defaults to allowing all operations); Devin
-   has a live but Research-Preview `--sandbox` whose coverage is unverified and is treated
-   as no-confinement for enforcement purposes (v1) — so worktree + `git diff` is the only
-   file-scope enforcement any of the five external backends actually get. The validator
-   rejects any of these backends with `isolation: direct`. `devin`, `opencode` and `zai` are also
-   **worker-only** — never a routable arbiter/review-panel seat (see
-   [`adapter-devin.md`](../backend-launcher/adapter-devin.md) /
-   [`adapter-opencode.md`](../backend-launcher/adapter-opencode.md), [`adapter-zai.md`](../backend-launcher/adapter-zai.md)).
+2. **Codex / Antigravity / Cursor / Devin / opencode / zai / qwen ⇒ worktree.** Any `backend: codex`,
+   `backend: antigravity`, `backend: cursor`, `backend: devin`, `backend: opencode`, `backend: zai`,
+   **or** `backend: qwen` job MUST be `isolation: worktree`. All six are external workers with no
+   *per-file* enforcement of their own: Codex's sandbox restricts writes only to a *directory*, and
+   qwen's kernel sandbox (`QWEN_SANDBOX`, mandatory — see below) is the same shape — real OS-level
+   confinement, but directory-scoped, not glob-scoped; Antigravity, Cursor, opencode and zai have
+   **no kernel sandbox at all** (Cursor's headless `-f` grants arbitrary write+shell; opencode
+   defaults to allowing all operations); Devin has a live but Research-Preview `--sandbox` whose
+   coverage is unverified and is treated as no-confinement for enforcement purposes (v1) — so
+   worktree + `git diff` is the only *file-scope* enforcement any of the six external backends
+   actually get, sandboxed or not. The validator rejects any of these backends with
+   `isolation: direct`. `devin`, `opencode`, `zai` and `qwen` are also **worker-only** — never a
+   routable arbiter/review-panel seat (see [`adapter-devin.md`](../backend-launcher/adapter-devin.md) /
+   [`adapter-opencode.md`](../backend-launcher/adapter-opencode.md),
+   [`adapter-zai.md`](../backend-launcher/adapter-zai.md),
+   [`adapter-qwen.md`](../backend-launcher/adapter-qwen.md)).
 
    **zai availability is env-gated:** the backend is offered only when `ZAI_API_KEY` is set.
    It is a headless `claude -p` pointed at z.ai's Anthropic-compatible endpoint — the only
@@ -368,6 +379,19 @@ These hold in **every** stance and are checked by `compound-v-validate-manifest.
    zai is **4**: six concurrent jobs were measured clean, but z.ai publishes no concurrency
    limit and adjusts it dynamically by plan tier, so the default sits below the measured
    ceiling. Lower it on Lite.
+
+   **qwen availability is env + capability + opt-in gated — the only backend with all three.**
+   The backend is offered only when `BAILIAN_TOKEN_PLAN_API_KEY` is set, `qwen` is on `PATH` under
+   **Node ≥ 22.0.0**, a working sandbox provider exists (`sandbox-exec` on macOS; `docker` or
+   `podman` on Linux — the sandbox is **mandatory**, not optional, so its absence marks `qwen`
+   **unavailable**, not merely degraded), AND the operator's local, uncommitted terms
+   acknowledgment (`.claude/compound-v.json` → `qwen_optin.terms_version`) is current.
+   [`compound-v-pool-state.py`](../../scripts/compound-v-pool-state.py)'s
+   `backend_available("qwen", …)` enforces the key + sandbox half at routing time; the manifest
+   validator enforces the opt-in half. Default `backend_max_parallel` for qwen is **2**, labeled
+   **unmeasured** — Alibaba publishes "supports 6-8 Agents running concurrently" on this plan, but
+   that ceiling has not been measured by this project, so the seeded default stays conservative
+   rather than adopting the published number outright.
 3. **Pool ⇒ restricted worktree implementer.** `backend: pool` is legal only for an explicitly
    configured `standard`/`light`, non-reviewer, non-sensitive implementer in a worktree. It rejects
    manifest `model`, `effort: xhigh`, and `security|auth|payment|pii|a11y` job types. The routing

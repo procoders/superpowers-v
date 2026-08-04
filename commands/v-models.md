@@ -1,5 +1,5 @@
 ---
-description: Refresh the Compound V tier→model map — discover the concrete models each backend (claude, codex, antigravity, cursor, devin, opencode, zai) currently offers, show them, let you assign deep/standard/light, and write the result into .claude/compound-v.json so intent-based routing survives model churn without touching any call site.
+description: Refresh the Compound V tier→model map — discover the concrete models each backend (claude, codex, antigravity, cursor, devin, opencode, zai, qwen) currently offers, show them, let you assign deep/standard/light, and write the result into .claude/compound-v.json so intent-based routing survives model churn without touching any call site.
 disable-model-invocation: true
 ---
 
@@ -15,14 +15,15 @@ at dispatch time, so refreshing the map here is the *only* thing you ever touch
 when models churn.
 
 Argument (optional): `{{args}}` may name a single backend to refresh in isolation
-(`claude` | `codex` | `antigravity` | `cursor` | `devin` | `opencode` | `zai`); otherwise walk
-all of them. `zai` has **no list endpoint** — z.ai publishes no model-discovery API — so its map is
-curated + user-overridable, exactly like codex's. The Coding Plan documents three models:
+(`claude` | `codex` | `antigravity` | `cursor` | `devin` | `opencode` | `zai` | `qwen`); otherwise
+walk all of them. `zai` has **no list endpoint** — z.ai publishes no model-discovery API — so its
+map is curated + user-overridable, exactly like codex's. The Coding Plan documents three models:
 `glm-5.2`, `glm-5-turbo`, `glm-4.7`. The endpoint also accepts `glm-5.1`, `glm-5`, `glm-4.6`
 and `glm-4.5-air`, but z.ai publishes no credit multiplier for those, so their burn is
-unpredictable — offer them only as explicit overrides, labelled unverified.
+unpredictable — offer them only as explicit overrides, labelled unverified. `qwen`, by contrast,
+**does** have a live, authenticated `/models` endpoint — see Step 1g below.
 
-`devin`, `opencode` and `zai` are **worker-only** backends (v1) — their model
+`devin`, `opencode`, `zai` and `qwen` are **worker-only** backends (v1) — their model
 maps drive dispatch only, never any arbiter/review panel seat.
 
 **This is the "skill picks the models and offers you the options" surface.** Do the
@@ -223,6 +224,44 @@ provider) — remind the user this is exactly why it stays **worker-only, never 
 arbiter seat**: an opencode ballot's family is determined entirely by which
 `provider/model` was resolved, not by the backend name.
 
+### 1g. qwen — `/models` endpoint discovery, curated + user-confirmed assignment
+
+Qwen Code's CLI has no `qwen models` subcommand, but Alibaba Bailian's **Token Plan** endpoint
+serves a real, live `/models` catalog — and unlike the *different* Coding Plan's `/models` route
+(unauthenticated; a bogus key gets the same 200 response, so it proves nothing), the Token Plan's
+`/models` is **authenticated**: a bogus key gets a 401 there, so a 200 is a genuine, key-scoped
+catalog:
+
+```bash
+[ -n "${BAILIAN_TOKEN_PLAN_API_KEY:-}" ] \
+  && curl -sS -H "Authorization: Bearer ${BAILIAN_TOKEN_PLAN_API_KEY}" \
+       "${OPENAI_BASE_URL:-https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1}/models" \
+  || echo "qwen unavailable (no BAILIAN_TOKEN_PLAN_API_KEY set)"
+```
+
+Like opencode, qwen's catalog spans **multiple unrelated model families behind one endpoint** — the
+2026-08-04 measurement against the operator's own key returned `qwen3.8-max`, `qwen3.8-max-preview`,
+`qwen3.7-max`, `qwen3.7-plus`, `qwen3.6-flash`, `glm-5.2`, `deepseek-v4-pro`,
+`deepseek-v4-flash-0731` (plus audio/image models, irrelevant here) — so, like opencode/cursor,
+Compound V does **not** auto-rank it; show the user the live response, then let them assign each
+tier. **Unlike opencode, every qwen cell is a bare catalog name, never a `provider/model` string** —
+qwen is single-vendor at the protocol level (one OpenAI-compatible endpoint), the opposite of
+opencode's shape. The built-in fallback map (curated, user-overridable, and what ships when
+discovery cannot run):
+
+- `deep` → `qwen3.8-max`
+- `standard` → `qwen3.8-max` (same as `deep` — no live per-tier measurement yet justifies a cheaper
+  `standard` pick, mirroring `zai`'s deep=standard shape)
+- `light` → `qwen3.6-flash` — a naming inference from the catalog, not a latency/quality ranking;
+  say so if the user asks why
+
+If the key is absent, or `qwen`/Node ≥ 22/a sandbox provider are missing (see `/v:init`'s
+Step 1a-septies probe), say so plainly, keep the existing `qwen` block unchanged, and skip its
+reassignment. **`qwen` is worker-only** — remind the user that whatever they assign here never
+seats it on an arbiter/review panel, and that even a fully-discovered map does not make `qwen`
+dispatchable without the separate `qwen_optin.terms_version` acknowledgment `/v:init` describes
+(refreshing the model map is not the same act as accepting the Token Plan's terms risk).
+
 ---
 
 ## Step 2 — Show findings and let the user assign tiers
@@ -365,7 +404,7 @@ resolver reads the per-stance block you wrote (omitting it defaults to `balanced
 
 ```bash
 for s in balanced cost-aware; do
-  for b in claude codex antigravity cursor devin opencode; do
+  for b in claude codex antigravity cursor devin opencode qwen; do
     for t in deep standard light; do
       python3 scripts/compound-v-resolve-model.py --backend "$b" --tier "$t" \
         --stance "$s" --config .claude/compound-v.json
@@ -404,11 +443,13 @@ per task-type in [`routing-policy.md`](../skills/compound-v/routing-policy.md), 
 set here. `xhigh` is valid **iff** `backend: codex`; every other backend rejects it
 with a clear error naming the rule (use `high` instead).
 
-**Honesty rules:** report only what discovery actually returned. `agy models </dev/null`
-and `opencode models </dev/null` both run headlessly and return live catalogs, so
-report the discovered models as discovered. Only if the CLI is **absent** do we fall
+**Honesty rules:** report only what discovery actually returned. `agy models </dev/null`,
+`opencode models </dev/null`, and qwen's authenticated `/models` call all return live catalogs, so
+report the discovered models as discovered. Only if the CLI/key is **absent** do we fall
 back to the built-in map — say so plainly when that happens, rather than passing the
 fallback off as discovered. devin has no discovery command at all — its roster is
 always curated, say so. Never print token or cost numbers (anti-ruflo). Never assign
-`haiku`. Always remind the user that `devin` and `opencode` are worker-only backends —
-whatever they assign here never seats either on an arbiter/review panel.
+`haiku`. Always remind the user that `devin`, `opencode`, and `qwen` are worker-only backends —
+whatever they assign here never seats any of them on an arbiter/review panel, and that a
+successful `qwen` model-map refresh is separate from the `qwen_optin` acknowledgment that
+actually makes it dispatchable.

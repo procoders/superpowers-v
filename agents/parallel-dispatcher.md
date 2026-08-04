@@ -79,6 +79,7 @@ Honor the manifest's `depends_on`, `run`, and `max_parallel`. For each job you b
 | `devin` | [`adapter-devin.md`](../skills/backend-launcher/adapter-devin.md) | Devin worker through its adapter; **always** `worktree`. Pool assignment does not weaken its reviewer/scope restrictions. |
 | `opencode` | [`adapter-opencode.md`](../skills/backend-launcher/adapter-opencode.md) | Opencode worker through its adapter; **always** `worktree`. Its resolved model retains the required `provider/model` shape. |
 | `zai` | [`adapter-zai.md`](../skills/backend-launcher/adapter-zai.md) | Bash-spawned `claude -p` worker via [`scripts/compound-v-run-zai-worker.sh`](../scripts/compound-v-run-zai-worker.sh) pointed at z.ai's Anthropic endpoint (`--model <resolved GLM>`; effort advisory); **always** `worktree`. **Lower-trust / opt-in, WORKER-ONLY** (no kernel sandbox); only when `ZAI_API_KEY` is set. (2.18) |
+| `qwen` | [`adapter-qwen.md`](../skills/backend-launcher/adapter-qwen.md) | Bash-spawned Qwen Code CLI worker via [`scripts/compound-v-run-qwen-worker.sh`](../scripts/compound-v-run-qwen-worker.sh) pointed at Alibaba Bailian's Token Plan (`--model <resolved>`; effort validated then explicitly discarded, no headless effort flag); **always** `worktree`. **Opt-in, WORKER-ONLY** — the only backend besides `codex` with a **mandatory kernel sandbox** (`QWEN_SANDBOX`); only when `BAILIAN_TOKEN_PLAN_API_KEY` is set, `qwen` is on `PATH` under Node ≥ 22, a sandbox provider works, and the operator's local terms acknowledgment is current. |
 | `pool` | **none** | Routing instruction only. Step 0a freezes a concrete `assigned_backend` / `assigned_model`; every adapter and backend-keyed consumer receives that pair, never `pool`. |
 
 ### Step 1 — Task 0 (Serial Pre-Phase)
@@ -401,7 +402,7 @@ COMPOUND V DISPATCH COMPLETE: <run-id>  (manifest: <manifest-path>)
 Phase totals:
   Task 0:          DONE on opus (Y reviewer rounds)
   Parallel batch:  N jobs across M batches
-    pool assignments: codex K · zai P             # integer job counts only
+    pool assignments: codex K · zai P · qwen Q     # integer job counts only
     claude·opus:     K (list job IDs)
     claude·sonnet:   P (list job IDs + justifications)
     codex·<model>:   C (list job IDs — all worktree)

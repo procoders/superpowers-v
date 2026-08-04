@@ -156,7 +156,7 @@ docs/superpowers/execution/<run-id>/
   "max_total_retries": 12,
   "earliest_reset_observed_at": "2026-06-26T14:32:55Z",
   "earliest_reset_seconds": 120,
-  "backend_max_parallel": { "zai": 4 },
+  "backend_max_parallel": { "zai": 4, "qwen": 2 },
   "cooldowns": { "codex": { "until": "2026-06-26T14:33:10Z", "reason": "rate_limited", "opened_at": "2026-06-26T14:32:55Z", "opened_by_attempt_id": "task-2-api:2", "probe": { "status": "idle", "owner_job_id": null, "owner_attempt_id": null, "lease_until": null } } },
   "circuit_open": {
     "codex": { "open": true, "reason": "out_of_credits", "opened_at": "2026-06-26T14:32:55Z", "cleared_by": null }

@@ -223,6 +223,72 @@ opencode providers list </dev/null 2>&1 | grep -qv '0 credentials' \
 > **mandatory env-scrub** (the worker script must NOT blindly inherit the dispatcher's own
 > provider env vars into the `opencode run` child process).
 
+### 1a-septies. Qwen Code CLI (`qwen`) — optional, opt-in, sandbox-mandatory, WORKER-ONLY backend
+
+```bash
+command -v qwen
+```
+
+If absent → qwen is **not available** (record it; routing never offers it).
+
+If present, check the Node.js floor — `qwen` ships as the npm package `@qwen-code/qwen-code`
+with a **hard `engines: {node: ">=22.0.0"}` requirement**, unlike the standalone `codex`/
+`cursor-agent` binaries; skipping this check turns a Node-20 machine's failure into something
+unclassified instead of a clean capability-missing message:
+
+```bash
+node --version 2>/dev/null | sed 's/^v//' | awk -F. '{ exit ($1 >= 22) ? 0 : 1 }' \
+  && echo "qwen: node >= 22 ok" || echo "qwen: node too old (or node missing)"
+```
+
+Then check a working sandbox provider — required because, for `qwen` alone among the lower-trust
+backends, kernel sandboxing is **mandatory, not optional**:
+
+```bash
+if [ "$(uname -s)" = "Darwin" ]; then
+  command -v sandbox-exec >/dev/null 2>&1 && echo "qwen: sandbox provider ok (sandbox-exec)" \
+    || echo "qwen: NO sandbox provider (sandbox-exec missing)"
+else
+  { command -v docker || command -v podman; } >/dev/null 2>&1 \
+    && echo "qwen: sandbox provider ok (docker/podman)" \
+    || echo "qwen: NO sandbox provider (docker and podman both missing)"
+fi
+```
+
+Then check the credential (auth-free presence check only — never print or log the value):
+
+```bash
+[ -n "${BAILIAN_TOKEN_PLAN_API_KEY:-}" ] && echo "qwen: key present" || echo "qwen: key not set"
+```
+
+**Mark qwen unavailable — not merely degraded — unless ALL THREE hold:** `qwen` on `PATH`,
+Node ≥ 22.0.0, and a working sandbox provider (plus the key). `backend_available("qwen", …)` in
+[`compound-v-pool-state.py`](../scripts/compound-v-pool-state.py) enforces the key + sandbox half
+of this same gate at routing time — a probe that skipped the sandbox check would offer a backend
+the pool logic then silently refuses. Record `BAILIAN_TOKEN_PLAN_API_KEY` presence and the endpoint
+choice as **explicit config**: `OPENAI_BASE_URL` defaults to Alibaba Bailian's **Token Plan**
+international endpoint, `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1`
+(record whichever endpoint is actually in use — a region mismatch returns a 401 that does not
+self-identify as a region error). Never write the key into the config file — only the variable
+name.
+
+> **Flag it as opt-in, WORKER-ONLY, sandbox-mandatory when you record it.** Unlike every other
+> lower-trust backend, `qwen` has a **real** kernel confinement requirement (`QWEN_SANDBOX`: macOS
+> Seatbelt via `sandbox-exec`, or Linux Docker/Podman) — the only backend besides Codex with
+> OS-level confinement, which places it structurally above the no-OS-guarantee tier
+> (antigravity/cursor/opencode/zai). That said, it is **not** Codex-equivalent trust yet: the
+> untrusted-folder backport question is unverified and the scope gate / merge-back / blocked path
+> have only run against a stub binary, never a real model's edits (see
+> [`adapter-qwen.md`](../skills/backend-launcher/adapter-qwen.md)). **Even when all three probes
+> pass, `qwen` still will not dispatch a single job** until the operator has separately read the
+> adapter's Compliance section and recorded a current `qwen_optin.terms_version` acknowledgment in
+> `.claude/compound-v.json` (Step 4a) — the manifest validator rejects any `qwen` job when that
+> record is absent or stale. Alibaba's Token Plan terms restrict the key to "interactive use with
+> compatible AI programming and agent tools," not automated scripts, and whether a dispatcher
+> script clears that bar is genuinely unresolved; the operator who accepts the
+> account-suspension risk must be the one who read it, so this probe records availability — it
+> does **not** set the acknowledgment on the operator's behalf.
+
 ### 1b. Context7 MCP (match by namespace)
 
 Context7 is **plugin-namespaced** — match the namespace, not a bare `context7`:
@@ -558,7 +624,8 @@ was, in those two fields).
       "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" },
       "cursor":      { "deep": "auto",                  "standard": "auto",                  "light": "auto" },
       "devin":       { "deep": "claude-opus-4.6",        "standard": "claude-sonnet-4",        "light": "gpt-5.5" },
-      "opencode":    { "deep": "anthropic/claude-opus-4-6", "standard": "openai/gpt-5.6-terra", "light": "opencode/mimo-v2.5-free" }
+      "opencode":    { "deep": "anthropic/claude-opus-4-6", "standard": "openai/gpt-5.6-terra", "light": "opencode/mimo-v2.5-free" },
+      "qwen":        { "deep": "qwen3.8-max",            "standard": "qwen3.8-max",            "light": "qwen3.6-flash" }
     },
     "cost-aware": {
       "claude":      { "deep": "opus",                  "standard": "sonnet",                "light": "sonnet" },
@@ -566,20 +633,21 @@ was, in those two fields).
       "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" },
       "cursor":      { "deep": "auto",                  "standard": "auto",                  "light": "auto" },
       "devin":       { "deep": "claude-opus-4.6",        "standard": "claude-sonnet-4",        "light": "gpt-5.5" },
-      "opencode":    { "deep": "anthropic/claude-opus-4-6", "standard": "openai/gpt-5.6-terra", "light": "opencode/mimo-v2.5-free" }
+      "opencode":    { "deep": "anthropic/claude-opus-4-6", "standard": "openai/gpt-5.6-terra", "light": "opencode/mimo-v2.5-free" },
+      "qwen":        { "deep": "qwen3.8-max",            "standard": "qwen3.8-max",            "light": "qwen3.6-flash" }
     }
   },
   "pools": {
     "balanced": {
-      "light":    [ { "backend": "codex" }, { "backend": "zai" } ],
-      "standard": [ { "backend": "codex", "weight": 2 }, { "backend": "zai" } ]
+      "light":    [ { "backend": "codex" }, { "backend": "zai" }, { "backend": "qwen" } ],
+      "standard": [ { "backend": "codex", "weight": 2 }, { "backend": "zai" }, { "backend": "qwen" } ]
     },
     "cost-aware": {
-      "light":    [ { "backend": "codex" }, { "backend": "zai" } ],
-      "standard": [ { "backend": "codex", "weight": 2 }, { "backend": "zai" } ]
+      "light":    [ { "backend": "codex" }, { "backend": "zai" }, { "backend": "qwen" } ],
+      "standard": [ { "backend": "codex", "weight": 2 }, { "backend": "zai" }, { "backend": "qwen" } ]
     }
   },
-  "backend_max_parallel": { "zai": 4 }
+  "backend_max_parallel": { "zai": 4, "qwen": 2 }
 }
 ```
 
@@ -587,6 +655,10 @@ was, in those two fields).
   arbiter/review panel until family-dedup keys on the *resolved* model rather than the
   backend name (both are multi-provider routers, so `backend: devin`/`backend: opencode`
   does not fix a single model family — see `adapter-devin.md` / `adapter-opencode.md`).
+- `qwen` is also **worker-only** (no reviewer/arbiter seat) — see `adapter-qwen.md`. Seeding it in
+  `models`/`pools` above does not by itself make it dispatchable: the manifest validator separately
+  requires a current `qwen_optin.terms_version` acknowledgment in this same config file (see the
+  `qwen_optin` bullet below) before any `backend: qwen` job passes validation.
 
 (`conservative` and `claude-only` mirror `balanced` — seed those two stance blocks
 identically to `balanced`. Only `cost-aware.claude.standard` differs: `sonnet`, not
@@ -676,24 +748,43 @@ identically to `balanced`. Only `cost-aware.claude.standard` differs: `sonnet`, 
   claude uses native tier aliases. Tell the user they can refresh or customize this map any time
   with [`/v:models`](v-models.md) — they do **not** need to hand-edit JSON. The map
   is project-local config; it is documented but not committed in the plugin repo.
-- **`pools` — SEED the per-stance, per-tier Codex + zai worker rings shown above.** The only
+- **`pools` — SEED the per-stance, per-tier Codex + zai + qwen worker rings shown above.** The only
   accepted shape is `{<stance>: {<tier>: [{backend, optional model, optional weight}]}}`; unlike
   `models`, there is no legacy flat pool shape and no auto-detection. `backend` is required;
   `model` is an optional non-empty override; `weight` is an optional non-boolean integer from 1
   through 100 (default `1`), and one tier's expanded ring may contain at most 256 slots. The
   `standard` example therefore rotates manifest-order job counts
-  `codex, codex, zai, …`, while `light` alternates. Config presence does **not** activate routing:
-  a planner still emits `backend: pool` only as an explicit operator choice for an eligible
-  standard/light implementer. Conservative and Claude-only have no shipped pool entries.
+  `codex, codex, zai, qwen, …`, while `light` alternates. Config presence does **not** activate
+  routing: a planner still emits `backend: pool` only as an explicit operator choice for an
+  eligible standard/light implementer. Conservative and Claude-only have no shipped pool entries.
 - **Claude is intentionally absent from shipped pools.** Its Claude/Claude Code quota is shared
   with the operator's live session; add `{ "backend": "claude" }` only as a deliberate opt-in.
-  To down-weight Claude, keep it at weight `1` and give Codex/zai larger integer weights. Never add
-  Claude implicitly because another member is unavailable.
+  To down-weight Claude, keep it at weight `1` and give Codex/zai/qwen larger integer weights.
+  Never add Claude implicitly because another member is unavailable.
 - **`backend_max_parallel` is a top-level map of concrete backend → positive, non-boolean integer.**
   It is shape-validated and the prose dispatcher respects it while filling batches; this does not
   create or claim a new deterministic scheduler/semaphore gate. The shipped `zai: 4` value depends
   on prerequisite PR 1 (`feat/zai-backend`, PR #5). This pool release MUST NOT merge before PR 1;
   do not add a cross-branch markdown link because the repository's dead-link guard is line-based.
+  The shipped `qwen: 2` value is **unmeasured** — Alibaba publishes "supports 6-8 Agents running
+  concurrently" on the Token Plan, but that ceiling has not been measured by this project, so the
+  seeded default stays conservative rather than adopting the published number outright; raise it
+  only after a live 2/4/6 run confirms it holds.
+- **`qwen_optin` — the operator's own, uncommitted, terms-risk acknowledgment; NOT part of `pools`
+  or `models`.** Seeding `qwen` into `pools`/`models` above does not make it dispatchable by
+  itself: the manifest validator separately rejects any `backend: qwen` job unless this key is
+  present and current:
+  ```jsonc
+  "qwen_optin": { "terms_version": "2026-08-04" }
+  ```
+  Only write this key when the operator has actually read
+  [`adapter-qwen.md`](../skills/backend-launcher/adapter-qwen.md)'s Compliance section and accepts
+  the account-suspension risk it describes (Alibaba's Token Plan terms restrict the key to
+  "interactive use with compatible AI programming and agent tools," not automated scripts, and
+  Compound V cannot resolve that ambiguity on the operator's behalf). **Never write the API key
+  here** — `BAILIAN_TOKEN_PLAN_API_KEY` stays in the environment, never in this file. This is the
+  only backend-specific opt-in record among the shipped backends; do not generalize the pattern to
+  `zai`/`devin`/`opencode` without a documented reason — their own adapters do not require it.
 - Both new blocks are committed team **policy**, not machine-local capability. `pools` and
   `backend_max_parallel` must be objects when present; structural malformation fails closed in the
   shared project-config loader. Per-member/per-limit mistakes are dropped with surfaced warnings,
@@ -727,6 +818,13 @@ The user-level cache of what this machine can do, reused across repos:
     "version": "<from `opencode --version`>",
     "providers_configured": []
   },
+  "qwen": {
+    "available": false,
+    "node_version_ok": null,
+    "sandbox_provider": null,
+    "trust": "opt-in, sandbox-mandatory (QWEN_SANDBOX); the only backend besides codex with real OS-level confinement; worker-only",
+    "version": "<from `qwen --version`>"
+  },
   "context7": { "available": true },
   "workflows": { "available": false },
   "deep_research": true,
@@ -751,6 +849,17 @@ The user-level cache of what this machine can do, reused across repos:
   `adapter-opencode.md`).
 - `devin` and `opencode` are never added to any arbiter/review-panel capability block —
   they are **worker-only** in v1.
+- `qwen.available` reflects the Step 1a-septies three-way probe: `command -v qwen` **AND**
+  `node_version_ok` (Node ≥ 22.0.0) **AND** `sandbox_provider` non-null (`sandbox-exec` on macOS;
+  `docker`/`podman` on Linux) — mark `available: false` if **any** of the three fails, not merely
+  degraded, since `backend_available("qwen", …)` enforces the same three-way gate at routing time.
+  `node_version_ok`/`sandbox_provider` are recorded individually so a failed probe is diagnosable
+  (which of the three is missing) rather than a single opaque `false`. **`qwen` is also
+  never added to any arbiter/review-panel capability block — worker-only.** Unlike every other
+  entry here, `BAILIAN_TOKEN_PLAN_API_KEY` presence and the `qwen_optin` acknowledgment are **not**
+  cached in this file — like `zai`'s key, they are environment/policy facts checked live each run,
+  not stable machine capability; the key lives only in the environment and the opt-in lives only in
+  the committed `.claude/compound-v.json` (Step 4a).
 - `scheduler.tier1_cron` / `scheduler.tier2_scheduled_tasks` reflect the Step 1d-ter presence
   probes (`CronCreate` / `mcp__scheduled-tasks__create_scheduled_task` in your own available-tools
   listing) — the machine-local capability `epic.autonomy.watch` (Step 3c, committed policy) needs at
@@ -774,10 +883,15 @@ capability still missing (with the exact next step). If Codex came back
 version-incompatible, say so plainly and recommend updating it. Mention that the
 default tier→model `models` map was seeded into `.claude/compound-v.json`, and that
 [`/v:models`](v-models.md) refreshes or customizes it whenever a backend ships new
-models while preserving pool policy. Also report that the shipped Codex + zai `pools` and
-`backend_max_parallel.zai` ceiling were seeded, that config alone does not activate pooled jobs,
-and that Claude membership remains explicit opt-in. Describe weights as deterministic job-count
-rotation only—never as balanced tokens, credits, messages, time, savings, or quota.
+models while preserving pool policy. Also report that the shipped Codex + zai + qwen `pools` and
+`backend_max_parallel.{zai,qwen}` ceilings were seeded, that config alone does not activate pooled
+jobs, and that Claude membership remains explicit opt-in. If `qwen`'s three-way probe (binary +
+Node ≥ 22 + sandbox provider) failed, say **which** part failed rather than a bare "unavailable" —
+and separately note that even a fully-available `qwen` will not dispatch a job until the operator
+records the `qwen_optin.terms_version` acknowledgment (this is a decision for the operator to make
+after reading `adapter-qwen.md`'s Compliance section, not something `/v:init` sets on its own).
+Describe weights as deterministic job-count rotation only—never as balanced tokens, credits,
+messages, time, savings, or quota.
 
 - **Next:** run `/v:onboard` to build the project knowledge base (architecture docs + AGENTS.md bridge). This is a suggestion, not automatic.
 

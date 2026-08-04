@@ -35,7 +35,7 @@ Worked example: [`examples/manifest.example.yaml`](../../examples/manifest.examp
 | `id` | string | yes | Unique job id within the run (e.g. `task-1-editor-ui`). |
 | `title` | string | yes | One-line job title. |
 | `type` | string | yes | Job-type token used by the routing policy (e.g. `shared_foundation`, `bounded_crud`, `large_isolated`, `core_slice`, `mechanical_refactor`, `docs`, `tests_new`, `external_api`, `review`). |
-| `backend` | enum | yes | A concrete backend (`claude` \| `codex` \| `antigravity` \| `cursor` \| `devin` \| `opencode` \| `zai`) or the job-only routing token `pool`. **Execution-layer data — NEVER appears in any frontmatter.** `pool` has no adapter: it is replaced by `assigned_backend` / `assigned_model` before launch. (`antigravity`/`cursor`/`opencode`/`zai` are opt-in, lower-trust, no kernel sandbox ⇒ always `worktree`; `devin` has a Research-Preview kernel sandbox treated as unverified/no-confinement for v1 ⇒ also always `worktree`. `devin`/`opencode`/`zai` are **worker-only** — never a routable arbiter/review-panel seat. For `devin`/`opencode` because both are multi-provider brokers whose resolved model family is data-dependent; for `zai` because `model_family()` carries no `glm` needle, so a GLM ballot buckets as `unknown` and could be deduped against an unrelated model.) |
+| `backend` | enum | yes | A concrete backend (`claude` \| `codex` \| `antigravity` \| `cursor` \| `devin` \| `opencode` \| `zai` \| `qwen`) or the job-only routing token `pool`. **Execution-layer data — NEVER appears in any frontmatter.** `pool` has no adapter: it is replaced by `assigned_backend` / `assigned_model` before launch. (`antigravity`/`cursor`/`opencode`/`zai` are opt-in, lower-trust, no kernel sandbox ⇒ always `worktree`; `devin` has a Research-Preview kernel sandbox treated as unverified/no-confinement for v1 ⇒ also always `worktree`; `qwen` is opt-in and requires a **mandatory** kernel sandbox (`QWEN_SANDBOX`) ⇒ also always `worktree` — the sandbox is directory-scoped, not glob-scoped, so worktree + the git-diff gate is still the only per-file enforcement. `devin`/`opencode`/`zai`/`qwen` are **worker-only** — never a routable arbiter/review-panel seat. For `devin`/`opencode` because both are multi-provider brokers whose resolved model family is data-dependent; for `zai` because `model_family()` carries no `glm` needle, so a GLM ballot buckets as `unknown` and could be deduped against an unrelated model; for `qwen` because the epic arbiter's family match has no `qwen`/`glm`/`deepseek` needle either, and because its ToS analysis is not yet settled — see [`adapter-qwen.md`](../backend-launcher/adapter-qwen.md).) |
 | `tier` | enum | yes¹ | `deep` \| `standard` \| `light`. The **intent** the routing policy assigns; the dispatcher resolves it to a concrete model. Stable vocabulary that survives model churn. |
 | `effort` | enum | no | `low` \| `medium` \| `high` \| `xhigh`. Orthogonal reasoning-effort hint. Default pairing `deep→high`, `standard→medium`, `light→low`, but independently tunable per task-type. For `codex` it maps to `-c model_reasoning_effort=<effort>`; for `claude` it is advisory (the `Task` path has no separate effort flag). `xhigh` is valid **iff** `backend: codex`; every other backend rejects it with a clear error naming the rule (use `high` instead). |
 | `model` | string | no¹ | Explicit override, e.g. `opus`, `sonnet`, `gpt-5.6-sol`. When present it **skips resolution** (the manifest pins the model directly). Execution-layer data — never in frontmatter. Backward-compatible: pre-tier manifests carrying only `model` remain valid. |
@@ -54,17 +54,17 @@ Worked example: [`examples/manifest.example.yaml`](../../examples/manifest.examp
 
 | Tier | Strongest fit | Routes to (Balanced) |
 |---|---|---|
-| `deep` | Strongest reasoning: architecture, security/auth/payments, designing tests, external APIs, **ALL reviewers**, shared-foundation Task 0. | claude `opus`, codex `gpt-5.6-sol`, antigravity top model, cursor `auto`, devin `claude-opus-4.6`, opencode `anthropic/claude-opus-4-6`, zai `glm-5.2`. |
-| `standard` | Bounded core/feature build, incl. large isolated codex work. | claude `opus` (`sonnet` under the `cost-aware` stance), codex `gpt-5.6-terra`, antigravity mid model, cursor `auto`, devin `claude-sonnet-4`, opencode `openai/gpt-5.6-terra`, zai `glm-5.2`. |
-| `light` | Mechanical single-file / docs / i18n. | claude `sonnet`, codex `gpt-5.6-luna`, antigravity flash model, cursor `auto`, devin `gpt-5.5`, opencode `opencode/mimo-v2.5-free` (a real credential-free model), zai `glm-5-turbo` (chosen for LATENCY on a head-to-head measurement — 16% faster than glm-4.7, which is only 7% cheaper in practice because it emits ~60% more output; do not "fix" this back to the cheaper-looking multiplier). |
+| `deep` | Strongest reasoning: architecture, security/auth/payments, designing tests, external APIs, **ALL reviewers**, shared-foundation Task 0. | claude `opus`, codex `gpt-5.6-sol`, antigravity top model, cursor `auto`, devin `claude-opus-4.6`, opencode `anthropic/claude-opus-4-6`, zai `glm-5.2`, qwen `qwen3.8-max`. |
+| `standard` | Bounded core/feature build, incl. large isolated codex work. | claude `opus` (`sonnet` under the `cost-aware` stance), codex `gpt-5.6-terra`, antigravity mid model, cursor `auto`, devin `claude-sonnet-4`, opencode `openai/gpt-5.6-terra`, zai `glm-5.2`, qwen `qwen3.8-max` (same as `deep`, mirroring zai's shape). |
+| `light` | Mechanical single-file / docs / i18n. | claude `sonnet`, codex `gpt-5.6-luna`, antigravity flash model, cursor `auto`, devin `gpt-5.5`, opencode `opencode/mimo-v2.5-free` (a real credential-free model), zai `glm-5-turbo` (chosen for LATENCY on a head-to-head measurement — 16% faster than glm-4.7, which is only 7% cheaper in practice because it emits ~60% more output; do not "fix" this back to the cheaper-looking multiplier), qwen `qwen3.6-flash` (a naming inference from the measured catalog, not a latency/quality measurement — see [`adapter-qwen.md`](../backend-launcher/adapter-qwen.md)). |
 
 `effort ∈ {low, medium, high, xhigh}` is orthogonal to tier. The default pairing (`deep→high`, `standard→medium`, `light→low`) is just a default — a task-type may pin a different effort independently. `xhigh` is valid **iff** `backend: codex`; every other backend rejects it with a clear error naming the rule (use `high` instead) — it maps to codex's `model_reasoning_effort=xhigh` (live-verified 2026-07-11 on codex-cli 0.144.1).
 
-Resolution is **stance-aware**: the `standard` Claude row resolves to `opus` under the `balanced` stance and `sonnet` under `cost-aware` (the resolver's `cost-aware.claude.standard = sonnet`; `cost-aware.claude.deep` stays `opus`). The dispatcher reads the manifest's `routing_stance` and passes it (`--stance`) to the resolver on every resolve; omitting it defaults to `balanced`. Only the `standard` Claude cell shifts — `deep` (incl. all reviewers + sensitive surfaces) is `opus` in every stance, and `codex`/`antigravity`/`cursor`/`devin`/`opencode`/`zai` are identical across stances.
+Resolution is **stance-aware**: the `standard` Claude row resolves to `opus` under the `balanced` stance and `sonnet` under `cost-aware` (the resolver's `cost-aware.claude.standard = sonnet`; `cost-aware.claude.deep` stays `opus`). The dispatcher reads the manifest's `routing_stance` and passes it (`--stance`) to the resolver on every resolve; omitting it defaults to `balanced`. Only the `standard` Claude cell shifts — `deep` (incl. all reviewers + sensitive surfaces) is `opus` in every stance, and `codex`/`antigravity`/`cursor`/`devin`/`opencode`/`zai`/`qwen` are identical across stances.
 
 ### Config `models` map (project `.claude/compound-v.json`)
 
-The concrete model behind each tier lives in a **refreshable** map in the project config — not hardcoded in any job. This is what lets the plugin survive model churn: when models change, refresh the map (`/v:models`), not the manifests. The map is **per-stance** — its shape is `{<stance>: {<backend>: {<tier>: model}}}`. Only the `claude` rows differ across stances (`cost-aware.claude.standard = sonnet`; everywhere else `standard` is `opus`); `codex`/`antigravity`/`cursor`/`devin`/`opencode`/`zai` are identical in every stance. `opencode`'s cells are full `provider/model` strings (the provider may legitimately differ per tier — no schema change, the resolver already treats every cell as opaque):
+The concrete model behind each tier lives in a **refreshable** map in the project config — not hardcoded in any job. This is what lets the plugin survive model churn: when models change, refresh the map (`/v:models`), not the manifests. The map is **per-stance** — its shape is `{<stance>: {<backend>: {<tier>: model}}}`. Only the `claude` rows differ across stances (`cost-aware.claude.standard = sonnet`; everywhere else `standard` is `opus`); `codex`/`antigravity`/`cursor`/`devin`/`opencode`/`zai`/`qwen` are identical in every stance. `opencode`'s cells are full `provider/model` strings (the provider may legitimately differ per tier — no schema change, the resolver already treats every cell as opaque); `qwen`, like `zai`, is single-vendor at the protocol level, so its cells are bare catalog names (e.g. `qwen3.8-max`), never `provider/model`:
 
 ```jsonc
 "models": {
@@ -75,7 +75,8 @@ The concrete model behind each tier lives in a **refreshable** map in the projec
     "cursor":      { "deep": "auto",                       "standard": "auto",                        "light": "auto" },
     "devin":       { "deep": "claude-opus-4.6",            "standard": "claude-sonnet-4",              "light": "gpt-5.5" },
     "opencode":    { "deep": "anthropic/claude-opus-4-6",  "standard": "openai/gpt-5.6-terra",         "light": "opencode/mimo-v2.5-free" },
-    "zai":         { "deep": "glm-5.2",                    "standard": "glm-5.2",                     "light": "glm-5-turbo" }
+    "zai":         { "deep": "glm-5.2",                    "standard": "glm-5.2",                     "light": "glm-5-turbo" },
+    "qwen":        { "deep": "qwen3.8-max",                "standard": "qwen3.8-max",                  "light": "qwen3.6-flash" }
   },
   "cost-aware": {
     "claude":      { "deep": "opus",                      "standard": "sonnet",                     "light": "sonnet" },
@@ -84,13 +85,14 @@ The concrete model behind each tier lives in a **refreshable** map in the projec
     "cursor":      { "deep": "auto",                       "standard": "auto",                        "light": "auto" },
     "devin":       { "deep": "claude-opus-4.6",            "standard": "claude-sonnet-4",              "light": "gpt-5.5" },
     "opencode":    { "deep": "anthropic/claude-opus-4-6",  "standard": "openai/gpt-5.6-terra",         "light": "opencode/mimo-v2.5-free" },
-    "zai":         { "deep": "glm-5.2",                    "standard": "glm-5.2",                     "light": "glm-5-turbo" }
+    "zai":         { "deep": "glm-5.2",                    "standard": "glm-5.2",                     "light": "glm-5-turbo" },
+    "qwen":        { "deep": "qwen3.8-max",                "standard": "qwen3.8-max",                  "light": "qwen3.6-flash" }
   }
   // conservative + claude-only mirror balanced
 }
 ```
 
-The map is **documented, not committed** in this repo (it is project-local config). `/v:init` seeds the per-stance default map so routing works out of the box; `/v:models` discovers available models per backend and rewrites the map. The resolver also **accepts the legacy flat shape** `{<backend>: {<tier>: model}}` (applied to every stance) for backward-compat — it auto-detects which shape it was given. NEVER `haiku` anywhere. Antigravity values are illustrative placeholders refreshed by `agy models`; codex has no list command, so its map is curated + user-overridable; claude uses native tier aliases.
+The map is **documented, not committed** in this repo (it is project-local config). `/v:init` seeds the per-stance default map so routing works out of the box; `/v:models` discovers available models per backend and rewrites the map. The resolver also **accepts the legacy flat shape** `{<backend>: {<tier>: model}}` (applied to every stance) for backward-compat — it auto-detects which shape it was given. NEVER `haiku` anywhere. Antigravity values are illustrative placeholders refreshed by `agy models`; codex has no list command, so its map is curated + user-overridable; claude uses native tier aliases. The `qwen` catalog above was read live from the operator's own key against Alibaba's Token Plan `/models` endpoint 2026-08-04 (`qwen3.8-max`, `qwen3.8-max-preview`, `qwen3.7-max`, `qwen3.7-plus`, `qwen3.6-flash`, `glm-5.2`, `deepseek-v4-pro`, `deepseek-v4-flash-0731`, plus audio/image models) — **not** the Coding Plan catalog (which is a different subscription with zero entitlement on this key, and does not include `qwen3.8-max`/`qwen3.6-flash`). Per-tier differentiation within `qwen` is unmeasured; `light → qwen3.6-flash` is a naming inference, not a ranking.
 
 ### Config `pools` and `backend_max_parallel` (project `.claude/compound-v.json`)
 
@@ -104,21 +106,29 @@ job. Pools have exactly one shape, with no legacy-flat auto-detection:
     "balanced": {
       "light": [
         { "backend": "codex" },
-        { "backend": "zai" }
+        { "backend": "zai" },
+        { "backend": "qwen" }
       ],
       "standard": [
         { "backend": "codex", "weight": 2 },
-        { "backend": "zai", "model": "glm-5.2" }
+        { "backend": "zai", "model": "glm-5.2" },
+        { "backend": "qwen" }
       ]
     },
     "cost-aware": {
-      "light": [ { "backend": "codex" }, { "backend": "zai" } ],
-      "standard": [ { "backend": "codex", "weight": 2 }, { "backend": "zai" } ]
+      "light": [ { "backend": "codex" }, { "backend": "zai" }, { "backend": "qwen" } ],
+      "standard": [ { "backend": "codex", "weight": 2 }, { "backend": "zai" }, { "backend": "qwen" } ]
     }
   },
-  "backend_max_parallel": { "zai": 4 }
+  "backend_max_parallel": { "zai": 4, "qwen": 2 }
 }
 ```
+
+`qwen` in a pool is still subject to every other qwen gate: `backend_available("qwen", …)` (key +
+sandbox provider) at freeze time, and the operator opt-in acknowledgment at validation time. A pool
+configured with `qwen` as a member does not bypass either — an unavailable or non-opted-in `qwen`
+slot freezes as `available: false` and the pool degrades to its other members (see the frozen
+`pool_members` / `assigned_backend` contract below); it does not fail the run.
 
 The exact path is `pools.<stance>.<tier>[]`. Each member is an object with:
 
@@ -138,13 +148,17 @@ documented batch ceiling the prose dispatcher respects; validation proves its **
 new scheduler or semaphore enforces it. Either top-level key may be absent and then normalizes to
 `{}`; every legacy/non-pool manifest keeps its existing routing behavior.
 
-The shipped policy uses **Codex + zai** and deliberately omits `claude`. Claude/Claude Code quota is
-shared with the operator's live session, whereas Codex and zai are separate worker subscriptions;
-adding `{ "backend": "claude" }` is therefore an explicit opt-in. To give Claude a smaller share,
-keep its weight at `1` and give the other members larger integer weights. This pool release has a
-hard merge prerequisite on PR 1 (`feat/zai-backend`, PR #5); do not merge it before that backend is
-present. The dependency is stated as prose because cross-branch file links fail this repository's
-line-based dead-link guard.
+The shipped policy uses **Codex + zai + qwen** and deliberately omits `claude`. Claude/Claude Code
+quota is shared with the operator's live session, whereas Codex, zai, and qwen are separate worker
+subscriptions; adding `{ "backend": "claude" }` is therefore an explicit opt-in. To give Claude a
+smaller share, keep its weight at `1` and give the other members larger integer weights. **This is
+the documented example only — it does not modify `.claude/compound-v.json`**, the operator's own
+live rotation (seeded `claude + zai`), which changes only by a deliberate, separate act. A `qwen`
+pool member additionally never dispatches until the operator's local terms acknowledgment is
+current (see the invariant rules below) — configuring it here is necessary but not sufficient. This
+pool release has a hard merge prerequisite on PR 1 (`feat/zai-backend`, PR #5); do not merge it
+before that backend is present. The dependency is stated as prose because cross-branch file links
+fail this repository's line-based dead-link guard.
 
 `/v:models` refreshes **only** `models` and preserves `pools`, `backend_max_parallel`, and every
 optional pool-member `model` override unchanged. A member without `model` automatically follows the
@@ -244,8 +258,12 @@ occupies slot `0`. `compound-v-pool-state.py resume` validates this record and r
 concrete pair without re-reading config or re-deriving the pool assignment.
 
 For the shipped members, that one-time availability predicate is deliberately narrow: `codex` is
-available only when its binary is on `PATH`; `zai` is available only when `ZAI_API_KEY` is non-empty.
-Those verdicts are not re-probed after freeze, including on resume.
+available only when its binary is on `PATH`; `zai` is available only when `ZAI_API_KEY` is non-empty;
+`qwen` is available only when `BAILIAN_TOKEN_PLAN_API_KEY` is non-empty **and** a working sandbox
+provider exists (`sandbox-exec` on macOS; `docker` or `podman` on Linux) — the only shipped member
+whose availability predicate checks a capability beyond a binary/key, because its trust tier is
+claimed on that sandbox actually being available. Those verdicts are not re-probed after freeze,
+including on resume.
 
 Adapters, workers, advisor selection, failure classification/policy, usage extraction, outcome
 memory, and scorecards receive only those concrete assignment fields—never the routing token
@@ -432,7 +450,7 @@ usage:
 | `input_tokens` | int \| null | Total input/prompt tokens for the job, summed across the backend's own usage events. `null` when not measured. |
 | `output_tokens` | int \| null | Total output/completion tokens for the job, summed across the backend's own usage events. `null` when not measured. |
 | `advisor_calls` | int \| null | Times the executor actually consulted the read-only advisor subagent. **Worker-COUNTED** by the advisor worker (not derived from any CLI turn/iteration count, which is turns, not advisor consults), and set only when advisor mode ran; `null` otherwise. |
-| `backend` | string | Backend the usage was extracted for (`codex` \| `opencode` \| `cursor` \| `agy`/`antigravity` \| `claude` \| `devin`). |
+| `backend` | string | Backend the usage was extracted for (`codex` \| `opencode` \| `cursor` \| `qwen` \| `agy`/`antigravity` \| `claude` \| `devin`). |
 | `measured` | bool | `true` **only** when real token counts were extracted from the backend's structured usage events; `false` when the backend exposes nothing (see below). |
 
 ### Measured-only contract (anti-ruflo)
@@ -447,12 +465,17 @@ honest; a made-up number is not.
 | `codex` | **yes** | sum of `turn.completed.usage` across all turns (`--json`) |
 | `opencode` | **yes** | sum of `step_finish.part.tokens` (`--format json`) |
 | `cursor` | **yes** | `result.usage` (needs `-f`/trust) |
+| `qwen` | **yes** | terminal `result` element's `usage` in the buffered JSON array (`--output-format json`) |
 | `agy` (antigravity) | **no** → `measured:false`, null tokens | no structured usage (`--print` only) |
 | `claude` via `Task` subagent | **no** → `measured:false`, null tokens | in-harness, returns text only |
 | `devin` | **no** → `measured:false`, null tokens | no machine-readable usage |
 
-The three measured backends (`codex`, `opencode`, `cursor`) each use a different casing/shape, so a
-single normalizer handles them. The worker's stdout stays EXACTLY one `job_result` JSON — the
+The four measured backends (`codex`, `opencode`, `cursor`, `qwen`) each use a different
+casing/shape — `qwen`'s is a third capture shape again, a buffered top-level JSON **array**, distinct
+from codex's JSONL and cursor/opencode's per-event streams — so a single normalizer handles them,
+dispatching per backend. A well-formed-but-empty `usage` object (e.g. on a failed `qwen` job) still
+yields `measured:false` with null counts, never a fabricated `0` (the anti-ruflo rule). The worker's
+stdout stays EXACTLY one `job_result` JSON — the
 extractor reads the events log into a variable and never writes stdout.
 
 ### Extraction and aggregation

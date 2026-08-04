@@ -1,6 +1,6 @@
 ---
 name: backend-launcher
-description: Use when Compound V's dispatcher needs to run one file-scoped job on a chosen backend (Claude subagent, headless Codex worker, headless Antigravity worker, headless Cursor worker, headless Devin worker, or headless opencode worker) and get back a canonical job_result. The single job_spec → job_result contract every adapter implements; the orchestrator speaks only this contract and never sees backend-specific flags.
+description: Use when Compound V's dispatcher needs to run one file-scoped job on a chosen backend (Claude subagent, headless Codex worker, headless Antigravity worker, headless Cursor worker, headless Devin worker, headless opencode worker, or headless Qwen Code worker) and get back a canonical job_result. The single job_spec → job_result contract every adapter implements; the orchestrator speaks only this contract and never sees backend-specific flags.
 ---
 
 # Backend Launcher
@@ -19,7 +19,7 @@ There is no skill-import API: an adapter is a sibling doc (`adapter-codex.md`, `
 
 ```jsonc
 {
-  "backend": "codex",                  // claude | codex | antigravity | cursor | devin | opencode | zai
+  "backend": "codex",                  // claude | codex | antigravity | cursor | devin | opencode | zai | qwen
   "prompt": "…",                       // the worker prompt (opens with the planner/executor lock, below)
   "tier": "standard",                  // deep | standard | light — the routing INTENT (stable across model churn)
   "effort": "medium",                  // low | medium | high | xhigh — orthogonal reasoning-effort hint (optional; xhigh is codex-only)
@@ -128,6 +128,7 @@ This is the *instructed* half. The git-diff scope gate above is the *enforced* h
 | `adapter-devin.md` | headless Devin | Bash-spawned `devin -p` (own process, own worktree) | `worktree` (mandatory) | git-diff scope gate | **lower-trust / opt-in, WORKER-ONLY** (Research-Preview `--sandbox`, unverified coverage; multi-vendor model broker — excluded from any arbiter panel) |
 | `adapter-zai.md` | headless z.ai (GLM) | Bash-spawned `claude -p` against z.ai's Anthropic endpoint (own process, own worktree) | `worktree` (mandatory) | git-diff scope gate | **lower-trust / opt-in, WORKER-ONLY** (no kernel sandbox; a headless Claude Code pointed at a third-party endpoint — the only path, since z.ai ships no headless CLI) |
 | `adapter-opencode.md` | headless opencode | Bash-spawned `opencode run` (own process, own worktree) | `worktree` (mandatory) | git-diff scope gate | **lower-trust / opt-in, WORKER-ONLY** (no kernel sandbox; multi-provider `provider/model` router — excluded from any arbiter panel until family-dedup keys on the resolved model) |
+| `adapter-qwen.md` | headless Qwen Code | Bash-spawned `qwen` (own process, own worktree) | `worktree` (mandatory) + **kernel sandbox (mandatory)** | git-diff scope gate | **opt-in, WORKER-ONLY** — invocation verified live 2026-08-04 against `qwen 0.21.5` on Alibaba Bailian's **Token Plan**; scope gate / merge-back / blocked-path coverage still stub-only. The only backend besides Codex that requires OS-level confinement — but the adapter's Compliance section was researched against the **Coding Plan's** terms (the wrong plan) and has not yet been re-reviewed against the Token Plan actually in use |
 
 - **claude-subagent** — reuses today's `Task`-based dispatch with a `model` override and `maxTurns: 15`, optionally inside a worktree, and runs the **same** scope gate on return so enforcement is identical to Codex. Direct writes are gated against a baseline commit.
 - **codex** — a Bash-spawned `codex exec` worker in its own process and its own worktree (never an `agents/` entry, never the experimental `openai-codex` app-server broker, which is single-flight and can't fan out). Pinned flag set below.
