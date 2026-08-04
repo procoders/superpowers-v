@@ -26,7 +26,10 @@ SUPERVISOR="$SCRIPT_DIR/compound-v-run-with-timeout.py"
 SCOPE_CHECK="$SCRIPT_DIR/compound-v-scope-check.py"
 USAGE_EXTRACT="$SCRIPT_DIR/compound-v-usage-extract.py"
 
-ZAI_BASE_URL="${ZAI_BASE_URL:-https://api.z.ai/api/anthropic}"
+# Pinned, not caller-overridable: an ambient ZAI_BASE_URL in the dispatcher's own
+# environment must not be able to redirect this worker to an unpinned endpoint
+# before the credential scrub even runs.
+ZAI_BASE_URL="https://api.z.ai/api/anthropic"
 
 # The MANDATORY provider-credential scrub, as an ALLOWLIST rather than a denylist. `env -i`
 # clears EVERY inherited variable and only these names are injected back with their parent
@@ -316,17 +319,19 @@ esac
 # never read; we are not using it (see note 4 above), so instead we CHECK where the response
 # actually came from. A non-GLM model means the request did not reach z.ai, and the job fails
 # rather than letting an unnoticed charge land on some other credential.
-SERVED_MODEL="$(jq -r '(.modelUsage // {}) | keys | .[0] // ""' "$EVENTS_LOG" 2>/dev/null || echo "")"
+# Check EVERY modelUsage key, not just the first: a response that mixes a glm-*
+# key with a later-sorting non-GLM key (e.g. a haiku-slot fallback) must still
+# fail, not pass on the strength of whichever key sorts first.
+NON_GLM_MODEL="$(jq -r '(.modelUsage // {}) | keys | map(select(startswith("glm-") | not)) | .[0] // ""' "$EVENTS_LOG" 2>/dev/null || echo "")"
+MODEL_COUNT="$(jq -r '(.modelUsage // {}) | keys | length' "$EVENTS_LOG" 2>/dev/null || echo 0)"
 if [ "$exit_code" = "0" ]; then
-  case "$SERVED_MODEL" in
-    glm-*) : ;;
-    *)
-      emit_job_result "error" false '[]' '[]' \
-        "response came from model '$SERVED_MODEL', not a GLM — the request did not reach z.ai" \
-        "$SESSION_ID" "$WT" 1 "other" 0 "$USAGE_JSON"
-      exit 0
-      ;;
-  esac
+  if [ "$MODEL_COUNT" = "0" ] || [ -n "$NON_GLM_MODEL" ]; then
+    SERVED_MODEL="${NON_GLM_MODEL:-"(none)"}"
+    emit_job_result "error" false '[]' '[]' \
+      "response came from model '$SERVED_MODEL', not a GLM — the request did not reach z.ai" \
+      "$SESSION_ID" "$WT" 1 "other" 0 "$USAGE_JSON"
+    exit 0
+  fi
 fi
 
 if [ "$exit_code" != "0" ]; then

@@ -55,8 +55,19 @@ case "$1" in
   blocked)  printf 'stray\n' > ./NOT_ALLOWED.txt ;;
   success)  printf 'ok\n' > ./allowed.txt ;;
   nonglm)   : ;;
+  mixedglm) : ;;
   crash)    echo "boom" >&2; exit 1 ;;
 esac
+if [ "$1" = "mixedglm" ]; then
+cat <<'JSON'
+{"type":"result","subtype":"success","is_error":false,"result":"stub did the thing",
+ "session_id":"ce0ba7c7-bb9a-421f-b926-9973806d506f",
+ "total_cost_usd":0.42,
+ "usage":{"input_tokens":123,"output_tokens":45},
+ "modelUsage":{"glm-5.2":{"inputTokens":100,"outputTokens":40,"costUSD":0.40},
+               "sonnet-5":{"inputTokens":23,"outputTokens":5,"costUSD":0.02}}}
+JSON
+else
 cat <<'JSON'
 {"type":"result","subtype":"success","is_error":false,"result":"stub did the thing",
  "session_id":"ce0ba7c7-bb9a-421f-b926-9973806d506f",
@@ -64,6 +75,7 @@ cat <<'JSON'
  "usage":{"input_tokens":123,"output_tokens":45},
  "modelUsage":{"$2":{"inputTokens":123,"outputTokens":45,"costUSD":0.42}}}
 JSON
+fi
 STUB
   chmod +x "$STUBDIR/claude"
 }
@@ -179,6 +191,12 @@ check "a non-GLM response fails the job" \
       "$([ "$(printf '%s' "$R" | jq -r .status)" = error ] && echo yes || echo no)"
 check "the non-GLM failure says why" \
       "$(printf '%s' "$R" | jq -r .summary | grep -q 'did not reach z.ai' && echo yes || echo no)"
+
+# modelUsage carrying BOTH a glm-* key and a later-sorting non-GLM key must still fail:
+# checking only the alphabetically-first key ("glm-5.2" < "sonnet-5") would wrongly pass.
+R="$(run_worker mixedglm "allowed.txt" 60 glm-5.2)"
+check "a mixed GLM/non-GLM modelUsage still fails the job" \
+      "$([ "$(printf '%s' "$R" | jq -r .status)" = error ] && echo yes || echo no)"
 
 # The `crash` mode was declared in make_stub() but never invoked by any run_worker call, so
 # the worker's entire exit_code != 0 branch (the classifier call, failure_class,
