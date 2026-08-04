@@ -272,14 +272,38 @@ never comes.
 - **Never pass `--openai-api-key` on the command line** (argv is world-readable via `ps`) or
   `--insecure` (sets `QWEN_TLS_INSECURE=1`).
 
-**Quota — request-based, not token-based; a different mental model than `zai`'s credit multipliers:**
-Pro tier: **6,000 requests / 5h · 45,000 / week · 90,000 / month** ($50/mo international, ¥200/mo
-China). A 60-turn agentic loop costs 60 units regardless of output length — `--max-session-turns` is
-the relevant guard, not a token budget. **No pay-as-you-go fallback**: quota exhaustion is a hard error,
-never an overage charge — makes the `FALLBACK` policy entry load-bearing, not optional politeness.
-Concurrency limit is real, **undocumented in magnitude, and dynamically adjusted** — `max_parallel`
-must ship conservative (**≤2**) and labeled unmeasured, never as a measured ceiling. Lite tier is
-discontinued (no purchases since 2026-03-20); Pro is effectively the only tier.
+**Quota — Token Plan Pro, credit-based.** ⚠️ This whole section previously described the **Coding
+Plan** and was wrong for this operator: their subscription was measured to be **Token Plan → Pro
+Plan, $68/month** (console screenshot + live API behaviour; their key has zero entitlement on any
+Coding Plan endpoint). Corrected facts:
+
+- **Fixed monthly fee, credits deducted** — not pay-as-you-go, not per-request counting.
+- Console-published rate windows: **12,000 credits / 5 hours** and **40,000 / 7 days**.
+- **Credits are consumed by "the model, token count, thinking mode, and tool calls"** — so a long
+  system preamble, a large tool set, AND the model's own reasoning tokens all bill. Measured: a
+  one-word prompt cost **17,277 input tokens**, which is the preamble plus 64 tool definitions, not
+  the user's text; and `qwen3.8-max` emitted an unrequested `thinking` block. `--core-tools` is
+  therefore a real cost lever here in a way it never was on a per-request plan. Do not guess the
+  credits-per-token ratio — it is unpublished, and inventing one violates the anti-fabrication rule.
+- **Exhaustion does NOT self-heal on a rolling window.** Quoted: *"Credits are deducted from the
+  seat's monthly quota first. After the seat quota is exhausted, overages draw from the shared quota
+  pack. After all Credits are exhausted, the service suspends until the next billing cycle."* The
+  5h/7d numbers are RATE caps; the real budget is monthly. **This splits the failure taxonomy in a way
+  the classifier must respect:** a rate-window trip is `rate_limited`/`usage_window_exhausted` and
+  should cool down, but a *monthly* exhaustion will not reopen for weeks — it must circuit-break and
+  reroute, never wait. Treating them alike would park a run for days.
+- **Concurrency is published for this plan**, unlike the Coding Plan's undocumented dynamic limit:
+  *"Supports 6-8 Agents running concurrently"* on Pro. Published ≠ measured by us — keep
+  `backend_max_parallel.qwen` conservative until a real 2/4/6 run is done, but record that a higher
+  ceiling is documented.
+
+**Compliance carries over unchanged — the clause is the same shape on this plan.** Token Plan's own
+terms: *"This plan is for interactive use with compatible AI programming and agent tools only. Do not
+use it for automated scripts or application backends."* That is the same automation prohibition the
+Compliance section above analyses for the Coding Plan, so that analysis stands with the plan name
+swapped; do not treat the plan change as having resolved it. Additionally: *"Each seat is bound to one
+member and one API Key, and cannot be shared"* — the single-operator rule is explicit here, not
+inferred.
 
 **Model catalog — wider than originally scoped, and already drifting:** Alibaba's own Model Studio
 page (2026-08-04) lists `qwen3.7-plus`, `qwen3.6-plus`, `qwen3.5-plus`, `qwen3-max-2026-01-23`,
