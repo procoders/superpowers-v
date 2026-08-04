@@ -376,12 +376,14 @@ It is built with `jq`, not a heredoc: `$MODEL` and `$OPENAI_BASE_URL` are caller
 Resolved before dispatch by [`compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py) `--backend qwen --tier <tier>`. qwen is **single-vendor at the protocol level**: one OpenAI-protocol endpoint, so every model is a **bare catalog name**, never a `provider/model` string.
 
 ```
-deep     → qwen3-coder-plus     ← STALE: this model does not exist on the Token Plan
-standard → qwen3-coder-plus     ← STALE
-light    → qwen3-coder-plus     ← STALE
+deep     → qwen3.8-max
+standard → qwen3.8-max
+light    → qwen3.6-flash
 ```
 
-> **⚠️ The tier map is stale and will fail at dispatch.** `qwen3-coder-plus` was the *Coding Plan* default. It is **not in the Token Plan catalog**, and this worker passes `--model` straight through, so a job routed on the current map sends a name the endpoint does not serve. Fixing [`compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py) is a separate task; until it lands, pass `--model` explicitly.
+Retargeted to the measured Token Plan catalog. The old map pointed all three tiers at `qwen3-coder-plus` — the *Coding Plan* default, which **is not in this plan's catalog** — and because this worker passes `--model` straight through, every tier-routed job would have sent a name the endpoint does not serve.
+
+**`light → qwen3.6-flash` is a naming inference, not a measurement.** No latency or quality comparison has been run between these models on this plan. It is a defensible default, not a ranking.
 
 **Catalog — MEASURED on the operator's key, 2026-08-04, Token Plan:**
 
@@ -392,7 +394,7 @@ qwen3.6-flash · glm-5.2 · deepseek-v4-pro · deepseek-v4-flash-0731
 
 (plus audio/image models, irrelevant here.) **No `kimi`, no `qwen3-coder-plus`, no `MiniMax`.** `qwen3.8-max` is the model the live end-to-end verification ran on. **Not `"auto"`**: unlike `cursor` (which resolves `auto` internally), this worker passes `--model` straight to the endpoint, so a placeholder would be sent literally and rejected.
 
-**Per-tier differentiation is still unmeasured.** Inventing a ranking from a catalog listing would be a fabricated metric — so when the map is fixed, either measure or point all three tiers at one model and say so.
+**Per-tier differentiation is still unmeasured** — see the note under the tier map. Inventing a ranking from a catalog listing would be a fabricated metric.
 
 **Endpoint.** `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` is the default and the one verified working. Note the shape — a regional host and a `/compatible-mode/v1` path, **not** the Coding Plan's `coding-intl.dashscope.aliyuncs.com/v1`. It stays operator-overridable via `OPENAI_BASE_URL` (other regions are a legitimate choice) with the `https://` scheme pinned. **A region mismatch produces a 401 that does not self-identify as a region error.**
 
