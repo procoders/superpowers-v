@@ -41,7 +41,7 @@ import sys
 TIMEOUT_EXIT_CODE = 124
 
 CONCRETE_BACKENDS = (
-    "codex", "claude", "antigravity", "cursor", "devin", "opencode", "zai",
+    "codex", "claude", "antigravity", "cursor", "devin", "opencode", "zai", "qwen",
 )
 
 RETRYABLE = {"rate_limited", "overloaded", "timeout", "network", "other"}
@@ -206,6 +206,32 @@ _ZAI_RULES = [
         "temporary failure in name resolution",
     ]),
 ]
+
+# Alibaba Bailian Coding Plan (backend `qwen`), via the Qwen Code CLI.
+#
+# CRITICAL SHAPE FACT: DashScope returns {"errorType": "...", "rid": "...", "message": null,
+# "status": 429} — `message` is NULL. A classifier keyed on message text (the way _ZAI_RULES
+# is) matches NOTHING here. Key on errorType and on the quota-window phrases instead.
+#
+# The hour/week/month phrases are usage_window_exhausted, NOT out_of_credits: this plan has no
+# pay-as-you-go fallback, so an exhausted window reopens on its own and the run should cool
+# down rather than treat the balance as spent.
+_QWEN_RULES = (
+    ("auth", [
+        "invalid access token", "token expired", "invalid api-key", "401",
+    ]),
+    ("usage_window_exhausted", [
+        "hour allocated quota exceeded",
+        "week allocated quota exceeded",
+        "month allocated quota exceeded",
+    ]),
+    ("rate_limited", [
+        "throttling.userqpslimit",
+        "concurrency allocated quota exceeded",
+        "429",
+    ]),
+    ("overloaded", ["503", "529"]),
+)
 
 _CURSOR_RULES = [
     ("out_of_credits", [
@@ -387,6 +413,8 @@ def classify(backend, exit_code, stderr):
         rules = _CURSOR_RULES
     elif backend == "zai":
         rules = _ZAI_RULES
+    elif backend == "qwen":
+        rules = _QWEN_RULES
     else:
         rules = _CODEX_RULES
     for cls, needles in rules:
@@ -438,6 +466,25 @@ def _selftest():
         # classify()'s final `else` is _CODEX_RULES, so a zai backend WITHOUT its own branch
         # would classify this as `auth` and tell the operator to run `codex login`.
         ("zai", 1, "not logged in, please run `codex login`", "other"),
+        # --- qwen: Alibaba Bailian Coding Plan via the Qwen Code CLI ---
+        ("qwen", 0, "", "none"),
+        ("qwen", 124, "", "timeout"),
+        # DashScope returns message: null — key on errorType, never on message text.
+        ("qwen", 1, '{"errorType":"THROTTLING.userQPSLimit","rid":"x","message":null,"status":429}',
+         "rate_limited"),
+        ("qwen", 1, "concurrency allocated quota exceeded", "rate_limited"),
+        # A WINDOW that reopens by itself — not a spent balance. The Coding Plan has no
+        # pay-as-you-go, so the correct response is a cooldown, not out_of_credits.
+        ("qwen", 1, "hour allocated quota exceeded", "usage_window_exhausted"),
+        ("qwen", 1, "week allocated quota exceeded", "usage_window_exhausted"),
+        ("qwen", 1, "month allocated quota exceeded", "usage_window_exhausted"),
+        ("qwen", 1, "invalid access token or token expired", "auth"),
+        # Native, documented exit codes — no error-text parsing needed.
+        ("qwen", 53, "", "other"),
+        ("qwen", 55, "", "other"),
+        # THE REGRESSION GUARD: without an explicit qwen branch the final `else` is
+        # _CODEX_RULES and this would classify as `auth` with "run codex login" advice.
+        ("qwen", 1, "not logged in, please run `codex login`", "other"),
         # backend, exit, stderr, expected_class
         ("codex", 0, "", "none"),
         ("codex", 124, "", "timeout"),
@@ -665,7 +712,7 @@ def _selftest():
 
     # The CLI accepts every concrete worker backend shipped after PR 1, while the
     # manifest-only routing token ``pool`` remains structurally unclassifiable.
-    concrete = ("claude", "codex", "antigravity", "cursor", "devin", "opencode", "zai")
+    concrete = ("claude", "codex", "antigravity", "cursor", "devin", "opencode", "zai", "qwen")
     try:
         parser = _build_parser()
         for backend in concrete:

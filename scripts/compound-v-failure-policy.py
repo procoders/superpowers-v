@@ -29,17 +29,18 @@ PER_CLASS_MAX = {
 
 # Backend fallback chain — every external backend reroutes to claude (always available); claude
 # itself has no further local fallback. Mirrors routing-policy's env-aware reroute. The lower-trust
-# external workers (antigravity, cursor, zai) reroute UP to claude on a circuit-break, never down.
+# external workers (antigravity, cursor, zai, qwen) reroute UP to claude on a circuit-break, never
+# down.
 #
 # A MISSING key yields None, which decide() reads as "nowhere to reroute" and turns into `halt` —
-# stopping the whole run. That is why zai is listed explicitly. NOTE: `devin` and `opencode` are
-# still absent and therefore still halt a run on a credit wall; that is a pre-existing gap,
-# deliberately not changed here.
+# stopping the whole run. That is why zai and qwen are listed explicitly. NOTE: `devin` and
+# `opencode` are still absent and therefore still halt a run on a credit wall; that is a
+# pre-existing gap, deliberately not changed here.
 FALLBACK = {"codex": "claude", "antigravity": "claude", "cursor": "claude",
-            "zai": "claude", "claude": None}
+            "zai": "claude", "qwen": "claude", "claude": None}
 
 CONCRETE_BACKENDS = (
-    "codex", "claude", "antigravity", "cursor", "devin", "opencode", "zai",
+    "codex", "claude", "antigravity", "cursor", "devin", "opencode", "zai", "qwen",
 )
 
 BACKOFF_BASE = 2
@@ -451,6 +452,13 @@ def _selftest():
     d = decide("out_of_credits", "zai", 0, 0, 12)
     check("ooc-zai", d["action"], "reroute",
           d["reroute_to"] == "claude" and d["circuit_break"])
+    d = decide("out_of_credits", "qwen", 0, 0, 12)
+    check("ooc-qwen", d["action"], "reroute",
+          d["reroute_to"] == "claude" and d["circuit_break"])
+    d = decide("usage_window_exhausted", "qwen", 0, 0, 12,
+               pool_routed=True, jitter=False)
+    check("qwen window exhaustion cools down rather than halting the run",
+          True, True, d["action"] != "halt")
     d = decide("out_of_credits", "claude", 0, 0, 12)
     check("ooc-claude", d["action"], "halt", d["circuit_break"])
     d = decide("auth", "codex", 0, 0, 12)
