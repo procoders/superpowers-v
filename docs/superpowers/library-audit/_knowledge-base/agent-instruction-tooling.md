@@ -82,3 +82,57 @@ Audit: `docs/superpowers/library-audit/2026-07-10-research-grounded-brainstorm.m
 ### V-memory recall CLI (local)
 - **2026-07-10:** `python3 scripts/compound-v-memory.py search "<query>" [--repo REPO] [--top N] [--intent planning|review] [--json] [--no-embed]`. `/v:remember` uses `search "{{args}}" --top 8`. A separate `recall-check` subcommand (recurring-failure verdict) is for review gates — **not** brainstorm gate 2; gate 2 uses `search`. Agent bash cwd resets between calls → use an absolute script path or explicit `cd`.
 - Source: `scripts/compound-v-memory.py search --help`; `commands/v-remember.md:10`.
+
+### Validating a fast-moving CLI's flag set — method (2026-08-04)
+
+Recorded after the Qwen Code CLI audit, which is the third adapter (`zai`, `opencode`, `qwen`) whose spec
+was written from prose docs alone. The pattern is now consistent enough to state as a method.
+
+**The docs site is not the authority. The released source's argument-parser table is.**
+
+For Qwen Code v0.21.5, reading `packages/cli/src/config/config.ts` at the exact tag contradicted the
+published docs on four points, one of them security-relevant:
+
+| Doc claim | Source at the same tag |
+|---|---|
+| `--sandbox=docker\|podman\|sandbox-exec` selects a provider | `.option('sandbox', {type: 'boolean'})` |
+| precedence is "CLI flag > env var > settings.json" | *"note environment variable takes precedence over argument"* — `QWEN_SANDBOX` wins |
+| 5 Seatbelt profiles | 6 (`restrictive-proxied` omitted everywhere downstream) |
+| `-p` is the headless flag | `-p` is **deprecated** in favour of the positional prompt |
+
+**Procedure that costs ~5 tool calls and catches this class of bug:**
+
+1. Resolve the exact current version — `curl -s https://registry.npmjs.org/-/package/<pkg>/dist-tags`
+   (npmjs.com HTML 403s to WebFetch; the registry JSON does not). Note `engines` too — Qwen Code requires
+   `node >=22.0.0`, which no spec mentioned.
+2. `gh api repos/<org>/<repo> --jq '{archived,pushed_at,license,stargazers_count}'` and
+   `.../releases` for real cadence. Quote the `?recursive=1` URL in zsh or the `?` globs.
+3. `gh api "repos/<org>/<repo>/git/trees/<TAG>?recursive=1"` to locate the parser
+   (`**/config/config.ts`, `cli.py`, `main.go`, …).
+4. `curl -sL raw.githubusercontent.com/<org>/<repo>/<TAG>/<path>` — **`github.com/.../blob/...` returns
+   403/404 to WebFetch; `raw.githubusercontent.com` works.**
+5. `grep -nE "\.option\(|alias:|describe:|deprecateOption"` for the full table, then read the parser's
+   validation block (`.check()` in yargs) for **mutual exclusions** — these are `exit 1` failures that
+   look like "CLI not found" to a supervisor. Qwen Code has eight.
+
+**What to look for beyond the flags the spec names:**
+
+- **Deprecations already live.** A flag can work today and be the spec's centrepiece tomorrow.
+- **Mutual exclusions.** Composing two individually-valid flags is a common adapter bug.
+- **Optional-argument flags** that fall back to an interactive picker (`--resume` with no id) — a hang,
+  not an error, in headless.
+- **Env-var-over-flag precedence.** Silently defeats an `env -i` allow-list.
+- **Config-dir redirect vars** (`QWEN_HOME`, `CLAUDE_CONFIG_DIR`) — better than `HOME=<scratch>`, and they
+  often carry extra isolation behaviour (`QWEN_HOME` also drops `~/.env` from discovery).
+- **`.env` discovery that walks up the tree.** A worktree worker inherits ancestor `.env` files.
+- **Documented exit codes.** Qwen Code publishes 0/53/55/130 — free, deterministic needles for failure
+  classification that a spec had written off as "no error samples exist yet".
+- **Flags that remove planned work.** `--max-wall-time`, `--max-tool-calls`, `--json-schema`,
+  `--session-id`, `--safe-mode` each replaced something a spec intended to build or left unresolved.
+
+**Still not a substitute for a live probe.** Source reading proves what the parser accepts; it does not
+prove what the binary does with it end-to-end, nor the provider's error shapes. It is the cheap 80%,
+run *before* the spec locks, not instead of the probe.
+
+Sources: `docs/superpowers/library-audit/2026-08-04-qwen-code-cli-backend.md`;
+`_knowledge-base/qwen-code-cli.md`; `_knowledge-base/claude-code-cli-flags.md` (2026-07-31, 2026-08-04).

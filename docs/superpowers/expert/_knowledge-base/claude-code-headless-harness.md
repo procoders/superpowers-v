@@ -168,3 +168,151 @@ or a reviewer will flinch at the variable name.
   likely first production 400.
 - `total_cost_usd` from `--output-format json` is an Anthropic price-table computation and is
   garbage for a non-Anthropic model.
+
+---
+
+## Updated 2026-08-04 — cwd-rooted config discovery breaks the `env -i` isolation model
+
+### 🔑 The taxonomy: `$HOME`-rooted vs cwd-rooted agents
+
+The `env -i` allow-list + scratch-`HOME` pattern (established for `claude`, reused by `opencode` and
+`zai`) is a **complete** isolation answer for one class of CLI and a **partial** one for another.
+Classify the binary before reusing the pattern.
+
+| Class | Where credentials/config are discovered | Is `env -i` + scratch `HOME` sufficient? |
+|---|---|---|
+| **`$HOME`-rooted** — e.g. `claude` (`~/.claude`, keychain, `CLAUDE_CONFIG_DIR`) | environment + `$HOME` | **Yes** — both are controlled by the launcher |
+| **cwd-rooted** — every **Gemini CLI fork**: `gemini`, `qwen` (`.qwen/.env`, `.env`, `.qwen/settings.json` **in the working directory**) | environment + `$HOME` + **cwd** | **No** — cwd is the worktree, a checkout of the repo under test. No environment scrub can reach a filesystem read. |
+
+**Why this matters for a dispatcher:** the worker's cwd is a git worktree of the repository being
+worked on. For a cwd-rooted agent, that repository's contents are **part of the agent's configuration
+surface**, not merely its input.
+
+**Mitigating fact worth claiming explicitly:** `git worktree add` materialises **tracked files only**,
+so the operator's own gitignored `.env` does *not* travel into the worktree. Three paths survive:
+(a) a repo that *tracks* `.env` / `.qwen/`; (b) a resumed or re-dispatched job re-entering a worktree
+a previous job wrote into; (c) any repo whose HEAD is not fully trusted.
+
+### Qwen Code discovery order (verified 2026-08-04, primary docs)
+
+[auth](https://qwenlm.github.io/qwen-code-docs/en/users/configuration/auth/) ·
+[settings](https://qwenlm.github.io/qwen-code-docs/en/users/configuration/settings/)
+
+```
+credential precedence (high → low):
+  CLI flags → shell env → .env files → settings.json `env`
+
+.env search — STOPS at the first file found; files are NOT merged:
+  1. .qwen/.env          ← cwd  (never subject to excludedEnvVars filtering)
+  2. .env                ← cwd  (excludedEnvVars applies; default ["DEBUG","DEBUG_MODE"])
+  3. ~/.qwen/.env
+  4. ~/.env
+
+settings precedence (low → high):
+  defaults → system defaults → user (~/.qwen) → PROJECT (.qwen/settings.json) → system → env → CLI flags
+```
+
+**What still holds under a scrub:** *"Only variables not already present in `process.env` are
+loaded."* An exported credential **cannot be overwritten** by a worktree `.env`. Half the design works.
+
+**What does not:**
+1. **Injection ≠ override.** Any variable the scrub does not set is unset, and a worktree `.env` can
+   supply it. If the launcher exports `BAILIAN_CODING_PLAN_API_KEY` but not `OPENAI_API_KEY`, the
+   latter is injectable and is a first-class auth path in the precedence list — a silent auth-path
+   switch. Same failure family as the `opencode` worker authenticating from an ambient
+   `ANTHROPIC_BASE_URL`.
+2. **`.qwen/.env` is exempt from all filtering** — *"Variables from `.qwen/.env` files are never
+   excluded."* Highest priority, least filtered, inside the worktree.
+3. **Project `.qwen/settings.json` outranks user settings** and can set `tools.sandbox` (disabling the
+   kernel sandbox), `advanced.excludedEnvVars` (emptying the filter), tool permissions, and
+   **`mcpServers`** — arbitrary local commands that run outside the model's tool loop, outside a
+   git-derived scope gate, and outside a sandbox the same file just turned off.
+
+### ⚠️ Gemini CLI forks inherit an unpatched RCE class — check the fork point
+
+[**GHSA-wpqr-6v78-jr5g**](https://github.com/advisories/GHSA-wpqr-6v78-jr5g) — *"Gemini CLI: Remote
+Code Execution via workspace trust and tool allowlisting bypasses"*, **Critical, CVSS 10.0**,
+published **2026-04-24**. Affects `@google/gemini-cli` < 0.39.1 (and `= 0.40.0-preview.2`); fixed in
+**0.39.1 / 0.40.0-preview.3**; `google-github-actions/run-gemini-cli` < 0.1.22.
+
+Two chained flaws, both directly relevant to any headless worker:
+
+> "Gemini CLI running in CI environments (headless mode) automatically trusted workspace folders for
+> the purpose of loading configuration and environment variables… If used with untrusted directory
+> contents, this could lead to remote code execution."
+
+> under `--yolo`, the tool allowlist "was ignored entirely" — "an allowlist intended to permit
+> `run_shell_command(echo)` could effectively allow any command."
+
+Fixed behaviour upstream: headless + untrusted folder raises `FatalUntrustedWorkspaceError` and exits.
+
+**Reusable rule: a fork inherits the vulnerability history of everything between its fork point and
+the fix.** Qwen Code forks Gemini CLI **v0.8.2** — ~31 minor versions before 0.39.1. Qwen Code ships a
+[Trusted Folders](https://qwenlm.github.io/qwen-code-docs/en/users/configuration/trusted-folders/)
+feature (`security.folderTrust.enabled`; untrusted ⇒ `.qwen/settings.json` not loaded, `.env` not
+loaded, extensions restricted, tool auto-acceptance disabled, `~/.qwen/trustedFolders.json`) — but the
+docs state it is **disabled by default** and are **silent on headless behaviour**. Backport status:
+**[UNVERIFIED]** — a live-probe item, not an assumption.
+
+**The dangerous configuration, named:** `--yolo` + headless + no mandatory sandbox + cwd = a checkout
+of the repo under test + folder-trust unset. That is the advisory's exact shape. Note also that
+`--yolo` **does not sandbox** in Qwen Code — sandboxing is a separate opt-in (`--sandbox`,
+`QWEN_SANDBOX`, `tools.sandbox`).
+
+### Two reusable defences for cwd-rooted workers
+
+1. **Pre-flight worktree config check.** Before launching, refuse (or quarantine) if the worktree
+   contains any agent-config path — for Qwen Code: `.qwen/.env`, `.env`, `.qwen/settings.json`,
+   `.qwen/QWEN.local.md`. On a clean repo this never fires and costs nothing; it exists for the
+   tracked-secret and resumed-worktree cases. **Comment the reasoning in the script** or it gets
+   deleted later as dead code.
+2. **Response model assertion** (generalised from `zai`'s GLM assertion). Read the model identifier
+   out of the response and **fail the job** unless it matches what was requested. This is the only
+   defence against a silent auth-path switch, and it converts an unnoticed charge on the wrong
+   credential into a failed job. **Every** backend whose credential resolution has more state than the
+   launcher models needs one. Corroborating mechanism: [qwen-code #1855](https://github.com/QwenLM/qwen-code/issues/1855)
+   (2026-02-17, closed — *isolated report*), cached OAuth credentials continuing to take priority over
+   a newly configured Coding Plan key, yielding persistent 401s.
+
+### Context-file egress differs per agent — never copy another adapter's file list
+
+Every hierarchical-context agent concatenates discovered context files and **sends them with every
+prompt**. The *file names* differ, so a copied warning sends operators to check the wrong files.
+
+| Agent | Default context files discovered |
+|---|---|
+| `claude` | `~/.claude/CLAUDE.md`, `./CLAUDE.md`, subdirectory `CLAUDE.md` |
+| `qwen` | `QWEN.md`, `CONTEXT.md`, **`AGENTS.md`** (default since [#2006](https://github.com/QwenLM/qwen-code/issues/2006) → PR #2018, 2026-02-28; `QWEN.md`→`AGENTS.md` rename 2026-03), `.qwen/QWEN.local.md` (0.16.2, 2026-05-27), plus transitive `@path/to/file.md` imports |
+| `gemini` | `GEMINI.md` (global / project-upward / subdirectory scan), `contextFileName` override |
+
+**Consequence for repos that carry an `AGENTS.md`** (this one does): a `qwen` job ships the repo's
+agent-instruction file — often its densest architecture document — to the vendor on **every job**.
+`HOME` redirection isolates *user-level* config only; the repo's *project-level* context is inside the
+worktree by construction.
+
+### Other Qwen Code headless facts (docs-verified 2026-08-04)
+
+- Headless mode is officially *"ideal for scripting, automation, CI/CD pipelines"*
+  ([headless docs](https://qwenlm.github.io/qwen-code-docs/en/users/features/headless/)) — worth
+  quoting when a vendor's *subscription* terms say the opposite.
+- Useful flags the wrappers tend to miss: **`--max-session-turns`** (the right spend control on a
+  request-billed plan) and **`--max-wall-time`** (overlaps an external timeout supervisor — pick one
+  authority deliberately).
+- **No `--cd`** flag. Requires the subshell-`cd` pattern, same as `claude` and `cursor`.
+- **No headless effort flag.** The 5-tier ladder is the interactive `/effort` command or
+  `model.reasoningEffort` in settings.json — so applying effort headlessly means writing a settings
+  file, which must go in the **scratch `HOME`**, never the worktree, or the worker dirties its own
+  diff and trips the scope gate.
+
+### Reusable one-liners (additions)
+
+- Classify the binary first: `$HOME`-rooted or **cwd-rooted**. `env -i` is a complete answer only for
+  the former.
+- A cwd-rooted agent makes the repo under test part of its *configuration*, not just its input.
+- An environment scrub prevents **override**, never **injection** — unset names are free real estate.
+- `git worktree add` checks out tracked files only: a real mitigation, worth claiming, not a guarantee.
+- A fork inherits every CVE between its fork point and the fix. Check the fork point.
+- `--yolo`/auto-approve is an **approval** setting, not a **sandbox** setting, in every Gemini-CLI fork.
+- Security features documented as "disabled by default" must be set **explicitly** by a launcher —
+  never inherited.
+- Copy another adapter's egress *reasoning*, never its *file list*.

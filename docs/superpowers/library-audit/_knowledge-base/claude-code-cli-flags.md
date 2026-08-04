@@ -180,3 +180,62 @@ Reveals: auth header, `POST {base}/v1/messages?beta=true`, `anthropic-version: 2
 `anthropic-beta` list, the resolved `model`, every system block with its `cache_control`, and the full
 tool array. This is the only reliable way to check tool-set and auth claims — a fake `claude` on `PATH`
 validates argv but **cannot** reveal that the real binary interprets a flag differently.
+
+---
+
+## Updated 2026-08-04 — qwen backend (cross-tool: the `allowedTools` trap is a family trait)
+
+Cross-reference added while auditing Qwen Code CLI v0.21.5. Full detail lives in
+`qwen-code-cli.md`; recorded here because it changes how the Claude Code entry above should be read.
+
+### The "allowed tools ≠ available tools" inversion is inherited, not a Claude Code quirk
+
+The 2026-07-31 entry above documents `--allowedTools` as *"the single most misleading flag in the CLI"*
+— it governs prompting only, and `--tools` / `--disallowedTools` are the real levers.
+
+**Qwen Code has the identical flag with the identical semantics**, verified in its released source:
+
+```ts
+// QwenLM/qwen-code @ v0.21.5 — packages/cli/src/config/config.ts
+.option('allowed-tools', { type: 'array', string: true,
+  description: 'Tools to allow, will bypass confirmation' })
+```
+
+Qwen Code is a fork of Google's Gemini CLI (v0.8.2 base), so this is a **lineage trait shared by every
+Gemini-CLI-derived agent**, not a Claude Code idiosyncrasy. Treat "a flag named `--allowed*tools`" as a
+confirmation-bypass control by default in any such tool, and go find the separate restriction flag.
+
+Restriction-lever mapping across the two tools:
+
+| Concern | Claude Code | Qwen Code v0.21.5 |
+|---|---|---|
+| bypass confirmation (**not** restriction) | `--allowedTools` / `--allowed-tools` | `--allowed-tools` |
+| restrict which tools exist | `--tools <list>` | `--core-tools <list>` |
+| remove specific tools | `--disallowedTools <BareName>` | `--exclude-tools <list>` |
+| hard stop on any tool use | — | `--max-tool-calls 0` (exit 55) |
+| no-execution mode | `--permission-mode plan` | `--approval-mode=plan` |
+
+Aggravating factor in Qwen Code: `allowed-tools` is registered **twice** in the same yargs command
+(`config.ts:769` and `config.ts:950`) with slightly different help text — a docs-only reader is even more
+likely to land on the wrong one.
+
+### `--bare` means different things in the two CLIs — do not carry the assumption across
+
+| | meaning |
+|---|---|
+| Claude Code | caps the tool set at `Bash, Edit, Read`; **cannot be widened** (measured, 2026-07-31 above) |
+| Qwen Code v0.21.5 | *"Minimal mode: skip implicit startup auto-discovery and only honor explicitly provided CLI inputs."* — a **hermeticity** lever, says nothing about the tool set |
+
+Qwen Code's nearest equivalent to Claude Code's `--bare` tool-capping is `--core-tools <list>`; its
+nearest equivalent for suppressing ambient configuration is `--safe-mode` (disables context files, hooks,
+extensions, skills, MCP servers).
+
+### Method note reinforced
+
+The 2026-07-31 entry's closing point — *"a fake `claude` on `PATH` validates argv but cannot reveal that
+the real binary interprets a flag differently"* — held again. For Qwen Code the cheap substitute for a
+live probe was **reading the released source's `yargs` table at the exact tag**, which surfaced four
+doc-contradicting facts a docs-only pass had accepted. See `qwen-code-cli.md`.
+
+Sources: <https://github.com/QwenLM/qwen-code/blob/v0.21.5/packages/cli/src/config/config.ts>;
+audit `docs/superpowers/library-audit/2026-08-04-qwen-code-cli-backend.md`.

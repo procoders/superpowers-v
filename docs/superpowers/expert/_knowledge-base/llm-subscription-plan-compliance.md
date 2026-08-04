@@ -198,3 +198,151 @@ Relevant when repointing Anthropic's own tooling at a competitor:
 - Undocumented ≠ absent. "Adjusted dynamically" means yesterday's successful fan-out proves nothing.
 - On a strike-based provider, retry policy is a **compliance** decision, not a reliability one.
 - If the plugin ships publicly, the ban lands on the installer. Opt-in, off by default, loud notice.
+
+---
+
+## Updated 2026-08-04 — Alibaba Bailian / Model Studio Coding Plan as a headless dispatch backend
+
+### 🔑 The generalisation: clause family 3 has TWO axes, and only one of them is curable by "spawn the real binary"
+
+The 2026-07-31 entry established that *spawning the vendor-approved binary ≠ SDK access*, so a
+dispatcher shelling out to a real CLI stays inside z.ai's allow-list. **That reasoning is not
+portable.** It cures a clause that restricts the **client**; it does nothing for a clause that
+restricts the **mode of use**.
+
+| Axis | Clause restricts… | Example wording | Cured by spawning the approved binary? |
+|---|---|---|---|
+| **Client axis** | *which* software may call the endpoint | *"directly invoking model APIs"*, *"SDK-based access"* (z.ai) | **Yes** — the binary makes its own HTTP calls |
+| **Mode axis** | *how* the endpoint may be driven | *"automated scripts… non-interactive batch calling scenarios"* (Alibaba) | **No** — a script driving an approved binary is still an automated script |
+
+**Check both axes on every new plan.** A plan can be permissive on the client axis (long allow-list,
+your tool is on it) and restrictive on the mode axis at the same time — which reads as "we're fine"
+to anyone who only checks the tool list. This is the sharper form of the existing one-liner
+*"'Supported tool' answers which binary, not how many at once, from what process, or whose key."*
+
+### Alibaba Bailian Coding Plan — worked example (verified 2026-08-04, EN + ZH primary)
+
+**Mode restriction** ([EN](https://www.alibabacloud.com/help/en/model-studio/coding-plan),
+[ZH](https://help.aliyun.com/zh/model-studio/coding-plan), heading *"Prohibition of API calls"*):
+
+> "This plan is for interactive use in programming tools such as Claude Code and OpenClaw. Do not use
+> the plan's API key for automated scripts, application backends, or other non-interactive scenarios."
+>
+> 「仅限在编程工具（如 Claude Code、OpenClaw 等）中使用，禁止**以 API 调用的形式**用于自动化脚本、自定义应用程序后端或任何非交互式批量调用场景。」
+
+**Read the Chinese, not only the English.** The qualifier 「以 API 调用的形式」 (*"in the form of API
+calls"*) is absent from the English rendering and materially narrows the clause — it plausibly scopes
+the ban to calling the endpoint **directly**, bypassing an approved tool. The FAQ's own examples of
+prohibited use are **curl, Postman, Dify** — all bypass patterns. **Reusable rule: when a Chinese
+vendor's EN and ZH terms differ in scope, the ZH text is the operative one and usually the more
+precise; fetch both.**
+
+**The unresolved contradiction (state it, don't resolve it).** Alibaba lists **Qwen Code** as a
+supported tool, and Qwen Code's own docs market headless mode as *"ideal for scripting, automation,
+CI/CD pipelines."* So the vendor ships a first-party tool designed for automation and a plan whose
+terms prohibit automation. **[NOT FOUND]** any community report of the clause being enforced, in
+either direction — searches across Reddit returned nothing relevant. Enforcement here is **unmeasured**,
+unlike z.ai's (two press reports, reproducible error codes). Surface it as a human decision.
+
+**Enforcement ladder:** 「将套餐 API Key 用于允许范围之外的调用将被视为违规或滥用，可能会导致订阅被暂停或 API Key 被封禁。」
+— *"may result in subscription suspension or API Key ban."* No strike count published (contrast z.ai's
+explicit three), no appeal path published, no SLA.
+
+**Personal-use:** 「套餐为订阅人专享使用，禁止共享。」 — subscriber-only, sharing prohibited. Plus the
+[Intl Product ToS v3.8.0](https://www.alibabacloud.com/help/en/legal/latest/alibaba-cloud-international-website-product-terms-of-service-v-3-8-0)
+(no resale/sublicense; no account transfer without written consent) and the
+[API Terms of Use](https://www.alibabacloud.com/help/en/legal/latest/api-term-of-use)
+(*"non-transferable, non-sublicensable, non-exclusive"*).
+
+**Auto-disable on exposure:** 「若系统检测到您的 API Key 存在公开泄露的情况，可能会自动将其禁用」 — a key
+detected as publicly leaked is disabled automatically. Raises the stakes on argv exposure (`ps` /
+`/proc/<pid>/cmdline`) and on any config file that could reach a commit.
+
+### ⚠️ Quota can be counted in REQUESTS, not tokens — check the unit before porting quota math
+
+z.ai bills a token-weighted credit; **Alibaba bills model calls.**
+
+> "The Coding Plan's quota consumption is based on the number of model calls, not on token consumption."
+> — [Coding Plan FAQ](https://www.alibabacloud.com/help/en/model-studio/coding-plan-faq)
+
+| Bailian Coding Plan (Pro) | Value |
+|---|---|
+| price | $50/mo (intl) · ¥200/mo (CN) |
+| per 5 hours | 6 000 requests |
+| per week | 45 000 requests |
+| per month | 90 000 requests |
+
+**This inverts the optimisation.** Token-billed ⇒ long outputs are expensive. Request-billed ⇒ **turn
+count** is expensive and output length is free. For an agentic worker the right control is a
+max-turns cap, not a max-tokens cap. Any adapter that carries a token-cost mental model onto a
+request-billed plan will optimise the wrong knob.
+
+Other structural facts:
+- **Concurrency limit exists, magnitude undocumented, adjusts dynamically** — *"the platform
+  dynamically adjusts this limit based on the overall resource load"*; exceeded ⇒
+  `concurrency allocated quota exceeded`. Same anti-pattern as z.ai: published token quota, hidden
+  concurrency.
+- **No pay-as-you-go fallback:** 「额度消耗完毕后，继续调用会失败报错，并且不会自动转为按量付费模式计费」 —
+  exhaustion is a hard wall, not an overage charge. Cost-safe; makes a dispatcher `FALLBACK` entry
+  load-bearing rather than nice-to-have.
+- **Coding Plan credentials are a separate namespace:** key `sk-sp-…`, dedicated base URL, **not**
+  interchangeable with ordinary Model Studio pay-as-you-go keys.
+- **Lite discontinued** — no new purchases 2026-03-20, no renewal/upgrade 2026-04-13. Pro is
+  effectively the only tier.
+
+**Endpoints:**
+
+| | China | International |
+|---|---|---|
+| OpenAI-compatible | `https://coding.dashscope.aliyuncs.com/v1` | `https://coding-intl.dashscope.aliyuncs.com/v1` |
+| Anthropic-compatible | `https://coding.dashscope.aliyuncs.com/apps/anthropic` | *(intl equivalent — unverified)* |
+
+### DashScope error surface — key on `errorType`, NOT on message text
+
+**The trap:** z.ai's classifier keys on documented *message text*. DashScope returns **`message: null`**
+on at least its throttling path, so a message-text classifier matches nothing and fails to `other`.
+
+Observed shape ([qwen-code #2191](https://github.com/QwenLM/qwen-code/issues/2191), 2026):
+
+```json
+{"errorType":"THROTTLING.userQPSLimit","rid":"<uuid>","message":null,"status":429}
+```
+
+| Needle | Source | Sensible class |
+|---|---|---|
+| `THROTTLING.userQPSLimit` | [#2191](https://github.com/QwenLM/qwen-code/issues/2191) | rate_limited |
+| `concurrency allocated quota exceeded` | Coding Plan FAQ | rate_limited |
+| `hour allocated quota exceeded` | Coding Plan FAQ | rate_limited |
+| `week` / `month allocated quota exceeded` | Coding Plan FAQ | out_of_credits |
+| 401 `invalid access token or token expired` | [#1855](https://github.com/QwenLM/qwen-code/issues/1855) | auth |
+
+429s on DashScope are a **live, recurring** surface, not an edge case — **6 threads**:
+[#2217](https://github.com/QwenLM/qwen-code/issues/2217),
+[#2191](https://github.com/QwenLM/qwen-code/issues/2191),
+[#2146](https://github.com/QwenLM/qwen-code/issues/2146),
+[#1742](https://github.com/QwenLM/qwen-code/issues/1742),
+[#882](https://github.com/QwenLM/qwen-code/issues/882),
+[#1983](https://github.com/QwenLM/qwen-code/issues/1983).
+
+### Vendor comparison — the four clause families, three vendors (2026-08-04)
+
+| | z.ai GLM Coding Plan | Alibaba Bailian Coding Plan | Anthropic Pro/Max |
+|---|---|---|---|
+| **1. Tool allow-list** | published, ~15 tools, tiered | published, ~14 tools incl. Qwen Code | n/a (own tool) |
+| **2. Personal use / aggregation** | one natural person; no share; no resell/**aggregate**/proxy | subscriber-only; no share; no resell/sublicense/transfer | no third-party routing of Pro/Max credentials |
+| **3. Scenario / mode** | **client axis** — no direct API / SDK access; coding scenarios only | **MODE axis** — no automated scripts, no non-interactive batch | AUP silent on automation |
+| **4. Enforcement** | rate-limit → freeze → ban at **>3 violations**; console appeal | suspension or key ban; **no strike count, no appeal published**; auto-disable on leaked key | enforced ~Jan 2026 vs extracted OAuth tokens |
+| **Quota unit** | token-weighted credits | **model calls** | rolling windows |
+| **Enforcement measured?** | yes (press + error codes) | **no — zero reports found** | yes (HN coverage) |
+
+### Reusable one-liners (additions)
+
+- Check **both** axes of the scenario clause: *which client* and *how driven*. Only the first is
+  cured by spawning the approved binary.
+- Fetch the vendor's **Chinese** terms too — the EN rendering dropped a scope-narrowing qualifier here.
+- Check the **quota unit** before porting quota math: token-billed and request-billed plans reward
+  opposite behaviours.
+- A vendor listing your tool while banning your usage mode is a contradiction you cannot resolve —
+  escalate it to the human, don't adjudicate it in an adapter doc.
+- "No published strike count" is worse than "three strikes," not better — it means the first
+  violation may be the last.

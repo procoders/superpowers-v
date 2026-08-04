@@ -1,258 +1,597 @@
 **Recon:** docs/superpowers/recon/2026-08-04-qwen-code-cli-backend-adapter.md
+**Pre-flights:** docs/superpowers/archaeology/2026-08-04-qwen-code-cli-backend.md · docs/superpowers/expert/2026-08-04-qwen-code-cli-backend.md · docs/superpowers/library-audit/2026-08-04-qwen-code-cli-backend.md
 
 # qwen — a headless Qwen Code CLI worker backend
 
-**Goal:** add `qwen` as a seventh dispatch backend, authenticated against Alibaba Cloud's
-Bailian/Model Studio "Coding Plan" (the Pro subscription being purchased). Role in v1: an
-**implementation worker**, plus a new **cross-brand advisor candidate** alongside Codex. Never a
-Review Gate reviewer, never (yet) a plan-review or epic-arbiter voice.
+**Goal:** add `qwen` as a seventh dispatch backend, authenticated against Alibaba Cloud's Bailian/Model
+Studio "Coding Plan" (the Pro subscription being purchased). **v1 scope: implementation worker only.**
+Never a Review Gate reviewer. **Advisor-mode inclusion is explicitly deferred — see Non-goals.**
 
-**Architecture:** a Bash-spawned `qwen -p` process — Qwen Code's own native headless mode, no proxy
-CLI needed (unlike `zai`, which must impersonate `claude -p` because z.ai ships no headless client
-of its own). Own git worktree, own process group under the timeout supervisor, git-derived scope
-gate — identical shape to cursor/antigravity/zai. No kernel write-confinement by default; a real one
-(`--sandbox` / `QWEN_SANDBOX=docker|podman|sandbox-exec`, inherited from the Gemini CLI fork this
-tool is built on) exists and is documented, but is **optional in v1**, not required.
+**Architecture:** a Bash-spawned `qwen` process using the **positional prompt** (`qwen "<prompt>"`, not
+`-p` — deprecated at v0.21.5), Qwen Code's own native headless mode. Own git worktree, own process
+group under the timeout supervisor, git-derived scope gate — identical shape to cursor/antigravity/zai.
+**Unlike the v1 draft of this spec, `QWEN_SANDBOX` (real kernel confinement — macOS Seatbelt / Linux
+Docker or Podman) is MANDATORY, not optional** — see Trust Tier below for why this changed.
 
-**Status — auth-pending / coverage-unverified.** Every fact below comes from Qwen Code's own docs
-(`qwenlm.github.io/qwen-code-docs`, `github.com/QwenLM/qwen-code`) and Alibaba Cloud's official
-Model Studio help pages, read directly during this brainstorm (2026-08-04) — not from a live probe
-with a real Coding Plan key, because the plan has not been purchased yet. This mirrors where
-`adapter-opencode.md` and `adapter-devin.md` already sit. The `zai` spec's own history is the
-cautionary precedent: its first draft, written from docs alone, shipped a `--allowedTools` /
-`--tools` inversion that only a real-binary probe caught. **A live verification pass — the same
-"Verified live against `<cli> <version>`" treatment `zai`/`codex` got — is required before this
-adapter's status flips to shipped**, and should be budgeted to find at least one such surprise.
+**Status — auth-pending / coverage-unverified, revised after three Compound V pre-flights
+(2026-08-04).** This spec's first draft was written from Qwen Code's *published docs* alone and
+contained multiple factual errors the pre-flights caught by reading the actual `v0.21.5` released
+source (`packages/cli/src/config/{config,sandboxConfig,environment}.ts`) — in at least one
+security-relevant case (`--sandbox`'s arity and precedence), **the published docs themselves
+contradict the source at the same tag.** Every correction below is sourced to a specific file/line or
+a primary Alibaba/GitHub page, not reasoned from the tool's general shape. A live probe with a real
+Coding Plan key is still required before this adapter ships as verified — this spec fixes what three
+independent audits could catch without one, not everything.
 
-## Verified facts (from primary docs, not measurement)
+---
 
-- **Headless flag:** `qwen -p "<prompt>"` runs without the interactive UI; `-o text` for plain text.
-  `--output-format json` returns a JSON array of message objects (system/assistant/result types);
-  `--output-format stream-json` streams events.
-- **Session control:** `qwen --continue -p "…"` resumes the most recent project session;
-  `qwen --resume <session-id> -p "…"` resumes a specific one. Checkpoints (history, tool outputs,
-  compression state) are written atomically under `~/.qwen/tmp/<project_hash>/checkpoints`.
-- **`--yolo` (or `--approval-mode=yolo`) auto-approves tool calls but does not sandbox.** Sandboxing
-  is a separate opt-in: `--sandbox`, `QWEN_SANDBOX`, or `tools.sandbox` config. Without it, yolo-mode
-  tools run at the host process's own privilege — same shape as Cursor/Antigravity/opencode/zai. A
-  stderr warning fires in headless+yolo+no-sandbox; suppressible via `QWEN_CODE_SUPPRESS_YOLO_WARNING=1`.
-- **Real kernel sandbox exists, unlike Cursor/Antigravity/opencode.** macOS: `QWEN_SANDBOX=true`
-  selects `sandbox-exec` (Seatbelt) with named profiles (`permissive-open` … `restrictive-closed`).
-  Linux/Windows: requires Docker or Podman; `SANDBOX_FLAGS` injects extra container flags. Inherited
-  from the Gemini CLI fork.
-- **Auth is API-key-based, not OAuth — headless-native.** Alibaba's own docs state it plainly:
-  *"OAuth cannot function without a browser. All other methods — Coding Plan, third-party APIs, and
-  custom providers — work fully in headless environments."* Qwen OAuth itself was discontinued
-  2026-04-15 and is legacy-only regardless.
-- **Coding Plan credentials:** env var `BAILIAN_CODING_PLAN_API_KEY="sk-sp-…"` +
-  `OPENAI_BASE_URL="https://coding-intl.dashscope.aliyuncs.com/v1"` (international) or
-  `https://coding.dashscope.aliyuncs.com/v1` (China). Config-file equivalent:
-  `~/.qwen/settings.json` → `modelProviders.openai`. Env var priority (highest to lowest): CLI flags
-  → shell exports → `.env` files (`.qwen/.env` → `.env` → `~/.qwen/.env` → `~/.env`) →
-  `settings.json` → `env`.
-- **The Coding Plan is a multi-vendor catalog behind one key**, not a single model family like
-  `zai`'s GLM-only shape: documented models include `qwen3.5-plus`, `qwen3.6-plus`, `qwen3.7-plus`,
-  `qwen3-coder-plus`, and — via the same endpoint — `glm-5`, `kimi-k2.5`, `MiniMax-M2.5`.
-- **No `--effort`/`--reasoning` CLI flag for headless mode.** Qwen Code has a 5-tier reasoning-effort
-  ladder, but it's exposed as the interactive `/effort` command or the `model.reasoningEffort`
-  settings.json field — not a `qwen -p` flag. Applying `effort` headlessly means writing it into a
-  pinned settings.json in the worktree/scratch before invocation (opencode's pattern), not a CLI arg.
-  Needs live confirmation.
+## Compliance — read this before anything else
 
-## Unverified / needs-live-confirmation
+**Alibaba's Coding Plan terms plausibly prohibit exactly what Compound V does, and this is not the
+same situation `zai` cleared.** Verbatim, Alibaba's own pages (fetched 2026-08-04, English and
+Chinese):
 
-- Exact `--resume` session-id shape (docs show a UUID-formatted example, not a stated contract —
-  same caution as opencode's `ses_`-prefixed ids not being Codex's UUID).
-- Whether `qwen` has a `--cd`/`--dir`-equivalent flag or needs a subshell `cd` like cursor/zai.
-- The DashScope/Bailian error-response shape (codes, HTTP statuses, `Retry-After` presence) needed
-  to build `compound-v-classify-failure.py --backend qwen`.
-- Whether `--sandbox` and `--yolo` compose cleanly in one headless invocation (docs describe both
-  independently; not observed together).
-- Qwen Code's "Skills and SubAgents" feature's interaction with the planner/executor prompt lock.
+> 中文（[help.aliyun.com/zh/model-studio/coding-plan](https://help.aliyun.com/zh/model-studio/coding-plan)）：
+> 「仅限在编程工具（如 Claude Code、OpenClaw 等）中使用，禁止以 API 调用的形式用于自动化脚本、自定义应用程序后端或任何非交互式批量调用场景。」
+> 「将套餐 API Key 用于允许范围之外的调用将被视为违规或滥用，可能会导致订阅被暂停或 API Key 被封禁。」
+>
+> English ([alibabacloud.com/help/en/model-studio/coding-plan](https://www.alibabacloud.com/help/en/model-studio/coding-plan),
+> under "Prohibition of API calls"): "This plan is for interactive use in programming tools such as
+> Claude Code and OpenClaw. Do not use the plan's API key for automated scripts, application backends,
+> or other non-interactive scenarios." … "may result in subscription suspension or API Key revocation."
+
+**Why `zai`'s cleared reasoning does not transfer.** `zai`'s clause restricts *which client* (bans
+direct API/SDK access; spawning the real `claude` binary cures it). Alibaba's clause restricts *the
+mode of use* (bans automated, non-interactive, batch calling) — spawning the real `qwen` binary from a
+dispatcher script does **not** obviously cure that, because the script is still automated and
+non-interactive regardless of which binary it drives.
+
+**The countervailing reading, stated fairly — this is genuinely ambiguous, not a foregone violation:**
+the Chinese original qualifies the ban with **「以 API 调用的形式」** ("in the form of API calls"), which
+plausibly scopes it to *bypassing* an approved tool, not to scripting one; the FAQ's own prohibited
+examples are curl/Postman/Dify (direct-bypass patterns); and Qwen Code is itself on the supported-tools
+list, with its own docs marketing headless mode as **"ideal for scripting, automation, CI/CD
+pipelines."** Alibaba ships a tool built for automation and a plan whose terms forbid automation — that
+contradiction is Alibaba's, not this adapter's, but **the account risk lands on the operator.** No
+enforcement precedent was found in any public source (unlike z.ai, which has reproducible error codes
+and press coverage) — the risk here is real but **unmeasured**.
+
+**Decision taken (2026-08-04, explicit, informed):** proceed, with this section serving as the loud,
+permanent acknowledgment `adapter-qwen.md` must carry — not a footnote inherited from `zai`. Consistent
+with that decision, advisor-mode (the least defensible use — a review call, not an interactive
+programming session) is **deferred out of v1 entirely** — see Non-goals.
+
+**`qwen` MUST ship opt-in and OFF by default**, and the opt-in acknowledgment must cover
+**account-suspension risk**, not only the sandbox/trust-tier caveat every lower-trust backend carries.
+This is the standing rule for a publicly-distributed plugin: the operator who accepts the risk must be
+the one who read the clause, and an installer who never opted in must never have a `qwen` job dispatched
+on their key by default.
+
+**Operator-side clauses that must be respected regardless:** the subscription is licensed to one
+natural person; no account/key sharing; no resale, sublicense, or account transfer (Alibaba Cloud
+International Product Terms of Service v3.8.0). **A key must never enter CI, a shared secret store, or
+a team-wide config** — this is a single-operator adapter, full stop. Alibaba's Coding Plan FAQ also
+states keys are **auto-disabled on detected public exposure** — raises the stakes on the argv-leak
+lesson `zai` already paid for (see Credentials, below).
+
+**Data egress — different file set than `zai`, not `CLAUDE.md`.** Qwen Code inherits Gemini CLI's
+hierarchical context system: `AGENTS.md` (default since 2026-02-28), `QWEN.md`, `CONTEXT.md`,
+`.qwen/QWEN.local.md`, and transitive `@`-imports are concatenated and sent with every prompt. **This
+repository has `AGENTS.md` at its root — Compound V's own architecture document — which a `qwen` job
+against this repo would ship to Alibaba on every single call.** The required `--safe-mode` flag (see
+Credentials and isolation) disables context files and therefore **suppresses this egress by default** —
+but the adapter doc must still state the mechanism plainly, because it is one flag away from being live
+again: any future change that drops `--safe-mode` for the sake of giving the worker project context
+silently re-opens it. Whatever the prompt itself carries is sent regardless.
+First-party mitigations worth citing alongside the warning: Alibaba states it does not train on
+customer data, AES-256 at rest, SOC 2 (Security/Availability/Confidentiality) — but retention period,
+storage region, and deletion path are **not published anywhere found**, and the international
+endpoint's Singapore association is inferred, not a stated Coding-Plan-specific commitment.
+
+**Jurisdiction, stated neutrally, not as advocacy:** routing source code through a China-headquartered
+provider carries the same class of concern the domain audit documents for any Chinese-model
+integration — third-country-transfer exposure under GDPR Ch. V if a repo's contents include personal
+data, and a live US/China export-control trajectory whose concrete risk to a plugin is *continuity*
+(a backend becoming unreachable or unlawful for some installers on a policy change), not sanction. The
+single most concrete signal found: Alibaba itself banned Claude Code on its own internal machines over
+alleged backdoor risk (Reuters, 2026-07-03) — a fact worth stating in the adapter doc as a neutral data
+point, not an argument either way. **Do not dispatch `qwen` against a repository under an NDA or a
+contract with a data-residency clause without checking that clause first** — this is a per-repo
+operator decision, not something this adapter can enforce.
+
+---
+
+## Verified facts (v0.21.5 released source — not docs alone)
+
+The library audit checked the actual `yargs` option table at git tag `v0.21.5`
+(`packages/cli/src/config/config.ts` and neighbors), not just the published docs site, because the
+two disagree on at least one security-relevant flag. Where they disagree, source wins; both readings
+are recorded so a future version bump can be checked against the right one.
+
+**Headless invocation:**
+- **Positional prompt, not `-p`.** `qwen "<prompt>"` — `-p`/`--prompt` is deprecated at v0.21.5
+  ("Use the positional prompt instead. This flag will be removed in a future version.") and combining
+  `--prompt` with a positional is a parse-time error. The positional already defaults to one-shot.
+- `--output-format text|json|stream-json` (`-o`). `json` buffers an **array** of message objects:
+  `{type:"system", subtype:"session_start", session_id, model}`, `{type:"assistant",
+  message:{content:[...], usage}}`, `{type:"result", subtype:"success", session_id, is_error,
+  duration_ms, result, usage, stats}`. (The *docs site* also describes an unrelated flat-object shape
+  under a different heading on the same page — that shape was not found in the source's actual emitter
+  and should be treated as a doc error, not a second real mode; confirm the array shape empirically in
+  live verification and fail loudly, never silently-empty, if neither matches.)
+- **`--json-schema <json|@file>`** registers a synthetic `structured_output` tool and ends the session
+  on the first valid call — a first-party way to pin `job_result` to a known shape instead of parsing
+  free-form output. Worth using to sidestep the shape ambiguity above.
+- `--continue`/`-c` (latest session), `--resume <id>`/`-r` (specific session — **never emit a bare
+  `--resume` with no id, it opens an interactive session picker and hangs headless**), `--session-id
+  <id>` (**caller assigns** the id instead of scraping it back — strictly better than `zai`'s
+  regex-anchor approach), `--fork-session`. `--chat-recording false` disables resume entirely.
+  `--continue`+`--resume`, and `--session-id` with either, are mutually exclusive (parse-time error).
+
+**Sandbox — corrects the spec's first draft, which followed the docs site and was wrong:**
+- **`-s`/`--sandbox` is a boolean**, not a profile selector (`type: 'boolean'`). `--sandbox <profile>`
+  as written in the original draft does not work.
+- **The provider comes from `QWEN_SANDBOX`** (`sandbox-exec`|`docker`|`podman`), the **profile from
+  `SEATBELT_PROFILE`** (macOS only), the **image from `QWEN_SANDBOX_IMAGE`** (`--sandbox-image` CLI
+  flag is deprecated in favor of it).
+- **The environment variable outranks the CLI flag** — a source comment states this explicitly
+  ("environment variable takes precedence over argument"), the **opposite** of what the published
+  sandbox docs page claims.
+- **Six Seatbelt profiles**, not five: `permissive-open` (**default** — writes broad, network open),
+  `permissive-closed`, `permissive-proxied`, `restrictive-open`, `restrictive-closed`,
+  `restrictive-proxied`.
+- If `process.env['SANDBOX']` is already set when `qwen` starts, sandboxing is **silently skipped** —
+  the process believes it's already contained. This variable must never leak into the invocation
+  unset-by-accident from the operator's own shell.
+- On macOS, `sandbox-exec` is preferred automatically over Docker/Podman whenever it exists — Linux
+  requires Docker or Podman.
+- `SANDBOX` is set *by the sandbox transport itself* once engaged (non-empty = contained) — a
+  verifiable post-hoc signal, not a promise. Exact assertion mechanics need live verification.
+
+**Tool restriction — a second doc-vs-reality trap, same family as Claude Code's own `--allowedTools`
+lesson already in this repo's knowledge base:**
+- **`--allowed-tools` bypasses confirmation. It does not restrict which tools exist.** Registered
+  twice in the option table with slightly different help text, making a docs-only reading even more
+  likely to pick the wrong flag.
+- **`--core-tools <list>` (allowlist) and `--exclude-tools <list>` (denylist) are the real
+  restriction levers.** `--max-tool-calls 0` aborts on the first tool call of any kind — a hard
+  read-only lever.
+
+**Approval mode — mutually exclusive with `--yolo` at parse time:**
+- `--yolo`/`-y` and `--approval-mode` **together is a hard parser error** ("Cannot use both --yolo
+  (-y) and --approval-mode together. Use --approval-mode=yolo instead."), `exit 1` + help dump.
+  **Emit `--approval-mode=yolo` for the worker; never emit bare `--yolo`.**
+- `--yolo`/`approval-mode=yolo` auto-approves all tool calls but does **not** imply a sandbox — the
+  CLI itself prints a headless-safety warning to this effect (suppressible via
+  `QWEN_CODE_SUPPRESS_YOLO_WARNING=1`), confirmed independent of sandbox state.
+
+**Budget/runaway guards, native and previously unknown to this spec:**
+- `--max-wall-time <dur>` (`90`|`30s`|`5m`|`1h`|`1.5h`) and `--max-tool-calls <n>` both abort with
+  **exit code 55**. `--max-session-turns <n>` caps turn count.
+- `--max-subagent-depth <n>` (`1` disables nesting; default 5) and `--safe-mode` (disables context
+  files, hooks, extensions, skills, MCP servers) resolve the recon's open question about Skills/
+  SubAgents interacting with the planner/executor lock. **Skills are on by default at v0.21.5.**
+- Documented, deterministic exit codes: **0** success, **53** session-turn cap, **55** wall-time/
+  tool-call budget, **130** SIGINT.
+- `--fallback-model <m1,m2,m3>` documents the exact capacity codes it responds to: **429, 503, 529.**
+
+**Deprecations live at v0.21.5** (all still function, but emit stderr notices that pollute output a
+classifier will parse): `--prompt`/`-p`, `--sandbox-image` (→ `tools.sandboxImage`/`QWEN_SANDBOX_IMAGE`),
+`--proxy` (→ settings.json), `--experimental-acp` (→ `--acp`), `--experimental-skills` (ignored, on by
+default now).
+
+**No `--cd`/`--dir` flag exists anywhere in the option table** — confirmed by exhaustive enumeration.
+`--include-directories`/`--add-dir` adds *additional* read scope; it does not change cwd. **The worker
+must `cd` into the worktree in a subshell**, exactly like `cursor` and `zai`.
+
+**`--worktree <slug>` exists and must never be passed.** It starts the session inside Qwen Code's
+*own* git worktree at `<repoRoot>/.qwen/worktrees/<slug>/` and — critically for a headless worker —
+**prompts interactively on exit** to keep or remove it. If this engages by flag, by inherited settings,
+or by a resumed session's sidecar, the model edits files the scope gate never diffs (an "empty diff
+waves through a job that changed nothing" failure) and/or the process hangs waiting for input that
+never comes.
+
+**Auth — headless-native, confirmed:**
+- OAuth cannot work headless (Alibaba's own docs state this plainly); Coding Plan/API-key auth does.
+  Qwen OAuth's free tier was discontinued 2026-04-15 regardless.
+- Credentials: `BAILIAN_CODING_PLAN_API_KEY` + `OPENAI_BASE_URL` — international
+  `https://coding-intl.dashscope.aliyuncs.com/v1`, China `https://coding.dashscope.aliyuncs.com/v1`.
+  Default to international; make the endpoint an explicit config field (a region mismatch produces a
+  401 that does not self-identify as a region error).
+- **`--auth-type openai`** should be pinned explicitly in the worker argv (the binary also accepts
+  `qwen-oauth|gemini|vertex-ai|anthropic`) — asserts the auth path rather than inheriting it from
+  config discovery, and is the reason the CR5-5 reviewer-gate reasoning below is scope-dependent, not
+  tool-dependent.
+- **Never pass `--openai-api-key` on the command line** (argv is world-readable via `ps`) or
+  `--insecure` (sets `QWEN_TLS_INSECURE=1`).
+
+**Quota — request-based, not token-based; a different mental model than `zai`'s credit multipliers:**
+Pro tier: **6,000 requests / 5h · 45,000 / week · 90,000 / month** ($50/mo international, ¥200/mo
+China). A 60-turn agentic loop costs 60 units regardless of output length — `--max-session-turns` is
+the relevant guard, not a token budget. **No pay-as-you-go fallback**: quota exhaustion is a hard error,
+never an overage charge — makes the `FALLBACK` policy entry load-bearing, not optional politeness.
+Concurrency limit is real, **undocumented in magnitude, and dynamically adjusted** — `max_parallel`
+must ship conservative (**≤2**) and labeled unmeasured, never as a measured ceiling. Lite tier is
+discontinued (no purchases since 2026-03-20); Pro is effectively the only tier.
+
+**Model catalog — wider than originally scoped, and already drifting:** Alibaba's own Model Studio
+page (2026-08-04) lists `qwen3.7-plus`, `qwen3.6-plus`, `qwen3.5-plus`, `qwen3-max-2026-01-23`,
+`qwen3-coder-next`, `qwen3-coder-plus`, `MiniMax-M2.5`, `glm-5`, `glm-4.7`, `kimi-k2.5`. Qwen3.8-Max
+(shipped 2026-08-03, one day before this spec) is **not yet** in the Coding Plan catalog — which
+confirms rather than overturns the earlier decision not to hardcode a specific flagship as the
+default: the catalog itself moves faster than a spec can track.
+
+**Package/runtime:** `@qwen-code/qwen-code` — 26,646★, Apache-2.0, not archived, five stable releases
+in the seven days before this audit plus a daily nightly channel: **actively developed, not stale; the
+real risk is churn, not abandonment.** Requires **Node.js ≥ 22.0.0** (`engines` field) — unlike
+`codex`/`cursor-agent`, which ship as standalone binaries, `qwen` is an npm package with a hard runtime
+floor that must be asserted in `/v:init` capability detection, or a Node-20 machine gets an
+unclassified failure instead of a clean capability-missing message.
+
+**Security precedent — real, unresolved either way:** upstream Gemini CLI shipped **GHSA-wpqr-6v78-jr5g**
+(2026-04-24, **CVSS 10.0**, `@google/gemini-cli < 0.39.1`) for exactly the configuration this adapter's
+first draft proposed: headless mode auto-trusting workspace folders for config/env loading, combined
+with `--yolo` ignoring the tool allowlist entirely — remote code execution from an untrusted directory
+(e.g. a malicious PR in a CI-like context). **Qwen Code forked Gemini CLI at v0.8.2, roughly 31 minor
+versions before the fix landed.** Qwen Code does ship its own **Trusted Folders** feature (blocks
+`.qwen/settings.json`, `.env`, extensions, and tool auto-acceptance when a folder is untrusted) but its
+own docs state it is **disabled by default**, and are silent on what headless mode does with an
+untrusted folder — whether Qwen Code backported the upstream fix's `FatalUntrustedWorkspaceError`
+behavior is **unverified**. This is the primary reason `--sandbox`/`QWEN_SANDBOX` moved from optional
+to mandatory in this revision (see Trust Tier), and why a live-verification pass must explicitly check
+this before the adapter's status can read anything stronger than "auth-pending / coverage-unverified."
+
+---
 
 ## Credentials and isolation
 
-Mirrors `zai`'s `env -i` allow-list + scratch-`HOME` shape, adapted to Qwen Code's own config path
-(`~/.qwen/settings.json` instead of `~/.claude`):
+**`env -i` does not fully isolate Qwen Code the way it isolates Claude Code — this is a documented gap,
+not a residual risk to wave away.** Claude Code's config surface is `$HOME`-rooted; **Qwen Code's is
+also `cwd`-rooted**, and cwd is the worktree (a checkout of the repo under test). Verified discovery
+order:
 
 ```
-env -i PATH TMPDIR LANG HOME=<scratch> \
-    BAILIAN_CODING_PLAN_API_KEY=<key> OPENAI_BASE_URL=<coding-intl endpoint> \
+.env search — walks UPWARD from cwd toward $HOME, stops at first file found, files are NOT merged:
+  <cwd>/.qwen/.env  → <cwd>/.env  → (repeat at each ancestor directory) → ~/.qwen/.env → ~/.env
+  .qwen/.env is EXEMPT from all exclusion filtering, at every level.
+
+settings precedence (low → high):
+  defaults → system defaults → user (~/.qwen) → PROJECT (.qwen/settings.json, inside the worktree)
+  → system → env vars → CLI flags
+```
+
+**What the scrub still protects:** values already present in `process.env` are never overwritten by a
+loaded `.env` — so an explicitly-exported `BAILIAN_CODING_PLAN_API_KEY`/`OPENAI_BASE_URL` cannot be
+hijacked by simple override. **What it does not protect:** any name the scrub does *not* set is free
+real estate — `OPENAI_API_KEY` is unset by this design and is a first-class alternate auth path; a
+worktree `.qwen/settings.json` can set `tools.sandbox: false` (disabling the one control this adapter
+now requires) or `mcpServers` (arbitrary local commands outside the model's tool loop, the git scope
+gate, and any sandbox the settings file just turned off). `git worktree add` materializes **tracked**
+files only, so an operator's own gitignored `.env` does not travel in — a real, worth-stating
+mitigation — but a repo that *tracks* `.env`/`.qwen/`, or a resumed job re-entering a worktree a prior
+job wrote into, are live paths.
+
+**Required isolation shape:**
+
+```
+env -i PATH TMPDIR LANG \
+    HOME=<scratch> QWEN_HOME=<scratch> \
+    BAILIAN_CODING_PLAN_API_KEY=<key> OPENAI_BASE_URL=<endpoint> \
+    QWEN_SANDBOX=<sandbox-exec|docker|podman> SEATBELT_PROFILE=<restrictive-closed|restrictive-proxied> \
+    [QWEN_SANDBOX_IMAGE=<image>] \
   python3 scripts/compound-v-run-with-timeout.py --timeout <t> --grace 3 -- \
-    qwen -p --yolo [--sandbox <profile> --sandbox-image <image-if-linux>] \
-      --output-format json [--resume <id>] "<prompt>" </dev/null
+    ( cd "$WT" && qwen --approval-mode=yolo --auth-type openai --output-format json \
+        --session-id "$(uuidgen)" --safe-mode --max-subagent-depth 1 \
+        --max-session-turns <n> --exclude-tools <deny-list-if-any> \
+        [--json-schema <path>] "<prompt>" ) </dev/null
 ```
 
-`HOME` redirection keeps the operator's own `~/.qwen` config and any cached credentials out of the
-worker's reach, the same load-bearing reason `zai` redirects `CLAUDE_CONFIG_DIR`. Exact flag order
-and any additional required env vars (e.g. whether `QWEN_SANDBOX` must also be set alongside
-`--sandbox`) are pinned during live verification, not here.
+Non-negotiable elements beyond the flag corrections above:
+- **`QWEN_HOME` in addition to `HOME`.** `QWEN_HOME` is the tool's own purpose-built isolation lever —
+  it relocates settings/OAuth-tokens/installation_id **and** removes `~/.env` from the discovery set
+  entirely, a property plain `HOME` redirection does not have.
+- **Pre-flight refuse (or quarantine) the job if the fresh worktree contains any of `.qwen/.env`,
+  `.env`, `.qwen/settings.json`, or `.qwen/QWEN.local.md`.** Costs nothing on a clean repo (never
+  fires, since `git worktree add` only pulls tracked files); exists for the tracked-secret and
+  resumed-worktree cases. Comment the reasoning in the script so a future edit doesn't "optimize" it
+  away as dead code.
+- **`SANDBOX` must never be present in the operator's ambient environment when the supervisor launches
+  `qwen`** — a leaked `SANDBOX` value causes the tool to believe it is already contained and skip
+  sandboxing silently. Explicit deny in the `env -i` allow-list reasoning, not just an omission.
+- **`--safe-mode` and `--max-subagent-depth 1` are required, not optional.** `--safe-mode` disables
+  context files, hooks, extensions, skills, **and MCP servers** — closing the injection path where a
+  worktree-supplied `.qwen/settings.json` declares `mcpServers` (arbitrary local commands that run
+  outside the model's tool loop, outside the git scope gate, and outside the sandbox). It also
+  suppresses the `AGENTS.md` egress described in Compliance, since context files are exactly what it
+  disables. **Accepted loss, stated plainly:** the worker no longer receives project conventions from
+  context files, so anything a task depends on must live in the job prompt — the same trade `zai`
+  already makes. Skills are **on by default** at v0.21.5, so this is a live concern for the
+  planner/executor lock, not hypothetical.
+- **Set `security.folderTrust.enabled` explicitly** in the scratch `QWEN_HOME`'s `settings.json` rather
+  than relying on the documented default, which is **off**. Do not infer the headless behavior — the
+  live pass must observe it.
+- **A model-identity assertion, `zai`'s GLM-check analogue:** read the response's model identifier
+  (from the `result` event's model field or `--json-schema` output) and fail the job if it does not
+  match the requested model. This is the concrete defense against the injection path above (a
+  worktree-supplied `OPENAI_API_KEY` silently switching which credential/endpoint served the request) —
+  the Coding Plan's multi-vendor catalog makes "did we get the model we asked for" meaningful the same
+  way it is for `zai`.
+- **Live-verify whether Qwen Code backported the upstream untrusted-folder fix**, and record the
+  observed behavior plus the exact `qwen --version` in `adapter-qwen.md`, the way `codex-cli 0.144.1`
+  is recorded. Re-verify on every version bump given the release cadence above.
+- Credential-in-argv discipline mirrors `zai`'s hard-won lesson exactly: `env -i` wraps the
+  **supervisor**, never the binary directly, because the supervisor is the long-lived process whose
+  argv is `ps`-readable for the whole job. Aggravated here: Alibaba auto-disables keys it detects as
+  publicly exposed, so an argv leak costs the subscription, not just secrecy.
 
-## Model resolution
+**Copy the *post-fix* `zai` worker, not any older sibling.** Five of the six existing workers still
+carry a pattern that was **reproduced as exploitable**: they write `write_allowed` to a predictable
+`$ART/write_allowed.globs` and read it back after the child exits — and a child with unconfined write
+access can append `**` to that file and turn its own out-of-scope write into a clean PASS. The `zai`
+worker was fixed to pass repeated **`--allow` arguments** from positional parameters instead. Specific
+inheritance list, each item earned by a real bug:
+- `--allow`-argument gate transport, never the `$ART` file.
+- `env -i` wrapping the supervisor + `--env-only` allow-list (a macOS Python.framework build injects
+  `SDKROOT`/`CPATH`/etc. into the supervisor's own environment, which `Popen` would otherwise inherit).
+- `set -f` (noglob) around the `IFS=":"` split of `write_allowed` — entries are literal globs, and
+  without it they pathname-expand against the launcher's cwd and corrupt the allow-list.
+- Scope-gate exit-code semantics: rc `1` means BLOCKED and must **not** be fatal; only rc `>1` or
+  unparseable output is a worker fault.
+- `$ART` scratch outside `$WT` so the diff stays pristine; idempotent worktree recreation on resume.
+- Do **not** copy `zai`'s `RUN_ID=""""` typo (four quote characters — harmless but real, and it
+  survives shellcheck).
 
-Bare model name (`qwen3-coder-plus`, `glm-5`, `kimi-k2.5`, …) — one endpoint, so never a
-`provider/model` string like opencode. **No hardcoded default `deep`/`standard`/`light` map in this
-spec**: Alibaba shipped a new flagship (Qwen3.8-Max, 2026-08-03) mid-brainstorm, one day before this
-doc was written — pinning a model name now would likely be stale before the user's subscription is
-even active. The default map is resolved via `/v:models` once a real key exists, written into
-`.claude/compound-v.json` per the existing pattern (mirrors opencode's "assignment stays curated +
-user-confirmed").
+**One timeout authority, chosen deliberately.** Qwen Code has native `--max-wall-time` (and
+`--max-tool-calls`), both aborting with exit code 55, which overlaps `compound-v-run-with-timeout.py`'s
+job. **The process-group supervisor stays the authority** — it is the plugin-wide non-negotiable launch
+rule and the only mechanism that `killpg`s an orphaned tool subtree. Native `--max-session-turns` is
+used for a *different* purpose (quota, see below), not as a second wall-clock. Do not set
+`--max-wall-time` as well; two racing timeouts produce an ambiguous failure class.
 
-`glm-5` and `kimi-k2.5` are **documented, named overrides** reachable through this same endpoint —
-not silently-accepted arbitrary strings. `effort` accepts `low|medium|high`, never `xhigh`
-(project-wide: `xhigh` is codex-only).
+---
 
-## Trust tier, isolation, reviewer/arbiter eligibility
+## Trust tier and reviewer gate
 
-`isolation: worktree` mandatory — new entry beside `codex|antigravity|cursor|devin|opencode|zai ⇒
-worktree`. **Lower-trust, opt-in tier**, same as opencode/cursor/antigravity/zai: worktree + the
-git-derived gate detect an in-worktree scope leak but cannot prevent an out-of-worktree side effect,
-because `--sandbox` is optional, not required, in v1. Operators who enable `--sandbox` get strictly
-better isolation than the tier implies, but the adapter does not depend on it.
+**Sandbox is mandatory in v1 — this is a change from the original draft, made after the pre-flights.**
+`qwen` becomes the **second** backend (after Codex) with a *real* kernel confinement requirement,
+placing it structurally above the no-OS-guarantee tier (opencode/cursor/antigravity/zai) rather than
+inside it — but its status stays **auth-pending/coverage-unverified**, not "verified," until a live
+pass confirms (a) sandboxing actually engages under the pinned invocation, and (b) the untrusted-folder
+backport question above is resolved. Claiming Codex-equivalent trust before both are confirmed would be
+premature. `isolation: worktree` remains mandatory regardless (existing invariant).
 
-**WORKER-ONLY, hard-enforced, not a judgment call.** Verified directly in
-`compound-v-validate-manifest.py`: the CR5-5 gate requires a reviewer job to resolve to
-`backend: claude` **and** a model name containing `"opus"` (`_is_claude_opus()`), checked at both
-manifest-validation and sealed-receipt time. This is unconditional — no benchmark result changes it,
-for `qwen` or any other backend. `zai`/`opencode`/`devin` additionally get an explicit backend-name
-block because their own model resolution can produce an "opus"-substring string (z.ai's Anthropic
-aliases, opencode's `anthropic/claude-opus-4-6`); `qwen`'s model names never do, so it rides the
-universal CR5-5 check alone.
+**WORKER-ONLY, and this needed an actual code change, not a free ride.** The original draft claimed the
+existing CR5-5 gate (`_is_claude_opus()`) "already covers `qwen` generically." **That claim was false as
+written** — CR5-5 only inspects `fast_path.review` declarations and sealed receipts; a normal
+(non-fast-path) manifest reviewer job never reaches it. The actual second gate — an explicit
+backend-name block at `compound-v-validate-manifest.py`'s reviewer-prohibition site — currently lists
+`("devin", "opencode", "zai")` and does **not** include `qwen`. Without adding it, `backend: qwen, type:
+spec_review, tier: deep` validates cleanly today. **`qwen` must be added to that tuple, exactly like
+zai**, and the acceptance criteria below are corrected accordingly. (The premise that qwen's own model
+names never contain "opus" holds only under this spec's Non-goal of never widening past the Coding
+Plan's OpenAI-protocol auth path — `--auth-type anthropic` exists in the binary; pinning `--auth-type
+openai` explicitly, as this spec now requires, is the cheap hardening that keeps that premise true.)
 
-**Not (yet) in `/v:review-plan` or the epic-arbiter panel.** Both (`compound-v-codex-review.sh`,
-`compound-v-epic-arbiter.py`) are hardcoded to Codex today; extending either to draw from a general
-backend pool is separate, larger work — Non-goal here (see below), same posture zai/opencode already
-carry.
-
-## New this PR: `qwen` joins the advisor-mode cross-brand pool
-
-Advisor-mode (`skills/backend-launcher/adapter-advisor.md`) already has a general selector —
-`compound-v-resolve-model.py --select-advisor` — with a deterministic priority list:
-`codex > any other non-claude > opus fallback`. Today only two of those tiers are actually **driven**
-by `compound-v-advisor-consult.sh` (codex, claude); any other selection is refused as an unproven
-path. This PR:
-
-1. Adds `qwen` to the priority list, ordered by **verified isolation strength** — the same axis
-   already used to rank Codex first — not by benchmark score:
-   ```
-   codex (kernel read-only sandbox)  >  qwen (optional kernel sandbox)  >
-   zai / opencode / cursor / antigravity (no OS guarantee)  >  opus fallback
-   ```
-2. Adds a third pinned, driven execution path in `compound-v-advisor-consult.sh`: a read-only
-   `qwen` consult (sandboxed where `--sandbox` is available, no write tools regardless).
-3. Documents `backend: qwen, model: glm-5` and `backend: qwen, model: kimi-k2.5` as valid **explicit
-   overrides** for an advisor consult — not entries in the auto-picked priority list. Rationale below.
-
-**Why GLM and Kimi are overrides, not defaults — benchmark research, 2026-08-04.** All figures below
-are from secondary aggregators (not vendor-primary pages) and should be read as directional, not
-exact; multiple sources disagreed by a few points on the same figure.
-
-| | General intelligence (Artificial Analysis index, Opus 5 = 61) | SWE-bench Pro (Opus 4.8 = 69.2%) | Terminal-Bench (agentic CLI) | Notable independent signal |
-|---|---|---|---|---|
-| Qwen (3.7 Max / Qwen3-Coder-Next) | ~46 | 44.3% | beats Opus 4.6 on 2.0 (61.6% vs 59.3%) | real-world Rust test: benchmark scores didn't translate to effectiveness |
-| Kimi K3 / K2.x | ~57 (closest to Opus of the three) | ~10–62 depending on variant/source (noisy) | 66.7% (K2.6, v2.0) | hands-on test: notably weaker on ambiguous, long-horizon agentic tasks — advisor-mode's exact use case |
-| GLM-5.2 | ~51 (or 34 on a non-reasoning variant) | 62.1% — beats GPT-5.5's 58.6% | 81.0% (first open-weight past 80%) | strongest of the three on agentic/coding axes; some headline claims are self-reported/custom-harness |
-
-None of the three matches Opus across the board, and the picture is genuinely mixed rather than
-uniformly favorable to any one of them. The actual justification for a non-Claude advisor voice in
-this codebase was never "as smart as Opus" — `compound-v-codex-review.sh`'s own header states Codex's
-value as *"error DECORRELATION: a different model family sees the blind spots the planner's own
-family does not see in itself."* Qwen earns default-priority status on the same isolation logic as
-Codex (§ above). GLM and Kimi earn override-only, probationary status: real decorrelation value is
-plausible, but the evidence is too mixed (and, for Kimi, actively negative on advisor-mode's specific
-use case in one hands-on test) to auto-pick either by default before the user has live experience of
-their own.
-
-**Why GLM routes through `qwen` in addition to `zai`.** `glm-5` is reachable two ways: the existing
-`zai` backend (z.ai's own official plan, no kernel sandbox) or `backend: qwen, model: glm-5` (Bailian
-resale of the same model family, but with `qwen`'s optional kernel sandbox available). If the
-operator drops their direct z.ai subscription, GLM access moves to the `qwen` path with no adapter
-change required — `zai` simply goes unconfigured. No new selection mechanism is needed for this:
-`job_spec.model` already supports an explicit override that skips tier resolution.
+---
 
 ## Job contract
 
-`job_spec` is unchanged. `qwen` accepts `backend`, `prompt`, `tier`, `effort` (`low|medium|high`,
-never `xhigh`), `model` (explicit override — bare name, e.g. `glm-5`/`kimi-k2.5`), `cwd`,
-`write_allowed`, `read_only`, `timeout_sec`, `network` (maps to whether the container/Seatbelt
-profile permits network access when `--sandbox` is engaged; advisory when it isn't). `read_only` /
-an empty `write_allowed` is enforced post-hoc the same way as every other adapter: any change ⇒
-`blocked`, never merged — `qwen` adds no new semantics here.
+`job_spec` is unchanged. `qwen` accepts `backend`, `prompt`, `tier`, `effort` (`low|medium|high`, never
+`xhigh`), `model` (explicit override — bare name, e.g. `glm-5`/`kimi-k2.5`/`qwen3-coder-plus`), `cwd`,
+`write_allowed`, `read_only`, `timeout_sec`, `network`.
+
+- **`effort` is advisory, and where it's written matters.** No headless CLI flag exists at all — the
+  only surface is `model.reasoningEffort` in settings.json. Qwen's own ladder is `low|medium|high|
+  xhigh|max`; **the `xhigh` ban is Compound V policy, not a Qwen limitation** — document it that way so
+  a future reader doesn't "fix" a non-bug. Note Qwen applies its own per-provider effort clamp, so the
+  value can be silently downgraded per model regardless. **Any pinned effort settings file must be
+  written to `$SCRATCH/.qwen/settings.json` (the redirected `QWEN_HOME`), never inside `$WT`** — a
+  project-scoped `.qwen/settings.json` lives inside the worktree and would dirty the worker's own diff,
+  tripping the scope gate on a job that changed nothing on purpose.
+- **`network` maps to the Seatbelt/container profile now that sandboxing is mandatory**: `network:
+  false` must resolve to a `*-closed` or `*-proxied` profile, never left at the network-open default.
+  This is a real mapping now, not `zai`'s explicit-discard pattern.
+- `read_only` / an empty `write_allowed` is enforced post-hoc exactly like every other adapter: any
+  change ⇒ `blocked`, never merged.
 
 `job_result` is unchanged and assembled by the caller: `files_changed`/`violations`/`blocked` stay
-git-derived; `worktree` is always set (never `direct`, same invariant as codex/cursor/antigravity/zai);
-`session_id` shape and `usage` field population are pinned during live verification, not here.
+git-derived; `worktree` is always set (never `direct`); `session_id` is the caller-assigned UUID from
+`--session-id`, not scraped; `usage` is real (`--output-format json`'s `usage` fields), not fabricated
+on a failed job (the `a091185` lesson — a well-formed-but-empty usage object must yield
+`measured:false`, not zeros).
+
+---
 
 ## Failure classification
 
-**Not yet built** — same posture as opencode: no live DashScope/Bailian error samples exist yet.
-`compound-v-classify-failure.py --backend qwen` fails closed to `other` for every payload until a
-live pass supplies real codes/messages, exactly like opencode's stated gap. `compound-v-failure-policy.py`
-gets a `FALLBACK` entry for `qwen` regardless, so a quota failure reroutes/retries instead of halting
-the whole run (the same reason `zai`'s spec calls this "not optional" — without it, `None` halts
-everything).
+**Real error data already exists — narrower "fail closed to `other`" scope than the first draft
+assumed.** Community threads (2026, above the single-report threshold) show:
+`{"errorType":"THROTTLING.userQPSLimit","message":null,"status":429}` — **`message` is `null`**, so a
+classifier keying on message text (the way `zai`'s does) matches nothing; **key on `errorType`
+instead.** Also documented: `concurrency allocated quota exceeded` / `hour allocated quota exceeded` /
+`week allocated quota exceeded` / `month allocated quota exceeded` (map to `rate_limited` /
+`out_of_credits`), and 401 `invalid access token or token expired`. Additionally, the CLI's own
+deterministic exit codes wire in directly without needing error-text parsing at all: **0** success,
+**53** session-turn cap, **55** wall-time/tool-call budget exceeded, **130** SIGINT.
+
+A `qwen` branch in `compound-v-classify-failure.py` is mandatory **in this PR**, seeded with the
+needles above — the function's final `else` is `_CODEX_RULES`, so its absence is not a neutral gap, it
+is a wrong answer (a `qwen` auth failure would be told to run `codex login`, the exact bug class the
+`zai` selftest already pins). Whatever isn't covered by the needles above still fails closed to
+`other`. `compound-v-failure-policy.py` needs a `FALLBACK` entry for `qwen` regardless — with no
+pay-as-you-go fallback on this plan, a missing entry means a quota wall halts the entire run, not a
+graceful degrade.
+
+**Retry policy on this backend is a compliance decision, not a reliability one.** The stated penalty
+for using the key outside the permitted scope is subscription suspension, and enforcement throttling is
+wire-indistinguishable from ordinary rate limiting — so an aggressive retry against a provider that
+penalizes repeat offenders is itself the hazard. **Low retry ceiling, bounded self-derived backoff (no
+`Retry-After` is documented), circuit-breaker opens early** — the same posture `zai` adopted for the
+same reason, and here the downside is losing the subscription rather than losing a window's credits.
+
+---
+
+## Model resolution
+
+Bare model name — one OpenAI-protocol endpoint, never a `provider/model` string. **A built-in
+placeholder tier map is required in code, not optional.** The repo has no `.claude/compound-v.json`
+today, `resolve()` raises `ValueError` on an unresolvable cell, and `--selftest` iterates every
+backend × tier as a hard CI gate — registering `qwen` in `BACKENDS` without a resolvable map turns CI
+red on the first commit. Follow the established pattern for "we don't know the exact model yet": either
+a safe placeholder (mirroring `_CURSOR`'s `{"deep":"auto", ...}`) or the most conservative documented
+model name, with `/v:models` overriding it once a real key exists — the map must always resolve, even
+if what it resolves to is provisional. `glm-5`, `glm-4.7`, and `kimi-k2.5` remain documented,
+non-default overrides reachable through the same endpoint.
+
+`max_parallel` defaults to **2**, explicitly labeled unmeasured (undocumented, dynamically-adjusted
+concurrency limit per Alibaba's own FAQ).
+
+---
 
 ## Testing
 
-Stub-first (`scripts/test-qwen-worker-stub.sh`, mirroring `test-advisor-worker-stub.sh`): a fake
-`qwen` on `PATH` asserts the pinned argv, that `env -i` forwards exactly the declared allow-list, and
-the success/BLOCKED/timeout paths. **A stub cannot catch the class of bug that broke `zai`'s first
-draft** (a flag pair that parses fine in argv assertions but means the opposite of what the doc
-claims) — a real-binary, no-network smoke test against a local stub HTTP server is required before
-shipping as verified, not optional polish.
+Stub-first: `scripts/test-qwen-worker-stub.sh` — the name matters, both CI globs (`shellcheck
+scripts/*.sh`, the `scripts/test-*.sh` loop) pick it up with **zero workflow-file edits** required, but
+only if it **exits 0 and SKIPs cleanly when the real `qwen` binary is absent** (the CI runner has none),
+mirroring `test-zai-wire-smoke.sh`'s `command -v` guard. Cover the same five paths the zai stub proves:
+success / blocked / timeout / non-zero-exit / (a qwen-appropriate model-mismatch check in place of
+zai's `nonglm` mode, using the model-identity assertion above).
+
+**A stub cannot catch a flag-semantics inversion** — this spec exists because a docs-only reading
+already produced one (`--sandbox`'s arity and precedence). A real-binary, no-network smoke test
+(`scripts/test-qwen-wire-smoke.sh`, mirroring `test-zai-wire-smoke.sh`) against a local stub HTTP
+endpoint is required before shipping as verified, not optional polish.
+
+---
 
 ## Files touched
 
-**New:** `scripts/compound-v-run-qwen-worker.sh`, `skills/backend-launcher/adapter-qwen.md`.
+Thirteen independent registration sites, per the archaeology audit's matrix — this backend is not one
+switch. **New:** `scripts/compound-v-run-qwen-worker.sh`, `skills/backend-launcher/adapter-qwen.md`,
+`scripts/test-qwen-worker-stub.sh`, `scripts/test-qwen-wire-smoke.sh`.
 
-**Edited:** `compound-v-resolve-model.py` (qwen tier map resolution + advisor-selector priority
-entry), `compound-v-validate-manifest.py` (`VALID_BACKENDS`, worktree invariant, selftest fixtures —
-the CR5-5 reviewer gate needs no change, it already covers `qwen` generically), `job_result.schema.json`,
-`compound-v-classify-failure.py` (qwen branch, fail-closed to `other`), `compound-v-failure-policy.py`
-(`FALLBACK` entry), `compound-v-advisor-consult.sh` (third pinned path), `agents/parallel-dispatcher.md`,
-`skills/backend-launcher/SKILL.md` (adapter table), `skills/compound-v/execution-manifest.md`,
-`skills/compound-v/routing-policy.md` (advisor cross-brand list), `commands/v-init.md`,
-`commands/v-models.md`, `CHANGELOG.md`, `.claude-plugin/plugin.json` + `marketplace.json` (version
-lockstep).
+**Edited — shared/contended, ordering matters:**
+- `scripts/compound-v-resolve-model.py` — `BACKENDS`, the built-in tier-map placeholder, selftest
+  additions. **Single job** — do not split; it's loaded by-path elsewhere and any partial edit breaks
+  every backend's resolution.
+- `scripts/compound-v-validate-manifest.py` — `VALID_BACKENDS`, the worktree-required tuple, **the
+  reviewer block-list tuple** (the corrected, load-bearing edit this draft's first version missed),
+  docstring, new `QWEN_*` selftest fixtures. Backs the partition-reviewer agent; CI-run against every
+  tracked historical manifest.
+- `scripts/compound-v-classify-failure.py` — `_QWEN_RULES` seeded with the real needles above,
+  `classify()` branch, `--backend` choices, a selftest guard against the codex-fallthrough bug.
+- `scripts/compound-v-failure-policy.py` — `FALLBACK` entry, selftest case.
+- `scripts/compound-v-usage-extract.py` — **missed by the first draft entirely.** Either add to
+  `UNMEASURED_BACKENDS` or a real `_extract_qwen` branch, plus selftest.
+- `schemas/job_result.schema.json` — `usage.backend` description string only.
+- `skills/backend-launcher/SKILL.md` — adapter table row. **Must land AFTER `adapter-qwen.md` exists**
+  — the repo's dead-link CI gate scans every `.md` file and fails on an unresolved link.
+- `skills/compound-v/routing-policy.md`, `skills/compound-v/execution-manifest.md`,
+  `skills/compound-v/phase-3-parallel-opus-dispatch.md` (**missed by the first draft**),
+  `agents/parallel-dispatcher.md` — backend enum/table entries.
+- `commands/v-init.md` — a new qwen capability-probe section (asserting Node ≥22 per the runtime
+  floor above), config examples.
+- `commands/v-models.md` — a qwen discovery section (prose, like opencode's — no script change; qwen
+  discovery is not a ranking-script fit).
+- `commands/v-status.md` (**missed by the first draft**) — only if qwen ships unmeasured initially.
+- `CHANGELOG.md`, `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` — **one atomic job**;
+  three separate CI steps cross-check all three carry the identical version.
+
+**Confirmed NOT touched** (contrary to a plausible first guess): `.github/workflows/validate.yml` —
+every relevant CI step picks up new files by glob, which is exactly why the stub-test naming
+convention above is load-bearing, not cosmetic.
+
+**Explicitly out of scope for this PR** (advisor-mode dropped — see Non-goals):
+`scripts/compound-v-resolve-model.py`'s `ADVISOR_CONSULTABLE_NONCLAUDE` tuple,
+`scripts/compound-v-advisor-consult.sh`'s third pinned arm, and `skills/backend-launcher/adapter-advisor.md`'s
+priority-ladder prose (independently found to already be stale/wrong about the current codex-only
+reality — a pre-existing bug, not introduced by this spec, and not this PR's to fix).
+
+**Ordering constraints for the Partition Map:**
+1. `adapter-qwen.md` must exist before any file links to it (dead-link CI gate).
+2. `compound-v-resolve-model.py` must carry a resolvable `qwen` tier map before any qwen-related
+   selftest fixture in `validate-manifest.py` can pass.
+3. The three version-lockstep files are one atomic job.
+
+---
 
 ## Non-goals
 
+- **No advisor-mode inclusion in v1.** `qwen` has no proven read-only enforcement mechanism — no
+  kernel read-only sandbox like Codex's, no `--permission-mode plan`-equivalent structural
+  incapability. `--allowed-tools` looked like a fit and is not one (it bypasses confirmation, doesn't
+  restrict). The entire advisor-consult script exists because of a real 2026-07-13 incident where a
+  nested agent deleted this repository — shipping an unenforced "no write tools" consult would be a
+  regression of that mitigation, not a feature. Revisit only once `--exclude-tools`/`--approval-mode=plan`
+  is designed and live-verified as a genuine boundary, not before. This also removes the need to touch
+  `ADVISOR_CONSULTABLE_NONCLAUDE` or `compound-v-advisor-consult.sh` in this PR at all.
 - **No OAuth path** — Coding Plan is API-key-only; Qwen OAuth is discontinued and headless-incompatible
   regardless.
-- **No OpenRouter/BYOK/custom-provider auth paths** through Qwen Code — scoped strictly to the
-  Alibaba Coding Plan the user is purchasing. Revisit only if that scope genuinely changes.
-- **No mandatory `--sandbox`** in v1 — documented as available, not required (explicit user decision).
-- **No extension of `/v:review-plan` or `compound-v-epic-arbiter.py`** to draw on qwen/glm/kimi —
-  both are Codex-hardcoded today; generalizing either is separate, larger work.
-- **No arbiter family-dedup fix** (`compound-v-epic-arbiter.py`'s substring match doesn't know
-  `qwen`/`glm`/`kimi`) — required before any of these three could safely hold a panel seat; flagged,
-  not built, same as zai/opencode's own Non-goals.
-- **No change to the `zai` adapter itself.** If the operator cancels their z.ai subscription, `zai`
-  becomes unconfigured and unused; no code path here depends on that decision.
-- **No live-verified flag set.** This spec is written from documentation; the live probe (real Coding
-  Plan key, real `qwen` binary, real error samples) is a required follow-on before shipping as
-  verified, not a nice-to-have.
+- **No OpenRouter/BYOK/custom-provider auth paths** — scoped strictly to the Alibaba Coding Plan.
+  `--auth-type openai` is pinned explicitly in the worker argv to keep this true structurally, not just
+  by convention.
+- **No extension of `/v:review-plan` or `compound-v-epic-arbiter.py`** to draw on qwen — both are
+  Codex-hardcoded today; generalizing either is separate, larger work.
+- **No arbiter family-dedup fix** (`compound-v-epic-arbiter.py` has no `qwen`/`glm`/`kimi` needle) —
+  same gap `zai` already left, verified still present, not this PR's to close.
+- **No change to the `zai` adapter itself.** If the operator drops their z.ai subscription, `zai`
+  becomes unconfigured; `glm-5` remains reachable through `qwen` regardless. Whether to also retire the
+  `zai` adapter in that scenario is a separate, later decision — not required by this PR.
+- **No live-verified flag set, no "verified" status.** This spec is corrected against the *released
+  source*, which is stronger than docs-only but still not a live probe with a real key. The live pass —
+  confirming the sandbox precedence fixes actually work, resolving the JSON-shape ambiguity, and
+  checking the untrusted-folder backport question — is a required follow-on, not optional polish.
+- **No fixing of the pre-existing stale advisor-ladder prose** in `adapter-advisor.md`/
+  `advisor-consult.sh` comments (they already misdescribe the current codex-only reality, independent
+  of this spec) — out of scope; a genuine but unrelated cleanup.
+
+---
 
 ## Acceptance criteria
 
-1. A manifest with `backend: qwen, isolation: worktree` validates; the same manifest with
-   `isolation: direct` fails with a message naming the invariant.
-2. A `qwen` reviewer job fails validation under the existing CR5-5 gate (no new code needed for this
-   specific check — confirmed by test, not assumed).
-3. `compound-v-resolve-model.py --backend qwen --tier {deep,standard,light}` resolves from
-   `.claude/compound-v.json` (no hardcoded default map in code); `--effort xhigh` is rejected.
-4. `compound-v-resolve-model.py --select-advisor` includes `qwen` between codex and the no-sandbox
-   tier.
-5. `compound-v-advisor-consult.sh` drives a real (or stubbed, in CI) `qwen` read-only consult as a
-   third pinned path.
-6. `backend: qwen, model: glm-5` and `backend: qwen, model: kimi-k2.5` validate as accepted overrides
-   and do not appear in any auto-resolved default tier map.
-7. A worker that writes outside `write_allowed` yields `blocked: true` with offending paths in
+1. A manifest with `backend: qwen, isolation: worktree` validates; `isolation: direct` fails with a
+   message naming the invariant.
+2. **Corrected from the first draft:** a `backend: qwen, type: spec_review, tier: deep` job **fails**
+   validation, specifically because `qwen` was added to the reviewer block-list tuple — verified by a
+   fixture whose only defect is that backend/type combination (not assumed from the CR5-5 gate alone,
+   which does not cover a legacy-manifest reviewer job).
+3. `compound-v-resolve-model.py --backend qwen --tier {deep,standard,light}` resolves to a real,
+   non-raising value from a built-in placeholder map (not `.claude/compound-v.json` alone, which does
+   not exist in this repo); `--effort xhigh` is rejected with the project-policy message, not a
+   tool-limitation message.
+4. The worker's pinned invocation drives sandboxing entirely through `QWEN_SANDBOX`/`SEATBELT_PROFILE`
+   env vars, never a `--sandbox <profile>` flag form (which does not exist); `network: false` resolves
+   to a `*-closed`/`*-proxied` profile.
+5. The worker never emits `--allowed-tools` believing it restricts tools, never emits bare `--yolo`
+   (uses `--approval-mode=yolo` only), never emits `--worktree`, never emits `-p`, never emits
+   `--openai-api-key`/`--insecure` in argv, never emits a bare `--resume`.
+6. A model-identity assertion fails the job if the response's model does not match the requested
+   model.
+7. A pre-flight check refuses or quarantines the job if the fresh worktree contains
+   `.qwen/.env`/`.env`/`.qwen/settings.json`/`.qwen/QWEN.local.md`.
+7a. The invocation carries `--safe-mode` and `--max-subagent-depth 1`, and the scratch `QWEN_HOME`'s
+    `settings.json` sets `security.folderTrust.enabled` explicitly rather than inheriting the
+    documented-off default.
+7b. The worker passes the scope-gate allow-list as repeated `--allow` arguments, **never** via a
+    child-writable `$ART/write_allowed.globs` file (the reproduced self-rewriting-allow-list defect);
+    `set -f` guards the `IFS=":"` split; gate rc `1` is treated as BLOCKED, not as a worker fault.
+7c. `qwen` is off by default: a run with no explicit qwen opt-in dispatches no `qwen` job, and the
+    opt-in text names the account-suspension risk, not only the trust tier.
+8. A worker that writes outside `write_allowed` yields `blocked: true` with offending paths in
    `violations`; the caller does not merge.
-8. `compound-v-classify-failure.py --backend qwen` maps every payload to `other` (documented gap,
-   not silently absent) until a follow-on adds real needles.
-9. `compound-v-failure-policy.py` returns a reroute/bounded retry for a `qwen` quota failure, not a
-   run halt.
-10. CI runs shellcheck over the new worker script and executes its stub tests.
-11. `SKILL.md`'s adapter table lists `qwen` as **auth-pending / coverage-unverified** until a live
-    pass (real Coding Plan key) updates it — this status must not read as "verified" prematurely.
+9. `compound-v-classify-failure.py --backend qwen` maps `THROTTLING.userQPSLimit` and the
+   `{concurrency,hour,week,month} allocated quota exceeded` needles (keyed on `errorType`, never
+   `message`, which DashScope returns as `null`) plus native exit codes 53/55/130, and fails closed to
+   `other` for everything else.
+10. `compound-v-failure-policy.py` returns a reroute/bounded retry for a `qwen` quota failure, not a
+    run halt, with a **low** retry ceiling and an early circuit break (retry policy here is a
+    compliance decision — the stated penalty is suspension).
+11. CI runs shellcheck over the new worker script and executes `test-qwen-worker-stub.sh`, which SKIPs
+    cleanly (exit 0) when no `qwen` binary is present — with zero edits to `validate.yml`.
+12. `SKILL.md`'s adapter table lists `qwen` as **auth-pending / coverage-unverified**, and
+    `adapter-qwen.md` carries the Compliance section verbatim (EN+ZH) plus the exact verified
+    `qwen --version` once a live pass runs — this status must not read as "verified" prematurely.
+13. `adapter-qwen.md` states plainly which files would reach Alibaba via Qwen Code's context-file
+    system (`AGENTS.md` — this repo's own architecture doc — plus `QWEN.md`/`CONTEXT.md`/
+    `.qwen/QWEN.local.md` and `@`-imports), that `--safe-mode` currently suppresses that egress, and
+    that dropping `--safe-mode` re-opens it.
