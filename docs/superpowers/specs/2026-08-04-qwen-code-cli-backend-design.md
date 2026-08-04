@@ -261,10 +261,19 @@ never comes.
 **Auth — headless-native, confirmed:**
 - OAuth cannot work headless (Alibaba's own docs state this plainly); Coding Plan/API-key auth does.
   Qwen OAuth's free tier was discontinued 2026-04-15 regardless.
-- Credentials: `BAILIAN_CODING_PLAN_API_KEY` + `OPENAI_BASE_URL` — international
-  `https://coding-intl.dashscope.aliyuncs.com/v1`, China `https://coding.dashscope.aliyuncs.com/v1`.
-  Default to international; make the endpoint an explicit config field (a region mismatch produces a
-  401 that does not self-identify as a region error).
+- Credentials — **Token Plan, measured working end-to-end**: `BAILIAN_TOKEN_PLAN_API_KEY` with the
+  endpoint `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1`. Keep the endpoint
+  an explicit config field: a wrong endpoint returns a 401 that does **not** identify itself as a
+  region or plan error, which is exactly how this spec spent a day targeting the wrong plan.
+- **The credential is read via `settings.json`, not by env-var convention.** `--auth-type openai`
+  looks only at `OPENAI_API_KEY` / `security.auth.apiKey`; exporting `BAILIAN_*` alone yields
+  *"Missing API key for OpenAI-compatible auth."* The documented and measured-working mechanism is a
+  settings file in the redirected `QWEN_HOME` declaring
+  `modelProviders.openai.models[].envKey = "BAILIAN_TOKEN_PLAN_API_KEY"` plus
+  `security.auth.selectedType = "openai"`. **That file is `$QWEN_HOME/settings.json`, NOT
+  `$QWEN_HOME/.qwen/settings.json`** — with `QWEN_HOME` set, the config dir *is* `QWEN_HOME`, and the
+  nested path is silently ignored (the CLI warns "no settings.json was found there" and then dies on
+  the missing key).
 - **`--auth-type openai`** should be pinned explicitly in the worker argv (the binary also accepts
   `qwen-oauth|gemini|vertex-ai|anthropic`) — asserts the auth path rather than inheriting it from
   config discovery, and is the reason the CR5-5 reviewer-gate reasoning below is scope-dependent, not
@@ -305,12 +314,20 @@ swapped; do not treat the plan change as having resolved it. Additionally: *"Eac
 member and one API Key, and cannot be shared"* — the single-operator rule is explicit here, not
 inferred.
 
-**Model catalog — wider than originally scoped, and already drifting:** Alibaba's own Model Studio
-page (2026-08-04) lists `qwen3.7-plus`, `qwen3.6-plus`, `qwen3.5-plus`, `qwen3-max-2026-01-23`,
-`qwen3-coder-next`, `qwen3-coder-plus`, `MiniMax-M2.5`, `glm-5`, `glm-4.7`, `kimi-k2.5`. Qwen3.8-Max
-(shipped 2026-08-03, one day before this spec) is **not yet** in the Coding Plan catalog — which
-confirms rather than overturns the earlier decision not to hardcode a specific flagship as the
-default: the catalog itself moves faster than a spec can track.
+**Model catalog — the Token Plan's, read live from an authenticated `/models` call** (that endpoint
+genuinely authenticates: a bogus key gets 401 there, unlike the Coding Plan's `/models`, which serves
+its catalog to anyone and therefore proves nothing):
+
+```
+deepseek-v4-flash-0731 · deepseek-v4-pro · glm-5.2 · qwen3.6-flash · qwen3.7-max
+qwen3.7-plus · qwen3.8-max · qwen3.8-max-preview        (+ audio/image models, irrelevant here)
+```
+
+**`qwen3.8-max` and `glm-5.2` are both here** — the two models the earlier Coding-Plan-shaped draft
+recorded as unavailable. **`kimi` is absent entirely** (`kimi-k2.7-code` returns HTTP 403 "not
+eligible"), and so is `qwen3-coder-plus`; both are Coding Plan models. Chosen map: `deep` and
+`standard` → `qwen3.8-max`, `light` → `qwen3.6-flash`. The light assignment is a **naming inference,
+not a measurement** — no latency or quality comparison has been run between these models on this plan.
 
 **Package/runtime:** `@qwen-code/qwen-code` — 26,646★, Apache-2.0, not archived, five stable releases
 in the seven days before this audit plus a daily nightly channel: **actively developed, not stale; the
@@ -352,7 +369,7 @@ settings precedence (low → high):
 ```
 
 **What the scrub still protects:** values already present in `process.env` are never overwritten by a
-loaded `.env` — so an explicitly-exported `BAILIAN_CODING_PLAN_API_KEY`/`OPENAI_BASE_URL` cannot be
+loaded `.env` — so an explicitly-exported `BAILIAN_TOKEN_PLAN_API_KEY`/`OPENAI_BASE_URL` cannot be
 hijacked by simple override. **What it does not protect:** any name the scrub does *not* set is free
 real estate — `OPENAI_API_KEY` is unset by this design and is a first-class alternate auth path; a
 worktree `.qwen/settings.json` can set `tools.sandbox: false` (disabling the one control this adapter
@@ -367,7 +384,7 @@ job wrote into, are live paths.
 ```
 env -i PATH TMPDIR LANG \
     HOME=<scratch> QWEN_HOME=<scratch> \
-    BAILIAN_CODING_PLAN_API_KEY=<key> OPENAI_BASE_URL=<endpoint> \
+    BAILIAN_TOKEN_PLAN_API_KEY=<key> OPENAI_BASE_URL=<token-plan endpoint> \
     QWEN_SANDBOX=<sandbox-exec|docker|podman> \
     SEATBELT_PROFILE=<macOS only: restrictive-closed|restrictive-proxied> \
     [SANDBOX_FLAGS=<Linux only: container network-denial flags> QWEN_SANDBOX_IMAGE=<image>] \
@@ -502,7 +519,7 @@ openai` explicitly, as this spec now requires, is the cheap hardening that keeps
 ## Job contract
 
 `job_spec` is unchanged. `qwen` accepts `backend`, `prompt`, `tier`, `effort` (`low|medium|high`, never
-`xhigh`), `model` (explicit override — bare name, e.g. `glm-5`/`kimi-k2.5`/`qwen3-coder-plus`), `cwd`,
+`xhigh`), `model` (explicit override — bare name from the Token Plan catalog, e.g. `glm-5.2`/`qwen3.7-max`), `cwd`,
 `write_allowed`, `read_only`, `timeout_sec`, `network`.
 
 - **`effort` is advisory, and where it's written matters.** No headless CLI flag exists at all — the
@@ -589,8 +606,8 @@ Bare model name — one OpenAI-protocol endpoint, never a `provider/model` strin
 placeholder tier map is required in code, not optional.** The repo has no `.claude/compound-v.json`
 today, `resolve()` raises `ValueError` on an unresolvable cell, and `--selftest` iterates every
 backend × tier as a hard CI gate — registering `qwen` in `BACKENDS` without a resolvable map turns CI
-red on the first commit. **The built-in default must be a real, documented catalog model name** (e.g.
-`qwen3-coder-plus` from Alibaba's published Coding Plan list) — **not** a `_CURSOR`-style `"auto"`
+red on the first commit. **The built-in default must be a real, documented catalog model name** (`qwen3.8-max`,
+read live from the Token Plan catalog) — **not** a `_CURSOR`-style `"auto"`
 placeholder. `auto` works for Cursor because Cursor resolves it internally; here `--model "$MODEL"` is
 passed straight to the endpoint, so `auto` would be sent literally and rejected. `/v:models` overrides
 the default once a real key exists — provisional is fine, unresolvable or fictional is not. **The
@@ -729,26 +746,34 @@ reality — a pre-existing bug, not introduced by this spec, and not this PR's t
   Codex-hardcoded today; generalizing either is separate, larger work.
 - **No arbiter family-dedup fix** (`compound-v-epic-arbiter.py` has no `qwen`/`glm`/`kimi` needle) —
   same gap `zai` already left, verified still present, not this PR's to close.
-- **No change to the `zai` adapter itself — and dropping z.ai is now known to be a GLM downgrade,
-  not a lateral move.** An earlier revision said "`glm-5` remains reachable through `qwen` regardless",
-  which is true but misleading: **`glm-5.2` is NOT in the Coding Plan catalog** (measured live against
-  the operator's own key on both regional endpoints — the catalog is exactly `MiniMax-M2.5`, `glm-4.7`,
-  `glm-5`, `kimi-k2.5`, `qwen3-coder-next`, `qwen3-coder-plus`, `qwen3-max-2026-01-23`, `qwen3.5-plus`,
-  `qwen3.6-plus`, `qwen3.7-plus`). `glm-5.2` lives on Alibaba's separate **Token Plan**, so cancelling
-  the z.ai subscription would move GLM work from 5.2 down to 5. **Decision (2026-08-04): keep `zai`.**
-  It remains the only source of glm-5.2. Retiring it is not proposed by this PR.
-- **No Token Plan support.** Alibaba's Token Plan carries the newer models (`glm-5.2`, `glm-5.1`,
-  `kimi-k2.7-code`, `kimi-k2.6`, `qwen3.7-max`, the DeepSeek v4 family) but is a different
-  subscription: different endpoint (`token-plan.ap-southeast-1.maas.aliyuncs.com`), different
-  credential (`BAILIAN_TOKEN_PLAN_API_KEY`), and **per-token rather than per-request billing**, which
-  invalidates this spec's whole quota model. Explicitly out of scope; revisit as its own change.
-- **No `qwen3.8-max`.** Launched 2026-08-03 and absent from the Coding Plan catalog — confirmed twice,
-  against the live `/models` endpoint and against Alibaba's own documentation. Do not add it on the
-  strength of a launch announcement; add it when the catalog serves it.
-- **No live-verified flag set, no "verified" status.** This spec is corrected against the *released
-  source*, which is stronger than docs-only but still not a live probe with a real key. The live pass —
-  confirming the sandbox precedence fixes actually work, resolving the JSON-shape ambiguity, and
-  checking the untrusted-folder backport question — is a required follow-on, not optional polish.
+- **No change to the `zai` adapter itself.** Two earlier revisions of this bullet were wrong in
+  opposite directions and are both withdrawn: first that `glm-5` "remains reachable through qwen
+  regardless" (misleading — 5.2 is a different model), then that dropping z.ai would be a GLM
+  downgrade (false — **`glm-5.2` IS on the Token Plan** and answers to the operator's key). So z.ai is
+  no longer the only source of glm-5.2, and retiring it becomes a real option. This PR does not
+  propose it: that is a separate decision, taken with live cost data rather than at the end of a long
+  session.
+- **No Coding Plan support.** The Coding Plan carries `kimi-k2.5`, `qwen3-coder-plus`, `glm-5` and
+  `glm-4.7`, counts quota in requests, and needs `BAILIAN_CODING_PLAN_API_KEY` with the
+  `coding*.dashscope.aliyuncs.com` endpoints. The operator holds no entitlement there (every
+  authenticated call 401s), so supporting it would be untestable here. Out of scope; the adapter's
+  endpoint and credential are config, so adding it later is configuration plus a model map, not a
+  redesign.
+- **No `kimi` on this backend.** It is a Coding Plan model; on the Token Plan `kimi-k2.7-code`
+  returns HTTP 403 "not eligible" and no kimi appears in the catalog at all. Any rotation plan that
+  wants kimi needs the other subscription — do not add a kimi entry here expecting it to resolve.
+- **~~No live-verified flag set~~ — DONE, and it changed the design.** This non-goal is withdrawn: a
+  live pass ran on 2026-08-04 against `qwen 0.21.5` with the operator's real key, end to end (exit 0,
+  a real generation from `qwen3.8-max`). It falsified four things a documentation-only reading had
+  gotten wrong — the plan itself, the auth mechanism, the envelope name (`system`/`init`, not
+  `session_start`), and the containment proof (no `sandbox` field exists to read). **What is verified
+  is the invocation shape.** Still stub-only, and honestly so: the scope gate, the merge-back and the
+  BLOCKED path have never run against a real model. The status line must say exactly that rather than
+  rounding either way.
+- **Still unverified against this endpoint: the failure-classifier needles.** They were derived from
+  DashScope/Coding Plan error bodies; the Token Plan host is different and no failing body has been
+  captured there (capturing a quota error would mean exhausting the operator's window on purpose).
+  They fail closed to `other`, which is safe but imprecise. Only production traffic settles it.
 - **No fixing of the pre-existing stale advisor-ladder prose** in `adapter-advisor.md`/
   `advisor-consult.sh` comments (they already misdescribe the current codex-only reality, independent
   of this spec) — out of scope; a genuine but unrelated cleanup.
