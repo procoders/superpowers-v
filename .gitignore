@@ -5,6 +5,13 @@ node_modules/
 .env.local
 docs/superpowers/_runs/
 
+# Python bytecode cache. Committed __pycache__/*.pyc (added incidentally by a CI commit)
+# spuriously BLOCKs any job whose acceptance runs a Python selftest: a fresh worktree's
+# tracked bytecode gets rewritten by the interpreter, and the scope gate treats those
+# rewrites as out-of-scope changes.
+__pycache__/
+*.pyc
+
 # Compound V orchestrator run artifacts.
 # Worktrees live under $TMPDIR/compound-v/<run-id>/<job-id> (outside the repo) by
 # design; these guards catch any that accidentally land in-tree, plus the codex

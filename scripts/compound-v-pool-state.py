@@ -1371,7 +1371,7 @@ def _apply_result(state, job_id, intent, now_value, batch_id):
                    for item in successes):
             successes.append(success_row)
         state["network_successes"] = successes
-        return "complete" if changed else "complete"
+        return "complete"
 
     failure_class = intent.get("failure_class")
     if exact_cooldown_probe and failure_class in COOLDOWN_REASONS:
@@ -1529,6 +1529,31 @@ def transition_state(state, jobs, job_id, intent, now, batch_id,
                     or intent.get("advance_pool") is True
                     or (policy_intent is not None and intent.get("action") == "retry"))
     if not wants_launch:
+        # clear_assignment without advance_pool is the context_length escalation
+        # path: the job is leaving the ring (pools don't cover `deep`) and its
+        # frozen pool_index/pool_tier no longer describe where it will run. This
+        # helper has no ring-selection or model-resolution authority to invent a
+        # replacement itself (that's the dispatcher's compound-v-resolve-model.py
+        # call, per agents/parallel-dispatcher.md), so a caller that clears the
+        # assignment MUST supply an already-resolved fallback_assignment the same
+        # way ring exhaustion does — never silently leave the stale pool fields in
+        # place, which validate_state would otherwise keep accepting.
+        if intent.get("clear_assignment") is True:
+            fallback = intent.get("fallback_assignment")
+            if not (isinstance(fallback, dict)
+                    and frozenset(fallback.keys()) == frozenset(("backend", "model"))
+                    and fallback.get("backend") in VALID_CONCRETE_BACKENDS
+                    and isinstance(fallback.get("model"), str)
+                    and fallback.get("model")
+                    and "haiku" not in fallback.get("model").lower()):
+                raise ValueError(
+                    "clear_assignment requires a resolved fallback_assignment "
+                    "{backend, model} — none was supplied"
+                )
+            record = replacement.get("jobs", {}).get(job_id)
+            record["assigned_backend"] = fallback["backend"]
+            record["assigned_model"] = fallback["model"]
+            record["assignment_source"] = "fallback"
         errors = validate_state(replacement, jobs)
         if errors:
             raise ValueError("; ".join(errors))
@@ -2388,6 +2413,32 @@ def _selftest():
     expect("exact backend-model exclusion skips only that frozen slot",
            isinstance(exact_excluded, dict)
            and exact_excluded.get("assignment", {}).get("assigned_backend") == "zai")
+
+    # context_length escalation (decide()'s clear_assignment=True, no advance_pool):
+    # this helper cannot invent a replacement itself, so it must reject a bare
+    # clear_assignment and only apply an already-resolved fallback_assignment.
+    expect("clear_assignment without a resolved fallback_assignment is rejected",
+           bool(transition) and raises_value(lambda: transition(
+               route_state, route_jobs, "job-a", {"clear_assignment": True},
+               "2026-08-01T07:21:00Z", "batch-1", 300, 3,
+           )))
+    escalated = value_or_none(lambda: transition(
+        route_state, route_jobs, "job-a", {
+            "clear_assignment": True,
+            "fallback_assignment": {"backend": "claude", "model": "opus"},
+        }, "2026-08-01T07:21:00Z", "batch-1", 300, 3,
+    )) if transition else None
+    expect("clear_assignment with a resolved fallback_assignment records it",
+           isinstance(escalated, dict)
+           and escalated.get("action") == "state_updated"
+           and escalated.get("state", {}).get("jobs", {}).get("job-a", {})
+               .get("assigned_backend") == "claude"
+           and escalated.get("state", {}).get("jobs", {}).get("job-a", {})
+               .get("assigned_model") == "opus"
+           and escalated.get("state", {}).get("jobs", {}).get("job-a", {})
+               .get("assignment_source") == "fallback"
+           and escalated.get("state", {}).get("jobs", {}).get("job-a", {})
+               .get("pool_index") == 0)
 
     all_cooling = json.loads(json.dumps(route_state))
     all_cooling["cooldowns"] = {

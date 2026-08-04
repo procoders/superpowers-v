@@ -173,10 +173,14 @@ def decide(failure_class, backend, attempts, total_retries, max_total_retries,
             "next_pool_index": None,
             "consume_total_retry": False,
             # earliest_reset_seconds describes the terminal exhausted-pool/backend
-            # halt (what /v:status renders); stamping it onto proceed/retry/reroute
-            # results too would let an ordinary retry's Retry-After leak into a
-            # field nothing but the halt path ever clears.
-            "earliest_reset_seconds": earliest_reset if action == "halt" else None,
+            # halt (what /v:status renders) — never proceed/retry/reroute, and not
+            # every halt either: a structural halt (auth, model_unavailable,
+            # deepest-tier context_length) or one that already carries its own
+            # precise next_retry_at (network pause, usage-window, the >60s
+            # inline-wait halt) has nothing to do with a retry budget resetting.
+            # Only the call sites that are genuinely "the budget/backend is
+            # exhausted, retry in about this long" pass it explicitly below.
+            "earliest_reset_seconds": None,
             "clear_assignment": False,
             "circuit_break_backend": None,
             # PR 3 intent keys. Pool-state constructs and validates canonical state.
@@ -202,6 +206,7 @@ def decide(failure_class, backend, attempts, total_retries, max_total_retries,
             "halt",
             "run-level retry budget exhausted (%d/%d) — anti retry-storm cap; "
             "/v:resume%s" % (total_retries, max_total_retries, suffix),
+            earliest_reset_seconds=earliest_reset,
         )
 
     def cooldown_advance(reason, until):
@@ -272,6 +277,7 @@ def decide(failure_class, backend, attempts, total_retries, max_total_retries,
             "fix the fallback, then /v:resume" % (backend, fallback or "none"),
             circuit_break=True,
             circuit_break_backend=backend,
+            earliest_reset_seconds=earliest_reset,
         )
 
     if failure_class == "model_unavailable":
@@ -389,6 +395,7 @@ def decide(failure_class, backend, attempts, total_retries, max_total_retries,
                 "halt",
                 "%s: per-class retries exhausted (%d/%d) — /v:resume after the "
                 "condition clears" % (failure_class, attempts, cap),
+                earliest_reset_seconds=earliest_reset,
             )
         exhausted = budget_exhausted()
         if exhausted is not None:
@@ -484,6 +491,26 @@ def _selftest():
     d = decide("rate_limited", "codex", 0, 0, 12, retry_after=30, jitter=False)
     check("earliest-reset-not-leaked-onto-an-ordinary-retry", d["action"], "retry",
           d.get("earliest_reset_seconds") is None)
+    d = decide("auth", "codex", 0, 0, 12, retry_after=30)
+    check("earliest-reset-not-leaked-onto-a-structural-auth-halt", d["action"], "halt",
+          d.get("earliest_reset_seconds") is None)
+    d = decide("context_length", "codex", 0, 0, 12, current_tier="deep", retry_after=30)
+    check("earliest-reset-not-leaked-onto-a-structural-deepest-tier-halt",
+          d["action"], "halt", d.get("earliest_reset_seconds") is None)
+    d = decide("model_unavailable", "codex", 0, 0, 12, assigned_model="gpt-5.6-sol",
+               retry_after=30)
+    check("earliest-reset-not-leaked-onto-a-structural-model-unavailable-halt",
+          d["action"], "halt", d.get("earliest_reset_seconds") is None)
+    d = decide("rate_limited", "codex", 3, 0, 12, retry_after=30, jitter=False)
+    check("earliest-reset-present-on-a-genuine-per-class-exhaustion-halt",
+          d["action"], "halt", d.get("earliest_reset_seconds") == 30)
+    d = decide("out_of_credits", "codex", 0, 0, 12, retry_after=30,
+               fallback_available=False)
+    check("earliest-reset-present-on-a-genuine-out-of-credits-no-fallback-halt",
+          d["action"], "halt", d.get("earliest_reset_seconds") == 30)
+    d = decide("rate_limited", "codex", 1, 12, 12, retry_after=30, jitter=False)
+    check("earliest-reset-present-on-a-genuine-run-budget-exhausted-halt",
+          d["action"], "halt", d.get("earliest_reset_seconds") == 30)
 
     # PR 3 intent-only cases.
     now = "2026-08-01T07:20:00Z"

@@ -78,10 +78,8 @@ Honor the manifest's `depends_on`, `run`, and `max_parallel`. For each job you b
 | `cursor` | [`adapter-cursor.md`](../skills/backend-launcher/adapter-cursor.md) | Bash-spawned `cursor-agent -p -f` worker via [`scripts/compound-v-run-cursor-worker.sh`](../scripts/compound-v-run-cursor-worker.sh) (`--model <resolved>`, default `auto`; no effort flag); **always** `worktree`. **Lower-trust / opt-in** (no kernel sandbox); only when `cursor-agent` is installed AND authenticated. (2.1) |
 | `devin` | [`adapter-devin.md`](../skills/backend-launcher/adapter-devin.md) | Devin worker through its adapter; **always** `worktree`. Pool assignment does not weaken its reviewer/scope restrictions. |
 | `opencode` | [`adapter-opencode.md`](../skills/backend-launcher/adapter-opencode.md) | Opencode worker through its adapter; **always** `worktree`. Its resolved model retains the required `provider/model` shape. |
-| `zai` | `adapter-zai.md` from prerequisite PR 1 | z.ai worker via `compound-v-run-zai-worker.sh`; **always** `worktree`. The pool PR does not merge before that concrete adapter/worker exists. |
-| `pool` | **none** | Routing instruction only. Step 0a freezes a concrete `assigned_backend` / `assigned_model`; every adapter and backend-keyed consumer receives that pair, never `pool`. |
-
 | `zai` | [`adapter-zai.md`](../skills/backend-launcher/adapter-zai.md) | Bash-spawned `claude -p` worker via [`scripts/compound-v-run-zai-worker.sh`](../scripts/compound-v-run-zai-worker.sh) pointed at z.ai's Anthropic endpoint (`--model <resolved GLM>`; effort advisory); **always** `worktree`. **Lower-trust / opt-in, WORKER-ONLY** (no kernel sandbox); only when `ZAI_API_KEY` is set. (2.18) |
+| `pool` | **none** | Routing instruction only. Step 0a freezes a concrete `assigned_backend` / `assigned_model`; every adapter and backend-keyed consumer receives that pair, never `pool`. |
 
 ### Step 1 — Task 0 (Serial Pre-Phase)
 
