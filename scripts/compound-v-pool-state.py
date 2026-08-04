@@ -25,7 +25,7 @@ import sys
 KNOWN_JOB_STATUSES = ("pending", "dispatched", "running", "done", "blocked", "failed")
 VALID_POOL_TIERS = ("deep", "standard", "light")
 VALID_CONCRETE_BACKENDS = (
-    "claude", "codex", "antigravity", "cursor", "devin", "opencode", "zai",
+    "claude", "codex", "antigravity", "cursor", "devin", "opencode", "zai", "qwen",
 )
 VALID_ASSIGNMENT_SOURCES = ("pool", "fallback")
 MAX_POOL_WEIGHT = 100
@@ -562,14 +562,25 @@ def manifest_pool_ordinals(jobs):
     return result
 
 
-def backend_available(backend, env=None, which=None):
+def backend_available(backend, env=None, which=None, platform=None):
     """Evaluate the narrow documented pool precondition for one backend."""
     environment = os.environ if env is None else env
     find_binary = shutil.which if which is None else which
+    plat = sys.platform if platform is None else platform
     if backend == "codex":
         return bool(find_binary("codex"))
     if backend == "zai":
         return bool(environment.get("ZAI_API_KEY"))
+    if backend == "qwen":
+        # qwen is the ONLY backend whose trust tier is claimed on a kernel sandbox, so the
+        # precondition is the key AND a working sandbox provider. Falling through to the
+        # `return True` default below would freeze a qwen slot onto a machine that cannot
+        # sandbox it, leaving "the sandbox is mandatory" unenforced at routing time.
+        if not environment.get("BAILIAN_CODING_PLAN_API_KEY"):
+            return False
+        if plat == "darwin":
+            return bool(find_binary("sandbox-exec"))
+        return bool(find_binary("docker") or find_binary("podman"))
     return True
 
 
@@ -1814,6 +1825,29 @@ def _selftest():
                    {"backend": "claude", "model": "b"},
                ]}}, "balanced", {}, env={}, which=lambda name: "/usr/bin/codex",
            ))
+
+    expect("qwen needs BOTH the key and a sandbox provider",
+           backend_available("qwen", env={}, which=lambda b: "/usr/bin/" + b,
+                             platform="darwin") is False)
+    expect("qwen with a key but no sandbox provider is unavailable",
+           backend_available("qwen",
+                             env={"BAILIAN_CODING_PLAN_API_KEY": "sk-sp-x"},
+                             which=lambda b: None, platform="darwin") is False)
+    expect("qwen on macOS with sandbox-exec is available",
+           backend_available("qwen",
+                             env={"BAILIAN_CODING_PLAN_API_KEY": "sk-sp-x"},
+                             which=lambda b: "/usr/bin/sandbox-exec" if b == "sandbox-exec" else None,
+                             platform="darwin") is True)
+    expect("qwen on linux with docker is available",
+           backend_available("qwen",
+                             env={"BAILIAN_CODING_PLAN_API_KEY": "sk-sp-x"},
+                             which=lambda b: "/usr/bin/docker" if b == "docker" else None,
+                             platform="linux") is True)
+    expect("an unavailable qwen pool member degrades the pool instead of failing the run",
+           "available" in json.dumps(freeze_pool_members(
+               {}, {"balanced": {"light": [{"backend": "codex", "model": "a"},
+                                           {"backend": "qwen", "model": "qwen3-coder-plus"}]}},
+               "balanced", {}, env={}, which=lambda b: None)))
 
     # A backend name the resolver doesn't recognize yet stands in for the general
     # "available but unresolvable" case (e.g. the zai/PR-5 merge-order gap this
