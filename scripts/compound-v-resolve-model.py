@@ -47,9 +47,9 @@ Advisor helpers (v2.12, Feature B1):
   * ``advisor_eligible`` — a `standard`-tier / core-slice implementer OR a fast-path
     Claude worker MAY carry an advisor; reviewer/docs/shared_foundation jobs may not.
   * ``select_advisor`` — cross-brand advisor picker restricted to backends with an
-    IMPLEMENTED read-only consult path: codex (cross-brand, preferred) > opus fallback
-    (backend claude, model opus). cursor/antigravity/devin/opencode have NO consult
-    adapter, so they are NEVER offered as advisors. NEVER haiku.
+    IMPLEMENTED read-only consult path, in priority order: codex (preferred) > qwen >
+    opus fallback (backend claude, model opus). cursor/antigravity/devin/opencode/zai
+    have NO consult adapter, so they are NEVER offered as advisors. NEVER haiku.
 
 Python 3.9-safe (no match, no X|Y unions), stdlib only.
 """
@@ -130,26 +130,33 @@ _OPENCODE = {
 # Lower-trust tier: no kernel write-confinement, so worktree + git-diff is the ONLY file-scope
 # enforcement -- see skills/backend-launcher/adapter-zai.md. NEVER haiku.
 _ZAI = {"deep": "glm-5.2", "standard": "glm-5.2", "light": "glm-5-turbo"}
-# Alibaba Bailian "Coding Plan" (backend `qwen`), driven through the genuine Qwen Code CLI.
-# Catalog VERIFIED 2026-08-04 against Alibaba's own Model Studio help page: qwen3.7-plus,
-# qwen3.6-plus, qwen3.5-plus, qwen3-max-2026-01-23, qwen3-coder-next, qwen3-coder-plus,
-# MiniMax-M2.5, glm-5, glm-4.7, kimi-k2.5 are all reachable on one key.
+# Alibaba Bailian TOKEN PLAN (backend `qwen`), driven through the genuine Qwen Code CLI.
+# This is the plan the operator actually holds: Alibaba Token Plan -> Pro Plan ($68/month), a
+# FIXED MONTHLY SUBSCRIPTION with rolling credit windows (12,000 credits / 5h, 40,000 credits /
+# 7 days) -- NOT per-request billing, NOT pay-as-you-go. How many credits a token costs is not
+# documented anywhere we could measure, so NO conversion ratio is recorded here; inventing one
+# would be a fabricated metric.
 #
-# All three tiers deliberately carry the SAME model. Per-tier differentiation needs live
-# measurement on a real Coding Plan key (`/v:models` rewrites this map), and inventing a
-# ranking from a catalog listing would be a fabricated metric. `qwen3-coder-plus` is the
-# coding-specialised, documented default. NOT "auto": unlike cursor (which resolves "auto"
-# internally), the qwen worker passes --model straight to the endpoint, so a placeholder
-# would be sent literally and rejected.
+# Catalog MEASURED LIVE 2026-08-04 with the operator's own key against the Token Plan endpoint.
+# That /models call is AUTHENTICATED (a bogus key gets 401 there), so this listing is real:
+#   deepseek-v4-flash-0731, deepseek-v4-pro, glm-5.2, qwen-audio-3.0-tts-plus, qwen3.6-flash,
+#   qwen3.7-max, qwen3.7-plus, qwen3.8-max, qwen3.8-max-preview, wan2.7-image, wan2.7-image-pro
 #
-# Qwen3.8-Max (launched 2026-08-03) is NOT in the Coding Plan catalog — do not add it here
-# until it appears there.
+# deep+standard = qwen3.8-max, the plan's flagship; light = qwen3.6-flash, its cheap tier --
+# the same deep=standard>light shape as _ZAI. A full end-to-end run through the real Qwen Code
+# CLI on qwen3.8-max returned exit 0 and a genuine generation. Never a placeholder like cursor's
+# "auto": the qwen worker passes --model straight to the endpoint.
+#
+# kimi(-k2.5) and qwen3-coder-plus are NOT on this plan -- they are CODING PLAN models, and this
+# key has ZERO entitlement there (every authenticated Coding Plan call 401s; the one 200 was its
+# /models catalog, which is unauthenticated -- a bogus key gets the same listing). Do NOT add
+# them back here. `/v:models` rewrites this map against a live key, so a different subscription
+# is a config override, not an edit to this file.
 #
 # Lower-trust tier in the sense that no reviewer/arbiter seat is permitted, but UNLIKE
 # antigravity/cursor/zai this backend REQUIRES a kernel sandbox (QWEN_SANDBOX) — see
 # skills/backend-launcher/adapter-qwen.md. NEVER haiku.
-_QWEN = {"deep": "qwen3-coder-plus", "standard": "qwen3-coder-plus",
-         "light": "qwen3-coder-plus"}
+_QWEN = {"deep": "qwen3.8-max", "standard": "qwen3.8-max", "light": "qwen3.6-flash"}
 
 
 def _stance_map(claude_map):
@@ -436,8 +443,8 @@ def resolve_pool(tier, index, stance, pools, config_models, effort=None,
 #       Given the executor's backend and the backends available in this run,
 #       pick the advisor backend, PREFERRING a different brand than the executor —
 #       but ONLY among backends with an implemented read-only consult path:
-#           codex (cross-brand, preferred) > opus fallback
-#       cursor/antigravity/devin/opencode are NEVER selected as advisors — no consult
+#           codex (preferred) > qwen > opus fallback
+#       cursor/antigravity/devin/opencode/zai are NEVER selected as advisors — no consult
 #       adapter exists for them, so choosing one would be deterministic death
 #       ("unsupported advisor backend"). Opus fallback = backend "claude", model "opus"
 #       (always available, never haiku).
@@ -449,11 +456,23 @@ def resolve_pool(tier, index, stance, pools, config_models, effort=None,
 ADVISOR_INELIGIBLE_TYPE_TOKENS = ("review", "reviewer", "docs", "shared_foundation")
 
 # Non-claude advisor backends with an IMPLEMENTED read-only consult path — the ONLY
-# non-claude backends select_advisor may return. codex is the cross-brand preferred
-# advisor; the sole other consultable path is the Claude/opus fallback (below).
-# cursor/antigravity/devin/opencode have NO consult adapter, so offering them as an
+# non-claude backends select_advisor may return. THE ORDER IS THE PRIORITY: codex FIRST
+# (its kernel read-only sandbox is the strongest advisor seat), then qwen; the Claude/opus
+# fallback (below) is last. Putting qwen ahead of codex would silently demote every consult
+# from the kernel-sandboxed seat to a weaker one — do not reorder.
+#
+# qwen earns a seat on live evidence: `--approval-mode=plan` was probed against qwen 0.21.5
+# twice, and behaved as a REAL structural boundary both times, with the target directory
+# empty after each attempt — (a) asked to create a file, it refused and wrote nothing;
+# (b) asked to write via the shell, it refused, wrote nothing, and the session reported no
+# shell tool loaded. `--safe-mode` contributes part of that guarantee. Two empirical probes
+# are NOT a formal proof, and this comment does not claim one; they are the same class of
+# evidence as `claude --permission-mode plan`, which compound-v-advisor-consult.sh already
+# accepts as a pinned read-only path.
+#
+# cursor/antigravity/devin/opencode/zai have NO consult adapter, so offering them as an
 # advisor is deterministic death — they are deliberately excluded. NEVER haiku.
-ADVISOR_CONSULTABLE_NONCLAUDE = ("codex",)
+ADVISOR_CONSULTABLE_NONCLAUDE = ("codex", "qwen")
 
 
 def advisor_eligible(tier=None, job_type=None, backend=None, fast_path=False):
@@ -475,9 +494,10 @@ def advisor_eligible(tier=None, job_type=None, backend=None, fast_path=False):
 
 def select_advisor(executor_backend, available_backends, stance="balanced"):
     """Pick the cross-brand advisor backend, restricted to backends with an IMPLEMENTED
-    read-only consult path. Prefer a DIFFERENT brand than the executor: codex > opus
-    fallback. cursor/antigravity/devin/opencode are NEVER returned (no consult adapter —
-    selecting one would be deterministic 'unsupported advisor backend' death). Returns a
+    read-only consult path. Prefer a DIFFERENT brand than the executor, in priority order:
+    codex > qwen > opus fallback. cursor/antigravity/devin/opencode/zai are NEVER returned
+    (no consult adapter — selecting one would be deterministic 'unsupported advisor backend'
+    death). Returns a
     dict with ``advisor_backend`` / ``tier`` / ``model``. The opus fallback (backend
     'claude', model 'opus') is always available. NEVER haiku."""
     exec_b = str(executor_backend or "").strip().lower()
@@ -869,19 +889,38 @@ def _selftest():
         select_advisor("claude", ["zai", "claude"])["advisor_backend"] == "claude",
     )
 
-    # --- qwen: Alibaba Bailian Coding Plan, one model across all three tiers ----
-    expect("qwen resolves deep to a real catalog model",
-           resolve("qwen", "deep")["model"] == "qwen3-coder-plus")
-    expect("qwen resolves light to a real catalog model (never 'auto')",
-           resolve("qwen", "light")["model"] == "qwen3-coder-plus")
+    # --- qwen: Alibaba Bailian TOKEN PLAN, deep=standard=flagship > light -------
+    # Model names are the live-measured Token Plan catalog. The Coding Plan names
+    # (qwen3-coder-plus, kimi-*) are NOT on this plan and must never come back.
+    expect("qwen deep is the Token Plan flagship qwen3.8-max",
+           resolve("qwen", "deep")["model"] == "qwen3.8-max")
+    expect("qwen standard is qwen3.8-max (same as deep, mirroring zai)",
+           resolve("qwen", "standard")["model"] == "qwen3.8-max")
+    expect("qwen light is the cheap tier qwen3.6-flash (never 'auto')",
+           resolve("qwen", "light")["model"] == "qwen3.6-flash")
+    expect("no Coding Plan model leaks back into the qwen map",
+           not any("coder" in m or "kimi" in m for m in _QWEN.values()))
     expect("qwen is in BACKENDS", "qwen" in BACKENDS)
     expect("qwen is identical across stances",
            DEFAULT_MODELS_BY_STANCE["cost-aware"]["qwen"]
            == DEFAULT_MODELS_BY_STANCE["balanced"]["qwen"])
     expect("qwen rejects xhigh (codex-only rule)",
            raises(lambda: resolve("qwen", "deep", effort="xhigh")))
-    expect("qwen is NOT advisor-consultable in v1",
-           "qwen" not in ADVISOR_CONSULTABLE_NONCLAUDE)
+    # qwen IS advisor-consultable: `--approval-mode=plan` was live-probed twice on qwen
+    # 0.21.5 as a real structural boundary (nothing written either time).
+    expect("qwen IS advisor-consultable",
+           "qwen" in ADVISOR_CONSULTABLE_NONCLAUDE)
+    expect("codex still PRECEDES qwen in the advisor priority order",
+           ADVISOR_CONSULTABLE_NONCLAUDE.index("codex")
+           < ADVISOR_CONSULTABLE_NONCLAUDE.index("qwen"))
+    expect("qwen is offered as advisor when codex is absent",
+           select_advisor("claude", ["claude", "qwen"])
+           == {"advisor_backend": "qwen", "tier": "deep", "model": "qwen3.8-max"})
+    expect("codex wins over qwen when BOTH are available",
+           select_advisor("claude", ["claude", "codex", "qwen"])["advisor_backend"]
+           == "codex")
+    expect("qwen executor skips its own brand -> opus fallback",
+           select_advisor("qwen", ["qwen", "claude"])["advisor_backend"] == "claude")
 
     # Default effort pairing when --effort omitted.
     expect("deep default effort high", resolve("claude", "deep")["effort"] == "high")
