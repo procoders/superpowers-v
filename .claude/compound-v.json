@@ -1,0 +1,14 @@
+{
+  "pools": {
+    "balanced": {
+      "light": [
+        { "backend": "claude" },
+        { "backend": "zai" }
+      ],
+      "standard": [
+        { "backend": "claude", "model": "sonnet" },
+        { "backend": "zai" }
+      ]
+    }
+  }
+}
