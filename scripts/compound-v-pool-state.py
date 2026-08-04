@@ -411,7 +411,7 @@ def validate_state(state, jobs):
                         errors.append("%s.model must be concrete when available" % path)
 
     for job in jobs:
-        if not isinstance(job, dict) or job.get("backend") != "pool":
+        if not isinstance(job, dict) or _normalized_backend(job) != "pool":
             continue
         job_id = job.get("id")
         record = state_jobs.get(job_id)
