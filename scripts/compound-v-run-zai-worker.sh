@@ -32,7 +32,7 @@ ZAI_BASE_URL="${ZAI_BASE_URL:-https://api.z.ai/api/anthropic}"
 # clears EVERY inherited variable and only these names are injected back with their parent
 # values; a credential can reach the child ONLY if it is named here, never by omission from a
 # denylist. Note HOME is absent on purpose — it is replaced with a scratch dir below.
-_SAFE_ENV_VARS="PATH TMPDIR LANG LC_ALL TERM"
+_SAFE_ENV_VARS="PATH TMPDIR LANG"
 
 # --- helpers -----------------------------------------------------------------
 

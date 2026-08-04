@@ -123,8 +123,7 @@ _ANTIGRAVITY_RULES = [
 #
 # CRITICAL: that raw envelope is NOT what reaches this classifier. `claude -p` renders API
 # errors as `API Error: <status> <message>` in its own JSON result's `.result` field — MEASURED
-# 2026-08-01 against a live HTTP 400 sample (docs/superpowers/reviews/2026-08-01-zai-backend-
-# codex-review.md, finding #7). `error.code` is NEVER surfaced as a separate token there; the
+# 2026-08-01 against a live HTTP 400 sample. `error.code` is NEVER surfaced as a separate token there; the
 # numeric code survives in the rendered text only when z.ai happens to embed it IN the message
 # string itself — observed for exactly one case outside this table (the 1211 config fault
 # below). Whether the documented 429 codes ALSO render with a bracketed code is UNCONFIRMED —
@@ -343,8 +342,7 @@ def _selftest():
         # are shaped like what the worker ACTUALLY feeds this classifier: the whole captured
         # JSON document from `claude -p --output-format json`, whose `.result` field renders
         # as `API Error: <status> <message>` — MEASURED 2026-08-01 against a live HTTP 400
-        # sample (docs/superpowers/reviews/2026-08-01-zai-backend-codex-review.md, finding
-        # #7) — using the EXACT documented message text, not invented wording that happens to
+        # sample — using the EXACT documented message text, not invented wording that happens to
         # dodge the needle collisions (that was the bug: 53 ok / 0 fail while four of eight
         # codes silently misclassified, because the old fixtures never matched what the CLI
         # actually renders).
