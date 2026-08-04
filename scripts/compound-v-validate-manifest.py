@@ -28,6 +28,12 @@ Invariants enforced (from PRD §5.1/§5.5 + plan §5/§6)
    ``backend: codex`` (codex's kernel model_reasoning_effort accepts it —
    live-verified 2026-07-11 on codex-cli 0.144.1); any other backend with
    xhigh is a violation naming the rule.
+6. **qwen ⇒ operator opt-in.** A manifest that names ``backend: qwen`` also requires
+   an operator-local ``.claude/compound-v.json`` carrying
+   ``qwen_optin.terms_version`` equal to ``QWEN_TERMS_VERSION`` (the operator
+   acknowledged adapter-qwen.md's Compliance section). The record holds a version
+   marker only, never the API key. The gate fires ONLY when a job actually names
+   ``qwen``, and fails closed on an unreadable config.
 
 Required-field + enum validation (before invariant checks)
 -----------------------------------------------------------
@@ -518,11 +524,16 @@ VALID_EFFORTS = ("low", "medium", "high", "xhigh")
 # Enum vocabularies for required-field validation (per execution-manifest.md).
 # VALID_BACKENDS deliberately contains only concrete launch/consult backends;
 # POOL_BACKEND is a routing token accepted only at the per-job backend seam.
-VALID_BACKENDS = ("claude", "codex", "antigravity", "cursor", "devin", "opencode", "zai")
+VALID_BACKENDS = ("claude", "codex", "antigravity", "cursor", "devin", "opencode", "zai",
+                  "qwen")
 POOL_BACKEND = "pool"
 VALID_ISOLATIONS = ("direct", "worktree")
 VALID_RUNS = ("serial", "parallel")
 VALID_STANCES = ("balanced", "conservative", "cost-aware", "claude-only")
+
+# Bump when adapter-qwen.md's Compliance section changes materially — a stale
+# acknowledgment must not silently keep authorising dispatch.
+QWEN_TERMS_VERSION = "2026-08-04"
 
 # Pool routing is intentionally limited to non-sensitive implementer work.
 # Substring matching catches compound type names such as ``auth_middleware``.
@@ -801,6 +812,43 @@ def _backend_max_parallel_problems(repo_root, config_path):
                 "— fail-closed" % e]
     return ["backend_max_parallel config warning: %s" % warning
             for warning in warnings]
+
+
+def _qwen_optin_problems(repo_root, config_path, manifest):
+    """`qwen` dispatch requires an operator-local, uncommitted acknowledgment that the
+    operator read Alibaba's Coding Plan terms (which arguably prohibit exactly this use --
+    see skills/backend-launcher/adapter-qwen.md) and accepts the account-suspension risk.
+
+    Enforced HERE, at the one hard gate the whole pipeline funnels through, because prose in
+    /v:init cannot stop a hand-authored manifest and the dispatcher runs whatever backend a
+    manifest names. The record carries an acknowledgment and a terms-version marker only --
+    NEVER the API key, which stays in the environment.
+
+    Fires ONLY when the manifest actually names ``qwen``, so no existing manifest acquires
+    a new config dependency.
+    """
+    if not any(str(j.get("backend", "")).lower() == "qwen"
+               for j in (manifest.get("jobs") or [])
+               if isinstance(j, dict)):
+        return []
+    pc = _sibling("compound-v-project-config.py")
+    if pc is None:
+        return ["cannot load project-config sibling API for the qwen opt-in — fail-closed"]
+    cfg_path = config_path
+    if cfg_path is None and repo_root is not None:
+        cfg_path = os.path.join(repo_root, ".claude", "compound-v.json")
+    try:
+        cfg = pc.load_project_config_path(cfg_path)
+    except Exception as e:  # noqa: BLE001 - an unreadable opt-in record must fail closed
+        return ["qwen opt-in record is unreadable (%s) — fail-closed" % e]
+    ack = (cfg or {}).get("qwen_optin")
+    if not isinstance(ack, dict) or ack.get("terms_version") != QWEN_TERMS_VERSION:
+        return ["manifest dispatches backend: qwen but the operator opt-in is absent or "
+                "stale — set .claude/compound-v.json qwen_optin.terms_version to '%s' "
+                "after reading skills/backend-launcher/adapter-qwen.md (account-suspension "
+                "risk); the record must NEVER contain the API key"
+                % QWEN_TERMS_VERSION]
+    return []
 
 
 def _read_json_file(repo_root, relpath):
@@ -1765,6 +1813,10 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
     # routing key, independent of whether this manifest uses backend: pool.
     problems.extend(_backend_max_parallel_problems(repo_root, config_path))
 
+    # backend: qwen additionally requires an operator-local opt-in record. Scoped to
+    # manifests that actually name qwen, so no existing manifest gains a dependency.
+    problems.extend(_qwen_optin_problems(repo_root, config_path, manifest))
+
     pool_ordinals = {}
     validated_pool_member_sets = set()
 
@@ -2055,7 +2107,8 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
                         "job '%s' pool resolution failed: %s" % (jid, e)
                     )
 
-        if backend_lc in ("codex", "antigravity", "cursor", "devin", "opencode", "zai"):
+        if backend_lc in ("codex", "antigravity", "cursor", "devin", "opencode", "zai",
+                          "qwen"):
             if str(job.get("isolation", "")).lower() != "worktree":
                 problems.append(
                     "job '%s' uses backend %s but isolation is '%s' "
@@ -2063,21 +2116,26 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
                     % (jid, backend_lc, job.get("isolation"), backend_lc)
                 )
 
-        # WORKER-ONLY enforcement: devin/opencode are lower-trust, opt-in
-        # backends (see adapter-devin.md / adapter-opencode.md) meant for
-        # IMPLEMENTER jobs only. A reviewer job routed to either would
-        # silently satisfy the Review Gate's opus/deep guarantee through a
-        # low-trust external router instead of Claude Opus, defeating the
-        # guarantee entirely. Reject unconditionally, independent of
-        # tier/model — a reviewer job must never carry backend: devin or
-        # backend: opencode, full stop.
-        if _is_reviewer(job) and backend_lc in ("devin", "opencode", "zai"):
+        # WORKER-ONLY enforcement: devin/opencode/zai/qwen are lower-trust,
+        # opt-in backends (see adapter-devin.md / adapter-opencode.md /
+        # adapter-zai.md / adapter-qwen.md) meant for IMPLEMENTER jobs only. A
+        # reviewer job routed to any of them would silently satisfy the Review
+        # Gate's opus/deep guarantee through a low-trust external router
+        # instead of Claude Opus, defeating the guarantee entirely. Reject
+        # unconditionally, independent of tier/model — a reviewer job must
+        # never carry one of these backends, full stop.
+        #
+        # This block list is the ONLY unconditional protection: the CR5-5
+        # `_is_claude_opus` gate inspects `fast_path.review` declarations and
+        # sealed receipts, which a normal manifest's reviewer job never
+        # reaches, and invariant 3 below is satisfied by `tier: deep` alone.
+        if _is_reviewer(job) and backend_lc in ("devin", "opencode", "zai", "qwen"):
             problems.append(
-                "reviewer job '%s' uses backend '%s' — devin/opencode/zai are "
+                "reviewer job '%s' uses backend '%s' — devin/opencode/zai/qwen are "
                 "lower-trust, opt-in, WORKER-ONLY backends (see "
-                "adapter-devin.md / adapter-opencode.md / adapter-zai.md) and "
-                "must never be used for a reviewer job; route reviewers to "
-                "backend: claude with tier: deep or model: opus"
+                "adapter-devin.md / adapter-opencode.md / adapter-zai.md / "
+                "adapter-qwen.md) and must never be used for a reviewer job; route "
+                "reviewers to backend: claude with tier: deep or model: opus"
                 % (jid, backend_lc)
             )
 
@@ -2841,6 +2899,51 @@ ZAI_WORKTREE_MANIFEST = ZAI_DIRECT_MANIFEST.replace(
 # Review Gate's opus/deep guarantee through a third-party endpoint instead of Claude Opus.
 ZAI_REVIEWER_MANIFEST = ZAI_WORKTREE_MANIFEST.replace(
     "id: task-1-zai", "id: task-1-spec-review"
+).replace("type: implementer", "type: reviewer").replace("tier: standard", "tier: deep")
+
+
+# A complete, otherwise-valid manifest whose ONE defect is a qwen job with isolation:
+# direct. qwen REQUIRES a worktree like every other external worker.
+QWEN_DIRECT_MANIFEST = """
+run_id: 2026-08-04-qwen
+feature: "qwen"
+spec_path: docs/superpowers/specs/2026-08-04-qwen.md
+plan_path: docs/superpowers/plans/2026-08-04-qwen.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-08-04-qwen.md
+  domain: docs/superpowers/expert/2026-08-04-qwen.md
+  library: docs/superpowers/library-audit/2026-08-04-qwen.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "ships"
+jobs:
+  - id: task-1-qwen
+    title: "qwen slice"
+    type: implementer
+    backend: qwen
+    tier: standard
+    isolation: direct
+    run: serial
+    write_allowed: [src/qwen/**]
+    read_allowed: [src/**]
+    acceptance: ["builds"]
+"""
+
+
+# The same manifest with the ONE defect fixed. qwen is SINGLE-VENDOR: a bare catalog
+# name, never a "provider/model" string.
+QWEN_WORKTREE_MANIFEST = QWEN_DIRECT_MANIFEST.replace(
+    "isolation: direct", "isolation: worktree"
+).replace("run_id: 2026-08-04-qwen", "run_id: 2026-08-04-qwen-ok")
+
+
+# WORKER-ONLY: the ONE defect is a REVIEWER job routed to qwen. Note this is caught by
+# the explicit backend-name block list, NOT by CR5-5 (which only inspects
+# fast_path.review declarations and sealed receipts) and NOT by invariant 3 (which
+# `tier: deep` alone satisfies).
+QWEN_REVIEWER_MANIFEST = QWEN_WORKTREE_MANIFEST.replace(
+    "id: task-1-qwen", "id: task-1-spec-review"
 ).replace("type: implementer", "type: reviewer").replace("tier: standard", "tier: deep")
 
 
@@ -4259,6 +4362,24 @@ def _selftest_fastpath(expect):
            "degrade)", _is_committed_at_head(nogit, "docs/a.json") is None)
 
 
+def _validate_with_config(text, cfg):
+    """Validate ``text`` against a throwaway, materialised ``.claude/compound-v.json``.
+
+    The qwen opt-in gate reads the project config through ``repo_root``, so unlike the
+    isolation/reviewer gates it cannot be exercised by a bare ``validate_text(...)``.
+    Writes ``cfg`` into a temp repo root, validates with that root, then cleans up.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        claude_dir = os.path.join(d, ".claude")
+        os.makedirs(claude_dir)
+        with open(os.path.join(claude_dir, "compound-v.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump(cfg, fh)
+        return validate_text(text, repo_root=d)
+
+
 def _selftest():
     import tempfile
 
@@ -4721,6 +4842,51 @@ def _selftest():
         any("reviewer job 'task-1-spec-review'" in p
             and "backend 'zai'" in p
             and "WORKER-ONLY" in p for p in zai_reviewer_bad),
+    )
+
+    # qwen: same worktree invariant. The sandbox is a per-machine property the
+    # validator cannot see, so worktree + the git-derived scope gate is the only
+    # file-scope enforcement a manifest can guarantee statically.
+    qwen_bad = validate_text(QWEN_DIRECT_MANIFEST)
+    expect(
+        "qwen+direct caught (qwen requires worktree)",
+        any("backend qwen but isolation" in p
+            and "qwen requires worktree" in p for p in qwen_bad),
+    )
+    qwen_reviewer_bad = validate_text(QWEN_REVIEWER_MANIFEST)
+    expect(
+        "qwen reviewer job REJECTED (WORKER-ONLY, via the backend-name block)",
+        any("reviewer job 'task-1-spec-review'" in p
+            and "backend 'qwen'" in p
+            and "WORKER-ONLY" in p for p in qwen_reviewer_bad),
+    )
+
+    # The operator opt-in gate reads the project config, so it is asserted through a
+    # materialised config rather than a bare validate_text.
+    expect(
+        "a qwen job without the operator opt-in is rejected",
+        any("opt-in is absent or stale" in p
+            for p in _validate_with_config(QWEN_WORKTREE_MANIFEST, {})),
+    )
+    expect(
+        "a stale qwen opt-in (wrong terms_version) is rejected",
+        any("opt-in is absent or stale" in p
+            for p in _validate_with_config(
+                QWEN_WORKTREE_MANIFEST,
+                {"qwen_optin": {"terms_version": "1970-01-01"}})),
+    )
+    expect(
+        "a qwen job WITH a current opt-in validates",
+        _validate_with_config(
+            QWEN_WORKTREE_MANIFEST,
+            {"qwen_optin": {"terms_version": QWEN_TERMS_VERSION}}) == [],
+    )
+    # REGRESSION GUARD: the opt-in gate must fire ONLY for manifests that actually
+    # name qwen. Every historical manifest is validated by CI with no opt-in record
+    # on disk; a gate that fired unconditionally would turn all of them red.
+    expect(
+        "no-qwen manifest is untouched by the opt-in gate (no config present)",
+        _validate_with_config(GOOD_MANIFEST, {}) == [],
     )
 
     # WORKER-ONLY: a reviewer job MUST NEVER resolve to backend devin/opencode,
