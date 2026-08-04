@@ -91,7 +91,7 @@ Disjoint write sets. Every path belongs to exactly one task.
 **Interfaces:**
 - Produces: `resolve("qwen", tier)` returns `{"model": "qwen3-coder-plus", ...}` for all three tiers in every stance; `"qwen"` is a member of `BACKENDS`, `VALID_POOL_BACKENDS`, and `_PROVIDER_BACKENDS`. Every later task depends on `qwen` being a resolvable, legal backend name.
 
-**Why this is Task 0 and runs serially:** `resolve()` raises on an unresolvable cell, and `compound-v-resolve-model.py --selftest` iterates *every* backend × *every* tier as a hard CI gate. Adding `qwen` to `BACKENDS` without a resolvable map turns CI red for all seven backends on the first commit.
+**Why this is Task 0 and runs serially:** `resolve()` raises on an unresolvable cell, and `compound-v-resolve-model.py --selftest` iterates *every* backend × *every* tier as a hard CI gate. Adding `qwen` to `BACKENDS` without a resolvable map turns CI red for all seven backends on the first commit. Note `.claude/compound-v.json` now exists on this base (committed in `aa17e3a`) but carries **only** a `pools` block and no `models` key — so every tier still resolves through the built-in map, and the selftest runs with no config at all regardless.
 
 - [ ] **Step 1: Write the failing selftest assertions**
 
@@ -1055,9 +1055,11 @@ git commit -m "feat(qwen): gate pool availability on the key and a working sandb
 | `adapter-qwen.md` | headless Qwen Code | Bash-spawned `qwen` (own process, own worktree) | `worktree` (mandatory) + **kernel sandbox (mandatory)** | git-diff scope gate | **opt-in, WORKER-ONLY, auth-pending / coverage-unverified** (Alibaba Bailian Coding Plan; the only backend besides codex that requires OS-level confinement — but its ToS arguably prohibits automated use, see the adapter's Compliance section) |
 ```
 
-- [ ] **Step 2: Seed the default pool and the concurrency ceiling**
+- [ ] **Step 2: Document qwen as a pool-eligible backend and the concurrency ceiling**
 
-In `skills/compound-v/execution-manifest.md`, update the shipped pool policy from "Codex + zai" to include qwen, and document the ceiling:
+**Scope note:** this step edits the **documented example** in `skills/compound-v/execution-manifest.md` (which currently shows "Codex + zai"). It does **not** touch `.claude/compound-v.json` — the operator's live rotation config, committed in `aa17e3a` as `claude + zai`. Changing the operator's real rotation is a deliberate, separate step taken after this PR merges, not part of the backend build.
+
+Update the documented example to show qwen as an eligible member and document the ceiling:
 
 ```jsonc
 {
