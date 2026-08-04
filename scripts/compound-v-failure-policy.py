@@ -43,6 +43,14 @@ BACKOFF_CAP = 60
 MAX_INLINE_WAIT_SECONDS = 60
 NETWORK_PAUSE_SECONDS = 60
 
+RESET_FIELDS = ("reset_seconds", "retry_after_seconds", "resets_in_seconds")
+# Kept in sync by hand with the identical canonical-breaker constants/rules in
+# compound-v-pool-state.py (_circuit_open_errors); verified semantically
+# equivalent by review — re-diff both if either changes.
+CIRCUIT_REASONS = ("out_of_credits", "auth")
+CIRCUIT_CLEARED_BY = ("top_up", "reauth", "probe")
+CIRCUIT_ENTRY_FIELDS = frozenset(("open", "reason", "opened_at", "cleared_by"))
+
 
 def _load_provider_time():
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -164,7 +172,11 @@ def decide(failure_class, backend, attempts, total_retries, max_total_retries,
             "circuit_break": False,
             "next_pool_index": None,
             "consume_total_retry": False,
-            "earliest_reset_seconds": earliest_reset,
+            # earliest_reset_seconds describes the terminal exhausted-pool/backend
+            # halt (what /v:status renders); stamping it onto proceed/retry/reroute
+            # results too would let an ordinary retry's Retry-After leak into a
+            # field nothing but the halt path ever clears.
+            "earliest_reset_seconds": earliest_reset if action == "halt" else None,
             "clear_assignment": False,
             "circuit_break_backend": None,
             # PR 3 intent keys. Pool-state constructs and validates canonical state.
@@ -310,11 +322,19 @@ def decide(failure_class, backend, attempts, total_retries, max_total_retries,
                 "context too large for %s even at the deepest tier — split the job "
                 "(back to planning); no bigger tier exists" % backend,
             )
+        # A pool-routed job that escalates tier leaves its pool ring: the frozen
+        # slot it holds was resolved for the OLD (smaller) tier, and pools do
+        # not cover `deep` (a Non-goal), so the recorded pool assignment can no
+        # longer describe where this job is about to run. Clear it exactly like
+        # out_of_credits does, so the dispatcher re-resolves at the new tier and
+        # records the result as an ordinary assignment_source: fallback pair —
+        # never leaving a stale pool_index the validator would then reject.
         return out(
             "reroute",
             "context too large for %s at tier %s — escalate to a bigger tier"
             % (backend, current_tier or "?"),
             escalate_tier=True,
+            clear_assignment=pool_routed,
         )
 
     if failure_class == "network":
@@ -450,6 +470,20 @@ def _selftest():
           _backoff(1, 0, False) > _backoff(0, 0, False))
     check("backoff-capped", True, True,
           _backoff(10, 0, False) == MAX_INLINE_WAIT_SECONDS)
+    d = decide("context_length", "codex", 0, 0, 12, current_tier="standard")
+    check("ctx-standard", d["action"], "reroute", d["escalate_tier"])
+    check("ctx-standard-non-pool-keeps-its-recorded-assignment",
+          True, True, d["clear_assignment"] is False)
+    d = decide("context_length", "codex", 0, 0, 12, current_tier="light",
+               pool_routed=True)
+    check("ctx-pool-clears-the-now-stale-pool-assignment", d["action"], "reroute",
+          d["escalate_tier"] is True and d["clear_assignment"] is True)
+    d = decide("none", "codex", 0, 0, 12, retry_after=30)
+    check("earliest-reset-not-leaked-onto-proceed", d["action"], "proceed",
+          d.get("earliest_reset_seconds") is None)
+    d = decide("rate_limited", "codex", 0, 0, 12, retry_after=30, jitter=False)
+    check("earliest-reset-not-leaked-onto-an-ordinary-retry", d["action"], "retry",
+          d.get("earliest_reset_seconds") is None)
 
     # PR 3 intent-only cases.
     now = "2026-08-01T07:20:00Z"

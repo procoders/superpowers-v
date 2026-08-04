@@ -529,6 +529,19 @@ def expand_members(members):
     return expanded
 
 
+def _normalized_backend(job):
+    """Case/whitespace-insensitive backend read, matching the manifest validator's
+    own ``.strip().lower()`` convention — a job cannot pass validation as a pool
+    job under one casing and then be invisible to freeze/assignment under another."""
+    backend = job.get("backend") if isinstance(job, dict) else None
+    return backend.strip().lower() if isinstance(backend, str) else backend
+
+
+def _normalized_tier(job):
+    tier = job.get("tier") if isinstance(job, dict) else None
+    return tier.strip().lower() if isinstance(tier, str) else tier
+
+
 def manifest_pool_ordinals(jobs):
     """Map pool job ids to manifest-order ordinals, counted independently per tier."""
     if not isinstance(jobs, list):
@@ -536,10 +549,10 @@ def manifest_pool_ordinals(jobs):
     counters = {}
     result = {}
     for job in jobs:
-        if not isinstance(job, dict) or job.get("backend") != "pool":
+        if not isinstance(job, dict) or _normalized_backend(job) != "pool":
             continue
         job_id = job.get("id")
-        tier = job.get("tier")
+        tier = _normalized_tier(job)
         if not isinstance(job_id, str) or not job_id:
             raise ValueError("pool job is missing a non-empty id")
         if not isinstance(tier, str) or not tier:
@@ -583,12 +596,15 @@ def freeze_pool_members(state, pools, stance, config_models, env=None, which=Non
 
     resolver = _resolver_module()
     frozen_by_tier = {}
+    warnings = []
     for tier, members in stance_pools.items():
         frozen_slots = []
+        configured_backends = set()
         for slot in expand_members(members):
             backend = slot.get("backend")
             if not isinstance(backend, str) or not backend:
                 raise ValueError("pool member backend must be a non-empty string")
+            configured_backends.add(backend)
             available = backend_available(backend, env=env, which=which)
             model = None
             try:
@@ -599,12 +615,20 @@ def freeze_pool_members(state, pools, stance, config_models, env=None, which=Non
                     explicit_model=slot.get("model"),
                     stance=stance,
                 )["model"]
-            except ValueError:
+            except ValueError as error:
                 # A backend unavailable at freeze can remain as a positional
                 # tombstone even when this branch lacks its resolver map. It is
                 # never assignable; preserve an explicit override when present.
                 if available:
-                    raise
+                    # An AVAILABLE member that still fails resolution (e.g. its
+                    # backend isn't in the resolver's vocabulary yet — see the
+                    # zai/PR-5 merge-order case) must not surface a bare, member-
+                    # blind ValueError: name the member and tier the way the
+                    # manifest validator's equivalent message already does.
+                    raise ValueError(
+                        "pool member '%s' for stance '%s' tier '%s' failed "
+                        "concrete model resolution: %s" % (backend, stance, tier, error)
+                    )
                 explicit = slot.get("model")
                 if isinstance(explicit, str) and explicit.strip():
                     model = explicit.strip()
@@ -613,7 +637,24 @@ def freeze_pool_members(state, pools, stance, config_models, env=None, which=Non
                 frozen["model"] = model
             frozen_slots.append(frozen)
         frozen_by_tier[tier] = frozen_slots
+        available_backends = {
+            slot["backend"] for slot in frozen_slots if slot.get("available")
+        }
+        if len(configured_backends) > 1 and len(available_backends) <= 1:
+            # A pool configured with real redundancy that freezes down to (at
+            # most) one available backend silently defeats the feature's entire
+            # purpose — one provider absorbs the whole run. Freeze still
+            # succeeds (there may be nothing else to do), but it must not be
+            # silent about it.
+            warnings.append(
+                "pool '%s/%s' has %d of %d configured backend(s) available (%s); "
+                "this run will not spread jobs across providers"
+                % (stance, tier, len(available_backends), len(configured_backends),
+                   ", ".join(sorted(available_backends)) or "none")
+            )
     frozen_state["pool_members"] = frozen_by_tier
+    if warnings:
+        frozen_state["warnings"] = warnings
     return frozen_state
 
 
@@ -706,13 +747,12 @@ def freeze_assignments(state, jobs, pools, stance, config_models,
                 and isinstance(record.get("assigned_model"), str)
                 and record.get("assigned_model")):
             continue
-        assignment = select_frozen_member(
-            frozen, jobs_by_id[job_id].get("tier"), ordinal,
-        )
+        job_tier = _normalized_tier(jobs_by_id[job_id])
+        assignment = select_frozen_member(frozen, job_tier, ordinal)
         record["assigned_backend"] = assignment["assigned_backend"]
         record["assigned_model"] = assignment["assigned_model"]
         record["pool_index"] = assignment["pool_index"]
-        record["pool_tier"] = jobs_by_id[job_id].get("tier")
+        record["pool_tier"] = job_tier
         record["assignment_source"] = "pool"
     return frozen
 
@@ -818,7 +858,7 @@ def validate_state(state, jobs):
                         errors.append("%s.model must be concrete when available" % path)
 
     for job in jobs:
-        if not isinstance(job, dict) or job.get("backend") != "pool":
+        if not isinstance(job, dict) or _normalized_backend(job) != "pool":
             continue
         job_id = job.get("id")
         record = state_jobs.get(job_id)
@@ -1703,6 +1743,14 @@ def _selftest():
     expect("manifest order assigns independent ordinals per tier", ordinal_map == {
         "light-1": 0, "standard-1": 0, "light-2": 1, "standard-2": 1,
     })
+    case_variant_jobs = [
+        {"id": "cased-1", "backend": "Pool", "tier": "Light"},
+        {"id": "cased-2", "backend": " POOL ", "tier": "light"},
+    ]
+    case_ordinal_map = ordinals(case_variant_jobs) if ordinals else None
+    expect("a case/whitespace-variant backend: pool is still recognized as a "
+           "pool job, matching the manifest validator's own normalization",
+           case_ordinal_map == {"cased-1": 0, "cased-2": 1})
 
     availability_calls = []
 
@@ -1728,8 +1776,43 @@ def _selftest():
                 {"backend": "codex", "model": "gpt-pinned", "available": True},
                 {"backend": "zai", "model": "glm-pinned", "available": False},
             ]
-        }
+        },
+        "warnings": [
+            "pool 'balanced/light' has 1 of 2 configured backend(s) available "
+            "(codex); this run will not spread jobs across providers"
+        ],
     } and availability_calls == ["codex"])
+    expect("a pool with every configured member available carries no warning",
+           bool(freeze_members) and "warnings" not in freeze_members(
+               {}, {"balanced": {"light": [
+                   {"backend": "codex", "model": "a"},
+                   {"backend": "claude", "model": "b"},
+               ]}}, "balanced", {}, env={}, which=lambda name: "/usr/bin/codex",
+           ))
+
+    # A backend name the resolver doesn't recognize yet stands in for the general
+    # "available but unresolvable" case (e.g. the zai/PR-5 merge-order gap this
+    # branch was written against, before zai gained a real resolver entry) --
+    # `backend_available()` defaults unknown names to available, so this stays a
+    # reliable probe of the wrapping behavior regardless of which backends the
+    # resolver's vocabulary later grows to include.
+    unresolvable_only_pools = {
+        "balanced": {"light": [{"backend": "futureprovider"}]}}
+    unresolvable_error = None
+    if freeze_members:
+        try:
+            freeze_members(
+                {}, unresolvable_only_pools, "balanced", {},
+                env={}, which=lambda name: None,
+            )
+        except ValueError as error:
+            unresolvable_error = str(error)
+    expect("an available member that fails concrete resolution names the member "
+           "and tier instead of a bare resolver error",
+           unresolvable_error is not None
+           and "futureprovider" in unresolvable_error
+           and "light" in unresolvable_error
+           and "balanced" in unresolvable_error)
 
     def later_which(name):
         availability_calls.append("later:" + name)
@@ -1926,6 +2009,16 @@ def _selftest():
     fallback_errors = validate(fallback_state, manifest_jobs) if validate else ["missing validator"]
     expect("explicit external fallback may differ from its originating frozen slot",
            fallback_errors == [])
+
+    refrozen_fallback = freeze_assignments(
+        json.loads(json.dumps(fallback_state)), manifest_jobs, pools, "balanced", {},
+        env={}, which=lambda name: "/usr/bin/codex",
+    ) if freeze_assignments else None
+    expect("re-freezing a job that already carries a recorded (even non-ring, "
+           "fallback-sourced) assignment leaves that record byte-for-byte "
+           "untouched rather than silently re-deriving it from the pool ring",
+           isinstance(refrozen_fallback, dict)
+           and refrozen_fallback.get("jobs", {}).get("light-1") == fallback_record)
 
     implicit_external = json.loads(json.dumps(fallback_state))
     implicit_external["jobs"]["light-1"].pop("assignment_source", None)

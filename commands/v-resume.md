@@ -52,7 +52,7 @@ Hand-editing `state.json` is forbidden.
      it. z.ai 1234 is provider-reported and never counts. Recovery leases one real job; all other
      launches remain paused until that probe completes.
    - **Never silently re-dispatch to a still-open breaker.** If neither the top-up/probe (credits) nor the re-auth (auth) has happened, leave the breaker open, leave its jobs `failed`, and report exactly what the user must do to unblock — do not retry behind their back.
-   - Update `circuit_open[backend].cleared_by` and write `state.json` for every breaker transition.
+   - On every breaker-clearing transition, write BOTH fields together — `circuit_open[backend].open = false` **and** `circuit_open[backend].cleared_by` set to the matching reason (`"top_up"`/`"probe"` for `out_of_credits`, `"reauth"` for `auth`) — then write `state.json`. Writing `cleared_by` alone while `open` stays `true` produces a record `compound-v-pool-state.py validate` rejects (`cleared_by must be null while the breaker is open`), and that validation runs *before* step 5 on the next `/v:resume`, so a partial write leaves the operator unable to get back in — regenerate the corrupted entry (do not hand-edit around the validator) rather than resuming with it half-written.
 
 5. **Re-dispatch only the incomplete jobs** — `pending`, `failed`, or `blocked`, plus `dispatched` / `running` jobs that git-wins found **not landed** after steps 3–4 (and **not** behind a still-open breaker) — via **Engine A** (`compound-v:parallel-dispatcher` / the backend-launcher), honoring `depends_on`, `run`, manifest `max_parallel`, and the run-start `backend_max_parallel` ceilings against each recorded concrete backend exactly as the original dispatch. Each re-dispatch replays the captured prompt at `jobs/<id>.prompt.md` verbatim. A recorded `assignment_source: "fallback"` is a valid concrete fallback assignment after pool exhaustion; validate and reuse it exactly like an in-ring `assignment_source: "pool"` assignment.
    - A Codex worktree job's resume-vs-recreate decision is governed by the **resume-eligibility rule below** — reproduced verbatim so it agrees word-for-word with [`parallel-dispatcher.md`](../agents/parallel-dispatcher.md) and kills the old contradiction (this step once said "may use `codex exec resume`" unconditionally, while the dispatcher's invariant recreates the worktree fresh at HEAD). Either way — resumed session or fresh recreate — the **scope gate re-runs** on return.
@@ -60,7 +60,7 @@ Hand-editing `state.json` is forbidden.
 
 Both inputs the rule needs live in **`state.json jobs[<id>]`** — `session_id` (the captured UUID) and `failure_class` — written there by the dispatcher on the job's return (Step 2 already reads `state.json`; you do **not** need to open `results/<id>.json` for this). A job with an empty `session_id` has no session to resume ⇒ recreate fresh regardless.
 
-> **Resume-eligibility rule (Shared Interface Contract — byte-identical in `commands/v-resume.md` and `agents/parallel-dispatcher.md`).**
+> **Resume-eligibility rule (Shared Interface Contract — byte-identical in `commands/v-resume.md`, `agents/parallel-dispatcher.md`, and `skills/compound-v/state-machine.md`).**
 > A codex worktree job may be resumed via `codex exec resume <captured-uuid>` **IFF** its `failure_class` is
 > environmental (`timeout` | `network`) **AND** its worktree still exists at the recorded path.
 > Every other case recreates the worktree **fresh at HEAD** — the parallel-dispatcher worktree-recreate invariant.

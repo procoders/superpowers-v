@@ -62,6 +62,8 @@ python3 scripts/compound-v-pool-state.py validate < "$VALIDATE_REQUEST"
 
 `freeze` expands weights, evaluates the narrow member-availability preconditions once, and writes `pool_members` plus each pool job's `assigned_backend`, `assigned_model`, `pool_index`, and `pool_tier`. Its ordinal is computed from **manifest order among `backend: pool` jobs of the same tier**; launch order, dependency readiness, batching, and retries never participate. An unavailable or circuit-open slot is skipped without shrinking the ring, so later ordinals keep their original positions. If `pool_members` already exists, do not replace it from current config: config edits after this point cannot change the run.
 
+If the `freeze` result carries a top-level `warnings` array — it appears only when a configured pool's redundancy collapsed to at most one available backend (e.g. a member's env precondition wasn't met) — announce it loudly in the run summary before dispatching that tier's jobs. A collapsed pool still freezes and runs (there may be nothing else to do), but silently letting one provider absorb the whole run is exactly what this feature exists to prevent; the operator needs to know it happened, not discover it later in `/v:status`.
+
 Both helper commands are fail-closed. Do not hand-edit or partially reconstruct their fields; no job launches until `validate` exits 0.
 
 ## Dispatch Sequence
@@ -246,7 +248,7 @@ The worktree-recreate invariant above is the default: every dispatch — first a
 > **Pool-assignment replacement rule (Shared Interface Contract — copy byte-identically into dispatcher and resume runbooks).**
 > Assignment replacement is transition-owned. `out_of_credits` first opens the canonical permanent circuit and performs one bounded frozen-ring scan; only after ring exhaustion may it use an explicitly supplied exact `fallback_assignment` whose backend matches policy `reroute_to`. A missing, malformed, or mismatched fallback HALTS without guessing. `auth` persists its canonical permanent circuit and HALTS. A second short transient or a transient with a known wait over 60 seconds opens a cooldown and advances; `usage_window_exhausted` opens its cooldown and advances immediately; and `model_unavailable` excludes only the exact `exclude_assignment: {backend, model}` pair before selection. The dispatcher adds the persisted current `attempt_id`; when `consume_total_retry: true`, transition atomically charges `total_retries` once for that failed attempt only if it returns a concrete launch assignment, while a no-viable-member halt persists health without a charge. Replay cannot charge twice, and exhaustion HALTS before assignment. Persist and validate every resulting assignment and health-state mutation before relaunch.
 
-> **Resume-eligibility rule (Shared Interface Contract — byte-identical in `commands/v-resume.md` and `agents/parallel-dispatcher.md`).**
+> **Resume-eligibility rule (Shared Interface Contract — byte-identical in `commands/v-resume.md`, `agents/parallel-dispatcher.md`, and `skills/compound-v/state-machine.md`).**
 > A codex worktree job may be resumed via `codex exec resume <captured-uuid>` **IFF** its `failure_class` is
 > environmental (`timeout` | `network`) **AND** its worktree still exists at the recorded path.
 > Every other case recreates the worktree **fresh at HEAD** — the parallel-dispatcher worktree-recreate invariant.

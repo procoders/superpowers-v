@@ -207,15 +207,23 @@ def resolve_pools(cfg):
                         % (member_path, MAX_POOL_WEIGHT)
                     )
                     continue
+                extra_keys = sorted(
+                    k for k in member if k not in ("backend", "model", "weight")
+                )
+                if extra_keys:
+                    warnings.append(
+                        "%s has unexpected key(s) %s; ignored"
+                        % (member_path, extra_keys)
+                    )
+                if backend in seen_backends:
+                    warnings.append("%s duplicates backend %r; ignored"
+                                    % (member_path, backend))
+                    continue
                 if expanded_slots + weight > MAX_EXPANDED_POOL_SLOTS:
                     warnings.append(
                         "%s would exceed the %d-slot expanded pool limit; ignored"
                         % (member_path, MAX_EXPANDED_POOL_SLOTS)
                     )
-                    continue
-                if backend in seen_backends:
-                    warnings.append("%s duplicates backend %r; ignored"
-                                    % (member_path, backend))
                     continue
                 seen_backends.add(backend)
                 expanded_slots += weight
@@ -504,6 +512,21 @@ def _selftest():
                    {"backend": "codex", "weight": 1}
                ]}} and isinstance(pool_warnings, list) and len(pool_warnings) == 12)
 
+        # resolve_pools' OWN top-level "pools is not an object" raise is
+        # currently redundant behind load_project_config's separate
+        # structural sweep — every real caller goes through that sweep first,
+        # so this reader's own guard was previously unreachable from any
+        # fixture. Call it directly so the guard has its own regression test.
+        pool_reader_raises = False
+        if read_pools:
+            try:
+                read_pools({"pools": "not-an-object"})
+            except ValueError:
+                pool_reader_raises = True
+        expect("resolve_pools raises directly on a non-object pools block "
+               "(not only via load_project_config's structural sweep)",
+               pool_reader_raises)
+
         caps, cap_warnings = read_caps({
             "backend_max_parallel": {
                 "codex": 3,
@@ -530,6 +553,33 @@ def _selftest():
                    {"backend": "claude", "weight": 100},
                    {"backend": "cursor", "weight": 100},
                ]}} and isinstance(limit_warnings, list) and len(limit_warnings) == 2)
+
+        # An unknown/typo'd member key (e.g. "wieght" instead of "weight") warns
+        # but does NOT drop the member or change its normalized weight.
+        typo_pools, typo_warnings = read_pools({"pools": {"balanced": {"light": [
+            {"backend": "codex", "wieght": 50},
+        ]}}})
+        expect("typo'd member key warns but keeps member with default weight",
+               typo_pools == {"balanced": {"light": [
+                   {"backend": "codex", "weight": 1},
+               ]}}
+               and any("wieght" in w for w in typo_warnings))
+
+        # A member that is BOTH a duplicate backend AND would exceed the
+        # expanded-slot cap must report the more specific duplicate-backend
+        # warning, not the slot-limit warning (message ordering, not survival).
+        dup_over_cap_pools, dup_over_cap_warnings = read_pools({"pools": {"balanced": {"light": [
+            {"backend": "claude", "weight": 100},
+            {"backend": "cursor", "weight": 100},
+            {"backend": "claude", "weight": 100},
+        ]}}})
+        expect("duplicate-and-over-cap member reports duplicate, not slot-limit",
+               dup_over_cap_pools == {"balanced": {"light": [
+                   {"backend": "claude", "weight": 100},
+                   {"backend": "cursor", "weight": 100},
+               ]}}
+               and any("duplicates backend" in w for w in dup_over_cap_warnings)
+               and not any("expanded pool limit" in w for w in dup_over_cap_warnings))
 
         # Valid config round-trips models + pre_eval.
         write({

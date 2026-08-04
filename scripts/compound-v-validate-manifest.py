@@ -577,6 +577,21 @@ def _is_reviewer(job):
     return False
 
 
+def _pool_sensitive_match(job):
+    """Scan type + id + title for a sensitive-work token, mirroring
+    ``_is_reviewer`` above. A `type`-only scan lets a benignly-typed job whose
+    id/title names auth/payment/PII/security/a11y work route to `backend:
+    pool` — the same blind spot the reviewer heuristic already closed for
+    reviewer jobs. Returns the matched token, or ``None``."""
+    jtype = str(job.get("type", "")).lower()
+    jid = str(job.get("id", "")).lower()
+    title = str(job.get("title", "")).lower()
+    for tok in POOL_SENSITIVE_TYPE_TOKENS:
+        if tok in jtype or tok in jid or tok in title:
+            return tok
+    return None
+
+
 # --------------------------------------------------------------------------- #
 # Optional per-job `advisor:` block (v2.12, Feature B1).
 #
@@ -756,6 +771,36 @@ def _pool_resolution_context(repo_root, config_path):
         "pool routing config warning: %s" % warning for warning in warnings
     ]
     return (rm, pools, config_models, warning_problems)
+
+
+def _backend_max_parallel_problems(repo_root, config_path):
+    """Load + shape-validate ``backend_max_parallel`` through Task 1's sibling
+    API. AC-12 promises this key is "shape-validated," but no caller ever
+    reached ``resolve_backend_max_parallel`` — a malformed per-key value
+    (negative, boolean, an unknown backend) passed manifest validation
+    silently; only a non-object *whole block* was ever caught (by the
+    separate top-level structural sweep inside ``load_project_config_path``).
+
+    Runs unconditionally, unlike the pool context above: `backend_max_parallel`
+    applies whether or not any job in the manifest uses `backend: pool`. A
+    missing config file is the common case for this repo's own examples and
+    normalizes to ``{}`` with no warnings — never an error.
+    """
+    pc = _sibling("compound-v-project-config.py")
+    if pc is None:
+        return ["cannot load project-config sibling API for "
+                "backend_max_parallel — fail-closed"]
+    cfg_path = config_path
+    if cfg_path is None and repo_root is not None:
+        cfg_path = os.path.join(repo_root, ".claude", "compound-v.json")
+    try:
+        cfg = pc.load_project_config_path(cfg_path)
+        _normalized, warnings = pc.resolve_backend_max_parallel(cfg)
+    except Exception as e:  # noqa: BLE001 - routing config must fail closed
+        return ["backend_max_parallel config is unreadable or malformed (%s) "
+                "— fail-closed" % e]
+    return ["backend_max_parallel config warning: %s" % warning
+            for warning in warnings]
 
 
 def _read_json_file(repo_root, relpath):
@@ -1714,6 +1759,12 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
             _pool_resolution_context(repo_root, config_path)
         )
         problems.extend(pool_context_problems)
+
+    # backend_max_parallel is documented + AC-12 claims it is shape-validated.
+    # Unlike pools above, it is not gated on has_pool_jobs — it is a general
+    # routing key, independent of whether this manifest uses backend: pool.
+    problems.extend(_backend_max_parallel_problems(repo_root, config_path))
+
     pool_ordinals = {}
     validated_pool_member_sets = set()
 
@@ -1897,16 +1948,12 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
                     "forbidden for reviewer jobs" % jid
                 )
 
-            job_type_lc = str(job.get("type", "")).lower()
-            sensitive_tokens = [
-                tok for tok in POOL_SENSITIVE_TYPE_TOKENS
-                if tok in job_type_lc
-            ]
-            if sensitive_tokens:
+            matched_sensitive = _pool_sensitive_match(job)
+            if matched_sensitive:
                 problems.append(
                     "job '%s' uses backend: pool, but backend: pool is "
-                    "forbidden for sensitive job type '%s' (matched '%s')"
-                    % (jid, job.get("type"), sensitive_tokens[0])
+                    "forbidden for sensitive work (matched '%s' in its "
+                    "type/id/title)" % (jid, matched_sensitive)
                 )
             if tier_lc not in ("standard", "light"):
                 problems.append(
@@ -3293,6 +3340,19 @@ POOL_SECOND_STANDARD_JOB = """  - id: task-pool-standard
     acceptance: ["standard slice ships"]
 """
 
+POOL_SECOND_LIGHT_JOB = """  - id: task-pool-light-2
+    title: "second pooled light implementation"
+    type: bounded_crud
+    backend: pool
+    tier: light
+    effort: low
+    isolation: worktree
+    run: serial
+    write_allowed: [src/pool-light-2/**]
+    read_allowed: [src/**]
+    acceptance: ["second light slice ships"]
+"""
+
 
 # --------------------------------------------------------------------------- #
 # v2.9 fast-path self-test — builds on-disk fixtures in a temp repo root so the
@@ -4309,12 +4369,31 @@ def _selftest():
                 "standard": [{"backend": "claude"}],
             }
         })
+        deep_pool_path = pool_config("deep", {
+            "balanced": {"deep": [{"backend": "claude"}]}
+        })
+
         pool_valid = validate_text(
             _pool_manifest_fixture(second_job=POOL_SECOND_STANDARD_JOB),
             config_path=valid_pool_path,
         )
         expect("pool: worktree light/standard implementers validate (%r)"
                % pool_valid, pool_valid == [])
+
+        # Two pool jobs sharing the SAME tier: the manifest-order ordinal
+        # counter (pool_ordinals) must advance instead of colliding, and the
+        # loop must not crash or misreject either job. Real ordinal-correctness
+        # (does slot N really go to the Nth manifest job) is the runtime
+        # concern of compound-v-pool-state.py's manifest_pool_ordinals/
+        # freeze_assignments, which carry their own dedicated regression
+        # fixtures — this only proves the static validator's per-job loop
+        # handles same-tier repetition cleanly.
+        pool_same_tier = validate_text(
+            _pool_manifest_fixture(second_job=POOL_SECOND_LIGHT_JOB),
+            config_path=valid_pool_path,
+        )
+        expect("pool: two same-tier pool jobs both validate cleanly (%r)"
+               % pool_same_tier, pool_same_tier == [])
 
         pool_direct = validate_text(
             _pool_manifest_fixture(isolation="direct"),
@@ -4332,6 +4411,23 @@ def _selftest():
         expect("pool: reviewer rejected unconditionally",
                any("backend: pool is forbidden for reviewer" in p
                    for p in pool_reviewer))
+
+        # The fixture above uses tier: standard, which independently trips the
+        # "reviewer must resolve to deep reasoning" invariant — so it cannot by
+        # itself prove the pool-reviewer prohibition fires on a reviewer that
+        # WOULD otherwise look compliant. Use tier: deep, which satisfies that
+        # separate invariant, and confirm the pool-specific reviewer message
+        # still appears — this is the exact "manifest looks compliant" case
+        # the spec's §4 describes (deep/opus check passes, pool routing does not).
+        pool_reviewer_deep = validate_text(
+            _pool_manifest_fixture(job_type="quality_review", tier="deep",
+                                   effort="high"),
+            config_path=deep_pool_path,
+        )
+        expect("pool: reviewer rejected even at tier: deep, independent of "
+               "the separate deep-tier-for-pool ban (%r)" % pool_reviewer_deep,
+               any("backend: pool is forbidden for reviewer" in p
+                   for p in pool_reviewer_deep))
 
         pool_advisor = validate_text(
             _pool_manifest_fixture(
@@ -4352,12 +4448,30 @@ def _selftest():
                 config_path=valid_pool_path,
             )
             expect("pool: sensitive type %s rejected" % sensitive_type,
-                   any("backend: pool is forbidden for sensitive job type" in p
+                   any("backend: pool is forbidden for sensitive work" in p
                        and sensitive_type in p for p in pool_sensitive))
 
-        deep_pool_path = pool_config("deep", {
-            "balanced": {"deep": [{"backend": "claude"}]}
-        })
+        # A benignly-typed job whose ID/TITLE names sensitive work must be
+        # caught too — mirroring _is_reviewer's own type+id+title scan.
+        # _pool_manifest_fixture always sets id "task-pool-light" and lets the
+        # title be overridden by patching the rendered text directly (the
+        # helper has no title= parameter and adding one would change every
+        # other call site's positional shape).
+        sensitive_title_manifest = _pool_manifest_fixture(
+            job_type="bounded_crud", tier="light", effort="low",
+        ).replace(
+            'title: "pooled light implementation"',
+            'title: "rewrite the auth/session credential handling and PII '
+            'redaction"',
+        )
+        pool_sensitive_title = validate_text(
+            sensitive_title_manifest, config_path=valid_pool_path,
+        )
+        expect("pool: sensitive TITLE (benign type/id) is rejected, not just "
+               "a sensitive type (%r)" % pool_sensitive_title,
+               any("backend: pool is forbidden for sensitive work" in p
+                   for p in pool_sensitive_title))
+
         pool_deep = validate_text(
             _pool_manifest_fixture(tier="deep", effort="high"),
             config_path=deep_pool_path,
@@ -4426,6 +4540,21 @@ def _selftest():
                any("pool member 1" in p and "claude-haiku-alternate" in p
                    and "never-Haiku" in p for p in alternate_haiku))
 
+        # The two fixtures above pin Haiku via an explicit member-level `model`,
+        # which takes resolve()'s explicit_model short-circuit. The path the
+        # spec's §4 actually describes — a pool job has NO explicit model
+        # anywhere, so the gate must run on the model resolved from the
+        # config's per-stance `models` cell — had no fixture until now.
+        config_cell_haiku_path = project_config("config-cell-haiku", {
+            "pools": {"balanced": {"light": [{"backend": "codex"}]}},
+            "models": {"balanced": {"codex": {"light": "claude-haiku-cell"}}},
+        })
+        config_cell_haiku = validate_text(
+            _pool_manifest_fixture(), config_path=config_cell_haiku_path)
+        expect("pool: Haiku reached via the config models cell (no member-"
+               "level model override) is rejected (%r)" % config_cell_haiku,
+               any("never-Haiku" in p for p in config_cell_haiku))
+
         malformed_caps_path = project_config("malformed-caps", {
             "pools": {
                 "balanced": {"light": [{"backend": "codex"}]}
@@ -4437,6 +4566,28 @@ def _selftest():
         expect("pool: full structural loader rejects malformed backend_max_parallel",
                any("backend_max_parallel" in p and "malformed" in p
                    for p in pool_malformed_caps))
+
+        # AC-12 claims backend_max_parallel is "shape-validated" — per-KEY
+        # malformation (not just a malformed whole block, above) must surface
+        # too, and unconditionally: none of these manifests use backend: pool.
+        for bad_name, bad_value in (
+            ("negative", {"codex": -5}),
+            ("bool", {"codex": True}),
+            ("unknown-backend", {"mystery": 4}),
+            ("non-integer", {"codex": "four"}),
+        ):
+            bad_caps_path = project_config(
+                "caps-%s" % bad_name, {"backend_max_parallel": bad_value})
+            bad_caps_result = validate_text(GOOD_MANIFEST, config_path=bad_caps_path)
+            expect("backend_max_parallel.%s (%r) is surfaced as a shape "
+                   "warning, not silently dropped (%r)"
+                   % (bad_name, bad_value, bad_caps_result),
+                   any("backend_max_parallel config warning" in p
+                       for p in bad_caps_result))
+        good_caps_path = project_config(
+            "caps-good", {"backend_max_parallel": {"codex": 4, "zai": 2}})
+        expect("backend_max_parallel with valid per-key values carries no warning",
+               validate_text(GOOD_MANIFEST, config_path=good_caps_path) == [])
 
         malformed_pools_path = project_config("malformed-pools", {
             "pools": ["codex"]
@@ -4465,14 +4616,25 @@ def _selftest():
         unreadable_path = os.path.join(pool_td, "invalid-json.json")
         with open(unreadable_path, "w", encoding="utf-8") as fh:
             fh.write("{not-json")
-        expect("pool: legacy manifest ignores unreadable config entirely",
-               validate_text(GOOD_MANIFEST,
-                             config_path=unreadable_path) == [])
-        expect("pool: legacy manifest ignores structurally malformed config",
-               validate_text(
-                   GOOD_MANIFEST,
-                   config_path=malformed_caps_path,
-               ) == [])
+        # `pools` remains has_pool_jobs-gated, so a legacy (non-pool) manifest
+        # still never even attempts to resolve pool routing config — but
+        # backend_max_parallel is checked unconditionally (see
+        # _backend_max_parallel_problems above, closing AC-12/Finding-12), so
+        # an unreadable or structurally malformed config now surfaces a
+        # fail-closed warning for EVERY manifest, not only pool ones. The spec
+        # names backend_max_parallel a "routing key" that "must fail closed,
+        # never fail open" without carving out an exception for legacy
+        # manifests — unlike `pools`, it is not itself a new/opt-in feature.
+        legacy_unreadable = validate_text(GOOD_MANIFEST, config_path=unreadable_path)
+        expect("legacy manifest still fails closed on an unreadable config "
+               "(backend_max_parallel can't be assessed) (%r)"
+               % legacy_unreadable,
+               any("backend_max_parallel" in p for p in legacy_unreadable))
+        legacy_malformed_caps = validate_text(
+            GOOD_MANIFEST, config_path=malformed_caps_path)
+        expect("legacy manifest surfaces a malformed backend_max_parallel even "
+               "though it never uses backend: pool (%r)" % legacy_malformed_caps,
+               any("backend_max_parallel" in p for p in legacy_malformed_caps))
 
         expect("pool: legacy non-pool manifest remains valid",
                validate_text(GOOD_MANIFEST,

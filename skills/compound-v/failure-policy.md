@@ -30,11 +30,23 @@ Exact model exclusion is narrower than backend exclusion: `model_unavailable` ex
 
 That backend-wide cooldown is intentionally conservative. CLI-process output does not identify the credential, organization, or limiter bucket, so a cooldown can temporarily sideline a healthy model or credential on the same backend. This prevents retry herds; it is **not** quota balancing. Compound V does not poll balances, estimate remaining percentages, dynamically change weights, or optimize credits.
 
+### Escalation and non-pool fallback (unchanged by the cooldown model above)
+
+Two `context_length` outcomes and the ordinary non-pool `out_of_credits` path fall outside the cooldown/network-pause machinery above and are not restated in the scenario matrix below:
+
+- **`context_length`, tier below the deepest** → `escalate_tier`: re-resolve the job at a bigger tier via [`compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py) and re-dispatch, resetting/forking the per-class attempt counter. A pool job additionally gets `clear_assignment: true` — its frozen slot was resolved for the old tier and pools never cover `deep` — and its new pair is recorded with `assignment_source: fallback`, retaining the originating `pool_tier`/`pool_index`.
+- **`context_length` already at the deepest tier** (`--current-tier deep`) → `halt`: no bigger model exists, so the job is split back to planning rather than retried.
+- **`out_of_credits` (ordinary, non-pool job; fallback viable)** → `reroute` to `FALLBACK[backend]` (always `claude`) through the existing concrete chain, after circuit-breaking the exhausted backend; `consume_total_retry`/`clear_assignment` are both **false** — the job carries no pool context, so nothing pool-shaped is ever written. If the fallback is itself circuit-open (`--fallback-open`), policy returns `halt` instead.
+
 ## The 60-second ceiling
 
 Only a known provider minimum plus deterministic jitter that is **at most 60 seconds** may be waited inline. A known `retry_at` or retry-after longer than 60 seconds is never slept inside dispatch: the pool transitions to another viable member and records the cooldown, or a non-pool/no-viable route halts resumably with the precise `next_retry_at`.
 
 Known provider timing survives per-class or total retry-budget exhaustion. An explicit usage-window observation at the total budget ceiling persists its cooldown intent and reset time without consuming another retry or advancing the ring.
+
+**Backoff:** exponential (`base 2 · 2^attempts`, jittered to de-sync siblings, capped at **60s**); a provider `retry-after` (passed as `--retry-after <job_result.retry_after_seconds>`) **overrides** the computed value. Retries are capped **twice** — per-(job, failure_class) (`rate_limited` 3, `overloaded`/`network` 2, `timeout`/`other` 1, against `attempts[job][class]`) **and** by the run-level `max_total_retries` (default 12), the anti retry-storm guard. Whichever ceiling hits first → `halt`. A class's budget is independent: a job that exhausts `rate_limited` can still spend its `network` budget. A pool member change may reset/fork the per-class counter, but never the run-level budget: every policy result with `consume_total_retry: true` increments `total_retries` before relaunch.
+
+`earliest_reset_seconds` is populated only on the terminal exhausted-pool/exhausted-backend `halt` — every other action (`proceed`/`retry`/non-terminal `reroute`) always returns it as `null`, so an ordinary retry's own `retry-after` never leaks into the field `/v:status` renders as "earliest reset."
 
 ## Scenario matrix
 
@@ -71,6 +83,18 @@ Collection compares the result with that binding before transition or publicatio
 Ordinary concrete-backend manifests still use the same classifier and policy. They omit pool context, never invoke ring selection, and keep their existing fallback behavior. They still receive the 60-second ceiling, precise resumable retry timing, completed-success rule, cooldown/circuit validation, and launch-binding protection.
 
 Independent jobs continue when a sibling is cooled or failed. The run pauses only when global network evidence requires it or no viable backend remains. `/v:resume` revalidates persisted state and re-dispatches only incomplete work.
+
+---
+
+## Anti-patterns (do NOT)
+
+- ❌ **Retry `out_of_credits` or `auth`.** They never self-heal by retrying; you only burn time and rate-limit harder. Circuit-break (+ re-route for credits) or halt.
+- ❌ **Cap retries by count alone.** Cap by **count AND wall-clock** — per-class ceiling *and* the run-level `max_total_retries`. One job spinning on 429s on a single, non-pooled backend must not exhaust the whole run — its per-class cap (3/2/2/1/1) stops it long before the run-level budget could. **A pool-routed job is a deliberate exception**: because its per-class attempt counter resets on every member change (spec-required, so a fresh member gets a fresh chance) while the run-level budget does not, one persistently failing pool job *can* legitimately spend the entire run-level budget across enough members — e.g. 3 retries × 3 members = 9, plus 3 reroutes, against the default 12. That job's own failures then halt every other job in the run (the anti retry-storm cap in `decide()` fires regardless of which job is asking). This is accepted, spec-mandated behavior, not a bug — but it means a pool with more members than `max_total_retries` can absorb is a real footgun; size pools and `max_total_retries` with that interaction in mind, and `/v:resume` after raising the budget if it happens.
+- ❌ **Hammer a quota-exhausted backend.** Once the breaker is open, stop dispatching to it for the run.
+- ❌ **Classify by HTTP status.** Classify by error **TYPE**: OpenAI `insufficient_quota` and a throttle are both 429; the Anthropic credit error is a **400/402, not a 429**. The status alone will mis-route you.
+- ❌ **Silently swap backends.** Announce every re-route/circuit-break at event time and in the run summary, with the cost direction called out. `/v:status` reports only current recorded assignment counts and never reconstructs history.
+
+The canonical `circuit_open` field shape, breaker states, and the liveness-sweep integration are documented in [`state-machine.md`](state-machine.md), not duplicated here.
 
 ## Cross-references
 

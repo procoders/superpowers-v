@@ -1,0 +1,10 @@
+{
+  "pools": {
+    "balanced": {
+      "light": [
+        { "backend": "codex" },
+        { "backend": "cursor" }
+      ]
+    }
+  }
+}
