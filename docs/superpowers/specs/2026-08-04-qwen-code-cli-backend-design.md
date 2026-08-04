@@ -1,5 +1,12 @@
+**Base:** `feat/qwen-backend`, branched from `local/three-pr-integration` (`4bcb13c` — PR #5 zai,
+PR #6 tier-model-pool, PR #7 rate-limit-rerouting all merged, selftests green).
 **Recon:** docs/superpowers/recon/2026-08-04-qwen-code-cli-backend-adapter.md
 **Pre-flights:** docs/superpowers/archaeology/2026-08-04-qwen-code-cli-backend.md · docs/superpowers/expert/2026-08-04-qwen-code-cli-backend.md · docs/superpowers/library-audit/2026-08-04-qwen-code-cli-backend.md
+
+> ⚠️ **The three pre-flight audits were run against the older `feat/zai-backend` (`71b59dc`). Every
+> line number they cite is stale here, and two of their conclusions are outdated.** Their *reasoning*
+> was re-verified against this base (see "Re-verification against the integration base" below); their
+> *coordinates* were not carried over. Re-locate every site before editing it.
 
 # qwen — a headless Qwen Code CLI worker backend
 
@@ -22,6 +29,56 @@ contradict the source at the same tag.** Every correction below is sourced to a 
 a primary Alibaba/GitHub page, not reasoned from the tool's general shape. A live probe with a real
 Coding Plan key is still required before this adapter ships as verified — this spec fixes what three
 independent audits could catch without one, not everything.
+
+---
+
+## Re-verification against the integration base
+
+Re-read on `4bcb13c` before planning. What survived, what moved, and what the audits could not have
+seen because it did not exist yet.
+
+**Survived unchanged (the load-bearing findings all hold):**
+- `PER_CLASS_MAX` is still **global**, `rate_limited: 3` — no per-backend override exists. The
+  "a `FALLBACK` entry cannot deliver a low qwen retry ceiling" finding stands, and PR #7's much larger
+  circuit-break surface (`circuit_break_backend`, `cooldown_backend`, cooldowns with `until`) is what
+  the qwen policy must now build **on**, not alongside.
+- The reviewer block tuple is still `("devin", "opencode", "zai")` — `qwen` is still absent, so a
+  `backend: qwen` reviewer job would still validate. The correction stands.
+- `ADVISOR_CONSULTABLE_NONCLAUDE` is still a one-element `("codex",)`. Moot for v1 (advisor deferred),
+  but the audit's claim about a non-existent middle tier remains correct.
+- `_CURSOR = {"deep": "auto", ...}` still exists — so the "do not copy `auto` as qwen's placeholder"
+  correction still has a live thing to warn against.
+
+**Changed — five NEW registration sites that did not exist when the audits ran.** The audit's
+"13 independent registration sites" count is now low:
+- **`scripts/compound-v-pool-state.py`** — a backend tuple, *and* **`backend_available(backend, env,
+  which)`**, which today special-cases exactly two backends (`codex` → binary on PATH, `zai` →
+  `ZAI_API_KEY` set) and returns `True` for everything else. **This is the natural code home for the
+  mandatory-sandbox availability gate**: `qwen` must return available only when the key is set **and**
+  a working sandbox provider exists, otherwise the "sandbox is mandatory" claim has no enforcement at
+  routing time and a qwen job would be frozen into a pool on a machine that cannot sandbox it.
+  Defaulting to the `return True` fall-through would be a silent, wrong answer.
+- **`scripts/compound-v-project-config.py`** — backend tuple.
+- **`scripts/compound-v-dashboard.py`** — backend tuple plus cooldown rendering.
+- **`scripts/compound-v-failure-policy.py`** — `CONCRETE_BACKENDS`, a second tuple beside `FALLBACK`.
+- **Pool participation** in `compound-v-resolve-model.py` — `resolve_pool()`, weighted members,
+  `MAX_POOL_WEIGHT`/`MAX_EXPANDED_POOL_SLOTS`, and a rule that **`effort: xhigh` is invalid for pooled
+  jobs**. A decision is now required that the spec never faced: see "Pool participation" below.
+
+**Changed — the failure taxonomy grew.** `schemas/job_result.schema.json`'s `failure_class` enum now
+includes **`usage_window_exhausted`** and **`model_unavailable`** beside the classes this spec listed.
+That materially improves the qwen mapping: Alibaba's `hour/week/month allocated quota exceeded` is a
+**window** exhaustion (`usage_window_exhausted`), not `out_of_credits` — the Coding Plan has no
+pay-as-you-go, so the window reopens on its own and the run should cool down rather than treat the
+credit balance as spent. `concurrency allocated quota exceeded` → `rate_limited`.
+`THROTTLING.userQPSLimit` → `rate_limited`. 401 `invalid access token` → `auth`.
+
+**Pool participation — decision.** `qwen` is registered as a pool-eligible backend (it must appear in
+the pool-state tuple regardless), but ships with **no qwen member in any default pool**. Two reasons:
+its concurrency ceiling is the lowest of any backend and pools exist to spread load *across* backends;
+and pool assignments are frozen per run, so a qwen slot frozen on a machine whose sandbox provider is
+missing would fail every job in that run rather than degrade. Operators can add a qwen pool member in
+config once they have live quota experience. `backend_available()` remains the safety net either way.
 
 ---
 
@@ -445,8 +502,12 @@ assumed.** Community threads (2026, above the single-report threshold) show:
 `{"errorType":"THROTTLING.userQPSLimit","message":null,"status":429}` — **`message` is `null`**, so a
 classifier keying on message text (the way `zai`'s does) matches nothing; **key on `errorType`
 instead.** Also documented: `concurrency allocated quota exceeded` / `hour allocated quota exceeded` /
-`week allocated quota exceeded` / `month allocated quota exceeded` (map to `rate_limited` /
-`out_of_credits`), and 401 `invalid access token or token expired`. Additionally, the CLI's own
+`week allocated quota exceeded` / `month allocated quota exceeded`, and 401 `invalid access token or
+token expired`. **Mapped onto the taxonomy as it exists on this base** (which grew two classes since
+the audits ran): `concurrency` and `THROTTLING.userQPSLimit` → `rate_limited`; `hour`/`week`/`month`
+→ **`usage_window_exhausted`**, *not* `out_of_credits` — with no pay-as-you-go on this plan the window
+reopens by itself, so the correct behavior is a cooldown, not "the balance is spent"; 401 → `auth`.
+Additionally, the CLI's own
 deterministic exit codes wire in directly without needing error-text parsing at all: **0** success,
 **53** session-turn cap, **55** wall-time/tool-call budget exceeded, **130** SIGINT.
 
@@ -546,14 +607,22 @@ switch. **New:** `scripts/compound-v-run-qwen-worker.sh`, `skills/backend-launch
   historical manifest.
 - `scripts/compound-v-classify-failure.py` — `_QWEN_RULES` seeded with the real needles above,
   `classify()` branch, `--backend` choices, a selftest guard against the codex-fallthrough bug.
-- `scripts/compound-v-failure-policy.py` — `FALLBACK` entry **plus the qwen-specific retry/circuit-break
-  branch** (`PER_CLASS_MAX` is global today, so this is a real behavior change, not a table entry),
-  selftest cases.
+- `scripts/compound-v-failure-policy.py` — `FALLBACK` entry, **`CONCRETE_BACKENDS`** (a second tuple
+  the audits predate), **plus the qwen-specific retry/circuit-break branch** (`PER_CLASS_MAX` is still
+  global on this base, so this is a real behavior change, not a table entry) built on PR #7's existing
+  `circuit_break_backend`/`cooldown_backend` machinery rather than beside it. Selftest cases.
 - `skills/compound-v/state-machine.md` — circuit-break reason semantics, which today recognize only
   the `out_of_credits`/`auth` paths. **One job with the failure-policy change** — they are one
   behavior split across two files.
-- `scripts/compound-v-usage-extract.py` — **missed by the first draft entirely.** Either add to
-  `UNMEASURED_BACKENDS` or a real `_extract_qwen` branch, plus selftest.
+- `scripts/compound-v-usage-extract.py` — a real `_extract_qwen` branch (qwen's `--output-format json`
+  emits a buffered **array**, unlike zai's single document and codex's JSONL — a third shape, not a
+  copy of either), plus the `measured:false`-on-empty-usage guard and selftest.
+- `scripts/compound-v-pool-state.py` — **new site the audits predate.** Backend tuple **and**
+  `backend_available()`, which must return available for `qwen` only when the key is set **and** a
+  sandbox provider works. Falling through to its `return True` default would silently defeat the
+  mandatory-sandbox claim at routing time.
+- `scripts/compound-v-project-config.py`, `scripts/compound-v-dashboard.py` — **new sites the audits
+  predate.** Backend tuples (dashboard also renders per-backend cooldowns).
 - `schemas/job_result.schema.json` — `usage.backend` description string only.
 - `skills/backend-launcher/SKILL.md` — adapter table row. **Must land AFTER `adapter-qwen.md` exists**
   — the repo's dead-link CI gate scans every `.md` file and fails on an unresolved link.
