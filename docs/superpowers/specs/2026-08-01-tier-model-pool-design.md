@@ -155,8 +155,9 @@ per-job shapes. Since `assigned_backend` is load-bearing for resume and for the 
 this PR adds a narrow validator for the fields it introduces rather than trusting the shape.
 
 **`/v:resume` honours the recorded assignment** and never re-derives it: a resumed job belongs to
-a specific worktree and a specific partial diff. The one exception is a job that failed on a
-quota class — there, moving it is the point (§5).
+a specific worktree and a specific partial diff. There are two exceptions: a job that failed on a
+quota class — there, moving it is the point (§5) — and a job whose tier escalates past the pool's
+coverage (§5, `context_length`).
 
 ### 4. `backend: pool` — a routing instruction, not a backend
 
@@ -198,6 +199,14 @@ falling back to the existing chain only when the pool is exhausted. And because 
 tracked per failure-class and **reset on a reroute**, a 3-retry cap silently becomes 9 across a
 three-member pool against a 12-retry run budget: the run-level budget must be decremented across
 reroutes, not just the per-class counter.
+
+`context_length` is the second exception to §4's frozen-assignment rule. Pools do not cover
+`deep` (a Non-goal), so a pool job that escalates to a bigger tier is, by construction, escalating
+out of the tier its frozen slot was resolved for. The failure policy therefore also clears the
+pool assignment on `context_length` escalation for a pool-routed job — the same `clear_assignment`
+signal `out_of_credits` uses — so the dispatcher re-resolves it as an ordinary
+`assignment_source: fallback` pair instead of retaining a `pool_index` the resolved tier no longer
+matches, which the validator would otherwise reject.
 
 ### 6. Concurrency
 
