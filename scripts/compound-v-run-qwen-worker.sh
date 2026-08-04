@@ -2,18 +2,37 @@
 #
 # compound-v-run-qwen-worker.sh — headless Qwen Code worker for Compound V.
 #
-# Runs ONE file-scoped job as a Bash-spawned `qwen` process against Alibaba's Bailian Coding
-# Plan endpoint, inside its own git worktree, and emits the canonical job_result on stdout.
-# Implements skills/backend-launcher/adapter-qwen.md.
+# Runs ONE file-scoped job as a Bash-spawned `qwen` process against Alibaba's Bailian
+# **Token Plan** endpoint, inside its own git worktree, and emits the canonical job_result on
+# stdout. Implements skills/backend-launcher/adapter-qwen.md.
+#
+# NOT the Coding Plan. Measured 2026-08-04 on the operator's key: every Coding Plan combination
+# (both regions x three models x Bearer/x-api-key) returned 401, and the one 200 seen there —
+# GET /models — is UNAUTHENTICATED, so it proves nothing (a bogus key gets the same catalog).
+# The same key authenticates and generates on the Token Plan, where a bogus key does get a 401.
 #
 # !!! SAFETY — lower-trust in ROLE, sandbox-mandatory in MECHANISM, WORKER-ONLY !!!
 # Unlike zai/cursor/antigravity/opencode, this backend DOES get kernel confinement — and it is
 # REQUIRED, not optional. A machine with no sandbox provider (sandbox-exec on macOS, docker or
-# podman on Linux) makes this worker REFUSE to start rather than run unconfined, and the run is
-# failed afterwards unless the child actually reported that the sandbox engaged.
+# podman on Linux) makes this worker REFUSE to start rather than run unconfined.
+#
+# Engagement is NOT observable in the result payload. The 2026-08-04 live probe against
+# qwen 0.21.5 found NO `sandbox` key anywhere in `--output-format json`, so the earlier
+# "read it back out of the envelope" proof could never have passed. What IS enforceable, and
+# what this worker now relies on, is three things:
+#   1. refuse when an ambient SANDBOX is set (setting it IS the disable, see below);
+#   2. always hand qwen a CONCRETE provider name in QWEN_SANDBOX (sandbox-exec|docker|podman),
+#      never the bare boolean — an unresolvable provider then makes qwen itself raise
+#      FatalSandboxError instead of silently running unconfined;
+#   3. treat that FatalSandboxError as a WORKER fault, not a model failure.
+# The guarantee is qwen's own fatal error, not an observed field. Do not upgrade that claim.
+#
 # The backend is still never a reviewer: the manifest validator rejects it by name.
 #
-# Status: auth-pending / coverage-unverified. No live Coding Plan key has met this argv yet.
+# Status. The INVOCATION SHAPE is verified live 2026-08-04 against qwen 0.21.5 on Token Plan
+# Pro: exit 0, a real generation, an init envelope reporting the requested model. What is still
+# stub-only, and must not be described as verified: the scope gate, the merge-back, and the
+# blocked path have never run against a real model's edits.
 #
 # Enforcement (blocked/files_changed/violations) is git-derived by
 # scripts/compound-v-scope-check.py — never self-reported by the model.
@@ -27,16 +46,22 @@ SUPERVISOR="$SCRIPT_DIR/compound-v-run-with-timeout.py"
 SCOPE_CHECK="$SCRIPT_DIR/compound-v-scope-check.py"
 USAGE_EXTRACT="$SCRIPT_DIR/compound-v-usage-extract.py"
 
-# The international Coding Plan endpoint. Unlike zai's hard-pinned base URL this one is
-# caller-selectable, because the China endpoint (coding.dashscope.aliyuncs.com) is a legitimate
-# operator choice and a region mismatch returns a 401 that never says "wrong region". The
-# scheme is still pinned: an ambient value cannot downgrade the transport to plaintext.
-QWEN_DEFAULT_BASE_URL="https://coding-intl.dashscope.aliyuncs.com/v1"
+# The Token Plan endpoint, MEASURED working end-to-end on 2026-08-04. Note the shape: a
+# regional host and a `/compatible-mode/v1` path, NOT the Coding Plan's coding-intl.dashscope
+# host. Unlike zai's hard-pinned base URL this one stays caller-selectable — other regions are
+# a legitimate operator choice and a region mismatch returns a 401 that never says "wrong
+# region". The scheme is still pinned: an ambient value cannot downgrade it to plaintext.
+QWEN_DEFAULT_BASE_URL="https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
 
-# Coding Plan quota is counted in REQUESTS, not tokens: a 60-turn agentic loop costs 60 units
-# regardless of output length, so the turn count is the thing that costs. 15 is the same
+# Token Plan quota is counted in CREDITS off token usage, not in requests, so the turn count is
+# no longer the only thing that costs — but it is still the runaway guard. 15 is the same
 # ceiling adapter-claude.md pins for a scoped implementation slice — enough turns to write and
 # self-check a partitioned file set, small enough that a runaway job ends rather than churns.
+#
+# MEASURED and load-bearing on a per-token plan: a ONE-WORD prompt consumed 17,277 INPUT
+# tokens. That is the system preamble plus 64 tool definitions, not the user's prompt, and
+# --safe-mode was already on. `--core-tools` is the lever that could cut it. NOT applied yet:
+# trimming the tool set must be measured before it is claimed, not guessed at.
 MAX_TURNS=15
 
 # The MANDATORY provider-credential scrub, as an ALLOWLIST rather than a denylist. `env -i`
@@ -188,9 +213,9 @@ command -v env     >/dev/null 2>&1 || die "env not found on PATH (required for t
 [ -f "$SCOPE_CHECK" ]   || die "scope gate not found: $SCOPE_CHECK"
 [ -f "$USAGE_EXTRACT" ] || die "usage extractor not found: $USAGE_EXTRACT"
 
-QWEN_KEY="${BAILIAN_CODING_PLAN_API_KEY:-}"
+QWEN_KEY="${BAILIAN_TOKEN_PLAN_API_KEY:-}"
 [ -n "$QWEN_KEY" ] || \
-  die "BAILIAN_CODING_PLAN_API_KEY is not set — the qwen worker never reads a key from a file inside the repo"
+  die "BAILIAN_TOKEN_PLAN_API_KEY is not set — the qwen worker never reads a key from a file inside the repo"
 
 OPENAI_BASE_URL="${OPENAI_BASE_URL:-$QWEN_DEFAULT_BASE_URL}"
 case "$OPENAI_BASE_URL" in
@@ -239,7 +264,11 @@ SCRATCH="$ART/home"    # the worker's HOME *and* QWEN_HOME — see the settings 
 # was actually created from.
 BASELINE_SHA="$(git -C "$REPO" rev-parse HEAD 2>/dev/null)" || die "cannot resolve HEAD in $REPO"
 
-mkdir -p "$WT_PARENT/$RUN_ID" "$ART" "$SCRATCH/.qwen"
+# $SCRATCH/.qwen is deliberately NOT created. With QWEN_HOME set, the config dir IS $QWEN_HOME
+# itself — `.qwen` underneath it is the HOME-relative legacy path, which qwen only mentions to
+# warn that it will not migrate it ("QWEN_HOME points to … but no settings.json was found
+# there. Existing config remains at …/.qwen"). Measured 2026-08-04.
+mkdir -p "$WT_PARENT/$RUN_ID" "$ART" "$SCRATCH"
 
 # Idempotent on resume: drop any stale worktree at this path, then recreate at current HEAD.
 if [ -e "$WT" ]; then
@@ -268,18 +297,53 @@ while [ -n "$_scan" ] && [ "$_scan" != "/" ]; do
 done
 
 # --- the pinned settings file, in scratch and NEVER in the worktree ----------
+# THIS FILE IS THE AUTH PATH, not just a hardening knob. Measured 2026-08-04 against qwen
+# 0.21.5: the `openai` auth path does NOT read a BAILIAN_*_API_KEY variable on its own — with
+# only that variable set the CLI dies with "Missing API key for OpenAI-compatible auth. Set
+# settings.security.auth.apiKey, or set the 'OPENAI_API_KEY' environment variable."
+#
+# `modelProviders[].envKey` is the vendor-documented lever that closes that gap (their own
+# auth.md publishes this exact block): it names WHICH environment variable holds the key, so
+# the operator-facing name — the one Alibaba documents and the one /v:init records — is also
+# the name the CLI reads. Measured result of the run that added this block: exit 0, no "Missing
+# API key", init envelope reporting the requested model, and a real generation.
+#
+# Deliberate consequence: OPENAI_API_KEY is NEVER set, never allow-listed, and never handed to
+# the child. Qwen Code loads a `.env` variable only when it is NOT already in the environment,
+# so leaving the name unset would let a planted .env supply it — hence the ancestor scan above.
+#
 # security.folderTrust.enabled is set EXPLICITLY rather than inheriting the documented-off
 # default (Qwen Code forked Gemini CLI at v0.8.2, ~31 minors before GHSA-wpqr-6v78-jr5g's fix;
 # whether the untrusted-folder behaviour was backported is UNVERIFIED).
 #
-# This file MUST live under $SCRATCH — the redirected QWEN_HOME — and never inside $WT: a
-# project-scoped .qwen/settings.json sits in the worktree and would dirty the worker's own
-# diff, tripping the scope gate on a job that changed nothing on purpose. Redirecting
-# QWEN_HOME removes that whole hazard class; do not replicate the opencode worker's
-# in-worktree config pin and its symlink guards.
-cat > "$SCRATCH/.qwen/settings.json" <<'SETTINGS'
-{ "security": { "folderTrust": { "enabled": true } } }
-SETTINGS
+# PATH, MEASURED, and it is NOT the obvious one: the file goes at "$SCRATCH/settings.json",
+# i.e. directly at $QWEN_HOME — NOT at "$SCRATCH/.qwen/settings.json". With QWEN_HOME set, the
+# config dir IS $QWEN_HOME; a file under `.qwen` there is ignored and the CLI prints "QWEN_HOME
+# points to … but no settings.json was found there", then dies on the missing key. That exact
+# mistake was live in this worker until the 2026-08-04 probe caught it.
+#
+# It MUST live under $SCRATCH and never inside $WT: a project-scoped .qwen/settings.json sits
+# in the worktree and would dirty the worker's own diff, tripping the scope gate on a job that
+# changed nothing on purpose. Redirecting QWEN_HOME removes that whole hazard class; do not
+# replicate the opencode worker's in-worktree config pin and its symlink guards.
+#
+# Built with jq, not a heredoc: $MODEL and $OPENAI_BASE_URL are caller-supplied, and a
+# hand-quoted JSON template would be one odd catalog name away from an unparseable settings
+# file that fails as "no auth type is selected" three steps later.
+jq -n --arg model "$MODEL" --arg base "$OPENAI_BASE_URL" \
+  '{
+     modelProviders: {
+       openai: {
+         protocol: "openai",
+         models: [ { id: $model,
+                     name: ($model + " (Token Plan)"),
+                     baseUrl: $base,
+                     envKey: "BAILIAN_TOKEN_PLAN_API_KEY" } ]
+       }
+     },
+     security: { auth: { selectedType: "openai" }, folderTrust: { enabled: true } },
+     model: { name: $model }
+   }' > "$SCRATCH/settings.json" || die "cannot write the pinned settings file"
 
 EVENTS_LOG="${EVENTS_LOG_OVERRIDE:-$ART/qwen_result.json}"
 STDERR_LOG="$ART/qwen_stderr.log"
@@ -330,7 +394,7 @@ PROMPT_TEXT="$(cat "$PROMPT_FILE")"
 # QWEN_SANDBOX_IMAGE is listed for the container path even though this worker does not set
 # one — an unset name costs nothing and its absence from the list would be a silent trap.
 ENV_ONLY_NAMES="$(printf '%s' "$_SAFE_ENV_VARS" | tr ' ' ',')"
-ENV_ONLY_NAMES="$ENV_ONLY_NAMES,HOME,QWEN_HOME,BAILIAN_CODING_PLAN_API_KEY,OPENAI_BASE_URL"
+ENV_ONLY_NAMES="$ENV_ONLY_NAMES,HOME,QWEN_HOME,BAILIAN_TOKEN_PLAN_API_KEY,OPENAI_BASE_URL"
 ENV_ONLY_NAMES="$ENV_ONLY_NAMES,QWEN_SANDBOX,SEATBELT_PROFILE,QWEN_SANDBOX_IMAGE,SANDBOX_FLAGS"
 
 exit_code=0
@@ -360,7 +424,7 @@ exit_code=0
 env -i "$@" \
     HOME="$SCRATCH" \
     QWEN_HOME="$SCRATCH" \
-    BAILIAN_CODING_PLAN_API_KEY="$QWEN_KEY" \
+    BAILIAN_TOKEN_PLAN_API_KEY="$QWEN_KEY" \
     OPENAI_BASE_URL="$OPENAI_BASE_URL" \
     QWEN_SANDBOX="$QWEN_SANDBOX" \
   python3 "$SUPERVISOR" --timeout "$TIMEOUT_SEC" --grace 3 --env-only "$ENV_ONLY_NAMES" -- \
@@ -393,10 +457,56 @@ env -i "$@" \
 #  5. `--worktree` is NEVER emitted: it starts the session in Qwen Code's OWN worktree under
 #     .qwen/worktrees/ and prompts interactively on exit — headless that is a hang, and the
 #     model would then edit files the scope gate never diffs.
+#  6. `--auth-type openai` is MEASURED-redundant with security.auth.selectedType in the pinned
+#     settings file, and kept anyway: it puts the auth path in the process line where an
+#     operator reading `ps` can see it. Dropping BOTH fails with "No auth type is selected."
+#     The choice list is exactly openai|anthropic|qwen-oauth|gemini|vertex-ai — there is NO
+#     bailian/dashscope auth type, and every Anthropic-shaped path on the Bailian endpoint
+#     measured 404, so `openai` is the only protocol this endpoint speaks.
+#  7. `--session-id` IS honored, verified: the id handed in came back verbatim as `session_id`
+#     on every element. It is also VALIDATED — a non-UUID value is a parse-time refusal
+#     ("Invalid --session-id … Must be a valid UUID") plus a help dump, which is why the id is
+#     minted by uuidgen/uuid4 and never hand-shaped.
 
+# `usage` on the terminal `result` element measured as {input_tokens, output_tokens,
+# cache_read_input_tokens} and, on the Token Plan, also total_tokens. compound-v-usage-extract.py
+# reads input_tokens/output_tokens and ignores every other key, so an added field is inert; an
+# empty-but-well-formed usage object still yields measured:false with null counts, never a
+# fabricated 0. No cost figure is recorded, estimated, or carried anywhere.
 USAGE_JSON="$(python3 "$USAGE_EXTRACT" --backend qwen --events-log "$EVENTS_LOG" 2>/dev/null)" \
   || USAGE_JSON="$(unmeasured_usage)"
 [ -n "$USAGE_JSON" ] || USAGE_JSON="$(unmeasured_usage)"
+
+# --- containment, part 3: a sandbox that never engaged is a WORKER fault ------
+# There is no `sandbox` field in the output to read back (measured: no such key anywhere), so
+# engagement cannot be observed. What CAN be observed is qwen complaining that it could not
+# engage one. Two different texts, and the difference was measured, not read off the source:
+#   * getSandboxCommand() throws FatalSandboxError when a KNOWN provider's command is missing —
+#     "Missing sandbox command '…' (from QWEN_SANDBOX)" / "QWEN_SANDBOX is true but failed to
+#     determine command for sandbox; install docker or podman or specify command in
+#     QWEN_SANDBOX";
+#   * an UNKNOWN provider name instead prints "Invalid sandbox command '…'. Must be one of
+#     docker, podman, sandbox-exec" — and, measured, prints it in an UNBOUNDED LOOP without
+#     ever exiting. So "qwen fails loudly" is only half true: on that path it hangs, and the
+#     supervisor's timeout is what actually ends the job. Both texts are matched here anyway,
+#     because a hang that the timeout catches still must not be filed as a model failure.
+# This worker only ever emits a `command -v`-verified concrete name, so the unknown-name path
+# should be unreachable; it is matched because "should be unreachable" is not a guarantee.
+#
+# NEVER the bare boolean, and the reason is measured too: with QWEN_SANDBOX=true and no
+# SEATBELT_PROFILE, macOS silently selects the PERMISSIVE-OPEN profile (writes broad, network
+# open) and reports "using macos seatbelt (profile: permissive-open)". That is a sandbox in
+# name only. A concrete provider plus an explicit profile is what makes the confinement real.
+#
+# Checked BEFORE the timeout and exit-code branches on purpose. Classifying it as a model
+# failure would file a job that never ran contained as `other`/`rate_limited` and let the
+# dispatcher retry or reroute it; the operator's machine is what needs fixing, not the prompt.
+# Verified not to false-positive on a healthy sandboxed run, whose stderr says only
+# "using macos seatbelt (profile: …)" / "hopping into sandbox (command: …)".
+if grep -qE 'FatalSandboxError|from QWEN_SANDBOX|failed to determine command for sandbox|Invalid sandbox command' \
+     "$STDERR_LOG" 2>/dev/null; then
+  die "qwen could not engage the mandatory sandbox (QWEN_SANDBOX=$QWEN_SANDBOX): $(head -c 300 "$STDERR_LOG")"
+fi
 
 # Supervisor timeout: killpg'd the whole process tree, exit 124.
 if [ "$exit_code" = "124" ]; then
@@ -420,30 +530,35 @@ if [ "$exit_code" != "0" ]; then
   exit 0
 fi
 
-# --- fail-closed assertions on a clean exit ----------------------------------
-# Both read the TRANSPORT's own envelope. They run only after the failure branches above, so a
-# crashed or timed-out job still gets a classified job_result instead of a worker fault.
-
-# THE MODEL-IDENTITY ASSERTION. The served model comes from the transport's own session_start
-# event. NEVER from --json-schema/structured_output: that content is authored by the model, and
-# a model cannot authenticate its own identity — a substituted model would simply assert the
-# expected name. The Coding Plan's multi-vendor catalog (glm-*, kimi-*, MiniMax-*) is what
-# makes "did we get the model we asked for" a real question, and an ancestor-supplied
-# OPENAI_API_KEY is a first-class alternate auth path this is the concrete defense against.
-SERVED_MODEL="$(jq -r '[.[] | select(.type=="system" and .subtype=="session_start") | .model] | if length==1 then .[0] else empty end' "$EVENTS_LOG" 2>/dev/null || true)"
-[ -n "$SERVED_MODEL" ] || die "no unique session_start.model in the response — failing closed"
+# --- the fail-closed model-identity assertion on a clean exit -----------------
+# It reads the TRANSPORT's own envelope, and it runs only after the failure branches above, so
+# a crashed or timed-out job still gets a classified job_result instead of a worker fault.
+#
+# MEASURED 2026-08-04 against qwen 0.21.5: the FIRST output element is
+# {"type":"system","subtype":"init", …}. There is NO `session_start` element — that name does
+# exist in the source but belongs to a different "dual output" protocol that
+# `--output-format json` does not emit, and an earlier draft of this worker read it and would
+# therefore have failed every real run closed. The init element's measured key set is exactly
+# agents, cwd, mcp_servers, model, permission_mode, qwen_code_version, session_id,
+# slash_commands, subtype, tools, type, uuid — `model` is present (measured "qwen3.8-max").
+#
+# NEVER read the served model from --json-schema/structured_output: that content is authored by
+# the model, and a model cannot authenticate its own identity — a substituted model would
+# simply assert the expected name. The plan's multi-vendor catalog (glm-*, deepseek-*) is what
+# makes "did we get the model we asked for" a real question, and an
+# ancestor-planted OPENAI_API_KEY — a name this design deliberately leaves unset, so it is free
+# real estate — is a first-class alternate auth path this is the concrete defense against.
+#
+# Exactly one such element is required: missing, duplicated, or mismatched all fail closed.
+SERVED_MODEL="$(jq -r '[.[] | select(.type=="system" and .subtype=="init") | .model] | if length==1 then .[0] else empty end' "$EVENTS_LOG" 2>/dev/null || true)"
+[ -n "$SERVED_MODEL" ] || die "no unique system/init element carrying .model in the response — failing closed"
 [ "$SERVED_MODEL" = "$MODEL" ] || die "served model '$SERVED_MODEL' != requested '$MODEL'"
 
-# THE CONTAINMENT PROOF. `SANDBOX` is what the sandbox transport sets on ITSELF once it has
-# engaged, so a non-empty report from the child is the evidence that the mandatory sandbox
-# actually ran. If engagement cannot be proven the job fails: a mandatory sandbox that silently
-# no-ops is worse than an honest optional one, because the whole trust tier is claimed on it.
-# The exact field the real binary reports this in is a LIVE-PROBE item (status: auth-pending /
-# coverage-unverified) — this reads the session_start envelope, same source as the model
-# identity, and never model-authored output.
-SANDBOX_REPORTED="$(jq -r '[.[] | select(.type=="system" and .subtype=="session_start") | (.sandbox // "")] | if length==1 then .[0] else empty end' "$EVENTS_LOG" 2>/dev/null || true)"
-[ -n "$SANDBOX_REPORTED" ] || \
-  die "the child did not report an engaged sandbox (expected QWEN_SANDBOX=$QWEN_SANDBOX) — failing closed rather than accepting an unconfined run"
+# NO CONTAINMENT PROOF IS READ FROM THE PAYLOAD, because none exists: there is no `sandbox` key
+# anywhere in the measured output. The deleted assertion could never have passed. Containment
+# rests on the three enforceable steps documented in the header — refuse an ambient SANDBOX,
+# hand qwen a concrete provider, treat FatalSandboxError as a worker fault — and the adapter
+# doc says so plainly. Do not re-add a payload-derived proof without a field to read.
 
 SUMMARY="$(jq -r '[.[] | select(.type=="result") | (.result // "")] | last // ""' "$EVENTS_LOG" 2>/dev/null || echo "")"
 

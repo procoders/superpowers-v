@@ -2,22 +2,114 @@
 
 > Read the contract in [`SKILL.md`](SKILL.md) first — this adapter implements that `job_spec → job_result` interface. This file is the backend-specific runbook; the wiring lives in `scripts/compound-v-run-qwen-worker.sh`.
 
-The qwen backend is a **Bash-spawned `qwen` worker** — the genuine Qwen Code CLI (npm `@qwen-code/qwen-code`, Apache-2.0, **Node.js ≥ 22.0.0** required), authenticated against Alibaba Cloud's Bailian / Model Studio **"Coding Plan"**. Own process, own git worktree, own process group under the timeout supervisor, git-derived scope gate — the same shape as codex / cursor / antigravity / zai.
+The qwen backend is a **Bash-spawned `qwen` worker** — the genuine Qwen Code CLI (npm `@qwen-code/qwen-code`, Apache-2.0, **Node.js ≥ 22.0.0** required), authenticated against Alibaba Cloud's Bailian / Model Studio **"Token Plan"**. Own process, own git worktree, own process group under the timeout supervisor, git-derived scope gate — the same shape as codex / cursor / antigravity / zai.
+
+> **Token Plan, not Coding Plan — measured, not assumed.** The operator's key has **zero entitlement** on the Coding Plan: all 12 combinations tried (2 regions × 3 models × `Bearer` / `x-api-key`) returned **401**. The only 200 ever seen there was `GET /models`, and that route is **unauthenticated** — a deliberately bogus key returns the same 10-model catalog, so it proves nothing. The same key authenticates and **generates** on the Token Plan, where a bogus key *does* get a 401. The console shows *"Token Plan → Pro Plan, Current, $68/month"*. Everywhere this file used to say Coding Plan, it now means Token Plan; the sections that still describe the Coding Plan are marked as such.
 
 Two things make it different from every other adapter in this directory, and both are stated up front because they change how it may be used:
 
 - **A kernel sandbox is mandatory, not optional.** `qwen` is the second backend after codex with a real OS-level confinement requirement. A machine with no working sandbox provider reports `qwen` **unavailable** rather than running it unconfined.
-- **Alibaba's Coding Plan terms arguably prohibit exactly this use.** That is not a footnote inherited from `adapter-zai.md`; it is a different clause with a different shape, and it is unresolved. Read [Compliance](#compliance--read-this-before-anything-else) before dispatching a single job.
+- **The plan's terms have not been re-reviewed since the plan changed.** The [Compliance](#compliance--read-this-before-anything-else) section below was written against the **Coding Plan's** terms, which are not this plan's. Read it — and read the banner at the top of it — before dispatching a single job.
 
-**Status: `auth-pending / coverage-unverified`.**
+**Status: invocation shape `verified live`; end-to-end coverage still `partial`.**
 
 | | |
 |---|---|
-| `qwen --version` | **TBD — no live probe yet.** No live Coding Plan key exists, so the pinned argv below has never met the real binary. This slot stays an explicit unknown; it is **not** to be filled with a plausible-looking number. |
-| Source of every flag fact | The released **`v0.21.5`** source (`packages/cli/src/config/{config,sandboxConfig,environment}.ts`), not the docs site. Where the two disagree — and on `--sandbox` they do, in a security-relevant way — source wins. |
-| Live pass still owed | (a) sandboxing actually engages under the pinned invocation; (b) the `--output-format json` response shape; (c) whether Qwen Code backported the upstream untrusted-folder fix (see [Security precedent](#security-precedent)). |
+| `qwen --version` | **`0.21.5`** — the version every fact below was measured against, recorded the way `codex-cli 0.144.1` is in [`adapter-codex.md`](adapter-codex.md). Re-verify on every version bump. |
+| Source of every flag fact | The released **`v0.21.5`** source and, since 2026-08-04, **direct measurement against the shipped binary**. Where docs, source and measurement disagree, **measurement wins** — and on three separate points it did. |
+| Verified live 2026-08-04 | The pinned invocation runs end-to-end on Token Plan Pro: **exit 0**, a real generation, an `init` envelope reporting the requested model. See [Verified live](#verified-live-2026-08-04-against-qwen-0215). |
+| **Still stub-only — do NOT call these verified** | The **scope gate**, the **merge-back**, and the **blocked** path have never run against a real model's edits — only against the fake binary in `test-qwen-worker-stub.sh`. |
+| Still owed | Whether Qwen Code backported the upstream untrusted-folder fix (see [Security precedent](#security-precedent)); the credits-per-token conversion; the real concurrency ceiling. |
 
-Nothing here may be described as **verified**. Full derivation: [`docs/superpowers/specs/2026-08-04-qwen-code-cli-backend-design.md`](../../docs/superpowers/specs/2026-08-04-qwen-code-cli-backend-design.md).
+Full derivation: [`docs/superpowers/specs/2026-08-04-qwen-code-cli-backend-design.md`](../../docs/superpowers/specs/2026-08-04-qwen-code-cli-backend-design.md).
+
+---
+
+## Verified live 2026-08-04 against qwen 0.21.5
+
+Everything in this section was **observed**, running the real binary. Each item falsified something this adapter previously asserted from documentation, so each is written as the observation, not as the conclusion.
+
+### 1. The output shape — the first element is `system` / `init`, and there is no `session_start`
+
+`--output-format json` emits **one buffered top-level JSON array**. Its first element is:
+
+```json
+{"type": "system", "subtype": "init", …}
+```
+
+**Not `session_start`.** That name does exist in the shipped code, but it belongs to a different "dual output" protocol which `--output-format json` does **not** emit. The worker's first draft asserted on `session_start` and would therefore have failed **every** real run closed.
+
+The `init` element's measured key set is exactly:
+
+```
+agents, cwd, mcp_servers, model, permission_mode, qwen_code_version,
+session_id, slash_commands, subtype, tools, type, uuid
+```
+
+`model` **is** present here — that is what the model-identity assertion reads. **There is no `sandbox` key anywhere in the output.**
+
+The terminal `result` element's measured keys:
+
+```
+duration_api_ms, duration_ms, is_error, num_turns, permission_denials,
+result, session_id, stats, subtype, type, usage, uuid   (plus `error` when failing)
+```
+
+`usage` measured as `{input_tokens, output_tokens, cache_read_input_tokens}`, plus `total_tokens` on the Token Plan. `stats.models` is keyed **by model name** — `stats.models["qwen3.8-max"].api.totalRequests`.
+
+**`--session-id` is honored and validated.** The UUID handed in comes back verbatim as `session_id` on every element, so the caller genuinely *assigns* the id rather than scraping it. A non-UUID value is a parse-time refusal — `Invalid --session-id … Must be a valid UUID` plus a help dump — which is why the id is minted by `uuidgen`/`uuid4` and never hand-shaped.
+
+**A watch-out, observed and not yet handled anywhere:** a run whose every API call failed still came back **`subtype: "success"`, `is_error: false`, exit 0**, with the error text sitting in the `result` string (`"[API Error: …]"`). A `qwen` job that never reached the model can therefore be reported `success` with zero files changed. Nothing in this adapter reads `is_error` today. **Flagged, not fixed.**
+
+### 2. Auth — `settings.json` `envKey` is the auth path, and `OPENAI_API_KEY` is never set
+
+`--auth-type` accepts exactly `openai`, `anthropic`, `qwen-oauth`, `gemini`, `vertex-ai`. **There is no `bailian` / `dashscope` auth type**, and every Anthropic-shaped path on the endpoint measured **404** — the plan is OpenAI-protocol only. Omitting `--auth-type` *and* the settings equivalent fails with `No auth type is selected.`
+
+The `openai` path does **not** read a `BAILIAN_*_API_KEY` variable on its own. With only that variable set it dies with, verbatim:
+
+> `Missing API key for OpenAI-compatible auth. Set settings.security.auth.apiKey, or set the 'OPENAI_API_KEY' environment variable.`
+
+The lever that closes this is `modelProviders[].envKey`, which Qwen Code's own `auth.md` publishes: it names **which environment variable** holds the key. So the operator-facing name is also the name the CLI reads, and **`OPENAI_API_KEY` is never set, never allow-listed, and never handed to the child**. That is deliberate and strictly safer: leaving the name unset is what makes the ancestor-`.env` scan meaningful, since Qwen Code loads a `.env` variable only when it is **not** already in the environment.
+
+**The settings file goes AT `$QWEN_HOME/settings.json` — not at `$QWEN_HOME/.qwen/settings.json`.** With `QWEN_HOME` set, the config dir *is* `QWEN_HOME`; a file under a `.qwen` subdirectory there is ignored, and the CLI says so before dying on the missing key:
+
+> `Warning: QWEN_HOME points to "…" but no settings.json was found there. Existing config remains at "…/.qwen" — … not auto-migrated.`
+
+That exact mistake was live in this worker until the probe caught it. The worker therefore does **not** create `$SCRATCH/.qwen` at all.
+
+### 3. Containment — guaranteed by qwen's own error, **not** observed in the payload
+
+**There is no `sandbox` field in the output.** The containment proof this adapter previously described — read `SANDBOX` back out of the envelope — could never have passed. It is deleted, and it must not be re-added without a field to read.
+
+What is actually enforceable, and what the worker now relies on, is three things:
+
+1. **Refuse when an ambient `SANDBOX` is set.** `getSandboxCommand()` begins `if (process.env["SANDBOX"]) return "";` — an ambient value silently disables sandboxing, so setting it defensively *is* the disable. The worker's pre-existing refusal is correct and stays.
+2. **Always pass a CONCRETE provider name** in `QWEN_SANDBOX` (`sandbox-exec` | `docker` | `podman`), never the bare boolean. Measured reason: with `QWEN_SANDBOX=true` and no `SEATBELT_PROFILE`, macOS silently selects **`permissive-open`** (writes broad, network open) and reports `using macos seatbelt (profile: permissive-open)`. That is a sandbox in name only.
+3. **Treat a sandbox complaint in stderr as a WORKER fault, not a model failure.** Classifying it as a model failure would file a job that never ran contained as `other` / `rate_limited` and let the dispatcher retry or reroute it.
+
+**Two different texts, and the difference was measured rather than read off the source:**
+
+| Situation | What qwen actually does |
+|---|---|
+| A **known** provider whose command is missing | Throws `FatalSandboxError` — `Missing sandbox command '…' (from QWEN_SANDBOX)`, or `QWEN_SANDBOX is true but failed to determine command for sandbox; install docker or podman or specify command in QWEN_SANDBOX` |
+| An **unknown** provider name | Prints `Invalid sandbox command '…'. Must be one of docker, podman, sandbox-exec` — **in an unbounded loop, never exiting** |
+
+**So "qwen fails loudly" is only half true.** On the unknown-name path it *hangs*, and the supervisor's wall-clock timeout is what actually ends the job. The worker matches both texts anyway, because a hang the timeout catches still must not be filed as a model failure. It only ever emits a `command -v`-verified concrete name, so the unknown-name path should be unreachable — matched because *"should be unreachable"* is not a guarantee.
+
+Verified not to false-positive: a healthy sandboxed run's stderr says only `using macos seatbelt (profile: …)` or `hopping into sandbox (command: …)`.
+
+**Linux operators, note:** the `docker` path pulls `ghcr.io/qwenlm/qwen-code:<version>` from ghcr.io on first use. A cold machine spends the job's timeout budget on an image pull, and the pull needs network even for a `network: false` job. **Not measured to completion here** — observed starting, then cut off.
+
+### 4. What the catalog actually is on this plan
+
+Measured on the operator's key, the Token Plan catalog is:
+
+```
+qwen3.8-max · qwen3.8-max-preview · qwen3.7-max · qwen3.7-plus
+qwen3.6-flash · glm-5.2 · deepseek-v4-pro · deepseek-v4-flash-0731
+```
+
+(plus audio/image models, irrelevant here). **There is no `kimi` and no `qwen3-coder-plus` on this plan** — the model the tier map still names does not exist here. See [Model and effort](#model-and-effort).
 
 ---
 
@@ -27,13 +119,13 @@ Nothing here may be described as **verified**. Full derivation: [`docs/superpowe
 
 **WORKER-ONLY.** A `qwen` reviewer job is **rejected by name** by the same validator — `qwen` is in the explicit reviewer block-list tuple beside `devin` / `opencode` / `zai`. This needed a real code change and did not come for free: the CR5-5 gate (`_is_claude_opus`) only inspects `fast_path.review` declarations and sealed receipts, so a normal manifest's reviewer job never reaches it, and `tier: deep` alone satisfies the deep-reviewer invariant. Without the block-list entry, `backend: qwen, type: spec_review, tier: deep` would validate cleanly. A reviewer routed here would satisfy the Review Gate's Opus guarantee through a third-party endpoint instead of Claude Opus, defeating it entirely.
 
-**The kernel sandbox is required, not optional.** `QWEN_SANDBOX` (macOS Seatbelt via `sandbox-exec`; Linux Docker or Podman) must engage, and the worker **proves it engaged** after the run rather than assuming it. If containment cannot be proven, the job fails closed — a mandatory sandbox that silently no-ops is worse than an honest optional one, because the trust tier is claimed on it. [`compound-v-pool-state.py`](../../scripts/compound-v-pool-state.py)'s `backend_available("qwen", …)` returns `False` unless **both** the key and a working sandbox provider are present, so this is enforced at routing time and not only at the worker's own refusal.
+**The kernel sandbox is required, not optional.** `QWEN_SANDBOX` (macOS Seatbelt via `sandbox-exec`; Linux Docker or Podman) must engage. **Engagement is guaranteed by qwen's own fatal error, not observed in the result payload** — there is no `sandbox` field to read, so no payload-derived proof is possible or claimed. See [Containment](#3-containment--guaranteed-by-qwens-own-error-not-observed-in-the-payload) for the three enforceable steps that replace it. [`compound-v-pool-state.py`](../../scripts/compound-v-pool-state.py)'s `backend_available("qwen", …)` returns `False` unless **both** the key and a working sandbox provider are present, so this is enforced at routing time and not only at the worker's own refusal.
 
 **Opt-in, and enforced in code.** `qwen` ships **off by default**. A manifest naming a `qwen` job is rejected unless the operator-local, uncommitted acknowledgment (`.claude/compound-v.json` → `qwen_optin.terms_version`, gitignored) is present and current. Prose in `/v:init` cannot stop a hand-authored manifest; the validator can. The record holds an acknowledgment and a terms-version marker only — **never the API key**, which stays in the environment.
 
-**Not an arbiter seat.** [`compound-v-epic-arbiter.py`](../../scripts/compound-v-epic-arbiter.py) matches model families by substring over `gpt`, `gemini`, `claude`, `opus`, `sonnet`, `grok`. `qwen`, `glm` and `kimi` are all absent, so a Coding Plan ballot buckets as `unknown` alongside every other unrecognised model and could be deduped against an unrelated one — a correlated ballot masquerading as an independent vote. Same gap `zai` already left; not closed here.
+**Not an arbiter seat.** [`compound-v-epic-arbiter.py`](../../scripts/compound-v-epic-arbiter.py) matches model families by substring over `gpt`, `gemini`, `claude`, `opus`, `sonnet`, `grok`. `qwen`, `glm` and `deepseek` are all absent, so a ballot from this plan buckets as `unknown` alongside every other unrecognised model and could be deduped against an unrelated one — a correlated ballot masquerading as an independent vote. Same gap `zai` already left; not closed here.
 
-**Sandbox-mandatory places `qwen` structurally above the no-OS-guarantee tier (opencode / cursor / antigravity / zai) — but its status stays `auth-pending / coverage-unverified`, not "verified".** Claiming codex-equivalent trust before the live pass confirms both the sandbox engagement and the untrusted-folder backport question would be premature.
+**Sandbox-mandatory places `qwen` structurally above the no-OS-guarantee tier (opencode / cursor / antigravity / zai) — but that is still not codex-equivalent trust.** The invocation shape is now live-verified; the scope gate, the merge-back and the blocked path are not, and the untrusted-folder backport question is still open. Claiming codex-equivalent trust on that basis would be premature.
 
 ---
 
@@ -43,7 +135,8 @@ Nothing here may be described as **verified**. Full derivation: [`docs/superpowe
 1. ISOLATE   git -C <repo> worktree add <WT> HEAD          # clean diff baseline
 2. PREFLIGHT refuse on any .env / .qwen config file from <WT> up to /   # discovery walks UPWARD
 3. RUN       cd <WT> && env -i … python3 run-with-timeout.py -- qwen …  # kernel-sandboxed, see below
-4. ASSERT    session_start.model == requested model, and SANDBOX was non-empty in the child
+4. ASSERT    exactly one system/init element, and its .model == the requested model
+             (a sandbox complaint in stderr is a WORKER fault, checked before any classification)
 5. OBSERVE   compound-v-scope-check.py --worktree <WT> --baseline <sha> --allow <glob> [--allow <glob> …]
 6. ENFORCE   every changed path ∉ write_allowed ⇒ violation ⇒ blocked  (do NOT merge)
              MERGE: caller, on PASS only
@@ -66,6 +159,16 @@ That is the *instructed* half; the scope gate is the *enforced* half.
 ---
 
 ## Compliance — read this before anything else
+
+> ### ⚠️ OPEN ITEM — this whole section is about the WRONG PLAN
+>
+> Everything below was researched against the **Coding Plan's** terms. The plan actually in use is the **Token Plan** ($68/month Pro), and **its terms have not been read, quoted, or analysed by anyone**. The Coding Plan's "no automated / non-interactive use" clause is a *Coding Plan* clause; whether the Token Plan carries anything like it is **unknown**.
+>
+> Do not read the analysis below as clearance, and do not read it as a prohibition either — it is **about a plan this adapter no longer uses**. It is kept verbatim as the record of what was checked and when. **Re-doing this research against the Token Plan's terms is a prerequisite before this adapter is recommended to anyone but its own operator.**
+>
+> The general operator clauses ([below](#operator-clauses-that-must-be-respected-regardless)) — one natural person, no sharing, no resale, no key in CI — are Alibaba Cloud account-level terms and are assumed to carry across, but that assumption is also unverified.
+
+### (Historical, Coding Plan) — kept for the record
 
 **Alibaba's Coding Plan terms plausibly prohibit exactly what Compound V does, and this is not the same situation `zai` cleared.** Verbatim, Alibaba's own pages (fetched 2026-08-04, English and Chinese):
 
@@ -91,7 +194,7 @@ That is the *instructed* half; the scope gate is the *enforced* half.
 - The subscription is licensed to **one natural person**.
 - **No account or key sharing.**
 - **No resale, sublicense, or account transfer** (Alibaba Cloud International Product Terms of Service v3.8.0).
-- Alibaba's Coding Plan FAQ states keys are **auto-disabled on detected public exposure**. That raises the stakes on the argv-leak lesson `zai` already paid for (see [the pinned invocation](#the-pinned-invocation)): a leak costs the subscription, not just the secrecy of one string.
+- Alibaba's Coding Plan FAQ states keys are **auto-disabled on detected public exposure**. Whether the Token Plan does the same is unverified, but the argv-leak lesson `zai` already paid for stands regardless (see [the pinned invocation](#the-pinned-invocation)): assume a leak costs the subscription, not just the secrecy of one string.
 - **A key must never enter CI, a shared secret store, or a team-wide config.** This is a single-operator adapter, full stop.
 
 ### Jurisdiction — stated neutrally, not as advocacy
@@ -126,11 +229,23 @@ CONTEXT.md
 
 ## The pinned invocation
 
+**Verified live 2026-08-04, exit 0 with a real generation.** Two halves: a settings file that supplies the auth, and the argv.
+
 ```bash
+# 1. The settings file — AT $QWEN_HOME, never under a .qwen inside it. THIS IS THE AUTH PATH.
+jq -n --arg model "$MODEL" --arg base "$OPENAI_BASE_URL" '{
+  modelProviders: { openai: { protocol: "openai", models: [
+    { id: $model, name: ($model + " (Token Plan)"), baseUrl: $base,
+      envKey: "BAILIAN_TOKEN_PLAN_API_KEY" } ] } },
+  security: { auth: { selectedType: "openai" }, folderTrust: { enabled: true } },
+  model: { name: $model }
+}' > "$SCRATCH/settings.json"
+
+# 2. The invocation.
 ( cd "$WT" && \
   env -i PATH="$PATH" TMPDIR="$TMPDIR" LANG="${LANG:-}" \
       HOME="$SCRATCH" QWEN_HOME="$SCRATCH" \
-      BAILIAN_CODING_PLAN_API_KEY="$BAILIAN_CODING_PLAN_API_KEY" \
+      BAILIAN_TOKEN_PLAN_API_KEY="$BAILIAN_TOKEN_PLAN_API_KEY" \
       OPENAI_BASE_URL="$OPENAI_BASE_URL" \
       QWEN_SANDBOX="$QWEN_SANDBOX" \
       ${SEATBELT_PROFILE:+SEATBELT_PROFILE="$SEATBELT_PROFILE"} \
@@ -147,7 +262,9 @@ CONTEXT.md
            "$(cat "$PROMPT_FILE")" </dev/null >"$EVENTS_LOG" 2>"$STDERR_LOG" )
 ```
 
-`$SUPERVISOR` is [`scripts/compound-v-run-with-timeout.py`](../../scripts/compound-v-run-with-timeout.py). `$SESSION_ID` is generated by the caller (`uuidgen`). `$MAX_TURNS` is a documented constant pinned in the worker script — quota is counted in **requests**, so turn count is what costs.
+`$SUPERVISOR` is [`scripts/compound-v-run-with-timeout.py`](../../scripts/compound-v-run-with-timeout.py). `$SESSION_ID` is generated by the caller (`uuidgen`) and **must be a real UUID** — a non-UUID is a parse-time refusal. `$MAX_TURNS` is a documented constant pinned in the worker script; on a per-token plan it is the runaway guard rather than the unit of cost.
+
+**`OPENAI_API_KEY` is deliberately absent.** The key travels only under `BAILIAN_TOKEN_PLAN_API_KEY`, which `envKey` points the CLI at. See [Auth](#2-auth--settingsjson-envkey-is-the-auth-path-and-openai_api_key-is-never-set).
 
 ### Why the sandbox is driven by environment variables, never by a flag
 
@@ -175,9 +292,9 @@ The same upward path is why the settings precedence matters: `defaults → syste
 
 - **`--model "$MODEL"` is mandatory.** The job contract requires a resolved model; omitting `-m`/`--model` silently serves whatever the config/default chain picks, which makes both the routing decision and the identity assertion meaningless.
 - **`--approval-mode=yolo`, never bare `--yolo`.** `--yolo`/`-y` together with `--approval-mode` is a **hard parser error** ("Cannot use both --yolo (-y) and --approval-mode together. Use --approval-mode=yolo instead."), `exit 1` plus a help dump. Note that yolo auto-approves tool calls and does **not** imply a sandbox — the CLI prints its own headless-safety warning to that effect, independent of sandbox state.
-- **`--auth-type openai`** asserts the auth path rather than inheriting it from config discovery. The binary also accepts `qwen-oauth|gemini|vertex-ai|anthropic`; pinning `openai` is the cheap hardening that keeps this adapter scoped to the Coding Plan's OpenAI-protocol endpoint.
-- **`--output-format json`** buffers an **array** of message objects — `{type:"system", subtype:"session_start", session_id, model}`, `{type:"assistant", message:{content, usage}}`, `{type:"result", subtype:"success", session_id, is_error, duration_ms, result, usage, stats}`. This is a **third** capture shape, distinct from codex's JSONL and zai's single document. (The docs site also describes an unrelated flat-object shape; that shape was not found in the source's actual emitter and is treated as a doc error. The live pass confirms which is real — and the extractor fails loudly, never silently-empty, if neither matches.)
-- **`--session-id "$SESSION_ID"`** — the caller **assigns** the id rather than scraping and regex-validating it back, which is strictly better than `zai`'s anchor approach. `--session-id` is mutually exclusive with `--continue`/`--resume` at parse time.
+- **`--auth-type openai`** asserts the auth path rather than inheriting it from config discovery. **Measured-redundant** with `security.auth.selectedType` in the settings file, and kept anyway so the auth path is visible in the process line; dropping **both** fails with `No auth type is selected.` The full choice list is `openai|anthropic|qwen-oauth|gemini|vertex-ai` — no `bailian`/`dashscope` type exists, and Anthropic-shaped paths on this endpoint measured 404.
+- **`--output-format json`** buffers an **array** of message objects — `{type:"system", subtype:"init", …}`, `{type:"assistant", message:{content, usage}}`, `{type:"result", subtype:"success", …}`. This is a **third** capture shape, distinct from codex's JSONL and zai's single document. Measured live; the exact key sets are in [Verified live](#1-the-output-shape--the-first-element-is-system--init-and-there-is-no-session_start). The extractor fails loudly, never silently-empty, if the shape does not match.
+- **`--session-id "$SESSION_ID"`** — the caller **assigns** the id rather than scraping and regex-validating it back, which is strictly better than `zai`'s anchor approach. **Verified honored:** the id comes back verbatim on every element. It is validated as a UUID at parse time, and is mutually exclusive with `--continue`/`--resume`.
 - **`--safe-mode` is required, not optional.** It disables context files (see [Data egress](#data-egress--a-different-file-set-than-zai-and-not-claudemd)), hooks, extensions, skills **and MCP servers** — closing the injection path where a worktree-supplied `.qwen/settings.json` declares `mcpServers`. Skills are **on by default** at v0.21.5, so this is a live concern for the planner/executor lock, not a hypothetical one.
 - **`--max-subagent-depth 1`** disables nesting (the default is 5).
 - **`--max-session-turns "$MAX_TURNS"`** is a **quota** guard, not a second wall-clock.
@@ -204,26 +321,30 @@ Also live at v0.21.5 and worth knowing, because their stderr deprecation notices
 
 ### The model-identity assertion — read the envelope, never model output
 
-The served model is taken from the transport's own **`system` / `session_start`** event `model` field and compared to the requested `--model`. Missing, duplicated, or mismatched all **fail closed**.
+The served model is taken from the transport's own **`system` / `init`** element's `model` field — **not `session_start`**, which this output format never emits (see [Verified live](#1-the-output-shape--the-first-element-is-system--init-and-there-is-no-session_start)) — and compared to the requested `--model`. Missing, duplicated, or mismatched all **fail closed**.
 
 **Never read it from `--json-schema` / `structured_output`.** That content is authored by the model, and a model cannot authenticate its own identity — a substituted model would simply assert the expected name. (`--json-schema <json|@file>` is a real and useful first-party feature for pinning a *summary* payload's shape, and it is deliberately not in the pinned invocation for exactly this reason.)
 
-This is the concrete defense against the injection path above: a worktree- or ancestor-supplied `OPENAI_API_KEY` — unset by this design and therefore free real estate — is a first-class alternate auth path that could silently change which credential and which endpoint served the request. The Coding Plan's multi-vendor catalog is what makes "did we get the model we asked for" a meaningful question.
+This is the concrete defense against the injection path above: a worktree- or ancestor-supplied `OPENAI_API_KEY` — unset by this design and therefore free real estate — is a first-class alternate auth path that could silently change which credential and which endpoint served the request. The plan's multi-vendor catalog (`glm-*`, `deepseek-*`) is what makes "did we get the model we asked for" a meaningful question.
 
-### Containment proof
+### Containment — no payload proof exists
 
-After the run, the worker asserts the child actually reported a **non-empty `SANDBOX`** — the variable the sandbox transport sets on itself once engaged. If engagement cannot be proven, the job fails. Exact assertion mechanics are among the items the live pass must confirm.
+**Deleted, not weakened.** The old assertion read a `sandbox` field back out of the envelope; **no such field exists anywhere in the output**, so it could never have passed. It is replaced by the three enforceable steps in [Containment](#3-containment--guaranteed-by-qwens-own-error-not-observed-in-the-payload): refuse an ambient `SANDBOX`, always pass a concrete provider name, and treat a sandbox complaint in stderr as a **worker fault**. **Say it plainly: engagement is guaranteed by qwen's own fatal error, not observed in the result payload.** Do not re-add a payload-derived proof without a field to read.
 
-### The pinned settings file lives in scratch, never in the worktree
+### The pinned settings file lives in scratch, never in the worktree — and AT `$QWEN_HOME`
 
 ```bash
-mkdir -p "$SCRATCH/.qwen"
-cat > "$SCRATCH/.qwen/settings.json" <<'SETTINGS'
-{ "security": { "folderTrust": { "enabled": true } } }
-SETTINGS
+mkdir -p "$SCRATCH"          # NOT "$SCRATCH/.qwen" — see below
+jq -n --arg model "$MODEL" --arg base "$OPENAI_BASE_URL" '{ … }' > "$SCRATCH/settings.json"
 ```
 
-`security.folderTrust.enabled` is set **explicitly** rather than inheriting the documented-off default (see [Security precedent](#security-precedent)). The file MUST live under `$SCRATCH` — the redirected `QWEN_HOME` — and **never inside `$WT`**: a project-scoped `.qwen/settings.json` sits inside the worktree and would dirty the worker's own diff, tripping the scope gate on a job that changed nothing on purpose.
+The full block is in [the pinned invocation](#the-pinned-invocation). Three properties, each earned:
+
+- **`$SCRATCH/settings.json`, not `$SCRATCH/.qwen/settings.json`.** With `QWEN_HOME` set, the config dir *is* `QWEN_HOME`. A file under a `.qwen` subdirectory there is ignored and the CLI warns about it before dying on the missing key. Measured.
+- **Never inside `$WT`.** A project-scoped `.qwen/settings.json` sits inside the worktree and would dirty the worker's own diff, tripping the scope gate on a job that changed nothing on purpose.
+- **`security.folderTrust.enabled` set explicitly**, rather than inheriting the documented-off default (see [Security precedent](#security-precedent)).
+
+It is built with `jq`, not a heredoc: `$MODEL` and `$OPENAI_BASE_URL` are caller-supplied, and a hand-quoted template would be one odd catalog name away from an unparseable settings file that then fails as *"no auth type is selected"* three steps later.
 
 ---
 
@@ -232,16 +353,25 @@ SETTINGS
 Resolved before dispatch by [`compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py) `--backend qwen --tier <tier>`. qwen is **single-vendor at the protocol level**: one OpenAI-protocol endpoint, so every model is a **bare catalog name**, never a `provider/model` string.
 
 ```
-deep     → qwen3-coder-plus
-standard → qwen3-coder-plus
-light    → qwen3-coder-plus
+deep     → qwen3-coder-plus     ← STALE: this model does not exist on the Token Plan
+standard → qwen3-coder-plus     ← STALE
+light    → qwen3-coder-plus     ← STALE
 ```
 
-**All three tiers deliberately carry the same model.** Per-tier differentiation needs live measurement on a real Coding Plan key; inventing a ranking from a catalog listing would be a fabricated metric. `qwen3-coder-plus` is the coding-specialised, documented default. **Not `"auto"`**: unlike `cursor` (which resolves `auto` internally), this worker passes `--model` straight to the endpoint, so a placeholder would be sent literally and rejected. `/v:models` rewrites this map once a live key exists — provisional is fine, unresolvable or fictional is not.
+> **⚠️ The tier map is stale and will fail at dispatch.** `qwen3-coder-plus` was the *Coding Plan* default. It is **not in the Token Plan catalog**, and this worker passes `--model` straight through, so a job routed on the current map sends a name the endpoint does not serve. Fixing [`compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py) is a separate task; until it lands, pass `--model` explicitly.
 
-**Catalog** — Alibaba's own Model Studio page, 2026-08-04, all reachable on one key: `qwen3.7-plus`, `qwen3.6-plus`, `qwen3.5-plus`, `qwen3-max-2026-01-23`, `qwen3-coder-next`, `qwen3-coder-plus`, `MiniMax-M2.5`, `glm-5`, `glm-4.7`, `kimi-k2.5`. `glm-5`, `glm-4.7` and `kimi-k2.5` are documented, non-default overrides through the same endpoint. **Qwen3.8-Max (shipped 2026-08-03) is not yet in the Coding Plan catalog** — do not add it until it appears there. The catalog moves faster than a spec can track, which is the argument against hardcoding a flagship as the default.
+**Catalog — MEASURED on the operator's key, 2026-08-04, Token Plan:**
 
-**Endpoint.** International `https://coding-intl.dashscope.aliyuncs.com/v1` (the default) or China `https://coding.dashscope.aliyuncs.com/v1`. Make the choice an explicit config field: **a region mismatch produces a 401 that does not self-identify as a region error.**
+```
+qwen3.8-max · qwen3.8-max-preview · qwen3.7-max · qwen3.7-plus
+qwen3.6-flash · glm-5.2 · deepseek-v4-pro · deepseek-v4-flash-0731
+```
+
+(plus audio/image models, irrelevant here.) **No `kimi`, no `qwen3-coder-plus`, no `MiniMax`.** `qwen3.8-max` is the model the live end-to-end verification ran on. **Not `"auto"`**: unlike `cursor` (which resolves `auto` internally), this worker passes `--model` straight to the endpoint, so a placeholder would be sent literally and rejected.
+
+**Per-tier differentiation is still unmeasured.** Inventing a ranking from a catalog listing would be a fabricated metric — so when the map is fixed, either measure or point all three tiers at one model and say so.
+
+**Endpoint.** `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` is the default and the one verified working. Note the shape — a regional host and a `/compatible-mode/v1` path, **not** the Coding Plan's `coding-intl.dashscope.aliyuncs.com/v1`. It stays operator-overridable via `OPENAI_BASE_URL` (other regions are a legitimate choice) with the `https://` scheme pinned. **A region mismatch produces a 401 that does not self-identify as a region error.**
 
 **`effort` is advisory — twice over.** Qwen Code has **no headless effort flag at all**; the only surface is `model.reasoningEffort` in settings.json, and Qwen applies its own per-provider clamp on top, so a requested value can be silently downgraded per model. The worker accepts `low|medium|high`, validates, and then explicitly discards.
 
@@ -249,28 +379,43 @@ light    → qwen3-coder-plus
 
 ---
 
-## Quota
+## Quota — Token Plan Pro (**not** the Coding Plan's request counting)
 
-**Request-counted, not token-counted — a different mental model than `zai`'s credit multipliers.** Pro tier:
+**Credit windows, off token usage.** The subscription in use:
 
 ```
-6,000 requests / 5 hours
-45,000 requests / week
-90,000 requests / month
-$50/mo international · ¥200/mo China
+Token Plan Pro — $68 / month, fixed
+12,000 credits / 5 hours
+40,000 credits / 7 days
 ```
 
-A 60-turn agentic loop costs **60 units regardless of output length**, which is why `--max-session-turns` is the relevant guard and a token budget is not. Lite tier is discontinued (no purchases since 2026-03-20); Pro is effectively the only tier.
+**The credits-per-token conversion is NOT known and must not be guessed.** Nothing here converts tokens to credits, estimates a per-job cost, or reports a spend figure — and nothing may start doing so from a plausible-looking ratio. Measure it or leave it blank.
 
-**No pay-as-you-go fallback.** Quota exhaustion is a hard error, never an overage charge — which is what makes the `FALLBACK` policy entry load-bearing rather than politeness.
+**This is not the Coding Plan's model.** That plan counted **requests** (6,000 / 5h, etc.), which made a 60-turn loop cost 60 units regardless of output length. Here output length costs, so `--max-session-turns` is a **runaway guard**, not the unit of cost.
 
-**Concurrency.** Alibaba's limit is real, **undocumented in magnitude, and dynamically adjusted**. The seeded value is `backend_max_parallel.qwen = 2`, **labeled unmeasured** — chosen conservatively, never presented as a measured ceiling. Raise it only after a live 2/4/6 run says so.
+**No pay-as-you-go fallback** — a spent window is a hard error, never an overage charge. That is what makes the `FALLBACK` policy entry load-bearing rather than politeness.
+
+### The measured cost floor per job — a one-word prompt cost 17,277 input tokens
+
+MEASURED, live: a prompt of a single word consumed **17,277 input tokens**, 43 output. That is **the system preamble plus 64 tool definitions**, not the user's prompt, and `--safe-mode` was already on. On a per-request plan this would be invisible; on a per-token plan it is a floor under **every** job, however small.
+
+`--core-tools` (an allowlist) is the lever that could cut it — trimming the tool set now has **direct monetary value**, unlike on the Coding Plan.
+
+**Not implemented, deliberately.** Measure the reduction before claiming it. This entry is the finding and the lever, nothing more.
+
+### Concurrency
+
+**The plan advertises "Supports 6-8 Agents running concurrently"** — a *published* number, unlike the Coding Plan's undocumented, dynamically adjusted limit. **We have not measured it**, so it does not become the setting.
+
+The seeded value stays `backend_max_parallel.qwen = 2`, **labeled unmeasured** — conservative, never presented as a measured ceiling. Raise it only after a live 2/4/6 run says so, ideally toward the published 6-8 if that holds up.
 
 **Honest limit of that key, quoted from its own documentation:** validation proves the key's *shape*, "not that a new scheduler or semaphore enforces it." `backend_max_parallel` is **a ceiling the prose dispatcher respects, not an enforced bound.** Do not describe it as enforcement. A hard per-backend semaphore is future work.
 
 ---
 
 ## Backend-failure classification
+
+> **Unverified against the Token Plan endpoint.** Every needle below was derived from **DashScope / Coding Plan** error shapes. The Token Plan runs on a different host (`token-plan.*.maas.aliyuncs.com/compatible-mode/v1`) and its error bodies have **not** been observed — no failing call has been captured there. The classifier is therefore *plausible*, not measured; the fail-closed `other` default is what keeps that safe. **Capture a real 401 / 429 / window-exhausted body on this endpoint and re-derive.**
 
 **DashScope returns `message: null`** — the shape fact that everything else follows from:
 
@@ -294,7 +439,9 @@ A classifier keyed on message text — the way `zai`'s is — matches **nothing*
 
 **The `qwen` branch is not optional.** `classify()`'s final `else` is `_CODEX_RULES`, so its absence is not a neutral gap — it is a wrong answer: a Qwen auth failure would be matched by OpenAI's needles and the operator told to run **`codex login`** to fix an Alibaba key. The selftest pins exactly that regression.
 
-**No qwen-specific retry policy, and no edits to the shared failure machinery.** `qwen` takes the global defaults; the existing throttle-vs-window handling is already correct for this provider once the needles map to the right classes. Note explicitly that `adapter-zai.md`'s "a provider that penalises repeat offences, so cap retries low" reasoning is **about z.ai** (its April 2026 enforcement wave, wire-indistinguishable from ordinary rate limiting) and does **not** transfer: what Alibaba documents is a penalty for automated use *at all*, with no documented or observed link between retry count and enforcement.
+**No qwen-specific retry policy, and no edits to the shared failure machinery.** `qwen` takes the global defaults; the existing throttle-vs-window handling is already correct for this provider once the needles map to the right classes. Note explicitly that `adapter-zai.md`'s "a provider that penalises repeat offences, so cap retries low" reasoning is **about z.ai** (its April 2026 enforcement wave, wire-indistinguishable from ordinary rate limiting) and does **not** transfer: no link between retry count and enforcement is documented or observed for Alibaba.
+
+**A failure mode the classifier cannot see at all.** Measured: a run whose every API call failed still returned **`subtype: "success"`, `is_error: false`, exit 0**, with `"[API Error: …]"` in the `result` string. Nothing in this adapter reads `is_error` or inspects `result` for that pattern, so such a job is reported `success` with zero files changed — and the scope gate, correctly, sees nothing wrong. **Flagged, not fixed.**
 
 `qwen` reroutes **up to claude** via `FALLBACK` in [`compound-v-failure-policy.py`](../../scripts/compound-v-failure-policy.py). A missing entry yields `None`, which `decide()` turns into `halt` — the first quota wall would stop the entire run.
 
@@ -302,7 +449,11 @@ A classifier keyed on message text — the way `zai`'s is — matches **nothing*
 
 ## Usage
 
-`job_result.usage` carries **real** `input_tokens` / `output_tokens` read from the terminal `result` element of the buffered JSON array, with `measured: true` — `qwen` is **not** in `UNMEASURED_BACKENDS`. A failed job with a well-formed but **empty** `usage` object yields `measured: false` with **null** counts, never a fabricated `0`. No cost figure is ever recorded, estimated, or carried.
+`job_result.usage` carries **real** `input_tokens` / `output_tokens` read from the terminal `result` element of the buffered JSON array, with `measured: true` — `qwen` is **not** in `UNMEASURED_BACKENDS`. A failed job with a well-formed but **empty** `usage` object yields `measured: false` with **null** counts, never a fabricated `0`.
+
+**Measured shape:** `{input_tokens, output_tokens, cache_read_input_tokens}`, plus **`total_tokens`** on the Token Plan. [`compound-v-usage-extract.py`](../../scripts/compound-v-usage-extract.py) reads `input_tokens` / `output_tokens` and ignores every other key, so the added fields are inert — parse defensively and do not depend on a fixed key set.
+
+**No cost figure is ever recorded, estimated, or carried** — and on a credit-metered plan whose credits-per-token ratio is unknown, deriving one would be a fabricated metric. See [Quota](#quota--token-plan-pro-not-the-coding-plans-request-counting).
 
 ---
 
@@ -337,7 +488,7 @@ Two consequences, both already reflected above:
 1. This is the primary reason `QWEN_SANDBOX` moved from optional to **mandatory** in this design.
 2. It is why the scratch settings file sets `security.folderTrust.enabled` **explicitly** rather than inheriting the documented-off default.
 
-**Required live-probe item:** observe the headless untrusted-folder behavior directly and record it here together with the exact `qwen --version`, the way `codex-cli 0.144.1` is recorded in [`adapter-codex.md`](adapter-codex.md). **Do not infer it.** Re-verify on every version bump — the package shipped five stable releases in the seven days before this audit plus a daily nightly channel, so the risk here is churn, not abandonment. Until this is resolved, the status stays `auth-pending / coverage-unverified`.
+**Still an open live-probe item.** The 2026-08-04 probe pinned the version (**`qwen 0.21.5`**, the way `codex-cli 0.144.1` is recorded in [`adapter-codex.md`](adapter-codex.md)) and the invocation, but it did **not** exercise the headless untrusted-folder path. Observe that behavior directly and record it here. **Do not infer it.** Re-verify on every version bump — the package shipped five stable releases in the seven days before this audit plus a daily nightly channel, so the risk here is churn, not abandonment.
 
 ---
 
@@ -349,7 +500,7 @@ scripts/compound-v-run-qwen-worker.sh \
   --job-id task-1-build \
   --repo /abs/path/to/repo \
   --prompt-file /abs/path/to/jobs/task-1-build.prompt.md \
-  --model qwen3-coder-plus \
+  --model qwen3.8-max \
   --write-allowed "src/features/build/**" \
   --timeout-sec 900
 # optional: --effort low|medium|high   (advisory — validated, then explicitly discarded; xhigh is rejected)
@@ -361,6 +512,6 @@ scripts/compound-v-run-qwen-worker.sh \
 
 All paths MUST be absolute. `--write-allowed` is a **colon-separated** glob list; an **empty** value is a read-only/review job (any change ⇒ BLOCKED).
 
-**`BAILIAN_CODING_PLAN_API_KEY` must be set in the dispatcher's environment** — the worker refuses to start without it and never reads a key from a file inside the repo. `OPENAI_BASE_URL` defaults to the international endpoint. The worker also refuses to start when `SANDBOX` is already set in the environment, when no sandbox provider is available, or when the ancestor scan finds a Qwen config file.
+**`BAILIAN_TOKEN_PLAN_API_KEY` must be set in the dispatcher's environment** — the worker refuses to start without it and never reads a key from a file inside the repo. It is also the name written into the settings file's `envKey`, which is what makes the CLI read it; **`OPENAI_API_KEY` is never set.** `OPENAI_BASE_URL` defaults to the Token Plan endpoint. The worker also refuses to start when `SANDBOX` is already set in the environment, when no sandbox provider is available, or when the ancestor scan finds a Qwen config file.
 
 **Availability.** `qwen` is reachable only when the operator opt-in record is current, `qwen` is on PATH under Node ≥ 22, the key is set, and a sandbox provider works (`sandbox-exec` on macOS; `docker` or `podman` on Linux). `/v:init` probes all of these and marks `qwen` **unavailable** — not merely degraded — when any is missing. In a pool, an unavailable member is recorded `available: false` at freeze time and the run continues with a surfaced warning: **pools degrade, they do not fail.**

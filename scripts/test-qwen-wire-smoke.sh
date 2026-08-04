@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # test-qwen-wire-smoke.sh — runs the REAL `qwen` binary against a local stub HTTP endpoint and
-# asserts what actually reaches the wire. No network, no Coding Plan key, no quota consumed.
+# asserts what actually reaches the wire. No network, no Token Plan key, no credits consumed.
 #
 # WHY THIS EXISTS, SEPARATELY FROM test-qwen-worker-stub.sh:
 # the stub test validates the argv the worker emits. It cannot validate how the real binary
@@ -10,11 +10,16 @@
 # var outranks it), and `--allowed-tools` means the opposite of what its name suggests. Both
 # would have passed every conceivable argv assertion.
 #
-# It is also the harness for the live-probe items the adapter records as UNVERIFIED:
-#   (a) which shape `--output-format json` really emits,
-#   (b) what the session_start envelope really carries (the model-identity assertion reads it),
-#   (c) whether `--safe-mode` really suppresses the AGENTS.md context egress,
-#   (d) whether an engaged sandbox is observable in the output at all (the containment proof).
+# It is also the harness that PINS what the 2026-08-04 live probe measured against qwen 0.21.5:
+#   (a) `--output-format json` emits one buffered JSON ARRAY,
+#   (b) its first element is system/**init** — NOT session_start — and it carries `model`,
+#   (c) `--safe-mode` really suppresses the AGENTS.md context egress,
+#   (d) the settings.json `modelProviders[].envKey` block is what makes the CLI read
+#       BAILIAN_TOKEN_PLAN_API_KEY (without it: "Missing API key for OpenAI-compatible auth").
+#
+# There is deliberately NO sandbox-engagement assertion. The probe found no `sandbox` key
+# anywhere in the output, so engagement is not observable here; it rests on qwen's own
+# FatalSandboxError, which the stub test covers.
 #
 # THIS IS THE ONLY QWEN TEST THAT SKIPS. test-qwen-worker-stub.sh always runs — it proves the
 # worker with a FAKE binary, so a CI runner without the CLI must still execute it.
@@ -26,6 +31,7 @@ set -euo pipefail
 command -v qwen    >/dev/null 2>&1 || { echo "SKIP: qwen not on PATH"; exit 0; }
 command -v python3 >/dev/null 2>&1 || { echo "FAIL: python3 not found on PATH"; exit 2; }
 command -v git     >/dev/null 2>&1 || { echo "FAIL: git not found on PATH"; exit 2; }
+command -v jq      >/dev/null 2>&1 || { echo "FAIL: jq not found on PATH"; exit 2; }
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SUPERVISOR="$SCRIPT_DIR/compound-v-run-with-timeout.py"
@@ -111,7 +117,7 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         payload = json.dumps({
             "object": "list",
-            "data": [{"id": "qwen3-coder-plus", "object": "model", "owned_by": "bailian"}],
+            "data": [{"id": "qwen3.8-max", "object": "model", "owned_by": "bailian"}],
         }).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -147,11 +153,28 @@ mkdir -p "$WT"
 ( cd "$WT" && git init -q . && printf '# ctx\n%s\n' "$MARKER" > AGENTS.md \
   && printf '%s\n' "$MARKER" > QWEN.md )
 
+# The worker's EXACT settings file, and it is the AUTH PATH: `envKey` is what points the
+# openai provider at BAILIAN_TOKEN_PLAN_API_KEY. Without this block the CLI dies with
+# "Missing API key for OpenAI-compatible auth. Set settings.security.auth.apiKey, or set the
+# 'OPENAI_API_KEY' environment variable." — measured, which is why OPENAI_API_KEY is never set.
+# It goes at $QWEN_HOME/settings.json, NOT $QWEN_HOME/.qwen/settings.json — with QWEN_HOME set
+# the config dir IS QWEN_HOME, and a file under `.qwen` there is silently ignored.
 SCRATCH="$TMP/home"
-mkdir -p "$SCRATCH/.qwen"
-cat > "$SCRATCH/.qwen/settings.json" <<'SETTINGS'
-{ "security": { "folderTrust": { "enabled": true } } }
-SETTINGS
+mkdir -p "$SCRATCH"
+jq -n --arg model "qwen3.8-max" --arg base "http://127.0.0.1:$PORT/v1" \
+  '{
+     modelProviders: {
+       openai: {
+         protocol: "openai",
+         models: [ { id: $model,
+                     name: ($model + " (Token Plan)"),
+                     baseUrl: $base,
+                     envKey: "BAILIAN_TOKEN_PLAN_API_KEY" } ]
+       }
+     },
+     security: { auth: { selectedType: "openai" }, folderTrust: { enabled: true } },
+     model: { name: $model }
+   }' > "$SCRATCH/settings.json"
 
 # The sandbox is deliberately configured for a NETWORK-PERMITTING run here, because the whole
 # subject of this test is what reaches an endpoint. On macOS that is `restrictive-open`, which
@@ -173,7 +196,7 @@ ERR_LOG="$TMP/qwen_stderr.log"
 set --
 set -- "$@" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}"
 set -- "$@" HOME="$SCRATCH" QWEN_HOME="$SCRATCH"
-set -- "$@" BAILIAN_CODING_PLAN_API_KEY="smoke-key-not-a-secret"
+set -- "$@" BAILIAN_TOKEN_PLAN_API_KEY="smoke-key-not-a-secret"
 set -- "$@" OPENAI_BASE_URL="http://127.0.0.1:$PORT/v1"
 if [ "$SANDBOXED" = "yes" ]; then
   set -- "$@" QWEN_SANDBOX="sandbox-exec" SEATBELT_PROFILE="restrictive-open"
@@ -182,7 +205,7 @@ fi
 rc=0
 ( cd "$WT" && env -i "$@" \
   python3 "$SUPERVISOR" --timeout 90 --grace 3 -- \
-    qwen --model "qwen3-coder-plus" \
+    qwen --model "qwen3.8-max" \
       --approval-mode=yolo \
       --auth-type openai \
       --output-format json \
@@ -203,13 +226,14 @@ REQ_COUNT=0
 if [ -f "$CAPTURE" ]; then
   REQ_COUNT="$(wc -l < "$CAPTURE" | tr -d ' ')"
 fi
-check "the CLI reached the stub endpoint under BAILIAN_CODING_PLAN_API_KEY alone" \
+check "the CLI reached the stub endpoint with the key named ONLY by settings.json envKey" \
       "$([ "$REQ_COUNT" -ge 1 ] && echo yes || echo no)"
 if [ "$REQ_COUNT" -lt 1 ]; then
   echo
   echo "  No request was captured. The pinned invocation supplies the key ONLY as"
-  echo "  BAILIAN_CODING_PLAN_API_KEY; if the OpenAI auth path reads a different variable name,"
-  echo "  this is where that shows up. qwen exit=$rc; stderr follows:"
+  echo "  BAILIAN_TOKEN_PLAN_API_KEY, pointed at by modelProviders[].envKey — OPENAI_API_KEY is"
+  echo "  never set. A 'Missing API key for OpenAI-compatible auth' below means that envKey block"
+  echo "  stopped working. qwen exit=$rc; stderr follows:"
   head -c 800 "$ERR_LOG" 2>/dev/null || true
   echo
   echo "SELFTEST: $PASS ok, $FAILED fail"
@@ -233,7 +257,7 @@ a = reqs[0]
 body = a.get("body") or {}
 
 say("--model reaches the wire as the requested catalog name (got: %r)" % body.get("model"),
-    body.get("model") == "qwen3-coder-plus")
+    body.get("model") == "qwen3.8-max")
 say("the request path is the OpenAI chat-completions route (got: %s)" % a.get("path"),
     "/chat/completions" in (a.get("path") or ""))
 
@@ -250,7 +274,7 @@ tools = sorted((t.get("function") or {}).get("name") or t.get("name") or "?"
 say("no MCP-provided tool reached the wire (tools: %s)" % (", ".join(tools) or "none"),
     not any(str(t).startswith("mcp") for t in tools))
 
-# Live-probe item (a): which capture shape --output-format json really emits.
+# MEASURED item (a): --output-format json emits ONE buffered top-level JSON ARRAY.
 parsed = None
 try:
     parsed = json.loads(raw_out)
@@ -260,22 +284,47 @@ say("--output-format json emits ONE buffered JSON ARRAY (the shape the extractor
     isinstance(parsed, list))
 
 if isinstance(parsed, list):
-    starts = [o for o in parsed
-              if isinstance(o, dict) and o.get("type") == "system"
-              and o.get("subtype") == "session_start"]
-    say("exactly one system/session_start envelope (the model-identity assertion reads it)",
-        len(starts) == 1)
-    if len(starts) == 1:
-        say("session_start carries a model field (got: %r)" % starts[0].get("model"),
-            bool(starts[0].get("model")))
-        if sandboxed == "yes":
-            # Live-probe item (d): the worker's containment proof fails closed on this field.
-            say("session_start reports the engaged sandbox (containment proof, got: %r)"
-                % starts[0].get("sandbox"), bool(starts[0].get("sandbox")))
+    # MEASURED item (b): the first element is system/**init**. `session_start` exists in the
+    # source but belongs to a different "dual output" protocol this flag does not emit, and
+    # the worker read it in its first draft — which would have failed every real run closed.
+    inits = [o for o in parsed
+             if isinstance(o, dict) and o.get("type") == "system"
+             and o.get("subtype") == "init"]
+    say("exactly one system/init envelope (the model-identity assertion reads it)",
+        len(inits) == 1)
+    say("no system/session_start element is emitted (it is a different protocol)",
+        not [o for o in parsed
+             if isinstance(o, dict) and o.get("subtype") == "session_start"])
+    if len(inits) == 1:
+        say("system/init carries a model field (got: %r)" % inits[0].get("model"),
+            bool(inits[0].get("model")))
+        say("system/init carries the measured key set",
+            {"model", "session_id", "subtype", "type", "cwd",
+             "permission_mode", "qwen_code_version"} <= set(inits[0]))
+    # There is NO sandbox key anywhere — that absence is the finding, so assert it rather
+    # than quietly dropping the old check. `sandboxed` is reported for the log only.
+    say("no `sandbox` key appears anywhere in the output (sandboxed=%s): containment is NOT "
+        "observable here" % sandboxed,
+        not any(isinstance(o, dict) and "sandbox" in o for o in parsed))
     results = [o for o in parsed
                if isinstance(o, dict) and o.get("type") == "result"]
     say("a terminal result element carries usage (the usage extractor reads it)",
         bool(results) and isinstance(results[-1].get("usage"), dict))
+    if results and isinstance(results[-1].get("usage"), dict):
+        u = results[-1]["usage"]
+        say("usage carries input_tokens / output_tokens / cache_read_input_tokens (got: %s)"
+            % sorted(u),
+            {"input_tokens", "output_tokens", "cache_read_input_tokens"} <= set(u))
+        # Load-bearing on a per-TOKEN plan, unlike the per-request Coding Plan: a trivial
+        # prompt still pays for the system preamble plus the whole tool catalog. Reported,
+        # not asserted against a threshold — a threshold here would be an invented number.
+        say("NOTE input_tokens for a one-word prompt: %r (measured 17277 live; the system "
+            "preamble + tool definitions dominate, `--core-tools` is the lever)"
+            % u.get("input_tokens"), True)
+    say("stats.models is keyed BY MODEL NAME (got: %s)"
+        % (sorted((results[-1].get("stats") or {}).get("models") or {}) if results else []),
+        bool(results) and "qwen3.8-max" in
+        ((results[-1].get("stats") or {}).get("models") or {}))
 else:
     say("--output-format json output could not be parsed as a document at all "
         "(first 200 chars: %r)" % raw_out[:200], False)
