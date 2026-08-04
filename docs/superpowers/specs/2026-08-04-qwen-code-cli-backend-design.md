@@ -73,12 +73,20 @@ pay-as-you-go, so the window reopens on its own and the run should cool down rat
 credit balance as spent. `concurrency allocated quota exceeded` → `rate_limited`.
 `THROTTLING.userQPSLimit` → `rate_limited`. 401 `invalid access token` → `auth`.
 
-**Pool participation — decision.** `qwen` is registered as a pool-eligible backend (it must appear in
-the pool-state tuple regardless), but ships with **no qwen member in any default pool**. Two reasons:
-its concurrency ceiling is the lowest of any backend and pools exist to spread load *across* backends;
-and pool assignments are frozen per run, so a qwen slot frozen on a machine whose sandbox provider is
-missing would fail every job in that run rather than degrade. Operators can add a qwen pool member in
-config once they have live quota experience. `backend_available()` remains the safety net either way.
+**Pool participation — decision: `qwen` joins the shipped default pool beside `codex` and `zai`.**
+An earlier draft of this section argued for keeping it out, on the claim that a qwen slot frozen on a
+machine without a sandbox provider "would fail every job in that run." **That claim was wrong, and
+reading the code disproves it:** `freeze_pool_members()` calls `backend_available()` once per member
+at freeze time and records `available: false`, and the run continues with a surfaced warning
+("pool '<stance>/<tier>' has 1 of 2 configured backend(s) available … this run will not spread jobs
+across providers"). Pools degrade; they do not fail. That is precisely what `backend_available()` is
+for — which makes implementing it correctly for `qwen` (key **and** sandbox provider) the load-bearing
+task, not pool membership.
+
+Two consequences to carry into the plan: the shipped default policy changes from "Codex + zai" to
+"Codex + zai + qwen", so the seeded config, its documentation, and the pool examples all move
+together; and pooled jobs already reject `effort: xhigh`, which is consistent with qwen rejecting it
+anyway. Weight stays at the default `1` until live quota data justifies otherwise.
 
 ---
 
@@ -519,23 +527,35 @@ is a wrong answer (a `qwen` auth failure would be told to run `codex login`, the
 pay-as-you-go fallback on this plan, a missing entry means a quota wall halts the entire run, not a
 graceful degrade.
 
-**Retry policy on this backend is a compliance decision, not a reliability one** — and delivering it
-costs more than the one-line `FALLBACK` entry the first revision budgeted. The stated penalty for
-using the key outside the permitted scope is subscription suspension, and enforcement throttling is
-wire-indistinguishable from ordinary rate limiting, so aggressive retry against a provider that
-penalizes repeat offenders is itself the hazard.
+**Retry policy: qwen uses the existing global default. A previous revision of this spec claimed
+otherwise on a borrowed argument, and the argument does not survive checking.**
 
-**What the current code actually does, verified by reading it:** `PER_CLASS_MAX` is **global, not
-per-backend** — every backend gets 3 `rate_limited` retries — and `circuit_break` is currently reached
-only on the `out_of_credits`/`auth` paths; a transient exhaustion returns `halt` without breaking the
-circuit, and `state-machine.md` recognizes only those existing break reasons. So "low ceiling, early
-breaker for qwen" **cannot** be expressed by adding a `FALLBACK` key. Delivering it means a
-**qwen-specific policy branch** (proposal: **one** `rate_limited` retry, then circuit-break and
-reroute), plus the matching updates to `state-machine.md`'s reason semantics, the dispatcher's
-handling, and tests — all in one job, since they are one behavior. The alternative is dropping the
-claim and accepting the global 3-retry default. **This spec takes the first option**, because on a plan
-whose penalty is losing the subscription the default is the wrong trade — but the cost is now stated
-honestly instead of hidden inside "add a `FALLBACK` entry."
+That revision said retries must be capped low because this is "a provider that penalizes repeat
+offenders." **That reasoning came from `adapter-zai.md` and is about z.ai**, which had an April 2026
+enforcement wave whose throttling was wire-indistinguishable from ordinary rate limiting. It is not
+about Alibaba. What Alibaba actually documents is a penalty for **using the key for automation at
+all** (see Compliance) — there is no documented or observed link between retry count and enforcement,
+and the domain audit found **zero** community reports of Alibaba's enforcement behavior in either
+direction. Transplanting z.ai's conclusion onto a different vendor is exactly the error the domain
+audit warned about, and this spec committed it.
+
+A second, weaker argument was then offered in its place — "retries burn a request-counted quota" —
+and it does not hold either. Quota here counts **model calls**; a request rejected by a limiter never
+reached the model, and whether such a rejection decrements the counter is **not documented in either
+direction**. Unverified, so it cannot carry a design decision.
+
+**The actual reason no qwen-specific policy is needed: the existing taxonomy already splits the two
+cases correctly, and the split is exactly right for this provider.** `THROTTLING.userQPSLimit` and
+`concurrency allocated quota exceeded` are momentary throttles ⇒ `rate_limited` ⇒ retry with backoff,
+which is the correct response and for which the global ceiling of 3 is unobjectionable.
+`hour`/`week`/`month allocated quota exceeded` is a window that has run out ⇒
+**`usage_window_exhausted`** ⇒ PR #7's cooldown-with-`until` path, which stops retrying until the
+window reopens — again exactly right, and it is why the classifier mapping in this section matters far
+more than any retry count.
+
+**Decision: `qwen` takes the global defaults plus its `FALLBACK` entry; nothing in PR #7 is touched.**
+Not because editing fresh code is expensive, but because there is nothing to fix — the behavior is
+already correct once the needles map to the right classes. Revisit only if live data shows otherwise.
 
 ---
 
@@ -552,16 +572,17 @@ passed straight to the endpoint, so `auto` would be sent literally and rejected.
 the default once a real key exists — provisional is fine, unresolvable or fictional is not. `glm-5`, `glm-4.7`, and `kimi-k2.5` remain documented,
 non-default overrides reachable through the same endpoint.
 
-**Concurrency: a cap of 2, and it needs a validator invariant to mean anything.** Alibaba's
-concurrency limit is real, undocumented in magnitude, and dynamically adjusted, so the cap must be
-conservative and labeled unmeasured. But `max_parallel` in the manifest schema is a **single
-run-global value**, and the dispatcher batches purely by it — so "qwen defaults to 2" is not
-expressible today: a mixed manifest with `max_parallel: 6` would happily run six qwen jobs at once,
-which is exactly the throttling-and-account-risk this spec spends its Compliance section on. **v1
-fix: a validator invariant rejecting any manifest that contains a `qwen` job while its global
-`max_parallel` exceeds 2.** Blunt, but enforceable today and it fails loudly rather than silently
-over-dispatching. Per-backend caps in the dispatcher are the better long-term shape and are explicitly
-deferred (see Non-goals).
+**Concurrency: `backend_max_parallel.qwen = 2` — the mechanism already exists on this base.** A
+previous revision proposed inventing a validator invariant against the run-global `max_parallel`,
+on the belief that no per-backend cap existed. It does: PR #6 shipped a top-level
+**`backend_max_parallel.<backend>`** config key, validated for shape, and the default should seed
+`qwen: 2`. Alibaba's concurrency limit is real, undocumented in magnitude, and dynamically adjusted,
+so the cap stays conservative and labeled **unmeasured** until a live 2/4/6 run says otherwise.
+
+**Honest limit of that mechanism, quoted from its own documentation:** validation proves the key's
+*shape*, "not that a new scheduler or semaphore enforces it" — it is a ceiling the prose dispatcher
+respects, not a hard gate. So this is a convention with a config home, not an enforced bound; do not
+describe it as enforcement. A hard per-backend semaphore remains future work (Non-goals).
 
 ---
 
@@ -607,13 +628,12 @@ switch. **New:** `scripts/compound-v-run-qwen-worker.sh`, `skills/backend-launch
   historical manifest.
 - `scripts/compound-v-classify-failure.py` — `_QWEN_RULES` seeded with the real needles above,
   `classify()` branch, `--backend` choices, a selftest guard against the codex-fallthrough bug.
-- `scripts/compound-v-failure-policy.py` — `FALLBACK` entry, **`CONCRETE_BACKENDS`** (a second tuple
-  the audits predate), **plus the qwen-specific retry/circuit-break branch** (`PER_CLASS_MAX` is still
-  global on this base, so this is a real behavior change, not a table entry) built on PR #7's existing
-  `circuit_break_backend`/`cooldown_backend` machinery rather than beside it. Selftest cases.
-- `skills/compound-v/state-machine.md` — circuit-break reason semantics, which today recognize only
-  the `out_of_credits`/`auth` paths. **One job with the failure-policy change** — they are one
-  behavior split across two files.
+- `scripts/compound-v-failure-policy.py` — `FALLBACK` entry and **`CONCRETE_BACKENDS`** (a second
+  tuple the audits predate). **No retry/circuit-break behavior change**: `qwen` takes the global
+  defaults, and PR #7's existing throttle-vs-window handling is already correct for this provider
+  (see Failure classification). Selftest cases only.
+- `skills/compound-v/state-machine.md` — backend mentions only; **no circuit-break semantic change**
+  (the earlier revision's retry-branch requirement was withdrawn).
 - `scripts/compound-v-usage-extract.py` — a real `_extract_qwen` branch (qwen's `--output-format json`
   emits a buffered **array**, unlike zai's single document and codex's JSONL — a third shape, not a
   copy of either), plus the `measured:false`-on-empty-usage guard and selftest.
@@ -670,10 +690,13 @@ reality — a pre-existing bug, not introduced by this spec, and not this PR's t
 - **No OpenRouter/BYOK/custom-provider auth paths** — scoped strictly to the Alibaba Coding Plan.
   `--auth-type openai` is pinned explicitly in the worker argv to keep this true structurally, not just
   by convention.
-- **No per-backend `max_parallel` in the dispatcher.** The manifest schema has one run-global cap and
-  the dispatcher batches by it; introducing per-backend caps touches the schema, the dispatcher's
-  batching, and every backend's contract. v1 uses the blunt validator invariant instead (see Model
-  resolution). Per-backend caps are the better shape and are deferred deliberately, not overlooked.
+- **No hard per-backend concurrency enforcement.** `backend_max_parallel.qwen = 2` is seeded and
+  documented, but it is a ceiling the prose dispatcher respects, not a semaphore — as its own
+  documentation says, validation proves shape, not enforcement. A real scheduler-level bound is
+  future work, deliberately out of scope.
+- **No qwen-specific retry or circuit-break policy**, and no edits to PR #7's failure machinery — the
+  existing throttle-vs-window split already behaves correctly for this provider once the classifier
+  needles map to the right classes.
 - **No extension of `/v:review-plan` or `compound-v-epic-arbiter.py`** to draw on qwen — both are
   Codex-hardcoded today; generalizing either is separate, larger work.
 - **No arbiter family-dedup fix** (`compound-v-epic-arbiter.py` has no `qwen`/`glm`/`kimi` needle) —
@@ -734,16 +757,22 @@ reality — a pre-existing bug, not introduced by this spec, and not this PR's t
     `qwen` job is **rejected** when the operator-local acknowledgment record is absent or its
     terms-version marker is stale — with fixtures for both the absent and the acknowledged case. The
     record never holds the API key, and lives in gitignored operator-local config.
-7d. A `qwen`-containing manifest whose global `max_parallel` exceeds 2 fails validation.
+7d. The seeded config carries `backend_max_parallel.qwen = 2` (the existing PR #6 key — no new
+    validator invariant), documented as a dispatcher-respected ceiling, **not** as an enforced bound.
+7e. `qwen` appears in the shipped default pool beside `codex` and `zai`, and
+    `backend_available("qwen")` returns false when either the key or a working sandbox provider is
+    missing — proven by a freeze test that records `available: false` and continues with the
+    documented warning rather than failing the run.
 8. A worker that writes outside `write_allowed` yields `blocked: true` with offending paths in
    `violations`; the caller does not merge.
 9. `compound-v-classify-failure.py --backend qwen` maps `THROTTLING.userQPSLimit` and the
    `{concurrency,hour,week,month} allocated quota exceeded` needles (keyed on `errorType`, never
    `message`, which DashScope returns as `null`) plus native exit codes 53/55/130, and fails closed to
    `other` for everything else.
-10. `compound-v-failure-policy.py` returns a reroute/bounded retry for a `qwen` quota failure, not a
-    run halt, with a **low** retry ceiling and an early circuit break (retry policy here is a
-    compliance decision — the stated penalty is suspension).
+10. `compound-v-failure-policy.py` returns a reroute/bounded retry for a `qwen` quota failure rather
+    than a run halt, using the **global** defaults — no qwen-specific retry branch, no change to
+    PR #7's machinery. A `usage_window_exhausted` classification must reach the cooldown path, and a
+    `rate_limited` one the retry path; that split is what the test asserts.
 11. CI runs shellcheck over the new worker script and executes `test-qwen-worker-stub.sh`, which
     **injects a fake `qwen` first on `PATH` and always runs** — it must NOT skip on a missing real
     binary (that would disable it exactly in CI). Only `test-qwen-wire-smoke.sh` carries the
