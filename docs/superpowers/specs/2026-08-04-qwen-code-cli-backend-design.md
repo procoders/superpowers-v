@@ -569,7 +569,9 @@ red on the first commit. **The built-in default must be a real, documented catal
 `qwen3-coder-plus` from Alibaba's published Coding Plan list) — **not** a `_CURSOR`-style `"auto"`
 placeholder. `auto` works for Cursor because Cursor resolves it internally; here `--model "$MODEL"` is
 passed straight to the endpoint, so `auto` would be sent literally and rejected. `/v:models` overrides
-the default once a real key exists — provisional is fine, unresolvable or fictional is not. `glm-5`, `glm-4.7`, and `kimi-k2.5` remain documented,
+the default once a real key exists — provisional is fine, unresolvable or fictional is not. **The
+catalog is no longer provisional: it was read live from `/models` with the operator's own Coding Plan
+key on both regional endpoints, and both returned the identical ten entries.** `glm-5`, `glm-4.7`, and `kimi-k2.5` remain documented,
 non-default overrides reachable through the same endpoint.
 
 **Concurrency: `backend_max_parallel.qwen = 2` — the mechanism already exists on this base.** A
@@ -703,9 +705,22 @@ reality — a pre-existing bug, not introduced by this spec, and not this PR's t
   Codex-hardcoded today; generalizing either is separate, larger work.
 - **No arbiter family-dedup fix** (`compound-v-epic-arbiter.py` has no `qwen`/`glm`/`kimi` needle) —
   same gap `zai` already left, verified still present, not this PR's to close.
-- **No change to the `zai` adapter itself.** If the operator drops their z.ai subscription, `zai`
-  becomes unconfigured; `glm-5` remains reachable through `qwen` regardless. Whether to also retire the
-  `zai` adapter in that scenario is a separate, later decision — not required by this PR.
+- **No change to the `zai` adapter itself — and dropping z.ai is now known to be a GLM downgrade,
+  not a lateral move.** An earlier revision said "`glm-5` remains reachable through `qwen` regardless",
+  which is true but misleading: **`glm-5.2` is NOT in the Coding Plan catalog** (measured live against
+  the operator's own key on both regional endpoints — the catalog is exactly `MiniMax-M2.5`, `glm-4.7`,
+  `glm-5`, `kimi-k2.5`, `qwen3-coder-next`, `qwen3-coder-plus`, `qwen3-max-2026-01-23`, `qwen3.5-plus`,
+  `qwen3.6-plus`, `qwen3.7-plus`). `glm-5.2` lives on Alibaba's separate **Token Plan**, so cancelling
+  the z.ai subscription would move GLM work from 5.2 down to 5. **Decision (2026-08-04): keep `zai`.**
+  It remains the only source of glm-5.2. Retiring it is not proposed by this PR.
+- **No Token Plan support.** Alibaba's Token Plan carries the newer models (`glm-5.2`, `glm-5.1`,
+  `kimi-k2.7-code`, `kimi-k2.6`, `qwen3.7-max`, the DeepSeek v4 family) but is a different
+  subscription: different endpoint (`token-plan.ap-southeast-1.maas.aliyuncs.com`), different
+  credential (`BAILIAN_TOKEN_PLAN_API_KEY`), and **per-token rather than per-request billing**, which
+  invalidates this spec's whole quota model. Explicitly out of scope; revisit as its own change.
+- **No `qwen3.8-max`.** Launched 2026-08-03 and absent from the Coding Plan catalog — confirmed twice,
+  against the live `/models` endpoint and against Alibaba's own documentation. Do not add it on the
+  strength of a launch announcement; add it when the catalog serves it.
 - **No live-verified flag set, no "verified" status.** This spec is corrected against the *released
   source*, which is stronger than docs-only but still not a live probe with a real key. The live pass —
   confirming the sandbox precedence fixes actually work, resolving the JSON-shape ambiguity, and
