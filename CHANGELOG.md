@@ -29,6 +29,59 @@ Pool routing remains inside the existing safety boundary: pooled jobs require wo
 
 Weighted rotation distributes **job counts**, not tokens, credits, messages, wall-clock time, quota burn, savings, or provider capacity. Those meters are heterogeneous and are not visible through Compound V's CLI-process transport; no balance percentage or improvement metric is produced. z.ai's credit multiplier also varies by time of day, so equal job counts can consume unequal credits even on the same provider.
 
+## [2.19.0] - 2026-08-04
+
+### Added — `qwen`, a headless Qwen Code worker on Alibaba's Token Plan
+
+Own process, own git worktree, mandatory kernel sandbox (the only backend besides codex that
+requires OS-level confinement), git-derived scope gate. Worker-only: a `qwen` reviewer job is
+rejected by the manifest validator by name. Opt-in and off by default, gated at validation on an
+operator-local acknowledgment record with a terms-version marker — the record holds an
+acknowledgment only, never the API key.
+
+### Added — `qwen` as a cross-brand advisor
+
+Second in priority after codex (`codex > qwen > opus`). Read-only through four independent
+mechanisms: `--approval-mode=plan`, `--safe-mode`, an `--exclude-tools` denylist, and an empty
+scratch cwd with a scratch `QWEN_HOME` so no settings file exists anywhere in the discovery chain
+for an injected `mcpServers` to live in. Verified live twice — asked to write a file, and asked to
+write via shell — target directory empty both times.
+
+**Models:** `qwen3.8-max` (deep, standard) and `qwen3.6-flash` (light), from a live catalog read.
+`glm-5.2` is also on this plan and reachable by explicit override. `kimi` is NOT — it belongs to
+the Coding Plan.
+
+### Verification
+
+**Verified live 2026-08-04 against qwen 0.21.5** with a real Token Plan key, end to end. Stated
+plainly, that does and does not cover different things: the invocation shape, the auth mechanism,
+the response envelope and the usage extraction are measured; the scope gate, the merge-back and
+the BLOCKED path have only ever run against a stub. Do not round that up to "verified."
+
+**Notable corrections the live pass forced** — worth listing, because each was a documentation
+claim that measurement overturned:
+
+- `--allowed-tools` **bypasses** confirmation rather than restricting tools; `--exclude-tools` /
+  `--core-tools` are the real levers.
+- `QWEN_SANDBOX` **overrides** the `--sandbox` flag (the published docs claim the reverse), and
+  `--sandbox` is a boolean, not a profile selector; an ambient `SANDBOX` silently disables
+  sandboxing altogether.
+- The response's first element is `system`/`init` (which carries `model`), not `session_start`;
+  there is no `sandbox` field anywhere, so containment cannot be proven from the payload.
+- A run in which every API call failed still reports `subtype:"success"`, `is_error:false`, exit
+  0 — the worker now detects this and emits a classifiable `status: error` instead of a silent
+  no-op that would have looked like a completed job that built nothing.
+
+#### What this does not show
+
+The failure-classifier needles were derived from a different endpoint's error bodies and remain
+unverified here (they fail closed to `other`); the credits-per-token ratio is unpublished and is
+deliberately not estimated anywhere; `light → qwen3.6-flash` is a naming inference, not a
+measurement; and Alibaba's Token Plan terms say the plan is *"for interactive use with compatible
+AI programming and agent tools only. Do not use it for automated scripts or application
+backends"* — an unresolved ambiguity the operator accepts knowingly, which is why the backend is
+opt-in and off by default.
+
 ## [2.18.0] - 2026-08-01
 
 ### Added — `zai`, a headless GLM worker backend (lower-trust, opt-in, WORKER-ONLY)
