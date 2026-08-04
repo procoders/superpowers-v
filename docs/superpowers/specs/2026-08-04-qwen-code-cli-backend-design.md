@@ -120,8 +120,10 @@ are recorded so a future version bump can be checked against the right one.
   and should be treated as a doc error, not a second real mode; confirm the array shape empirically in
   live verification and fail loudly, never silently-empty, if neither matches.)
 - **`--json-schema <json|@file>`** registers a synthetic `structured_output` tool and ends the session
-  on the first valid call — a first-party way to pin `job_result` to a known shape instead of parsing
-  free-form output. Worth using to sidestep the shape ambiguity above.
+  on the first valid call — a first-party way to pin a *summary* payload's shape instead of parsing
+  free-form output. **Optional, and explicitly not part of the pinned invocation**, because its
+  content is model-authored: useful for shaping a human summary, never usable as evidence about the
+  run itself (see the model-identity assertion, which must read the transport envelope instead).
 - `--continue`/`-c` (latest session), `--resume <id>`/`-r` (specific session — **never emit a bare
   `--resume` with no id, it opens an interactive session picker and hangs headless**), `--session-id
   <id>` (**caller assigns** the id instead of scraping it back — strictly better than `zai`'s
@@ -277,27 +279,32 @@ job wrote into, are live paths.
 env -i PATH TMPDIR LANG \
     HOME=<scratch> QWEN_HOME=<scratch> \
     BAILIAN_CODING_PLAN_API_KEY=<key> OPENAI_BASE_URL=<endpoint> \
-    QWEN_SANDBOX=<sandbox-exec|docker|podman> SEATBELT_PROFILE=<restrictive-closed|restrictive-proxied> \
-    [QWEN_SANDBOX_IMAGE=<image>] \
+    QWEN_SANDBOX=<sandbox-exec|docker|podman> \
+    SEATBELT_PROFILE=<macOS only: restrictive-closed|restrictive-proxied> \
+    [SANDBOX_FLAGS=<Linux only: container network-denial flags> QWEN_SANDBOX_IMAGE=<image>] \
   python3 scripts/compound-v-run-with-timeout.py --timeout <t> --grace 3 -- \
-    ( cd "$WT" && qwen --approval-mode=yolo --auth-type openai --output-format json \
-        --session-id "$(uuidgen)" --safe-mode --max-subagent-depth 1 \
-        --max-session-turns <n> --exclude-tools <deny-list-if-any> \
-        [--json-schema <path>] "<prompt>" ) </dev/null
+    ( cd "$WT" && qwen --model "$MODEL" --approval-mode=yolo --auth-type openai \
+        --output-format json --session-id "$(uuidgen)" --safe-mode --max-subagent-depth 1 \
+        --max-session-turns <n> --exclude-tools <deny-list-if-any> "<prompt>" ) </dev/null
 ```
 
 Non-negotiable elements beyond the flag corrections above:
 - **`QWEN_HOME` in addition to `HOME`.** `QWEN_HOME` is the tool's own purpose-built isolation lever —
   it relocates settings/OAuth-tokens/installation_id **and** removes `~/.env` from the discovery set
   entirely, a property plain `HOME` redirection does not have.
-- **Pre-flight refuse (or quarantine) the job if the fresh worktree contains any of `.qwen/.env`,
-  `.env`, `.qwen/settings.json`, or `.qwen/QWEN.local.md`.** Costs nothing on a clean repo (never
-  fires, since `git worktree add` only pulls tracked files); exists for the tracked-secret and
-  resumed-worktree cases. Comment the reasoning in the script so a future edit doesn't "optimize" it
-  away as dead code.
-- **`SANDBOX` must never be present in the operator's ambient environment when the supervisor launches
-  `qwen`** — a leaked `SANDBOX` value causes the tool to believe it is already contained and skip
-  sandboxing silently. Explicit deny in the `env -i` allow-list reasoning, not just an omission.
+- **`--model "$MODEL"` must be passed explicitly.** The job contract requires a resolved model; an
+  invocation that omits `-m`/`--model` silently serves whatever the config/default chain picks, which
+  makes both the routing decision and the identity assertion below meaningless.
+- **Pre-flight refuse (or quarantine) the job for config files in the worktree AND in every ancestor
+  directory Qwen will search.** Checking only `$WT/.env` and `$WT/.qwen/.env` is insufficient:
+  discovery walks **upward** from cwd, so a file at `$TMPDIR/compound-v/<run-id>/`, `$TMPDIR/`, or any
+  ancestor is loaded too. Scan the full chain from `$WT` up to the filesystem root (cheap — a handful
+  of `test -f` calls) for `.env` and `.qwen/.env`, and refuse on any hit.
+  **`SANDBOX` cannot be defended by pre-defining it**, which is the non-obvious trap here: the tool
+  skips sandboxing when `SANDBOX` is *present at all*, so setting it defensively would be the
+  disable, not the guard. Scanning plus the post-hoc containment assertion below is the mechanism;
+  the same applies to any injected `QWEN_TLS_INSECURE`. Comment this reasoning in the script so a
+  future edit does not "optimize" the scan away as dead code.
 - **`--safe-mode` and `--max-subagent-depth 1` are required, not optional.** `--safe-mode` disables
   context files, hooks, extensions, skills, **and MCP servers** — closing the injection path where a
   worktree-supplied `.qwen/settings.json` declares `mcpServers` (arbitrary local commands that run
@@ -310,12 +317,20 @@ Non-negotiable elements beyond the flag corrections above:
 - **Set `security.folderTrust.enabled` explicitly** in the scratch `QWEN_HOME`'s `settings.json` rather
   than relying on the documented default, which is **off**. Do not infer the headless behavior — the
   live pass must observe it.
-- **A model-identity assertion, `zai`'s GLM-check analogue:** read the response's model identifier
-  (from the `result` event's model field or `--json-schema` output) and fail the job if it does not
-  match the requested model. This is the concrete defense against the injection path above (a
-  worktree-supplied `OPENAI_API_KEY` silently switching which credential/endpoint served the request) —
-  the Coding Plan's multi-vendor catalog makes "did we get the model we asked for" meaningful the same
-  way it is for `zai`.
+- **A model-identity assertion, `zai`'s GLM-check analogue — read from the ENVELOPE, never from model
+  output.** Take the model identifier from the **`system`/`session_start` event's `model` field** (the
+  transport's own record of what it dispatched to), and fail the job if it does not match the model
+  passed to `--model`. **Do not read it from `--json-schema`/`structured_output`** — that content is
+  authored by the model itself, and a model cannot authenticate its own identity; a wrong or
+  substituted model would simply assert the expected name. Missing, duplicated, or mismatched
+  envelope fields all **fail closed**. This is the concrete defense against the injection path above
+  (a worktree- or ancestor-supplied `OPENAI_API_KEY` silently switching which credential and endpoint
+  served the request) — the Coding Plan's multi-vendor catalog makes "did we get the model we asked
+  for" meaningful the same way it is for `zai`.
+- **Prove containment engaged, do not assume it.** After the run, assert the child actually had a
+  non-empty `SANDBOX` value (the variable the sandbox transport sets on itself once active). If
+  engagement cannot be proven, the job **fails closed** — a mandatory sandbox that silently no-ops is
+  worse than an honest optional one, because the trust tier is claimed on it.
 - **Live-verify whether Qwen Code backported the upstream untrusted-folder fix**, and record the
   observed behavior plus the exact `qwen --version` in `adapter-qwen.md`, the way `codex-cli 0.144.1`
   is recorded. Re-verify on every version bump given the release cadence above.
@@ -359,6 +374,27 @@ inside it — but its status stays **auth-pending/coverage-unverified**, not "ve
 pass confirms (a) sandboxing actually engages under the pinned invocation, and (b) the untrusted-folder
 backport question above is resolved. Claiming Codex-equivalent trust before both are confirmed would be
 premature. `isolation: worktree` remains mandatory regardless (existing invariant).
+
+**Mandatory sandboxing has two consequences the first revision of this section skipped.** First,
+**it is two different mechanisms, not one, and only the macOS half was specified.** `SEATBELT_PROFILE`
+is macOS-only and has **no effect whatsoever** on the Docker/Podman path Linux uses — there, network
+denial is a *container flag* concern (`SANDBOX_FLAGS`), not a profile name. Both mappings must be
+specified and tested separately; `network: false` means "a `*-closed`/`*-proxied` Seatbelt profile" on
+macOS and "container network denied" on Linux, and a spec that names only the former silently ships an
+unenforced `network: false` on every Linux install. Second, **if the sandbox is mandatory, then a
+machine with no working sandbox provider cannot run `qwen` at all** — `/v:init` must probe for a usable
+provider (Seatbelt on macOS; a working Docker or Podman on Linux) and mark `qwen` **unavailable**, not
+merely degraded, when none exists. Probing only for Node ≥22, as the previous revision did, would let
+`qwen` be routed on a machine where its one trust-tier justification cannot engage.
+
+**The opt-in must be enforced in code, not in prose.** "`qwen` is off by default" is unenforceable as
+originally written: editing `/v:init`'s prose cannot stop a hand-authored manifest, and the dispatcher
+runs whatever backend a manifest names. The enforcing mechanism is an **operator-local, uncommitted
+acknowledgment record** (in `.claude/compound-v.json`, which is gitignored — never in a tracked file)
+carrying a terms-version marker, and **the manifest validator must reject any `qwen` job when it is
+absent or its version marker is stale**. Validation is the right layer because it is the one hard gate
+the whole pipeline already funnels through. The record holds an acknowledgment only — **never the API
+key**, which stays in the environment. Both the absent and the acknowledged cases need test fixtures.
 
 **WORKER-ONLY, and this needed an actual code change, not a free ride.** The original draft claimed the
 existing CR5-5 gate (`_is_claude_opus()`) "already covers `qwen` generically." **That claim was false as
@@ -422,12 +458,23 @@ is a wrong answer (a `qwen` auth failure would be told to run `codex login`, the
 pay-as-you-go fallback on this plan, a missing entry means a quota wall halts the entire run, not a
 graceful degrade.
 
-**Retry policy on this backend is a compliance decision, not a reliability one.** The stated penalty
-for using the key outside the permitted scope is subscription suspension, and enforcement throttling is
-wire-indistinguishable from ordinary rate limiting — so an aggressive retry against a provider that
-penalizes repeat offenders is itself the hazard. **Low retry ceiling, bounded self-derived backoff (no
-`Retry-After` is documented), circuit-breaker opens early** — the same posture `zai` adopted for the
-same reason, and here the downside is losing the subscription rather than losing a window's credits.
+**Retry policy on this backend is a compliance decision, not a reliability one** — and delivering it
+costs more than the one-line `FALLBACK` entry the first revision budgeted. The stated penalty for
+using the key outside the permitted scope is subscription suspension, and enforcement throttling is
+wire-indistinguishable from ordinary rate limiting, so aggressive retry against a provider that
+penalizes repeat offenders is itself the hazard.
+
+**What the current code actually does, verified by reading it:** `PER_CLASS_MAX` is **global, not
+per-backend** — every backend gets 3 `rate_limited` retries — and `circuit_break` is currently reached
+only on the `out_of_credits`/`auth` paths; a transient exhaustion returns `halt` without breaking the
+circuit, and `state-machine.md` recognizes only those existing break reasons. So "low ceiling, early
+breaker for qwen" **cannot** be expressed by adding a `FALLBACK` key. Delivering it means a
+**qwen-specific policy branch** (proposal: **one** `rate_limited` retry, then circuit-break and
+reroute), plus the matching updates to `state-machine.md`'s reason semantics, the dispatcher's
+handling, and tests — all in one job, since they are one behavior. The alternative is dropping the
+claim and accepting the global 3-retry default. **This spec takes the first option**, because on a plan
+whose penalty is losing the subscription the default is the wrong trade — but the cost is now stated
+honestly instead of hidden inside "add a `FALLBACK` entry."
 
 ---
 
@@ -437,25 +484,43 @@ Bare model name — one OpenAI-protocol endpoint, never a `provider/model` strin
 placeholder tier map is required in code, not optional.** The repo has no `.claude/compound-v.json`
 today, `resolve()` raises `ValueError` on an unresolvable cell, and `--selftest` iterates every
 backend × tier as a hard CI gate — registering `qwen` in `BACKENDS` without a resolvable map turns CI
-red on the first commit. Follow the established pattern for "we don't know the exact model yet": either
-a safe placeholder (mirroring `_CURSOR`'s `{"deep":"auto", ...}`) or the most conservative documented
-model name, with `/v:models` overriding it once a real key exists — the map must always resolve, even
-if what it resolves to is provisional. `glm-5`, `glm-4.7`, and `kimi-k2.5` remain documented,
+red on the first commit. **The built-in default must be a real, documented catalog model name** (e.g.
+`qwen3-coder-plus` from Alibaba's published Coding Plan list) — **not** a `_CURSOR`-style `"auto"`
+placeholder. `auto` works for Cursor because Cursor resolves it internally; here `--model "$MODEL"` is
+passed straight to the endpoint, so `auto` would be sent literally and rejected. `/v:models` overrides
+the default once a real key exists — provisional is fine, unresolvable or fictional is not. `glm-5`, `glm-4.7`, and `kimi-k2.5` remain documented,
 non-default overrides reachable through the same endpoint.
 
-`max_parallel` defaults to **2**, explicitly labeled unmeasured (undocumented, dynamically-adjusted
-concurrency limit per Alibaba's own FAQ).
+**Concurrency: a cap of 2, and it needs a validator invariant to mean anything.** Alibaba's
+concurrency limit is real, undocumented in magnitude, and dynamically adjusted, so the cap must be
+conservative and labeled unmeasured. But `max_parallel` in the manifest schema is a **single
+run-global value**, and the dispatcher batches purely by it — so "qwen defaults to 2" is not
+expressible today: a mixed manifest with `max_parallel: 6` would happily run six qwen jobs at once,
+which is exactly the throttling-and-account-risk this spec spends its Compliance section on. **v1
+fix: a validator invariant rejecting any manifest that contains a `qwen` job while its global
+`max_parallel` exceeds 2.** Blunt, but enforceable today and it fails loudly rather than silently
+over-dispatching. Per-backend caps in the dispatcher are the better long-term shape and are explicitly
+deferred (see Non-goals).
 
 ---
 
 ## Testing
 
 Stub-first: `scripts/test-qwen-worker-stub.sh` — the name matters, both CI globs (`shellcheck
-scripts/*.sh`, the `scripts/test-*.sh` loop) pick it up with **zero workflow-file edits** required, but
-only if it **exits 0 and SKIPs cleanly when the real `qwen` binary is absent** (the CI runner has none),
-mirroring `test-zai-wire-smoke.sh`'s `command -v` guard. Cover the same five paths the zai stub proves:
-success / blocked / timeout / non-zero-exit / (a qwen-appropriate model-mismatch check in place of
-zai's `nonglm` mode, using the model-identity assertion above).
+scripts/*.sh`, the `scripts/test-*.sh` loop) pick it up with **zero workflow-file edits** required.
+
+**The stub test must place a FAKE `qwen` first on `PATH` and ALWAYS run — it must never skip on the
+real binary's absence.** This corrects an instruction inherited from the archaeology audit and carried
+into the previous revision of this spec. The two test types are not the same shape: `test-zai-worker-stub.sh`
+injects a fake `claude` and has no `command -v` guard at all, while only `test-zai-wire-smoke.sh` skips
+without the real CLI. Telling the *stub* to skip when `qwen` is missing would disable it precisely in
+CI, where no `qwen` is installed — leaving credential scrubbing, pinned argv, timeout handling, the
+scope gate, and the model-identity assertion **completely untested** while appearing green. Cover the
+same five paths the zai stub proves: success / blocked / timeout / non-zero-exit / model-mismatch
+(the qwen analogue of zai's `nonglm` mode, exercising the envelope assertion above). Add an
+ancestor-`.env` fixture that must fail closed.
+
+Only `scripts/test-qwen-wire-smoke.sh` carries the `command -v qwen || { echo SKIP; exit 0; }` guard.
 
 **A stub cannot catch a flag-semantics inversion** — this spec exists because a docs-only reading
 already produced one (`--sandbox`'s arity and precedence). A real-binary, no-network smoke test
@@ -476,11 +541,17 @@ switch. **New:** `scripts/compound-v-run-qwen-worker.sh`, `skills/backend-launch
   every backend's resolution.
 - `scripts/compound-v-validate-manifest.py` — `VALID_BACKENDS`, the worktree-required tuple, **the
   reviewer block-list tuple** (the corrected, load-bearing edit this draft's first version missed),
-  docstring, new `QWEN_*` selftest fixtures. Backs the partition-reviewer agent; CI-run against every
-  tracked historical manifest.
+  **the opt-in acknowledgment gate**, **the `qwen` ⇒ `max_parallel ≤ 2` invariant**, docstring, new
+  `QWEN_*` selftest fixtures. Backs the partition-reviewer agent; CI-run against every tracked
+  historical manifest.
 - `scripts/compound-v-classify-failure.py` — `_QWEN_RULES` seeded with the real needles above,
   `classify()` branch, `--backend` choices, a selftest guard against the codex-fallthrough bug.
-- `scripts/compound-v-failure-policy.py` — `FALLBACK` entry, selftest case.
+- `scripts/compound-v-failure-policy.py` — `FALLBACK` entry **plus the qwen-specific retry/circuit-break
+  branch** (`PER_CLASS_MAX` is global today, so this is a real behavior change, not a table entry),
+  selftest cases.
+- `skills/compound-v/state-machine.md` — circuit-break reason semantics, which today recognize only
+  the `out_of_credits`/`auth` paths. **One job with the failure-policy change** — they are one
+  behavior split across two files.
 - `scripts/compound-v-usage-extract.py` — **missed by the first draft entirely.** Either add to
   `UNMEASURED_BACKENDS` or a real `_extract_qwen` branch, plus selftest.
 - `schemas/job_result.schema.json` — `usage.backend` description string only.
@@ -530,6 +601,10 @@ reality — a pre-existing bug, not introduced by this spec, and not this PR's t
 - **No OpenRouter/BYOK/custom-provider auth paths** — scoped strictly to the Alibaba Coding Plan.
   `--auth-type openai` is pinned explicitly in the worker argv to keep this true structurally, not just
   by convention.
+- **No per-backend `max_parallel` in the dispatcher.** The manifest schema has one run-global cap and
+  the dispatcher batches by it; introducing per-backend caps touches the schema, the dispatcher's
+  batching, and every backend's contract. v1 uses the blunt validator invariant instead (see Model
+  resolution). Per-backend caps are the better shape and are deferred deliberately, not overlooked.
 - **No extension of `/v:review-plan` or `compound-v-epic-arbiter.py`** to draw on qwen — both are
   Codex-hardcoded today; generalizing either is separate, larger work.
 - **No arbiter family-dedup fix** (`compound-v-epic-arbiter.py` has no `qwen`/`glm`/`kimi` needle) —
@@ -559,24 +634,38 @@ reality — a pre-existing bug, not introduced by this spec, and not this PR's t
    non-raising value from a built-in placeholder map (not `.claude/compound-v.json` alone, which does
    not exist in this repo); `--effort xhigh` is rejected with the project-policy message, not a
    tool-limitation message.
-4. The worker's pinned invocation drives sandboxing entirely through `QWEN_SANDBOX`/`SEATBELT_PROFILE`
-   env vars, never a `--sandbox <profile>` flag form (which does not exist); `network: false` resolves
-   to a `*-closed`/`*-proxied` profile.
+4. The worker's pinned invocation drives sandboxing through `QWEN_SANDBOX` (never a `--sandbox
+   <profile>` flag form, which does not exist), and `network: false` is enforced **on both platforms**:
+   a `*-closed`/`*-proxied` profile via `SEATBELT_PROFILE` on macOS, and container network denial via
+   `SANDBOX_FLAGS` on Linux — tested separately, since `SEATBELT_PROFILE` has no effect on the
+   Docker/Podman path.
+4a. `/v:init` marks `qwen` **unavailable** (not merely degraded) when no working sandbox provider
+    exists — Seatbelt on macOS, a working Docker or Podman on Linux — in addition to the Node ≥22
+    probe.
+4b. The worker fails closed when it cannot prove containment engaged (a non-empty `SANDBOX` inside the
+    child), rather than proceeding unsandboxed under a mandatory-sandbox claim.
+4c. The invocation passes `--model "$MODEL"`; a job whose served model (read from the
+    `system`/`session_start` envelope, **not** from model-authored structured output) is missing,
+    duplicated, or different from the requested model fails closed.
 5. The worker never emits `--allowed-tools` believing it restricts tools, never emits bare `--yolo`
    (uses `--approval-mode=yolo` only), never emits `--worktree`, never emits `-p`, never emits
    `--openai-api-key`/`--insecure` in argv, never emits a bare `--resume`.
 6. A model-identity assertion fails the job if the response's model does not match the requested
    model.
-7. A pre-flight check refuses or quarantines the job if the fresh worktree contains
-   `.qwen/.env`/`.env`/`.qwen/settings.json`/`.qwen/QWEN.local.md`.
+7. A pre-flight check refuses or quarantines the job if `.qwen/.env`/`.env`/`.qwen/settings.json`/
+   `.qwen/QWEN.local.md` exists in the worktree **or in any ancestor directory Qwen's upward search
+   reaches**, with a regression fixture planting an ancestor `.env` that must fail closed.
 7a. The invocation carries `--safe-mode` and `--max-subagent-depth 1`, and the scratch `QWEN_HOME`'s
     `settings.json` sets `security.folderTrust.enabled` explicitly rather than inheriting the
     documented-off default.
 7b. The worker passes the scope-gate allow-list as repeated `--allow` arguments, **never** via a
     child-writable `$ART/write_allowed.globs` file (the reproduced self-rewriting-allow-list defect);
     `set -f` guards the `IFS=":"` split; gate rc `1` is treated as BLOCKED, not as a worker fault.
-7c. `qwen` is off by default: a run with no explicit qwen opt-in dispatches no `qwen` job, and the
-    opt-in text names the account-suspension risk, not only the trust tier.
+7c. `qwen` is off by default **enforced by the manifest validator**, not by prose: a manifest naming a
+    `qwen` job is **rejected** when the operator-local acknowledgment record is absent or its
+    terms-version marker is stale — with fixtures for both the absent and the acknowledged case. The
+    record never holds the API key, and lives in gitignored operator-local config.
+7d. A `qwen`-containing manifest whose global `max_parallel` exceeds 2 fails validation.
 8. A worker that writes outside `write_allowed` yields `blocked: true` with offending paths in
    `violations`; the caller does not merge.
 9. `compound-v-classify-failure.py --backend qwen` maps `THROTTLING.userQPSLimit` and the
@@ -586,8 +675,10 @@ reality — a pre-existing bug, not introduced by this spec, and not this PR's t
 10. `compound-v-failure-policy.py` returns a reroute/bounded retry for a `qwen` quota failure, not a
     run halt, with a **low** retry ceiling and an early circuit break (retry policy here is a
     compliance decision — the stated penalty is suspension).
-11. CI runs shellcheck over the new worker script and executes `test-qwen-worker-stub.sh`, which SKIPs
-    cleanly (exit 0) when no `qwen` binary is present — with zero edits to `validate.yml`.
+11. CI runs shellcheck over the new worker script and executes `test-qwen-worker-stub.sh`, which
+    **injects a fake `qwen` first on `PATH` and always runs** — it must NOT skip on a missing real
+    binary (that would disable it exactly in CI). Only `test-qwen-wire-smoke.sh` carries the
+    skip-when-absent guard. Zero edits to `validate.yml` either way.
 12. `SKILL.md`'s adapter table lists `qwen` as **auth-pending / coverage-unverified**, and
     `adapter-qwen.md` carries the Compliance section verbatim (EN+ZH) plus the exact verified
     `qwen --version` once a live pass runs — this status must not read as "verified" prematurely.
