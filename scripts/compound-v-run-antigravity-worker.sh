@@ -70,7 +70,7 @@ die() {
 emit_job_result() {
   # $1 status  $2 blocked(true|false)  $3 files_json (JSON array)  $4 violations_json (JSON array)
   # $5 summary  $6 session_id  $7 worktree  $8 exit_code(int)  $9 failure_class ("" => null)
-  # ${10} retry_after_seconds(int, 0 when unknown)
+  # ${10} retry_after_seconds  ${11} retry_at  ${12} network_scope
   jq -n \
     --arg status "$1" \
     --argjson blocked "$2" \
@@ -82,7 +82,9 @@ emit_job_result() {
     --argjson exit_code "$8" \
     --arg failure_class "$9" \
     --argjson retry_after_seconds "${10}" \
-    '{
+    --arg retry_at "${11:-}" \
+    --arg network_scope "${12:-}" \
+    '({
        status: $status,
        blocked: $blocked,
        files_changed: $files,
@@ -91,9 +93,14 @@ emit_job_result() {
        session_id: $session_id,
        worktree: $worktree,
        exit_code: $exit_code,
-       failure_class: (if $failure_class == "" then null else $failure_class end),
-       retry_after_seconds: $retry_after_seconds
-     }'
+       failure_class: (if ($status == "success" or $status == "blocked" or $failure_class == "")
+                       then null else $failure_class end),
+       retry_after_seconds: (if ($status == "success" or $status == "blocked")
+                             then 0 else $retry_after_seconds end)
+     } + (if ($status != "success" and $status != "blocked" and $retry_at != "")
+          then {retry_at: $retry_at} else {} end)
+       + (if ($status != "success" and $status != "blocked" and $network_scope != "")
+          then {network_scope: $network_scope} else {} end))'
 }
 
 # Validate an id (run_id / job_id) against a strict safe-character allow-list.
@@ -418,6 +425,8 @@ fi
 # "" => null in the emitted JSON.
 failure_class=""
 retry_after="0"
+retry_at=""
+network_scope=""
 # Classify on ANY non-zero agy exit — including a job that is also scope-BLOCKED — so an
 # out_of_credits/auth failure still records a class the dispatcher can use to open a circuit
 # (a blocked job whose agy exited 0 stays failure_class:null, correctly).
@@ -432,6 +441,8 @@ if [ "$status" = "error" ] || [ "$status" = "timeout" ] || [ "$exit_code" != "0"
       --backend antigravity --exit-code "$exit_code" --stderr-file "$STDERR_LOG" 2>/dev/null || true)
     failure_class=$(printf '%s' "$_cls_json" | jq -r '.failure_class' 2>/dev/null || true)
     retry_after=$(printf '%s' "$_cls_json" | jq -r '.retry_after // 0' 2>/dev/null || echo 0)
+    retry_at=$(printf '%s' "$_cls_json" | jq -r '.retry_at // ""' 2>/dev/null || echo '')
+    network_scope=$(printf '%s' "$_cls_json" | jq -r '.network_scope // ""' 2>/dev/null || echo '')
   fi
   # FAIL CLOSED: an error/timeout status must NEVER carry failure_class none/empty — the
   # policy maps `none` to `proceed`, which would let an enforcement failure continue as if
@@ -459,6 +470,8 @@ emit_job_result \
   "$WT" \
   "$exit_code" \
   "$failure_class" \
-  "$retry_after"
+  "$retry_after" \
+  "$retry_at" \
+  "$network_scope"
 
 exit 0

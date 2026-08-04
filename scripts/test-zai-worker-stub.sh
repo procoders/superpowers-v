@@ -56,6 +56,12 @@ case "$1" in
   success)  printf 'ok\n' > ./allowed.txt ;;
   nonglm)   : ;;
   mixedglm) : ;;
+  reset_window)
+    echo '[1318] Usage limit reached for the current window; next_flush_time: 2026-08-05T00:00:00Z' >&2
+    exit 1 ;;
+  provider_network)
+    echo '[1234] Network error' >&2
+    exit 1 ;;
   crash)    echo "boom" >&2; exit 1 ;;
 esac
 if [ "$1" = "mixedglm" ]; then
@@ -179,6 +185,10 @@ check "out-of-scope write is BLOCKED" \
       "$([ "$(printf '%s' "$R" | jq -r .status)" = blocked ] && echo yes || echo no)"
 check "the offending path is listed in violations" \
       "$(printf '%s' "$R" | jq -e '.violations | index("NOT_ALLOWED.txt")' >/dev/null && echo yes || echo no)"
+check "blocked clears failure_class" \
+      "$(printf '%s' "$R" | jq -e '.failure_class == null' >/dev/null && echo yes || echo no)"
+check "blocked clears retry_after_seconds" \
+      "$(printf '%s' "$R" | jq -e '.retry_after_seconds == 0' >/dev/null && echo yes || echo no)"
 
 R="$(run_worker hang "allowed.txt" 2 glm-5.2)"
 check "a hung worker yields status timeout" \
@@ -210,6 +220,22 @@ check "a crashing worker carries the real exit code" \
       "$([ "$(printf '%s' "$R" | jq -r .exit_code)" = 1 ] && echo yes || echo no)"
 check "a crashing worker gets a classified failure_class (not null)" \
       "$([ "$(printf '%s' "$R" | jq -r .failure_class)" = other ] && echo yes || echo no)"
+
+R="$(run_worker reset_window "allowed.txt" 60 glm-5.2)"
+check "reset-window class is preserved" \
+      "$([ "$(printf '%s' "$R" | jq -r .failure_class)" = usage_window_exhausted ] && echo yes || echo no)"
+check "reset-window absolute time is preserved" \
+      "$([ "$(printf '%s' "$R" | jq -r .retry_at)" = 2026-08-05T00:00:00Z ] && echo yes || echo no)"
+check "reset-window does not invent network scope" \
+      "$(printf '%s' "$R" | jq -e 'has("network_scope") | not' >/dev/null && echo yes || echo no)"
+
+R="$(run_worker provider_network "allowed.txt" 60 glm-5.2)"
+check "1234 remains a network class" \
+      "$([ "$(printf '%s' "$R" | jq -r .failure_class)" = network ] && echo yes || echo no)"
+check "1234 is provider-reported, not no-response" \
+      "$([ "$(printf '%s' "$R" | jq -r .network_scope)" = provider_reported ] && echo yes || echo no)"
+check "1234 does not invent retry_at" \
+      "$(printf '%s' "$R" | jq -e 'has("retry_at") | not' >/dev/null && echo yes || echo no)"
 
 echo
 echo "SELFTEST: $PASS ok, $FAILED fail"

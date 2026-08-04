@@ -17,6 +17,39 @@
     "failure_class",
     "retry_after_seconds"
   ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "success",
+              "blocked"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "retry_at"
+              ]
+            },
+            {
+              "required": [
+                "network_scope"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ],
   "properties": {
     "status": {
       "type": "string",
@@ -73,17 +106,40 @@
         "out_of_credits",
         "rate_limited",
         "overloaded",
+        "usage_window_exhausted",
+        "model_unavailable",
         "auth",
         "context_length",
         "timeout",
         "network",
         "other"
       ],
-      "description": "On a non-success status, the classified backend-failure reason from compound-v-classify-failure.py (out_of_credits | rate_limited | overloaded | auth | context_length | timeout | network | other). null on success/blocked. Drives the dispatcher's deterministic retry/reroute/halt policy (compound-v-failure-policy.py): out_of_credits/auth never retry; out_of_credits circuit-breaks the backend and re-routes remaining jobs to the fallback; transient classes retry with capped backoff."
+      "description": "On a non-success status, the classified backend-failure reason from compound-v-classify-failure.py (out_of_credits | rate_limited | overloaded | usage_window_exhausted | model_unavailable | auth | context_length | timeout | network | other). null on success/blocked. Drives the dispatcher's deterministic retry/reroute/halt policy."
     },
     "retry_after_seconds": {
       "type": "integer",
+      "minimum": 0,
       "description": "Seconds-until-retry parsed from the provider message (HTTP Retry-After, or a codex usage-limit countdown like 'try again in 5 days'), 0 when unknown. The dispatcher passes this to compound-v-failure-policy.py --retry-after so a retry honors the provider's stated wait instead of synthetic backoff."
+    },
+    "retry_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time",
+      "description": "OPTIONAL absolute provider retry/reset instant in RFC3339 form, normalized to aware UTC by compound-v-provider-time.py. Omitted on success/blocked; null only when an error-producing transport explicitly carries the field but has no absolute hint."
+    },
+    "network_scope": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        null,
+        "no_response",
+        "provider_reported"
+      ],
+      "description": "OPTIONAL network evidence scope. no_response means no valid provider response arrived and may contribute to bounded cross-provider correlation; provider_reported means the provider returned a network-class error and cannot prove common-path internet loss. Omitted on success/blocked."
     },
     "usage": {
       "type": "object",

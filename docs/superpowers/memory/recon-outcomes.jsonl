@@ -4,3 +4,4 @@
 {"ts": "2026-07-11T01:31:00Z", "topic": "off-negative-control", "outcome": "off"}
 {"ts": "2026-07-11T01:31:00Z", "topic": "engine-failure-injected", "outcome": "no_engine"}
 {"ts": "2026-07-11T01:31:52Z", "topic": "fts5-cyrillic-tokenizer", "outcome": "consumed", "path": "docs/superpowers/recon/2026-07-11-fts5-cyrillic-tokenizer.md"}
+{"ts": "2026-08-01T07:16:17Z", "topic": "three-provider-rate-limit-cooldown-rerouting", "outcome": "kb_skip", "path": "docs/superpowers/library-audit/_knowledge-base/model-routing-and-provider-quotas.md"}

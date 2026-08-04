@@ -188,63 +188,50 @@ The gate computes what the job *actually* changed purely from git —
 
 Write `state.json` after every per-job transition, so a crash never loses more than the in-flight job and [`/v:resume`](../commands/v-resume.md) can reconcile against git (git-wins) and re-dispatch only the incomplete. **HALT on the first BLOCKED — do not start the next batch.** (A `blocked` is a scope-gate halt and is terminal; a non-success backend *failure* is NOT — it goes through Step 2c, which may retry or re-route before any halt.)
 
-### Step 2c — Backend-failure policy — on a non-success `job_result` (classify → decide → act)
+### Step 2c — Backend-failure transition — classify → decide → transition → validate → persist → launch
 
-A `job_result.status` that is **not** `success` and **not** `blocked` is a backend failure (rate-limit, overload, out-of-credits, auth, context-length, timeout, network). (The worker **fails closed**: an `error`/`timeout` status never carries `failure_class: none`, so a genuine failure can't masquerade as success.) Do **not** guess and do **not** blindly retry — run the deterministic two-stage pipeline, exactly as [`skills/compound-v/failure-policy.md`](../skills/compound-v/failure-policy.md) specifies. The circuit breaker is the `state.json` fields read at batch boundaries — no daemon: `attempts` (keyed **per (job, failure_class)**), `cooldowns`, `circuit_open` (a per-backend **object** with `open`/`reason`/`opened_at`/`cleared_by`), `total_retries`, `max_total_retries`.
+A non-success/non-blocked `job_result` enters one deterministic sequence. `$BACKEND` is always the concrete executor. A provider success exists only after the canonical worker result is final `status: success`—HTTP 200, an opened SSE stream, or a first token is not success.
 
-1. **Classify.** Set `$BACKEND` to the concrete executor (`assigned_backend` for a pool job), never the routing token. Read the job's `failure_class` from the `job_result` (the Codex worker emits it; `null` on success/blocked). If absent — e.g. a `claude` job — recompute it by running the classifier with the concrete backend's exit code + captured stderr (for `claude`, pass `--backend claude`; the classifier reads the stream-json `api_retry.error` enum — see [`adapter-claude.md`](../skills/backend-launcher/adapter-claude.md)):
+**Attempt/batch identity lifecycle.** At batch formation, mint one non-empty `batch_id` and
+atomically persist that same value into every member's `jobs[<id>].batch_id` before any member
+launches. For every launch—including initial, same-assignment retry, reroute, and recovery
+probe—increment that job's persisted integer `attempt_counter`; the canonical attempt is exactly
+`<job_id>:<attempt_counter>` and is persisted as `jobs[<id>].attempt_id`. For a pool launch,
+`compound-v-pool-state.py transition` performs this increment and returns the same `attempt_id`;
+for a non-pool launch, the dispatcher performs the identical increment under the same serialized
+state-write lock. Validate and atomically persist the complete state before spawning the worker.
 
-   ```bash
-   python3 scripts/compound-v-classify-failure.py --backend "$BACKEND" \
-     --exit-code "$EXIT" --stderr-file "$STDERR"   # → {failure_class, retryable, matched}
-   ```
+Before spawning, atomically persist `jobs[<id>].launch_binding` with exactly `{job_id,
+attempt_id, batch_id, backend, result_path}`. `backend` is the concrete executor and `result_path`
+is the attempt-specific `attempt-results/<job_id>/<attempt_id>.json`, never the shared canonical
+result path. The persisted binding and attempt identity are one state replacement; a crash after
+the replacement can resume/collect that exact attempt, while a crash before it launches nothing.
+Pass the same attempt-specific path to the launcher/collector and capture it with the process.
 
-2. **Decide.** Feed the class + the job's **per-(job, class)** attempts + the run-level retry counters to the decision table, plus provider wait, fallback health, current tier, and (for a pool job) its complete frozen pool context. Use the **per-class** attempt count — `attempts[<job>][<failure_class>]` — not a per-job total, so a budget burned by one class doesn't starve another. `$BACKEND` is still the concrete executor:
+The **result binding is dispatcher-owned metadata** rather than worker/model self-report. Before
+collect *and again* before `compound-v-pool-state.py transition`, re-read and validate state, then
+require all five captured values to equal the persisted `jobs[<id>].launch_binding`, with
+`attempt_id`/`batch_id` also equal to `jobs[<id>].attempt_id` and `jobs[<id>].batch_id`. On match,
+copy those persisted identities into the result intent and only then publish the accepted result
+to canonical `results/<job_id>.json`. A **mismatched or stale result** is never published or used
+for health mutation, retry accounting, cooldown clearing, network evidence, or relaunch; retain
+its original bytes and binding under `stale-results/<job_id>/<attempt_id>.json` for audit and
+continue waiting for/reconciling the current binding. Thus an old in-flight completion cannot act
+as the current attempt or leased probe, and crash-resume never relies on process-local memory.
 
-   ```bash
-   # ATTEMPTS = state.attempts[<job>][<CLASS>] (per (job, failure_class)); 0 if absent.
-   # RETRY_AFTER = job_result.retry_after_seconds (provider's stated wait; 0 if unknown).
-   # Pass --fallback-open ONLY when the fallback backend's breaker is open:
-   #   i.e. circuit_open[<fallback-of-$BACKEND>].open == true.
-   # Pass --current-tier as the job's RESOLVED tier (deep|standard|light).
-   set -- --failure-class "$CLASS" --backend "$BACKEND" \
-          --attempts "$ATTEMPTS" --total-retries "$TOTAL" --max-total-retries "$MAX" \
-          --current-tier "$TIER"
-   [ -n "$RETRY_AFTER" ] && [ "$RETRY_AFTER" -gt 0 ] && set -- "$@" --retry-after "$RETRY_AFTER"
-   [ "$FALLBACK_OPEN" = "1" ] && set -- "$@" --fallback-open
-   if [ "$MANIFEST_BACKEND" = "pool" ] && [ "$ASSIGNMENT_SOURCE" != "fallback" ]; then
-     set -- "$@" \
-       --pool-members "$POOL_MEMBERS_JSON" \
-       --current-pool-index "$POOL_INDEX" \
-       --circuit-open "$CIRCUIT_OPEN_JSON"
-   fi
-   python3 scripts/compound-v-failure-policy.py "$@"
-   # → {action, reason, backoff_seconds, reroute_to, escalate_tier,
-   #      circuit_break, circuit_break_backend, next_pool_index,
-   #      consume_total_retry, earliest_reset_seconds, clear_assignment}
-   ```
+1. **Classify** the captured failure into `failure_class`, `retry_after`, `retry_at`, and `network_scope`. Only DNS/TLS/connect/reset with no valid provider response is `no_response`; provider-returned z.ai 1234 is `provider_reported` and cannot contribute to a global pause.
+2. **Decide** with `compound-v-failure-policy.py`, passing the concrete assignment, per-(job,class) attempts, monotonic run `total_retries`, reset hints, and summarized same-batch network facts. The policy emits the normalized intent documented in `failure-policy.md`; it MUST NOT receive or scan `pool_members`. Copy the persisted current `attempt_id` into that intent. If `reroute_to` is non-null and the ring may exhaust, resolve that concrete backend once and add the exact `{backend, model}` as `fallback_assignment`; never pass a backend without a resolved model.
+3. **Transition once** with `compound-v-pool-state.py transition`, passing current state, manifest jobs, job id, intent, injected aware-UTC `now`, `batch_id`, and timeout+grace. This helper alone validates nullable health intent, persists permanent circuits and causal network evidence, performs one bounded frozen-ring viability scan, grants at most one half-open/network probe lease, and returns replacement state plus an exact concrete assignment or resumable halt. It uses an explicit matching `fallback_assignment` only after ring exhaustion and never guesses one.
+4. **Validate and atomically persist** the returned state: write a same-directory temporary file, fsync/close it, then `os.replace(temp, state.json)`. When `consume_total_retry: true` and transition returns a concrete launch assignment, it has charged `total_retries` exactly once for the failed `attempt_id` and recorded that identity in `charged_attempt_ids` in this same returned state. A no-viable-member halt persists health intent without a charge; an exhausted budget returns `halt` with no assignment. Validation failure deletes the temporary file and launches nothing.
+5. **Launch** only the persisted assignment. Never increment `total_retries` separately: transition owns the idempotent charge. Never reset it or `charged_attempt_ids` on resume. Per-assignment class counters may fork/reset; the run counter may not.
 
-   - `--retry-after <job_result.retry_after_seconds>` — honor the provider's stated wait; it **overrides** the computed backoff.
-   - `--fallback-open` — set it when `circuit_open[<fallback-backend>].open` is `true`, so an `out_of_credits` whose only fallback is already exhausted yields **`halt`** (both causes surfaced) instead of a doomed reroute.
-   - `--current-tier <resolved tier>` — so a `context_length` failure escalates to a bigger tier **unless already at the deepest tier** (`deep`), where it returns `halt` (split the job) rather than escalating into a model that doesn't exist.
-   - For a pool job whose `assignment_source` is `pool` (or missing on legacy state), `POOL_MEMBERS_JSON = state.pool_members[state.jobs[<id>].pool_tier]`, `POOL_INDEX = state.jobs[<id>].pool_index`, and `CIRCUIT_OPEN_JSON = state.circuit_open` (default `{}`). Pass the entire ordered frozen ring; do not filter unavailable/open members or change their positions. The policy validates that the current slot's backend equals `$BACKEND`. For `assignment_source: fallback`, omit pool context and use the ordinary concrete fallback policy from the recorded fallback backend.
+An inline retry is allowed once on the same assignment only when provider minimum plus jitter is at most 60 seconds. A second short transient, an explicit usage-window reset, or any wait over 60 seconds records a canonical backend-wide cooldown and advances only that pooled job. No foreground path sleeps longer than 60 seconds: a non-pool or no-viable job halts with `next_retry_at`. `model_unavailable` excludes only the exact backend/model for that job. `out_of_credits` and `auth` use their existing reason-specific permanent circuit breakers, never a transient cooldown.
 
-3. **Act** on `action`:
-   - **`retry`** → **first record the cooldown so resume/half-open is deterministic**: write `cooldowns[<concrete-backend>] = <now + backoff_seconds>` (epoch/ISO) in `state.json` — this is the timestamp the half-open/`/v:resume` logic reads, so the retry path MUST produce it. If `consume_total_retry` is true, bump `total_retries`; also bump `attempts[<job>][<failure_class>]`. Preserve every assignment field (`assigned_backend`, `assigned_model`, `assignment_source`, `pool_index`, `pool_tier`) unchanged. Then **sleep `backoff_seconds`** (the policy's value — already the provider's `retry-after` when one was passed) and re-dispatch the **same concrete backend/model** (replay `jobs/<id>.prompt.md`) **through the full worker-script lifecycle** — for an external worker (Codex/Antigravity/Cursor) this means the worktree is removed and recreated fresh at current HEAD before the retry runs, exactly as the adapter's create step already does; never resume by poking the CLI at the job's old worktree directly. Re-run the scope gate on return.
-   - **`reroute`** with `circuit_break: true` (out_of_credits) → first open the canonical breaker object under the policy's concrete `circuit_break_backend`: `circuit_open[<concrete-backend>] = {"open": true, "reason": "out_of_credits", "opened_at": "<iso-ts>", "cleared_by": null}`. If `consume_total_retry` is true, increment `total_retries` **before** relaunch; this run-level budget persists across member changes.
-     - **`next_pool_index` is an integer:** select that frozen slot with `python3 scripts/compound-v-pool-state.py select` using `{"state": <state.json>, "tier": <pool_tier>, "index": <next_pool_index>}`. Before relaunch, atomically replace the job's `assigned_backend`, `assigned_model`, and `pool_index` from the result, keep `pool_tier`, set `assignment_source: "pool"`, and validate the whole state. Relaunch only after the new concrete assignment is durable. Do not bulk-reroute other pool jobs: their own frozen assignments remain unchanged until their own policy result says otherwise.
-     - **`next_pool_index` is null and `reroute_to` is concrete:** the pool is exhausted, so use the ordinary concrete-backend fallback chain. Resolve the fallback's model through the normal resolver for this tier/stance, atomically record that concrete pair with `assignment_source: "fallback"` while retaining the originating `pool_tier` and `pool_index`, validate the whole state, then relaunch. A fallback assignment is load-bearing resume state, not permission to re-read current pool config. Announce the concrete cost/trust change loudly.
-   - **`reroute`** with `escalate_tier: true` (context_length, not yet at the deepest tier) → re-resolve the job at a **bigger tier** via `compound-v-resolve-model.py` and re-dispatch. When the job is re-routed to a different backend or its class changes, **reset/fork** its per-class attempt counter. **For a pool job the policy also sets `clear_assignment: true`** — the frozen slot it held was resolved for the OLD tier, and pools never cover `deep` (a Non-goal), so the job leaves the ring. Record the newly resolved (bigger-tier) backend/model with `assignment_source: "fallback"`, **retaining the originating `pool_tier`/`pool_index`** exactly like an `out_of_credits` pool-exhaustion fallback does (`_assignment_errors` validates a fallback record's `pool_tier` against the job's *manifest* tier, which never changes — clearing it fails validation, it must stay set). Validate the whole state, then relaunch. A non-pool job's `clear_assignment` is always `false`; keep its assignment untouched exactly as today.
-   - **`halt`** → mark the job `failed` in `state.json`, keep the run **`/v:resume`-able**, and **continue other independent jobs** (ralph-tui-style: a sibling's 429 must not kill unrelated jobs). Two round-2 cases also return `halt` and must be honored, not retried:
-     - **out_of_credits with a dead fallback** (`--fallback-open` was set ⇒ the fallback backend is itself circuit-open) — both causes are surfaced; open this backend's breaker, leave the jobs `failed`, and stop dispatching to it. The run stops dead when the **last viable backend** is exhausted.
-     - **context_length already at the deepest tier** (`--current-tier deep`) — no bigger model exists, so **split the job → back to planning/partition**; do not loop on escalation.
-     - **auth** — the policy returns `halt` + `circuit_break: true`. As with **any** `circuit_break: true` result (out_of_credits OR auth), **open the breaker object** `circuit_open[<backend>] = {"open": true, "reason": "<failure_class>", "opened_at": "<iso-ts>", "cleared_by": null}` — for auth, cleared only by re-auth (`/v:init`) on `/v:resume`. Opening the breaker is keyed on `circuit_break: true`, not on the action being `reroute`.
+Cooldown expiry grants eligibility for one leased real-job probe; it does not declare health. Only success from the exact leased `attempt_id` clears that cooldown. A pre-cooldown in-flight success cannot clear it; another transient renews it; a permanent probe failure opens the appropriate circuit. Probe lease duration is job timeout plus grace, and liveness/git-wins reconciliation precedes reclaim.
 
-When the policy returns a positive `earliest_reset_seconds`, atomically persist the pair `state.earliest_reset_observed_at = <now-iso-ts>` and `state.earliest_reset_seconds = <policy value>`. Compare candidates by absolute instant (`observed_at + seconds`) and retain the earliest. The seconds value is relative to its observation time, never to the next status read. Clear both fields when the associated out-of-credits breaker is resolved (if other out-of-credits breakers remain, retain/recompute only from fresh observations). `/v:status` renders a fresh reset instant/duration and never converts it to a percentage.
+One `no_response` failure keeps the assignment and uses the bounded retry. Deduplicated no-response evidence from two distinct providers in the same batch within 60 seconds, with no completed provider success, opens a global network pause. Recovery launches exactly one real-job probe, never pool fan-out. A completed success from another provider instead permits endpoint-specific cooldown/reroute of the failing pooled job.
 
-**Circuit-break is check-before-launch.** Before dispatching each job in a batch, check `circuit_open[<concrete-backend>]` (`assigned_backend` for a pool job, manifest backend otherwise); if it is open, do NOT launch the job — run its policy path to reroute/halt. The canonical map is always keyed by concrete backend and each value is the object shape above; never create `circuit_open.pool` or use a bare boolean. A break discovered mid-batch cannot un-launch jobs already in flight on that backend (there is no daemon) — those complete and **fail fast** (an `out_of_credits` returns immediately). In-flight ones are not force-killed.
-
-Write `state.json` after every transition. "Deprioritize, don't remove": a transient failure gets a short `cooldowns[<backend>]` timestamp (probed half-open next batch), only a confirmed `out_of_credits`/`auth` opens the breaker **object** for the run (which [`/v:resume`](../commands/v-resume.md) reconciles by `reason` — top-up/probe for credits, re-auth for auth — never a silent re-dispatch). **Never** retry `out_of_credits`/`auth`; cap retries by **count AND wall-clock** (per-(job,class) ceiling *and* `max_total_retries`); classify by error **TYPE**, not HTTP status.
+The frozen weighted ring is never resized, reordered, or reweighted. Active cooldown, open circuit, and exact model exclusion only skip slots during the bounded scan. Already-running jobs are not cancelled solely because another job opened state.
 
 **Concrete-consumer invariant.** After Step 0a, every backend-keyed consumer receives the concrete pair: the adapter/worker `job_spec`, advisor eligibility and `--executor`, classifier `--backend`, failure-policy `--backend`, cooldown and canonical circuit keys, batch caps, scope/collector result metadata, usage extraction/aggregation, liveness bookkeeping, `task-outcomes.jsonl`, scorecard queries/updates, memory, batch announcements, `/v:status`, and the final report. A pool job skips model resolution because its concrete model is already frozen; an ordinary fallback is resolved once and recorded. No adapter, worker, classifier, usage extractor, memory row, or scorecard key may receive or persist `pool`.
 
@@ -254,7 +241,10 @@ The worktree-recreate invariant above is the default: every dispatch — first a
 > Before any git or breaker reconciliation, if the manifest contains a job whose routing token is `backend: pool`, validate the complete recorded state with `python3 scripts/compound-v-pool-state.py validate` using `{"state": <state.json>, "jobs": <manifest jobs>}`; any error HALTS resume.
 > Then obtain only that job's concrete pair with `python3 scripts/compound-v-pool-state.py resume` using `{"state": <state.json>, "job_id": "<id>"}`; the helper returns only `assigned_backend` and `assigned_model`.
 > Read `assignment_source`, `pool_index`, `pool_tier`, and `worktree` directly from the already-validated `state.json jobs[<id>]` record and reuse all six recorded values for reconciliation.
-> Never reload current pool config, recompute a manifest ordinal, rerun freeze, or call the model resolver for that recorded assignment. A transient retry preserves it byte-for-byte; only an `out_of_credits` policy decision may replace it, and the replacement MUST be written and validated before relaunch.
+> Never reload current pool config, recompute a manifest ordinal, rerun freeze, or call the model resolver for that recorded assignment. A same-assignment retry preserves it byte-for-byte; any replacement authorized by policy intent is selected only by `transition` and MUST be written and validated before relaunch.
+
+> **Pool-assignment replacement rule (Shared Interface Contract — copy byte-identically into dispatcher and resume runbooks).**
+> Assignment replacement is transition-owned. `out_of_credits` first opens the canonical permanent circuit and performs one bounded frozen-ring scan; only after ring exhaustion may it use an explicitly supplied exact `fallback_assignment` whose backend matches policy `reroute_to`. A missing, malformed, or mismatched fallback HALTS without guessing. `auth` persists its canonical permanent circuit and HALTS. A second short transient or a transient with a known wait over 60 seconds opens a cooldown and advances; `usage_window_exhausted` opens its cooldown and advances immediately; and `model_unavailable` excludes only the exact `exclude_assignment: {backend, model}` pair before selection. The dispatcher adds the persisted current `attempt_id`; when `consume_total_retry: true`, transition atomically charges `total_retries` once for that failed attempt only if it returns a concrete launch assignment, while a no-viable-member halt persists health without a charge. Replay cannot charge twice, and exhaustion HALTS before assignment. Persist and validate every resulting assignment and health-state mutation before relaunch.
 
 > **Resume-eligibility rule (Shared Interface Contract — byte-identical in `commands/v-resume.md`, `agents/parallel-dispatcher.md`, and `skills/compound-v/state-machine.md`).**
 > A codex worktree job may be resumed via `codex exec resume <captured-uuid>` **IFF** its `failure_class` is

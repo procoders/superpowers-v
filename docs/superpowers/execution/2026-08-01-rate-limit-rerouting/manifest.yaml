@@ -1,0 +1,185 @@
+run_id: 2026-08-01-rate-limit-rerouting
+feature: "Provider cooldown and failure rerouting"
+spec_path: docs/superpowers/specs/2026-08-01-rate-limit-rerouting-design.md
+plan_path: docs/superpowers/plans/2026-08-01-rate-limit-rerouting.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-08-01-rate-limit-rerouting.md
+  domain: docs/superpowers/expert/2026-08-01-rate-limit-rerouting.md
+  library: docs/superpowers/library-audit/2026-08-01-rate-limit-rerouting.md
+routing_stance: balanced
+max_parallel: 4
+shared_resources:
+  - schemas/job_result.schema.json
+
+acceptance_criteria:
+  - "A temporary OpenAI/Anthropic-style rate limit with a wait at or below 60 seconds retries the same concrete assignment once and consumes the run retry budget."
+  - "A second consecutive short rate limit on a pooled assignment records a canonical backend cooldown and advances only that job to the next viable frozen slot."
+  - "A wait over 60 seconds is never emitted as foreground backoff_seconds; pool jobs reroute and non-pool/no-viable jobs halt resumably with next_retry_at."
+  - "z.ai documented full messages classify correctly with and without numeric business codes: throttle, overload, resettable window, model unavailable, credits, and auth/policy action."
+  - "An explicit future usage-window reset causes immediate cooldown/reroute without a knowingly futile same-backend retry."
+  - "Pool selection skips active cooldown slots without deleting or reordering frozen members."
+  - "Two cooling providers and one healthy provider select the healthy provider deterministically."
+  - "Three unavailable/open/cooling providers halt without looping and report the earliest known absolute retry time."
+  - "Every cross-provider relaunch increments total_retries; /v:resume never resets it."
+  - "Exactly one attempt may own an expired backend's half-open probe lease. Only success from that exact leased attempt_id clears the cooldown; pre-cooldown in-flight success cannot clear it; repeated transient failure renews it."
+  - "A permanent failure returned by a probe transitions through the existing reason-specific circuit breaker, not another transient cooldown."
+  - "A single network failure preserves the assignment and uses the existing bounded retry."
+  - "A completed success by another provider in the correlation window permits endpoint-specific network cooldown and rerouting of the failing provider's pool job; merely opening a stream does not."
+  - "Deduplicated no_response failures from two distinct providers in one batch within 60 seconds and with no completed provider success open a global network pause. Provider-reported z.ai 1234 and stale/duplicate evidence cannot open it."
+  - "Network recovery uses exactly one real-job probe; it does not fan out across the pool."
+  - "Resume during an active cooldown or network pause performs no forbidden launch; resume after expiry grants only a serialized probe."
+  - "Unknown backend/reason/scope, bare-string new cooldown, malformed/naive timestamp, invalid attempt/probe owner/lease, duplicate probe ownership/evidence, negative or non-finite delay, and malformed/stale network evidence all fail closed."
+  - "Legacy non-pool short-retry decisions remain unchanged. The only intentional non-pool change is that a delay over 60 seconds cannot block the process."
+  - "Status and documentation distinguish transient cooldown, resettable usage window, permanent circuit breaker, and correlated network pause without capacity percentages or health claims."
+  - "Negative controls prove the tests detect at least: disabled cooldown skipping, uncapped multi-day sleep, stale in-flight success clearing a newer cooldown, double half-open probe, z.ai message-without-code misclassification, z.ai 1234 counted as offline evidence, and network-pause fan-out."
+
+jobs:
+  - id: task-0-wire-contract
+    title: "Strict time and provider result wire contract"
+    type: shared_foundation
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: direct
+    run: serial
+    write_allowed:
+      - scripts/compound-v-provider-time.py
+      - schemas/job_result.schema.json
+      - examples/job_result.example.json
+      - skills/backend-launcher/SKILL.md
+    read_allowed:
+      - scripts/compound-v-collect-results.py
+      - scripts/compound-v-classify-failure.py
+      - docs/superpowers/specs/2026-08-01-rate-limit-rerouting-design.md
+    acceptance:
+      - "Strict aware-UTC and finite-delay parsing passes on Python 3.9."
+      - "The additive job_result fields validate and success omits failure evidence."
+
+  - id: task-1-classification-transport
+    title: "Provider classification and result transport"
+    type: large_isolated
+    backend: codex
+    tier: standard
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on:
+      - task-0-wire-contract
+    write_allowed:
+      - scripts/compound-v-classify-failure.py
+      - scripts/compound-v-collect-results.py
+      - scripts/compound-v-run-codex-worker.sh
+      - scripts/compound-v-run-zai-worker.sh
+      - scripts/compound-v-run-cursor-worker.sh
+      - scripts/compound-v-run-antigravity-worker.sh
+      - scripts/test-zai-worker-stub.sh
+    read_allowed:
+      - scripts/compound-v-provider-time.py
+      - schemas/job_result.schema.json
+      - docs/superpowers/specs/2026-08-01-rate-limit-rerouting-design.md
+    acceptance:
+      - "Full provider messages classify with retry_at and network_scope."
+      - "z.ai 1234 is provider_reported and never no_response evidence."
+      - "Collectors and workers preserve optional fields without changing enforcement fields."
+
+  - id: task-2-policy-intent
+    title: "Pure bounded-retry and cooldown policy intent"
+    type: core_slice
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on:
+      - task-0-wire-contract
+    write_allowed:
+      - scripts/compound-v-failure-policy.py
+    read_allowed:
+      - scripts/compound-v-provider-time.py
+      - docs/superpowers/specs/2026-08-01-rate-limit-rerouting-design.md
+    acceptance:
+      - "No policy decision emits foreground backoff above 60 seconds."
+      - "Policy emits intent and does not scan frozen pool members."
+      - "Legacy non-pool short decisions and permanent breakers remain compatible."
+
+  - id: task-3-state-machine
+    title: "Canonical cooldown probe network and assignment state"
+    type: core_slice
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on:
+      - task-0-wire-contract
+    write_allowed:
+      - scripts/compound-v-pool-state.py
+    read_allowed:
+      - scripts/compound-v-provider-time.py
+      - scripts/compound-v-failure-policy.py
+      - docs/superpowers/specs/2026-08-01-rate-limit-rerouting-design.md
+    acceptance:
+      - "A bounded transition is the sole frozen-ring viability authority."
+      - "Cooldown and network recovery grant exactly one live probe lease."
+      - "Malformed state and every specified stale/duplicate case fail closed."
+
+  - id: task-4-dispatch-resume-status
+    title: "Dispatcher resume and status integration"
+    type: core_slice
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on:
+      - task-0-wire-contract
+    write_allowed:
+      - agents/parallel-dispatcher.md
+      - commands/v-resume.md
+      - commands/v-status.md
+      - scripts/compound-v-dashboard.py
+    read_allowed:
+      - scripts/compound-v-provider-time.py
+      - scripts/compound-v-failure-policy.py
+      - scripts/compound-v-pool-state.py
+      - skills/compound-v/state-machine.md
+      - docs/superpowers/specs/2026-08-01-rate-limit-rerouting-design.md
+    acceptance:
+      - "Dispatch order is decide, transition, validate, atomic persist, launch."
+      - "Resume cannot launch through active cooldown or network pause."
+      - "Status renders exact recovery commands and no fabricated health metrics."
+
+  - id: task-5-runbooks
+    title: "Authoritative runbooks and release note"
+    type: docs
+    backend: claude
+    tier: light
+    effort: low
+    isolation: direct
+    run: serial
+    depends_on:
+      - task-1-classification-transport
+      - task-2-policy-intent
+      - task-3-state-machine
+      - task-4-dispatch-resume-status
+    write_allowed:
+      - skills/compound-v/failure-policy.md
+      - skills/compound-v/state-machine.md
+      - skills/compound-v/execution-manifest.md
+      - skills/backend-launcher/adapter-codex.md
+      - skills/backend-launcher/adapter-claude.md
+      - skills/backend-launcher/adapter-zai.md
+      - CHANGELOG.md
+    read_allowed:
+      - scripts/compound-v-provider-time.py
+      - scripts/compound-v-classify-failure.py
+      - scripts/compound-v-failure-policy.py
+      - scripts/compound-v-pool-state.py
+      - agents/parallel-dispatcher.md
+      - commands/v-resume.md
+      - commands/v-status.md
+      - docs/superpowers/specs/2026-08-01-rate-limit-rerouting-design.md
+    acceptance:
+      - "Runbooks describe implemented state and policy without a duplicate algorithm."
+      - "The three-provider failure matrix and conservative cooldown trade-off are explicit."
+      - "The release note claims no quota-aware balancing or invented capacity metric."

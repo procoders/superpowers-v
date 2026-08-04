@@ -211,3 +211,38 @@ Independent measurement against a real GLM Coding Plan subscription, `claude 2.1
 - Consequence for any pooling/round-robin work: a pool can concentrate several concurrent jobs on
   one member, which is exactly when an unenforced per-backend ceiling matters. A
   `backend_max_parallel` config key is what would make the documented default real.
+
+---
+
+## Updated 2026-08-01 — PR3 cooldown timestamp compatibility
+
+Audit: `docs/superpowers/library-audit/2026-08-01-rate-limit-rerouting.md`.
+
+### Python 3.9 timestamp and JSON traps
+
+- Python 3.9's documented `datetime.fromisoformat()` grammar accepts UTC offsets such as
+  `+00:00`, but does not include a terminal `Z`; newer Python documentation demonstrates inputs
+  that 3.9 cannot be assumed to accept. A Python-3.9-safe persisted-time helper must explicitly
+  normalize terminal `Z` to `+00:00` (or use a narrow `%z` format), reject naive datetimes, compare
+  aware UTC values, and emit one canonical UTC representation. Source:
+  <https://docs.python.org/3.9/library/datetime.html>.
+- Python 3.9's `json` decoder accepts `NaN`, `Infinity`, and `-Infinity` by default even though the
+  JSON RFC does not. Numeric state validators must reject booleans/non-finite values explicitly;
+  merely requesting `type=int|float` or testing positivity is insufficient. Source:
+  <https://docs.python.org/3.9/library/json.html>.
+
+### Provider retry hints remain transport-limited
+
+- Anthropic documents `429 rate_limit_error`, separate `529 overloaded_error`, and two default SDK
+  retries for connection/rate-limit/5xx failures while honouring `retry-after` when present:
+  <https://docs.anthropic.com/en/api/errors>.
+- OpenAI documents `Retry-After` as a minimum only for temporary 429 responses, requires bounded
+  attempt/time budgets, and warns that unsuccessful requests consume rate-limit capacity:
+  <https://platform.openai.com/docs/guides/rate-limits>.
+- z.ai publishes resettable usage-window messages with a `{next_flush_time}` placeholder but does
+  not publish that placeholder's concrete timestamp grammar. Parse observed strict formats only;
+  an unknown rendering is an absent hint and must degrade to bounded backoff, never locale/timezone
+  guessing. Source: <https://docs.z.ai/api-reference/api-code>.
+- These contracts do not alter the CLI boundary: Compound V may see rendered text/countdowns, but
+  does not receive raw provider headers. Retry counts reported by the orchestrator are worker
+  launches; a CLI/SDK may already have made hidden HTTP attempts.

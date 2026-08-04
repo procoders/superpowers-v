@@ -61,7 +61,7 @@ id_is_safe() {
 emit_job_result() {
   # $1 status  $2 blocked(true|false)  $3 files_json (JSON array)  $4 violations_json (JSON array)
   # $5 summary  $6 session_id  $7 worktree  $8 exit_code(int)  $9 failure_class ("" => null)
-  # ${10} retry_after_seconds(int, 0 when unknown)  ${11} usage_json (JSON object)
+  # ${10} retry_after_seconds  ${11} usage_json  ${12} retry_at  ${13} network_scope
   jq -n \
     --arg status "$1" \
     --argjson blocked "$2" \
@@ -74,19 +74,26 @@ emit_job_result() {
     --arg failure_class "$9" \
     --argjson retry_after_seconds "${10}" \
     --argjson usage "${11}" \
-    '{
+    --arg retry_at "${12:-}" \
+    --arg network_scope "${13:-}" \
+    '({
        status: $status,
        blocked: $blocked,
        files_changed: $files,
        violations: $violations,
        summary: $summary,
-       failure_class: (if $failure_class == "" then null else $failure_class end),
+       failure_class: (if ($status == "success" or $status == "blocked" or $failure_class == "")
+                       then null else $failure_class end),
        session_id: $session_id,
        worktree: $worktree,
        exit_code: $exit_code,
-       retry_after_seconds: $retry_after_seconds,
+       retry_after_seconds: (if ($status == "success" or $status == "blocked")
+                             then 0 else $retry_after_seconds end),
        usage: $usage
-     }'
+     } + (if ($status != "success" and $status != "blocked" and $retry_at != "")
+          then {retry_at: $retry_at} else {} end)
+       + (if ($status != "success" and $status != "blocked" and $network_scope != "")
+          then {network_scope: $network_scope} else {} end))'
 }
 
 unmeasured_usage() {
@@ -336,13 +343,15 @@ fi
 
 if [ "$exit_code" != "0" ]; then
   FAIL_JSON="$(python3 "$SCRIPT_DIR/compound-v-classify-failure.py" \
-    --backend zai --exit-code "$exit_code" --stderr-file "$EVENTS_LOG" 2>/dev/null || echo '{}')"
+    --backend zai --exit-code "$exit_code" --stderr-file "$STDERR_LOG" 2>/dev/null || echo '{}')"
   FAILURE_CLASS="$(printf '%s' "$FAIL_JSON" | jq -r '.failure_class // "other"' 2>/dev/null || echo other)"
   RETRY_AFTER="$(printf '%s' "$FAIL_JSON" | jq -r '.retry_after // 0' 2>/dev/null || echo 0)"
+  RETRY_AT="$(printf '%s' "$FAIL_JSON" | jq -r '.retry_at // ""' 2>/dev/null || echo '')"
+  NETWORK_SCOPE="$(printf '%s' "$FAIL_JSON" | jq -r '.network_scope // ""' 2>/dev/null || echo '')"
   ERR_TEXT="$(head -c 500 "$STDERR_LOG" 2>/dev/null || echo "")"
   emit_job_result "error" false '[]' '[]' \
     "worker exited $exit_code: $ERR_TEXT" "$SESSION_ID" "$WT" "$exit_code" \
-    "$FAILURE_CLASS" "$RETRY_AFTER" "$USAGE_JSON"
+    "$FAILURE_CLASS" "$RETRY_AFTER" "$USAGE_JSON" "$RETRY_AT" "$NETWORK_SCOPE"
   exit 0
 fi
 

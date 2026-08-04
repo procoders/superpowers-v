@@ -6,11 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added — three-provider cooldown recovery
+
+Pool dispatch now persists backend cooldowns, exact-model exclusions, correlated no-response network
+pauses, leased recovery probes, and attempt-specific launch bindings across Codex, Claude, and z.ai.
+Provider waits above 60 seconds reroute or halt resumably; only the exact leased attempt's completed
+normalized success clears health state.
+
+Cooldowns are deliberately backend-wide because CLI output does not expose limiter identity. This
+may temporarily sideline a healthy model or credential, but prevents retry herds. It is not quota
+balancing: Compound V does not poll balances, infer percentages, or dynamically adjust pool weights.
+
 ### Added — deterministic weighted tier model pools
 
 A manifest job may now route through `backend: pool` for `standard` or `light` work. Pools are configured per stance and tier, rotate by manifest-order job ordinal, support positive integer weights, and resolve every member through the existing tier model map. The eligible weighted ring and each concrete backend/model assignment are frozen into `state.json`, so dispatch timing, config edits, and `/v:resume` cannot silently move an in-flight job.
 
-Pool routing remains inside the existing safety boundary: pooled jobs require worktree isolation; reviewers, deep-tier work, sensitive surfaces, `xhigh`, explicit manifest models, and `advisor_backend: pool` are rejected. The dispatcher passes only the resolved concrete backend/model to adapters, failure classification, usage, memory, scorecards, and status. `rate_limited` preserves the recorded assignment; confirmed `out_of_credits` advances to the next viable frozen slot while consuming the run retry budget, then uses the ordinary concrete fallback after the ring is exhausted. Canonical breaker state and resume assignments are validated fail-closed.
+Pool routing remains inside the existing safety boundary: pooled jobs require worktree isolation; reviewers, deep-tier work, sensitive surfaces, `xhigh`, explicit manifest models, and `advisor_backend: pool` are rejected. The dispatcher passes only the resolved concrete backend/model to adapters, failure classification, usage, memory, scorecards, and status. As refined by the cooldown recovery entry above, the first short throttle/overload preserves the assignment; subsequent or explicitly timed transient failures may cooldown and advance through the validated transition, while confirmed permanent exhaustion opens its circuit. Canonical health state and resume assignments are validated fail-closed.
 
 `claude` is not included in the shipped pool example because its usage limit is shared with the operator's interactive Claude/Claude Code session; adding it is an explicit opt-in. This change was merge-dependent on the z.ai backend in PR #5, now merged below.
 

@@ -50,11 +50,19 @@ Defined and validated by [`schemas/job_result.schema.json`](../../schemas/job_re
   "failure_class": null,               // null on success/blocked; else the classified backend failure
   "session_id": "uuid",                // codex exec resume <uuid>
   "worktree": "/tmp/compound-v/<run-id>/task-1-editor-ui",
-  "exit_code": 0
+  "exit_code": 0,
+  "retry_after_seconds": 0              // required, finite non-negative integer
 }
 ```
 
-**`failure_class` — the graceful-failure hook.** On a non-success backend *failure* (not a scope-gate `blocked`), the result carries a `failure_class` ∈ `{out_of_credits, rate_limited, overloaded, auth, context_length, timeout, network, other}` (the Codex worker emits it; `null` on success/blocked). The dispatcher feeds it to the deterministic **classify → policy → act** flow — [`scripts/compound-v-classify-failure.py`](../../scripts/compound-v-classify-failure.py) then [`scripts/compound-v-failure-policy.py`](../../scripts/compound-v-failure-policy.py) → **retry** (same backend, backoff), **reroute** (out_of_credits → circuit-break + env-aware codex→claude rewrite; context_length → bigger tier), or **halt** (resumable). A `claude` job whose result lacks the field is classified by re-reading the stream-json `api_retry.error` enum (`--backend claude`). Full policy: [`skills/compound-v/failure-policy.md`](../compound-v/failure-policy.md).
+**`failure_class` — the graceful-failure hook.** On a non-success backend *failure* (not a scope-gate `blocked`), the result carries a `failure_class` ∈ `{out_of_credits, rate_limited, overloaded, usage_window_exhausted, model_unavailable, auth, context_length, timeout, network, other}` (the Codex worker emits it; `null` on success/blocked). The dispatcher feeds it to the deterministic **classify → policy → act** flow — [`scripts/compound-v-classify-failure.py`](../../scripts/compound-v-classify-failure.py) then [`scripts/compound-v-failure-policy.py`](../../scripts/compound-v-failure-policy.py) → **retry** (same backend, bounded backoff), **reroute**, or **halt** (resumable). A `claude` job whose result lacks the field is classified by re-reading the stream-json `api_retry.error` enum (`--backend claude`). Full policy: [`skills/compound-v/failure-policy.md`](../compound-v/failure-policy.md).
+
+**Failure timing and network evidence (additive).** Error/timeout results may carry two optional fields in addition to the required non-negative integer `retry_after_seconds`:
+
+- `retry_at`: an RFC3339 absolute reset/retry instant or `null`. Consumers normalize and validate it through `scripts/compound-v-provider-time.py`; an unparseable or naive value fails closed rather than becoming an immediate retry.
+- `network_scope`: `no_response`, `provider_reported`, or `null`. Only `no_response` means no valid provider response arrived; `provider_reported` (including z.ai 1234) must never be treated as evidence of common-path internet loss.
+
+Under the success/blocked omission rule, a `success` or scope-gate `blocked` result **MUST omit** both `retry_at` and `network_scope`; its required `failure_class` remains `null` and `retry_after_seconds` remains `0`. Workers and collectors transport the optional fields exactly when error evidence exists and never invent them. These fields do not alter the git-derived enforcement fields.
 
 ---
 
