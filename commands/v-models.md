@@ -64,6 +64,15 @@ flat shape** `{<backend>: {<tier>: model}}` (applied to every stance) for backwa
 If `{{args}}` named one backend, only discover + reassign that backend (across every
 stance's block) and leave the other backends exactly as they are.
 
+Also snapshot both the **presence/absence** and value of the sibling `pools` and
+`backend_max_parallel` blocks before changing anything. They are operator-owned routing policy,
+**not** discovery output. `/v:models` never normalizes, reorders, regenerates, creates, or deletes
+them; it preserves every existing member, bounded weight (1–100; expanded tier ring at most 256
+slots), and optional member `model` override unchanged,
+and preserves exact absence when either key was absent. A pool member without `model` will
+automatically use the refreshed `models.<stance>.<backend>.<tier>` cell; a member with `model` is an
+intentional pin and remains untouched.
+
 ---
 
 ## Step 1 — Discover available models per backend
@@ -250,11 +259,27 @@ Guardrails on every assignment:
 
 ## Step 3 — Write the map into `.claude/compound-v.json`
 
-Merge the confirmed assignments into the config's `models` block. **Preserve every
-other key** in the file (`stance`, `memory`, `epic`, `review`, `workflows_accelerator`,
-…) and any backend block you did not refresh this run. Create the file (and parent
-dir) if absent, seeding the non-`models` keys from `/v:init` conventions if they
-aren't there yet. **Never write `backends` or `checked_at`** — machine-local
+Merge the confirmed assignments into the config's `models` block. For an **existing** file,
+preserve every other key (`stance`, `memory`, `epic`, `review`, `workflows_accelerator`, `pools`,
+`backend_max_parallel`, …) and any backend block you did not refresh this run. In particular,
+restore the Step 0 presence/absence and value of `pools` and `backend_max_parallel` unchanged; only
+`models` is this command's responsibility.
+
+For an **absent** file, create the file (and parent directory) with the confirmed `models` map plus
+only these pre-existing, non-pool `/v:init` defaults:
+
+- `stance: "balanced"`;
+- `memory: {"embeddings": false, "auto_recall": true, "auto_tighten": false}`;
+- `epic: {"max_features": 1, "autonomy": {"stance": "checkpoint", "watch": false,
+  "max_wall_clock_hours": 10, "max_no_progress_cycles": 3}}`;
+- `review: {"cross_model": false}`;
+- `brainstorm: {"deep_research": "ask", "batch_elicitation": true}`;
+- `pre_eval: {"enabled": true, "fast_path": "ask", "min_sample_count": 5,
+  "fan_out_threshold": 1, "token_cap": 20000, "remember": {}}`.
+
+Do **not** create `pools` or `backend_max_parallel` on this first-write path: their exact absence is
+operator policy and must remain absence. Do not invent `workflows_accelerator`; `/v:init` writes it
+only after an explicit opt-in. **Never write `backends` or `checked_at`** — machine-local
 capability lives in `~/.claude/compound-v-capabilities.json`, not in this committed
 file (v2.6.2). If an older file already has those two keys (pre-2.6.2), leave them
 untouched — they're inert, no migration needed.
@@ -265,7 +290,27 @@ Resulting shape (only `models` is this command's responsibility) — write the
 
 ```jsonc
 {
-  "stance": "…",            // preserved
+  "stance": "balanced",
+  "memory": { "embeddings": false, "auto_recall": true, "auto_tighten": false },
+  "epic": {
+    "max_features": 1,
+    "autonomy": {
+      "stance": "checkpoint",
+      "watch": false,
+      "max_wall_clock_hours": 10,
+      "max_no_progress_cycles": 3
+    }
+  },
+  "review": { "cross_model": false },
+  "brainstorm": { "deep_research": "ask", "batch_elicitation": true },
+  "pre_eval": {
+    "enabled": true,
+    "fast_path": "ask",
+    "min_sample_count": 5,
+    "fan_out_threshold": 1,
+    "token_cap": 20000,
+    "remember": {}
+  },
   "models": {
     "balanced": {
       "claude":      { "deep": "opus",    "standard": "opus",    "light": "sonnet" },
@@ -288,6 +333,10 @@ Resulting shape (only `models` is this command's responsibility) — write the
 }
 ```
 
+The shape above illustrates the absent-file first write and therefore omits `pools` and
+`backend_max_parallel`. When either key existed before the refresh, retain that key and its value
+unchanged alongside `models`; when it did not exist, do not add it.
+
 The resolver still accepts the **legacy flat shape** `{<backend>: {<tier>: model}}`
 (applied to every stance) for backward-compat, so an older flat config keeps working;
 new writes use the per-stance shape above.
@@ -296,6 +345,15 @@ The `models` map is **project-local config** — written into the project, not
 committed in the plugin repo (it is documented in
 [`execution-manifest.md`](../skills/compound-v/execution-manifest.md), seeded by
 `/v:init`, refreshed here).
+
+The pool schema is deliberately separate and per-stance only:
+`pools.<stance>.<tier>[]`, where each member has required `backend`, optional `model`, and optional
+bounded positive-integer `weight` (1–100, default `1`; expanded tier ring at most 256 slots). Do
+not infer or migrate a legacy flat pool shape. The
+shipped Codex + zai pools and their `backend_max_parallel.zai` ceiling depend on prerequisite PR 1
+(`feat/zai-backend`, PR #5), and this pool release must not merge before it. Claude is omitted by
+default and remains an explicit operator opt-in because its quota is shared with the live operator
+session. None of these facts makes pool configuration part of model discovery.
 
 ---
 
@@ -325,6 +383,12 @@ ignored and the same map applies to every stance). In particular,
 model means the write didn't take — fix the JSON and re-run. (Skip the `codex` rows if
 codex is unavailable on this machine; the map entries are still valid for when it
 returns.)
+
+Finally compare both the post-write **presence/absence** and values of `pools` and
+`backend_max_parallel` with the Step 0 snapshot. Any difference—including creating an absent key—is
+a failed refresh: restore the exact prior state before reporting success. Do not validate runtime
+availability here; pool availability is evaluated and frozen at run dispatch, while this command
+owns model-map refresh only.
 
 ---
 

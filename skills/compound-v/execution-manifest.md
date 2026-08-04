@@ -35,7 +35,7 @@ Worked example: [`examples/manifest.example.yaml`](../../examples/manifest.examp
 | `id` | string | yes | Unique job id within the run (e.g. `task-1-editor-ui`). |
 | `title` | string | yes | One-line job title. |
 | `type` | string | yes | Job-type token used by the routing policy (e.g. `shared_foundation`, `bounded_crud`, `large_isolated`, `core_slice`, `mechanical_refactor`, `docs`, `tests_new`, `external_api`, `review`). |
-| `backend` | enum | yes | `claude` \| `codex` \| `antigravity` \| `cursor` \| `devin` \| `opencode` \| `zai`. **Execution-layer data — NEVER appears in any frontmatter.** (`antigravity`/`cursor`/`opencode`/`zai` are opt-in, lower-trust, no kernel sandbox ⇒ always `worktree`; `devin` has a Research-Preview kernel sandbox treated as unverified/no-confinement for v1 ⇒ also always `worktree`. `devin`/`opencode`/`zai` are **worker-only** — never a routable arbiter/review-panel seat. For `devin`/`opencode` because both are multi-provider brokers whose resolved model family is data-dependent; for `zai` because `model_family()` carries no `glm` needle, so a GLM ballot buckets as `unknown` and could be deduped against an unrelated model.) |
+| `backend` | enum | yes | A concrete backend (`claude` \| `codex` \| `antigravity` \| `cursor` \| `devin` \| `opencode` \| `zai`) or the job-only routing token `pool`. **Execution-layer data — NEVER appears in any frontmatter.** `pool` has no adapter: it is replaced by `assigned_backend` / `assigned_model` before launch. (`antigravity`/`cursor`/`opencode`/`zai` are opt-in, lower-trust, no kernel sandbox ⇒ always `worktree`; `devin` has a Research-Preview kernel sandbox treated as unverified/no-confinement for v1 ⇒ also always `worktree`. `devin`/`opencode`/`zai` are **worker-only** — never a routable arbiter/review-panel seat. For `devin`/`opencode` because both are multi-provider brokers whose resolved model family is data-dependent; for `zai` because `model_family()` carries no `glm` needle, so a GLM ballot buckets as `unknown` and could be deduped against an unrelated model.) |
 | `tier` | enum | yes¹ | `deep` \| `standard` \| `light`. The **intent** the routing policy assigns; the dispatcher resolves it to a concrete model. Stable vocabulary that survives model churn. |
 | `effort` | enum | no | `low` \| `medium` \| `high` \| `xhigh`. Orthogonal reasoning-effort hint. Default pairing `deep→high`, `standard→medium`, `light→low`, but independently tunable per task-type. For `codex` it maps to `-c model_reasoning_effort=<effort>`; for `claude` it is advisory (the `Task` path has no separate effort flag). `xhigh` is valid **iff** `backend: codex`; every other backend rejects it with a clear error naming the rule (use `high` instead). |
 | `model` | string | no¹ | Explicit override, e.g. `opus`, `sonnet`, `gpt-5.6-sol`. When present it **skips resolution** (the manifest pins the model directly). Execution-layer data — never in frontmatter. Backward-compatible: pre-tier manifests carrying only `model` remain valid. |
@@ -46,7 +46,7 @@ Worked example: [`examples/manifest.example.yaml`](../../examples/manifest.examp
 | `read_allowed` | string[] | yes | Glob list this job MAY read. **ADVISORY only — NOT enforced** (git cannot track reads). Documents intent + scopes the prompt. Auto-includes Task 0 outputs + the three audits. |
 | `acceptance` | string[] | yes | This job's narrow acceptance, checked in its per-task review. |
 
-¹ **Every job MUST have `model` OR `tier`** (at least one). Most jobs carry `tier` (+ optional `effort`) and let the dispatcher resolve the concrete model; a job MAY instead pin an explicit `model` override that skips resolution. A job with neither is a validation failure.
+¹ **Every non-pool job MUST have `model` OR `tier`** (at least one). Most jobs carry `tier` (+ optional `effort`) and let the dispatcher resolve the concrete model; a job MAY instead pin an explicit `model` override that skips resolution. A pool job MUST carry `tier` and MUST NOT carry `model`: its selected member supplies the concrete model. A job with neither is a validation failure.
 
 `backend`, `tier`, `effort`, and `model` are execution-layer values. They drive dispatch; they MUST NOT leak into any agent/skill/command frontmatter (`lint-frontmatter.py` + `validate.yml` reject Haiku, and reviewers/agents always carry `model: opus`).
 
@@ -92,6 +92,175 @@ The concrete model behind each tier lives in a **refreshable** map in the projec
 
 The map is **documented, not committed** in this repo (it is project-local config). `/v:init` seeds the per-stance default map so routing works out of the box; `/v:models` discovers available models per backend and rewrites the map. The resolver also **accepts the legacy flat shape** `{<backend>: {<tier>: model}}` (applied to every stance) for backward-compat — it auto-detects which shape it was given. NEVER `haiku` anywhere. Antigravity values are illustrative placeholders refreshed by `agy models`; codex has no list command, so its map is curated + user-overridable; claude uses native tier aliases.
 
+### Config `pools` and `backend_max_parallel` (project `.claude/compound-v.json`)
+
+Tier pools are **explicit project policy**, stored beside `models`. Merely configuring a pool does
+not rewrite any stance-table route: a planner must deliberately emit `backend: pool` for an eligible
+job. Pools have exactly one shape, with no legacy-flat auto-detection:
+
+```jsonc
+{
+  "pools": {
+    "balanced": {
+      "light": [
+        { "backend": "codex" },
+        { "backend": "zai" }
+      ],
+      "standard": [
+        { "backend": "codex", "weight": 2 },
+        { "backend": "zai", "model": "glm-5.2" }
+      ]
+    },
+    "cost-aware": {
+      "light": [ { "backend": "codex" }, { "backend": "zai" } ],
+      "standard": [ { "backend": "codex", "weight": 2 }, { "backend": "zai" } ]
+    }
+  },
+  "backend_max_parallel": { "zai": 4 }
+}
+```
+
+The exact path is `pools.<stance>.<tier>[]`. Each member is an object with:
+
+- required non-empty `backend` naming a concrete worker backend;
+- optional non-empty `model`, used as that member's explicit model override; when absent, the
+  enclosing tier resolves through the ordinary `models.<stance>.<backend>.<tier>` map;
+- optional `weight`, a non-boolean integer from `1` through `100`; default `1`. Weight *n*
+  occupies *n* consecutive slots in the deterministic ring. The expanded ring for one tier is
+  capped at `256` slots so hostile or accidental JSON integers cannot force unbounded allocation.
+
+`pools` and top-level `backend_max_parallel` must be objects when present; a structural type error
+fails closed. Pool normalization drops malformed/duplicate members with a surfaced warning, rejects
+non-positive, boolean, or greater-than-100 weights and any member that would exceed 256 expanded
+slots for its tier, and never guesses a legacy flat shape. Each
+`backend_max_parallel.<backend>` value must likewise be a positive, non-boolean integer. It is a
+documented batch ceiling the prose dispatcher respects; validation proves its **shape**, not that a
+new scheduler or semaphore enforces it. Either top-level key may be absent and then normalizes to
+`{}`; every legacy/non-pool manifest keeps its existing routing behavior.
+
+The shipped policy uses **Codex + zai** and deliberately omits `claude`. Claude/Claude Code quota is
+shared with the operator's live session, whereas Codex and zai are separate worker subscriptions;
+adding `{ "backend": "claude" }` is therefore an explicit opt-in. To give Claude a smaller share,
+keep its weight at `1` and give the other members larger integer weights. This pool release has a
+hard merge prerequisite on PR 1 (`feat/zai-backend`, PR #5); do not merge it before that backend is
+present. The dependency is stated as prose because cross-branch file links fail this repository's
+line-based dead-link guard.
+
+`/v:models` refreshes **only** `models` and preserves `pools`, `backend_max_parallel`, and every
+optional pool-member `model` override unchanged. A member without `model` automatically follows the
+refreshed tier map; a member with `model` is an operator-owned pin and is intentionally not rewritten.
+
+### `backend: pool` job and frozen state contract
+
+The checked-in [`examples/manifest.example.yaml`](../../examples/manifest.example.yaml) stays on
+concrete backends so CI validation remains independent of project-local config, installed CLIs, and
+credentials. A pool-routed implementer has this shape in a real configured project:
+
+```yaml
+- id: task-3-docs
+  title: "Sequence editor user docs"
+  type: docs
+  backend: pool
+  tier: light
+  effort: low
+  isolation: worktree
+  run: parallel
+  write_allowed: ["docs/features/sequences.md"]
+  read_allowed: ["src/features/sequences/**"]
+  acceptance: ["documents create/edit/delete flow"]
+```
+
+`pool` is legal only on a **non-reviewer, non-sensitive implementer** at `tier: standard` or
+`tier: light`. It requires `isolation: worktree`; rejects `tier: deep`, an explicit manifest
+`model`, and `effort: xhigh`; and is forbidden for job types containing
+`security|auth|payment|pii|a11y`. `pool` remains illegal for `advisor.advisor_backend`. The selected
+member is resolved through the existing `resolve()` entry point, including stance precedence,
+optional member-model precedence, and the opencode `provider/model` check. After that resolution,
+the manifest validator applies the never-Haiku gate to the concrete model; `resolve_pool()` itself
+does not perform that policy check.
+
+Before any launch, the dispatcher expands weights, evaluates member availability once, and freezes
+the ring under top-level `state.json.pool_members`. Ordinals are counted in the manifest's declared
+job order among pool jobs of the same tier—not launch or completion order. A skipped unavailable or
+open-circuit slot still consumes its position; the ring is never resized mid-run. Each pool job then
+records concrete `state.json.jobs.<id>.assigned_backend` and `assigned_model` plus the selected
+`pool_index`, load-bearing `pool_tier`, and `assignment_source: "pool"` before launch. A dispatched
+pool job missing required assignment context is invalid state. Weight expansion and availability
+are visible rather than implied:
+
+```jsonc
+{
+  "pool_members": {
+    "light": [
+      { "backend": "codex", "model": "gpt-5.6-luna", "available": true },
+      { "backend": "codex", "model": "gpt-5.6-luna", "available": true },
+      { "backend": "zai", "model": "glm-5-turbo", "available": false }
+    ]
+  },
+  "jobs": {
+    "task-3-docs": {
+      "status": "dispatched",
+      "assigned_backend": "codex",
+      "assigned_model": "gpt-5.6-luna",
+      "assignment_source": "pool",
+      "pool_index": 0,
+      "pool_tier": "light",
+      "isolation": "worktree"
+    }
+  }
+}
+```
+
+The state validator treats these fields as one load-bearing record:
+
+- `pool_tier` MUST equal the pool job's manifest tier and names the exact frozen
+  `pool_members[pool_tier]` ring;
+- `pool_index` MUST be a non-negative, non-boolean integer inside that ring and MUST name a slot
+  whose frozen `available` value is `true`;
+- `assignment_source` is `pool` or `fallback`. A missing source is accepted only as the legacy
+  spelling of `pool`; unknown values fail closed;
+- for `assignment_source: "pool"`, `assigned_backend` / `assigned_model` MUST exactly match the
+  frozen slot at `[pool_tier][pool_index]`;
+- for `assignment_source: "fallback"`, the concrete pair may differ from that slot because the
+  ring was exhausted, but the backend must still be a known concrete backend, the model must be a
+  non-empty string, and the originating valid `pool_tier` / `pool_index` remain required.
+
+An ordinary fallback after ring exhaustion therefore records this shape before relaunch and resume:
+
+```jsonc
+{
+  "status": "dispatched",
+  "assigned_backend": "claude",
+  "assigned_model": "sonnet",
+  "assignment_source": "fallback",
+  "pool_index": 0,
+  "pool_tier": "light",
+  "isolation": "worktree"
+}
+```
+
+The fallback retains index `0` as its originating frozen context; it does not claim that Claude
+occupies slot `0`. `compound-v-pool-state.py resume` validates this record and returns the recorded
+concrete pair without re-reading config or re-deriving the pool assignment.
+
+For the shipped members, that one-time availability predicate is deliberately narrow: `codex` is
+available only when its binary is on `PATH`; `zai` is available only when `ZAI_API_KEY` is non-empty.
+Those verdicts are not re-probed after freeze, including on resume.
+
+Adapters, workers, advisor selection, failure classification/policy, usage extraction, outcome
+memory, and scorecards receive only those concrete assignment fields—never the routing token
+`pool`. `/v:resume` reuses the recorded assignment and worktree without consulting edited config.
+`rate_limited` retries that same assignment. Only `out_of_credits` advances to the next viable
+frozen member, consumes the run-level retry budget, records the replacement assignment before
+relaunch, and uses the existing concrete-backend fallback chain after the pool is exhausted. A
+terminal exhausted-pool halt carries `earliest_reset_seconds` when any member exposed a reset time.
+
+Weighted rotation balances **manifest job counts per tier only**. It does not measure or equalize
+tokens, credits, messages, wall-clock, savings, or provider quota. Jobs can differ radically in
+size, and zai charges the same token work at twice the off-peak credit rate during its peak window
+(Mon–Fri 14:00–18:00 UTC+8). Compound V performs no time-of-day routing and reports integer
+assignment counts, never percentages or a "balance score."
+
 ### Resolution (tier → model)
 
 [`scripts/compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py) is the resolver the dispatcher runs **before** invoking any backend. Given `--backend`, `--tier`, optional `--effort`, optional `--stance` (default `balanced`, threaded from the manifest's `routing_stance`), and optional `--config`, it returns one JSON object on stdout — `{ "backend", "tier", "model", "effort" }` — using the stance's built-in default map (the one above) that a `--config` cell overrides (per-stance `models.<stance>.<backend>.<tier>` or legacy flat `models.<backend>.<tier>`), and an `--explicit-model` (the manifest `model` override) always wins. It is generic: no backend-specific routing logic baked in. See [`routing-policy.md`](routing-policy.md) for the task-type → (tier, effort) table.
@@ -103,15 +272,16 @@ The map is **documented, not committed** in this repo (it is project-local confi
 1. **Disjoint writes.** Every file path belongs to exactly one job's `write_allowed`. No glob in two jobs may overlap. Overlap ⇒ validation fails with the colliding pair.
 2. **Shared resources → serial Task 0.** Lockfiles, generated code, schema migrations, barrels, and shared type files are not splittable. They go into a single `type: shared_foundation`, `run: serial`, `isolation: direct` job (conventionally `task-0-*`) that no sibling can race. Other jobs `depends_on` it.
 3. **Codex ⇒ worktree.** Any job with `backend: codex` MUST have `isolation: worktree`. (Codex's sandbox can only restrict writes to a *directory*, not a file allow-list, so the worktree + `git diff` combo is the only file-scope enforcement.)
-4. **Reviewers ⇒ deep.** Any review/reviewer job MUST resolve to the strongest tier — `tier: deep` OR an explicit `model: opus`. (Mirrors the frontmatter rule: reviewers are always Opus; `deep` resolves to `opus` for claude.)
-5. **Model OR tier.** Every job MUST carry at least one of `model` or `tier`. A job with neither cannot be dispatched (the resolver has nothing to route on) and fails validation.
-6. **Tier / effort enums.** If present, `tier ∈ {deep, standard, light}` and `effort ∈ {low, medium, high, xhigh}`. `xhigh` is valid **iff** `backend: codex`; every other backend rejects it with a clear error naming the rule (use `high` instead). Any other value fails validation.
-7. **Parallel ⇒ worktree.** A `run: parallel` job MUST be `isolation: worktree`. `isolation: direct` is only valid with `run: serial`. (A repo-wide `git diff` cannot attribute a parallel direct job's writes to that job, so per-job isolation is mandatory for parallel work.) Hard validation failure.
-8. **Required fields + safe ids.** Every top-level required field (`run_id`, `jobs`, `feature`, `acceptance_criteria`, `routing_stance`, `max_parallel`) and every per-job required field (`id`, `title`, `type`, `backend`, `isolation`, `run`, `write_allowed`, `read_allowed`, `acceptance`, plus `model` OR `tier`) must be present; enums must be in range; and each `id`/`run_id` must match `^[A-Za-z0-9._-]+$` (not `.`/`..`) — a `../x` id is a path-traversal vector, rejected before dispatch.
-9. **Unclear scope never dispatches.** A job whose scope the planner can't pin returns to planning rather than shipping with a guessed partition.
-10. **`read_allowed` auto-includes** Task 0 outputs + the three audit files, so every job can read the shared foundation and the pre-flight findings without listing them.
+4. **Pool ⇒ restricted worktree implementer.** A `backend: pool` job MUST use `tier: standard|light` and `isolation: worktree`; MUST NOT be a reviewer or a `security|auth|payment|pii|a11y` job; and MUST NOT carry manifest `model` or `effort: xhigh`. Its configured stance/tier pool must normalize to a non-empty ring, and the validator MUST reject any member whose concrete post-resolution model contains Haiku. `pool` is legal only at `job.backend`, never `advisor.advisor_backend`.
+5. **Reviewers ⇒ deep.** Any review/reviewer job MUST resolve to the strongest tier — `tier: deep` OR an explicit `model: opus`. (Mirrors the frontmatter rule: reviewers are always Opus; `deep` resolves to `opus` for claude.)
+6. **Model OR tier.** Every job MUST carry at least one of `model` or `tier`. A job with neither cannot be dispatched (the resolver has nothing to route on) and fails validation. Pool jobs specifically require `tier` and forbid manifest `model`.
+7. **Tier / effort enums.** If present, `tier ∈ {deep, standard, light}` and `effort ∈ {low, medium, high, xhigh}`. `xhigh` is valid **iff** `backend: codex`; every other backend—including `pool`—rejects it with a clear error naming the rule (use `high` instead). Any other value fails validation.
+8. **Parallel ⇒ worktree.** A `run: parallel` job MUST be `isolation: worktree`. `isolation: direct` is only valid with `run: serial`. (A repo-wide `git diff` cannot attribute a parallel direct job's writes to that job, so per-job isolation is mandatory for parallel work.) Hard validation failure.
+9. **Required fields + safe ids.** Every top-level required field (`run_id`, `jobs`, `feature`, `acceptance_criteria`, `routing_stance`, `max_parallel`) and every per-job required field (`id`, `title`, `type`, `backend`, `isolation`, `run`, `write_allowed`, `read_allowed`, `acceptance`, plus `model` OR `tier`) must be present; enums must be in range; and each `id`/`run_id` must match `^[A-Za-z0-9._-]+$` (not `.`/`..`) — a `../x` id is a path-traversal vector, rejected before dispatch.
+10. **Unclear scope never dispatches.** A job whose scope the planner can't pin returns to planning rather than shipping with a guessed partition.
+11. **`read_allowed` auto-includes** Task 0 outputs + the three audit files, so every job can read the shared foundation and the pre-flight findings without listing them.
 
-A violation of rule 1, 3, 4, 5, 6, 7, or 8 is a hard validation failure (non-zero exit + specifics). Rules 2/9/10 are partition-design rules enforced jointly by `partition-reviewer` and the validator.
+A violation of rule 1, 3, 4, 5, 6, 7, 8, or 9 is a hard validation failure (non-zero exit + specifics). Rules 2/10/11 are partition-design rules enforced jointly by `partition-reviewer` and the validator.
 
 ### Only `write_allowed` is enforced; `read_allowed` is advisory
 

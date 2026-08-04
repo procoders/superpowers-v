@@ -220,6 +220,8 @@ docs/superpowers/
 │   ├── task-outcomes.jsonl             # one line per job, appended by the collector
 │   ├── worker-performance.jsonl        # machine-generated scorecard (compound-v-scorecard.py; regenerated each run)
 │   └── routing-lessons.md              # human-curated routing lessons
+├── reviews/
+│   └── YYYY-MM-DD-<topic>[-review|-review-handoff].md  # ad-hoc pre-merge adversarial self-review + fix handoff
 ├── specs/                              # default Superpowers
 └── plans/                              # default Superpowers
 ```

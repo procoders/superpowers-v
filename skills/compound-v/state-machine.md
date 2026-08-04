@@ -154,20 +154,49 @@ docs/superpowers/execution/<run-id>/
   "escalated_to": null,
   "total_retries": 2,
   "max_total_retries": 12,
+  "earliest_reset_observed_at": "2026-06-26T14:32:55Z",
+  "earliest_reset_seconds": 120,
+  "backend_max_parallel": { "zai": 4 },
   "cooldowns": { "codex": "2026-06-26T14:33:10Z" },
   "circuit_open": {
     "codex": { "open": true, "reason": "out_of_credits", "opened_at": "2026-06-26T14:32:55Z", "cleared_by": null }
+  },
+  "pool_members": {
+    "standard": [
+      { "backend": "codex", "model": "gpt-5.6-terra", "available": true },
+      { "backend": "zai", "model": "glm-5.2", "available": true }
+    ]
   },
   "attempts": { "task-2-api": { "rate_limited": 2, "network": 1 } },
   "jobs": {
     "task-0-schema":   { "status": "done",    "isolation": "direct",   "worktree": null,                          "session_id": null,   "log": null },
     "task-1-editor-ui":{ "status": "running", "isolation": "worktree", "worktree": "$TMPDIR/compound-v/<run>/task-1-editor-ui", "session_id": "uuid", "log": "docs/superpowers/execution/<run>/logs/task-1-editor-ui.jsonl" },
-    "task-2-api":      { "status": "pending", "isolation": "direct",   "worktree": null,                          "session_id": null,   "log": null }
+    "task-2-api":      { "status": "pending", "isolation": "worktree", "worktree": "$TMPDIR/compound-v/<run>/task-2-api", "session_id": null, "log": null, "assigned_backend": "zai", "assigned_model": "glm-5.2", "assignment_source": "pool", "pool_index": 1, "pool_tier": "standard" }
   }
 }
 ```
 
-Per-job fields: `status` (lifecycle, below), `isolation` (`direct` | `worktree`), `worktree` (absolute path or `null`), `session_id` (the codex `thread_id` UUID read from the worker's `job_result.session_id`, UUID-validated — the resume UUID; `null` otherwise), `failure_class` (the returned `job_result.failure_class`, e.g. `timeout`/`network`; consulted by the resume-eligibility rule; `null` otherwise), `baseline` (the **immutable pre-launch baseline SHA** the scope gate — and, on a fast-path job, the post-hoc reclassifier — attribute against; recorded at dispatch, reconciled against on resume, **never** re-derived from a moved `HEAD`; CR5-3), and **`log`** (the codex worker's events-log path — `docs/superpowers/execution/<run-id>/logs/<id>.jsonl` — recorded by the dispatcher at dispatch; `null`/absent for non-codex jobs). `log` is read by the liveness sweep as a progress signal and is **degrade-safe**: absent ⇒ prior git+FS+pid behavior unchanged.
+Per-job fields: `status` (lifecycle, below), `isolation` (`direct` | `worktree`), `worktree` (absolute path or `null`), `session_id` (the codex `thread_id` UUID read from the worker's `job_result.session_id`, UUID-validated — the resume UUID; `null` otherwise), `failure_class` (the returned `job_result.failure_class`, e.g. `timeout`/`network`; consulted by the resume-eligibility rule; `null` otherwise), `baseline` (the **immutable pre-launch baseline SHA** the scope gate — and, on a fast-path job, the post-hoc reclassifier — attribute against; recorded at dispatch, reconciled against on resume, **never** re-derived from a moved `HEAD`; CR5-3), and **`log`** (the codex worker's events-log path — `docs/superpowers/execution/<run-id>/logs/<id>.jsonl` — recorded by the dispatcher at dispatch; `null`/absent for non-codex jobs). A pool-routed job additionally carries the load-bearing assignment fields below. `log` is read by the liveness sweep as a progress signal and is **degrade-safe**: absent ⇒ prior git+FS+pid behavior unchanged.
+
+### Frozen pool assignment fields
+
+At run start, before any job launches, the dispatcher runs `compound-v-project-config.py` once and sends the normalized `pools`, `models`, manifest `jobs` in original order, stance, and current state to `compound-v-pool-state.py freeze`. The successful output atomically replaces `state.json`; then `compound-v-pool-state.py validate` must exit 0. This is the only assignment freeze. Re-running the helper against a state that already has `pool_members` may validate/preserve it, but current config must never replace it.
+
+| Field | Shape | Meaning |
+|---|---|---|
+| `pool_members` | `{ "<tier>": [{ "backend": str, "model"?: str, "available": bool }, ...] }` | Expanded weighted slots frozen once. Unavailable slots remain positional tombstones; the ring is never resized. |
+| `jobs[id].assigned_backend` | concrete backend string | Backend supplied to every backend-keyed consumer. Never `pool`. |
+| `jobs[id].assigned_model` | non-empty string | Concrete model supplied to the worker and status/memory rows. |
+| `jobs[id].assignment_source` | `"pool"` or `"fallback"` | `pool` means the pair matches the frozen slot. `fallback` is the recorded ordinary concrete fallback after ring exhaustion; it may differ from the originating slot. Missing on legacy state is treated as `pool`. |
+| `jobs[id].pool_index` | non-negative integer | Current/originating index in the exact expanded frozen tier ring. It is the manifest-order ordinal modulo the ring, advanced across unavailable/open slots without shrinking. A fallback retains the originating index. |
+| `jobs[id].pool_tier` | `standard` or `light` — never `deep` | Frozen tier lookup key; must match the manifest tier. Pooling `deep` is a stated Non-goal; `compound-v-validate-manifest.py` rejects any `backend: pool` job at `tier: deep` before it can reach `state.json`, matching [`routing-policy.md`](routing-policy.md) and [`execution-manifest.md`](execution-manifest.md). |
+| `backend_max_parallel` | `{ "<concrete-backend>": positive-int }` | Normalized run-start batching ceilings copied from config so resume does not change them after a config edit. Prose-enforced batching contract, not a semaphore claim. |
+
+`assignment_source: "pool"` requires the recorded backend/model to match the exact available frozen slot at `pool_members[pool_tier][pool_index]`. `assignment_source: "fallback"` permits a different known-concrete backend/model while still requiring a valid originating tier/index. Unknown source/backend, a missing model, or malformed ring context fails closed. `compound-v-pool-state.py resume` validates and returns the recorded concrete pair; it never derives from config or a counter.
+
+The same helper validates the canonical circuit map before freeze/select/state-validation/resume: `state.circuit_open` must be an object keyed only by known concrete backends; each value has exactly `open`, `reason`, `opened_at`, and `cleared_by`, never a bare boolean. `opened_at` is always a non-empty string. Open entries require `reason: out_of_credits|auth` and `cleared_by: null`. A closed entry preserves its reason and records the matching recovery: `auth` requires `cleared_by: reauth`; `out_of_credits` requires `cleared_by: top_up|probe`. Null or cross-reason clearance pairs are rejected fail-closed.
+
+The ordinal is counted independently per tier from manifest order among `backend: pool` jobs. Dispatch timing, `depends_on`, batching, retries, and config edits never affect it. A transient `rate_limited`/overloaded/network/timeout retry preserves the complete assignment. Only an `out_of_credits` policy decision can replace it: record either the selected `next_pool_index` pair (`assignment_source: "pool"`) or the resolved ordinary fallback pair (`assignment_source: "fallback"`), increment the run budget when `consume_total_retry` is true, validate, then relaunch.
 
 ### Backend-failure fields (the circuit breaker — no daemon)
 
@@ -177,9 +206,11 @@ These run-level fields are how graceful backend-failure handling persists across
 |---|---|---|
 | `attempts` | `{ "<job-id>": { "<failure-class>": n } }` | retries this job has had **per failure-class**, so a budget burned by one class doesn't starve another. The dispatcher feeds `attempts[job][class]` as `--attempts` (per-class cap). Absent class ⇒ 0; reset/fork the counter when the job is re-routed to a different backend or the class changes. |
 | `cooldowns` | `{ "<backend>": "<iso-ts>" }` | a transient-failed backend is **deprioritized** until this timestamp (eligible again next batch). |
-| `circuit_open` | `{ "<backend>": { "open": bool, "reason": "out_of_credits\|auth", "opened_at": "<iso-ts>", "cleared_by": null } }` | a per-backend breaker **object** (not a bare bool). `open: true` ⇒ the backend is **out for the run**; only a confirmed `out_of_credits` or `auth` opens it. `reason` distinguishes the two so `/v:resume` can reconcile correctly (top-up vs re-auth); `cleared_by` records what closed it (`"top_up"` / `"reauth"` / `"probe"`), `null` while still open. |
+| `circuit_open` | `{ "<concrete-backend>": { "open": bool, "reason": "out_of_credits\|auth", "opened_at": "<iso-ts>", "cleared_by": null } }` | the one canonical per-concrete-backend breaker map. Values are objects, never bare booleans; `pool` is never a key. `open: true` ⇒ the backend is **out for the run**; only a confirmed `out_of_credits` or `auth` opens it. `reason` distinguishes the two so `/v:resume` can reconcile correctly (top-up vs re-auth); `cleared_by` records what closed it (`"top_up"` / `"reauth"` / `"probe"`), `null` while still open. |
 | `total_retries` | `int` | run-wide retry counter — the policy's `--total-retries`. |
 | `max_total_retries` | `int` (default 12) | run-level retry budget — the anti retry-storm cap (`--max-total-retries`). |
+| `earliest_reset_observed_at` | ISO timestamp or `null` | Observation time paired with `earliest_reset_seconds`; the seconds value is relative to this instant, not to the next read. |
+| `earliest_reset_seconds` | positive number or `null` | Provider-relative reset delay observed at `earliest_reset_observed_at`. Compare/reset using the derived absolute instant; clear both fields when the associated exhaustion is resolved. `/v:status` never renders it as a percentage. |
 
 "Deprioritize, don't remove": a 429/5xx/timeout gets a short **cooldown** (open next batch), only a confirmed `out_of_credits`/`auth` opens the breaker object for the whole run.
 
@@ -188,6 +219,7 @@ These run-level fields are how graceful backend-failure handling persists across
 | Status | Meaning | Resume action |
 |---|---|---|
 | `pending` | Not yet dispatched (or queued behind `depends_on`). | **re-dispatch** |
+| `dispatched` | Concrete assignment written and launch initiated, before the running transition is persisted. | reconcile, then **re-dispatch if not landed** |
 | `running` | Dispatched, no terminal result captured. After a crash this is ambiguous — reconcile against git. | reconcile, then **re-dispatch if not landed** |
 | `done` | Job finished, scope gate PASSED, result normalized. | skip (unless git disagrees — see git-wins) |
 | `blocked` | Scope gate caught a write outside `write_allowed`. Worktree retained. | **re-dispatch** (after the partition/prompt is corrected) |
@@ -208,20 +240,36 @@ The run-level `phase` and the per-job `status` map are distinct: `phase` is the 
 **Algorithm:**
 
 1. **Read** `state.json` and `manifest.yaml` from the run dir.
+
+> **Pool-assignment resume rule (Shared Interface Contract — byte-identical in `commands/v-resume.md`, `agents/parallel-dispatcher.md`, and `skills/compound-v/state-machine.md`).**
+> Before any git or breaker reconciliation, if the manifest contains a job whose routing token is `backend: pool`, validate the complete recorded state with `python3 scripts/compound-v-pool-state.py validate` using `{"state": <state.json>, "jobs": <manifest jobs>}`; any error HALTS resume.
+> Then obtain only that job's concrete pair with `python3 scripts/compound-v-pool-state.py resume` using `{"state": <state.json>, "job_id": "<id>"}`; the helper returns only `assigned_backend` and `assigned_model`.
+> Read `assignment_source`, `pool_index`, `pool_tier`, and `worktree` directly from the already-validated `state.json jobs[<id>]` record and reuse all six recorded values for reconciliation.
+> Never reload current pool config, recompute a manifest ordinal, rerun freeze, or call the model resolver for that recorded assignment. A transient retry preserves it byte-for-byte; only an `out_of_credits` policy decision may replace it, and the replacement MUST be written and validated before relaunch.
+
 2. **Reconcile against git reality.** For each job, observe what actually landed using the same git-derived signal the scope gate uses:
    `git -C <worktree-or-repo> diff --name-only HEAD` ∪ `git -C <worktree-or-repo> ls-files --others --exclude-standard`.
    This is "what the disk says," independent of what `state.json` claims.
 3. **Apply the GIT-WINS tie-break.** When `state.json` and git disagree, **git wins**:
    - `state.json` says `done` but the job's `write_allowed` files are **not** present in git → treat as **not done**, re-dispatch.
-   - `state.json` says `running`/`pending` but the files **are** fully present and inside scope → treat as `done`, skip.
+   - `state.json` says `running`/`dispatched`/`pending` but the files **are** fully present and inside scope → treat as `done`, skip.
    - This keeps resume safe under a crash that landed files but never got to write `state.json` — and under a stale `done` whose work was reverted.
-4. **Reconcile the breaker — neither a silent retry nor a permanent lockout.** Before re-dispatching, reconcile the circuit-breaker fields. The full per-backend procedure (probe semantics, `cleared_by`) lives in [`commands/v-resume.md`](../../commands/v-resume.md); in brief:
+4. **Reconcile the breaker — neither a silent retry nor a permanent lockout.** Before re-dispatching, reconcile the canonical `circuit_open` object map by concrete backend (`assigned_backend` for a pool job; never a `pool` key). The full per-backend procedure (probe semantics, `cleared_by`) lives in [`commands/v-resume.md`](../../commands/v-resume.md); in brief:
    - **Cooldown expired (transient):** a backend whose `cooldowns[backend]` timestamp has **expired** — and which has **no** open `circuit_open` entry — goes **half-open**: probe it **once** at the start of the next batch before full re-dispatch. A clean probe clears the `cooldowns` entry; a repeat failure re-cools it via the policy.
-   - **`circuit_open[backend].open==true` with `reason=="out_of_credits"`:** stays **open** — `/v:resume` does **not** reopen it automatically. Clear it (set `cleared_by`) only when the user confirms a top-up **or** a cheap liveness probe (a tiny "reply ok" call) succeeds; then re-dispatch that backend's failed jobs (the run-level `total_retries` budget persists across the resume).
+   - **`circuit_open[backend].open==true` with `reason=="out_of_credits"`:** stays **open** — `/v:resume` does **not** reopen it automatically. Clear it (set `cleared_by`) only when the user confirms a top-up **or** a cheap liveness probe (a tiny "reply ok" call) succeeds; then re-dispatch that backend's failed jobs. Clear the paired earliest-reset observation when no other out-of-credits breaker remains; otherwise retain/recompute only from fresh evidence. The run-level `total_retries` budget persists across resume.
    - **`circuit_open[backend].open==true` with `reason=="auth"`:** stays **open** until the user re-auths (via `/v:init`); only then clear it (`cleared_by`) and re-dispatch its failed jobs.
    - **Never silently re-dispatch to a still-open breaker.** An open `out_of_credits`/`auth` breaker that the user hasn't resolved keeps its jobs `failed` and surfaced, not re-tried.
-5. **Re-dispatch only `pending` / `failed` / `blocked`** jobs (after step 3 reclassification and step 4 breaker reconciliation), honoring `depends_on` and `max_parallel` exactly as the initial dispatch did. Each re-dispatch replays `jobs/<id>.prompt.md` verbatim.
-   - For a Codex worktree job, the codex adapter MAY resume the existing session (`codex exec resume <session_id>`) rather than start cold **only under the resume-eligibility rule** — its recorded `failure_class` is environmental (`timeout` | `network`) **AND** its worktree still exists at the recorded path (the authoritative rule + rationale live in [`v-resume.md`](../../commands/v-resume.md) and [`parallel-dispatcher.md`](../../agents/parallel-dispatcher.md)); every other case recreates the worktree fresh at HEAD. Either way the **scope gate re-runs** on return.
+5. **Re-dispatch `pending` / `failed` / `blocked` jobs, plus `dispatched` / `running` jobs that git-wins found not landed** (after step 3 reclassification and step 4 breaker reconciliation), honoring `depends_on`, manifest `max_parallel`, and frozen run-start `backend_max_parallel` ceilings against each concrete assignment exactly as the initial dispatch did. Each re-dispatch replays `jobs/<id>.prompt.md` verbatim.
+
+Both Codex resume inputs live in `state.json jobs[<id>]`. A job with an empty `session_id` has no session to resume ⇒ recreate fresh regardless.
+
+> **Resume-eligibility rule (Shared Interface Contract — byte-identical in `commands/v-resume.md`, `agents/parallel-dispatcher.md`, and `skills/compound-v/state-machine.md`).**
+> A codex worktree job may be resumed via `codex exec resume <captured-uuid>` **IFF** its `failure_class` is
+> environmental (`timeout` | `network`) **AND** its worktree still exists at the recorded path.
+> Every other case recreates the worktree **fresh at HEAD** — the parallel-dispatcher worktree-recreate invariant.
+> Never resume by cwd filtering; pass the captured UUID explicitly.
+
+Either way the **scope gate re-runs** on return.
 6. **Continue the pipeline** from the reconciled phase: re-collect, re-run the scope gate on every job, then the Review Gate, then merge. Already-`done` jobs are not re-run.
 
 **Why git-wins, restated:** `state.json` is a convenience cache; the filesystem under git is the ground truth. A resume that trusted a stale `done` could skip work that was never actually committed. By re-deriving from git on every resume, the run stays correct even across a hard crash mid-write.

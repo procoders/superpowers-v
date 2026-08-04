@@ -1,0 +1,143 @@
+run_id: 2026-08-01-tier-model-pool
+feature: "Tier model pools — deterministic weighted job rotation across providers"
+spec_path: docs/superpowers/specs/2026-08-01-tier-model-pool-design.md
+plan_path: docs/superpowers/plans/2026-08-01-tier-model-pool.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-08-01-tier-model-pool.md
+  domain: docs/superpowers/expert/2026-08-01-tier-model-pool.md
+  library: docs/superpowers/library-audit/2026-08-01-tier-model-pool.md
+acceptance_criteria:
+  - "A config with no `pools` key behaves exactly as before; every existing selftest passes unchanged."
+  - "`backend: pool` + `isolation: worktree` + a tier with a pool validates. The same job with `isolation: direct` fails with a message naming the rule."
+  - "A reviewer job with `backend: pool` fails validation."
+  - "`pool` is rejected as an `advisor.advisor_backend` value while remaining valid as `job.backend`."
+  - "A pool job whose resolved model contains `haiku` fails validation — the gate that the absence of an explicit `model` would otherwise make unreachable."
+  - "Six pool-routed `light` jobs over a two-member pool with weights 2 and 1 assign in the exact sequence A, A, B, A, A, B — computed from manifest order, with no randomness."
+  - "With one member unavailable, the counter still advances: the sequence skips that member and the remaining assignments keep the positions they would otherwise have had."
+  - "The frozen member list is written to `state.json` at run start, and editing `pools` mid-run does not change any later assignment."
+  - "Every assignment is recorded as `assigned_backend` / `assigned_model`, and the new validator rejects a `state.json` where a dispatched pool job lacks them."
+  - "`/v:resume` re-dispatches a pool job to its recorded backend even when the counter state is gone."
+  - "An `out_of_credits` failure on a pool job reroutes to the next pool member, not to `claude`; the run-level retry budget is decremented across the reroute."
+  - "`backend_max_parallel` is shape-validated and documented. No claim is made that a gate enforces it."
+routing_stance: balanced
+max_parallel: 5
+shared_resources:
+  - CHANGELOG.md
+  - .claude-plugin/plugin.json
+  - .claude-plugin/marketplace.json
+jobs:
+  - id: task-1-pool-core
+    title: "Config normalization, pure pool resolution, and frozen assignment state"
+    type: core_slice
+    backend: codex
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    write_allowed:
+      - scripts/compound-v-project-config.py
+      - scripts/compound-v-resolve-model.py
+      - scripts/compound-v-pool-state.py
+    read_allowed:
+      - scripts/**
+      - docs/superpowers/specs/2026-08-01-tier-model-pool-design.md
+      - docs/superpowers/archaeology/2026-08-01-tier-model-pool.md
+      - docs/superpowers/expert/2026-08-01-tier-model-pool.md
+      - docs/superpowers/library-audit/2026-08-01-tier-model-pool.md
+    acceptance:
+      - "TDD selftests prove fail-closed config parsing, optional models, positive integer weights, exact 2:1 sequence, skipped-slot position preservation, frozen state, concrete assignments, and resume reuse."
+  - id: task-2-manifest-gate
+    title: "Manifest pool token and safety invariants"
+    type: core_slice
+    backend: codex
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [task-1-pool-core]
+    write_allowed:
+      - scripts/compound-v-validate-manifest.py
+    read_allowed:
+      - scripts/**
+      - docs/superpowers/specs/2026-08-01-tier-model-pool-design.md
+    acceptance:
+      - "Pool is legal only for job.backend; worktree, non-reviewer, non-sensitive standard/light, no explicit manifest model, no xhigh, configured pool, and resolved never-Haiku gates are deterministic and tested."
+  - id: task-3-failure-policy
+    title: "Pool-aware quota exhaustion and classifier concrete-backend coverage"
+    type: core_slice
+    backend: codex
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    write_allowed:
+      - scripts/compound-v-failure-policy.py
+      - scripts/compound-v-classify-failure.py
+    read_allowed:
+      - scripts/**
+      - skills/compound-v/failure-policy.md
+      - docs/superpowers/specs/2026-08-01-tier-model-pool-design.md
+    acceptance:
+      - "Transient failures preserve assignments; out_of_credits advances within the pool, consumes the run retry budget, skips unavailable members, preserves earliest reset time, then uses the existing concrete fallback."
+  - id: task-4-dispatch-resume-docs
+    title: "Executable dispatcher, resume, state, status, and failure contracts"
+    type: docs
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [task-1-pool-core, task-3-failure-policy]
+    write_allowed:
+      - agents/parallel-dispatcher.md
+      - commands/v-resume.md
+      - commands/v-status.md
+      - skills/compound-v/state-machine.md
+      - skills/compound-v/failure-policy.md
+    read_allowed:
+      - scripts/**
+      - docs/superpowers/specs/2026-08-01-tier-model-pool-design.md
+    acceptance:
+      - "Every backend-keyed consumer receives the concrete assignment; resume never re-derives it; status reports integer counts and reset timing; backend_max_parallel is described honestly as dispatcher batching policy."
+  - id: task-5-public-contract
+    title: "Public manifest, routing, init/models, and example contract"
+    type: docs
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [task-1-pool-core, task-2-manifest-gate]
+    write_allowed:
+      - skills/compound-v/execution-manifest.md
+      - skills/compound-v/routing-policy.md
+      - commands/v-init.md
+      - commands/v-models.md
+      - examples/manifest.example.yaml
+    read_allowed:
+      - scripts/**
+      - docs/superpowers/specs/2026-08-01-tier-model-pool-design.md
+    acceptance:
+      - "Exact per-stance config and job.backend pool contract is documented; shipped pool examples omit Claude, make no quota-balance claim, and remain environment-independent under CI."
+  - id: task-6-integration-release
+    title: "Integration verification and honest release note"
+    type: shared_foundation
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: direct
+    run: serial
+    depends_on:
+      - task-1-pool-core
+      - task-2-manifest-gate
+      - task-3-failure-policy
+      - task-4-dispatch-resume-docs
+      - task-5-public-contract
+    write_allowed:
+      - CHANGELOG.md
+      - .claude-plugin/plugin.json
+      - .claude-plugin/marketplace.json
+    read_allowed:
+      - "**"
+    acceptance:
+      - "Full CI-equivalent checks pass with explicit checked counts; injected invalid fixture is detected; release metadata changes only after PR 1 is present; changelog states job-count rotation and all unmeasured non-claims."

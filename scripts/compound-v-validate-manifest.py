@@ -516,10 +516,17 @@ VALID_TIERS = ("deep", "standard", "light")
 VALID_EFFORTS = ("low", "medium", "high", "xhigh")
 
 # Enum vocabularies for required-field validation (per execution-manifest.md).
+# VALID_BACKENDS deliberately contains only concrete launch/consult backends;
+# POOL_BACKEND is a routing token accepted only at the per-job backend seam.
 VALID_BACKENDS = ("claude", "codex", "antigravity", "cursor", "devin", "opencode", "zai")
+POOL_BACKEND = "pool"
 VALID_ISOLATIONS = ("direct", "worktree")
 VALID_RUNS = ("serial", "parallel")
 VALID_STANCES = ("balanced", "conservative", "cost-aware", "claude-only")
+
+# Pool routing is intentionally limited to non-sensitive implementer work.
+# Substring matching catches compound type names such as ``auth_middleware``.
+POOL_SENSITIVE_TYPE_TOKENS = ("security", "auth", "payment", "pii", "a11y")
 
 # Top-level required fields (per execution-manifest.md "Top-level fields").
 TOPLEVEL_REQUIRED = (
@@ -568,6 +575,21 @@ def _is_reviewer(job):
         if tok in jtype or tok in jid or tok in title:
             return True
     return False
+
+
+def _pool_sensitive_match(job):
+    """Scan type + id + title for a sensitive-work token, mirroring
+    ``_is_reviewer`` above. A `type`-only scan lets a benignly-typed job whose
+    id/title names auth/payment/PII/security/a11y work route to `backend:
+    pool` — the same blind spot the reviewer heuristic already closed for
+    reviewer jobs. Returns the matched token, or ``None``."""
+    jtype = str(job.get("type", "")).lower()
+    jid = str(job.get("id", "")).lower()
+    title = str(job.get("title", "")).lower()
+    for tok in POOL_SENSITIVE_TYPE_TOKENS:
+        if tok in jtype or tok in jid or tok in title:
+            return tok
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -718,6 +740,67 @@ def _sibling(basename):
     if basename not in _SIBLING_CACHE:
         _SIBLING_CACHE[basename] = _load_sibling(basename)
     return _SIBLING_CACHE[basename]
+
+
+def _pool_resolution_context(repo_root, config_path):
+    """Load normalized pools + model overrides through Task 1's sibling APIs.
+
+    Returns ``(resolver_module, pools, config_models, problems)``. This is
+    called only when a manifest actually contains ``job.backend: pool`` so a
+    legacy manifest never acquires a new config dependency.
+    """
+    pc = _sibling("compound-v-project-config.py")
+    rm = _sibling("compound-v-resolve-model.py")
+    if pc is None or rm is None:
+        return (None, None, None,
+                ["cannot load pool project-config/model-resolver sibling APIs — "
+                 "fail-closed"])
+
+    cfg_path = config_path
+    if cfg_path is None and repo_root is not None:
+        cfg_path = os.path.join(repo_root, ".claude", "compound-v.json")
+    try:
+        cfg = pc.load_project_config_path(cfg_path)
+        pools, warnings = pc.resolve_pools(cfg)
+        config_models = pc.get_models(cfg)
+    except Exception as e:  # noqa: BLE001 - routing config must fail closed
+        return (rm, None, None,
+                ["pool routing config is unreadable or malformed (%s) — "
+                 "fail-closed" % e])
+    warning_problems = [
+        "pool routing config warning: %s" % warning for warning in warnings
+    ]
+    return (rm, pools, config_models, warning_problems)
+
+
+def _backend_max_parallel_problems(repo_root, config_path):
+    """Load + shape-validate ``backend_max_parallel`` through Task 1's sibling
+    API. AC-12 promises this key is "shape-validated," but no caller ever
+    reached ``resolve_backend_max_parallel`` — a malformed per-key value
+    (negative, boolean, an unknown backend) passed manifest validation
+    silently; only a non-object *whole block* was ever caught (by the
+    separate top-level structural sweep inside ``load_project_config_path``).
+
+    Runs unconditionally, unlike the pool context above: `backend_max_parallel`
+    applies whether or not any job in the manifest uses `backend: pool`. A
+    missing config file is the common case for this repo's own examples and
+    normalizes to ``{}`` with no warnings — never an error.
+    """
+    pc = _sibling("compound-v-project-config.py")
+    if pc is None:
+        return ["cannot load project-config sibling API for "
+                "backend_max_parallel — fail-closed"]
+    cfg_path = config_path
+    if cfg_path is None and repo_root is not None:
+        cfg_path = os.path.join(repo_root, ".claude", "compound-v.json")
+    try:
+        cfg = pc.load_project_config_path(cfg_path)
+        _normalized, warnings = pc.resolve_backend_max_parallel(cfg)
+    except Exception as e:  # noqa: BLE001 - routing config must fail closed
+        return ["backend_max_parallel config is unreadable or malformed (%s) "
+                "— fail-closed" % e]
+    return ["backend_max_parallel config warning: %s" % warning
+            for warning in warnings]
 
 
 def _read_json_file(repo_root, relpath):
@@ -1660,6 +1743,31 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
     manifest_fast_path = ("fast_path" in manifest
                           and manifest.get("fast_path") is not None)
 
+    # Pool configuration is an opt-in dependency. Load it once, through the
+    # Task 1 config/resolver seam, only when at least one job uses the routing
+    # token. This preserves byte-for-behaviour validation for legacy manifests.
+    has_pool_jobs = any(
+        isinstance(j, dict)
+        and str(j.get("backend", "")).lower() == POOL_BACKEND
+        for j in jobs
+    )
+    pool_rm = None
+    normalized_pools = None
+    pool_config_models = None
+    if has_pool_jobs:
+        pool_rm, normalized_pools, pool_config_models, pool_context_problems = (
+            _pool_resolution_context(repo_root, config_path)
+        )
+        problems.extend(pool_context_problems)
+
+    # backend_max_parallel is documented + AC-12 claims it is shape-validated.
+    # Unlike pools above, it is not gated on has_pool_jobs — it is a general
+    # routing key, independent of whether this manifest uses backend: pool.
+    problems.extend(_backend_max_parallel_problems(repo_root, config_path))
+
+    pool_ordinals = {}
+    validated_pool_member_sets = set()
+
     # Structural sanity + collect per-job globs.
     seen_ids = set()
     job_globs = []  # (job_id, [globs])
@@ -1730,10 +1838,13 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
             problems.append("job '%s' missing 'backend'" % jid)
         else:
             backend_val = str(job.get("backend")).lower()
-            if backend_val not in VALID_BACKENDS:
+            if (backend_val not in VALID_BACKENDS
+                    and backend_val != POOL_BACKEND):
                 problems.append(
-                    "job '%s' backend '%s' invalid (expected one of %s)"
-                    % (jid, job.get("backend"), ", ".join(VALID_BACKENDS))
+                    "job '%s' backend '%s' invalid (expected one of %s; "
+                    "job.backend may also use the scoped routing token '%s')"
+                    % (jid, job.get("backend"), ", ".join(VALID_BACKENDS),
+                       POOL_BACKEND)
                 )
 
         # isolation / run enum checks (only when present).
@@ -1788,7 +1899,8 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
         # xhigh ⇒ codex only: `effort: xhigh` is valid iff `backend: codex`
         # (every other backend rejects it with a clear error naming the rule).
         if (effort_val is not None and str(effort_val).lower() == "xhigh"
-                and str(job.get("backend", "")).lower() != "codex"):
+                and str(job.get("backend", "")).lower()
+                not in ("codex", POOL_BACKEND)):
             problems.append(
                 "job '%s' has effort 'xhigh' with backend '%s': xhigh is "
                 "codex-only (kernel: model_reasoning_effort); use high"
@@ -1816,6 +1928,133 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
         # enforcement that actually holds.
         # A non-worktree external worker cannot be deterministically attributed and is rejected.
         backend_lc = str(job.get("backend", "")).lower()
+        if backend_lc == POOL_BACKEND:
+            tier_lc = str(job.get("tier", "")).lower()
+            effort_lc = str(job.get("effort", "")).lower()
+            pool_index = pool_ordinals.get(tier_lc, 0)
+            pool_ordinals[tier_lc] = pool_index + 1
+
+            # ``pool`` is a routing instruction, not a launch backend. Its
+            # enforcement shape cannot change after concrete assignment.
+            if str(job.get("isolation", "")).lower() != "worktree":
+                problems.append(
+                    "job '%s' uses backend: pool with isolation '%s': "
+                    "backend: pool requires isolation: worktree"
+                    % (jid, job.get("isolation"))
+                )
+            if _is_reviewer(job):
+                problems.append(
+                    "job '%s' uses backend: pool, but backend: pool is "
+                    "forbidden for reviewer jobs" % jid
+                )
+
+            matched_sensitive = _pool_sensitive_match(job)
+            if matched_sensitive:
+                problems.append(
+                    "job '%s' uses backend: pool, but backend: pool is "
+                    "forbidden for sensitive work (matched '%s' in its "
+                    "type/id/title)" % (jid, matched_sensitive)
+                )
+            if tier_lc not in ("standard", "light"):
+                problems.append(
+                    "job '%s' uses tier '%s' with backend: pool: backend: "
+                    "pool supports only standard/light tiers (never deep)"
+                    % (jid, job.get("tier"))
+                )
+            if effort_lc == "xhigh":
+                problems.append(
+                    "job '%s' uses backend: pool with effort: xhigh: pooled "
+                    "jobs cannot use effort: xhigh because a pool may select "
+                    "a non-Codex backend; use high" % jid
+                )
+            if "model" in job:
+                problems.append(
+                    "job '%s' uses backend: pool but also declares model %r: "
+                    "pooled jobs cannot declare an explicit manifest model; "
+                    "configure an optional model on the pool member instead"
+                    % (jid, job.get("model"))
+                )
+
+            # Validate EVERY normalized member in a used stance+tier pool, not
+            # only the slot selected by this manifest ordinal. An alternate
+            # (or later frozen-unavailable) member is still executable routing
+            # configuration and must not hide Haiku or a backend-specific bad
+            # model such as a malformed Opencode provider/model override.
+            pool_stance = str(stance or "balanced").lower()
+            member_set_key = (pool_stance, tier_lc)
+            if (pool_rm is not None and normalized_pools is not None
+                    and tier_lc in ("standard", "light")
+                    and member_set_key not in validated_pool_member_sets):
+                validated_pool_member_sets.add(member_set_key)
+                stance_pools = normalized_pools.get(pool_stance)
+                members = (stance_pools.get(tier_lc)
+                           if isinstance(stance_pools, dict) else None)
+                if isinstance(members, list):
+                    for member_index, member in enumerate(members):
+                        try:
+                            member_resolution = pool_rm.resolve(
+                                backend=member.get("backend"),
+                                tier=tier_lc,
+                                config_models=pool_config_models,
+                                explicit_model=member.get("model"),
+                                stance=pool_stance,
+                                job_type=job.get("type"),
+                            )
+                            member_model = (member_resolution.get("model")
+                                            if isinstance(member_resolution, dict)
+                                            else None)
+                            if (not isinstance(member_model, str)
+                                    or not member_model.strip()):
+                                problems.append(
+                                    "pool member %d for stance '%s' tier '%s' "
+                                    "resolved no concrete model — fail-closed"
+                                    % (member_index, pool_stance, tier_lc)
+                                )
+                            elif "haiku" in member_model.lower():
+                                problems.append(
+                                    "pool member %d for stance '%s' tier '%s' "
+                                    "resolved model '%s', which violates the "
+                                    "never-Haiku policy"
+                                    % (member_index, pool_stance, tier_lc,
+                                       member_model)
+                                )
+                        except Exception as e:  # noqa: BLE001 - fail closed
+                            problems.append(
+                                "pool member %d for stance '%s' tier '%s' "
+                                "failed concrete model resolution: %s"
+                                % (member_index, pool_stance, tier_lc, e)
+                            )
+
+            # Resolve this job's manifest-order ordinal through Task 1's pure
+            # resolver. This preserves stance rules, optional-member-model
+            # precedence, Opencode provider/model checks, and exposes the
+            # concrete model for the never-Haiku execution-layer gate.
+            if (pool_rm is not None and normalized_pools is not None
+                    and tier_lc in ("standard", "light")
+                    and effort_lc != "xhigh"):
+                try:
+                    pool_resolution = pool_rm.resolve_pool(
+                        tier=tier_lc,
+                        index=pool_index,
+                        stance=pool_stance,
+                        pools=normalized_pools,
+                        config_models=pool_config_models,
+                        effort=(effort_lc if effort_lc else None),
+                        job_type=job.get("type"),
+                    )
+                    resolved_model = (pool_resolution.get("model")
+                                      if isinstance(pool_resolution, dict)
+                                      else None)
+                    if not isinstance(resolved_model, str) or not resolved_model.strip():
+                        problems.append(
+                            "job '%s' pool resolution returned no concrete model "
+                            "— fail-closed" % jid
+                        )
+                except Exception as e:  # noqa: BLE001 - routing must fail closed
+                    problems.append(
+                        "job '%s' pool resolution failed: %s" % (jid, e)
+                    )
+
         if backend_lc in ("codex", "antigravity", "cursor", "devin", "opencode", "zai"):
             if str(job.get("isolation", "")).lower() != "worktree":
                 problems.append(
@@ -3053,6 +3292,68 @@ jobs:
 """
 
 
+# Tier-model-pool fixtures. The routing config is deliberately kept separate
+# from the manifest text: production manifests name only ``backend: pool`` + a
+# tier, while the sibling project-config reader owns the concrete members.
+def _pool_manifest_fixture(job_type="bounded_crud", tier="light", effort="low",
+                           isolation="worktree", model_line="",
+                           advisor_block="", second_job=""):
+    return """
+run_id: 2026-08-01-pool-validator
+feature: "pool validator"
+spec_path: docs/superpowers/specs/2026-08-01-tier-model-pool-design.md
+plan_path: docs/superpowers/plans/2026-08-01-tier-model-pool.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-08-01-tier-model-pool.md
+  domain: docs/superpowers/expert/2026-08-01-tier-model-pool.md
+  library: docs/superpowers/library-audit/2026-08-01-tier-model-pool.md
+routing_stance: balanced
+max_parallel: 2
+acceptance_criteria:
+  - "pool safety holds"
+jobs:
+  - id: task-pool-light
+    title: "pooled light implementation"
+    type: %s
+    backend: pool
+    tier: %s
+    effort: %s
+%s    isolation: %s
+    run: serial
+    write_allowed: [src/pool-light/**]
+    read_allowed: [src/**]
+    acceptance: ["light slice ships"]
+%s%s
+""" % (job_type, tier, effort, model_line, isolation, advisor_block, second_job)
+
+
+POOL_SECOND_STANDARD_JOB = """  - id: task-pool-standard
+    title: "pooled standard implementation"
+    type: bounded_crud
+    backend: pool
+    tier: standard
+    effort: medium
+    isolation: worktree
+    run: serial
+    write_allowed: [src/pool-standard/**]
+    read_allowed: [src/**]
+    acceptance: ["standard slice ships"]
+"""
+
+POOL_SECOND_LIGHT_JOB = """  - id: task-pool-light-2
+    title: "second pooled light implementation"
+    type: bounded_crud
+    backend: pool
+    tier: light
+    effort: low
+    isolation: worktree
+    run: serial
+    write_allowed: [src/pool-light-2/**]
+    read_allowed: [src/**]
+    acceptance: ["second light slice ships"]
+"""
+
+
 # --------------------------------------------------------------------------- #
 # v2.9 fast-path self-test — builds on-disk fixtures in a temp repo root so the
 # containment + cross-artifact-binding checks exercise real files. Digests are
@@ -3959,9 +4260,13 @@ def _selftest_fastpath(expect):
 
 
 def _selftest():
+    import tempfile
+
     failures = []
+    checked = [0]
 
     def expect(name, cond):
+        checked[0] += 1
         if cond:
             print("  ok   - %s" % name)
         else:
@@ -4045,6 +4350,295 @@ def _selftest():
         "model:haiku override caught (never-Haiku policy)",
         any("never-Haiku policy" in p for p in haiku),
     )
+
+    # Tier pools are a routing token scoped only to job.backend. Exercise the
+    # real sibling config reader + resolver seam with on-disk JSON configs.
+    with tempfile.TemporaryDirectory() as pool_td:
+        def project_config(name, payload):
+            path = os.path.join(pool_td, name + ".json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh)
+            return path
+
+        def pool_config(name, pools):
+            return project_config(name, {"pools": pools})
+
+        valid_pool_path = pool_config("valid", {
+            "balanced": {
+                "light": [{"backend": "codex"}],
+                "standard": [{"backend": "claude"}],
+            }
+        })
+        deep_pool_path = pool_config("deep", {
+            "balanced": {"deep": [{"backend": "claude"}]}
+        })
+
+        pool_valid = validate_text(
+            _pool_manifest_fixture(second_job=POOL_SECOND_STANDARD_JOB),
+            config_path=valid_pool_path,
+        )
+        expect("pool: worktree light/standard implementers validate (%r)"
+               % pool_valid, pool_valid == [])
+
+        # Two pool jobs sharing the SAME tier: the manifest-order ordinal
+        # counter (pool_ordinals) must advance instead of colliding, and the
+        # loop must not crash or misreject either job. Real ordinal-correctness
+        # (does slot N really go to the Nth manifest job) is the runtime
+        # concern of compound-v-pool-state.py's manifest_pool_ordinals/
+        # freeze_assignments, which carry their own dedicated regression
+        # fixtures — this only proves the static validator's per-job loop
+        # handles same-tier repetition cleanly.
+        pool_same_tier = validate_text(
+            _pool_manifest_fixture(second_job=POOL_SECOND_LIGHT_JOB),
+            config_path=valid_pool_path,
+        )
+        expect("pool: two same-tier pool jobs both validate cleanly (%r)"
+               % pool_same_tier, pool_same_tier == [])
+
+        pool_direct = validate_text(
+            _pool_manifest_fixture(isolation="direct"),
+            config_path=valid_pool_path,
+        )
+        expect("pool: direct isolation rejected by scoped worktree rule",
+               any("backend: pool requires isolation: worktree" in p
+                   for p in pool_direct))
+
+        pool_reviewer = validate_text(
+            _pool_manifest_fixture(job_type="quality_review", tier="standard",
+                                   effort="high"),
+            config_path=valid_pool_path,
+        )
+        expect("pool: reviewer rejected unconditionally",
+               any("backend: pool is forbidden for reviewer" in p
+                   for p in pool_reviewer))
+
+        # The fixture above uses tier: standard, which independently trips the
+        # "reviewer must resolve to deep reasoning" invariant — so it cannot by
+        # itself prove the pool-reviewer prohibition fires on a reviewer that
+        # WOULD otherwise look compliant. Use tier: deep, which satisfies that
+        # separate invariant, and confirm the pool-specific reviewer message
+        # still appears — this is the exact "manifest looks compliant" case
+        # the spec's §4 describes (deep/opus check passes, pool routing does not).
+        pool_reviewer_deep = validate_text(
+            _pool_manifest_fixture(job_type="quality_review", tier="deep",
+                                   effort="high"),
+            config_path=deep_pool_path,
+        )
+        expect("pool: reviewer rejected even at tier: deep, independent of "
+               "the separate deep-tier-for-pool ban (%r)" % pool_reviewer_deep,
+               any("backend: pool is forbidden for reviewer" in p
+                   for p in pool_reviewer_deep))
+
+        pool_advisor = validate_text(
+            _pool_manifest_fixture(
+                tier="standard", effort="medium",
+                advisor_block=("    advisor:\n"
+                               "      enabled: true\n"
+                               "      advisor_backend: pool\n")),
+            config_path=valid_pool_path,
+        )
+        expect("pool: advisor_backend remains a concrete-backend enum",
+               any("advisor.advisor_backend" in p
+                   and "not a known backend" in p for p in pool_advisor))
+
+        for sensitive_type in ("security", "auth", "payment", "pii", "a11y"):
+            pool_sensitive = validate_text(
+                _pool_manifest_fixture(job_type=sensitive_type,
+                                       tier="standard", effort="high"),
+                config_path=valid_pool_path,
+            )
+            expect("pool: sensitive type %s rejected" % sensitive_type,
+                   any("backend: pool is forbidden for sensitive work" in p
+                       and sensitive_type in p for p in pool_sensitive))
+
+        # A benignly-typed job whose ID/TITLE names sensitive work must be
+        # caught too — mirroring _is_reviewer's own type+id+title scan.
+        # _pool_manifest_fixture always sets id "task-pool-light" and lets the
+        # title be overridden by patching the rendered text directly (the
+        # helper has no title= parameter and adding one would change every
+        # other call site's positional shape).
+        sensitive_title_manifest = _pool_manifest_fixture(
+            job_type="bounded_crud", tier="light", effort="low",
+        ).replace(
+            'title: "pooled light implementation"',
+            'title: "rewrite the auth/session credential handling and PII '
+            'redaction"',
+        )
+        pool_sensitive_title = validate_text(
+            sensitive_title_manifest, config_path=valid_pool_path,
+        )
+        expect("pool: sensitive TITLE (benign type/id) is rejected, not just "
+               "a sensitive type (%r)" % pool_sensitive_title,
+               any("backend: pool is forbidden for sensitive work" in p
+                   for p in pool_sensitive_title))
+
+        pool_deep = validate_text(
+            _pool_manifest_fixture(tier="deep", effort="high"),
+            config_path=deep_pool_path,
+        )
+        expect("pool: deep tier rejected (standard/light only)",
+               any("backend: pool supports only standard/light tiers" in p
+                   for p in pool_deep))
+
+        pool_xhigh = validate_text(
+            _pool_manifest_fixture(tier="standard", effort="xhigh"),
+            config_path=valid_pool_path,
+        )
+        expect("pool: xhigh rejected once, without generic duplicate (%r)"
+               % pool_xhigh,
+               len(pool_xhigh) == 1
+               and "pooled jobs cannot use effort: xhigh" in pool_xhigh[0])
+
+        pool_model = validate_text(
+            _pool_manifest_fixture(model_line="    model: gpt-5.6-luna\n"),
+            config_path=valid_pool_path,
+        )
+        expect("pool: explicit manifest model rejected",
+               any("pooled jobs cannot declare an explicit manifest model" in p
+                   for p in pool_model))
+
+        pool_missing = validate_text(
+            _pool_manifest_fixture(),
+            config_path=os.path.join(pool_td, "missing.json"),
+        )
+        expect("pool: missing configured pool rejected",
+               any("no configured pool for stance 'balanced' tier 'light'" in p
+                   for p in pool_missing))
+
+        empty_pool_path = pool_config("empty", {
+            "balanced": {"light": []}
+        })
+        pool_empty = validate_text(
+            _pool_manifest_fixture(), config_path=empty_pool_path)
+        expect("pool: empty configured pool rejected",
+               any("no configured pool for stance 'balanced' tier 'light'" in p
+                   for p in pool_empty))
+
+        haiku_pool_path = pool_config("haiku", {
+            "balanced": {
+                "light": [{"backend": "claude",
+                           "model": "claude-haiku-pool"}]
+            }
+        })
+        pool_haiku = validate_text(
+            _pool_manifest_fixture(), config_path=haiku_pool_path)
+        expect("pool: resolved Haiku rejected by execution-layer policy",
+               any("resolved model" in p and "never-Haiku" in p
+                   for p in pool_haiku))
+
+        alternate_haiku_path = pool_config("alternate-haiku", {
+            "balanced": {
+                "light": [
+                    {"backend": "codex"},
+                    {"backend": "claude", "model": "claude-haiku-alternate"},
+                ]
+            }
+        })
+        alternate_haiku = validate_text(
+            _pool_manifest_fixture(), config_path=alternate_haiku_path)
+        expect("pool: unselected alternate member resolved to Haiku is rejected",
+               any("pool member 1" in p and "claude-haiku-alternate" in p
+                   and "never-Haiku" in p for p in alternate_haiku))
+
+        # The two fixtures above pin Haiku via an explicit member-level `model`,
+        # which takes resolve()'s explicit_model short-circuit. The path the
+        # spec's §4 actually describes — a pool job has NO explicit model
+        # anywhere, so the gate must run on the model resolved from the
+        # config's per-stance `models` cell — had no fixture until now.
+        config_cell_haiku_path = project_config("config-cell-haiku", {
+            "pools": {"balanced": {"light": [{"backend": "codex"}]}},
+            "models": {"balanced": {"codex": {"light": "claude-haiku-cell"}}},
+        })
+        config_cell_haiku = validate_text(
+            _pool_manifest_fixture(), config_path=config_cell_haiku_path)
+        expect("pool: Haiku reached via the config models cell (no member-"
+               "level model override) is rejected (%r)" % config_cell_haiku,
+               any("never-Haiku" in p for p in config_cell_haiku))
+
+        malformed_caps_path = project_config("malformed-caps", {
+            "pools": {
+                "balanced": {"light": [{"backend": "codex"}]}
+            },
+            "backend_max_parallel": "four",
+        })
+        pool_malformed_caps = validate_text(
+            _pool_manifest_fixture(), config_path=malformed_caps_path)
+        expect("pool: full structural loader rejects malformed backend_max_parallel",
+               any("backend_max_parallel" in p and "malformed" in p
+                   for p in pool_malformed_caps))
+
+        # AC-12 claims backend_max_parallel is "shape-validated" — per-KEY
+        # malformation (not just a malformed whole block, above) must surface
+        # too, and unconditionally: none of these manifests use backend: pool.
+        for bad_name, bad_value in (
+            ("negative", {"codex": -5}),
+            ("bool", {"codex": True}),
+            ("unknown-backend", {"mystery": 4}),
+            ("non-integer", {"codex": "four"}),
+        ):
+            bad_caps_path = project_config(
+                "caps-%s" % bad_name, {"backend_max_parallel": bad_value})
+            bad_caps_result = validate_text(GOOD_MANIFEST, config_path=bad_caps_path)
+            expect("backend_max_parallel.%s (%r) is surfaced as a shape "
+                   "warning, not silently dropped (%r)"
+                   % (bad_name, bad_value, bad_caps_result),
+                   any("backend_max_parallel config warning" in p
+                       for p in bad_caps_result))
+        good_caps_path = project_config(
+            "caps-good", {"backend_max_parallel": {"codex": 4, "zai": 2}})
+        expect("backend_max_parallel with valid per-key values carries no warning",
+               validate_text(GOOD_MANIFEST, config_path=good_caps_path) == [])
+
+        malformed_pools_path = project_config("malformed-pools", {
+            "pools": ["codex"]
+        })
+        pool_malformed_pools = validate_text(
+            _pool_manifest_fixture(), config_path=malformed_pools_path)
+        expect("pool: full structural loader rejects malformed pools block",
+               any("pools" in p and "malformed" in p
+                   for p in pool_malformed_pools))
+
+        warning_pool_path = pool_config("warning-pool", {
+            "balanced": {
+                "light": [
+                    {"backend": "codex"},
+                    {"backend": "claude", "weight": 0},
+                ]
+            }
+        })
+        pool_warning = validate_text(
+            _pool_manifest_fixture(), config_path=warning_pool_path)
+        expect("pool: normalization warning is surfaced as a validation problem",
+               any("pool routing config warning" in p
+                   and "weight must be a positive integer" in p
+                   for p in pool_warning))
+
+        unreadable_path = os.path.join(pool_td, "invalid-json.json")
+        with open(unreadable_path, "w", encoding="utf-8") as fh:
+            fh.write("{not-json")
+        # `pools` remains has_pool_jobs-gated, so a legacy (non-pool) manifest
+        # still never even attempts to resolve pool routing config — but
+        # backend_max_parallel is checked unconditionally (see
+        # _backend_max_parallel_problems above, closing AC-12/Finding-12), so
+        # an unreadable or structurally malformed config now surfaces a
+        # fail-closed warning for EVERY manifest, not only pool ones. The spec
+        # names backend_max_parallel a "routing key" that "must fail closed,
+        # never fail open" without carving out an exception for legacy
+        # manifests — unlike `pools`, it is not itself a new/opt-in feature.
+        legacy_unreadable = validate_text(GOOD_MANIFEST, config_path=unreadable_path)
+        expect("legacy manifest still fails closed on an unreadable config "
+               "(backend_max_parallel can't be assessed) (%r)"
+               % legacy_unreadable,
+               any("backend_max_parallel" in p for p in legacy_unreadable))
+        legacy_malformed_caps = validate_text(
+            GOOD_MANIFEST, config_path=malformed_caps_path)
+        expect("legacy manifest surfaces a malformed backend_max_parallel even "
+               "though it never uses backend: pool (%r)" % legacy_malformed_caps,
+               any("backend_max_parallel" in p for p in legacy_malformed_caps))
+
+        expect("pool: legacy non-pool manifest remains valid",
+               validate_text(GOOD_MANIFEST,
+                             config_path=valid_pool_path) == [])
 
     # depends_on: dangling ref INVALID, cycle INVALID, valid DAG OK.
     dangling = validate_text(DANGLING_DEP_MANIFEST)
@@ -4258,9 +4852,10 @@ def _selftest():
     _selftest_fastpath(expect)
 
     if failures:
-        print("\nSELFTEST FAILED: %d case(s)" % len(failures))
+        print("\nSELFTEST: %d ok, %d fail"
+              % (checked[0] - len(failures), len(failures)))
         return 1
-    print("\nSELFTEST PASSED")
+    print("\nSELFTEST: %d ok, 0 fail" % checked[0])
     return 0
 
 

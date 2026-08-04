@@ -168,6 +168,8 @@ EFFORTS = ("low", "medium", "high", "xhigh")
 # Stance vocabulary — DUPLICATED on purpose from compound-v-validate-manifest.py:VALID_STANCES.
 # Both scripts are standalone, stdlib-only CLIs; do NOT introduce a shared import. Keep in sync.
 VALID_STANCES = ("balanced", "conservative", "cost-aware", "claude-only")
+MAX_POOL_WEIGHT = 100
+MAX_EXPANDED_POOL_SLOTS = 256
 
 # Default effort pairing when --effort is omitted. Independently tunable per
 # task-type by passing --effort explicitly; this is only the fallback.
@@ -211,7 +213,10 @@ def load_config_models(config_path):
         return {}
     mod = _project_config_module()
     if mod is not None:
-        cfg = mod.load_config_file(config_path)  # missing → {}, malformed → raise
+        # Use the full shared structural verdict, not only JSON/root validation:
+        # malformed routing siblings such as pools must fail closed for every
+        # resolver consumer even though this wrapper returns only models.
+        cfg = mod.load_project_config_path(config_path)
         return mod.get_models(cfg)               # absent → {}, non-object → raise
     # Fallback (sibling unavailable): the original inline logic, unchanged.
     if not os.path.isfile(config_path):
@@ -220,6 +225,11 @@ def load_config_models(config_path):
         data = json.load(fh)
     if not isinstance(data, dict):
         raise ValueError("config root is not a JSON object: %s" % config_path)
+    for key in ("models", "pre_eval", "brainstorm", "pools",
+                "backend_max_parallel"):
+        value = data.get(key)
+        if value is not None and not isinstance(value, dict):
+            raise ValueError("config '%s' is not an object: %s" % (key, config_path))
     models = data.get("models")
     if models is None:
         return {}
@@ -323,6 +333,69 @@ def resolve(backend, tier, effort=None, config_models=None, explicit_model=None,
             tier=tier, job_type=job_type, backend=backend, fast_path=fast_path
         )
     return result
+
+
+def resolve_pool(tier, index, stance, pools, config_models, effort=None,
+                 job_type=None):
+    """Resolve one deterministic weighted pool slot through :func:`resolve`.
+
+    ``index`` is the manifest ordinal among pool-routed jobs of ``tier``. Each
+    member occupies ``weight`` consecutive slots. A frozen member marked
+    ``available: false`` is skipped by advancing around the original expanded
+    ring; the ring is never resized, so later positional ordinals stay stable.
+    """
+    if tier not in TIERS:
+        raise ValueError("unknown tier '%s' (expected one of %s)"
+                         % (tier, ", ".join(TIERS)))
+    if stance not in VALID_STANCES:
+        raise ValueError("unknown stance '%s' (expected one of %s)"
+                         % (stance, ", ".join(VALID_STANCES)))
+    if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+        raise ValueError("pool index must be a non-negative integer")
+    if effort == "xhigh":
+        raise ValueError(
+            "effort 'xhigh' is not valid for pooled jobs: a pool may select a "
+            "non-codex backend; use high"
+        )
+
+    stance_pools = pools.get(stance) if isinstance(pools, dict) else None
+    members = stance_pools.get(tier) if isinstance(stance_pools, dict) else None
+    if not isinstance(members, list) or not members:
+        raise ValueError("no configured pool for stance '%s' tier '%s'"
+                         % (stance, tier))
+
+    expanded = []
+    for member in members:
+        if not isinstance(member, dict):
+            raise ValueError("pool member for stance '%s' tier '%s' is not an object"
+                             % (stance, tier))
+        weight = member.get("weight", 1)
+        if (not isinstance(weight, int) or isinstance(weight, bool)
+                or weight <= 0 or weight > MAX_POOL_WEIGHT):
+            raise ValueError("pool member weight must be a positive integer <= %d"
+                             % MAX_POOL_WEIGHT)
+        if len(expanded) + weight > MAX_EXPANDED_POOL_SLOTS:
+            raise ValueError("expanded pool exceeds the %d-slot limit"
+                             % MAX_EXPANDED_POOL_SLOTS)
+        expanded.extend([member] * weight)
+
+    start = index % len(expanded)
+    for offset in range(len(expanded)):
+        member = expanded[(start + offset) % len(expanded)]
+        if member.get("available", True) is False:
+            continue
+        backend = member.get("backend")
+        return resolve(
+            backend=backend,
+            tier=tier,
+            effort=effort,
+            config_models=config_models,
+            explicit_model=member.get("model"),
+            stance=stance,
+            job_type=job_type,
+        )
+    raise ValueError("no available pool member for stance '%s' tier '%s'"
+                     % (stance, tier))
 
 
 # --------------------------------------------------------------------------- #
@@ -516,6 +589,145 @@ def _selftest():
             return False
         except ValueError:
             return True
+
+    # --- pure weighted pool resolution (tier-model-pool PR 2) ---
+    # Keep these tests independent from implementation helpers: literal expected
+    # sequences prove manifest ordinals, weighted slots, and skip-without-resize.
+    _pool_resolver = globals().get("resolve_pool")
+
+    def pool_call(*args, **kwargs):
+        if not callable(_pool_resolver):
+            return None
+        return _pool_resolver(*args, **kwargs)
+
+    def pool_raises(*args, **kwargs):
+        if not callable(_pool_resolver):
+            return False
+        return raises(lambda: _pool_resolver(*args, **kwargs))
+
+    _weighted_pools = {
+        "balanced": {
+            "light": [
+                {"backend": "codex", "weight": 2},
+                {"backend": "claude", "weight": 1},
+            ]
+        }
+    }
+    _weighted_results = [
+        pool_call("light", i, "balanced", _weighted_pools, {})
+        for i in range(6)
+    ]
+    expect("weighted pool 2:1 resolves A,A,B,A,A,B", [
+        r.get("backend") if isinstance(r, dict) else None
+        for r in _weighted_results
+    ] == ["codex", "codex", "claude", "codex", "codex", "claude"])
+
+    _override_pools = {
+        "balanced": {
+            "light": [{"backend": "codex", "model": "gpt-pool-pinned", "weight": 1}]
+        }
+    }
+    _override_result = pool_call(
+        "light", 0, "balanced", _override_pools,
+        {"codex": {"light": "gpt-config-cell"}},
+    )
+    expect("pool optional model is resolved as explicit override through resolve()",
+           isinstance(_override_result, dict)
+           and _override_result.get("model") == "gpt-pool-pinned")
+
+    _bad_opencode_pool = {
+        "balanced": {
+            "light": [{"backend": "opencode", "model": "bare-model", "weight": 1}]
+        }
+    }
+    expect("pool preserves opencode provider/model validation",
+           pool_raises("light", 0, "balanced", _bad_opencode_pool, {}))
+    expect("pool rejects unknown stance",
+           pool_raises("light", 0, "turbo", _weighted_pools, {}))
+    expect("pool rejects unknown tier",
+           pool_raises("turbo", 0, "balanced", _weighted_pools, {}))
+    expect("pool rejects xhigh before selecting even a codex member",
+           pool_raises("light", 0, "balanced", _weighted_pools, {}, effort="xhigh"))
+    expect("pool rejects a negative or non-integer manifest ordinal",
+           pool_raises("light", -1, "balanced", _weighted_pools, {})
+           and pool_raises("light", True, "balanced", _weighted_pools, {}))
+
+    _job_type_result = pool_call(
+        "standard", 0, "balanced",
+        {"balanced": {"standard": [{"backend": "codex", "weight": 1}]}},
+        {}, job_type="bounded_crud",
+    )
+    expect("pool forwards job_type through existing resolve()",
+           isinstance(_job_type_result, dict)
+           and _job_type_result.get("advisor_eligible") is True)
+
+    _skipped_pools = {
+        "balanced": {
+            "light": [
+                {"backend": "codex", "weight": 1},
+                {"backend": "claude", "weight": 1, "available": False},
+                {"backend": "cursor", "weight": 1},
+            ]
+        }
+    }
+    _skipped_results = [
+        pool_call("light", i, "balanced", _skipped_pools, {})
+        for i in range(6)
+    ]
+    expect("unavailable slot advances without shrinking positional ordinals", [
+        r.get("backend") if isinstance(r, dict) else None
+        for r in _skipped_results
+    ] == ["codex", "cursor", "cursor", "codex", "cursor", "cursor"])
+    expect("pool with no available member raises", pool_raises(
+        "light", 0, "balanced",
+        {"balanced": {"light": [
+            {"backend": "codex", "weight": 1, "available": False}
+        ]}},
+        {},
+    ))
+    expect("pool rejects a member weight above the deterministic cap",
+           pool_raises("light", 0, "balanced", {"balanced": {"light": [
+               {"backend": "codex", "weight": 101},
+           ]}}, {}))
+    expect("pool rejects weight=0",
+           pool_raises("light", 0, "balanced", {"balanced": {"light": [
+               {"backend": "codex", "weight": 0},
+           ]}}, {}))
+    expect("pool rejects weight=-5 (negative)",
+           pool_raises("light", 0, "balanced", {"balanced": {"light": [
+               {"backend": "codex", "weight": -5},
+           ]}}, {}))
+    expect("pool rejects weight=True (bool is not a valid weight)",
+           pool_raises("light", 0, "balanced", {"balanced": {"light": [
+               {"backend": "codex", "weight": True},
+           ]}}, {}))
+    expect("pool rejects weight=False (bool is not a valid weight)",
+           pool_raises("light", 0, "balanced", {"balanced": {"light": [
+               {"backend": "codex", "weight": False},
+           ]}}, {}))
+    expect("pool rejects weight=2.5 (float is not a valid weight)",
+           pool_raises("light", 0, "balanced", {"balanced": {"light": [
+               {"backend": "codex", "weight": 2.5},
+           ]}}, {}))
+    expect("pool rejects weight='3' (string is not a valid weight)",
+           pool_raises("light", 0, "balanced", {"balanced": {"light": [
+               {"backend": "codex", "weight": "3"},
+           ]}}, {}))
+    expect("pool rejects aggregate expanded slots above the deterministic cap",
+           pool_raises("light", 0, "balanced", {"balanced": {"light": [
+               {"backend": "codex", "weight": 100},
+               {"backend": "claude", "weight": 100},
+               {"backend": "cursor", "weight": 100},
+           ]}}, {}))
+
+    _haiku_result = pool_call(
+        "light", 0, "balanced",
+        {"balanced": {"light": [{"backend": "claude", "weight": 1}]}},
+        {"balanced": {"claude": {"light": "claude-haiku-config"}}},
+    )
+    expect("resolved haiku remains visible to the caller's policy gate",
+           isinstance(_haiku_result, dict)
+           and _haiku_result.get("model") == "claude-haiku-config")
 
     # Default resolution for every (backend, tier) cell.
     for backend in BACKENDS:
@@ -767,6 +979,14 @@ def _selftest():
         with open(_cp, "w") as _fh:
             _fh.write("[not, an, object]")
         expect("wrapper: malformed config raises",
+               raises(lambda: load_config_models(_cp)))
+        with open(_cp, "w") as _fh:
+            json.dump({"models": {}, "pools": []}, _fh)
+        expect("wrapper: structurally malformed pools raises",
+               raises(lambda: load_config_models(_cp)))
+        with open(_cp, "w") as _fh:
+            json.dump({"models": {}, "backend_max_parallel": []}, _fh)
+        expect("wrapper: structurally malformed backend_max_parallel raises",
                raises(lambda: load_config_models(_cp)))
     # Behaviour-preserving guarantees the dispatcher relies on between waves:
     expect("balanced claude/deep -> opus (regression guard)",
