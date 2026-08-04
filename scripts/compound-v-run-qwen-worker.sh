@@ -248,6 +248,20 @@ else
   die "qwen requires a sandbox provider: none of sandbox-exec, docker, podman found"
 fi
 
+# THE WHITELIST GATE ON THE EXPORTED VALUE. Every branch above assigns a literal, so this
+# cannot fire today — it exists because of what qwen does when the value is NOT one of these
+# three, MEASURED 2026-08-04: it prints "Invalid sandbox command '…'. Must be one of docker,
+# podman, sandbox-exec" IN AN UNBOUNDED LOOP and never exits. Only the supervisor's wall-clock
+# timeout ends that job, so it burns the whole budget and reports `timeout` instead of a
+# configuration fault. Refusing here makes that loop UNREACHABLE rather than merely survivable.
+# Keep this immediately before the export path: any future edit that makes the provider
+# caller-influenced (a flag, a config field, an env override) is exactly the change that would
+# otherwise reopen the hang, and it will hit this line first.
+case "$QWEN_SANDBOX" in
+  sandbox-exec|docker|podman) : ;;
+  *) die "refusing to export QWEN_SANDBOX='$QWEN_SANDBOX': must be one of sandbox-exec, docker, podman (an unrecognised value makes qwen loop forever instead of failing)" ;;
+esac
+
 # A pre-existing SANDBOX value makes Qwen Code believe it is ALREADY contained and skip
 # sandboxing silently. It cannot be defended by pre-setting it — setting it IS the disable —
 # so it is excluded from the allow-list above and asserted absent here.
@@ -562,6 +576,38 @@ SERVED_MODEL="$(jq -r '[.[] | select(.type=="system" and .subtype=="init") | .mo
 
 SUMMARY="$(jq -r '[.[] | select(.type=="result") | (.result // "")] | last // ""' "$EVENTS_LOG" 2>/dev/null || echo "")"
 
+# --- THE SILENT-NO-OP GUARD: an API failure that reports itself as success ----
+# MEASURED 2026-08-04, and it is the worst failure shape an orchestrator can get. A run whose
+# EVERY API call failed still came back:
+#
+#     {"type":"result","subtype":"success","is_error":false, …,
+#      "result":"[API Error: Connection error. (cause: connect ECONNREFUSED …)]"}
+#
+# exit 0. So `subtype` says success, `is_error` says false, the process says 0 — and the model
+# never ran. The scope gate then correctly finds nothing changed, and without this guard the
+# job is reported `status: success` having built nothing.
+#
+# Why that cannot be left as a documented quirk: this plan bills from CREDIT WINDOWS (12,000 /
+# 5h). Window exhaustion is not an edge case, it is the normal end state of a busy run. Every
+# job after that point would report success, the dispatcher would mark them done, and the run
+# would "complete" with no work performed and nothing for the failure policy to reroute.
+#
+# TWO detectors, because `is_error` was MEASURED TO LIE and must not be trusted alone:
+#   (a) is_error == true                      — believed when set, never relied on when false;
+#   (b) the result string contains "[API Error:" — the shape actually observed.
+# Substring, not an anchor: the measured strings began with it, but a partial run can emit
+# assistant text first. Over-triggering turns a real success into a retryable error, which is
+# the safe direction; under-triggering silently loses the whole run.
+API_ERROR="$(jq -r '
+  [.[] | select(.type=="result")] | last
+  | if . == null then empty
+    elif (.is_error == true)
+      then (((.error // .result // "") | tostring)
+            | if . == "" then "is_error:true with no error text" else . end)
+    elif (((.result // "") | tostring) | contains("[API Error:"))
+      then (.result | tostring)
+    else empty end' "$EVENTS_LOG" 2>/dev/null || true)"
+
 # --- the git-derived scope gate ----------------------------------------------
 # Deterministic authority. Never re-implement glob matching in bash, and never read what the
 # model said it changed.
@@ -608,8 +654,39 @@ BLOCKED="$(printf '%s' "$SCOPE_JSON" | jq -r 'if ((.violations // []) | length) 
 
 if [ "$BLOCKED" = "true" ]; then
   # Leave the worktree for inspection; the caller must NOT merge.
+  #
+  # BLOCKED wins over the API-error branch below, deliberately. A scope violation is the louder
+  # signal — the worker wrote where it was not allowed to — and it must never be masked by a
+  # later API failure. Both verdicts refuse the merge, so nothing is lost by ordering it first.
   emit_job_result "blocked" true "$FILES_JSON" "$VIOL_JSON" \
     "$SUMMARY" "$SESSION_ID" "$WT" 0 "" 0 "$USAGE_JSON"
+  exit 0
+fi
+
+# The silent-no-op guard fires HERE, after the gate, so the emitted job_result carries the REAL
+# files_changed rather than an assumed empty list. A run that changed nothing AND carries an
+# API-error result can no longer come out as `success`.
+if [ -n "$API_ERROR" ]; then
+  # An emitted job_result, NOT a bare `die`. `die` exits 2 with no JSON, which the dispatcher
+  # reads as a dead worker — unclassifiable, and the failure policy cannot reroute it. A
+  # `status: error` with a real failure_class is what lets a 401 become `auth` and a spent
+  # window become `usage_window_exhausted` and get handled instead of halting the run.
+  printf '%s\n' "$API_ERROR" > "$ART/api_error.txt"
+  # --exit-code 1, not 0, and this is load-bearing: classify() short-circuits `exit_code == 0`
+  # to "none" before it ever looks at the text. The PROCESS did exit 0 — that stays truthful in
+  # the emitted exit_code field below — but the JOB failed, so the classifier is handed a
+  # non-zero code to unlock the needle matching it would otherwise skip.
+  FAIL_JSON="$(python3 "$SCRIPT_DIR/compound-v-classify-failure.py" \
+    --backend qwen --exit-code 1 --stderr-file "$ART/api_error.txt" 2>/dev/null || echo '{}')"
+  FAILURE_CLASS="$(printf '%s' "$FAIL_JSON" | jq -r '.failure_class // "other"' 2>/dev/null || echo other)"
+  RETRY_AFTER="$(printf '%s' "$FAIL_JSON" | jq -r '.retry_after // 0' 2>/dev/null || echo 0)"
+  RETRY_AT="$(printf '%s' "$FAIL_JSON" | jq -r '.retry_at // ""' 2>/dev/null || echo '')"
+  NETWORK_SCOPE="$(printf '%s' "$FAIL_JSON" | jq -r '.network_scope // ""' 2>/dev/null || echo '')"
+  # exit_code stays 0: that is what the process really returned. The lie was never the exit
+  # code, it was `subtype: success` — and the status field is where this run gets corrected.
+  emit_job_result "error" false "$FILES_JSON" '[]' \
+    "the transport reported success but the run carried an API error: $(printf '%s' "$API_ERROR" | head -c 400)" \
+    "$SESSION_ID" "$WT" 0 "$FAILURE_CLASS" "$RETRY_AFTER" "$USAGE_JSON" "$RETRY_AT" "$NETWORK_SCOPE"
   exit 0
 fi
 

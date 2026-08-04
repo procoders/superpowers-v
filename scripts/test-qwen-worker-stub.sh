@@ -89,7 +89,8 @@ for _b in bash sh env python3 git jq uname dirname mkdir rm cat head tr sed grep
 done
 
 make_stub() {
-  # $1 = mode (success|blocked|hang|wrongmodel|crash|noinit|fatalsandbox|invalidsandbox)
+  # $1 = mode (success|blocked|hang|wrongmodel|crash|noinit|fatalsandbox|invalidsandbox
+  #            |apierror|iserror)
   # $2 = served model
   cat > "$STUBDIR/qwen" <<STUB
 #!/usr/bin/env bash
@@ -105,6 +106,8 @@ case "$1" in
   wrongmodel) : ;;
   noinit)     : ;;
   crash)      printf 'boom\n' >&2; exit 3 ;;
+  # The silent no-op: NO file is written, the API failed, and the transport still says success.
+  apierror|iserror) : ;;
   # There is no sandbox field to blank out. What a sandbox that cannot engage really looks
   # like is qwen's own getSandboxCommand() throwing, verbatim from the shipped source.
   fatalsandbox)
@@ -125,10 +128,22 @@ esac
 # and a stats.models map keyed BY MODEL NAME. There is no \`sandbox\` key anywhere in the
 # output. The input_tokens value is deliberately five figures: a ONE-WORD prompt measured
 # 17,277 input tokens, because the system preamble plus 64 tool definitions dominate it.
+#
+# NOTE the two failure modes below keep subtype:"success" and exit 0. That is not the stub
+# being lazy — it is the MEASURED shape: a run whose every API call failed still reported
+# itself as a success, with the error text sitting in the result string. The iserror mode is
+# the variant where is_error is honestly true.
+# (No backticks anywhere in this heredoc: it is UNQUOTED, so they would run as commands.)
 _INIT_FMT='{"type":"system","subtype":"init","session_id":"11111111-2222-3333-4444-555555555555","uuid":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","model":"%s","cwd":"%s","permission_mode":"yolo","qwen_code_version":"0.21.5","agents":[],"mcp_servers":[],"slash_commands":[],"tools":["read_file","write_file"]}'
-_RESULT_FMT='{"type":"result","subtype":"success","uuid":"ffffffff-0000-1111-2222-333333333333","session_id":"11111111-2222-3333-4444-555555555555","is_error":false,"num_turns":1,"duration_ms":1234,"duration_api_ms":1000,"permission_denials":[],"result":"done","usage":{"input_tokens":17277,"output_tokens":43,"cache_read_input_tokens":0,"total_tokens":17320},"stats":{"models":{"%s":{"api":{"totalRequests":1}}}}}'
+_RESULT_FMT='{"type":"result","subtype":"success","uuid":"ffffffff-0000-1111-2222-333333333333","session_id":"11111111-2222-3333-4444-555555555555","is_error":%s,"num_turns":1,"duration_ms":1234,"duration_api_ms":1000,"permission_denials":[],"result":"%s","usage":{"input_tokens":17277,"output_tokens":43,"cache_read_input_tokens":0,"total_tokens":17320},"stats":{"models":{"%s":{"api":{"totalRequests":1}}}}}'
+case "$1" in
+  # is_error stays FALSE here on purpose: this is the exact lie that was measured.
+  apierror) _is_err=false; _res='[API Error: 401 invalid access token or token expired]' ;;
+  iserror)  _is_err=true;  _res='[API Error: hour allocated quota exceeded]' ;;
+  *)        _is_err=false; _res='done' ;;
+esac
 _INIT="\$(printf "\$_INIT_FMT" "$2" "\$PWD")"
-_RESULT="\$(printf "\$_RESULT_FMT" "$2")"
+_RESULT="\$(printf "\$_RESULT_FMT" "\$_is_err" "\$_res" "$2")"
 case "$1" in
   noinit) printf '[%s]\n' "\$_RESULT" ;;
   *)      printf '[%s,%s]\n' "\$_INIT" "\$_RESULT" ;;
@@ -241,11 +256,16 @@ check "the pinned default Token Plan endpoint reaches the child" \
       "$(grep -qxF "OPENAI_BASE_URL=$TOKEN_PLAN_URL" "$ENV_OUT" && echo yes || echo no)"
 check "QWEN_SANDBOX reaches the child with a real provider" \
       "$(grep -qE '^QWEN_SANDBOX=(sandbox-exec|docker|podman)$' "$ENV_OUT" && echo yes || echo no)"
-# CONTAINMENT, part 2 of 3. The bare boolean is the dangerous form: `QWEN_SANDBOX=true` makes
-# qwen guess a provider, and when it cannot guess one it throws instead of running — but only a
-# CONCRETE name makes the failure deterministic on every host. Never emit true/1/yes.
+# CONTAINMENT, part 2 of 3. The bare boolean is the dangerous form — MEASURED: with
+# QWEN_SANDBOX=true and no SEATBELT_PROFILE, macOS silently picks the PERMISSIVE-OPEN profile
+# (writes broad, network open) and calls it a sandbox. Never emit true/1/yes.
 check "QWEN_SANDBOX is never the bare boolean" \
       "$(grep -qiE '^QWEN_SANDBOX=(true|1|yes|on)$' "$ENV_OUT" && echo no || echo yes)"
+# The exported value must be inside the documented set, always — an unrecognised name makes the
+# real binary loop forever, and only the supervisor's timeout would end it.
+check "the exported QWEN_SANDBOX is one of the three documented providers" \
+      "$(grep -E '^QWEN_SANDBOX=' "$ENV_OUT" \
+         | grep -qxE 'QWEN_SANDBOX=(sandbox-exec|docker|podman)' && echo yes || echo no)"
 # CONTAINMENT, part 1 of 3. Setting SANDBOX is what DISABLES sandboxing, so the worker must
 # never hand one down either.
 check "SANDBOX is never handed to the child" \
@@ -390,6 +410,48 @@ check "it does not fall through to the failure classifier as a model error" \
 R="$(run_worker success "allowed.txt" 60 qwen3.8-max)"
 check "a healthy run is not mistaken for a sandbox fault" \
       "$([ "$(printf '%s' "$R" | jq -r .status)" = success ] && echo yes || echo no)"
+
+echo "== the silent-no-op guard (measured: an API failure that reports itself a success) =="
+# THE MEASURED LIE: subtype "success", is_error FALSE, exit 0, no files written, and the API
+# error only visible inside the `result` string. Without the guard this is a clean `success`
+# for a job that built nothing — and on a credit-windowed plan that is the NORMAL end state of
+# a busy run, so every job after the window closes would report success having done no work.
+R="$(run_worker apierror "allowed.txt" 60 qwen3.8-max)"
+check "an API error reported as subtype:success is NOT status success" \
+      "$([ "$(printf '%s' "$R" | jq -r .status)" != success ] && echo yes || echo no)"
+check "it is status error (classifiable + reroutable), not a bare worker crash" \
+      "$([ "$(printf '%s' "$R" | jq -r .status)" = error ] && echo yes || echo no)"
+check "it carries a non-null failure_class" \
+      "$(printf '%s' "$R" | jq -e '.failure_class != null' >/dev/null && echo yes || echo no)"
+# 401 / "invalid access token" are _QWEN_RULES auth needles. The point is not the literal class
+# so much as that the real classifier ran on the real text instead of defaulting blindly.
+check "the 401 text classifies as auth (got: $(printf '%s' "$R" | jq -r .failure_class))" \
+      "$([ "$(printf '%s' "$R" | jq -r .failure_class)" = auth ] && echo yes || echo no)"
+check "the error text is preserved in the summary, not swallowed" \
+      "$(printf '%s' "$R" | jq -r .summary | grep -q 'API Error' && echo yes || echo no)"
+check "a job that built nothing reports files_changed: []" \
+      "$([ "$(printf '%s' "$R" | jq -c .files_changed)" = '[]' ] && echo yes || echo no)"
+check "blocked stays false — this is a failure, not a scope violation" \
+      "$([ "$(printf '%s' "$R" | jq -r .blocked)" = false ] && echo yes || echo no)"
+# The PROCESS really did exit 0. The status is what gets corrected, not the exit code.
+check "exit_code stays truthful at 0" \
+      "$([ "$(printf '%s' "$R" | jq -r .exit_code)" = 0 ] && echo yes || echo no)"
+check "still no cost value anywhere in the result" \
+      "$(printf '%s' "$R" | tr '[:upper:]' '[:lower:]' | grep -q cost && echo no || echo yes)"
+
+# The honest variant: is_error actually true. Believed when set — never relied on when false.
+R="$(run_worker iserror "allowed.txt" 60 qwen3.8-max)"
+check "is_error:true also yields status error" \
+      "$([ "$(printf '%s' "$R" | jq -r .status)" = error ] && echo yes || echo no)"
+check "a spent quota window classifies as usage_window_exhausted (got: $(printf '%s' "$R" | jq -r .failure_class))" \
+      "$([ "$(printf '%s' "$R" | jq -r .failure_class)" = usage_window_exhausted ] && echo yes || echo no)"
+
+# The guard must not fire on an ordinary run whose result string is just prose.
+R="$(run_worker success "allowed.txt" 60 qwen3.8-max)"
+check "an ordinary successful run is untouched by the guard" \
+      "$([ "$(printf '%s' "$R" | jq -r .status)" = success ] && echo yes || echo no)"
+check "an ordinary successful run still has a null failure_class" \
+      "$(printf '%s' "$R" | jq -e '.failure_class == null' >/dev/null && echo yes || echo no)"
 
 # `.env` discovery walks UPWARD from cwd, so a file one directory above the worktree is loaded
 # too — and because QWEN_SANDBOX outranks the CLI flag, a planted ancestor .env could disable

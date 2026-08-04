@@ -59,7 +59,28 @@ result, session_id, stats, subtype, type, usage, uuid   (plus `error` when faili
 
 **`--session-id` is honored and validated.** The UUID handed in comes back verbatim as `session_id` on every element, so the caller genuinely *assigns* the id rather than scraping it. A non-UUID value is a parse-time refusal — `Invalid --session-id … Must be a valid UUID` plus a help dump — which is why the id is minted by `uuidgen`/`uuid4` and never hand-shaped.
 
-**A watch-out, observed and not yet handled anywhere:** a run whose every API call failed still came back **`subtype: "success"`, `is_error: false`, exit 0**, with the error text sitting in the `result` string (`"[API Error: …]"`). A `qwen` job that never reached the model can therefore be reported `success` with zero files changed. Nothing in this adapter reads `is_error` today. **Flagged, not fixed.**
+### The silent-no-op guard
+
+**The measured quirk.** A run whose **every API call failed** still came back:
+
+```json
+{"type":"result","subtype":"success","is_error":false,
+ "result":"[API Error: Connection error. (cause: connect ECONNREFUSED …)]"}
+```
+
+with **exit 0**. `subtype` says success. `is_error` says false. The process says 0. The model never ran.
+
+**Why it is not a curiosity.** The scope gate then correctly finds nothing changed, and the job reports `status: success` having built nothing. On a plan billed from **credit windows** (12,000 / 5h), window exhaustion is not an edge case — it is the *normal end state of a busy run*. Every job after that point would report success, the dispatcher would mark them all done, and the run would "complete" with no work performed and no failure for the policy layer to reroute. **A silent no-op is the worst outcome an orchestrator can be handed — worse than a loud crash.**
+
+**The mitigation, in the worker.** After the scope gate, before the success emit:
+
+1. **Two detectors, because `is_error` was measured to lie.** `is_error == true` is believed when set and **never relied on when false**; independently, the `result` string is tested for `[API Error:` — the shape actually observed. Substring, not an anchor: the measured strings began with it, but a partial run can emit assistant text first. Over-triggering turns a real success into a retryable error (safe); under-triggering loses the whole run (not).
+2. **The extracted text goes to [`compound-v-classify-failure.py --backend qwen`](../../scripts/compound-v-classify-failure.py)**, so a 401 lands as `auth` and quota phrasing as `usage_window_exhausted` / `rate_limited` — a real `failure_class` the failure policy can act on.
+3. **It emits a `job_result` with `status: "error"`, never a bare `die`.** `die` exits 2 with no JSON, which the dispatcher reads as a dead worker — unclassifiable, and unroutable. `status: error` with a class is what lets a spent window get handled instead of halting the run.
+4. **`exit_code` stays `0`** — that is what the process really returned. The lie was never the exit code; it was `subtype: success`, and `status` is where it gets corrected.
+5. **`blocked` wins over this branch.** A scope violation is the louder signal and must never be masked by a later API failure. Both verdicts refuse the merge, so nothing is lost by that ordering.
+
+One consequence worth stating: **a run that changed no files and carries an API-error result can no longer emit `status: "success"`.** `scripts/test-qwen-worker-stub.sh` pins exactly the measured shape (`subtype:"success"` + `is_error:false` + `[API Error: …]` + exit 0 ⇒ `status:"error"` with a non-null `failure_class`) plus the honest `is_error:true` variant.
 
 ### 2. Auth — `settings.json` `envKey` is the auth path, and `OPENAI_API_KEY` is never set
 
@@ -94,7 +115,9 @@ What is actually enforceable, and what the worker now relies on, is three things
 | A **known** provider whose command is missing | Throws `FatalSandboxError` — `Missing sandbox command '…' (from QWEN_SANDBOX)`, or `QWEN_SANDBOX is true but failed to determine command for sandbox; install docker or podman or specify command in QWEN_SANDBOX` |
 | An **unknown** provider name | Prints `Invalid sandbox command '…'. Must be one of docker, podman, sandbox-exec` — **in an unbounded loop, never exiting** |
 
-**So "qwen fails loudly" is only half true.** On the unknown-name path it *hangs*, and the supervisor's wall-clock timeout is what actually ends the job. The worker matches both texts anyway, because a hang the timeout catches still must not be filed as a model failure. It only ever emits a `command -v`-verified concrete name, so the unknown-name path should be unreachable — matched because *"should be unreachable"* is not a guarantee.
+**So "qwen fails loudly" is only half true.** On the unknown-name path it *hangs*, and the supervisor's wall-clock timeout is what actually ends the job — burning the whole time budget and reporting `timeout` instead of a configuration fault.
+
+**That loop is made unreachable, not merely survivable.** Immediately before export, the worker tests `QWEN_SANDBOX` against the documented set `sandbox-exec | docker | podman` and **refuses** anything else. Every branch that assigns it uses a `command -v`-verified literal, so the check cannot fire today — it is placed there for the future edit that makes the provider caller-influenced (a flag, a config field, an env override), which is exactly the change that would otherwise reopen the hang. **Do not delete it as dead code.** The stderr matcher for both texts stays as well, as the second line of defence.
 
 Verified not to false-positive: a healthy sandboxed run's stderr says only `using macos seatbelt (profile: …)` or `hopping into sandbox (command: …)`.
 
@@ -441,7 +464,7 @@ A classifier keyed on message text — the way `zai`'s is — matches **nothing*
 
 **No qwen-specific retry policy, and no edits to the shared failure machinery.** `qwen` takes the global defaults; the existing throttle-vs-window handling is already correct for this provider once the needles map to the right classes. Note explicitly that `adapter-zai.md`'s "a provider that penalises repeat offences, so cap retries low" reasoning is **about z.ai** (its April 2026 enforcement wave, wire-indistinguishable from ordinary rate limiting) and does **not** transfer: no link between retry count and enforcement is documented or observed for Alibaba.
 
-**A failure mode the classifier cannot see at all.** Measured: a run whose every API call failed still returned **`subtype: "success"`, `is_error: false`, exit 0**, with `"[API Error: …]"` in the `result` string. Nothing in this adapter reads `is_error` or inspects `result` for that pattern, so such a job is reported `success` with zero files changed — and the scope gate, correctly, sees nothing wrong. **Flagged, not fixed.**
+**A failure mode that reaches the classifier only because the worker routes it there.** A `qwen` API failure does **not** arrive as a non-zero exit code — it arrives inside a `result` element that claims success (see [The silent-no-op guard](#the-silent-no-op-guard)). The worker extracts that text and feeds it to `--backend qwen` with a synthetic non-zero exit code, because `classify()` short-circuits `exit_code == 0` to `"none"` before it looks at any text. **Without that, every API-level failure on this backend would be invisible to this whole table.**
 
 `qwen` reroutes **up to claude** via `FALLBACK` in [`compound-v-failure-policy.py`](../../scripts/compound-v-failure-policy.py). A missing entry yields `None`, which `decide()` turns into `halt` — the first quota wall would stop the entire run.
 
@@ -459,7 +482,7 @@ A classifier keyed on message text — the way `zai`'s is — matches **nothing*
 
 ## Worktree lifecycle and merge-back
 
-Identical in shape to [`adapter-zai.md`](adapter-zai.md). The baseline SHA is captured **before** `worktree add`. Worktrees live outside the repo under `${TMPDIR}/compound-v/<run-id>/<job-id>`; scratch (`$SCRATCH` — the captured result, stderr, the pinned `.qwen/settings.json`, and the worker's redirected `HOME`/`QWEN_HOME`) lives in `$WT.art`, **outside** the worktree so the diff stays pristine. Idempotent on resume.
+Identical in shape to [`adapter-zai.md`](adapter-zai.md). The baseline SHA is captured **before** `worktree add`. Worktrees live outside the repo under `${TMPDIR}/compound-v/<run-id>/<job-id>`; scratch (`$SCRATCH` — the captured result, stderr, the pinned **`settings.json` at the scratch root** — *not* under a `.qwen` subdirectory, see [the settings file](#the-pinned-settings-file-lives-in-scratch-never-in-the-worktree--and-at-qwen_home) — and the worker's redirected `HOME`/`QWEN_HOME`) lives in `$WT.art`, **outside** the worktree so the diff stays pristine. Idempotent on resume.
 
 ```bash
 # PASS
