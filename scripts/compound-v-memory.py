@@ -598,15 +598,34 @@ def reindex_file(conn, root, rel, embedder):
     return _persist_chunks(conn, root, rel, chunks, vecs)
 
 
+# Max chunks per embedder subprocess call. One flat call over a large corpus blows the embedder's
+# 300s wall-clock timeout and silently degrades the WHOLE refresh to FTS5-only (None => all NULL).
+# Splitting into bounded sub-batches keeps every call well under the timeout; the ONNX model reloads
+# per sub-batch (~3s), a small price versus losing the dense lane entirely on any sizable repo.
+EMBED_BATCH = 256
+
+
+def _embed_batched(embedder, texts, size=EMBED_BATCH):
+    """Embed `texts` in <=size sub-batches so no single embedder call risks the timeout. Degrade-safe
+    and all-or-nothing: if ANY sub-batch fails (None), the whole result is None (matches the prior
+    single-call contract — a partial vector set must never be persisted)."""
+    out = []
+    for i in range(0, len(texts), size):
+        vecs = embedder(texts[i:i + size])
+        if vecs is None:
+            return None
+        out.extend(vecs)
+    return out
+
+
 def reindex_batch(conn, root, rels, embedder):
-    """Re-index many files, embedding ALL their chunks in a SINGLE embedder call — so the isolated
-    venv embedder loads the ONNX model ONCE per refresh instead of once per file. Chunks are
-    flattened in order, embedded together, then the vectors are sliced back per file. Degrade-safe:
-    a None result (embed failed) persists every file with NULL embeddings (FTS5-only). Returns the
-    number of files processed."""
+    """Re-index many files, embedding their chunks in bounded sub-batches (EMBED_BATCH) so a large
+    corpus never trips the embedder's per-call timeout. Chunks are flattened in order, embedded,
+    then the vectors are sliced back per file. Degrade-safe: a None result (embed failed) persists
+    every file with NULL embeddings (FTS5-only). Returns the number of files processed."""
     per_file = [(rel, chunk_file(os.path.join(root, rel), rel)) for rel in rels]
     flat = [c["text"] for _, chunks in per_file for c in chunks]
-    all_vecs = embedder(flat) if (embedder is not None and flat) else None
+    all_vecs = _embed_batched(embedder, flat) if (embedder is not None and flat) else None
     offset = 0
     for rel, chunks in per_file:
         n = len(chunks)
@@ -1061,6 +1080,17 @@ def _selftest() -> int:
 
     # repo_id determinism
     check("repo_id stable", repo_id("/a/b") == repo_id("/a/b") and repo_id("/a/b") != repo_id("/a/c"))
+
+    # _embed_batched: splits into <=EMBED_BATCH calls, preserves order, all-or-nothing on failure
+    calls = []
+    ident = lambda ts: (calls.append(len(ts)) or [[float(len(t))] for t in ts])  # noqa: E731
+    texts = ["x" * i for i in range(600)]  # 600 > 2*EMBED_BATCH ⇒ 3 sub-batches
+    out = _embed_batched(ident, texts, size=256)
+    check("_embed_batched preserves order/count",
+          out is not None and len(out) == 600 and out[0] == [0.0] and out[599] == [599.0])
+    check("_embed_batched splits by size", calls == [256, 256, 88])
+    check("_embed_batched all-or-nothing on failure",
+          _embed_batched(lambda ts: None, texts, size=256) is None)
 
     # redaction — token families incl. sk- with an interior hyphen (Codex finding)
     r = redact("k sk-proj-abcd1234EFGH5678 and ghp_abcdefabcdefabcdef12 plus AKIA0123456789AB e")
