@@ -53,6 +53,7 @@ import json
 import os
 import socketserver
 import sys
+import time
 import urllib.parse
 
 # ---------------------------------------------------------------------------
@@ -69,6 +70,22 @@ ALLOWED_SUFFIXES = (".json", ".html", ".yaml", ".yml")
 
 DONE_JOB_STATES = ("done", "success")
 MDASH = "&mdash;"
+
+# --- resume context (v2.19) --------------------------------------------------
+# A compaction re-injects the SessionStart banner but NOT the agent's position in
+# a pipeline. `resume` answers the one question a just-compacted agent cannot
+# answer from context alone: "was I in the middle of a Compound V run?"
+# Read-only, present-only, degrade-silent -- the same contract as the rest of
+# this script.
+TERMINAL_RUN_PHASES = ("merged",)
+TERMINAL_EPIC_STATUSES = ("done", "completed")
+# Freshness window. The two errors are NOT symmetric: a false positive costs one
+# line of banner noise, a false negative costs exactly the amnesia this exists to
+# fix. So the window is generous rather than tight -- it exists only to stop a
+# long-abandoned run nagging forever, not to be a precise liveness signal.
+DEFAULT_RESUME_MAX_AGE_HOURS = 72.0
+# The banner is a single line. Cap how much of it one feature may claim.
+RESUME_MAX_RECORDS = 2
 
 CONTENT_TYPES = {
     ".json": "application/json; charset=utf-8",
@@ -1303,12 +1320,199 @@ def _selftest():
             check(wt_range[0] <= ln <= wt_range[1],
                   "present-only: write-mode open() outside _write_text")
 
+    # -----------------------------------------------------------------
+    # resume context (v2.19) -- the anti-amnesia banner input
+    # -----------------------------------------------------------------
+    with tempfile.TemporaryDirectory() as tmp:
+        rroot = os.path.join(tmp, "execution")
+        os.makedirs(rroot)
+        now = 1000000000.0
+
+        def _iso(hours_ago):
+            dt = datetime.datetime.fromtimestamp(now - hours_ago * 3600.0,
+                                                 datetime.timezone.utc)
+            return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        def _mkrun(name, phase, hours_ago, jobs=2, done=1, with_state=True):
+            d = os.path.join(rroot, name)
+            os.makedirs(d)
+            _write_text(os.path.join(d, "manifest.yaml"),
+                        "run_id: " + name + "\njobs:\n"
+                        + "".join("  - id: j%d\n" % i for i in range(jobs)))
+            if with_state:
+                _write_text(os.path.join(d, "state.json"), json.dumps({
+                    "run_id": name, "phase": phase, "updated_at": _iso(hours_ago),
+                    "jobs": dict(("j%d" % i,
+                                  {"status": "done" if i < done else "pending"})
+                                 for i in range(jobs)),
+                }))
+
+        # empty root -> silent, and never raises
+        check(active_records(rroot, now=now) == [], "resume: empty root must be empty")
+        check(format_resume_line([]) == "", "resume: empty records -> empty line")
+
+        _mkrun("2099-01-01-live", "DISPATCHED", 2.0)          # fresh + unfinished
+        _mkrun("2099-01-02-merged", "MERGED", 1.0)            # fresh but finished
+        _mkrun("2099-01-03-oldopen", "DISPATCHED", 500.0)     # unfinished but stale
+        _mkrun("2099-01-04-nostate", "", 0.0, with_state=False)  # no recorded ts
+
+        ids = [r["id"] for r in active_records(rroot, now=now)]
+        check(ids == ["2099-01-01-live"],
+              "resume: expected only the fresh unfinished run, got " + repr(ids))
+
+        # REGRESSION (found live): freshness must come from the RECORDED timestamp,
+        # never a file mtime -- git rewrites mtimes on clone/branch-switch, which
+        # would make every historical run look seconds old on a fresh checkout.
+        for dirpath, _dn, fns in os.walk(rroot):
+            for fn in fns:
+                os.utime(os.path.join(dirpath, fn), (now, now))
+        ids2 = [r["id"] for r in active_records(rroot, now=now)]
+        check(ids2 == ["2099-01-01-live"],
+              "resume: mtime touch must not resurrect stale/untimestamped runs, got "
+              + repr(ids2))
+
+        line = format_resume_line(active_records(rroot, now=now))
+        check("2099-01-01-live" in line, "resume: line must name the active run")
+        check("DISPATCHED" in line and "1/2" in line,
+              "resume: line must carry phase and job progress")
+        check("/v:status" in line, "resume: line must name the recovery command")
+
+        # epics: terminal status excluded, live status included
+        for name, status, hours in (("2099-02-01-epicrun", "running", 3.0),
+                                    ("2099-02-02-epicdone", "done", 3.0)):
+            d = os.path.join(rroot, name)
+            os.makedirs(d)
+            _write_text(os.path.join(d, "epic-state.json"), json.dumps({
+                "epic_id": name, "status": status, "updated_at": _iso(hours),
+                "features": [{"id": "f1", "status": "done"},
+                             {"id": "f2", "status": "pending"}],
+            }))
+        eids = [r["id"] for r in active_records(rroot, now=now) if r["kind"] == "epic"]
+        check(eids == ["2099-02-01-epicrun"],
+              "resume: only the non-terminal epic is active, got " + repr(eids))
+
+        # the banner is one line: cap records and say how many were withheld
+        _mkrun("2099-01-05-live2", "COLLECTED", 4.0)
+        many = active_records(rroot, now=now)
+        check(len(many) > RESUME_MAX_RECORDS,
+              "resume: fixture should exceed the cap for the +N check")
+        capped = format_resume_line(many)
+        check("+{} more".format(len(many) - RESUME_MAX_RECORDS) in capped,
+              "resume: over-cap records must be counted, not dropped silently")
+
     if failures:
         print("SELFTEST FAILED ({} issue(s)):".format(len(failures)))
         for f in failures:
             print("  - " + f)
         return 1
     print("SELFTEST PASSED")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Resume context (read-only; consumed by the SessionStart banner)
+# ---------------------------------------------------------------------------
+
+def _is_unfinished(rec):
+    """True when a record represents work that still has a next step."""
+    status = str(rec.get("status") or "").strip().lower()
+    if rec.get("kind") == "epic":
+        return status not in TERMINAL_EPIC_STATUSES
+    # A run dir with a manifest but no state.json is materialized-but-never-run.
+    # That is unfinished in the most literal sense, so it counts.
+    return status not in TERMINAL_RUN_PHASES
+
+
+def _parse_ts(raw):
+    """ISO-8601 -> epoch seconds (UTC). None when absent or unparseable."""
+    if not raw:
+        return None
+    text = str(raw).strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.datetime.fromisoformat(text)
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return dt.timestamp()
+
+
+def _age_hours(rec, now):
+    """Age from the RECORDED timestamp only -- never from an mtime.
+
+    `sort_ts` is a file mtime, and git rewrites mtimes on every clone and branch
+    switch, which would make every historical run in the repo look seconds old.
+    A record with no recorded timestamp is therefore treated as unknown-age and
+    stays silent: we would rather say nothing than fabricate freshness out of a
+    filesystem artifact.
+    """
+    ts = _parse_ts(rec.get("display_ts"))
+    if ts is None:
+        return None
+    return max(0.0, (now - ts) / 3600.0)
+
+
+def _fmt_age(hours):
+    if hours is None:
+        return "age unknown"
+    if hours < 1.0:
+        return "updated <1h ago"
+    if hours < 48.0:
+        return "updated {}h ago".format(int(round(hours)))
+    return "updated {}d ago".format(int(hours // 24))
+
+
+def active_records(root, max_age_hours=DEFAULT_RESUME_MAX_AGE_HOURS, now=None):
+    """Unfinished runs/epics touched within `max_age_hours`, newest first."""
+    now = time.time() if now is None else now
+    out = []
+    for rec in build_records(os.path.realpath(root)):
+        if not _is_unfinished(rec):
+            continue
+        age = _age_hours(rec, now)
+        if age is None or age > max_age_hours:
+            continue
+        rec = dict(rec)
+        rec["age_hours"] = age
+        out.append(rec)
+    return out
+
+
+def format_resume_line(records):
+    """One terse line for the SessionStart banner. Empty string when nothing is active."""
+    if not records:
+        return ""
+    parts = []
+    for rec in records[:RESUME_MAX_RECORDS]:
+        label = "epic" if rec.get("kind") == "epic" else "run"
+        parts.append("{} {} \u2014 {}, {}/{} {} done, {}".format(
+            label, rec.get("id"), rec.get("status"),
+            rec.get("done", 0), rec.get("total", 0),
+            "features" if label == "epic" else "jobs",
+            _fmt_age(rec.get("age_hours")),
+        ))
+    more = len(records) - len(parts)
+    if more > 0:
+        parts.append("+{} more".format(more))
+    return ("\u23f8 UNFINISHED COMPOUND V WORK: " + "; ".join(parts)
+            + ". You are mid-pipeline: run /v:status (and /v:resume <run-id>) "
+              "before starting anything new. Earlier compliance in this session "
+              "does NOT carry -- a rescope re-enters the pipeline at the top.")
+
+
+def cmd_resume(args):
+    records = active_records(args.execution_root, args.max_age_hours)
+    if args.as_json:
+        payload = [{k: r.get(k) for k in
+                    ("kind", "id", "status", "done", "total", "age_hours", "display_ts")}
+                   for r in records]
+        print(json.dumps({"active": payload}, indent=2, sort_keys=True))
+        return 0
+    line = format_resume_line(records)
+    if line:
+        print(line)
     return 0
 
 
@@ -1338,6 +1542,16 @@ def main(argv=None):
     p_serve.add_argument("--port", type=int, default=DEFAULT_PORT,
                          help="preferred port (default: %(default)s; falls back to a free port)")
 
+    p_resume = sub.add_parser("resume",
+                              help="print one line naming unfinished runs/epics (banner input)")
+    p_resume.add_argument("--execution-root", default=DEFAULT_EXECUTION_ROOT,
+                          help="execution root to read (default: %(default)s)")
+    p_resume.add_argument("--max-age-hours", type=float,
+                          default=DEFAULT_RESUME_MAX_AGE_HOURS,
+                          help="ignore work older than this (default: %(default)s)")
+    p_resume.add_argument("--json", dest="as_json", action="store_true",
+                          help="machine-readable output")
+
     args = parser.parse_args(argv)
 
     if args.selftest:
@@ -1346,6 +1560,8 @@ def main(argv=None):
         return cmd_emit(args)
     if args.cmd == "serve":
         return cmd_serve(args)
+    if args.cmd == "resume":
+        return cmd_resume(args)
     parser.print_help()
     return 1
 

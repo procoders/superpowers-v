@@ -31,7 +31,14 @@ case "$file_path" in
     nudge="💉 Compound V — plan saved at $file_path. To execute: invoke compound-v:partition-reviewer first (verify Partition Map is disjoint), then compound-v:parallel-dispatcher. Shortcuts: /v:orchestrate $file_path materializes a manifest from the plan, or /v:dispatch $file_path runs the pipeline directly (it still accepts a bare plan path)."
     ;;
   *docs/superpowers/specs/*.md)
-    nudge="💉 Compound V — spec saved at $file_path. If this came from brainstorming, dispatch the three pre-flights IN ONE MESSAGE WITH THREE PARALLEL TASK CALLS: compound-v:code-archaeologist, compound-v:domain-expert, compound-v:doc-validator. Then writing-plans with the three audits as design-constraint sources."
+    nudge="💉 Compound V — spec saved at $file_path. If this came from brainstorming, dispatch the three pre-flights IN ONE MESSAGE WITH THREE PARALLEL TASK CALLS: compound-v:code-archaeologist, compound-v:domain-expert, compound-v:doc-validator. Then writing-plans with the three audits as design-constraint sources. ALL THREE: doc-validator is skipped only when the spec has ZERO technical dependencies — \"no NEW dependency\" is not the rule, because dependencies you already use go stale and acquire CVEs. If this spec RESCOPES work whose earlier features already went through the pipeline, that earlier compliance does not carry: the rescope re-enters at the top."
+    # Trigger 0 runs BEFORE a brainstorm, so by the time a spec exists it can no
+    # longer be run -- a retroactive recon is the fabricated-evidence pattern, not
+    # a recovery. All this can honestly do is turn a silent skip into a declared
+    # one. Absent/empty recon dir => say so; never claim the gate still applies.
+    if [ ! -d "docs/superpowers/recon" ] || [ -z "$(ls -A docs/superpowers/recon 2>/dev/null)" ]; then
+      nudge="$nudge NOTE: no recon doc exists — Trigger 0 did not run for this brainstorm. It cannot be run retroactively; state the omission to the user rather than passing over it."
+    fi
     ;;
   *docs/superpowers/recon/*.md)
     nudge="💉 Compound V — recon saved at $file_path. Start the brainstorm with it: read it before the first question; treat DIRECTIONS as non-exhaustive."

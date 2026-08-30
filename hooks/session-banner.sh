@@ -31,6 +31,20 @@ if command -v python3 >/dev/null 2>&1 && [ -e "docs/superpowers/architecture/.on
   fi
 fi
 
+# Anti-amnesia resume context (v2.19). SessionStart fires on `compact` as well as
+# `startup`, but the banner above is STATELESS -- it says the same thing to a fresh
+# session and to one that was six hours into a 16-job dispatch. That gap is the
+# reported "Claude forgets" failure: what a compaction destroys is not the rules
+# (they come back with the skill) but the agent's POSITION in the pipeline. This
+# reads it back off disk. Read-only, and MUST fail silent for the same reason as
+# the staleness probe above: set -euo pipefail would abort the whole banner.
+if command -v python3 >/dev/null 2>&1 && [ -d "docs/superpowers/execution" ]; then
+  resume=$(python3 "${CLAUDE_PLUGIN_ROOT:-.}/scripts/compound-v-dashboard.py" resume 2>/dev/null || echo "")
+  if [ -n "${resume:-}" ]; then
+    banner="$banner $resume"
+  fi
+fi
+
 # Detect platform and emit appropriate JSON shape
 if [ -n "${CURSOR_PLUGIN_ROOT:-}" ]; then
   jq -n --arg ctx "$banner" '{additional_context: $ctx}'
