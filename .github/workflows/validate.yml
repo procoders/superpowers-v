@@ -133,6 +133,28 @@ jobs:
             echo "✅ $m passes the invariant gate"
           done
 
+      - name: Every run dir has a committed state.json (audit-trail gate)
+        run: |
+          set -e
+          # /v:orchestrate writes state.json (step 6) and commits it (step 8) -- both
+          # are PROSE instructions in a markdown file, so an agent can satisfy neither
+          # and nothing notices. Four runs between 2026-07-13 and 2026-07-25 shipped a
+          # manifest with no state: /v:status reports "NO STATE" for them, and the
+          # SessionStart resume banner (which reads state.json to tell a just-compacted
+          # agent where it was) is blind to them. Their state is genuinely lost, so they
+          # are allowlisted by id -- never back-filled, because a reconstructed audit
+          # trail is the fabricated-evidence pattern, not a repair.
+          ALLOW="2026-07-13-usage-and-advisor 2026-07-14-v2.14-blockers-and-headless 2026-07-15-v2.16-decision-preferences 2026-07-25-v2.17-cochange"
+          rc=0
+          for m in $(git ls-files 'docs/superpowers/execution/*/manifest.yaml'); do
+            d=$(dirname "$m"); id=$(basename "$d")
+            case " $ALLOW " in *" $id "*) continue ;; esac
+            git ls-files --error-unmatch "$d/state.json" >/dev/null 2>&1 || {
+              echo "❌ $d has a committed manifest.yaml but no committed state.json"; rc=1; }
+          done
+          [ "$rc" = 0 ] || { echo "A run with no committed state.json is invisible to /v:status and to the resume banner. Commit it (/v:orchestrate step 8)."; exit 1; }
+          echo "✅ every non-allowlisted run dir carries a committed state.json"
+
       - name: Validate example job_result against the schema
         run: |
           set -e

@@ -4,6 +4,32 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [2.19.0] - 2026-08-30
+
+### Fixed — the SessionStart banner becomes stateful ("Claude forgets")
+
+`SessionStart` fires on **`compact`** as well as `startup`, but `hooks/session-banner.sh` was **stateless**: it emitted identical text to a fresh session and to one that was six hours into a 16-job dispatch. What a compaction destroys is not the rules — the skill body brings those back — but the agent's **position** in the pipeline.
+
+The reported failure looked exactly like that: an agent ran the full pipeline for features 1 and 2 of an epic, then improvised a mid-flight rescope, skipping recon and brainstorming, and self-reported it only when the user asked whether it was still running Compound V.
+
+- **`compound-v-dashboard.py resume`** — a new read-only subcommand reusing `build_records()`. Prints ONE line naming unfinished runs/epics (id, phase, job progress, age), or nothing at all. `--json` for machine use, `--max-age-hours` to widen the window.
+- **Freshness comes from the recorded timestamp, never a file mtime.** Found during live probing: git rewrites mtimes on clone and branch-switch, so an mtime window made all seven historical runs look seconds old on a fresh checkout. A record with **no** recorded timestamp stays silent rather than being assigned a fabricated age. Covered by a named regression test.
+- **The spec-write nudge now refutes the incident's two excuses.** `doc-validator` is skipped only when a spec has **zero** technical dependencies — *"no NEW dependency"* is not the rule, because dependencies you already use go stale and acquire CVEs. And a rescope re-enters the pipeline at the top: earlier compliance within an epic does not carry.
+- **An absent recon doc is now declared, not passed over.** Trigger 0 runs *before* a brainstorm and cannot be replayed once a spec exists — a retroactive recon would be the fabricated-evidence pattern, not a recovery. All the hook can honestly do is turn a silent skip into a stated one.
+- Three new rows in `rationalization-table.md` for the same incident.
+
+### Added — CI gate: every committed run dir carries a committed `state.json`
+
+Found while verifying the fix above: the last **four** run directories (2026-07-13 … 2026-07-25) ship a `manifest.yaml` with **no** `state.json`. The last committed run state is 2026-07-11. `/v:status` renders `NO STATE` for all four, and the new resume banner — which reads `state.json` — was blind to exactly the runs it most needs to see.
+
+Root cause is this release's own theme: `/v:orchestrate` step 6 writes `state.json` and step 8 commits it, and **both are prose in a markdown file**. An agent can satisfy neither and nothing breaks. Now it breaks.
+
+The four are **allowlisted by id, not back-filled** — their state is genuinely gone, and reconstructing an audit trail after the fact is fabricated evidence, not a repair. The gate was verified to actually fail: a planted run dir with a staged manifest and no state exited 1 and named the directory; removing it returned 0.
+
+### Note on versioning
+
+2.18 is skipped as a release number. The `v2.18-autonomy` branch (Stop-hook restoration, `timeout_sec` validation, Iron Five relocation) is real but unfinished — no command wiring, no Review Gate, no cross-model pass — and will land under a later version rather than being shipped half-wired.
+
 ## [2.17.0] - 2026-07-26
 
 ### Added — Co-change advisory (ordered, git-derived) + failure-prioritized evidence packing
