@@ -143,3 +143,95 @@ Maintained by Compound V Phase 1B advisor. Append at the bottom on each pass.
   halt, breaker state n/cap, exact copy-paste resume command, paths to evidence}. Distinguish
   "whole run blocked, act now" (page) from "one unit parked, rest proceeding" (batch into a
   morning summary).
+
+---
+
+## Updated 2026-09-01 — native Claude Code `Workflow` runtime contract (v3.0 audit)
+
+All quotes verbatim from the official
+[dynamic-workflows doc](https://code.claude.com/docs/en/workflows), fetched 2026-09-01.
+
+### The caps are agent-COUNT only. There is no spend cap.
+
+- *"Up to 16 concurrent agents"*, *"1,000 agents total per run"*, *"Up to 4,096 items in a single
+  `parallel()` or `pipeline()` call: the runtime rejects a longer list with an error."*
+- The runtime's own cost claim, which is weaker than it reads: *"The runtime's agent caps limit how
+  many agents a single run can spawn, which bounds the cost of a runaway script."* 1,000 agents ×
+  unbounded tokens each is not a ceiling.
+- The only cost signal is **advisory and suppressible**: *"When a workflow schedules more than 25
+  agents, or its projected token total passes 1.5 million, its progress line … shows a `Large
+  workflow` warning … The warning is advisory: it doesn't pause or limit the run."* And: *"Sessions
+  with ultracode on don't show the warning."*
+- `workflowSizeGuideline` (`small`/`medium`/`large`, default `medium` = <15 agents) is also not a
+  cap: *"Claude Code sends the guideline to Claude as advice, not a cap."*
+- **Reusable rule:** on this runtime the only cost control you can actually build is *measurement* —
+  record per-run token totals into your own state file. Do not enable ultracode as part of an
+  orchestration engine: it raises effort *and* suppresses the sole cost signal.
+
+### Route availability — a widely-repeated claim is WRONG
+
+- ~~"Workflows cannot be launched from `-p` / SDK / scheduled routes"~~ → **corrected 2026-09-01:**
+  *"Workflows are available in the CLI, the Desktop app, the IDE extensions, non-interactive mode
+  with `claude -p`, and the Agent SDK."*
+- What is route-restricted is the **`ultracode` keyword** opt-in, not the tool: *"The keyword is an
+  opt-in only in a prompt you type yourself … It doesn't start a workflow when it reaches the session
+  another way: a prompt passed with `-p` … a scheduled task prompt … a webhook payload."* (That
+  restriction itself landed in v2.1.210; earlier versions honored the keyword from every route.)
+- The launch is approvable with no human present: *"In `claude -p` and the Agent SDK, Claude Code
+  never shows this prompt"*, and it can be approved by an allow rule (`Workflow`), Auto mode, a
+  `PreToolUse` hook returning `allow`, or **bypass-permissions mode** (*"Claude Code approves the
+  call"*).
+- **Hazard to name in any design:** a `bypassPermissions` headless run can fan out up to 1,000
+  agents with no prompt and no spend cap. Choosing to keep headless on a non-Workflow engine is a
+  *policy* decision and must be argued as one, not attributed to a capability the runtime does not
+  actually lack.
+- Still true and independently probe-verified: **a subagent cannot launch a Workflow**, so any
+  orchestration seam must live in the top-level session.
+
+### Three runtime contracts that break naive generated scripts
+
+1. **Determinism is enforced by throwing.** *"Claude Code makes `Date.now()`, `Math.random()`, and a
+   no-argument `new Date()` throw inside the script, so that a relaunched run repeats the same
+   `agent()` calls. Pass a timestamp in through `args` instead."* Also *"No module loading: a script
+   that contains `import()` fails before the run starts."* Any manifest→script generator must emit
+   neither; timestamps and run-ids arrive via `args`.
+2. **`agent()` can return `null`, and `pipeline()` preserves it.** *"An `agent()` call resolves to
+   `null` if you stop it mid-run or it hits an unrecoverable API error. `pipeline()` keeps that
+   `null` in the results array."* A downstream verification stage must treat `null` as FAIL, never as
+   skip — otherwise the gate is unreachable exactly when the worker died.
+3. **Resume re-runs completed work.** *"Failed: runs again, and so does every agent that started
+   after it, even ones that completed … If a script starts A, B, C, and D in that order and B fails,
+   relaunching returns A from cache and runs B, C, and D again."* Any stage that writes/commits state
+   or appends to an outcomes stream **must be idempotent**.
+
+### No human in the loop mid-run
+
+*"No mid-run user input … Only agent permission prompts can pause a run. For sign-off between stages,
+run each stage as its own workflow."* Any invariant of the form "the human accepts the tier before we
+proceed" must be satisfied **before** launch; it cannot be honored inside a workflow.
+
+### Resume scope — narrower than a state file, wider than "same session"
+
+*"You can resume a run within the same Claude Code session."* Backgrounding carries a run over, and
+*"a session you resume with `claude --resume` can replay them"* — but *"a session you start fresh has
+nothing to replay and starts the workflow over."* Treat a workflow as an inner loop for one dispatch,
+never as the system of record for crash recovery.
+
+### FABRICATION FLAG (second sighting) — the "$47,000" agent-cost figure
+
+Previously flagged (2026-07-12 entry) as a single-source aggregator claim, and again in the
+2026-09-01 recon attributed to aicosts.ai. On this pass it resurfaced on vendor marketing pages under
+a **different** attribution — a "4-agent LangChain loop [that] ran 11 days"
+([TokenOps](https://commandline.microsoft.com/tokenops-real-time-run-scoped-cost-control-ai-agents/),
+[Portal26](https://portal26.ai/ai-agent-cost-control-stop-agents-burning-budget/)) — with no primary
+incident report behind either version. **Two mutually inconsistent attributions for one number is
+stronger evidence of fabrication than one.** Never cite it. The *mechanism* (per-step caps without a
+global ceiling) remains well corroborated; the dollar figure is not.
+
+### Evidence quality note on "what practitioners do about agent cost"
+
+Every 2026 source found on runtime token-budget enforcement is **vendor content marketing** (TokenOps,
+Portal26, OpenLegion, Waxell, Nexgismo, TrustGate). Internally consistent and mechanistically
+plausible, but **no independent benchmark, post-mortem, or regulator notice** corroborates any of the
+specific practices or numbers. The 2026-07-12 entry above reached the same conclusions from different
+sources and did so more carefully — prefer it.
