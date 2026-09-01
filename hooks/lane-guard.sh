@@ -34,8 +34,15 @@
 # A false deny inside a long autonomous run is far more expensive than a missed
 # write the git gate catches anyway. Therefore: ANY uncertainty allows.
 #   * unparseable stdin                 -> allow, log
+#   * a Bash command whose quoting the
+#     tokenizer cannot parse            -> allow, log
 #   * no lane map / job unresolvable    -> allow, log   (the normal case for an
 #                                         ordinary human session)
+#   * an ISOLATED AGENT unresolved
+#     against a LIVE lane map           -> allow, log, record one deduplicated
+#                                         line in the run dir, AND say so once
+#                                         in additionalContext -- see UNRESOLVED
+#                                         IDENTITY below
 #   * manifest missing or malformed     -> allow, log, AND say so in
 #                                         additionalContext (the guard was
 #                                         supposed to be active and could not be)
@@ -56,6 +63,17 @@
 # A result cache was considered and rejected: it would save ~40 ms and buy a
 # cache-invalidation bug in the one component whose failure mode is a false deny.
 #
+# The quote-aware tokenizer and the unresolved-identity record made this source
+# ~250 lines longer, and the source is COMPILED ON EVERY INVOCATION (it is
+# passed to `python3 -c`, and PYTHONDONTWRITEBYTECODE deliberately forbids the
+# .pyc cache that would amortise it). Measured on a DIFFERENT machine from the
+# figures above, so read the delta and not the absolutes -- same harness, 10
+# runs, three repeats, on the unresolved path every ordinary tool call takes:
+#   before  41.5 / 43.6 / 43.9 ms      after  48.6 / 49.3 / 51.4 ms
+# i.e. roughly +6 ms ambient. That is the price of the fix, stated rather than
+# hidden: the shipped segmentation allowed `sed -i 's/a/b/; s/c/d/' FILE`
+# outright, and no amount of speed makes a guard that misses worth keeping.
+#
 # CARVE-OUT: EXTERNAL WORKERS
 # ---------------------------
 # A command invoking `scripts/compound-v-run-*-worker.sh` is NEVER denied
@@ -69,6 +87,16 @@
 # This job does NOT register the hook — `hooks/hooks.json` belongs to task-16.
 # The intended registration is a `PreToolUse` entry with matcher
 # `Write|Edit|MultiEdit|NotebookEdit|Bash`.
+#
+# LANE REGISTRATION IS NOT ENFORCED, AND THIS HOOK CANNOT ENFORCE IT
+# ------------------------------------------------------------------
+# A job binds itself to its worktree by running `register-lane`, which the
+# implementer's prompt calls its "FIRST COMMAND, BEFORE ANY OTHER TOOL CALL".
+# That is prose. Nothing makes it happen, and a worker that writes first is
+# allowed because no map entry exists yet. This hook cannot close that from its
+# side — it sees whatever is on disk when PreToolUse fires, and denying until a
+# map appears would deny the registration command itself. What it does instead
+# is refuse to let the failure be invisible: see UNRESOLVED IDENTITY below.
 #
 # LANE MAP CONTRACT (how a tool call becomes a job id)
 # ----------------------------------------------------
@@ -130,6 +158,7 @@ import os
 import re
 import shlex
 import sys
+import time
 
 LOG = (os.environ.get("CV_LANE_GUARD_LOG")
        or os.path.join(os.environ.get("TMPDIR", "/tmp"),
@@ -304,9 +333,9 @@ def read_map(path):
     return agents, worktrees, manifest
 
 
-def resolve_job(agent_id, cwd):
+def resolve_job(agent_id, cwd, maps=None):
     """-> (job_id, manifest_path, root, project_root, how) or None."""
-    for path in map_files(cwd):
+    for path in (map_files(cwd) if maps is None else maps):
         parsed = read_map(path)
         if not parsed:
             continue
@@ -326,6 +355,153 @@ def resolve_job(agent_id, cwd):
             if cwd and _rel_under(cwd, wt) is not None:
                 return job, manifest, wt, proj, "cwd->worktree"
     return None
+
+
+# --------------------------------------------------------------------------- #
+# UNRESOLVED IDENTITY -- recorded, not silently permissive
+#
+# `register-lane` is the implementer's "FIRST COMMAND, BEFORE ANY OTHER TOOL
+# CALL" and NOTHING ENFORCES IT. It is prompt prose. A worker that writes before
+# it registers is allowed, because at that moment no map entry exists for it --
+# and this hook cannot fix that ORDERING from its side: PreToolUse fires with
+# whatever map is on disk, it has no way to make a registration that has not
+# happened yet exist, and refusing to act until one does would mean denying the
+# `register-lane` command itself. (It also cannot lock the registration write:
+# that read-modify-write is `register_lane()` in
+# scripts/compound-v-emit-workflow.py -- another job's lane -- and this hook
+# never writes the lane map at all. See the report for the exact defect.)
+#
+# What the guard CAN do is stop the failure from being invisible. When an
+# ISOLATED AGENT (cwd inside `.claude/worktrees/<id>`) fails to resolve against a
+# LIVE lane map, that is not the ordinary human session -- it is a worker that
+# wrote before registering, or a registration a concurrent sibling's
+# read-modify-write lost. One deduplicated line goes into the run directory so
+# afterwards the run says so, instead of reading as a clean run.
+#
+# THE THREE GATES ON RECORDING, and why each is there:
+#   1. a lane map was found            -- otherwise Compound V is not involved
+#   2. at least one worktree it names still EXISTS on disk -- a finished run's
+#      worktrees are removed (`git worktree remove` runs on Merge AND Discard),
+#      so a repo full of historical run dirs does not make every call an incident
+#   3. cwd is inside `.claude/worktrees/<id>` -- a plain human session in the
+#      main checkout stays exactly as silent as it is today
+# Residual false positive, stated rather than hidden: a NON-Compound-V agent
+# worktree running while a Compound V run is genuinely live. Cost of that: one
+# recorded line and one notice. There is no signal that separates the two --
+# Engine C hands its workers no environment marker.
+# --------------------------------------------------------------------------- #
+UNRESOLVED_RECORD = "lane-guard-unresolved.jsonl"
+UNRESOLVED_RECORD_MAX = 262144   # bounded: this runs on every tool call
+WORKTREE_RE = re.compile(r"^(?P<root>.*/\.claude/worktrees/[^/]+)(?:/|$)")
+
+
+def agent_worktree_root(cwd):
+    """The `<...>/.claude/worktrees/<id>` prefix of cwd, or None."""
+    m = WORKTREE_RE.match(os.path.normpath(cwd or ""))
+    return m.group("root") if m else None
+
+
+def live_lane_map(path):
+    """True when this run's lane map still names a worktree that exists."""
+    parsed = read_map(path)
+    if not parsed:
+        return False
+    _agents, worktrees, _manifest = parsed
+    for wt in worktrees:
+        try:
+            if os.path.isdir(wt):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def record_unresolved(map_path, agent_id, cwd, tool):
+    """Append one DEDUPLICATED line to <run-dir>/lane-guard-unresolved.jsonl.
+
+    -> True when a new line was written (the caller announces it once; every
+    later call for the same identity stays quiet).
+
+    LOCKING. The dedupe is a read-then-append, so it takes an exclusive
+    `fcntl.flock` on the record file across both halves -- two workers hitting
+    this in the same instant cannot read each other's pre-write state and both
+    conclude they are first. The lock is NON-BLOCKING with two short retries: a
+    PreToolUse hook that waits on a lock is a hook that stalls the session, and
+    this record is worth far less than the run. If the lock cannot be had the
+    line is appended anyway -- the file is opened O_APPEND, so a short write
+    cannot be lost or interleaved, and the worst outcome is a duplicate line,
+    never a missing one.
+
+    Never raises: a failure to record must not influence the decision."""
+    try:
+        import fcntl
+        rundir = os.path.dirname(map_path)
+        wt_root = agent_worktree_root(cwd)
+        # NEVER write inside the tree the acting agent is being gated on: an
+        # untracked file there is one the git scope gate would then union into
+        # that job's changed set and BLOCK it for. The run dir normally lives in
+        # the main checkout, but a linked worktree carries the same paths.
+        if wt_root and _rel_under(rundir, wt_root) is not None:
+            log("SKIP-RECORD (run dir is inside the gated worktree) %s" % rundir)
+            return False
+        path = os.path.join(rundir, UNRESOLVED_RECORD)
+        key = (agent_id or "", os.path.normpath(cwd or ""))
+        entry = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "tool": tool,
+            "agent_id": key[0],
+            "cwd": key[1],
+            "why": ("lane guard could not resolve this caller to a job; the "
+                    "write was NOT lane-checked (register-lane missing, ran "
+                    "late, or its entry was lost)"),
+        }
+    except Exception as exc:
+        log("RECORD FAILED (setup): %r" % (exc,))
+        return False
+
+    fh = None
+    locked = False
+    try:
+        fh = open(path, "a+")
+        for _ in range(6):   # <= 30 ms worst case, on a path that is already rare
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked = True
+                break
+            except (IOError, OSError):
+                time.sleep(0.005)
+        try:
+            fh.seek(0, os.SEEK_END)
+            if fh.tell() > UNRESOLVED_RECORD_MAX:
+                return False
+            fh.seek(0)
+            body = fh.read(UNRESOLVED_RECORD_MAX)
+        except Exception:
+            body = ""
+        for line in body.splitlines():
+            try:
+                prev = json.loads(line)
+            except Exception:
+                continue
+            if (prev.get("agent_id") or "", prev.get("cwd") or "") == key:
+                return False
+        fh.write(json.dumps(entry, sort_keys=True) + "\n")
+        fh.flush()
+        return True
+    except Exception as exc:
+        log("RECORD FAILED (write): %r" % (exc,))
+        return False
+    finally:
+        if fh is not None:
+            try:
+                if locked:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+            try:
+                fh.close()
+            except Exception:
+                pass
 
 
 def write_allowed_for(manifest_path, job_id):
@@ -376,17 +552,25 @@ def load_matcher():
 #   * interpreters: python3 -c / node -e / perl -e / awk / ruby writing a file
 #   * eval, base64 | sh, a script invoked by path that writes on its own
 #   * a path held in a variable, or produced by command substitution
+#   * the contents of `$( )` and backticks -- the tokenizer does not model them,
+#     so a separator inside one still splits the command (no worse than before,
+#     and every token it produces carries `$`/`` ` `` and is therefore skipped
+#     as unresolvable)
+#   * the command a `find -exec ... \;` runs (`find` itself is not modelled)
 #   * build/format tooling: make, npm run build, prettier --write, go generate
 #   * git subcommands that rewrite the tree without naming paths
 #     (checkout <branch>, restore, apply, clean, stash, reset --hard)
 #   * relative paths in a segment that follows a `cd` (skipped on purpose)
 #   * an in-lane path that is a symlink pointing out of lane
 #   * anything a background/long-running process writes after the call returns
+#   * a command whose QUOTING it cannot parse at all -- an unterminated quote, a
+#     heredoc whose terminator never arrives, a `$(( a << b ))` that looks like a
+#     heredoc. Those raise `_UnparseableCommand` and ALLOW, by contract: on
+#     uncertainty this hook never denies.
 # All of the above are seen by the git-derived gate afterwards. That is exactly
 # why the git gate keeps the authority.
 # --------------------------------------------------------------------------- #
 WORKER_RE = re.compile(r"compound-v-run-[A-Za-z0-9_.-]+-worker\.sh")
-SEGMENT_RE = re.compile(r"\|\||&&|;|\||\n|&")
 REDIR_WORDS = (">", ">>", ">|", "&>", "&>>", "1>", "1>>", "2>", "2>>")
 REDIR_ATTACHED = re.compile(r"^(?:[0-9]*|&)>>?\|?(?P<t>.+)$")
 CD_LIKE = ("cd", "pushd", "popd", "chdir")
@@ -421,13 +605,192 @@ VALUE_FLAGS = {
 }
 
 
+class _UnparseableCommand(Exception):
+    """The tokenizer met shell it does not model.
+
+    ALWAYS resolves to ALLOW at the call site. This exception exists so that
+    "I could not parse this" is a distinct, loggable outcome instead of being
+    silently degraded into a wrong answer -- which is what the previous
+    regex-split did in both directions, and why it shipped a false ALLOW."""
+
+
+# Separators, but only when they are OUTSIDE quotes and not escaped.
+_UNQUOTED_BREAK = ";&|\n"
+# A heredoc delimiter word ends at any of these.
+_HEREDOC_END = " \t\n;&|<>()"
+
+
+def _read_heredoc(s, i):
+    """Consume `<<` / `<<-` plus its delimiter word starting at s[i].
+
+    -> (raw text consumed, (delimiter, allow_leading_tabs), next index)
+
+    Raises when the delimiter is not a plain literal (`<<$VAR`, `<<`cmd``):
+    without knowing the delimiter there is no way to know where the BODY ends,
+    and every byte after it is then unclassifiable. Guessing there is exactly
+    how a heredoc body gets read as a command."""
+    n = len(s)
+    j = i + 2
+    strip_tabs = False
+    if j < n and s[j] == "-":
+        strip_tabs = True
+        j += 1
+    while j < n and s[j] in " \t":
+        j += 1
+    parts = []
+    while j < n and s[j] not in _HEREDOC_END:
+        ch = s[j]
+        if ch == "'":
+            k = s.find("'", j + 1)
+            if k < 0:
+                raise _UnparseableCommand("unterminated quote in heredoc delimiter")
+            parts.append(s[j + 1:k])
+            j = k + 1
+            continue
+        if ch == '"':
+            k = j + 1
+            while k < n and s[k] != '"':
+                k += 2 if s[k] == "\\" else 1
+            if k >= n:
+                raise _UnparseableCommand("unterminated quote in heredoc delimiter")
+            parts.append(s[j + 1:k])
+            j = k + 1
+            continue
+        if ch == "\\":
+            if j + 1 >= n:
+                raise _UnparseableCommand("trailing backslash in heredoc delimiter")
+            parts.append(s[j + 1])
+            j += 2
+            continue
+        if ch in ("$", "`"):
+            raise _UnparseableCommand("heredoc delimiter is not a literal")
+        parts.append(ch)
+        j += 1
+    word = "".join(parts)
+    if not word:
+        raise _UnparseableCommand("heredoc with no delimiter")
+    return s[i:j], (word, strip_tabs), j
+
+
+def _skip_heredoc_bodies(s, i, heredocs):
+    """Skip the body of each pending heredoc. A heredoc body is DATA, never a
+    command: the old regex split read `rm README.md` inside one as a command and
+    would have DENIED on it."""
+    for delim, strip_tabs in heredocs:
+        while True:
+            nl = s.find("\n", i)
+            line = s[i:] if nl < 0 else s[i:nl]
+            candidate = line.lstrip("\t") if strip_tabs else line
+            i = len(s) if nl < 0 else nl + 1
+            if candidate == delim:
+                break
+            if nl < 0:
+                raise _UnparseableCommand("heredoc %r never terminated" % delim)
+    return i
+
+
+def _split_segments(cmd_string):
+    """Split a shell command into command segments, QUOTE-AWARE.
+
+    Splits on `;`, `&`, `&&`, `|`, `||` and newlines only where they are outside
+    single quotes, double quotes and backslash escapes, and skips heredoc bodies
+    whole.
+
+    This replaced a raw `re.split(r"\\|\\||&&|;|\\||\\n|&")`, which split on the
+    BYTES before any quote was parsed. That regex was wrong in both directions
+    and both were observed by executing it:
+      * false ALLOW -- `sed -i 's/a/b/; s/c/d/' README.md` and
+        `sed -E -i 's/a|b/c/' README.md` produced NO target at all, so the
+        out-of-lane write sailed through, while the single-expression spelling
+        was correctly denied. The hook's own documentation listed all three as
+        caught.
+      * false DENY -- a `;` in a heredoc body or in a `git commit -m "..."`
+        message opened a segment whose first word was whatever followed it, so
+        `git commit -m "fix; rm README.md"` was read as an `rm` of README.md.
+        A false deny stalls an autonomous run, which is the more expensive half.
+
+    Raises `_UnparseableCommand` on anything it cannot model. The caller ALLOWS
+    on that -- never deny on uncertainty."""
+    segments = []
+    buf = []
+    heredocs = []
+    i, n = 0, len(cmd_string)
+
+    def flush():
+        seg = "".join(buf).strip()
+        if seg:
+            segments.append(seg)
+        del buf[:]
+
+    while i < n:
+        ch = cmd_string[i]
+
+        if ch == "\\":
+            if i + 1 >= n:
+                raise _UnparseableCommand("trailing backslash")
+            if cmd_string[i + 1] == "\n":   # line continuation
+                i += 2
+                continue
+            buf.append(cmd_string[i:i + 2])
+            i += 2
+            continue
+
+        if ch == "'":
+            j = cmd_string.find("'", i + 1)
+            if j < 0:
+                raise _UnparseableCommand("unterminated single quote")
+            buf.append(cmd_string[i:j + 1])
+            i = j + 1
+            continue
+
+        if ch == '"':
+            j = i + 1
+            while j < n and cmd_string[j] != '"':
+                j += 2 if cmd_string[j] == "\\" else 1
+            if j >= n:
+                raise _UnparseableCommand("unterminated double quote")
+            buf.append(cmd_string[i:j + 1])
+            i = j + 1
+            continue
+
+        if (ch == "<" and cmd_string.startswith("<<", i)
+                and not cmd_string.startswith("<<<", i)):
+            text, delim, i = _read_heredoc(cmd_string, i)
+            buf.append(text)
+            heredocs.append(delim)
+            continue
+
+        if ch == "\n" and heredocs:
+            flush()
+            i = _skip_heredoc_bodies(cmd_string, i + 1, heredocs)
+            heredocs = []
+            continue
+
+        if ch in _UNQUOTED_BREAK:
+            flush()
+            i += 1
+            continue
+
+        buf.append(ch)
+        i += 1
+
+    if heredocs:
+        raise _UnparseableCommand("heredoc body never started")
+    flush()
+    return segments
+
+
 def _tokens(segment):
     try:
         lx = shlex.shlex(segment, posix=True)
         lx.whitespace_split = True
         return list(lx)
-    except ValueError:
-        return segment.split()
+    except ValueError as exc:
+        # NOT a whitespace-split fallback any more. Splitting a segment shlex
+        # rejected produces tokens like `'s/a/b/` and `README.md"` -- garbage
+        # that was then matched against the lane and DENIED on. Unparseable
+        # means unparseable: allow, and say which command it was.
+        raise _UnparseableCommand("shlex: %s" % exc)
 
 
 def _nonflag(args, cmd):
@@ -454,7 +817,9 @@ def _nonflag(args, cmd):
 
 def bash_targets(cmd_string, cwd):
     """-> (targets, saw_cd). `saw_cd` means relative paths from that point on
-    are unresolvable, so the caller must only evaluate absolute ones."""
+    are unresolvable, so the caller must only evaluate absolute ones.
+
+    Raises `_UnparseableCommand`; the caller ALLOWS on it."""
 
     def existing(tokens):
         keep = []
@@ -471,7 +836,7 @@ def bash_targets(cmd_string, cwd):
 
     targets = []
     saw_cd = False
-    for segment in SEGMENT_RE.split(cmd_string):
+    for segment in _split_segments(cmd_string):
         segment = segment.strip()
         if not segment:
             continue
@@ -583,8 +948,30 @@ def main():
     cwd = payload.get("cwd") or os.getcwd()
     agent_id = payload.get("agent_id") or ""
 
-    resolved = resolve_job(agent_id, cwd)
+    maps = map_files(cwd)
+    resolved = resolve_job(agent_id, cwd, maps)
     if not resolved:
+        # An ISOLATED AGENT that matches nothing in a LIVE lane map is the
+        # dangerous case, not the ordinary one: it wrote before `register-lane`,
+        # or its registration was lost. Record it so the run cannot afterwards
+        # read as clean. See the block above for the three gates and the
+        # residual false positive.
+        if agent_worktree_root(cwd):
+            for path in maps:
+                if not live_lane_map(path):
+                    continue
+                first = record_unresolved(path, agent_id, cwd, tool)
+                log("ALLOW (UNRESOLVED IDENTITY under a live lane map %s) "
+                    "tool=%s agent_id=%r cwd=%s first=%s"
+                    % (path, tool, agent_id, cwd, first))
+                if first:
+                    open_notice(
+                        "an isolated agent (cwd %s) resolved to NO job in the "
+                        "live lane map %s. Most likely it wrote before running "
+                        "`register-lane`, or a concurrent registration lost its "
+                        "entry. Recorded in %s so this run does not read as a "
+                        "clean one." % (cwd, path, UNRESOLVED_RECORD))
+                return 0
         # The ordinary case for a plain human session. Silent by design: an
         # additionalContext line on every tool call would be pure noise.
         log("ALLOW (job unresolved) tool=%s agent_id=%r cwd=%s"
@@ -606,7 +993,15 @@ def main():
         return 0
 
     if tool == "Bash":
-        raw_targets, _ = bash_targets(command, cwd)
+        try:
+            raw_targets, _ = bash_targets(command, cwd)
+        except _UnparseableCommand as exc:
+            # By contract: uncertainty allows. Logged, not announced -- a command
+            # the tokenizer rejects is overwhelmingly a command the shell would
+            # reject too, and a per-call notice on it would be noise.
+            log("ALLOW (command not parseable: %s) job=%s cmd=%s"
+                % (exc, job_id, command[:200]))
+            return 0
     else:
         p = tool_input.get("file_path") or tool_input.get("notebook_path") or ""
         raw_targets = [(p, False)] if p else []
