@@ -1,19 +1,19 @@
 {
   "run_id": "2026-09-01-v3.0-triage-tests-orchestration",
-  "phase": "PARTITION_VERIFIED",
-  "updated_at": "2026-09-01T11:02:25Z",
+  "phase": "DISPATCHED",
+  "updated_at": "2026-09-01T14:39:13Z",
   "pre_eval_id": null,
   "total_retries": 0,
   "max_total_retries": 10,
   "jobs": {
     "task-0-contract": {
-      "status": "pending",
+      "status": "done",
       "isolation": "direct",
       "worktree": null,
       "session_id": null
     },
     "task-1-preeval": {
-      "status": "pending",
+      "status": "running",
       "isolation": "worktree",
       "worktree": null,
       "session_id": null
@@ -37,13 +37,13 @@
       "session_id": null
     },
     "task-5-invariant": {
-      "status": "pending",
+      "status": "running",
       "isolation": "worktree",
       "worktree": null,
       "session_id": null
     },
     "task-6-transport": {
-      "status": "pending",
+      "status": "running",
       "isolation": "worktree",
       "worktree": null,
       "session_id": null
@@ -55,7 +55,7 @@
       "session_id": null
     },
     "task-8-stop-rule": {
-      "status": "pending",
+      "status": "running",
       "isolation": "worktree",
       "worktree": null,
       "session_id": null
@@ -67,19 +67,19 @@
       "session_id": null
     },
     "task-10-adrs": {
-      "status": "pending",
+      "status": "running",
       "isolation": "worktree",
       "worktree": null,
       "session_id": null
     },
     "task-11-v218-wiring": {
-      "status": "pending",
+      "status": "running",
       "isolation": "worktree",
       "worktree": null,
       "session_id": null
     },
     "task-12-taxonomy": {
-      "status": "pending",
+      "status": "running",
       "isolation": "worktree",
       "worktree": null,
       "session_id": null
@@ -97,7 +97,7 @@
       "session_id": null
     },
     "task-15-lane-guard": {
-      "status": "pending",
+      "status": "running",
       "isolation": "worktree",
       "worktree": null,
       "session_id": null
