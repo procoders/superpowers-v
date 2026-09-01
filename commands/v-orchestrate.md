@@ -10,6 +10,31 @@ The manifest schema and rules are defined in [`skills/compound-v/execution-manif
 
 ## Steps
 
+0a. **Obtain a triage record if there is none (spec §A3).** Every run this command materializes must
+   trace to a committed pre-eval record — `compound-v-validate-manifest.py` requires a well-formed
+   `triage` block, and [`/v:dispatch`](v-dispatch.md) passes `--require-triage` in every mode, so a
+   run without one cannot be dispatched. **Before anything else**, look for a record covering this
+   work:
+
+   ```bash
+   ls docs/superpowers/pre-eval/*.json 2>/dev/null | tail -20
+   ```
+
+   A record covers this work when its `localization.resolved_paths` (or `declared_paths`) are the
+   files this plan touches. If `{{args}}` already *is* a `pre_eval_id` or a record path, that is the
+   record — skip to Step 0.
+
+   **If none exists, run [`/v:triage <the request>`](v-triage.md) now** and use the record it writes
+   and commits. Do not hand-write a record, do not invent a `pre_eval_id`, and do not proceed
+   without one: `/v:triage` is the only producer, and a reconstructed audit trail is the
+   fabricated-evidence pattern rather than a repair. Carry the resulting `pre_eval_id` into Step 6's
+   `state.json`, Step 8b's `bind`, and the manifest's `triage` block.
+
+   `/v:triage` may come back **DIRECT**. A DIRECT change has no manifest, no run directory and no
+   worktree, so **this command is not its next step** — `/v:triage --land <pre_eval_id>` is. Only a
+   DIRECT record whose landing gate demoted it to SCOPED, or a record that was SCOPED or FULL to
+   begin with, arrives here.
+
 0. **Fast-path branch (accepted pre-eval → committed single-job run).** If `{{args}}` resolves to an accepted `FASTPATH_ELIGIBLE` pre-eval record (a `pre_eval_id`, or a `docs/superpowers/pre-eval/<pre_eval_id>.json` path with `decision: FASTPATH_ELIGIBLE`), do **not** run the plan-based flow below — the fast path has no full plan and no three audits. Instead delegate to the deterministic materializer, which runs the authoritative **Phase-M** lifecycle (mint a deterministic run-id from `pre_eval_id` → copy the pinned taxonomy snapshot into the run → write spec/plan **stubs**, block-YAML audit **skip-records**, the single-job `fast_path` manifest with the review **declaration** only, and the captured implementer prompt → **commit all artifacts except `state.json`** → **append + commit the `bind` event** → **commit `state.json` at `FASTPATH_DISPATCHED` LAST**). It also runs the validator in `--mode pre-dispatch` as an in-code gate before binding, so a manifest the validator would reject never reaches dispatch.
    ```bash
    python3 scripts/compound-v-fastpath-materialize.py materialize \
