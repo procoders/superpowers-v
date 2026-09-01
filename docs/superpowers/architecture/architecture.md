@@ -10,8 +10,10 @@ Compound V is a **transparent interceptor** that sits between Superpowers phases
 **lightweight execution orchestrator** that is now the default execution path. It is not invoked
 directly; it fires automatically at **four** Superpowers transitions: a gated pre-brainstorm recon
 (Trigger 0), after `brainstorming` (before `writing-plans`), inside `writing-plans`, and at execution.
-A v2.9 **Pre-Evaluation** stage runs even before Trigger 0 and — only when a change is provably trivial
-and low-impact — may OFFER a proportionate fast-path; it never auto-routes. (`skills/compound-v/SKILL.md:10-14`)
+A v2.9 **Pre-Evaluation** stage runs even before Trigger 0 and scores the request into one of three tiers —
+DIRECT, SCOPED or FULL. It OFFERS by default and auto-routes only inside the DIRECT auto-route class, whose
+membership is decided by mechanically checkable predicates and never by model judgement; every other tier
+still requires a human offer and acceptance. (`skills/compound-v/SKILL.md:10-14`)
 
 ## The unified pipeline
 

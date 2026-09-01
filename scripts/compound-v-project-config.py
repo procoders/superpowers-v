@@ -15,12 +15,13 @@ Fail-closed contract
   ``load_config_file`` returns ``{}``.
 - **Structural malformation** (not valid JSON, root not an object, ``models`` present
   but not an object, ``pre_eval`` present but not an object) → **raise** ``ValueError``
-  so the CALLER can warn-once and fall back to all-defaults. A malformed config is
-  NEVER silently treated as an auto-route (Iron-Invariant #5 / #4).
+  so the CALLER can warn-once and fall back to all-defaults. A malformed config NEVER
+  widens the DIRECT auto-route class (Iron-Invariant #5 / #4, amended).
 - **Per-key invalid values inside ``pre_eval``** (e.g. ``fast_path: "banana"``,
   ``min_sample_count: "x"``) are NOT structural — ``resolve_pre_eval`` coerces each
   bad/missing key back to its declared default and RETURNS the offending keys in a
-  ``warnings`` list so the caller can warn-once. Never fail open, never auto-route.
+  ``warnings`` list so the caller can warn-once. Never fail open: a coerced value can
+  only shrink what this stage will skip, never enlarge the auto-route class.
 
 This module is intentionally tiny and dependency-free (pure stdlib, Python 3.9-safe)
 so it can be imported by other standalone scripts by path.
@@ -39,9 +40,13 @@ CONFIG_RELPATH = os.path.join(".claude", "compound-v.json")
 
 # ---------------------------------------------------------------------------- #
 # pre_eval.* declared keys + fail-closed defaults (spec §7 / pre-eval-config.md).
-# Every default is the SAFE (never-auto-route) value. `fast_path: ask` OFFERS,
-# never routes; `off` is a hard kill-switch. `remember` is an explicit, revocable
-# per-category opt-in (AC-11) and defaults to empty (ask every time).
+# Iron-Invariant #4, amended (v3.0 spec §A4): the score OFFERS by default and
+# auto-routes ONLY inside the DIRECT auto-route class, whose membership is decided by
+# mechanically checkable predicates and never by model judgement; every other tier
+# still requires a human offer and acceptance. Every default below is the SAFE value
+# and none of them can put a request in that class: `fast_path: ask` only OFFERS,
+# `off` is a hard kill-switch. `remember` is an explicit, revocable per-category
+# opt-in (AC-11) and defaults to empty (ask every time).
 # ---------------------------------------------------------------------------- #
 PRE_EVAL_DEFAULTS = {
     "enabled": True,            # pre-eval stage runs (fail-closed to FULL_PIPELINE anyway)
@@ -132,7 +137,7 @@ def resolve_pre_eval(cfg):
     """Return ``(values, warnings)``: the effective ``pre_eval`` config with every
     missing/invalid key coerced to its declared default, plus a list of human-readable
     warnings for the caller to surface once. NEVER raises on a bad per-key value —
-    a bad value can only DEGRADE to the safe default, never become an auto-route.
+    a bad value can only DEGRADE to the safe default, never enlarge the auto-route class.
     """
     values = dict(PRE_EVAL_DEFAULTS)
     values["remember"] = {}  # fresh copy — never share the module-level dict
@@ -314,7 +319,8 @@ def _selftest():
             "remember": {"css-only": "fastpath"}})
         expect("valid pre_eval -> no warnings", w == [])
 
-        # Per-key bad values -> coerce to default + warn (never raise, never auto-route).
+        # Per-key bad values -> coerce to default + warn (never raise, never a wider
+        # auto-route class).
         write({"pre_eval": {"fast_path": "banana", "min_sample_count": "x",
                             "token_cap": -1, "enabled": "yes",
                             "remember": {"css-only": "always", "auth": "fastpath"}}})

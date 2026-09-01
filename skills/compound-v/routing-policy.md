@@ -349,6 +349,15 @@ is the agent's model and is unrelated to this execution-layer tier resolution.)
 
 ## How a job type is routed (the decision, in order)
 
+> **Triage runs first, and decides whether there is anything to route at all.** Iron Invariant #4,
+> amended (spec §A4): **the score OFFERS by default; it auto-routes only inside the DIRECT auto-route
+> class, whose membership is decided by mechanically checkable predicates and never by model judgement,
+> and every other tier still requires a human offer and acceptance.** A `DIRECT` decision produces no
+> manifest, so it never reaches this table — the steps below run for `SCOPED` and `FULL` only.
+> Note the vocabulary collision this file now carries: the scorecard's **"never auto-route to a
+> lower-trust backend"** (step 4, and [What scorecards are NOT](#what-scorecards-are-not)) is about
+> *which backend* an already-routed job gets, and the §A4 amendment does not touch it.
+
 1. Read the active **stance** from `.claude/compound-v.json` (default Balanced;
    Claude-only if no Codex).
 2. Check [`routing-lessons.md`](../../docs/superpowers/memory/routing-lessons.md)
