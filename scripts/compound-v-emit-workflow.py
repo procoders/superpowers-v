@@ -1458,13 +1458,49 @@ def _manifest_job(manifest, job_id):
 # --------------------------------------------------------------------------- #
 # gate-receipt — the Gate stage's single clamped command
 # --------------------------------------------------------------------------- #
-def _run_scope_check(scope_check, mode, root, baseline, allow, python_bin):
+def _preexisting_snapshot(root, python_bin):
+    """Repo-relative paths already dirty BEFORE this job ran (direct mode only).
+
+    In `direct` mode the gate measures the whole working tree against the baseline,
+    so it cannot tell a job's writes from dirt that was already there. Dogfooded
+    2026-09-01: the first live Engine C run was BLOCKED not by its job — which
+    stayed in its lane — but by leftover probe records, an untracked pre-eval
+    directory and stray .pyc files. Every agent that day hit the same thing and
+    passed `--preexisting` by hand.
+
+    Captured at REGISTER time, before the implementer runs, so it is a genuine
+    before-picture rather than a post-hoc excuse: anything appearing after this
+    snapshot is the job's and is still gated. A worktree job needs none of this —
+    its tree starts clean by construction.
+    """
+    out = _run([python_bin, "-c", (
+        "import subprocess,sys\n"
+        "def q(*a):\n"
+        "    r = subprocess.run(['git','-C',sys.argv[1]]+list(a),"
+        " capture_output=True, text=True)\n"
+        "    return [x for x in r.stdout.split('\\0') if x]\n"
+        "s = set(q('diff','--name-only','-z','HEAD'))\n"
+        "s |= set(q('ls-files','--others','--exclude-standard','-z'))\n"
+        "s |= set(q('ls-files','--others','--ignored','--exclude-standard','-z','--'))\n"
+        "print('\\n'.join(sorted(s)))"), root])[1]
+    return [ln for ln in out.splitlines() if ln.strip()]
+
+
+def _run_scope_check(scope_check, mode, root, baseline, allow, python_bin,
+                     preexisting=None):
     cmd = [python_bin, scope_check]
     cmd += ["--worktree" if mode == "worktree" else "--repo", root]
     if baseline:
         cmd += ["--baseline", baseline]
     for glob in allow:
         cmd += ["--allow", glob]
+    # --preexisting takes a FILE of paths, one per line — not a repeatable value.
+    # Passing paths individually made argparse keep only the last and try to open
+    # it as a filename, so the subtraction silently did nothing. Caught on the
+    # third live Engine C run, by the gate still reporting paths the snapshot had
+    # captured correctly.
+    if preexisting:
+        cmd += ["--preexisting", preexisting]
     rc, out, err = _run(cmd)
     try:
         parsed = json.loads(out) if out.strip() else None
@@ -1605,8 +1641,16 @@ def cmd_gate_receipt(argv):
     realised = _head_commit(root)
 
     allow = job.get("write_allowed") or []
+    # Direct mode only: subtract what was already dirty when the job registered.
+    # Never in worktree mode — a worktree starts clean, so a subtraction there could
+    # only ever hide a real violation.
+    pre = None
+    if args.mode != "worktree":
+        candidate = os.path.join(args.run_dir, "preexisting", "%s.txt" % args.job_id)
+        if os.path.isfile(candidate):
+            pre = candidate
     rc, raw_stdout, err, parsed = _run_scope_check(
-        args.scope_check, args.mode, root, baseline, allow, args.python
+        args.scope_check, args.mode, root, baseline, allow, args.python, preexisting=pre
     )
     if baseline:
         digest, digest_err = compute_diff_digest(root, baseline)
@@ -2426,6 +2470,26 @@ def cmd_register_lane(argv):
     ack = {"registered": args.job_id,
            "worktrees": len(lane.get("worktrees") or {}),
            "agents": len(lane.get("agents") or {})}
+
+    # ---- SNAPSHOT WHAT WAS ALREADY DIRTY, before the implementer runs ------ #
+    # Direct mode only. The gate measures the whole tree against the baseline, so
+    # without a before-picture it attributes pre-existing dirt to this job. The
+    # first live Engine C run (2026-09-01) was BLOCKED by exactly that: leftover
+    # probe records and stray .pyc files, not by anything its job did.
+    #
+    # Taken HERE because this is the only point that provably precedes the work.
+    # A snapshot taken later could not distinguish "was already there" from "the
+    # job just wrote it", which is the whole property being bought.
+    if (args.isolation or "direct") != "worktree":
+        try:
+            pre = _preexisting_snapshot(args.repo_root, sys.executable)
+            _atomic_write(os.path.join(run_dir, "preexisting", "%s.txt" % args.job_id),
+                          "\n".join(pre) + ("\n" if pre else ""))
+            ack["preexisting"] = len(pre)
+        except Exception as exc:  # noqa: BLE001
+            # Fail OPEN into a stricter gate, never a looser one: with no snapshot
+            # the gate subtracts nothing and a dirty tree blocks. Loud, not silent.
+            ack["preexisting_error"] = str(exc)
 
     # ---- PIN THE BASELINE, before anything has run ------------------------- #
     # This command is the Implement stage's FIRST tool call, which makes it the
