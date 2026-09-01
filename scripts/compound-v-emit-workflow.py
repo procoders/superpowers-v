@@ -893,8 +893,16 @@ def _implement_prompt(job, plan):
     lines.append('%s %s register-lane \\' % (plan["python"], plan["emitter"]))
     lines.append('  --run-dir %s --job-id %s --cwd "$PWD" \\'
                  % (plan["run_dir"], job["id"]))
+    # The AGENT layer, not the manifest's. register-lane uses this to decide both
+    # where to pin the baseline and whether to take the pre-existing snapshot, and
+    # a depends_on job runs its agent in the project checkout while declaring
+    # `worktree` in the manifest. Passing the manifest value here meant the job
+    # that most needs the snapshot — the one gated in a shared, already-dirty tree
+    # — was the only one that never got it. Fifth place today where one field name
+    # meant two different things on two layers.
     lines.append('  --repo-root %s --isolation %s'
-                 % (plan["repo_root"], job["isolation"]))
+                 % (plan["repo_root"],
+                    "worktree" if job.get("agent_isolation") == "worktree" else "direct"))
     lines.append("```")
     lines.append("")
     lines.append("That command also PINS this job's baseline commit before anything")
