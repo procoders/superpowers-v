@@ -457,18 +457,28 @@ Confirm all choices back to the user before saving.
 The pre-eval stage is a **routing/triage** gate that may OFFER a proportionate fast-path on a
 proven-trivial change. Its config surface is the Task 0 contract
 [`pre-eval-config.md`](../docs/superpowers/architecture/pre-eval-config.md); `/v:init` seeds it into
-`.claude/compound-v.json` (Step 4a). **Every default is fail-closed** — the SAFE, never-auto-route
-value — so a user who just presses Enter gets the safe behaviour. Read/round-trip these ONLY through
+`.claude/compound-v.json` (Step 4a). **Every default is fail-closed** — the SAFE, offer-only value,
+never one that routes a change on its own — so a user who just presses Enter gets the safe
+behaviour. Read/round-trip these ONLY through
 the shared loader `compound-v-project-config.load_project_config(repo)` + `resolve_pre_eval(cfg)`
 (never re-interpret the keys here). Offer two structured choices (defaults are safe; reconfigurable
 any time):
 
 - **Fast-path offer — `pre_eval.fast_path`** (options `ask` / `off`; default **`ask`**): whether the
   pre-eval stage may *offer* a fast-path when a change is provably trivial. `ask` folds the offer
-  into the ONE recon/clarify interaction (never a standalone screen); it only ever OFFERS — it
-  **never auto-routes** (Iron-Invariant #4). `off` is a **hard kill-switch** — no offer, no
-  fast-path, ever (honored for cost AND confidentiality). There is deliberately **no `auto` value**;
-  a malformed/unknown value is coerced back to `ask` (offer), never to any auto-route.
+  into the ONE recon/clarify interaction (never a standalone screen); it only ever OFFERS, and a
+  fast-path is never taken without the human accepting it. `off` is a **hard kill-switch** — no
+  offer, no fast-path, ever (honored for cost AND confidentiality). There is deliberately **no
+  `auto` value** for this key; a malformed/unknown value is coerced back to `ask` (offer), never to
+  anything that routes on its own.
+
+  **Iron Invariant #4, as amended in v3.0**
+  ([spec §A4](../docs/superpowers/specs/2026-09-01-v3.0-triage-tests-orchestration-design.md) —
+  amended, not deleted): *the score OFFERS by default; it auto-routes only inside the DIRECT
+  auto-route class, whose membership is decided by mechanically checkable predicates and never by
+  model judgement, and every other tier still requires a human offer and acceptance.* That class is
+  a property of the triage scorer and its repo-local impact taxonomy — **not** of this key: nothing
+  written into `pre_eval.*` widens it, and no value of `fast_path` places a change inside it.
 - **Remembered categories — `pre_eval.remember`** (default **`{}`** = ask every time): AC-11's
   explicit, revocable, one-time per-taxonomy-category opt-in — e.g. after accepting the fast-path for
   `css-only`, the developer MAY choose not to be re-asked for that category, recorded as
@@ -522,6 +532,7 @@ was, in those two fields).
     }
   },
   "review": { "cross_model": false },
+  "enforcement": { "pipeline_bypass": false, "triage_gate": false },
   "brainstorm": {
     "deep_research": "ask",
     "batch_elicitation": true
@@ -605,6 +616,25 @@ identically to `balanced`. Only `cost-aware.claude.standard` differs: `sonnet`, 
 - **`review.cross_model`** (default `false`) = the Step 3c toggle; when `true`, high-stakes
   plans get an automatic Codex second opinion ([`/v:review-plan`](v-review-plan.md)) before
   dispatch.
+- **`enforcement.*`** (every gate defaults **`false`** — OFF) = the blocking `Stop`-hook rules in
+  [`hooks/epic-goal-stop.sh`](../hooks/epic-goal-stop.sh). This is a **map of named gates**, not a
+  fixed pair: each reader owns exactly one key and reads it fail-closed-to-OFF
+  (`jq -r '.enforcement.<key> // false'`), so a key that is absent, misspelled, malformed or unknown
+  to this version is simply OFF and a future release adds a gate by adding a key — never by changing
+  the shape. Seed the block above verbatim; seed a **`false`** for every gate the installed version
+  documents, and leave keys you do not recognize untouched when re-running `/v:init` over an existing
+  config. Shipped gates: **`pipeline_bypass`** (v2.18 — tracked source changed this session with no
+  run record and no accepted fast-path record; corrects toward the pipeline or its sanctioned
+  Pre-Evaluation shortcut) and **`triage_gate`** (v3.0 — non-exempt files changed with no committed
+  triage record covering that diff). **`/v:init` writes them OFF and never offers to turn one on.**
+  Enabling a gate is a deliberate human edit of this file, because a false positive costs a blocked
+  turn in every session of everyone who shares this repo, and both rules are **advisory and
+  best-effort by construction**: each blocks at most once while its own temp-dir marker survives, and
+  the runtime silently discards a `Stop` block when a turn ends via a tool result, an MCP end-turn or
+  a loop tick. They raise the cost of skipping the pipeline; they cannot make skipping impossible, so
+  do not describe them to the user as enforcement that cannot be bypassed. The armed **epic goal**
+  rule in the same hook is *not* configured here — it is armed per-epic by
+  [`/v:epic`](v-epic.md) §0d and lives in `epic-state.json`.
 - **`brainstorm.deep_research`** (default `"ask"`) / **`brainstorm.batch_elicitation`**
   (default `true`) = the Step 3d choices: the pre-brainstorm recon mode (`ask|auto|off`;
   `off` is a hard kill-switch) and the independent-question batching toggle. These are
@@ -618,7 +648,7 @@ identically to `balanced`. Only `cost-aware.claude.standard` differs: `sonnet`, 
   `fan_out_threshold:1`, `token_cap:20000`, `remember:{}`) = the Step 3e Pre-Evaluation triage
   surface, per the Task 0 contract
   [`pre-eval-config.md`](../docs/superpowers/architecture/pre-eval-config.md). Seed the block above
-  verbatim; every default is the fail-closed / never-auto-route value. `fast_path:"off"` is a **hard
+  verbatim; every default is the fail-closed, offer-only value. `fast_path:"off"` is a **hard
   kill-switch**; `remember` holds AC-11's revocable per-category opt-ins (`{category: "fastpath"}`,
   only the literal `"fastpath"` honored). This is **committed team POLICY**, not machine capability.
   Unlike the resolver's `models` map, nothing hand-validates this file at read time on the hot path:
@@ -627,8 +657,11 @@ identically to `balanced`. Only `cost-aware.claude.standard` differs: `sonnet`, 
   `load_project_config` raise so the caller warns once and falls back to all-defaults, while a
   **per-key** invalid value (`fast_path:"banana"`, negative `token_cap`, a `remember` value ≠
   `"fastpath"`) is coerced to its declared default by `resolve_pre_eval`, which returns a `warnings`
-  list to surface once. An invalid value can only DEGRADE to the safe default — it is **NEVER** treated
-  as an auto-route (Iron-Invariant #4/#5). Do not re-implement these rules inline; call the loader.
+  list to surface once. An invalid value can only DEGRADE to the safe, offer-only default — it can
+  **NEVER** be read as a request to route a change on its own, and it can never place one in the
+  DIRECT auto-route class (Iron Invariant #4 as amended in v3.0, plus #5: membership in that class is
+  decided by the scorer's mechanically checkable predicates against the repo-local impact taxonomy,
+  never by a config value and never by model judgement). Do not re-implement these rules inline; call the loader.
 - **`models` — SEED the default per-stance tier→model map (exactly the block above)** so
   intent-based routing resolves out of the box even with no further setup. The map is
   **per-stance** — shape `{<stance>: {<backend>: {<tier>: model}}}`. Only the `claude`
@@ -734,7 +767,9 @@ This is a command doc (no runnable code of its own), so the selftest is a **veri
 that pins the four Step-3e/4a behaviours to the **real** shared loader
 `scripts/compound-v-project-config.py` (Task 0) — no fabricated behaviour, no re-implemented rules.
 It asserts: **(a)** `pre_eval.*` defaults are seeded; **(b)** a malformed value warns → uses the
-default → **never auto-routes**; **(c)** a remembered category is displayable + revocable; **(d)**
+default → **never routes a change on its own** (this key's domain has no `auto` value at all, and
+the amended Iron Invariant #4's DIRECT auto-route class is decided by the scorer's predicates, not
+by anything in `pre_eval.*`); **(c)** a remembered category is displayable + revocable; **(d)**
 `off` is a hard kill-switch — and that **every fail-closed override still fires on a remembered
 category** (structurally, because `remember` can only ever store the literal `"fastpath"`; the
 overrides themselves are re-checked by the scorer per spec §2, never by this config).

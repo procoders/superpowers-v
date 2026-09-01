@@ -28,12 +28,12 @@ acceptance_criteria:
   - "AC-03: `compound-v-fastpath-materialize.py` emits a `triage` block and its own selftest passes; the 11 historical files are allowlisted by id, never back-filled."
   - "AC-04: `/v:triage` exists, writes and commits a record, and `/v:orchestrate` obtains one when absent."
   - "AC-05: The auto-route class implements all nine predicates of A4, including floor-passed and full post-diff re-validation of predicates 2/5/6/line-budget. A test proves a change that outgrows the class is demoted and the demotion recorded. The `sensitive` set is read from the taxonomy, never hardcoded, and this repo's taxonomy lists `skills|agents|commands` markdown. A selftest proves the circuit breaker disarms auto-route once the rolling demotion rate exceeds the threshold, and that it never delays the first decision."
-  - "AC-06: `phase-preeval.md`, `SKILL.md`, `rationalization-table.md` and `routing-policy.md` all carry the amended Iron Invariant #4; no LIVE file still asserts the unamended form — the four prose files plus `preeval.py`, the record schema and `pre-eval-config.md`. CHANGELOG history and archived run artifacts under `docs/superpowers/execution/**/jobs/` are history and are NOT rewritten."
+  - "AC-06: `phase-preeval.md`, `SKILL.md`, `rationalization-table.md` and `routing-policy.md` all carry the amended Iron Invariant #4; no LIVE file still asserts the unamended form — the four prose files plus `preeval.py` (BOTH the module docstring and line 58), `commands/v-init.md`, `compound-v-project-config.py`, `architecture.md`, the record schema and `pre-eval-config.md`. CHANGELOG history and archived run artifacts under `docs/superpowers/execution/**/jobs/` are history and are NOT rewritten."
   - "AC-07: `triage-outcomes.jsonl` receives `predicted` and `actual` events, and SCOPED is its own cohort in `compound-v-triage-outcomes.py`."
   - "AC-08: `.claude/compound-v-impact-taxonomy.yaml` exists here, produced by `/v:onboard draft-taxonomy`, and a live `--score-only` probe returns a non-`unknown` band."
   - "AC-09: `run_test_floor` gains a producer, returns below the `changed_paths` computation, and runs impacted ∪ previously-failing ∪ newly-added. No second floor is introduced."
-  - "AC-10: The manifest accepts `test_contract` and per-job `test_scope`; an unmapped path resolves to `full_command`; `floor_only` never resolves to an empty command."
-  - "AC-11: `job_result.schema.json` carries `tests: {command, exit_code, scope, selected_count}`, and every worker receives the test contract as a real argument, not as prompt prose."
+  - "AC-10: The manifest accepts `test_contract` and per-job `test_scope`; every MATCHING map rule is unioned rather than first-match-wins, unattended DIRECT landing additionally requires `full_command`, an unmapped path resolves to `full_command`; `floor_only` never resolves to an empty command."
+  - "AC-11: `job_result.schema.json` carries `duration_ms` (measured-only) and `failures[]` (machine-readable ids, without which previously-failing is uncomputable next run), and carries `tests: {command, exit_code, scope, selected_count}`, and every worker receives the test contract as a real argument, not as prompt prose."
   - "AC-12: `spec-reviewer.md` requires the floor unconditionally, requires `full_command` at FULL and for unmapped paths, and FAILS a job reporting no test command."
   - "AC-13: ADR 0003 (scoped tests) and ADR 0004 (Workflow as dispatch engine) exist, each naming the decision it supersedes and its own falsification condition."
   - "AC-14: The triage rule lives inside `epic-goal-stop.sh` as a second rule, is OFF by default, blocks at most once per session on its own marker, uses a bounded check that records incompletion rather than passing silently, and has a test proving the raw script exits 2 when it fails to parse while the `|| true` registration still fails open."
@@ -42,10 +42,10 @@ acceptance_criteria:
   - "AC-17: CI executes the files under `tests/`, and the full-suite backstop is a job that always runs rather than a conditionally-skipped one that reports Success."
   - "AC-18: v2.18's job p5 (command wiring for `/v:epic`, `/v:status`, `/v:init`, `epic-mode.md`) is complete, since v2.18 ships inside 3.0."
   - "AC-19: Every new script carries `--selftest` and is discovered by the existing CI sweep; every new guard is demonstrated to fail on a planted violation before it is trusted."
-  - "AC-20: `hooks/lane-guard.sh` denies a `Write`/`Edit`/`Bash` write outside the acting job's `write_allowed`, resolving the job from `agent_id` with a `cwd`-to-worktree fallback, and reusing `compound-v-scope-check.py`'s matcher rather than a second glob engine. A test proves a planted out-of-lane write is denied, and a second proves a shell write via `sed -i` is caught by the `Bash` matcher."
+  - "AC-20: `hooks/lane-guard.sh` denies the DIRECTLY ATTRIBUTABLE operations — `Write`/`Edit`, and recognised shell write forms — outside the acting job's `write_allowed`, and does NOT claim to catch indirect writers (a build step or a generator script whose target never appears in the command string). A planted indirect writer must be caught by the integration postcondition instead, and that is tested, resolving the job from `agent_id` with a `cwd`-to-worktree fallback, and reusing `compound-v-scope-check.py`'s matcher rather than a second glob engine. A test proves a planted out-of-lane write is denied, and a second proves a shell write via `sed -i` is caught by the `Bash` matcher."
   - "AC-21: The git-derived verdict is retained and still authoritative; no document claims the deny replaces it."
   - "AC-22: `UserPromptSubmit` invokes triage, and `PostCompact` supplies resume context using the summary it receives."
-  - "AC-24: the D1 integration authority exists as code — every job carries exactly one gate receipt bound to baseline commit, realised commit and diff digest; a forged receipt is rejected and a missing one triggers re-derivation, both proven on planted cases."
+  - "AC-24: the D1 integration authority is CALLED — /v:dispatch and /v:resume invoke the integration gate before integrating any job commit, proven end to end, not merely as a standalone script. It exists as code — every job carries exactly one gate receipt bound to baseline commit, realised commit and diff digest; a forged receipt is rejected and a missing one triggers re-derivation, both proven on planted cases."
   - "AC-25: the cross-vendor path survives the engine swap — a non-`claude` job's clamp admits its worker script, the lane guard does not deny that invocation, and its workflow agent runs `isolation: direct` so the worker owns its own worktree."
   - "AC-23: README, CHANGELOG and `AGENTS.md` state the Claude Code ≥ 2.1.219 floor and that Feature B's defaults are principle-derived, the '20,000 tests' observation being unreproduced."
 
@@ -141,6 +141,7 @@ jobs:
       - "scripts/**"
     acceptance:
       - "SCOPED is its own cohort; fast-path precision no longer corrupted"
+      - "the breaker numerator is NEGATIVE ACTUAL OUTCOMES — a demotion, a CI failure on the resulting commit, a revert of it, or a later escalation — never a demotion count alone. A mis-sized change that stays one allowed sub-20-line file is never demoted, so a demotion-only breaker stays armed through any number of bad commits"
       - "a predicted event is appended per decision and an actual event per completed run — the stream has never had a single data point"
       - "breaker never delays the first decision and disarms above the threshold"
 
@@ -189,6 +190,8 @@ jobs:
     acceptance:
       - "record written AND committed under docs/superpowers/pre-eval/"
       - "predicate 7 floor-passed and predicate 8 full post-diff re-validation implemented"
+      - "the pre-commit recheck lands behind a REAL serialization boundary — an expected-HEAD `git update-ref` compare-and-swap — not a re-read. 'Atomic' was an assertion in the spec; two sessions can both pass the armed check, one disarm the breaker, and the other commit on already-passed authorization"
+      - "tests prove ALL THREE fail: a substituted path, a mutated taxonomy, and a stale concurrent authorization"
       - "sensitive set read from the taxonomy, never hardcoded"
 
   - id: task-5-invariant
@@ -297,7 +300,7 @@ jobs:
     effort: high
     isolation: worktree
     run: parallel
-    depends_on: [task-0-contract, task-6-transport]
+    depends_on: [task-0-contract, task-6-transport, task-17-integration-authority]
     timeout_sec: 5400
     write_allowed:
       - "scripts/compound-v-emit-workflow.py"
@@ -319,17 +322,20 @@ jobs:
       - "schemas/**"
     acceptance:
       - "named Engine C throughout; Engine B is never used"
-      - "Gate never throws, null is FAIL, Record is idempotent"
+      - "Gate never throws, null is FAIL, Record is idempotent — AND each attempt and receipt is keyed to an immutable commit hash which is merged AT MOST ONCE, since a relaunch re-runs completed agents and idempotent Record alone still permits a double commit"
       - "emitted script has no Date.now, Math.random, bare new Date() or import()"
       - "scriptPath invocation forced; CLAUDE_CODE_WORKFLOWS probed with Engine A fallback"
+      - "engine selection PROBES a clamped spawn rather than inferring support from the version floor. disallowedTools and bashCommandClamp were found in 2.1.238 and the product claims support from 2.1.219; a version that accepts Workflow but refuses the clamp would select Engine C and then fail to create the Gate agent"
       - "engine selection justified operationally, never by the refuted headless claim"
       - "non-claude jobs are emitted with isolation: direct at the AGENT level — the codex/gemini worker script creates and owns its own worktree, and nesting one inside a workflow worktree is untested. This repo already carries a downstream incident from getting worktree ownership wrong"
       - "a non-claude job's bashCommandClamp admits scripts/compound-v-run-<backend>-worker.sh, or carries no clamp — a clamp that binds nothing makes the runtime REFUSE the spawn"
       - "the emitted script USES the native budget global: it guards its fan-out on budget.remaining() and stops spawning rather than running past the ceiling. We are handing execution to a runtime that HAS a spend ceiling; not taking it would be leaving the only real cost control on the table"
       - "the emitted script USES phase() and log() so the native progress tree and narrator line are populated — progress visibility stops being something we render from our own state after the fact"
+      - "THIS run is pinned to the pre-cutover dispatcher and resume contract through release: the new /v:resume must accept this run's pre-existing state.json, proven, because the session can die after this job merges and the remaining waves still have to finish on the old engine"
       - "whatever replaces the deleted batching prose PRESERVES the commit-before-dependent rule — a prerequisite merge-back only STAGES, so a dependent worktree created at HEAD would not see it. Deleting that rule mid-run breaks the very ordering this run depends on"
       - "the Gate stage PRODUCES the receipt: it returns baseline_commit, realised_commit, diff_digest, verdict, raw_stdout and exit_code, and Record persists them into the job result. With no producer every receipt is missing, task-17 re-derives for every job, and integration never completes for any run"
       - "compound-v-emit-workflow.py carries --selftest and is found by the CI sweep over scripts/*.py"
+      - "/v:dispatch AND /v:resume invoke scripts/compound-v-integration-gate.py before ANY job commit is integrated. Without this the authority lands as another correct script with no caller — the exact defect this release exists to fix, reproduced in its own cure"
       - "/v:dispatch invokes the validator WITH --require-triage in EVERY mode — this is the mechanism that stops a future run repeating 3.0 own bootstrap exemption"
       - "task-6 job_spec test_contract slice propagated into the dispatcher canonical field list"
 
@@ -450,7 +456,8 @@ jobs:
       - "scripts/**"
       - "commands/**"
     acceptance:
-      - "UserPromptSubmit invokes triage — the entry point the scorer has never had, since the skill description fires four transitions too late"
+      - "the UserPromptSubmit hook is an IDEMPOTENT NUDGE, not an invocation: it fires only when no active run and no covering triage record exist, and never writes or commits a record itself. It fires on EVERY prompt, so without eligibility and dedup a mid-run 'status?' would mint another record, contaminate the outcome stream and change which record the Stop rule sees. The mechanical closures stay at dispatch validation and Stop"
+      - "UserPromptSubmit nudges triage — the entry point the scorer has never had, since the skill description fires four transitions too late"
       - "PostCompact uses the summary it receives, improving on v2.19's SessionStart banner which fires on compact but cannot see what was summarized"
       - "both fail open and are silent when they cannot complete, never blocking a turn"
       - "hooks.json registers all three new hooks INCLUDING task-15's lane-guard, with the || true fail-open form — bash exits 2 on a parse error, which is exactly the blocking code"

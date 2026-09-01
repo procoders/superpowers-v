@@ -133,6 +133,106 @@ Skip this entire subsection when §0's watch binding found `autonomy.watch` abse
    A crash between the delete and the create leaves the epic temporarily Tier-1-unarmed rather than doubled — the conservative choice: Tier-2 (if armed) still covers resurrection in the interim, and worst case the epic simply waits for the next re-entry (human or Tier-2-fired) to re-arm Tier-1, which step 1's dedup (above) also protects against ever leaving two live Tier-1 entries behind.
 4. **Commit** the `epic-state.json` writes from steps 1–3 (§9) before continuing to §1.
 
+### 0d. Goal-condition arming (v2.18 Feature A, marathon-only, OPT-IN — offer it, never arm silently)
+
+The armed goal is this plugin's only **blocking** primitive: a `Stop` hook
+([`hooks/epic-goal-stop.sh`](../hooks/epic-goal-stop.sh), registered with `|| true`) that refuses
+to let the turn end while a deterministically-evaluated goal is armed and unmet. It is orthogonal to
+watch — watch resurrects an epic *after* a death, the goal stops the turn ending *before* one. Full
+design: [`epic-mode.md`](../skills/compound-v/epic-mode.md) "Armed goal condition".
+
+**Gate.** Marathon-only (`--arm-goal` refuses a checkpoint epic). Run this **once**, at the start of
+the invocation, after §0's stance binding and after §0c if watch is on. **Never arm without the
+user's explicit yes** — a `Stop` block holds *their* session open, so this is offered, not defaulted.
+
+1. **Get the session id from the harness, in this session.** The arm stores it and the hook compares
+   it to the `session_id` on the `Stop` payload:
+
+   ```bash
+   printf '%s\n' "${CLAUDE_CODE_SESSION_ID:-}"
+   ```
+
+   **If it is empty, do not arm** — say so and continue without a goal. `--arm-goal` refuses an empty
+   `--session-id` by design (an empty stored id disables isolation and would hold *every* session in
+   the project open), so do not attempt to substitute a placeholder, a pid or an invented UUID.
+
+   **Stated honestly:** `CLAUDE_CODE_SESSION_ID` is the harness's own session id as seen from a Bash
+   call in this session; that it is byte-identical to the id the harness puts on the `Stop` payload is
+   **not verified here**. The failure direction is benign — a mismatched id makes the arm **inert**
+   (the hook exits 0 silently on mismatch), never wrong. Step 4 is how you find out.
+
+2. **Agree the condition and the bound with the user.** Exactly two conditions exist:
+   `all_features_done` (every feature done **and** the final review passed) and `final_review_passed`.
+   `max_continues` must be an integer **> 0** — `0` is invalid, not "unlimited"; there is no unlimited
+   setting. Start small (4–8); it is the only bound on how many turns the hook may hold open.
+
+   ```bash
+   python3 scripts/compound-v-epic-state.py --arm-goal \
+     --state docs/superpowers/execution/epics/<epic-id>/epic-state.json \
+     --condition all_features_done --session-id "$CLAUDE_CODE_SESSION_ID" --max-continues 8
+   # → {"armed": {"condition": …, "session_id": …, "arm_id": "<fresh uuid4 hex>", "max_continues": 8},
+   #    "replaced": null}
+   ```
+
+   A second `--arm-goal` on the same epic is **REFUSED** naming the existing arm; pass `--replace-arm`
+   only when you mean it — a replacement mints a fresh `arm_id`, which **abandons** the previous arm's
+   continue counter rather than inheriting it. `--condition no_incomplete_jobs` is refused with its
+   reason (it is run-scoped, and a `done` job whose files are not in git is not done). A non-zero exit
+   is never fatal to the epic: report it and run the loop without a goal.
+
+3. **Commit the arm (§9).** `goal_arm` is an `epic-state.json` write like any other — batch it into
+   §0c's or the first pass's commit. Never leave it uncommitted.
+
+4. **Check that the arm actually engaged, once, at the end of the first held turn.** The hook creates
+   its slot under `${TMPDIR:-/tmp}/compound-v-stop-hook/goal-<digest>` the first time it blocks:
+
+   ```bash
+   ls "${TMPDIR:-/tmp}/compound-v-stop-hook/" 2>/dev/null || echo "no hook store yet"
+   ```
+
+   A `goal-*` slot means a goal arm is live on this machine (with at most one armed epic per project,
+   that is this one). **No slot after a turn that should have been held** means the goal rule never
+   reached the counter. The honest candidate causes, in likelihood order: the stored session id does
+   not match the `Stop` payload's; more than one epic-state under `docs/superpowers/execution/epics/`
+   carries an arm, so discovery **failed open**; `jq` or `python3` is missing on this machine; or the
+   runtime discarded the block because the turn ended via a tool result or an MCP end-turn. Say which
+   ones you checked, disarm, and continue without a goal; **do not** report the epic as goal-driven
+   when it is not. The slot's `count` file is the hook's own state:
+   read it if you want the count, never write it, and never infer a count you did not read.
+
+**What the hook does with it, in one line each** (the authority is `epic-mode.md`): it reads
+`--goal-status` (strictly read-only) and blocks only while `should_continue` is true; it increments
+and **persists** its counter *before* emitting the block; it releases the turn when the counter is
+exhausted, when the goal is `met`, or when the epic goes `terminal`; and it **never writes**
+`epic-state.json`. A released turn is **not** a finished epic — read `met`, never `should_continue`,
+before reporting completion.
+
+### 0e. Headless shim offer (v2.18 Feature F — offered and printed, NEVER installed)
+
+When this invocation carries **`--watch`** in `{{args}}`, and only then, also print the OS-scheduler
+artifact for the headless resurrection shim so the user can install it themselves:
+
+```bash
+python3 scripts/compound-v-headless-shim.py emit \
+  --epic-id <epic-id> --state docs/superpowers/execution/epics/<epic-id>/epic-state.json
+# --os {macos,linux} to override the auto-detected target
+```
+
+- **The offer is the whole wiring.** The shim prints a launchd plist / crontab line plus a runbook
+  and installs nothing; `/v:epic` runs it and shows the output. **You** must not run `launchctl`,
+  `crontab`, or any installer on the user's behalf — the shim's own AST selftest asserts it makes
+  exactly one `subprocess` call naming neither, and doing it from here would relocate exactly the
+  behavior that selftest forbids.
+- **Never pre-fill `--allow-build`.** Its default artifact is the safe subset: the fired session
+  claims, checks liveness and reports, then **stops** — it refuses the build/commit/re-arm steps, and
+  that refusal is the safety system. `--allow-build` widens the allowlist to run a marathon
+  unattended; offer it only if the user asks for it, and never emit any permission-bypass flag.
+- **`--watch` here is a presentation flag only.** It requests this offer; it does **not** opt an epic
+  into watch. That is `--init --watch` on a NEW epic (step 3), and the persisted `autonomy.watch`
+  stays the sole authority afterwards.
+- The shim removes the desktop-app dependency; it does **not** make anything run while the machine
+  sleeps. Repeat the honest boundary below when you print it.
+
 ### 1. Per-iteration progress + breaker check (before every feature)
 
 At the top of each loop pass, pick a **stable cycle id for this pass** (an incrementing counter held in your own scratch state, or a UUID minted once per pass and reused for every call *within* that same pass, so one pass is never double-counted):
@@ -348,6 +448,30 @@ Skip entirely when §0's watch binding found `autonomy.watch` absent/false. Othe
 
 No task/entry matching the exact id/marker, on either tier, is expected and harmless — not a failure, and **not a controlled error either**: `--record-watcher-disarmed` on a `(provider, task_id)` pair this registry never recorded (an older-convention id from before this fix, or a create that crashed before its own `--record-watcher-armed` write) succeeds as a no-op (v2.11 MEDIUM-4 fix) rather than aborting the sweep — so both sweeps above always run to completion regardless of what the registry does or doesn't already know about. Because both sweeps key off the PROVIDER's own list (not the registry) and match EXACTLY (not by a prefix that could cross epics), a task that was created but never recorded is still found and deleted here, and a different epic's watcher is never touched — there is no crash window where a Tier-2 task survives forever, and no cross-epic collision. Commit the resulting `--record-watcher-disarmed` writes (§9) co-located with the SAME commit that records the terminal status — never leave a disarm uncommitted, per the v2.6.4 rule §9 already states.
 
+### Goal disarm (v2.18, run at EVERY terminal exit — §7 and §8, only when a goal was armed)
+
+Skip entirely when §0d never armed a goal. Otherwise, right before this invocation stops at **any**
+terminal outcome — `done` (§8), `blocked_needing_human` from a tripped breaker or `halt_epic` (§7),
+or exhausted reachable work (§7) — pop the armed record:
+
+```bash
+python3 scripts/compound-v-epic-state.py --disarm-goal \
+  --state docs/superpowers/execution/epics/<epic-id>/epic-state.json
+# → {"disarmed": true, "mutated": true, "arm_id": "…"}   (nothing armed → {"disarmed": false, "mutated": false, "arm_id": null})
+```
+
+Idempotent by design: disarming when nothing is armed is a clean success with `mutated: false` and
+writes nothing, so it is always safe to run. **It is a tidy-up, not a safety mechanism** — the hook
+already stops holding the turn open by itself once the goal is `met` or the epic is `terminal`, so a
+crash before this step cannot leave a session wedged; what it prevents is a *stale* record that a
+later re-arm would have to `--replace-arm` around. Commit the write (§9) in the SAME commit as the
+terminal status, exactly like the watch disarm above.
+
+**Report `met`, not "the turn was released."** Take the terminal wording from `--goal-status`'s `met`
+field (or the epic's own summary), never from the fact that the hook stopped blocking: a
+breaker-tripped or `halt_epic` epic reports `met: false, terminal: true, should_continue: false`, and
+calling that "goal met" would be a fabricated completion claim.
+
 ### 7. Halt-page runbook (whole-epic block only)
 
 Page **only** when the epic itself is blocked — `blocked_needing_human` (tripped breaker or `halt_epic`) or exhausted reachable work. A single `blocked`/abandoned **feature** notice does **not** page here — it batches into the end-of-run report (§8) alongside a successful `done`. Commit first (§9) — the page must describe a state that is actually on disk in git, not one still sitting uncommitted in the worktree. **Run "Watch disarm" above before paging** (watch-only — a no-op when watch is off). The runbook carries, verbatim, every field the spec requires:
@@ -388,7 +512,7 @@ git add docs/superpowers/execution/epics/<epic-id>/epic-state.json \
 git commit -m "chore(v-epic): marathon <epic-id> <feature-id> -> <what happened>"
 ```
 
-(Omit the `arbiter/` path when nothing was written there — e.g. a bare `done` mark.) Trigger points: a feature reaching `done` — **committed together with its `--mark-sample-audit-due` when sampled, so `done` is never on disk without the obligation** (§4); a `--clear-sample-audit-due` on a passed audit (§4); a `--record-audit-failed` reverting a failed sample-audit (§4); every `--record-disposition` + its accompanying `--update` (§5/§6 — `retry_fix`/`halt_feature`/`blocked_external`/`halt_epic`); a `--record-disposition` recovered from a `consumed` `--resume-challenge` (§2 `needs_arbitration`); every `--trip-breaker` (§1/§5/§7); every `--record-final-review` (§8); and once more, belt-and-suspenders, right before the halt-page (§7) or the terminal `done` report (§8). **(v2.11, watch-only, additive):** every `--renew-lease` and `--record-watcher-armed`/`--record-watcher-disarmed` write from §0c or "Watch disarm" — co-located with the SAME commit as the nearby trigger point above (§0c's initial arm/heartbeat batches into the epic's `init` commit or its own first-pass commit; a terminal disarm batches into the SAME commit as the halt-page's or the terminal `done`'s status write) — never a separate uncommitted write.
+(Omit the `arbiter/` path when nothing was written there — e.g. a bare `done` mark.) Trigger points: a feature reaching `done` — **committed together with its `--mark-sample-audit-due` when sampled, so `done` is never on disk without the obligation** (§4); a `--clear-sample-audit-due` on a passed audit (§4); a `--record-audit-failed` reverting a failed sample-audit (§4); every `--record-disposition` + its accompanying `--update` (§5/§6 — `retry_fix`/`halt_feature`/`blocked_external`/`halt_epic`); a `--record-disposition` recovered from a `consumed` `--resume-challenge` (§2 `needs_arbitration`); every `--trip-breaker` (§1/§5/§7); every `--record-final-review` (§8); and once more, belt-and-suspenders, right before the halt-page (§7) or the terminal `done` report (§8). **(v2.11, watch-only, additive):** every `--renew-lease` and `--record-watcher-armed`/`--record-watcher-disarmed` write from §0c or "Watch disarm" — co-located with the SAME commit as the nearby trigger point above (§0c's initial arm/heartbeat batches into the epic's `init` commit or its own first-pass commit; a terminal disarm batches into the SAME commit as the halt-page's or the terminal `done`'s status write) — never a separate uncommitted write. **(v2.18, additive):** the `--arm-goal` write from §0d (batched into §0c's or the first pass's commit) and the `--disarm-goal` write from "Goal disarm" (batched into the SAME commit as the terminal status) — same rule, same reason.
 
 ### The honest boundary (v2.10 marathon + v2.11 auto-resurrection watch)
 

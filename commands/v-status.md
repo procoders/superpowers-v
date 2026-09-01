@@ -10,7 +10,7 @@ The run-id (optional) is `{{args}}`.
 
 1. **Locate the run.**
    - If `{{args}}` names a run-id, the run dir is `docs/superpowers/execution/{{args}}/`.
-   - If `{{args}}` is empty, list the subdirectories of `docs/superpowers/execution/`. If there is exactly one, use it. If there are several, show them (newest first by run-id date prefix) and render the most recent, noting the others.
+   - If `{{args}}` is empty, list the subdirectories of `docs/superpowers/execution/` — **except `epics/`**, which holds epic spines (`epics/<epic-id>/epic-state.json`), not runs; it is rendered by the "Armed epic goal" section below, never as a run row. If there is exactly one, use it. If there are several, show them (newest first by run-id date prefix) and render the most recent, noting the others.
    - If `docs/superpowers/execution/` is absent or empty, tell the user there are no **Compound V**
      orchestrator runs yet. Before stopping, do one cheap check: does `.superpowers/sdd/` exist in
      this repo (plain Superpowers' `subagent-driven-development` task-tracking directory —
@@ -73,6 +73,51 @@ These renderings are additive and **degrade-safe**: if `docs/superpowers/pre-eva
 
    - `precision` is computed from the fast-path **PARENT** outcome only (`review_passed ∧ not escalated`), `escalation_rate` from `escalated / n`, where `n` = fast-path parents **with a terminal `actual`** (a pre-merge `merge_pending`/absent actual is excluded and reported in `excluded_no_terminal_actual`, never counted).
    - When the script returns `{"status": "insufficient", …}` (n = 0, or n below the `min_sample_count` floor), print **"insufficient samples (n=N, need ≥floor)"** — do **not** print a precision percentage. This floor exists precisely so a two-run history never masquerades as a calibrated rate. Show the sample size `n` alongside any figure you do print.
+
+## Armed epic goal (v2.18)
+
+Additive and **degrade-safe**, exactly like the two sections above: if there are no epics, if nothing
+is armed, or if the probe fails, render an em-dash or skip the section — never invent a goal state.
+
+10. **Render the armed-goal column for every epic in this project.** For each
+    `docs/superpowers/execution/epics/*/epic-state.json`, ask the read-only probe:
+
+    ```bash
+    python3 scripts/compound-v-epic-state.py --goal-status \
+      --state docs/superpowers/execution/epics/<epic-id>/epic-state.json
+    # → {"armed":…, "condition":…, "session_id":…, "arm_id":…, "max_continues":…,
+    #    "met":…, "category":…, "terminal":…, "reason":…, "should_continue":…}
+    ```
+
+    `--goal-status` is **strictly read-only** — it never mutates the state and its CLI branch never
+    writes the file, which is what lets both the `Stop` hook and this command call it freely. It is
+    deliberately **not** marathon-gated, so a checkpoint epic answers a clean `armed: false` rather
+    than an error. Render one row per epic:
+
+    | Epic | Armed goal | Goal state | Continuations |
+    |---|---|---|---|
+    | 2026-08-02-billing | `all_features_done` (max 8) | unmet, running — the `Stop` hook holds the turn | — |
+    | 2026-07-19-search | — | — | — |
+
+    - **Armed goal** — `condition` and `max_continues` when `armed == true`; `—` otherwise.
+    - **Goal state** — read `met`, `terminal` and `should_continue` and say which one it is:
+      `should_continue: true` → *unmet, running*; `met: true` → *met*; `terminal: true` with
+      `met: false` → **`terminal, unmet — do NOT continue`**, quoting the `reason` (e.g.
+      `blocked_needing_human: halt_epic disposition on <feature>`). **Never report a terminal-unmet
+      epic as met, or as "goal reached".** A stopped epic is not a finished one, and `should_continue`
+      is not a completion answer — that conflation is a fabricated completion claim.
+    - **Continuations** — always `—`. The `continue_count` lives in the **hook's own store** under the
+      OS temp dir, keyed on `digest(project root) + session_id + arm_id`; this command has no session
+      id to key it with, and the hook is the only writer. Print the honest em-dash; never derive,
+      estimate or back-fill a continuation count (same anti-ruflo rule as the Usage column).
+
+    **Degrade-safe, in every direction.** No `docs/superpowers/execution/epics/` directory → skip the
+    section entirely. A probe that exits non-zero, prints nothing, or prints unparsable JSON → one row
+    with `—` in every column and a plain note that the goal state could not be read; never break the
+    table and never guess. **More than one epic armed at once** → show them all and say plainly that
+    the hook's discovery **fails open on multiple matches**, so *none* of them is holding a session
+    open — at most one armed epic per project is the contract, and this is how you see it violated.
+    Note that an armed record is inert in any session other than the one whose `session_id` it stores.
 
 ## Dashboard (v2.15) — `--html` / `--serve`
 
