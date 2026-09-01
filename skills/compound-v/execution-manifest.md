@@ -51,7 +51,7 @@ Worked example: [`examples/manifest.example.yaml`](../../examples/manifest.examp
 | `write_allowed` | string[] | yes | Glob list this job MAY write. The scope gate **enforces** it (git-derived). |
 | `read_allowed` | string[] | yes | Glob list this job MAY read. **ADVISORY only — NOT enforced** (git cannot track reads). Documents intent + scopes the prompt. Auto-includes Task 0 outputs + the three audits. |
 | `acceptance` | string[] | yes | This job's narrow acceptance, checked in its per-task review. |
-| `test_scope` | enum | no | v3.0 (Feature B2): `full` \| `impacted` \| `floor_only`. **Absent ⇒ `full`.** `floor_only` requires a non-empty `test_contract.floor_command`; `impacted` requires a non-empty `full_command` (an unmapped path resolves to it). |
+| `test_scope` | enum | no | v3.0 (Feature B2): `full` \| `impacted` \| `floor_only`. **Absent ⇒ DERIVED (3.1.0)** — see below; it is no longer a flat `full`. `floor_only` requires a non-empty `test_contract.floor_command`; `impacted` requires a non-empty `full_command` (an unmapped path resolves to it). |
 | `timeout_sec` | integer | no | Wall-clock seconds this job's worker gets before the supervisor kills it. Domain **60 … 21600** inclusive (a bool is rejected — `true` is not `1`). **Absent ⇒ the worker script's own `DEFAULT_TIMEOUT_SEC=900`, unchanged**, which is what every manifest committed before v2.18 relies on. Applies to the **worker-script backends** (`codex`, `antigravity`, `cursor`, `devin`, `opencode`), where the dispatcher passes it through as `--timeout-sec`; for `claude` (in-harness `Task`) there is no equivalent knob and the field is advisory. Anything above **600** MUST be dispatched on the background path — see the outer-bound rule in [`parallel-dispatcher.md`](../../agents/parallel-dispatcher.md). |
 
 ¹ **Every job MUST have `model` OR `tier`** (at least one). Most jobs carry `tier` (+ optional `effort`) and let the dispatcher resolve the concrete model; a job MAY instead pin an explicit `model` override that skips resolution. A job with neither is a validation failure.
@@ -137,6 +137,32 @@ The map is **documented, not committed** in this repo (it is project-local confi
 10. **`read_allowed` auto-includes** Task 0 outputs + the three audit files, so every job can read the shared foundation and the pre-flight findings without listing them.
 
 11. **Triage, on demand (v3.0).** Under `--require-triage`, a missing or malformed `triage` block, a `tier` outside `{DIRECT, SCOPED, FULL}`, or a `taxonomy_digest` that disagrees with the taxonomy on disk is a hard failure. Without the flag the block is ignored entirely.
+### The derived default (3.1.0) — running the whole project is a decision, not a default
+
+Until 3.1.0 a job with no `test_scope` ran the **entire suite**, because the default was the
+literal string `full`. On a real application that is twenty to thirty thousand tests for a
+two-line change, and nobody chose it — it was what you got for not writing a line of YAML.
+
+`default_scope_for` now derives it from what the repository has actually said:
+
+| Condition | Default | Why |
+|---|---|---|
+| triage tier `DIRECT` **and** a declared `floor_command` | `floor_only` | A change small enough to skip the pipeline gets the floor and nothing else. |
+| a declared, non-empty `impacted_map` | `impacted` | The map **is** the repository saying which tests relate to which paths. Honouring it is not a guess. |
+| otherwise | `full` | With no map, nothing here knows what relates to what, and "all of them" is the only truthful answer. The note says so, so the fix — write an `impacted_map` — is visible instead of mysterious. |
+
+**A derived `impacted` degrades; a declared one halts.** If the changed or newly-added set
+cannot be computed, a scope this resolver *derived* falls back to `full` with a note, because
+a convenience that halts a run is worse than the behaviour it replaced. An explicit
+`test_scope: impacted` still fails closed — someone declared it, and silently widening their
+declaration would be the fabricated-scope failure the resolver exists to prevent.
+
+**Unchanged, and still true:** the union rule (impacted ∪ previously-failing ∪ newly-added),
+the fail-closed empty-set refusal, and the standing statement that the scoped floor is
+**early feedback** and does not restore what a full suite guarantees. A glob map carries
+strictly less information than a call graph, and call-graph selection is already measured at
+0.2%–10.6% unsafe per revision.
+
 12. **A scope never resolves to nothing (v3.0).** `test_scope: floor_only` requires a non-empty `test_contract.floor_command`; `test_scope: impacted` requires a non-empty `full_command`; every `impacted_map` entry carries both `when` and `run`.
 
 A violation of rule 1, 3, 4, 5, 6, 7, 8, 11 or 12 is a hard validation failure (non-zero exit + specifics). Rules 2/9/10 are partition-design rules enforced jointly by `partition-reviewer` and the validator.
@@ -385,7 +411,7 @@ jobs:
 | `test_contract.floor_command` | string | no¹ | The merge-blocking floor. Runs at every tier. |
 | `test_contract.full_command` | string | no¹ | The full suite. Also the resolution of any changed path that matches no `when` glob. |
 | `test_contract.impacted_map` | list | no | Declarative `{when, run}` rules. **Both fields are mandatory per entry** — a half-declared rule selects nothing. Unknown keys are rejected. |
-| `test_scope` (per job) | enum | no | `full` \| `impacted` \| `floor_only`. **Absent ⇒ `full`**, which is what every pre-3.0 manifest relies on. |
+| `test_scope` (per job) | enum | no | `full` \| `impacted` \| `floor_only`. **Absent ⇒ DERIVED** — see *The derived default* below. |
 
 ¹ Conditionally required by the two resolution rules the validator enforces, so that a scope can never
 resolve to running **nothing**:

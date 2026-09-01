@@ -2087,7 +2087,13 @@ def _tests_block_from_floor(floor, contract=None, job=None):
             scope = candidate
             break
     if scope is None:
-        scope = "full"
+        # Mirror of compound-v-fastpath-run.py:default_scope_for. DUPLICATED on
+        # purpose — both are standalone stdlib CLIs with no shared import (house
+        # style). Keep in sync. Reporting a flat "full" here after the resolver
+        # derived "impacted" would put a scope in the audit record that no run
+        # ever used, which is a fabricated field wearing a schema-valid value.
+        rows = (contract or {}).get("impacted_map")
+        scope = "impacted" if isinstance(rows, list) and rows else "full"
 
     block = {
         "command": "\n".join(commands),

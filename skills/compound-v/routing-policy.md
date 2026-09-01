@@ -170,6 +170,40 @@ never the gate.
 
 ---
 
+## Model policy at the Brainstorm and Plan stages (set 2026-09-02)
+
+The same split as the execution ladder — **Sonnet executes, Opus judges** — applied to the
+pre-flights:
+
+| Stage / agent | Model | Why |
+|---|---|---|
+| `code-archaeologist` (Phase 1A) | **sonnet** | Measures existing code. Scanning a repository is execution however large it is; the agent produces findings and decides nothing. |
+| `doc-validator` (Phase 1C) | **sonnet** | Resolves a library, queries its current docs, compares against what the repo declares. Checking, not deciding. |
+| `domain-expert` (Phase 1B) | **opus** | Domain and regulatory judgment — what the brainstorm took for granted. This is the judgment seat. |
+| `partition-reviewer`, `spec-reviewer`, `parallel-dispatcher` | **opus** | Reviewers and the dispatcher are the safety net. A cheap reviewer is no reviewer. |
+
+**Business-critical work overrides upward, at dispatch time.** Fable is not in any agent's
+frontmatter and must not be: a static `model: fable` would spend the top model on every
+routine pre-flight. The caller sets it per invocation with the Agent tool's `model`
+override, which takes precedence over the definition. Reach for it when the feature is
+business-critical, not when it is merely large.
+
+`scripts/lint-frontmatter.py` enforces this: `model: opus` on every agent, except the two
+named in its `SONNET_ELIGIBLE_AGENTS` allow-list, which may also carry `model: sonnet`.
+Never Haiku, anywhere. Adding a name to that list is a deliberate act with a reason
+attached — the rule was absolute so that it could not drift, and the allow-list keeps that
+property.
+
+### Effort, and where it is honestly available
+
+Effort is tunable **on Engine C jobs** (`opts.effort`, from the manifest's `effort` field,
+default pairing `frontier`/`deep`→high, `standard`→medium, `light`→low). It is **not**
+available on the pre-flight path: the Agent/Task tool takes a `model` override and has no
+effort parameter, so "raise the effort for a harder brainstorm" cannot be done there today.
+Raising the *model* is the lever that exists at that stage. Stated rather than promised.
+
+---
+
 ## Tiers, the models map, and the resolver
 
 Routing speaks **tiers**, not models. The mapping from tier to a concrete model

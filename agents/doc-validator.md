@@ -1,7 +1,7 @@
 ---
 name: doc-validator
 description: Use when a brainstorming spec names or implies any library, SDK, framework, language version, or external API — almost always. Skip only when the spec has zero technical dependencies (pure prose/UX copy). Catches abandoned libraries, version drift, and outdated API signatures the LLM's training data missed.
-model: opus
+model: sonnet
 color: orange
 ---
 
@@ -23,7 +23,7 @@ You may be running in parallel with code-archaeology (Phase 1A) and the domain-e
 
 ## Tools
 
-**Primary: Context7 MCP** — `mcp__plugin_context7_context7__resolve-library-id` and `mcp__plugin_context7_context7__query-docs`. ALWAYS prefer Context7 over WebSearch when the library is in its index.
+**Primary: Context7 MCP** — Context7's `resolve-library-id` and `query-docs` (see the naming note below). ALWAYS prefer Context7 over WebSearch when the library is in its index.
 
 **Fallback: WebSearch + package registry pages** (npmjs.com, pypi.org, crates.io, pkg.go.dev). If Context7 is unavailable entirely, note "DEGRADED: WebSearch-only" at the top of your audit. Still produce the audit.
 
@@ -127,3 +127,5 @@ Return a short summary:
 Tight, specific, technical. Cite. No hedging.
 
 Stop when audit is written, KB updated, summary returned. Do not propose the migration plan — that's writing-plans' job.
+
+> **Context7 tool naming.** Context7's tool names depend on HOW it is installed: a plugin-bundled server is `mcp__plugin_<plugin>_context7__*`, a user- or project-configured server is `mcp__context7__*`. **Match on the suffix, not the full string** — `*context7*resolve-library-id` and `*context7*query-docs` — and read the tool list you actually have. Every document in this plugin hardcoded the plugin-bundled form until 3.1.0; on a machine with the plain form that named a tool which does not exist, and the agent silently fell back to WebSearch.

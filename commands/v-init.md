@@ -206,17 +206,29 @@ opencode providers list </dev/null 2>&1 | grep -qv '0 credentials' \
 > **mandatory env-scrub** (the worker script must NOT blindly inherit the dispatcher's own
 > provider env vars into the `opencode run` child process).
 
-### 1b. Context7 MCP (match by namespace)
+### 1b. Context7 MCP (match the NAME, not one install shape)
 
-Context7 is **plugin-namespaced** — match the namespace, not a bare `context7`:
+Context7 arrives under **two different names** depending on how it was installed, and
+until 3.1.0 this step matched only one of them:
+
+* plugin-bundled → `plugin:context7:context7`, tools `mcp__plugin_<plugin>_context7__*`
+* user- or project-configured → `context7`, tools `mcp__context7__*`
+
+The old matcher was `grep -E 'plugin[:_]context7[:_]context7'`, which finds nothing on a
+machine running the second shape. Verified live on 2026-09-02: `claude mcp list` printed
+`context7: https://mcp.context7.com/mcp (HTTP) - ✔ Connected` and a `resolve-library-id`
+call returned real results, while the documented matcher reported Context7 **missing** and
+would have told the user to install what they already had.
 
 ```bash
-claude mcp list 2>/dev/null | grep -E 'plugin[:_]context7[:_]context7'
+claude mcp list 2>/dev/null | grep -iE '(^|[:_ ])context7([:_ ]|$)'
 ```
 
-A match (`plugin:context7:context7` / `plugin_context7_context7`) → Context7 is
-available (forced-on per [`skill-escalation.md`](../skills/compound-v/skill-escalation.md)).
-No match → record it as missing (install in Step 2).
+A match under EITHER name → Context7 is available (forced-on per
+[`skill-escalation.md`](../skills/compound-v/skill-escalation.md)). Record which name
+matched, because the agents that use it must match the same shape by suffix
+(`*context7*resolve-library-id`, `*context7*query-docs`) rather than by a hardcoded
+string. No match → record it as missing (install in Step 2).
 
 ### 1c. Required skills & agents
 

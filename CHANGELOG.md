@@ -4,6 +4,65 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [3.1.0] - 2026-09-02
+
+Three maintainer requirements, set 2026-09-02. Each one turned out to be a mechanism that already existed and was defaulted, named, or gated wrong.
+
+### Fixed — a two-line change no longer runs twenty thousand tests
+
+The test-selection machinery was right: `impacted ∪ previously-failing ∪ newly-added`, a declared `impacted_map`, a fail-closed refusal of an empty set. **Its default was the literal string `full`.** A job that did not write `test_scope:` ran the entire suite — and on a real application that is twenty to thirty thousand tests for a two-line change that nobody chose. It was what you got for not writing a line of YAML.
+
+`default_scope_for` now derives it from what the repository has actually said:
+
+| Condition | Default |
+|---|---|
+| triage tier `DIRECT` **and** a declared `floor_command` | `floor_only` |
+| a declared, non-empty `impacted_map` | `impacted` |
+| otherwise | `full` — with a note saying the contract declares no map, so nothing knows what relates to what and "all of them" is the only truthful answer |
+
+**A derived `impacted` degrades; a declared one halts.** If the changed set cannot be computed, a scope the resolver *derived* falls back to `full` with a note — a convenience that halts a run is worse than the behaviour it replaced. An explicit `test_scope: impacted` still fails closed: someone declared it, and silently widening their declaration is exactly the fabricated-scope failure this resolver exists to prevent. That distinction came out of the resolver's own selftest going red on the first attempt.
+
+Demonstrated: a job with no `test_scope`, changing `src/db/schema.sql` against the example contract, resolves to `npm run test:floor` + `npm run test:db`. Before this release it ran `npm test`.
+
+**Unchanged and still true:** the union rule, the empty-set refusal, and the standing statement that the scoped floor is **early feedback** and does not restore what a full suite guarantees. A glob map carries strictly less information than a call graph, and call-graph selection is already measured at 0.2%–10.6% unsafe per revision.
+
+### Changed — a second opinion follows the same entry criterion as brainstorming
+
+If a change was too small to brainstorm, it is too small to hand to a second model family — there is no plan for it to read. The gate now rides the triage tier, and it is a call rather than a rule to remember: `compound-v-preeval.py --cross-model-review <tier>`.
+
+`DIRECT` → no (no brainstorm, no plan, no manifest exist). `SCOPED` → no by default. `FULL` → yes. An unrecognised tier → **yes**: not knowing how big a change is, is itself a reason to have another family read it, and this gate only ever spends tokens — it can never let a worse plan through.
+
+It is derived, never stored. The pre-eval record is digest-sealed; adding a field would change the bytes of every future record while old ones keep theirs, and a reused `pre_eval_id` would then be refused as a conflict over a field carrying no new information.
+
+The existing stakes list now chooses the review's **depth**, not whether to ask — plus one criterion in the maintainer's own terms: **volume is not the signal, coupling is.** A thousand mechanical lines in one lane still does not need a second family; eighty coupled ones do.
+
+### Fixed — Context7 was named wrong, and detected wrong
+
+Asked to double-check that Context7 and WebSearch are actually used at Brainstorm and Plan, the answer came back worse than "not enough".
+
+Context7 arrives under **two different names**: plugin-bundled (`mcp__plugin_<plugin>_context7__*`) or user/project-configured (`mcp__context7__*`). Every document in this plugin hardcoded the first — nine occurrences across eight files. On a machine running the second shape, the pre-flight agents were told to call a tool **that does not exist**, and fell silently back to WebSearch.
+
+`/v:init`'s detector had the same assumption in grep form: `plugin[:_]context7[:_]context7`. Verified live on 2026-09-02 — `claude mcp list` printed `context7: https://mcp.context7.com/mcp (HTTP) - ✔ Connected` and a real `resolve-library-id` call returned results, while the documented matcher found nothing and would have told the user to install what they already had.
+
+Both now match by suffix and cover either shape; the new matcher was checked against the live output **and** against the plugin form.
+
+### Changed — the model policy reaches the pre-flight stages
+
+Same split as the execution ladder: **Sonnet executes, Opus judges.** Scanning a repository is execution however large the repository is.
+
+| Agent | Model | Why |
+|---|---|---|
+| `code-archaeologist` | **sonnet** | Measures existing code. Produces findings, decides nothing. |
+| `doc-validator` | **sonnet** | Resolves a library, queries current docs, compares against what the repo declares. Checking, not deciding. |
+| `domain-expert` | **opus** | Domain and regulatory judgment — what the brainstorm took for granted. |
+| every reviewer + the dispatcher | **opus** | The safety net. A cheap reviewer is no reviewer. |
+
+`lint-frontmatter.py` enforced a flat `model: opus` on every agent; it now holds an explicit, short `SONNET_ELIGIBLE_AGENTS` allow-list. The rule was absolute so that it could not drift, and a two-name allow-list keeps that property where "any agent picks its own model" would not.
+
+**Fable stays out of frontmatter.** A static `model: fable` would spend the top model on every routine pre-flight; it is a dispatch-time override for business-critical work, set by the caller with the Agent tool's `model` parameter.
+
+**And one thing that cannot be done, stated rather than promised:** effort is tunable on Engine C jobs (`opts.effort`) and **not** on the pre-flight path — the Agent/Task tool takes a `model` override and has no effort parameter. At Brainstorm and Plan, raising the model is the lever that exists.
+
 ## [3.0.6] - 2026-09-02
 
 ### Fixed — two releases that were never released

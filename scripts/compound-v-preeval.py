@@ -148,6 +148,56 @@ DECISION_TO_TIER = {
     DECISION_FULL: "FULL",
 }
 
+# --------------------------------------------------------------------------- #
+# v3.1.0 — the cross-model review gate, derived from the SAME tier.
+#
+# The maintainer's rule, 2026-09-02: a cross-model second opinion follows the same
+# entry criterion as brainstorming. "Если брейншторма не было, то смысл и кодекс
+# запускать" — a change too small to brainstorm is too small to hand to a second
+# model family, and a massive or business-logic-heavy ticket is exactly what a
+# second family should read.
+#
+# This is DERIVED, never stored: the pre-eval record is digest-sealed, and adding a
+# field to it would change the bytes of every future record while old ones keep
+# theirs — a reused pre_eval_id would then be refused as a conflict for a field that
+# carries no new information. The tier is already in the record; the gate is a
+# function of it, so it is computed at read time and has exactly one source of truth.
+#
+# The stakes list in skills/compound-v/cross-model-review.md still applies WITHIN
+# FULL — this decides whether the question is even asked.
+CROSS_MODEL_REVIEW_BY_DECISION = {
+    DECISION_FASTPATH: (False, "tier DIRECT — no brainstorm, no plan and no manifest "
+                               "exist, so there is nothing for a second model to review"),
+    DECISION_SCOPED: (False, "tier SCOPED — a bounded, localized change; the Opus "
+                             "partition-reviewer and the deterministic manifest "
+                             "validator already cover it. Ask for one explicitly if the "
+                             "slice turns out to be coupled"),
+    DECISION_FULL: (True, "tier FULL — the pipeline ran brainstorm and planning, which "
+                          "is the same threshold a second opinion is worth paying for; "
+                          "apply the stakes list in cross-model-review.md to choose the "
+                          "depth, not whether to ask"),
+}
+
+
+def cross_model_review_for(decision_or_tier):
+    """(required, why). Accepts either a decision constant or a manifest triage tier.
+
+    Unknown input falls to True: not knowing the size of a change is itself a reason
+    to have a second family read it, and this gate only ever spends tokens — it can
+    never let a worse plan through.
+    """
+    key = str(decision_or_tier or "").strip()
+    if key in CROSS_MODEL_REVIEW_BY_DECISION:
+        return CROSS_MODEL_REVIEW_BY_DECISION[key]
+    for dec, tier in DECISION_TO_TIER.items():
+        if key.upper() == tier:
+            return CROSS_MODEL_REVIEW_BY_DECISION[dec]
+    return (True, "tier %r is not one of %s — an unrecognised size falls to 'review', "
+                  "because not knowing how big a change is, is itself a reason to have "
+                  "a second family read it"
+                  % (decision_or_tier, ", ".join(sorted(DECISION_TO_TIER.values()))))
+
+
 # spec §A1 — the 3x3 difficulty x impact matrix. Keyed (difficulty, impact); ANY pair absent
 # from this table (including every `unknown`/None combination) falls closed to FULL via
 # `_matrix_decision`'s default. The `low`/`low` cell is a DIRECT *candidate* only: Layer B
@@ -1114,6 +1164,11 @@ def main(argv):
                          "the POST-RUN advisor-hot reclassification sensor. Absent => the "
                          "sensor is off (advisor_hot stays False; unchanged pre-dispatch "
                          "behavior). Must resolve inside the repo root.")
+    ap.add_argument("--cross-model-review", metavar="TIER_OR_DECISION",
+                    help="print the cross-model (second-family) review gate for a "
+                         "triage tier or decision constant, as JSON, and exit. "
+                         "Derived from the tier — the same entry criterion as "
+                         "brainstorming: no brainstorm, no second opinion.")
     ap.add_argument("--score-only", action="store_true",
                     help="pure scoring from --localization-json, no writes")
     ap.add_argument("--localization-json", dest="localization_json",
@@ -1121,6 +1176,12 @@ def main(argv):
     ap.add_argument("--fan-out-threshold", type=int, default=1)
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv[1:])
+    if getattr(args, "cross_model_review", None):
+        required, why = cross_model_review_for(args.cross_model_review)
+        print(json.dumps({"input": args.cross_model_review,
+                          "cross_model_review": required,
+                          "why": why}, indent=2, sort_keys=True))
+        return 0
 
     if args.score_only:
         if not args.localization_json:
@@ -1299,6 +1360,25 @@ def _selftest():
     # AC-1 (MANDATORY) — "make button X red" → shared design token → override #3 → FULL.
     v = score(_loc(["src/ui/button.css", "src/ui/card.css"], flags=["shared_token"],
                    fan_out=2), taxonomy, request_text="make button X red")
+    # --- v3.1.0: the cross-model review gate rides the SAME tier ----------------
+    expect("DIRECT asks for no second opinion — nothing was brainstormed",
+           cross_model_review_for(DECISION_FASTPATH)[0] is False)
+    expect("SCOPED asks for no second opinion by default",
+           cross_model_review_for(DECISION_SCOPED)[0] is False)
+    expect("FULL asks for one",
+           cross_model_review_for(DECISION_FULL)[0] is True)
+    expect("the manifest's tier token answers identically to the decision constant",
+           all(cross_model_review_for(t)[0] == cross_model_review_for(d)[0]
+               for d, t in DECISION_TO_TIER.items()))
+    expect("an unrecognised size falls to 'review', never to 'skip'",
+           cross_model_review_for("something-else")[0] is True
+           and cross_model_review_for(None)[0] is True)
+    expect("every branch explains itself",
+           all(len(cross_model_review_for(k)[1]) > 30
+               for k in (DECISION_FASTPATH, DECISION_SCOPED, DECISION_FULL, "x")))
+    expect("the gate covers every decision the engine can emit",
+           set(CROSS_MODEL_REVIEW_BY_DECISION) == set(DECISION_TO_TIER))
+
     expect("AC-1: shared-token 'make button red' -> FULL_PIPELINE", v["decision"] == DECISION_FULL)
     expect("AC-1: override #3 (shared_token/a11y) fired", v["override_fired"] == 3)
     expect("AC-1: no model call needed (needs_t3 False)", v["needs_t3"] is False)

@@ -67,8 +67,8 @@ slug. Scanning is fallback-only.
 
 ## Tools
 
-**Primary: Context7 MCP** — `mcp__plugin_context7_context7__resolve-library-id`
-and `mcp__plugin_context7_context7__query-docs`. Use these to fetch
+**Primary: Context7 MCP** — Context7's `resolve-library-id` and
+`query-docs` (see the naming note at the end of this file). Use these to fetch
 authoritative current docs. ALWAYS prefer Context7 over WebSearch when
 the library is in its index.
 
@@ -242,3 +242,5 @@ When the validator returns, the controller should verify:
 - [ ] Random spot-check: pick one library, click its cited URL, confirm the version/date claim
 
 If any of these fail → re-dispatch the validator with the specific gap. Do not paper over it. A wrong "current version" in the audit is worse than no audit.
+
+> **Context7 tool naming.** Context7's tool names depend on HOW it is installed: a plugin-bundled server is `mcp__plugin_<plugin>_context7__*`, a user- or project-configured server is `mcp__context7__*`. **Match on the suffix, not the full string** — `*context7*resolve-library-id` and `*context7*query-docs` — and read the tool list you actually have. Every document in this plugin hardcoded the plugin-bundled form until 3.1.0; on a machine with the plain form that named a tool which does not exist, and the agent silently fell back to WebSearch.

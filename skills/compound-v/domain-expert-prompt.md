@@ -172,7 +172,7 @@ Return a short summary to the controller:
   calls = parallel = same cost, 1/N the wall-clock.
 - DO confidently flag open questions for the human. "I don't know, the
   product team needs to decide" is a valid finding.
-- DO use context7 (mcp__plugin_context7_context7__query-docs) for
+- DO use context7 (Context7's query-docs) for
   library/framework docs in addition to WebSearch. Context7 is faster and
   more authoritative for SDK contracts.
 
@@ -208,3 +208,5 @@ When the advisor returns, the controller should verify:
 - [ ] Cited sources are real (random spot-check one link)
 
 If any of these fail → re-dispatch the advisor with the specific gap, do not paper over it.
+
+> **Context7 tool naming.** Context7's tool names depend on HOW it is installed: a plugin-bundled server is `mcp__plugin_<plugin>_context7__*`, a user- or project-configured server is `mcp__context7__*`. **Match on the suffix, not the full string** — `*context7*resolve-library-id` and `*context7*query-docs` — and read the tool list you actually have. Every document in this plugin hardcoded the plugin-bundled form until 3.1.0; on a machine with the plain form that named a tool which does not exist, and the agent silently fell back to WebSearch.

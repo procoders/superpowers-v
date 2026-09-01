@@ -100,7 +100,11 @@ jobs:
     effort: medium
     isolation: worktree             # parallel ⇒ worktree (per-job scope attribution)
     run: parallel
-    test_scope: impacted            # full | impacted | floor_only (absent ⇒ full)
+    test_scope: impacted            # full | impacted | floor_only. ABSENT is no longer
+                                    # 'full': 3.1.0 derives it — a declared impacted_map
+                                    # makes 'impacted' the default, DIRECT triage makes it
+                                    # 'floor_only', and only a contract with NO map still
+                                    # falls back to running everything.
     depends_on:
       - task-0-schema
     write_allowed:

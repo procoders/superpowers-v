@@ -29,7 +29,7 @@ Run Phase 1C if ANY of these apply (almost always true):
 
 ## Prerequisite: MCP Context7
 
-Phase 1C is most useful when [Context7 MCP](https://github.com/upstash/context7) is installed (`mcp__plugin_context7_context7__*` tools). Context7 fetches current, authoritative library documentation directly — bypassing training data staleness.
+Phase 1C is most useful when [Context7 MCP](https://github.com/upstash/context7) is installed (its `*context7*` tools). Context7 fetches current, authoritative library documentation directly — bypassing training data staleness.
 
 **Detection:** if Context7 tools are unavailable, Phase 1C degrades to WebSearch-only. Still useful, but slower and less authoritative. Note the degradation in the audit output.
 
@@ -152,3 +152,5 @@ When the audit is complete, the controller announces:
 If section 4 (Critical) is non-empty, **surface to the human BEFORE invoking writing-plans.** A plan that builds on an abandoned library is a plan with a known-bad foundation.
 
 Once Phase 1A and 1B ALSO complete, invoke `writing-plans` with all three audits attached. Their "Design Constraints" sections compose into the plan's non-negotiable requirements list.
+
+> **Context7 tool naming.** Context7's tool names depend on HOW it is installed: a plugin-bundled server is `mcp__plugin_<plugin>_context7__*`, a user- or project-configured server is `mcp__context7__*`. **Match on the suffix, not the full string** — `*context7*resolve-library-id` and `*context7*query-docs` — and read the tool list you actually have. Every document in this plugin hardcoded the plugin-bundled form until 3.1.0; on a machine with the plain form that named a tool which does not exist, and the agent silently fell back to WebSearch.

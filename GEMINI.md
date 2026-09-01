@@ -40,7 +40,7 @@ Gemini's `activate_skill` tool can load the SKILL.md content on demand. Trigger:
 |---|---|
 | `Task(subagent_type, prompt, model)` | Gemini's `run_subagent` or `agent_dispatch` (varies by version) |
 | `Skill <name>` | `activate_skill <name>` |
-| `mcp__plugin_context7_context7__*` | MCP tools loaded via Gemini's MCP integration |
+| `*context7*` tools | MCP tools loaded via Gemini's MCP integration |
 
 ## Model policy mapping
 
@@ -86,3 +86,5 @@ These are Claude Code `/v:*` commands. On Gemini CLI, invoke the equivalent skil
 ## Disclaimer
 
 This plugin was built and tested primarily on Claude Code. Gemini compatibility is best-effort. If you find Gemini-specific gotchas, please file an issue.
+
+> **Context7 tool naming.** Context7's tool names depend on HOW it is installed: a plugin-bundled server is `mcp__plugin_<plugin>_context7__*`, a user- or project-configured server is `mcp__context7__*`. **Match on the suffix, not the full string** — `*context7*resolve-library-id` and `*context7*query-docs` — and read the tool list you actually have. Every document in this plugin hardcoded the plugin-bundled form until 3.1.0; on a machine with the plain form that named a tool which does not exist, and the agent silently fell back to WebSearch.

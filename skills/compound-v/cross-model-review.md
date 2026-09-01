@@ -14,10 +14,30 @@ reviewer lacks.
 
 ---
 
-## When to run it (gate by stakes — it is not free)
+## When to run it — the tier decides IF, the stakes decide HOW DEEP
 
-A max-effort GPT review costs real tokens and ~minutes. Run it ONLY for **high-stakes
-plans**. Invoke when ANY of these hold:
+**First gate (3.1.0, mechanical): the triage tier.** A cross-model second opinion follows
+the **same entry criterion as brainstorming**. A change too small to brainstorm is too
+small to hand to a second model family — there is no plan for it to read. Ask the engine
+rather than remembering the rule:
+
+```bash
+python3 scripts/compound-v-preeval.py --cross-model-review "$TIER"
+```
+
+| Triage tier | Second opinion | Why |
+|---|---|---|
+| `DIRECT` | **no** | No brainstorm, no plan, no manifest — nothing exists to review. |
+| `SCOPED` | **no** by default | A bounded, localized change; the Opus `partition-reviewer` and the deterministic validator already cover it. Ask explicitly if the slice turns out to be coupled. |
+| `FULL` | **yes** | The pipeline ran brainstorm and planning. That is the threshold a second family is worth paying for. |
+
+An unrecognised tier falls to **yes**: not knowing how big a change is, is itself a reason
+to have another family read it, and this gate can only ever spend tokens — it can never
+let a worse plan through.
+
+**Second gate (unchanged): the stakes.** Inside `FULL`, the list below chooses the *depth*
+of the review, not whether to ask. A max-effort GPT review costs real tokens and ~minutes.
+Reach for the deepest form when ANY of these hold:
 
 - the plan touches **security / auth / payments / PII / migrations / shared data model**;
 - the partition is **large or coupled** (≈4+ parallel tasks, or a serial shared-foundation task others depend on);
@@ -25,8 +45,12 @@ plans**. Invoke when ANY of these hold:
 - the **human explicitly asks** for a second opinion.
 
 **Skip** for small, mechanical, or single-slice plans — the Opus `partition-reviewer` plus
-the deterministic `validate-manifest.py` already cover those. A rule of thumb: run it when
-the plan's riskiest job resolves to **tier `deep`**.
+the deterministic `validate-manifest.py` already cover those. Two rules of thumb that agree
+with the table above: run it when the plan's riskiest job resolves to model tier `deep` or
+`frontier`, and run it when the ticket carries **business logic with many code-level
+dependencies** — the same coupling signal that puts a job on Opus rather than Sonnet.
+Volume alone is not the criterion; a thousand mechanical lines in one lane still does not
+need a second family, and eighty coupled ones do.
 
 This sits in the three-layer plan check, each layer catching a different class of error:
 

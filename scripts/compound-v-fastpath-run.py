@@ -371,6 +371,50 @@ def _run_parse_checks(worktree, changed_paths, checkers):
 VALID_TEST_SCOPES = ("full", "impacted", "floor_only")
 
 
+def default_scope_for(contract, tier=None):
+    """(scope, why). The default a job gets when it declares no ``test_scope``.
+
+    Until 3.1.0 that default was the literal string ``"full"``, which meant a
+    two-line change ran the entire suite — twenty to thirty thousand tests in a real
+    application — because nobody had written ``test_scope:`` on the job. The maintainer's
+    rule, set 2026-09-02: **run the tests related to the change, and running the whole
+    project is not a default, it is a decision.**
+
+    The default is now DERIVED from what the repository has actually told us:
+
+    * ``DIRECT`` triage tier with a declared floor ⇒ ``floor_only``. A change small
+      enough to skip the pipeline gets the floor and nothing else.
+    * a declared, non-empty ``impacted_map`` ⇒ ``impacted``. The map IS the repository
+      saying which tests relate to which paths; honouring it is not a guess.
+    * otherwise ⇒ ``full``, because with no map there is no information about what
+      relates to what, and the honest answer to "which tests matter here?" is "all of
+      them". The `why` string says so, so the fix — write an ``impacted_map`` — is
+      visible instead of mysterious.
+
+    What this does NOT change: the union rule (impacted ∪ previously-failing ∪
+    newly-added), the fail-closed empty-set refusal, and the standing statement that the
+    scoped floor is EARLY FEEDBACK and does not restore what a full suite guarantees. A
+    glob map carries strictly less information than a call graph, and call-graph
+    selection is already measured at 0.2%-10.6% unsafe per revision.
+    """
+    contract = contract if isinstance(contract, dict) else {}
+    tier_s = str(tier or "").strip().upper()
+    floor = contract.get("floor_command")
+    has_floor = isinstance(floor, str) and floor.strip()
+    if tier_s == "DIRECT" and has_floor:
+        return "floor_only", ("triage tier DIRECT with a declared floor_command — the "
+                              "floor is the whole test obligation at this tier")
+    rows = contract.get("impacted_map")
+    if isinstance(rows, list) and rows:
+        return "impacted", ("test_contract declares an impacted_map (%d rule(s)) — the "
+                            "repository has said which tests relate to which paths, so "
+                            "the default honours it instead of running everything"
+                            % len(rows))
+    return "full", ("test_contract declares no impacted_map, so nothing here knows which "
+                    "tests relate to this change and 'all of them' is the only truthful "
+                    "answer — declare an impacted_map to scope this")
+
+
 class TestContractError(Exception):
     """A test contract that cannot resolve to a non-empty command set. Fail-closed:
     a scope must never resolve to running NOTHING, and a silent zero is a fabricated
@@ -505,7 +549,9 @@ def resolve_test_commands(contract, scope, changed_paths=None, new_paths=None,
 
     Raises ``TestContractError`` whenever the answer would be an empty command set."""
     contract = contract if isinstance(contract, dict) else {}
-    scope = (scope or "full") if scope not in (None, "") else "full"
+    derived_note = None
+    if scope in (None, ""):
+        scope, derived_note = default_scope_for(contract)
     scope = str(scope)
     if scope not in VALID_TEST_SCOPES:
         raise TestContractError(
@@ -519,6 +565,9 @@ def resolve_test_commands(contract, scope, changed_paths=None, new_paths=None,
     full = _text("full_command")
     notes = []
     ordered = []
+    if derived_note:
+        notes.append("scope: no test_scope declared, defaulted to %r — %s"
+                     % (scope, derived_note))
 
     if floor:
         ordered.append(floor)
@@ -599,8 +648,10 @@ def resolve_from_manifest(manifest, job_id=None, scope=None, worktree=None,
     """Resolve the contract for one job straight off a parsed manifest.
 
     ``scope`` (explicit) wins; otherwise the named job's ``test_scope`` is used; an absent
-    ``test_scope`` is ``full``, which is what every pre-3.0 manifest relies on. The changed
-    and newly-added sets are derived from git when not supplied.
+    ``test_scope`` is DERIVED by ``default_scope_for`` from the contract's own
+    ``impacted_map`` and the manifest's triage tier — it is no longer the hardcoded
+    ``full`` that made a two-line change run the entire suite. The changed and
+    newly-added sets are derived from git when not supplied.
 
     The previously-failing set is the one input a caller can get wrong by SAYING NOTHING,
     so silence is the conservative answer here: pass ``last_result`` (a parsed
@@ -613,22 +664,37 @@ def resolve_from_manifest(manifest, job_id=None, scope=None, worktree=None,
             if isinstance(job, dict) and str(job.get("id")) == str(job_id):
                 scope = job.get("test_scope")
                 break
-    scope = scope or "full"
+    derived_note = None
+    if scope in (None, ""):
+        triage = manifest.get("triage")
+        tier = triage.get("tier") if isinstance(triage, dict) else None
+        scope, derived_note = default_scope_for(contract, tier)
 
     if scope == "impacted":
+        # Fail-closed applies to a scope the manifest ASKED FOR. A scope this function
+        # DERIVED is a convenience, and a convenience that halts a run is worse than the
+        # behaviour it replaced — so a derived `impacted` that cannot compute its inputs
+        # degrades to `full`, loudly. An explicit `test_scope: impacted` still stops:
+        # someone declared it, and silently widening their declaration would be the
+        # fabricated-scope failure this whole resolver exists to prevent.
+        degrade = None
         if changed_paths is None:
             changed_paths = _changed_from_scope(worktree, baseline)
             if changed_paths is None:
-                raise TestContractError(
-                    "cannot derive changed paths (scope-check unavailable) and "
-                    "test_scope is 'impacted' — fail-closed rather than scoping off an "
-                    "empty diff")
-        if new_paths is None:
+                degrade = ("cannot derive changed paths (scope-check unavailable)")
+        if degrade is None and new_paths is None:
             new_paths = added_paths(worktree, baseline)
             if new_paths is None:
+                degrade = ("cannot derive the newly-added set "
+                           "(git diff --diff-filter=A failed)")
+        if degrade is not None:
+            if derived_note is None:
                 raise TestContractError(
-                    "cannot derive the newly-added set (git diff --diff-filter=A failed) "
-                    "— fail-closed rather than dropping one of the three sets")
+                    "%s and test_scope is 'impacted' — fail-closed rather than scoping "
+                    "off an empty diff" % degrade)
+            scope = "full"
+            derived_note = ("%s, so the DERIVED 'impacted' default degraded to 'full' "
+                            "rather than halting the run" % degrade)
 
     if no_prior_run:
         failures, available = [], True      # empty BY CONSTRUCTION — nothing has run
@@ -636,8 +702,12 @@ def resolve_from_manifest(manifest, job_id=None, scope=None, worktree=None,
         failures, available = None, False   # undeclared ⇒ uncomputable ⇒ full fallback
     else:
         failures, available = previously_failing(last_result)
-    return resolve_test_commands(contract, scope, changed_paths, new_paths,
-                                 failures, available)
+    resolved, notes = resolve_test_commands(contract, scope, changed_paths, new_paths,
+                                           failures, available)
+    if derived_note:
+        notes = ["scope: no test_scope declared, defaulted to %r — %s"
+                 % (scope, derived_note)] + list(notes)
+    return resolved, notes
 
 
 # --------------------------------------------------------------------------- #
@@ -2122,6 +2192,54 @@ def _selftest():
                         "--out", os.path.join(tmp, "v-inv3.json")])
         expect("HIGH-1: invalidate-receipt with NO destination is refused (exit 2)",
                rc_inv3 == 2)
+
+        # --- v3.1.0: the DERIVED default scope ------------------------------
+        # The rule set 2026-09-02: running the whole project is a DECISION, not
+        # a default. These pin every branch of that decision, including the one
+        # branch where "all of them" is still the honest answer.
+        _c_map = {"floor_command": "sh -c 'exit 0'", "full_command": "pytest",
+                  "impacted_map": [{"when": "src/**", "run": "pytest tests/unit"}]}
+        _c_nomap = {"floor_command": "sh -c 'exit 0'", "full_command": "pytest"}
+        expect("a declared impacted_map makes 'impacted' the default",
+               default_scope_for(_c_map)[0] == "impacted")
+        expect("no impacted_map still defaults to full — nothing knows what relates",
+               default_scope_for(_c_nomap)[0] == "full")
+        expect("the full default explains itself, so the fix is visible",
+               "impacted_map" in default_scope_for(_c_nomap)[1])
+        expect("DIRECT tier with a floor defaults to floor_only",
+               default_scope_for(_c_map, tier="DIRECT")[0] == "floor_only")
+        expect("DIRECT tier WITHOUT a floor does not invent one",
+               default_scope_for({"impacted_map": [{"when": "a/**", "run": "x"}]},
+                                 tier="DIRECT")[0] == "impacted")
+        expect("tier is matched case-insensitively",
+               default_scope_for(_c_map, tier="direct")[0] == "floor_only")
+        expect("SCOPED and FULL tiers do not override the map",
+               default_scope_for(_c_map, tier="SCOPED")[0] == "impacted"
+               and default_scope_for(_c_map, tier="FULL")[0] == "impacted")
+        expect("an empty impacted_map is not a map",
+               default_scope_for({"full_command": "pytest",
+                                  "impacted_map": []})[0] == "full")
+        _bad_wt = os.path.join(tmp, "no-such-worktree")
+        _man_derived = {"test_contract": _c_map, "jobs": [{"id": "j"}]}
+        _sl_d, _notes_d = resolve_from_manifest(_man_derived, job_id="j",
+                                                no_prior_run=True, worktree=_bad_wt)
+        expect("a derived impacted degrades to full rather than halting the run",
+               any("degraded to 'full'" in n for n in _notes_d))
+        _man_explicit = {"test_contract": _c_map,
+                         "jobs": [{"id": "j", "test_scope": "impacted"}]}
+        _halted = False
+        try:
+            resolve_from_manifest(_man_explicit, job_id="j", no_prior_run=True,
+                                  worktree=_bad_wt)
+        except TestContractError:
+            _halted = True
+        expect("an EXPLICIT impacted still fails closed", _halted)
+        _man_direct = {"test_contract": _c_map, "triage": {"tier": "DIRECT"},
+                       "jobs": [{"id": "j"}]}
+        _sl_t, _notes_t = resolve_from_manifest(_man_direct, job_id="j",
+                                                no_prior_run=True, worktree=tmp)
+        expect("the manifest's triage tier reaches the default",
+               any("DIRECT" in n for n in _notes_t))
 
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

@@ -143,10 +143,12 @@ Return a short summary:
 - DO NOT skip the KB check to "save time" — KB reuse compounds value across features.
 - DO NOT run web searches sequentially. One message, multiple WebSearch calls = parallel = same cost, 1/N wall-clock.
 - DO confidently flag open questions for the human. "I don't know, the product team needs to decide" is a valid finding.
-- DO use `mcp__plugin_context7_context7__query-docs` for library/framework docs when relevant — context7 is faster and more authoritative for SDK contracts than WebSearch.
+- DO use Context7's `query-docs` for library/framework docs when relevant — context7 is faster and more authoritative for SDK contracts than WebSearch.
 
 ## Style
 
 Tight, specific, technical. No hedging. Cite sources for every non-obvious claim.
 
 Stop when the audit is written, the KB is updated, and the summary is returned. Do not propose implementation. Do not propose tests. Those are later phases.
+
+> **Context7 tool naming.** Context7's tool names depend on HOW it is installed: a plugin-bundled server is `mcp__plugin_<plugin>_context7__*`, a user- or project-configured server is `mcp__context7__*`. **Match on the suffix, not the full string** — `*context7*resolve-library-id` and `*context7*query-docs` — and read the tool list you actually have. Every document in this plugin hardcoded the plugin-bundled form until 3.1.0; on a machine with the plain form that named a tool which does not exist, and the agent silently fell back to WebSearch.

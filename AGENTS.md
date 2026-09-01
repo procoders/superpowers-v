@@ -66,7 +66,7 @@ The skill content lives at `skills/compound-v/SKILL.md` and its phase reference 
 |---|---|
 | `Task(subagent_type, prompt, model, maxTurns, run_in_background)` | `subagent <name> --model opus --max-turns 15 --background` |
 | `Skill <name>` | Read the skill file directly and apply |
-| `mcp__plugin_context7_context7__*` | Whatever the local Context7 MCP installation exposes |
+| `*context7*` tools | Whatever the local Context7 MCP installation exposes |
 | Codex backend (`adapter-codex.md`) | A Bash-spawned `codex exec` worker process — its own process, its own git worktree. NOT a subagent, NOT the `openai-codex` JSON-RPC broker (single-flight, can't fan out). |
 
 The Codex backend is harness-independent on purpose: it is just `codex exec` driven by `scripts/compound-v-run-codex-worker.sh`. Any harness with a shell can spawn it.
@@ -107,6 +107,7 @@ All reviewers/agents carry `model: opus`. Manifest `backend`/`model` values (`gp
 ## Model policy (universal)
 
 - **Opus by default** — every implementer, reviewer, advisor
+- **Sonnet for scanning** — `code-archaeologist` and `doc-validator` (3.1.0): reading a repository and checking a library version is execution, not judgment
 - **Sonnet** — narrow exception per the 8-box junior-task taxonomy in `skills/compound-v/phase-3-parallel-opus-dispatch.md`
 - **Never Haiku** — not permitted in this project
 
@@ -124,3 +125,5 @@ All reviewers/agents carry `model: opus`. Manifest `backend`/`model` values (`gp
 ## Disclaimer
 
 This plugin was built and tested primarily on Claude Code. Codex / Gemini compatibility is best-effort via shims. If you find harness-specific gotchas, please file an issue.
+
+> **Context7 tool naming.** Context7's tool names depend on HOW it is installed: a plugin-bundled server is `mcp__plugin_<plugin>_context7__*`, a user- or project-configured server is `mcp__context7__*`. **Match on the suffix, not the full string** — `*context7*resolve-library-id` and `*context7*query-docs` — and read the tool list you actually have. Every document in this plugin hardcoded the plugin-bundled form until 3.1.0; on a machine with the plain form that named a tool which does not exist, and the agent silently fell back to WebSearch.

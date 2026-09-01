@@ -33,6 +33,16 @@ import yaml
 DESCRIPTION_SOFT_MAX = 500
 FRONTMATTER_HARD_MAX = 1024
 
+# Agents whose work is SCANNING — reading a repository, resolving a library, comparing a
+# declared version against the current one — and which may therefore carry
+# `model: sonnet`. Every other agent, and every reviewer without exception, stays Opus.
+# Set 2026-09-02. To revert one, delete its name here and change its frontmatter back;
+# the linter fails until both agree, which is the point.
+SONNET_ELIGIBLE_AGENTS = {
+    "code-archaeologist",   # measures existing code; produces findings, decides nothing
+    "doc-validator",        # resolves libraries and compares versions against the repo
+}
+
 # Path classes (relative to the lint root) that MUST carry frontmatter (A4).
 CLASS_AGENT = "agent"
 CLASS_COMMAND = "command"
@@ -125,14 +135,28 @@ def lint_file(path: pathlib.Path, rel=None) -> list:
     if "haiku" in model:
         issues.append(f"model '{model}' contains 'haiku' — project policy forbids Haiku")
 
-    # Project policy (A5): agents carry exactly `model: opus` — Opus-by-default is
-    # documented as ENFORCED; execution-layer models (manifest backend/model) never
-    # appear in frontmatter.
-    if cls == CLASS_AGENT and model != "opus":
-        found = f"'{model}'" if model else "no model field"
-        issues.append(
-            f"agents must carry 'model: opus' (found {found}) — project model policy"
-        )
+    # Project policy (A5, revised by the maintainer 2026-09-02): agents carry
+    # `model: opus`, EXCEPT the named scanning agents, which may carry `model: sonnet`.
+    #
+    # The revision follows the same split the execution ladder uses: Sonnet EXECUTES
+    # (including reading code — scanning a repository is execution however large it is),
+    # Opus JUDGES. The allow-list is explicit and short on purpose: the original rule was
+    # absolute precisely so it could not drift, and "any agent may pick its own model"
+    # would be that drift. Adding a name here is a deliberate act with a reason attached.
+    #
+    # Fable is NOT an option here. It belongs to a business-critical INVOCATION, not to
+    # an agent definition, and the caller sets it with the Agent tool's `model` override
+    # (which takes precedence over frontmatter). A static `model: fable` would spend the
+    # top model on every routine pre-flight.
+    if cls == CLASS_AGENT:
+        name = str(data.get("name") or "").strip()
+        allowed = ("opus", "sonnet") if name in SONNET_ELIGIBLE_AGENTS else ("opus",)
+        if model not in allowed:
+            found = f"'{model}'" if model else "no model field"
+            issues.append(
+                f"agent '{name}' must carry model: {' or '.join(allowed)} "
+                f"(found {found}) — project model policy"
+            )
 
     # Common gotcha: unquoted glob in paths field
     paths_val = data.get("paths")
@@ -211,11 +235,27 @@ def _selftest() -> int:
                   for i in issues_for("skills/foo/refs/SKILL.md", "plain body\n")))
 
         # A5: agents must carry model: opus
-        check("agent with model sonnet flagged",
-              any("model: opus" in i for i in issues_for(
+        check("a non-listed agent with model sonnet is flagged",
+              any("model policy" in i for i in issues_for(
                   "agents/sonnet.md", "---\nname: x\ndescription: d\nmodel: sonnet\n---\nb\n")))
+        check("a listed scanning agent may carry model sonnet",
+              not any("model policy" in i for i in issues_for(
+                  "agents/code-archaeologist.md",
+                  "---\nname: code-archaeologist\ndescription: d\nmodel: sonnet\n---\nb\n")))
+        check("a listed scanning agent may still carry model opus",
+              not any("model policy" in i for i in issues_for(
+                  "agents/doc-validator.md",
+                  "---\nname: doc-validator\ndescription: d\nmodel: opus\n---\nb\n")))
+        check("no agent may carry model fable in frontmatter",
+              any("model policy" in i for i in issues_for(
+                  "agents/code-archaeologist.md",
+                  "---\nname: code-archaeologist\ndescription: d\nmodel: fable\n---\nb\n")))
+        check("the allow-list never admits haiku",
+              any("haiku" in i for i in issues_for(
+                  "agents/code-archaeologist.md",
+                  "---\nname: code-archaeologist\ndescription: d\nmodel: haiku\n---\nb\n")))
         check("agent with no model field flagged",
-              any("model: opus" in i for i in issues_for(
+              any("model policy" in i for i in issues_for(
                   "agents/nomodel.md", "---\nname: x\ndescription: d\n---\nb\n")))
 
         # unchanged policies still hold

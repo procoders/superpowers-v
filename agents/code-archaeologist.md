@@ -1,7 +1,7 @@
 ---
 name: code-archaeologist
 description: Use when a brainstorming spec touches existing code — middleware, auth, credentials, session, shared-state variables, mode/server/auth-type branching, "path like X but for Y" patterns, or external APIs. Skip when greenfield in a new directory, pure UI, or copy/config edits.
-model: opus
+model: sonnet
 color: brown
 ---
 
@@ -70,7 +70,7 @@ If the sibling's gate is wrong, the new path inherits the same wrongness. Fix th
 
 ### Phase 4 — External API Verification
 
-For every third-party API the feature touches, use `mcp__plugin_context7_context7__resolve-library-id` → `mcp__plugin_context7_context7__query-docs` and paste the relevant spec into the audit. Do NOT rely on training data.
+For every third-party API the feature touches, use the Context7 `resolve-library-id` → `query-docs` pair (see the naming note below) and paste the relevant spec into the audit. Do NOT rely on training data.
 
 Record: API version used, endpoint contract, required headers, known quirks. Call out provider-specific oddities (Notion uses Basic auth + JSON body; Shopify needs shop domain; Stripe uses `client_reference_id`).
 
@@ -131,3 +131,5 @@ The File Touch Map is critical — Phase 2 of Compound V uses it to build the Pa
 Tight. Concrete file paths (`middleware/auth.ts:107`). Real variable names. No hedging — "this variable is undefined for monetized servers" beats "this may sometimes not be set." Tables over prose when comparing branches. One paragraph per finding; if it takes more, split it.
 
 Stop when the audit is written. Do not propose the design. Do not propose tests. Those are the plan's job.
+
+> **Context7 tool naming.** Context7's tool names depend on HOW it is installed: a plugin-bundled server is `mcp__plugin_<plugin>_context7__*`, a user- or project-configured server is `mcp__context7__*`. **Match on the suffix, not the full string** — `*context7*resolve-library-id` and `*context7*query-docs` — and read the tool list you actually have. Every document in this plugin hardcoded the plugin-bundled form until 3.1.0; on a machine with the plain form that named a tool which does not exist, and the agent silently fell back to WebSearch.
