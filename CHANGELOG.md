@@ -4,6 +4,28 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [3.0.3] - 2026-09-01
+
+### Fixed — three defects found by dogfooding, none of which any gate had caught
+
+3.0.2 shipped Engine C with 143 selftest checks, 50 contract assertions, three partition-gate rounds, two cross-model reviews and a three-pass Review Gate. Then it was **run for real**, and three defects surfaced immediately. All three sit on **seams between two components** — each half correct on its own, each half passing its own tests, and the contract between them broken. A selftest lives inside one half and cannot see that the halves agreed on different things.
+
+**The DIRECT tier was unreachable through `/v:triage` for any request.** A request consisting of nothing but an existing filename — `TROUBLESHOOTING.md` — resolved to **301 paths** at `ambiguous`, fired Layer-A override #1 and fail-closed to FULL. Token extraction split it into `.md` and `TROUBLESHOOTING` and grepped `.md` across every markdown file. The consequence was not imprecision: the entire nine-predicate auto-route class, its compare-and-swap landing gate and its circuit breaker — all built and tested across 3.0 and 3.0.2 — could not be reached by any input. A request that names a file now resolves to that file, narrowly: only whitespace-separated words that are already a regular file, no globbing and no fuzzy matching.
+
+**The probe surface under-reported the tier, always optimistically.** `compound-v-localize.py` with no explicit `--taxonomy` classified with **no content rules at all** and returned `flags: []`; `preeval --score-only` then scored that flagless localization and additionally omitted `churn_hot` and `tier2`. Two independent omissions, both cheapening the answer, on the documented way to ask "is this safe to auto-commit?". `README.md` read `low/low` through the probe and `low/high` through the engine. Probe and engine now agree exactly, and an absent taxonomy says so on stderr instead of looking like a clean classification.
+
+**A dirty working tree blocked every direct-mode run.** In `direct` mode the gate measures the whole tree against the baseline, so pre-existing dirt was attributed to the job. The snapshot is now taken at `register-lane` — the only point that provably precedes the work — and never in worktree mode, where the tree starts clean and a subtraction could only hide a real violation. A failed snapshot falls into the stricter gate, never the looser one.
+
+### Engine C has now run
+
+Five live dispatches. It emits, implements, gates, records, finalizes the wave, asks the integration authority, merges and commits — and refuses correctly when it should: a dirty tree halted the run with nothing merged and nothing committed, and a crashed check counted as a failure rather than as "no violations found". The wave finalizer is idempotent: re-running found the work already in `HEAD` and created no duplicate commit.
+
+The caveat carried since 3.0 — *"treat the first live run as a first live run"* — is now discharged for a single-job manifest. **It has still not run a real 18-job dispatch.**
+
+### Also corrected
+
+`docs/superpowers/dogfood/` withdraws its own tier table: every figure in it was measured with the broken probe above. `README.md`, `CHANGELOG.md` and `TROUBLESHOOTING.md` were all listed as auto-routable and **none of the three is**. Recorded rather than fixed: a file large enough to exhaust the content-scan byte cap scores `unknown`, so **file size alone can force the full pipeline**.
+
 ## [3.0.2] - 2026-09-01
 
 ### Fixed — Engine C's three criticals, and it is enabled again
