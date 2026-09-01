@@ -701,9 +701,29 @@ def write_taxonomy_snapshot(repo, pre_eval_id, taxonomy_bytes):
 
 
 def build_record(pre_eval_id, request, verdict, localization, taxonomy_version,
-                 taxonomy_ref, taxonomy_digest, ts=None):
+                 taxonomy_ref, taxonomy_digest, ts=None, binding=None):
     """Assemble the write-once pre-eval RECORD (conforms to pre-eval-record.schema.json).
-    `status: PRE_EVAL_DONE` is a RECORD field, not a state.json phase (AC-7/CR2-8)."""
+    `status: PRE_EVAL_DONE` is a RECORD field, not a state.json phase (AC-7/CR2-8).
+
+    binding: the OPTIONAL Feature-C coverage binding (spec §C) — a dict with any of
+        `session_id`, `base_commit`, `declared_paths`. It is what lets the triage gate in
+        `hooks/epic-goal-stop.sh` decide whether this record COVERS the current diff, and
+        only `/v:triage` can supply it: this engine never sees a session. Absent (the
+        default, and every call this module makes) the record is byte-for-byte what it was
+        before v3.0 — no binding keys, and an identical `digest`.
+
+        THE KWARG EXISTS TO REMOVE A FOOTGUN, not merely as a convenience. `digest` is
+        computed over the whole record, so a producer that called `build_record` and THEN
+        attached the binding fields would ship a record whose self-integrity digest no
+        longer verifies — silently, because `digest` is optional and only checked when
+        present. Passing the binding through here keeps the digest correct by construction.
+
+        `tier` is NOT accepted from the caller. It is DERIVED from the decision via
+        DECISION_TO_TIER whenever a binding is supplied, because the triage gate prefers
+        `tier` over `decision`: accepting it as an argument would let a producer hand the
+        gate a tier the record's own decision refuses. The schema pins the two together as
+        well, so the disagreement is unrepresentable on both sides of the boundary.
+    """
     tax = _tax()
     rec = {
         "pre_eval_id": pre_eval_id,
@@ -723,6 +743,18 @@ def build_record(pre_eval_id, request, verdict, localization, taxonomy_version,
         "min_sample_status": verdict["min_sample_status"],
         "confidence": _evidence_confidence(verdict, localization),
     }
+
+    # Feature C coverage binding — added BEFORE the digest, never after (see the docstring).
+    # Each key is emitted only when the caller supplied it, so an unbound record keeps its
+    # pre-3.0 bytes exactly. `tier` rides along derived, never supplied.
+    if binding:
+        for _k in ("session_id", "base_commit", "declared_paths"):
+            if binding.get(_k) is not None:
+                rec[_k] = binding[_k]
+        _tier = DECISION_TO_TIER.get(verdict["decision"])
+        if _tier is not None:
+            rec["tier"] = _tier
+
     rec["digest"] = tax.record_digest(rec, exclude_field="digest")
     return rec
 
@@ -1558,6 +1590,114 @@ def _selftest():
                               taxonomy_digest=None, taxonomy_version=None)
         _schema_check(expect, _null_tax_full, must_validate=True,
                       label="schema ACCEPTS a null-taxonomy FULL_PIPELINE record")
+
+        # ===== (c5) The three fields Feature C's triage gate reads (spec §C) ========= #
+        # `hooks/epic-goal-stop.sh` decides whether a record COVERS the current diff by
+        # reading session_id, declared_paths and (for display) base_commit. The schema is
+        # additionalProperties:false, so until these exist NO record can carry them and NO
+        # record can ever cover a diff — the gate would ship inert. The engine does not
+        # produce them (it never sees a session); /v:triage does. What is tested here is
+        # that they are EXPRESSIBLE and CONSTRAINED, not that this module emits them.
+        _bound = dict(ress["record"],
+                      session_id="sess-abc123",
+                      base_commit="a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+                      declared_paths=["scripts/app.py", "scripts/", "docs/**"],
+                      tier="SCOPED")
+        _schema_check(expect, _bound, must_validate=True,
+                      label="schema ACCEPTS session_id + base_commit + declared_paths + tier")
+
+        # `tier` is what the gate PREFERS over `decision`, so a disagreement would exempt a
+        # record as a tier its own decision refuses. Pinned for all three decisions.
+        for _dec, _good, _bad in ((DECISION_FASTPATH, "DIRECT", "FULL"),
+                                  (DECISION_SCOPED, "SCOPED", "DIRECT"),
+                                  (DECISION_FULL, "FULL", "DIRECT")):
+            _rec = dict(_bound, decision=_dec, tier=_good)
+            _schema_check(expect, _rec, must_validate=True,
+                          label="schema ACCEPTS tier %s beside %s" % (_good, _dec))
+            _schema_check(expect, dict(_rec, tier=_bad), must_validate=False,
+                          label="schema REJECTS tier %s beside %s" % (_bad, _dec))
+        # ...and `tier` stays optional: the gate falls back to mapping `decision`.
+        _no_tier = dict(_bound)
+        _no_tier.pop("tier")
+        _schema_check(expect, _no_tier, must_validate=True,
+                      label="schema ACCEPTS a record with no tier (gate maps decision)")
+
+        # session_id: null and absent both mean "binds no session", which the gate can only
+        # read as covering nothing. The EMPTY STRING is rejected — it looks like a binding
+        # and can never match, which is the one shape that misleads a reader.
+        _schema_check(expect, dict(_bound, session_id=None), must_validate=True,
+                      label="schema ACCEPTS session_id null (binds no session)")
+        _schema_check(expect, dict(_bound, session_id=""), must_validate=False,
+                      label="schema REJECTS an empty session_id")
+
+        # base_commit is recorded, not decisive — but it still has to be a commit.
+        _schema_check(expect, dict(_bound, base_commit=None), must_validate=True,
+                      label="schema ACCEPTS base_commit null")
+        _schema_check(expect, dict(_bound, base_commit="a1b2c3d"), must_validate=True,
+                      label="schema ACCEPTS a short base_commit sha")
+        for _badsha in ("HEAD", "A1B2C3D", "a1b2c3", "z" * 40, "a1b2c3d4 "):
+            _schema_check(expect, dict(_bound, base_commit=_badsha), must_validate=False,
+                          label="schema REJECTS base_commit %r" % (_badsha,))
+
+        # declared_paths: exactly the three forms the gate's `_path_covered` understands.
+        _schema_check(expect, dict(_bound, declared_paths=[]), must_validate=True,
+                      label="schema ACCEPTS an empty declared_paths (covers nothing)")
+        for _good_path in ("a.py", "scripts/app.py", "scripts/", "docs/**", "src/*.css"):
+            _schema_check(expect, dict(_bound, declared_paths=[_good_path]),
+                          must_validate=True,
+                          label="schema ACCEPTS declared path %r" % (_good_path,))
+        # The gate DROPS an entry carrying its own separator or a line break, which silently
+        # narrows the set. Rejecting here is where the producer still finds out.
+        for _bad_path in (chr(31) + "x", "a" + chr(31) + "b", "a\nb", "a\rb", chr(0) + "a",
+                          "", "/abs/path", "../escape", "a/../b", "..",
+                          "/", "\ttab"):
+            _schema_check(expect, dict(_bound, declared_paths=[_bad_path]),
+                          must_validate=False,
+                          label="schema REJECTS declared path %r" % (_bad_path,))
+        _schema_check(expect, dict(_bound, declared_paths=["a.py", "a.py"]),
+                      must_validate=False,
+                      label="schema REJECTS duplicate declared paths")
+        _schema_check(expect, dict(_bound, declared_paths="scripts/"), must_validate=False,
+                      label="schema REJECTS a bare-string declared_paths")
+
+        # ===== (c6) build_record's optional binding — the digest stays correct ======== #
+        # The producer is /v:triage, not this engine, but the PRIMITIVE lives here because
+        # `digest` covers the whole record: a producer that attached the binding AFTER
+        # calling build_record would ship a record whose self-integrity digest silently no
+        # longer verifies. Passing it through keeps that impossible.
+        _tax_mod = _tax()
+        _bv = score(_loc(["src/ui/Widget.tsx"], flags=[], fan_out=1), taxonomy)
+        _unbound = build_record("2026-07-12T101600Z-b-a1b2", "bind me", _bv,
+                                _loc(["src/ui/Widget.tsx"], flags=[], fan_out=1),
+                                1, "tax.yaml", "sha256:" + "0" * 64,
+                                ts="2026-07-12T10:16:00Z")
+        expect("build_record without a binding is unchanged (no binding keys)",
+               not any(k in _unbound for k in
+                       ("session_id", "base_commit", "declared_paths", "tier")))
+        _boundrec = build_record("2026-07-12T101600Z-b-a1b2", "bind me", _bv,
+                                 _loc(["src/ui/Widget.tsx"], flags=[], fan_out=1),
+                                 1, "tax.yaml", "sha256:" + "0" * 64,
+                                 ts="2026-07-12T10:16:00Z",
+                                 binding={"session_id": "sess-abc123",
+                                          "base_commit": "a1b2c3d4e5f6",
+                                          "declared_paths": ["src/ui/Widget.tsx"]})
+        expect("build_record carries the binding through",
+               _boundrec["session_id"] == "sess-abc123"
+               and _boundrec["base_commit"] == "a1b2c3d4e5f6"
+               and _boundrec["declared_paths"] == ["src/ui/Widget.tsx"])
+        expect("build_record DERIVES tier from the decision (never taken from the caller)",
+               _boundrec["tier"] == DECISION_TO_TIER[_bv["decision"]])
+        expect("the bound record's digest covers the binding and still verifies",
+               _boundrec["digest"] == _tax_mod.record_digest(_boundrec,
+                                                             exclude_field="digest")
+               and _boundrec["digest"] != _unbound["digest"])
+        _schema_check(expect, _boundrec, must_validate=True,
+                      label="a build_record-produced bound record validates")
+        # The footgun this prevents, demonstrated: bolt the fields on afterwards and the
+        # digest no longer verifies.
+        _bolted = dict(_unbound, session_id="sess-abc123")
+        expect("bolting a binding on AFTER build_record breaks the digest (why the kwarg)",
+               _bolted["digest"] != _tax_mod.record_digest(_bolted, exclude_field="digest"))
 
         # (d) needs_t3 end-to-end: NO record + NO predicted are written; artifacts durable.
         fk_need = fake_localize_factory(_loc(["tools/gen.py"], flags=[], fan_out=1))

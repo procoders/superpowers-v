@@ -44,6 +44,36 @@
         "properties": { "decision": { "const": "FULL_PIPELINE" } },
         "required": ["decision"]
       }
+    },
+    {
+      "if": {
+        "properties": { "decision": { "const": "FASTPATH_ELIGIBLE" } },
+        "required": ["decision", "tier"]
+      },
+      "then": {
+        "description": "Tier agreement: `tier` is a readability alias for `decision`, never an independent claim. The triage gate prefers `tier`, so a disagreement would let a record be exempted as a tier its own decision refuses.",
+        "properties": { "tier": { "const": "DIRECT" } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "decision": { "const": "SCOPED_PIPELINE" } },
+        "required": ["decision", "tier"]
+      },
+      "then": {
+        "description": "Tier agreement - see the FASTPATH_ELIGIBLE case above.",
+        "properties": { "tier": { "const": "SCOPED" } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "decision": { "const": "FULL_PIPELINE" } },
+        "required": ["decision", "tier"]
+      },
+      "then": {
+        "description": "Tier agreement - see the FASTPATH_ELIGIBLE case above. This is the case that matters most: a FULL record wearing `tier: DIRECT` would be exempted by the triage gate as if it were the auto-route class.",
+        "properties": { "tier": { "const": "FULL" } }
+      }
     }
   ],
   "properties": {
@@ -99,6 +129,29 @@
       "enum": ["FASTPATH_ELIGIBLE", "SCOPED_PIPELINE", "FULL_PIPELINE"],
       "description": "The triage outcome, one of THREE proportionate tiers (v3.0 spec §A1). FASTPATH_ELIGIBLE = tier DIRECT (implement in place, run the floor, commit on the branch — no manifest, no run dir); SCOPED_PIPELINE = tier SCOPED (manifest, run dir, scope gate, floor, one combined SPEC+QUALITY review; recon and the three pre-flights skipped); FULL_PIPELINE = tier FULL (the whole pipeline). The value is produced by the 3x3 difficulty×impact matrix INSIDE compound-v-preeval.py's `score`, and consumers MUST branch on all three values explicitly — a `== FASTPATH_ELIGIBLE ? A : B` reader is a two-value reader of a three-value enum. Iron-Invariant #4 AS AMENDED (spec §A4): the score OFFERS by default and auto-routes only inside the DIRECT auto-route class, whose membership is decided by mechanically checkable predicates and never by model judgement; every other tier still requires a human offer and acceptance. Any override / unknown axis / missing-or-malformed taxonomy / token-cap overrun ⇒ FULL_PIPELINE (fail-closed), and a non-null `override_fired` ALWAYS pairs with FULL_PIPELINE regardless of the recorded bands."
     },
+    "tier": {
+      "type": "string",
+      "enum": ["DIRECT", "SCOPED", "FULL"],
+      "description": "OPTIONAL, and REDUNDANT BY CONSTRUCTION: the manifest-vocabulary token for `decision` (FASTPATH_ELIGIBLE=DIRECT, SCOPED_PIPELINE=SCOPED, FULL_PIPELINE=FULL - compound-v-preeval.py's DECISION_TO_TIER). The triage gate in `hooks/epic-goal-stop.sh` PREFERS this field over `decision` when it is present, so an unconstrained `tier` would be a second, higher-priority source of truth for a safety-relevant classification: a record could say `decision: FULL_PIPELINE` and `tier: DIRECT` and be exempted as DIRECT. The three tier-agreement conditionals in the top-level `allOf` therefore PIN it to `decision`, which makes the hook's preferred branch provably identical to its fallback rather than a way around it. Carry it for human readability; never as an independent claim. `decision` remains the authority.",
+      "$comment": "Pinned to `decision` by the tier-agreement conditionals in the top-level allOf."
+    },
+    "session_id": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "The harness session this record was written in - the value on the `Stop` hook's stdin payload, compared EXACTLY by the triage gate in `hooks/epic-goal-stop.sh`. Written by `/v:triage`, the only component that knows it: the scoring engine never sees a session, so a record produced by `compound-v-preeval.py` alone omits this field. ABSENT OR NULL MEANS THE RECORD BINDS NO SESSION AND THEREFORE COVERS NOTHING - the gate's exact-match test cannot succeed against an empty value, which is the fail-closed direction. Never required: requiring it would invalidate every record the engine writes outside a triage command.",
+      "$comment": "minLength applies only to the string form; null passes. The empty string is rejected because it asserts a session binding that can never match."
+    },
+    "base_commit": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{7,40}$",
+      "description": "The commit HEAD pointed at when this record was written. RECORDED, NOT DECISIVE: `hooks/epic-goal-stop.sh` reads it and deliberately derives NO freshness rule from it, because HEAD legitimately advances mid-session - any commit moves it, including /v:triage's own commit of this very record - so a mismatch is not evidence that the record is stale. The field exists so a human or a later audit can say which tree the classification was made against. Do not add a staleness check keyed on it without evidence that a mismatch actually correlates with a bad decision. (`pattern` applies only when the value is a string, so null passes.)"
+    },
+    "declared_paths": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/declared_path" },
+      "description": "The repo-relative paths this record's classification actually covers - the field that turns the triage gate from an existence check into a COVERAGE check. `hooks/epic-goal-stop.sh` exempts a changed path only when the record is for the same session AND the path lies inside this set; without it, one triage of 'change the README' would exempt an unrelated later edit to that hook itself. COVERAGE IS THE THREE-WAY MATCH THAT HOOK IMPLEMENTS, and it is deliberately narrow: an exact string match, a DIRECTORY PREFIX only when the entry ends in `/`, or a glob only when the entry contains `*`. A bare `scripts` does NOT cover `scripts/app.py` - write `scripts/` or `scripts/**`. Widening a declared set by accident is the one direction this must not fail in, which is also why the item constraints reject what the hook would otherwise silently drop. Written by `/v:triage`; usually the localization's `resolved_paths`, but kept a separate field because a record may legitimately declare a broader set than triage resolved."
+    },
     "min_sample_status": {
       "type": "string",
       "enum": ["insufficient", "calibrated"],
@@ -111,10 +164,17 @@
     "digest": {
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$",
-      "description": "Self-integrity digest of THIS record: 'sha256:'+sha256(canonical_json(record without `digest`)). Optional; when present, downstream verifies it with compound-v-taxonomy.record_digest(record, exclude_field='digest')."
+      "description": "Self-integrity digest of THIS record: 'sha256:'+sha256(canonical_json(record without `digest`)). Optional; when present, downstream verifies it with compound-v-taxonomy.record_digest(record, exclude_field='digest'). IT COVERS EVERY OTHER FIELD, the Feature-C binding (`session_id`, `base_commit`, `declared_paths`, `tier`) included. A producer that attaches the binding AFTER building the record ships one whose digest no longer verifies, and does so silently because this field is optional and only checked when present. Pass the binding to compound-v-preeval.py `build_record(..., binding={...})`, which folds it in before the digest is taken."
     }
   },
   "$defs": {
+    "declared_path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^/\u0000-\u001f][^\u0000-\u001f]*$",
+      "not": { "pattern": "(^|/)\\.\\.(/|$)" },
+      "description": "One entry in `declared_paths`: a repo-relative path, a directory prefix (trailing `/`), or a glob (containing `*`). CONSTRAINED TO MATCH WHAT THE CONSUMER CAN ACTUALLY READ. `hooks/epic-goal-stop.sh` serializes candidates as `tierU+001Frun_idU+001Fpath` lines and DROPS any entry containing U+001F, LF or CR, because a re-escaped path would no longer equal the path git reports. Dropping narrows the declared set, which is the safe direction for the hook but silent for the producer - so this pattern rejects every C0 control character here, where the producer still learns. A leading `/` is rejected because paths are repo-relative and git never reports an absolute one, so such an entry could only ever match nothing while looking like coverage. `..` segments are rejected because an entry that escapes the repo cannot describe a changed path, and normalizing it here would create a second path semantics to keep in sync with the gate's."
+    },
     "band": {
       "type": "string",
       "enum": ["low", "medium", "high", "unknown"],
