@@ -687,6 +687,11 @@ def run_test_floor(worktree, baseline="HEAD", changed_paths=None, test_cmd=None,
             result["reasons"].append(
                 "tier-1: changed paths underivable (scope-check unavailable) — the "
                 "resolved set still runs, but this floor is NOT diff-proportionate")
+        # Keep the ORIGINAL string beside the argv. `" ".join(shlex.split(x))` is
+        # lossy — `sh -c "exit 0"` comes back as `sh -c exit 0`, which is a
+        # different command. That matters beyond cosmetics: B2 computes the next
+        # run's "previously failing" set from these strings, so a recorded command
+        # that cannot be re-run silently drops coverage instead of restoring it.
         argvs = []
         for raw in resolved:
             cmd = shlex.split(raw) if isinstance(raw, str) else list(raw)
@@ -694,14 +699,16 @@ def run_test_floor(worktree, baseline="HEAD", changed_paths=None, test_cmd=None,
                 result["reasons"].append(
                     "tier-1: configured test command is empty (fail-closed)")
                 return result
-            argvs.append(cmd)
+            spelling = raw if isinstance(raw, str) else " ".join(
+                shlex.quote(part) for part in cmd)
+            argvs.append((cmd, spelling))
         failed_cmds = []
-        for cmd in argvs:
+        for cmd, spelling in argvs:
             rc, _ = _run_supervised(cmd, worktree, test_timeout_s)
-            result["checks"].append({"tier": 1, "checker": " ".join(cmd), "rc": rc,
+            result["checks"].append({"tier": 1, "checker": spelling, "rc": rc,
                                      "status": "pass" if rc == 0 else "fail"})
             if rc != 0:
-                failed_cmds.append((" ".join(cmd), rc))
+                failed_cmds.append((spelling, rc))
         if not failed_cmds:
             result["passed"] = True
             result["merge_blocked"] = False
@@ -1709,8 +1716,14 @@ def _selftest():
                res["merge_blocked"] is True and res["passed"] is False)
         expect("B1: later commands still RUN (no short-circuit ⇒ complete failures)",
                os.path.isfile(marker))
+        # Recorded VERBATIM, not shlex-joined. B2 rebuilds the next run's
+        # "previously failing" set from these strings, so the test asserts the
+        # property that matters — the recorded spelling re-parses to the argv
+        # that actually ran — rather than a particular rendering of it.
         expect("B1: the failing command is recorded by name",
-               res.get("failures") == ["sh -c exit 1"])
+               res.get("failures") == ["sh -c 'exit 1'"])
+        expect("B1: the recorded failure is re-runnable, not lossily joined",
+               shlex.split(res.get("failures", [""])[0]) == ["sh", "-c", "exit 1"])
         res = run_test_floor(r, base, changed_paths=["a.py"],
                              test_commands=["sh -c 'exit 0'", "sh -c 'exit 0'"])
         expect("B1: an all-green resolved set passes the floor",
