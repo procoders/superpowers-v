@@ -1,0 +1,42 @@
+{
+  "base_commit": "20352d228c1e71d871da12a9ad4f57a0eaf6c7de",
+  "confidence": "localization:exact; tiers:localization,T1",
+  "decision": "FULL_PIPELINE",
+  "declared_paths": [
+    "TROUBLESHOOTING.md"
+  ],
+  "difficulty": {
+    "band": "low",
+    "display": 2
+  },
+  "digest": "sha256:4e911a5d49cd3dec33d883b8a8f6e6880ba6267575f8993d2c8cc7ed8c3d1adc",
+  "impact": {
+    "band": "high",
+    "display": 8
+  },
+  "localization": {
+    "confidence": "exact",
+    "fan_out": 1,
+    "flags": [
+      "content:config_literal"
+    ],
+    "resolved_paths": [
+      "TROUBLESHOOTING.md"
+    ]
+  },
+  "min_sample_status": "insufficient",
+  "override_fired": null,
+  "pre_eval_id": "2026-09-01T170558Z-add-a-new-symptom-28ad",
+  "request_slug": "add-a-new-symptom",
+  "session_id": "e619cb38-ebe3-4b45-a1f4-c3007616291d",
+  "status": "PRE_EVAL_DONE",
+  "taxonomy_digest": "sha256:1f2a12f634422ca72a66cfa195b731a0e19743b5e7fe622fb799821cf5e88e85",
+  "taxonomy_ref": "docs/superpowers/pre-eval/2026-09-01T170558Z-add-a-new-symptom-28ad.taxonomy-snapshot.yaml",
+  "taxonomy_version": 1,
+  "tier": "FULL",
+  "tiers_signalled": [
+    "localization",
+    "T1"
+  ],
+  "ts": "2026-09-01T17:05:58Z"
+}

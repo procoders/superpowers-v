@@ -1,0 +1,11 @@
+{
+  "confidence": "exact",
+  "digest": "sha256:64b27c4a34964d54e53b5f578d2c76a7f744f656b5306f23f9811d54b9f39138",
+  "fan_out": 1,
+  "flags": [
+    "content:config_literal"
+  ],
+  "resolved_paths": [
+    "TROUBLESHOOTING.md"
+  ]
+}
