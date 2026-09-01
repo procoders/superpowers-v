@@ -49,8 +49,8 @@ re-opening the self-widening hole; this command adds nothing to it.
 | 4 | Path matches the taxonomy's `auto_route_allow` | Phase T, via `match_auto_route` | yes |
 | 5 | Path matches **no** entry in the `sensitive` set | Phase T, via `match_auto_route` (taxonomy + mandatory floor) | yes |
 | 6 | **No test file touched** | Phase T (resolved path), Phase L (realised path) | yes |
-| 7 | **The floor has been run and passed** — and an *unattended* landing additionally requires `full_command` | Phase L | yes (the floor result is bound to a diff digest; a moved diff re-runs it) |
-| 8 | **Full post-diff re-validation** against the immutable pre-edit taxonomy snapshot: path identity, allowlist, sensitive set, no test file, line budget, taxonomy digest unchanged | Phase L | yes |
+| 7 | **The floor has been run and passed** — and an *unattended* landing additionally requires `full_command` | Phase L | yes (the floor result is bound to a diff digest; a moved diff re-runs it, against a throwaway index) |
+| 8 | **Full post-diff re-validation** against the immutable pre-edit taxonomy snapshot: path identity, allowlist, sensitive set, no test file, line budget, taxonomy digest unchanged | Phase L | yes — and a **third** time against the exact tree handed to `commit-tree` |
 | 9 | **Circuit breaker armed** (`compound-v-triage-outcomes.py breaker`, exit 3 = disarmed) | Phase L | yes |
 
 Predicates 1-6 decide *membership*. Predicates 7-9 decide *landing*, and they are the only
@@ -81,6 +81,18 @@ probed live before this command shipped:
   `git write-tree` + `git commit-tree`, and HEAD is moved with `git update-ref HEAD <new>
   <expected>`. If anything moved HEAD since the recheck, git refuses (`cannot lock ref 'HEAD': is at
   X but expected Y`) and **nothing lands**. A `git commit` cannot express that condition.
+
+- **A final re-validation of the tree itself** — the two guarantees above cover HEAD and the
+  [recheck → commit] window; neither covers the *index*, which stays mutable for as long as
+  anything in the process can still run. Predicate 7's own test commands are the clearest example:
+  `full_command` is arbitrary project code in this worktree, and a `git add` inside it writes
+  straight into the object `commit-tree` is about to commit. So the floor runs with
+  `GIT_INDEX_FILE` pointed at a **throwaway copy** — a suite that stages into the tree it is
+  validating moves only the copy, is detected by comparing the copy back against the tree it
+  started from, and the landing is refused rather than repaired. And because a determined command
+  can step around the variable and write to the real index anyway, predicate 8 is re-run once more
+  against the tree object `write-tree` produced, which must also **be** the diff predicates 7 and 8
+  were computed against. A tree nobody validated cannot ride in underneath a HEAD that never moved.
 
 `commit-tree` commits exactly what is in the index, so Phase L stages **only** the one authorised
 path and refuses if the staged set is anything else. Unrelated dirt in the working tree is left
@@ -310,7 +322,7 @@ evaluate 7, 8 and 9 and stop before the CAS window.
 
 ```bash
 V_TRIAGE_ID='<pre_eval_id>' V_TRIAGE_MESSAGE='<commit message>' python3 - <<'PY'
-import hashlib, importlib.util, json, os, subprocess, sys
+import hashlib, importlib.util, json, os, shutil, subprocess, sys, tempfile
 
 REPO = os.path.abspath(os.environ.get("V_TRIAGE_REPO", "."))
 DRY = os.environ.get("V_TRIAGE_DRY_RUN") == "1"
@@ -330,9 +342,15 @@ vm = _load("compound-v-validate-manifest.py", "cv_validate_manifest")
 cfgmod = _load("compound-v-project-config.py", "cv_project_config")
 outc = _load("compound-v-triage-outcomes.py", "cv_triage_outcomes")
 
-def git(*args):
+def git(*args, **kw):
+    """``index=<abspath>`` runs the command against THAT index file instead of the
+    repository's own. The candidate-index discipline below is built on it."""
+    env = None
+    if kw.get("index"):
+        env = dict(os.environ)
+        env["GIT_INDEX_FILE"] = kw["index"]
     return subprocess.run(["git", "-C", REPO] + list(args),
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, env=env)
 
 pid = (os.environ.get("V_TRIAGE_ID") or "").strip()
 msg = (os.environ.get("V_TRIAGE_MESSAGE") or "").strip()
@@ -415,12 +433,25 @@ if failures:
 git("add", "--", authorised)
 staged = [p for p in git("diff", "--cached", "--name-only", "-z").stdout.split("\0") if p]
 
-def revalidate():
+def revalidate(tree=None):
     """Predicate 8, in full, against the immutable pre-edit snapshot. Returns
-    (ok, [reasons], realised_diff_digest). Called once before the lock and AGAIN inside
-    it — the second call is the one the commit is actually authorised by."""
+    (ok, [reasons], realised_diff_digest). Called before the lock, AGAIN inside it, and
+    a THIRD time against the exact tree object handed to `commit-tree`.
+
+    `tree` is what closes the gap between "the index was valid" and "the tree being
+    committed is valid". The compare-and-swap guards HEAD and only HEAD; the index stays
+    mutable for as long as anything in this process can still run — the floor's own test
+    commands included. With `tree` given, every clause below reads `git diff HEAD <tree>`,
+    which is byte-identical to `--cached` when the two agree and is the only phrasing
+    bound to the bytes actually being committed."""
     why = []
-    st = [p for p in git("diff", "--cached", "--name-only", "-z").stdout.split("\0") if p]
+
+    def diff(*flags):
+        if tree is None:
+            return git("diff", "--cached", *flags)
+        return git("diff", *(list(flags) + ["HEAD", tree]))
+
+    st = [p for p in diff("--name-only", "-z").stdout.split("\0") if p]
     # PATH IDENTITY: the realised path must EQUAL the resolved one. "One literal path"
     # alone permits substituting a different file of the same shape.
     if st != [authorised]:
@@ -437,8 +468,7 @@ def revalidate():
         if is_test_path(p):
             why.append("%s is a test file (predicate 6)" % p)
     total = 0
-    for row in git("diff", "--cached", "--numstat", "--no-renames",
-                   "-z").stdout.split("\0"):
+    for row in diff("--numstat", "--no-renames", "-z").stdout.split("\0"):
         if not row:
             continue
         parts = row.split("\t", 2)
@@ -452,7 +482,7 @@ def revalidate():
     if total > budget:
         why.append("%d changed lines is over the %d-line auto_route_max_lines budget"
                    % (total, budget))
-    blob = git("diff", "--cached", "--no-color").stdout
+    blob = diff("--no-color").stdout
     digest = "sha256:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()
     return (not why), why, digest
 
@@ -475,6 +505,63 @@ def load_contract():
     tc = cfg.get("test_contract")
     return tc if isinstance(tc, dict) else None
 
+# ---- the floor runs against a DISPOSABLE CANDIDATE INDEX ------------------------- #
+# `commit-tree` commits the INDEX, and `full_command` is arbitrary project code running
+# in this worktree — nothing about it is trusted and nothing stops a test from `git add`
+# ing more work into the very tree this landing is about to commit. Pointing
+# GIT_INDEX_FILE at a throwaway COPY means whatever the tests stage lands there instead;
+# comparing that copy's tree with the real one afterwards is how a suite that edited the
+# tree it was validating gets DETECTED rather than smuggled in. A test suite that moves
+# the tree it is validating has not validated anything, so this is a refusal, not a
+# repair.
+def run_floor(bind_digest):
+    """Predicate 7's floor, index-isolated. Returns the floor result with
+    `bound_diff_digest` set and `mutated` set to a reason when the tests moved a tree."""
+    tmpd = tempfile.mkdtemp(prefix="v-triage-candidate-index-")
+    cand = os.path.join(tmpd, "index")
+    try:
+        real_index = git("rev-parse", "--git-path", "index").stdout.strip()
+        if not os.path.isabs(real_index):
+            real_index = os.path.join(REPO, real_index)
+        shutil.copyfile(real_index, cand)
+        before = git("write-tree").stdout.strip()
+        # `run_test_floor` runs each command through the timeout supervisor with the
+        # process environment inherited, so this is how the variable reaches them.
+        prev = os.environ.get("GIT_INDEX_FILE")
+        os.environ["GIT_INDEX_FILE"] = cand
+        try:
+            res = fr.run_test_floor(REPO, "HEAD", changed_paths=list(staged),
+                                    test_commands=slice_["resolved_commands"])
+        finally:
+            if prev is None:
+                os.environ.pop("GIT_INDEX_FILE", None)
+            else:
+                os.environ["GIT_INDEX_FILE"] = prev
+        after_cand = git("write-tree", index=cand).stdout.strip()
+        after_real = git("write-tree").stdout.strip()
+        res["bound_diff_digest"] = bind_digest
+        res["candidate_tree"] = after_cand
+        if not (before and after_cand and after_real):
+            res["mutated"] = "the candidate index could not be resolved to a tree"
+        elif after_cand != before:
+            res["mutated"] = ("the test commands staged changes into the tree they were "
+                              "validating (%s -> %s)" % (before[:12], after_cand[:12]))
+        return res
+    finally:
+        shutil.rmtree(tmpd, ignore_errors=True)
+
+def floor_verdict(res):
+    """(ok7, why7) from a `run_floor` result. A mutated tree fails predicate 7 even
+    when every configured command exited 0."""
+    good = (bool(res.get("passed")) and not res.get("merge_blocked")
+            and not res.get("mutated"))
+    if good:
+        return True, []
+    reasons = list(res.get("reasons") or [])
+    if res.get("mutated"):
+        reasons.append(res["mutated"])
+    return False, reasons or ["the floor did not pass"]
+
 contract = load_contract()
 slice_ = floor = None
 ok7, why7 = False, []
@@ -492,12 +579,9 @@ else:
         slice_, _notes = fr.resolve_from_manifest(
             {"test_contract": contract}, scope="full", worktree=REPO,
             baseline="HEAD", no_prior_run=True)
-        floor = fr.run_test_floor(REPO, "HEAD", changed_paths=list(staged),
-                                  test_commands=slice_["resolved_commands"])
-        floor["bound_diff_digest"] = realised_digest
-        ok7 = bool(floor.get("passed")) and not floor.get("merge_blocked")
-        if not ok7:
-            why7.extend(floor.get("reasons") or ["the floor did not pass"])
+        floor = run_floor(realised_digest)
+        ok7, _why = floor_verdict(floor)
+        why7.extend(_why)
     except fr.TestContractError as e:
         why7.append("test contract did not resolve (fail-closed): %s" % e)
 
@@ -514,6 +598,22 @@ def breaker():
                       else ["circuit breaker DISARMED (exit %d): %s"
                             % (r.returncode,
                                r.stdout.strip().replace("\n", " ")[:300])])
+
+# ---- reverts of PAST landings, recorded BEFORE this one is authorised ----------- #
+# A DIRECT landing dispatches no reviewer and opens no run directory, so until now it
+# appended no `actual` at all: ten landings that were every one reverted left ten
+# `predicted` events, ZERO negatives, a 0/10 rate and an armed breaker. That is the
+# blind spot the numerator was widened to remove, reopened for the one negative outcome
+# that only arrives AFTER the commit. `sweep_landings` derives it from git — a revert
+# names the commit it reverts — and records it against the landed sha, which is the
+# outcome key the receipt below binds. It runs on BOTH sides of the lock for the same
+# reason the breaker is read twice: the pre-lock read is advisory, and the in-lock one
+# is what the commit is authorised by.
+sweep = outc.sweep_landings(repo=REPO)
+if sweep.get("appended"):
+    print("swept %d reverted landing(s) onto the outcome stream: %s"
+          % (sweep["appended"],
+             ", ".join(r["commit"][:12] for r in sweep["reverted"])))
 
 ok9, br, why9 = breaker()
 
@@ -582,11 +682,9 @@ try:
     # proves the floor ran against exactly this tree. A moved digest invalidates it and
     # the floor is re-run here, inside the window.
     if ok8 and digest_now != (floor or {}).get("bound_diff_digest"):
-        floor = fr.run_test_floor(REPO, "HEAD", changed_paths=list(staged),
-                                  test_commands=slice_["resolved_commands"])
-        floor["bound_diff_digest"] = digest_now
-        ok7 = bool(floor.get("passed")) and not floor.get("merge_blocked")
-        why7 = [] if ok7 else (floor.get("reasons") or ["the floor did not pass"])
+        floor = run_floor(digest_now)
+        ok7, why7 = floor_verdict(floor)
+    sweep = outc.sweep_landings(repo=REPO)
     ok9, br, why9 = breaker()
     report("in-lock")
 
@@ -595,6 +693,20 @@ try:
         raise SystemExit(2)
 
     tree = git("write-tree").stdout.strip()
+    if not tree:
+        print("LANDING REFUSED: the index could not be written to a tree")
+        raise SystemExit(1)
+    # THE LAST WORD IS THE TREE, NOT THE INDEX. Everything above validated an index, and
+    # the compare-and-swap below guards HEAD — neither says anything about the bytes
+    # `commit-tree` is handed. This re-runs predicate 8 against exactly those bytes and
+    # additionally requires them to BE the diff predicates 7 and 8 were computed against,
+    # so a tree nobody validated cannot ride in underneath a HEAD that never moved.
+    okT, whyT, digest_tree = revalidate(tree=tree)
+    if not (okT and digest_tree == digest_now):
+        demote(whyT + ([] if digest_tree == digest_now else
+                       ["the tree handed to commit-tree (%s) is not the diff predicates "
+                        "7 and 8 were computed against (%s)" % (digest_tree, digest_now)]))
+        raise SystemExit(2)
     new = git("commit-tree", tree, "-p", expected, "-m", msg).stdout.strip()
     if not new:
         print("LANDING REFUSED: could not build the commit object")
@@ -611,6 +723,16 @@ finally:
     git("update-ref", "-d", LOCK, expected)
 # ==================================================================================== #
 
+# THE LANDING IS THE OUTCOME, and an outcome needs a key. There is no run directory at
+# DIRECT and no run_id to name, so the LANDED COMMIT SHA is the key: it exists the moment
+# the landing does, it is stable, it is what a revert names, and it is what the sweep
+# above corrects under (last-writer-wins on `(pre_eval_id, run_id, event)`). Without a
+# key, no CI failure and no revert could ever be attributed to the decision that caused
+# it, and the breaker could only ever see a demotion.
+outc.append_actual(pid, landed, review_result=None,
+                   test_result="pass" if floor.get("passed") else "fail",
+                   landing=True, authorised_path=authorised)
+
 # The realised diff digest is bound HERE, in a landing receipt beside the record. It
 # cannot live in the record itself: the record is write-once, is written BEFORE the edit
 # exists, and its schema is additionalProperties:false with no field for it. This command
@@ -622,10 +744,11 @@ receipt = {
     "expected_head": expected,
     "authorised_path": authorised,
     "realised_paths": staged,
-    "diff_digest": digest_now,
+    "diff_digest": digest_tree,
+    "tree": tree,
     "taxonomy_digest": pinned,
     "floor": {"tier_used": floor.get("tier_used"), "passed": floor.get("passed"),
-              "checks": floor.get("checks"), "bound_diff_digest": digest_now,
+              "checks": floor.get("checks"), "bound_diff_digest": digest_tree,
               "commands": (slice_ or {}).get("resolved_commands")},
     "breaker": json.loads(br.stdout) if br.stdout.strip() else None,
     "predicates": {"7": True, "8": True, "9": True},
@@ -637,6 +760,28 @@ print("LANDED %s  (%s)" % (landed, authorised))
 print("receipt docs/superpowers/pre-eval/%s.landing.json — commit it next." % pid)
 PY
 ```
+
+### What a landing records, and why it needs a key
+
+A DIRECT landing dispatches no reviewer and opens no run directory, so it has no `run_id` — and
+`append_actual` requires one. The consequence was a hole in the very latch the class depends on: ten
+DIRECT decisions, all landed, all reverted or all red in CI, produced ten `predicted` events and
+**zero** negative actuals, so the breaker read 0/10 and stayed armed for the eleventh. Phase L
+therefore keys its outcome on the **landed commit sha** — it exists the moment the landing does, it
+is stable, and it is exactly what a revert names — and appends a terminal `actual` under it.
+
+Reverts are then genuinely produced: `compound-v-triage-outcomes.py sweep-landings` reads the
+landing receipts, asks git which of those commits have been reverted (git's own
+`This reverts commit <sha>.` marker), and appends the correction under the same key, where
+last-writer-wins replaces the clean actual. Phase L runs it on **both sides of the lock**, before
+the breaker is read, so a landing whose predecessors were reverted meets a disarmed breaker.
+
+**CI failure is not produced for a DIRECT decision, and is not claimed as one.** Nothing in this
+repository calls back from CI into the outcome stream; `ci_failed` is a live input for full-pipeline
+runs (`/v:dispatch` passes it) and is now *appendable* against a landing because the key exists, but
+no DIRECT landing has ever produced one. Wiring that is a workflow-file change, and until it lands
+the honest numerator for this tier is demotions, reverts and escalations — an unreachable input in a
+safety latch is worse than a smaller honest one.
 
 Then commit the receipt **separately**. It cannot ride in the landing commit: predicate 8 requires
 the realised diff to be exactly the one authorised path, and the receipt records a commit that does
@@ -664,6 +809,8 @@ commit does not itself need a record.
   forgets them still cannot be self-widened — but the digest check is what makes that guarantee hold
   across the edit.
 - **Never force the commit.** If the CAS refuses, something moved HEAD; demote and let a human look.
+- **Never let the tests write the tree.** A floor that stages into the index is refused, not
+  reconciled — a suite that edited what it was validating has validated nothing.
 - **Never invent a session id.** An empty `CLAUDE_CODE_SESSION_ID` means the record covers nothing;
   say so.
 - **No fabricated metrics.** Print the floor's real exit codes and the breaker's real rate, nothing
@@ -686,9 +833,14 @@ wrote. It covers path substitution (including an index the implementer pre-poiso
 self-widening in both shapes, both halves of the concurrency defence (the lock ref and the
 expected-HEAD compare-and-swap), the RECORDED demotion (`demoted_from` / `demotion_reason` reaching
 the outcome stream), predicate 7 against a red contract, an absent one and one with no
-`full_command`, the line budget and the no-test-file clause, and a latched-off breaker. Each
-refusal is paired with a control that LANDS, and with a planted mutation that removes the
-corresponding check from a copy of the gate and is asserted to turn that refusal's assertion red.
+`full_command`, the line budget and the no-test-file clause, a latched-off breaker, both halves of
+the mutable-index defence (a floor that stages into its own candidate index, and one that steps
+around the variable to stage into the real one — each caught by a different check, each proved
+independent by the other staying green under the first's mutation), and the landing outcome key
+(the terminal `actual` under the landed sha, and a reverted landing disarming the breaker before the
+next landing is authorised). Each refusal is paired with a control that LANDS, and with a planted
+mutation that removes the corresponding check from a copy of the gate and is asserted to turn that
+refusal's assertion red.
 
 **What this replaced, and why.** The fixture that used to sit here asserted `staged ==
 ["OTHER.md"]` (a fact about `git add`), that two sha256 digests differ (a fact about sha256), and

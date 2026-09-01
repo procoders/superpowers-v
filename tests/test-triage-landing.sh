@@ -215,7 +215,7 @@ D="$1"
 if [ ! -f "$D/.race-1" ]; then
   : >"$D/.race-1"
   printf 'perturb\\n' >> "$D/README.md"
-  git -C "$D" add -- README.md
+  env -u GIT_INDEX_FILE git -C "$D" add -- README.md
   exit 0
 fi
 [ -f "$D/.race-2" ] && exit 0
@@ -224,6 +224,26 @@ H=$(git -C "$D" rev-parse HEAD)
 T=$(git -C "$D" rev-parse "HEAD^{tree}")
 C=$(git -C "$D" commit-tree "$T" -p "$H" -m "concurrent session")
 git -C "$D" update-ref HEAD "$C" "$H"
+"""
+
+# A `full_command` that EDITS THE TREE IT IS VALIDATING and stages the edit.
+# `full_command` is arbitrary project code running in this worktree; nothing about
+# it is trusted, and `commit-tree` commits the INDEX -- so a test that `git add`s
+# is writing directly into the object the landing is about to commit.
+SNEAK = """set -e
+D="$1"
+printf 'smuggled\\n' >> "$D/README.md"
+git -C "$D" add -- README.md
+"""
+
+# The same attack written by someone who KNOWS the floor is handed a throwaway
+# index and steps around it, staging into the REAL one. The candidate it was given
+# comes back pristine, so nothing about the candidate can tell -- only the tree
+# actually handed to `commit-tree` can.
+SNEAK_ESCAPE = """set -e
+D="$1"
+printf 'smuggled\\n' >> "$D/README.md"
+env -u GIT_INDEX_FILE git -C "$D" add -- README.md
 """
 
 PID = "2026-09-01T000000Z-sandbox-a1"
@@ -235,7 +255,7 @@ def git(d, *args):
 
 
 def sandbox(tax_text=TAX, authorised="README.md", full=GREEN, floor=GREEN,
-            contract=True, race=False):
+            contract=True, race=False, helper=None):
     """A repository the gate will accept: a committed base, a live taxonomy, a
     DIRECT pre-eval record whose digest verifies, and its pinned snapshot."""
     d = tempfile.mkdtemp(prefix="v-land-")
@@ -257,6 +277,8 @@ def sandbox(tax_text=TAX, authorised="README.md", full=GREEN, floor=GREEN,
     _write(os.path.join(d, "OTHER.md"), "other\n")
     if race:
         _write(os.path.join(d, "race.sh"), RACE)
+    if helper:
+        _write(os.path.join(d, helper[0]), helper[1])
     git(d, "add", "--", "README.md", "OTHER.md", TAXONOMY_REL)
     git(d, "commit", "-qm", "base")
 
@@ -322,6 +344,18 @@ def land(d, dry=False):
                                    "-z", r.head).stdout.split("\0") if p]
                    if r.moved else [])
     r.subject = git(d, "log", "-1", "--pretty=%s").stdout.strip()
+    # What the commit ACTUALLY carries, not what the gate said about it: the
+    # budget clause is a claim about the landed tree, so the landed tree is what
+    # a budget assertion has to read.
+    r.committed_lines = None
+    if r.moved:
+        rows = [x for x in git(d, "diff", "--numstat", "--no-renames", "-z",
+                               r.head + "^", r.head).stdout.split("\0") if x]
+        r.committed_lines = 0
+        for row in rows:
+            parts = row.split("\t", 2)
+            if len(parts) == 3 and parts[0] != "-" and parts[1] != "-":
+                r.committed_lines += int(parts[0]) + int(parts[1])
     r.receipt = os.path.isfile(os.path.join(d, "docs", "superpowers", "pre-eval",
                                             PID + ".landing.json"))
     stream = os.path.join(d, "docs", "superpowers", "memory",
@@ -371,7 +405,8 @@ def control():
     ok("control: HEAD advanced by exactly the authorised path",
        r.moved and r.committed == ["README.md"])
     ok("control: the landing receipt was written", r.receipt)
-    ok("control: nothing was recorded as a demotion", r.events == [])
+    ok("control: nothing was recorded as a demotion",
+       [e for e in r.events if e.get("event") == "predicted"] == [])
 
     # The dry run is the same predicates without the CAS window — it must never
     # commit, which is what makes it safe to suggest to a user mid-edit.
@@ -570,6 +605,111 @@ def predicate9():
     demoted("predicate 9 (breaker latched off)", r, "circuit breaker DISARMED")
 
 
+# =========================================================================== #
+# ATTACK 4 -- THE MUTABLE INDEX. The compare-and-swap guards HEAD; it says
+# nothing about the tree. Predicate 8 is re-validated inside the lock, and when
+# the diff digest moved the floor is run AGAIN -- and nothing re-validates after
+# that second run. `write-tree` then commits whatever the index now holds.
+# =========================================================================== #
+# 19 added lines against a 20-line budget: one more line, staged by the floor's
+# own test command, is over.
+OVER_BY_ONE = "hello\n" + "".join("line %d\n" % i for i in range(19))
+
+
+@scenario("attack4")
+def attack4():
+    # 4 CONTROL: the identical 19-line edit with a well-behaved floor LANDS, so
+    # the two refusals below are attributable to what the floor DID and not to
+    # the size of the edit or to a gate that refuses everything near the budget.
+    d = sandbox()
+    _write(os.path.join(d, "README.md"), OVER_BY_ONE)
+    r = land(d)
+    ok("attack 4 CONTROL: 19 added lines under a well-behaved floor LAND",
+       r.rc == 0 and r.committed == ["README.md"] and r.committed_lines == 19)
+
+    # 4a: the floor stages one more line into the index `commit-tree` commits.
+    d = sandbox(full="sh @D@/sneak.sh @D@", helper=("sneak.sh", SNEAK))
+    _write(os.path.join(d, "README.md"), OVER_BY_ONE)
+    r = land(d)
+    refused("attack 4a (the floor edits the tree it validates)", r)
+    ok("attack 4a: no over-budget tree reached HEAD (committed lines: %r)"
+       % (r.committed_lines,), not r.moved and r.committed_lines is None)
+    demoted("attack 4a (the floor edits the tree it validates)", r,
+            "staged changes into the tree")
+
+    # 4b: the same attack, escaping the isolation so the real index and the
+    # candidate move together. The divergence check sees nothing here -- the
+    # final re-validation of the exact tree is the only thing left.
+    d = sandbox(full="sh @D@/sneak.sh @D@", helper=("sneak.sh", SNEAK_ESCAPE))
+    _write(os.path.join(d, "README.md"), OVER_BY_ONE)
+    r = land(d)
+    refused("attack 4b (the floor escapes the candidate index)", r)
+    ok("attack 4b: no over-budget tree reached HEAD (committed lines: %r)"
+       % (r.committed_lines,), not r.moved and r.committed_lines is None)
+    demoted("attack 4b (the floor escapes the candidate index)", r,
+            "auto_route_max_lines budget")
+
+
+# =========================================================================== #
+# ATTACK 5 -- THE BREAKER'S REOPENED BLIND SPOT. A DIRECT landing opens no run
+# directory, so it has no `run_id` and `append_actual` refuses it. Ten landings
+# that were every one reverted therefore left ten `predicted` events, ZERO
+# negatives, a 0/10 rate and an armed breaker.
+# =========================================================================== #
+def _stream(d):
+    return os.path.join(d, "docs", "superpowers", "memory", "triage-outcomes.jsonl")
+
+
+@scenario("attack5")
+def attack5():
+    # 5a: a landing is an OUTCOME and needs a key later evidence can name.
+    d = sandbox()
+    _write(os.path.join(d, "README.md"), "hello\nlegit\n")
+    r = land(d)
+    ok("attack 5a: the authorised landing still LANDS", r.rc == 0)
+    acts = [e for e in r.events if e.get("event") == "actual"]
+    ok("attack 5a: the landing appended a terminal actual", len(acts) == 1)
+    ev = acts[0] if acts else {}
+    ok("attack 5a: the actual is keyed by the LANDED COMMIT sha",
+       bool(r.head) and ev.get("run_id") == r.head)
+    ok("attack 5a: it is terminal, not a merge_pending placeholder",
+       ev.get("merge_pending") is None)
+    ok("attack 5a: a clean landing records every negative flag as false",
+       ev.get("demoted") is False and ev.get("ci_failed") is False
+       and ev.get("reverted") is False and ev.get("escalated") is False)
+
+    # 5b: land, revert the landed commit, and try to land again. The revert is a
+    # negative outcome for a DIRECT decision, so the breaker must have seen it
+    # BEFORE it authorises the next landing.
+    d = sandbox()
+    outc.append_predicted(PID, decision=pe.DECISION_FASTPATH,
+                          difficulty_band="low", impact_band="low",
+                          stream_path=_stream(d))
+    _write(os.path.join(d, "README.md"), "hello\nlegit\n")
+    r1 = land(d)
+    ok("attack 5b: the first landing LANDS", r1.rc == 0)
+    landed = r1.head
+    rv = git(d, "revert", "--no-edit", landed)
+    ok("attack 5b: the landed commit is reverted by a human", rv.returncode == 0)
+
+    _write(os.path.join(d, "README.md"), "hello\nsecond\n")
+    r2 = land(d)
+    ok("attack 5b: the revert is recorded against the landed commit",
+       any(e.get("event") == "actual" and e.get("run_id") == landed
+           and e.get("reverted") is True for e in r2.events))
+    ok("attack 5b: the NEXT landing is refused, not waved through",
+       r2.rc == 2 and not r2.moved)
+    ok("attack 5b: it is the circuit breaker that refuses it",
+       "circuit breaker DISARMED" in r2.out)
+
+    # The sweep runs before every landing, so it must not grow the stream on a
+    # revert it has already recorded.
+    sw = outc.sweep_landings(repo=d, stream_path=_stream(d))
+    ok("attack 5b: re-sweeping an already-recorded revert appends nothing",
+       sw["appended"] == 0 and sw["already_recorded"] == 1
+       and sw["reverted"][0]["commit"] == landed)
+
+
 selected = [(g, fn) for g, fn in _registry if not GROUPS or g in GROUPS]
 if not selected:
     sys.exit("no scenario group matched %r — the filter is dead" % (GROUPS,))
@@ -631,6 +771,21 @@ SUBS = {
     "M8-test-file": [("        if is_test_path(p):", "        if False:", 1)],
     # Predicate 9 stops reading the breaker's exit-code contract.
     "M9-breaker": [("    armed = r.returncode == 0", "    armed = True", 1)],
+    # The candidate index stops being compared with the real one, so a floor that
+    # stages into the tree it is validating is no longer detected.
+    "M10-candidate-index": [
+        ("        elif after_cand != before:", "        elif False:", 1)],
+    # The final re-validation of the exact tree handed to commit-tree.
+    "M11-tree-is-final": [("    if not (okT and digest_tree == digest_now):",
+                           "    if False:", 1)],
+    # The landing stops recording itself as an outcome, so nothing can ever be
+    # attributed to it afterwards.
+    "M12-landing-actual": [("outc.append_actual(pid, landed, review_result=None,",
+                            "(lambda *_a, **_k: None)(pid, landed, review_result=None,",
+                            1)],
+    # The revert sweep, on both sides of the lock.
+    "M13-revert-sweep": [("outc.sweep_landings(repo=REPO)",
+                          '{"appended": 0, "reverted": []}', 2)],
 }
 if mid not in SUBS:
     sys.exit("unknown mutation %r" % mid)
@@ -693,6 +848,22 @@ mutation M8-test-file predicate8 \
   "predicate 6 (the realised diff is a test file): the gate REFUSES to land"
 mutation M9-breaker predicate9 \
   "predicate 9 (breaker latched off): the gate REFUSES to land"
+# M10 and M11 are each other's control: 4a is caught ONLY by the candidate-index
+# comparison and 4b ONLY by the final tree check, so removing one must red its own
+# attack and leave the other's green. That is what says they are two checks and not
+# one check written twice.
+mutation M10-candidate-index attack4 \
+  "attack 4a (the floor edits the tree it validates): the gate REFUSES to land" \
+  "attack 4b (the floor escapes the candidate index): the gate REFUSES to land"
+mutation M11-tree-is-final attack4 \
+  "attack 4b (the floor escapes the candidate index): the gate REFUSES to land" \
+  "attack 4a (the floor edits the tree it validates): the gate REFUSES to land"
+mutation M12-landing-actual attack5 \
+  "attack 5a: the landing appended a terminal actual" \
+  "attack 5a: the authorised landing still LANDS"
+mutation M13-revert-sweep attack5 \
+  "attack 5b: the NEXT landing is refused, not waved through" \
+  "attack 5a: the landing appended a terminal actual"
 
 echo ""
 echo "───────────────────────────────────────────────────────────────"
