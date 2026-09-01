@@ -321,7 +321,12 @@ def _selftest():
         expect("valid pre_eval round-trips", v == {
             "enabled": True, "fast_path": "off", "min_sample_count": 3,
             "fan_out_threshold": 2, "token_cap": 5000,
-            "remember": {"css-only": "fastpath"}})
+            "remember": {"css-only": "fastpath"},
+            # v3.0 breaker keys: absent from this fixture, so they resolve to their
+            # declared defaults. Asserted explicitly rather than loosened to a subset
+            # check -- an exact-shape assertion is what caught the addition at all.
+            "auto_route_window": 20,
+            "auto_route_max_demotion_rate": 0.25})
         expect("valid pre_eval -> no warnings", w == [])
 
         # Per-key bad values -> coerce to default + warn (never raise, never a wider
