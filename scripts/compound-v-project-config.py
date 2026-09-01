@@ -55,6 +55,11 @@ PRE_EVAL_DEFAULTS = {
     "fan_out_threshold": 1,     # Layer-B: fast-path only when fan_out <= this (single-path)
     "token_cap": 20000,         # whole-stage token budget; overrun → abort → FULL_PIPELINE
     "remember": {},             # {category: "fastpath"} — explicit, revocable (AC-11)
+    # v3.0 auto-route miscalibration breaker. Read raw by compound-v-triage-outcomes.py
+    # before being declared here, which is exactly how a key drifts: declare it, so the
+    # coerce path below owns it rather than each reader inventing its own fallback.
+    "auto_route_window": 20,            # rolling window of DIRECT decisions the rate is taken over
+    "auto_route_max_demotion_rate": 0.25,  # STRICTLY above this ⇒ auto-route disarms itself
 }
 _FAST_PATH_VALUES = ("ask", "off")
 
