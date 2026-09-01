@@ -144,7 +144,10 @@ jobs:
           # agent where it was) is blind to them. Their state is genuinely lost, so they
           # are allowlisted by id -- never back-filled, because a reconstructed audit
           # trail is the fabricated-evidence pattern, not a repair.
-          ALLOW="2026-07-13-usage-and-advisor 2026-07-14-v2.14-blockers-and-headless 2026-07-15-v2.16-decision-preferences 2026-07-25-v2.17-cochange"
+          # 2026-07-26-v2.18-autonomy joined them when that branch merged into v3.0:
+          # this gate caught it on the merge, which is the gate working as designed.
+          # Its state was never written either, so it is listed, not reconstructed.
+          ALLOW="2026-07-13-usage-and-advisor 2026-07-14-v2.14-blockers-and-headless 2026-07-15-v2.16-decision-preferences 2026-07-25-v2.17-cochange 2026-07-26-v2.18-autonomy"
           rc=0
           for m in $(git ls-files 'docs/superpowers/execution/*/manifest.yaml'); do
             d=$(dirname "$m"); id=$(basename "$d")
