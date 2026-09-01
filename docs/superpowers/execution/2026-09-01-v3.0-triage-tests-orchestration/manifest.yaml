@@ -191,7 +191,7 @@ jobs:
       - ".claude/**"
     acceptance:
       - "reads DECISION_SCOPED and DECISION_TO_TIER FROM the engine — never re-spells the decision string or the tier token, since a duplicated wire vocabulary is how two halves drift apart"
-      - "record written AND committed under docs/superpowers/pre-eval/, and it POPULATES session_id, base_commit and declared_paths. task-8's Stop rule reads exactly those to decide whether a record covers the current diff; without a producer no record can ever cover one and Feature C ships inert — the fourth no-caller defect in this release"
+      - "record written AND committed under docs/superpowers/pre-eval/, and it POPULATES session_id, base_commit and declared_paths. a DIRECT record additionally binds the realised diff digest (this command computes it for predicate 8, and is the only place it exists). task-8's Stop rule reads those fields to decide whether a record covers the current diff; without a producer no record can ever cover one and Feature C ships inert — the fourth no-caller defect in this release"
       - "predicate 7 floor-passed and predicate 8 full post-diff re-validation implemented"
       - "predicate 7 additionally requires full_command for an UNATTENDED landing, not merely the floor. DIRECT dispatches no reviewer, so the review gate cannot be the enforcement point for the one tier that commits without a human — the predicate chain is"
       - "the pre-commit recheck lands behind a REAL serialization boundary — an expected-HEAD `git update-ref` compare-and-swap — not a re-read. 'Atomic' was an assertion in the spec; two sessions can both pass the armed check, one disarm the breaker, and the other commit on already-passed authorization"
