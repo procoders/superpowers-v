@@ -1,10 +1,12 @@
 ---
-description: Resume an interrupted Compound V orchestrator run by run-id. Reconciles state.json against git reality (git-wins tie-break) and re-dispatches only the incomplete jobs (pending/failed/blocked) via Engine A, then continues collect → review → merge.
+description: Resume an interrupted Compound V orchestrator run by run-id. Reconciles state.json against git reality (git-wins tie-break) and re-dispatches only the incomplete jobs (pending/failed/blocked), then continues collect → integration gate → review → merge.
 ---
 
 You are about to **resume** the Compound V orchestrator run `{{args}}` after an interruption or crash. Resume is **idempotent** — resuming a fully-`MERGED` run is a no-op.
 
-Resume is **Engine-A-owned**: it does not rely on Workflows (whose resume is same-session-only and fails the crash case). The reconcile + re-dispatch logic below is the authoritative procedure defined in [`skills/compound-v/state-machine.md`](../skills/compound-v/state-machine.md).
+Resume belongs to the **verification layer**, not to any engine. It deliberately does not rely on the native runtime's resume, which is **same-session-only** and, past a failure point, **re-runs completed agents** — a 16-job run whose job 3 failed would re-run jobs 4–16 that already succeeded, paying full cost twice. The reconcile + re-dispatch logic below is the authoritative procedure defined in [`skills/compound-v/state-machine.md`](../skills/compound-v/state-machine.md).
+
+> **This contract must read a PRE-CUTOVER `state.json`, and that is a hard requirement, not a courtesy.** The 3.0 run that ships Engine C is itself dispatched on the pre-cutover path: its `state.json` carries `worktree: null`, no `baseline`, no `merged`, and its run dir has no `lane-map.json`, no `receipts/` and no `results/`. The session can die *after* the Engine C job merges while later waves still have to finish on the old engine. So every field Engine C adds is **OPTIONAL on read**: a job missing `baseline` reconciles the way it always did (git-wins against the recorded pre-dispatch commit, or the worktree HEAD with that weakness stated), a missing `lane-map.json` is not an error, and a missing receipt is **re-derived** by the integration gate rather than treated as a failure. Never refuse to resume a run because it predates a field.
 
 ## Steps
 
@@ -25,7 +27,9 @@ Resume is **Engine-A-owned**: it does not rely on Workflows (whose resume is sam
    - **Never silently re-dispatch to a still-open breaker.** If neither the top-up/probe (credits) nor the re-auth (auth) has happened, leave the breaker open, leave its jobs `failed`, and report exactly what the user must do to unblock — do not retry behind their back.
    - Update `circuit_open[backend].cleared_by` and write `state.json` for every breaker transition.
 
-5. **Re-dispatch only the incomplete jobs** — those that are `pending`, `failed`, or `blocked` after steps 3–4 (and **not** behind a still-open breaker) — via **Engine A** (`compound-v:parallel-dispatcher` / the backend-launcher), honoring `depends_on`, `run`, and `max_parallel` exactly as the original dispatch. Each re-dispatch replays the captured prompt at `jobs/<id>.prompt.md` verbatim.
+5. **Re-dispatch only the incomplete jobs** — those that are `pending`, `failed`, or `blocked` after steps 3–4 (and **not** behind a still-open breaker) — honoring `depends_on`, `run`, and `max_parallel` exactly as the original dispatch. Each re-dispatch replays the captured prompt at `jobs/<id>.prompt.md` verbatim.
+   - **Re-dispatch on the engine the run can actually reach now, not the one it started on.** Probe as [`/v:dispatch`](v-dispatch.md) step 4 does. On a successful probe, re-emit the workflow **restricted to the incomplete jobs** and launch it by `scriptPath`; the pipeline's own guards make this safe to repeat — Record is idempotent and keys each merge to an immutable realised commit, so a job that already merged is not merged twice. Where the probe fails or this is a subagent context, use the residual subagent path ([`parallel-dispatcher.md`](../agents/parallel-dispatcher.md)).
+   - **A run that started pre-cutover resumes cleanly on either path.** Its jobs simply have no `merged` record yet, so the at-most-once guard has nothing to skip and does the full merge once.
    - A Codex worktree job's resume-vs-recreate decision is governed by the **resume-eligibility rule below** — reproduced verbatim so it agrees word-for-word with [`parallel-dispatcher.md`](../agents/parallel-dispatcher.md) and kills the old contradiction (this step once said "may use `codex exec resume`" unconditionally, while the dispatcher's invariant recreates the worktree fresh at HEAD). Either way — resumed session or fresh recreate — the **scope gate re-runs** on return.
    - Update each job's `status` and write `state.json` after every transition.
 
@@ -37,9 +41,18 @@ Both inputs the rule needs live in **`state.json jobs[<id>]`** — `session_id` 
 > Every other case recreates the worktree **fresh at HEAD** — the parallel-dispatcher worktree-recreate invariant.
 > Never resume by cwd filtering; pass the captured UUID explicitly.
 
-6. **Continue the pipeline** from the reconciled phase: re-collect results, run the scope gate on every job, then the three-pass Review Gate (AC-gated), then merge worktree diffs on PASS. Already-`done` jobs are not re-run. **On reaching `MERGED`, commit the run substrate exactly as [`parallel-dispatcher`](../agents/parallel-dispatcher.md)'s Step 7 does** — `state.json` (phase written as `MERGED` first, then committed together with the rest), `results/*.json`, and the memory/scorecard files if this resume refreshed them — **before** handing off to `superpowers:finishing-a-development-branch`. This matters *especially* on the resume path: the whole point of resuming is recovering from a crash or interruption, so leaving the just-recovered state uncommitted means a subsequent worktree cleanup can silently erase the very state resume just fixed.
+6. **Gate integration on the authority — BEFORE any job commit is integrated.**
+   ```
+   python3 scripts/compound-v-integration-gate.py \
+     --run-dir docs/superpowers/execution/<run-id>/ --json
+   ```
+   **Not optional on the resume path either** — it is *more* load-bearing here, because a crashed run is exactly where a job's receipt is most likely to be missing or half-written. A missing or partial receipt is **re-derived** and that verdict wins; a receipt whose bindings disagree with the tree is **refused outright, never re-derived**; a verifying receipt whose conclusion disagrees with an independent re-derivation is refused as **contradicted**; `unverifiable` and duplicate receipts fail closed. Anything other than a clean report ⇒ **HALT**, do not merge.
 
-7. **Report.** Which jobs were skipped (already landed), which were re-dispatched, which stayed **blocked behind an open breaker** (and the exact unblock action — top up credits or re-auth via `/v:init`), and the resulting `phase`. Point the user at [`/v:status {{args}}`](v-status.md) to inspect.
+   A pre-cutover run has no receipts at all, so every job takes the re-derivation branch. That is the designed behaviour, not a degraded one — but it needs a gateable tree, so do **not** remove a job's worktree before this runs.
+
+7. **Continue the pipeline** from the reconciled phase: re-collect results, run the scope gate on every job, then the three-pass Review Gate (AC-gated), then merge worktree diffs on PASS. Already-`done` jobs are not re-run. **On reaching `MERGED`, commit the run substrate exactly as [`parallel-dispatcher`](../agents/parallel-dispatcher.md)'s Step 7 does** — `state.json` (phase written as `MERGED` first, then committed together with the rest), `results/*.json`, and the memory/scorecard files if this resume refreshed them — **before** handing off to `superpowers:finishing-a-development-branch`. This matters *especially* on the resume path: the whole point of resuming is recovering from a crash or interruption, so leaving the just-recovered state uncommitted means a subsequent worktree cleanup can silently erase the very state resume just fixed.
+
+8. **Report.** Which jobs were skipped (already landed), which were re-dispatched, which stayed **blocked behind an open breaker** (and the exact unblock action — top up credits or re-auth via `/v:init`), and the resulting `phase`. Point the user at [`/v:status {{args}}`](v-status.md) to inspect.
 
 ## Fast-path & escalation resume (v2.9)
 
@@ -60,5 +73,6 @@ A pre-eval-backed fast-path run reconciles by the same git-wins logic, with two 
 
 - A `blocked` job is re-dispatched only after its prompt/partition is corrected — do not blindly re-run a job that wrote outside its scope.
 - A backend with an **open `circuit_open` breaker** is never silently retried: `out_of_credits` needs a confirmed top-up (or a passing liveness probe), `auth` needs a re-auth (`/v:init`). Without that, its jobs stay `failed` and surfaced.
-- Resume never weakens enforcement: the `git diff` scope gate runs on every re-dispatched job.
+- Resume never weakens enforcement: the `git diff` scope gate runs on every re-dispatched job, and `compound-v-integration-gate.py` gates integration before any commit lands.
+- Never refuse to resume a run because its `state.json` predates a field Engine C adds. Every such field is optional on read.
 - Do **not** print fabricated cost or token metrics (anti-ruflo).

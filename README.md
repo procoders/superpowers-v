@@ -10,6 +10,15 @@ You describe a feature. Claude plans it, splits it into non-overlapping pieces, 
 
 ---
 
+
+## Requirements
+
+**Claude Code ≥ 2.1.219.** Compound V 3.0 hands execution to the native Workflow runtime and to native hook events (`PreToolUse`, `UserPromptSubmit`, `PostCompact`, `Stop`); older versions lack them.
+
+**On measurement, stated up front.** No speed or cost claim ships with 3.0. The observation that motivated proportionate tests — a small change running a full suite — was not reproduced during the design recon, so the test-scoping defaults are **principle-derived, not measured**. The scoped floor is early feedback and does **not** restore what a full suite guarantees; the merge-blocking CI run does, and it always runs. The pipeline records selected-test counts and measured-only durations so a future release can speak from real data instead.
+
+**One ambient cost worth knowing before you install.** The lane-enforcement hook runs on every `Write`/`Edit`/`Bash` tool call in every session — measured at 63 ms on the path where no Compound V job is acting. It is what turns lane enforcement from detection-after-the-fact into a refusal before the write.
+
 ## 🎮 New here? Learn it as a game → **[Compound V Academy](https://amiainative.dev/compound-v)**
 
 The fastest way to *get* what this plugin does. Three gamified episodes — **Developer · Product Owner · Universal Creator** — walk you through the whole pipeline (onboarding → the three scouts → manifest + dispatch → the review gates), with the squad — **The Trench**, **Bootcher**, **Monsieur Contexte**, **Motherboard**, **Git Noir**, **A-Express** — as your guides. 👉 **<https://amiainative.dev/compound-v>**

@@ -61,7 +61,7 @@ Read from `.claude/compound-v.json`. **Fail-closed rule:** Missing file or key �
   The bracketed clause appears only when deep-research is present. Options (omit unavailable engines): **deep-research pass** / **quick search pass** / **either, with narrowed scope** (the user refines the topic in one line — the human narrows, which reduces anchoring) / **skip**. Semantics, all binding:
   - Exactly one ask per brainstorm; never re-ask after a decline.
   - Cancel, timeout, empty reply, or an unrelated next message = skip (→ `declined`).
-  - **Declining deep-research while accepting the quick pass is a RUN with Engine B**, not a decline.
+  - **Declining deep-research while accepting the quick pass is a RUN on rung R-B**, not a decline.
   - Narrowed scope requires nonblank text: if missing, ask once for the one line; still blank → skip (→ `declined`).
   - Cost is stated qualitatively — wall-clock bands and what gets spawned — never as a fabricated number.
 - **`auto`:** run without asking — same engine ladder, same output contract. The anti-anchoring header (§4) applies in every mode.
@@ -69,23 +69,30 @@ Read from `.claude/compound-v.json`. **Fail-closed rule:** Missing file or key �
 
 ---
 
-## 3. Engine Ladder
+## 3. Research Ladder
 
-One engine runs per recon, chosen top-down. Recon imposes a **bounded delay** on the brainstorm's first question — bounded by per-rung timeouts, never indefinite. **At most one engine COMPLETES per recon** (the one-completion budget): a failed rung A may fall to rung B, with **both attempts recorded** in the log line and the outcomes stream's `engine` field reflecting the completer.
+> **Naming, because this ladder used to collide with the dispatch engines.** These rungs are
+> **research engines** for a recon pass and have nothing to do with how jobs execute. Compound V's
+> execution engine is **Engine C** (a native Workflow — see
+> [`workflows-accelerator.md`](workflows-accelerator.md)); the rungs below are named **R-A / R-B /
+> R-C** so a sentence like "recon ran on B" can never be read as a dispatch-engine claim. A live
+> validation log from v2.8 did exactly that.
 
-**A — `deep-research` (bundled skill), if present.**
+One research engine runs per recon, chosen top-down. Recon imposes a **bounded delay** on the brainstorm's first question — bounded by per-rung timeouts, never indefinite. **At most one engine COMPLETES per recon** (the one-completion budget): a failed rung R-A may fall to rung R-B, with **both attempts recorded** in the log line and the outcomes stream's `engine` field reflecting the completer.
+
+**R-A — `deep-research` (bundled skill), if present.**
 
 - The presence check is a **live look at the available-skills listing at fire time**. The `/v:init` capability flag (`deep_research` in `~/.claude/compound-v-capabilities.json`) is an **advisory hint only** — it can go stale (e.g. `disableBundledSkills`); the listing is the contract.
 - Invoke through the **skill/slash interface** (its available-skills entry / `/deep-research`). **Never** hard-code a `Workflow({...})` call — the Workflow tool may be absent for a plain subagent — and **never** gate on a Claude Code version number.
-- **Timeout: cancel rung A if it has not completed within ~15 minutes**, then fall to rung B. Output of an incomplete A is **discarded** — unless specific claims are individually sourced, which may be kept and the doc labeled **PARTIAL** (title suffix `— PARTIAL`, real reason in the announcement).
+- **Timeout: cancel rung R-A if it has not completed within ~15 minutes**, then fall to rung R-B. Output of an incomplete R-A is **discarded** — unless specific claims are individually sourced, which may be kept and the doc labeled **PARTIAL** (title suffix `— PARTIAL`, real reason in the announcement).
 - **deep-research returns its report as a MESSAGE and writes no files.** The caller captures the returned report, trims it to the recon format (§4 — five sections, ≤150 lines), and writes + commits the doc itself. Do not assume the native report shape matches the recon contract; the trim is the caller's job.
 
-**B — parallel WebSearch, if deep-research is absent, declined, or failed.**
+**R-B — parallel WebSearch, if deep-research is absent, declined, or failed.**
 
 - **3–6 WebSearch calls in ONE message** (the Phase 1B search pattern: one message, concurrent calls — covering official docs, common pitfalls, hard constraints, recent changes, alternatives). The caller synthesizes the results into the §4 format. Cancel stragglers past ~3 minutes and synthesize from what returned.
 - **Permission denial or quota exhaustion: do NOT retry.** If some searches succeeded, synthesize from those only (sourced claims only) and label the doc **PARTIAL**. **Report the real reason** — "WebSearch denied by permission settings", "quota exhausted" — never "no engine available".
 
-**C — skip with explicit notice.**
+**R-C — skip with explicit notice.**
 
 - No engine available (or every rung failed): announce plainly with the **real reason** — *"recon skipped: <actual failure>"* — mirroring 1C's Context7 degrade notice (→ `no_engine`). Never silently pretend recon ran; never stall waiting for an engine. The brainstorm continues.
 

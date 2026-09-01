@@ -42,6 +42,12 @@ decision / ``taxonomy_digest`` / localization content-digest) equal across manif
 + artifact, CR4-6 containment, and a ``fast_path.review`` declaration (``backend: claude`` +
 ``tier: deep``) that resolves to Claude Opus — with NO review receipt yet.
 
+v3.0 (Feature A2): it also carries the top-level ``triage`` block
+(``{tier, pre_eval_id, taxonomy_digest, decided_at}``). ``/v:dispatch`` passes
+``--require-triage`` on every live dispatch in every mode, so a manifest without the block
+is not a lint nit — it is a run that dies at dispatch with the artifacts already committed.
+The tier token is read from ``compound-v-preeval.DECISION_TO_TIER``, never re-spelled.
+
 Commit discipline (v2.6.4 + CR5-9): every lifecycle commit is built in a PRIVATE temporary
 index (``GIT_INDEX_FILE`` seeded from ``HEAD``) so ONLY the exact named paths are committed —
 unrelated user-staged work is never swept in, and an overlapping user-staged lifecycle path is
@@ -411,6 +417,28 @@ def build_manifest(run_id, pre_eval_id, record, artifact, write_literal, snapsho
     if taxonomy_version in (None, ""):
         taxonomy_version = "unversioned"
 
+    # v3.0 (Feature A2): the `triage` block — the mechanical consumer of the tier.
+    # `--require-triage` is passed by `/v:dispatch` on every live dispatch in every mode,
+    # so a manifest materialized WITHOUT this block does not fail here; it fails at
+    # dispatch, after the run dir is already committed. Emit it.
+    #
+    # The tier token is READ FROM the engine (`compound-v-preeval.DECISION_TO_TIER`) and
+    # never re-spelled here: two halves that each spell "SCOPED" drift the day one of them
+    # changes. The decision itself was already pinned to DECISION_FASTPATH by `_preflight`,
+    # so the lookup can only miss if the engine's vocabulary moved underneath us — which is
+    # exactly the drift this indirection exists to make loud rather than silent.
+    triage_tier = _preeval().DECISION_TO_TIER.get(record.get("decision"))
+    if triage_tier is None:
+        raise MaterializeError(
+            "record decision %r has no tier in the engine's DECISION_TO_TIER map — "
+            "refusing to invent a manifest triage.tier"
+            % (record.get("decision"),))
+    decided_at = record.get("ts")
+    if not isinstance(decided_at, str) or not decided_at.strip():
+        raise MaterializeError(
+            "record is missing its 'ts' timestamp — triage.decided_at must be the moment "
+            "the decision was taken, never the moment the manifest was written")
+
     skip = {
         "skipped": True,
         "reason": "fastpath",
@@ -422,6 +450,17 @@ def build_manifest(run_id, pre_eval_id, record, artifact, write_literal, snapsho
         "feature": feature,
         "spec_path": spec_path,
         "plan_path": plan_path,
+        # `taxonomy_digest` is the SNAPSHOT's content-address (identical to the record's
+        # `taxonomy_digest` — `_preflight` already proved they agree). The validator
+        # compares it to the taxonomy bytes on disk under `--require-triage`, so a
+        # taxonomy edited between the pre-eval and the dispatch fails closed there: the
+        # record outlived the rules that produced it.
+        "triage": {
+            "tier": triage_tier,
+            "pre_eval_id": pre_eval_id,
+            "taxonomy_digest": snapshot_digest,
+            "decided_at": decided_at,
+        },
         "audits": {
             "archaeology": dict(skip),
             "domain": dict(skip),
@@ -1264,6 +1303,58 @@ def _selftest():
     _digest_case("well-shaped wrong-value digest",
                  lambda a: a.__setitem__("digest", "sha256:" + ("0" * 64)),
                  "self-digest mismatch")
+
+    # ===================== (12) v3.0 Feature A2: the `triage` block ================= #
+    # `/v:dispatch` passes `--require-triage` in every mode, so the block is not optional
+    # in practice. These cases prove the emitted block is well-formed AGAINST THE REAL
+    # VALIDATOR under that flag — not merely present — and that its tier came from the
+    # engine's own map rather than a re-spelled literal.
+    with tempfile.TemporaryDirectory() as td:
+        repo = init_repo(td)
+        res = make_eligible(repo)
+        pid = res["pre_eval_id"]
+        out = run_materialize(repo, pid, prompt_text="apply\n")
+        run_dir = os.path.join(repo, EXEC_DIR_REL, out["run_id"])
+        val = _validator()
+        with open(os.path.join(run_dir, "manifest.yaml"), "r", encoding="utf-8") as fh:
+            mtext = fh.read()
+        parsed = val.load_yaml(mtext)
+        tri = parsed.get("triage")
+        expect("A2: manifest carries a top-level `triage` mapping",
+               isinstance(tri, dict))
+        expect("A2: triage.tier is the engine's tier for this decision (not re-spelled)",
+               isinstance(tri, dict)
+               and tri.get("tier") == pe.DECISION_TO_TIER[pe.DECISION_FASTPATH])
+        expect("A2: triage.pre_eval_id names the committed record",
+               isinstance(tri, dict) and tri.get("pre_eval_id") == pid)
+        expect("A2: triage.taxonomy_digest == the record's taxonomy_digest",
+               isinstance(tri, dict)
+               and tri.get("taxonomy_digest") == res["record"]["taxonomy_digest"])
+        expect("A2: triage.decided_at is the record's decision timestamp",
+               isinstance(tri, dict) and tri.get("decided_at") == "2026-07-12T10:16:00Z")
+        expect("A2: triage block re-parses under the _mini_yaml fallback (no flow {})",
+               isinstance(val._mini_yaml(mtext).get("triage"), dict))
+
+        # THE gate that matters: the REAL validator, with the REAL flag.
+        problems = val.validate(parsed, mode="pre-dispatch", repo_root=repo,
+                                require_triage=True)
+        expect("A2: materialized manifest passes --require-triage (no violations)",
+               problems == [])
+        if problems:
+            for p in problems:
+                print("        - %s" % p)
+
+        # And the negative: strip the block and the SAME validator must reject it. A test
+        # that only ever sees a pass cannot tell "correct" from "never checked".
+        stripped = dict(parsed)
+        stripped.pop("triage", None)
+        expect("A2: the same manifest WITHOUT triage is rejected under the flag",
+               any("missing required top-level 'triage' block"
+                   in p for p in val.validate(stripped, mode="pre-dispatch",
+                                              repo_root=repo, require_triage=True)))
+        # …and stays valid without the flag, so the historical sweep is untouched.
+        expect("A2: absent triage is still valid WITHOUT the flag (no default flipped)",
+               val.validate(stripped, mode="pre-dispatch", repo_root=repo) == [])
 
     if failures:
         print("\nSELFTEST FAILED: %d case(s)" % len(failures))

@@ -12,7 +12,8 @@ digest/matcher primitives are [`scripts/compound-v-taxonomy.py`](../../../script
 ## 1. `pre_eval.*` config keys (`.claude/compound-v.json`)
 
 `/v:init` seeds these (Step 4a); they live in the project config alongside `models`. All defaults
-are **fail-closed** — the SAFE, never-auto-route value. Read them ONLY through
+are **fail-closed** — the SAFE value; none of them can place a request in the DIRECT auto-route class
+(Iron-Invariant #4 as amended, spec §A4). Read them ONLY through
 `compound-v-project-config.load_project_config(repo)` + `resolve_pre_eval(cfg)`.
 
 | Key | Type | Default | Meaning |
@@ -30,8 +31,8 @@ are **fail-closed** — the SAFE, never-auto-route value. Read them ONLY through
   all-defaults. A malformed config is NEVER silently treated as an auto-route (Iron-Invariant #5/#4).
 - **Per-key** invalid values (`fast_path: "banana"`, `min_sample_count: "x"`, a negative
   `token_cap`, a `remember` value ≠ `"fastpath"`) are coerced back to the declared default by
-  `resolve_pre_eval`, which returns a `warnings` list for the caller to surface once. Never raises,
-  never routes.
+  `resolve_pre_eval`, which returns a `warnings` list for the caller to surface once. Never raises;
+  a coerced value can only shrink what this stage will skip, never enlarge the auto-route class.
 
 ### `remember` — revocation (AC-11)
 
@@ -88,10 +89,19 @@ safe.
 case the record is STILL written (and the `predicted` triage event STILL appended, Iron-Invariant #5)
 — there is simply no snapshot to reference and no bytes to digest, so it is written with
 `taxonomy_ref: null`, `taxonomy_digest: null`, `taxonomy_version: null`, `decision: FULL_PIPELINE`.
-`pre-eval-record.schema.json` makes those three fields nullable and uses an
-`if decision == FASTPATH_ELIGIBLE then require non-null taxonomy_ref + taxonomy_digest` conditional, so
-the null-taxonomy record validates but can never be FASTPATH_ELIGIBLE. Consumers MUST route any
-null-taxonomy record straight to the full pipeline.
+`decision` is **three-valued as of 3.0** (spec §A1): the engine's `DECISION_FASTPATH` (the DIRECT tier),
+the added `DECISION_SCOPED`, and `DECISION_FULL`. `compound-v-preeval.py` and
+[`schemas/pre-eval-record.schema.json`](../../../schemas/pre-eval-record.schema.json) are the single
+authority for the literals — do not re-declare a closed enum here or in any other prose.
+
+`pre-eval-record.schema.json` makes those three taxonomy fields nullable and gates them on the
+**negative** condition — `if decision != FULL_PIPELINE then require non-null taxonomy_ref +
+taxonomy_digest` — deliberately, and not on `FASTPATH_ELIGIBLE`. A FASTPATH-keyed conditional was correct
+only while the enum had two values: the moment a third exists it admits a null-taxonomy record as SCOPED,
+and SCOPED is still a real routing decision taken without the sensitive-path and content-pattern
+protections the taxonomy is the only source of. Under the negative form the null-taxonomy record validates
+and can be nothing but `FULL_PIPELINE`. Consumers MUST route any null-taxonomy record straight to the full
+pipeline.
 
 ### Cross-artifact binding fields (AC-13, validator-enforced by C1)
 

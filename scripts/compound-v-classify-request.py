@@ -30,6 +30,25 @@ FAIL-CLOSED EVERYWHERE (Iron-Invariant #5): any error / timeout / unparse / non-
 eligibility (spec §2, round-3 fix); the enum -> band scoring is A3's authority (this module never
 scores).
 
+WHAT THE THIRD TIER DOES AND DOES NOT CHANGE HERE (v3.0 spec §A1)
+-----------------------------------------------------------------
+The scorer now emits three decisions (`FASTPATH_ELIGIBLE` / `SCOPED_PIPELINE` /
+`FULL_PIPELINE`). This module's contract is unchanged: it still returns ONE of four
+category enums and never a decision. Two consequences are worth stating precisely rather
+than leaving to inference, because the round-3 sentence above was written when there were
+only two tiers:
+
+  * `unknown` is still an unconditional `FULL_PIPELINE` — it fails the axes closed, and no
+    matrix cell is reachable from an unknown band.
+  * "T3 alone never manufactures fast-path eligibility" remains exactly true of the DIRECT
+    tier: `plumbing` maps to (low, low), but DIRECT additionally requires taxonomy safety
+    coverage, no fired override, `fan_out <= threshold` and a single literal path — none of
+    which this module can supply. It is NOT true of SCOPED: `user-facing-minor` maps to
+    (medium, medium), a genuine SCOPED cell. That is by design — SCOPED buys a manifest, a
+    run directory, the scope gate, the floor and a review pass, so it is not a class a
+    model-derived category can route around. Only the auto-route class is, and DIRECT is
+    the only tier in it.
+
 Usage:
   compound-v-classify-request.py --build-prompt --request "<text>" [--path P ...] \
                                  [--taxonomy-category C ...]

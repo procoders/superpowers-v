@@ -9,7 +9,7 @@ description: Use when superpowers:brainstorming is about to begin (pre-brainstor
 
 Compound V is a **transparent interceptor** that sits between Superpowers phases AND, as of v1.0, a **lightweight execution orchestrator** — the orchestrated pipeline is now the default execution path. You don't invoke it directly — it fires automatically at four transitions:
 
-**Stage −1 — Pre-Evaluation (v2.9).** *Before* Trigger 0 even offers recon, a fast, cheap **Pre-Evaluation** scores the change request on two separate axes (difficulty ⊥ impact) from deterministic tiered evidence and — only when a change is *provably* trivial **and** low-impact — OFFERS a proportionate **fast-path** that collapses the full pipeline into one scope-gated implementer plus one combined SPEC+QUALITY Opus review. Everything else routes to the full pipeline below. It uses no raw LLM magnitude, **never auto-routes** (it only ever offers), and fails closed on any ambiguity, sensitive-path touch, or shared-token/a11y surface. A sibling **post-diff re-classifier** can still ESCALATE an accepted fast-path back to the full pipeline before merge (minting a new run-id, never mutating the frozen manifest). See [phase-preeval.md](phase-preeval.md); the offer/accept decision is captured as a thin ADR via `/v:adr`.
+**Stage −1 — Pre-Evaluation / triage (v2.9; three-tier as of v3.0).** *Before* Trigger 0 even offers recon, a fast, cheap **Pre-Evaluation** scores the change request on two separate axes (difficulty ⊥ impact) from deterministic tiered evidence and returns one of three tiers: **DIRECT** (implement in place, run the floor, commit on the current branch — no manifest, no run directory, no reviewer dispatch, but a triage record is still written and committed), **SCOPED** (manifest, run directory, scope gate, floor and one combined SPEC+QUALITY review; recon and the three pre-flights are skipped), or **FULL** (the pipeline below, unchanged). It uses no raw LLM magnitude and fails closed on any ambiguity, sensitive-path touch, or shared-token/a11y surface. Iron Invariant #4, amended: **the score OFFERS by default; it auto-routes only inside the DIRECT auto-route class, whose membership is decided by mechanically checkable predicates and never by model judgement, and every other tier still requires a human offer and acceptance.** A sibling **post-diff re-classifier** can still ESCALATE an accepted fast-path back to the full pipeline before merge (minting a new run-id, never mutating the frozen manifest). See [phase-preeval.md](phase-preeval.md); the offer/accept decision is captured as a thin ADR via `/v:adr`.
 
 0. **Before `brainstorming` begins** → offers a **gated pre-brainstorm recon** (Trigger 0): a bounded deep-research/WebSearch pass that writes an anti-anchoring recon doc to `docs/superpowers/recon/` — evidence to widen the brainstorm's questions, never a conclusion to converge on. See [phase-0-recon.md](phase-0-recon.md).
 1. **After `brainstorming`, before `writing-plans`** → injects THREE parallel pre-flights:
@@ -22,7 +22,7 @@ Compound V is a **transparent interceptor** that sits between Superpowers phases
 **The unified pipeline (orchestrator-as-default):**
 
 ```
-★ PRE-EVAL (v2.9)  two-axis score → OFFER fast-path | FULL_PIPELINE   (fail-closed; never auto-routes)
+★ PRE-EVAL (v2.9)  two-axis score → DIRECT | SCOPED | FULL_PIPELINE   (fail-closed; auto-routes only inside the DIRECT class)
    │  └─ accepted fast-path ─► materialize 1-job manifest ─► implement ─► scope gate
    │        ─► post-diff re-classify (ESCALATE → full pipeline, new run-id) ─► review ─► merge
    ▼  (full pipeline)
@@ -116,6 +116,18 @@ flowchart LR
 
 ---
 
+## Hard Rules (the Iron Five)
+
+1. **No plan without a Phase 1A archaeology audit** if any audit-trigger applies.
+2. **No plan without a Phase 1B domain-expert audit** if the spec has any user-facing or domain-specific surface.
+3. **No plan without a Phase 1C library/doc audit** if the spec mentions or implies any library/SDK/framework.
+4. **No execution without a verified Partition Map** in the plan.
+5. **No sequential implementer dispatch** when the Partition Map shows N≥2 parallel-safe tasks.
+
+Violating any of these = stop, fix, restart the phase.
+
+---
+
 ## The Phases — Quick Reference
 
 ### Phase 0: Pre-Brainstorm Recon (gated — Trigger 0)
@@ -177,18 +189,6 @@ When the plan is ready:
 At the review gate, run `recall-check --files <diff's files>` over V-memory: if the same file pattern carries N≥k prior `blocked`/`error`/`timeout` or scope-violation records (default k=2), it returns the conservative-only verdict **tighten** (force worktree / add a review pass / fold into Task 0) — evidence that escalates, never reroutes or loosens. Whether it auto-applies (`memory.auto_tighten`) vs is surfaced advisory, and whether recall auto-fires at all (`memory.auto_recall`), is the `/v:init` choice read from `.claude/compound-v.json`. Separately, when `review.cross_model` is enabled (a `/v:init` default), run an automatic [`/v:review-plan`](../../commands/v-review-plan.md) Codex second opinion on high-stakes plans before dispatch. See [memory.md](memory.md).
 
 **Per-job isolation.** Disjoint Claude jobs write directly to the active workspace (partitioning prevents collisions); Codex/external workers and overlap-prone jobs run in a worktree under `$TMPDIR/compound-v/<run-id>/<job-id>`, merged back on PASS via an index-based patch that includes new files (`git -C <wt> add -A && git -C <wt> diff --cached --binary HEAD | (cd <repo> && git apply --index)`; a plain `git diff HEAD | git apply` would drop allowed untracked additions). The `git diff` scope gate runs on every job either way; a BLOCKED job never merges. See `phase-3-parallel-opus-dispatch.md` and [backend-launcher/SKILL.md](../backend-launcher/SKILL.md).
-
----
-
-## Hard Rules (the Iron Five)
-
-1. **No plan without a Phase 1A archaeology audit** if any audit-trigger applies.
-2. **No plan without a Phase 1B domain-expert audit** if the spec has any user-facing or domain-specific surface.
-3. **No plan without a Phase 1C library/doc audit** if the spec mentions or implies any library/SDK/framework.
-4. **No execution without a verified Partition Map** in the plan.
-5. **No sequential implementer dispatch** when the Partition Map shows N≥2 parallel-safe tasks.
-
-Violating any of these = stop, fix, restart the phase.
 
 ---
 

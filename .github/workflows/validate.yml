@@ -144,7 +144,10 @@ jobs:
           # agent where it was) is blind to them. Their state is genuinely lost, so they
           # are allowlisted by id -- never back-filled, because a reconstructed audit
           # trail is the fabricated-evidence pattern, not a repair.
-          ALLOW="2026-07-13-usage-and-advisor 2026-07-14-v2.14-blockers-and-headless 2026-07-15-v2.16-decision-preferences 2026-07-25-v2.17-cochange"
+          # 2026-07-26-v2.18-autonomy joined them when that branch merged into v3.0:
+          # this gate caught it on the merge, which is the gate working as designed.
+          # Its state was never written either, so it is listed, not reconstructed.
+          ALLOW="2026-07-13-usage-and-advisor 2026-07-14-v2.14-blockers-and-headless 2026-07-15-v2.16-decision-preferences 2026-07-25-v2.17-cochange 2026-07-26-v2.18-autonomy"
           rc=0
           for m in $(git ls-files 'docs/superpowers/execution/*/manifest.yaml'); do
             d=$(dirname "$m"); id=$(basename "$d")
@@ -300,3 +303,65 @@ jobs:
           done
           [ "$rc" = "0" ] || { echo "❌ one or more selftests failed"; exit 1; }
           echo "✅ all script selftests pass under Python 3.9"
+
+      # The selftest sweep above globs scripts/*.py ONLY. Everything under tests/ is
+      # executed by the separate `tests` job below, which always runs.
+
+  # ---------------------------------------------------------------------------
+  # The full-suite backstop (v3.0, Feature B5).
+  #
+  # This is a JOB, not a step guarded by `if:` — and the workflow carries no `paths:`
+  # filter. GitHub reports a conditionally-skipped job as `Success`, so a path filter
+  # or an `if:` on a REQUIRED check turns it green without executing anything. The job
+  # therefore always runs and dispatches internally: it decides what to execute, the
+  # workflow never decides whether to execute it.
+  #
+  # It also fixes a second, older hole. Until 3.0 the only sweep was `scripts/*.py`
+  # plus ONE hardcoded `bash tests/test-epic-goal-stop.sh`, so three of the four files
+  # under tests/ had never run in CI at all — including tests/v2.9-e2e/*.py, which a
+  # flat `tests/*.sh` glob would still miss. The discovery below is RECURSIVE and
+  # covers both extensions, and it fails when it discovers nothing: a guard that
+  # silently matches zero files is the v2.14.1 false-green all over again.
+  # ---------------------------------------------------------------------------
+  tests:
+    name: Full test suite (tests/, always runs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get install -y jq
+
+      # Python 3.9 is the documented floor for the scripts these tests drive.
+      - name: Set up Python 3.9 (test floor)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install test dependencies
+        run: python3 -m pip install --quiet pyyaml jsonschema
+
+      - name: Run every test under tests/ (recursive, .sh and .py)
+        run: |
+          # No `set -e`: every test runs and every failure is reported, rather than
+          # stopping at the first. PYTHONDONTWRITEBYTECODE keeps a local run of this
+          # same sweep from leaving scripts/__pycache__/*.pyc behind — untracked files
+          # the scope gate unions into a job's changed set, which would BLOCK the job
+          # that ran its own tests.
+          set -uo pipefail
+          rc=0
+          found=0
+          while IFS= read -r t; do
+            found=$((found + 1))
+            case "$t" in
+              *.sh) echo "── bash $t";    LANG=C bash "$t"    || { echo "❌ TEST FAILED: $t"; rc=1; } ;;
+              *.py) echo "── python3 $t"; LANG=C PYTHONDONTWRITEBYTECODE=1 python3 "$t" || { echo "❌ TEST FAILED: $t"; rc=1; } ;;
+            esac
+          done < <(find tests -type f \( -name '*.sh' -o -name '*.py' \) -print0 \
+                     | LC_ALL=C sort -z | tr '\0' '\n')
+          if [ "$found" = "0" ]; then
+            echo "❌ no test files discovered under tests/ — the discovery glob is dead, which is exactly how 25 of 29 selftests silently stopped running in v2.14"
+            exit 1
+          fi
+          [ "$rc" = "0" ] || { echo "❌ $found test file(s) swept; one or more failed"; exit 1; }
+          echo "✅ all $found test file(s) under tests/ pass"

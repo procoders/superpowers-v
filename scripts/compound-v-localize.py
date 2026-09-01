@@ -7,6 +7,13 @@ BOUNDED read-only step has resolved the request to real repo paths, a fan-out co
 semantic flags (Iron-Invariant #2). "make button X red" may be a global design token or an
 a11y contrast state — this module DISCOVERS that before the decision, not after.
 
+v3.0 widens what depends on that, without changing this module's contract. The scorer now
+routes into THREE tiers via a 3x3 band matrix (`FASTPATH_ELIGIBLE`/DIRECT,
+`SCOPED_PIPELINE`/SCOPED, `FULL_PIPELINE`/FULL — spec §A1), so a `low` band is no longer
+load-bearing only for the fast path: it also decides the `low`/`medium` SCOPED cell.
+`fan_out` and the single-literal-path shape stay DIRECT-only predicates. Nothing here
+returns or reads a decision; this module supplies the evidence and never the tier.
+
     localize(request, repo, taxonomy) -> {resolved_paths[], fan_out, flags[], confidence}
         confidence in {exact, ambiguous, failed}
 

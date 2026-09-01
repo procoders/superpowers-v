@@ -29,8 +29,9 @@ Cohort separation (Iron-Invariant #3)
 Only an **accepted fast-path** outcome may support a healthy / lowering signal. A
 full-pipeline outcome — including an escalation CHILD — contributes **escalation evidence
 ONLY**, never low-corroboration. A run is a *fast-path parent* iff its ``predicted``
-decision is ``FASTPATH_ELIGIBLE`` AND it is not marked ``escalation_child``. Everything
-else (missing/declined ``predicted``, or ``escalation_child:true``) is full-pipeline.
+decision is the engine's ``DECISION_FASTPATH`` AND it is not marked ``escalation_child``;
+a *SCOPED* parent likewise for ``DECISION_SCOPED`` (v3.0 §A5). Everything else
+(missing/declined/unknown ``predicted``, or ``escalation_child:true``) is full-pipeline.
 At launch every ``predicted`` is ``FULL_PIPELINE`` → Tier 2 is escalation-only by
 construction. Fail-closed: an unknown / missing ``predicted`` decision → full-pipeline.
 
@@ -74,12 +75,36 @@ input beyond the triage boundary. No fabricated cost / token metrics anywhere.
 
 Python 3.9-safe, stdlib only. NEVER a hard ``import yaml`` (this module needs no YAML).
 
+v3.0 (spec §A4.9 / §A5)
+-----------------------
+THREE cohorts, not two. ``_cohorts`` used to collapse everything that was not fast-path
+into ``fullpipeline``; with the engine's third tier that silently folds a whole new
+population into the escalation-evidence figure `/v:status` renders beside fast-path
+precision. ``SCOPED`` is now its own cohort. The decision strings and the manifest tier
+tokens are READ FROM THE ENGINE (``compound-v-preeval.py``'s ``DECISION_SCOPED`` /
+``DECISION_TO_TIER``) and never re-spelled here — a duplicated wire vocabulary is how the
+two halves drift apart.
+
+The MISCALIBRATION CIRCUIT BREAKER lives here too. Its numerator is NEGATIVE ACTUAL
+OUTCOMES — a demotion, a CI failure on the resulting commit, a revert of it, or a later
+escalation of the same work — never a demotion count alone: a mis-sized change that stays
+one allowed, non-sensitive, sub-20-line file is never demoted, so a demotion-only breaker
+stays armed through any number of bad commits. It is ARMED FROM THE FIRST DECISION (a
+warm-up gate was rejected by the maintainer), reactive rather than preventive, and above
+``auto_route_max_demotion_rate`` over the last ``auto_route_window`` DIRECT decisions it
+APPENDS its own ``disarm`` latch, which only a named human's ``rearm`` clears.
+
 Usage:
     compound-v-triage-outcomes.py predicted --pre-eval-id ID --decision D [--field k=v ...]
     compound-v-triage-outcomes.py bind      --pre-eval-id ID --run-id R
-    compound-v-triage-outcomes.py actual    --pre-eval-id ID --run-id R [--escalated] ...
+    compound-v-triage-outcomes.py actual    --pre-eval-id ID --run-id R [--escalated]
+                                            [--demoted] [--ci-failed] [--reverted] ...
     compound-v-triage-outcomes.py precision [--repo DIR] [--min-sample N]
     compound-v-triage-outcomes.py tier2     [--repo DIR] [--min-sample N]
+    compound-v-triage-outcomes.py cohorts   [--repo DIR]
+    compound-v-triage-outcomes.py breaker   [--repo DIR] [--window N] [--max-rate R]
+                                            [--no-latch]     # exit 3 = DISARMED
+    compound-v-triage-outcomes.py rearm     --by NAME [--reason WHY]
     compound-v-triage-outcomes.py --selftest
 """
 
@@ -98,9 +123,32 @@ STREAM_BASENAME = "triage-outcomes.jsonl"
 EVENT_PREDICTED = "predicted"
 EVENT_BIND = "bind"
 EVENT_ACTUAL = "actual"
-EVENTS = (EVENT_PREDICTED, EVENT_BIND, EVENT_ACTUAL)
+# spec 4.9 -- the miscalibration circuit breaker's LATCH. "Disarms itself ... until a human
+# re-arms it" is a latch, not a recomputation: once the negative-outcome rate crosses the
+# threshold the disarm is APPENDED to this same stream, so it survives the bad outcomes
+# rolling out of the rolling window. A `rearm` event (naming a human) is the only thing that
+# clears it. No new file, no mutated line -- the stream stays strictly append-only (AC-3).
+EVENT_BREAKER = "breaker"
+EVENTS = (EVENT_PREDICTED, EVENT_BIND, EVENT_ACTUAL, EVENT_BREAKER)
 
-FASTPATH_DECISION = "FASTPATH_ELIGIBLE"
+BREAKER_DISARM = "disarm"
+BREAKER_REARM = "rearm"
+BREAKER_ACTIONS = (BREAKER_DISARM, BREAKER_REARM)
+
+# spec 4.9 defaults. `auto_route_window` = how many of the most recent DIRECT decisions the
+# rate is computed over; `auto_route_max_demotion_rate` = the rate ABOVE which auto-route
+# disarms itself (strictly above -- a rate exactly equal to the ceiling stays armed).
+DEFAULT_AUTO_ROUTE_WINDOW = 20
+DEFAULT_AUTO_ROUTE_MAX_DEMOTION_RATE = 0.25
+
+# The NEGATIVE `actual` outcome flags the breaker's NUMERATOR counts (spec 4.9). r3 counted
+# post-diff DEMOTIONS only, and a cross-model review showed that cannot see the failure the
+# breaker exists to catch: a mis-sized change that stays one allowed, non-sensitive, sub-20-
+# line file is never demoted, so twenty bad commits in a row leave the rate at zero and the
+# breaker armed. `escalated` is here for the same reason -- a later escalation of the same
+# work is a negative outcome even though nothing was "demoted" at commit time.
+NEGATIVE_ACTUAL_FLAGS = ("demoted", "ci_failed", "reverted", "escalated")
+
 # A review is "passed" for precision if it lands one of these normalized verdicts.
 _REVIEW_PASSED = ("approved", "pass", "passed")
 
@@ -119,6 +167,7 @@ def _load_sibling(basename, modname):
 
 _UPDATE_MEMORY = None
 _PROJECT_CONFIG = None
+_PREEVAL = None
 _VALIDATE_MANIFEST = None
 _VALIDATE_MANIFEST_TRIED = False
 
@@ -157,6 +206,47 @@ def _validate_manifest():
         except Exception:  # noqa: BLE001 - any load failure -> fail-closed (None)
             _VALIDATE_MANIFEST = None
     return _VALIDATE_MANIFEST
+
+
+def _preeval():
+    """The scoring ENGINE module. This file reads its decision strings (`DECISION_FASTPATH`
+    / `DECISION_SCOPED` / `DECISION_FULL`) and its `DECISION_TO_TIER` map FROM here and never
+    re-spells either -- a duplicated wire vocabulary is how the two halves drift apart, and
+    this module used to carry its own `FASTPATH_DECISION` literal.
+
+    Deliberately NOT fail-soft: a load failure raises rather than falling back to hardcoded
+    strings, because a silent fallback IS the duplicated vocabulary. The import is lazy and
+    cached, and the cycle is safe in both directions -- the two modules load each other only
+    from inside functions, never at module-body time."""
+    global _PREEVAL
+    if _PREEVAL is None:
+        _PREEVAL = _load_sibling("compound-v-preeval.py", "compound_v_preeval")
+    return _PREEVAL
+
+
+def _decision_direct():
+    """The engine's DIRECT (fast-path) decision string."""
+    return _preeval().DECISION_FASTPATH
+
+
+def _decision_scoped():
+    """The engine's SCOPED decision string (spec A1's third tier)."""
+    return _preeval().DECISION_SCOPED
+
+
+def decision_to_tier(decision):
+    """The manifest `triage.tier` token for a decision, read from the ENGINE's
+    `DECISION_TO_TIER`. An unknown / missing decision returns None -- never a fabricated
+    tier, and never a re-spelled token."""
+    return _preeval().DECISION_TO_TIER.get(decision)
+
+
+def _tier_rank():
+    """{decision: rank} with DIRECT < SCOPED < FULL, built from the ENGINE's own constants
+    (no re-spelled strings). Used to decide whether a LATER `predicted` for the same
+    pre_eval_id escalated the work to a HIGHER tier -- one of the breaker's negatives."""
+    pe = _preeval()
+    return {pe.DECISION_FASTPATH: 0, pe.DECISION_SCOPED: 1, pe.DECISION_FULL: 2}
 
 
 # ---------------------------------------------------------------------------- #
@@ -226,6 +316,10 @@ def append_predicted(pre_eval_id, decision=None, difficulty_band=None, impact_ba
         "localization": localization if localization is not None else {},
     }
     obj.update(extra)
+    # The manifest tier token, read from the ENGINE's DECISION_TO_TIER and written AFTER
+    # `extra` so no caller can smuggle in a tier the decision does not map to. An unknown
+    # decision records `tier: null` rather than a fabricated tier.
+    obj["tier"] = decision_to_tier(decision)
     _append_event(obj, stream_path)
     return obj
 
@@ -255,12 +349,19 @@ def bind_run(pre_eval_id, run_id, escalation_child=False, ts=None, stream_path=N
 
 def append_actual(pre_eval_id, run_id, escalated=False, review_result=None,
                   test_result=None, merge_pending=False, escalation_child=False,
+                  demoted=False, ci_failed=False, reverted=False, demotion_reason=None,
                   ts=None, stream_path=None, **extra):
-    """Append the ``actual`` event at MERGED / ESCALATION. CR5-4: a TERMINAL actual is
-    emitted only AFTER the merge/commit boundary; a precision-IGNORED intermediate may be
-    appended first with ``merge_pending:true`` (last-writer-wins means the terminal actual
-    that follows replaces it). ``escalated:true`` marks a fast-path parent that escalated;
-    ``escalation_child:true`` marks the full-pipeline child run itself."""
+    """Append the ``actual`` event at MERGED / ESCALATION -- one per COMPLETED run. CR5-4: a
+    TERMINAL actual is emitted only AFTER the merge/commit boundary; a precision-IGNORED
+    intermediate may be appended first with ``merge_pending:true`` (last-writer-wins means
+    the terminal actual that follows replaces it). ``escalated:true`` marks a fast-path
+    parent that escalated; ``escalation_child:true`` marks the full-pipeline child run.
+
+    ``demoted`` / ``ci_failed`` / ``reverted`` are the outcome flags spec 4.9's circuit
+    breaker counts alongside ``escalated``. They are recorded ALWAYS (as booleans), not
+    only-when-true, because the breaker's numerator is an outcome question and "the run
+    reported a green CI" and "nobody said" must not look alike in the audit trail.
+    ``demotion_reason`` is free text and is written only when supplied."""
     if not pre_eval_id:
         raise ValueError("append_actual requires a pre_eval_id")
     if not run_id:
@@ -273,11 +374,42 @@ def append_actual(pre_eval_id, run_id, escalated=False, review_result=None,
         "escalated": bool(escalated),
         "review_result": review_result,
         "test_result": test_result,
+        "demoted": bool(demoted),
+        "ci_failed": bool(ci_failed),
+        "reverted": bool(reverted),
     }
+    if demotion_reason:
+        obj["demotion_reason"] = demotion_reason
     if merge_pending:
         obj["merge_pending"] = True
     if escalation_child:
         obj["escalation_child"] = True
+    obj.update(extra)
+    _append_event(obj, stream_path)
+    return obj
+
+
+def append_breaker(action, by=None, reason=None, rate=None, window=None, max_rate=None,
+                   ts=None, stream_path=None, **extra):
+    """Append the circuit-breaker LATCH event (spec 4.9). ``disarm`` is written by the
+    breaker itself when the negative-outcome rate crosses the ceiling; ``rearm`` is written
+    only by a NAMED human -- "disarms itself ... until a human re-arms it" is a latch, so a
+    rearm without a ``by`` is refused rather than recorded anonymously."""
+    if action not in BREAKER_ACTIONS:
+        raise ValueError("breaker action must be one of %s, got %r"
+                         % (", ".join(BREAKER_ACTIONS), action))
+    if action == BREAKER_REARM and not (by and str(by).strip()):
+        raise ValueError("rearm requires --by (a human re-arms the breaker, not a script)")
+    obj = {
+        "event": EVENT_BREAKER,
+        "ts": ts or _now_iso(),
+        "action": action,
+        "by": by,
+        "reason": reason,
+        "rate": rate,
+        "window": window,
+        "max_rate": max_rate,
+    }
     obj.update(extra)
     _append_event(obj, stream_path)
     return obj
@@ -326,15 +458,24 @@ def _reduce_objs(objs, malformed):
     Returns a dict:
       {"predicted": {pre_eval_id: obj},
        "runs": {(pre_eval_id, run_id): {"bind": obj|None, "actual": obj|None}},
+       "breakers": [obj, ...]   # LATCH events, in file order
        "malformed": int}
 
     Reduce key is ``(pre_eval_id, run_id, event)`` (run_id None for predicted); the LAST
-    line in file order wins.
+    line in file order wins. ``breaker`` events carry no ``pre_eval_id`` at all -- they are
+    stream-scoped, kept in file order, and the LAST one decides the latch.
     """
     predicted = {}
     runs = {}
+    breakers = []
     for obj in objs:
         ev = obj.get("event")
+        if ev == EVENT_BREAKER:
+            if obj.get("action") in BREAKER_ACTIONS:
+                breakers.append(obj)
+            else:
+                malformed += 1  # a breaker line with no recognized action decides nothing
+            continue
         pid = obj.get("pre_eval_id")
         if not pid:
             malformed += 1
@@ -348,7 +489,8 @@ def _reduce_objs(objs, malformed):
             continue
         slot = runs.setdefault((pid, rid), {"bind": None, "actual": None})
         slot[ev] = obj  # last-writer-wins per (pre_eval_id, run_id, event)
-    return {"predicted": predicted, "runs": runs, "malformed": malformed}
+    return {"predicted": predicted, "runs": runs, "breakers": breakers,
+            "malformed": malformed}
 
 
 def _reduce_stream(stream_path=None):
@@ -571,7 +713,7 @@ def _reduce_committed(ctx, stream_abspath):
     precision / Tier-2 even though the append path itself stays working-tree + append-only.
     """
     if not ctx.get("repo_root") or not ctx.get("stream_committed"):
-        return {"predicted": {}, "runs": {}, "malformed": 0}
+        return {"predicted": {}, "runs": {}, "breakers": [], "malformed": 0}
     objs, malformed = _parse_events(_git_read_stream_lines(ctx, stream_abspath))
     return _reduce_objs(objs, malformed)
 
@@ -702,16 +844,28 @@ def _verify_terminal_actual(ctx, pre_eval_id, run_id, slot, actual, is_fastpath,
 
 
 def _cohorts(stream_path=None, exec_dir=None, repo=None):
-    """Split reduced runs into the two cohorts, honoring Iron-Invariant #3.
+    """Split reduced runs into the THREE cohorts, honoring Iron-Invariant #3.
 
     Returns:
-      {"fastpath": [ {pre_eval_id, run_id, actual|None, terminal:bool} ... ],
+      {"fastpath": [ {pre_eval_id, run_id, decision, tier, actual|None, terminal:bool} ...],
+       "scoped": [ ... same shape ... ],
        "fullpipeline": [ ... same shape ... ],
        "malformed": int}
 
-    A fast-path PARENT run: predicted.decision == FASTPATH_ELIGIBLE AND not
-    escalation_child. Everything else (declined/missing predicted → fail-closed, or an
-    escalation child) is full-pipeline (escalation evidence only).
+    A fast-path PARENT run: predicted.decision == the ENGINE's DIRECT decision AND not
+    escalation_child. A SCOPED parent: predicted.decision == the ENGINE's SCOPED decision
+    AND not escalation_child. Everything else (declined/missing/unknown predicted →
+    fail-closed, or an escalation child of either) is full-pipeline.
+
+    spec §A5 — SCOPED IS ITS OWN COHORT. Before 3.0 this function collapsed everything
+    that was not fast-path into ``fullpipeline``; with a third tier that silently folds a
+    whole new population into the escalation-evidence figure `/v:status` renders beside
+    fast-path precision. The decision strings and the tier tokens are read from the engine
+    (``_decision_direct`` / ``_decision_scoped`` / ``decision_to_tier``), never re-spelled.
+
+    Iron-Invariant #3 is UNCHANGED by the split: only an accepted fast-path outcome can
+    support a healthy / lowering signal, so a SCOPED outcome still contributes escalation
+    evidence exactly as a full-pipeline one does — it is now merely countable on its own.
 
     ``terminal`` is now git-DERIVED (CRIT-2): a non-``merge_pending`` ``actual`` counts as
     terminal ONLY when the COMMITTED git blob at HEAD backs it (``_verify_terminal_actual``
@@ -726,27 +880,54 @@ def _cohorts(stream_path=None, exec_dir=None, repo=None):
     # uncommitted appended / overriding event must not affect precision / Tier-2.
     state = _reduce_committed(ctx, stream_abspath)
     predicted = state["predicted"]
+    direct_decision = _decision_direct()
+    scoped_decision = _decision_scoped()
     fastpath = []
+    scoped = []
     fullpipeline = []
     for (pid, rid), slot in state["runs"].items():
         pred = predicted.get(pid)
         decision = pred.get("decision") if isinstance(pred, dict) else None
-        is_fastpath = decision == FASTPATH_DECISION and not _is_escalation_child(slot)
+        child = _is_escalation_child(slot)
+        is_fastpath = decision == direct_decision and not child
+        is_scoped = decision == scoped_decision and not child
         term = _terminal_actual(slot)
+        # `is_fastpath` (NOT `is_scoped`) still selects the stricter sealed-receipt check.
+        # The sealed receipt is produced by the fast-path runner; inventing a receipt
+        # contract for SCOPED here would be a requirement no producer in this lane can
+        # satisfy. SCOPED verification is therefore exactly as strict as full-pipeline
+        # verification already is (committed MERGED state + a real merge-commit object),
+        # never weaker than the pipeline a SCOPED run replaced.
         verified = term is not None and _verify_terminal_actual(
             ctx, pid, rid, slot, term, is_fastpath, exec_dir)
         entry = {
             "pre_eval_id": pid,
             "run_id": rid,
+            "decision": decision,
+            "tier": decision_to_tier(decision),
             "actual": term if verified else None,
             "terminal": verified,
         }
         if is_fastpath:
             fastpath.append(entry)
+        elif is_scoped:
+            scoped.append(entry)
         else:
             fullpipeline.append(entry)
-    return {"fastpath": fastpath, "fullpipeline": fullpipeline,
+    return {"fastpath": fastpath, "scoped": scoped, "fullpipeline": fullpipeline,
             "malformed": state["malformed"]}
+
+
+def cohort_stats(stream_path=None, exec_dir=None, repo=None):
+    """Per-cohort counts, for renderers (`/v:status`) that must show the three tiers
+    separately instead of one collapsed non-fast-path bucket. ``*_n`` is the cohort size;
+    ``*_terminal`` counts only git-VERIFIED terminal outcomes."""
+    c = _cohorts(stream_path, exec_dir=exec_dir, repo=repo)
+    out = {"malformed": c["malformed"]}
+    for name in ("fastpath", "scoped", "fullpipeline"):
+        out[name + "_n"] = len(c[name])
+        out[name + "_terminal"] = sum(1 for e in c[name] if e["terminal"])
+    return out
 
 
 def precision_stats(stream_path=None, min_sample_count=None, repo=None, exec_dir=None):
@@ -830,14 +1011,22 @@ def tier2_lookup(min_sample_count=None, stream_path=None, repo=None, exec_dir=No
 
     cohorts = _cohorts(stream_path, exec_dir=exec_dir, repo=repo)
     fastpath_counted = [e for e in cohorts["fastpath"] if e["terminal"]]
+    scoped_counted = [e for e in cohorts["scoped"] if e["terminal"]]
     fullpipeline_counted = [e for e in cohorts["fullpipeline"] if e["terminal"]]
     n_fastpath = len(fastpath_counted)
-    escalation_evidence_n = len(fullpipeline_counted)
+    # spec §A5: SCOPED is its own cohort, but Iron-Invariant #3 is unchanged — a
+    # non-fast-path outcome is escalation evidence, never a healthy signal. The aggregate
+    # therefore keeps its pre-3.0 meaning (every non-fast-path terminal outcome) and the
+    # split is reported ALONGSIDE it, rather than silently shrinking a number other readers
+    # already consume.
+    escalation_evidence_n = len(scoped_counted) + len(fullpipeline_counted)
 
     # MED-11: fail closed on an empty cohort BEFORE any all()-over-empty can read healthy.
     if n_fastpath == 0 or n_fastpath < floor:
         return {"status": "insufficient", "n": n_fastpath,
                 "escalation_evidence_n": escalation_evidence_n,
+                "scoped_n": len(scoped_counted),
+                "fullpipeline_n": len(fullpipeline_counted),
                 "min_sample_count": floor}
 
     clean = all(
@@ -845,7 +1034,268 @@ def tier2_lookup(min_sample_count=None, stream_path=None, repo=None, exec_dir=No
         and _review_passed(e["actual"].get("review_result"))
         for e in fastpath_counted
     )
-    return {"health": "healthy" if clean else "unhealthy", "n": n_fastpath}
+    return {"health": "healthy" if clean else "unhealthy", "n": n_fastpath,
+            "escalation_evidence_n": escalation_evidence_n,
+            "scoped_n": len(scoped_counted),
+            "fullpipeline_n": len(fullpipeline_counted)}
+
+
+# ---------------------------------------------------------------------------- #
+# spec §A4.9 — the miscalibration circuit breaker.
+#
+# Auto-route is ARMED FROM THE FIRST DECISION. A warm-up gate was considered and
+# REJECTED by the maintainer (it would make the feature's whole point unavailable
+# for weeks), so the safety property here is REACTIVE, not preventive, and nothing
+# below may delay decision one: an empty history yields rate 0.0 and stays armed,
+# and there is deliberately NO min-sample floor of the kind `precision_stats` uses.
+#
+# THE NUMERATOR IS NEGATIVE ACTUAL OUTCOMES, NOT DEMOTIONS. An earlier revision
+# counted post-diff demotions only, and a cross-model review showed that cannot see
+# the failure the breaker exists to catch: a mis-sized change that stays one
+# allowed, non-sensitive, sub-20-line file is never demoted, so twenty bad commits
+# in a row leave the rate at zero and the breaker armed. A DIRECT decision counts as
+# negative when ANY of these is recorded against its pre_eval_id:
+#
+#   * a DEMOTION            — an `actual` with `demoted:true`
+#   * a CI FAILURE          — an `actual` with `ci_failed:true`
+#   * a REVERT              — an `actual` with `reverted:true`
+#   * a LATER ESCALATION    — an `actual` with `escalated:true`, an escalation-CHILD
+#                             run bound under the same pre_eval_id, or a later
+#                             `predicted` re-deciding the same work at a strictly
+#                             HIGHER tier (DIRECT < SCOPED < FULL, ranked from the
+#                             ENGINE's own constants).
+#
+# The last of those is why this walks the RAW event sequence instead of the
+# last-writer-wins reduction: a later `predicted` at a higher tier REPLACES the
+# DIRECT one under LWW, so a reduction-based breaker would watch the escalated
+# decision vanish out of its own denominator — the blind spot, restated.
+#
+# READ SIDE, and the asymmetry is deliberate: the breaker reduces the WORKING-TREE
+# stream, while `precision_stats` / `tier2_lookup` reduce the COMMITTED blob. Those
+# two answer opposite questions. Precision must never be fabricated UPWARD, so it
+# refuses anything git cannot back. The breaker is a SAFETY latch whose failure
+# direction must be over-disarming, never under-disarming — a negative outcome that
+# has been recorded but not yet committed must still be able to disarm auto-route.
+# ---------------------------------------------------------------------------- #
+def _coerce_window(raw):
+    """Fail-closed ``auto_route_window``: a positive int (bools rejected — ``True`` is an
+    int in Python), else the declared default."""
+    if isinstance(raw, bool) or raw is None:
+        return DEFAULT_AUTO_ROUTE_WINDOW
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_AUTO_ROUTE_WINDOW
+    return val if val >= 1 else DEFAULT_AUTO_ROUTE_WINDOW
+
+
+def _coerce_max_rate(raw):
+    """Fail-closed ``auto_route_max_demotion_rate``: a float in [0.0, 1.0], else the
+    declared default. A malformed ceiling must not silently become 1.0 (never disarms)."""
+    if isinstance(raw, bool) or raw is None:
+        return DEFAULT_AUTO_ROUTE_MAX_DEMOTION_RATE
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_AUTO_ROUTE_MAX_DEMOTION_RATE
+    if val != val or val < 0.0 or val > 1.0:  # NaN or out of range
+        return DEFAULT_AUTO_ROUTE_MAX_DEMOTION_RATE
+    return val
+
+
+def resolve_breaker_policy(repo=None, window=None, max_rate=None):
+    """Effective ``(auto_route_window, auto_route_max_demotion_rate)``. Explicit arguments
+    win; otherwise read from ``.claude/compound-v.json``'s ``pre_eval`` block through the
+    shared project-config loader, coerced fail-closed to the spec defaults (20, 0.25).
+
+    The two keys are read from the RAW ``pre_eval`` object rather than through
+    ``resolve_pre_eval``: that function returns only the keys declared in its own
+    ``PRE_EVAL_DEFAULTS``, and adding them there is another lane's file. Reading raw keeps
+    this forward-compatible — the day they are declared there, this still resolves them."""
+    if window is not None and max_rate is not None:
+        return _coerce_window(window), _coerce_max_rate(max_rate)
+    pc = _project_config()
+    try:
+        cfg = pc.load_project_config(repo if repo is not None else _repo_root())
+    except ValueError:
+        cfg = {}  # malformed config → the safe declared defaults, never fail open
+    block = cfg.get("pre_eval")
+    if not isinstance(block, dict):
+        block = {}
+    eff_window = window if window is not None else block.get("auto_route_window")
+    eff_rate = max_rate if max_rate is not None else block.get("auto_route_max_demotion_rate")
+    return _coerce_window(eff_window), _coerce_max_rate(eff_rate)
+
+
+def _direct_history(objs):
+    """Walk the RAW event sequence (file order) and return
+    ``(direct_ids, negatives)``:
+
+      direct_ids  — pre_eval_ids whose FIRST ``predicted`` decided DIRECT, in the order
+                    they were first decided. This is the breaker's denominator population.
+      negatives   — {pre_eval_id: [reason, ...]} for those ids, per the four categories
+                    documented above.
+
+    Using the FIRST predicted (not the last) is what keeps an escalated decision inside its
+    own denominator; the escalation is then recorded as the negative it is."""
+    rank = _tier_rank()
+    direct = _decision_direct()
+    order = []
+    first_decision = {}
+    negatives = {}
+
+    def negative(pid, reason):
+        if first_decision.get(pid) == direct:
+            negatives.setdefault(pid, [])
+            if reason not in negatives[pid]:
+                negatives[pid].append(reason)
+
+    for obj in objs:
+        ev = obj.get("event")
+        pid = obj.get("pre_eval_id")
+        if ev == EVENT_BREAKER or not pid:
+            continue
+        if ev == EVENT_PREDICTED:
+            decision = obj.get("decision")
+            if pid not in first_decision:
+                first_decision[pid] = decision
+                if decision == direct:
+                    order.append(pid)
+                continue
+            # A LATER predicted for work already decided: an escalation iff it ranks
+            # strictly higher. An unrecognized later decision is fail-closed as an
+            # escalation — for a safety latch the safe direction is to disarm and let a
+            # human re-arm, not to ignore a decision string this engine cannot rank.
+            old_rank = rank.get(first_decision.get(pid))
+            new_rank = rank.get(decision)
+            if old_rank is None:
+                continue
+            if new_rank is None:
+                negative(pid, "reclassified_unrankable")
+            elif new_rank > old_rank:
+                negative(pid, "escalated_to:%s" % (decision_to_tier(decision) or decision))
+            continue
+        if ev in (EVENT_BIND, EVENT_ACTUAL):
+            if obj.get("escalation_child"):
+                negative(pid, "escalation_child")
+            if ev == EVENT_ACTUAL:
+                for flag in NEGATIVE_ACTUAL_FLAGS:
+                    if obj.get(flag):
+                        negative(pid, flag)
+    return order, negatives
+
+
+def _latch_state(breakers):
+    """The LAST ``breaker`` event in file order decides the latch. Returns
+    ``(latched_off: bool, event|None)``."""
+    if not breakers:
+        return False, None
+    last = breakers[-1]
+    return last.get("action") == BREAKER_DISARM, last
+
+
+def _rearm_watermark(objs):
+    """Index of the last ``rearm`` event in file order, or -1.
+
+    Re-arming restarts the ROLLING RATE, it does not erase history: the stream stays
+    append-only and every past event is still there, but the window counts only DIRECT
+    decisions recorded AFTER the human re-armed. Without this the re-arm is a no-op — the
+    decisions that tripped the breaker are still inside the window, so the very next
+    evaluation re-disarms and "until a human re-arms it" never actually re-arms anything.
+    The human takes responsibility for what came before the watermark; the breaker goes
+    back to being armed-from-decision-one and reactive to what comes after."""
+    idx = -1
+    for i, obj in enumerate(objs):
+        if obj.get("event") == EVENT_BREAKER and obj.get("action") == BREAKER_REARM:
+            idx = i
+    return idx
+
+
+def breaker_state(stream_path=None, repo=None, window=None, max_rate=None):
+    """The auto-route circuit-breaker state (spec §A4.9), computed WITHOUT any warm-up::
+
+        {"armed": bool, "rate": float, "window": int, "max_rate": float,
+         "n_decisions": int, "n_negatives": int, "negative_ids": [...],
+         "latched_off": bool, "latch": event|None, "reason": str}
+
+    ``rate = n_negatives / n_decisions`` over the last ``window`` DIRECT decisions, and an
+    EMPTY history is rate 0.0 and ARMED — the first decision is never delayed. ``armed`` is
+    False when the latch is set OR the rate is strictly above the ceiling."""
+    eff_window, eff_rate = resolve_breaker_policy(repo=repo, window=window,
+                                                  max_rate=max_rate)
+    objs, _malformed = _read_events(stream_path)
+    watermark = _rearm_watermark(objs)
+    order, negatives = _direct_history(objs[watermark + 1:])
+    windowed = order[-eff_window:] if eff_window else []
+    neg_ids = [pid for pid in windowed if pid in negatives]
+    n = len(windowed)
+    rate = (float(len(neg_ids)) / n) if n else 0.0
+
+    reduced = _reduce_objs(objs, 0)
+    latched_off, latch = _latch_state(reduced["breakers"])
+
+    over = rate > eff_rate
+    if latched_off:
+        reason = "latched off by a recorded disarm — a human must re-arm"
+    elif over:
+        reason = ("negative-outcome rate %.3f is above the %.3f ceiling over the last %d "
+                  "DIRECT decisions" % (rate, eff_rate, n))
+    elif n == 0:
+        reason = ("armed: no DIRECT decisions since the last re-arm"
+                  if watermark >= 0 else
+                  "armed: no DIRECT decisions yet (no warm-up gate — spec §A4.9)")
+    else:
+        reason = ("armed: negative-outcome rate %.3f is at or below the %.3f ceiling over "
+                  "the last %d DIRECT decisions" % (rate, eff_rate, n))
+
+    return {
+        "armed": (not latched_off) and (not over),
+        "rate": rate,
+        "window": eff_window,
+        "max_rate": eff_rate,
+        "n_decisions": n,
+        "n_negatives": len(neg_ids),
+        "negative_ids": neg_ids,
+        "negative_reasons": {pid: negatives[pid] for pid in neg_ids},
+        "latched_off": latched_off,
+        "latch": latch,
+        "rearmed_at": objs[watermark].get("ts") if watermark >= 0 else None,
+        "reason": reason,
+    }
+
+
+def breaker_evaluate(stream_path=None, repo=None, window=None, max_rate=None, latch=True,
+                     ts=None, note=None):
+    """Evaluate the breaker and, when the ceiling is crossed and no disarm is latched yet,
+    APPEND the disarm — this is the "auto-route disarms itself" half of spec §A4.9. The
+    append is idempotent (an already-latched breaker is not re-disarmed on every check),
+    and ``latch=False`` makes the call a pure read."""
+    st = breaker_state(stream_path=stream_path, repo=repo, window=window,
+                       max_rate=max_rate)
+    if latch and not st["latched_off"] and st["rate"] > st["max_rate"]:
+        append_breaker(BREAKER_DISARM, by=None, reason=(note or st["reason"]),
+                       rate=st["rate"], window=st["window"], max_rate=st["max_rate"],
+                       ts=ts, stream_path=stream_path)
+        st = breaker_state(stream_path=stream_path, repo=repo, window=window,
+                           max_rate=max_rate)
+        st["disarmed_now"] = True
+    return st
+
+
+def rearm_breaker(by, reason=None, stream_path=None, ts=None, repo=None, window=None,
+                  max_rate=None):
+    """A NAMED human re-arms auto-route (spec §A4.9: it stays disarmed "until a human
+    re-arms it"). Appends the ``rearm`` latch event and returns the resulting state.
+
+    Re-arming clears the latch AND sets the watermark the rolling rate is counted from
+    (``_rearm_watermark``), so the decisions that tripped the breaker do not immediately
+    re-trip it. Nothing is erased — the stream is append-only and every past event stays
+    readable; only the ROLLING WINDOW restarts. The breaker is then armed-from-decision-one
+    again and reacts to the next negative outcome exactly as it did to the first.
+    """
+    append_breaker(BREAKER_REARM, by=by, reason=reason, ts=ts, stream_path=stream_path)
+    return breaker_state(stream_path=stream_path, repo=repo, window=window,
+                         max_rate=max_rate)
 
 
 # ---------------------------------------------------------------------------- #
@@ -895,16 +1345,43 @@ def main(argv):
     p_act.add_argument("--test-result")
     p_act.add_argument("--merge-pending", action="store_true")
     p_act.add_argument("--escalation-child", action="store_true")
+    # spec §A4.9 — the breaker's NEGATIVE-outcome flags (`--escalated` above is the fourth).
+    p_act.add_argument("--demoted", action="store_true",
+                       help="post-diff re-validation demoted this DIRECT change")
+    p_act.add_argument("--ci-failed", action="store_true",
+                       help="CI failed on the commit this decision produced")
+    p_act.add_argument("--reverted", action="store_true",
+                       help="the commit this decision produced was reverted")
+    p_act.add_argument("--demotion-reason")
     p_act.add_argument("--field", action="append", help="extra k=v (repeatable)")
     p_act.add_argument("--stream")
 
-    for name in ("precision", "tier2"):
+    for name in ("precision", "tier2", "cohorts"):
         q = sub.add_parser(name)
         q.add_argument("--repo")
         q.add_argument("--min-sample", type=int)
         q.add_argument("--stream")
         q.add_argument("--exec-dir",
                        help="run-directory root (default: derived from stream/repo)")
+
+    # spec §A4.9 — read/latch the auto-route circuit breaker.
+    p_br = sub.add_parser("breaker")
+    p_br.add_argument("--repo")
+    p_br.add_argument("--stream")
+    p_br.add_argument("--window", type=int, help="override auto_route_window")
+    p_br.add_argument("--max-rate", type=float,
+                      help="override auto_route_max_demotion_rate")
+    p_br.add_argument("--no-latch", action="store_true",
+                      help="report only; do not append the self-disarm when over ceiling")
+    p_br.add_argument("--note")
+
+    p_re = sub.add_parser("rearm")
+    p_re.add_argument("--by", required=True, help="the human re-arming auto-route")
+    p_re.add_argument("--reason")
+    p_re.add_argument("--repo")
+    p_re.add_argument("--stream")
+    p_re.add_argument("--window", type=int)
+    p_re.add_argument("--max-rate", type=float)
 
     args = parser.parse_args(argv[1:])
     if not args.cmd:
@@ -930,6 +1407,8 @@ def main(argv):
                 args.pre_eval_id, args.run_id, escalated=args.escalated,
                 review_result=args.review_result, test_result=args.test_result,
                 merge_pending=args.merge_pending, escalation_child=args.escalation_child,
+                demoted=args.demoted, ci_failed=args.ci_failed, reverted=args.reverted,
+                demotion_reason=args.demotion_reason,
                 stream_path=args.stream, **_parse_fields(args.field))
             print(json.dumps(obj, ensure_ascii=False))
             return 0
@@ -945,6 +1424,24 @@ def main(argv):
                                           exec_dir=args.exec_dir),
                              indent=2))
             return 0
+        if args.cmd == "cohorts":
+            print(json.dumps(cohort_stats(stream_path=args.stream, repo=args.repo,
+                                          exec_dir=args.exec_dir), indent=2))
+            return 0
+        if args.cmd == "breaker":
+            st = breaker_evaluate(stream_path=args.stream, repo=args.repo,
+                                  window=args.window, max_rate=args.max_rate,
+                                  latch=not args.no_latch, note=args.note)
+            print(json.dumps(st, indent=2))
+            # Exit 3 = DISARMED. A caller can gate auto-route on the exit code without
+            # parsing JSON; 0/1 stay "computed fine" / "bad input" as everywhere else.
+            return 0 if st["armed"] else 3
+        if args.cmd == "rearm":
+            st = rearm_breaker(args.by, reason=args.reason, stream_path=args.stream,
+                               repo=args.repo, window=args.window,
+                               max_rate=args.max_rate)
+            print(json.dumps(st, indent=2))
+            return 0 if st["armed"] else 3
     except ValueError as e:
         sys.stderr.write("error: %s\n" % e)
         return 1
@@ -955,9 +1452,14 @@ def main(argv):
 # Self-test (TDD — written first).
 # ---------------------------------------------------------------------------- #
 def _selftest():
+    import io
     import tempfile
 
     failures = []
+    # The decision strings come from the ENGINE, here as everywhere else in this file.
+    FASTPATH_DECISION = _decision_direct()
+    SCOPED_DECISION = _decision_scoped()
+    FULL_DECISION = _preeval().DECISION_FULL
 
     def expect(name, cond):
         print(("  ok   - " if cond else "  FAIL - ") + name)
@@ -1102,7 +1604,7 @@ def _selftest():
         stream2 = os.path.join(td, "fp", STREAM_BASENAME)
         fpid = "2026-07-11T090000Z-refactor-auth-zz99"
         frid = "2026-07-11-refactor-auth"
-        append_predicted(fpid, decision="FULL_PIPELINE", difficulty_band="high",
+        append_predicted(fpid, decision=FULL_DECISION, difficulty_band="high",
                          impact_band="high", stream_path=stream2)
         bind_run(fpid, frid, stream_path=stream2)
         # A perfectly clean, non-escalated, review-passed FULL-PIPELINE outcome...
@@ -1216,7 +1718,7 @@ def _selftest():
                and abs(pdup["escalation_rate"] - 1.0) < 1e-9)
         # A duplicate predicted with a changed decision: last one wins (once committed —
         # CRIT-1: the reclassifying predicted must be in the COMMITTED blob to take effect).
-        append_predicted(did, decision="FULL_PIPELINE", stream_path=stream4)
+        append_predicted(did, decision=FULL_DECISION, stream_path=stream4)
         _fx_commit_all(td)
         pdup2 = precision_stats(stream_path=stream4)
         expect("last predicted (FULL_PIPELINE) reclassifies the run out of fast-path",
@@ -1542,6 +2044,301 @@ def _selftest():
         p_sealed = precision_stats(stream_path=s_c2seal)
         expect("CRIT-2: the SAME run with a fully-sealed committed receipt IS counted (1/1)",
                p_sealed["n"] == 1 and abs(p_sealed["precision"] - 1.0) < 1e-9)
+
+        # ==================================================================== #
+        # v3.0 §A5 — the wire vocabulary is the ENGINE's, not a second copy.    #
+        # ==================================================================== #
+        _own = io.open(os.path.abspath(__file__), encoding="utf-8").read()
+        _assigned = re.search(r'=\s*"(FASTPATH_ELIGIBLE|SCOPED_PIPELINE|FULL_PIPELINE)"',
+                              _own)
+        expect("no decision string is ASSIGNED in this file (read from the engine)",
+               _assigned is None)
+        _pe = _preeval()
+        expect("DIRECT decision is read from the engine",
+               FASTPATH_DECISION == _pe.DECISION_FASTPATH)
+        expect("SCOPED decision is read from the engine",
+               SCOPED_DECISION == _pe.DECISION_SCOPED)
+        expect("tier tokens come from the engine's DECISION_TO_TIER",
+               decision_to_tier(SCOPED_DECISION) == _pe.DECISION_TO_TIER[SCOPED_DECISION]
+               and decision_to_tier(FASTPATH_DECISION)
+               == _pe.DECISION_TO_TIER[FASTPATH_DECISION])
+        expect("an unknown decision maps to NO tier (never a fabricated one)",
+               decision_to_tier("NOT_A_DECISION") is None)
+
+        # ==================================================================== #
+        # v3.0 §A5 — SCOPED IS ITS OWN COHORT. Before this it collapsed into    #
+        # `fullpipeline` with everything else that was not fast-path.           #
+        # ==================================================================== #
+        s_coh = os.path.join(td, "a5-cohorts", STREAM_BASENAME)
+        # one DIRECT parent (merged + sealed receipt), one SCOPED parent, one FULL parent.
+        append_predicted("PID-D1", decision=FASTPATH_DECISION, stream_path=s_coh)
+        bind_run("PID-D1", "RUN-D1", stream_path=s_coh)
+        append_actual("PID-D1", "RUN-D1", review_result="approved", test_result="pass",
+                      stream_path=s_coh)
+        mk_run(exec_dir, "RUN-D1", _PHASE_MERGED, pre_eval_id="PID-D1",
+               merge_sha=REAL_SHA, receipt=True)
+        append_predicted("PID-S1", decision=SCOPED_DECISION, stream_path=s_coh)
+        bind_run("PID-S1", "RUN-S1", stream_path=s_coh)
+        append_actual("PID-S1", "RUN-S1", review_result="approved", test_result="pass",
+                      stream_path=s_coh)
+        mk_run(exec_dir, "RUN-S1", _PHASE_MERGED, pre_eval_id="PID-S1",
+               merge_sha=REAL_SHA)
+        append_predicted("PID-F1", decision=FULL_DECISION, stream_path=s_coh)
+        bind_run("PID-F1", "RUN-F1", stream_path=s_coh)
+        append_actual("PID-F1", "RUN-F1", review_result="approved", test_result="pass",
+                      stream_path=s_coh)
+        mk_run(exec_dir, "RUN-F1", _PHASE_MERGED, pre_eval_id="PID-F1",
+               merge_sha=REAL_SHA)
+        _fx_commit_all(td)
+        coh = _cohorts(s_coh)
+        expect("SCOPED run lands in its OWN cohort",
+               [e["run_id"] for e in coh["scoped"]] == ["RUN-S1"])
+        expect("SCOPED run is NOT collapsed into fullpipeline",
+               all(e["run_id"] != "RUN-S1" for e in coh["fullpipeline"]))
+        expect("DIRECT and FULL runs stay in their own cohorts",
+               [e["run_id"] for e in coh["fastpath"]] == ["RUN-D1"]
+               and [e["run_id"] for e in coh["fullpipeline"]] == ["RUN-F1"])
+        expect("each cohort entry carries the engine's tier token",
+               {e["run_id"]: e["tier"] for e in
+                coh["fastpath"] + coh["scoped"] + coh["fullpipeline"]}
+               == {"RUN-D1": _pe.DECISION_TO_TIER[FASTPATH_DECISION],
+                   "RUN-S1": _pe.DECISION_TO_TIER[SCOPED_DECISION],
+                   "RUN-F1": _pe.DECISION_TO_TIER[FULL_DECISION]})
+        p_coh = precision_stats(stream_path=s_coh)
+        expect("fast-path precision counts the DIRECT parent ONLY (1/1), uncorrupted",
+               p_coh["n"] == 1 and abs(p_coh["precision"] - 1.0) < 1e-9)
+        t2_coh = tier2_lookup(min_sample_count=1, stream_path=s_coh)
+        expect("tier2 reports the SCOPED and full-pipeline halves separately",
+               t2_coh["scoped_n"] == 1 and t2_coh["fullpipeline_n"] == 1)
+        expect("Iron-Invariant #3 intact: SCOPED is escalation evidence, not health",
+               t2_coh["escalation_evidence_n"] == 2 and t2_coh["n"] == 1
+               and t2_coh["health"] == "healthy")
+        cs = cohort_stats(stream_path=s_coh)
+        expect("cohort_stats renders all three cohorts",
+               cs["fastpath_terminal"] == 1 and cs["scoped_terminal"] == 1
+               and cs["fullpipeline_terminal"] == 1)
+        # An escalation CHILD of a SCOPED parent is still full-pipeline, never SCOPED.
+        bind_run("PID-S1", "RUN-S1-child", escalation_child=True, stream_path=s_coh)
+        append_actual("PID-S1", "RUN-S1-child", review_result="approved",
+                      escalation_child=True, stream_path=s_coh)
+        _fx_commit_all(td)
+        coh2 = _cohorts(s_coh)
+        expect("an escalation child of a SCOPED parent is full-pipeline, not SCOPED",
+               all(e["run_id"] != "RUN-S1-child" for e in coh2["scoped"])
+               and any(e["run_id"] == "RUN-S1-child" for e in coh2["fullpipeline"]))
+
+        # ==================================================================== #
+        # v3.0 §A4.9 — the miscalibration circuit breaker. BOTH halves:         #
+        #   (1) ARMED FROM DECISION ONE — no warm-up gate, ever.                #
+        #   (2) DISARMS ITSELF once the negative-outcome rate crosses.          #
+        # ==================================================================== #
+        expect("fail-closed policy defaults (20 / 0.25)",
+               resolve_breaker_policy(repo=td) ==
+               (DEFAULT_AUTO_ROUTE_WINDOW, DEFAULT_AUTO_ROUTE_MAX_DEMOTION_RATE))
+        expect("malformed window/max_rate coerce to the declared defaults",
+               _coerce_window("abc") == 20 and _coerce_window(0) == 20
+               and _coerce_window(True) == 20 and _coerce_max_rate("x") == 0.25
+               and _coerce_max_rate(1.5) == 0.25 and _coerce_max_rate(-0.1) == 0.25)
+        expect("explicit overrides are honored", resolve_breaker_policy(
+            repo=td, window=5, max_rate=0.5) == (5, 0.5))
+
+        # --- HALF 1: armed from decision one (and before it) ------------------
+        s_b0 = os.path.join(td, "a49-empty", STREAM_BASENAME)
+        b0 = breaker_state(stream_path=s_b0, repo=td)
+        expect("breaker is ARMED with no history at all (no warm-up gate)",
+               b0["armed"] is True and b0["n_decisions"] == 0 and b0["rate"] == 0.0)
+        s_b1 = os.path.join(td, "a49-first", STREAM_BASENAME)
+        append_predicted("PID-B1", decision=FASTPATH_DECISION, stream_path=s_b1)
+        b1 = breaker_state(stream_path=s_b1, repo=td)
+        expect("breaker is ARMED on the very FIRST DIRECT decision (never delayed)",
+               b1["armed"] is True and b1["n_decisions"] == 1 and b1["rate"] == 0.0)
+        bind_run("PID-B1", "RUN-B1", stream_path=s_b1)
+        append_actual("PID-B1", "RUN-B1", review_result="approved", test_result="pass",
+                      stream_path=s_b1)
+        b1b = breaker_state(stream_path=s_b1, repo=td)
+        expect("a clean first outcome leaves the breaker armed",
+               b1b["armed"] is True and b1b["n_negatives"] == 0)
+
+        # --- HALF 2: disarms itself — THE DEMOTION-ONLY BLIND SPOT -------------
+        # Four DIRECT decisions, each one allowed, non-sensitive and sub-20-line, so NOTHING
+        # is ever demoted — and each one fails CI. A demotion-only numerator reads 0/4 and
+        # stays armed through all four bad commits; an outcome numerator reads 4/4.
+        s_b2 = os.path.join(td, "a49-blindspot", STREAM_BASENAME)
+        for i in range(4):
+            pid_i, rid_i = "PID-BS%d" % i, "RUN-BS%d" % i
+            append_predicted(pid_i, decision=FASTPATH_DECISION, difficulty_band="low",
+                             impact_band="low", stream_path=s_b2)
+            bind_run(pid_i, rid_i, stream_path=s_b2)
+            append_actual(pid_i, rid_i, review_result="approved", test_result="fail",
+                          demoted=False, ci_failed=True, diff_files=1, diff_lines=3,
+                          stream_path=s_b2)
+        _b2_objs, _ = _read_events(s_b2)
+        expect("the blind-spot fixture records ZERO demotions (a demotion-only breaker "
+               "would read 0/4 and stay armed)",
+               sum(1 for o in _b2_objs
+                   if o.get("event") == EVENT_ACTUAL and o.get("demoted")) == 0)
+        b2 = breaker_state(stream_path=s_b2, repo=td)
+        expect("negative ACTUAL outcomes are the numerator: rate 4/4 despite no demotion",
+               b2["n_decisions"] == 4 and b2["n_negatives"] == 4
+               and abs(b2["rate"] - 1.0) < 1e-9)
+        expect("above the ceiling the breaker is DISARMED",
+               b2["armed"] is False)
+        expect("the disarm names the CI failures", all(
+            "ci_failed" in b2["negative_reasons"][pid] for pid in b2["negative_ids"]))
+        # ... and it disarms ITSELF: the latch is APPENDED to the same append-only stream.
+        b2ev = breaker_evaluate(stream_path=s_b2, repo=td)
+        expect("the breaker appends its OWN disarm latch (auto-route disarms itself)",
+               b2ev.get("disarmed_now") is True and b2ev["latched_off"] is True
+               and b2ev["armed"] is False)
+        expect("the latch is one appended `breaker` event, never a mutated line",
+               sum(1 for o in _read_events(s_b2)[0]
+                   if o.get("event") == EVENT_BREAKER) == 1)
+        b2ev2 = breaker_evaluate(stream_path=s_b2, repo=td)
+        expect("re-checking an already-latched breaker does NOT append a second disarm",
+               b2ev2.get("disarmed_now") is None
+               and sum(1 for o in _read_events(s_b2)[0]
+                       if o.get("event") == EVENT_BREAKER) == 1)
+
+        # --- the latch outlives the window ------------------------------------
+        for i in range(DEFAULT_AUTO_ROUTE_WINDOW):
+            pid_i = "PID-CLEAN%d" % i
+            append_predicted(pid_i, decision=FASTPATH_DECISION, stream_path=s_b2)
+            bind_run(pid_i, "RUN-CLEAN%d" % i, stream_path=s_b2)
+            append_actual(pid_i, "RUN-CLEAN%d" % i, review_result="approved",
+                          test_result="pass", stream_path=s_b2)
+        b3 = breaker_state(stream_path=s_b2, repo=td)
+        expect("the bad outcomes have rolled OUT of the rolling window (rate back to 0)",
+               b3["n_decisions"] == DEFAULT_AUTO_ROUTE_WINDOW and b3["rate"] == 0.0)
+        expect("but the breaker STAYS disarmed until a human re-arms it",
+               b3["armed"] is False and b3["latched_off"] is True)
+
+        # --- only a NAMED human re-arms ---------------------------------------
+        try:
+            append_breaker(BREAKER_REARM, stream_path=s_b2)
+            expect("an anonymous re-arm is refused", False)
+        except ValueError:
+            expect("an anonymous re-arm is refused", True)
+        b4 = rearm_breaker("oleg", reason="classifier recalibrated", stream_path=s_b2,
+                           repo=td)
+        expect("a named human re-arms auto-route", b4["armed"] is True
+               and b4["latched_off"] is False and b4["latch"]["by"] == "oleg")
+        expect("the re-arm is appended, never a rewrite (2 breaker events now)",
+               sum(1 for o in _read_events(s_b2)[0]
+                   if o.get("event") == EVENT_BREAKER) == 2)
+        expect("the re-arm restarts the rolling window (it is not a no-op)",
+               b4["n_decisions"] == 0 and b4["rate"] == 0.0
+               and b4["rearmed_at"] is not None)
+        expect("re-evaluating right after a re-arm does NOT immediately re-disarm",
+               breaker_evaluate(stream_path=s_b2, repo=td)["armed"] is True)
+        expect("nothing was erased - the whole history is still in the stream",
+               len(_read_events(s_b2)[0]) ==
+               2 + 3 * (4 + DEFAULT_AUTO_ROUTE_WINDOW))
+        # ... and it is armed-from-decision-one AGAIN: the next bad outcome re-disarms.
+        append_predicted("PID-AFTER", decision=FASTPATH_DECISION, stream_path=s_b2)
+        append_actual("PID-AFTER", "RUN-AFTER", reverted=True, stream_path=s_b2)
+        b5 = breaker_state(stream_path=s_b2, repo=td)
+        expect("after a re-arm the breaker still reacts to the very next bad outcome",
+               b5["n_decisions"] == 1 and b5["armed"] is False
+               and b5["negative_reasons"]["PID-AFTER"] == ["reverted"])
+
+        # --- the other three negatives, each on its own ------------------------
+        for tag, kwargs, reason in (("DEM", {"demoted": True}, "demoted"),
+                                    ("REV", {"reverted": True}, "reverted"),
+                                    ("ESC", {"escalated": True}, "escalated")):
+            s_n = os.path.join(td, "a49-" + tag, STREAM_BASENAME)
+            append_predicted("PID-" + tag, decision=FASTPATH_DECISION, stream_path=s_n)
+            bind_run("PID-" + tag, "RUN-" + tag, stream_path=s_n)
+            append_actual("PID-" + tag, "RUN-" + tag, review_result="approved",
+                          stream_path=s_n, **kwargs)
+            b_n = breaker_state(stream_path=s_n, repo=td)
+            expect("a %s outcome disarms the breaker" % reason,
+                   b_n["armed"] is False
+                   and b_n["negative_reasons"]["PID-" + tag] == [reason])
+
+        # --- a LATER escalation of the same work, which LWW would have hidden --
+        s_esc = os.path.join(td, "a49-later-esc", STREAM_BASENAME)
+        append_predicted("PID-LE", decision=FASTPATH_DECISION, stream_path=s_esc)
+        append_predicted("PID-LE", decision=FULL_DECISION, stream_path=s_esc)  # escalated
+        _lww = _reduce_stream(s_esc)
+        expect("last-writer-wins would have RECLASSIFIED the escalated decision away",
+               _lww["predicted"]["PID-LE"]["decision"] == FULL_DECISION)
+        b_le = breaker_state(stream_path=s_esc, repo=td)
+        expect("the breaker walks the RAW sequence, so the escalation stays counted",
+               b_le["n_decisions"] == 1 and b_le["armed"] is False
+               and b_le["negative_reasons"]["PID-LE"] == [
+                   "escalated_to:" + _pe.DECISION_TO_TIER[FULL_DECISION]])
+        # a re-decision at the SAME tier is not an escalation
+        s_same = os.path.join(td, "a49-same-tier", STREAM_BASENAME)
+        append_predicted("PID-ST", decision=FASTPATH_DECISION, stream_path=s_same)
+        append_predicted("PID-ST", decision=FASTPATH_DECISION, stream_path=s_same)
+        expect("a re-decision at the SAME tier is not an escalation",
+               breaker_state(stream_path=s_same, repo=td)["armed"] is True)
+        # an escalation CHILD bound under a DIRECT decision is an escalation too
+        s_child = os.path.join(td, "a49-child", STREAM_BASENAME)
+        append_predicted("PID-EC", decision=FASTPATH_DECISION, stream_path=s_child)
+        bind_run("PID-EC", "RUN-EC-child", escalation_child=True, stream_path=s_child)
+        expect("an escalation child bound under a DIRECT decision counts as negative",
+               breaker_state(stream_path=s_child, repo=td)["armed"] is False)
+
+        # --- the ceiling is STRICTLY above, and SCOPED/FULL never enter it -----
+        s_edge = os.path.join(td, "a49-edge", STREAM_BASENAME)
+        for i in range(4):
+            append_predicted("PID-E%d" % i, decision=FASTPATH_DECISION,
+                             stream_path=s_edge)
+        append_actual("PID-E0", "RUN-E0", ci_failed=True, stream_path=s_edge)
+        b_edge = breaker_state(stream_path=s_edge, repo=td)
+        expect("a rate exactly AT the ceiling (1/4 = 0.25) stays armed",
+               abs(b_edge["rate"] - 0.25) < 1e-9 and b_edge["armed"] is True)
+        append_actual("PID-E1", "RUN-E1", reverted=True, stream_path=s_edge)
+        expect("one more negative (2/4 = 0.5) crosses it",
+               breaker_state(stream_path=s_edge, repo=td)["armed"] is False)
+        s_other = os.path.join(td, "a49-other-tiers", STREAM_BASENAME)
+        append_predicted("PID-SC", decision=SCOPED_DECISION, stream_path=s_other)
+        append_actual("PID-SC", "RUN-SC", ci_failed=True, reverted=True,
+                      stream_path=s_other)
+        b_other = breaker_state(stream_path=s_other, repo=td)
+        expect("the window is DIRECT decisions only: a bad SCOPED run does not disarm it",
+               b_other["n_decisions"] == 0 and b_other["armed"] is True)
+
+        # --- a `--no-latch` read never writes ---------------------------------
+        s_nolatch = os.path.join(td, "a49-nolatch", STREAM_BASENAME)
+        append_predicted("PID-NL", decision=FASTPATH_DECISION, stream_path=s_nolatch)
+        append_actual("PID-NL", "RUN-NL", ci_failed=True, stream_path=s_nolatch)
+        b_nl = breaker_evaluate(stream_path=s_nolatch, repo=td, latch=False)
+        expect("a latch=False evaluation reports disarmed but appends nothing",
+               b_nl["armed"] is False and b_nl["latched_off"] is False
+               and sum(1 for o in _read_events(s_nolatch)[0]
+                       if o.get("event") == EVENT_BREAKER) == 0)
+
+        # ==================================================================== #
+        # §A5 — the events themselves: a `predicted` per decision carrying the   #
+        # engine's tier, an `actual` per completed run carrying the four         #
+        # negative-outcome flags. This stream has never had a data point.        #
+        # ==================================================================== #
+        s_ev = os.path.join(td, "a5-events", STREAM_BASENAME)
+        pe_ev = append_predicted("PID-EV", decision=SCOPED_DECISION,
+                                 difficulty_band="low", impact_band="medium",
+                                 taxonomy_sha="sha256:" + "1" * 64, stream_path=s_ev)
+        expect("the predicted event carries the engine's tier token",
+               pe_ev["tier"] == _pe.DECISION_TO_TIER[SCOPED_DECISION])
+        expect("a caller cannot smuggle in a tier the decision does not map to",
+               append_predicted("PID-EV2", decision=SCOPED_DECISION,
+                                stream_path=s_ev, tier="DIRECT")["tier"]
+               == _pe.DECISION_TO_TIER[SCOPED_DECISION])
+        ac_ev = append_actual("PID-EV", "RUN-EV", review_result="approved",
+                              test_result="fail", ci_failed=True,
+                              demotion_reason="path identity changed", stream_path=s_ev)
+        expect("the actual event records all four negative-outcome flags explicitly",
+               all(k in ac_ev for k in NEGATIVE_ACTUAL_FLAGS)
+               and ac_ev["ci_failed"] is True and ac_ev["demoted"] is False
+               and ac_ev["demotion_reason"] == "path identity changed")
+        expect("breaker events do not pollute the malformed count",
+               _reduce_stream(s_b2)["malformed"] == 0
+               and len(_reduce_stream(s_b2)["breakers"]) == 2)
+        with io.open(s_ev, encoding="utf-8") as fh:
+            _ev_lines = [l for l in fh.read().splitlines() if l.strip()]
+        expect("every event is one appended JSON line", len(_ev_lines) == 3
+               and all(json.loads(l)["event"] in EVENTS for l in _ev_lines))
 
     if failures:
         print("\nSELFTEST FAILED: %d case(s)" % len(failures))

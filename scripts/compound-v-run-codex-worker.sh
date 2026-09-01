@@ -27,7 +27,8 @@
 #     --write-allowed "<glob>[:<glob>...]" \
 #     [--timeout-sec <n>] [--network true|false] \
 #     [--read-only true|false] [--output-schema <abs-path>] \
-#     [--effort low|medium|high|xhigh] [--events-log <abs-path>]
+#     [--effort low|medium|high|xhigh] [--events-log <abs-path>] \
+#     [--test-contract-file <abs-path>] [--test-timeout-sec <n>]
 #
 # All file paths MUST be absolute. write_allowed is a colon-separated glob list,
 # each glob matched repo-relative against the changed paths. An EMPTY
@@ -62,6 +63,9 @@ emit_job_result() {
   # $1 status  $2 blocked(true|false)  $3 files_json (JSON array)  $4 violations_json (JSON array)
   # $5 summary  $6 session_id  $7 worktree  $8 exit_code(int)  $9 failure_class ("" => null)
   # ${10} retry_after_seconds(int, 0 when unknown)  ${11} usage_json (JSON object)
+  # The `tests` object rides on the GLOBAL $TESTS_JSON ("null" ⇒ key omitted)
+  # rather than a positional arg: the five workers' emit arities already differ,
+  # and a global keeps this patch byte-identical across all of them.
   jq -n \
     --arg status "$1" \
     --argjson blocked "$2" \
@@ -74,6 +78,7 @@ emit_job_result() {
     --arg failure_class "$9" \
     --argjson retry_after_seconds "${10}" \
     --argjson usage "${11}" \
+    --argjson tests "${TESTS_JSON:-null}" \
     '{
        status: $status,
        blocked: $blocked,
@@ -86,7 +91,131 @@ emit_job_result() {
        failure_class: (if $failure_class == "" then null else $failure_class end),
        retry_after_seconds: $retry_after_seconds,
        usage: $usage
-     }'
+     }
+     + (if $tests == null then {} else {tests: $tests} end)'
+}
+
+# --- test contract (v3.0 Feature B3) -----------------------------------------
+# The RESOLVED test contract reaches this worker as a REAL ARGUMENT
+# (--test-contract-file <abs .json>), never as prose inside the prompt: a value a
+# model has to NOTICE in a prompt is not a contract, and that is exactly the failure
+# mode this release exists to remove. The CALLER resolves the manifest's
+# `test_contract` plus the job's `test_scope` into the ordered `resolved_commands`
+# list (the glob authority stays in the caller's Python, for the same reason the
+# scope gate does); this worker only EXECUTES that list and REPORTS what it measured.
+# The executor model never fills `tests` — same rule as blocked/files_changed/violations.
+#
+# These three functions are BYTE-IDENTICAL in all five worker scripts
+# (scripts/compound-v-run-{codex,antigravity,cursor,devin,opencode}-worker.sh).
+# Fix them in all five, or in none.
+
+# Read one resolved command by INDEX, never by line: a command may legitimately
+# contain a newline, and a line-oriented split would silently turn one command into
+# two (and the second one into a shell fragment).
+tc_command_at() {
+  jq -r --argjson i "$2" '.resolved_commands[$i]' "$1"
+}
+
+# Structural validation of --test-contract-file, run EARLY — before a model run is
+# burned. A malformed contract is a usage fault (exit 2), not a test failure:
+# discovering it after an hour of model time teaches the run nothing.
+tc_validate() {
+  _tc_f="$1"
+  command -v jq >/dev/null 2>&1 || die "jq not found on PATH (needed to read --test-contract-file)"
+  case "$_tc_f" in /*) : ;; *) die "--test-contract-file must be an absolute path: $_tc_f" ;; esac
+  [ -f "$_tc_f" ] || die "--test-contract-file not found: $_tc_f"
+  jq -e '
+      (type == "object")
+      and (((keys) - ["scope","floor_command","full_command","resolved_commands"]) | length) == 0
+      and has("scope")
+      and (.scope as $s | ["full","impacted","floor_only"] | index($s) != null)
+      and ((.resolved_commands | type) == "array")
+      and ((.resolved_commands | length) > 0)
+      and (.resolved_commands | map(type == "string") | all)
+    ' "$_tc_f" >/dev/null 2>&1 \
+    || die "--test-contract-file is malformed; want {\"scope\":\"full|impacted|floor_only\",\"resolved_commands\":[\"...\"]} with optional floor_command/full_command and no other keys: $_tc_f"
+  # A scope must NEVER resolve to running nothing (execution-manifest.md invariant 12:
+  # floor_only means ONLY the floor, never nothing). An all-whitespace command would
+  # `bash -c` to a silent exit 0 — a fabricated pass wearing a green tick.
+  _tc_n=$(jq -r '.resolved_commands | length' "$_tc_f")
+  _tc_i=0
+  while [ "$_tc_i" -lt "$_tc_n" ]; do
+    _tc_c=$(tc_command_at "$_tc_f" "$_tc_i")
+    if [ -z "$(printf '%s' "$_tc_c" | tr -d '[:space:]')" ]; then
+      die "--test-contract-file resolved_commands[$_tc_i] is blank; a scope must never resolve to an empty command"
+    fi
+    _tc_i=$((_tc_i + 1))
+  done
+}
+
+# Execute the resolved commands inside the worktree and print the MEASURED `tests`
+# object on stdout. Nothing here is estimated: `duration_ms` is wall-clock around the
+# supervised invocations (so it includes the supervisor's own start-up — that IS what
+# running a test through this worker costs), and `failures[]` carries the exact
+# commands that exited non-zero, which is what makes the NEXT run's previously-failing
+# set computable at all. Commands are never short-circuited, so `failures[]` is
+# complete even when the first one fails.
+#
+# Every command runs under the process-group timeout supervisor with stdin </dev/null
+# and its output captured to FILES outside the worktree: this worker's own stdout must
+# stay exactly one job_result JSON, and a hung test must not outlive the job.
+#
+# $1 = contract file   $2 = worktree (cwd for the commands)   $3 = log dir, OUTSIDE $2
+tc_run() {
+  _tc_f="$1"
+  _tc_wt="$2"
+  _tc_logdir="$3"
+  mkdir -p "$_tc_logdir" 2>/dev/null || true
+  # Bytecode caches are the commonest test byproduct. Tests run AFTER the gate, so a
+  # __pycache__ can never cause a false violation — but it could still ride into the
+  # merge, so do not create it in the first place.
+  export PYTHONDONTWRITEBYTECODE=1
+  _tc_scope=$(jq -r '.scope' "$_tc_f")
+  _tc_n=$(jq -r '.resolved_commands | length' "$_tc_f")
+  _tc_ran='[]'
+  _tc_failed='[]'
+  _tc_rc=0
+  _tc_t0=$(python3 -c 'import time; print(int(time.time() * 1000))' 2>/dev/null) || _tc_t0=""
+  _tc_i=0
+  while [ "$_tc_i" -lt "$_tc_n" ]; do
+    _tc_c=$(tc_command_at "$_tc_f" "$_tc_i")
+    set +e
+    python3 "$SUPERVISOR" --timeout "$TEST_TIMEOUT_SEC" --grace 3 --cwd "$_tc_wt" \
+      --stdout "$_tc_logdir/test_$_tc_i.out" --stderr "$_tc_logdir/test_$_tc_i.err" \
+      --max-output-bytes 1048576 -- /bin/bash -c "$_tc_c" </dev/null
+    _tc_crc=$?
+    set -e
+    _tc_ran=$(printf '%s' "$_tc_ran" | jq -c --arg c "$_tc_c" '. + [$c]')
+    if [ "$_tc_crc" != "0" ]; then
+      if [ "$_tc_rc" = "0" ]; then
+        _tc_rc="$_tc_crc"
+      fi
+      _tc_failed=$(printf '%s' "$_tc_failed" | jq -c --arg c "$_tc_c" '. + [$c]')
+    fi
+    _tc_i=$((_tc_i + 1))
+  done
+  _tc_t1=$(python3 -c 'import time; print(int(time.time() * 1000))' 2>/dev/null) || _tc_t1=""
+  # duration_ms is MEASURED-ONLY: ABSENT — not zero, not estimated — when either clock
+  # read failed. A count with a fabricated duration is worse than a count with none.
+  _tc_dur="null"
+  if [ -n "$_tc_t0" ] && [ -n "$_tc_t1" ]; then
+    _tc_dur=$((_tc_t1 - _tc_t0))
+    [ "$_tc_dur" -ge 0 ] || _tc_dur="null"
+  fi
+  jq -n \
+    --arg scope "$_tc_scope" \
+    --argjson ran "$_tc_ran" \
+    --argjson failures "$_tc_failed" \
+    --argjson code "$_tc_rc" \
+    --argjson count "$_tc_n" \
+    --argjson dur "$_tc_dur" \
+    '{
+       command: ($ran | join("\n")),
+       exit_code: $code,
+       scope: $scope,
+       selected_count: $count,
+       failures: $failures
+     } + (if $dur == null then {} else {duration_ms: $dur} end)'
 }
 
 # Validate an id (run_id / job_id) against a strict safe-character allow-list.
@@ -122,6 +251,13 @@ OUTPUT_SCHEMA=""
 EFFORT=""
 EVENTS_LOG=""
 
+# --test-contract-file / --test-timeout-sec (v3.0 Feature B3) — the RESOLVED test
+# contract, carried as a real argument. Empty ⇒ this worker runs no tests and emits
+# NO `tests` object at all (absent is honest; an invented zero is not).
+TEST_CONTRACT_FILE=""
+TEST_TIMEOUT_SEC=900
+TESTS_JSON="null"
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --run-id)        RUN_ID="$2"; shift 2 ;;
@@ -136,6 +272,8 @@ while [ $# -gt 0 ]; do
     --output-schema) OUTPUT_SCHEMA="$2"; shift 2 ;;
     --effort)        EFFORT="$2"; shift 2 ;;
     --events-log)    EVENTS_LOG="$2"; shift 2 ;;
+    --test-contract-file) TEST_CONTRACT_FILE="$2"; shift 2 ;;
+    --test-timeout-sec)   TEST_TIMEOUT_SEC="$2"; shift 2 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -169,6 +307,15 @@ case "$REPO" in /*) : ;; *) die "--repo must be an absolute path: $REPO" ;; esac
 case "$PROMPT_FILE" in /*) : ;; *) die "--prompt-file must be an absolute path: $PROMPT_FILE" ;; esac
 [ -d "$REPO" ]        || die "--repo is not a directory: $REPO"
 [ -f "$PROMPT_FILE" ] || die "--prompt-file not found: $PROMPT_FILE"
+
+# The test contract is validated BEFORE the backend is launched: a malformed contract
+# must not cost a model run. tc_validate `die`s (exit 2) with the specific defect.
+case "$TEST_TIMEOUT_SEC" in
+  ''|*[!0-9]*) die "--test-timeout-sec must be a positive integer: $TEST_TIMEOUT_SEC" ;;
+esac
+if [ -n "$TEST_CONTRACT_FILE" ]; then
+  tc_validate "$TEST_CONTRACT_FILE"
+fi
 if [ -n "$OUTPUT_SCHEMA" ]; then
   case "$OUTPUT_SCHEMA" in /*) : ;; *) die "--output-schema must be absolute: $OUTPUT_SCHEMA" ;; esac
   [ -f "$OUTPUT_SCHEMA" ] || die "--output-schema not found: $OUTPUT_SCHEMA"
@@ -544,6 +691,33 @@ usage_json=$(python3 "$SCRIPT_DIR/compound-v-usage-extract.py" \
   --backend codex --events-log "$EVENTS_LOG" 2>/dev/null) || usage_json=""
 if [ -z "$usage_json" ] || ! printf '%s' "$usage_json" | jq -e . >/dev/null 2>&1; then
   usage_json='{"input_tokens":null,"output_tokens":null,"advisor_calls":null,"backend":"codex","measured":false}'
+fi
+
+# --- run the resolved test contract (v3.0 Feature B3) ------------------------
+# ORDERING IS LOAD-BEARING: this runs AFTER the git-derived scope gate above, so a
+# file a test writes into the worktree (a cache dir, a coverage report) can never be
+# mistaken for a scope VIOLATION. The flip side belongs to the caller and is stated in
+# backend-launcher/SKILL.md: anything a test creates after the gate is outside the
+# gate's authority and must not be merged — stage by the gate's `files_changed`, never
+# a bare `git add -A`.
+#
+# Tests run only on an otherwise-successful job: a blocked/timeout/error job is not
+# going to merge, and a test verdict for it would be noise. `tests` is then ABSENT.
+#
+# A non-zero tests.exit_code does NOT change `status`. `status`/`failure_class`
+# describe the BACKEND's disposition, and re-labelling a red suite as a backend error
+# would feed it to the retry/reroute policy, which cannot fix a failing test. This
+# worker reports; the CALLER must not merge a job whose tests failed, and the review
+# gate FAILs a job that reports no test command at all.
+TESTS_JSON="null"
+if [ -n "$TEST_CONTRACT_FILE" ] && [ "$status" = "success" ]; then
+  TESTS_JSON=$(tc_run "$TEST_CONTRACT_FILE" "$WT" "$ART/tests") || TESTS_JSON="null"
+  # Fail honest, never fabricate: an unparseable/absent result means we cannot say what
+  # ran, so we say nothing. The review gate treats "no test command" as a FAIL, so this
+  # degrades closed rather than into a silent green.
+  if [ -z "$TESTS_JSON" ] || ! printf '%s' "$TESTS_JSON" | jq -e . >/dev/null 2>&1; then
+    TESTS_JSON="null"
+  fi
 fi
 
 # --- emit --------------------------------------------------------------------

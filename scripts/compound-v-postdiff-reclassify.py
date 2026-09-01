@@ -13,10 +13,41 @@ changed-path set the scope gate used. It REUSES scope-check's changed-path set +
 its `matches` globber (imported by path, read-only) — it never modifies, subclasses,
 or re-copies scope-check.
 
-It answers ONE question: "does the actual, materialized diff still deserve the
-fast-path, or must it ESCALATE to the full pipeline?" It returns
-``{"escalate": bool, "reasons": [...]}`` — never a routing decision of its own; the
-orchestrator escalates on ``escalate=True``.
+It answers ONE question: "does the actual, materialized diff still deserve the tier
+triage gave it, or must it ESCALATE?" It returns
+``{"escalate": bool, "escalate_to": str|None, "reasons": [...]}`` — never a routing
+decision of its own; the orchestrator escalates on ``escalate=True``.
+
+THREE TIERS: WHY ``escalate`` ALONE IS NO LONGER AN ANSWER (v3.0 spec §A1/§A4)
+-----------------------------------------------------------------------------
+``compound-v-preeval.py`` now emits THREE decisions — ``FASTPATH_ELIGIBLE`` (tier
+DIRECT), ``SCOPED_PIPELINE`` (tier SCOPED) and ``FULL_PIPELINE`` (tier FULL). A bare
+``escalate: True`` was a complete answer only while there were two tiers and "not the
+fast path" could only mean one thing. It is now ambiguous, and resolving the ambiguity
+in the caller is exactly the "binary reader of a three-value enum" mistake.
+
+So ``reclassify`` takes the tier the change is CURRENTLY on (``from_decision``) and
+names the tier it must move to (``escalate_to``):
+
+===================  ================  =========================================
+``from_decision``    ``escalate_to``   why
+===================  ================  =========================================
+FASTPATH_ELIGIBLE    SCOPED_PIPELINE   spec §A4 predicate 8: a post-diff failure
+                                       "demotes to SCOPED before commit", which
+                                       still buys the manifest, the run dir, the
+                                       scope gate, the floor and a review pass.
+SCOPED_PIPELINE      FULL_PIPELINE     one tier up; FULL is the ceiling.
+FULL_PIPELINE        FULL_PIPELINE     already at the ceiling.
+None / unrecognised  FULL_PIPELINE     FAIL-CLOSED. A caller that does not say
+                                       which tier it is on gets the most
+                                       ceremony, never the least.
+===================  ================  =========================================
+
+``escalate_to`` is ``None`` exactly when ``escalate`` is False. The three tier strings
+are duplicated here as module constants ON PURPOSE: this module imports nothing from
+the scorer (it is a sibling analyzer, and the values are a published wire vocabulary
+carried in JSON records, not a Python import). A ``_SELFTEST`` case asserts they still
+equal the scorer's constants, so the two cannot drift silently.
 
 Fail-closed is the law (Iron-Invariant #5). ANY uncertainty escalates:
 unsupported/absent parser, parse failure, binary / deleted / renamed change,
@@ -70,12 +101,14 @@ sink. YAML is loaded only via the shared soft-PyYAML loader (CLI path only).
 Interface:
     reclassify(baseline_sha, changed_paths, worktree, taxonomy,
                parsers=None, max_total_lines=..., max_untracked_bytes=...,
-               git_timeout_s=...) -> {"escalate": bool, "reasons": [str, ...]}
+               git_timeout_s=..., from_decision=None)
+        -> {"escalate": bool, "escalate_to": str|None, "reasons": [str, ...]}
 
 CLI:
     compound-v-postdiff-reclassify.py --worktree DIR [--baseline SHA]
         --taxonomy taxonomy.yaml [--changed-file paths.txt] [--max-total-lines N]
         [--max-untracked-bytes N]
+        [--from-decision FASTPATH_ELIGIBLE|SCOPED_PIPELINE|FULL_PIPELINE]
     compound-v-postdiff-reclassify.py --selftest
 """
 
@@ -93,6 +126,22 @@ import tempfile
 MAX_TOTAL_LINES = 50            # union of tracked (numstat) + untracked line counts
 MAX_UNTRACKED_BYTES = 20000     # per untracked file
 GIT_TIMEOUT_S = 30
+
+# The three-value decision vocabulary produced by compound-v-preeval.py (v3.0 spec §A1),
+# duplicated here as a wire vocabulary rather than imported (see the module docstring).
+# `_selftest` asserts these still equal the scorer's constants, so drift cannot be silent.
+DECISION_FASTPATH = "FASTPATH_ELIGIBLE"   # tier DIRECT
+DECISION_SCOPED = "SCOPED_PIPELINE"       # tier SCOPED
+DECISION_FULL = "FULL_PIPELINE"           # tier FULL
+
+# Where an escalation lands, per tier. EVERY value is named explicitly and the lookup
+# default is FULL: an unrecognised or absent `from_decision` gets the MOST ceremony, never
+# the least. DIRECT demotes exactly one tier, to SCOPED, per spec §A4 predicate 8.
+_ESCALATION_TARGET = {
+    DECISION_FASTPATH: DECISION_SCOPED,
+    DECISION_SCOPED: DECISION_FULL,
+    DECISION_FULL: DECISION_FULL,
+}
 PARSER_TIMEOUT_S = 20
 MAX_DIFF_BYTES = 1_000_000      # bounded sink for `git diff`/`git show`
 MAX_NUMSTAT_BYTES = 4_000_000
@@ -586,13 +635,28 @@ def _safe_join(worktree, path):
 # --------------------------------------------------------------------------- #
 # The reclassifier.
 # --------------------------------------------------------------------------- #
+def escalation_target(from_decision):
+    """The tier an escalation from `from_decision` lands on (v3.0 spec §A1/§A4). Every known
+    tier is mapped explicitly; anything else — including None, the pre-3.0 caller that never
+    said which tier it was on — falls closed to FULL_PIPELINE."""
+    return _ESCALATION_TARGET.get(from_decision, DECISION_FULL)
+
+
 def reclassify(baseline_sha, changed_paths, worktree, taxonomy,
                parsers=None, max_total_lines=MAX_TOTAL_LINES,
                max_untracked_bytes=MAX_UNTRACKED_BYTES,
-               git_timeout_s=GIT_TIMEOUT_S):
-    """Post-hoc reclassification of a fast-path diff. See module docstring.
+               git_timeout_s=GIT_TIMEOUT_S, from_decision=None):
+    """Post-hoc reclassification of a proportionate-tier diff. See module docstring.
 
-    Returns {"escalate": bool, "reasons": [str, ...]} — reasons deduped + sorted.
+    Args:
+      from_decision: the tier the change is currently on — one of DECISION_FASTPATH /
+                     DECISION_SCOPED / DECISION_FULL. Optional and fail-closed: None (the
+                     pre-3.0 call shape) targets FULL_PIPELINE, so an existing caller keeps
+                     exactly its old two-tier meaning while a 3.0 caller gets the one-tier
+                     demotion spec §A4 predicate 8 requires.
+
+    Returns {"escalate": bool, "escalate_to": str|None, "reasons": [str, ...]} — reasons
+    deduped + sorted; `escalate_to` is None exactly when `escalate` is False.
     Fail-closed: ANY uncertainty adds a reason (⇒ escalate)."""
     if parsers is None:
         parsers = dict(_DEFAULT_PARSERS)
@@ -683,7 +747,10 @@ def reclassify(baseline_sha, changed_paths, worktree, taxonomy,
         reasons.append("total changed lines %d exceeds threshold %d" % (total_lines, max_total_lines))
 
     reasons = sorted(set(reasons))
-    return {"escalate": len(reasons) > 0, "reasons": reasons}
+    escalate = len(reasons) > 0
+    return {"escalate": escalate,
+            "escalate_to": escalation_target(from_decision) if escalate else None,
+            "reasons": reasons}
 
 
 # --------------------------------------------------------------------------- #
@@ -708,6 +775,11 @@ def main(argv):
                     "default: derive from scope-check")
     ap.add_argument("--max-total-lines", type=int, default=MAX_TOTAL_LINES)
     ap.add_argument("--max-untracked-bytes", type=int, default=MAX_UNTRACKED_BYTES)
+    ap.add_argument("--from-decision", dest="from_decision", default=None,
+                    choices=[DECISION_FASTPATH, DECISION_SCOPED, DECISION_FULL],
+                    help="the tier this change is currently on; sets `escalate_to` in the "
+                         "output (DIRECT demotes to SCOPED, SCOPED to FULL). Omitted => "
+                         "fail-closed to FULL_PIPELINE, the pre-3.0 two-tier meaning.")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv[1:])
 
@@ -739,9 +811,12 @@ def main(argv):
         args.baseline, changed, args.worktree, taxonomy,
         max_total_lines=args.max_total_lines,
         max_untracked_bytes=args.max_untracked_bytes,
+        from_decision=args.from_decision,
     )
     print(json.dumps(result, indent=2))
-    # Exit 0 = fast-path holds; 1 = ESCALATE. (Non-zero is advisory; caller decides.)
+    # Exit 0 = the current tier holds; 1 = ESCALATE to result["escalate_to"]. (Non-zero is
+    # advisory; the caller decides — and now reads WHICH tier from the payload, not from an
+    # assumption that "not fast-path" means FULL.)
     return 1 if result["escalate"] else 0
 
 
@@ -1324,6 +1399,63 @@ def _selftest():
         res, _ = run(r, base)
         expect("new tiny Python file with no def/content does NOT escalate",
                res["escalate"] is False)
+
+        # ============ v3.0 — THE ESCALATION TARGET, NOT JUST THE BOOLEAN ============ #
+        # The wire vocabulary must not drift from the scorer that produces it. Import the
+        # scorer's constants by path and compare; if this ever fails, one side moved.
+        _pe = _load_sibling("compound-v-preeval.py", "_cv_preeval_drift_check")
+        if not _pe:
+            expect("decision-vocabulary drift check skipped (scorer not importable)", True)
+        else:
+            expect("decision vocabulary matches compound-v-preeval.py exactly",
+                   (DECISION_FASTPATH, DECISION_SCOPED, DECISION_FULL)
+                   == (_pe.DECISION_FASTPATH, _pe.DECISION_SCOPED, _pe.DECISION_FULL))
+
+        # Pure mapping: DIRECT demotes ONE tier (spec §A4 predicate 8), SCOPED goes to FULL,
+        # FULL stays, and everything unrecognised — None included — falls closed to FULL.
+        expect("escalation target: DIRECT -> SCOPED",
+               escalation_target(DECISION_FASTPATH) == DECISION_SCOPED)
+        expect("escalation target: SCOPED -> FULL",
+               escalation_target(DECISION_SCOPED) == DECISION_FULL)
+        expect("escalation target: FULL -> FULL",
+               escalation_target(DECISION_FULL) == DECISION_FULL)
+        for _unknown in (None, "", "DIRECT", "fastpath_eligible", 4):
+            expect("escalation target fail-closed for %r -> FULL" % (_unknown,),
+                   escalation_target(_unknown) == DECISION_FULL)
+
+        # End to end on a real diff: the SAME escalating change reports a DIFFERENT target
+        # depending on the tier it came from — which is the whole point of the field.
+        r = new_repo("escalate-target")
+        write(r, "src/auth/login.ts", "// base\n")
+        git(r, ["add", "-A"]); git(r, ["commit", "-qm", "base"])
+        base = head(r)
+        write(r, "src/auth/login.ts", "// base\nconst x = 1;\n")
+        res_direct, _ = run(r, base, from_decision=DECISION_FASTPATH)
+        res_scoped, _ = run(r, base, from_decision=DECISION_SCOPED)
+        res_bare, _ = run(r, base)
+        expect("escalating diff from DIRECT reports escalate_to SCOPED",
+               res_direct["escalate"] is True
+               and res_direct["escalate_to"] == DECISION_SCOPED)
+        expect("escalating diff from SCOPED reports escalate_to FULL",
+               res_scoped["escalate"] is True
+               and res_scoped["escalate_to"] == DECISION_FULL)
+        expect("escalating diff with NO from_decision falls closed to FULL "
+               "(the pre-3.0 caller keeps its old meaning)",
+               res_bare["escalate"] is True and res_bare["escalate_to"] == DECISION_FULL)
+        expect("the escalate BOOLEAN and the reasons are identical across all three",
+               res_direct["escalate"] == res_scoped["escalate"] == res_bare["escalate"]
+               and res_direct["reasons"] == res_scoped["reasons"] == res_bare["reasons"])
+
+        # escalate_to is None exactly when escalate is False — never a stale target a
+        # caller could act on after a clean pass.
+        r = new_repo("escalate-target-clean")
+        write(r, "keep.md", "x\n")
+        git(r, ["add", "-A"]); git(r, ["commit", "-qm", "base"])
+        base = head(r)
+        write(r, "const2.py", "X = 1\n")
+        res_clean, _ = run(r, base, from_decision=DECISION_FASTPATH)
+        expect("no escalation -> escalate_to is None (no stale target)",
+               res_clean["escalate"] is False and res_clean["escalate_to"] is None)
 
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

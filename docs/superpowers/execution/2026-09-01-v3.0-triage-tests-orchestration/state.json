@@ -1,0 +1,123 @@
+{
+  "run_id": "2026-09-01-v3.0-triage-tests-orchestration",
+  "phase": "COLLECTED",
+  "updated_at": "2026-09-01T17:13:20Z",
+  "pre_eval_id": null,
+  "total_retries": 0,
+  "max_total_retries": 10,
+  "jobs": {
+    "task-0-contract": {
+      "status": "done",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null
+    },
+    "task-1-preeval": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "task-2-outcomes": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "task-3-fastpath": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "task-4-triage-command": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "task-5-invariant": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "task-6-transport": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "task-7-review-gate": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "task-8-stop-rule": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "task-9-engine-c": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "task-10-adrs": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "task-11-v218-wiring": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "task-12-taxonomy": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "task-13-review": {
+      "status": "running",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null
+    },
+    "task-14-release": {
+      "status": "pending",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null
+    },
+    "task-15-lane-guard": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "task-16-native-points": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "task-17-integration-authority": {
+      "status": "done",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    }
+  },
+  "review": {
+    "spec": "pending",
+    "quality": "pending",
+    "integration": "pending"
+  }
+}

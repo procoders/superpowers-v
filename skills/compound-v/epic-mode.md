@@ -221,6 +221,97 @@ Per feature, marathon adds `"attempts": 0, "last_error": null, "disposition": nu
 
 ---
 
+## Armed goal condition (v2.18, opt-in, marathon-only)
+
+Marathon and watch both answer *"how does this epic come back after a death?"*. The **armed goal**
+answers a different question: *why did the turn end at all while runnable work remained?* It is the
+only **blocking** primitive in this plugin — a `Stop` hook that refuses to let the turn end while a
+deterministically-evaluated goal is armed and unmet.
+
+**What arming means.** `/v:epic` (never the hook) writes a top-level `goal_arm` record into
+`epic-state.json` — exactly `{condition, session_id, arm_id, max_continues}`, **lazily created** on
+the first `--arm-goal` and **popped entirely** by `--disarm-goal`, so a never-armed epic's key set is
+unchanged. The record is a *statement of intent plus its bound*; it holds no counter. At the end of
+every turn [`hooks/epic-goal-stop.sh`](../../hooks/epic-goal-stop.sh) reads it through
+[`compound-v-epic-state.py`](../../scripts/compound-v-epic-state.py) `--goal-status` (strictly
+read-only) and, when the goal is armed, this session's, and not yet met, emits
+`{"decision":"block"}` instead of letting the turn end. **The hook never writes
+`epic-state.json`** — `_atomic_write_json` has ~35 call sites documented as "not flock-guarded, only
+the single live driver calls this", so the continue counter and the enforcement once-marker live in
+the hook's own store under the OS temp dir instead. Arming is therefore the *only* write, and
+`/v:epic` is still the single writer of the epic spine.
+
+**Exactly two conditions ship**, both resolved from on-disk state and never by model judgment (a goal
+a model may declare met is prose again, which is the thing this release exists to replace):
+`all_features_done` (the strict `done:` terminal — every feature done **and** the final review
+passed) and `final_review_passed` (which `--record-final-review` already refuses to record while any
+sample-audit or confirmed-blocker obligation is outstanding). `no_incomplete_jobs` is **refused at
+arm time with the reason**: it is *run*-scoped, lives in a `state.json` this module never opens, and
+a naive read would be **wrong** rather than merely missing — a job marked `done` whose files are not
+in git is not done.
+
+**The lifecycle.**
+
+| Phase | What happens | Who acts |
+|---|---|---|
+| **arm** | `--arm-goal --condition C --session-id ID --max-continues N` writes `goal_arm`, minting a fresh `arm_id` | `/v:epic` §0d |
+| **live** | each `Stop` with `should_continue == true` increments the hook's own counter, **persists it, then** blocks | the hook |
+| **exhausted** | `continue_count` reaches `max_continues` → the hook releases the turn and says so on stderr; the record stays armed | the hook |
+| **met / terminal** | `should_continue` goes false → the hook stops holding the turn open **by itself**; nothing is un-armed | the hook |
+| **disarm** | `--disarm-goal` pops the record (idempotent: `mutated: false` when nothing was armed) | `/v:epic`, or a human |
+
+**At most one armed epic per project — enforced in two halves.** Per *file*: a second `--arm-goal`
+is REFUSED naming the existing arm unless `--replace-arm` is passed, which replaces it **explicitly**
+and says so on stderr. Across *files*: the hook's discovery walk canonicalizes its `cwd`, finds the
+project root, and looks for `docs/superpowers/execution/epics/*/epic-state.json` — **zero or multiple
+matches FAIL OPEN**, because guessing which epic to hold a session open for is worse than not
+holding it. So do not leave two epic-state files armed and expect either to hold: the honest outcome
+is that neither does.
+
+**The goal rule matches on `session_id`.** The armed record stores the id of the session that armed
+it; the hook compares it to the `session_id` on the `Stop` payload and **exits 0 silently on any
+mismatch** — a second session working in the same project is never held open by someone else's epic.
+An **empty** session id is refused at arm time *and* re-checked in the hook, because an empty stored
+id disables isolation entirely and would hold **every** session in the project open. The practical
+consequence for the driver: an arm made with the wrong id is not an error anywhere — it is simply
+inert. `/v:epic` §0d states how to obtain the id and what to check afterwards.
+
+**`max_continues` is the bound, and `0` is invalid, not "unlimited".** There is no unlimited setting.
+The counter is keyed on `digest(project root) + session_id + arm_id`: the root, so project A cannot
+suppress project B in the same session; the `arm_id`, so a disarm/re-arm inside one live session
+starts a **fresh** count instead of a sequential second epic inheriting the first's. A `--replace-arm`
+mints a new `arm_id` for exactly that reason — it abandons the previous arm's counter rather than
+inheriting it. If the hook's store is swept mid-arm (a temp sweep, a reboot), the hook **fails open**
+rather than recreating the counter at zero: autonomy stopping is an acceptable failure, an unbounded
+loop is not. Re-arm to resume goal-held continuation.
+
+**A terminal-but-unmet epic yields "do not continue", never "met".** `--goal-status` reports both
+answers separately and they are not interchangeable:
+
+```
+# an epic halted by a halt_epic disposition, with an armed all_features_done goal:
+{"armed": true, "condition": "all_features_done", …, "met": false,
+ "category": "halted_needing_human", "terminal": true,
+ "reason": "blocked_needing_human: halt_epic disposition on a", "should_continue": false}
+```
+
+`should_continue` is `armed AND NOT met AND NOT terminal` — the one boolean the hook needs, and it
+correctly says *stop* for a tripped breaker, a `halt_epic` verdict, exhausted reachable work or an
+unsatisfiable DAG. A caller that wants *"did it FINISH?"* must read **`met`**. Conflating the two —
+treating "the hook stopped holding the turn" as "the epic completed" — is a **fabricated completion
+claim**, and it is the specific bug this split exists to prevent: a stopped epic is not a finished
+one. `done_with_confirmed_blockers` deliberately does not satisfy `all_features_done` either — that
+epic is terminal, so the loop stops, but it stops **without** claiming the epic finished.
+
+**Honest boundary (state it to the user).** A `Stop` block is **best-effort**: the runtime silently
+discards one when the turn ends via a tool result, an MCP end-turn or a loop tick, and the harness
+cap (`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`, default 8) is a backstop we do not rely on — our own
+`continue_count` is *the* bound and the epic circuit breakers stay authoritative above both. This
+buys meaningfully longer unattended runs **with a ceiling**; it is not eight hours, and it is still
+not "survives while you sleep".
+
+---
+
 ## Honesty boundary
 
 State this to the user — epic mode is bounded, not magic:
@@ -231,6 +322,7 @@ State this to the user — epic mode is bounded, not magic:
 - **Quality is bounded by per-feature spec + partition quality.** A weak decomposition (overlapping features, missed deps) produces a weak epic. The state spine guarantees **order and resumability**, not that your decomposition was right.
 - **Marathon (v2.10, opt-in) — "survives a fall" is honest, not magic.** *In-session:* the loop continues past a soft per-feature error to the next runnable feature automatically, within the one live `/v:epic` invocation; a crashed feature is caught by the existing `running` → reconcile path on the next pass. *Hard death* (quota, closed terminal, crashed machine): a **human re-invokes `/v:epic <epic-id>`**, re-entrant, resuming from `epic-state.json` — unless the epic also opted into `watch`.
 - **Watch (v2.11, opt-in, marathon-only) — bounded auto-resurrection, still not "survives while you sleep."** See "Auto-resurrection watch" above for the full corrected boundary: Tier-1 `CronCreate` pauses/misses fires/expires after 7 days; Tier-2 `scheduled-tasks` performs one catch-up on app start/wake, not an always-on server; "survives quota exhaustion" needs both a reset AND continued authentication; a truly machine-off (laptop closed/asleep) resurrection needs remote infrastructure, never claimed built-in; `max_resume_count` bounds it so a persistently-dying run halts for a human instead of looping forever. No fabricated cost/token metrics anywhere in either stance.
+- **Armed goal (v2.18, opt-in, marathon-only) — a bounded blocking primitive, not an unbounded loop.** See "Armed goal condition" above: a `Stop` block is best-effort (the runtime discards one when a turn ends via a tool result, an MCP end-turn or a loop tick), `max_continues` is a finite, immutable ceiling (`0` is invalid, not "unlimited"), a lost hook store fails OPEN rather than granting a fresh tranche, and a **terminal-but-unmet** epic reports `should_continue: false` with `met: false` — the loop stops **without** claiming the epic finished. Never report a released turn as a completed epic.
 
 ---
 
@@ -239,7 +331,8 @@ State this to the user — epic mode is bounded, not magic:
 - Epic state spine (CLI + validation, incl. the v2.11 watch surface — liveness/claim-resume/watcher-registry): [`scripts/compound-v-epic-state.py`](../../scripts/compound-v-epic-state.py)
 - Marathon arbiter panel (v2.10): [`scripts/compound-v-epic-arbiter.py`](../../scripts/compound-v-epic-arbiter.py)
 - Auto-resurrection watcher (v2.11, NEW): [`scripts/compound-v-epic-watch.py`](../../scripts/compound-v-epic-watch.py) — `emit-prompt`/`plan`
-- Driver command: [`commands/v-epic.md`](../../commands/v-epic.md) (`/v:epic`) — the marathon loop's exact command sequence, incl. §0c (watch arm) and "Watch disarm"
+- Driver command: [`commands/v-epic.md`](../../commands/v-epic.md) (`/v:epic`) — the marathon loop's exact command sequence, incl. §0c (watch arm) and "Watch disarm"; §0d (goal arm) and "Goal disarm"
+- Armed-goal `Stop` hook (v2.18): [`hooks/epic-goal-stop.sh`](../../hooks/epic-goal-stop.sh) — reads `--goal-status`, writes only its own store; registered in [`hooks/hooks.json`](../../hooks/hooks.json) as `"<script>" || true`
 - Per-run state machine + crash-resume (one level down): [`state-machine.md`](state-machine.md)
 - The per-feature manifest contract: [`execution-manifest.md`](execution-manifest.md)
 - The main skill: [`SKILL.md`](SKILL.md)

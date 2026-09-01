@@ -4,6 +4,43 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [3.0.0] - 2026-09-01
+
+### Changed — the native runtime becomes the execution engine
+
+Compound V stops being an orchestrator. Claude Code grew a native orchestration runtime and a full set of enforcement points; this release hands execution to them and keeps the parts that have no native equivalent: **triage, disjoint file lanes, the git-derived verdict, cross-session recovery and the cross-vendor arbiter.**
+
+The audit that drove it is committed at [`docs/superpowers/architecture/native-mechanisms.md`](docs/superpowers/architecture/native-mechanisms.md) — 23 guarantees matched against the mechanism that could provide them. Of those, **11 had a native mechanism that covers the need and which we were not using**: five decided in 1.0 and never built, three we did not know existed, one never looked at, one deleted on a false premise, one rendered by hand. All eleven are used now.
+
+**Requires Claude Code ≥ 2.1.219.**
+
+### Added — proportionate triage, with a caller
+
+A three-tier decision (`DIRECT` / `SCOPED` / `FULL`) replacing the two-value one, computed inside the engine so a fired override can never be paired with a cheap tier. The existing 7,883-line scorer needed no new scoring logic — it needed an entry point. It now has three: `/v:triage`, a `UserPromptSubmit` nudge, and a manifest validator that **refuses to validate a manifest without a triage block** when `/v:dispatch` passes `--require-triage`, which it does in every mode.
+
+A narrow auto-commit class gated on nine mechanically checkable predicates, including a floor that must have passed, full post-diff re-validation against an immutable pre-edit taxonomy snapshot, and a `git update-ref` compare-and-swap so two sessions cannot both act on the same authorization. A miscalibration breaker counts **negative outcomes** — CI failures, reverts, escalations — not demotions, which a demotion-only counter structurally cannot see.
+
+### Added — tests proportionate to the change, bought with a floor
+
+`test_contract` and per-job `test_scope` in the manifest, transported to workers as a real argument rather than prose in a prompt. The floor is impacted ∪ previously-failing ∪ newly-added; an unmapped path resolves to the full suite, never to nothing.
+
+**Stated plainly, because it is the point:** the floor is early feedback. It does **not** restore what the full suite guaranteed — CI does, and CI always runs. Call-graph-derived test selection is measured at 0.2%–10.6% unsafe per revision, and a hand-written glob map carries strictly less information than a call graph, so 0.2% is an optimistic floor rather than an expectation. This reverses a decision made in 2.17; the reasoning is recorded in [ADR 0003](docs/superpowers/adr/0003-scoped-tests-with-a-floor.md).
+
+### Added — lane enforcement before the write
+
+A `PreToolUse` deny that refuses an out-of-lane `Write`/`Edit`/`Bash` write. Its limits are recorded as **passing tests rather than comments** — interpreter one-liners, variable-held paths and build tooling are not caught by command inspection, and are caught by the git-derived postcondition instead, which remains the authority. The guard runs on every matching tool call in every session; measured at 63 ms on the unresolved path.
+
+### Fixed
+
+- `run_test_floor` had never executed once: `--test-cmd` had no producer. It has one.
+- The floor recorded commands via a lossy shlex join, so a recorded failure could not be re-run — silently shrinking the next run's previously-failing set.
+- Merge-back diffed against `HEAD` rather than the pinned baseline, so an executor that committed inside its worktree passed the gate while its committed half failed to land.
+- CI executed nothing under `tests/`. It now sweeps recursively, as a job that always runs and fails when it discovers nothing.
+
+### Note on measurement
+
+No speed or cost claim ships with this release. The observation that motivated proportionate tests — a one-word change running a full suite — was **not reproduced** by any lane of the recon, so Feature B's defaults are **principle-derived, not measured**. The pipeline now records selected-test counts and measured-only durations so the next release can speak from our own data.
+
 ## [2.19.0] - 2026-08-30
 
 ### Fixed — the SessionStart banner becomes stateful ("Claude forgets")

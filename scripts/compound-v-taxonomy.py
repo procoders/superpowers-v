@@ -16,7 +16,14 @@ Taxonomy shape (authored by `/v:onboard`, validated by compound-v-validate-taxon
       - {match: "aria-label", pattern_type: literal, case: sensitive,
          scan: content, kind: a11y, impact_band: high}
     sensitive_path_list: ["src/auth/**", "**/migrations/**"]
+    auto_route_allow: ["CHANGELOG.md"]        # v3.0 A4 predicate 4 — optional, default empty
+    auto_route_max_lines: 20                  # v3.0 A4 predicate 8 — optional, default 20
     churn: {exclude_paths: ["**/*.min.js"], format_commit_patterns: ["^chore\\(fmt\\)"]}
+
+The two `auto_route_*` keys are the v3.0 DIRECT auto-route class (spec §A4). They are
+OPTIONAL and fail-closed by absence: a taxonomy without `auto_route_allow` grants nothing,
+which is exactly the pre-3.0 behaviour. `match_auto_route()` is the single implementation
+of predicates 4 and 5; no consumer re-derives allow/sensitive membership itself.
 
 Bands are `low | medium | high` (never a raw number — Iron-Invariant #1). Matching is
 **conservative-max**: a single strong `high` signal is never diluted by a weak one.
@@ -147,6 +154,26 @@ PATTERN_TYPES = ("literal", "glob", "regex")
 MAX_REGEX_LEN = 200
 DEFAULT_REGEX_TIMEOUT_S = 2
 _REGEX_RESULT_CAP_BYTES = 1 << 16  # bounded output sink for the regex worker
+
+
+# v3.0 §A4 — the DIRECT auto-route class.
+#
+# DEFAULT_AUTO_ROUTE_MAX_LINES is the spec default applied when the taxonomy is silent. A
+# MALFORMED value is not defaulted, it is floored to 0 (nothing can auto-route) — a broken
+# budget must never silently become a permissive one.
+DEFAULT_AUTO_ROUTE_MAX_LINES = 20
+
+# MANDATORY_SENSITIVE: the policy files, treated as sensitive for auto-route purposes in EVERY
+# project whether or not the taxonomy lists them. Spec §A4.5: "a policy that does not protect
+# itself is not a policy", and §A4.8's attack is precisely an implementer editing only the
+# taxonomy to widen `auto_route_allow`. A seed that forgets these rows must not re-open it, so
+# the floor lives in code and the taxonomy can only ADD to it. Deliberately scoped to
+# auto-route eligibility: `match_path`'s `sensitive` (hard override #2) still reports exactly
+# what the taxonomy declares, so no existing verdict changes shape.
+MANDATORY_SENSITIVE = (
+    ".claude/compound-v-impact-taxonomy.yaml",
+    ".claude/compound-v.json",
+)
 
 
 def band_rank(band):
@@ -384,6 +411,8 @@ def load_taxonomy(path=None, text=None):
         "path_patterns": [],
         "content_patterns": [],
         "sensitive_path_list": [str(g) for g in _as_list(data.get("sensitive_path_list"))],
+        "auto_route_allow": [str(g) for g in _as_list(data.get("auto_route_allow"))],
+        "auto_route_max_lines": _auto_route_max_lines(data.get("auto_route_max_lines")),
         "churn": {"exclude_paths": [], "format_commit_patterns": []},
     }
     for row in _as_list(data.get("path_patterns")):
@@ -434,6 +463,79 @@ def match_path(taxonomy, path):
         "sensitive": sensitive,
         "difficulty_band": max_band(r.get("difficulty_band") for r in matched),
         "impact_band": max_band(r.get("impact_band") for r in matched),
+    }
+
+
+def _auto_route_max_lines(raw):
+    """Normalize `auto_route_max_lines`. Absent -> the spec default (20). Malformed (a bool, a
+    non-int, a negative) -> 0, i.e. no change fits the budget. Fail-closed, never permissive."""
+    if raw is None:
+        return DEFAULT_AUTO_ROUTE_MAX_LINES
+    if isinstance(raw, bool):
+        return 0
+    if isinstance(raw, int):
+        return raw if raw >= 0 else 0
+    if isinstance(raw, str):
+        try:
+            v = int(raw.strip())
+        except ValueError:
+            return 0
+        return v if v >= 0 else 0
+    return 0
+
+
+def auto_route_sensitive_globs(taxonomy):
+    """The sensitive set as auto-route sees it: everything the taxonomy declares PLUS the
+    MANDATORY_SENSITIVE policy-file floor. Order-stable, de-duplicated."""
+    out = []
+    for g in list(taxonomy.get("sensitive_path_list", [])) + list(MANDATORY_SENSITIVE):
+        if g not in out:
+            out.append(g)
+    return out
+
+
+def taxonomy_self_protects(taxonomy):
+    """True when the taxonomy's OWN declared sensitive_path_list already covers every
+    MANDATORY_SENSITIVE policy file (spec §A4.5). False means the code floor is doing the work
+    and the taxonomy should be fixed — reportable, never silently tolerated."""
+    declared = taxonomy.get("sensitive_path_list", [])
+    return all(any(glob_match(p, g) for g in declared) for p in MANDATORY_SENSITIVE)
+
+
+def match_auto_route(taxonomy, path):
+    """Spec §A4 predicates 4 and 5 for ONE repo-relative path — the single implementation
+    every consumer (triage, the post-diff re-validation, the reclassifier) calls instead of
+    re-deriving membership.
+
+    Fail-closed throughout: an absent/empty `auto_route_allow` grants nothing, and sensitivity
+    is evaluated against `auto_route_sensitive_globs` (taxonomy + mandatory policy floor), so
+    the class can never be widened by an edit to the policy file it is authorizing.
+
+    Returns:
+      {"path": str,
+       "allowed": bool,          # predicate 4 — matches auto_route_allow
+       "sensitive": bool,        # predicate 5 — matches the sensitive set (floor included)
+       "eligible": bool,         # allowed AND NOT sensitive
+       "max_lines": int,         # the line budget predicate 8 re-checks post-diff
+       "reasons": [str, ...]}    # why NOT eligible; empty when eligible
+    """
+    allow = taxonomy.get("auto_route_allow", []) or []
+    allowed = any(glob_match(path, g) for g in allow)
+    sensitive = any(glob_match(path, g) for g in auto_route_sensitive_globs(taxonomy))
+    reasons = []
+    if not allow:
+        reasons.append("auto_route_allow is empty (fail-closed: nothing auto-routes)")
+    elif not allowed:
+        reasons.append("path matches no auto_route_allow entry (predicate 4)")
+    if sensitive:
+        reasons.append("path matches the sensitive set (predicate 5)")
+    return {
+        "path": path,
+        "allowed": allowed,
+        "sensitive": sensitive,
+        "eligible": bool(allowed and not sensitive),
+        "max_lines": _auto_route_max_lines(taxonomy.get("auto_route_max_lines")),
+        "reasons": reasons,
     }
 
 
@@ -662,6 +764,37 @@ churn:
 """
 
 
+_AUTO_ROUTE_TAXONOMY = """
+version: 1
+sensitive_path_list:
+  - "docs/secrets/**"
+auto_route_allow:
+  - "CHANGELOG.md"
+  - "docs/**/*.md"
+auto_route_max_lines: 12
+churn:
+  exclude_paths:
+    - "**/*.min.js"
+  format_commit_patterns:
+    - "^chore"
+"""
+
+# A DELIBERATELY BAD seed: it allows the policy file and never lists it as sensitive. This is
+# the §A4.8 self-widening attack expressed as a taxonomy; MANDATORY_SENSITIVE must refuse it.
+_SELF_WIDENING_TAXONOMY = """
+version: 1
+sensitive_path_list:
+  - "src/auth/**"
+auto_route_allow:
+  - ".claude/**"
+churn:
+  exclude_paths:
+    - "**/*.min.js"
+  format_commit_patterns:
+    - "^chore"
+"""
+
+
 def _selftest():
     import time
 
@@ -697,6 +830,71 @@ def _selftest():
     expect("migrations path is sensitive (glob **/migrations/**)", mp3["sensitive"] is True)
     mp4 = match_path(tax, "README.md")
     expect("unmatched path -> None bands", mp4["difficulty_band"] is None)
+
+    # --- v3.0 §A4 auto-route class (predicates 4, 5 and the line budget) ---
+    # A taxonomy with NO auto_route_* keys is the pre-3.0 shape: it must grant nothing and
+    # report the spec default budget.
+    expect("no auto_route_allow key -> empty allow list", tax["auto_route_allow"] == [])
+    expect("no auto_route_max_lines key -> spec default 20",
+           tax["auto_route_max_lines"] == DEFAULT_AUTO_ROUTE_MAX_LINES)
+    ar_none = match_auto_route(tax, "CHANGELOG.md")
+    expect("absent auto_route_allow -> not eligible (fail-closed)", ar_none["eligible"] is False)
+    expect("absent auto_route_allow -> says so", any("empty" in r for r in ar_none["reasons"]))
+
+    ar_tax = load_taxonomy(text=_AUTO_ROUTE_TAXONOMY)
+    expect("auto_route_allow loads", ar_tax["auto_route_allow"] == ["CHANGELOG.md", "docs/**/*.md"])
+    expect("auto_route_max_lines loads", ar_tax["auto_route_max_lines"] == 12)
+    ok_row = match_auto_route(ar_tax, "CHANGELOG.md")
+    expect("allowed + non-sensitive -> eligible", ok_row["eligible"] is True)
+    expect("eligible row carries no reasons", ok_row["reasons"] == [])
+    expect("eligible row carries the line budget", ok_row["max_lines"] == 12)
+    expect("recursive allow glob matches", match_auto_route(ar_tax, "docs/a/b.md")["eligible"] is True)
+    expect("unlisted path not eligible (predicate 4)",
+           match_auto_route(ar_tax, "scripts/x.py")["eligible"] is False)
+    both = match_auto_route(ar_tax, "docs/secrets/deploy.md")
+    expect("allowed BUT sensitive -> not eligible (predicate 5 wins)", both["eligible"] is False)
+    expect("sensitive-wins reason names predicate 5",
+           any("sensitive" in r for r in both["reasons"]))
+
+    # The §A4.8 attack: a taxonomy that ALLOWS the policy file and forgets to list it as
+    # sensitive must STILL be refused — MANDATORY_SENSITIVE is a code floor the YAML can only
+    # add to, never remove.
+    attack = load_taxonomy(text=_SELF_WIDENING_TAXONOMY)
+    atk = match_auto_route(attack, ".claude/compound-v-impact-taxonomy.yaml")
+    expect("policy file allowed by a bad seed is STILL sensitive (mandatory floor)",
+           atk["sensitive"] is True)
+    expect("policy file can never be auto-routed (A4.8 self-widening closed)",
+           atk["eligible"] is False)
+    expect("the other policy file is floored too",
+           match_auto_route(attack, ".claude/compound-v.json")["sensitive"] is True)
+    expect("taxonomy_self_protects False when the seed omits the policy rows",
+           taxonomy_self_protects(attack) is False)
+
+    # Malformed budgets are floored to 0, never defaulted to a permissive 20.
+    expect("malformed max_lines (string junk) -> 0",
+           load_taxonomy(text="version: 1\nauto_route_max_lines: \"abc\"\n")["auto_route_max_lines"] == 0)
+    expect("negative max_lines -> 0", _auto_route_max_lines(-1) == 0)
+    expect("bool max_lines -> 0 (True is not 1 here)", _auto_route_max_lines(True) == 0)
+    expect("numeric-string max_lines parses", _auto_route_max_lines("15") == 15)
+    expect("absent max_lines -> spec default", _auto_route_max_lines(None) == 20)
+
+    # --- dogfood: THIS repo's own taxonomy, when present ---
+    _repo_tax = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                             ".claude", "compound-v-impact-taxonomy.yaml")
+    if os.path.isfile(_repo_tax):
+        rt = load_taxonomy(path=_repo_tax)
+        expect("repo taxonomy declares its own policy self-protection",
+               taxonomy_self_protects(rt) is True)
+        expect("repo taxonomy: CHANGELOG.md is auto-routable",
+               match_auto_route(rt, "CHANGELOG.md")["eligible"] is True)
+        expect("repo taxonomy: a skill doc is sensitive, not auto-routable",
+               match_auto_route(rt, "skills/compound-v/SKILL.md")["eligible"] is False)
+        expect("repo taxonomy: an engine script is not auto-routable",
+               match_auto_route(rt, "scripts/compound-v-preeval.py")["eligible"] is False)
+        expect("repo taxonomy: README.md scores a real (non-unknown) band",
+               match_path(rt, "README.md")["impact_band"] == "low")
+    else:
+        expect("repo taxonomy dogfood (skipped — .claude taxonomy absent)", True)
 
     # --- match_content literal + glob + regex(subprocess) ---
     hits = match_content(tax, 'button.setAttribute("aria-label", x)')

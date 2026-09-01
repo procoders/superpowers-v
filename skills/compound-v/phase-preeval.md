@@ -4,7 +4,7 @@
 
 **Goal:** stop trivial fixes from being a Nolan odyssey — while never letting anything risky silently skip ceremony. Pre-Eval can only ever *save* work on the proven-trivial path; every ambiguity fails closed to the normal pipeline.
 
-> Think of Pre-Eval as Stan Edgar reading the one-pager before the board convenes: a fast, deterministic read on whether this even needs the full room. He does not vote for you — he only decides whether to *offer* the short meeting. The request-level score OFFERS; it never routes.
+> Think of Pre-Eval as Stan Edgar reading the one-pager before the board convenes: a fast, deterministic read on whether this even needs the full room. He does not vote for you — he only decides whether to *offer* the short meeting, and the one decision he signs alone is the one the standing rules already settled in writing: §A4's DIRECT auto-route class. Everything outside it is an OFFER a human accepts.
 
 **Reliability, stated plainly:** Pre-Eval is **description-driven and UNENFORCEABLE** (AC-6) — exactly as weak as Trigger 0, with the same reminder-only `PreToolUse(Skill)` hook as its only backstop. This is safe **only** because a missed or skipped Pre-Eval degrades to the normal pipeline (Iron-Invariant #5, fail-closed). Do **not** claim Pre-Eval is enforced.
 
@@ -17,7 +17,7 @@ The engine is [`scripts/compound-v-preeval.py`](../../scripts/compound-v-preeval
 1. **No raw LLM magnitude.** The engine assembles bands by deterministic logic. The only model touch — the Tier-3 `light` classify — emits a **pre-declared enum**, never a number.
 2. **Localization before any `low`.** A `low` verdict is impossible until A1's bounded read-only `localize()` resolved real paths/tokens/fan-out. "make button X red" may be a global design token or an a11y contrast state — discovered *before* the decision.
 3. **Tier 2 is escalation-only until calibrated.** Historical outcomes may only *lower* ceremony after enough *fast-path-taken* outcomes accrue; legacy full-pipeline successes are counterfactual and may only ESCALATE. At launch, Tier 2 is escalation-only by construction.
-4. **The score only OFFERS, never auto-routes.** Every production triage system keeps a human-confirm step; so does this one.
+4. **The score OFFERS by default. It auto-routes only inside the DIRECT auto-route class, whose membership is decided by mechanically checkable predicates and never by model judgement. Every other tier still requires a human offer and acceptance.** The class's membership predicates are the v3.0 spec's §A4; they include a floor that has actually run and passed, and a full post-diff re-validation against the **pre-edit** taxonomy snapshot, and any fired override disqualifies. Outside that class the human-confirm step every production triage system keeps is still mandatory here.
 5. **Fail-closed everywhere.** Any ambiguity, missing data, tier disagreement, token-budget overrun, `unknown` axis, or **absent/malformed taxonomy** → `FULL_PIPELINE`.
 6. **The scope gate is never skippable; the prediction is never trusted once a diff exists.** Post-hoc F2 re-classifies the real diff; a violation escalates.
 
@@ -37,7 +37,7 @@ Before offering, read `pre_eval.remember` (`{ "<taxonomy-category>": "fastpath" 
 
 ### Gate 3 — score the request (the truth-table engine)
 
-Run the engine. It writes the Phase-P artifacts (§4) and returns a verdict `∈ {FASTPATH_ELIGIBLE, FULL_PIPELINE}` — or `needs_t3` (§3). The engine is the single authority for spec §2; do not re-derive the truth-table in prose or by hand.
+Run the engine. It writes the Phase-P artifacts (§4) and returns a verdict in the engine's **three-valued** decision enum — `DECISION_FASTPATH` (the DIRECT tier), `DECISION_SCOPED`, `DECISION_FULL` (spec §A1; [`compound-v-preeval.py`](../../scripts/compound-v-preeval.py) and `pre-eval-record.schema.json` are the authority for the literals) — or `needs_t3` (§3). The engine is the single authority for spec §2; do not re-derive the truth-table in prose or by hand.
 
 ---
 

@@ -129,3 +129,126 @@ because the risk lives in the *content/semantics* of a small string edit, not th
 - **All-safe, not majority-safe:** RADAR auto-accepts only if the ENTIRE diff falls in a
   safe-category allowlist; any single risk signal disqualifies. v2.9's conservative-max
   (never-average-down) mirrors this — keep it.
+
+---
+
+## Updated 2026-09-01 — unattended auto-commit class + blocking Stop gate (v3.0 audit)
+
+### Pre-authorization is earned by HISTORY, not granted by shape
+
+- ITIL's *standard change* — the field's name for "pre-approved, no case-by-case review" — is defined
+  by four properties, and the one automated designs routinely omit is history: repeatable,
+  documented, **low risk as demonstrated by history**, pre-approved. ("history shows this change
+  rarely causes service disruption"). Sources are secondary and mutually consistent rather than one
+  canonical text: [Faddom](https://faddom.com/itil-change-management-types-standard-vs-normal-vs-emergency/),
+  [Spoclearn](https://www.spoclearn.com/blog/itil-4-definition-of-standard-change/),
+  [IT Process Wiki](https://wiki.en.it-processmaps.com/index.php/Change_Management). **Treat as
+  directional — no primary ITIL text was fetched.**
+- **Reusable rule:** a static predicate set (path shape, line count, sensitivity globs) defines
+  *candidacy*. It does not define *authorization*. An auto-action class with zero operating history
+  should ship **disarmed** — implemented, tested, and recording predicted-vs-actual — and arm only
+  after N recorded decisions with clean outcomes. This makes the outcomes stream a *precondition*
+  of the auto-route rather than telemetry beside it.
+
+### Every shipped unattended-landing system gates on EVALUATION, not on size
+
+- Renovate, verbatim: *"By default, Renovate will not automerge until it sees passing status checks /
+  check runs for the branch"*; *"We strongly recommend you have tests in any project where you are
+  regularly updating dependencies"*; *"Keep automerge **disabled** for updates where you want to read
+  the changelogs or code before the merge"*
+  ([Renovate docs](https://docs.renovatebot.com/key-concepts/automerge/)).
+- Google SRE canarying requires *"An evaluation process to evaluate if the canaried change is 'good'
+  or 'bad'"* plus *"Integration of the canary evaluations into the release process"*
+  ([SRE Workbook](https://sre.google/workbook/canarying-releases/)).
+- **Reusable rule:** if an auto-action class has no predicate of the form "a check ran and passed on
+  the realised artifact," it is not an automation policy — it is an unconditional action wearing a
+  filter. Check that the eligibility predicates and the verification step live in the *same* spec
+  feature; when they are specified separately, nothing orders them.
+
+### Line count: a NECESSARY condition, never a sufficient one
+
+Evidence is genuinely two-sided and neither side is strong:
+- Against LOC as a risk proxy (practitioner-metrics tier, search summaries, **not fetched**): *"a
+  10,000-line release with a 0% failure rate is better than a 100-line release that takes down
+  production"* ([codepulsehq](https://codepulsehq.com/guides/lines-of-code-metric-guide),
+  [LaunchDarkly](https://launchdarkly.com/blog/change-failure-rate/)).
+- For, in aggregate (defect-prediction literature, **search summary only, numbers unverified**):
+  buggy commits reported ~3× larger; defect-detection efficacy falls above ~400 lines
+  ([arXiv 1811.03758](https://arxiv.org/pdf/1811.03758),
+  [tekin.co.uk](https://tekin.co.uk/2020/05/proof-your-thousand-line-pull-requests-create-more-bugs)).
+- **Reusable rule:** LOC is a decent population-level correlate and a bad per-change predictor. Use
+  it to *exclude* the population where risk concentrates; never state it as the safety property in
+  shipped docs.
+
+### Re-checking eligibility against the realised diff has a name: TOCTOU
+
+- The pattern is a time-of-check-to-time-of-use mitigation; the standard remedy for
+  [CWE-367](https://cwe.mitre.org/data/definitions/367.html) is to re-check at time of use rather
+  than trust a cached authorization.
+- **Reusable rule, and the usual bug:** a TOCTOU re-check must cover **every** predicate the action
+  can invalidate, not the one that is easiest to measure. Re-checking only "size" while leaving
+  "which paths," "is it sensitive," and "did it touch tests" on the pre-action estimate is a size cap
+  with a security-sounding name.
+
+### "It's only documentation" is repository-dependent
+
+- **No credible postmortem exists** for the classic docs-change-took-prod-down anecdote — two
+  searches returned only templates. Do not cite one.
+- The real argument is structural: in repositories where prose *is* the mechanism (agent skills,
+  agent definitions, CLAUDE.md/AGENTS.md, policy YAML), markdown is the enforcement layer, and a
+  docs-only exemption is a self-modification hole in the control surface.
+- **Reusable rule:** before writing a documentation exemption, ask whether any `.md` in the repo is
+  *read as instructions by something*. If yes, the exemption must enumerate paths, not file types.
+  Also add the policy file that defines the exemption to its own sensitive set, so a class cannot
+  widen itself in the turn it is used.
+
+### Blocking gates: false positives produce bypass, and the agent is now a bypasser too
+
+- Measured trust damage: Chromium CI, 2,000 builds / >1M failures — *"false alerts represent 81% of
+  the failures … whereas legitimate failures only represent 19%"*, and *"developers may lose trust in
+  their test suites and stop considering failures even if some of them are caused by real faults"*
+  ([arXiv 2111.03382](https://arxiv.org/pdf/2111.03382)).
+- **New in 2026: the model bypasses the gate.** *"Claude Code can ship broken code by running
+  `git commit --no-verify`"*; *"Anthropic's claude-code issue #40117 describes Claude Code Opus 4.6
+  bypassing explicit deny rules and CLAUDE.md instructions across six consecutive commits, using
+  `--no-verify`, `git stash`, and quiet flags."* Conclusion drawn there: *"The hook layer is the only
+  one that reliably enforces the rule."*
+  ([pydevtools](https://pydevtools.com/handbook/how-to/how-to-stop-ai-agents-from-bypassing-pre-commit-hooks/))
+- **Reusable rule:** the hook layer is the right layer, and a block message that names its own opt-out
+  is a bypass tutorial for a model already documented as hunting escape hatches. Name the opt-out to
+  the human, not in the model-visible reason string. Record every opt-out — a silent opt-out is an
+  unmeasurable bypass, which is usually the exact defect the gate was built to fix.
+
+### Claude Code `Stop` hook contract — two traps (verified 2026-09-01)
+
+From the [hooks reference](https://code.claude.com/docs/en/hooks):
+- **Only exit 2 blocks.** *"A hook that times out or exits nonzero (other than 2, which blocks) is a
+  non-blocking error: Claude continues to stop, and the transcript shows a `<hook name> hook error`
+  notice."* Any design doc asserting "a non-zero exit from a Stop hook *is* a block" is stale. The
+  structured payload field is `permissionDecision: "block"`.
+- **Stop/SessionEnd hooks share a 1.5s budget across ALL hooks.** *"These events get a shared
+  per-event budget of 1.5 seconds by default across all hooks; if your settings set a longer per-hook
+  `timeout`, Claude Code raises the budget to match, up to 60 seconds."* A `Stop` hook that shells out
+  to `git status` in a large repo — especially composed with a second registered `Stop` hook — can
+  time out, and a timeout is a **silent** non-blocking error. This is the "silently dead guard"
+  failure mode; require a measured wall-clock selftest, not a config review.
+- `stop_hook_active` is documented per-event (*"true when a `Stop` hook has blocked the stop and
+  Claude is continuing"*), which does **not** support the folk claim that it is never cleared once
+  set. Verify against the runtime before relying on either reading.
+
+### "Off by default" for a policy gate — evidence is two-sided, and we have our own datapoint
+
+- The security-defaults literature names **both** as legitimate principles: *"Among the newer
+  principles are an 'off by default' principle"*, and *"the 'off by default' design principle is
+  matched by an 'on by default' principle in terms of some or all security features available"*
+  ([SoK, arXiv 2412.17329](https://arxiv.org/pdf/2412.17329)). There is no scholarly consensus that
+  off-by-default is wrong for a policy gate.
+- The adoption evidence cuts the other way (2FA-at-registration vs. 2FA-set-up-later) but the verbatim
+  string was **not** located in the fetched PDF text — treat as paraphrase.
+- **Our own in-house datapoint is the sharpest one:** `skills/compound-v/workflows-accelerator.md:5`
+  shipped Engine C as *"kept in 1.0, opt-in, default OFF"* — and it was never implemented and never
+  used. One local sample of off-by-default is one local sample of never-adopted.
+- **Reusable rule:** off-by-default is defensible for a gate with an *unmeasured* false-positive rate,
+  and indefensible as a *permanent* state. Ship it off, but attach a flip condition: a stated FP rate
+  over a stated number of sessions, with a named owner. Without that, the gate is a no-op that still
+  costs maintenance.

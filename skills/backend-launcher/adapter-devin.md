@@ -156,3 +156,38 @@ scripts/compound-v-run-devin-worker.sh \
 ```
 
 All file paths MUST be **absolute**. `--write-allowed` is a **colon-separated** glob list; an **empty** `--write-allowed` is a read-only/review job (any change ⇒ BLOCKED). `--timeout-sec` must be a **positive integer**. Devin requires an **authenticated** session (`devin auth login` / `COGNITION_API_KEY`) — `/v:init` records availability + auth (see `commands/v-init.md` §1a-quater).
+
+---
+
+## The test contract — a real argument, never prompt prose (v3.0, Feature B3)
+
+Read [`SKILL.md`](SKILL.md) first: the contract, its shape, and who resolves it. This adapter's part
+is one flag pair, and the fact that it is a **flag** at all is the whole point — before 3.0 the only
+way a job's `test_scope` could reach a headless Devin worker was as a sentence inside
+`--prompt-file`, hoping the model noticed it.
+
+```bash
+scripts/compound-v-run-devin-worker.sh \
+  … \
+  --test-contract-file /abs/run-dir/jobs/<job-id>.test-contract.json \
+  --test-timeout-sec 900        # optional, default 900, per COMMAND
+```
+
+- The file holds the **resolved** slice: `{scope, resolved_commands[, floor_command, full_command]}`.
+  The caller resolves it (`impacted_map` globs stay in the caller's Python — a second matcher here
+  would diverge from the authority and silently *drop* tests); the worker executes exactly that list.
+- It is **structurally validated before devin is launched**. A malformed contract, an unknown key,
+  a scope outside `full|impacted|floor_only`, an empty `resolved_commands`, or a blank command is a
+  **usage fault (exit 2)**, not a test failure — a blank command would `bash -c` to a silent exit 0.
+- Each command runs under the process-group supervisor with `</dev/null`, `--cwd` the worktree, and
+  its output captured to files under `$WT.art/tests/` (outside the worktree, so stdout stays exactly
+  one `job_result` JSON and a hung test cannot outlive the job).
+- Commands run **after** the scope gate and **only** when the job would otherwise be `success`; the
+  measured result lands in `job_result.tests` (`command`, `exit_code`, `scope`, `selected_count`,
+  plus measured-only `duration_ms` and `failures[]`). Omit the flag and the worker runs no tests and
+  emits no `tests` object at all.
+- A non-zero `tests.exit_code` does **not** change `status` — the caller must not merge it, and the
+  review gate FAILs a job that reports no test command. `status`/`failure_class` stay the backend's
+  disposition, so a red suite is never fed to the retry/reroute policy that cannot fix it.
+- Because tests run after the gate, anything they create in the worktree is **outside the gate's
+  authority**: merge-back stages by the gate's `files_changed`, never a bare `git add -A`.

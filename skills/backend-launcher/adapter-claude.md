@@ -2,19 +2,23 @@
 
 > *"A-Train runs the same track everyone else does — he just runs it in-harness. No new process, no worktree unless you ask, same finish-line check on the way back."*
 
-Read the contract first: [`SKILL.md`](SKILL.md) (the `job_spec → job_result` shape, the git-derived enforcement rule, the worker-prompt lock). This file is the **claude** adapter — it maps a `job_spec` to an in-harness `Task` call and normalizes the return to the canonical `job_result`. It speaks the same contract as [`adapter-codex.md`](adapter-codex.md); the only differences are the launch mechanism (a `Task` tool call, not a Bash-spawned process) and that isolation is `direct` by default.
+Read the contract first: [`SKILL.md`](SKILL.md) (the `job_spec → job_result` shape, the git-derived enforcement rule, the worker-prompt lock). This file is the **claude** adapter — it maps a `job_spec` to an in-harness agent and normalizes the return to the canonical `job_result`. It speaks the same contract as [`adapter-codex.md`](adapter-codex.md); the only differences are the launch mechanism (an in-harness agent, not a Bash-spawned process) and that isolation is `direct` by default.
+
+**Which engine launches it (v3.0).** A claude job runs as one **Engine C** `agent()` stage — Engine C being the native Workflow runtime, the name already used across this plugin's shipped docs. Engine C is the primary and default way jobs execute in 3.0, not an opt-in accelerator beside our own loop. The **residual subagent path** — the same in-harness `Task` call this adapter has always described — is retained only for contexts that physically cannot launch a workflow (a subagent has no Workflow tool). Both paths hand the job to an in-harness Claude agent with a resolved model and a turn cap, and both end in the *same* git-derived scope gate, which is why one adapter covers them.
+
+One thing this adapter is **not** allowed to say, because it is wrong: that the residual `Task` path is an "engine" beside Engine C. It is a reduced fallback. The engine letter for the claude path is **C**, and no other letter belongs in this file — the intermediate `claude -p` shell-out design that once carried its own letter was rejected and never shipped.
 
 The defining property: **enforcement is identical to Codex.** The Claude subagent runs the same `git diff` scope gate on return ([`scripts/compound-v-scope-check.py`](../../scripts/compound-v-scope-check.py)), so a Claude job that drifts outside its `write_allowed` is caught and BLOCKED exactly as a Codex job would be. The model is trusted to write code, never trusted to self-report what it changed.
 
 ---
 
-## The mapping: `job_spec` → `Task` call
+## The mapping: `job_spec` → one in-harness agent call
 
-The dispatcher already holds the `job_spec` (from the manifest). This adapter turns it into one `Task` invocation:
+The dispatcher already holds the `job_spec` (from the manifest). This adapter turns it into one agent invocation — an Engine C `agent()` stage, or the identical `Task` call on the residual subagent path:
 
 | `job_spec` field | Where it goes in the `Task` call |
 |---|---|
-| `prompt` | The Task prompt, prefixed with the worker-prompt lock (below) and the rendered `write_allowed` / `read_allowed` lists |
+| `prompt` | The agent prompt, prefixed with the worker-prompt lock (below) and the rendered `write_allowed` / `read_allowed` lists |
 | `tier` | The routing **intent** (`deep` \| `standard` \| `light`). Resolved to a concrete model **before** dispatch via [`scripts/compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py) `--backend claude --tier <tier> --stance <routing_stance>` → `models.claude.<tier>` (native aliases: `deep`/`standard` → `opus` (`standard` → `sonnet` under the `cost-aware` stance), `light` → `sonnet`; **never `haiku`**). The resolver call carries `--stance` from the manifest's `routing_stance` (default `balanced`). The resolved model becomes the subagent's `model` override. |
 | `effort` | Advisory only on the Task path (`low` \| `medium` \| `high`). Unlike codex (which surfaces it as `-c model_reasoning_effort`), an in-harness `Task` has **no separate effort flag** — record it, optionally reflect it in the prompt's framing, but do not fabricate a knob that does not exist. |
 | `model` | The subagent's model override — the **resolved** `tier`→model value (`opus` or `sonnet`), or an explicit manifest `model` that skips resolution. From routing policy; **never `haiku`**. |
@@ -24,9 +28,10 @@ The dispatcher already holds the `job_spec` (from the manifest). This adapter tu
 | `read_only` | When `true`, the prompt forbids writes and the scope gate expects an empty `files_changed` |
 | `timeout_sec` | Advisory only — a `Task` call has no hard timeout knob; long jobs are batched, not time-boxed. Record it; do not fabricate enforcement. |
 | `network` | Not a subagent concern (no sandbox flag); ignored for claude, relevant only to codex |
-| `output_schema` | Not used to constrain a subagent; the canonical `job_result` is assembled by the caller, not emitted by the subagent |
+| `output_schema` | Not used to constrain a subagent; the canonical `job_result` is assembled by the caller, not emitted by the subagent. On the Engine C path an Implement stage returns a raw implement result, **never** a `job_result` — `blocked`/`files_changed`/`violations` are git-derived by the caller, and asking the constrained party to fill in its own enforcement fields is the fabricated-evidence pattern with extra steps |
+| `test_contract` | The resolved test slice (v3.0 Feature B3). There is no external process here to hand a `--test-contract-file` to, so it is **not** rendered into the prompt: the caller runs the resolved commands itself after the gate and fills `tests` from what it measured. See the test-contract section below |
 
-**Fixed Task parameters** every claude job sets:
+**Fixed agent parameters** every claude job sets (the `Task` names below; an Engine C `agent()` stage carries the same values as stage options):
 
 - **`subagent`** — the dispatcher's worker subagent (the `Task`-based dispatch reused from 0.1.x). The manifest's `backend: claude` selects this adapter; `model` selects the override.
 - **`model`** — the **resolved** `tier`→model value (or an explicit `job_spec.model` override that skips resolution). `claude` resolves `tier` to a native alias via [`scripts/compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py): `deep`/`standard` → `opus` (`standard` → `sonnet` under the `cost-aware` stance), `light` → `sonnet` (the clearly-junior mechanical slices the routing policy marks — bounded CRUD, mechanical refactor, docs/i18n). The resolver call carries `--stance` from the manifest's `routing_stance` (default `balanced`). Resolution happens **before** dispatch so the call site passes a concrete model to the `Task`. No Haiku, ever. `job_spec.effort` is advisory here — the `Task` path has no effort flag, so it is not passed through to any backend call (contrast the codex adapter, which maps `effort` → `-c model_reasoning_effort`).
@@ -101,9 +106,11 @@ Assemble the [canonical `job_result`](../../schemas/job_result.schema.json) from
 | `blocked` | `true` iff `violations` is non-empty |
 | `status` | `blocked` if `blocked`; else `error` if the Task errored / hit `maxTurns` without finishing; else `success` |
 | `summary` | the subagent's final message — **informational only**, never used for enforcement |
-| `session_id` | `""` — an in-harness `Task` has no resumable backend session (resume re-dispatches the job via Engine A; it does not re-attach a session) |
+| `session_id` | `""` — an in-harness agent has no resumable backend session. Cross-session recovery belongs to the **verification layer** (`state.json` + `/v:resume`), which re-dispatches the job; it never re-attaches a session, and the native runtime's own resume is same-session-only |
 | `worktree` | the absolute worktree path for `worktree` jobs; `""` for `direct` jobs |
 | `exit_code` | `0` on a clean Task return; non-zero on a Task error |
+| `tests` | MEASURED by the caller after the gate (v3.0 B3) — the resolved commands it ran, their exit code, the scope and the count. **Absent** when the job ran no tests. Never the agent's account of what it ran: an agent that says "tests pass" is a summary, not evidence |
+| `gate_receipt` | OPTIONAL (v3.0 D1) — the receipt for this job's gate run. Defence in depth and an early exit; the verification layer's integration postcondition is the authority and re-runs the gate itself on a missing, `null` or disagreeing receipt |
 
 On `blocked`: the caller **must not merge** — it halts the run and surfaces the offending paths (worktree jobs leave `$WT` for inspection). On `success`: worktree jobs merge via `git apply`; direct jobs are already in the tree.
 
@@ -129,3 +136,25 @@ python3 scripts/compound-v-classify-failure.py --backend claude \
 ## Why this adapter is the simple one
 
 No process spawn, no sandbox flags, no `--output-last-message` parsing, no `codex_hooks` stderr to suppress, no session UUID to capture. The subagent runs inside the harness with a model override and a turn cap. The contract holds anyway because **enforcement does not live in the backend** — it lives in the caller's git-diff scope gate, which is identical whether the worker was an in-harness `Task` or a Bash-spawned `codex exec`. Same syringe, same finish-line check.
+
+---
+
+## The test contract on the claude path (v3.0, Feature B3)
+
+Read [`SKILL.md`](SKILL.md) for the contract itself. The other five adapters hand the resolved slice
+to a worker script as `--test-contract-file`, precisely so it is not prose a model has to notice.
+There is **no external process here**, so this adapter does the honest equivalent rather than
+inventing a flag that does not exist:
+
+- The resolved commands are **not** rendered into the agent's prompt. An agent asked to run tests and
+  report the result is self-reporting, which is the same defect as asking it for `files_changed`.
+- The **caller** — the workflow stage or the verification layer that owns this job — runs the
+  resolved commands itself, in the job's worktree (or the repo for a `direct` job), **after** the
+  scope gate and only when the job would otherwise be `success`, and fills `job_result.tests` from
+  what it measured: `command` (what actually ran, newline-separated when several), `exit_code`
+  (0 iff every command exited 0), `scope`, `selected_count`, plus measured-only `duration_ms` and
+  `failures[]`. When it runs nothing, `tests` is **absent** — never an invented zero.
+- Same ordering rule, same consequence: a file a test writes after the gate is outside the gate's
+  authority, so merge-back stages by the gate's `files_changed`, never a bare `git add -A`.
+- A non-zero `tests.exit_code` does not change `status`; the caller must not merge, and the review
+  gate FAILs a job that reports no test command at all.
