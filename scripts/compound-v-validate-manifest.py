@@ -112,13 +112,53 @@ import sys
 # --------------------------------------------------------------------------- #
 # YAML loading: prefer PyYAML, fall back to an embedded subset parser.
 # --------------------------------------------------------------------------- #
+class ManifestParseError(Exception):
+    """PyYAML is installed and the manifest is NOT valid YAML.
+
+    Distinct from PyYAML being absent, which is a legitimate fallback.
+    """
+
+
+def _format_yaml_error(exc):
+    """Render a PyYAML error with line/column when it carries a mark."""
+    mark = getattr(exc, "problem_mark", None)
+    problem = getattr(exc, "problem", None) or str(exc).splitlines()[0]
+    if mark is not None:
+        return "line %d, column %d: %s" % (mark.line + 1, mark.column + 1, problem)
+    return str(problem)
+
+
 def load_yaml(text):
+    """Parse a manifest, preferring PyYAML.
+
+    🔴 THE TWO FAILURE MODES ARE NOT THE SAME AND MUST NOT SHARE A HANDLER.
+
+    Pre-fix this was a bare ``except Exception`` around both the import and the
+    parse, silently falling through to ``_mini_yaml``. That made this gate -
+    which the Compound V docs call the only hard gate - FAIL OPEN: a manifest
+    that is not valid YAML could still be reported
+    ``{"verdict": "valid", "violations": []}``.
+
+    It fired for real on 2026-09-01, on a manifest carrying unescaped inner
+    double quotes inside a double-quoted scalar. ``_mini_yaml`` happened to
+    recover that structure correctly, but that is luck, not a guarantee: a
+    partial parse can drop jobs or write_allowed entries, and the disjointness
+    invariant would then be checked against a structure that is not what the
+    file says - the exact thing the gate exists to prevent.
+
+    - ImportError  -> PyYAML genuinely absent. Fall back to _mini_yaml; that is
+                      the documented optional-dependency path.
+    - YAMLError    -> malformed manifest. FAIL CLOSED, naming line and column.
+    """
     try:
         import yaml  # noqa: WPS433 (intentional optional dep)
-
-        return yaml.safe_load(text)
-    except Exception:  # pragma: no cover - import or parse fallback
+    except ImportError:  # pragma: no cover - optional dependency absent
         return _mini_yaml(text)
+
+    try:
+        return yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise ManifestParseError(_format_yaml_error(exc)) from exc
 
 
 def _strip_comment(line):
@@ -2006,7 +2046,14 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
 def validate_text(text, mode=None, repo_root=None, config_path=None,
                   receipt_path=None, manifest_bytes=None, diff_root=None,
                   expected_attempt=None):
-    data = load_yaml(text)
+    try:
+        data = load_yaml(text)
+    except ManifestParseError as exc:
+        # Fail closed: a manifest that does not parse is not a valid manifest.
+        # Reported as a violation so the caller's exit code and JSON verdict
+        # both say "invalid" rather than the pre-fix silent "valid".
+        return ["manifest is not valid YAML (%s); refusing to validate a "
+                "structure the file does not actually describe" % exc]
     # The manifest_digest binding (CR5-6) is computed over the manifest's raw
     # bytes. When a caller supplies the exact on-disk bytes (main() does), use
     # them verbatim; otherwise fall back to the UTF-8 encoding of the text.
@@ -4120,6 +4167,41 @@ def _selftest():
         "reviewer via tier:deep accepted (no model)",
         not any("reviewer job 'task-3-spec-review'" in p for p in good),
     )
+
+    # Malformed YAML must FAIL CLOSED, not silently degrade to _mini_yaml.
+    #
+    # Regression guard. Pre-fix, load_yaml wrapped both the import and the parse
+    # in one `except Exception` and fell through to the embedded subset parser,
+    # so a manifest that is NOT valid YAML could still be reported
+    # {"verdict": "valid", "violations": []}. That fired for real on a manifest
+    # carrying unescaped inner double quotes inside a double-quoted scalar.
+    _MALFORMED = (
+        'run_id: probe\n'
+        'feature: "a scalar with unescaped inner "quotes" that PyYAML rejects"\n'
+        'jobs:\n'
+        '  - id: job-one\n'
+        '    write_allowed: [src/**]\n'
+    )
+    try:
+        import yaml as _yaml  # noqa: WPS433
+    except ImportError:  # pragma: no cover - PyYAML absent: the fallback is legitimate
+        expect("malformed YAML: skipped, PyYAML absent (fallback is correct)", True)
+    else:
+        _malformed_problems = validate_text(_MALFORMED)
+        expect(
+            "malformed YAML -> violation (fails CLOSED, not silent _mini_yaml)",
+            any("not valid YAML" in p for p in _malformed_problems),
+        )
+        expect(
+            "malformed YAML violation names line and column",
+            any("line 2, column" in p for p in _malformed_problems),
+        )
+        # And the legitimate optional-dependency path still works: _mini_yaml
+        # itself must keep parsing a well-formed manifest.
+        expect(
+            "PyYAML-absent fallback still parses a good manifest",
+            len(_mini_yaml(GOOD_MANIFEST).get("jobs", [])) > 0,
+        )
 
     # Empty / malformed.
     expect("no jobs -> violation", validate_text("run_id: x") != [])
