@@ -129,8 +129,72 @@ Re-run the validator (or `/v:dispatch`) until it's clean. The manifest schema + 
 **Fix:** `/v:resume <run-id>`. It re-reads `docs/superpowers/execution/<run-id>/state.json`, **reconciles it against git reality** (what actually landed — git wins the tie-break, so if `state.json` says `done` but the files aren't in git, the job is re-dispatched), and re-dispatches only `pending` / `failed` / `blocked` jobs. Finished jobs are not re-run.
 
 - Check status first with `/v:status <run-id>` (renders `state.json` — phase + per-job status).
-- Resume lives in **Engine A** (the helper-script layer), which is exactly why it survives a hard crash. The opt-in Workflows accelerator (Engine C) does **not** provide crash-resume — its resume is same-session-only, so the orchestrator never routes resume through it.
+- Resume lives in the **verification layer** (`state.json` + the helper scripts), which is exactly why it survives a hard crash. **Engine C runs the jobs; it does not own recovery.** The native runtime's resume is same-session-only *and* re-runs completed agents past a failure point — in a 16-job run whose job 3 failed, jobs 4–16 would re-run despite having succeeded, paying full cost twice. `/v:resume` does not.
+- Resume also gates integration: it runs `scripts/compound-v-integration-gate.py` before any job commit is integrated, so **do not remove a job's worktree before resuming** — a missing receipt is *re-derived* from the tree, and a removed worktree makes the job `unverifiable` instead.
+- A run dispatched **before** 3.0's cutover has no `baseline`, no `lane-map.json` and no receipts. That resumes fine: every field Engine C adds is optional on read, and each such job simply takes the re-derivation branch.
 - If you don't know the run-id, list `docs/superpowers/execution/` — each subdirectory is a run.
+
+## Engine C didn't run — the dispatch fell back to the subagent path
+
+**Symptom:** `/v:dispatch` reports it is using the residual subagent path, or the Workflow tool refuses the launch.
+
+**Cause / fix — in the order worth checking:**
+
+1. **You are in a subagent.** A subagent has no Workflow tool at all — probed live under both the public name `Workflow` and the internal `RunWorkflow`. Run `/v:dispatch` from the **top level**. This is also why `/v:dispatch` no longer delegates its run to `compound-v:parallel-dispatcher`: delegating would silently drop every run onto the residual path.
+2. **`CLAUDE_WORKFLOW_NAME_ONLY` is set.** The tool then accepts only `{name, args}` and refuses `script` / `scriptPath` / `resumeFromRunId` / `remote` outright. Engine C needs `scriptPath`, because that is what makes the committed artefact the thing that ran. Unset it, or accept the residual path.
+3. **Workflows are off.** `CLAUDE_CODE_WORKFLOWS=false`, `CLAUDE_CODE_DISABLE_WORKFLOWS`, the managed `disableWorkflows` setting, or `enableWorkflows: false` each disable the tool.
+4. **The build accepts `Workflow` but refuses the clamp.** `disallowedTools` and `bashCommandClamp` were found in 2.1.238 while workflow support is claimed from 2.1.219 — so a version check is not a capability check, and a build that passes one and fails the other selects Engine C and then **fails to create the Gate agent**. Run `python3 scripts/compound-v-emit-workflow.py --engine-probe` and execute the clamped-spawn snippet it prints.
+
+**What is NOT the cause:** headless. Workflows **are** available in `claude -p` and in the Agent SDK; only the `ultracode` keyword is route-restricted. Do not report "workflows are unavailable headless" — that claim is withdrawn.
+
+## `agent() opts.bashCommandClamp can bind nothing` — the spawn is refused
+
+**Symptom:** the run dies at the Gate (or at an external-backend implementer) with a refusal naming the clamp.
+
+**Cause:** the clamp is an **allowlist of shell command forms**, and it is fail-closed by design — including refusing the spawn outright rather than running an agent un-clamped. The three ways to trip it:
+
+- **Bash was removed from the agent's tool pool** (by the spawn's own `disallowedTools`, the agent definition's denies, or absence from the session pool). A clamp on a Bash-less agent keeps nothing, so it refuses. Never put `Bash` in `disallowedTools` on a clamped spawn.
+- **A malformed or inert entry.** Each entry must be a `Bash(<command or prefix>)` permission rule: tool name case-sensitive, non-empty content, no whitespace padding inside the parens.
+- **A non-`claude` job whose clamp doesn't admit its worker.** A clamp that omits `scripts/compound-v-run-<backend>-worker.sh` cannot launch that family at all. Either add the worker invocation to the clamp, or give that job **no clamp** — which is what the generator does when it cannot find the worker script.
+
+At runtime the same fail-closed posture applies to individual commands: *"no clamp rule matches this command"* and *"permission check crashed"* both **deny**.
+
+## `compound-v-integration-gate.py` says `unverifiable` for every job
+
+**Symptom:** the gate refuses integration and every job reads `unverifiable`.
+
+**Cause:** it has nothing to gate. Before 3.0 nothing wrote the fields it needs — a smoke run against this release's own run dir returned `unverifiable` for all 18 jobs: no `results/` directory, `worktree: null`, no `baseline`. The gate is failing **closed**, correctly.
+
+**Fix:** record what it needs, per job — `state.json jobs[<id>].worktree` (where to gate) and `.baseline` (the pinned pre-launch SHA to measure against), plus one `results/<id>.json`. Engine C writes all three. For an older run, supply them by hand or re-dispatch. Do not remove the worktrees first: without a gateable tree there is nothing to re-derive from.
+
+**Related:** if a job reads `forged` with a duplicate-receipt reason, look for a stray `results/<id>.<something>.json`. D1 requires **exactly one** receipt per job, so any dotted sibling of the primary is read as a rival receipt. Superseded attempts belong in `results/attempts/`.
+
+## The lane guard never denies anything
+
+**Symptom:** `hooks/lane-guard.sh` is registered, but an obviously out-of-lane write goes through.
+
+**Cause:** the guard could not resolve which job is acting, and its contract is **fail-open** — a false deny inside a long autonomous run costs far more than a missed write the git gate catches anyway. It resolves `agent_id` first, then falls back to `cwd` → worktree, both via `docs/superpowers/execution/<run>/lane-map.json`. **If nothing wrote that file, the guard resolves nothing and allows everything, silently.**
+
+**Fix:** dispatch through Engine C, which writes `lane-map.json` — each implementer registers its real worktree as its first command. Confirm the file exists and maps that worktree to the job. Check the guard's log (`$TMPDIR/compound-v-lane-guard.log`, or `$CV_LANE_GUARD_LOG`); it records every allow-because-unresolved.
+
+Two honest limits: on Claude Code 2.1.238 an agent is **not told its own `agent_id`**, so the `agents` map is normally empty and resolution runs on the `worktrees` map — which is the fallback the 1D probe proved works. And the guard is **defence in depth, never the authority**: shell writes have unbounded evasions (`eval`, an interpreter one-liner, a variable holding the path), and the git-derived scope gate plus the integration postcondition still decide what enters the tree.
+
+## The test floor reports nothing, or never ran
+
+**Symptom:** no `tests` object on a job result, or a floor result that clearly executed no commands.
+
+**Cause:** through 3.0 the floor's invocation carried `--test-cmd <configured-tests>` — an angle-bracket placeholder that **no caller ever substituted**, in either `/v:collect` or `agents/parallel-dispatcher.md`. That is why the floor had never executed once.
+
+**Fix:** call the producer instead of the placeholder:
+
+```bash
+python3 scripts/compound-v-fastpath-run.py test-floor \
+  --worktree "$WT" --baseline "$BASE" \
+  --manifest "$RUN_DIR/manifest.yaml" --job-id "$JOB_ID" \
+  (--last-result "$RUN_DIR/results/$JOB_ID.json" | --no-prior-run)
+```
+
+`--manifest` + `--job-id` resolve the command set from the manifest's `test_contract` and the job's `test_scope`. One of `--last-result` / `--no-prior-run` is required on purpose: silence must not become "nothing was failing". A worker gets the resolved slice as a real argument (`--test-contract-file`), never as prompt prose — a value a model has to notice is not a contract. And an **absent** `tests` object is honest; an invented zero is not.
 
 ## `/v:init` can't find Codex (or sets Claude-only unexpectedly)
 

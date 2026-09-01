@@ -35,7 +35,25 @@ The run-dir layout and per-job `status` semantics are in [`skills/compound-v/sta
    ```
    Exit codes: `0` = pass, `1` = blocked (violations present), `2` = usage/git error. It derives changed files with `git -C <worktree-or-repo> diff --name-only HEAD` ∪ `git ... ls-files --others --exclude-standard`. Any path outside `write_allowed` ⇒ the job is **BLOCKED**: mark it `blocked` in `state.json`, retain its worktree, **do not merge it**, and **HALT the run** — surface the offending paths to the user. A BLOCKED job is corrected and re-dispatched via `/v:resume`, not silently merged.
 
-4. **Review Gate — three passes (Opus), AC-gated.** If every job passes the scope gate, run [`spec-reviewer`](../agents/spec-reviewer.md)'s three passes:
+   **Then run the test floor per job, from the same producer.** Ordering is load-bearing and is the reverse of the fast-path tail: the executor runs, the gate computes `files_changed`/`violations`, and *then* the resolved commands run inside the worktree. Running tests before the gate would let a coverage file or a cache directory a test wrote become a false `violation`. The flip side is real and is the caller's problem: **anything a test creates after the gate is outside the gate's authority and must not be merged** — which is why merge-back stages by `files_changed` and not by `git add -A`.
+
+   ```
+   python3 scripts/compound-v-fastpath-run.py test-floor \
+     --worktree <wt-dir> --baseline <pinned-baseline-sha> \
+     --manifest <run-dir>/manifest.yaml --job-id <job-id> \
+     (--last-result <run-dir>/results/<job-id>.json | --no-prior-run)
+   ```
+
+3b. **Integration gate — the authority, BEFORE any job commit is integrated.**
+   ```
+   python3 scripts/compound-v-integration-gate.py \
+     --run-dir docs/superpowers/execution/<run-id>/ --json
+   ```
+   **This call is not optional.** Every job must resolve to a verdict this script derived or verified: a missing or partial receipt is **re-derived** and that verdict wins; a receipt whose bindings disagree with the tree is **refused outright, never re-derived**; a verifying receipt whose conclusion disagrees with an independent re-derivation is refused as **contradicted**; `unverifiable` and duplicate receipts fail closed. Anything other than a clean report ⇒ **HALT**, do not merge.
+
+   Note the naming convention it enforces: `results/<job-id>.json` is the primary and there must be exactly **one**. Any sibling `results/<job-id>.<attempt>.json` is read as a **duplicate receipt** and the job is returned `forged` — D1 requires exactly one receipt per job. Engine C keeps superseded attempts under `results/attempts/`, which the gate's listing does not scan, so history is preserved without minting a rival receipt.
+
+4. **Review Gate — three passes (Opus), AC-gated.** If every job passes the scope gate and the integration gate is clean, run [`spec-reviewer`](../agents/spec-reviewer.md)'s three passes:
    - **SPEC** — each job satisfies its own `acceptance` in the manifest.
    - **QUALITY** — code quality, no regressions, **no fabricated metrics**.
    - **INTEGRATION** — cross-job seams build, and the composite change satisfies the feature-level `acceptance_criteria`.
@@ -50,9 +68,15 @@ For a `fast_path` manifest, `/v:collect` runs the **ONE authoritative order** th
 1. **Test floor — run it FIRST, persist the result, HALT on failure (non-skippable).** Ahead of the scope gate, run the proportionate floor ladder (configured tests → guarded parse-check → cheap diff-read) and write its **fresh** result into the run dir — step 4's `review-spec` fails closed unless this floor-result file exists and PASSED, and `/v:collect` is usable standalone, so this command must produce it (never assume the dispatcher left one behind):
    ```
    python3 scripts/compound-v-fastpath-run.py test-floor \
-     --worktree <wt-dir> [--baseline <pinned-baseline-sha>] [--test-cmd <configured-tests>] \
+     --worktree <wt-dir> [--baseline <pinned-baseline-sha>] \
+     --manifest <run-dir>/manifest.yaml --job-id <job-id> \
+     (--last-result <run-dir>/results/<job-id>.json | --no-prior-run) \
      > docs/superpowers/execution/<run-id>/review/floor-result.json
    ```
+   **`--manifest` + `--job-id` are the producer, and they replace a placeholder that never had a value.** This invocation used to read `[--test-cmd <configured-tests>]` — an angle-bracket stand-in that no caller ever substituted, in either this file or [`parallel-dispatcher.md`](../agents/parallel-dispatcher.md). That is why the test floor had never executed once. `--manifest`/`--job-id` resolve the ordered command set from the manifest's `test_contract` and the job's `test_scope` **in Python**, applying the rules in [`execution-manifest.md`](../skills/compound-v/execution-manifest.md): the floor always runs and comes first, overlapping `when` globs union, a changed path matching no `when` glob resolves to `full_command`, and `floor_only` means *only the floor*, never nothing.
+
+   Pass `--last-result` when a prior run was recorded (its `tests.failures[]` is the previously-failing set) and `--no-prior-run` when none was — **one of the two is required on purpose**: silence must not become "nothing was failing". `--test-cmd` still exists as an explicit override; it is not the default path and must never again be written as an unsubstituted placeholder.
+
    A floor **FAILURE** blocks the merge: surface it and **HALT** — do not scope-gate, review, or merge.
 2. **Scope gate** — run [`scripts/compound-v-scope-check.py`](../scripts/compound-v-scope-check.py) on the implementer job against its sole `write_allowed` literal, as in step 3. Any out-of-scope path ⇒ **BLOCKED**, HALT, do not merge.
 3. **F2 — post-hoc reclassify, pre-merge, against the pinned baseline.** BEFORE any merge/commit/worktree-removal, run the sibling reclassifier over the **same pinned baseline + the authoritative changed-path set the scope gate used**:
@@ -89,7 +113,8 @@ For a `fast_path` manifest, `/v:collect` runs the **ONE authoritative order** th
 
 ## Safety
 
-- The scope gate is the **authority**, not the worker's self-report — a job that wrote outside `write_allowed` is BLOCKED and never merges.
+- The scope gate is the **authority**, not the worker's self-report — a job that wrote outside `write_allowed` is BLOCKED and never merges. A workflow Gate stage's receipt is defence in depth and an early exit; `compound-v-integration-gate.py` decides what enters the tree.
+- Never write `--test-cmd <configured-tests>`, or any other unsubstituted placeholder, into a runnable command. That exact stand-in is why the floor had never run.
 - This command is **idempotent**: re-collecting a clean run re-derives the same verdicts and does not re-dispatch.
 - Do **not** override the Opus requirement on the reviewers, and do **not** skip the final integration pass.
 - Do **not** print fabricated cost or token metrics (anti-ruflo).
