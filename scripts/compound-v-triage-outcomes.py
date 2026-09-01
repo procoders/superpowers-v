@@ -99,6 +99,7 @@ Usage:
     compound-v-triage-outcomes.py bind      --pre-eval-id ID --run-id R
     compound-v-triage-outcomes.py actual    --pre-eval-id ID --run-id R [--escalated]
                                             [--demoted] [--ci-failed] [--reverted] ...
+    sweep-landings [--repo R]                   # git-derived reverts of DIRECT landings
     compound-v-triage-outcomes.py precision [--repo DIR] [--min-sample N]
     compound-v-triage-outcomes.py tier2     [--repo DIR] [--min-sample N]
     compound-v-triage-outcomes.py cohorts   [--repo DIR]
@@ -1041,6 +1042,113 @@ def tier2_lookup(min_sample_count=None, stream_path=None, repo=None, exec_dir=No
 
 
 # ---------------------------------------------------------------------------- #
+# DIRECT LANDINGS: the outcome key, and the one negative outcome this repository
+# can DERIVE after the commit.
+#
+# A DIRECT landing dispatches no reviewer and opens no run directory, so it has no
+# ``run_id`` -- and ``append_actual`` requires one. That is why `/v:triage --land`
+# appended nothing at all: ten landings that were every one reverted left ten
+# ``predicted`` events, zero negatives, a 0/10 rate and an armed breaker.
+#
+# THE KEY IS THE LANDED COMMIT SHA, recorded by Phase L's landing receipt. It
+# exists the moment the landing does, it is stable, and it is exactly what a revert
+# names -- so a correction can be appended under it later and win by
+# last-writer-wins over the clean actual the landing wrote.
+#
+# THE REVERT MARKER IS GIT'S OWN: ``git revert`` writes "This reverts commit <sha>."
+# into the message it creates. A hand-rolled revert that reverses the content
+# without that trailer is NOT detected. That is a real limit of this producer,
+# recorded here rather than papered over.
+# ---------------------------------------------------------------------------- #
+_LANDING_SUFFIX = ".landing.json"
+_PRE_EVAL_RELPATH = os.path.join("docs", "superpowers", "pre-eval")
+_REVERT_MARKER = "This reverts commit "
+
+
+def landing_receipts(repo=None):
+    """Every DIRECT landing receipt Phase L has written, as
+    ``[{"pre_eval_id", "commit", "path"}, ...]`` sorted by filename.
+
+    A receipt without a ``pre_eval_id``, or without a ``landed_commit`` that LOOKS like
+    an object name, is SKIPPED: a key git cannot resolve is not a key, and handing an
+    unvalidated string to a ``--grep`` pattern is how a refspec gets injected."""
+    root = repo if repo is not None else _repo_root()
+    pdir = os.path.join(root, _PRE_EVAL_RELPATH)
+    out = []
+    try:
+        names = sorted(os.listdir(pdir))
+    except OSError:
+        return out
+    for name in names:
+        if not name.endswith(_LANDING_SUFFIX):
+            continue
+        path = os.path.join(pdir, name)
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                doc = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(doc, dict):
+            continue
+        pid = doc.get("pre_eval_id")
+        sha = doc.get("landed_commit")
+        if not pid or not isinstance(sha, str) or not _SHA_RE.match(sha):
+            continue
+        out.append({"pre_eval_id": pid, "commit": sha, "path": path})
+    return out
+
+
+def _revert_of(repo, sha):
+    """The commit reachable from HEAD that REVERTS ``sha``, or None. ``--fixed-strings``
+    keeps the pattern literal; the sha is ``_SHA_RE``-validated before git sees it."""
+    if not sha or not _SHA_RE.match(sha):
+        return None
+    rc, out = _run_git(["log", "--format=%H", "--fixed-strings", "--max-count=1",
+                        "--grep=" + _REVERT_MARKER + sha, "HEAD"], cwd=repo)
+    if rc != 0:
+        return None
+    lines = [x.strip() for x in out.decode("utf-8", "replace").splitlines() if x.strip()]
+    return lines[0] if lines else None
+
+
+def sweep_landings(repo=None, stream_path=None, ts=None):
+    """Record REVERTS of DIRECT landings as negative outcomes, keyed by the landed sha.
+
+    IDEMPOTENT: a landing whose ``actual`` already carries ``reverted:true`` is skipped,
+    so Phase L can run this before every landing without growing the stream. The write
+    stays strictly append-only (AC-3) -- the correction wins by last-writer-wins over the
+    clean actual the landing wrote, it never rewrites it.
+
+    Returns ``{"repo", "scanned", "reverted": [...], "appended", "already_recorded"}``.
+    """
+    root = os.path.abspath(repo if repo is not None else _repo_root())
+    top = _git_toplevel(root) or root
+    receipts = landing_receipts(root)
+    reduced = _reduce_stream(stream_path)
+    found = []
+    appended = already = 0
+    for rec in receipts:
+        rev = _revert_of(top, rec["commit"])
+        if not rev:
+            continue
+        found.append({"pre_eval_id": rec["pre_eval_id"], "commit": rec["commit"],
+                      "revert_commit": rev})
+        slot = reduced["runs"].get((rec["pre_eval_id"], rec["commit"])) or {}
+        prev = slot.get("actual") or {}
+        if prev.get("reverted"):
+            already += 1
+            continue
+        append_actual(rec["pre_eval_id"], rec["commit"], reverted=True,
+                      review_result=prev.get("review_result"),
+                      test_result=prev.get("test_result"),
+                      ts=ts, stream_path=stream_path,
+                      landing=True, revert_commit=rev)
+        appended += 1
+    return {"repo": top, "scanned": len(receipts), "reverted": found,
+            "appended": appended, "already_recorded": already}
+
+
+# ---------------------------------------------------------------------------- #
 # spec §A4.9 — the miscalibration circuit breaker.
 #
 # Auto-route is ARMED FROM THE FIRST DECISION. A warm-up gate was considered and
@@ -1064,6 +1172,24 @@ def tier2_lookup(min_sample_count=None, stream_path=None, repo=None, exec_dir=No
 #                             `predicted` re-deciding the same work at a strictly
 #                             HIGHER tier (DIRECT < SCOPED < FULL, ranked from the
 #                             ENGINE's own constants).
+#
+# WHICH OF THOSE HAS A LIVE PRODUCER FOR A **DIRECT** DECISION, stated plainly
+# rather than claimed — an unreachable input in a safety latch is worse than a
+# smaller honest one:
+#
+#   * DEMOTION   — PRODUCED. Phase L's `demote()` appends the higher-tier
+#                  `predicted`, which this walk counts as an escalation.
+#   * REVERT     — PRODUCED. `sweep_landings` below derives it from git and Phase L
+#                  runs it on both sides of its lock, before the breaker is read.
+#   * ESCALATION — PRODUCED. A later `predicted` at a higher tier, or an
+#                  escalation-child `bind` under the same pre_eval_id.
+#   * CI FAILURE — **NOT PRODUCED for a DIRECT decision.** Nothing in this
+#                  repository calls back from CI into this stream, and wiring that
+#                  is a workflow-file change outside this module. `ci_failed` is a
+#                  live input for full-pipeline runs (`/v:dispatch` passes it) and
+#                  is APPENDABLE against a landing now that the landed-commit key
+#                  exists — but no DIRECT landing has ever produced one, and this
+#                  file does not pretend otherwise.
 #
 # The last of those is why this walks the RAW event sequence instead of the
 # last-writer-wins reduction: a later `predicted` at a higher tier REPLACES the
@@ -1375,6 +1501,11 @@ def main(argv):
                       help="report only; do not append the self-disarm when over ceiling")
     p_br.add_argument("--note")
 
+    # The revert producer, reachable from a shell as well as from Phase L.
+    p_sw = sub.add_parser("sweep-landings")
+    p_sw.add_argument("--repo")
+    p_sw.add_argument("--stream")
+
     p_re = sub.add_parser("rearm")
     p_re.add_argument("--by", required=True, help="the human re-arming auto-route")
     p_re.add_argument("--reason")
@@ -1427,6 +1558,10 @@ def main(argv):
         if args.cmd == "cohorts":
             print(json.dumps(cohort_stats(stream_path=args.stream, repo=args.repo,
                                           exec_dir=args.exec_dir), indent=2))
+            return 0
+        if args.cmd == "sweep-landings":
+            print(json.dumps(sweep_landings(repo=args.repo, stream_path=args.stream),
+                             indent=2))
             return 0
         if args.cmd == "breaker":
             st = breaker_evaluate(stream_path=args.stream, repo=args.repo,
@@ -2309,6 +2444,84 @@ def _selftest():
                b_nl["armed"] is False and b_nl["latched_off"] is False
                and sum(1 for o in _read_events(s_nolatch)[0]
                        if o.get("event") == EVENT_BREAKER) == 0)
+
+        # ==================================================================== #
+        # DIRECT LANDINGS — the outcome key, and the revert producer that uses   #
+        # it. Before this, a DIRECT landing had no run_id, so `append_actual`    #
+        # refused it and the breaker's numerator could only ever see a demotion. #
+        # ==================================================================== #
+        _lrepo = os.path.join(td, "landings")
+        _lpdir = os.path.join(_lrepo, "docs", "superpowers", "pre-eval")
+        _lmem = os.path.join(_lrepo, "docs", "superpowers", "memory")
+        os.makedirs(_lpdir)
+        os.makedirs(_lmem)
+        s_land = os.path.join(_lmem, STREAM_BASENAME)
+        subprocess.run(["git", "init", "-q", "-b", "main", _lrepo], env=_fx_env(),
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, check=True)
+        with io.open(os.path.join(_lrepo, "README.md"), "w", encoding="utf-8") as fh:
+            fh.write("hello\n")
+        _fx_commit_all(_lrepo, "base")
+        with io.open(os.path.join(_lrepo, "README.md"), "w", encoding="utf-8") as fh:
+            fh.write("hello\nthe landed line\n")
+        _fx_commit_all(_lrepo, "the DIRECT landing")
+        _landed = _fx_git_out(_lrepo, "rev-parse", "HEAD")
+        _lpid = "2026-09-01T000000Z-selftest-l1"
+
+        def _receipt(name, doc):
+            with io.open(os.path.join(_lpdir, name), "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(doc, sort_keys=True) + "\n")
+
+        _receipt(_lpid + ".landing.json",
+                 {"pre_eval_id": _lpid, "landed_commit": _landed, "tier": "DIRECT"})
+        _receipt("2026-09-01T000000Z-selftest-l2.landing.json",
+                 {"pre_eval_id": "2026-09-01T000000Z-selftest-l2",
+                  "landed_commit": "not-a-sha"})
+        _recs = landing_receipts(_lrepo)
+        expect("landing receipts are read by the landed-commit key",
+               len(_recs) == 1 and _recs[0]["commit"] == _landed
+               and _recs[0]["pre_eval_id"] == _lpid)
+
+        # Phase L's own append: the landing IS the outcome, keyed by the sha.
+        append_predicted(_lpid, decision=FASTPATH_DECISION, difficulty_band="low",
+                         impact_band="low", stream_path=s_land)
+        append_actual(_lpid, _landed, review_result=None, test_result="pass",
+                      landing=True, stream_path=s_land)
+        expect("a clean landing leaves the breaker armed (it is not a negative)",
+               breaker_state(stream_path=s_land, repo=_lrepo)["armed"] is True)
+
+        _sw0 = sweep_landings(repo=_lrepo, stream_path=s_land)
+        expect("sweeping an un-reverted landing appends nothing",
+               _sw0["scanned"] == 1 and _sw0["appended"] == 0
+               and _sw0["reverted"] == [])
+
+        subprocess.run(["git", "-C", _lrepo, "revert", "--no-edit", _landed],
+                       env=_fx_env(), stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        _sw1 = sweep_landings(repo=_lrepo, stream_path=s_land)
+        expect("a reverted landing is DERIVED from git and appended once",
+               _sw1["appended"] == 1 and len(_sw1["reverted"]) == 1
+               and _sw1["reverted"][0]["commit"] == _landed)
+        _lev = [o for o in _read_events(s_land)[0]
+                if o.get("event") == EVENT_ACTUAL and o.get("reverted")]
+        expect("the correction is keyed by the LANDED COMMIT, last-writer-wins",
+               len(_lev) == 1 and _lev[0]["run_id"] == _landed
+               and _lev[0]["pre_eval_id"] == _lpid
+               and _reduce_stream(s_land)["runs"][(_lpid, _landed)]["actual"]
+               ["reverted"] is True)
+        _b_land = breaker_state(stream_path=s_land, repo=_lrepo)
+        expect("the revert reaches the breaker's numerator and DISARMS auto-route",
+               _b_land["armed"] is False and _b_land["n_decisions"] == 1
+               and _b_land["negative_reasons"][_lpid] == ["reverted"])
+
+        _sw2 = sweep_landings(repo=_lrepo, stream_path=s_land)
+        expect("the sweep is idempotent (Phase L runs it before every landing)",
+               _sw2["appended"] == 0 and _sw2["already_recorded"] == 1
+               and len(_read_events(s_land)[0]) == 3)
+
+        expect("a landing actual with no bind is NEVER counted as precision success",
+               precision_stats(stream_path=s_land, repo=_lrepo).get("status")
+               == "insufficient")
 
         # ==================================================================== #
         # §A5 — the events themselves: a `predicted` per decision carrying the   #
