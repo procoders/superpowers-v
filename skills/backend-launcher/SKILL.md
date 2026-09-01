@@ -30,7 +30,16 @@ There is no skill-import API: an adapter is a sibling doc (`adapter-codex.md`, `
   "read_only": false,                  // true ⇒ sandbox read-only, no merge
   "timeout_sec": 900,
   "network": false,                    // maps to sandbox_workspace_write.network_access
-  "output_schema": "/abs/schemas/job_result.schema.json"  // optional
+  "output_schema": "/abs/schemas/job_result.schema.json", // optional
+  "test_contract": {                   // optional (v3.0 Feature B3) — the RESOLVED test contract
+    "scope": "impacted",               //   full | impacted | floor_only (the job's test_scope)
+    "floor_command": "bash tests/run-floor.sh",
+    "full_command":  "bash tests/run-all.sh",
+    "resolved_commands": [             //   caller-resolved, ordered, deduped; the floor is first
+      "bash tests/run-floor.sh",
+      "python3 scripts/compound-v-preeval.py --selftest"
+    ]
+  }
 }
 ```
 
@@ -50,7 +59,16 @@ Defined and validated by [`schemas/job_result.schema.json`](../../schemas/job_re
   "failure_class": null,               // null on success/blocked; else the classified backend failure
   "session_id": "uuid",                // codex exec resume <uuid>
   "worktree": "/tmp/compound-v/<run-id>/task-1-editor-ui",
-  "exit_code": 0
+  "exit_code": 0,
+  "tests": {                           // optional, MEASURED-ONLY (v3.0 B3) — absent when no tests ran
+    "command": "bash tests/run-floor.sh\npython3 scripts/compound-v-preeval.py --selftest",
+    "exit_code": 0,
+    "scope": "impacted",
+    "selected_count": 2,
+    "duration_ms": 8412,               //   measured-only: ABSENT rather than estimated
+    "failures": []                     //   measured-only: the identifiers that failed
+  },
+  "gate_receipt": { … }                // optional (v3.0 D1) — one scope-gate run, bound to two commits
 }
 ```
 
@@ -71,6 +89,101 @@ Both halves are required: `diff --name-only` catches edits to tracked files; `ls
 The deterministic authority is [`scripts/compound-v-scope-check.py`](../../scripts/compound-v-scope-check.py) (built downstream). This file states the rule; that script is what the dispatcher actually calls after every job.
 
 **Only `write_allowed` is enforced; `read_allowed` is advisory.** The gate is git-derived, and git tracks writes, not reads. `write_allowed` is the hard boundary — any changed path outside it is a `violation` ⇒ `blocked`. `read_allowed` (in the `job_spec`) is **advisory only**: it scopes the worker prompt and documents intent, but git cannot detect an out-of-scope read, so there is no deterministic gate behind it. Never present `read_allowed` as enforced.
+
+---
+
+## The test contract is an ARGUMENT, never prompt prose (v3.0, Feature B3)
+
+Before 3.0 there was no transport at all: every worker takes `--prompt-file`, and the `job_spec` had
+no test field — so a job's `test_scope` could only reach an external worker as a sentence inside a
+prompt, hoping the model noticed it. A value a model has to notice is not a contract. It is the same
+failure the triage block exists to remove, one layer down.
+
+**The slice.** `job_spec.test_contract` is the **resolved** contract for exactly one job:
+
+```jsonc
+"test_contract": {
+  "scope": "impacted",                    // full | impacted | floor_only — the job's test_scope
+  "floor_command": "bash tests/run-floor.sh",   // optional, informational: what the floor was
+  "full_command":  "bash tests/run-all.sh",     // optional, informational: what full would have been
+  "resolved_commands": ["bash tests/run-floor.sh", "python3 scripts/compound-v-preeval.py --selftest"]
+}
+```
+
+Only `scope` and `resolved_commands` are required; unknown keys are rejected, so a `resolved_command`
+typo cannot pass silently as "nothing to run".
+
+**Resolution belongs to the CALLER, execution to the worker.** The caller turns the manifest's
+`test_contract` (`floor_command` / `full_command` / `impacted_map`) plus the job's `test_scope` into
+the ordered, deduped `resolved_commands` list, applying the rules in
+[`execution-manifest.md`](../compound-v/execution-manifest.md): the floor always runs and comes
+first; overlapping `when` globs **union**; a changed path matching no `when` glob resolves to
+`full_command`; `floor_only` means *only the floor*, never nothing. That glob matching stays in the
+caller's Python for the same reason the scope gate does — a second, weaker matcher written in bash
+five times over would diverge from the authority, and a divergence here silently *drops* tests.
+The worker never re-derives the set; it executes exactly the list it was handed.
+
+**Transport.** Every worker script takes the resolved slice as a real argument:
+
+```bash
+scripts/compound-v-run-<backend>-worker.sh … \
+  --test-contract-file /abs/run-dir/jobs/<job-id>.test-contract.json \
+  [--test-timeout-sec 900]
+```
+
+`--test-contract-file` is an absolute path to a JSON file holding exactly the slice above. It is
+**structurally validated before the model runs**, and a malformed contract is a usage fault (`exit 2`)
+rather than a test failure — failing after an hour of model time would teach the run nothing. A
+blank resolved command is rejected there too: `bash -c "   "` exits 0, and a silent zero is a
+fabricated pass. Omit the flag and the worker runs no tests and reports no `tests` object.
+
+**Ordering is load-bearing.** Tests run **after** the git-derived scope gate and only when the job
+would otherwise be `success`:
+
+1. the executor runs, 2. the gate computes `files_changed` / `violations`, 3. *then* the resolved
+commands run inside the worktree.
+
+Running them before the gate would let a coverage file or a cache directory a test wrote become a
+false `violation`. The flip side is real and is the caller's problem: **anything a test creates after
+the gate is outside the gate's authority and must not be merged** — see Merge-back below. A blocked,
+timed-out or errored job never reaches step 3, and then `tests` is **absent**; absent is honest,
+an invented zero is not.
+
+**Who fills `tests`.** The worker that ran the commands, from what it measured — never the executor
+model. This is the same rule as `blocked` / `files_changed` / `violations`, for the same reason:
+asking the constrained party to report on its own constraint is the fabricated-evidence pattern.
+`duration_ms` and `failures[]` are measured-only and absent rather than estimated; `failures[]`
+carries the exact commands that exited non-zero, which is what makes the next run's
+*previously-failing* set computable at all. On the `claude` path there is no external process to
+carry the argument, so the caller runs the same resolved commands itself after the gate and fills
+`tests` from what it measured — see [`adapter-claude.md`](adapter-claude.md).
+
+**What the floor is, said without varnish.** The floor is an **early-feedback optimization. It does
+not restore what the full suite guaranteed, and CI does.** Impacted ∪ previously-failing ∪
+newly-added structurally omits every existing, previously-passing test the declared map fails to
+select. Never write, here or anywhere, that the floor preserves pre-merge safety.
+
+**A non-zero `tests.exit_code` does not change `status`.** `status` and `failure_class` describe the
+*backend's* disposition, and re-labelling a red test suite as a backend `error` would send it into
+the retry/reroute policy, which cannot fix a failing test. The worker reports; the **caller must not
+merge** a job whose `tests.exit_code` is non-zero, and the review gate FAILs a job that reports no
+test command at all.
+
+---
+
+## `gate_receipt` — the receipt, not the authority (v3.0, Feature D1)
+
+A job result may carry a `gate_receipt`: one run of the scope gate, bound to `baseline_commit`,
+`realised_commit` and a `diff_digest`, with the gate's verbatim stdout and exit code. It exists so
+integration can be *refused* until every original job has one.
+
+It is **not** the authority. A gate stage inside a workflow can be narrowed so it can do nothing but
+run the check — and it still cannot be forced to *report* honestly, because a clamp limits what an
+agent can do, not what it returns, and a schema proves shape, not execution. So the verification
+layer's integration postcondition wins: where a receipt is **missing, `null`, or disagrees with the
+tree**, the verification layer runs [`compound-v-scope-check.py`](../../scripts/compound-v-scope-check.py)
+itself and that verdict stands. Emit the object only when all six fields are genuinely known — a
+partial receipt is a missing receipt, and a missing one is re-derived rather than trusted.
 
 ---
 
@@ -166,9 +279,28 @@ Pinned facts (do not re-derive):
 On **PASS**: apply the worktree's changes — **including new (untracked) files** — into the main tree, then `git worktree remove -f`. A plain `git diff HEAD | git apply` would silently DROP added files (an allowed new file passes the gate but never lands), so use an index-based patch:
 
 ```bash
-git -C "$WT" add -A
-git -C "$WT" diff --cached --binary HEAD | (cd "$REPO" && git apply --index)
+# Stage ONLY the paths the gate saw and approved (job_result.files_changed), so a file a
+# test command wrote into the worktree AFTER the gate cannot ride into the main tree
+# unreviewed. `git add -A` with no pathspec would carry it.
+# NUL-delimited, because a path may legitimately contain a newline (the workers keep
+# files_changed newline-safe on purpose — do not undo that here).
+printf '%s' "$JOB_RESULT" | jq -j '.files_changed[] | (., "\u0000")' \
+  | while IFS= read -r -d '' p; do git -C "$WT" add -A -- "$p"; done
+git -C "$WT" diff --cached --binary "$BASELINE_SHA" | (cd "$REPO" && git apply --index)
 git -C "$REPO" worktree remove -f "$WT"
 ```
+
+Two details are load-bearing:
+
+- **Diff against the pinned `$BASELINE_SHA`** — the SHA captured *before* `git worktree add`, which is
+  what the gate itself was given. `--cached HEAD` agrees with it only while the executor never
+  commits; an executor that *did* commit inside its worktree leaves a HEAD past the baseline, and
+  the committed half of its work would silently not land.
+- **Stage by gate-approved path, never a bare `git add -A`** — tests run after the gate (see the test
+  contract section above), so a coverage file, a `.pytest_cache/`, or any other byproduct exists in
+  the worktree by merge time and is outside the gate's authority. Restricting the pathspec to
+  `files_changed` is what keeps "only what the gate approved gets merged" true. Workers export
+  `PYTHONDONTWRITEBYTECODE=1` for the test step, which removes the commonest byproduct but not the
+  general case.
 
 On **BLOCKED**: leave the worktree for inspection, do **not** merge. Worktrees live under `$TMPDIR/compound-v/<run-id>/<job-id>` (outside the repo — no `.gitignore` change needed). This loses per-job commit attribution, which is acceptable for disjoint file sets.
