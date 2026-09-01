@@ -2,16 +2,19 @@
 
 - **Status:** Accepted
 - **Date:** 2026-09-01
-- **Reverses:** the "What STAYS in Engine A" guarantee in
-  [`skills/compound-v/workflows-accelerator.md:60-71`](../../../skills/compound-v/workflows-accelerator.md)
+- **Reverses:** the "What STAYS in Engine A — even when C runs" guarantee, which commit `c27d33e`
+  deleted from [`skills/compound-v/workflows-accelerator.md`](../../../skills/compound-v/workflows-accelerator.md);
+  it survives only in git — `git show c27d33e^:skills/compound-v/workflows-accelerator.md`
 - **Deciders:** Compound V v3.0 design, Feature D
-  ([spec `:215-284`](../specs/2026-09-01-v3.0-triage-tests-orchestration-design.md))
+  ([spec § "Feature D — Dispatch on the native Workflow runtime"](../specs/2026-09-01-v3.0-triage-tests-orchestration-design.md))
 
 ## Context
 
 In 1.0 this project decided where the native Workflow runtime — Engine C — was allowed to touch the
-system, and called that boundary load-bearing. Verbatim, from
-[`workflows-accelerator.md:60-71`](../../../skills/compound-v/workflows-accelerator.md):
+system, and called that boundary load-bearing. Verbatim, from the § "What STAYS in Engine A — even
+when C runs" section that commit `c27d33e` deleted from
+[`workflows-accelerator.md`](../../../skills/compound-v/workflows-accelerator.md) — the quoted lines
+are `:60-71` of the pre-deletion blob, `git show c27d33e^:skills/compound-v/workflows-accelerator.md`:
 
 > This is the load-bearing guarantee. Engine C only changes **how jobs fan out**, never
 > the enforcement or recovery layer:
@@ -33,11 +36,12 @@ The reasoning was sound and the conclusion was wrong, because of what "Engine A'
 
 **Engine A is prose.** On the `claude` backend there is no program that runs the scope gate. There is a
 document telling a dispatcher model to run it, and the document is candid about its own status —
-[`agents/parallel-dispatcher.md:136-144`](../../../agents/parallel-dispatcher.md) heads the step
+[`agents/parallel-dispatcher.md` § "Step 2b — Scope gate + state.json"](../../../agents/parallel-dispatcher.md) heads the step
 "(wiring, not prose)" and then supplies a shell command a model must remember to type. The external
 backends are different: the codex, cursor and antigravity worker scripts invoke
 [`compound-v-scope-check.py`](../../../scripts/compound-v-scope-check.py) themselves, in bash, as
-[`compound-v-run-codex-worker.sh:424-430`](../../../scripts/compound-v-run-codex-worker.sh) records —
+[`compound-v-run-codex-worker.sh`](../../../scripts/compound-v-run-codex-worker.sh) records in its
+"git-derived enforcement" comment block —
 "the SAME deterministic gate the dispatcher runs after every job... Single source of truth."
 
 **And the external backends were never used.** Every job declared in every committed manifest under

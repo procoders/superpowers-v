@@ -5,7 +5,7 @@
 - **Supersedes:** the `impacted-tests` rejection in
   [`2026-07-25-v2.17-cochange-and-evidence-packing-design.md:308-310`](../specs/2026-07-25-v2.17-cochange-and-evidence-packing-design.md)
 - **Deciders:** Compound V v3.0 design, Feature B
-  ([spec `:139-196`](../specs/2026-09-01-v3.0-triage-tests-orchestration-design.md))
+  ([spec § "Feature B — Scoped tests, bought with a floor and an evaluation"](../specs/2026-09-01-v3.0-triage-tests-orchestration-design.md))
 
 ## Context
 
@@ -38,12 +38,14 @@ Two further facts changed the ground under the rejection, and both are propertie
 it stands today rather than arguments:
 
 - **There is no "run everything" to preserve.** `run_test_floor`
-  ([`compound-v-fastpath-run.py:308`](../../../scripts/compound-v-fastpath-run.py)) is already
+  ([`compound-v-fastpath-run.py`](../../../scripts/compound-v-fastpath-run.py), `def run_test_floor`) is already
   merge-blocking and already fail-closed on an empty command, and it has never had a producer for
   `--test-cmd`. The manifest has no test field at all. So the status quo the rejection was defending is
   not "the full suite runs"; it is "nothing runs mechanically, and
-  [`agents/spec-reviewer.md:138`](../../../agents/spec-reviewer.md) asks a model to confirm a suite it
-  was never told how to invoke."
+  [`agents/spec-reviewer.md`](../../../agents/spec-reviewer.md), as it read before Feature B's own
+  task changed it — § 3.3 "Build is green": *"The composite must build/compile and the test suite must
+  pass"* (`git show 8d08b70^:agents/spec-reviewer.md`, replaced by `8d08b70`) — asks a model to confirm
+  a suite it was never told how to invoke."
 - **Nothing under `tests/` was swept by CI on this branch until Feature B's own task-0 landed the
   sweep** — the v2.14.1 false-green shape recurring, in the very repository that named it.
 
@@ -146,8 +148,9 @@ observed:
 
 The 0.2%–10.6% range is from published regression-test-selection research on **call-graph-derived**
 selection, recorded in the v3.0 spec at
-[`:168`](../specs/2026-09-01-v3.0-triage-tests-orchestration-design.md). It was **not measured on this
-repository**, not measured on a glob map, and not measured on Compound V at all. No measurement of this
+[§ B2, "Known miss rate, stated with the claim"](../specs/2026-09-01-v3.0-triage-tests-orchestration-design.md).
+It was **not measured on this repository**, not measured on a glob map, and not measured on Compound V
+at all. No measurement of this
 project's own miss rate exists and none has been taken; falsifier 2 above describes how one would be. The
 claim that a glob map carries strictly less information than a call graph is an argument about what the
 two structures contain, not an experiment.
