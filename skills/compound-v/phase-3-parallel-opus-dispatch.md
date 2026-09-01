@@ -4,17 +4,33 @@
 
 **Goal:** Read `manifest.yaml` and dispatch each job to the backend the manifest names (Claude subagent or headless Codex worker) via the [`backend-launcher`](../backend-launcher/SKILL.md) contract, concurrently per batch, with strict scope locks and **per-job isolation** — direct writes to the active workspace where safe, an isolated git worktree where the job is risky or runs on an external backend. **Opus by default for Claude jobs; Sonnet only for the narrow junior-level mechanical tasks defined below; backend/model/isolation are read from the manifest, not re-decided here.** After every job the **scope gate** runs and `state.json` is updated.
 
-> **Agent-driven flow, deterministic enforcement (by design).** The orchestration *flow* below — read the manifest, dispatch batches, honor `depends_on`/`run`/`max_parallel`, run reviews — is intentionally **agent-driven**, not a standalone executable dispatcher daemon. That is the deliberate Engine A choice (PRD §3.1, anti-ruflo: no daemon, no MCP server, no scheduler process). The **enforcement**, by contrast, is fully **deterministic scripts**: [`compound-v-scope-check.py`](../../scripts/compound-v-scope-check.py) (the git-derived scope gate) and [`compound-v-validate-manifest.py`](../../scripts/compound-v-validate-manifest.py) (the invariant gate). The safety guarantees live in those scripts, not in the flow — an agent driving the flow cannot weaken a guarantee the scripts enforce. This is intent, not a gap.
+> **Since 3.0 the flow is a generated program, and the enforcement still is not prose.** The orchestration *flow* below — read the manifest, honor `depends_on`/`run`/`max_parallel`, gate, record — is executed by **Engine C**: a native Claude Code Workflow generated from the manifest by [`compound-v-emit-workflow.py`](../../scripts/compound-v-emit-workflow.py), committed into the run directory, and launched by `scriptPath` ([`workflows-accelerator.md`](workflows-accelerator.md), [`ADR 0004`](../../docs/superpowers/adr/0004-workflow-as-the-dispatch-engine.md)). Still no daemon, no MCP server, no scheduler process.
+>
+> The 1.0 note this paragraph replaced described the flow as deliberately agent-driven and said the safety guarantees lived in the scripts, not the flow. The second half was true and remains true; the first half quietly hid a gap. On the `claude` backend — **73 of 73 recorded jobs** — nothing *ran* the scope gate. A paragraph asked an agent to. Engine C moves the gate and the state write *into* the run, and [`compound-v-integration-gate.py`](../../scripts/compound-v-integration-gate.py) re-derives or refuses every receipt before a commit is integrated. Enforcement is still deterministic scripts — [`compound-v-scope-check.py`](../../scripts/compound-v-scope-check.py) and [`compound-v-validate-manifest.py`](../../scripts/compound-v-validate-manifest.py) — but now something calls them on every job, every time.
+>
+> Where a workflow cannot launch (a subagent context, or a session that refuses `scriptPath`), the **residual subagent path** in [`agents/parallel-dispatcher.md`](../../agents/parallel-dispatcher.md) runs the same steps by hand.
 
 > **Compatibility:** the older "no worktrees, direct writes only" stance from 0.1.x is now **per-job isolation** (the manifest's `isolation` field). Direct writes remain the default for in-harness Claude jobs whose partition is clean; worktrees are used where a job is risky (touches a broad/shared surface) or runs on an external backend (Codex is **always** worktree). A bare plan path with no manifest still works — the dispatcher materializes a manifest first (see `commands/v-dispatch.md`), then proceeds as below.
 
-## Concurrency Reality (from 2026 Claude Code testing)
+## Concurrency Reality
+
+**On Engine C, concurrency is the runtime's, not ours.** Concurrent `agent()` calls are capped at
+**`min(16, available CPUs − 2)`** per workflow — fewer when Claude Code has fewer CPUs available,
+including inside a CPU-limited container, so on a 4-CPU CI runner the effective cap is **2**. The
+manifest's `max_parallel` maps to chunk size and is therefore **advisory**: never size a claim, or a
+throughput expectation, on 16.
+
+Two other runtime limits shape the emitted script:
+
+- **`budget` is a hard ceiling, not a hint.** Once `spent()` reaches `total`, further `agent()` calls **throw** — and a throw inside a `pipeline()` stage drops the item and skips its remaining stages, which is how an audit record gets lost. So the script reads `budget.remaining()` and **stops scheduling** rather than running into it. `total` is `null` unless the user set a `+500k`-style directive.
+- **`phase()` races inside stages.** Set `opts.phase` on every `agent()` call; use the global `phase()` only at wave boundaries.
+
+**On the residual subagent path**, the older hand-dispatch numbers still apply:
 
 - **Foreground parallel limit: 4-6 Task calls in one message.** Beyond that you hit rate-limit cascades and permission-prompt thrashing.
 - **Background limit (`run_in_background: true`): 5-10.** Background agents auto-deny permission prompts (use already-granted perms) and the parent gets a notification when each finishes.
-- **If your plan has N>6 parallel tasks**, batch them: dispatch 4-6 at a time, wait for the batch to return, dispatch the next batch. Document the batches in the Partition Map.
-- **`run_in_background: true` for the implementer batch is acceptable** when permissions are pre-granted for the workspace — it lets you continue orchestration work while implementers run. Background subagents do NOT carry working-directory state between Bash calls; foreground subagents do. Plan accordingly.
-- **Cap runaway reasoning:** include `maxTurns: 15` (or your project's limit) on every dispatched Claude Task call. Implementers that haven't finished in 15 turns are usually stuck and need a re-dispatch with more context, not more turns. (Codex worker jobs are bounded by `timeout_sec` in the `job_spec` instead — see `backend-launcher`.)
+- **`run_in_background: true` for an implementer wave is acceptable** when permissions are pre-granted for the workspace. Background subagents do NOT carry working-directory state between Bash calls; foreground subagents do. Plan accordingly — every path in a prompt must be absolute.
+- **Cap runaway reasoning:** include `maxTurns: 15` (or your project's limit) on every dispatched Claude Task call. Implementers that haven't finished in 15 turns are usually stuck and need a re-dispatch with more context, not more turns. (External worker jobs are bounded by `timeout_sec` in the `job_spec` instead — see `backend-launcher`.)
 
 ## The Three Overrides
 
@@ -219,7 +235,22 @@ The gate computes what the job *actually* changed purely from git —
 
 Then update `state.json` (the run's single source of truth — schema in [`state-machine.md`](state-machine.md)):
 
-- **PASS** (no violation) → set the job `status: done`. For a worktree job, merge back with an **index-based patch that includes new (untracked) files** — `git -C "$WT" add -A && git -C "$WT" diff --cached --binary HEAD | (cd "$REPO" && git apply --index)` into the main tree, then `git worktree remove -f`. (A plain `git diff HEAD | git apply` would silently DROP allowed new files.) Direct jobs are already in the tree.
+- **PASS** (no violation) → set the job `status: done`. For a worktree job, merge back with an **index-based patch that includes new (untracked) files**, staged by the paths the gate approved and diffed against the **pinned baseline SHA**:
+
+  ```bash
+  # Stage ONLY job_result.files_changed — NUL-delimited, because a path may
+  # legitimately contain a newline and the workers keep files_changed newline-safe.
+  printf '%s' "$JOB_RESULT" | jq -j '.files_changed[] | (., "\u0000")' \
+    | while IFS= read -r -d '' p; do git -C "$WT" add -A -- "$p"; done
+  git -C "$WT" diff --cached --binary "$BASELINE_SHA" | (cd "$REPO" && git apply --index)
+  git -C "$REPO" worktree remove -f "$WT"
+  ```
+
+  **Diff against `$BASELINE_SHA`, never `HEAD` — the `HEAD` form this file used to prescribe is a data-loss bug.** `--cached HEAD` agrees with the baseline only while the executor never commits. An executor that *did* commit inside its worktree leaves `HEAD` past the baseline, **passes the gate** (which measures against the pinned SHA), and then its committed half silently fails to land: a job that looks clean, with half its work gone.
+
+  **Stage by gate-approved path, never a bare `git add -A`.** Tests run *after* the gate, so a coverage file or a cache directory a test wrote exists in the worktree by merge time and is outside the gate's authority. Restricting the pathspec to `files_changed` is what keeps "only what the gate approved gets merged" true.
+
+  (A plain `git diff HEAD | git apply` would additionally DROP allowed new files.) Direct jobs are already in the tree. Full contract: [`backend-launcher/SKILL.md`](../backend-launcher/SKILL.md) §Merge-back.
 - **BLOCKED** (any path outside `write_allowed`) → set `status: blocked`, advance the run `phase` to terminal **BLOCKED**, surface the offending paths, and **do not merge** — leave the worktree for inspection. A BLOCKED job halts the run; it does not get silently re-dispatched.
 - **failed / timeout / error** (a non-success backend *failure*, distinct from a scope-gate `blocked`) → run the **classify → policy → act** loop before deciding anything: classify the failure ([`compound-v-classify-failure.py`](../../scripts/compound-v-classify-failure.py)), look up the action ([`compound-v-failure-policy.py`](../../scripts/compound-v-failure-policy.py)), then **retry** (same backend, backoff), **reroute** (out_of_credits → circuit-break + env-aware codex→claude rewrite, announced loudly; context_length → bigger tier), or **halt** (mark `failed`, keep the run resumable, continue independent siblings). Never retry `out_of_credits`/`auth`; cap retries by count AND wall-clock. Full table: [`failure-policy.md`](failure-policy.md).
 

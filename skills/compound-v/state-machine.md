@@ -2,7 +2,9 @@
 
 This is the **lightweight execution substrate** for an orchestrator run: a run directory plus a `state.json`. It is **not** an FSM engine — there is no daemon, no event loop, no background process. The run directory *is* the record (it doubles as the audit trail; see PRD §5.12), and `state.json` is the single source of truth for "where is this run."
 
-Resume is **owned by Engine A** (agent + helper scripts). It is deliberately **not** a Workflows (Engine C) capability — Workflows resume is same-session-only and starts fresh after a Claude Code exit, which fails the crash case by design. So even when the opt-in Workflows accelerator runs the dispatch batch, the scope gate and the state machine below stay in Engine A's layer.
+Resume is **owned by the verification layer** (`state.json` + the helper scripts), not by any engine. It is deliberately **not** the native runtime's resume: that is same-session-only, starts fresh after a Claude Code exit — which fails the crash case by design — and, past a failure point, **re-runs completed agents**, so a 16-job run whose job 3 failed would re-run jobs 4–16 that already succeeded.
+
+**Since 3.0 the scope gate and the state write happen INSIDE the run, on Engine C.** That reverses what this file said in 1.0, and the reversal is deliberate: keeping them "outside" kept them in prose, and on the `claude` backend — 73 of 73 recorded jobs — no program ran the gate at all. See [`workflows-accelerator.md`](workflows-accelerator.md) and [`ADR 0004`](../../docs/superpowers/adr/0004-workflow-as-the-dispatch-engine.md). What did **not** move is this document: cross-session recovery, and the git-derived integration postcondition that decides what enters the tree, remain here.
 
 ---
 
@@ -126,20 +128,32 @@ size and "insufficient samples" below the floor — never a fabricated number (A
 
 ```
 docs/superpowers/execution/<run-id>/
-├── manifest.yaml          # the contract (see execution-manifest.md)
-├── state.json             # phase + per-job status (this doc)
+├── manifest.yaml            # the contract (see execution-manifest.md)
+├── state.json               # phase + per-job status (this doc)
+├── dispatch.workflow.js     # Engine C: the EXACT orchestration that ran (committed)
+├── lane-map.json            # agent/worktree -> job id, read by hooks/lane-guard.sh
 ├── jobs/
-│   └── <id>.prompt.md     # the exact dispatched prompt — replayed verbatim on resume
+│   ├── <id>.prompt.md            # the exact dispatched prompt — replayed verbatim on resume
+│   └── <id>.test-contract.json   # the RESOLVED test slice handed to the worker as an argument
 ├── logs/
-│   └── <id>.jsonl         # codex worker's --json event stream (session-aware workers)
+│   └── <id>.jsonl           # codex worker's --json event stream (session-aware workers)
+├── receipts/
+│   └── <id>.gate.json       # the Gate stage's raw six-field receipt, as produced
 └── results/
-    └── <id>.json          # normalized job_result (schemas/job_result.schema.json)
+    ├── <id>.json            # normalized job_result (schemas/job_result.schema.json) — EXACTLY ONE
+    └── attempts/
+        └── <id>.<n>.json    # superseded attempts, archived out of the gate's line of sight
 ```
 
 - `manifest.yaml` — schema and rules live in [`execution-manifest.md`](execution-manifest.md). Read-only after materialization.
 - `jobs/<id>.prompt.md` — captured at dispatch time. Resume re-dispatches **this exact prompt**, so a re-run is deterministic rather than re-derived.
 - `logs/<id>.jsonl` — the codex worker's `--json` event stream, one file per codex job (the dispatcher passes `--events-log docs/superpowers/execution/<run-id>/logs/<id>.jsonl` and records that path into `state.json jobs[<id>].log`). Present only for codex jobs; the liveness sweep reads the newest event as a progress signal. Degrade-safe: absent ⇒ prior git+FS+pid behavior unchanged.
-- `results/<id>.json` — one normalized [`job_result`](../../schemas/job_result.schema.json) per finished job, written by the collector. Its `files_changed` / `violations` / `blocked` fields are **git-derived**, never model-self-reported.
+- `results/<id>.json` — one normalized [`job_result`](../../schemas/job_result.schema.json) per finished job. Its `files_changed` / `violations` / `blocked` fields are **git-derived**, never model-self-reported.
+
+  **Exactly one per job, and the naming is enforced.** [`compound-v-integration-gate.py`](../../scripts/compound-v-integration-gate.py) treats any sibling `results/<id>.<anything>.json` as a **duplicate receipt** and returns `forged` for that job — D1 requires exactly one receipt per job, and job ids never contain a dot, so the split is unambiguous. Superseded attempts therefore live in `results/attempts/<id>.<n>.json`, which the gate's listing (direct `*.json` children of `results/` only) does not scan: history is preserved without minting a rival receipt.
+- `dispatch.workflow.js` — Engine C's generated script, **committed before it is launched** and launched by `scriptPath`. This is what makes "the exact orchestration that ran is in the run directory" true rather than aspirational.
+- `lane-map.json` — `{"run_id", "manifest", "agents": {"<agent_id>": "<job-id>"}, "worktrees": {"<abs path>": "<job-id>"}}`. Read by [`hooks/lane-guard.sh`](../../hooks/lane-guard.sh) to resolve which job a tool call belongs to. **Without it the guard resolves no job, fails open, and silently allows every write.** Each implementer registers its own worktree as its first command. On Claude Code 2.1.238 a spawned agent is not told its own `agent_id`, so `agents` is normally empty and the `worktrees` map — the guard's documented `cwd` fallback, and the one the 1D probe proved works — carries the resolution. A run dir without this file is not an error; it is a run the guard cannot attribute.
+- `receipts/<id>.gate.json` — the Gate stage's receipt exactly as produced, kept beside the normalized result so a reviewer can compare the raw artefact against the folded one.
 
 ---
 
@@ -167,7 +181,13 @@ docs/superpowers/execution/<run-id>/
 }
 ```
 
+> **`worktree` and `baseline` are what the integration authority needs, and until 3.0 nothing wrote them.** A smoke run of [`compound-v-integration-gate.py`](../../scripts/compound-v-integration-gate.py) against this release's own run dir returned **`unverifiable` for every job**: no `results/` directory, `worktree: null`, no `baseline`. The gate fails closed correctly, so the whole verification layer was inert. Record both, per job, at dispatch — `worktree` decides *where* the gate runs, `baseline` decides *what it measures against*.
+>
+> **They stay OPTIONAL on read.** A run dispatched before the cutover carries neither, and [`/v:resume`](../../commands/v-resume.md) must still accept it: a job with no `baseline` reconciles as it always did, and a job with no receipt is re-derived rather than failed. Never refuse to resume a run because it predates a field.
+
 Per-job fields: `status` (lifecycle, below), `isolation` (`direct` | `worktree`), `worktree` (absolute path or `null`), `session_id` (the codex `thread_id` UUID read from the worker's `job_result.session_id`, UUID-validated — the resume UUID; `null` otherwise), `failure_class` (the returned `job_result.failure_class`, e.g. `timeout`/`network`; consulted by the resume-eligibility rule; `null` otherwise), `baseline` (the **immutable pre-launch baseline SHA** the scope gate — and, on a fast-path job, the post-hoc reclassifier — attribute against; recorded at dispatch, reconciled against on resume, **never** re-derived from a moved `HEAD`; CR5-3), and **`log`** (the codex worker's events-log path — `docs/superpowers/execution/<run-id>/logs/<id>.jsonl` — recorded by the dispatcher at dispatch; `null`/absent for non-codex jobs). `log` is read by the liveness sweep as a progress signal and is **degrade-safe**: absent ⇒ prior git+FS+pid behavior unchanged.
+
+**`merged` — the at-most-once merge key (3.0).** `{ "realised_commit": "<40-hex>", "mode": "worktree" | "direct" }`, written when a job's worktree is merged back. **Idempotence on the record step alone is not enough**, and this field is why: the native runtime's resume re-runs every agent that started after a failed one, *completed ones included*, so a finished job can implement, gate and record a second time. Keying the merge to an immutable commit hash — and refusing a second merge for the same `realised_commit` — is what turns "we wrote the same result file twice, harmlessly" into "we did not double-apply the patch". Absent ⇒ never merged, which is exactly the state a pre-cutover run is in, so it merges once and normally.
 
 ### Backend-failure fields (the circuit breaker — no daemon)
 
