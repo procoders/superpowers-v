@@ -66,31 +66,41 @@ delegating, the epic inherits Engine C along with everything else.
 
 4. **Select the engine by PROBE, not by version.**
 
-   > ### ⛔ Engine C is DISABLED BY DEFAULT as of 3.0.1 — read this before enabling it
+   > ### Engine C is enabled again as of 3.0.2 — what was wrong, and what closed it
    >
-   > A post-release cross-model review found **three CRITICAL defects in Engine C**, and every one
-   > of them fires on its **first real use**. Engine C has never been executed against a real
-   > manifest — only a three-stage seam probe ran — so nothing had exercised them:
+   > 3.0.1 disabled it. A cross-model review had found three CRITICAL defects, every one firing on
+   > first real use, in a path 3.0 had made the default **without ever executing it end to end**.
+   > All three are fixed and each is now pinned by a test that was **observed red** against 3.0.1:
    >
-   > 1. **A `direct` job's patch can be applied into the wrong repository.** Every implementer is
-   >    told to return `pwd` as its worktree, and `record` decides direct-vs-worktree from whether
-   >    that locator is empty. A compliant direct agent therefore always enters `merge_back`, and
-   >    the emitted Record command omits `--repo-root` — so the destination defaults to the
-   >    repository containing the installed plugin, not the project. This is the same class as this
-   >    project's own 2026-07-13 repo-deletion incident.
-   > 2. **A job can land without the authority ever running.** `record` calls `git apply --index`
-   >    in the main checkout *before* `/v:dispatch` step 7 runs the integration gate, and never
-   >    commits. Any later plain `git commit` — `/v:orchestrate` runs one — sweeps that staged
-   >    patch into history. The authority is bypassed, not defeated.
-   > 3. **Dependents cannot see their prerequisites.** Record stages but does not commit, and a
-   >    dependent's worktree is created from an unchanged `HEAD`.
+   > 1. **A `direct` job's patch landed in the wrong repository.** `record` branched on whether the
+   >    agent-reported worktree was empty, and a compliant direct agent always reported its cwd — so
+   >    it always entered `merge_back` — while the emitted command carried no `--repo-root` and fell
+   >    back to the repo containing the installed script. The reproduction observed `M README.md`
+   >    **in the plugin repository**. Now: the branch is the manifest's `isolation`, `--repo-root` is
+   >    required by every subcommand, and the default destination is deleted outright.
+   > 2. **A job could land with the authority never having run.** `record` staged into the checkout
+   >    before the gate and never committed, so any later plain `git commit` swept it in. Now `record`
+   >    is **evidence only**, and a serialized `finalize-wave` runs the integration gate → merges only
+   >    what it permitted → commits, pathspec-restricted so it cannot sweep unrelated staged work.
+   >    The wave loop stops scheduling after any non-success result.
+   > 3. **The external worker lost its invocation and its worktree.** Now `emit` materializes
+   >    `jobs/<id>.prompt.md` and `jobs/<id>.launch.argv.json`, the Gate carries its observed worktree
+   >    into Record explicitly, and `register-lane` pins the baseline **before** the worker launches.
+   >    An unpinned baseline is a gate error, not a fallback to a HEAD the worker can move.
    >
-   > Until these are fixed, **the residual subagent path is the default**. Engine C runs only when
-   > `engine_c: true` is set explicitly in `.claude/compound-v.json`, and enabling it means
-   > accepting the three defects above. They are tracked for 3.0.1.
+   > Also closed: the lane-map read-modify-write raced (a 12-writer subprocess test now pins it; a
+   > mutant that reverts only the lock loses 1–3 of 12 lanes), `GATE_SCHEMA` rejected the `tests`
+   > object the Gate emits on every passing verdict, and a throw in Implement dropped the item past
+   > both Gate and Record — the v2.6.4 audit-trail loss, reproduced structurally.
    >
-   > This block is the honest cost of shipping a default path that had never run end to end. The
-   > release said so; it should also have kept the untested path off the default until it had.
+   > **Two authority passes, deliberately.** `finalize-wave` gates each wave before committing it;
+   > step 7 re-runs the gate run-wide afterwards. The first is what makes a dependent's worktree see
+   > its prerequisite; the second is the run-level authority and is cheap. Neither replaces the other.
+   >
+   > **Still true, and the reason 3.0.1 existed:** Engine C has now been exercised by 143 selftest
+   > checks and 50 contract assertions, but **not by a real 18-job dispatch**. Treat the first live
+   > run as a first live run.
+
 
 
    ```
@@ -105,9 +115,8 @@ delegating, the epic inherits Engine C along with everything else.
    select Engine C and then **fail to create the Gate agent** — the clamp refuses the spawn
    outright rather than degrading.
 
-   - `engine_c: true` in `.claude/compound-v.json` AND probe succeeds → **Engine C** (step 5).
-   - `engine_c` absent or false → the **residual subagent path**, regardless of the probe. This is
-     the 3.0.1 default; see the block above for why.
+   - Probe succeeds → **Engine C** (step 5). `engine_c: false` in `.claude/compound-v.json` still
+     forces the residual path for anyone who wants it.
    - Probe fails, or this is a subagent context → the **residual subagent path**
      ([`parallel-dispatcher.md`](../agents/parallel-dispatcher.md)), then rejoin at step 7.
 

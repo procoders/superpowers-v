@@ -83,6 +83,47 @@ cat >"$RUN2/lane-map.json" <<JEOF
  "worktrees": {"$WT2": "job-under-test"}}
 JEOF
 
+# Isolated agent worktrees that NO lane map knows about — the shape of a worker
+# that wrote before it ran `register-lane`, or whose registration a concurrent
+# sibling's read-modify-write lost.
+WTX="$PROJ/.claude/worktrees/wf_unregistered-9"
+WTY="$PROJ/.claude/worktrees/wf_unregistered-10"
+WTZ="$PROJ/.claude/worktrees/wf_unregistered-11"
+mkdir -p "$WTX" "$WTY" "$WTZ"
+
+# A SEPARATE project whose only run is FINISHED: its lane map names a worktree
+# that no longer exists on disk (`git worktree remove` runs on Merge AND
+# Discard). A repo full of historical run dirs must not turn every unresolved
+# call into a recorded incident.
+PROJ2="$WORK/proj2"
+RUN3="$PROJ2/docs/superpowers/execution/2099-01-03-finished"
+GONE="$PROJ2/.claude/worktrees/wf_gone-1"        # deliberately NOT created
+OTHER="$PROJ2/.claude/worktrees/wf_other-2"
+mkdir -p "$RUN3" "$OTHER"
+cat >"$RUN3/lane-map.json" <<JEOF
+{"run_id": "2099-01-03-finished",
+ "agents": {},
+ "worktrees": {"$GONE": "job-gone"}}
+JEOF
+
+# Where every MUTATED copy of the hook lives. It has to MIRROR THE PLUGIN
+# LAYOUT (`<root>/hooks/<hook>` beside `<root>/scripts/`), because the hook
+# locates the matcher and the YAML loader relative to its own directory. A
+# mutant dropped in a bare temp dir cannot find either, fails open as "guard
+# degraded", and would then satisfy any assertion that merely expects ALLOW —
+# a planted violation that passes for the wrong reason proves nothing.
+MUTROOT="$WORK/mutants"
+mkdir -p "$MUTROOT/hooks"
+ln -s "$REPO/scripts" "$MUTROOT/scripts"
+
+records()  { find "$PROJ/docs/superpowers/execution" \
+                  -name lane-guard-unresolved.jsonl 2>/dev/null; }
+reclines() { find "$PROJ/docs/superpowers/execution" \
+                  -name lane-guard-unresolved.jsonl -exec cat {} + 2>/dev/null \
+             | grep -c . ; }
+recreset() { find "$PROJ/docs/superpowers/execution" \
+                  -name lane-guard-unresolved.jsonl -delete 2>/dev/null; }
+
 # --------------------------------------------------------------------------- #
 # Driver
 # --------------------------------------------------------------------------- #
@@ -210,6 +251,42 @@ bash_case "git checkout -- PATH out of lane" deny \
 bash_case "an absolute out-of-lane path inside the worktree" deny \
   agent_abc123 "$WT" "printf x > $WT/docs/abs-leak.md"
 
+echo "=== 3b. quote-aware segmentation ==========================="
+# THE FALSE ALLOW A CROSS-MODEL REVIEW FOUND BY EXECUTING bash_targets().
+# The shipped segmentation was `re.split(r"\|\||&&|;|\||\n|&")` — it split on
+# the BYTES before any quote was parsed, so these were the observed outputs:
+#   sed -i 's/a/b/' README.md          => [('README.md', False)]   (denied)
+#   sed -i 's/a/b/; s/c/d/' README.md  => []                       (ALLOWED)
+#   sed -E -i 's/a|b/c/' README.md     => []                       (ALLOWED)
+# One expression denied, two expressions or a `|` in the pattern allowed —
+# while the hook's own documentation listed all three as caught.
+
+bash_case "sed -i, ONE expression (the spelling that already worked)" deny \
+  agent_abc123 "$WT" "sed -i 's/a/b/' README.md"
+bash_case "sed -i, TWO expressions split by a QUOTED ;" deny \
+  agent_abc123 "$WT" "sed -i 's/a/b/; s/c/d/' README.md"
+bash_case "sed -E -i whose PATTERN contains a QUOTED |" deny \
+  agent_abc123 "$WT" "sed -E -i 's/a|b/c/' README.md"
+
+# The same regex was wrong in the other direction too, and that half is the
+# expensive one: a false deny stalls an autonomous run, while a miss is still
+# caught by the git-derived gate afterwards. Each of these opened a bogus
+# segment whose first word became a command.
+bash_case "a ; inside a HEREDOC BODY is data, not a command" allow \
+  agent_abc123 "$WT" \
+  "$(printf 'cat > tests/new.sh <<%sEOF%s\nrm README.md; echo hi\nEOF\n' "'" "'")"
+bash_case "a | inside a quoted grep PATTERN is not a pipe" allow \
+  agent_abc123 "$WT" "grep -E 'a|rm README.md' tests/a.sh"
+bash_case "a ; inside a double-quoted commit MESSAGE is not a separator" allow \
+  agent_abc123 "$WT" 'git commit -m "fix; rm README.md"'
+
+# UNQUOTED separators must still split — a tokenizer that over-merges would
+# quietly stop denying half the table above.
+bash_case "an UNQUOTED ; still splits (rm in the second segment denies)" deny \
+  agent_abc123 "$WT" 'echo ok; rm docs/existing.md'
+bash_case "an UNQUOTED | still splits (tee in the second segment denies)" deny \
+  agent_abc123 "$WT" 'echo ok | tee docs/existing.md'
+
 bash_case "in-lane heredoc is not denied" allow \
   agent_abc123 "$WT" "$(printf 'cat > tests/new.sh <<%sEOF%s\nx\nEOF\n' "'" "'")"
 bash_case "in-lane sed -i is not denied" allow \
@@ -232,7 +309,7 @@ bash_case "truncate -s 0 does not read the SIZE as a path" allow \
 # guard the 1D probe called decorative — and prove the identical `sed -i` payload
 # then slips through. If this ever passes, the Bash matcher has stopped working
 # and every DENY above is meaningless.
-MUTANT="$WORK/lane-guard-writeedit-only.sh"
+MUTANT="$MUTROOT/hooks/lane-guard-writeedit-only.sh"
 sed 's/"NotebookEdit", "Bash")/"NotebookEdit")/' "$HOOK" >"$MUTANT"
 chmod +x "$MUTANT"
 grep -q '"NotebookEdit", "Bash")' "$MUTANT" \
@@ -245,6 +322,40 @@ bash_case "PLANTED: a Write|Edit-only guard MISSES sed -i (so Bash is load-beari
 HOOK_UNDER_TEST=""
 bash_case "and the real guard catches that same payload" deny \
   agent_abc123 "$WT" "sed -i 's/a/b/' README.md"
+
+# PLANTED VIOLATION 2: restore the raw regex segmentation that shipped, and
+# prove the two-expression `sed -i` slips straight through it — the exact false
+# ALLOW a cross-model review found by executing bash_targets(). The mutation
+# injects the old expression inline rather than leaving it in the hook as dead
+# code, so a crash cannot masquerade as the old behaviour.
+MUTANT_SPLIT="$MUTROOT/hooks/lane-guard-regex-split.sh"
+python3 - "$HOOK" "$MUTANT_SPLIT" <<'PYX'
+import sys
+src = open(sys.argv[1]).read()
+edits = [
+    # the segmentation that shipped
+    ("for segment in _split_segments(cmd_string):",
+     'for segment in re.split(r"\\|\\||&&|;|\\||\\n|&", cmd_string):'),
+    # and the whitespace-split fallback that shipped with it — both halves, or
+    # the mutant would allow via the new "unparseable" path instead of via the
+    # old bug, and prove nothing.
+    ('raise _UnparseableCommand("shlex: %s" % exc)',
+     'return segment.split()'),
+]
+for old, new in edits:
+    if src.count(old) != 1:
+        raise SystemExit("FATAL: mutation anchor %r is not unique" % old)
+    src = src.replace(old, new)
+open(sys.argv[2], "w").write(src)
+PYX
+[ -s "$MUTANT_SPLIT" ] || { echo "FATAL: split mutation did not apply"; exit 1; }
+chmod +x "$MUTANT_SPLIT"
+HOOK_UNDER_TEST="$MUTANT_SPLIT"
+bash_case "PLANTED: the shipped regex split MISSES sed -i with two expressions" \
+  allow agent_abc123 "$WT" "sed -i 's/a/b/; s/c/d/' README.md"
+bash_case "PLANTED: and it FALSE-DENIES a ; inside a commit message" \
+  deny agent_abc123 "$WT" 'git commit -m "fix; rm README.md"'
+HOOK_UNDER_TEST=""
 
 echo "=== 4. the external-worker carve-out (spec D5.2) =========="
 
@@ -328,6 +439,106 @@ check "a missing matcher -> no deny, exit 0, and an announced fail-open" \
   "$([ "$(is_deny)" = no ] && [ "$RC" = "0" ] \
      && printf '%s' "$OUT" | grep -q 'FAILED OPEN' && echo 1 || echo 0)"
 
+echo "=== 7b. an UNRESOLVED IDENTITY is recorded, not silent ===="
+# `register-lane` is prompt prose — "FIRST COMMAND, BEFORE ANY OTHER TOOL CALL"
+# — and nothing enforces it. A worker that writes before registering is allowed,
+# because no map entry exists yet, and this hook cannot fix that ordering from
+# its side. What it CAN refuse to do is let the failure be invisible: a run in
+# which the guard never resolved anything must not read afterwards as a clean
+# run.
+
+recreset
+
+file_case "an isolated agent unresolved under a LIVE lane map is allowed" allow \
+  Write "" "$WTX" "$WTX/README.md"
+check "it is recorded in the run dir, not only in a temp log" \
+  "$([ -n "$(records)" ] && echo 1 || echo 0)"
+check "exactly one line was recorded" \
+  "$([ "$(reclines)" = "1" ] && echo 1 || echo 0)"
+check "the fail-open is ANNOUNCED once, naming register-lane" \
+  "$(printf '%s' "$OUT" | grep -q 'FAILED OPEN' \
+     && printf '%s' "$OUT" | grep -q 'register-lane' && echo 1 || echo 0)"
+check "it is logged as an unresolved identity, not as a plain human session" \
+  "$([ "$(logged 'UNRESOLVED IDENTITY')" = yes ] && echo 1 || echo 0)"
+
+file_case "the SAME identity again is allowed" allow \
+  Write "" "$WTX" "$WTX/docs/other.md"
+check "the repeat does NOT add a second line (deduplicated)" \
+  "$([ "$(reclines)" = "1" ] && echo 1 || echo 0)"
+check "the repeat is silent — one notice per identity, not per tool call" \
+  "$([ "$(silent)" = yes ] && echo 1 || echo 0)"
+
+file_case "a DIFFERENT unregistered worktree is allowed" allow \
+  Write "" "$WTY" "$WTY/README.md"
+check "a different identity DOES add a line" \
+  "$([ "$(reclines)" = "2" ] && echo 1 || echo 0)"
+
+# The lock earns its place here: without it these eight read-then-append pairs
+# can each read the file before any of them has written, and all eight conclude
+# they are first.
+recreset
+CONCUR="$(encode Write "" "$WTZ" file_path "$WTZ/README.md")"
+for _k in 1 2 3 4 5 6 7 8; do
+  printf '%s' "$CONCUR" \
+    | env -u CLAUDE_PROJECT_DIR -u CLAUDE_PLUGIN_ROOT \
+          CV_PROJECT_DIR="$PROJ" CV_LANE_GUARD_LOG="$WORK/log.concurrent" \
+          "$HOOK_BASH" "$HOOK" >/dev/null 2>&1 &
+done
+wait
+check "8 CONCURRENT identical calls record exactly ONE line (locked)" \
+  "$([ "$(reclines)" = "1" ] && echo 1 || echo 0)"
+
+# The three gates on recording, each asserted.
+recreset
+file_case "a resolved job records NOTHING (the guard did its job)" deny \
+  Write agent_abc123 "$WT" "$WT/README.md"
+check "gate 1: a resolved identity leaves no incident record" \
+  "$([ -z "$(records)" ] && echo 1 || echo 0)"
+
+run "$(encode Write "" "$OTHER" file_path "$OTHER/README.md")" \
+    CV_PROJECT_DIR="$PROJ2"
+verdict "an isolated agent under a FINISHED run's lane map" allow
+check "gate 2: a run whose worktrees are gone records nothing" \
+  "$([ ! -f "$RUN3/lane-guard-unresolved.jsonl" ] && echo 1 || echo 0)"
+check "gate 2: and stays silent (no per-call noise in a stale repo)" \
+  "$([ "$(silent)" = yes ] && echo 1 || echo 0)"
+
+file_case "gate 3: an ordinary human session (cwd is no worktree) is allowed" \
+  allow Write "" "$WORK" "$WORK/human.md"
+check "gate 3: a human session records nothing and stays silent" \
+  "$([ -z "$(records)" ] && [ "$(silent)" = yes ] && echo 1 || echo 0)"
+recreset
+
+# PLANTED VIOLATION 3: strip the recording, and the incident becomes exactly the
+# silent fail-open this section exists to end.
+MUTANT_REC="$MUTROOT/hooks/lane-guard-no-record.sh"
+sed 's/if agent_worktree_root(cwd):/if False:/' "$HOOK" >"$MUTANT_REC"
+chmod +x "$MUTANT_REC"
+grep -q 'if False:' "$MUTANT_REC" \
+  || { echo "FATAL: the record mutation did not apply"; exit 1; }
+HOOK_UNDER_TEST="$MUTANT_REC"
+file_case "PLANTED: without the recording an unresolved identity is silent" \
+  allow Write "" "$WTX" "$WTX/README.md"
+check "PLANTED: and the run afterwards looks completely clean" \
+  "$([ -z "$(records)" ] && [ "$(silent)" = yes ] && echo 1 || echo 0)"
+HOOK_UNDER_TEST=""
+recreset
+
+# PLANTED VIOLATION 4: neuter the dedupe the lock protects, and the same
+# identity writes a line on every single tool call.
+MUTANT_DEDUPE="$MUTROOT/hooks/lane-guard-no-dedupe.sh"
+sed 's/) == key:/) == 0:/' "$HOOK" >"$MUTANT_DEDUPE"
+chmod +x "$MUTANT_DEDUPE"
+grep -q ') == 0:' "$MUTANT_DEDUPE" \
+  || { echo "FATAL: the dedupe mutation did not apply"; exit 1; }
+HOOK_UNDER_TEST="$MUTANT_DEDUPE"
+file_case "PLANTED: dedupe removed, call 1" allow Write "" "$WTX" "$WTX/a.md"
+file_case "PLANTED: dedupe removed, call 2" allow Write "" "$WTX" "$WTX/b.md"
+check "PLANTED: without the dedupe the same identity records twice" \
+  "$([ "$(reclines)" = "2" ] && echo 1 || echo 0)"
+HOOK_UNDER_TEST=""
+recreset
+
 echo "=== 8. documented blind spots (asserted, not assumed) ====="
 # These are ALLOWED, and that is the honest limit of command inspection. They
 # are pinned here so the limit is a tested fact rather than a claim in a
@@ -347,6 +558,19 @@ bash_case "BLIND SPOT: a build/format step that writes on its own" allow \
 bash_case "BLIND SPOT: a script invoked by path that writes on its own" allow \
   agent_abc123 "$WT" 'bash tests/a.sh'
 
+# Limits of the quote-aware tokenizer, kept honest and kept PASSING.
+bash_case "BLIND SPOT: a command whose quoting cannot be parsed at all" allow \
+  agent_abc123 "$WT" "sed -i 's/a/b/ README.md"
+check "the unparseable command is LOGGED as unparseable" \
+  "$([ "$(logged 'command not parseable')" = yes ] && echo 1 || echo 0)"
+check "the unparseable command produces NO context noise" \
+  "$([ "$(silent)" = yes ] && echo 1 || echo 0)"
+bash_case "BLIND SPOT: find -exec — the executed command is not modelled" allow \
+  agent_abc123 "$WT" 'find tests -name "*.sh" -exec sed -i "s/a/b/" {} \;'
+# shellcheck disable=SC2016  # the literal $(...) is the entire point of this case
+bash_case "BLIND SPOT: the contents of a command substitution" allow \
+  agent_abc123 "$WT" 'echo $(rm README.md) > tests/subst.txt'
+
 echo "=== 9. the invariants the spec pins ======================="
 
 check "the hook reuses compound-v-scope-check.py's matcher" \
@@ -361,6 +585,13 @@ check "the hook never claims the deny replaces the git gate" \
   "$(grep -qiE 'replaces the git|instead of the git' "$HOOK" && echo 0 || echo 1)"
 check "the hook keeps its log OUT of the repo by default" \
   "$(grep -q 'TMPDIR' "$HOOK" && echo 1 || echo 0)"
+check "the segmentation is quote-aware, not a raw regex split" \
+  "$(grep -q '_split_segments(cmd_string)' "$HOOK" \
+     && ! grep -q 'SEGMENT_RE' "$HOOK" && echo 1 || echo 0)"
+check "the incident record's read-then-append takes an exclusive lock" \
+  "$(grep -q 'LOCK_EX' "$HOOK" && echo 1 || echo 0)"
+check "the hook is honest that it cannot enforce lane registration" \
+  "$(grep -q 'CANNOT ENFORCE IT' "$HOOK" && echo 1 || echo 0)"
 
 echo "-------------------------------------------"
 printf '%d passed, %d failed\n' "$pass" "$fail"

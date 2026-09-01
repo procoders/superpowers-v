@@ -22,11 +22,15 @@ SUBCOMMANDS
                  gate, compute the PINNED diff digest, run the test floor, and
                  emit a complete six-field `gate_receipt`.
   record         the Record stage's ONE clamped command: idempotently persist
-                 results/<job-id>.json + state.json, and merge the worktree back
-                 AT MOST ONCE per realised commit.
+                 results/<job-id>.json + state.json. EVIDENCE ONLY — it writes
+                 nothing into the project checkout.
+  finalize-wave  the serialized end of every wave: run the integration AUTHORITY
+                 over that wave's jobs, then merge and COMMIT the permitted ones.
+                 The only writer into the project checkout.
   register-lane  the Implement agent's FIRST command: bind its real worktree to
-                 its job id in lane-map.json, which is what makes
-                 hooks/lane-guard.sh able to resolve an acting job at all.
+                 its job id in lane-map.json (which is what makes
+                 hooks/lane-guard.sh able to resolve an acting job at all), and
+                 PIN this job's baseline commit before anything runs.
 
 WHY THE GATE STAGE CANNOT THROW
 -------------------------------
@@ -58,11 +62,20 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO_DEFAULT = os.path.dirname(HERE)
 
+# THERE IS NO DEFAULT REPOSITORY ROOT, and its absence is the point.
+#
+# Until 3.0.2 this module carried `REPO_DEFAULT = os.path.dirname(HERE)` — the
+# repository containing the INSTALLED SCRIPT — and handed it to `record` as the
+# `--repo-root` default. Since the emitted Record command passed no `--repo-root`
+# at all, a job that edited `README.md` in /work/app had its patch applied into
+# /plugins/superpowers-v. A wrong-repository write is the same class as this
+# project's 2026-07-13 incident, so the root is now REQUIRED everywhere it
+# decides a destination, and its absence FAILS CLOSED rather than picking one.
 SCOPE_CHECK_DEFAULT = os.path.join(HERE, "compound-v-scope-check.py")
 FASTPATH_DEFAULT = os.path.join(HERE, "compound-v-fastpath-run.py")
 INTEGRATION_GATE_DEFAULT = os.path.join(HERE, "compound-v-integration-gate.py")
+RESOLVE_MODEL_DEFAULT = os.path.join(HERE, "compound-v-resolve-model.py")
 
 # --------------------------------------------------------------------------- #
 # Determinism constraints of the Workflow runtime (verified against the
@@ -102,7 +115,7 @@ NARROW_DISALLOWED = [
     "SlashCommand", "Skill", "Artifact", "ExitPlanMode",
 ]
 
-STAGE_PHASES = ["Implement", "Gate", "Record"]
+STAGE_PHASES = ["Implement", "Gate", "Record", "Finalize"]
 
 # Reserve, in tokens, assumed per queued agent when guarding fan-out against the
 # native `budget` ceiling. Deliberately a round, declared constant rather than a
@@ -164,6 +177,49 @@ def _atomic_write(path, data):
     finally:
         if tmp is not None and os.path.exists(tmp):
             os.unlink(tmp)
+
+
+class _run_dir_lock(object):
+    """Hold an exclusive lock across a whole READ-MODIFY-WRITE of a shared file.
+
+    `_atomic_write` makes one WRITE atomic. It does nothing whatsoever for the
+    READ that preceded it, and every shared file in a run dir — lane-map.json,
+    state.json — is updated read-modify-write by agents that run CONCURRENTLY
+    within a wave. Two implementers both read the pre-write map, both merge their
+    own entry into it, and the second write drops the first's.
+
+    The entry that goes missing is a LANE. hooks/lane-guard.sh resolves the
+    acting job from that map; with no entry it resolves nothing, FAILS OPEN, and
+    silently allows every write that job makes. That is the same hole as the map
+    having no producer at all — only intermittent, and only under concurrency, so
+    it presents as a flake rather than as a missing enforcement boundary.
+
+    POSIX `flock` is the mechanism. If it cannot be taken, this RAISES rather
+    than proceeding unlocked: an unserialized merge is exactly the failure being
+    prevented, and "we could not lock, so we did it anyway" is fail-open.
+    """
+
+    def __init__(self, run_dir, name="run"):
+        self.path = os.path.join(run_dir, ".%s.lock" % name)
+        self.run_dir = run_dir
+        self._fh = None
+
+    def __enter__(self):
+        import fcntl
+        os.makedirs(self.run_dir, exist_ok=True)
+        self._fh = open(self.path, "a+")
+        fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        if self._fh is not None:
+            try:
+                import fcntl
+                fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+            finally:
+                self._fh.close()
+                self._fh = None
+        return False
 
 
 def _read_json(path, default=None):
@@ -362,6 +418,51 @@ def topo_waves(jobs, max_parallel):
     return [[by_id[j] for j in wave] for wave in waves]
 
 
+# --------------------------------------------------------------------------- #
+# agentType — the last native mechanism the audit had open
+#
+# docs/superpowers/architecture/native-mechanisms.md records `agentType` as the
+# one mechanism that exists, covers a need, and was not used: the emitted script
+# contained zero occurrences. The need it covers is named in that row — the
+# REVIEW GATE. Engine C spawned implement/gate/record and nothing else, so a
+# manifest job whose declared `type` is `review` — 3.0's own `task-13-review`,
+# "Three-pass Review Gate over the composite", is one — was handed the generic
+# IMPLEMENTER prompt: told to write inside a lane and report a summary, with
+# none of `agents/spec-reviewer.md`'s three-pass contract reaching it.
+#
+# So exactly ONE mapping is made, and only where a job's own declared type says
+# the work IS that role. The other stages stay anonymous on purpose, and the
+# reason is in the JS_TEMPLATE next to them: Gate, Record and Finalize are
+# de-tooled single-command transports whose entire safety property is
+# `disallowedTools` + `bashCommandClamp`, and every agent under agents/ declares
+# no `tools:` restriction at all.
+#
+# The prefix is READ from the plugin's own manifest rather than assumed. It is
+# the install's plugin name, not the checkout's directory name — this very file
+# is edited from a git worktree whose directory is a random job id, so deriving
+# it from the path would produce a name that resolves to nothing. If the
+# manifest or the agent file is missing, no `agentType` is emitted and the job
+# stays anonymous: a name that resolves to nothing is worse than no name.
+# --------------------------------------------------------------------------- #
+AGENT_TYPE_BY_JOB_TYPE = {"review": "spec-reviewer"}
+
+
+def resolve_agent_type(job_type, plugin_dir=None):
+    """(agent_type or None, reason). Never guesses a name."""
+    role = AGENT_TYPE_BY_JOB_TYPE.get((job_type or "").strip())
+    if not role:
+        return None, None
+    root = plugin_dir or os.path.dirname(HERE)
+    if not os.path.exists(os.path.join(root, "agents", "%s.md" % role)):
+        return None, "no agents/%s.md under %s" % (role, root)
+    manifest = os.path.join(root, ".claude-plugin", "plugin.json")
+    doc = _read_json(manifest, None)
+    name = (doc or {}).get("name")
+    if not (isinstance(name, str) and name.strip()):
+        return None, "plugin manifest %s declares no name" % manifest
+    return "%s:%s" % (name.strip(), role), None
+
+
 def _clamp_rules(job, python_bin, self_path, worker_script_for):
     """The bashCommandClamp for one job's IMPLEMENT agent.
 
@@ -385,10 +486,168 @@ def _clamp_rules(job, python_bin, self_path, worker_script_for):
     return rules
 
 
+# --------------------------------------------------------------------------- #
+# the external handoff, materialized BEFORE the workflow runs
+#
+# 3.0.1 emitted the literal string `worker-script ...` as an external job's only
+# launcher. There was no argv and no prompt file, so the one thing the worker
+# script cannot start without — `--prompt-file` — was left for a model to invent
+# at run time, from a prompt that did not contain it. `emit` now writes both
+# artefacts into the run dir and puts the COMPLETE argv in the prompt, so the
+# invocation is a committed file rather than an instruction to improvise.
+# --------------------------------------------------------------------------- #
+def worker_prompt_path(run_dir, job_id):
+    return os.path.join(run_dir, "jobs", "%s.prompt.md" % job_id)
+
+
+def launch_argv_path(run_dir, job_id):
+    return os.path.join(run_dir, "jobs", "%s.launch.argv.json" % job_id)
+
+
+def baseline_pin_path(run_dir, job_id):
+    """`jobs/<job-id>.baseline` — the PER-JOB pin.
+
+    state.json is one file that every job in a wave writes, so a pin that lived
+    only there could be lost to a sibling's last-writer-wins save. This file is
+    written by exactly one job and read by the gate, which is what makes "pinned
+    before the worker launched" a fact rather than a hope. state.json still gets
+    the same value; this is the copy that cannot be raced away.
+    """
+    return os.path.join(run_dir, "jobs", "%s.baseline" % job_id)
+
+
+def read_pinned_baseline(run_dir, job_id, state_job=None):
+    """The pinned baseline, or None. state.json first, then the per-job pin."""
+    pinned = (state_job or {}).get("baseline")
+    if isinstance(pinned, str) and re.match(r"^[0-9a-f]{40}$", pinned.strip()):
+        return pinned.strip()
+    try:
+        with open(baseline_pin_path(run_dir, job_id), "r", encoding="utf-8") as fh:
+            candidate = fh.read().strip()
+    except Exception:  # noqa: BLE001
+        return None
+    return candidate if re.match(r"^[0-9a-f]{40}$", candidate) else None
+
+
+def resolve_job_model(job, python_bin, resolve_model=None):
+    """(model, error). An explicit `model` wins; otherwise `tier` is resolved.
+
+    Fails closed: an external backend's argv cannot be completed without a
+    concrete model, and `--model` is one of the worker script's own required
+    arguments. Guessing one here would be a fabricated routing decision.
+    """
+    explicit = job.get("model")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip(), None
+    tier = job.get("tier")
+    if not (isinstance(tier, str) and tier.strip()):
+        return None, ("job %r declares neither `model` nor `tier`, so no concrete "
+                      "model can be resolved for its worker" % job.get("id"))
+    target = resolve_model or RESOLVE_MODEL_DEFAULT
+    if not os.path.exists(target):
+        return None, "model resolver not found at %s" % target
+    cmd = [python_bin, target, "--backend", job.get("backend") or "claude",
+           "--tier", tier.strip()]
+    effort = job.get("effort")
+    if isinstance(effort, str) and effort.strip():
+        cmd += ["--effort", effort.strip()]
+    rc, out, err = _run(cmd)
+    if rc != 0:
+        return None, "model resolution failed (rc=%d): %s" % (rc, (err or out)[:200])
+    try:
+        model = (json.loads(out) or {}).get("model")
+    except Exception as exc:  # noqa: BLE001
+        return None, "model resolver produced no JSON: %s" % exc
+    if not (isinstance(model, str) and model.strip()):
+        return None, "model resolver returned no model for tier %r" % tier
+    return model.strip(), None
+
+
+def render_worker_prompt(job, run_id):
+    """The task itself, as the file the worker is handed via `--prompt-file`."""
+    lines = ["# %s" % (job.get("title") or job.get("id")),
+             "",
+             "Compound V run `%s`, job `%s`." % (run_id, job.get("id")),
+             ""]
+    body = job.get("description") or job.get("prompt") or job.get("spec")
+    if isinstance(body, str) and body.strip():
+        lines += [body.strip(), ""]
+    deps = job.get("depends_on") or []
+    if isinstance(deps, str):
+        deps = [deps]
+    if deps:
+        lines += ["Prerequisites, already merged and COMMITTED into your base "
+                  "before this worktree was created: %s." % ", ".join(deps), ""]
+    lines += ["## Write-allowed (your lane — anything else is a scope violation)", ""]
+    for glob in (job.get("write_allowed") or []):
+        lines.append("- `%s`" % glob)
+    lines.append("")
+    read_allowed = job.get("read_allowed") or []
+    if read_allowed:
+        lines += ["## Read-allowed (advisory — git cannot enforce reads)", ""]
+        for glob in read_allowed:
+            lines.append("- `%s`" % glob)
+        lines.append("")
+    acceptance = job.get("acceptance") or []
+    if acceptance:
+        lines += ["## Acceptance (your definition of done)", ""]
+        for item in acceptance:
+            lines.append("- %s" % item)
+        lines.append("")
+    lines += [
+        "## What you must NOT report",
+        "",
+        "Do not report `blocked`, `files_changed` or `violations`. Those are",
+        "enforcement fields, they are derived from git by the caller, and a",
+        "constrained party filling in its own enforcement fields is the",
+        "fabricated-evidence pattern.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def build_launch_argv(job, entry, run_id, repo_root, run_dir, model):
+    """The COMPLETE worker argv — every flag the worker script requires."""
+    argv = [
+        entry["worker_script"],
+        "--run-id", run_id,
+        "--job-id", job["id"],
+        "--repo", repo_root,
+        "--prompt-file", worker_prompt_path(run_dir, job["id"]),
+        "--model", model,
+        "--write-allowed", ":".join(job.get("write_allowed") or []),
+    ]
+    timeout = job.get("timeout_sec")
+    if isinstance(timeout, int) and not isinstance(timeout, bool) and timeout > 0:
+        argv += ["--timeout-sec", str(timeout)]
+    effort = job.get("effort")
+    if isinstance(effort, str) and effort.strip():
+        argv += ["--effort", effort.strip()]
+    argv += ["--events-log", os.path.join(run_dir, "logs", "%s.events.jsonl" % job["id"])]
+    if entry.get("test_contract_file"):
+        argv += ["--test-contract-file", entry["test_contract_file"]]
+    return argv
+
+
+def _shell_join(argv):
+    try:
+        import shlex
+        return " \\\n  ".join(shlex.quote(a) for a in argv)
+    except Exception:  # noqa: BLE001
+        return " ".join(argv)
+
+
 def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
                scope_check, fastpath, workers_dir):
     """Everything the emitted script needs, as plain data."""
     run_id = manifest.get("run_id") or os.path.basename(os.path.normpath(run_dir))
+    abs_run_dir = os.path.abspath(run_dir)
+    if not repo_root:
+        raise ValueError(
+            "no repository root: the destination a job's work lands in is never "
+            "defaulted (see the REPO_DEFAULT note at the top of this file)"
+        )
+    abs_repo_root = os.path.abspath(repo_root)
+    artefacts = {}
     max_parallel = manifest.get("max_parallel") or 4
     jobs = manifest.get("jobs") or []
     waves = topo_waves(jobs, max_parallel)
@@ -420,8 +679,16 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
         else:
             isolation = "direct"
         clamp = _clamp_rules(job, python_bin, self_path, worker_script_for)
-        return {
+        # agentType only spawns Claude agents, so an external backend never gets
+        # one — its implementer is a launcher, not a role.
+        agent_type, agent_type_note = (None, None)
+        if backend == "claude":
+            agent_type, agent_type_note = resolve_agent_type(job.get("type"))
+        entry = {
             "id": job_id,
+            "job_type": job.get("type"),
+            "agent_type": agent_type,
+            "agent_type_note": agent_type_note,
             "title": job.get("title") or job_id,
             "backend": backend,
             "tier": job.get("tier"),
@@ -441,12 +708,47 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
                 if backend != "claude" and declares_contract else None
             ),
             "implement_clamp": clamp,
+            "prompt_file": worker_prompt_path(abs_run_dir, job_id),
+            "launch_argv_file": None,
+            "launch_argv": None,
+            "launch_command": None,
         }
+        artefacts[job_id] = {
+            "prompt_file": entry["prompt_file"],
+            "prompt_text": render_worker_prompt(job, run_id),
+            "launch_argv_file": None,
+            "launch_argv": None,
+        }
+        if backend != "claude":
+            if not entry["worker_script"]:
+                raise ValueError(
+                    "job %r runs on backend %r but scripts/compound-v-run-%s-worker.sh "
+                    "is not present — the handoff cannot be materialized, and an "
+                    "unmaterialized handoff is what 3.0.1 shipped"
+                    % (job_id, backend, backend)
+                )
+            model, err = resolve_job_model(job, python_bin)
+            if not model:
+                raise ValueError(
+                    "job %r cannot be launched: %s. `--model` is required by the "
+                    "worker script, so this fails closed rather than guessing"
+                    % (job_id, err)
+                )
+            argv = build_launch_argv(job, entry, run_id, abs_repo_root,
+                                     abs_run_dir, model)
+            entry["launch_argv"] = argv
+            entry["launch_argv_file"] = launch_argv_path(abs_run_dir, job_id)
+            entry["launch_command"] = _shell_join(argv)
+            entry["model"] = entry["model"] or model
+            artefacts[job_id]["launch_argv"] = argv
+            artefacts[job_id]["launch_argv_file"] = entry["launch_argv_file"]
+        return entry
 
     return {
         "run_id": run_id,
-        "run_dir": os.path.abspath(run_dir),
-        "repo_root": os.path.abspath(repo_root),
+        "run_dir": abs_run_dir,
+        "repo_root": abs_repo_root,
+        "artefacts": artefacts,
         "manifest_path": os.path.abspath(
             manifest.get("_manifest_path") or os.path.join(run_dir, "manifest.yaml")
         ),
@@ -496,6 +798,31 @@ GATE_SCHEMA = {
         "exit_code": {"type": "integer"},
         "raw_stdout": {"type": "string"},
         "reason": {"type": "string"},
+        # The tree the gate ACTUALLY measured, carried forward so Record does not
+        # have to reconstruct it. 3.0.1 threw this away and rebuilt a locator from
+        # lane-map.json, which holds the WRAPPER agent's project cwd — so a codex
+        # job whose worker changed files in its own worktree was recorded against
+        # an unchanged tree and its valid patch never reached the project. Empty
+        # string for a `direct` job: there is no worktree, and that is a value.
+        "worktree": {"type": "string"},
+        # gate-receipt emits `tests` on a passing verdict, and this object is
+        # additionalProperties:false — so without this line the Gate agent's own
+        # structured result was invalid on every clean happy path.
+        "tests": {"type": "object"},
+    },
+}
+
+FINALIZE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["wave", "integrated"],
+    "properties": {
+        "wave": {"type": "integer"},
+        "integrated": {"type": "boolean"},
+        "commit": {"type": "string"},
+        "merged": {"type": "array", "items": {"type": "string"}},
+        "refused": {"type": "array", "items": {"type": "string"}},
+        "reason": {"type": "string"},
     },
 }
 
@@ -523,7 +850,16 @@ RECORD_SCHEMA = {
 def _implement_prompt(job, plan):
     """The implementer's prompt. Ends with the enforcement-field lock."""
     lines = []
-    lines.append("You are the implementer for Compound V job `%s`." % job["id"])
+    if job.get("agent_type"):
+        # Spawned BY ROLE. The role contract lives in that agent's own
+        # definition, so this prompt supplies the job's inputs and nothing else —
+        # restating the contract here is how the two copies drift apart.
+        lines.append("You are spawned as `%s`. Your role, your passes and your "
+                     "verdict vocabulary come from your OWN agent definition; "
+                     "this prompt carries only Compound V job `%s`'s inputs."
+                     % (job["agent_type"], job["id"]))
+    else:
+        lines.append("You are the implementer for Compound V job `%s`." % job["id"])
     lines.append("")
     lines.append("TITLE: %s" % job["title"])
     lines.append("")
@@ -534,31 +870,49 @@ def _implement_prompt(job, plan):
     lines.append("")
     lines.append("```bash")
     lines.append('%s %s register-lane \\' % (plan["python"], plan["emitter"]))
-    lines.append('  --run-dir %s --job-id %s --cwd "$PWD"' % (plan["run_dir"], job["id"]))
+    lines.append('  --run-dir %s --job-id %s --cwd "$PWD" \\'
+                 % (plan["run_dir"], job["id"]))
+    lines.append('  --repo-root %s --isolation %s'
+                 % (plan["repo_root"], job["isolation"]))
     lines.append("```")
     lines.append("")
-    if job["backend"] != "claude" and job["worker_script"]:
+    lines.append("That command also PINS this job's baseline commit before anything")
+    lines.append("changes, and it fails closed if it cannot. A gate measured against a")
+    lines.append("HEAD that moved is a gate that passes the run it should have caught.")
+    lines.append("")
+    if job["backend"] != "claude" and job["launch_command"]:
         lines.append("THIS JOB RUNS ON AN EXTERNAL BACKEND (%s)." % job["backend"])
-        lines.append("You do not implement it yourself. Launch the worker script,")
-        lines.append("which creates and OWNS its own git worktree — you are running at")
-        lines.append("`direct` isolation precisely so no worktree is nested inside another:")
+        lines.append("You do not implement it yourself. Run EXACTLY this command — every")
+        lines.append("argument is already materialized, including the prompt file, which")
+        lines.append("was written before this workflow started. Do not edit it, do not")
+        lines.append("substitute values, do not add flags. The worker creates and OWNS its")
+        lines.append("own git worktree — you are at `direct` isolation precisely so no")
+        lines.append("worktree is nested inside another:")
         lines.append("")
         lines.append("```bash")
-        if job["test_contract_file"]:
-            lines.append("%s ... \\" % job["worker_script"])
-            lines.append("  --test-contract-file %s" % job["test_contract_file"])
-        else:
-            lines.append("%s ..." % job["worker_script"])
+        lines.append(job["launch_command"])
         lines.append("```")
         lines.append("")
-        if job["test_contract_file"]:
-            lines.append("The `--test-contract-file` above is a REAL ARGUMENT, and it is")
-            lines.append("already written: the `register-lane` command you ran first")
-            lines.append("resolved this job's test contract into that path. Pass the flag")
-            lines.append("exactly as shown. A test contract that reaches a worker as prose")
-            lines.append("inside a prompt is a value the model has to notice, and a value a")
-            lines.append("model has to notice is not a contract.")
-            lines.append("")
+        lines.append("The full argv is also committed at `%s`, so the invocation that ran"
+                     % job["launch_argv_file"])
+        lines.append("is a file in the run directory and not a reconstruction. The task")
+        lines.append("itself is `%s`." % job["prompt_file"])
+        lines.append("")
+        lines.append("When the worker finishes, return the ABSOLUTE worktree it reports")
+        lines.append("(the `worktree` field of its job_result) as your `worktree` — that")
+        lines.append("is the tree the Gate will measure. Never return your own `pwd`; you")
+        lines.append("did not change anything in it.")
+        lines.append("")
+    elif job["isolation"] == "worktree":
+        lines.append("You are running in your OWN git worktree. Return its absolute path")
+        lines.append("(`pwd`) as `worktree` — that is the tree the Gate measures.")
+        lines.append("")
+    else:
+        lines.append("You are running at `direct` isolation, in the project checkout")
+        lines.append("itself. Return `worktree` as the EMPTY STRING. A direct job has no")
+        lines.append("worktree to merge from, and reporting your `pwd` there is what made")
+        lines.append("3.0.1 apply a direct job's patch into a different repository.")
+        lines.append("")
     lines.append("WRITE-ALLOWED (your lane — anything else is a scope violation):")
     for glob in job["write_allowed"]:
         lines.append("  - %s" % glob)
@@ -568,8 +922,8 @@ def _implement_prompt(job, plan):
         for item in job["acceptance"]:
             lines.append("  - %s" % item)
         lines.append("")
-    lines.append("RETURN a raw result: `status`, the absolute `worktree` you worked in")
-    lines.append("(`pwd`), and a `summary`.")
+    lines.append("RETURN a raw result: `status`, the `worktree` described above, and a")
+    lines.append("`summary`.")
     lines.append("")
     lines.append("DO NOT report `blocked`, `files_changed` or `violations`. Those are")
     lines.append("enforcement fields, they are git-derived by the caller, and a")
@@ -580,8 +934,11 @@ def _implement_prompt(job, plan):
 
 def _gate_command(job, plan):
     return (
-        "%s %s gate-receipt --run-dir %s --job-id %s --worktree <ABSOLUTE_WORKTREE>"
-        % (plan["python"], plan["emitter"], plan["run_dir"], job["id"])
+        "%s %s gate-receipt --run-dir %s --job-id %s --repo-root %s "
+        "--mode %s --worktree <ABSOLUTE_GATE_ROOT>"
+        % (plan["python"], plan["emitter"], plan["run_dir"], job["id"],
+           plan["repo_root"],
+           "worktree" if job["isolation"] == "worktree" else "direct")
     )
 
 
@@ -626,6 +983,7 @@ def emit_script(plan):
     body = body.replace("__IMPLEMENT_SCHEMA__", _js_json(IMPLEMENT_SCHEMA))
     body = body.replace("__GATE_SCHEMA__", _js_json(GATE_SCHEMA))
     body = body.replace("__RECORD_SCHEMA__", _js_json(RECORD_SCHEMA))
+    body = body.replace("__FINALIZE_SCHEMA__", _js_json(FINALIZE_SCHEMA))
     return body
 
 
@@ -655,6 +1013,7 @@ const CFG = __CFG__;
 const IMPLEMENT_SCHEMA = __IMPLEMENT_SCHEMA__;
 const GATE_SCHEMA = __GATE_SCHEMA__;
 const RECORD_SCHEMA = __RECORD_SCHEMA__;
+const FINALIZE_SCHEMA = __FINALIZE_SCHEMA__;
 
 // Timestamps must be passed in; the runtime forbids reading a clock.
 const NOW = (args && args.now) ? String(args.now) : null;
@@ -685,18 +1044,34 @@ function budgetAllows(n) {
 // Stage 1 — Implement. Returns a RAW result, never a job_result.
 // ---------------------------------------------------------------------------
 async function implementStage(job) {
-  const p = CFG.prompts[job.id];
-  const opts = {
-    label: 'implement ' + job.id,
-    phase: 'Implement',
-    schema: IMPLEMENT_SCHEMA
-  };
-  if (job.model) opts.model = job.model;
-  if (job.effort) opts.effort = job.effort;
-  if (job.agent_isolation) opts.isolation = job.agent_isolation;
-  if (job.implement_clamp) opts.bashCommandClamp = job.implement_clamp;
-  const raw = await agent(p.implement, opts);
-  return { job: job, implement: raw };
+  try {
+    const p = CFG.prompts[job.id];
+    const opts = {
+      label: 'implement ' + job.id,
+      phase: 'Implement',
+      schema: IMPLEMENT_SCHEMA
+    };
+    if (job.model) opts.model = job.model;
+    if (job.effort) opts.effort = job.effort;
+    if (job.agent_isolation) opts.isolation = job.agent_isolation;
+    if (job.implement_clamp) opts.bashCommandClamp = job.implement_clamp;
+    // Spawn BY ROLE where the manifest's own job `type` says the work is one of
+    // this project's registered agents. Only `type: review` maps today, to the
+    // Review Gate — the need the native-mechanisms audit recorded against
+    // `agentType`. Gate, Record and Finalize deliberately stay anonymous: they
+    // are single-command transports whose safety is `disallowedTools` +
+    // `bashCommandClamp`, and every agent definition here declares no `tools:`
+    // restriction, so spawning them by role would hand back the whole toolbox.
+    if (job.agent_type) opts.agentType = job.agent_type;
+    const raw = await agent(p.implement, opts);
+    return { job: job, implement: raw };
+  } catch (e) {
+    // A THROW here would drop the item and skip Gate AND Record — the v2.6.4
+    // audit-trail loss, structurally. Return the failure as a value instead, so
+    // the Gate reads it as null-is-FAIL and Record still writes a result.
+    log('implement ' + job.id + ' threw: ' + String(e && e.message ? e.message : e));
+    return { job: job, implement: null };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -729,15 +1104,26 @@ async function gateStage(prev, job) {
     if (impl === null || impl === undefined) {
       return gateFailure(job.id, 'implement agent returned null — treated as FAIL, never as a clean tree');
     }
-    const worktree = (impl.worktree || '').trim();
-    if (!worktree) {
-      return gateFailure(job.id, 'implement agent reported no worktree; nothing to gate');
+
+    // WHERE TO GATE is decided by the MANIFEST's isolation, never by whether the
+    // agent happened to return a non-empty locator. A `direct` job works in the
+    // project checkout, so that checkout is the tree — and an agent that reports
+    // some other pwd for a direct job is the exact failure this branch removes.
+    let gateRoot;
+    if (job.isolation === 'worktree') {
+      gateRoot = (impl.worktree || '').trim();
+      if (!gateRoot) {
+        return gateFailure(job.id, 'worktree job reported no worktree; there is no tree to gate — fails closed');
+      }
+    } else {
+      gateRoot = CFG.repo_root;
     }
 
     const cmd = CFG.python + ' ' + CFG.emitter + ' gate-receipt' +
       ' --run-dir ' + q(CFG.run_dir) +
       ' --job-id ' + q(job.id) +
-      ' --worktree ' + q(worktree) +
+      ' --repo-root ' + q(CFG.repo_root) +
+      ' --worktree ' + q(gateRoot) +
       ' --manifest ' + q(CFG.manifest_path) +
       ' --mode ' + q(job.isolation === 'worktree' ? 'worktree' : 'direct') +
       (NOW ? ' --now ' + q(NOW) : '');
@@ -776,12 +1162,20 @@ async function gateStage(prev, job) {
 }
 
 // ---------------------------------------------------------------------------
-// Stage 3 — Record. Idempotent, and every commit merged AT MOST ONCE.
+// Stage 3 — Record. EVIDENCE ONLY. It writes results/, receipts/ and state.json
+// and it touches NOTHING in the main checkout.
+//
+// Until 3.0.2 this stage called `git apply --index` in the project checkout —
+// BEFORE the integration authority had run, and without ever committing. Any
+// later plain `git commit` (`/v:orchestrate` runs one) swept that staged patch
+// into history, so a job could land with the authority never having run. The
+// authority was not defeated; it was bypassed. Integration now belongs to the
+// wave finalizer below, which runs the authority FIRST.
 //
 // Idempotence alone is not enough: a relaunch re-runs every agent that started
 // after a failed one, INCLUDING completed ones, so a finished job can implement,
 // gate and record a second time. The at-most-once property is keyed to an
-// immutable commit hash in Python (see `record`), not to this stage running once.
+// immutable commit hash in Python, not to this stage running once.
 // ---------------------------------------------------------------------------
 async function recordStage(verdict, job) {
   try {
@@ -789,6 +1183,7 @@ async function recordStage(verdict, job) {
     const cmd = CFG.python + ' ' + CFG.emitter + ' record' +
       ' --run-dir ' + q(CFG.run_dir) +
       ' --job-id ' + q(job.id) +
+      ' --repo-root ' + q(CFG.repo_root) +
       ' --manifest ' + q(CFG.manifest_path) +
       ' --verdict-json ' + q(JSON.stringify(v)) +
       (NOW ? ' --now ' + q(NOW) : '');
@@ -821,14 +1216,83 @@ async function recordStage(verdict, job) {
 }
 
 // ---------------------------------------------------------------------------
+// Stage 4 — the WAVE FINALIZER. Serialized, once per wave, after the pipeline.
+//
+// This is the only place a job's work reaches the project checkout, and it does
+// three things IN THIS ORDER, in one Python call that fails closed at every step:
+//
+//   1. run scripts/compound-v-integration-gate.py — the AUTHORITY — over exactly
+//      this wave's jobs. Anything other than `permitted` and nothing merges;
+//   2. merge the permitted jobs' gate-approved slices into the checkout;
+//   3. COMMIT them.
+//
+// Step 3 is what makes the wave barrier mean anything. A merge that only stages
+// leaves the next wave's worktrees — created fresh at HEAD — unable to see their
+// prerequisites, and leaves a patch lying in the index for an unrelated commit
+// to sweep up. The barrier was documented as doing this since 1.0; it never did.
+// ---------------------------------------------------------------------------
+async function finalizeWave(waveIndex, wave) {
+  const title = 'Wave ' + (waveIndex + 1);
+  try {
+    const ids = wave.map(function (j) { return j.id; }).join(',');
+    const cmd = CFG.python + ' ' + CFG.emitter + ' finalize-wave' +
+      ' --run-dir ' + q(CFG.run_dir) +
+      ' --repo-root ' + q(CFG.repo_root) +
+      ' --manifest ' + q(CFG.manifest_path) +
+      ' --wave ' + q(String(waveIndex + 1)) +
+      ' --jobs ' + q(ids) +
+      (NOW ? ' --now ' + q(NOW) : '');
+
+    const prompt =
+      'Run EXACTLY this one command and return its JSON output verbatim as your ' +
+      'structured result. It runs the integration authority over this wave and, ' +
+      'only if the authority permits, merges and commits the wave. Do not ' +
+      'summarise it, do not re-run it, do not run anything else.\n\n```bash\n' +
+      cmd + '\n```\n';
+
+    const res = await agent(prompt, {
+      label: 'finalize ' + title,
+      phase: 'Finalize',
+      schema: FINALIZE_SCHEMA,
+      disallowedTools: CFG.narrow_disallowed,
+      bashCommandClamp: [
+        'Bash(' + CFG.python + ' ' + CFG.emitter + ' finalize-wave:*)'
+      ]
+    });
+    if (res === null || res === undefined) {
+      return { wave: waveIndex + 1, integrated: false,
+               reason: 'finalizer agent returned null — nothing is integrated' };
+    }
+    return res;
+  } catch (e) {
+    return {
+      wave: waveIndex + 1,
+      integrated: false,
+      reason: 'finalize stage caught: ' + String(e && e.message ? e.message : e)
+    };
+  }
+}
+
+function waveHadFailure(waveSummary, fin) {
+  if (!fin || fin.integrated !== true) return true;
+  for (let i = 0; i < waveSummary.jobs.length; i++) {
+    if (waveSummary.jobs[i].status !== 'success') return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
 // Waves. Each wave is a BARRIER, and the barrier is load-bearing.
 //
-// A prerequisite's merge-back only STAGES (`git apply --index` does not commit),
-// so a dependent worktree created at HEAD would not contain it. Record commits
-// inside the wave, and the next wave's agents — hence the next wave's worktrees —
-// are not spawned until this whole wave has resolved. Do not flatten the waves.
+// The next wave's agents — hence the next wave's worktrees — are not spawned
+// until this wave has been gated by the authority, merged and COMMITTED. Do not
+// flatten the waves, and do not move the finalizer inside the pipeline: it has
+// to be serialized, because it writes to the one shared checkout.
 // ---------------------------------------------------------------------------
-const summary = { run_id: CFG.run_id, waves: [], stopped_for_budget: false };
+const summary = {
+  run_id: CFG.run_id, waves: [], stopped_for_budget: false,
+  halted: false, halt_reason: null
+};
 
 for (let w = 0; w < CFG.waves.length; w++) {
   const wave = CFG.waves[w];
@@ -859,12 +1323,31 @@ for (let w = 0; w < CFG.waves.length; w++) {
       reason: ack && ack.reason ? ack.reason : null
     });
   }
+
+  const fin = await finalizeWave(w, wave);
+  waveSummary.finalize = fin;
   summary.waves.push(waveSummary);
   log(title + ' done: ' + JSON.stringify(waveSummary.jobs));
+  log(title + ' finalize: ' + JSON.stringify(fin));
+
+  // STOP SCHEDULING after any non-success result. Continuing past a blocked or
+  // errored job builds later waves on a base that is missing a prerequisite, and
+  // a dependent that silently ran without its dependency is worse than a run
+  // that stopped where it broke. /v:resume re-dispatches what is incomplete.
+  if (waveHadFailure(waveSummary, fin)) {
+    summary.halted = true;
+    summary.halt_reason = title + ': ' +
+      (fin && fin.integrated === true
+        ? 'a job did not reach `success`'
+        : ('integration was not permitted — ' + (fin && fin.reason ? fin.reason : 'no reason given')));
+    log('HALTED. ' + summary.halt_reason + ' Remaining waves are unrun; ' +
+        'inspect the run dir and recover with /v:resume.');
+    break;
+  }
 }
 
-log('Engine C finished. The workflow gate is defence in depth and an early exit — ' +
-    'run scripts/compound-v-integration-gate.py before integrating any commit.');
+log('Engine C finished. Each wave was gated by scripts/compound-v-integration-gate.py ' +
+    'before it merged; the workflow Gate stage is defence in depth and an early exit.');
 
 return summary;
 """
@@ -899,28 +1382,32 @@ def test_contract_path(run_dir, job_id):
 def register_lane(run_dir, job_id, cwd, manifest_path=None, agent_id=None):
     """Bind one job to its real worktree (and agent id, if ever available).
 
-    MERGES; never overwrites. Concurrent implementers in the same wave each call
-    this, so a last-writer-wins overwrite would erase its siblings' lanes and put
-    the guard straight back to failing open.
+    MERGES; never overwrites — and the merge is SERIALIZED, which is what makes
+    that claim true. Concurrent implementers in the same wave each call this, and
+    an unlocked read-modify-write let the second writer drop the first's lane:
+    `_atomic_write` protects the write, not the read that chose what to write.
+    A dropped lane is a job the guard cannot resolve, and an unresolved job is a
+    guard that fails open and allows every write it makes.
     """
     path = lane_map_path(run_dir)
     run_id = os.path.basename(os.path.normpath(run_dir))
-    existing = _read_json(path, None)
-    if not isinstance(existing, dict):
-        existing = {}
-    existing.setdefault("run_id", run_id)
-    existing.setdefault("agents", {})
-    existing.setdefault("worktrees", {})
-    existing["manifest"] = (
-        manifest_path
-        or existing.get("manifest")
-        or os.path.join(run_dir, "manifest.yaml")
-    )
-    if cwd:
-        existing["worktrees"][os.path.abspath(cwd)] = job_id
-    if agent_id:
-        existing["agents"][agent_id] = job_id
-    _atomic_write(path, json.dumps(existing, indent=2, sort_keys=True) + "\n")
+    with _run_dir_lock(run_dir):
+        existing = _read_json(path, None)
+        if not isinstance(existing, dict):
+            existing = {}
+        existing.setdefault("run_id", run_id)
+        existing.setdefault("agents", {})
+        existing.setdefault("worktrees", {})
+        existing["manifest"] = (
+            manifest_path
+            or existing.get("manifest")
+            or os.path.join(run_dir, "manifest.yaml")
+        )
+        if cwd:
+            existing["worktrees"][os.path.abspath(cwd)] = job_id
+        if agent_id:
+            existing["agents"][agent_id] = job_id
+        _atomic_write(path, json.dumps(existing, indent=2, sort_keys=True) + "\n")
     return existing
 
 
@@ -1042,7 +1529,9 @@ def cmd_gate_receipt(argv):
     ap.add_argument("--worktree", required=True)
     ap.add_argument("--manifest")
     ap.add_argument("--mode", choices=["worktree", "direct"], default="worktree")
-    ap.add_argument("--repo-root", default=REPO_DEFAULT)
+    ap.add_argument("--repo-root", required=True,
+                    help="the PROJECT root. Required: a `direct` job is gated in "
+                         "this tree, and a defaulted root gates the wrong repo.")
     ap.add_argument("--scope-check", default=SCOPE_CHECK_DEFAULT)
     ap.add_argument("--fastpath", default=FASTPATH_DEFAULT)
     ap.add_argument("--python", default=(sys.executable or "python3"))
@@ -1071,25 +1560,48 @@ def cmd_gate_receipt(argv):
         print(json.dumps(out, indent=2, sort_keys=True))
         return 2
 
-    root = os.path.abspath(args.worktree)
+    repo_root = os.path.abspath(args.repo_root)
+    reasons = []
+
+    # WHERE TO GATE follows the MODE, which follows the manifest's isolation —
+    # never a locator an agent chose. A `direct` job is gated in the project
+    # checkout; the caller still passes `--worktree` so a disagreement is caught
+    # rather than silently resolved in the agent's favour.
+    if args.mode == "direct":
+        root = repo_root
+        if os.path.abspath(args.worktree) != repo_root:
+            out["reason"] = (
+                "direct job reported worktree %s, which is not the project root "
+                "%s — a direct job has no worktree, and 3.0.1 turned exactly this "
+                "mismatch into a patch applied to the wrong repository"
+                % (os.path.abspath(args.worktree), repo_root)
+            )
+            print(json.dumps(out, indent=2, sort_keys=True))
+            return 2
+    else:
+        root = os.path.abspath(args.worktree)
     if not os.path.isdir(root):
-        out["reason"] = "worktree does not exist: %s" % root
+        out["reason"] = "gate root does not exist: %s" % root
         print(json.dumps(out, indent=2, sort_keys=True))
         return 2
 
-    # The baseline is the PINNED pre-launch SHA recorded on state.json, never a
-    # live HEAD. Pinning it is what keeps an executor that COMMITS inside its
-    # worktree visible to the gate; measured against HEAD such a job looks clean.
+    # The baseline is the PINNED pre-launch SHA, never a live HEAD, and its
+    # ABSENCE FAILS CLOSED. 3.0.1 fell back to the gate root's HEAD, which is
+    # exactly the value a worker that commits inside its worktree has already
+    # moved — so the fallback measured the job against its own output and
+    # reported a clean tree. An unknown baseline is not a passing one.
     state = _load_state(run_dir)
     state_job = state["jobs"].get(job_id) or {}
-    baseline = state_job.get("baseline")
-    reasons = []
+    baseline = read_pinned_baseline(run_dir, job_id, state_job)
     if not baseline:
-        baseline = _head_commit(root)
-        reasons.append(
-            "state.json pinned no baseline for this job; fell back to the "
-            "worktree HEAD, which a worker that commits can move"
+        out["reason"] = (
+            "no baseline pinned for job %s (neither state.json nor "
+            "jobs/%s.baseline). register-lane pins it before the worker launches; "
+            "without it the gate would measure against a HEAD the worker can move, "
+            "so this fails closed" % (job_id, job_id)
         )
+        print(json.dumps(out, indent=2, sort_keys=True))
+        return 2
     realised = _head_commit(root)
 
     allow = job.get("write_allowed") or []
@@ -1113,6 +1625,10 @@ def cmd_gate_receipt(argv):
     out["verdict"] = verdict
     out["exit_code"] = rc
     out["raw_stdout"] = raw_stdout
+    # The tree this gate MEASURED, carried forward to Record explicitly. Empty
+    # for a direct job — that is a value, not a missing one, and Record branches
+    # on the manifest's isolation rather than on whether this string is blank.
+    out["worktree"] = "" if args.mode == "direct" else root
     if baseline:
         out["baseline_commit"] = baseline
     if realised:
@@ -1410,7 +1926,8 @@ def _maybe_append_run_actual(run_dir, manifest, state, repo_root):
             % run_id)
 
 
-def _job_result_from(verdict, job, state_job, tests=None, contract=None):
+def _job_result_from(verdict, job, state_job, tests=None, contract=None,
+                     isolation=None):
     """The canonical job_result. Enforcement fields come from the GATE, not the
     implementer: `blocked`, `files_changed` and `violations` are git-derived.
 
@@ -1446,6 +1963,16 @@ def _job_result_from(verdict, job, state_job, tests=None, contract=None):
     if not isinstance(retry_after, int) or isinstance(retry_after, bool):
         retry_after = 0
 
+    # `worktree` is a WORKTREE LOCATOR, and a direct job does not have one. The
+    # branch is the manifest's `isolation`; it is never "whatever string happens
+    # to be non-empty". A compliant direct implementer returns its project cwd,
+    # so emptiness could not distinguish the two — and that is precisely how a
+    # direct job's patch ended up being applied into another repository.
+    if (isolation or job.get("isolation")) == "worktree":
+        worktree = state_job.get("worktree") or ""
+    else:
+        worktree = ""
+
     result = {
         "status": status,
         "blocked": gate_verdict == "blocked",
@@ -1453,7 +1980,7 @@ def _job_result_from(verdict, job, state_job, tests=None, contract=None):
         "violations": violations,
         "summary": verdict.get("reason") or (job.get("title") or job.get("id") or ""),
         "session_id": state_job.get("session_id") or "",
-        "worktree": state_job.get("worktree") or "",
+        "worktree": worktree,
         "exit_code": exit_code,
         # `unknown` is not in the schema's failure_class enum — `other` is the
         # declared bucket for "a non-success this producer cannot classify".
@@ -1480,10 +2007,15 @@ def cmd_record(argv):
     ap.add_argument("--job-id", required=True)
     ap.add_argument("--manifest")
     ap.add_argument("--verdict-json", required=True)
-    ap.add_argument("--repo-root", default=REPO_DEFAULT)
+    ap.add_argument("--repo-root", required=True,
+                    help="the PROJECT root. REQUIRED even though `record` no "
+                         "longer writes to it: it is where the triage stream "
+                         "lives, and a defaulted root wrote into the plugin's "
+                         "own repository.")
     ap.add_argument("--now")
     ap.add_argument("--no-merge", action="store_true",
-                    help="persist only; used by the selftest and by /v:collect")
+                    help="accepted and ignored. `record` never merges any more — "
+                         "the wave finalizer does, after the authority runs.")
     args = ap.parse_args(argv)
 
     run_dir = os.path.abspath(args.run_dir)
@@ -1510,8 +2042,13 @@ def cmd_record(argv):
             manifest = {}
     job = _manifest_job(manifest, job_id) or {"id": job_id}
 
-    state = _load_state(run_dir)
-    state_job = state["jobs"].setdefault(job_id, {})
+    # A DETACHED copy of this job's entry. Every mutation below lands on it, and
+    # it is merged back into a FRESHLY READ state.json under the run-dir lock at
+    # the end. Records within a wave run concurrently, so holding a state object
+    # across the body and writing it whole would let one Record erase a sibling's
+    # `worktree`/`baseline` — which the integration authority then reads as
+    # `unverifiable` and refuses.
+    state_job = dict(_load_state(run_dir)["jobs"].get(job_id) or {})
 
     # The receipt binds to the worktree the gate observed, so record it: the
     # integration authority reads `worktree` from state.json (or the result) to
@@ -1524,16 +2061,47 @@ def cmd_record(argv):
     # caller passed as an argument", not a re-derivation.
     contract = _read_json(test_contract_path(run_dir, job_id), {}) or {}
 
-    lane = _read_json(lane_map_path(run_dir), {}) or {}
-    for path, mapped in (lane.get("worktrees") or {}).items():
-        if mapped == job_id:
-            state_job["worktree"] = path
-            break
-    if verdict.get("baseline_commit"):
-        state_job.setdefault("baseline", verdict["baseline_commit"])
+    # The manifest is the authority on isolation, and its ABSENCE FAILS CLOSED.
+    # Deriving it from "is the locator empty?" is what 3.0.1 did, and a compliant
+    # direct implementer's locator is never empty.
+    isolation = job.get("isolation")
+    if isolation not in ("direct", "worktree"):
+        ack["reason"] = (
+            "manifest job %r declares no `isolation` (got %r). Record branches on "
+            "the manifest, never on whether a locator is empty, so an undeclared "
+            "isolation fails closed rather than being guessed" % (job_id, isolation)
+        )
+        print(json.dumps(ack, indent=2, sort_keys=True))
+        return 2
+
+    # The GATE's observed worktree, carried explicitly. lane-map.json holds the
+    # cwd of the agent that *wrapped* the job — for an external backend that is
+    # the project checkout, not the worker-owned worktree the gate measured — so
+    # rebuilding a locator from it recorded the wrong tree and the worker's valid
+    # patch never reached the project.
+    if isolation == "worktree":
+        gate_worktree = verdict.get("worktree")
+        if not (isinstance(gate_worktree, str) and gate_worktree.strip()):
+            ack["reason"] = (
+                "the gate verdict for worktree job %r carries no observed "
+                "`worktree`. Record will not reconstruct one from lane-map.json — "
+                "that map holds the wrapper agent's cwd — so this fails closed"
+                % job_id
+            )
+            print(json.dumps(ack, indent=2, sort_keys=True))
+            return 2
+        state_job["worktree"] = os.path.abspath(gate_worktree.strip())
+    else:
+        state_job["worktree"] = ""
+
+    pinned = read_pinned_baseline(run_dir, job_id, state_job)
+    if pinned:
+        state_job["baseline"] = pinned
+    elif verdict.get("baseline_commit"):
+        state_job["baseline"] = verdict["baseline_commit"]
 
     result = _job_result_from(verdict, job, state_job, tests=tests,
-                              contract=contract)
+                              contract=contract, isolation=isolation)
 
     # ---- ONE result file per job -------------------------------------------
     # results/<id>.json is the primary and there is exactly one. The integration
@@ -1565,54 +2133,264 @@ def cmd_record(argv):
     ack["result_path"] = result_path
     ack["status"] = result["status"]
 
-    # ---- merge-back, AT MOST ONCE per realised commit ----------------------
-    realised = verdict.get("realised_commit")
-    merged_record = state_job.get("merged") or {}
-    if result["status"] != "success":
-        ack["reason"] = "not merged: gate verdict was %r" % verdict.get("verdict")
-    elif args.no_merge:
-        ack["reason"] = "merge suppressed by --no-merge"
-    elif realised and merged_record.get("realised_commit") == realised:
-        ack["reason"] = (
-            "already merged for realised commit %s — a relaunch re-runs completed "
-            "agents, so this is the at-most-once guard doing its job" % realised[:12]
-        )
-    elif not state_job.get("worktree"):
-        ack["reason"] = "direct job (no worktree): changes are already in the tree"
-        state_job["merged"] = {"realised_commit": realised, "mode": "direct"}
-    else:
-        ok, err = merge_back(
-            state_job["worktree"], os.path.abspath(args.repo_root),
-            state_job.get("baseline"), result["files_changed"],
-        )
-        if ok:
-            ack["merged"] = True
-            state_job["merged"] = {"realised_commit": realised, "mode": "worktree"}
-        else:
-            ack["reason"] = "merge-back failed: %s" % err
-            result["status"] = "error"
-            _atomic_write(
-                result_path, json.dumps(result, indent=2, sort_keys=True) + "\n"
-            )
-            ack["status"] = "error"
+    # ---- NO MERGE HAPPENS HERE ---------------------------------------------
+    # `merged` stays False and the main checkout is untouched. Integration is the
+    # wave finalizer's job, and it runs the integration authority first. Record's
+    # entire contribution is evidence: results/, receipts/, state.json.
+    state_job["realised_commit"] = verdict.get("realised_commit")
+    ack["merged"] = False
+    ack["reason"] = (
+        "evidence recorded; integration is the wave finalizer's, after "
+        "compound-v-integration-gate.py has run over this wave"
+    )
 
     state_job["status"] = {
         "success": "done", "blocked": "blocked",
     }.get(result["status"], "failed")
-    state_job.setdefault("isolation", job.get("isolation") or "direct")
+    state_job["isolation"] = isolation
 
-    # The triage join's third event. Appended by whichever Record call finds every
-    # job terminal, BEFORE state.json is saved so the idempotence latch lands in
-    # the same write.
-    note = _maybe_append_run_actual(
-        run_dir, manifest, state, os.path.abspath(args.repo_root)
-    )
-    if note:
-        ack["triage_actual"] = note
-    _save_state(run_dir, state, now=args.now)
+    # Merge this job's entry into a FRESHLY READ state.json, under the lock. The
+    # triage join's third event is appended by whichever Record call finds every
+    # job terminal — inside the same critical section, so "am I the last?" is
+    # answered against the state that is about to be written, not a stale copy,
+    # and the idempotence latch lands in the same write.
+    with _run_dir_lock(run_dir):
+        state = _load_state(run_dir)
+        state["jobs"].setdefault(job_id, {}).update(state_job)
+        note = _maybe_append_run_actual(
+            run_dir, manifest, state, os.path.abspath(args.repo_root)
+        )
+        if note:
+            ack["triage_actual"] = note
+        _save_state(run_dir, state, now=args.now)
 
     print(json.dumps(ack, indent=2, sort_keys=True))
     return 0
+
+
+# --------------------------------------------------------------------------- #
+# finalize-wave — the ONLY writer into the project checkout
+#
+# Order is the whole point, and it is: AUTHORITY -> MERGE -> COMMIT.
+#
+# 3.0.1 had Record call `git apply --index` in the main checkout before
+# `/v:dispatch` step 7 ran `compound-v-integration-gate.py`, and Record never
+# committed. Two consequences, both real:
+#
+#   * a job could LAND without the authority ever running — the session dies
+#     after Record stages, a later plain `git commit` (`/v:orchestrate` runs one)
+#     sweeps the staged patch into history, and nothing ever gated it. The
+#     authority was bypassed, not defeated: it is a correct script that the
+#     integration path had already walked past;
+#   * a dependent could not SEE its prerequisite — `git apply --index` stages,
+#     and the next wave's worktree is created from an unchanged HEAD.
+#
+# Both close by making a wave's integration one serialized step that runs the
+# authority over exactly this wave's jobs, refuses everything on anything other
+# than `permitted`, and finishes with a real commit.
+# --------------------------------------------------------------------------- #
+def _commit_paths(repo_root, paths, message):
+    """Commit exactly these paths. Returns (sha or None, error or None).
+
+    Restricted to a pathspec on purpose: a bare `git commit` in a shared checkout
+    commits whatever else is staged, which is the mechanism by which an ungated
+    patch reached history in the first place. NUL-delimited because a path may
+    legitimately contain a newline.
+    """
+    if not paths:
+        return None, None
+    ok, err = _stage_paths(repo_root, paths)
+    if not ok:
+        return None, err
+    payload = "\0".join(paths).encode("utf-8")
+    try:
+        proc = subprocess.Popen(
+            ["git", "-C", repo_root, "commit",
+             "--pathspec-from-file=-", "--pathspec-file-nul", "-m", message],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        out, cerr = proc.communicate(payload)
+        rc = proc.returncode
+    except Exception as exc:  # noqa: BLE001
+        return None, "git commit raised: %s" % exc
+    if rc != 0:
+        text = (out + cerr).decode("utf-8", "replace")
+        if "nothing to commit" in text or "no changes added" in text:
+            return None, None  # already committed; idempotent, not a failure
+        return None, "git commit failed: %s" % text.strip()[:400]
+    return _head_commit(repo_root), None
+
+
+def cmd_finalize_wave(argv):
+    ap = argparse.ArgumentParser(prog="compound-v-emit-workflow.py finalize-wave")
+    ap.add_argument("--run-dir", required=True)
+    ap.add_argument("--repo-root", required=True,
+                    help="the PROJECT root — the tree this wave merges into. "
+                         "Never defaulted.")
+    ap.add_argument("--manifest")
+    ap.add_argument("--jobs", required=True,
+                    help="comma-separated job ids belonging to THIS wave")
+    ap.add_argument("--wave", type=int, default=0)
+    ap.add_argument("--integration-gate", default=INTEGRATION_GATE_DEFAULT)
+    ap.add_argument("--python", default=(sys.executable or "python3"))
+    ap.add_argument("--now")
+    ap.add_argument("--no-commit", action="store_true",
+                    help="merge but do not commit; for tests only")
+    args = ap.parse_args(argv)
+
+    run_dir = os.path.abspath(args.run_dir)
+    repo_root = os.path.abspath(args.repo_root)
+    manifest_path = os.path.abspath(
+        args.manifest or os.path.join(run_dir, "manifest.yaml")
+    )
+    job_ids = [j.strip() for j in args.jobs.split(",") if j.strip()]
+    out = {"wave": args.wave, "integrated": False, "merged": [], "refused": []}
+
+    def emit(code):
+        print(json.dumps(out, indent=2, sort_keys=True))
+        return code
+
+    if not job_ids:
+        out["reason"] = "--jobs named no job ids"
+        return emit(2)
+    if not os.path.exists(args.integration_gate):
+        out["reason"] = (
+            "the integration authority is not at %s. Nothing merges without it — "
+            "an absent authority is a refusal, never a waiver" % args.integration_gate
+        )
+        return emit(2)
+
+    # ---- 1. THE AUTHORITY, first ------------------------------------------- #
+    rc, gate_out, gate_err = _run([
+        args.python, args.integration_gate,
+        "--run-dir", run_dir, "--repo-root", repo_root,
+        "--manifest", manifest_path, "--jobs", ",".join(job_ids), "--json",
+    ])
+    try:
+        report = json.loads(gate_out) if gate_out.strip() else None
+    except Exception:  # noqa: BLE001
+        report = None
+    if not isinstance(report, dict):
+        out["reason"] = ("the integration authority produced no report (rc=%d): %s"
+                         % (rc, (gate_err or gate_out)[:300]))
+        return emit(1)
+    if report.get("integration") != "permitted":
+        out["refused"] = report.get("refused") or job_ids
+        out["reason"] = (
+            "integration REFUSED by scripts/compound-v-integration-gate.py: %s. "
+            "Nothing was merged and nothing was committed."
+            % json.dumps(report.get("tally") or {})
+        )
+        return emit(1)
+
+    # ---- 2. merge the permitted slices ------------------------------------- #
+    manifest = {}
+    if os.path.exists(manifest_path):
+        try:
+            manifest = _load_yaml(manifest_path) or {}
+        except Exception:  # noqa: BLE001
+            manifest = {}
+    # Read once for the git work; every WRITE goes through _apply below, which
+    # re-reads under the run-dir lock. The finalizer is serialized by the wave
+    # loop, but a straggler Record from a relaunched wave is not, and an unlocked
+    # read-modify-write here would erase whatever it had just written.
+    state = _load_state(run_dir)
+    job_updates = {}
+
+    def _apply(now=None):
+        with _run_dir_lock(run_dir):
+            fresh = _load_state(run_dir)
+            for jid, updates in job_updates.items():
+                fresh["jobs"].setdefault(jid, {}).update(updates)
+            fresh.setdefault("waves", {})[str(args.wave)] = {
+                "jobs": job_ids, "merged": out["merged"],
+                "commit": out.get("commit"), "integrated": out.get("integrated"),
+            }
+            _save_state(run_dir, fresh, now=now)
+
+    approved = []
+    for job_id in job_ids:
+        job = _manifest_job(manifest, job_id) or {"id": job_id}
+        state_job = state["jobs"].get(job_id) or {}
+        result = _read_json(os.path.join(run_dir, "results", "%s.json" % job_id), None)
+        if not isinstance(result, dict) or result.get("status") != "success":
+            out["refused"].append(job_id)
+            continue
+        files = [p for p in (result.get("files_changed") or []) if p]
+        isolation = job.get("isolation") or state_job.get("isolation") or "direct"
+        realised = state_job.get("realised_commit")
+        merged_record = state_job.get("merged") or {}
+
+        if realised and merged_record.get("realised_commit") == realised \
+                and merged_record.get("integrated"):
+            approved.extend(files)
+            out["merged"].append(job_id)
+            continue  # at-most-once: a relaunch re-runs completed agents
+
+        if isolation == "worktree":
+            worktree = result.get("worktree") or state_job.get("worktree")
+            if not worktree:
+                out["refused"].append(job_id)
+                out["reason"] = (
+                    "job %s is isolation:worktree but resolves to no worktree; "
+                    "there is nothing to merge FROM, so it fails closed" % job_id
+                )
+                break
+            ok, err = merge_back(worktree, repo_root,
+                                 read_pinned_baseline(run_dir, job_id, state_job),
+                                 files)
+            if not ok:
+                out["refused"].append(job_id)
+                out["reason"] = "merge-back failed for %s: %s" % (job_id, err)
+                break
+        # A `direct` job changed the checkout in place; there is nothing to apply,
+        # only something to commit.
+        approved.extend(files)
+        job_updates[job_id] = {"merged": {"realised_commit": realised,
+                                          "mode": isolation, "integrated": True}}
+        out["merged"].append(job_id)
+
+    # ---- 3. COMMIT -------------------------------------------------------- #
+    # Reached even when the loop BROKE on a refusal. A sibling that already
+    # merged has its patch in the index; returning early would leave it staged
+    # and uncommitted, which is CRITICAL 2's own shape — an ungated-looking patch
+    # waiting for someone else's `git commit` to sweep it in. Everything staged
+    # here was permitted by the authority, so it is committed; the refusal is
+    # still a refusal, `integrated` stays false, and the wave loop halts.
+    unique = []
+    for path in approved:
+        if path not in unique:
+            unique.append(path)
+    if args.no_commit:
+        out["reason"] = "merged but not committed (--no-commit)"
+    else:
+        message = "compound-v: wave %d of run %s (%s)" % (
+            args.wave,
+            state.get("run_id") or os.path.basename(run_dir),
+            ", ".join(out["merged"]) or "no jobs",
+        )
+        sha, err = _commit_paths(repo_root, unique, message)
+        if err:
+            out["reason"] = err
+            out["integrated"] = False
+            _apply(now=args.now)
+            return emit(1)
+        if sha:
+            out["commit"] = sha
+            for job_id in out["merged"]:
+                merged = dict(job_updates.get(job_id, {}).get("merged") or {})
+                merged.update({"commit": sha, "integrated": True})
+                job_updates.setdefault(job_id, {})["merged"] = merged
+        else:
+            out["commit"] = _head_commit(repo_root) or ""
+            out["reason"] = ("nothing left to commit — this wave's work is already "
+                             "in HEAD (idempotent re-finalize)")
+
+    out["integrated"] = not out["refused"]
+    if out["refused"]:
+        out.setdefault("reason", "some jobs did not reach `success`")
+    _apply(now=args.now)
+    return emit(0 if out["integrated"] else 1)
 
 
 # --------------------------------------------------------------------------- #
@@ -1624,6 +2402,13 @@ def cmd_register_lane(argv):
     ap.add_argument("--job-id", required=True)
     ap.add_argument("--cwd", required=True)
     ap.add_argument("--manifest")
+    ap.add_argument("--repo-root", required=True,
+                    help="the PROJECT root. Required: a direct job's baseline is "
+                         "this tree's HEAD, and it is never defaulted.")
+    ap.add_argument("--isolation", required=True,
+                    choices=["direct", "worktree"],
+                    help="from the MANIFEST. Decides which tree the baseline is "
+                         "pinned from; never inferred from --cwd.")
     ap.add_argument("--agent-id",
                     help="the PreToolUse payload's agent_id, IF the runtime ever "
                          "exposes it to the agent itself. It does not on 2.1.238.")
@@ -1641,6 +2426,58 @@ def cmd_register_lane(argv):
     ack = {"registered": args.job_id,
            "worktrees": len(lane.get("worktrees") or {}),
            "agents": len(lane.get("agents") or {})}
+
+    # ---- PIN THE BASELINE, before anything has run ------------------------- #
+    # This command is the Implement stage's FIRST tool call, which makes it the
+    # only point in the Engine C lifecycle that happens before a worker launches.
+    # 3.0.1 pinned nothing here, so state.json carried no baseline and the gate
+    # filled one in from its own fallback AFTER execution — measuring the job
+    # against a HEAD the job may itself have moved.
+    #
+    # The pin is written per-job (`jobs/<id>.baseline`) as well as into
+    # state.json. Every job in a wave writes state.json, so a value that lived
+    # only there could be lost to a sibling's save; the per-job file has exactly
+    # one writer.
+    repo_root = os.path.abspath(args.repo_root)
+    pin_root = repo_root if args.isolation == "direct" else os.path.abspath(args.cwd)
+    baseline = _head_commit(pin_root)
+    if not baseline:
+        sys.stderr.write(
+            "cannot pin a baseline: %s has no resolvable HEAD. A gate with no "
+            "pinned baseline measures a job against its own output, so this "
+            "fails closed rather than letting the job start.\n" % pin_root
+        )
+        return 2
+    pin_path = baseline_pin_path(run_dir, args.job_id)
+    os.makedirs(os.path.dirname(pin_path), exist_ok=True)
+    if not os.path.exists(pin_path):
+        _atomic_write(pin_path, baseline + "\n")
+    with _run_dir_lock(run_dir):
+        state = _load_state(run_dir)
+        entry = state["jobs"].setdefault(args.job_id, {})
+        entry.setdefault("baseline",
+                         read_pinned_baseline(run_dir, args.job_id, entry)
+                         or baseline)
+        entry["isolation"] = args.isolation
+        _save_state(run_dir, state)
+    ack["baseline"] = entry["baseline"]
+    ack["baseline_pin"] = pin_path
+
+    # ---- the handoff artefacts must already EXIST -------------------------- #
+    # `emit` materializes them. If they are missing, the worker's --prompt-file
+    # would point at nothing and the launcher would be an improvisation, which is
+    # what 3.0.1 shipped. Refuse to let the job start rather than find out later.
+    prompt_file = worker_prompt_path(run_dir, args.job_id)
+    argv_file = launch_argv_path(run_dir, args.job_id)
+    if os.path.exists(argv_file) and not os.path.exists(prompt_file):
+        sys.stderr.write(
+            "job %s has a materialized launcher argv but no prompt file at %s — "
+            "the worker's --prompt-file would point at nothing. Re-run `emit`.\n"
+            % (args.job_id, prompt_file)
+        )
+        return 2
+    ack["prompt_file"] = prompt_file if os.path.exists(prompt_file) else None
+    ack["launch_argv_file"] = argv_file if os.path.exists(argv_file) else None
 
     # ---- the test contract, resolved BEFORE the worker launches ------------
     # This is the Implement stage, and it is the only point in the Engine C
@@ -1774,7 +2611,10 @@ def cmd_emit(argv):
     ap = argparse.ArgumentParser(prog="compound-v-emit-workflow.py emit")
     ap.add_argument("manifest", help="path to manifest.yaml")
     ap.add_argument("--run-dir", help="default: the manifest's directory")
-    ap.add_argument("--repo-root", default=REPO_DEFAULT)
+    ap.add_argument("--repo-root",
+                    help="the PROJECT root. Omitted, it is DERIVED from the "
+                         "manifest's own git tree; if that cannot be derived, "
+                         "emit fails. It is never the installed plugin's repo.")
     ap.add_argument("--out", help="default: <run-dir>/dispatch.workflow.js")
     ap.add_argument("--python", default="/usr/bin/python3")
     ap.add_argument("--scope-check", default=SCOPE_CHECK_DEFAULT)
@@ -1791,11 +2631,33 @@ def cmd_emit(argv):
     manifest["_manifest_path"] = manifest_path
     run_dir = os.path.abspath(args.run_dir or os.path.dirname(manifest_path))
 
-    plan = build_plan(
-        manifest, run_dir, args.repo_root, args.python,
-        os.path.abspath(__file__), args.scope_check, args.fastpath,
-        args.workers_dir,
-    )
+    # The project root is DERIVED from the manifest's own tree, never inherited
+    # from wherever this script happens to be installed. A run whose root cannot
+    # be established does not emit — a workflow that does not know which
+    # repository it is building is not a workflow that should start.
+    repo_root = args.repo_root
+    if not repo_root:
+        rc, top, _ = _run(["git", "-C", os.path.dirname(manifest_path),
+                           "rev-parse", "--show-toplevel"])
+        repo_root = top.strip() if rc == 0 and top.strip() else None
+    if not repo_root:
+        sys.stderr.write(
+            "REFUSING TO EMIT: no repository root. Pass --repo-root <project>, or "
+            "put the manifest inside the project's git tree. Defaulting this to "
+            "the repository containing this script is what made 3.0.1 apply a "
+            "job's patch to the wrong repository.\n"
+        )
+        return 2
+
+    try:
+        plan = build_plan(
+            manifest, run_dir, repo_root, args.python,
+            os.path.abspath(__file__), args.scope_check, args.fastpath,
+            args.workers_dir,
+        )
+    except ValueError as exc:
+        sys.stderr.write("REFUSING TO EMIT: %s\n" % exc)
+        return 1
     script = emit_script(plan)
 
     hits = forbidden_hits(script)
@@ -1814,8 +2676,25 @@ def cmd_emit(argv):
         args.out or os.path.join(run_dir, "dispatch.workflow.js")
     )
     _atomic_write(out_path, script)
+
+    # The handoff artefacts, written NOW — before the workflow runs, which is the
+    # only moment early enough for a worker to be handed a --prompt-file that
+    # exists. 3.0.1 emitted `worker-script ...` and left the rest to a model.
+    artefacts = []
+    for job_id, doc in sorted(plan["artefacts"].items()):
+        _atomic_write(doc["prompt_file"], doc["prompt_text"])
+        artefacts.append(doc["prompt_file"])
+        if doc["launch_argv_file"]:
+            _atomic_write(
+                doc["launch_argv_file"],
+                json.dumps(doc["launch_argv"], indent=2) + "\n",
+            )
+            artefacts.append(doc["launch_argv_file"])
+
     report = {
         "script": out_path,
+        "repo_root": plan["repo_root"],
+        "job_artefacts": artefacts,
         "run_id": plan["run_id"],
         "waves": [[j["id"] for j in wave] for wave in plan["waves"]],
         "jobs": sum(len(w) for w in plan["waves"]),
@@ -2023,9 +2902,7 @@ def selftest():
             fh.write("#!/bin/sh\n")
         codex_jobs = [
             {"id": "c1", "backend": "codex", "isolation": "worktree",
-             "write_allowed": ["x/**"]},
-            {"id": "g1", "backend": "gemini", "isolation": "worktree",
-             "write_allowed": ["y/**"]},
+             "model": "gpt-5.6-sol", "write_allowed": ["x/**"]},
         ]
         cplan = _plan_for(_tiny_manifest(codex_jobs), tmp, workers_dir=workers)
         entries = {j["id"]: j for w in cplan["waves"] for j in w}
@@ -2035,7 +2912,22 @@ def selftest():
         _check("a non-claude job's clamp admits its worker script",
                any(worker_sh in rule for rule in entries["c1"]["implement_clamp"]))
         _check("no worker script ⇒ NO clamp, rather than a clamp that binds nothing",
-               entries["g1"]["implement_clamp"] is None)
+               _clamp_rules({"id": "g1", "backend": "gemini"}, "/usr/bin/python3",
+                            os.path.abspath(__file__), lambda b: None) is None)
+        # An external job whose worker script is absent, or whose model cannot be
+        # resolved, has no COMPLETE argv — so emit refuses rather than writing a
+        # launcher the implementer would have to improvise around.
+        for broken, why in (
+            ({"id": "g1", "backend": "gemini", "model": "g",
+              "write_allowed": ["y/**"]}, "no worker script"),
+            ({"id": "c2", "backend": "codex", "write_allowed": ["z/**"]},
+             "neither model nor tier"),
+        ):
+            try:
+                _plan_for(_tiny_manifest([broken]), tmp, workers_dir=workers)
+                _check("emit FAILS CLOSED on an external job with %s" % why, False)
+            except ValueError:
+                _check("emit FAILS CLOSED on an external job with %s" % why, True)
         for rule in entries["c1"]["implement_clamp"]:
             _check("clamp entry is a Bash(...) permission rule with content",
                    rule.startswith("Bash(") and rule.endswith(")")
@@ -2062,6 +2954,10 @@ def selftest():
         os.makedirs(os.path.join(run_dir, "jobs"), exist_ok=True)
         man = {"run_id": "selftest-run", "max_parallel": 2,
                "jobs": [{"id": "j1", "title": "j1", "isolation": "worktree",
+                         "write_allowed": ["src/**"]},
+                        {"id": "j2", "title": "j2", "isolation": "direct",
+                         "write_allowed": ["src/**"]},
+                        {"id": "j3", "title": "j3", "isolation": "direct",
                          "write_allowed": ["src/**"]}]}
         try:
             import yaml
@@ -2107,7 +3003,7 @@ def selftest():
         # ORPHAN 2 — what the integration authority needs
         if have_yaml:
             verdict = {
-                "job_id": "j1", "verdict": "pass",
+                "job_id": "j1", "verdict": "pass", "worktree": os.path.abspath(repo),
                 "baseline_commit": baseline, "realised_commit": baseline,
                 "diff_digest": digest, "raw_stdout": json.dumps(
                     {"verdict": "pass", "changed": ["src.txt"], "violations": []}),
@@ -2328,6 +3224,7 @@ def selftest():
         ext_manifest = {
             "run_id": "r", "test_contract": {"floor_command": "sh -c 'exit 0'"},
             "jobs": [{"id": "x", "backend": "codex", "test_scope": "floor_only",
+                      "model": "gpt-5.6-sol", "isolation": "worktree",
                       "write_allowed": ["src/**"]}],
         }
         ext_plan = build_plan(ext_manifest, tmp, tmp, "/usr/bin/python3",
@@ -2342,6 +3239,8 @@ def selftest():
                and "# --test-contract-file" not in ext_prompt)
         no_contract = build_plan(
             {"run_id": "r", "jobs": [{"id": "x", "backend": "codex",
+                                      "model": "gpt-5.6-sol",
+                                      "isolation": "worktree",
                                       "write_allowed": ["src/**"]}]},
             tmp, tmp, "/usr/bin/python3", os.path.abspath(__file__),
             SCOPE_CHECK_DEFAULT, FASTPATH_DEFAULT, HERE)
@@ -2363,6 +3262,241 @@ def selftest():
                "pre_eval_id" in (_maybe_append_run_actual(
                    tmp, {"run_id": "r", "jobs": [{"id": "a"}]},
                    {"jobs": {"a": {"status": "done"}}}, tmp) or ""))
+
+        # --- 3.0.2: the three defects that disabled Engine C -------------------
+
+        # CRITICAL 1 — the branch is the MANIFEST's isolation, not emptiness.
+        direct_res = _job_result_from(
+            {"verdict": "pass", "raw_stdout": "", "exit_code": 0},
+            {"id": "d", "isolation": "direct"},
+            {"worktree": "/some/project/cwd"}, tests=None)
+        _check("a DIRECT job's result carries worktree \"\" even when a locator "
+               "was registered (emptiness never selects the merge path)",
+               direct_res["worktree"] == "", direct_res["worktree"])
+        wt_res = _job_result_from(
+            {"verdict": "pass", "raw_stdout": "", "exit_code": 0},
+            {"id": "w", "isolation": "worktree"},
+            {"worktree": "/wt/w"}, tests=None)
+        _check("a WORKTREE job keeps its locator", wt_res["worktree"] == "/wt/w")
+        _check("no module-level default repository root exists to fall back to",
+               "REPO_DEFAULT" not in globals())
+
+        script_2 = emit_script(_plan_for(_tiny_manifest(
+            [{"id": "s1", "isolation": "direct", "write_allowed": ["a/**"]}]), tmp))
+        rec_seg = script_2.split("' record' +", 1)[-1][:800]
+        gate_seg = script_2.split("' gate-receipt' +", 1)[-1][:800]
+        _check("the emitted Record command names its destination explicitly",
+               "--repo-root" in rec_seg and "CFG.repo_root" in rec_seg)
+        _check("the emitted Gate command names the project root explicitly",
+               "--repo-root" in gate_seg)
+        _check("a direct job is gated in CFG.repo_root, never in a reported pwd",
+               "gateRoot = CFG.repo_root" in script_2)
+
+        # CRITICAL 2 — the authority runs BEFORE integration, and the wave commits.
+        _check("the emitted script carries a serialized wave finalizer",
+               "finalizeWave" in script_2 and "finalize-wave" in script_2)
+        _check("the wave loop STOPS scheduling after a non-success result",
+               "waveHadFailure" in script_2 and "summary.halted = true" in script_2)
+        _check("Finalize is a declared phase, so the runtime can render it",
+               "Finalize" in STAGE_PHASES and "phase: 'Finalize'" in script_2)
+        # Record must not be able to write into the checkout at all. Asserted on
+        # the compiled name table rather than on behaviour, because "it did not
+        # merge THIS time" is not the property; "it cannot" is.
+        record_calls = set(cmd_record.__code__.co_names)
+        _check("Record calls neither merge_back nor _stage_paths — integration is "
+               "the finalizer's, after the authority",
+               not ({"merge_back", "_stage_paths", "_commit_paths"} & record_calls),
+               str(sorted(record_calls & {"merge_back", "_stage_paths",
+                                          "_commit_paths"})))
+        _check("the finalizer DOES call all three, in one place",
+               {"merge_back", "_commit_paths"}
+               <= set(cmd_finalize_wave.__code__.co_names))
+
+        fin_repo = os.path.join(tmp, "fin-repo")
+        fin_base = _init_repo(fin_repo)
+        _check("finalize selftest repo has a baseline", bool(fin_base))
+        # An unrelated file is left STAGED, exactly as a concurrent
+        # `/v:orchestrate` would leave one. The wave's commit must not take it.
+        with open(os.path.join(fin_repo, "unrelated.txt"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("someone else's staged work\n")
+        _run(["git", "-C", fin_repo, "add", "unrelated.txt"])
+        os.makedirs(os.path.join(fin_repo, "src"), exist_ok=True)
+        with open(os.path.join(fin_repo, "src", "landed.txt"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("the wave's work\n")
+        sha, cerr = _commit_paths(fin_repo, ["src/landed.txt"], "wave 1")
+        _check("the wave's commit succeeds", bool(sha), str(cerr))
+        _rc, names, _e = _git(fin_repo, ["show", "--name-only", "--format=", "HEAD"])
+        _check("the commit contains the wave's path",
+               "src/landed.txt" in names, names)
+        _check("the commit does NOT sweep in someone else's staged file — the "
+               "mechanism by which an ungated patch reached history",
+               "unrelated.txt" not in names, names)
+        _rc, still, _e = _git(fin_repo, ["diff", "--cached", "--name-only"])
+        _check("the unrelated file is still staged, untouched",
+               still.strip() == "unrelated.txt", still)
+
+        # The authority's refusal is a refusal: nothing merges, nothing commits.
+        if have_yaml:
+            ref_dir = os.path.join(tmp, "refuse")
+            os.makedirs(ref_dir, exist_ok=True)
+            import yaml as _yaml
+            with open(os.path.join(ref_dir, "manifest.yaml"), "w",
+                      encoding="utf-8") as fh:
+                _yaml.safe_dump({"run_id": "refuse", "jobs": [
+                    {"id": "never-ran", "isolation": "direct",
+                     "write_allowed": ["src/**"]}]}, fh)
+            head_before = _head_commit(fin_repo)
+            with _quiet():
+                rc = cmd_finalize_wave([
+                    "--run-dir", ref_dir, "--repo-root", fin_repo,
+                    "--manifest", os.path.join(ref_dir, "manifest.yaml"),
+                    "--jobs", "never-ran", "--wave", "1",
+                ])
+            _check("a wave whose job produced no result is REFUSED", rc != 0)
+            _check("a refused wave commits nothing",
+                   _head_commit(fin_repo) == head_before)
+
+        # HIGH 3 — the handoff keeps its invocation, its worktree and its pin.
+        ext2 = build_plan(
+            {"run_id": "r3", "test_contract": {"floor_command": "sh -c 'exit 0'"},
+             "jobs": [{"id": "e1", "backend": "codex", "isolation": "worktree",
+                       "model": "gpt-5.6-sol", "effort": "high",
+                       "timeout_sec": 900, "test_scope": "floor_only",
+                       "write_allowed": ["src/**"]}]},
+            tmp, tmp, "/usr/bin/python3", os.path.abspath(__file__),
+            SCOPE_CHECK_DEFAULT, FASTPATH_DEFAULT, HERE)
+        e1 = ext2["waves"][0][0]
+        for flag in ("--run-id", "--job-id", "--repo", "--prompt-file", "--model",
+                     "--write-allowed", "--events-log", "--test-contract-file"):
+            _check("the materialized argv carries %s" % flag,
+                   flag in (e1["launch_argv"] or []), str(e1["launch_argv"]))
+        _check("the argv carries no elision",
+               "..." not in (e1["launch_argv"] or []))
+        _check("the launcher in the prompt is the materialized argv, not a stub",
+               e1["launch_command"] in _implement_prompt(e1, ext2)
+               and "worker-script" not in _implement_prompt(e1, ext2))
+        _check("the prompt file is materialized with the job's real acceptance",
+               "src/**" in ext2["artefacts"]["e1"]["prompt_text"])
+        _check("an external job's implementer is told to return the WORKER's "
+               "worktree, never its own pwd",
+               "Never return your own `pwd`" in _implement_prompt(e1, ext2))
+
+        pin_dir = os.path.join(tmp, "pin-run")
+        os.makedirs(pin_dir, exist_ok=True)
+        with _quiet():
+            rc = cmd_register_lane([
+                "--run-dir", pin_dir, "--job-id", "p1", "--cwd", fin_repo,
+                "--repo-root", fin_repo, "--isolation", "direct",
+                "--no-test-contract",
+            ])
+        _check("register-lane exits 0 when it can pin", rc == 0)
+        _check("register-lane PINS the baseline before anything runs",
+               bool(read_pinned_baseline(
+                   pin_dir, "p1", _load_state(pin_dir)["jobs"].get("p1"))))
+        _check("the pin is ALSO a per-job file, which a sibling's state.json "
+               "save cannot race away",
+               os.path.exists(baseline_pin_path(pin_dir, "p1")))
+        _check("an unpinned job reads back as unpinned, not as some HEAD",
+               read_pinned_baseline(pin_dir, "absent", {}) is None)
+
+        # --- agentType: the last unused native mechanism ----------------------
+        rev_plan = _plan_for(_tiny_manifest(
+            [{"id": "rev", "type": "review", "backend": "claude",
+              "isolation": "direct", "write_allowed": ["docs/**"]},
+             {"id": "impl", "type": "bounded_crud", "backend": "claude",
+              "isolation": "direct", "write_allowed": ["src/**"]}]), tmp)
+        rev_entries = {j["id"]: j for w in rev_plan["waves"] for j in w}
+        expected, why = resolve_agent_type("review")
+        _check("this plugin's own agents/spec-reviewer.md + plugin.json resolve "
+               "a real agentType", bool(expected), str(why))
+        _check("a `type: review` job is spawned BY ROLE, not anonymously",
+               rev_entries["rev"]["agent_type"] == expected)
+        _check("the name is READ from the plugin manifest, never derived from a "
+               "checkout directory (this file is edited from a worktree whose "
+               "directory name is a random job id)",
+               bool(expected) and expected.endswith(":spec-reviewer")
+               and os.path.basename(os.path.dirname(HERE)) not in
+               (expected or "").split(":")[0:1]
+               or expected == "%s:spec-reviewer" % (_read_json(os.path.join(
+                   os.path.dirname(HERE), ".claude-plugin", "plugin.json"),
+                   {}) or {}).get("name"))
+        _check("an ordinary implementation job stays anonymous",
+               rev_entries["impl"]["agent_type"] is None)
+        ext_rev = _plan_for(_tiny_manifest(
+            [{"id": "xr", "type": "review", "backend": "codex",
+              "model": "gpt-5.6-sol", "isolation": "worktree",
+              "write_allowed": ["docs/**"]}]), tmp, workers_dir=HERE)
+        _check("an EXTERNAL review job gets no agentType — agentType spawns "
+               "Claude agents, and that job's implementer is a launcher",
+               ext_rev["waves"][0][0]["agent_type"] is None)
+        _check("an unknown plugin root yields NO name rather than a guessed one",
+               resolve_agent_type("review", plugin_dir=tmp)[0] is None)
+        rev_script = emit_script(rev_plan)
+        _check("the emitted script actually SETS agentType (the audit row's "
+               "'zero occurrences in the emitted script')",
+               "opts.agentType = job.agent_type" in rev_script)
+        _check("the by-role prompt defers to the agent's own definition instead "
+               "of restating the contract",
+               "come from your OWN agent definition"
+               in _implement_prompt(rev_entries["rev"], rev_plan))
+        _check("Gate/Record/Finalize stay anonymous — their safety IS the "
+               "narrowing, and no agent here declares a tools: restriction",
+               "phase: 'Gate'" in rev_script
+               and rev_script.count("opts.agentType") == 1
+               and "agentType" not in rev_script.split("async function gateStage", 1)[1]
+               .split("async function finalizeWave", 1)[0])
+        _check("a throwing Implement stage no longer skips Gate AND Record",
+               "return { job: job, implement: null };" in rev_script)
+
+        # --- the lane map under real CONCURRENCY -------------------------------
+        # `_atomic_write` makes one write atomic and does nothing for the read
+        # that chose what to write. Unlocked, two implementers in a wave both read
+        # the pre-write map and the second drops the first's lane — and a dropped
+        # lane is a job hooks/lane-guard.sh cannot resolve, so it fails OPEN.
+        #
+        # Run as real SUBPROCESSES, not threads: the racing writers are separate
+        # `register-lane` processes, and a GIL-serialized thread test can pass
+        # while the process case still loses entries.
+        race_dir = os.path.join(tmp, "race-run")
+        os.makedirs(race_dir, exist_ok=True)
+        _atomic_write(os.path.join(race_dir, "state.json"),
+                      json.dumps({"run_id": "race", "jobs": {}}) + "\n")
+        writers = 12
+        procs = []
+        for i in range(writers):
+            cwd_i = os.path.join(tmp, "race-wt-%d" % i)
+            os.makedirs(cwd_i, exist_ok=True)
+            procs.append(subprocess.Popen(
+                ["/usr/bin/python3", os.path.abspath(__file__), "register-lane",
+                 "--run-dir", race_dir, "--job-id", "race-%d" % i,
+                 "--cwd", cwd_i, "--repo-root", repo,
+                 # `direct`, so all twelve pin from the same real git tree: the
+                 # race under test is the shared-file merge, not HEAD resolution.
+                 "--isolation", "direct", "--no-test-contract"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"),
+            ))
+        rcs = [p.wait() for p in procs]
+        for p in procs:
+            p.stdout.close()
+            p.stderr.close()
+        race_map = _read_json(lane_map_path(race_dir), {}) or {}
+        _check("every concurrent register-lane exited 0",
+               all(rc == 0 for rc in rcs), str(rcs))
+        _check("%d concurrent registrations keep ALL %d lanes — an unlocked "
+               "read-modify-write drops the losers, and a dropped lane is a "
+               "guard that fails open" % (writers, writers),
+               len(race_map.get("worktrees") or {}) == writers,
+               "kept %d" % len(race_map.get("worktrees") or {}))
+        race_state = _read_json(os.path.join(race_dir, "state.json"), {}) or {}
+        _check("and every job's pinned baseline survives the same race",
+               len(race_state.get("jobs") or {}) == writers,
+               "kept %d" % len(race_state.get("jobs") or {}))
+        _check("the lock is held across the READ as well as the write",
+               "_run_dir_lock" in register_lane.__code__.co_names
+               and "_run_dir_lock" in cmd_record.__code__.co_names)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -2380,6 +3514,7 @@ SUBCOMMANDS = {
     "emit": cmd_emit,
     "gate-receipt": cmd_gate_receipt,
     "record": cmd_record,
+    "finalize-wave": cmd_finalize_wave,
     "register-lane": cmd_register_lane,
 }
 
@@ -2389,7 +3524,8 @@ def main(argv=None):
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__)
         print("usage: compound-v-emit-workflow.py "
-              "{emit,gate-receipt,record,register-lane} ... | --selftest")
+              "{emit,gate-receipt,record,finalize-wave,register-lane} ... "
+              "| --selftest")
         return 0
     if argv[0] == "--selftest":
         return selftest()

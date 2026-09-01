@@ -17,7 +17,14 @@ You describe a feature. Claude plans it, splits it into non-overlapping pieces, 
 
 **On measurement, stated up front.** No speed or cost claim ships with 3.0. The observation that motivated proportionate tests — a small change running a full suite — was not reproduced during the design recon, so the test-scoping defaults are **principle-derived, not measured**. The scoped floor is early feedback and does **not** restore what a full suite guarantees; the merge-blocking CI run does, and it always runs. The pipeline records selected-test counts and measured-only durations so a future release can speak from real data instead.
 
-**One ambient cost worth knowing before you install.** The lane-enforcement hook runs on every `Write`/`Edit`/`Bash` tool call in every session — measured at 63 ms on the path where no Compound V job is acting. It is what turns lane enforcement from detection-after-the-fact into a refusal before the write.
+**One ambient cost worth knowing before you install.** The lane-enforcement hook runs on every `Write`/`Edit`/`Bash` tool call in every session. Its cost is **47–81 ms**, and which end you pay depends on the path: **47 ms** where no Compound V job is acting — the ordinary human session, and the only path a session that never dispatches will ever take — rising to **81 ms** once a job resolves and the manifest is parsed, whether that write is then allowed or denied (the two resolved paths cost the same; the deny is not the expensive one). Re-measured 2026-09-01, mean of 50 invocations per path, on macOS 26.5.2 / arm64 with `/usr/bin/python3` 3.9.6, against a checkout carrying 12 run directories. Reproduce the unresolved figure from a checkout root — the total divided by 50:
+
+```bash
+P=$(printf '{"hook_event_name":"PreToolUse","tool_name":"Write","session_id":"s","cwd":"%s","tool_input":{"file_path":"%s/README.md"}}' "$PWD" "$PWD")
+time (for i in $(seq 1 50); do printf '%s' "$P" | ./hooks/lane-guard.sh >/dev/null; done)
+```
+
+The two resolved figures need a lane map, so drive the same loop against the sandbox `tests/test-lane-guard.sh` builds; set `CV_LANE_GUARD_LOG` and read it back to confirm which path you actually hit, because an unresolved run is silent and looks like an allow. **These numbers supersede the 63 ms this file used to publish and the 54/112/152 ms in `hooks/lane-guard.sh`'s own header** — those two disagreed with each other, and re-measurement reproduced neither. It is what turns lane enforcement from detection-after-the-fact into a refusal before the write.
 
 ## 🎮 New here? Learn it as a game → **[Compound V Academy](https://amiainative.dev/compound-v)**
 
