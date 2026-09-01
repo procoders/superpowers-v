@@ -196,7 +196,13 @@ jobs:
             # Skip this workflow file itself (it names the patterns) and the PRD/plan,
             # which discuss the anti-pattern by name.
             case "$f" in
-              *docs/superpowers/specs/*|*docs/superpowers/plans/*) continue ;;
+              # preflight/ joined this list in 3.0. The domain audit's own MUST NOT
+              # rules name the very pattern this gate detects ("any claimed savings
+              # ... MUST NOT be printed as a measurement"), so the document that
+              # FORBIDS the anti-pattern was failing the guard against it. Same
+              # category as specs/ and plans/: prose that discusses the anti-pattern
+              # by name, never code that emits one.
+              *docs/superpowers/specs/*|*docs/superpowers/plans/*|*docs/superpowers/preflight/*) continue ;;
             esac
             if grep -inE "$patterns" "$f" >/dev/null 2>&1; then
               echo "❌ possible fabricated cost/token metric in $f:"
