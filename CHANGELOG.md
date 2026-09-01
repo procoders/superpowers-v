@@ -4,6 +4,54 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [3.0.5] - 2026-09-02
+
+### Fixed — routing that routes
+
+Compound V has carried a tier vocabulary since 1.1. The manifest validator enforced it, five documents explained it, and until this release **it never reached `agent()`**.
+
+`resolve_job_model` was invoked only for external backends, where `--model` is a required CLI argument. For `backend: claude` — every job in every real run — it was never called, `opts.model` was never set, and every agent inherited the session model. The tier was real everywhere except at the one call site that spends money. That is the thirteenth mechanism this project has shipped with no caller, and the second one found by asking a plain question about it rather than by a test.
+
+Two more inputs were dead in the same place. The manifest's `routing_stance` and the project's own `/v:models` map were written by one command and read by nobody on the dispatch path: every resolution silently used the built-in balanced defaults. Both are now passed on every resolve.
+
+### Changed — the ladder, and what decides it
+
+Set by the maintainer on 2026-09-02. The split is **execution vs judgment**, not how much code a job touches.
+
+**Sonnet executes.** A spec that already survived brainstorming and planning, HTML/CSS, Node plumbing, translations, mechanical refactors — and *reading* code, which is execution however large the codebase.
+
+**Opus judges.** Deciding, and connecting parts of code to each other. Business logic with many code-level dependencies is Opus **however mechanical each individual edit looks**; coupling is the signal, not line count.
+
+**Fable is the extreme seat**, reached through a new `frontier` tier — what a failed job escalates into, and where interface design belongs.
+
+| Stance | `frontier` | `deep` | `standard` | `light` |
+|---|---|---|---|---|
+| balanced *(default)* | `fable` | `opus` | **`sonnet`** | `sonnet` |
+| conservative | `fable` | `opus` | `opus` | `sonnet` |
+| cost-aware | `opus` | `opus` | `sonnet` | `sonnet` |
+
+`standard` on `claude` was `opus` before. Conservative is now the stance that keeps it there — that is what choosing it means. Reviewers are unaffected and unmovable: Invariant 3 still demands `deep`/`opus`, because a sealed review receipt must carry a Claude Opus `reviewer_model`.
+
+### Added — transport, and escalation
+
+**Gate, Record and Finalize are transport**, and are now routed as such. Each runs exactly one clamped command and hands back its JSON verbatim; the real logic is Python the integration authority re-verifies from git. They take the `light` cell instead of inheriting the session model.
+
+**A job that failed is re-dispatched one rung up** — `sonnet → opus → fable` — and stops at the top. The signal is the recorded `results/<id>.json` status, never a counter we keep: an absent result is not a failure. Two exemptions, both load-bearing. A **reviewer** is never escalated, or its own receipt stops being valid. A **model the manifest pinned explicitly** is never escalated, because stepping a value we did not choose is a fabricated routing decision.
+
+### Fixed — a reader of the tier vocabulary that had been wrong all along
+
+Adding `frontier` surfaced it: the failure policy halted a `context_length` failure at `deep` as "the deepest tier, no bigger model exists". The naive fix is to escalate `deep → frontier` first. It would be wrong — `frontier` is a stronger model, **not a bigger context window**; Fable and Opus carry the same 1M window, so the escalation would buy nothing and would dress a fabricated remedy as a routing decision. Both tiers now halt, and the message says why.
+
+Model discovery proposes `frontier` = its own `deep` pick for every external backend, since no vendor here ships a rung above its top model.
+
+### Verified
+
+`opts.model` was probed against the live 2.1.238 runtime **before** any of this was built — three clamped agents on `sonnet`, `opus` and `fable`; all three accepted. Then a two-lane Engine C run whose only routing input was the tier: `standard`→Sonnet, `deep`→Opus, both gated clean and merged as one commit. Six of that run's seven agents ran on Sonnet where all seven would have been Opus.
+
+**That is a count, not a saving.** No cost and no duration were measured, and none is claimed.
+
+Not exercised live: escalation (nothing failed, so nothing escalated — it is covered by selftests), the `frontier` tier inside a real run, and any stance other than `balanced`.
+
 ## [3.0.4] - 2026-09-01
 
 ### Fixed — the multi-wave dispatch, and one field name that meant two things
@@ -24,7 +72,7 @@ The manifest makes it decidable: a job with an empty `write_allowed` (a reviewer
 
 ### Known and unfixed
 
-**Model routing is not routing.** `resolve_job_model` is invoked only for external backends, where `--model` is a required CLI argument. For `backend: claude` — every job in every real run — it is never called, `opts.model` is never set, and every agent inherits the session model. The tier vocabulary exists and never reaches `agent()`. Under `balanced`, `deep` and `standard` both resolve to `opus` anyway, `light` is used by no manifest in this repo, and **Fable appears nowhere in the routing map**. This is the thirteenth mechanism this project has shipped with no caller; it is recorded here rather than fixed, because changing it changes the cost of every future run and that is the maintainer's call.
+**Model routing is not routing.** *(Fixed in 3.0.5.)* `resolve_job_model` is invoked only for external backends, where `--model` is a required CLI argument. For `backend: claude` — every job in every real run — it is never called, `opts.model` is never set, and every agent inherits the session model. The tier vocabulary exists and never reaches `agent()`. Under `balanced`, `deep` and `standard` both resolve to `opus` anyway, `light` is used by no manifest in this repo, and **Fable appears nowhere in the routing map**. This is the thirteenth mechanism this project has shipped with no caller; it is recorded here rather than fixed, because changing it changes the cost of every future run and that is the maintainer's call.
 
 **The dependent job's implementer produced no file** across several runs. The machinery now refuses that correctly instead of blessing it, but why that particular agent declines to write is unresolved and is an agent-behaviour question, not an Engine C one.
 
