@@ -4,6 +4,26 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [3.0.1] - 2026-09-01
+
+### Fixed — Engine C is disabled by default; it had never run, and it has three critical defects
+
+A post-release cross-model review of the shipped code returned **SHIP-BLOCKING DEFECTS FOUND**. All three criticals are in Engine C, the path 3.0 made the default **without ever executing it end to end** — only a three-stage seam probe had run.
+
+- A `direct` job's patch could be applied into **the repository containing the installed plugin** rather than the project: every implementer returns `pwd` as its worktree, `record` decides direct-vs-worktree from whether that locator is empty, and the emitted Record command omits `--repo-root`.
+- A job could **land without the integration authority running at all**: `record` stages with `git apply --index` before `/v:dispatch` runs the gate and never commits, so any later plain `git commit` sweeps it into history.
+- **Dependents could not see their prerequisites**, since staged-not-committed work is invisible to a worktree created from `HEAD`.
+
+Engine C now requires `engine_c: true` in `.claude/compound-v.json`. The residual subagent path is the default until 3.0.1's fixes land.
+
+### Fixed — the result schema promised recovery the authority does not perform
+
+`gate_receipt`'s description said a digest-mismatched receipt is re-derived and the new verdict wins. The code refuses it outright as forged, and the code is right — re-deriving a forgery over a tree that happens to be clean would reward it. The schema was the wrong public interface; corrected to match.
+
+### Note
+
+3.0's own release text said Engine C had never been executed. It should also have kept an unexecuted path off the default. That is the lesson this release records.
+
 ## [3.0.0] - 2026-09-01
 
 ### Changed — the native runtime becomes the execution engine

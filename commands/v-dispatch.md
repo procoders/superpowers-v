@@ -66,6 +66,33 @@ delegating, the epic inherits Engine C along with everything else.
 
 4. **Select the engine by PROBE, not by version.**
 
+   > ### ⛔ Engine C is DISABLED BY DEFAULT as of 3.0.1 — read this before enabling it
+   >
+   > A post-release cross-model review found **three CRITICAL defects in Engine C**, and every one
+   > of them fires on its **first real use**. Engine C has never been executed against a real
+   > manifest — only a three-stage seam probe ran — so nothing had exercised them:
+   >
+   > 1. **A `direct` job's patch can be applied into the wrong repository.** Every implementer is
+   >    told to return `pwd` as its worktree, and `record` decides direct-vs-worktree from whether
+   >    that locator is empty. A compliant direct agent therefore always enters `merge_back`, and
+   >    the emitted Record command omits `--repo-root` — so the destination defaults to the
+   >    repository containing the installed plugin, not the project. This is the same class as this
+   >    project's own 2026-07-13 repo-deletion incident.
+   > 2. **A job can land without the authority ever running.** `record` calls `git apply --index`
+   >    in the main checkout *before* `/v:dispatch` step 7 runs the integration gate, and never
+   >    commits. Any later plain `git commit` — `/v:orchestrate` runs one — sweeps that staged
+   >    patch into history. The authority is bypassed, not defeated.
+   > 3. **Dependents cannot see their prerequisites.** Record stages but does not commit, and a
+   >    dependent's worktree is created from an unchanged `HEAD`.
+   >
+   > Until these are fixed, **the residual subagent path is the default**. Engine C runs only when
+   > `engine_c: true` is set explicitly in `.claude/compound-v.json`, and enabling it means
+   > accepting the three defects above. They are tracked for 3.0.1.
+   >
+   > This block is the honest cost of shipping a default path that had never run end to end. The
+   > release said so; it should also have kept the untested path off the default until it had.
+
+
    ```
    python3 scripts/compound-v-emit-workflow.py --engine-probe
    ```
@@ -78,7 +105,9 @@ delegating, the epic inherits Engine C along with everything else.
    select Engine C and then **fail to create the Gate agent** — the clamp refuses the spawn
    outright rather than degrading.
 
-   - Probe succeeds → **Engine C** (step 5).
+   - `engine_c: true` in `.claude/compound-v.json` AND probe succeeds → **Engine C** (step 5).
+   - `engine_c` absent or false → the **residual subagent path**, regardless of the probe. This is
+     the 3.0.1 default; see the block above for why.
    - Probe fails, or this is a subagent context → the **residual subagent path**
      ([`parallel-dispatcher.md`](../agents/parallel-dispatcher.md)), then rejoin at step 7.
 

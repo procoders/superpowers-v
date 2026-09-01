@@ -135,7 +135,7 @@
     "gate_receipt": {
       "type": "object",
       "additionalProperties": false,
-      "description": "OPTIONAL receipt for ONE run of the git-derived scope gate on this job (v3.0 Feature D1). The 3.0 integration postcondition is the authority: every original job must have exactly one receipt bound to its baseline commit, its realised commit and a diff digest, and where a receipt is MISSING, null, or its digest disagrees with the tree, the verification layer runs scripts/compound-v-scope-check.py ITSELF and that verdict wins. Integration is refused until every job has a valid receipt. A workflow Gate stage is defence in depth and an early exit, never the authority \u2014 a clamp limits what an agent CAN DO, not what it RETURNS. Emit the object only when all six fields are genuinely known; a partial receipt is a missing receipt, and a missing receipt is re-derived rather than trusted.",
+      "description": "Recovery semantics, matching scripts/compound-v-integration-gate.py exactly: MISSING or PARTIAL receipt => the verification layer re-derives from git and the derived verdict wins. COMPLETE but binding-mismatched => REFUSED OUTRIGHT as forged, never re-derived, because re-deriving a forgery over a tree that happens to be clean would reward it with a pass. An earlier wording promised re-derivation for the mismatched case; the code never did that, and the code is right.",
       "required": [
         "baseline_commit",
         "realised_commit",
