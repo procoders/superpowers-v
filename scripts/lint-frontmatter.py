@@ -248,7 +248,12 @@ def main(argv: list) -> int:
     total = 0
     for f in sorted(root.rglob("*.md")):
         parts = f.parts
-        if "node_modules" in parts or ".git" in parts:
+        # `worktrees` covers the harness's agent checkouts under .claude/worktrees/.
+        # They are copies of THIS repo, so linting them double-reports every file
+        # and, during a parallel build, reports dozens of "issues" in files that are
+        # not in this checkout at all (observed at 51 and twice at 68). .gitignore
+        # cannot help here: this walk is rglob, not git.
+        if "node_modules" in parts or ".git" in parts or "worktrees" in parts:
             continue
         issues = lint_file(f, rel=f.relative_to(root))
         for i in issues:
