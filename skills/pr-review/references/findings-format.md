@@ -72,6 +72,7 @@ _Summary: Standards — N findings (worst: …). Spec — M findings (worst: …
 | **Finding** | One paragraph | What's wrong / surprising. Be specific. No "this might be a problem." |
 | **Recommended Action** | One sentence | What the author should do. For Open Questions, this is the question itself. |
 | **Verdict** | `Fix before merge` / `Reviewer decides` / `Verify before merge` / `Nice-to-have` / `Confirmed safe` | Phase 5. |
+| **Class-check** | `n other instances` / `no other instances` / `n/a — low confidence` | Phase 5, required on every High/Medium row. The result of grepping the finding's *pattern* across the repo, not just its site. `no other instances` is a real result and must be recorded — it is what lets a later reader tell "we looked" from "we never asked". Sibling instances are added as their own rows, individually anchored. |
 | **Post?** | `[ ]` / `[x]` / `[posted]` | Default `[ ]`. Open Questions default `[x]`. After posting, mark `[posted]`. |
 
 ---

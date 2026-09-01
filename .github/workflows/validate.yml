@@ -300,3 +300,10 @@ jobs:
           done
           [ "$rc" = "0" ] || { echo "❌ one or more selftests failed"; exit 1; }
           echo "✅ all script selftests pass under Python 3.9"
+
+      # The selftest sweep above globs scripts/*.py ONLY, so nothing under tests/
+      # was ever executed by CI. Without this step the Stop-hook decision table
+      # would be dead weight — exactly the v2.14.1 false-green (25 of 29
+      # selftests silently never ran) we already fixed once.
+      - name: Run the Stop-hook decision table (tests/test-epic-goal-stop.sh)
+        run: bash tests/test-epic-goal-stop.sh

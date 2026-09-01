@@ -38,7 +38,7 @@ A 🔴 critical pre-flight finding HALTs the run before `PREFLIGHT_DONE` advance
 
 Inside writing-plans, every file the implementation will touch is mapped and assigned to exactly one
 task (no file in two tasks); shared resources (lockfiles, generated code, migrations, barrels, type
-files) go to a serial pre-phase, Task 0. (`skills/compound-v/SKILL.md:158-164`) The partition is
+files) go to a serial pre-phase, Task 0. (`skills/compound-v/SKILL.md:170-176`) The partition is
 gated by `partition-reviewer`, which returns PASS and materializes `manifest.yaml`; a partition FAIL
 HALTs the run. (`skills/compound-v/state-machine.md:23`)
 

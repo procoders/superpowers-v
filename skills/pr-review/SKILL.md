@@ -197,7 +197,25 @@ Assign two mandatory fields per finding:
 non-interactive run): assign verdict + confidence autonomously, no `AskUserQuestion` batch.
 **Otherwise:** present as `AskUserQuestion` batch(es) and let the user adjust.
 
-**Exit gate:** every row has Confidence + Verdict.
+**Class generalization (High/Medium confidence only).** Before the exit gate, take each finding that
+landed at **High or Medium** confidence and ask one question: *is this an instance of a class, or a
+one-off?* If it names a pattern that could exist elsewhere — a wrong call, a missing guard, a stale
+assumption, a forgotten lockstep partner — grep for that pattern across the repository and add any hits
+as rows of the same finding, anchored individually.
+
+Why this earns its place rather than bloating the review: our own v2.6.4 incident began as **two**
+reported bugs and became **nine** real commit points the moment that question was asked, and the lesson
+recorded then was that *"hunt for adjacent bugs" is a genuinely different ask from "verify this fix."*
+This phase is where that ask becomes part of the contract instead of a thing a careful reviewer
+remembers to do.
+
+**Gated deliberately.** Low-confidence findings are excluded — generalizing a suspicion multiplies noise
+rather than coverage. A search that finds nothing is a real result: record it in the **`Class-check`**
+column (see [references/findings-format.md](references/findings-format.md)) as `no other instances`, so
+a later reader can tell "we looked" from "we never asked". Low-confidence rows record
+`n/a — low confidence`.
+
+**Exit gate:** every row has Confidence + Verdict, and every High/Medium row has a `Class-check` value.
 
 ### Phase 6 — Triage With User
 Present the complete findings table ([references/findings-format.md](references/findings-format.md)). User checks `[x]` in Post?. Defaults: Open Questions → `[x]`; Confirmed-safe → `[ ]`; Low hygiene → `[ ]`; everything else → `[ ]` (opt in).

@@ -1,6 +1,18 @@
 {
-  "$comment": "Compound V hooks. SubagentStop was removed in v0.1.1 on the premise that it was undocumented. That premise was WRONG (verified 2026-07-25): Stop and SubagentStop are both documented, exit 2 / decision:block prevents the turn from ending, and Anthropic's own ralph-loop plugin ships a Stop hook. Compound V currently emits additionalContext ONLY -- zero blocking enforcement at the harness level. Restoring a blocking Stop hook is v2.18 work. SessionStart matcher pattern copied from upstream obra/superpowers v5.1.0. memory-refresh.sh (v2.0) is APPENDED to both events — it is silent (emits no context) and self-backgrounds an FTS5-only `refresh --quick`, so it composes with the banner/nudge without blocking and never installs/downloads. brainstorm-trigger0-nudge.sh (v2.8) uses PreToolUse additionalContext — live-probed 2026-07-11 on Claude Code 2.1.197 (see the probe comment in that hook); reminder only, never blocks.",
+  "$comment": "Compound V hooks. SubagentStop was removed in v0.1.1 on the premise that it was undocumented. That premise was WRONG (verified 2026-07-25): Stop and SubagentStop are both documented, exit 2 / decision:block prevents the turn from ending, and Anthropic's own ralph-loop plugin ships a Stop hook. v2.18 RESTORES a blocking Stop hook (epic-goal-stop.sh). SessionStart matcher pattern copied from upstream obra/superpowers v5.1.0. memory-refresh.sh (v2.0) is APPENDED to both events — it is silent (emits no context) and self-backgrounds an FTS5-only `refresh --quick`, so it composes with the banner/nudge without blocking and never installs/downloads. brainstorm-trigger0-nudge.sh (v2.8) uses PreToolUse additionalContext — live-probed 2026-07-11 on Claude Code 2.1.197 (see the probe comment in that hook); reminder only, never blocks.",
+  "$comment_stop": "Stop takes NO matcher — it is not a tool event. The `|| true` suffix is MECHANISM (a) of the two-part fail-open contract: a non-zero exit from a Stop hook IS a block, and a syntax error in the script is fatal before any in-script trap can run, so the registration itself must neutralize it. MECHANISM (b) lives inside epic-goal-stop.sh (an unconditional-exit-0 EXIT trap plus output suppression on a failed run). Both are required; neither is sufficient. Do NOT remove the `|| true` — see tests/test-epic-goal-stop.sh, which asserts it is present and proves the raw script really does exit non-zero when broken.",
   "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/epic-goal-stop.sh\" || true",
+            "async": false
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Skill",

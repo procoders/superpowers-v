@@ -45,6 +45,7 @@ Worked example: [`examples/manifest.example.yaml`](../../examples/manifest.examp
 | `write_allowed` | string[] | yes | Glob list this job MAY write. The scope gate **enforces** it (git-derived). |
 | `read_allowed` | string[] | yes | Glob list this job MAY read. **ADVISORY only — NOT enforced** (git cannot track reads). Documents intent + scopes the prompt. Auto-includes Task 0 outputs + the three audits. |
 | `acceptance` | string[] | yes | This job's narrow acceptance, checked in its per-task review. |
+| `timeout_sec` | integer | no | Wall-clock seconds this job's worker gets before the supervisor kills it. Domain **60 … 21600** inclusive (a bool is rejected — `true` is not `1`). **Absent ⇒ the worker script's own `DEFAULT_TIMEOUT_SEC=900`, unchanged**, which is what every manifest committed before v2.18 relies on. Applies to the **worker-script backends** (`codex`, `antigravity`, `cursor`, `devin`, `opencode`), where the dispatcher passes it through as `--timeout-sec`; for `claude` (in-harness `Task`) there is no equivalent knob and the field is advisory. Anything above **600** MUST be dispatched on the background path — see the outer-bound rule in [`parallel-dispatcher.md`](../../agents/parallel-dispatcher.md). |
 
 ¹ **Every job MUST have `model` OR `tier`** (at least one). Most jobs carry `tier` (+ optional `effort`) and let the dispatcher resolve the concrete model; a job MAY instead pin an explicit `model` override that skips resolution. A job with neither is a validation failure.
 
