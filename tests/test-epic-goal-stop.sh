@@ -416,7 +416,210 @@ check "ENFORCEMENT excludes docs/superpowers/** (arming a goal is not 'source ch
   "$([ "$RC" = "0" ] && [ -z "$OUT" ] && echo 1 || echo 0)"
 
 # ---------------------------------------------------------------------------
-# 13. PRECEDENCE — both rules eligible on one Stop
+# 13. THE TRIAGE GATE (v3.0 Feature C) — a second RULE in this script, never a
+#     second registration. Two blocking `Stop` registrations have undefined
+#     ordering; this file's whole shape exists to keep one response per event.
+# ---------------------------------------------------------------------------
+
+# The gate keys its marker on project+session only (no arm_id — it is not the
+# goal rule), so the test computes the same key the hook does.
+triage_marker() { printf '%s/triage-%s' "$HOOK_STORE" \
+  "$(printf '%s|%s' "$(cd "$1" && pwd -P)" "$2" | sha256_of)"; }
+triage_incomplete() { printf '%s/triage-incomplete-%s' "$HOOK_STORE" \
+  "$(printf '%s|%s' "$(cd "$1" && pwd -P)" "$2" | sha256_of)"; }
+
+# mkproj_gate <dir> — a project whose triage gate is ON and whose config is
+# already COMMITTED, so the only dirty path is the one each case introduces.
+mkproj_gate() {
+  local d="$1"
+  mkproj "$d"
+  printf '%s\n' '{"enforcement": {"triage_gate": true}}' >"$d/.claude/compound-v.json"
+  git -C "$d" add -A >/dev/null 2>&1
+  git -C "$d" -c user.email=t@t -c user.name=t commit -qm gate >/dev/null 2>&1
+}
+
+# record <dir> <name> <session> <decision> <run_id|""> <declared...>
+record() {
+  local d="$1" name="$2" s="$3" dec="$4" rid="$5"; shift 5
+  mkdir -p "$d/docs/superpowers/pre-eval"
+  local paths; paths="$(printf '%s\n' "$@" | jq -R . | jq -s .)"
+  jq -n --arg s "$s" --arg dec "$dec" --arg rid "$rid" --argjson p "$paths" \
+     '{pre_eval_id: "2026-09-01T120000Z-t-a1", status: "PRE_EVAL_DONE",
+       session_id: $s, decision: $dec, declared_paths: $p}
+      + (if $rid == "" then {} else {run_id: $rid} end)' \
+     >"$d/docs/superpowers/pre-eval/${name}.json"
+}
+
+# --- OFF by default: a false positive here bricks a stranger's session -------
+R="$WORK/projR"; mkproj "$R"
+printf 'print("changed")\n' >>"$R/scripts/app.py"
+run_hook "$(stdin_json Stop sess-R "$R")"
+check "TRIAGE GATE is OFF by default: changes, no config -> silent, exit 0" \
+  "$([ "$RC" = "0" ] && [ -z "$OUT" ] && echo 1 || echo 0)"
+printf '%s\n' '{"enforcement": {"pipeline_bypass": false}}' >"$R/.claude/compound-v.json"
+run_hook "$(stdin_json Stop sess-R "$R")"
+check "TRIAGE GATE stays OFF when the config exists but omits triage_gate" \
+  "$([ "$RC" = "0" ] && [ -z "$OUT" ] && echo 1 || echo 0)"
+check "TRIAGE GATE: nothing was written to the store while it was off" \
+  "$([ ! -e "$(triage_marker "$R" sess-R)" ] && echo 1 || echo 0)"
+
+# --- armed: blocks ONCE, and only once --------------------------------------
+S="$WORK/projS"; mkproj_gate "$S"
+printf 'print("changed")\n' >>"$S/scripts/app.py"
+run_hook "$(stdin_json Stop sess-S "$S")"
+check "TRIAGE GATE armed + an uncovered change -> exactly ONE JSON block" \
+  "$(is_block "$OUT" && echo 1 || echo 0)"
+check "TRIAGE GATE: the block names the uncovered path and /v:triage" \
+  "$(printf '%s' "$OUT" | jq -r '.reason' 2>/dev/null \
+     | grep -q 'scripts/app.py' && printf '%s' "$OUT" | jq -r '.reason' | grep -q '/v:triage' && echo 1 || echo 0)"
+check "TRIAGE GATE: it set its OWN marker" \
+  "$([ -e "$(triage_marker "$S" sess-S)" ] && echo 1 || echo 0)"
+
+# stop_hook_active is a CONSECUTIVE-BLOCK COUNTER the harness may reset, and
+# CLAUDE_CODE_STOP_HOOK_BLOCK_CAP lets it override us outright — so the bound has
+# to be our own marker. Both values of the flag must yield silence here.
+run_hook "$(stdin_json Stop sess-S "$S" true)"
+check "TRIAGE GATE does NOT block twice (marker, not the harness counter)" \
+  "$([ "$RC" = "0" ] && [ -z "$OUT" ] && echo 1 || echo 0)"
+run_hook "$(stdin_json Stop sess-S "$S" false)"
+check "TRIAGE GATE stays silent with stop_hook_active=false as well" \
+  "$([ "$RC" = "0" ] && [ -z "$OUT" ] && echo 1 || echo 0)"
+
+# --- a record that COVERS the diff exempts it -------------------------------
+T="$WORK/projT"; mkproj_gate "$T"
+printf 'print("changed")\n' >>"$T/scripts/app.py"
+record "$T" r1 sess-T FASTPATH_ELIGIBLE "" "scripts/app.py"
+run_hook "$(stdin_json Stop sess-T "$T")"
+check "TRIAGE GATE: a DIRECT record covering the diff -> silent, exit 0" \
+  "$([ "$RC" = "0" ] && [ -z "$OUT" ] && echo 1 || echo 0)"
+
+# A directory-suffixed declaration covers what is under it.
+T2="$WORK/projT2"; mkproj_gate "$T2"
+printf 'print("changed")\n' >>"$T2/scripts/app.py"
+record "$T2" r1 sess-T2 FASTPATH_ELIGIBLE "" "scripts/"
+run_hook "$(stdin_json Stop sess-T2 "$T2")"
+check "TRIAGE GATE: a 'scripts/' declaration covers scripts/app.py" \
+  "$([ "$RC" = "0" ] && [ -z "$OUT" ] && echo 1 || echo 0)"
+
+# --- a record that exists but does NOT declare the changed path -------------
+# THE HEADLINE CASE. Existence is not coverage: one triage of "change the
+# README" must not license a later edit to this very hook in the same session.
+U="$WORK/projU"; mkproj_gate "$U"
+printf 'print("changed")\n' >>"$U/scripts/app.py"
+record "$U" r1 sess-U FASTPATH_ELIGIBLE "" "README.md"
+run_hook "$(stdin_json Stop sess-U "$U")"
+check "TRIAGE GATE: a record whose declared_paths EXCLUDE the diff does NOT exempt it" \
+  "$(is_block "$OUT" && echo 1 || echo 0)"
+
+# A bare directory name is not a prefix declaration — widening a declared set by
+# accident is the one direction this must never fail in.
+U2="$WORK/projU2"; mkproj_gate "$U2"
+printf 'print("changed")\n' >>"$U2/scripts/app.py"
+record "$U2" r1 sess-U2 FASTPATH_ELIGIBLE "" "scripts"
+run_hook "$(stdin_json Stop sess-U2 "$U2")"
+check "TRIAGE GATE: a bare 'scripts' does NOT silently cover scripts/app.py" \
+  "$(is_block "$OUT" && echo 1 || echo 0)"
+
+# --- session isolation: another session's record is not this session's cover -
+V="$WORK/projV"; mkproj_gate "$V"
+printf 'print("changed")\n' >>"$V/scripts/app.py"
+record "$V" r1 sess-OTHER FASTPATH_ELIGIBLE "" "scripts/app.py"
+run_hook "$(stdin_json Stop sess-V "$V")"
+check "TRIAGE GATE: a covering record from ANOTHER session does not exempt" \
+  "$(is_block "$OUT" && echo 1 || echo 0)"
+
+# --- SCOPED / FULL need a run directory, not just a record ------------------
+W="$WORK/projW"; mkproj_gate "$W"
+printf 'print("changed")\n' >>"$W/scripts/app.py"
+record "$W" r1 sess-W SCOPED_PIPELINE 2026-09-01-run "scripts/app.py"
+run_hook "$(stdin_json Stop sess-W "$W")"
+check "TRIAGE GATE: a SCOPED record with NO run directory is an intention, not a cover" \
+  "$(is_block "$OUT" && echo 1 || echo 0)"
+rm -f "$(triage_marker "$W" sess-W)"
+mkdir -p "$W/docs/superpowers/execution/2026-09-01-run"
+printf '%s\n' '{"phase":"DISPATCHED"}' >"$W/docs/superpowers/execution/2026-09-01-run/state.json"
+run_hook "$(stdin_json Stop sess-W "$W")"
+check "TRIAGE GATE: the same SCOPED record WITH its run directory does exempt" \
+  "$([ "$RC" = "0" ] && [ -z "$OUT" ] && echo 1 || echo 0)"
+
+# --- the pipeline's own paper trail is never 'changed source' ---------------
+X="$WORK/projX"; mkproj_gate "$X"
+mkdir -p "$X/docs/superpowers/pre-eval"
+printf '%s\n' '{}' >"$X/docs/superpowers/pre-eval/scratch.json"
+run_hook "$(stdin_json Stop sess-X "$X")"
+check "TRIAGE GATE: a change confined to docs/superpowers/** is not 'changed'" \
+  "$([ "$RC" = "0" ] && [ -z "$OUT" ] && echo 1 || echo 0)"
+
+# --- a malformed record is not an exemption ---------------------------------
+Y="$WORK/projY"; mkproj_gate "$Y"
+printf 'print("changed")\n' >>"$Y/scripts/app.py"
+mkdir -p "$Y/docs/superpowers/pre-eval"
+printf 'NOT JSON {{{\n' >"$Y/docs/superpowers/pre-eval/broken.json"
+run_hook "$(stdin_json Stop sess-Y "$Y")"
+check "TRIAGE GATE: an unreadable record set -> fail OPEN, exit 0, no block" \
+  "$([ "$RC" = "0" ] && [ -z "$OUT" ] && echo 1 || echo 0)"
+check "TRIAGE GATE: ...and it was RECORDED, not passed silently" \
+  "$([ -s "$(triage_incomplete "$Y" sess-Y)" ] && echo 1 || echo 0)"
+check "TRIAGE GATE: an incomplete check does NOT burn the once-per-session marker" \
+  "$([ ! -e "$(triage_marker "$Y" sess-Y)" ] && echo 1 || echo 0)"
+
+# --- THE BOUNDED CHECK -------------------------------------------------------
+# All `Stop` hooks share a 1.5s budget, and a `git` that overruns it is a SILENT
+# no-op — the dead-guard shape this project has already shipped once. A real slow
+# `git` on PATH proves the bound exists, that the hook returns promptly, and that
+# the overrun is written down rather than looking like a clean pass.
+Z="$WORK/projZ"; mkproj_gate "$Z"
+printf 'print("changed")\n' >>"$Z/scripts/app.py"
+SLOWBIN="$WORK/slowbin"; mkdir -p "$SLOWBIN"
+REAL_GIT="$(command -v git)"
+{ printf '#!/bin/sh\n'; printf 'sleep 5\n'; printf 'exec %s "$@"\n' "$REAL_GIT"; } >"$SLOWBIN/git"
+chmod +x "$SLOWBIN/git"
+t0="$(date +%s)"
+run_hook "$(stdin_json Stop sess-Z "$Z")" \
+  "PATH=$SLOWBIN:$PATH" "COMPOUND_V_TRIAGE_GATE_BUDGET_MS=200"
+t1="$(date +%s)"
+check "BOUNDED CHECK: a slow git -> exit 0 and NO block" \
+  "$([ "$RC" = "0" ] && [ -z "$OUT" ] && echo 1 || echo 0)"
+check "BOUNDED CHECK: the hook returned well inside the shared 1.5s budget ($((t1 - t0))s, not 5s)" \
+  "$([ "$((t1 - t0))" -le 2 ] && echo 1 || echo 0)"
+check "BOUNDED CHECK: the overrun was RECORDED, not passed silently" \
+  "$(grep -q 'triage-gate-incomplete' "$(triage_incomplete "$Z" sess-Z)" 2>/dev/null && echo 1 || echo 0)"
+check "BOUNDED CHECK: the recorded line names the budget it could not meet" \
+  "$(grep -q '100ms' "$(triage_incomplete "$Z" sess-Z)" 2>/dev/null && echo 1 || echo 0)"
+check "BOUNDED CHECK: an unfinished check does NOT set the once-per-session marker" \
+  "$([ ! -e "$(triage_marker "$Z" sess-Z)" ] && echo 1 || echo 0)"
+# ...and the very next Stop, with a healthy git, still gets its one block.
+run_hook "$(stdin_json Stop sess-Z "$Z")"
+check "BOUNDED CHECK: the next turn retries and blocks (the gate was not consumed)" \
+  "$(is_block "$OUT" && echo 1 || echo 0)"
+
+# --- PRECEDENCE -------------------------------------------------------------
+# One event, one response. The goal rule outranks both corrections; between the
+# two corrections the triage gate goes first, because `/v:triage` is the first
+# step of the correction the bypass rule asks for.
+AA="$WORK/projAA"; mkproj_gate "$AA"
+printf '%s\n' '{"enforcement": {"triage_gate": true, "pipeline_bypass": true}}' \
+  >"$AA/.claude/compound-v.json"
+printf 'print("changed")\n' >>"$AA/scripts/app.py"
+run_hook "$(stdin_json Stop sess-AA "$AA")"
+check "PRECEDENCE: triage gate + bypass rule both eligible -> exactly ONE response" \
+  "$([ "$(json_docs "$OUT")" = "1" ] && echo 1 || echo 0)"
+check "PRECEDENCE: the TRIAGE GATE wins over the bypass rule" \
+  "$(printf '%s' "$OUT" | jq -r '.reason' 2>/dev/null | grep -q 'no triage record covers' && echo 1 || echo 0)"
+check "PRECEDENCE: the bypass rule's marker was NOT set (one state update)" \
+  "$([ ! -e "$HOOK_STORE/enforce-$(printf '%s|%s' "$(cd "$AA" && pwd -P)" sess-AA | sha256_of)" ] && echo 1 || echo 0)"
+
+AB="$WORK/projAB"; mkproj_gate "$AB"
+printf 'print("changed")\n' >>"$AB/scripts/app.py"
+arm "$AB" sess-AB 5
+run_hook "$(stdin_json Stop sess-AB "$AB")"
+check "PRECEDENCE: the GOAL rule still outranks the triage gate" \
+  "$(printf '%s' "$OUT" | jq -r '.reason' 2>/dev/null | grep -q 'epic goal is armed' && echo 1 || echo 0)"
+check "PRECEDENCE: the goal rule blocking left the triage marker unset" \
+  "$([ ! -e "$(triage_marker "$AB" sess-AB)" ] && echo 1 || echo 0)"
+
+# ---------------------------------------------------------------------------
+# 14. PRECEDENCE — the goal rule and the bypass rule on one Stop
 # ---------------------------------------------------------------------------
 Q="$WORK/projQ"; mkproj "$Q"
 printf '%s\n' '{"enforcement": {"pipeline_bypass": true}}' >"$Q/.claude/compound-v.json"
@@ -433,7 +636,7 @@ check "PRECEDENCE: exactly ONE state update — the enforcement marker was NOT s
   "$([ "$before_markers" = "$after_markers" ] && echo 1 || echo 0)"
 
 # ---------------------------------------------------------------------------
-# 14. Fail-open is MECHANICAL — both independent mechanisms
+# 15. Fail-open is MECHANICAL — both independent mechanisms
 # ---------------------------------------------------------------------------
 # (a) the registration in hooks.json carries `|| true`
 reg="$(jq -r '.hooks.Stop[]?.hooks[]?.command // empty' "$REPO/hooks/hooks.json" 2>/dev/null \
@@ -445,8 +648,9 @@ check "REGISTRATION: Stop carries NO matcher (it is not a tool event)" \
   "$(jq -e '[.hooks.Stop[]? | has("matcher")] | any | not' "$REPO/hooks/hooks.json" >/dev/null 2>&1 && echo 1 || echo 0)"
 
 # (a) proven: a DELIBERATELY BROKEN script still yields 0 through that
-#     registration. A syntax error is fatal BEFORE any trap can run — which is
-#     exactly why mechanism (a) has to exist independently of mechanism (b).
+#     registration. A script whose FIRST command will not parse never reaches its
+#     own `trap` line, so mechanism (b) is not installed yet — which is exactly
+#     why mechanism (a) has to exist independently of it.
 broken="$WORK/broken.sh"
 printf '#!/usr/bin/env bash\nthis is ( not valid bash\n' >"$broken"
 chmod +x "$broken"
@@ -458,6 +662,78 @@ check "MECHANISM (a): a syntactically broken hook DOES exit non-zero on its own 
   "$([ "$raw_rc" != "0" ] && echo 1 || echo 0)"
 check "MECHANISM (a): the '|| true' registration turns that into exit 0" \
   "$([ "$wrapped_rc" = "0" ] && echo 1 || echo 0)"
+
+# EXIT 2 IS THE BLOCKING CODE, and bash uses it for a PARSE ERROR. That is the
+# whole reason mechanism (a) has to exist independently of mechanism (b): a
+# script that fails to parse never runs a line of itself, so its own EXIT trap
+# is not registered and cannot save it. Three shapes, all of them ordinary
+# editing accidents, are probed here rather than asserted.
+i=0
+for shape in 'if true; then\n  echo hi\nfi\nfi\n' \
+             'echo "unterminated\n' \
+             'f() {\n  echo hi\n'; do
+  i=$((i + 1))
+  pe="$WORK/parse-error-$i.sh"
+  { printf '#!/usr/bin/env bash\n'; printf "$shape"; } >"$pe"
+  chmod +x "$pe"
+  "$HOOK_BASH" "$pe" </dev/null >/dev/null 2>&1
+  pe_raw=$?
+  sh -c "'$HOOK_BASH' '$pe' || true" </dev/null >/dev/null 2>&1
+  pe_wrapped=$?
+  check "PARSE ERROR shape $i: the raw script exits EXACTLY 2 — the blocking code (got $pe_raw)" \
+    "$([ "$pe_raw" = "2" ] && echo 1 || echo 0)"
+  check "PARSE ERROR shape $i: the '|| true' registration still fails open (exit 0)" \
+    "$([ "$pe_wrapped" = "0" ] && echo 1 || echo 0)"
+done
+
+# WHERE the parse error sits decides which mechanism saves the session, and that
+# is sharper than "a syntax error is fatal before any trap can run". Probed, not
+# assumed: bash parses a script INCREMENTALLY, one complete command at a time, so
+# a malformed command is only reached when execution gets to it.
+#
+#   * error ABOVE `trap 'exit 0' EXIT` -> the trap was never registered -> exit 2,
+#     and ONLY the `|| true` registration stands between that and a wedged turn.
+#   * error BELOW it -> the trap is already installed and forces 0.
+#
+# Both are asserted, because the second is the one that would quietly rot: if a
+# future edit ever moves that trap down the file, mechanism (b)'s reach shrinks
+# and this test is what says so.
+break_hook_at() { # <dst> <'above'|'below'>
+  python3 - "$HOOK" "$1" "$2" <<'INNERPY'
+import sys
+src, dst, where = sys.argv[1], sys.argv[2], sys.argv[3]
+text = open(src).read()
+anchor = "trap 'exit 0' EXIT\n"
+assert text.count(anchor) == 1, "trap anchor not found exactly once in the hook"
+text = text.replace(anchor, "fi\n" + anchor if where == "above" else anchor + "fi\n", 1)
+open(dst, "w").write(text)
+INNERPY
+  chmod +x "$1"
+}
+
+stdin_json Stop sess-A "$A" >"$WORK/stdin.json"
+
+hook_above="$PLUGIN/hooks/broken-above.sh"
+break_hook_at "$hook_above" above
+ba_out="$(env TMPDIR="$STORE_BASE" "$HOOK_BASH" "$hook_above" <"$WORK/stdin.json" 2>/dev/null)"
+ba_raw=$?
+env TMPDIR="$STORE_BASE" sh -c "'$HOOK_BASH' '$hook_above' || true" <"$WORK/stdin.json" >/dev/null 2>&1
+ba_wrapped=$?
+check "PARSE ERROR in THIS hook, ABOVE the trap: exits EXACTLY 2 - the blocking code (got $ba_raw)" \
+  "$([ "$ba_raw" = "2" ] && echo 1 || echo 0)"
+check "PARSE ERROR in THIS hook, ABOVE the trap: emits nothing on stdout" \
+  "$([ -z "$ba_out" ] && echo 1 || echo 0)"
+check "PARSE ERROR in THIS hook, ABOVE the trap: ONLY the '|| true' registration saves it" \
+  "$([ "$ba_wrapped" = "0" ] && echo 1 || echo 0)"
+
+hook_below="$PLUGIN/hooks/broken-below.sh"
+break_hook_at "$hook_below" below
+bb_out="$(env TMPDIR="$STORE_BASE" "$HOOK_BASH" "$hook_below" <"$WORK/stdin.json" 2>/dev/null)"
+bb_raw=$?
+check "PARSE ERROR in THIS hook, BELOW the trap: the already-installed trap forces 0 (got $bb_raw)" \
+  "$([ "$bb_raw" = "0" ] && echo 1 || echo 0)"
+check "PARSE ERROR in THIS hook, BELOW the trap: still emits nothing on stdout" \
+  "$([ -z "$bb_out" ] && echo 1 || echo 0)"
 
 # (b) proven: a runtime abort INSIDE hook_main emits nothing and exits 0
 injected="$PLUGIN/hooks/injected.sh"

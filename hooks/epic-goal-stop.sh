@@ -19,6 +19,17 @@
 #         forces status 0 on every path, plus all fallible logic confined to
 #         `hook_main`, run inside a command substitution whose output is
 #         DISCARDED unless it returned 0.  A half-finished run emits nothing.
+#   WHY (a) IS NOT REDUNDANT, stated precisely because the imprecise version is
+#   easy to write.  A bash PARSE ERROR exits 2 — which is exactly the blocking
+#   code — and bash parses a script INCREMENTALLY, so a malformed command only
+#   bites when execution reaches it.  Probed on bash 3.2: a parse error BELOW the
+#   `trap` line is caught by mechanism (b), because the trap is already
+#   installed; a parse error ABOVE it, or anything that stops this file being
+#   executed at all, exits 2 with no trap registered, and ONLY the `|| true`
+#   registration stands between that and a wedged session.  Everything above the
+#   trap is therefore comments on purpose.  Both directions are asserted in
+#   tests/test-epic-goal-stop.sh, so the day someone moves that trap down the
+#   file, the suite says so.
 #   Deliberately NO `set -e` and NO `set -u`.  `set -u` in particular exits the
 #   whole shell on an unbound variable — `|| true` around a function call does
 #   not save you from it.  Every expansion below is explicitly defaulted
@@ -47,10 +58,51 @@
 #      any of: not armed / session mismatch / goal met / epic terminal /
 #      counter exhausted / state unreadable / store lost / persist failed
 #                                                    ... fall through, open
-#   5. ENFORCEMENT — only if the goal rule did not block, and only when
+#   5. TRIAGE GATE — only if the goal rule did not block, and only when
+#      `.enforcement.triage_gate == true` in .claude/compound-v.json:
+#      non-exempt files changed && NO pre-eval record COVERS that diff
+#        && this session's own marker unset ........ set marker, BLOCK
+#      a bounded check that could not finish ....... RECORD it, then open
+#   6. ENFORCEMENT — only if neither rule above blocked, and only when
 #      `.enforcement.pipeline_bypass == true` in .claude/compound-v.json:
 #      source changed && no run record && marker unset ... set marker, BLOCK
-#   6. otherwise ................................... exit 0, silent
+#   7. otherwise ................................... exit 0, silent
+#
+# WHY THE TRIAGE GATE SITS ABOVE THE BYPASS RULE.  Both are "you changed code
+# without X", both are off by default, and only one response per event is
+# permitted.  The triage gate is the more specific diagnosis, and its correction
+# — `/v:triage` — is the first step of the correction the bypass rule asks for.
+# Firing the general one first would send the reader to a pipeline that now
+# refuses to run without the very record the triage gate is asking them to make.
+# The bypass rule keeps its own relative position, so absorbing v2.18 changes
+# nothing about how that rule already behaved.
+#
+# COVERAGE, NOT MERE EXISTENCE.  `/v:triage` COMMITS its record, so the record is
+# never in the dirty changed-set — its presence has to be read off disk, and a
+# matching `session_id` alone is not enough.  A record exempts a path only when
+# it is the SAME SESSION and that path lies inside the record's own
+# `declared_paths`.  Otherwise one triage of "change the README" would exempt a
+# later, unrelated edit to this very file in the same session.  A record that is
+# not DIRECT additionally has to be BOUND to a run: `run_id` set, and
+# docs/superpowers/execution/<run_id>/state.json present.  SCOPED and FULL are
+# promises to route through the pipeline; the run directory is the evidence that
+# the promise was kept, and without it the record is an intention, not a cover.
+#
+# THE 1.5 SECOND BUDGET IS SHARED BY EVERY `Stop` HOOK, AND A TIMED-OUT `git` IS
+# A SILENT NO-OP — the dead-guard shape this project has already shipped once
+# (v2.14.1: a link guard that could not fail, 25 of 29 selftests never running).
+# So each of this rule's two external calls runs under `_bounded_capture`, and a
+# call that does not finish is RECORDED — `$TMPDIR/compound-v-stop-hook/
+# triage-incomplete-<key>` plus a stderr line — before the rule fails open.  The
+# gate still cannot block on evidence it does not have; what it must not do is
+# look identical to a clean pass.  Budget: COMPOUND_V_TRIAGE_GATE_BUDGET_MS,
+# default 800, split evenly between the two calls.
+#
+# WHAT THE TRIAGE GATE DOES NOT SEE, SAID PLAINLY.  It reads the WORKING TREE
+# against HEAD.  Work already committed in this session is invisible to it, as it
+# is to the bypass rule beside it.  This is a nudge at the end of a turn, not a
+# proof that every change in a session was triaged; the mechanical authority is
+# the validator's `--require-triage` on the dispatch path.
 #
 # STORE LOSS, AND THE ONE CONSERVATIVE EDGE IT COSTS.  A temp sweep or a reboot
 # can remove the store mid-arm.  Recreating the counter at zero would silently
@@ -326,8 +378,343 @@ by itself; to stop sooner, disarm with:
   return 0
 }
 
-# --- rule 2: pipeline-bypass enforcement (OFF by default) -------------------
-# Runs ONLY when the goal rule did not block.  Returns 0 having printed a block,
+# --- bounded execution -------------------------------------------------------
+# Every `Stop` hook on the machine shares ONE 1.5 second budget, and an external
+# command that runs past it is cut off with no trace — a guard that cannot finish
+# looks exactly like a guard that passed.  So the triage gate never calls an
+# external command directly; it calls it through here.
+#
+# This is a poll rather than a wrapper around `timeout(1)`, because there is no
+# `timeout` on a stock macOS box — probed on the maintainer's machine: neither
+# `timeout` nor `gtimeout` is on PATH.  The child writes its exit status to a
+# sentinel file as its LAST act and the parent polls for that file, never for the
+# pid: a finished-but-unreaped child still answers `kill -0` and would read as
+# "still running".
+#
+# Killing the poll's child does NOT reliably kill the command inside it — the
+# subshell dies, the `git` under it can outlive us — so every call gets its OWN
+# output file and unlinks it on the way out.  A survivor keeps writing into an
+# unlinked inode that nothing will ever read; sharing one filename would instead
+# let a timed-out call from a previous turn scribble into the next turn's answer.
+#
+# _bounded_capture <budget_ms> <path_prefix> <cmd...>
+#   returns 0  → the command completed; its own exit status is in $_BC_RC and its
+#                stdout is at $_BC_OUT, which the CALLER unlinks after reading
+#   returns 1  → the budget expired; the child was killed; nothing survives
+#   returns 2  → could not run bounded at all (no `sleep`); nothing survives
+_BC_RC=""
+_BC_OUT=""
+_BC_N=0
+_bounded_capture() {
+  local ms="$1" pfx="$2"
+  shift 2
+  _BC_RC=""
+  _BC_OUT=""
+  command -v sleep >/dev/null 2>&1 || return 2
+
+  _BC_N=$((_BC_N + 1))
+  local out="${pfx}.$$.${_BC_N}" rcf waited=0 step=25 pid rc
+  rcf="${out}.rc"
+  rm -f "$out" "$rcf" 2>/dev/null
+  : >"$out" 2>/dev/null || return 2
+
+  # Job control stays OFF (no `set -m`), so bash prints no "Terminated" notice
+  # for the child killed below — a timeout says exactly one thing on stderr, and
+  # it is the line _record_triage_incomplete writes.
+  { "$@" >"$out" 2>/dev/null; printf '%s' "$?" >"$rcf" 2>/dev/null; } &
+  pid=$!
+
+  while [ "$waited" -lt "$ms" ]; do
+    # `-s`, not `-e`: the redirection creates the file before printf fills it.
+    if [ -s "$rcf" ]; then
+      rc="$(cat "$rcf" 2>/dev/null)"
+      _is_uint "$rc" || rc=1
+      rm -f "$rcf" 2>/dev/null
+      _BC_RC="$rc"
+      _BC_OUT="$out"
+      return 0
+    fi
+    if ! sleep 0.025 2>/dev/null; then
+      kill -TERM "$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      rm -f "$out" "$rcf" 2>/dev/null
+      return 2
+    fi
+    waited=$((waited + step))
+  done
+
+  kill -TERM "$pid" 2>/dev/null
+  wait "$pid" 2>/dev/null
+  rm -f "$out" "$rcf" 2>/dev/null
+  return 1
+}
+
+# --- rule 2: the triage gate (OFF by default) --------------------------------
+# Fires when the turn is ending, non-exempt files have changed, and NO pre-eval
+# record covers that diff.  Runs ONLY when the goal rule did not block.  Returns
+# 0 having printed a block, or non-zero having printed nothing.
+
+# One jq pass over every candidate record, emitting `tier<US>run_id<US>path` for
+# each declared path of each record belonging to THIS session.  The separator is
+# U+001F, not a tab: a tab is an IFS-WHITESPACE character, so bash `read` folds a
+# run of them into ONE delimiter and an empty `run_id` would silently shift the
+# path into the run_id slot -- every record would then cover nothing.
+#
+# `tier` is read from `.tier` when a producer supplies it, and otherwise mapped
+# from `.decision`, which is the field the record schema actually carries today
+# (FASTPATH_ELIGIBLE / SCOPED_PIPELINE / FULL_PIPELINE == DIRECT / SCOPED / FULL,
+# spec §A1).  Anything unrecognised maps to "" and is therefore treated as
+# non-DIRECT — the direction that demands MORE evidence, not less.
+#
+# A declared path containing the separator or a line break is DROPPED rather than
+# escaped: this output is read back line by line, and a re-escaped path no longer
+# equals the path git reports.  Dropping narrows the declared set; keeping it
+# would widen it, and only one of those two mistakes is safe.
+# shellcheck disable=SC2016  # $tier/$rid are jq variables, not shell ones.
+_TRIAGE_JQ='
+[ .[]
+  | select(type == "object")
+  | select(((.session_id // "") | tostring) == $sid)
+  | (if ((.tier // "") | tostring | length) > 0
+     then ((.tier | tostring) | ascii_upcase)
+     else ((.decision // "") | tostring
+           | if   . == "FASTPATH_ELIGIBLE" then "DIRECT"
+             elif . == "SCOPED_PIPELINE"   then "SCOPED"
+             elif . == "FULL_PIPELINE"     then "FULL"
+             else "" end)
+     end) as $tier
+  | (((.run_id // "") | tostring)) as $rid
+  | (.declared_paths // [])
+  | select(type == "array")
+  | .[]
+  | select(type == "string")
+  | select(length > 0)
+  | select((test("[\u001f\n\r]")) | not)
+  | ([$tier, $rid, .] | join("\u001f"))
+] | .[]
+'
+
+# Set by _triage_rule for the two helpers below, so neither has to be handed a
+# multi-kilobyte string on every call.
+_TR_PROJ=""
+_TR_RECS=""
+
+# A bounded check that quietly does nothing is the exact failure this rule was
+# written around, so incompletion is WRITTEN DOWN: appended to a store file and
+# said once on stderr.  It is deliberately NOT the once-per-session marker — no
+# block happened, so the next turn gets to try again.
+_record_triage_incomplete() {
+  local f="$1" why="$2" ts
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" || ts=""
+  [ -n "$ts" ] || ts="unknown-time"
+  printf '%s\ttriage-gate-incomplete\t%s\n' "$ts" "$why" >>"$f" 2>/dev/null
+  _log "triage gate INCOMPLETE — ${why}. Failing open and recording it in ${f}; a bounded check that could not run is not a pass."
+}
+
+# _path_covered <changed_path> <declared_entry>
+# Exact match, a directory prefix (the declared entry ends in `/`), or a glob
+# (the declared entry contains `*`).  A bare `hooks` does NOT cover `hooks/x.sh`
+# — the record has to say `hooks/` or `hooks/**`.  Widening a declared set by
+# accident is the one direction this must not fail in.
+_path_covered() {
+  local p="$1" d="$2"
+  [ -n "$d" ] || return 1
+  [ "$p" = "$d" ] && return 0
+  case "$d" in
+    */) case "$p" in "$d"*) return 0 ;; esac ;;
+  esac
+  # shellcheck disable=SC2254  # $d is unquoted ON PURPOSE: this is the one place
+  # a declared entry is a pattern rather than a literal.
+  case "$d" in
+    *\**) case "$p" in $d) return 0 ;; esac ;;
+  esac
+  return 1
+}
+
+# _covered_by_records <changed_path> — 0 when some record in $_TR_RECS covers it.
+_covered_by_records() {
+  local p="$1" t rid d oldifs="$IFS" found=1
+  while IFS=$'\037' read -r t rid d; do
+    [ -n "$d" ] || continue
+    if [ "$t" != "DIRECT" ]; then
+      # SCOPED / FULL / unrecognised: an intention, not a cover, until the run
+      # directory it promised actually exists.  `run_id` is joined into a path,
+      # so it is constrained to one harmless segment first.
+      case "$rid" in '' | */* | *..*) continue ;; esac
+      [ -f "${_TR_PROJ}/docs/superpowers/execution/${rid}/state.json" ] || continue
+    fi
+    if _path_covered "$p" "$d"; then found=0; break; fi
+  done <<EOF
+${_TR_RECS}
+EOF
+  IFS="$oldifs"
+  return "$found"
+}
+
+_triage_rule() {
+  local proj="$1" sid="$2"
+  _TR_PROJ="$proj"
+  _TR_RECS=""
+
+  local cfg="${proj}/.claude/compound-v.json"
+  [ -f "$cfg" ] || return 1
+  local on
+  on="$(jq -r '.enforcement.triage_gate // false' "$cfg" 2>/dev/null)" || on="false"
+  # OFF BY DEFAULT, and the default is the safe one: a false positive here does
+  # not fail a build, it holds a stranger's turn open.
+  [ "$on" = "true" ] || return 1
+
+  command -v git >/dev/null 2>&1 || return 1
+
+  local store key marker inc
+  store="$(_store_dir)"
+  key="$(_digest "${proj}|${sid}")" || return 1
+  [ -n "$key" ] || return 1
+  marker="${store}/triage-${key}"
+  inc="${store}/triage-incomplete-${key}"
+  # At most once per session, on THIS rule's own marker.  Never on
+  # `stop_hook_active`: that is a consecutive-block counter, not a session flag,
+  # and CLAUDE_CODE_STOP_HOOK_BLOCK_CAP (default 8) lets the harness override the
+  # hook outright — neither is a bound we get to own.
+  [ -e "$marker" ] && return 1
+
+  mkdir -p "$store" 2>/dev/null || return 1
+
+  local budget half
+  budget="${COMPOUND_V_TRIAGE_GATE_BUDGET_MS:-800}"
+  _is_uint "$budget" && [ "$budget" -ge 100 ] && [ "$budget" -le 5000 ] || budget=800
+  half=$((budget / 2))
+
+  # A PREFIX, not a filename: _bounded_capture appends a per-call suffix and
+  # unlinks the file itself on every path, so nothing accumulates in the store
+  # and no two calls can ever read each other's output.
+  local tmpo="${store}/triage-${key}.work"
+
+  # ---- the changed set, bounded --------------------------------------------
+  # Tracked modifications UNIONED with untracked-but-not-ignored files, in ONE
+  # git process rather than two, because the budget is shared.  A brand new
+  # source file is the commonest shape of untriaged work, and git has already
+  # dropped everything .gitignore covers, so this is "in the repo and not
+  # deliberately ignored" rather than "already in the index".
+  local rc chg=""
+  _bounded_capture "$half" "$tmpo" \
+    git -C "$proj" -c core.quotePath=false \
+      status --porcelain --untracked-files=all --no-renames
+  rc=$?
+  if [ "$rc" -eq 1 ]; then
+    _record_triage_incomplete "$inc" "git status did not finish within ${half}ms"
+    return 1
+  fi
+  if [ "$rc" -ne 0 ] || [ "${_BC_RC:-1}" != "0" ]; then
+    _record_triage_incomplete "$inc" "git status could not run (bounded rc=${rc}, git rc=${_BC_RC:-?})"
+    return 1
+  fi
+  # porcelain v1: two status columns, a space, then the path.  `--no-renames`
+  # keeps a rename from arriving as `old -> new` in one field, and
+  # `core.quotePath=false` stops a non-ASCII path arriving octal-escaped — an
+  # escaped path would match no declared entry and read as uncovered.
+  chg="$(sed -e 's/^...//' -e 's/^"\(.*\)"$/\1/' "$_BC_OUT" 2>/dev/null | sed '/^$/d' | sort -u)" || chg=""
+  rm -f "$_BC_OUT" 2>/dev/null
+
+  # ---- the exempt set ------------------------------------------------------
+  # The pipeline's own paper trail — which is where the triage record itself
+  # lands — and this hook's store when TMPDIR happens to point inside the repo.
+  local store_rel="" changed
+  case "$store" in
+    "$proj"/*) store_rel="${store#"$proj"/}" ;;
+  esac
+  changed="$(printf '%s\n' "$chg" | grep -v '^docs/superpowers/' 2>/dev/null || true)"
+  if [ -n "$store_rel" ]; then
+    changed="$(printf '%s\n' "$changed" | grep -v "^${store_rel}/" 2>/dev/null || true)"
+  fi
+  changed="$(printf '%s\n' "$changed" | sed '/^$/d')" || changed=""
+  [ -n "$changed" ] || return 1
+
+  # ---- the records, bounded ------------------------------------------------
+  local pdir="${proj}/docs/superpowers/pre-eval"
+  if [ -d "$pdir" ]; then
+    local files n oldifs
+    # `find`, not a glob: an unmatched glob would reach jq as a literal filename.
+    files="$(find "$pdir" -maxdepth 1 -type f -name '*.json' 2>/dev/null | sort)" || files=""
+    files="$(printf '%s\n' "$files" | sed '/^$/d')" || files=""
+    if [ -n "$files" ]; then
+      n="$(printf '%s\n' "$files" | wc -l | tr -d ' ')" || n=0
+      if [ "${n:-0}" -gt 500 ]; then
+        _record_triage_incomplete "$inc" "${n} pre-eval records is more than can be scanned within ${half}ms"
+        return 1
+      fi
+      oldifs="$IFS"
+      IFS=$'\n'
+      # shellcheck disable=SC2086
+      set -- $files
+      IFS="$oldifs"
+      _bounded_capture "$half" "$tmpo" jq -r -s --arg sid "$sid" "$_TRIAGE_JQ" "$@"
+      rc=$?
+      if [ "$rc" -eq 1 ]; then
+        _record_triage_incomplete "$inc" "the pre-eval record scan did not finish within ${half}ms"
+        return 1
+      fi
+      if [ "$rc" -ne 0 ] || [ "${_BC_RC:-1}" != "0" ]; then
+        _record_triage_incomplete "$inc" "the pre-eval record scan failed (bounded rc=${rc}, jq rc=${_BC_RC:-?}) — a record we could not read is not an exemption"
+        return 1
+      fi
+      _TR_RECS="$(cat "$_BC_OUT" 2>/dev/null)" || _TR_RECS=""
+      rm -f "$_BC_OUT" 2>/dev/null
+    fi
+  fi
+
+  # ---- coverage ------------------------------------------------------------
+  local p uncovered="" nunc=0
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    if ! _covered_by_records "$p"; then
+      nunc=$((nunc + 1))
+      if [ "$nunc" -le 8 ]; then uncovered="${uncovered}
+  ${p}"; fi
+    fi
+  done <<EOF
+${changed}
+EOF
+  [ "$nunc" -gt 0 ] || return 1
+  if [ "$nunc" -gt 8 ]; then uncovered="${uncovered}
+  … and $((nunc - 8)) more"; fi
+
+  # Marker BEFORE the block is emitted: a correction we could not bound is a
+  # correction we do not make.
+  : >"$marker" 2>/dev/null || return 1
+
+  _log "triage gate: ${nunc} changed path(s) not covered by any pre-eval record for session ${sid}"
+
+  local reason
+  reason="Compound V — this turn changed files that no triage record covers.
+
+  uncovered changed paths (${nunc}):${uncovered}
+
+A pre-eval record covers a path only when it was written for THIS session and
+that path lies inside its own declared_paths — and, for a SCOPED or FULL record,
+only when the run directory it promised actually exists. Existence is not
+coverage: a triage of one file must not license an edit to another.
+
+Before finishing, run:
+  /v:triage <what this change is>
+
+It classifies the change, writes and commits the record, and prints the tier
+that decided it. DIRECT means implement in place and run the floor; SCOPED and
+FULL route through /v:orchestrate and /v:dispatch.
+
+This gate reads the working tree against HEAD, so it cannot see work already
+committed this turn. It fires at most once per session and is advisory: say so
+and continue if triage genuinely does not apply here. Turn it off by setting
+enforcement.triage_gate to false in .claude/compound-v.json."
+
+  jq -n --arg reason "$reason" \
+    --arg msg "Compound V: ${nunc} changed path(s) with no triage record covering them" \
+    '{decision: "block", reason: $reason, systemMessage: $msg}' 2>/dev/null || return 1
+  return 0
+}
+
+# --- rule 3: pipeline-bypass enforcement (OFF by default) -------------------
+# Runs ONLY when neither rule above blocked.  Returns 0 having printed a block,
 # or non-zero having printed nothing.
 _enforcement_rule() {
   local proj="$1" sid="$2"
@@ -455,11 +842,20 @@ hook_main() {
 
   # ---- PRECEDENCE ----------------------------------------------------------
   # The goal rule first.  If it blocked, it already made the one permitted state
-  # update and printed the one permitted response — the enforcement rule does
-  # NOT run.  A goal-driven continuation is the system working as intended; a
+  # update and printed the one permitted response — NEITHER correction rule
+  # runs.  A goal-driven continuation is the system working as intended; a
   # pipeline correction on the same turn would be noise, and two blocks on one
   # event is undefined behaviour.
   if _goal_rule "$proj" "$sid" "$sha"; then
+    return 0
+  fi
+
+  # Then the triage gate, then the older bypass rule.  Both are "you changed
+  # code without X", both are off by default, and only ONE response per event is
+  # permitted — so the more specific diagnosis goes first: `/v:triage` is the
+  # first step of the correction the bypass rule asks for, and the pipeline it
+  # points at now refuses to run without that record.
+  if _triage_rule "$proj" "$sid"; then
     return 0
   fi
 
