@@ -1,0 +1,9 @@
+{
+  "agents": {},
+  "manifest": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-02-v3.0.5-model-routing/manifest.yaml",
+  "run_id": "2026-09-02-v3.0.5-model-routing",
+  "worktrees": {
+    "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_fcc3a1f0-a9e-1": "exec-lane",
+    "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_fcc3a1f0-a9e-2": "judge-lane"
+  }
+}

@@ -2,11 +2,11 @@
 """
 Compound V model discovery — turn a backend's live model catalog into a tier map.
 
-The model broker routes by INTENT (tier ∈ deep/standard/light), resolving to a concrete
+The model broker routes by INTENT (tier ∈ frontier/deep/standard/light), resolving to a concrete
 model through a refreshable `models` block in .claude/compound-v.json
 (see compound-v-resolve-model.py). This script does the DISCOVERY half deterministically:
 it reads a backend's catalog (a plain list of model names, one per line) and PROPOSES a
-deep/standard/light assignment, so /v:models and /v:init can suggest a real, current map
+frontier/deep/standard/light assignment, so /v:models and /v:init can suggest a real, current map
 instead of a hand-curated one that rots when the provider ships new models.
 
 I/O is intentionally split: the CALLER fetches the catalog (e.g. `agy models </dev/null`)
@@ -19,6 +19,7 @@ Ranking (antigravity / Gemini-family default):
     reported under `available` and can be set explicitly, but are not auto-assigned.
   - A model name carries its effort in trailing parens, e.g. "Gemini 3.1 Pro (High)".
   - deep  = strongest series (Pro > Flash; higher version breaks ties) at its TOP effort.
+  - frontier = the same as deep for every external backend (no vendor rung above it).
   - light = weakest series at its LOWEST effort.
   - standard = the strong series at a LOWER effort if it has one (a capable model, cheaper);
     else the weak series at its top effort; else the median of the catalog.
@@ -114,8 +115,13 @@ def propose(catalog_lines, family="Gemini"):
         ordered = sorted(fam, key=lambda p: (p["strength"], p["version"], p["effort_rank"]))
         standard = ordered[len(ordered) // 2]["full"]
 
+    # `frontier` is the extreme seat (v3.0.5). For an external backend it is the
+    # SAME model as `deep`: no vendor here ships a rung above its own top model, and
+    # proposing a distinct one would be a fabricated route. Only `claude` genuinely
+    # separates them, and its map is native aliases, not a discovered catalog.
     return {"available": available,
-            "proposed": {"deep": deep, "standard": standard, "light": light},
+            "proposed": {"frontier": deep, "deep": deep,
+                         "standard": standard, "light": light},
             "note": note}
 
 
@@ -176,6 +182,10 @@ def _selftest():
     r3 = propose(cat3, family="Gemini")
     check("no-family note", "no 'Gemini'" in r3["note"])
     check("still proposes something", r3["proposed"] is not None)
+    check("proposal carries every tier the resolver knows",
+          set(r3["proposed"]) == {"frontier", "deep", "standard", "light"})
+    check("frontier mirrors deep for an external backend",
+          r3["proposed"]["frontier"] == r3["proposed"]["deep"])
 
     check("empty catalog -> None", propose([], "Gemini")["proposed"] is None)
 

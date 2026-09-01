@@ -100,11 +100,16 @@ def decide(failure_class, backend, attempts, total_retries, max_total_retries,
                    circuit_break=True)
 
     if failure_class == "context_length":
-        # Escalate to a bigger tier — UNLESS we are already at the deepest tier, in which
-        # case a bigger model does not exist and the job must be split (back to planning).
-        if current_tier == "deep":
-            return out("halt", "context too large for %s even at the deepest tier — split "
-                       "the job (back to planning); no bigger tier exists" % backend)
+        # Escalate to a bigger tier — UNLESS we are already at the top, in which case a
+        # bigger CONTEXT does not exist and the job must be split (back to planning).
+        # `frontier` (v3.0.5) is a stronger model, NOT a bigger context window: on the
+        # claude ladder Fable and Opus carry the same 1M window, so escalating a
+        # context_length failure from `deep` into `frontier` would buy nothing and would
+        # dress a fabricated remedy as a routing decision. Both halt.
+        if current_tier in ("deep", "frontier"):
+            return out("halt", "context too large for %s at tier %s — split the job (back "
+                       "to planning); no tier above it carries a bigger context window"
+                       % (backend, current_tier))
         return out("reroute", "context too large for %s at tier %s — escalate to a bigger "
                    "tier" % (backend, current_tier or "?"), escalate_tier=True)
 
@@ -159,6 +164,8 @@ def _selftest():
     check("ctx", d["action"], "reroute", d["escalate_tier"])
     d = decide("out_of_credits", "codex", 0, 0, 12, fallback_available=False)
     check("ooc-no-fallback", d["action"], "halt", d["circuit_break"])
+    d = decide("context_length", "codex", 0, 0, 12, current_tier="frontier")
+    check("ctx-frontier", d["action"], "halt", not d["escalate_tier"])
     d = decide("context_length", "codex", 0, 0, 12, current_tier="deep")
     check("ctx-deep", d["action"], "halt")
     d = decide("context_length", "codex", 0, 0, 12, current_tier="standard")
@@ -187,7 +194,7 @@ def main(argv):
                    help="seconds from the provider's Retry-After, if known")
     p.add_argument("--fallback-open", action="store_true",
                    help="set when the fallback backend is itself circuit-open/unavailable")
-    p.add_argument("--current-tier", choices=["deep", "standard", "light"],
+    p.add_argument("--current-tier", choices=["frontier", "deep", "standard", "light"],
                    help="the job's current tier (for context_length escalation)")
     p.add_argument("--no-jitter", action="store_true")
     p.add_argument("--selftest", action="store_true")

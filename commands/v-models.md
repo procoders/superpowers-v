@@ -1,11 +1,11 @@
 ---
-description: Refresh the Compound V tier→model map — discover the concrete models each backend (claude, codex, antigravity, cursor, devin, opencode) currently offers, show them, let you assign deep/standard/light, and write the result into .claude/compound-v.json so intent-based routing survives model churn without touching any call site.
+description: Refresh the Compound V tier→model map — discover the concrete models each backend (claude, codex, antigravity, cursor, devin, opencode) currently offers, show them, let you assign frontier/deep/standard/light, and write the result into .claude/compound-v.json so intent-based routing survives model churn without touching any call site.
 disable-model-invocation: true
 ---
 
 You are running **`/v:models`** — the Compound V model broker's **refresh
 surface**. Compound V routes work by **intent** (a stable `tier` vocabulary —
-`deep` / `standard` / `light`) instead of hardcoding model strings that rot every
+`frontier` / `deep` / `standard` / `light`) instead of hardcoding model strings that rot every
 time a provider ships a new model. The mapping from tier → concrete model lives in
 a **refreshable** `models` block in `.claude/compound-v.json`. This command
 discovers what each backend can run **right now**, lets you assign each tier, and
@@ -32,24 +32,25 @@ Read `.claude/compound-v.json` if it exists. Remember its current `models` block
 preserve any backend they don't refresh this run. The `models` block is **per-stance**
 — shape `{<stance>: {<backend>: {<tier>: model}}}`. If the file or its `models` key
 is absent, fall back to the built-in default (the resolver carries the same one). Only
-the `claude` rows differ across stances — `cost-aware.claude.standard` is `sonnet`,
-everywhere else `standard` Claude is `opus`:
+the `claude` rows differ across stances — `conservative.claude.standard` is `opus`,
+everywhere else `standard` Claude is `sonnet`; and `cost-aware.claude.frontier` caps at
+`opus` instead of reaching `fable`:
 
 ```jsonc
 "models": {
   "balanced": {
-    "claude":      { "deep": "opus",                  "standard": "opus",                  "light": "sonnet" },
-    "codex":       { "deep": "gpt-5.6-sol",            "standard": "gpt-5.6-terra",          "light": "gpt-5.6-luna" },
+    "claude":      { "frontier": "fable", "deep": "opus",  "standard": "sonnet",                "light": "sonnet" },
+    "codex":       { "frontier": "gpt-5.6-sol", "deep": "gpt-5.6-sol", "standard": "gpt-5.6-terra", "light": "gpt-5.6-luna" },
     "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" },
     "cursor":      { "deep": "auto",                  "standard": "auto",                  "light": "auto" }
   },
   "cost-aware": {
-    "claude":      { "deep": "opus",                  "standard": "sonnet",                "light": "sonnet" },
-    "codex":       { "deep": "gpt-5.6-sol",            "standard": "gpt-5.6-terra",          "light": "gpt-5.6-luna" },
+    "claude":      { "frontier": "opus",  "deep": "opus",  "standard": "sonnet",                "light": "sonnet" },
+    "codex":       { "frontier": "gpt-5.6-sol", "deep": "gpt-5.6-sol", "standard": "gpt-5.6-terra", "light": "gpt-5.6-luna" },
     "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" },
     "cursor":      { "deep": "auto",                  "standard": "auto",                  "light": "auto" }
   }
-  // conservative + claude-only mirror balanced
+  // claude-only mirrors balanced; conservative keeps standard on opus
 }
 ```
 
@@ -103,7 +104,7 @@ Antigravity (Gemini family) **does** have a discovery command, and it runs
 fix used for `agy --print`) and it returns the catalog in ~2s without a TTY. Pipe that
 catalog through [`scripts/compound-v-discover-models.py`](../scripts/compound-v-discover-models.py)
 (pure parse + rank — the CALLER fetches the catalog; the script never calls a backend)
-to get a real `proposed` deep/standard/light map plus the full `available` list:
+to get a real `proposed` frontier/deep/standard/light map plus the full `available` list:
 
 ```bash
 command -v agy >/dev/null \
@@ -111,7 +112,7 @@ command -v agy >/dev/null \
   || echo "agy unavailable"
 ```
 
-- This prints JSON `{available:[...], proposed:{deep,standard,light}, note, backend}`.
+- This prints JSON `{available:[...], proposed:{frontier,deep,standard,light}, note, backend}`. For every external backend `frontier` is the same value as `deep` — no vendor here ships a rung above its own top model.
   **Show the user the `available` catalog and the `proposed` map**, then let them
   confirm or override (Step 2). The proposal is real, current model names — no more
   placeholders. Against the live catalog (agy 1.0.13: Gemini 3.5 Flash Low/Medium/High,
@@ -277,7 +278,7 @@ Resulting shape (only `models` is this command's responsibility) — write the
       "devin":       { "deep": "claude-opus-4.6", "standard": "claude-sonnet-4", "light": "gpt-5.5" },
       "opencode":    { "deep": "anthropic/claude-opus-4-6", "standard": "openai/gpt-5.6-terra", "light": "opencode/mimo-v2.5-free" }
     }
-    // conservative + claude-only mirror balanced
+    // claude-only mirrors balanced; conservative keeps standard on opus
   }
 }
 ```
