@@ -149,6 +149,7 @@ def _load(basename, modname):
 
 pe = _load("compound-v-preeval.py", "cv_preeval")
 tx = _load("compound-v-taxonomy.py", "cv_taxonomy")
+outc = _load("compound-v-triage-outcomes.py", "cv_triage_outcomes")
 
 DIRECT = pe.DECISION_TO_TIER[pe.DECISION_FASTPATH]
 SCOPED = pe.DECISION_TO_TIER[pe.DECISION_SCOPED]
@@ -193,6 +194,10 @@ churn:
 # The same taxonomy with the policy file itself auto-routable — the seed for the
 # self-widening attack, where triage legitimately authorised the taxonomy path.
 TAX_SELF = TAX.replace('  - "README.md"', '  - "README.md"\n  - ".claude/**"')
+
+# The same taxonomy with tests/** auto-routable, so predicate 6 (no test file
+# touched) is the ONLY thing left standing between a test edit and a commit.
+TAX_TESTS = TAX.replace('  - "README.md"', '  - "README.md"\n  - "tests/**"')
 
 TAXONOMY_REL = pe.DEFAULT_TAXONOMY_REL
 GREEN = "sh -c 'exit 0'"
@@ -512,6 +517,59 @@ def predicate7():
             "test contract did not resolve")
 
 
+# =========================================================================== #
+# PREDICATE 8's REMAINING CLAUSES — the ones a path-identity test does not
+# reach. "Outgrows the class" is literally the line budget, and predicate 6 is
+# the only thing stopping an auto-route from editing the tests that guard it.
+# =========================================================================== #
+@scenario("predicate8")
+def predicate8():
+    d = sandbox()
+    _write(os.path.join(d, "README.md"),
+           "hello\n" + "".join("line %d\n" % i for i in range(30)))
+    r = land(d)
+    refused("predicate 8 (the change outgrew the 20-line budget)", r)
+    demoted("predicate 8 (the change outgrew the 20-line budget)", r,
+            "auto_route_max_lines budget")
+
+    # The same 30 lines, split so the diff stays under budget, LANDS — the
+    # refusal above is the budget and not the number of lines being unusual.
+    d = sandbox()
+    _write(os.path.join(d, "README.md"),
+           "hello\n" + "".join("line %d\n" % i for i in range(5)))
+    r = land(d)
+    ok("predicate 8 CONTROL: the same edit under the budget LANDS",
+       r.rc == 0 and r.committed == ["README.md"])
+
+    # Predicate 6: a taxonomy that auto-routes tests/** still cannot auto-route
+    # an edit to a test — the class is defined by the code, not only the policy.
+    d = sandbox(tax_text=TAX_TESTS, authorised="tests/widget_test.md")
+    os.makedirs(os.path.join(d, "tests"))
+    _write(os.path.join(d, "tests", "widget_test.md"), "a test\n")
+    r = land(d)
+    refused("predicate 6 (the realised diff is a test file)", r)
+    demoted("predicate 6 (the realised diff is a test file)", r,
+            "is a test file (predicate 6)")
+
+
+# =========================================================================== #
+# PREDICATE 9 — the circuit breaker. Everywhere else in this suite it is armed,
+# so its refusal path would otherwise never be observed.
+# =========================================================================== #
+@scenario("predicate9")
+def predicate9():
+    d = sandbox()
+    _write(os.path.join(d, "README.md"), "hello\nlegit\n")
+    # The latch, written the way the breaker itself writes it.
+    outc.append_breaker(outc.BREAKER_DISARM, reason="scenario latch",
+                        stream_path=os.path.join(d, "docs", "superpowers",
+                                                 "memory",
+                                                 "triage-outcomes.jsonl"))
+    r = land(d)
+    refused("predicate 9 (breaker latched off)", r)
+    demoted("predicate 9 (breaker latched off)", r, "circuit breaker DISARMED")
+
+
 selected = [(g, fn) for g, fn in _registry if not GROUPS or g in GROUPS]
 if not selected:
     sys.exit("no scenario group matched %r — the filter is dead" % (GROUPS,))
@@ -567,6 +625,12 @@ SUBS = {
     # decisions.
     "M6-predicate-7": [("if not (ok7 and ok8 and ok9):", "if not (ok8 and ok9):",
                         2)],
+    # The line budget -- "outgrows the class", literally.
+    "M7-line-budget": [("    if total > budget:", "    if False:", 1)],
+    # Predicate 6: no test file touched.
+    "M8-test-file": [("        if is_test_path(p):", "        if False:", 1)],
+    # Predicate 9 stops reading the breaker's exit-code contract.
+    "M9-breaker": [("    armed = r.returncode == 0", "    armed = True", 1)],
 }
 if mid not in SUBS:
     sys.exit("unknown mutation %r" % mid)
@@ -623,6 +687,12 @@ mutation M5-record attack1 \
   "attack 1a (path substitution): the demotion reached the outcome stream"
 mutation M6-predicate-7 predicate7 \
   "predicate 7 (red full_command): the gate REFUSES to land"
+mutation M7-line-budget predicate8 \
+  "predicate 8 (the change outgrew the 20-line budget): the gate REFUSES to land"
+mutation M8-test-file predicate8 \
+  "predicate 6 (the realised diff is a test file): the gate REFUSES to land"
+mutation M9-breaker predicate9 \
+  "predicate 9 (breaker latched off): the gate REFUSES to land"
 
 echo ""
 echo "───────────────────────────────────────────────────────────────"

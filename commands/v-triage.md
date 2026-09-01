@@ -685,10 +685,10 @@ invocation left behind: its exit code, the sandbox's git history, and the outcom
 wrote. It covers path substitution (including an index the implementer pre-poisoned), taxonomy
 self-widening in both shapes, both halves of the concurrency defence (the lock ref and the
 expected-HEAD compare-and-swap), the RECORDED demotion (`demoted_from` / `demotion_reason` reaching
-the outcome stream), and predicate 7 refusing an unattended landing against a red contract, an
-absent one, and one with no `full_command`. Each attack is paired with a control that LANDS, and
-with a planted mutation that removes the corresponding check from a copy of the gate and is
-asserted to turn that attack's assertion red.
+the outcome stream), predicate 7 against a red contract, an absent one and one with no
+`full_command`, the line budget and the no-test-file clause, and a latched-off breaker. Each
+refusal is paired with a control that LANDS, and with a planted mutation that removes the
+corresponding check from a copy of the gate and is asserted to turn that refusal's assertion red.
 
 **What this replaced, and why.** The fixture that used to sit here asserted `staged ==
 ["OTHER.md"]` (a fact about `git add`), that two sha256 digests differ (a fact about sha256), and
