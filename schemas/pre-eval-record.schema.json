@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://github.com/procoders/superpowers-v/schemas/pre-eval-record.schema.json",
   "title": "Compound V pre-eval record",
-  "description": "Canonical, write-once control-plane record written by the pre-eval scoring engine (A3) to docs/superpowers/pre-eval/<pre_eval_id>.json BEFORE any run dir exists (AC-2). `status: PRE_EVAL_DONE` is a RECORD field, NOT a state.json phase (AC-7/CR2-8) — there is no state.json at prediction time. `decision` only ever OFFERS FASTPATH_ELIGIBLE; the request-level score never auto-routes (Iron-Invariant #4). Enforcement fields are deterministic (taxonomy/localization/override logic), never model magnitude (Iron-Invariant #1). C1's fast-path cross-artifact binding (AC-13) verifies pre_eval_id / decision / taxonomy_digest / localization-digest match across this record, the manifest, and the localization artifact.\n\nDIGEST CONVENTION (CR5-6/CR5-7, single-sourced in compound-v-taxonomy.py, documented in docs/superpowers/architecture/pre-eval-config.md): the record's own `digest` = 'sha256:' + sha256(canonical_json(record MINUS the `digest` field)), where canonical_json = json.dumps(obj, sort_keys=True, separators=(',',':'), ensure_ascii=False, allow_nan=False). `taxonomy_digest` is a DISTINCT convention: 'sha256:' + sha256(RAW taxonomy-snapshot bytes) — a content address of the immutable snapshot, not a re-serialization.",
+  "description": "Canonical, write-once control-plane record written by the pre-eval scoring engine (A3) to docs/superpowers/pre-eval/<pre_eval_id>.json BEFORE any run dir exists (AC-2). `status: PRE_EVAL_DONE` is a RECORD field, NOT a state.json phase (AC-7/CR2-8) — there is no state.json at prediction time. `decision` carries one of three tiers (FASTPATH_ELIGIBLE / SCOPED_PIPELINE / FULL_PIPELINE, v3.0 spec §A1). Iron-Invariant #4 AS AMENDED (spec §A4): the score OFFERS by default and auto-routes only inside the DIRECT auto-route class, whose membership is decided by mechanically checkable predicates and never by model judgement; every other tier still requires a human offer and acceptance. Enforcement fields are deterministic (taxonomy/localization/override logic), never model magnitude (Iron-Invariant #1). C1's fast-path cross-artifact binding (AC-13) verifies pre_eval_id / decision / taxonomy_digest / localization-digest match across this record, the manifest, and the localization artifact.\n\nDIGEST CONVENTION (CR5-6/CR5-7, single-sourced in compound-v-taxonomy.py, documented in docs/superpowers/architecture/pre-eval-config.md): the record's own `digest` = 'sha256:' + sha256(canonical_json(record MINUS the `digest` field)), where canonical_json = json.dumps(obj, sort_keys=True, separators=(',',':'), ensure_ascii=False, allow_nan=False). `taxonomy_digest` is a DISTINCT convention: 'sha256:' + sha256(RAW taxonomy-snapshot bytes) — a content address of the immutable snapshot, not a re-serialization.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -19,18 +19,33 @@
     "decision",
     "min_sample_status"
   ],
-  "if": {
-    "properties": { "decision": { "const": "FASTPATH_ELIGIBLE" } },
-    "required": ["decision"]
-  },
-  "then": {
-    "description": "A FASTPATH_ELIGIBLE record MUST pin a real, non-null taxonomy snapshot + its content-address (a fast-path is impossible without the sensitive-path + content-pattern protections). taxonomy_ref/taxonomy_digest are required and strictly typed here.",
-    "required": ["taxonomy_ref", "taxonomy_digest"],
-    "properties": {
-      "taxonomy_ref": { "type": "string", "minLength": 1 },
-      "taxonomy_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  "allOf": [
+    {
+      "if": {
+        "properties": { "decision": { "not": { "const": "FULL_PIPELINE" } } },
+        "required": ["decision"]
+      },
+      "then": {
+        "description": "ANY record that is not FULL_PIPELINE — FASTPATH_ELIGIBLE or SCOPED_PIPELINE — MUST pin a real, non-null taxonomy snapshot + its content-address. The condition is stated NEGATIVELY (`decision != FULL_PIPELINE`) on purpose: keyed on `const: FASTPATH_ELIGIBLE` it silently stopped applying the moment a third tier existed, and a SCOPED record with a null taxonomy would have validated — the exact fail-open this check exists to prevent. No proportionate tier is reachable without the sensitive-path + content-pattern protections: `_has_safety_coverage` in compound-v-preeval.py routes an absent, malformed or unreadable taxonomy to an unconditional FULL_PIPELINE, so this conditional is the machine-checked restatement of an engine invariant rather than a second policy. taxonomy_ref/taxonomy_digest are required and strictly typed here.",
+        "required": ["taxonomy_ref", "taxonomy_digest"],
+        "properties": {
+          "taxonomy_ref": { "type": "string", "minLength": 1 },
+          "taxonomy_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "override_fired": { "type": "integer" } },
+        "required": ["override_fired"]
+      },
+      "then": {
+        "description": "ANY FIRED OVERRIDE FORCES FULL (see also the taxonomy conditional above, which is keyed the same negative way) (v3.0 spec §A1). A record whose override_fired is a real row id MUST carry decision=FULL_PIPELINE. Machine-checked here so a record that pairs a hard override with a proportionate tier cannot exist even if a future producer regresses.",
+        "properties": { "decision": { "const": "FULL_PIPELINE" } },
+        "required": ["decision"]
+      }
     }
-  },
+  ],
   "properties": {
     "pre_eval_id": {
       "type": "string",
@@ -60,12 +75,12 @@
     },
     "taxonomy_ref": {
       "type": ["string", "null"],
-      "description": "Repo-relative, normalized, no-'..' path to the IMMUTABLE taxonomy snapshot the score was computed against (pre-run, under docs/superpowers/pre-eval/<pre_eval_id>.taxonomy-snapshot.yaml). A committed regular file (never an escaping symlink). Copied into the run preserving this digest when a fast-path materializes (CR2-6/CR4-2). NULLABLE for the absent-taxonomy case (see taxonomy_digest); the top-level `if decision==FASTPATH_ELIGIBLE` conditional makes it a required, non-null, non-empty string on any fast-path record."
+      "description": "Repo-relative, normalized, no-'..' path to the IMMUTABLE taxonomy snapshot the score was computed against (pre-run, under docs/superpowers/pre-eval/<pre_eval_id>.taxonomy-snapshot.yaml). A committed regular file (never an escaping symlink). Copied into the run preserving this digest when a fast-path materializes (CR2-6/CR4-2). NULLABLE for the absent-taxonomy case (see taxonomy_digest); the first `allOf` conditional (`if decision != FULL_PIPELINE`) makes it a required, non-null, non-empty string on any proportionate-tier record — FASTPATH_ELIGIBLE and SCOPED_PIPELINE alike."
     },
     "taxonomy_digest": {
       "type": ["string", "null"],
       "pattern": "^sha256:[0-9a-f]{64}$",
-      "description": "'sha256:'+sha256(RAW snapshot bytes) of taxonomy_ref. On a FASTPATH_ELIGIBLE record it is required and MUST equal the manifest's taxonomy_digest (AC-13). ABSENT-TAXONOMY CASE (spec §2 missing-data table + Iron-Invariant #5): when the taxonomy file/snapshot is absent, malformed, or unavailable there is no snapshot to reference and no bytes to digest, so the engine STILL writes the record (and appends the `predicted` event) with decision=FULL_PIPELINE and `taxonomy_ref: null` / `taxonomy_digest: null` / `taxonomy_version: null`. Such a record validates precisely because these three fields are nullable when decision != FASTPATH_ELIGIBLE; the `if/then` conditional above forbids that null-taxonomy state from ever being FASTPATH_ELIGIBLE. A3/C1/M1 MUST treat the null-taxonomy record as an unconditional FULL_PIPELINE. (`pattern` applies only when the value is a string, so null passes.)"
+      "description": "'sha256:'+sha256(RAW snapshot bytes) of taxonomy_ref. On a FASTPATH_ELIGIBLE record it is required and MUST equal the manifest's taxonomy_digest (AC-13). ABSENT-TAXONOMY CASE (spec §2 missing-data table + Iron-Invariant #5): when the taxonomy file/snapshot is absent, malformed, or unavailable there is no snapshot to reference and no bytes to digest, so the engine STILL writes the record (and appends the `predicted` event) with decision=FULL_PIPELINE and `taxonomy_ref: null` / `taxonomy_digest: null` / `taxonomy_version: null`. Such a record validates precisely because these three fields are nullable when decision != FASTPATH_ELIGIBLE; the first `allOf` conditional forbids that null-taxonomy state from ever carrying a PROPORTIONATE decision — it is keyed `decision != FULL_PIPELINE`, so it binds SCOPED_PIPELINE exactly as it binds FASTPATH_ELIGIBLE. A3/C1/M1 MUST treat the null-taxonomy record as an unconditional FULL_PIPELINE. (`pattern` applies only when the value is a string, so null passes.)"
     },
     "difficulty": { "$ref": "#/$defs/axis" },
     "impact": { "$ref": "#/$defs/axis" },
@@ -77,12 +92,12 @@
     "localization": { "$ref": "#/$defs/localization" },
     "override_fired": {
       "type": ["integer", "null"],
-      "description": "The Layer-A hard-override row id (1-6, spec §2) that forced FULL_PIPELINE, or null if none fired. A non-null value REQUIRES decision=FULL_PIPELINE."
+      "description": "The Layer-A hard-override row id (1-7, spec §2 rows 1-6 plus the appended advisor-hot row 7) that forced FULL_PIPELINE, or null if none fired. A non-null value REQUIRES decision=FULL_PIPELINE, and the second `allOf` conditional above enforces it mechanically. This is not redundancy with the bands: override #4 (semantic-vs-path disagreement) records the GENUINE low/low bands beside override_fired=4, so a consumer that re-derived the tier from `difficulty`+`impact` would grant DIRECT — and with it the auto-route class — to a record whose own audit trail says a hard override fired. Read `decision`, never the bands."
     },
     "decision": {
       "type": "string",
-      "enum": ["FASTPATH_ELIGIBLE", "FULL_PIPELINE"],
-      "description": "The triage outcome. FASTPATH_ELIGIBLE only OFFERS a proportionate fast-path (Iron-Invariant #4 — never an auto-route). Any override / unknown axis / missing-or-malformed taxonomy / token-cap overrun ⇒ FULL_PIPELINE (fail-closed)."
+      "enum": ["FASTPATH_ELIGIBLE", "SCOPED_PIPELINE", "FULL_PIPELINE"],
+      "description": "The triage outcome, one of THREE proportionate tiers (v3.0 spec §A1). FASTPATH_ELIGIBLE = tier DIRECT (implement in place, run the floor, commit on the branch — no manifest, no run dir); SCOPED_PIPELINE = tier SCOPED (manifest, run dir, scope gate, floor, one combined SPEC+QUALITY review; recon and the three pre-flights skipped); FULL_PIPELINE = tier FULL (the whole pipeline). The value is produced by the 3x3 difficulty×impact matrix INSIDE compound-v-preeval.py's `score`, and consumers MUST branch on all three values explicitly — a `== FASTPATH_ELIGIBLE ? A : B` reader is a two-value reader of a three-value enum. Iron-Invariant #4 AS AMENDED (spec §A4): the score OFFERS by default and auto-routes only inside the DIRECT auto-route class, whose membership is decided by mechanically checkable predicates and never by model judgement; every other tier still requires a human offer and acceptance. Any override / unknown axis / missing-or-malformed taxonomy / token-cap overrun ⇒ FULL_PIPELINE (fail-closed), and a non-null `override_fired` ALWAYS pairs with FULL_PIPELINE regardless of the recorded bands."
     },
     "min_sample_status": {
       "type": "string",

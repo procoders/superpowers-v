@@ -4,10 +4,62 @@ Compound V — the CORE pre-evaluation scoring engine (v2.9 Task A3).
 
 The pre-eval stage runs FIRST, before Trigger 0 recon (spec §1). It scores a change
 request on two SEPARATE axes (difficulty, impact) from tiered deterministic evidence and
-— only when a change is *provably* trivial + low-impact — writes a `FASTPATH_ELIGIBLE`
-verdict the harness may OFFER as a proportionate fast-path. Everything else is
-`FULL_PIPELINE`. The request-level score never auto-routes (Iron-Invariant #4); it only
-ever OFFERS.
+routes it into one of THREE proportionate tiers (v3.0 spec §A1).
+
+THE DECISION VOCABULARY — a stable INTERFACE for every downstream consumer
+--------------------------------------------------------------------------
+This module is the sole producer of the `decision` value. Consumers (the outcomes
+stream, the fast-path materializer/runner, the post-diff reclassifier, `/v:triage`,
+`/v:orchestrate`) read it and MUST branch on all three values explicitly. A consumer
+that tests `== FASTPATH` and puts everything else in one `else` arm is a two-value
+reader of a three-value enum, which is how a tier silently lands in a cohort or a
+pipeline that means something else.
+
+    DECISION_FASTPATH = "FASTPATH_ELIGIBLE"   # tier DIRECT — implement in place, floor,
+                                              #   commit on the branch. No manifest/run dir.
+    DECISION_SCOPED   = "SCOPED_PIPELINE"     # tier SCOPED — manifest, run dir, scope gate,
+                                              #   floor, ONE combined SPEC+QUALITY review.
+                                              #   Recon + the three pre-flights are skipped.
+    DECISION_FULL     = "FULL_PIPELINE"       # tier FULL  — the whole pipeline, unchanged.
+
+`DECISION_TO_TIER` maps each value to the manifest `triage.tier` token
+(`DIRECT` / `SCOPED` / `FULL`) that `compound-v-validate-manifest.py` compares verbatim.
+
+THE 3x3 BAND MATRIX (spec §A1) — computed INSIDE this engine, never post-hoc
+---------------------------------------------------------------------------
+                impact low   impact medium   impact high
+    diff low      DIRECT        SCOPED          FULL
+    diff medium   SCOPED        SCOPED          FULL
+    diff high     FULL          FULL            FULL
+
+Two rules make the matrix safe, and BOTH must live here rather than in a reader of the
+verdict dict:
+
+  * **Any fired override forces FULL.** Enforced structurally in `_verdict()`, the single
+    construction point of every verdict. This is not belt-and-suspenders: override #4
+    (semantic-vs-path disagreement) returns the GENUINE `low`/`low` bands beside
+    `override_fired=4`, so a consumer that re-derived the tier from the record's two band
+    fields would hand DIRECT — and with it the auto-route class — to a record whose own
+    audit trail says a hard override fired.
+  * **Unknown / unmapped bands fail closed to FULL.** Override #6 catches `unknown` first;
+    the matrix lookup itself then defaults any pair it does not recognise to FULL.
+
+DIRECT additionally keeps every Layer-B predicate (`fan_out <= threshold`, exactly one
+literal normalized path). A `low`/`low` request that fails a Layer-B predicate is NOT
+promoted to DIRECT and NOT dropped to FULL — it demotes ONE tier, to SCOPED, which is
+where the matrix already puts its `low`/`medium` and `medium`/`low` neighbours.
+
+IRON-INVARIANT #4, as amended by spec §A4
+-----------------------------------------
+    The score OFFERS by default. It auto-routes only inside the DIRECT auto-route class,
+    whose membership is decided by mechanically checkable predicates and never by model
+    judgement. Every other tier still requires a human offer and acceptance.
+
+This engine emits the tier and the mechanical evidence for it. It never auto-routes by
+itself: the auto-route class has nine predicates (spec §A4), of which this engine can only
+establish the first six — the floor having run and passed, the full post-diff
+re-validation against the PRE-EDIT taxonomy snapshot, and the miscalibration circuit
+breaker are all post-decision and belong to `/v:triage` and the outcomes stream.
 
     score(localization, taxonomy, t3_category=None, ...) -> deterministic verdict dict
 
@@ -83,7 +135,33 @@ PRE_EVAL_DIR_REL = os.path.join("docs", "superpowers", "pre-eval")
 DEFAULT_TAXONOMY_REL = os.path.join(".claude", "compound-v-impact-taxonomy.yaml")
 STATUS_PRE_EVAL_DONE = "PRE_EVAL_DONE"
 DECISION_FASTPATH = "FASTPATH_ELIGIBLE"
+DECISION_SCOPED = "SCOPED_PIPELINE"
 DECISION_FULL = "FULL_PIPELINE"
+
+# The manifest `triage.tier` token each decision materializes as. `compound-v-validate-
+# manifest.py` compares that token VERBATIM (case matters), so the mapping is single-sourced
+# here rather than re-spelled by every producer.
+DECISION_TO_TIER = {
+    DECISION_FASTPATH: "DIRECT",
+    DECISION_SCOPED: "SCOPED",
+    DECISION_FULL: "FULL",
+}
+
+# spec §A1 — the 3x3 difficulty x impact matrix. Keyed (difficulty, impact); ANY pair absent
+# from this table (including every `unknown`/None combination) falls closed to FULL via
+# `_matrix_decision`'s default. The `low`/`low` cell is a DIRECT *candidate* only: Layer B
+# still has to prove the fan-out and single-literal-path predicates before it is granted.
+_TIER_MATRIX = {
+    ("low", "low"): DECISION_FASTPATH,
+    ("low", "medium"): DECISION_SCOPED,
+    ("low", "high"): DECISION_FULL,
+    ("medium", "low"): DECISION_SCOPED,
+    ("medium", "medium"): DECISION_SCOPED,
+    ("medium", "high"): DECISION_FULL,
+    ("high", "low"): DECISION_FULL,
+    ("high", "medium"): DECISION_FULL,
+    ("high", "high"): DECISION_FULL,
+}
 
 # spec §2 — T3 total truth table (deterministic; every enum → BOTH axes, no low/med
 # ambiguity, round-3 fix). The T3 `light`-tier classify emits exactly one of these.
@@ -258,6 +336,14 @@ def _content_raises_impact(flags):
     return False
 
 
+def _matrix_decision(difficulty_band, impact_band):
+    """spec §A1 — the 3x3 band matrix, as a pure lookup. FAIL-CLOSED BY CONSTRUCTION: any
+    pair the table does not contain (`unknown`, `None`, a band a future taxonomy invents)
+    returns FULL. Callers must still apply the Layer-B predicates before honouring a
+    DIRECT (`DECISION_FASTPATH`) result — see `score`."""
+    return _TIER_MATRIX.get((difficulty_band, impact_band), DECISION_FULL)
+
+
 def _has_safety_coverage(taxonomy):
     """A loaded taxonomy provides *safety coverage* only if it carries a non-empty
     sensitive-path list — the core protection a fast-path relies on. Without it there is no
@@ -303,6 +389,10 @@ def score(localization, taxonomy, t3_category=None, *, tier2=None, churn_hot=Fal
       {"needs_t3": True, "t3_prompt": str}                              # parent runs the Task
       {"decision", "override_fired", "difficulty", "impact",            # a completed verdict
        "tiers_signalled", "min_sample_status"}
+
+    `decision` is one of DECISION_FASTPATH / DECISION_SCOPED / DECISION_FULL (spec §A1's
+    3x3 matrix, applied at Layer B). A non-null `override_fired` ALWAYS pairs with
+    DECISION_FULL — `_verdict` enforces that, so no caller has to re-check it.
     """
     loc = localization or {}
     resolved = loc.get("resolved_paths", []) or []
@@ -435,17 +525,28 @@ def score(localization, taxonomy, t3_category=None, *, tier2=None, churn_hot=Fal
                         imp=impact_band or "unknown", tiers=tiers,
                         min_sample=min_sample_status)
 
-    # ============================ Layer B — positive gate ======================== #
-    # FASTPATH_ELIGIBLE ⟺ difficulty==low ∧ impact==low ∧ fan_out≤threshold ∧ exactly one
-    # literal normalized path (not shared/generated/config/migration — all already caught
-    # by overrides #2/#3 and content-flag impact, so at Layer B `flags` is clean).
-    eligible = (
-        difficulty_band == "low"
-        and impact_band == "low"
-        and fan_out <= int(fan_out_threshold)
-        and _is_single_literal_path(resolved)
-    )
-    decision = DECISION_FASTPATH if eligible else DECISION_FULL
+    # ==================== Layer B — the 3x3 matrix + the DIRECT predicates ============ #
+    # spec §A1. The matrix is applied HERE, inside the engine, on the bands as computed —
+    # never re-derived downstream from the record's two band fields, because a fired
+    # override can leave genuine `low`/`low` bands on a record that must never be DIRECT
+    # (override #4; see the module docstring). `_verdict` is the structural backstop.
+    decision = _matrix_decision(difficulty_band, impact_band)
+
+    # DIRECT (`FASTPATH_ELIGIBLE`) additionally keeps every pre-existing Layer-B predicate:
+    # fan_out ≤ threshold ∧ exactly one literal normalized path (not shared/generated/
+    # config/migration — all already caught by overrides #2/#3 and content-flag impact, so
+    # at Layer B `flags` is clean). Failing one does NOT fall to FULL: the bands are still
+    # low/low, so the change demotes exactly ONE tier, to SCOPED — the tier the matrix
+    # already assigns to this cell's low/medium and medium/low neighbours, and one that
+    # still buys a manifest, a run directory, the scope gate, the floor and a review.
+    if decision == DECISION_FASTPATH:
+        direct_predicates_hold = (
+            fan_out <= int(fan_out_threshold)
+            and _is_single_literal_path(resolved)
+        )
+        if not direct_predicates_hold:
+            decision = DECISION_SCOPED
+
     return _verdict(decision, override=None, diff=difficulty_band, imp=impact_band,
                     tiers=tiers, min_sample=min_sample_status)
 
@@ -458,6 +559,17 @@ def _bands_conflict(a, b):
 
 
 def _verdict(decision, override, diff, imp, tiers, min_sample):
+    # THE INVARIANT, enforced at the single construction point of every verdict (spec §A1):
+    # ANY FIRED OVERRIDE FORCES FULL. Every Layer-A row already passes DECISION_FULL, so
+    # this normally changes nothing — it exists so that no future edit can introduce a
+    # verdict carrying both a non-null `override_fired` and a proportionate decision. That
+    # pairing is precisely what override #4 makes reachable: it returns the GENUINE
+    # `low`/`low` bands beside `override_fired=4`, and a record on which the two disagreed
+    # would let a post-hoc reader grant DIRECT — and the auto-route class with it — to a
+    # change whose own audit trail says a hard override fired.
+    if override is not None:
+        decision = DECISION_FULL
+
     # De-dup tiers preserving order; keep only the schema enum.
     allowed = ("T1", "T2", "T3", "churn", "localization")
     seen, ordered = set(), []
@@ -765,7 +877,8 @@ def run_preeval(request, repo=".", taxonomy_path=None, t3_category=None,
 
     Config honored (fail-closed, HIGH-4): `pre_eval.enabled==false` → the whole stage is a
     no-op (no artifacts) → FULL_PIPELINE; `pre_eval.fast_path=="off"` → hard kill-switch, the
-    score is still computed but the decision is forced FULL_PIPELINE (never FASTPATH_ELIGIBLE);
+    score is still computed but the decision is forced FULL_PIPELINE (never
+    FASTPATH_ELIGIBLE and never SCOPED_PIPELINE — both are proportionate tiers);
     `pre_eval.min_sample_count` floors the Tier-2 cohort lookup applied per the spec's cohort
     rule (healthy corroborates low, unhealthy raises, insufficient = no signal).
     """
@@ -846,16 +959,23 @@ def run_preeval(request, repo=".", taxonomy_path=None, t3_category=None,
                     fan_out_threshold=fan_out_threshold,
                     token_cap=token_cap, request_text=request)
 
-    # HIGH-4(b): fast_path == "off" is a HARD kill-switch — no fast-path offer is EVER made.
-    # The bands stay computed (for the record + learning), but the DECISION is forced
-    # FULL_PIPELINE. When the score would need a T3 model call, we skip it entirely: a
-    # fast-path that can never be offered is not worth a model spend (spec §3, near-free).
+    # HIGH-4(b): fast_path == "off" is a HARD kill-switch on PROPORTIONATE routing — no
+    # reduced-ceremony tier is EVER offered. The bands stay computed (for the record +
+    # learning), but the DECISION is forced FULL_PIPELINE. When the score would need a T3
+    # model call, we skip it entirely: a fast-path that can never be offered is not worth a
+    # model spend (spec §3, near-free).
+    #
+    # v3.0: this branch names DECISION_SCOPED EXPLICITLY rather than letting it fall through
+    # the `== DECISION_FASTPATH` test into the untouched arm. An operator who set
+    # `fast_path: "off"` asked for the full pipeline; silently handing them a tier that also
+    # skips recon and the three pre-flights would be the kill-switch failing open on a value
+    # that did not exist when the switch was written.
     if fast_path_off:
         if verdict.get("needs_t3"):
             verdict = _verdict(DECISION_FULL, override=None, diff="unknown", imp="unknown",
                                tiers=verdict.get("tiers_signalled", []),
                                min_sample=verdict.get("min_sample_status", "insufficient"))
-        elif verdict.get("decision") == DECISION_FASTPATH:
+        elif verdict.get("decision") in (DECISION_FASTPATH, DECISION_SCOPED):
             verdict = dict(verdict, decision=DECISION_FULL)
 
     if verdict.get("needs_t3"):
@@ -996,6 +1116,68 @@ churn:
 """
 
 
+# One glob per matrix cell, so a fixture selects a (difficulty, impact) pair by PATH alone
+# and every cell test differs from its neighbours in nothing but the bands. `sensitive_path_list`
+# is non-empty (and disjoint from `m/**`) because `_has_safety_coverage` fails closed without it.
+_MATRIX_TAXONOMY_TEXT = """
+version: 1
+path_patterns:
+  - glob: "m/dlow-ilow/**"
+    difficulty_band: low
+    impact_band: low
+  - glob: "m/dlow-imedium/**"
+    difficulty_band: low
+    impact_band: medium
+  - glob: "m/dlow-ihigh/**"
+    difficulty_band: low
+    impact_band: high
+  - glob: "m/dmedium-ilow/**"
+    difficulty_band: medium
+    impact_band: low
+  - glob: "m/dmedium-imedium/**"
+    difficulty_band: medium
+    impact_band: medium
+  - glob: "m/dmedium-ihigh/**"
+    difficulty_band: medium
+    impact_band: high
+  - glob: "m/dhigh-ilow/**"
+    difficulty_band: high
+    impact_band: low
+  - glob: "m/dhigh-imedium/**"
+    difficulty_band: high
+    impact_band: medium
+  - glob: "m/dhigh-ihigh/**"
+    difficulty_band: high
+    impact_band: high
+content_patterns:
+  - match: "--color-"
+    pattern_type: literal
+    case: insensitive
+    scan: content
+    kind: shared_token
+    impact_band: high
+sensitive_path_list:
+  - "src/auth/**"
+churn:
+  exclude_paths: []
+  format_commit_patterns: []
+"""
+
+# spec §A1's table, transcribed ONCE as data so the selftest asserts against the spec rather
+# than against `_TIER_MATRIX` (asserting a table against itself proves nothing).
+_SPEC_A1_MATRIX = {
+    ("low", "low"): DECISION_FASTPATH,
+    ("low", "medium"): DECISION_SCOPED,
+    ("low", "high"): DECISION_FULL,
+    ("medium", "low"): DECISION_SCOPED,
+    ("medium", "medium"): DECISION_SCOPED,
+    ("medium", "high"): DECISION_FULL,
+    ("high", "low"): DECISION_FULL,
+    ("high", "medium"): DECISION_FULL,
+    ("high", "high"): DECISION_FULL,
+}
+
+
 def _loc(paths, flags=None, fan_out=None, confidence="exact"):
     return {"resolved_paths": list(paths), "fan_out": fan_out if fan_out is not None
             else len(paths), "flags": list(flags or []), "confidence": confidence}
@@ -1104,14 +1286,16 @@ def _selftest():
     expect("Layer-B eligible: display labels derived post-decision",
            ve["difficulty"]["display"] == 2 and ve["impact"]["display"] == 2)
 
-    # fan_out over threshold blocks Layer B (no override — just not eligible).
+    # fan_out over threshold blocks the DIRECT predicates. v3.0: the bands are still low/low,
+    # so this demotes ONE tier to SCOPED, not all the way to FULL (spec §A1 — the matrix owns
+    # the tier; the Layer-B predicates only gate the DIRECT cell). Pre-3.0 this asserted FULL.
     vfan = score(_loc(["src/ui/button.css"], flags=[], fan_out=3), taxonomy)
-    expect("Layer-B: fan_out>threshold -> FULL (no override)",
-           vfan["decision"] == DECISION_FULL and vfan["override_fired"] is None)
+    expect("Layer-B: fan_out>threshold -> SCOPED (low/low bands, no override)",
+           vfan["decision"] == DECISION_SCOPED and vfan["override_fired"] is None)
 
-    # Two literal paths → not a single-path partition → FULL.
+    # Two literal paths → not a single-path partition → not DIRECT, but still low/low → SCOPED.
     vtwo = score(_loc(["a.css", "b.css"], flags=[], fan_out=2), taxonomy)
-    expect("Layer-B: two paths -> FULL", vtwo["decision"] == DECISION_FULL)
+    expect("Layer-B: two paths -> SCOPED", vtwo["decision"] == DECISION_SCOPED)
 
     # A content:feature_flag hit raises impact → not low → FULL (AC-8, no override).
     vff = score(_loc(["src/config.css"], flags=["content:feature_flag"], fan_out=1),
@@ -1123,10 +1307,71 @@ def _selftest():
     vrt = score(_loc(["src/ui/button.css"], flags=["regex_timeout"], fan_out=1), taxonomy)
     expect("fail-closed regex_timeout -> FULL", vrt["decision"] == DECISION_FULL)
 
-    # medium-band path (.tsx) → impact medium → FULL.
+    # medium-band path (.tsx) → medium/medium. v3.0: that is the matrix's centre cell, SCOPED.
+    # Pre-3.0 this collapsed to FULL — one of the 8 of 9 cells spec §A1 exists to un-collapse.
     vmed = score(_loc(["src/ui/Widget.tsx"], flags=[], fan_out=1), taxonomy)
-    expect("Layer-B: medium path -> FULL", vmed["decision"] == DECISION_FULL
+    expect("Layer-B: medium/medium path -> SCOPED", vmed["decision"] == DECISION_SCOPED
            and vmed["impact"]["band"] == "medium")
+
+    # ============ v3.0 spec §A1 — the 3x3 matrix, ALL NINE CELLS, inside the engine ==== #
+    # Every fixture is identical but for the path, and every path differs only in the band
+    # pair its taxonomy row declares — so a failing cell can only mean the matrix is wrong.
+    # Each carries a single literal path and fan_out=1, i.e. the DIRECT predicates HOLD, so
+    # the only thing under test in each cell is the band→tier mapping itself.
+    mtx = tax.load_taxonomy(text=_MATRIX_TAXONOMY_TEXT)
+    _cell_names = {DECISION_FASTPATH: "DIRECT", DECISION_SCOPED: "SCOPED",
+                   DECISION_FULL: "FULL"}
+    for (_d, _i), _want in sorted(_SPEC_A1_MATRIX.items()):
+        _path = "m/d%s-i%s/f.txt" % (_d, _i)
+        _v = score(_loc([_path], flags=[], fan_out=1), mtx,
+                   request_text="matrix cell %s/%s" % (_d, _i))
+        expect("matrix cell difficulty=%s impact=%s -> %s" % (_d, _i, _cell_names[_want]),
+               _v["decision"] == _want and _v["override_fired"] is None
+               and _v["difficulty"]["band"] == _d and _v["impact"]["band"] == _i)
+
+    # The matrix is FAIL-CLOSED BY CONSTRUCTION, not only by override #6 arriving first:
+    # ask the pure lookup directly for every pair the table does not contain.
+    for _bad in (("unknown", "low"), ("low", "unknown"), ("unknown", "unknown"),
+                 (None, "low"), ("low", None), (None, None), ("critical", "low")):
+        expect("matrix fail-closed: %r -> FULL" % (_bad,),
+               _matrix_decision(*_bad) == DECISION_FULL)
+    expect("matrix covers exactly the 9 spec §A1 cells and nothing else",
+           set(_TIER_MATRIX) == set(_SPEC_A1_MATRIX)
+           and all(_TIER_MATRIX[k] == v for k, v in _SPEC_A1_MATRIX.items()))
+
+    # ===== ANY FIRED OVERRIDE FORCES FULL — the single most load-bearing line in A1 ===== #
+    # Override #4 is the one that makes the hazard real: it records the GENUINE low/low
+    # bands beside override_fired=4. Assert BOTH halves — that the bands really are low/low
+    # (so this is not a vacuous test), and that a post-hoc reader of exactly those bands
+    # WOULD have said DIRECT — while the engine says FULL.
+    vov = score(_loc(["x.css"], flags=[]), taxonomy, t3_category="user-facing-major")
+    expect("override #4 records genuine low/low bands",
+           vov["difficulty"]["band"] == "low" and vov["impact"]["band"] == "low")
+    expect("override #4: a post-hoc read of those bands WOULD have granted DIRECT",
+           _matrix_decision(vov["difficulty"]["band"], vov["impact"]["band"])
+           == DECISION_FASTPATH)
+    expect("override #4: the ENGINE says FULL_PIPELINE despite low/low",
+           vov["decision"] == DECISION_FULL and vov["override_fired"] == 4)
+
+    # And the structural backstop itself: `_verdict` is the single construction point, so a
+    # proportionate decision handed in beside ANY override id comes back out as FULL.
+    for _row in (1, 2, 3, 4, 5, 6, 7):
+        for _proportionate in (DECISION_FASTPATH, DECISION_SCOPED):
+            _forced = _verdict(_proportionate, override=_row, diff="low", imp="low",
+                               tiers=["T1"], min_sample="insufficient")
+            expect("_verdict forces FULL: override #%d beside %s" % (_row, _proportionate),
+                   _forced["decision"] == DECISION_FULL
+                   and _forced["override_fired"] == _row)
+    # ...and that it does NOT touch a clean verdict (the backstop must not be a blanket).
+    _clean = _verdict(DECISION_SCOPED, override=None, diff="medium", imp="medium",
+                      tiers=["T1"], min_sample="insufficient")
+    expect("_verdict leaves an override-free SCOPED verdict alone",
+           _clean["decision"] == DECISION_SCOPED)
+
+    # The tier vocabulary downstream reads (tasks 2/3/4 consume this as an interface).
+    expect("DECISION_TO_TIER maps all three decisions to the manifest triage tokens",
+           DECISION_TO_TIER == {DECISION_FASTPATH: "DIRECT", DECISION_SCOPED: "SCOPED",
+                                DECISION_FULL: "FULL"})
 
     # ================= T3 total truth table (enum → both axes) ====================== #
     # An unclassified path (no path_pattern) + T2 insufficient → T3 fallback.
@@ -1137,8 +1382,8 @@ def _selftest():
            vt_plumb["decision"] == DECISION_FASTPATH and "T3" in vt_plumb["tiers_signalled"])
     vt_minor = score(_loc(["tools/gen.py"], flags=[], fan_out=1), taxonomy,
                      t3_category="user-facing-minor")
-    expect("T3 user-facing-minor -> medium/medium -> FULL",
-           vt_minor["decision"] == DECISION_FULL and vt_minor["impact"]["band"] == "medium")
+    expect("T3 user-facing-minor -> medium/medium -> SCOPED",
+           vt_minor["decision"] == DECISION_SCOPED and vt_minor["impact"]["band"] == "medium")
     vt_major = score(_loc(["tools/gen.py"], flags=[], fan_out=1), taxonomy,
                      t3_category="user-facing-major")
     expect("T3 user-facing-major -> high/high -> FULL",
@@ -1189,8 +1434,12 @@ def _selftest():
            and "T2" in vt2_healthy["tiers_signalled"])
     vt2_unhealthy = score(_loc(["src/ui/button.css"], flags=[], fan_out=1), taxonomy,
                           tier2={"health": "unhealthy", "n": 9})
-    expect("T2 unhealthy RAISES difficulty -> FULL",
-           vt2_unhealthy["decision"] == DECISION_FULL
+    # T2 `unhealthy` raises difficulty low→medium. v3.0: with impact still low that is the
+    # matrix's (medium, low) cell, SCOPED — the RAISE is what is under test here, and it
+    # still holds: the change has definitively left the DIRECT auto-route class.
+    expect("T2 unhealthy RAISES difficulty -> out of DIRECT, into SCOPED",
+           vt2_unhealthy["decision"] == DECISION_SCOPED
+           and vt2_unhealthy["decision"] != DECISION_FASTPATH
            and vt2_unhealthy["difficulty"]["band"] != "low")
     vt2_insuff = score(_loc(["src/ui/button.css"], flags=[], fan_out=1), taxonomy,
                        tier2={"status": "insufficient", "n": 0})
@@ -1259,6 +1508,56 @@ def _selftest():
         expect("E2E eligible: record has non-null taxonomy_ref + digest",
                rese["record"]["taxonomy_ref"] and rese["record"]["taxonomy_digest"])
         _schema_check(expect, rese["record"], must_validate=True)
+
+        # (c2) SCOPED end-to-end (v3.0). A medium/medium path is the matrix's centre cell.
+        # The record must be WRITABLE and must VALIDATE: the schema's `decision` enum held
+        # only two values before this change, so every SCOPED record would have failed here
+        # — which is why the enum and the engine had to move in the same commit.
+        fk_scoped = fake_localize_factory(_loc(["src/ui/Widget.tsx"], flags=[], fan_out=1))
+        ress = run_preeval("adjust the widget label spacing", repo=repo, _localize=fk_scoped,
+                           ts="2026-07-12T10:16:30Z", stream_path=stream)
+        expect("E2E scoped: decision SCOPED_PIPELINE",
+               ress["decision"] == DECISION_SCOPED and ress["override_fired"] is None)
+        expect("E2E scoped: bands recorded medium/medium",
+               ress["record"]["difficulty"]["band"] == "medium"
+               and ress["record"]["impact"]["band"] == "medium")
+        expect("E2E scoped: predicted event carries the new decision verbatim",
+               ress["predicted_event"]["decision"] == DECISION_SCOPED)
+        _schema_check(expect, ress["record"], must_validate=True,
+                      label="SCOPED record validates against pre-eval-record.schema.json")
+
+        # (c3) The schema itself must REFUSE the pairing the engine refuses to produce:
+        # a fired override beside a proportionate decision. Hand-forge that record (the
+        # engine cannot emit one) and assert the schema rejects it — so the invariant
+        # survives even a future producer that regresses.
+        _forged = dict(ress["record"], override_fired=4)
+        _schema_check(expect, _forged, must_validate=False,
+                      label="schema REJECTS override_fired beside SCOPED_PIPELINE")
+        _forged_fp = dict(rese["record"], override_fired=4)
+        _schema_check(expect, _forged_fp, must_validate=False,
+                      label="schema REJECTS override_fired beside FASTPATH_ELIGIBLE")
+        _schema_check(expect, dict(ress["record"], override_fired=None), must_validate=True,
+                      label="schema ACCEPTS override_fired null beside SCOPED_PIPELINE")
+
+        # (c4) The taxonomy conditional is keyed `decision != FULL_PIPELINE`, NOT
+        # `== FASTPATH_ELIGIBLE`. Keyed the old way it stopped applying the moment a third
+        # tier existed and a SCOPED record with a null taxonomy validated — the fail-open
+        # the check exists to prevent. The engine cannot produce that record (an absent
+        # taxonomy is an unconditional FULL), so forge it and prove the SCHEMA refuses it.
+        _null_tax_scoped = dict(ress["record"], taxonomy_ref=None, taxonomy_digest=None,
+                                taxonomy_version=None)
+        _schema_check(expect, _null_tax_scoped, must_validate=False,
+                      label="schema REJECTS a null-taxonomy SCOPED_PIPELINE record")
+        _null_tax_fp = dict(rese["record"], taxonomy_ref=None, taxonomy_digest=None,
+                            taxonomy_version=None)
+        _schema_check(expect, _null_tax_fp, must_validate=False,
+                      label="schema REJECTS a null-taxonomy FASTPATH_ELIGIBLE record")
+        # ...while a null-taxonomy FULL_PIPELINE record stays valid: that is the real
+        # absent-taxonomy case the engine emits, and the negative keying must not break it.
+        _null_tax_full = dict(ress["record"], decision=DECISION_FULL, taxonomy_ref=None,
+                              taxonomy_digest=None, taxonomy_version=None)
+        _schema_check(expect, _null_tax_full, must_validate=True,
+                      label="schema ACCEPTS a null-taxonomy FULL_PIPELINE record")
 
         # (d) needs_t3 end-to-end: NO record + NO predicted are written; artifacts durable.
         fk_need = fake_localize_factory(_loc(["tools/gen.py"], flags=[], fan_out=1))
@@ -1422,8 +1721,11 @@ def _selftest():
         resu = run_preeval("tweak local button padding once more", repo=repo, _localize=fk,
                            config_values=_cfg(min_sample_count=1), ts="2026-07-12T10:24:00Z",
                            stream_path=stream)
-        expect("HIGH-4(c): unhealthy Tier-2 cohort resolved by run_preeval RAISES -> FULL",
-               resu["decision"] == DECISION_FULL
+        # (medium, low) after the raise → SCOPED under the v3.0 matrix; the property being
+        # asserted is unchanged — the cohort signal took the change OUT of the DIRECT class.
+        expect("HIGH-4(c): unhealthy Tier-2 cohort resolved by run_preeval RAISES out of DIRECT",
+               resu["decision"] == DECISION_SCOPED
+               and resu["decision"] != DECISION_FASTPATH
                and resu["record"]["difficulty"]["band"] != "low"
                and "T2" in resu["record"]["tiers_signalled"])
 
