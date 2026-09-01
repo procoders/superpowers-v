@@ -669,162 +669,31 @@ commit does not itself need a record.
 - **No fabricated metrics.** Print the floor's real exit codes and the breaker's real rate, nothing
   derived or estimated.
 
-## Selftest — the three negative proofs
+## Selftest — `tests/test-triage-landing.sh`
 
-This is a command doc, so its selftest is a **verification fixture** pinned to the real shipped
-modules (the `/v:init` precedent). It builds throwaway git repos in `$TMPDIR` and proves the three
-attacks the landing gate exists to stop. Run from the repo root; it exits non-zero on any failure.
+Phase L's proofs live in **`tests/test-triage-landing.sh`**. Run it from the repo root; it exits
+non-zero on any failure, and CI's `tests` job discovers it recursively and always runs it.
 
 ```bash
-python3 - <<'PY'
-import importlib.util, os, subprocess, sys, tempfile
-
-REPO = os.path.abspath(".")
-def _load(b, m):
-    s = importlib.util.spec_from_file_location(m, os.path.join(REPO, "scripts", b))
-    mod = importlib.util.module_from_spec(s)
-    s.loader.exec_module(mod)
-    return mod
-pe = _load("compound-v-preeval.py", "cv_preeval")
-tx = _load("compound-v-taxonomy.py", "cv_taxonomy")
-
-fails = []
-def ok(name, cond):
-    print(("ok   " if cond else "FAIL ") + name)
-    if not cond:
-        fails.append(name)
-
-TAX = """version: 1
-path_patterns:
-  - glob: "**/*.md"
-    difficulty_band: low
-    impact_band: low
-sensitive_path_list:
-  - "**/*.pem"
-auto_route_allow:
-  - "README.md"
-auto_route_max_lines: 20
-churn:
-  exclude_paths: []
-  format_commit_patterns: []
-"""
-
-def repo():
-    d = tempfile.mkdtemp(prefix="vtriage-")
-    for a in (["init", "-q", "."], ["config", "user.email", "t@t"],
-              ["config", "user.name", "t"]):
-        subprocess.run(["git", "-C", d] + a, check=True, capture_output=True)
-    open(os.path.join(d, "README.md"), "w").write("hello\n")
-    open(os.path.join(d, "OTHER.md"), "w").write("other\n")
-    subprocess.run(["git", "-C", d, "add", "."], check=True, capture_output=True)
-    subprocess.run(["git", "-C", d, "commit", "-qm", "base"], check=True,
-                   capture_output=True)
-    return d
-
-taxonomy = tx.load_taxonomy(text=TAX)
-pinned = tx.taxonomy_digest_bytes(TAX.encode("utf-8"))
-
-# ---- attack 1: a SUBSTITUTED path ------------------------------------------------- #
-# Triage authorised README.md; the implementer edited OTHER.md instead. Same SHAPE: one
-# literal path, under the budget, not a test. Only path IDENTITY catches it.
-d = repo()
-open(os.path.join(d, "OTHER.md"), "a").write("sneaky\n")
-subprocess.run(["git", "-C", d, "add", "--", "OTHER.md"], check=True, capture_output=True)
-staged = [p for p in subprocess.run(
-    ["git", "-C", d, "diff", "--cached", "--name-only", "-z"],
-    capture_output=True, text=True).stdout.split("\0") if p]
-ok("attack 1: the realised path set is not the authorised one (path identity FAILS)",
-   staged == ["OTHER.md"] and staged != ["README.md"])
-ok("attack 1: shape alone would have passed — the authorised path IS eligible",
-   tx.match_auto_route(taxonomy, "README.md")["eligible"])
-
-# ---- attack 2: a MUTATED taxonomy -------------------------------------------------- #
-# The change authorised for one small non-sensitive markdown file instead edits ONLY the
-# policy file, widening auto_route_allow to scripts/**. One literal path, under 20 lines,
-# not a test — and, under a seed that omits the policy files, not sensitive either.
-WIDENED = TAX.replace('  - "README.md"', '  - "README.md"\n  - "scripts/**"')
-ok("attack 2: mutating the taxonomy changes its digest, so the record's pin fails",
-   tx.taxonomy_digest_bytes(WIDENED.encode("utf-8")) != pinned)
-ok("attack 2: the widened taxonomy WOULD have granted scripts/** (the hole is real)",
-   tx.match_auto_route(tx.load_taxonomy(text=WIDENED), "scripts/x.py")["allowed"]
-   and not tx.match_auto_route(taxonomy, "scripts/x.py")["allowed"])
-ok("attack 2: this taxonomy does NOT declare the policy files sensitive",
-   not tx.taxonomy_self_protects(taxonomy))
-ok("attack 2: the MANDATORY_SENSITIVE code floor makes the taxonomy sensitive anyway",
-   tx.match_auto_route(taxonomy,
-                       ".claude/compound-v-impact-taxonomy.yaml")["sensitive"])
-ok("attack 2: and .claude/compound-v.json with it",
-   tx.match_auto_route(taxonomy, ".claude/compound-v.json")["sensitive"])
-
-# ---- attack 3: a STALE concurrent authorization ------------------------------------ #
-# Two sessions both read the breaker as armed. Session A commits; session B's expected
-# HEAD is now stale. A plain re-read cannot see that; the CAS can.
-d = repo()
-H = subprocess.run(["git", "-C", d, "rev-parse", "HEAD"], capture_output=True,
-                   text=True).stdout.strip()
-LOCK = "refs/compound-v/triage-landing-lock"
-a = subprocess.run(["git", "-C", d, "update-ref", LOCK, H, ""], capture_output=True)
-b = subprocess.run(["git", "-C", d, "update-ref", LOCK, H, ""], capture_output=True)
-ok("attack 3: the lock ref is a real create-if-absent mutex (2nd acquire refused)",
-   a.returncode == 0 and b.returncode != 0)
-subprocess.run(["git", "-C", d, "update-ref", "-d", LOCK, H], check=True,
-               capture_output=True)
-open(os.path.join(d, "README.md"), "a").write("A\n")
-subprocess.run(["git", "-C", d, "add", "--", "README.md"], check=True, capture_output=True)
-t = subprocess.run(["git", "-C", d, "write-tree"], capture_output=True,
-                   text=True).stdout.strip()
-c1 = subprocess.run(["git", "-C", d, "commit-tree", t, "-p", H, "-m", "A"],
-                    capture_output=True, text=True).stdout.strip()
-ok("attack 3: session A's CAS succeeds against the head it expected",
-   subprocess.run(["git", "-C", d, "update-ref", "HEAD", c1, H],
-                  capture_output=True).returncode == 0)
-open(os.path.join(d, "README.md"), "a").write("B\n")
-subprocess.run(["git", "-C", d, "add", "--", "README.md"], check=True, capture_output=True)
-t2 = subprocess.run(["git", "-C", d, "write-tree"], capture_output=True,
-                    text=True).stdout.strip()
-c2 = subprocess.run(["git", "-C", d, "commit-tree", t2, "-p", H, "-m", "B"],
-                    capture_output=True, text=True).stdout.strip()
-stale = subprocess.run(["git", "-C", d, "update-ref", "HEAD", c2, H],
-                       capture_output=True, text=True)
-ok("attack 3: session B's CAS on the STALE expected head is REFUSED",
-   stale.returncode != 0 and "expected" in (stale.stderr or ""))
-ok("attack 3: and HEAD still points at session A's commit (nothing was clobbered)",
-   subprocess.run(["git", "-C", d, "rev-parse", "HEAD"], capture_output=True,
-                  text=True).stdout.strip() == c1)
-
-# ---- the vocabulary rule ----------------------------------------------------------- #
-ok("vocabulary: DECISION_TO_TIER is read from the engine, never re-spelled",
-   pe.DECISION_TO_TIER[pe.DECISION_FASTPATH] == "DIRECT"
-   and pe.DECISION_TO_TIER[pe.DECISION_SCOPED] == "SCOPED"
-   and pe.DECISION_TO_TIER[pe.DECISION_FULL] == "FULL")
-
-# ---- the binding keeps the digest correct BY CONSTRUCTION -------------------------- #
-verdict = {"decision": pe.DECISION_FASTPATH, "override_fired": None,
-           "difficulty": {"band": "low", "display": 2},
-           "impact": {"band": "low", "display": 2},
-           "tiers_signalled": ["T1"], "min_sample_status": "insufficient"}
-loc = {"resolved_paths": ["README.md"], "fan_out": 1, "flags": [], "confidence": "exact"}
-bound = pe.build_record("2026-09-01T000000Z-x-a1", "r", verdict, loc, 1, "ref",
-                        "sha256:" + "0" * 64,
-                        binding={"session_id": "s1", "base_commit": "a" * 40,
-                                 "declared_paths": ["README.md"]})
-ok("binding: the bound record's digest verifies",
-   tx.record_digest(bound, exclude_field="digest") == bound["digest"])
-after = dict(bound)
-after["session_id"] = "s2"
-ok("binding: bolting a field on AFTER build_record breaks the digest (why the kwarg)",
-   tx.record_digest(after, exclude_field="digest") != after["digest"])
-ok("binding: tier is DERIVED from the decision, never accepted from the caller",
-   bound["tier"] == pe.DECISION_TO_TIER[pe.DECISION_FASTPATH])
-
-print("")
-print("%d failure(s)" % len(fails))
-sys.exit(1 if fails else 0)
-PY
+bash tests/test-triage-landing.sh
 ```
 
-**Known gap, stated rather than papered over:** this fixture is *not* discovered by CI. The sweep in
-`.github/workflows/validate.yml` runs `scripts/*.py --selftest` and everything under `tests/`, and
-neither directory is in this job's lane (`commands/v-triage.md`, `commands/v-orchestrate.md`,
-`docs/superpowers/pre-eval/**`). A follow-up that owns `tests/` should move these proofs there
-verbatim, so a regression reds CI instead of waiting for someone to run this block by hand.
+It extracts the Phase L block **verbatim out of this file** and runs it against throwaway git
+repositories in `$TMPDIR`, so it drives the gate as shipped rather than a copy that can drift — if
+you edit Phase L, the suite runs your edit. Every assertion is a real invocation and what that
+invocation left behind: its exit code, the sandbox's git history, and the outcome stream the run
+wrote. It covers path substitution (including an index the implementer pre-poisoned), taxonomy
+self-widening in both shapes, both halves of the concurrency defence (the lock ref and the
+expected-HEAD compare-and-swap), the RECORDED demotion (`demoted_from` / `demotion_reason` reaching
+the outcome stream), and predicate 7 refusing an unattended landing against a red contract, an
+absent one, and one with no `full_command`. Each attack is paired with a control that LANDS, and
+with a planted mutation that removes the corresponding check from a copy of the gate and is
+asserted to turn that attack's assertion red.
+
+**What this replaced, and why.** The fixture that used to sit here asserted `staged ==
+["OTHER.md"]` (a fact about `git add`), that two sha256 digests differ (a fact about sha256), and
+that `git update-ref` honours an expected old value (a fact about git). Phase L could have been
+deleted from this file and all fifteen of its assertions would still have passed. It was also
+outside CI — the sweep covers `scripts/*.py --selftest` and `tests/**`, and `commands/` is in
+neither — so nothing ever ran it. Its trailing `build_record` binding assertions were a duplicate
+of `scripts/compound-v-preeval.py --selftest`, which CI does run.
