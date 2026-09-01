@@ -48,7 +48,7 @@ A narrow auto-commit class gated on nine mechanically checkable predicates, incl
 
 ### Added — lane enforcement before the write
 
-A `PreToolUse` deny that refuses an out-of-lane `Write`/`Edit`/`Bash` write. Its limits are recorded as **passing tests rather than comments** — interpreter one-liners, variable-held paths and build tooling are not caught by command inspection, and are caught by the git-derived postcondition instead, which remains the authority. The guard runs on every matching tool call in every session; measured at 63 ms on the unresolved path.
+A `PreToolUse` deny that refuses an out-of-lane `Write`/`Edit`/`Bash` write. Its limits are recorded as **passing tests rather than comments** — interpreter one-liners, variable-held paths and build tooling are not caught by command inspection, and are caught by the git-derived postcondition instead, which remains the authority. The guard runs on every matching tool call in every session. **The 63 ms figure published here in 3.0.0 is withdrawn:** a re-measurement over 50 invocations per path reproduced neither it nor the ~112 ms the hook's own header carried. The measured cost is **47–81 ms** — ~47 ms when no job resolves, ~81 ms when one does, against a ~31 ms bare-interpreter floor. The deny path is not the expensive one; resolution and manifest parsing are. See `hooks/lane-guard.sh`'s COST header for the reproduction command.
 
 ### Fixed
 
