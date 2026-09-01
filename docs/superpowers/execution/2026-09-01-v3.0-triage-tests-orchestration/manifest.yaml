@@ -24,11 +24,11 @@ audits:
 
 acceptance_criteria:
   - "AC-01: `compound-v-preeval.py` emits three decision values; a selftest covers all 9 matrix cells, the unknown/fail-closed case, and that **any fired override forces FULL** even when the bands read `low`/`low`."
-  - "AC-02: `compound-v-validate-manifest.py` FAILS on a missing or malformed `triage` block and on a `taxonomy_digest` mismatch. The flag ships default-off in every mode (turning it on before the materializer emits the block would red the e2e suite inside the task that adds it), is flipped on for `--mode pre-dispatch` only once the materializer lands, and **`/v:dispatch` passes it in every mode** so no future run repeats 3.0's bootstrap exemption. A planted violation is shown to fail."
+  - "AC-02: `compound-v-validate-manifest.py` FAILS on a missing or malformed `triage` block and on a `taxonomy_digest` mismatch. The flag ships default-off in every mode (turning it on before the materializer emits the block would red the e2e suite inside the task that adds it), **`/v:dispatch` passes it in every mode** so no future run repeats 3.0's bootstrap exemption. A planted violation is shown to fail."
   - "AC-03: `compound-v-fastpath-materialize.py` emits a `triage` block and its own selftest passes; the 11 historical files are allowlisted by id, never back-filled."
   - "AC-04: `/v:triage` exists, writes and commits a record, and `/v:orchestrate` obtains one when absent."
   - "AC-05: The auto-route class implements all nine predicates of A4, including floor-passed and full post-diff re-validation of predicates 2/5/6/line-budget. A test proves a change that outgrows the class is demoted and the demotion recorded. The `sensitive` set is read from the taxonomy, never hardcoded, and this repo's taxonomy lists `skills|agents|commands` markdown. A selftest proves the circuit breaker disarms auto-route once the rolling demotion rate exceeds the threshold, and that it never delays the first decision."
-  - "AC-06: `phase-preeval.md`, `SKILL.md`, `rationalization-table.md` and `routing-policy.md` all carry the amended Iron Invariant #4; no file still asserts the unamended form."
+  - "AC-06: `phase-preeval.md`, `SKILL.md`, `rationalization-table.md` and `routing-policy.md` all carry the amended Iron Invariant #4; no LIVE file still asserts the unamended form — the four prose files plus `preeval.py`, the record schema and `pre-eval-config.md`. CHANGELOG history and archived run artifacts under `docs/superpowers/execution/**/jobs/` are history and are NOT rewritten."
   - "AC-07: `triage-outcomes.jsonl` receives `predicted` and `actual` events, and SCOPED is its own cohort in `compound-v-triage-outcomes.py`."
   - "AC-08: `.claude/compound-v-impact-taxonomy.yaml` exists here, produced by `/v:onboard draft-taxonomy`, and a live `--score-only` probe returns a non-`unknown` band."
   - "AC-09: `run_test_floor` gains a producer, returns below the `changed_paths` computation, and runs impacted ∪ previously-failing ∪ newly-added. No second floor is introduced."
@@ -45,6 +45,8 @@ acceptance_criteria:
   - "AC-20: `hooks/lane-guard.sh` denies a `Write`/`Edit`/`Bash` write outside the acting job's `write_allowed`, resolving the job from `agent_id` with a `cwd`-to-worktree fallback, and reusing `compound-v-scope-check.py`'s matcher rather than a second glob engine. A test proves a planted out-of-lane write is denied, and a second proves a shell write via `sed -i` is caught by the `Bash` matcher."
   - "AC-21: The git-derived verdict is retained and still authoritative; no document claims the deny replaces it."
   - "AC-22: `UserPromptSubmit` invokes triage, and `PostCompact` supplies resume context using the summary it receives."
+  - "AC-24: the D1 integration authority exists as code — every job carries exactly one gate receipt bound to baseline commit, realised commit and diff digest; a forged receipt is rejected and a missing one triggers re-derivation, both proven on planted cases."
+  - "AC-25: the cross-vendor path survives the engine swap — a non-`claude` job's clamp admits its worker script, the lane guard does not deny that invocation, and its workflow agent runs `isolation: direct` so the worker owns its own worktree."
   - "AC-23: README, CHANGELOG and `AGENTS.md` state the Claude Code ≥ 2.1.219 floor and that Feature B's defaults are principle-derived, the '20,000 tests' observation being unreproduced."
 
 routing_stance: balanced
@@ -57,9 +59,12 @@ max_parallel: 5
 # in wave 2 -- see its acceptance line about preserving the commit-before-dependent rule.
 #   wave 0 : task-0-contract                                    (serial)
 #   wave 1 : task-1, task-5, task-6, task-8, task-10, task-11, task-12, task-15
-#   wave 2 : task-2, task-3, task-7, task-16, task-17, then task-9 last
-#   wave 3 : task-4
-#   wave 4 : task-13-review (serial)  ->  task-14-release (serial)
+#   wave 2 : task-2, task-3, task-7, task-17, then task-9 last
+#   wave 3 : task-4                       (needs task-1, task-2, task-3, task-12)
+#   wave 4 : task-16                      (needs task-4 — added in round 2, which is
+#                                          what moved it out of wave 2)
+#   wave 5 : task-13-review   (serial)
+#   wave 6 : task-14-release  (serial)
 
 jobs:
   - id: task-0-contract
@@ -88,7 +93,7 @@ jobs:
       - "the historical 11 manifests are allowlisted by id, never back-filled"
       - "test_contract and per-job test_scope validated; floor_only never empty"
       - "CI executes tests/ RECURSIVELY and for both extensions — a flat tests/*.sh glob misses tests/v2.9-e2e/*.py, which has never run in CI"
-      - "the two tests the glob newly activates (test-codex-review-schema-default.sh, test-session-banner-staleness.sh) are verified green BEFORE wiring it — neither is in this lane and a red one would fail this job for reasons it cannot fix"
+      - "the THREE targets the recursive glob newly activates (test-codex-review-schema-default.sh, test-session-banner-staleness.sh, and tests/v2.9-e2e/test_fastpath_and_escalation.py — the last is task-3 lane, concurrently modified) are verified green BEFORE wiring it — neither is in this lane and a red one would fail this job for reasons it cannot fix"
       - "the new step is proven to fail on a planted violation"
 
   - id: task-1-preeval
@@ -323,6 +328,7 @@ jobs:
       - "the emitted script USES the native budget global: it guards its fan-out on budget.remaining() and stops spawning rather than running past the ceiling. We are handing execution to a runtime that HAS a spend ceiling; not taking it would be leaving the only real cost control on the table"
       - "the emitted script USES phase() and log() so the native progress tree and narrator line are populated — progress visibility stops being something we render from our own state after the fact"
       - "whatever replaces the deleted batching prose PRESERVES the commit-before-dependent rule — a prerequisite merge-back only STAGES, so a dependent worktree created at HEAD would not see it. Deleting that rule mid-run breaks the very ordering this run depends on"
+      - "the Gate stage PRODUCES the receipt: it returns baseline_commit, realised_commit, diff_digest, verdict, raw_stdout and exit_code, and Record persists them into the job result. With no producer every receipt is missing, task-17 re-derives for every job, and integration never completes for any run"
       - "compound-v-emit-workflow.py carries --selftest and is found by the CI sweep over scripts/*.py"
       - "/v:dispatch invokes the validator WITH --require-triage in EVERY mode — this is the mechanism that stops a future run repeating 3.0 own bootstrap exemption"
       - "task-6 job_spec test_contract slice propagated into the dispatcher canonical field list"
@@ -462,7 +468,6 @@ jobs:
     timeout_sec: 5400
     write_allowed:
       - "scripts/compound-v-integration-gate.py"
-      - "scripts/compound-v-scope-check.py"
       - "tests/test-integration-gate.sh"
     read_allowed:
       - "docs/superpowers/specs/**"
@@ -474,10 +479,11 @@ jobs:
     acceptance:
       - "implements spec D1: every original job must have exactly ONE gate receipt bound to its baseline commit, its realised commit and a diff digest"
       - "where a receipt is MISSING, null, or its digests disagree with the tree, this gate runs compound-v-scope-check.py ITSELF and that verdict wins — a workflow Gate agent returns a schema-valid verdict that proves JSON shape, never that the check ran"
-      - "integration is REFUSED until every job has a valid receipt; a job that vanished to null is treated exactly like a failed one"
+      - "MISSING is not INVALID: a missing or null receipt makes this gate RE-DERIVE from git, and the derived verdict is authoritative — a clean re-derivation lets integration proceed, a violation BLOCKS it. Only a PRESENT receipt whose digests disagree with the tree is refused outright, because that is a forged claim rather than an absent one"
+      - "INVOKES scripts/compound-v-scope-check.py as a subprocess and does NOT modify it — that matcher is consumed by task-15's lane guard, which merges first, and re-derivation needs no write access to it"
       - "carries --selftest and is picked up by the CI sweep over scripts/*.py"
       - "a planted forged receipt (valid shape, wrong digest) is REJECTED — proven, not asserted"
-      - "a planted missing receipt causes the gate to re-derive and BLOCK — proven, not asserted"
+      - "a planted missing receipt causes RE-DERIVATION, and a BLOCK only where that re-derivation finds a real violation. Both branches proven, not asserted"
 
   - id: task-13-review
     title: "Three-pass Review Gate over the composite"
@@ -508,7 +514,7 @@ jobs:
     read_allowed:
       - "**"
     acceptance:
-      - "reports a verdict for EVERY criterion by its AC-NN id, ALL TWENTY-THREE, not a blanket 'criteria met' — the ids are copied verbatim from the spec so the two lists cannot drift"
+      - "reports a verdict for EVERY criterion by its AC-NN id, ALL TWENTY-FIVE, not a blanket 'criteria met' — the ids are copied verbatim from the spec so the two lists cannot drift"
       - "no write outside any job's partitioned set"
       - "no fabricated metric anywhere in the diff"
 
