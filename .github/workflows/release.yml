@@ -70,9 +70,23 @@ jobs:
           body += "\n\nFull detail in the [CHANGELOG](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)."
           with open("_release_notes.md", "w", encoding="utf-8") as fh:
               fh.write(body)
-          # a short human title line from the CHANGELOG heading, if any
+          # A short human title. The CHANGELOG heading is `## [X.Y.Z] - YYYY-MM-DD`, so
+          # what follows the dash is the DATE, not a name — v3.0.6 and v3.1.0 both shipped
+          # titled "vX.Y.Z — 2026-09-02" before this was noticed. Take the first `### `
+          # heading of the body instead, which is where the release actually names itself,
+          # and fall back to no suffix rather than to a date.
           m = re.search(r'(?m)^## \[?%s\]?\s*(?:[—-]\s*(.*))?$' % re.escape(v), cl)
           title_suffix = (m.group(1).strip() if m and m.group(1) else "").strip()
+          if re.fullmatch(r'\d{4}-\d{2}-\d{2}', title_suffix or ""):
+              title_suffix = ""
+          if not title_suffix:
+              h = re.search(r'(?m)^###\s+(.+?)\s*$', body)
+              if h:
+                  # "Fixed — a two-line change no longer runs twenty thousand tests"
+                  # reads better as the half after the dash.
+                  t = h.group(1).strip()
+                  parts = re.split(r'\s+[—-]\s+', t, maxsplit=1)
+                  title_suffix = (parts[1] if len(parts) > 1 else t).strip()[:80]
           with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
               fh.write("title_suffix=%s\n" % title_suffix)
           print("Extracted %d chars of notes." % len(body))
