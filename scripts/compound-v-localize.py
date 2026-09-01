@@ -406,6 +406,33 @@ def localize(request, repo, taxonomy, *, file_cap=FILE_CAP, timeout_s=SEARCH_TIM
     NEVER runs git; NEVER launches an external CLI outside the timeout supervisor.
     """
     repo = repo or "."
+
+    # LITERAL PATH FAST PATH.
+    # A request that NAMES a file must resolve to that file. Without this, token
+    # extraction splits "TROUBLESHOOTING.md" into ".md" and "TROUBLESHOOTING",
+    # treats ".md" as a CSS-ish selector, greps it, and returns 301 paths at
+    # `ambiguous` -- which fires Layer-A override #1 and fail-closes to
+    # FULL_PIPELINE. Observed live 2026-09-01: a request consisting of nothing but
+    # an existing filename could not localize, so the DIRECT tier was unreachable
+    # through /v:triage for ANY request, and with it the whole nine-predicate
+    # auto-route class. Found by dogfooding, not by a test.
+    #
+    # Deliberately narrow: only whitespace-separated words that are ALREADY a
+    # regular file inside the repo count. No globbing, no fuzzy matching, no
+    # basename search -- a guess here would hand a cheap tier to the wrong file.
+    literal = []
+    for word in str(request or "").split():
+        cand = word.strip("`'\"(),;:")
+        if not cand or cand.startswith("-"):
+            continue
+        if _contained_regular_file(repo, cand) and cand not in literal:
+            literal.append(cand)
+    if literal:
+        flags, classify_incomplete = _classify_paths(repo, literal, taxonomy)
+        return {"resolved_paths": sorted(literal), "fan_out": len(literal),
+                "flags": flags,
+                "confidence": "ambiguous" if classify_incomplete else "exact"}
+
     tokens = extract_query_tokens(request)
     if not tokens:
         return {"resolved_paths": [], "fan_out": 0, "flags": [], "confidence": "failed"}

@@ -122,6 +122,7 @@ import argparse
 import datetime
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import re
@@ -767,11 +768,50 @@ def _evidence_confidence(verdict, localization):
 
 
 def write_record(repo, pre_eval_id, record):
-    """Write the write-once RECORD (O_EXCL — reject overwrite, CR1-9). Returns rel path."""
+    """Write the write-once RECORD (O_EXCL — reject overwrite, CR1-9). Returns rel path.
+
+    Re-running triage on the SAME request is a supported operation: `run_preeval`
+    deliberately rediscovers an existing `pre_eval_id` via
+    `find_pre_eval_id_by_request` rather than minting a second one. Until this was
+    dogfooded (2026-09-01) that path then hit `O_EXCL` and died with a raw
+    `FileExistsError` traceback — the discovery half and the write half
+    contradicted each other.
+
+    Resolution keeps write-once intact where it matters. Byte-identical content is
+    an idempotent no-op, because rewriting a file with what it already holds
+    changes nothing and refusing it only punishes a legitimate re-run. Content that
+    DIFFERS is still refused, and now with the reason and the offending keys named
+    instead of a stack trace: a record whose decision or bindings moved under a
+    reused id is a real conflict, and silently overwriting it would destroy the
+    audit trail this whole layer exists to produce.
+    """
     full = record_path(repo, pre_eval_id)
-    _write_once_text(full, json.dumps(record, indent=2, sort_keys=True,
-                                      ensure_ascii=False) + "\n")
-    return _rel(repo, full)
+    payload = json.dumps(record, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    if os.path.exists(full):
+        try:
+            existing = io.open(full, encoding="utf-8").read()
+        except OSError as exc:
+            raise ValueError("pre-eval record %s exists but is unreadable: %s"
+                               % (pre_eval_id, exc))
+        if existing == payload:
+            # Byte-identical: an idempotent re-run. Signalled to the caller so it can
+            # skip the PREDICTED append — this write is what stops the flow before
+            # `append_predicted`, so returning "fine" without that signal would put a
+            # SECOND predicted event on the stream the circuit breaker reads.
+            return _rel(repo, full), True
+        try:
+            old_rec = json.loads(existing)
+            moved = sorted(k for k in set(old_rec) | set(record)
+                           if old_rec.get(k) != record.get(k))
+        except ValueError:
+            moved = ["<existing record is not valid JSON>"]
+        raise ValueError(
+            "pre-eval record %s already exists with DIFFERENT content; refusing to "
+            "overwrite an audit artifact. Fields that differ: %s. Re-running the same "
+            "request is fine — this means the same id now scores differently, which is "
+            "a conflict a human should look at." % (pre_eval_id, ", ".join(moved) or "(none)"))
+    _write_once_text(full, payload)
+    return _rel(repo, full), False
 
 
 # --------------------------------------------------------------------------- #
@@ -1024,10 +1064,10 @@ def run_preeval(request, repo=".", taxonomy_path=None, t3_category=None,
     # Phase-P step 4 (write) + 5 (append): write-once record, then predicted event.
     record = build_record(pre_eval_id, request, verdict, localization,
                           taxonomy_version, taxonomy_ref, taxonomy_digest, ts=ts)
-    record_rel = write_record(repo, pre_eval_id, record)
+    record_rel, record_already_existed = write_record(repo, pre_eval_id, record)
 
     predicted_event = None
-    if append_predicted:
+    if append_predicted and not record_already_existed:
         tm = _triage_mod()
         predicted_event = tm.append_predicted(
             pre_eval_id,
@@ -1513,10 +1553,24 @@ def _selftest():
                and res["predicted_event"]["event"] == "predicted")
         # write-once: a second run with the SAME request reuses the pre_eval_id and rejects
         # the record overwrite (write-once record).
-        rejected = _rejects(lambda: run_preeval(
-            "make button X red", repo=repo, _localize=fk, ts="2026-07-12T10:15:00Z",
-            pre_eval_id=res["pre_eval_id"], stream_path=stream), FileExistsError)
-        expect("E2E: write-once record rejects overwrite", rejected)
+        # Re-running the SAME request is supported (run_preeval rediscovers the id),
+        # so a byte-identical second run is an idempotent no-op — and must NOT append
+        # a second predicted event to the stream the breaker reads. A run whose
+        # content DIFFERS under a reused id is still refused: that is a real conflict.
+        before = io.open(stream, encoding="utf-8").read().count('"event": "predicted"') \
+            if os.path.isfile(stream) else 0
+        again = run_preeval("make button X red", repo=repo, _localize=fk,
+                            ts="2026-07-12T10:15:00Z", pre_eval_id=res["pre_eval_id"],
+                            stream_path=stream)
+        after = io.open(stream, encoding="utf-8").read().count('"event": "predicted"') \
+            if os.path.isfile(stream) else 0
+        expect("E2E: an identical re-run is an idempotent no-op", again["pre_eval_id"] == res["pre_eval_id"])
+        expect("E2E: an identical re-run appends NO second predicted event", after == before)
+        rec_path = os.path.join(repo, record_path(repo, res["pre_eval_id"]))
+        rec = json.loads(io.open(rec_path, encoding="utf-8").read())
+        rec["decision"] = "SCOPED_PIPELINE"
+        conflicted = _rejects(lambda: write_record(repo, res["pre_eval_id"], rec), ValueError)
+        expect("E2E: a DIFFERING record under a reused id is refused", conflicted)
 
         # (b) The record validates against pre-eval-record.schema.json (if jsonschema present).
         _schema_check(expect, res["record"], must_validate=True)
