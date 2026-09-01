@@ -1,0 +1,360 @@
+# Compound V 3.0 execution manifest.
+#
+# BOOTSTRAP NOTE, stated rather than skipped: this manifest carries no `triage`
+# block, because the block is DEFINED by task-0 and its `taxonomy_digest` cannot
+# exist until task-12 generates the taxonomy. 3.0's own run is therefore the last
+# run that legitimately predates the gate it installs. Every run after this one
+# must carry it, and `--require-triage` is off by default precisely so the CI
+# historical sweep and this bootstrap keep passing.
+
+run_id: 2026-09-01-v3.0-triage-tests-orchestration
+feature: "Compound V 3.0 — proportionate triage, scoped tests, native-Workflow dispatch"
+spec_path: docs/superpowers/specs/2026-09-01-v3.0-triage-tests-orchestration-design.md
+plan_path: docs/superpowers/plans/2026-09-01-v3.0-triage-tests-orchestration.md
+audits:
+  archaeology: docs/superpowers/preflight/2026-09-01-v3.0-1a-archaeology.md
+  domain: docs/superpowers/preflight/2026-09-01-v3.0-1b-domain.md
+  library: docs/superpowers/preflight/2026-09-01-v3.0-1c-docs.md
+
+acceptance_criteria:
+  - "A manifest without a well-formed triage block FAILS validation under --require-triage, proven on a planted violation"
+  - "compound-v-preeval.py emits three tiers, and any fired override forces FULL even when the bands read low/low"
+  - "The auto-route class re-validates single-path, sensitive-set, no-test-file AND the line budget against the realised diff, demoting to SCOPED on any failure"
+  - "The sensitive set is read from the taxonomy, never hardcoded"
+  - "floor_command runs at every tier; an unmapped path resolves to full_command; floor_only never resolves to an empty command"
+  - "The floor runs impacted UNION previously-failing UNION newly-added"
+  - "job_result carries tests{command,exit_code,scope,selected_count} and every worker receives the test contract as an argument, not as prompt prose"
+  - "spec-reviewer FAILS a job that reports no test command at all"
+  - "The emitted workflow script's Gate stage never throws, treats null as FAIL, and its Record stage is idempotent"
+  - "The emitted script contains no Date.now, Math.random, bare new Date() or import()"
+  - "Engine C is selected only in a top-level session where the live probe succeeds; Engine A everywhere else"
+  - "CI executes the files under tests/, and the full-suite backstop always runs rather than being conditionally skipped"
+  - "Every new guard is demonstrated to fail on a planted violation"
+  - "No speed or cost claim ships with 3.0; README and CHANGELOG state the defaults are principle-derived"
+
+routing_stance: balanced
+max_parallel: 5
+
+jobs:
+  - id: task-0-contract
+    title: "Manifest contract: triage block, test_contract, --require-triage, CI runs tests/"
+    type: shared_foundation
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: direct
+    run: serial
+    timeout_sec: 3600
+    write_allowed:
+      - "scripts/compound-v-validate-manifest.py"
+      - "skills/compound-v/execution-manifest.md"
+      - "examples/manifest.example.yaml"
+      - ".github/workflows/validate.yml"
+    read_allowed:
+      - "docs/superpowers/specs/**"
+      - "docs/superpowers/plans/**"
+      - "docs/superpowers/preflight/**"
+      - "docs/superpowers/execution/**"
+      - "tests/**"
+    acceptance:
+      - "triage block validated under --require-triage, off by default elsewhere"
+      - "taxonomy_digest mismatch FAILS"
+      - "test_contract and per-job test_scope validated; floor_only never empty"
+      - "CI executes tests/ and the new step is proven to fail on a planted violation"
+
+  - id: task-1-preeval
+    title: "Third tier in the scorer; any fired override forces FULL"
+    type: standard
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-contract]
+    timeout_sec: 3600
+    write_allowed:
+      - "scripts/compound-v-preeval.py"
+    read_allowed:
+      - "docs/superpowers/specs/**"
+      - "docs/superpowers/preflight/**"
+      - "scripts/**"
+    acceptance:
+      - "DECISION_SCOPED exists; matrix computed inside the engine, not post-hoc"
+      - "selftest covers 9 cells, unknown, and override_fired beside low/low"
+
+  - id: task-2-outcomes
+    title: "SCOPED cohort + miscalibration circuit breaker"
+    type: standard
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [task-1-preeval]
+    timeout_sec: 3600
+    write_allowed:
+      - "scripts/compound-v-triage-outcomes.py"
+    read_allowed:
+      - "docs/superpowers/specs/**"
+      - "scripts/**"
+    acceptance:
+      - "SCOPED is its own cohort; fast-path precision no longer corrupted"
+      - "breaker never delays the first decision and disarms above the threshold"
+
+  - id: task-3-fastpath
+    title: "Materializer emits triage; the existing floor gets a producer and three sets"
+    type: standard
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-contract, task-1-preeval]
+    timeout_sec: 3600
+    write_allowed:
+      - "scripts/compound-v-fastpath-materialize.py"
+      - "scripts/compound-v-fastpath-run.py"
+    read_allowed:
+      - "docs/superpowers/specs/**"
+      - "scripts/**"
+    acceptance:
+      - "build_manifest emits triage; its selftest updated in the same commit"
+      - "run_test_floor returns below changed_paths and runs impacted+failing+new"
+      - "no second floor is introduced"
+
+  - id: task-4-triage-command
+    title: "/v:triage, the caller the engine never had, plus the nine auto-route predicates"
+    type: standard
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [task-1-preeval, task-2-outcomes, task-3-fastpath]
+    timeout_sec: 3600
+    write_allowed:
+      - "commands/v-triage.md"
+      - "commands/v-orchestrate.md"
+    read_allowed:
+      - "docs/superpowers/specs/**"
+      - "commands/**"
+      - "scripts/**"
+    acceptance:
+      - "record written AND committed under docs/superpowers/pre-eval/"
+      - "predicate 7 floor-passed and predicate 8 full post-diff re-validation implemented"
+      - "sensitive set read from the taxonomy, never hardcoded"
+
+  - id: task-5-invariant
+    title: "Amended Iron Invariant #4 across all four prose files"
+    type: junior
+    backend: claude
+    tier: standard
+    effort: medium
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-contract]
+    timeout_sec: 1800
+    write_allowed:
+      - "skills/compound-v/phase-preeval.md"
+      - "skills/compound-v/SKILL.md"
+      - "skills/compound-v/rationalization-table.md"
+      - "skills/compound-v/routing-policy.md"
+    read_allowed:
+      - "docs/superpowers/specs/**"
+      - "skills/**"
+    acceptance:
+      - "grep -rn 'never auto-routes' finds no unamended assertion"
+      - "a rationalization row added for skipping the triage record"
+
+  - id: task-6-transport
+    title: "job_result tests block + a real test-contract argument to every worker"
+    type: standard
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-contract]
+    timeout_sec: 3600
+    write_allowed:
+      - "schemas/job_result.schema.json"
+      - "skills/backend-launcher/SKILL.md"
+      - "skills/backend-launcher/adapter-*.md"
+      - "scripts/compound-v-run-*-worker.sh"
+    read_allowed:
+      - "docs/superpowers/specs/**"
+      - "docs/superpowers/preflight/**"
+      - "schemas/**"
+      - "skills/backend-launcher/**"
+      - "scripts/**"
+    acceptance:
+      - "additionalProperties:false schema gains tests{command,exit_code,scope,selected_count}"
+      - "test contract reaches workers as an argument, never as prompt prose"
+
+  - id: task-7-review-gate
+    title: "Tier-aware review gate; no test command reported is a FAIL"
+    type: standard
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [task-6-transport]
+    timeout_sec: 1800
+    write_allowed:
+      - "agents/spec-reviewer.md"
+    read_allowed:
+      - "docs/superpowers/specs/**"
+      - "agents/**"
+      - "schemas/**"
+    acceptance:
+      - "floor unconditional; full_command at FULL and for unmapped paths"
+      - "a job reporting no test command FAILS"
+
+  - id: task-8-stop-rule
+    title: "Triage rule inside the existing Stop hook, with the 1.5s budget respected"
+    type: standard
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-contract]
+    timeout_sec: 3600
+    write_allowed:
+      - "hooks/epic-goal-stop.sh"
+      - "tests/test-epic-goal-stop.sh"
+    read_allowed:
+      - "docs/superpowers/specs/**"
+      - "docs/superpowers/preflight/**"
+      - "hooks/**"
+      - "tests/**"
+    acceptance:
+      - "a second RULE in the existing script, never a second registration"
+      - "blocks at most once per session on its own marker, not on stop_hook_active"
+      - "a bounded check that RECORDS incompletion rather than passing silently"
+      - "test proves the raw script exits 2 when it fails to parse while || true still fails open"
+
+  - id: task-9-engine-c
+    title: "Engine C: emit a workflow whose gate is a stage that cannot throw"
+    type: large_isolated
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-contract]
+    timeout_sec: 5400
+    write_allowed:
+      - "scripts/compound-v-emit-workflow.py"
+      - "commands/v-dispatch.md"
+      - "agents/parallel-dispatcher.md"
+      - "skills/compound-v/workflows-accelerator.md"
+    read_allowed:
+      - "docs/superpowers/specs/**"
+      - "docs/superpowers/preflight/**"
+      - "commands/**"
+      - "agents/**"
+      - "skills/**"
+      - "scripts/**"
+    acceptance:
+      - "named Engine C throughout; Engine B is never used"
+      - "Gate never throws, null is FAIL, Record is idempotent"
+      - "emitted script has no Date.now, Math.random, bare new Date() or import()"
+      - "scriptPath invocation forced; CLAUDE_CODE_WORKFLOWS probed with Engine A fallback"
+      - "engine selection justified operationally, never by the refuted headless claim"
+
+  - id: task-10-adrs
+    title: "ADR 0003 scoped tests, ADR 0004 Workflow as the dispatch engine"
+    type: junior
+    backend: claude
+    tier: standard
+    effort: medium
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-contract]
+    timeout_sec: 1800
+    write_allowed:
+      - "docs/superpowers/adr/0003-*.md"
+      - "docs/superpowers/adr/0004-*.md"
+    read_allowed:
+      - "docs/superpowers/**"
+      - "skills/**"
+    acceptance:
+      - "0003 names the v2.17 rejection, the v2.14.1 incident and the 0.2%-10.6% RTS miss rate as an optimistic floor"
+      - "0004 names the workflows-accelerator guarantee it reverses"
+      - "each records its own falsification condition"
+
+  - id: task-11-v218-wiring
+    title: "v2.18 job p5: arm/disarm wiring across the commands"
+    type: standard
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-contract]
+    timeout_sec: 3600
+    write_allowed:
+      - "commands/v-epic.md"
+      - "commands/v-status.md"
+      - "commands/v-init.md"
+      - "skills/compound-v/epic-mode.md"
+    read_allowed:
+      - "docs/superpowers/specs/**"
+      - "commands/**"
+      - "skills/**"
+      - "scripts/**"
+    acceptance:
+      - "/v:epic arm/disarm plus the shim offer; /v:status armed-goal column; /v:init enforcement key"
+
+  - id: task-12-taxonomy
+    title: "Generate the impact taxonomy so the engine can stop saying unknown"
+    type: standard
+    backend: claude
+    tier: deep
+    effort: medium
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-contract]
+    timeout_sec: 1800
+    write_allowed:
+      - ".claude/compound-v-impact-taxonomy.yaml"
+    read_allowed:
+      - "docs/superpowers/specs/**"
+      - "scripts/**"
+      - "skills/**"
+    acceptance:
+      - "produced by /v:onboard draft-taxonomy, not hand-authored"
+      - "sensitive set seeds skills/**/*.md, agents/*.md, commands/*.md, hooks/**, .github/**"
+      - "a live --score-only probe returns a non-unknown band"
+
+  - id: task-13-review
+    title: "Three-pass Review Gate over the composite"
+    type: review
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: direct
+    run: serial
+    depends_on:
+      - task-1-preeval
+      - task-2-outcomes
+      - task-3-fastpath
+      - task-4-triage-command
+      - task-5-invariant
+      - task-6-transport
+      - task-7-review-gate
+      - task-8-stop-rule
+      - task-9-engine-c
+      - task-10-adrs
+      - task-11-v218-wiring
+      - task-12-taxonomy
+    timeout_sec: 5400
+    write_allowed: []
+    read_allowed:
+      - "**"
+    acceptance:
+      - "every feature-level acceptance criterion met"
+      - "no write outside any job's partitioned set"
+      - "no fabricated metric anywhere in the diff"
