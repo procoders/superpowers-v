@@ -35,3 +35,23 @@ docs/superpowers/execution/2026-07-11-v2.9-pre-evaluation/baselines/
 
 # stray CLI stderr captures (e.g. agy/models probes)
 *.err
+
+# Harness-created agent worktrees. The existing `.worktrees/` guard above predates
+# them and does not match this path. Ignoring them is deliberate and has a stated
+# trade-off, per the scope-gate warning above: an ignored path is invisible to
+# `git ls-files --others --exclude-standard`, so the gate can no longer see a job
+# that writes INTO another agent's tree. That case is covered earlier and better —
+# hooks/lane-guard.sh denies a cross-tree write BEFORE it happens. What ignoring
+# buys is that every concurrent job stops having to hand-snapshot its siblings'
+# checkouts into --preexisting just to measure its own diff, and that a local
+# `lint-frontmatter.py .` stops reporting dozens of phantom issues from files that
+# are not in this checkout at all (observed three times: 51, 68, 68).
+.claude/worktrees/
+
+# Python bytecode. Not previously ignored, so a local run of the repo's own test
+# sweep with a bytecode-writing interpreter left .pyc files next to the scripts —
+# untracked, therefore unioned into the acting job's changed set, therefore a
+# false scope-gate BLOCK. CI exports PYTHONDONTWRITEBYTECODE=1; this covers the
+# local case.
+__pycache__/
+*.pyc
