@@ -1126,12 +1126,19 @@ async function gateStage(prev, job) {
       return gateFailure(job.id, 'implement agent returned null — treated as FAIL, never as a clean tree');
     }
 
-    // WHERE TO GATE is decided by the MANIFEST's isolation, never by whether the
-    // agent happened to return a non-empty locator. A `direct` job works in the
-    // project checkout, so that checkout is the tree — and an agent that reports
-    // some other pwd for a direct job is the exact failure this branch removes.
+    // WHERE TO GATE follows where the AGENT actually ran (`agent_isolation`),
+    // never whether the agent happened to return a non-empty locator, and never
+    // the MANIFEST's isolation — those are two different layers that share a
+    // field name. A depends_on job declares `worktree` in the manifest (the
+    // validator requires it; scope attribution uses it) and runs its agent in
+    // the project checkout, because a fresh worktree branches from the default
+    // ref and would not contain the wave that just committed.
+    //
+    // Reading the manifest value here made Record refuse a perfectly good direct
+    // run for "carrying no observed worktree" — the fail-closed rule from 3.0.2
+    // firing on a job that was never supposed to have one.
     let gateRoot;
-    if (job.isolation === 'worktree') {
+    if (job.agent_isolation === 'worktree') {
       gateRoot = (impl.worktree || '').trim();
       if (!gateRoot) {
         return gateFailure(job.id, 'worktree job reported no worktree; there is no tree to gate — fails closed');
@@ -2137,7 +2144,16 @@ def cmd_record(argv):
     # The manifest is the authority on isolation, and its ABSENCE FAILS CLOSED.
     # Deriving it from "is the locator empty?" is what 3.0.1 did, and a compliant
     # direct implementer's locator is never empty.
+    # ...but branch on the AGENT layer, not the manifest's. A depends_on job
+    # declares `worktree` in the manifest and runs its agent in the project
+    # checkout, because a fresh worktree branches from the default ref and would
+    # not contain the wave that just committed. Reading the manifest value here
+    # made Record refuse a valid direct run for "carrying no observed worktree" —
+    # 3.0.2's fail-closed rule firing on a job never meant to have one. One field
+    # name, two layers, opposite meanings.
     isolation = job.get("isolation")
+    if isolation == "worktree" and (job.get("depends_on") or []):
+        isolation = "direct"
     if isolation not in ("direct", "worktree"):
         ack["reason"] = (
             "manifest job %r declares no `isolation` (got %r). Record branches on "
