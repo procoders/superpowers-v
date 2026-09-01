@@ -1130,7 +1130,24 @@ def main(argv):
         except ValueError as e:
             ap.error("invalid --localization-json: %s" % e)
         taxonomy, _bytes, _v = _load_taxonomy(args.repo, args.taxonomy)
+        # --score-only used to pass NEITHER churn_hot NOR tier2 NOR advisor_hot, while
+        # run_preeval passes all three. The probe therefore reported a systematically
+        # CHEAPER tier than the engine actually produces — always in the optimistic
+        # direction, which is the worst direction for a surface people use to ask
+        # "would this be DIRECT?". Observed 2026-09-01: README.md read low/low here and
+        # low/high through run_preeval, from an identical localization.
+        # These are computed the same way run_preeval computes them; each degrades to
+        # its inert value rather than failing, exactly as it does there.
+        try:
+            churn_hot = _churn_hot_for(args.repo, localization.get("resolved_paths", []))
+        except Exception:  # noqa: BLE001 — advisory signal, never break the probe
+            churn_hot = False
+        try:
+            tier2 = _triage_mod().tier2_lookup(repo=args.repo)
+        except Exception:  # noqa: BLE001
+            tier2 = None
         verdict = score(localization, taxonomy, t3_category=args.t3_category,
+                        tier2=tier2, churn_hot=churn_hot,
                         fan_out_threshold=args.fan_out_threshold,
                         request_text=args.request or "")
         print(json.dumps(verdict, indent=2, sort_keys=True))

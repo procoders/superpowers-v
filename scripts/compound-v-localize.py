@@ -520,11 +520,34 @@ def write_localization_artifact(repo, pre_eval_id, result):
 # ---------------------------------------------------------------------------- #
 # CLI.
 # ---------------------------------------------------------------------------- #
-def _load_taxonomy_arg(path):
-    if not path:
-        return {}
+DEFAULT_TAXONOMY_REL = os.path.join(".claude", "compound-v-impact-taxonomy.yaml")
+
+
+def _load_taxonomy_arg(path, repo="."):
+    """Load the taxonomy, defaulting to the PROJECT's own the way run_preeval does.
+
+    Until 2026-09-01 an omitted --taxonomy meant `{}` — the CLI classified with no
+    rules at all and returned `flags: []`. Anyone who fed that output into
+    `preeval --score-only` (the documented way to ask "what tier would this get?")
+    therefore got a systematically CHEAPER answer than the engine produces, always
+    in the optimistic direction. Observed: README.md read low/low through the CLI
+    and low/high through run_preeval, from what looked like the same localization —
+    the difference was a `content:i18n_placeholder` flag the flagless run never saw.
+
+    An absent taxonomy still degrades to `{}` rather than failing, because A3 turns
+    that into an unconditional FULL_PIPELINE anyway — but it now says so on stderr
+    instead of looking like a clean classification.
+    """
     tax = _taxonomy_module()
-    return tax.load_taxonomy(path=path)
+    if path:
+        return tax.load_taxonomy(path=path)
+    default = os.path.join(repo or ".", DEFAULT_TAXONOMY_REL)
+    if os.path.isfile(default):
+        return tax.load_taxonomy(path=default)
+    sys.stderr.write(
+        "warning: no taxonomy at %s — classifying WITHOUT content rules, so these "
+        "flags are incomplete and any tier derived from them is optimistic\n" % default)
+    return {}
 
 
 def main(argv):
@@ -545,7 +568,7 @@ def main(argv):
     if args.request is None:
         ap.error("--request is required (or use --selftest)")
     try:
-        taxonomy = _load_taxonomy_arg(args.taxonomy)
+        taxonomy = _load_taxonomy_arg(args.taxonomy, args.repo)
     except (ValueError, OSError, RuntimeError) as e:
         # Fail-closed: an unreadable taxonomy must NOT crash localization; A3 turns an
         # absent/malformed taxonomy into an unconditional FULL_PIPELINE.
