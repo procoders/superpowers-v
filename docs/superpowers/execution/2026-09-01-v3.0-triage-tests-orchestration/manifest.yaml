@@ -318,6 +318,8 @@ jobs:
       - "emitted script has no Date.now, Math.random, bare new Date() or import()"
       - "scriptPath invocation forced; CLAUDE_CODE_WORKFLOWS probed with Engine A fallback"
       - "engine selection justified operationally, never by the refuted headless claim"
+      - "the emitted script USES the native budget global: it guards its fan-out on budget.remaining() and stops spawning rather than running past the ceiling. We are handing execution to a runtime that HAS a spend ceiling; not taking it would be leaving the only real cost control on the table"
+      - "the emitted script USES phase() and log() so the native progress tree and narrator line are populated — progress visibility stops being something we render from our own state after the fact"
       - "whatever replaces the deleted batching prose PRESERVES the commit-before-dependent rule — a prerequisite merge-back only STAGES, so a dependent worktree created at HEAD would not see it. Deleting that rule mid-run breaks the very ordering this run depends on"
       - "compound-v-emit-workflow.py carries --selftest and is found by the CI sweep over scripts/*.py"
       - "/v:dispatch invokes the validator WITH --require-triage in EVERY mode — this is the mechanism that stops a future run repeating 3.0 own bootstrap exemption"
