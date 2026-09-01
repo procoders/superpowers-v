@@ -40,6 +40,7 @@ scripts), not a guessed shape.
 import importlib.util
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -645,7 +646,11 @@ class TestFeatureBTestFloorProducer(_RepoCase):
         self.assertEqual(rc, 1, "a failing floor must exit non-zero: %s%s" % (out, err))
         self.assertTrue(res["merge_blocked"])
         self.assertFalse(res["passed"])
-        self.assertEqual(res["failures"], ["sh -c exit 3"])
+        # Verbatim, not shlex-joined: B2 rebuilds the next run's
+        # "previously failing" set from these strings, so a recording that
+        # cannot be re-parsed into the argv that ran drops coverage silently.
+        self.assertEqual(res["failures"], ["sh -c 'exit 3'"])
+        self.assertEqual(shlex.split(res["failures"][0]), ["sh", "-c", "exit 3"])
 
 
 if __name__ == "__main__":
