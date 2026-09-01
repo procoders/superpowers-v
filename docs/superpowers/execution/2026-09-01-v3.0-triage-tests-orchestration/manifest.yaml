@@ -140,6 +140,7 @@ jobs:
       - "docs/superpowers/specs/**"
       - "scripts/**"
     acceptance:
+      - "reads DECISION_SCOPED and DECISION_TO_TIER FROM the engine — never re-spells the decision string or the tier token, since a duplicated wire vocabulary is how two halves drift apart"
       - "SCOPED is its own cohort; fast-path precision no longer corrupted"
       - "the breaker numerator is NEGATIVE ACTUAL OUTCOMES — a demotion, a CI failure on the resulting commit, a revert of it, or a later escalation — never a demotion count alone. A mis-sized change that stays one allowed sub-20-line file is never demoted, so a demotion-only breaker stays armed through any number of bad commits"
       - "a predicted event is appended per decision and an actual event per completed run — the stream has never had a single data point"
@@ -163,6 +164,7 @@ jobs:
       - "docs/superpowers/specs/**"
       - "scripts/**"
     acceptance:
+      - "reads DECISION_SCOPED and DECISION_TO_TIER FROM the engine — never re-spells the decision string or the tier token, since a duplicated wire vocabulary is how two halves drift apart"
       - "build_manifest emits triage; its selftest AND tests/v2.9-e2e updated in the same commit"
       - "does NOT flip any validator default — the mode-scoped default was removed as circular; the closure is /v:dispatch passing --require-triage explicitly, which task-9 owns"
       - "run_test_floor returns below changed_paths and runs impacted+failing+new"
@@ -188,6 +190,7 @@ jobs:
       - "scripts/**"
       - ".claude/**"
     acceptance:
+      - "reads DECISION_SCOPED and DECISION_TO_TIER FROM the engine — never re-spells the decision string or the tier token, since a duplicated wire vocabulary is how two halves drift apart"
       - "record written AND committed under docs/superpowers/pre-eval/"
       - "predicate 7 floor-passed and predicate 8 full post-diff re-validation implemented"
       - "the pre-commit recheck lands behind a REAL serialization boundary — an expected-HEAD `git update-ref` compare-and-swap — not a re-read. 'Atomic' was an assertion in the spec; two sessions can both pass the armed check, one disarm the breaker, and the other commit on already-passed authorization"
