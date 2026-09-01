@@ -392,6 +392,15 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
     max_parallel = manifest.get("max_parallel") or 4
     jobs = manifest.get("jobs") or []
     waves = topo_waves(jobs, max_parallel)
+    # A `test_contract` block is what makes resolution POSSIBLE at all. Without
+    # one, `resolve-tests` fails closed and writes no file — and the worker
+    # scripts reject a `--test-contract-file` that does not exist (exit 2). So the
+    # flag is emitted only where the manifest actually declares the contract;
+    # elsewhere the worker runs no tests and reports no `tests` object, which is
+    # the documented honest outcome, not a silent zero.
+    declares_contract = isinstance(manifest.get("test_contract"), dict) and bool(
+        manifest.get("test_contract")
+    )
 
     def worker_script_for(backend):
         path = os.path.join(workers_dir, "compound-v-run-%s-worker.sh" % backend)
@@ -427,6 +436,10 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
             "depends_on": job.get("depends_on") or [],
             "test_scope": job.get("test_scope"),
             "worker_script": worker_script_for(backend) if backend != "claude" else None,
+            "test_contract_file": (
+                test_contract_path(os.path.abspath(run_dir), job_id)
+                if backend != "claude" and declares_contract else None
+            ),
             "implement_clamp": clamp,
         }
 
@@ -497,6 +510,12 @@ RECORD_SCHEMA = {
         "status": {"type": "string"},
         "result_path": {"type": "string"},
         "reason": {"type": "string"},
+        # The Record stage reports whether it appended the run's triage `actual`.
+        # RECORD_SCHEMA is additionalProperties:false, so a field the ack emits
+        # and the schema does not declare would make the Record agent's
+        # structured result invalid — and Record is the stage that must never be
+        # the thing that fails.
+        "triage_actual": {"type": "string"},
     },
 }
 
@@ -525,12 +544,21 @@ def _implement_prompt(job, plan):
         lines.append("`direct` isolation precisely so no worktree is nested inside another:")
         lines.append("")
         lines.append("```bash")
-        lines.append("%s ..." % job["worker_script"])
-        lines.append("  # --test-contract-file %s"
-                     % os.path.join(plan["run_dir"], "jobs",
-                                    "%s.test-contract.json" % job["id"]))
+        if job["test_contract_file"]:
+            lines.append("%s ... \\" % job["worker_script"])
+            lines.append("  --test-contract-file %s" % job["test_contract_file"])
+        else:
+            lines.append("%s ..." % job["worker_script"])
         lines.append("```")
         lines.append("")
+        if job["test_contract_file"]:
+            lines.append("The `--test-contract-file` above is a REAL ARGUMENT, and it is")
+            lines.append("already written: the `register-lane` command you ran first")
+            lines.append("resolved this job's test contract into that path. Pass the flag")
+            lines.append("exactly as shown. A test contract that reaches a worker as prose")
+            lines.append("inside a prompt is a value the model has to notice, and a value a")
+            lines.append("model has to notice is not a contract.")
+            lines.append("")
     lines.append("WRITE-ALLOWED (your lane — anything else is a scope violation):")
     for glob in job["write_allowed"]:
         lines.append("  - %s" % glob)
@@ -862,6 +890,12 @@ def lane_map_path(run_dir):
     return os.path.join(run_dir, "lane-map.json")
 
 
+def test_contract_path(run_dir, job_id):
+    """`jobs/<job-id>.test-contract.json` — the resolved slice a worker is HANDED
+    as `--test-contract-file`, and the slice `record` reads `scope` back out of."""
+    return os.path.join(run_dir, "jobs", "%s.test-contract.json" % job_id)
+
+
 def register_lane(run_dir, job_id, cwd, manifest_path=None, agent_id=None):
     """Bind one job to its real worktree (and agent id, if ever available).
 
@@ -1095,7 +1129,11 @@ def cmd_gate_receipt(argv):
     # become a false violation. The flip side is the caller's problem and is
     # handled at merge: staging is restricted to the gate-approved paths.
     if verdict == "pass":
-        contract_out = os.path.join(run_dir, "jobs", "%s.test-contract.json" % job_id)
+        # Re-resolved here against the job's REALISED diff. The Implement stage
+        # already wrote one (that is the copy an external worker was handed,
+        # before it changed anything); this one is what the floor about to run
+        # was scoped from, and it is what `record` reads `scope` back out of.
+        contract_out = test_contract_path(run_dir, job_id)
         os.makedirs(os.path.dirname(contract_out), exist_ok=True)
         _resolve_test_contract(
             args.fastpath, manifest_path, job_id, root, baseline,
@@ -1189,9 +1227,195 @@ def merge_back(worktree, repo_root, baseline, files_changed):
     return True, None
 
 
-def _job_result_from(verdict, job, state_job, tests=None):
+# --------------------------------------------------------------------------- #
+# the floor document -> the schema's `tests` block
+#
+# `test-floor` and `job_result.tests` are two DIFFERENT shapes, and Engine C used
+# to copy the first into the second verbatim. The floor returns
+# `{phase, tier_used, passed, merge_blocked, changed_paths, checks, reasons,
+#   failures?, contract_notes?}`; the schema's `tests` object is
+# `additionalProperties: false` and requires exactly
+# `{command, exit_code, scope, selected_count}`. So EVERY Engine C job_result —
+# on the clean happy path, not some edge — failed the schema `/v:collect` says it
+# is validated against, and `agents/spec-reviewer.md` FAILs any job whose
+# `tests.command` is absent: the default engine's every job would have been
+# failed by this release's own review gate.
+#
+# Translation happens HERE, at the one boundary that builds a job_result, so
+# there is a single producer of the shape rather than one per caller.
+#
+# WHAT IS MEASURED AND WHAT IS NOT, stated rather than papered over:
+#   * `command` / `selected_count` come from the floor's `checks[].checker` — the
+#     commands it ACTUALLY ran, in execution order. No checker strings at all
+#     means the floor executed nothing, and then the whole object is OMITTED:
+#     absent is honest, an invented zero is not.
+#   * `exit_code` is the FIRST non-zero `rc` the floor recorded. A floor that
+#     failed WITHOUT recording an rc (tier-2/3 report `status`, not always a
+#     usable code) reports 1 — non-zero is what is known to be true; the exact
+#     value is a summary, and the alternative (dropping the object) would hide a
+#     failure. A passing floor with no rc reports 0.
+#   * `failures` / `duration_ms` are copied ONLY when the floor reports them.
+#     Tier-1 always sets `failures` (empty = measured-and-nothing-failed); tiers
+#     2 and 3 never do, and its ABSENCE is what makes B2 fall back to
+#     `full_command` instead of silently dropping the previously-failing set.
+#     Nothing here measures duration, so nothing here invents one.
+#   * `scope` is copied from the resolved contract slice the same floor ran, and
+#     falls back to the job's declared `test_scope`, then to `full` — which is
+#     the resolver's OWN default for an unset scope, not a guess about this run.
+# --------------------------------------------------------------------------- #
+TESTS_SCOPES = ("full", "impacted", "floor_only")
+
+
+def _tests_block_from_floor(floor, contract=None, job=None):
+    """Translate a `test-floor` document into the schema's `tests` block.
+
+    Returns None when the floor ran no command — the schema says to omit the
+    object entirely rather than report a fabricated zero.
+    """
+    if not isinstance(floor, dict):
+        return None
+    # Already in schema shape (a caller that translated once) — pass it through.
+    if "command" in floor and "phase" not in floor:
+        return floor
+
+    checks = [c for c in (floor.get("checks") or []) if isinstance(c, dict)]
+    commands = [str(c.get("checker")).strip() for c in checks
+                if str(c.get("checker") or "").strip()]
+    if not commands:
+        return None
+
+    exit_code = None
+    for check in checks:
+        rc = check.get("rc")
+        if isinstance(rc, int) and rc != 0:
+            exit_code = rc
+            break
+    if exit_code is None:
+        passed = bool(floor.get("passed")) and not floor.get("merge_blocked")
+        exit_code = 0 if passed else 1
+
+    scope = None
+    for candidate in ((contract or {}).get("scope"), (job or {}).get("test_scope")):
+        if isinstance(candidate, str) and candidate in TESTS_SCOPES:
+            scope = candidate
+            break
+    if scope is None:
+        scope = "full"
+
+    block = {
+        "command": "\n".join(commands),
+        "exit_code": int(exit_code),
+        "scope": scope,
+        "selected_count": len(commands),
+    }
+    failures = floor.get("failures")
+    if isinstance(failures, list):
+        block["failures"] = [str(f) for f in failures]
+    duration = floor.get("duration_ms")
+    if isinstance(duration, int) and not isinstance(duration, bool) and duration >= 0:
+        block["duration_ms"] = duration
+    return block
+
+
+# --------------------------------------------------------------------------- #
+# the triage `actual` event — the join's missing producer on the default path
+#
+# `predicted` -> `bind` -> `actual` is a three-event join, and on Engine C the
+# third event had NO reachable producer: the only two live `append_actual` call
+# sites were `agents/parallel-dispatcher.md` (the residual path `/v:dispatch`
+# explicitly says not to use) and the v2.9 fast-path tail in `/v:collect`. So the
+# join never closed, precision read `insufficient` forever, and the
+# miscalibration breaker's numerator could only ever see demotions — the exact
+# blind spot negative outcomes were added to remove.
+#
+# WHAT IS APPENDED HERE, and what is not. This is the RECORD/MERGE path: it knows
+# the run's jobs merged, and it does NOT know the Review Gate's verdict or that
+# the run substrate was committed. CR5-4 says a TERMINAL `actual` is emitted only
+# after the merge/commit boundary, so what is written here is the documented
+# precision-IGNORED intermediate (`merge_pending: true`). `/v:dispatch`'s final
+# step writes the terminal one, and last-writer-wins replaces this.
+# --------------------------------------------------------------------------- #
+TRIAGE_OUTCOMES_DEFAULT = os.path.join(HERE, "compound-v-triage-outcomes.py")
+TERMINAL_JOB_STATES = ("done", "blocked", "failed")
+
+
+def _import_triage_outcomes(path=None):
+    target = path or TRIAGE_OUTCOMES_DEFAULT
+    if not os.path.exists(target):
+        return None
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("cv_triage_outcomes", target)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _run_test_result(run_dir, job_ids):
+    """`pass` / `fail` / None, derived from the recorded results' `tests` blocks.
+
+    None when no job recorded one — "nobody ran tests" and "tests passed" must not
+    look alike, so the absence is reported as absence."""
+    seen = False
+    for job_id in job_ids:
+        doc = _read_json(os.path.join(run_dir, "results", "%s.json" % job_id), None)
+        tests = (doc or {}).get("tests")
+        if not isinstance(tests, dict):
+            continue
+        seen = True
+        if tests.get("exit_code") != 0:
+            return "fail"
+    return "pass" if seen else None
+
+
+def _maybe_append_run_actual(run_dir, manifest, state, repo_root):
+    """Append the run's intermediate `actual` once EVERY manifest job is terminal.
+
+    Returns a short note for the ack, or None when nothing was appended. Keyed on
+    `state.json` so a relaunch (which re-runs completed agents) does not append a
+    second one."""
+    job_ids = [j.get("id") for j in (manifest.get("jobs") or []) if j.get("id")]
+    if not job_ids:
+        return None
+    for job_id in job_ids:
+        if (state["jobs"].get(job_id) or {}).get("status") not in TERMINAL_JOB_STATES:
+            return None  # the run is not finished; the last job appends
+    triage = manifest.get("triage") if isinstance(manifest.get("triage"), dict) else {}
+    pre_eval_id = triage.get("pre_eval_id")
+    if not pre_eval_id:
+        return ("no triage.pre_eval_id in the manifest; the join's `actual` has "
+                "nothing to key on and is NOT invented")
+    if (state.get("triage_actual") or {}).get("merge_pending"):
+        return "triage `actual` (merge_pending) already appended for this run"
+
+    module = _import_triage_outcomes()
+    if module is None:
+        return "triage-outcomes module unavailable; no `actual` appended"
+    run_id = manifest.get("run_id") or os.path.basename(os.path.normpath(run_dir))
+    stream_path = os.path.join(repo_root, module.STREAM_RELPATH)
+    try:
+        module.append_actual(
+            pre_eval_id, run_id, merge_pending=True,
+            test_result=_run_test_result(run_dir, job_ids),
+            stream_path=stream_path,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return "triage `actual` append failed: %s" % exc
+    state["triage_actual"] = {"merge_pending": True, "pre_eval_id": pre_eval_id,
+                              "run_id": run_id}
+    return ("appended the precision-IGNORED `actual` (merge_pending) for %s; "
+            "/v:dispatch writes the terminal one after the merge/commit boundary"
+            % run_id)
+
+
+def _job_result_from(verdict, job, state_job, tests=None, contract=None):
     """The canonical job_result. Enforcement fields come from the GATE, not the
-    implementer: `blocked`, `files_changed` and `violations` are git-derived."""
+    implementer: `blocked`, `files_changed` and `violations` are git-derived.
+
+    `tests` is the RAW `test-floor` document; it is translated here into the
+    schema's four-field block (see `_tests_block_from_floor`)."""
     raw = verdict.get("raw_stdout") or ""
     scope = None
     try:
@@ -1209,20 +1433,36 @@ def _job_result_from(verdict, job, state_job, tests=None):
     else:
         status = "error"
 
+    # The three REQUIRED fields below are typed `string`/`string`/`integer` in the
+    # schema, with the empty string and 0 documented as their own "not applicable"
+    # values ("Empty string when the backend has no resumable session"; "empty
+    # string for `direct` (in-place) jobs"; "0 when unknown"). Emitting null there
+    # made every Engine C result fail the schema; the schema belongs to another
+    # lane, so the conformant VALUE is emitted rather than the type widened.
+    exit_code = verdict.get("exit_code")
+    if not isinstance(exit_code, int) or isinstance(exit_code, bool):
+        exit_code = 0
+    retry_after = verdict.get("retry_after_seconds")
+    if not isinstance(retry_after, int) or isinstance(retry_after, bool):
+        retry_after = 0
+
     result = {
         "status": status,
         "blocked": gate_verdict == "blocked",
         "files_changed": changed,
         "violations": violations,
         "summary": verdict.get("reason") or (job.get("title") or job.get("id") or ""),
-        "session_id": state_job.get("session_id"),
-        "worktree": state_job.get("worktree"),
-        "exit_code": verdict.get("exit_code", 0),
-        "failure_class": None if status in ("success", "blocked") else "unknown",
-        "retry_after_seconds": None,
+        "session_id": state_job.get("session_id") or "",
+        "worktree": state_job.get("worktree") or "",
+        "exit_code": exit_code,
+        # `unknown` is not in the schema's failure_class enum — `other` is the
+        # declared bucket for "a non-success this producer cannot classify".
+        "failure_class": None if status in ("success", "blocked") else "other",
+        "retry_after_seconds": retry_after,
     }
-    if tests is not None:
-        result["tests"] = tests
+    tests_block = _tests_block_from_floor(tests, contract, job)
+    if tests_block is not None:
+        result["tests"] = tests_block
 
     # A receipt is emitted ONLY when all six fields are genuinely known. A
     # PARTIAL receipt is a missing receipt, and a missing receipt is re-derived
@@ -1279,6 +1519,10 @@ def cmd_record(argv):
     receipt_path = os.path.join(run_dir, "receipts", "%s.gate.json" % job_id)
     receipt_doc = _read_json(receipt_path, {}) or {}
     tests = receipt_doc.get("tests")
+    # The resolved slice the floor actually ran — its `scope` is the value the
+    # schema's `tests.scope` requires "copied verbatim from the contract the
+    # caller passed as an argument", not a re-derivation.
+    contract = _read_json(test_contract_path(run_dir, job_id), {}) or {}
 
     lane = _read_json(lane_map_path(run_dir), {}) or {}
     for path, mapped in (lane.get("worktrees") or {}).items():
@@ -1288,7 +1532,8 @@ def cmd_record(argv):
     if verdict.get("baseline_commit"):
         state_job.setdefault("baseline", verdict["baseline_commit"])
 
-    result = _job_result_from(verdict, job, state_job, tests=tests)
+    result = _job_result_from(verdict, job, state_job, tests=tests,
+                              contract=contract)
 
     # ---- ONE result file per job -------------------------------------------
     # results/<id>.json is the primary and there is exactly one. The integration
@@ -1355,6 +1600,15 @@ def cmd_record(argv):
         "success": "done", "blocked": "blocked",
     }.get(result["status"], "failed")
     state_job.setdefault("isolation", job.get("isolation") or "direct")
+
+    # The triage join's third event. Appended by whichever Record call finds every
+    # job terminal, BEFORE state.json is saved so the idempotence latch lands in
+    # the same write.
+    note = _maybe_append_run_actual(
+        run_dir, manifest, state, os.path.abspath(args.repo_root)
+    )
+    if note:
+        ack["triage_actual"] = note
     _save_state(run_dir, state, now=args.now)
 
     print(json.dumps(ack, indent=2, sort_keys=True))
@@ -1373,17 +1627,58 @@ def cmd_register_lane(argv):
     ap.add_argument("--agent-id",
                     help="the PreToolUse payload's agent_id, IF the runtime ever "
                          "exposes it to the agent itself. It does not on 2.1.238.")
+    ap.add_argument("--fastpath", default=FASTPATH_DEFAULT)
+    ap.add_argument("--python", default=(sys.executable or "python3"))
+    ap.add_argument("--no-test-contract", action="store_true",
+                    help="skip resolving this job's test contract (the lane map "
+                         "is still written)")
     args = ap.parse_args(argv)
+    run_dir = os.path.abspath(args.run_dir)
     lane = register_lane(
-        os.path.abspath(args.run_dir), args.job_id, args.cwd,
+        run_dir, args.job_id, args.cwd,
         manifest_path=args.manifest, agent_id=args.agent_id,
     )
-    print(json.dumps(
-        {"registered": args.job_id,
-         "worktrees": len(lane.get("worktrees") or {}),
-         "agents": len(lane.get("agents") or {})},
-        indent=2, sort_keys=True,
-    ))
+    ack = {"registered": args.job_id,
+           "worktrees": len(lane.get("worktrees") or {}),
+           "agents": len(lane.get("agents") or {})}
+
+    # ---- the test contract, resolved BEFORE the worker launches ------------
+    # This is the Implement stage, and it is the only point in the Engine C
+    # lifecycle that runs BEFORE an external worker starts. `gate-receipt` also
+    # resolves a contract, but it runs AFTER the implementer has finished — so a
+    # worker's `--test-contract-file` pointed at a file that did not yet exist,
+    # and the flag was commented out to hide it. Resolving here is what makes the
+    # flag real: on Engine C an external worker now genuinely RECEIVES the
+    # contract instead of being told about one.
+    #
+    # The resolution is scoped to the PRE-CHANGE tree, which is the only tree
+    # that exists yet. For `impacted` that means the impacted set is empty and the
+    # slice is the floor (plus whatever the declared map yields for an empty
+    # diff); the post-change resolution the FLOOR runs from is re-derived in
+    # `gate-receipt`. Stated rather than hidden: this contract is the worker's
+    # instruction, not the gate's measurement.
+    if not args.no_test_contract:
+        manifest_path = os.path.abspath(
+            args.manifest or os.path.join(run_dir, "manifest.yaml")
+        )
+        state_job = (_load_state(run_dir)["jobs"].get(args.job_id) or {})
+        out_path = test_contract_path(run_dir, args.job_id)
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        written = _resolve_test_contract(
+            args.fastpath, manifest_path, args.job_id, os.path.abspath(args.cwd),
+            state_job.get("baseline"), args.python, out_path,
+        )
+        ack["test_contract"] = written
+        if not written:
+            # Never fabricated into a success: the manifest may simply declare no
+            # `test_contract`, and the emitted prompt then carries no flag either.
+            ack["test_contract_note"] = (
+                "no contract resolved (the manifest may declare no `test_contract`, "
+                "or resolution failed closed) — the worker runs no tests and reports "
+                "no `tests` object"
+            )
+
+    print(json.dumps(ack, indent=2, sort_keys=True))
     return 0
 
 
@@ -1974,6 +2269,100 @@ def selftest():
                                "resolve-tests", "--help"])
             _check("resolve-tests accepts --manifest, --job-id and --out",
                    "--manifest" in out and "--job-id" in out and "--out" in out)
+
+        # --- the floor document is TRANSLATED, never copied --------------------
+        # These are unit checks on the shape. Conformance against the real schema
+        # is asserted end-to-end by tests/test-engine-c-contract.sh, which needs
+        # jsonschema; this half runs on stdlib alone so the guard never silently
+        # depends on an optional install.
+        floor_pass = {"phase": "test_floor", "tier_used": 1, "passed": True,
+                      "merge_blocked": False, "changed_paths": ["src/a.py"],
+                      "reasons": [], "failures": [],
+                      "checks": [{"tier": 1, "checker": "pytest -q", "rc": 0,
+                                  "status": "pass"}]}
+        block = _tests_block_from_floor(floor_pass, {"scope": "impacted"}, {})
+        _check("the tests block carries ONLY schema-declared keys",
+               set(block) <= {"command", "exit_code", "scope", "selected_count",
+                              "duration_ms", "failures"})
+        _check("the four required tests fields are all present",
+               all(k in block for k in
+                   ("command", "exit_code", "scope", "selected_count")))
+        _check("tests.scope is copied from the resolved contract, not re-derived",
+               block["scope"] == "impacted")
+        _check("tests.failures survives translation (empty == measured, not absent)",
+               block["failures"] == [])
+        _check("no duration is invented when the floor measured none",
+               "duration_ms" not in block)
+
+        floor_fail = dict(floor_pass, passed=False, merge_blocked=True,
+                          failures=["pytest -q"],
+                          checks=[{"tier": 1, "checker": "pytest -q", "rc": 3,
+                                   "status": "fail"}])
+        _check("a failing floor reports the failing command's OWN rc",
+               _tests_block_from_floor(floor_fail, None, {})["exit_code"] == 3)
+        _check("a floor that ran nothing yields NO tests block (absent is honest)",
+               _tests_block_from_floor(
+                   {"phase": "test_floor", "tier_used": 0, "passed": False,
+                    "merge_blocked": True, "checks": [], "reasons": ["x"]}) is None)
+
+        # --- the three fields that used to be null against integer/string ------
+        result = _job_result_from(
+            {"verdict": "pass", "raw_stdout": "", "exit_code": 0},
+            {"id": "j", "title": "t"}, {}, tests=None,
+        )
+        _check("session_id / worktree are strings, never null",
+               isinstance(result["session_id"], str)
+               and isinstance(result["worktree"], str))
+        _check("retry_after_seconds is an integer, never null",
+               isinstance(result["retry_after_seconds"], int))
+        errored = _job_result_from(
+            {"verdict": "error", "raw_stdout": "", "exit_code": 2},
+            {"id": "j"}, {}, tests=None,
+        )
+        _check("failure_class stays inside the schema's enum",
+               errored["failure_class"] in (
+                   None, "none", "out_of_credits", "rate_limited", "overloaded",
+                   "auth", "context_length", "timeout", "network", "other"))
+
+        # --- SEAM-1: the flag reaches an external worker uncommented -----------
+        ext_manifest = {
+            "run_id": "r", "test_contract": {"floor_command": "sh -c 'exit 0'"},
+            "jobs": [{"id": "x", "backend": "codex", "test_scope": "floor_only",
+                      "write_allowed": ["src/**"]}],
+        }
+        ext_plan = build_plan(ext_manifest, tmp, tmp, "/usr/bin/python3",
+                              os.path.abspath(__file__), SCOPE_CHECK_DEFAULT,
+                              FASTPATH_DEFAULT, HERE)
+        ext_job = ext_plan["waves"][0][0]
+        ext_prompt = _implement_prompt(ext_job, ext_plan)
+        _check("an external job carries a resolved test-contract path",
+               bool(ext_job["test_contract_file"]))
+        _check("the worker invocation passes --test-contract-file UNCOMMENTED",
+               "--test-contract-file" in ext_prompt
+               and "# --test-contract-file" not in ext_prompt)
+        no_contract = build_plan(
+            {"run_id": "r", "jobs": [{"id": "x", "backend": "codex",
+                                      "write_allowed": ["src/**"]}]},
+            tmp, tmp, "/usr/bin/python3", os.path.abspath(__file__),
+            SCOPE_CHECK_DEFAULT, FASTPATH_DEFAULT, HERE)
+        _check("no declared test_contract ⇒ no flag (the worker script would "
+               "reject a path that does not exist)",
+               "--test-contract-file" not in _implement_prompt(
+                   no_contract["waves"][0][0], no_contract))
+
+        # --- ORPHAN-9: the `actual` producer -----------------------------------
+        _check("the triage-outcomes producer exists",
+               os.path.exists(TRIAGE_OUTCOMES_DEFAULT))
+        actual_state = {"jobs": {"a": {"status": "done"}, "b": {"status": "pending"}}}
+        actual_manifest = {"run_id": "r", "triage": {"pre_eval_id": "pe-1"},
+                           "jobs": [{"id": "a"}, {"id": "b"}]}
+        _check("no `actual` is appended while a job is still running",
+               _maybe_append_run_actual(tmp, actual_manifest, actual_state, tmp)
+               is None)
+        _check("a manifest with no pre_eval_id gets a REASON, never an invented id",
+               "pre_eval_id" in (_maybe_append_run_actual(
+                   tmp, {"run_id": "r", "jobs": [{"id": "a"}]},
+                   {"jobs": {"a": {"status": "done"}}}, tmp) or ""))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

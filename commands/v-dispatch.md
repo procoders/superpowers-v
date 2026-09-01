@@ -116,8 +116,14 @@ delegating, the epic inherits Engine C along with everything else.
    While it runs, the script writes what the rest of the pipeline needs:
    - `lane-map.json` — each implementer registers its real worktree as its first command, which is
      what lets [`hooks/lane-guard.sh`](../hooks/lane-guard.sh) resolve an acting job at all;
+   - `jobs/<job-id>.test-contract.json` — written by that same first command, **before** an
+     external worker launches, because that is the only moment early enough for the worker to be
+     handed `--test-contract-file`. A contract resolved after the implementer has run reaches
+     nobody;
    - `receipts/<job-id>.gate.json` and `results/<job-id>.json` — one result per job, exactly one;
-   - `state.json` per-job `worktree`, `baseline`, `status` and `merged`.
+   - `state.json` per-job `worktree`, `baseline`, `status` and `merged`;
+   - `docs/superpowers/memory/triage-outcomes.jsonl` — the precision-IGNORED `merge_pending`
+     `actual`, appended once every job is terminal. Step 9 writes the terminal one.
 
 7. **Gate integration on the authority — BEFORE any job commit is integrated.**
 
@@ -142,12 +148,39 @@ delegating, the epic inherits Engine C along with everything else.
    SPEC (each job's `acceptance`), QUALITY (no regressions, no fabricated metrics), INTEGRATION
    (cross-job seams, feature-level `acceptance_criteria`). DONE is gated on all three.
 
-9. **Advance to `MERGED`, commit the run substrate, then hand off** to
-   `superpowers:finishing-a-development-branch`. Write `phase: MERGED` into `state.json` **first**,
-   then commit it together with `results/*.json`, `receipts/*.json`, `lane-map.json`,
-   `dispatch.workflow.js` and any refreshed memory/scorecard files — in that one commit, before any
-   worktree cleanup. `finishing-a-development-branch` runs `git worktree remove` on both Merge and
-   Discard, which silently deletes anything uncommitted.
+9. **Advance to `MERGED`, append the terminal `actual`, commit the run substrate, then hand off**
+   to `superpowers:finishing-a-development-branch`. Write `phase: MERGED` into `state.json`
+   **first**; then, once the merge/commit boundary has actually succeeded, append the run's
+   terminal triage outcome:
+
+   ```
+   python3 scripts/compound-v-triage-outcomes.py actual \
+     --pre-eval-id <manifest triage.pre_eval_id> --run-id <run-id> \
+     --review-result approved            # the step-8 verdict, verbatim; never assumed
+     [--demoted] [--ci-failed] [--reverted] [--escalated]   # negative outcomes, when they happened
+   ```
+
+   **This append is on the same footing as the `state.json` commit, not an optional extra.**
+   `predicted` → `bind` → `actual` is a three-event join, and until this release the `actual`
+   half had **no reachable producer on this path at all**: the only live callers were the
+   residual `parallel-dispatcher` (which step 4 tells you not to use) and `/v:collect`'s v2.9
+   fast-path tail. So the join never closed, `/v:status` precision read `insufficient`
+   permanently, and the miscalibration circuit breaker could only ever see demotions — the exact
+   blind spot negative outcomes exist to remove. Report the outcome that happened; a run whose
+   review did **not** pass gets that recorded, not an `approved` written to tidy the log.
+
+   Engine C's Record stage already appended a precision-**IGNORED** `merge_pending` intermediate
+   when its last job went terminal. That one is deliberately not terminal (CR5-4): this append
+   replaces it, last-writer-wins, and only a terminal `actual` whose committed git blob backs it
+   is ever counted. **A manifest with no `triage` block has no `pre_eval_id`** (3.0's own
+   bootstrap manifest is one): say so and skip the append — never mint an id to make the join
+   close.
+
+   Then commit `state.json` together with `results/*.json`, `receipts/*.json`, `lane-map.json`,
+   `jobs/*.test-contract.json`, `dispatch.workflow.js`,
+   `docs/superpowers/memory/triage-outcomes.jsonl` and any refreshed memory/scorecard files — in
+   that one commit, before any worktree cleanup. `finishing-a-development-branch` runs
+   `git worktree remove` on both Merge and Discard, which silently deletes anything uncommitted.
 
 ## Safety
 
@@ -161,4 +194,7 @@ delegating, the epic inherits Engine C along with everything else.
   frontmatter. Reviewers stay `model: opus`.
 - Never arm a headless Engine C launch under `bypassPermissions`: a run could start with no prompt
   and no spend cap.
+- Do NOT finish a run without the step-9 `actual` append: an unclosed `predicted`↔`actual` join
+  is what keeps precision at `insufficient` and the circuit breaker blind to every negative
+  outcome that is not a demotion.
 - Do **not** print fabricated cost or token metrics (anti-ruflo).
