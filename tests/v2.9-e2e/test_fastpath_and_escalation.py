@@ -275,6 +275,45 @@ class TestAC3And7FastPathLifecycle(_RepoCase):
         self.assertEqual(verdict["verdict"], "valid")
         self.assertEqual(verdict["violations"], [])
 
+    def test_materialized_manifest_carries_a_valid_triage_block(self):
+        """v3.0 Feature A2. `/v:dispatch` passes `--require-triage` on every live dispatch in
+        every mode, so a manifest without the block does not merely lint badly — the run dies
+        at dispatch with its artifacts already committed. Prove the REAL validator CLI accepts
+        the materialized manifest UNDER THE FLAG, and that stripping the block flips it."""
+        repo = self.new_repo()
+        res = self._make_eligible(repo)
+        mat = import_script("compound-v-fastpath-materialize.py", "cv_mat_triage")
+        out = mat.run_materialize(repo, res["pre_eval_id"], prompt_text="apply\n")
+        manifest_full = os.path.join(repo, out["manifest_ref"])
+
+        rc, verdict, cli_out, err = run_json(
+            "compound-v-validate-manifest.py", "--mode", "pre-dispatch",
+            "--require-triage", "--repo-root", repo, manifest_full)
+        self.assertEqual(rc, 0, "validate --require-triage must PASS: %s%s" % (cli_out, err))
+        self.assertEqual(verdict["violations"], [])
+
+        # The block's own values, checked against the ENGINE's map — never a re-spelled token.
+        pe = import_script("compound-v-preeval.py", "cv_preeval_triage")
+        val = import_script("compound-v-validate-manifest.py", "cv_val_triage")
+        with open(manifest_full, "r", encoding="utf-8") as fh:
+            parsed = val.load_yaml(fh.read())
+        tri = parsed["triage"]
+        self.assertEqual(tri["tier"], pe.DECISION_TO_TIER[pe.DECISION_FASTPATH])
+        self.assertEqual(tri["pre_eval_id"], res["pre_eval_id"])
+        self.assertEqual(tri["taxonomy_digest"], res["record"]["taxonomy_digest"])
+        self.assertEqual(tri["decided_at"], res["record"]["ts"])
+
+        # The negative: a test that only ever sees a pass cannot tell correct from unchecked.
+        stripped = dict(parsed)
+        stripped.pop("triage")
+        problems = val.validate(stripped, mode="pre-dispatch", repo_root=repo,
+                                require_triage=True)
+        self.assertTrue(any("missing required top-level 'triage' block" in p
+                            for p in problems), problems)
+        self.assertEqual(val.validate(stripped, mode="pre-dispatch", repo_root=repo), [],
+                         "no validator default was flipped: absent triage is still valid "
+                         "WITHOUT the flag")
+
     def test_clean_fastpath_diff_does_not_escalate(self):
         repo = self.new_repo()
         res = self._make_eligible(repo)
@@ -456,6 +495,157 @@ class TestAC10And12NoFabricatedMetric(_RepoCase):
         self.assertIn("precision", result)
         self.assertIsInstance(result["precision"], (int, float))
         self.assertEqual(result["n"], 1)
+
+
+# =========================================================================== #
+# v3.0 Feature B1/B2/B3 — the floor's producer and its three sets, driven through
+# the REAL `compound-v-fastpath-run.py` CLI on a REAL git repo.
+#
+# WHAT IS AND IS NOT PROVEN HERE. These cases prove the resolver selects and unions
+# what the contract DECLARES. They do not — and cannot — prove the floor catches an
+# indirect break: change `src/parser.py`, break `tests/test_cli_integration.py`
+# through an import, and no set selects it. The floor is early feedback; the
+# merge-blocking CI run is what preserves the guarantee.
+# =========================================================================== #
+MANIFEST_YAML = """run_id: r1
+test_contract:
+  floor_command: "sh -c 'exit 0'"
+  full_command: "sh -c 'echo FULL'"
+  impacted_map:
+    - when: "scripts/compound-v-*.py"
+      run: "sh -c 'echo selftest {path}'"
+    - when: "scripts/**"
+      run: "sh -c 'echo lint-scripts'"
+jobs:
+  - id: task-1
+    test_scope: impacted
+  - id: task-2
+    test_scope: floor_only
+"""
+
+
+class TestFeatureBTestFloorProducer(_RepoCase):
+
+    def _seed(self):
+        """A repo with one MODIFIED mapped file, one ADDED mapped file, one UNMAPPED file."""
+        repo = self.new_repo("floor")
+        write_file(repo, "scripts/compound-v-thing.py", "x = 1\n")
+        write_file(repo, "README.md", "hi\n")
+        write_file(repo, "m.yaml", MANIFEST_YAML)
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "seed")
+        base = git_head(repo)
+        write_file(repo, "scripts/compound-v-thing.py", "x = 2\n")     # modified, mapped
+        write_file(repo, "scripts/compound-v-added.py", "y = 1\n")     # ADDED, mapped
+        write_file(repo, "src/unmapped.txt", "u\n")                    # unmapped
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "change")
+        return repo, base
+
+    def _resolve(self, repo, base, *extra):
+        rc, data, out, err = run_json(
+            "compound-v-fastpath-run.py", "resolve-tests", "--worktree", repo,
+            "--manifest", os.path.join(repo, "m.yaml"), "--job-id", "task-1",
+            "--baseline", base, *extra)
+        return rc, data, out, err
+
+    def test_impacted_scope_unions_the_three_sets(self):
+        repo, base = self._seed()
+        rc, data, out, err = self._resolve(repo, base, "--no-prior-run")
+        self.assertEqual(rc, 0, "%s%s" % (out, err))
+        cmds = data["contract"]["resolved_commands"]
+
+        # The floor always runs and comes FIRST, at every tier.
+        self.assertEqual(cmds[0], "sh -c 'exit 0'")
+        # SET 1 — impacted, with EVERY matching rule unioned (not first-match-wins) and
+        # `{path}` substituted.
+        self.assertIn("sh -c 'echo selftest scripts/compound-v-thing.py'", cmds)
+        self.assertIn("sh -c 'echo lint-scripts'", cmds)
+        # SET 3 — newly added, run through the SAME map.
+        self.assertIn("sh -c 'echo selftest scripts/compound-v-added.py'", cmds)
+        # An unmapped path is unknown blast radius → full_command, never "nothing to run".
+        self.assertIn("sh -c 'echo FULL'", cmds)
+        self.assertEqual(len(cmds), len(set(cmds)), "the resolved set must be deduped")
+        # The slice carries ONLY the keys the workers' --test-contract-file accepts.
+        self.assertLessEqual(set(data["contract"]),
+                             {"scope", "resolved_commands", "floor_command", "full_command"})
+
+    def test_absent_failures_field_falls_back_to_full_command(self):
+        """B2's rule: when the last run reported no machine-readable `tests.failures[]`, the
+        previously-failing set is UNCOMPUTABLE and the floor falls back to `full_command`
+        rather than silently dropping the set and degrading three sets to two."""
+        repo, base = self._seed()
+        # A last result WITH measured failures: they are unioned in verbatim, and the
+        # fully-mapped paths do not need the full fallback for THIS reason.
+        write_file(repo, "last-with.json", json.dumps(
+            {"status": "success",
+             "tests": {"command": "x", "exit_code": 1, "scope": "impacted",
+                       "selected_count": 1, "failures": ["sh -c 'echo previously-failed'"]}}))
+        rc, data, out, err = self._resolve(repo, base, "--last-result",
+                                           os.path.join(repo, "last-with.json"))
+        self.assertEqual(rc, 0, "%s%s" % (out, err))
+        self.assertIn("sh -c 'echo previously-failed'",
+                      data["contract"]["resolved_commands"])
+
+        # A last result with NO `failures` field → full_command, with the reason stated.
+        write_file(repo, "last-without.json", json.dumps(
+            {"status": "success",
+             "tests": {"command": "x", "exit_code": 0, "scope": "impacted",
+                       "selected_count": 1}}))
+        rc, data, out, err = self._resolve(repo, base, "--last-result",
+                                           os.path.join(repo, "last-without.json"))
+        self.assertEqual(rc, 0, "%s%s" % (out, err))
+        self.assertIn("sh -c 'echo FULL'", data["contract"]["resolved_commands"])
+        self.assertTrue(any("UNCOMPUTABLE" in n for n in data["notes"]), data["notes"])
+
+    def test_undeclared_previously_failing_set_is_refused(self):
+        """Silence must not become 'nothing was failing'. Neither --last-result nor
+        --no-prior-run ⇒ refuse (exit 2), rather than quietly resolving a smaller set."""
+        repo, base = self._seed()
+        rc, _data, _out, err = self._resolve(repo, base)
+        self.assertEqual(rc, 2, err)
+        self.assertIn("previously-failing set is undeclared", err)
+
+    def test_floor_only_runs_only_the_floor_and_never_nothing(self):
+        repo, base = self._seed()
+        rc, data, out, err = run_json(
+            "compound-v-fastpath-run.py", "resolve-tests", "--worktree", repo,
+            "--manifest", os.path.join(repo, "m.yaml"), "--job-id", "task-2",
+            "--baseline", base, "--no-prior-run")
+        self.assertEqual(rc, 0, "%s%s" % (out, err))
+        self.assertEqual(data["contract"]["resolved_commands"], ["sh -c 'exit 0'"])
+        self.assertEqual(data["contract"]["scope"], "floor_only")
+
+    def test_test_floor_executes_the_resolved_set_and_is_diff_proportionate(self):
+        """The producer closes the loop: `--test-cmd` had none, so tier-1 had never run once.
+        `test-floor --manifest` now executes the resolved set, and the changed-path derivation
+        happens BEFORE the tier-1 return — which is what makes it diff-proportionate at all."""
+        repo, base = self._seed()
+        rc, res, out, err = run_json(
+            "compound-v-fastpath-run.py", "test-floor", "--worktree", repo,
+            "--manifest", os.path.join(repo, "m.yaml"), "--job-id", "task-1",
+            "--baseline", base, "--no-prior-run")
+        self.assertEqual(rc, 0, "%s%s" % (out, err))
+        self.assertEqual(res["tier_used"], 1, "the floor must reach tier-1, not fall through")
+        self.assertTrue(res["passed"] and not res["merge_blocked"])
+        self.assertIn("scripts/compound-v-added.py", res["changed_paths"],
+                      "tier-1 must know the diff (the early return moved below it)")
+        self.assertGreaterEqual(
+            len([c for c in res["checks"] if c.get("tier") == 1]), 3,
+            "every resolved command runs; none is short-circuited")
+
+    def test_a_failing_resolved_command_blocks_the_merge(self):
+        repo, base = self._seed()
+        write_file(repo, "m.yaml", MANIFEST_YAML.replace(
+            "floor_command: \"sh -c 'exit 0'\"", "floor_command: \"sh -c 'exit 3'\""))
+        rc, res, out, err = run_json(
+            "compound-v-fastpath-run.py", "test-floor", "--worktree", repo,
+            "--manifest", os.path.join(repo, "m.yaml"), "--job-id", "task-2",
+            "--baseline", base, "--no-prior-run")
+        self.assertEqual(rc, 1, "a failing floor must exit non-zero: %s%s" % (out, err))
+        self.assertTrue(res["merge_blocked"])
+        self.assertFalse(res["passed"])
+        self.assertEqual(res["failures"], ["sh -c exit 3"])
 
 
 if __name__ == "__main__":

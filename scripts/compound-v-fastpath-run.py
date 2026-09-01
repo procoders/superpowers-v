@@ -54,9 +54,35 @@ parent-run Task; this script only builds the request and validates the returned 
 external CLI routes through the timeout supervisor with a closed stdin and a bounded sink. No
 fabricated metrics. Fail-closed on any ambiguity.
 
+v3.0 (Feature B1/B2/B3) — the floor finally has a PRODUCER and three sets:
+
+  * ``resolve-tests`` turns a manifest's ``test_contract`` (``floor_command`` /
+    ``full_command`` / ``impacted_map``) plus one job's ``test_scope`` into the ordered,
+    deduped command list — the file every worker takes as ``--test-contract-file``. Before
+    this, ``--test-cmd`` had no producer anywhere in the repo (``"$CFG_TESTS"`` was an
+    unbound shell placeholder), so tier-1 had never executed once.
+  * ``test-floor --manifest`` runs that same resolved set at tier-1.
+  * At ``test_scope: impacted`` the set is the UNION OF THREE — impacted ∪
+    previously-failing ∪ newly-added — with every MATCHING ``impacted_map`` rule unioned,
+    an unmapped path resolving to ``full_command``, and an uncomputable previously-failing
+    set (no ``tests.failures[]`` in the last recorded run) also resolving to
+    ``full_command`` rather than being silently dropped.
+  * The changed-path derivation now happens BEFORE the tier-1 return, which is what makes
+    a configured-tests floor diff-proportionate at all.
+
+  THE FLOOR IS EARLY FEEDBACK, NOT A GUARANTEE. It does not restore what the full suite
+  guaranteed; CI does. The three sets structurally omit every existing, previously-passing
+  test the declared map fails to select — change ``src/parser.py``, break
+  ``tests/test_cli_integration.py`` through an indirect import, and no set selects it.
+
 CLI:
     compound-v-fastpath-run.py test-floor  --worktree DIR [--baseline SHA]
-        [--changed-file paths.txt] [--test-cmd "CMD"] [--out result.json]
+        [--changed-file paths.txt] [--test-cmd "CMD"]
+        [--manifest manifest.yaml --job-id ID | --scope SCOPE]
+        [--last-result job_result.json | --no-prior-run] [--out result.json]
+    compound-v-fastpath-run.py resolve-tests --worktree DIR --manifest manifest.yaml
+        [--baseline SHA] [--job-id ID | --scope full|impacted|floor_only]
+        [--last-result job_result.json | --no-prior-run] [--out contract.json]
     compound-v-fastpath-run.py review-spec --worktree DIR --baseline SHA --manifest FILE
         --run-id ID --pre-eval-id ID [--attempt-id N] --floor-result FILE
         --scope-clean --f2-result FILE [--out spec.json]
@@ -220,13 +246,35 @@ def _diff_bytes(worktree, baseline):
 # Optional sibling: derive changed paths from the scope gate (soft, read-only).
 # Kept injectable so the floor is testable without git plumbing.
 # --------------------------------------------------------------------------- #
-def _changed_from_scope(worktree, baseline):
+_SCOPE_CHECK_CACHE = []
+
+
+def _scope_check():
+    """Import ``compound-v-scope-check.py`` by path, or return None.
+
+    It is the repo's ONE path-glob authority (``glob_to_regex`` / ``matches``: ``*`` does
+    not cross ``/``, ``**`` does, ``[`` is literal). Feature B2's ``impacted_map`` matching
+    reuses it rather than reaching for ``fnmatch`` — a second, weaker matcher would diverge
+    from the gate, and a divergence here silently DROPS tests."""
+    if _SCOPE_CHECK_CACHE:
+        return _SCOPE_CHECK_CACHE[0]
     import importlib.util
     path = os.path.join(_script_dir(), "compound-v-scope-check.py")
     try:
         spec = importlib.util.spec_from_file_location("compound_v_scope_check", path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
+    except Exception:  # noqa: BLE001
+        return None
+    _SCOPE_CHECK_CACHE.append(mod)
+    return mod
+
+
+def _changed_from_scope(worktree, baseline):
+    mod = _scope_check()
+    if mod is None:
+        return None
+    try:
         return list(mod.changed_files(worktree, baseline))
     except Exception:  # noqa: BLE001
         return None
@@ -303,53 +351,373 @@ def _run_parse_checks(worktree, changed_paths, checkers):
 
 
 # --------------------------------------------------------------------------- #
+# v3.0 Feature B2/B3 — the test contract RESOLVER: the producer `--test-cmd` never had.
+#
+# WHAT THE FLOOR IS, SAID WITHOUT VARNISH. The floor is an EARLY-FEEDBACK OPTIMIZATION.
+# It does NOT restore what the full suite guaranteed; CI does. The union of impacted,
+# previously-failing and newly-added structurally omits every existing, previously-passing
+# test the declared map fails to select: change `src/parser.py`, break
+# `tests/test_cli_integration.py` through an indirect import, and NO set selects it — the
+# floor passes and only the merge-blocking CI run catches it. A hand-written glob map
+# carries strictly less information than a call graph, and call-graph-derived selection is
+# already measured at 0.2%-10.6% unsafe per revision, so 0.2% is an optimistic floor and
+# not an expectation. Nothing here may be described as preserving pre-merge safety.
+#
+# Resolution belongs to the CALLER (this Python), execution to the worker: the resolved
+# slice reaches an external worker as `--test-contract-file`, a real argument, never as
+# prose in a prompt. See skills/backend-launcher/SKILL.md and
+# skills/compound-v/execution-manifest.md — this code is their mechanical half.
+# --------------------------------------------------------------------------- #
+VALID_TEST_SCOPES = ("full", "impacted", "floor_only")
+
+
+class TestContractError(Exception):
+    """A test contract that cannot resolve to a non-empty command set. Fail-closed:
+    a scope must never resolve to running NOTHING, and a silent zero is a fabricated
+    pass wearing a green tick."""
+
+
+def _decode(data):
+    if isinstance(data, bytes):
+        return data.decode("utf-8", "replace")
+    return data or ""
+
+
+def added_paths(worktree, baseline="HEAD"):
+    """The NEWLY-ADDED set: ``git diff --name-only --diff-filter=A <baseline>``.
+
+    Returns ``None`` when git could not answer — the caller then fails closed rather
+    than reading "no answer" as "nothing was added". Note the honest boundary: this
+    sees files added *against the baseline* (worktree or committed), and does not see
+    an untracked file git has never been told about; the scope gate unions
+    ``ls-files --others`` for exactly that reason, and the spec pins this set to the
+    ``--diff-filter=A`` form."""
+    rc, out = _git(worktree, ["diff", "--name-only", "--diff-filter=A", baseline])
+    if rc != 0:
+        return None
+    return [ln.strip() for ln in _decode(out).splitlines() if ln.strip()]
+
+
+def previously_failing(last_result):
+    """The PREVIOUSLY-FAILING set, read from the last recorded run's ``tests.failures[]``
+    (``schemas/job_result.schema.json``, Feature B3).
+
+    Returns ``(failures, available)``:
+
+    * ``last_result`` is ``None``  → ``([], True)``. No prior run was recorded, so nothing
+      is *known to have failed*; the set is empty BY CONSTRUCTION, not unknown. (The CLI
+      makes the caller say this out loud with ``--no-prior-run``, so a forgotten
+      ``--last-result`` cannot quietly become "nothing was failing".)
+    * a prior run with a measured ``failures`` array → ``(list, True)``. An EMPTY array is
+      measured-and-nothing-failed, which is a real answer.
+    * a prior run whose ``tests`` block or ``failures`` field is ABSENT → ``(None, False)``.
+      The runner reported nothing machine-readable, the set is UNCOMPUTABLE, and B2's rule
+      applies: the floor falls back to ``full_command`` rather than silently dropping the
+      set and degrading three sets to two."""
+    if last_result is None:
+        return [], True
+    if not isinstance(last_result, dict):
+        return None, False
+    tests = last_result.get("tests")
+    if not isinstance(tests, dict) or "failures" not in tests:
+        return None, False
+    failures = tests.get("failures")
+    if not isinstance(failures, list):
+        return None, False
+    out = [str(f) for f in failures if str(f).strip()]
+    return out, True
+
+
+def _impacted_for(contract, paths):
+    """Map changed paths onto ``impacted_map`` commands.
+
+    EVERY matching rule contributes its ``run`` — the rules UNION. First-match-wins would
+    silently drop coverage the map explicitly DECLARES, which is worse than never having
+    declared it. ``{path}`` in a ``run`` is substituted with the matching path.
+
+    Returns ``(commands, unmapped)``: ``unmapped`` are the paths that matched no ``when``
+    glob at all — unknown blast radius, which the caller resolves to ``full_command``,
+    never to "nothing to run"."""
+    mod = _scope_check()
+    if mod is None:
+        raise TestContractError(
+            "the path-glob authority (compound-v-scope-check.py) failed to load — "
+            "refusing to resolve impacted_map with a second, weaker matcher")
+    rows = contract.get("impacted_map") or []
+    if not isinstance(rows, list):
+        raise TestContractError("test_contract.impacted_map must be a list of {when, run}")
+    commands = []
+    unmapped = []
+    for path in paths:
+        matched = False
+        for i, row in enumerate(rows):
+            if not isinstance(row, dict):
+                raise TestContractError(
+                    "test_contract.impacted_map[%d] must be a mapping with 'when' and 'run'"
+                    % i)
+            when = row.get("when")
+            run = row.get("run")
+            if not isinstance(when, str) or not when.strip() \
+                    or not isinstance(run, str) or not run.strip():
+                raise TestContractError(
+                    "test_contract.impacted_map[%d] is half-declared (both 'when' and "
+                    "'run' are mandatory) — a half-declared rule selects nothing" % i)
+            if mod.matches(path, when):
+                matched = True
+                commands.append(run.replace("{path}", path))
+        if not matched:
+            unmapped.append(path)
+    return commands, unmapped
+
+
+def _dedupe(items):
+    """Stable de-duplication: first occurrence wins, order preserved (the floor is first)."""
+    seen = set()
+    out = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
+
+
+def resolve_test_commands(contract, scope, changed_paths=None, new_paths=None,
+                          prev_failures=None, prev_failures_available=True):
+    """Resolve a manifest ``test_contract`` + one job's ``test_scope`` into the ordered,
+    deduped command list a worker executes.
+
+    Returns ``(slice, notes)``. ``slice`` holds EXACTLY the keys the worker's
+    ``--test-contract-file`` validator accepts (``scope``, ``resolved_commands``, and the
+    informational ``floor_command`` / ``full_command`` when declared) — nothing else, so a
+    typo cannot pass silently as "nothing to run". ``notes`` is the human-readable record of
+    WHY each command is in the set; it is deliberately NOT part of the slice.
+
+    The rules, in one place:
+
+    * the floor always runs, at every tier, and comes FIRST;
+    * ``floor_only`` means ONLY the floor — never nothing;
+    * ``full`` runs the floor plus ``full_command``;
+    * ``impacted`` runs the floor plus the UNION OF THREE SETS —
+      impacted ∪ previously-failing ∪ newly-added — because running only the impacted set
+      is the mistake regression-test-selection practice already made and corrected;
+    * a changed path matching no ``when`` glob resolves to ``full_command``;
+    * an uncomputable previously-failing set also resolves to ``full_command``.
+
+    Raises ``TestContractError`` whenever the answer would be an empty command set."""
+    contract = contract if isinstance(contract, dict) else {}
+    scope = (scope or "full") if scope not in (None, "") else "full"
+    scope = str(scope)
+    if scope not in VALID_TEST_SCOPES:
+        raise TestContractError(
+            "test_scope %r is not one of %s" % (scope, ", ".join(VALID_TEST_SCOPES)))
+
+    def _text(key):
+        val = contract.get(key)
+        return val.strip() if isinstance(val, str) and val.strip() else None
+
+    floor = _text("floor_command")
+    full = _text("full_command")
+    notes = []
+    ordered = []
+
+    if floor:
+        ordered.append(floor)
+        notes.append("floor: floor_command runs at every tier and comes first")
+    elif scope == "floor_only":
+        raise TestContractError(
+            "test_scope 'floor_only' with no test_contract.floor_command — floor_only "
+            "means ONLY the floor, never nothing")
+    else:
+        notes.append("floor: no floor_command declared (nothing always-on to run first)")
+
+    if scope == "full":
+        if not full:
+            raise TestContractError(
+                "test_scope 'full' with no test_contract.full_command — the full scope "
+                "would resolve to nothing")
+        ordered.append(full)
+        notes.append("full: full_command (the declared whole suite)")
+
+    elif scope == "impacted":
+        if not full:
+            raise TestContractError(
+                "test_scope 'impacted' with no test_contract.full_command — an unmapped "
+                "path and an uncomputable failing set both resolve to it, so it is "
+                "mandatory")
+        changed = list(changed_paths or [])
+        new = list(new_paths or [])
+
+        # SET 1 — impacted: every matching rule for every changed path.
+        impacted_cmds, unmapped = _impacted_for(contract, changed)
+        ordered.extend(impacted_cmds)
+        notes.append("impacted: %d command(s) from %d changed path(s) (every matching "
+                     "rule unions)" % (len(impacted_cmds), len(changed)))
+
+        # SET 2 — previously failing: the exact identifiers the LAST run measured.
+        if prev_failures_available:
+            failing = list(prev_failures or [])
+            ordered.extend(failing)
+            notes.append("previously-failing: %d command(s) from the last run's "
+                         "tests.failures[]" % len(failing))
+        else:
+            ordered.append(full)
+            notes.append("previously-failing: UNCOMPUTABLE (the last run reported no "
+                         "machine-readable tests.failures[]) — falling back to "
+                         "full_command rather than silently dropping the set")
+
+        # SET 3 — newly added: run through the SAME map; an added file nothing declares
+        # is unknown blast radius exactly like a changed one.
+        new_cmds, new_unmapped = _impacted_for(contract, new)
+        ordered.extend(new_cmds)
+        notes.append("newly-added: %d command(s) from %d added path(s) "
+                     "(git diff --diff-filter=A)" % (len(new_cmds), len(new)))
+
+        if unmapped or new_unmapped:
+            ordered.append(full)
+            notes.append("unmapped: %s matched no `when` glob — unknown blast radius "
+                         "resolves to full_command, never to nothing"
+                         % ", ".join(sorted(set(unmapped + new_unmapped))))
+
+    ordered = _dedupe([c for c in ordered if str(c).strip()])
+    if not ordered:
+        raise TestContractError(
+            "test_scope %r resolved to an EMPTY command set — a scope must never resolve "
+            "to running nothing (declare floor_command / full_command / impacted_map)"
+            % scope)
+
+    slice_ = {"scope": scope, "resolved_commands": ordered}
+    if floor:
+        slice_["floor_command"] = floor
+    if full:
+        slice_["full_command"] = full
+    return slice_, notes
+
+
+def resolve_from_manifest(manifest, job_id=None, scope=None, worktree=None,
+                          baseline="HEAD", changed_paths=None, new_paths=None,
+                          last_result=None, no_prior_run=False):
+    """Resolve the contract for one job straight off a parsed manifest.
+
+    ``scope`` (explicit) wins; otherwise the named job's ``test_scope`` is used; an absent
+    ``test_scope`` is ``full``, which is what every pre-3.0 manifest relies on. The changed
+    and newly-added sets are derived from git when not supplied.
+
+    The previously-failing set is the one input a caller can get wrong by SAYING NOTHING,
+    so silence is the conservative answer here: pass ``last_result`` (a parsed
+    ``job_result``) or assert ``no_prior_run=True``. Neither ⇒ the set is treated as
+    uncomputable and the floor falls back to ``full_command``. Returns ``(slice, notes)``."""
+    manifest = manifest if isinstance(manifest, dict) else {}
+    contract = manifest.get("test_contract")
+    if scope in (None, "") and job_id:
+        for job in manifest.get("jobs") or []:
+            if isinstance(job, dict) and str(job.get("id")) == str(job_id):
+                scope = job.get("test_scope")
+                break
+    scope = scope or "full"
+
+    if scope == "impacted":
+        if changed_paths is None:
+            changed_paths = _changed_from_scope(worktree, baseline)
+            if changed_paths is None:
+                raise TestContractError(
+                    "cannot derive changed paths (scope-check unavailable) and "
+                    "test_scope is 'impacted' — fail-closed rather than scoping off an "
+                    "empty diff")
+        if new_paths is None:
+            new_paths = added_paths(worktree, baseline)
+            if new_paths is None:
+                raise TestContractError(
+                    "cannot derive the newly-added set (git diff --diff-filter=A failed) "
+                    "— fail-closed rather than dropping one of the three sets")
+
+    if no_prior_run:
+        failures, available = [], True      # empty BY CONSTRUCTION — nothing has run
+    elif last_result is None:
+        failures, available = None, False   # undeclared ⇒ uncomputable ⇒ full fallback
+    else:
+        failures, available = previously_failing(last_result)
+    return resolve_test_commands(contract, scope, changed_paths, new_paths,
+                                 failures, available)
+
+
+# --------------------------------------------------------------------------- #
 # The test floor (concrete ladder).
 # --------------------------------------------------------------------------- #
 def run_test_floor(worktree, baseline="HEAD", changed_paths=None, test_cmd=None,
-                   checkers=None, test_timeout_s=TEST_TIMEOUT_S):
+                   checkers=None, test_timeout_s=TEST_TIMEOUT_S, test_commands=None):
     """Run the proportionate fast-path test floor as a concrete ladder.
 
-    tier-1 configured project tests (``test_cmd``) → tier-2 guarded language parse-checks
-    → tier-3 one cheap diff-read. Returns a result dict::
+    tier-1 configured project tests (``test_commands`` / ``test_cmd``) → tier-2 guarded
+    language parse-checks → tier-3 one cheap diff-read. Returns a result dict::
 
         {"phase":"test_floor", "tier_used":1|2|3|0, "passed":bool, "merge_blocked":bool,
-         "checks":[...], "reasons":[...]}
+         "changed_paths":[...]|None, "checks":[...], "reasons":[...]}
 
     ``merge_blocked`` is True on any floor FAILURE (Iron-Invariant #6). A tier is only
     "used" when it actually produced a verdict; an empty/unavailable tier falls through.
-    """
+
+    ``test_commands`` is the ORDERED, already-resolved list from ``resolve_test_commands``
+    (the floor first). ``test_cmd`` remains the single-command form. Both are executed at
+    tier-1; no command is short-circuited, so the recorded failures are complete.
+
+    THE FLOOR IS EARLY FEEDBACK, NOT A GUARANTEE. Passing here does not restore what the
+    full suite guaranteed — the merge-blocking CI run does. See the resolver's header."""
     if checkers is None:
         checkers = _default_checkers()
     changed_paths = list(changed_paths) if changed_paths is not None else None
     result = {"phase": "test_floor", "tier_used": 0, "passed": False,
               "merge_blocked": True, "checks": [], "reasons": []}
 
-    # tier-1: configured project tests.
-    if test_cmd:
-        cmd = shlex.split(test_cmd) if isinstance(test_cmd, str) else list(test_cmd)
-        if not cmd:
-            result["reasons"].append("tier-1: configured test command is empty (fail-closed)")
-            return result
-        rc, _ = _run_supervised(cmd, worktree, test_timeout_s)
+    # --- The diff comes FIRST. ---------------------------------------------------------
+    # This derivation used to sit BELOW the tier-1 return, so on the one path where a
+    # project actually HAS configured tests the floor knew nothing about what changed and
+    # could not be proportionate to the diff at all. It is computed before any tier runs.
+    # An underivable diff is only fatal for the tiers that NEED it (2 and 3): a tier-1 set
+    # that the caller already resolved is executed regardless, and the loss of
+    # proportionality is recorded rather than swallowed.
+    if changed_paths is None:
+        changed_paths = _changed_from_scope(worktree, baseline)
+    result["changed_paths"] = list(changed_paths) if changed_paths is not None else None
+
+    # tier-1: the resolved project test set.
+    resolved = list(test_commands) if test_commands else ([test_cmd] if test_cmd else [])
+    if resolved:
         result["tier_used"] = 1
-        result["checks"].append({"tier": 1, "checker": " ".join(cmd), "rc": rc,
-                                 "status": "pass" if rc == 0 else "fail"})
-        if rc == 0:
+        if changed_paths is None:
+            result["reasons"].append(
+                "tier-1: changed paths underivable (scope-check unavailable) — the "
+                "resolved set still runs, but this floor is NOT diff-proportionate")
+        argvs = []
+        for raw in resolved:
+            cmd = shlex.split(raw) if isinstance(raw, str) else list(raw)
+            if not cmd:
+                result["reasons"].append(
+                    "tier-1: configured test command is empty (fail-closed)")
+                return result
+            argvs.append(cmd)
+        failed_cmds = []
+        for cmd in argvs:
+            rc, _ = _run_supervised(cmd, worktree, test_timeout_s)
+            result["checks"].append({"tier": 1, "checker": " ".join(cmd), "rc": rc,
+                                     "status": "pass" if rc == 0 else "fail"})
+            if rc != 0:
+                failed_cmds.append((" ".join(cmd), rc))
+        if not failed_cmds:
             result["passed"] = True
             result["merge_blocked"] = False
         else:
-            result["reasons"].append(
-                "tier-1: configured tests failed (rc=%s%s)"
-                % (rc, "; timeout" if rc == 124 else ""))
+            for name, rc in failed_cmds:
+                result["reasons"].append(
+                    "tier-1: configured tests failed (rc=%s%s): %s"
+                    % (rc, "; timeout" if rc == 124 else "", name))
+        result["failures"] = [name for name, _ in failed_cmds]
         return result
 
-    # Derive changed paths if not supplied (soft; fail-closed if underivable).
+    # Tiers 2 and 3 cannot work without the diff (soft; fail-closed if underivable).
     if changed_paths is None:
-        changed_paths = _changed_from_scope(worktree, baseline)
-        if changed_paths is None:
-            result["reasons"].append(
-                "cannot derive changed paths (scope-check unavailable) — fail-closed")
-            return result
+        result["reasons"].append(
+            "cannot derive changed paths (scope-check unavailable) — fail-closed")
+        return result
 
     # tier-2: guarded per-language parse-checks.
     checks, ran_any, failed_any = _run_parse_checks(worktree, changed_paths, checkers)
@@ -754,12 +1122,94 @@ def _emit(obj, out_path):
     print(text)
 
 
+_VALIDATOR_CACHE = []
+
+
+def _load_manifest(path):
+    """Parse a manifest.yaml through the VALIDATOR's own loader (PyYAML when present, its
+    ``_mini_yaml`` block fallback otherwise) so this script and the gate never disagree
+    about what a manifest says."""
+    if not _VALIDATOR_CACHE:
+        import importlib.util
+        vp = os.path.join(_script_dir(), "compound-v-validate-manifest.py")
+        spec = importlib.util.spec_from_file_location("compound_v_validate_manifest", vp)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _VALIDATOR_CACHE.append(mod)
+    with open(path, "r", encoding="utf-8") as fh:
+        return _VALIDATOR_CACHE[0].load_yaml(fh.read())
+
+
+def _resolve_args(args):
+    """Shared producer for the resolved test slice. Returns ``(slice, notes)`` or raises
+    ``TestContractError``. This is the producer ``--test-cmd`` never had."""
+    manifest = _load_manifest(args.manifest)
+    last_result = None
+    if getattr(args, "last_result", None):
+        last_result = _read_json(args.last_result)
+    if not getattr(args, "no_prior_run", False) and last_result is None:
+        # Refuse to guess. Silence here would quietly drop the previously-failing set,
+        # which is exactly the degradation B2 calls out by name.
+        raise TestContractError(
+            "the previously-failing set is undeclared: pass --last-result <job_result.json> "
+            "(the last recorded run) or --no-prior-run (nothing has run yet). Without one "
+            "of them the set is uncomputable and the floor falls back to full_command")
+    changed = None
+    if getattr(args, "changed_file", None):
+        with open(args.changed_file, "r", encoding="utf-8") as fh:
+            changed = [ln.strip() for ln in fh if ln.strip()]
+    return resolve_from_manifest(
+        manifest, job_id=getattr(args, "job_id", None), scope=getattr(args, "scope", None),
+        worktree=args.worktree, baseline=args.baseline, changed_paths=changed,
+        last_result=last_result, no_prior_run=getattr(args, "no_prior_run", False))
+
+
+def _cmd_resolve_tests(args):
+    """Emit the resolved test-contract slice — the file every worker takes as
+    ``--test-contract-file``, and the same list ``test-floor`` executes at tier-1."""
+    if not args.manifest:
+        sys.stderr.write("REFUSED: resolve-tests needs --manifest (the declared "
+                         "test_contract is the only producer there is)\n")
+        return 2
+    try:
+        slice_, notes = _resolve_args(args)
+    except TestContractError as e:
+        sys.stderr.write("REFUSED (fail-closed): %s\n" % e)
+        return 2
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(slice_, indent=2) + "\n")
+    print(json.dumps({"contract": slice_, "notes": notes}, indent=2))
+    return 0
+
+
 def _cmd_test_floor(args):
     changed = None
     if args.changed_file:
         with open(args.changed_file, "r", encoding="utf-8") as fh:
             changed = [ln.strip() for ln in fh if ln.strip()]
-    res = run_test_floor(args.worktree, args.baseline, changed, args.test_cmd)
+
+    # --test-cmd's PRODUCER (v3.0 Feature B1): --manifest resolves the declared
+    # test_contract + this job's test_scope into the ordered command set. --test-cmd stays
+    # for the one-off/explicit case and, when both are given, wins — an operator typing an
+    # explicit command should not be silently overruled by a declaration.
+    test_commands = None
+    notes = []
+    if args.manifest and not args.test_cmd:
+        try:
+            slice_, notes = _resolve_args(args)
+        except TestContractError as e:
+            _emit({"phase": "test_floor", "tier_used": 0, "passed": False,
+                   "merge_blocked": True, "checks": [],
+                   "reasons": ["test contract did not resolve (fail-closed): %s" % e]},
+                  args.out)
+            return 1
+        test_commands = slice_["resolved_commands"]
+
+    res = run_test_floor(args.worktree, args.baseline, changed, args.test_cmd,
+                         test_commands=test_commands)
+    if notes:
+        res["contract_notes"] = notes
     _emit(res, args.out)
     return 0 if res.get("passed") and not res.get("merge_blocked") else 1
 
@@ -771,6 +1221,11 @@ def _cmd_review_spec(args):
     if args.changed_file:
         with open(args.changed_file, "r", encoding="utf-8") as fh:
             changed = [ln.strip() for ln in fh if ln.strip()]
+    elif isinstance(floor, dict) and isinstance(floor.get("changed_paths"), list):
+        # v3.0: prefer the floor's own recorded diff. Tier-1 checks carry a command, not a
+        # file, so scraping `checks` returned an EMPTY changed list on exactly the path the
+        # producer has now made reachable for the first time.
+        changed = list(floor["changed_paths"])
     elif isinstance(floor, dict):
         changed = [c.get("file") for c in floor.get("checks", [])
                    if c.get("file") and not str(c.get("file", "")).startswith("<")]
@@ -888,13 +1343,41 @@ def main(argv):
     ap = argparse.ArgumentParser(prog="compound-v-fastpath-run.py")
     sub = ap.add_subparsers(dest="phase")
 
+    def _contract_flags(p):
+        p.add_argument("--manifest", help="manifest.yaml carrying the v3.0 `test_contract` "
+                                          "block — THE PRODUCER for the test command set")
+        p.add_argument("--job-id", dest="job_id",
+                       help="job whose `test_scope` to honour (absent test_scope ⇒ full)")
+        p.add_argument("--scope", choices=list(VALID_TEST_SCOPES),
+                       help="explicit test_scope override; wins over the job's")
+        p.add_argument("--last-result", dest="last_result",
+                       help="the LAST recorded job_result.json; its tests.failures[] is "
+                            "the previously-failing set. Absent tests.failures[] ⇒ the "
+                            "floor falls back to full_command, never to dropping the set")
+        p.add_argument("--no-prior-run", dest="no_prior_run", action="store_true",
+                       help="assert that NO prior run was recorded, so the "
+                            "previously-failing set is empty by construction. Required "
+                            "when --last-result is absent: silence must not become "
+                            "'nothing was failing'")
+
     p1 = sub.add_parser("test-floor")
     p1.add_argument("--worktree", required=True)
     p1.add_argument("--baseline", default="HEAD")
     p1.add_argument("--changed-file")
     p1.add_argument("--test-cmd")
+    _contract_flags(p1)
     p1.add_argument("--out")
     p1.set_defaults(func=_cmd_test_floor)
+
+    p1b = sub.add_parser("resolve-tests",
+                         help="resolve test_contract + test_scope into the ordered "
+                              "command set (the worker's --test-contract-file)")
+    p1b.add_argument("--worktree", required=True)
+    p1b.add_argument("--baseline", default="HEAD")
+    p1b.add_argument("--changed-file")
+    _contract_flags(p1b)
+    p1b.add_argument("--out", help="write the slice (and ONLY the slice) here")
+    p1b.set_defaults(func=_cmd_resolve_tests)
 
     p2 = sub.add_parser("review-spec")
     p2.add_argument("--worktree", required=True)
@@ -1089,6 +1572,161 @@ def _selftest():
         write(r, "doc.md", "one\n"); git(r, ["add", "-A"]); git(r, ["commit", "-qm", "b"])
         res = run_test_floor(r, "HEAD", changed_paths=["doc.md"])
         expect("tier-3 empty diff → merge_blocked (fail-closed)", res["merge_blocked"] is True)
+
+        # ---- v3.0 Feature B1/B2: the producer, the three sets, the moved return ----
+        CONTRACT = {
+            "floor_command": "sh -c 'exit 0'",
+            "full_command": "sh -c 'echo full'",
+            "impacted_map": [
+                {"when": "scripts/compound-v-*.py", "run": "python3 {path} --selftest"},
+                {"when": "scripts/**", "run": "sh -c 'lint scripts'"},
+                {"when": "docs/**", "run": "sh -c 'docs check'"},
+            ],
+        }
+
+        def cmds(scope, changed=None, new=None, failing=None, available=True,
+                 contract=CONTRACT):
+            slice_, _notes = resolve_test_commands(contract, scope, changed, new,
+                                                   failing, available)
+            return slice_["resolved_commands"]
+
+        # B2: the floor always runs, at every tier, and comes FIRST.
+        expect("B2: floor_command is first in every resolved set",
+               cmds("full")[0] == "sh -c 'exit 0'"
+               and cmds("floor_only")[0] == "sh -c 'exit 0'"
+               and cmds("impacted", ["docs/x.md"], [], [], True)[0] == "sh -c 'exit 0'")
+        expect("B2: floor_only resolves to ONLY the floor",
+               cmds("floor_only") == ["sh -c 'exit 0'"])
+        expect("B2: full resolves to floor + full_command",
+               cmds("full") == ["sh -c 'exit 0'", "sh -c 'echo full'"])
+
+        # B2: a scope must NEVER resolve to nothing.
+        def _raises(fn):
+            try:
+                fn()
+            except TestContractError:
+                return True
+            return False
+        expect("B2: floor_only with no floor_command is REFUSED (never nothing)",
+               _raises(lambda: cmds("floor_only", contract={"full_command": "x"})))
+        expect("B2: impacted with no full_command is REFUSED (the fallback is mandatory)",
+               _raises(lambda: cmds("impacted", ["a.py"], [], [], True,
+                                    contract={"floor_command": "f"})))
+        expect("B2: an entirely empty contract is REFUSED, not silently green",
+               _raises(lambda: cmds("full", contract={})))
+        expect("B2: a half-declared impacted_map rule is REFUSED",
+               _raises(lambda: cmds("impacted", ["scripts/x.py"], [], [], True,
+                                    contract={"floor_command": "f", "full_command": "F",
+                                              "impacted_map": [{"when": "scripts/**"}]})))
+
+        # B2: EVERY matching rule unions — first-match-wins would drop declared coverage.
+        both = cmds("impacted", ["scripts/compound-v-preeval.py"], [], [], True)
+        expect("B2: overlapping `when` globs UNION (both matching rules selected)",
+               "python3 scripts/compound-v-preeval.py --selftest" in both
+               and "sh -c 'lint scripts'" in both)
+        expect("B2: `{path}` is substituted with the matching path",
+               "python3 scripts/compound-v-preeval.py --selftest" in both)
+        expect("B2: a fully-mapped impacted set does NOT drag in full_command",
+               "sh -c 'echo full'" not in both)
+
+        # B2: an unmapped path is unknown blast radius → full_command, never nothing.
+        un = cmds("impacted", ["src/parser.py"], [], [], True)
+        expect("B2: an unmapped changed path resolves to full_command",
+               "sh -c 'echo full'" in un)
+
+        # B2 set 2 — previously failing.
+        pf = cmds("impacted", ["docs/a.md"], [], ["pytest tests/test_x.py::test_y"], True)
+        expect("B2: previously-failing commands are unioned into the set",
+               "pytest tests/test_x.py::test_y" in pf)
+        drop = cmds("impacted", ["docs/a.md"], [], None, False)
+        expect("B2: an UNCOMPUTABLE previously-failing set falls back to full_command "
+               "(never silently dropped)", "sh -c 'echo full'" in drop)
+        _slice, _notes = resolve_test_commands(CONTRACT, "impacted", ["docs/a.md"], [],
+                                               None, False)
+        expect("B2: the fallback states its reason in the notes",
+               any("UNCOMPUTABLE" in n for n in _notes))
+
+        # B2 set 3 — newly added, run through the SAME map.
+        na = cmds("impacted", ["docs/a.md"], ["scripts/compound-v-new.py"], [], True)
+        expect("B2: a newly-added path is mapped like a changed one",
+               "python3 scripts/compound-v-new.py --selftest" in na)
+        na2 = cmds("impacted", ["docs/a.md"], ["src/brand-new.py"], [], True)
+        expect("B2: an unmapped NEWLY-ADDED path also resolves to full_command",
+               "sh -c 'echo full'" in na2)
+
+        # The union is deduped and order-stable (floor first).
+        dd = cmds("impacted", ["scripts/a.py", "scripts/b.py"], [], [], True)
+        expect("B2: the resolved set is deduped, order-stable, floor-first",
+               dd[0] == "sh -c 'exit 0'" and len(dd) == len(set(dd))
+               and dd.count("sh -c 'lint scripts'") == 1)
+
+        # The slice carries ONLY the keys the worker's --test-contract-file accepts.
+        slice_only, _ = resolve_test_commands(CONTRACT, "full")
+        expect("B3: the slice holds only {scope, resolved_commands, floor_command, "
+               "full_command}",
+               set(slice_only) <= {"scope", "resolved_commands", "floor_command",
+                                   "full_command"}
+               and slice_only["scope"] == "full")
+
+        # previously_failing() — the three honest answers.
+        expect("B3: no prior run ⇒ empty BY CONSTRUCTION (not unknown)",
+               previously_failing(None) == ([], True))
+        expect("B3: a measured empty failures[] ⇒ measured-and-nothing-failed",
+               previously_failing({"tests": {"failures": []}}) == ([], True))
+        expect("B3: measured failures[] are returned verbatim",
+               previously_failing({"tests": {"failures": ["cmd a"]}}) == (["cmd a"], True))
+        expect("B3: an ABSENT tests block ⇒ uncomputable (full fallback)",
+               previously_failing({"status": "success"}) == (None, False))
+        expect("B3: a tests block with NO failures field ⇒ uncomputable",
+               previously_failing({"tests": {"command": "x", "exit_code": 0}})
+               == (None, False))
+
+        # B1: newly-added derivation, against a REAL repo.
+        r = new_repo("added")
+        write(r, "keep.md", "hi\n"); git(r, ["add", "-A"]); git(r, ["commit", "-qm", "b"])
+        base = head(r)
+        write(r, "brand/new.py", "x = 1\n")
+        git(r, ["add", "-A"]); git(r, ["commit", "-qm", "add"])
+        expect("B1: added_paths() reports the newly-added file (--diff-filter=A)",
+               added_paths(r, base) == ["brand/new.py"])
+        expect("B1: added_paths() does NOT report a merely modified file",
+               "keep.md" not in (added_paths(r, base) or []))
+
+        # B1: the moved return — tier-1 is now diff-proportionate at all.
+        r = new_repo("t1-diff")
+        write(r, "a.py", "x = 1\n"); git(r, ["add", "-A"]); git(r, ["commit", "-qm", "b"])
+        base = head(r)
+        write(r, "a.py", "x = 2\n")
+        res = run_test_floor(r, base, test_cmd="sh -c 'exit 0'")
+        expect("B1: tier-1 now reports changed_paths (the return moved BELOW the diff)",
+               res["tier_used"] == 1 and res.get("changed_paths") == ["a.py"])
+
+        # B1: the resolved set runs in order and is NOT short-circuited.
+        marker = os.path.join(tmp, "second-ran")
+        res = run_test_floor(r, base, changed_paths=["a.py"], test_commands=[
+            "sh -c 'exit 1'", "sh -c 'touch %s'" % marker])
+        expect("B1: a failing command in the set blocks the merge",
+               res["merge_blocked"] is True and res["passed"] is False)
+        expect("B1: later commands still RUN (no short-circuit ⇒ complete failures)",
+               os.path.isfile(marker))
+        expect("B1: the failing command is recorded by name",
+               res.get("failures") == ["sh -c exit 1"])
+        res = run_test_floor(r, base, changed_paths=["a.py"],
+                             test_commands=["sh -c 'exit 0'", "sh -c 'exit 0'"])
+        expect("B1: an all-green resolved set passes the floor",
+               res["passed"] is True and res["merge_blocked"] is False
+               and len([c for c in res["checks"] if c.get("tier") == 1]) == 2)
+
+        # resolve_from_manifest: test_scope comes off the job; absent ⇒ full.
+        man = {"test_contract": CONTRACT,
+               "jobs": [{"id": "task-1", "test_scope": "floor_only"},
+                        {"id": "task-2"}]}
+        s1, _ = resolve_from_manifest(man, job_id="task-1", no_prior_run=True)
+        expect("B2: a job's test_scope drives resolution",
+               s1["scope"] == "floor_only" and s1["resolved_commands"] == ["sh -c 'exit 0'"])
+        s2, _ = resolve_from_manifest(man, job_id="task-2", no_prior_run=True)
+        expect("B2: an ABSENT test_scope is `full` (what every pre-3.0 manifest relies on)",
+               s2["scope"] == "full")
 
         # ---- REVIEW HANDOFF ------------------------------------------------
         # Build a real diff + manifest to bind against.
