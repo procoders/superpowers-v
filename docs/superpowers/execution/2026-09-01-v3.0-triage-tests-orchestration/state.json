@@ -1,7 +1,7 @@
 {
   "run_id": "2026-09-01-v3.0-triage-tests-orchestration",
   "phase": "PARTITION_VERIFIED",
-  "updated_at": "2026-09-01T00:10:56Z",
+  "updated_at": "2026-09-01T00:20:16Z",
   "pre_eval_id": null,
   "total_retries": 0,
   "max_total_retries": 10,
@@ -85,6 +85,12 @@
       "session_id": null
     },
     "task-13-review": {
+      "status": "pending",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null
+    },
+    "task-14-release": {
       "status": "pending",
       "isolation": "direct",
       "worktree": null,

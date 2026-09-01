@@ -2,10 +2,16 @@
 #
 # BOOTSTRAP NOTE, stated rather than skipped: this manifest carries no `triage`
 # block, because the block is DEFINED by task-0 and its `taxonomy_digest` cannot
-# exist until task-12 generates the taxonomy. 3.0's own run is therefore the last
-# run that legitimately predates the gate it installs. Every run after this one
-# must carry it, and `--require-triage` is off by default precisely so the CI
-# historical sweep and this bootstrap keep passing.
+# exist until task-12 generates the taxonomy.
+#
+# The partition gate rejected the first version of this note, which claimed
+# "every run after this one must carry it". Nothing in the design made that true:
+# --require-triage defaults on only for --mode pre-dispatch, and that mode is
+# selected only for fast_path manifests, so a normal 3.1 run would get exactly
+# the same mode-less pass 3.0 gives itself -- permanently, not once. The closure
+# is now a real mechanism and belongs to task-9: /v:dispatch invokes the
+# validator WITH --require-triage on every dispatch, in every mode. The CI
+# historical sweep stays mode-less and keeps its allowlist.
 
 run_id: 2026-09-01-v3.0-triage-tests-orchestration
 feature: "Compound V 3.0 — proportionate triage, scoped tests, native-Workflow dispatch"
@@ -31,6 +37,9 @@ acceptance_criteria:
   - "CI executes the files under tests/, and the full-suite backstop always runs rather than being conditionally skipped"
   - "Every new guard is demonstrated to fail on a planted violation"
   - "No speed or cost claim ships with 3.0; README and CHANGELOG state the defaults are principle-derived"
+  - "triage-outcomes.jsonl receives a predicted event per decision and an actual event per completed run"
+  - "/v:dispatch invokes the validator WITH --require-triage in every mode, so no future run can repeat 3.0 bootstrap exemption"
+  - "compound-v-emit-workflow.py carries --selftest and is discovered by the CI sweep"
 
 routing_stance: balanced
 max_parallel: 5
@@ -57,8 +66,9 @@ jobs:
       - "docs/superpowers/execution/**"
       - "tests/**"
     acceptance:
-      - "triage block validated under --require-triage, off by default elsewhere"
-      - "taxonomy_digest mismatch FAILS"
+      - "triage block validated under --require-triage; the flag ships DEFAULT OFF in every mode, because turning it on for --mode pre-dispatch before task-3 emits the block would red tests/v2.9-e2e inside task-0 itself"
+      - "taxonomy_digest mismatch FAILS, tested against synthesized bytes since the real taxonomy does not exist until task-12"
+      - "the historical 11 manifests are allowlisted by id, never back-filled"
       - "test_contract and per-job test_scope validated; floor_only never empty"
       - "CI executes tests/ and the new step is proven to fail on a planted violation"
 
@@ -74,13 +84,21 @@ jobs:
     timeout_sec: 3600
     write_allowed:
       - "scripts/compound-v-preeval.py"
+      - "scripts/compound-v-postdiff-reclassify.py"
+      - "scripts/compound-v-classify-request.py"
+      - "scripts/compound-v-localize.py"
+      - "schemas/pre-eval-record.schema.json"
     read_allowed:
       - "docs/superpowers/specs/**"
       - "docs/superpowers/preflight/**"
       - "scripts/**"
+      - "schemas/**"
     acceptance:
       - "DECISION_SCOPED exists; matrix computed inside the engine, not post-hoc"
       - "selftest covers 9 cells, unknown, and override_fired beside low/low"
+      - "pre-eval-record.schema.json's decision enum admits the third value — preeval's own selftest validates records against it and would otherwise fail"
+      - "every binary consumer of the decision in this lane handles SCOPED explicitly, never by falling through to the fast-path branch"
+      - "this lane's own Iron Invariant wording is amended (preeval.py:9-10, the record schema description)"
 
   - id: task-2-outcomes
     title: "SCOPED cohort + miscalibration circuit breaker"
@@ -99,6 +117,7 @@ jobs:
       - "scripts/**"
     acceptance:
       - "SCOPED is its own cohort; fast-path precision no longer corrupted"
+      - "a predicted event is appended per decision and an actual event per completed run — the stream has never had a single data point"
       - "breaker never delays the first decision and disarms above the threshold"
 
   - id: task-3-fastpath
@@ -114,11 +133,13 @@ jobs:
     write_allowed:
       - "scripts/compound-v-fastpath-materialize.py"
       - "scripts/compound-v-fastpath-run.py"
+      - "tests/v2.9-e2e/**"
     read_allowed:
       - "docs/superpowers/specs/**"
       - "scripts/**"
     acceptance:
-      - "build_manifest emits triage; its selftest updated in the same commit"
+      - "build_manifest emits triage; its selftest AND tests/v2.9-e2e updated in the same commit"
+      - "ONLY NOW is --require-triage flipped to default-on for --mode pre-dispatch, since the block it demands now exists"
       - "run_test_floor returns below changed_paths and runs impacted+failing+new"
       - "no second floor is introduced"
 
@@ -130,11 +151,12 @@ jobs:
     effort: high
     isolation: worktree
     run: parallel
-    depends_on: [task-1-preeval, task-2-outcomes, task-3-fastpath]
+    depends_on: [task-1-preeval, task-2-outcomes, task-3-fastpath, task-12-taxonomy]
     timeout_sec: 3600
     write_allowed:
       - "commands/v-triage.md"
       - "commands/v-orchestrate.md"
+      - "docs/superpowers/pre-eval/**"
     read_allowed:
       - "docs/superpowers/specs/**"
       - "commands/**"
@@ -145,11 +167,11 @@ jobs:
       - "sensitive set read from the taxonomy, never hardcoded"
 
   - id: task-5-invariant
-    title: "Amended Iron Invariant #4 across all four prose files"
-    type: junior
+    title: "Amended Iron Invariant #4 across the prose surface"
+    type: standard
     backend: claude
-    tier: standard
-    effort: medium
+    tier: deep
+    effort: high
     isolation: worktree
     run: parallel
     depends_on: [task-0-contract]
@@ -159,11 +181,13 @@ jobs:
       - "skills/compound-v/SKILL.md"
       - "skills/compound-v/rationalization-table.md"
       - "skills/compound-v/routing-policy.md"
+      - "scripts/compound-v-project-config.py"
+      - "docs/superpowers/architecture/architecture.md"
     read_allowed:
       - "docs/superpowers/specs/**"
       - "skills/**"
     acceptance:
-      - "grep -rn 'never auto-routes' finds no unamended assertion"
+      - "no unamended assertion survives IN THIS JOB'S OWN FILES — the repo-wide sweep is split across the owning jobs, since a grep criterion cannot reach into a concurrent lane"
       - "a rationalization row added for skipping the triage record"
 
   - id: task-6-transport
@@ -190,6 +214,8 @@ jobs:
     acceptance:
       - "additionalProperties:false schema gains tests{command,exit_code,scope,selected_count}"
       - "test contract reaches workers as an argument, never as prompt prose"
+      - "adapter-claude.md uses Engine C naming"
+      - "the job_spec test_contract slice is defined here; task-9 propagates it into the dispatcher's canonical field list, which this job does not own"
 
   - id: task-7-review-gate
     title: "Tier-aware review gate; no test command reported is a FAIL"
@@ -243,13 +269,18 @@ jobs:
     effort: high
     isolation: worktree
     run: parallel
-    depends_on: [task-0-contract]
+    depends_on: [task-0-contract, task-6-transport]
     timeout_sec: 5400
     write_allowed:
       - "scripts/compound-v-emit-workflow.py"
       - "commands/v-dispatch.md"
+      - "commands/v-resume.md"
       - "agents/parallel-dispatcher.md"
       - "skills/compound-v/workflows-accelerator.md"
+      - "skills/compound-v/state-machine.md"
+      - "skills/compound-v/phase-3-parallel-opus-dispatch.md"
+      - "skills/compound-v/phase-0-recon.md"
+      - "TROUBLESHOOTING.md"
     read_allowed:
       - "docs/superpowers/specs/**"
       - "docs/superpowers/preflight/**"
@@ -263,6 +294,9 @@ jobs:
       - "emitted script has no Date.now, Math.random, bare new Date() or import()"
       - "scriptPath invocation forced; CLAUDE_CODE_WORKFLOWS probed with Engine A fallback"
       - "engine selection justified operationally, never by the refuted headless claim"
+      - "compound-v-emit-workflow.py carries --selftest and is found by the CI sweep over scripts/*.py"
+      - "/v:dispatch invokes the validator WITH --require-triage in EVERY mode — this is the mechanism that stops a future run repeating 3.0 own bootstrap exemption"
+      - "task-6 job_spec test_contract slice propagated into the dispatcher canonical field list"
 
   - id: task-10-adrs
     title: "ADR 0003 scoped tests, ADR 0004 Workflow as the dispatch engine"
@@ -320,6 +354,7 @@ jobs:
     timeout_sec: 1800
     write_allowed:
       - ".claude/compound-v-impact-taxonomy.yaml"
+      - "scripts/compound-v-taxonomy.py"
     read_allowed:
       - "docs/superpowers/specs/**"
       - "scripts/**"
@@ -327,7 +362,8 @@ jobs:
     acceptance:
       - "produced by /v:onboard draft-taxonomy, not hand-authored"
       - "sensitive set seeds skills/**/*.md, agents/*.md, commands/*.md, hooks/**, .github/**"
-      - "a live --score-only probe returns a non-unknown band"
+      - "a live --score-only probe returns a non-unknown band (score-only is documented as pure scoring, no writes)"
+      - "--with-churn is NOT used: it would write a churn cache inside the worktree, and the scope gate unions ignored files, so that is an immediate BLOCK"
 
   - id: task-13-review
     title: "Three-pass Review Gate over the composite"
@@ -358,3 +394,28 @@ jobs:
       - "every feature-level acceptance criterion met"
       - "no write outside any job's partitioned set"
       - "no fabricated metric anywhere in the diff"
+
+  - id: task-14-release
+    title: "Release 3.0 — version lockstep, honest caveats, no speed or cost claim"
+    type: standard
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: direct
+    run: serial
+    depends_on: [task-13-review]
+    timeout_sec: 3600
+    write_allowed:
+      - "CHANGELOG.md"
+      - ".claude-plugin/plugin.json"
+      - ".claude-plugin/marketplace.json"
+      - "README.md"
+      - "AGENTS.md"
+    read_allowed:
+      - "**"
+    acceptance:
+      - "3.0.0 in lockstep across plugin.json, marketplace.json and the CHANGELOG heading — CI enforces this"
+      - "README and AGENTS.md state the Claude Code >= 2.1.219 floor"
+      - "both files state that Feature B defaults are principle-derived, the ~20,000-tests observation being unreproduced"
+      - "NO speed and NO cost claim anywhere in the release text"
+      - "the last unamended Iron Invariant assertion, in CHANGELOG history, is left as history and not rewritten"
