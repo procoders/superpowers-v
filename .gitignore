@@ -48,10 +48,15 @@ docs/superpowers/execution/2026-07-11-v2.9-pre-evaluation/baselines/
 # are not in this checkout at all (observed three times: 51, 68, 68).
 .claude/worktrees/
 
-# Python bytecode. Not previously ignored, so a local run of the repo's own test
-# sweep with a bytecode-writing interpreter left .pyc files next to the scripts —
-# untracked, therefore unioned into the acting job's changed set, therefore a
-# false scope-gate BLOCK. CI exports PYTHONDONTWRITEBYTECODE=1; this covers the
-# local case.
+# Python bytecode. A local run of the repo's own test sweep with a
+# bytecode-writing interpreter leaves .pyc files next to the scripts.
+#
+# CORRECTION to what an earlier commit message implied: ignoring these does NOT
+# hide them from the scope gate, and must not be expected to. The gate's third
+# term is `git ls-files --others --ignored --exclude-standard` precisely so a
+# worker cannot escape it by writing a gitignored path — see the header of
+# scripts/compound-v-scope-check.py. What ignoring buys is a clean `git status`
+# and a quiet linter; the gate still reports them, and the real fix there is
+# PYTHONDONTWRITEBYTECODE=1, which CI exports and every worker script now sets.
 __pycache__/
 *.pyc
