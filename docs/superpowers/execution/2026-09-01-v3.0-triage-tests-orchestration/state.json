@@ -1,7 +1,7 @@
 {
   "run_id": "2026-09-01-v3.0-triage-tests-orchestration",
-  "phase": "DISPATCHED",
-  "updated_at": "2026-09-01T16:16:41Z",
+  "phase": "COLLECTED",
+  "updated_at": "2026-09-01T17:13:20Z",
   "pre_eval_id": null,
   "total_retries": 0,
   "max_total_retries": 10,
@@ -31,7 +31,7 @@
       "session_id": null
     },
     "task-4-triage-command": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
       "worktree": null,
       "session_id": null
@@ -61,7 +61,7 @@
       "session_id": null
     },
     "task-9-engine-c": {
-      "status": "running",
+      "status": "done",
       "isolation": "worktree",
       "worktree": null,
       "session_id": null
@@ -85,7 +85,7 @@
       "session_id": null
     },
     "task-13-review": {
-      "status": "pending",
+      "status": "running",
       "isolation": "direct",
       "worktree": null,
       "session_id": null
@@ -103,7 +103,7 @@
       "session_id": null
     },
     "task-16-native-points": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
       "worktree": null,
       "session_id": null
