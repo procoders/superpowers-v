@@ -50,6 +50,17 @@ acceptance_criteria:
 routing_stance: balanced
 max_parallel: 5
 
+# Dispatch waves, written down rather than inferred at dispatch time (partition
+# review W7). A prerequisite's merge-back only STAGES; the caller must COMMIT it
+# before creating a dependent's worktree at HEAD, or the dependent will not see it.
+# task-9 rewrites the orchestration prose that carries that rule, so it merges LAST
+# in wave 2 -- see its acceptance line about preserving the commit-before-dependent rule.
+#   wave 0 : task-0-contract                                    (serial)
+#   wave 1 : task-1, task-5, task-6, task-8, task-10, task-11, task-12, task-15
+#   wave 2 : task-2, task-3, task-7, task-16, task-17, then task-9 last
+#   wave 3 : task-4
+#   wave 4 : task-13-review (serial)  ->  task-14-release (serial)
+
 jobs:
   - id: task-0-contract
     title: "Manifest contract: triage block, test_contract, --require-triage, CI runs tests/"
@@ -76,7 +87,9 @@ jobs:
       - "taxonomy_digest mismatch FAILS, tested against synthesized bytes since the real taxonomy does not exist until task-12"
       - "the historical 11 manifests are allowlisted by id, never back-filled"
       - "test_contract and per-job test_scope validated; floor_only never empty"
-      - "CI executes tests/ and the new step is proven to fail on a planted violation"
+      - "CI executes tests/ RECURSIVELY and for both extensions — a flat tests/*.sh glob misses tests/v2.9-e2e/*.py, which has never run in CI"
+      - "the two tests the glob newly activates (test-codex-review-schema-default.sh, test-session-banner-staleness.sh) are verified green BEFORE wiring it — neither is in this lane and a red one would fail this job for reasons it cannot fix"
+      - "the new step is proven to fail on a planted violation"
 
   - id: task-1-preeval
     title: "Third tier in the scorer; any fired override forces FULL"
@@ -145,7 +158,7 @@ jobs:
       - "scripts/**"
     acceptance:
       - "build_manifest emits triage; its selftest AND tests/v2.9-e2e updated in the same commit"
-      - "ONLY NOW is --require-triage flipped to default-on for --mode pre-dispatch, since the block it demands now exists"
+      - "does NOT flip any validator default — the mode-scoped default was removed as circular; the closure is /v:dispatch passing --require-triage explicitly, which task-9 owns"
       - "run_test_floor returns below changed_paths and runs impacted+failing+new"
       - "no second floor is introduced"
 
@@ -167,6 +180,7 @@ jobs:
       - "docs/superpowers/specs/**"
       - "commands/**"
       - "scripts/**"
+      - ".claude/**"
     acceptance:
       - "record written AND committed under docs/superpowers/pre-eval/"
       - "predicate 7 floor-passed and predicate 8 full post-diff re-validation implemented"
@@ -189,12 +203,14 @@ jobs:
       - "skills/compound-v/routing-policy.md"
       - "scripts/compound-v-project-config.py"
       - "docs/superpowers/architecture/architecture.md"
+      - "docs/superpowers/architecture/pre-eval-config.md"
     read_allowed:
       - "docs/superpowers/specs/**"
       - "skills/**"
     acceptance:
       - "no unamended assertion survives IN THIS JOB'S OWN FILES — the repo-wide sweep is split across the owning jobs, since a grep criterion cannot reach into a concurrent lane"
       - "a rationalization row added for skipping the triage record"
+      - "pre-eval-config.md stops hardcoding the two-value decision enum and its FASTPATH-only conditional — after task-1 lands the third value that citation-verified doc is factually wrong"
 
   - id: task-6-transport
     title: "job_result tests block + a real test-contract argument to every worker"
@@ -222,6 +238,7 @@ jobs:
       - "test contract reaches workers as an argument, never as prompt prose"
       - "adapter-claude.md uses Engine C naming"
       - "the job_spec test_contract slice is defined here; task-9 propagates it into the dispatcher's canonical field list, which this job does not own"
+      - "the schema also gains gate_receipt{baseline_commit,realised_commit,diff_digest,verdict,raw_stdout,exit_code} — additionalProperties is false, so without this field task-17 has nowhere to put the receipt and the D1 authority cannot exist"
 
   - id: task-7-review-gate
     title: "Tier-aware review gate; no test command reported is a FAIL"
@@ -294,12 +311,14 @@ jobs:
       - "agents/**"
       - "skills/**"
       - "scripts/**"
+      - "schemas/**"
     acceptance:
       - "named Engine C throughout; Engine B is never used"
       - "Gate never throws, null is FAIL, Record is idempotent"
       - "emitted script has no Date.now, Math.random, bare new Date() or import()"
       - "scriptPath invocation forced; CLAUDE_CODE_WORKFLOWS probed with Engine A fallback"
       - "engine selection justified operationally, never by the refuted headless claim"
+      - "whatever replaces the deleted batching prose PRESERVES the commit-before-dependent rule — a prerequisite merge-back only STAGES, so a dependent worktree created at HEAD would not see it. Deleting that rule mid-run breaks the very ordering this run depends on"
       - "compound-v-emit-workflow.py carries --selftest and is found by the CI sweep over scripts/*.py"
       - "/v:dispatch invokes the validator WITH --require-triage in EVERY mode — this is the mechanism that stops a future run repeating 3.0 own bootstrap exemption"
       - "task-6 job_spec test_contract slice propagated into the dispatcher canonical field list"
@@ -406,7 +425,7 @@ jobs:
     effort: high
     isolation: worktree
     run: parallel
-    depends_on: [task-0-contract, task-15-lane-guard]
+    depends_on: [task-0-contract, task-15-lane-guard, task-4-triage-command]
     timeout_sec: 3600
     write_allowed:
       - "hooks/triage-prompt-nudge.sh"
@@ -417,11 +436,42 @@ jobs:
       - "docs/superpowers/preflight/**"
       - "hooks/**"
       - "scripts/**"
+      - "commands/**"
     acceptance:
       - "UserPromptSubmit invokes triage — the entry point the scorer has never had, since the skill description fires four transitions too late"
       - "PostCompact uses the summary it receives, improving on v2.19's SessionStart banner which fires on compact but cannot see what was summarized"
       - "both fail open and are silent when they cannot complete, never blocking a turn"
       - "hooks.json registers all three new hooks INCLUDING task-15's lane-guard, with the || true fail-open form — bash exits 2 on a parse error, which is exactly the blocking code"
+      - "the EXISTING Stop registration is preserved verbatim: tests/test-epic-goal-stop.sh asserts it carries || true and that no Stop entry has a matcher, and that test is not in this lane"
+
+  - id: task-17-integration-authority
+    title: "The git-derived integration postcondition — the authority Engine C is NOT"
+    type: standard
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    depends_on: [task-0-contract, task-6-transport]
+    timeout_sec: 5400
+    write_allowed:
+      - "scripts/compound-v-integration-gate.py"
+      - "scripts/compound-v-scope-check.py"
+      - "tests/test-integration-gate.sh"
+    read_allowed:
+      - "docs/superpowers/specs/**"
+      - "docs/superpowers/preflight/**"
+      - "scripts/**"
+      - "schemas/**"
+      - "agents/**"
+      - "commands/**"
+    acceptance:
+      - "implements spec D1: every original job must have exactly ONE gate receipt bound to its baseline commit, its realised commit and a diff digest"
+      - "where a receipt is MISSING, null, or its digests disagree with the tree, this gate runs compound-v-scope-check.py ITSELF and that verdict wins — a workflow Gate agent returns a schema-valid verdict that proves JSON shape, never that the check ran"
+      - "integration is REFUSED until every job has a valid receipt; a job that vanished to null is treated exactly like a failed one"
+      - "carries --selftest and is picked up by the CI sweep over scripts/*.py"
+      - "a planted forged receipt (valid shape, wrong digest) is REJECTED — proven, not asserted"
+      - "a planted missing receipt causes the gate to re-derive and BLOCK — proven, not asserted"
 
   - id: task-13-review
     title: "Three-pass Review Gate over the composite"
@@ -446,12 +496,13 @@ jobs:
       - task-12-taxonomy
       - task-15-lane-guard
       - task-16-native-points
+      - task-17-integration-authority
     timeout_sec: 5400
     write_allowed: []
     read_allowed:
       - "**"
     acceptance:
-      - "reports a verdict for EVERY criterion by its AC-NN id, all twenty, not a blanket 'criteria met' — the ids are copied verbatim from the spec so the two lists cannot drift"
+      - "reports a verdict for EVERY criterion by its AC-NN id, ALL TWENTY-THREE, not a blanket 'criteria met' — the ids are copied verbatim from the spec so the two lists cannot drift"
       - "no write outside any job's partitioned set"
       - "no fabricated metric anywhere in the diff"
 
