@@ -275,10 +275,14 @@ _goal_rule() {
 
   [ -n "$arm_id" ] || { _log "armed record carries an empty arm_id — FAILING OPEN"; return 1; }
   # `0` is INVALID, not "unlimited".  There is no unlimited setting.
-  _is_uint "$maxc" && [ "$maxc" -gt 0 ] || {
+  # Written as an explicit negative rather than `A && B || C`: shellcheck SC2015
+  # flags that form because C also runs when A succeeds and B fails — which is
+  # what is wanted here, but a reader cannot tell that from the shape alone, and
+  # a fail-open guard is the last place to leave intent to inference.
+  if ! _is_uint "$maxc" || [ "$maxc" -le 0 ]; then
     _log "max_continues is not a positive integer (${maxc:-<empty>}) — FAILING OPEN"
     return 1
-  }
+  fi
 
   # `should_continue` is `armed AND NOT met AND NOT terminal`.  A terminal-but-
   # unmet epic (tripped breaker, halt_epic, exhausted work, unsatisfiable DAG)
