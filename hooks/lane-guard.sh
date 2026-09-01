@@ -48,12 +48,31 @@
 # ----
 # PreToolUse hooks share a tight time budget, so every path here is bounded: at
 # most 8 run directories are inspected, resolution stops at the first match, and
-# the manifest is only parsed AFTER a job has been resolved. Measured on the
-# development machine (macOS, /usr/bin/python3 3.9), mean of 10 runs:
-#   bare interpreter start        ~54 ms   (the floor -- nothing can beat it)
-#   unresolved job (human session) ~112 ms  (no manifest parse)
-#   full deny path                 ~152 ms
-# A result cache was considered and rejected: it would save ~40 ms and buy a
+# the manifest is only parsed AFTER a job has been resolved.
+#
+# RE-MEASURED 2026-09-01 (macOS 26.5.2, arm64, /usr/bin/python3 3.9.6), mean of
+# 50 invocations per path, against a checkout carrying 12 run directories:
+#   bare interpreter start          ~31 ms  (the floor -- nothing can beat it)
+#   unresolved job (human session)  ~47 ms  (no manifest parse)
+#   resolved, write in lane         ~81 ms  (manifest parsed)
+#   resolved, write out of lane     ~80 ms  (the deny is NOT the expensive path)
+# So the honest published figure is a RANGE, 47-81 ms, not a single number: the
+# split that matters is resolution + manifest parse (~34 ms), not the verdict.
+#
+# These supersede the ~54/~112/~152 ms this header carried before, which were a
+# mean of 10 and disagreed with the 63 ms README.md published for the same
+# unresolved path. Re-measurement reproduced NEITHER set; both are withdrawn
+# rather than reconciled. README.md and AGENTS.md now carry these same figures
+# and the reproduction command.
+#
+# To reproduce: drive this hook with the synthetic PreToolUse payloads that
+# tests/test-lane-guard.sh builds (its sandbox is what the resolved rows above
+# were measured against) and time the loop. Set CV_LANE_GUARD_LOG and read it
+# back to confirm which path you hit -- an in-lane allow logs NOTHING and an
+# unresolved allow logs "ALLOW (job unresolved)", and the two are otherwise
+# indistinguishable from stdout, which is empty for both.
+#
+# A result cache was considered and rejected: it would save ~34 ms and buy a
 # cache-invalidation bug in the one component whose failure mode is a false deny.
 #
 # CARVE-OUT: EXTERNAL WORKERS
