@@ -1,0 +1,21 @@
+{
+  "baseline_commit": "4d91adc326c134d4a77af5a71d3669d846ea45bf",
+  "diff_digest": "sha256:15d4794ad86b76aeed31b0600c40e643e4bf54ed85d4bf87e65abedf70da4f2a",
+  "exit_code": 0,
+  "job_id": "judge-lane",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"4d91adc326c134d4a77af5a71d3669d846ea45bf\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-narrowing-judge.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-narrowing-judge.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "4d91adc326c134d4a77af5a71d3669d846ea45bf",
+  "source": "gate-receipt",
+  "tests": {
+    "checks": [],
+    "merge_blocked": true,
+    "passed": false,
+    "phase": "test_floor",
+    "reasons": [
+      "test contract did not resolve (fail-closed): test_scope 'full' with no test_contract.full_command \u2014 the full scope would resolve to nothing"
+    ],
+    "tier_used": 0
+  },
+  "verdict": "pass",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_88d7caa0-6f1-2"
+}

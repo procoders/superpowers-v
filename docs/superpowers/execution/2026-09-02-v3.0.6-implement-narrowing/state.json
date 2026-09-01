@@ -1,0 +1,46 @@
+{
+  "run_id": "2026-09-02-v3.0.6-implement-narrowing",
+  "phase": "DISPATCHED",
+  "jobs": {
+    "exec-lane": {
+      "baseline": "4d91adc326c134d4a77af5a71d3669d846ea45bf",
+      "isolation": "worktree",
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_88d7caa0-6f1-1",
+      "realised_commit": "4d91adc326c134d4a77af5a71d3669d846ea45bf",
+      "status": "done",
+      "merged": {
+        "realised_commit": "4d91adc326c134d4a77af5a71d3669d846ea45bf",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "5c89a374472171e4f04a1800d10a759a22e38036"
+      }
+    },
+    "judge-lane": {
+      "baseline": "4d91adc326c134d4a77af5a71d3669d846ea45bf",
+      "isolation": "worktree",
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_88d7caa0-6f1-2",
+      "realised_commit": "4d91adc326c134d4a77af5a71d3669d846ea45bf",
+      "status": "done",
+      "merged": {
+        "realised_commit": "4d91adc326c134d4a77af5a71d3669d846ea45bf",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "5c89a374472171e4f04a1800d10a759a22e38036"
+      }
+    }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "exec-lane",
+        "judge-lane"
+      ],
+      "merged": [
+        "exec-lane",
+        "judge-lane"
+      ],
+      "commit": "5c89a374472171e4f04a1800d10a759a22e38036",
+      "integrated": true
+    }
+  }
+}

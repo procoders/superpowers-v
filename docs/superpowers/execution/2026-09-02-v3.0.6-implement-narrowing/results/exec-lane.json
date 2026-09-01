@@ -1,0 +1,22 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-02-narrowing-exec.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "4d91adc326c134d4a77af5a71d3669d846ea45bf",
+    "diff_digest": "sha256:9c9ec2e87b62912cb8b1748a1090d67ca9b547d157f53c5e20c7bfb1a79d8319",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"4d91adc326c134d4a77af5a71d3669d846ea45bf\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-narrowing-exec.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-narrowing-exec.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "4d91adc326c134d4a77af5a71d3669d846ea45bf",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Execution lane \u2014 a settled spec, no decision to make",
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_88d7caa0-6f1-1"
+}

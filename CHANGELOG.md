@@ -4,6 +4,36 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [3.0.6] - 2026-09-02
+
+### Fixed — two releases that were never released
+
+The release workflow gated on the **tag**, not the release. Tagging by hand before CI runs — which is how every release in this project is cut — made the job a silent no-op: it logged *"nothing to release"* and skipped. **v3.0.4 and v3.0.5 were both tagged, both went green, and neither was ever published.** GitHub's latest release sat at v3.0.3 while two versions' worth of code shipped past it. Both are published now, and the gate asks about the release instead. `gh release create` accepts an existing tag, so a hand-pushed tag is no longer a reason to skip.
+
+This is the same defect this release cycle keeps finding, in a new place: a mechanism that exists, looks like it is working, and has no caller. It is the fourteenth.
+
+### Added — the Implement stage is narrowed at spawn too
+
+`disallowedTools` sat on Gate and Record and never on Implement — the one stage that actually holds write access. The audit table has recorded that as ⚠ since the day it was written.
+
+Implement now carries its own, **different** list — a strict subset of the transport narrowing, keeping `Read`/`Write`/`Edit`, `Glob`/`Grep` and `Bash`:
+
+| Removed | Why |
+|---|---|
+| `Task`, `Agent` | A nested spawn is not the job. `hooks/lane-guard.sh` resolves a write by `agent_id` first; a nested agent carries a different one, and the only fallback is cwd-under-a-**registered**-worktree — which a `direct`-mode job does not have. So a nested agent's writes are logged `job unresolved` and **allowed**. The git-derived gate still sees the bytes, but attributes them to a job that did not write them, and that attribution is what the whole enforcement chain rests on. |
+| `SlashCommand` | An implementer running `/v:dispatch` re-enters the pipeline from inside one of its own jobs. |
+| `WebFetch`, `WebSearch` | Research is a pre-flight phase in this plugin (Trigger 0, the doc-validator). An implementer holding write access while pulling untrusted web content into its own context is the injection surface the charter exists for. A job that genuinely needs external material gets it through a pre-flight, or pinned into `read_allowed` and the prompt. |
+
+**This is a removal of capability**, stated here rather than discovered by whoever wonders why their implementer cannot search.
+
+Dogfooded live on the same two-lane shape as 3.0.5, so the narrowing was the only variable: both lanes wrote, both gated clean, merged as `5c89a37`. That proves the list is **harmless**, not that it **bites** — no job in that run tried to spawn a nested agent or reach the network. That it bites is the runtime's contract for `disallowedTools`, not something the run observed.
+
+`bashCommandClamp` on Implement stays conditional: `_clamp_rules` returns `None` for a non-`claude` job whose worker script is missing, and an implementer with no clamp is unnarrowed on Bash. Unchanged here.
+
+### Where the native-mechanism audit stands
+
+Ten of the twelve "native mechanism exists, we were not using it" rows now close fully; two close partially. Triage-at-prompt-arrival is still a reminder rather than a mechanism, with its blocking gate off by default. `agentType` spawns the reviewer by role, but Gate, Record and Finalize stay anonymous on purpose — **no agent under `agents/` declares a `tools:` restriction**, so spawning them by role would hand back the whole toolbox and undo the narrowing this release just finished. No row is left unclosed.
+
 ## [3.0.5] - 2026-09-02
 
 ### Fixed — routing that routes

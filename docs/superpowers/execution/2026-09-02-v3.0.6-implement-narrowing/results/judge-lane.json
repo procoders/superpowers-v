@@ -1,0 +1,22 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-02-narrowing-judge.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "4d91adc326c134d4a77af5a71d3669d846ea45bf",
+    "diff_digest": "sha256:15d4794ad86b76aeed31b0600c40e643e4bf54ed85d4bf87e65abedf70da4f2a",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"4d91adc326c134d4a77af5a71d3669d846ea45bf\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-narrowing-judge.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-narrowing-judge.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "4d91adc326c134d4a77af5a71d3669d846ea45bf",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Judgment lane \u2014 coupling, not line count",
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_88d7caa0-6f1-2"
+}
