@@ -31,13 +31,20 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "Plugin version: $v"
 
-      - name: Skip if the tag already exists
+      # Gate on the RELEASE, not the tag. Gating on the tag made this job a silent
+      # no-op for any maintainer who tags by hand before CI runs — which is exactly
+      # what happened to v3.0.4 and v3.0.5: both were tagged, both went green, and
+      # neither was ever published. The skip logged "nothing to release" and looked
+      # correct. `gh release create` accepts an existing tag, so a hand-pushed tag is
+      # no longer a reason to skip.
+      - name: Skip if the release already exists
         id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if git rev-parse -q --verify "refs/tags/v${{ steps.ver.outputs.version }}" >/dev/null \
-             || git ls-remote --exit-code --tags origin "v${{ steps.ver.outputs.version }}" >/dev/null 2>&1; then
+          if gh release view "v${{ steps.ver.outputs.version }}" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Tag v${{ steps.ver.outputs.version }} already exists — nothing to release."
+            echo "Release v${{ steps.ver.outputs.version }} already exists — nothing to release."
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
@@ -80,6 +87,9 @@ jobs:
         run: |
           title="v$V"
           if [ -n "$SUFFIX" ]; then title="v$V — $SUFFIX"; fi
+          # --target is honoured only when the tag does not exist yet; an existing
+          # hand-pushed tag keeps whatever commit it already points at, which is the
+          # correct behaviour — the tag is the maintainer's statement of what shipped.
           gh release create "v$V" --target "${{ github.sha }}" --latest \
             --title "$title" --notes-file _release_notes.md
           echo "Released v$V"

@@ -115,6 +115,31 @@ NARROW_DISALLOWED = [
     "SlashCommand", "Skill", "Artifact", "ExitPlanMode",
 ]
 
+# What the IMPLEMENT stage loses. It is not the transport narrowing above — an
+# implementer must keep Read/Write/Edit, Glob/Grep and Bash to do the work. It loses
+# the tools that either defeat lane attribution or widen the trust boundary:
+#
+#   Task / Agent   A nested spawn is not the job. `hooks/lane-guard.sh` resolves a
+#                  write by `agent_id` FIRST (`resolve_job`, :355-372); a nested agent
+#                  carries a different one, and the only fallback is cwd-under-a-
+#                  REGISTERED-WORKTREE — which a `direct`-mode job does not have. So a
+#                  nested agent's writes are logged "job unresolved" and ALLOWED. The
+#                  git-derived gate still sees the bytes afterwards, but attributes
+#                  them to a job that did not write them, which is precisely the
+#                  attribution the whole enforcement chain rests on.
+#   SlashCommand   An implementer running `/v:dispatch` re-enters the pipeline from
+#                  inside one of its own jobs.
+#   WebFetch /     Research is a PRE-FLIGHT phase in this plugin (Trigger 0, the
+#   WebSearch      doc-validator). An implementer holding write access and pulling
+#                  untrusted web content into its own context is the injection surface
+#                  the charter exists for. A job that genuinely needs external material
+#                  gets it the same way every other job does: through a pre-flight, or
+#                  pinned into `read_allowed` and the prompt.
+#
+# This is a REMOVAL of capability, deliberately. It is stated here rather than
+# discovered by whoever wonders why their implementer cannot search.
+IMPLEMENT_DISALLOWED = ["Task", "Agent", "SlashCommand", "WebFetch", "WebSearch"]
+
 STAGE_PHASES = ["Implement", "Gate", "Record", "Finalize"]
 
 # Reserve, in tokens, assumed per queued agent when guarding fan-out against the
@@ -896,6 +921,7 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
         "max_parallel": max_parallel,
         "budget_reserve_per_agent": BUDGET_RESERVE_PER_AGENT,
         "narrow_disallowed": NARROW_DISALLOWED,
+        "implement_disallowed": IMPLEMENT_DISALLOWED,
         "routing_stance": stance,
         "models_config": config_path,
         "transport_model": transport_model,
@@ -1122,6 +1148,7 @@ def emit_script(plan):
         "emitter": plan["emitter"],
         "budget_reserve_per_agent": plan["budget_reserve_per_agent"],
         "narrow_disallowed": plan["narrow_disallowed"],
+        "implement_disallowed": plan["implement_disallowed"],
         "transport_model": plan["transport_model"],
         "waves": waves,
         "prompts": prompts,
@@ -1203,6 +1230,9 @@ async function implementStage(job) {
     };
     if (job.model) opts.model = job.model;
     if (job.effort) opts.effort = job.effort;
+    // Narrow at spawn, same as the transport stages — a different list, because an
+    // implementer keeps the tools it needs to write code. See IMPLEMENT_DISALLOWED.
+    if (CFG.implement_disallowed) opts.disallowedTools = CFG.implement_disallowed;
     if (job.agent_isolation) opts.isolation = job.agent_isolation;
     if (job.implement_clamp) opts.bashCommandClamp = job.implement_clamp;
     // Spawn BY ROLE where the manifest's own job `type` says the work is one of
@@ -3100,6 +3130,20 @@ def selftest():
                "Bash" not in NARROW_DISALLOWED)
         _check("StructuredOutput survives the narrowing",
                "StructuredOutput" not in NARROW_DISALLOWED)
+        _check("the implement stage is narrowed at spawn",
+               "opts.disallowedTools = CFG.implement_disallowed" in script)
+        _check("an implementer keeps the tools it needs to write code",
+               not ({"Read", "Write", "Edit", "Glob", "Grep", "Bash", "Skill"}
+                    & set(IMPLEMENT_DISALLOWED)))
+        _check("an implementer cannot spawn a nested agent",
+               {"Task", "Agent"} <= set(IMPLEMENT_DISALLOWED))
+        _check("an implementer cannot re-enter the pipeline or reach the network",
+               {"SlashCommand", "WebFetch", "WebSearch"} <= set(IMPLEMENT_DISALLOWED))
+        _check("the implement narrowing is NOT the transport narrowing",
+               set(IMPLEMENT_DISALLOWED) != set(NARROW_DISALLOWED)
+               and set(IMPLEMENT_DISALLOWED) < set(NARROW_DISALLOWED))
+        _check("the implement narrowing reaches CFG",
+               '"implement_disallowed"' in script.split("const IMPLEMENT_SCHEMA", 1)[0])
         _check("implement schema carries no enforcement fields",
                not ({"blocked", "files_changed", "violations"}
                     & set(IMPLEMENT_SCHEMA["properties"])))
