@@ -1,7 +1,7 @@
 {
   "run_id": "2026-09-01-v3.0-triage-tests-orchestration",
   "phase": "DISPATCHED",
-  "updated_at": "2026-09-01T14:39:13Z",
+  "updated_at": "2026-09-01T16:16:41Z",
   "pre_eval_id": null,
   "total_retries": 0,
   "max_total_retries": 10,
@@ -13,19 +13,19 @@
       "session_id": null
     },
     "task-1-preeval": {
-      "status": "running",
+      "status": "done",
       "isolation": "worktree",
       "worktree": null,
       "session_id": null
     },
     "task-2-outcomes": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
       "worktree": null,
       "session_id": null
     },
     "task-3-fastpath": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
       "worktree": null,
       "session_id": null
@@ -37,49 +37,49 @@
       "session_id": null
     },
     "task-5-invariant": {
-      "status": "running",
+      "status": "done",
       "isolation": "worktree",
       "worktree": null,
       "session_id": null
     },
     "task-6-transport": {
-      "status": "running",
+      "status": "done",
       "isolation": "worktree",
       "worktree": null,
       "session_id": null
     },
     "task-7-review-gate": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
       "worktree": null,
       "session_id": null
     },
     "task-8-stop-rule": {
-      "status": "running",
+      "status": "done",
       "isolation": "worktree",
       "worktree": null,
       "session_id": null
     },
     "task-9-engine-c": {
-      "status": "pending",
+      "status": "running",
       "isolation": "worktree",
       "worktree": null,
       "session_id": null
     },
     "task-10-adrs": {
-      "status": "running",
+      "status": "done",
       "isolation": "worktree",
       "worktree": null,
       "session_id": null
     },
     "task-11-v218-wiring": {
-      "status": "running",
+      "status": "done",
       "isolation": "worktree",
       "worktree": null,
       "session_id": null
     },
     "task-12-taxonomy": {
-      "status": "running",
+      "status": "done",
       "isolation": "worktree",
       "worktree": null,
       "session_id": null
@@ -97,7 +97,7 @@
       "session_id": null
     },
     "task-15-lane-guard": {
-      "status": "running",
+      "status": "done",
       "isolation": "worktree",
       "worktree": null,
       "session_id": null
@@ -109,7 +109,7 @@
       "session_id": null
     },
     "task-17-integration-authority": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
       "worktree": null,
       "session_id": null
