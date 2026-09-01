@@ -82,18 +82,32 @@ at dispatch.
 > antigravity only when the prompt and surface are trusted. **antigravity ⇒ worktree**
 > is a hard invariant (below).
 
-Why these tiers: `deep` is the strongest reasoning seat — it carries architecture,
-all sensitive surfaces, designing new tests, external APIs, every reviewer, and
-shared-foundation Task 0. `standard` carries bounded core/feature build including
-large isolated Codex work. `light` carries mechanical single-file edits, docs, and
-i18n. `bounded_crud` sits on `light` here (a well-specified 8-box junior slice); a
-fuzzier CRUD slice that needs more judgment is bumped to `standard` — that is a
-planner call, not a hard rule.
+Why these tiers — the split is **execution vs judgment**, set by the maintainer on
+2026-09-02, not "how much code does this touch":
 
-> With the per-stance models map (Balanced shown), `deep`/`standard` on `claude` both resolve to `opus`
-> and `light` to `sonnet`; `standard` on `codex` resolves to `gpt-5.6-terra`. So this
-> table produces the same effective models as the pre-tier version — the difference
-> is that the model strings now live in one refreshable place, not in the table.
+* **Sonnet executes.** A spec that already survived brainstorming and planning,
+  HTML/CSS, Node plumbing, translations, mechanical refactors — and *reading* code.
+  Scanning a codebase is execution; you can read it all day on Sonnet.
+* **Opus judges.** Deciding, and connecting parts of code to each other. Business
+  logic with many code-level dependencies is Opus **however mechanical each
+  individual edit looks** — coupling, not line count, is the signal.
+* **Fable is the extreme seat** (`frontier`). It is what a failed job escalates
+  into, and where interface-design work belongs. A planner may assign it directly;
+  it is unusual, not forbidden.
+
+So `deep` carries architecture, all sensitive surfaces, coupled business logic,
+designing new tests, external APIs, every reviewer, and shared-foundation Task 0.
+`standard` carries bounded build against a settled spec. `light` carries mechanical
+single-file edits, docs, i18n, and read-only scanning. `bounded_crud` sits on `light`
+here (a well-specified 8-box junior slice); a fuzzier CRUD slice that needs more
+judgment is bumped to `deep` — that is a planner call, not a hard rule.
+
+> With the per-stance models map (Balanced shown), `frontier` on `claude` resolves to
+> `fable`, `deep` to `opus`, and `standard`/`light` to `sonnet`; `standard` on `codex`
+> resolves to `gpt-5.6-terra`. **This is a behaviour change as of 3.0.5**: `standard`
+> on `claude` was `opus` before, and — because `opts.model` was never set on the
+> claude path — nothing was actually routed at all. Every agent inherited the session
+> model. The tier existed, was validated, was documented, and never reached `agent()`.
 
 ---
 
@@ -101,9 +115,10 @@ planner call, not a hard rule.
 
 For high-stakes or unfamiliar codebases where you want maximum judgment and no
 external worker. Every implementation job is `deep`; `light` is reserved for purely
-mechanical slices; Codex is not used at all. (With the per-stance models map (Balanced shown) `deep`
-resolves to `opus` and `light` to `sonnet`, so this is "Opus-everywhere except the
-mechanical edges" — but stated in the churn-proof tier vocabulary.)
+mechanical slices; Codex is not used at all. (Under this stance `deep` **and** `standard` resolve to
+`opus` and `light` to `sonnet`, so this is "Opus-everywhere except the mechanical
+edges" — but stated in the churn-proof tier vocabulary. It is the one stance that
+keeps `standard` on Opus; that is what choosing it means.)
 
 | Job type | Backend | Tier · Effort | Isolation | Run |
 |---|---|---|---|---|
@@ -145,10 +160,12 @@ never the gate.
 > Security / auth / payments / PII / a11y stays `deep` (⇒ Opus) in **every** stance
 > — sensitive surfaces are never cost-optimized.
 >
-> Under this stance the `standard`-tier `claude` cell resolves to **Sonnet 5** (the
-> resolver's `cost-aware.claude.standard = sonnet`), so `core_slice`/`tests_new`
-> implementers run on Sonnet here — while `deep` (architecture, sensitive surfaces,
-> **all reviewers**) stays Opus. Only the `standard` Claude cell shifts; `light` is
+> Under this stance the `standard`-tier `claude` cell resolves to **Sonnet 5**, so
+> `core_slice`/`tests_new` implementers run on Sonnet here — while `deep`
+> (architecture, sensitive surfaces, **all reviewers**) stays Opus. As of 3.0.5 that
+> is no longer what distinguishes this stance: `balanced` routes `standard` to Sonnet
+> too. What cost-aware still changes is the ceiling — its `frontier` cell caps at
+> `opus`, so a re-attempt under this stance never escalates into Fable. `light` is
 > `sonnet` in every stance, and `codex`/`antigravity`/`cursor` are identical across stances.
 
 ---
@@ -163,12 +180,29 @@ or the manifests.
 
 | Tier | Strongest fit | Default effort |
 |---|---|---|
-| `deep` | strongest reasoning — architecture, security/auth/payments/PII/a11y, designing new tests, external APIs, **all reviewers**, shared-foundation Task 0 | high |
-| `standard` | bounded core/feature build, incl. large isolated Codex work | medium |
-| `light` | mechanical single-file edits, docs, i18n strings | low |
+| `frontier` | the extreme seat — what a failed job **escalates into**, and where interface design belongs. Assigned directly only deliberately | high |
+| `deep` | judgment — architecture, security/auth/payments/PII/a11y, **coupled business logic**, designing new tests, external APIs, **all reviewers**, shared-foundation Task 0 | high |
+| `standard` | execution against a settled spec — bounded core/feature build, incl. large isolated Codex work | medium |
+| `light` | mechanical single-file edits, docs, i18n strings, read-only scanning, and the pipeline's own transport stages | low |
+
+### Two things the tier decides that are not implementer jobs
+
+**Transport.** The pipeline's own Gate, Record and Finalize agents each run exactly
+one clamped command and hand back its JSON verbatim; the real logic is Python the
+integration authority re-verifies from git. That is `light` by definition, so they
+are routed through the same resolver instead of inheriting whatever model the session
+happens to be running.
+
+**Escalation.** A job with a recorded non-success result in this run is re-dispatched
+**one rung up** the claude ladder — `sonnet → opus → fable` — and stops at the top.
+The signal is the recorded `results/<id>.json` status, never a counter we keep: an
+absent result is not a failure. Two exemptions, both load-bearing: a **reviewer** is
+never escalated (its sealed receipt must carry a Claude Opus `reviewer_model`), and a
+**model the manifest pinned explicitly** is never escalated, because stepping a value
+we did not choose would be a fabricated routing decision.
 
 `effort ∈ {low, medium, high, xhigh}` is **orthogonal** to tier. The default pairing
-(`deep→high`, `standard→medium`, `light→low`) is only a default; a task-type may pin
+(`frontier→high`, `deep→high`, `standard→medium`, `light→low`) is only a default; a task-type may pin
 a different effort independently. For `codex`, effort maps to
 `-c model_reasoning_effort=<effort>`; for `claude` it is advisory (the `Task` path
 has no separate effort flag). `xhigh` is valid **iff** `backend: codex`; every other
@@ -181,19 +215,20 @@ the resolver and the manifest validator.
 `.claude/compound-v.json` carries a **per-stance** `models` map — its shape is
 `{<stance>: {<backend>: {<tier>: model}}}`, so each stance carries its own
 `{tier → model}` rows. Only the `claude` rows differ across stances; `codex` /
-`antigravity` / `cursor` are identical in every stance. The one cell that moves is
-`cost-aware.claude.standard`, which is **`sonnet`** (Sonnet 5) — everywhere else
-`standard` Claude is `opus`:
+`antigravity` / `cursor` are identical in every stance. Two cells move:
+`conservative.claude.standard` is **`opus`** (everywhere else `standard` Claude is
+**`sonnet`**), and `cost-aware.claude.frontier` caps at **`opus`** instead of
+reaching `fable`:
 
 ```json
 "models": {
   "balanced": {
-    "claude":      { "deep": "opus", "standard": "opus", "light": "sonnet" },
+    "claude":      { "frontier": "fable", "deep": "opus", "standard": "sonnet", "light": "sonnet" },
     "codex":       { "deep": "gpt-5.6-sol", "standard": "gpt-5.6-terra", "light": "gpt-5.6-luna" },
     "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" }
   },
   "cost-aware": {
-    "claude":      { "deep": "opus", "standard": "sonnet", "light": "sonnet" },
+    "claude":      { "frontier": "opus", "deep": "opus", "standard": "sonnet", "light": "sonnet" },
     "codex":       { "deep": "gpt-5.6-sol", "standard": "gpt-5.6-terra", "light": "gpt-5.6-luna" },
     "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" }
   }

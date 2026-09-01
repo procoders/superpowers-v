@@ -529,12 +529,71 @@ def read_pinned_baseline(run_dir, job_id, state_job=None):
     return candidate if re.match(r"^[0-9a-f]{40}$", candidate) else None
 
 
-def resolve_job_model(job, python_bin, resolve_model=None):
+# The claude escalation ladder, bottom to top. A job that already failed once in
+# this run is re-dispatched ONE rung up, never straight to the top: the
+# maintainer's rule is "if we did not solve it the first time, hand it to Fable",
+# and the cheapest honest reading of that is one step at a time.
+CLAUDE_ESCALATION = ("sonnet", "opus", "fable")
+
+# Mirror of compound-v-validate-manifest.py:REVIEWER_TOKENS. DUPLICATED on
+# purpose — both are standalone stdlib CLIs with no shared import (house style).
+# Keep in sync.
+REVIEWER_TOKENS = ("review", "reviewer", "spec_review", "quality", "integration")
+
+
+def _is_reviewer_job(job):
+    """True iff this job is a reviewer, by type/id/title token."""
+    haystack = " ".join(str(job.get(k) or "").lower()
+                        for k in ("type", "id", "title"))
+    return any(tok in haystack for tok in REVIEWER_TOKENS)
+
+
+def prior_attempt_failed(run_dir, job_id):
+    """True iff this job already has a RECORDED non-success result in this run.
+
+    The signal is the recorded result, not a counter we keep ourselves: `record`
+    writes results/<id>.json for every terminal job, and /v:resume re-runs this
+    emitter against the same run dir. An absent or unreadable result is NOT a
+    failure — escalation must be earned by evidence, never by a missing file.
+    """
+    doc = _read_json(os.path.join(run_dir, "results", "%s.json" % job_id), None)
+    if not isinstance(doc, dict):
+        return False
+    status = str(doc.get("status") or "").strip().lower()
+    return bool(status) and status != "success"
+
+
+def escalate_claude_model(model):
+    """(model, capped_reason). One rung up the ladder, or unchanged at the top.
+
+    A model outside the ladder (an explicitly pinned string we do not own) is
+    returned untouched: escalating a value we did not choose would be a
+    fabricated routing decision.
+    """
+    key = str(model or "").strip().lower()
+    if key not in CLAUDE_ESCALATION:
+        return model, "%r is not on the claude ladder" % model
+    i = CLAUDE_ESCALATION.index(key)
+    if i + 1 >= len(CLAUDE_ESCALATION):
+        return model, "already at the top of the ladder"
+    return CLAUDE_ESCALATION[i + 1], None
+
+
+def resolve_job_model(job, python_bin, resolve_model=None, stance=None,
+                      config_path=None):
     """(model, error). An explicit `model` wins; otherwise `tier` is resolved.
 
     Fails closed: an external backend's argv cannot be completed without a
     concrete model, and `--model` is one of the worker script's own required
-    arguments. Guessing one here would be a fabricated routing decision.
+    arguments. Guessing one here would be a fabricated routing decision. A
+    `backend: claude` caller degrades OPEN instead — see job_entry — because an
+    unset `opts.model` is a working default (inherit the session model), not a
+    broken argv.
+
+    `stance` and `config_path` are what make the project's own routing real: the
+    resolver's map is per-stance, and `/v:models` writes its discovered map into
+    .claude/compound-v.json. Until 3.0.5 neither was passed, so every resolution
+    silently used the built-in balanced defaults.
     """
     explicit = job.get("model")
     if isinstance(explicit, str) and explicit.strip():
@@ -548,6 +607,10 @@ def resolve_job_model(job, python_bin, resolve_model=None):
         return None, "model resolver not found at %s" % target
     cmd = [python_bin, target, "--backend", job.get("backend") or "claude",
            "--tier", tier.strip()]
+    if isinstance(stance, str) and stance.strip():
+        cmd += ["--stance", stance.strip()]
+    if isinstance(config_path, str) and config_path and os.path.isfile(config_path):
+        cmd += ["--config", config_path]
     effort = job.get("effort")
     if isinstance(effort, str) and effort.strip():
         cmd += ["--effort", effort.strip()]
@@ -647,6 +710,22 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
             "defaulted (see the REPO_DEFAULT note at the top of this file)"
         )
     abs_repo_root = os.path.abspath(repo_root)
+    # Routing inputs the emitter never read before 3.0.5. The manifest's own
+    # stance wins; the project config is where /v:models writes its discovered
+    # per-backend map. Both are optional and both degrade to the resolver's
+    # built-in balanced defaults.
+    stance = str(manifest.get("routing_stance") or "").strip() or None
+    config_path = os.path.join(abs_repo_root, ".claude", "compound-v.json")
+    if not os.path.isfile(config_path):
+        config_path = None
+    # Gate, Record and Finalize are TRANSPORT: each runs exactly one clamped
+    # command and returns its JSON verbatim, and the command's real logic is
+    # Python that the integration authority re-verifies from git. That is the
+    # `light` tier by definition, so they are routed through the same resolver
+    # rather than inheriting whatever the session happens to be running.
+    transport_model, transport_note = resolve_job_model(
+        {"id": "__transport__", "backend": "claude", "tier": "light"},
+        python_bin, stance=stance, config_path=config_path)
     artefacts = {}
     max_parallel = manifest.get("max_parallel") or 4
     jobs = manifest.get("jobs") or []
@@ -694,6 +773,8 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
             "tier": job.get("tier"),
             "effort": job.get("effort"),
             "model": job.get("model"),
+            "model_source": None,
+            "model_note": None,
             "isolation": isolation,
             # AGENT-level isolation, which is NOT the manifest's isolation. A job
             # with depends_on must run its agent in the MAIN checkout, because the
@@ -734,6 +815,39 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
             "launch_argv": None,
             "launch_command": None,
         }
+        if backend == "claude":
+            # THE WIRE. Until 3.0.5 this whole vocabulary stopped here: `model`
+            # was copied straight off the manifest (almost always absent, since
+            # manifests route by `tier`), `opts.model` was never set, and every
+            # agent inherited the session model. The tier existed, was validated,
+            # was documented — and never reached agent().
+            resolved, merr = resolve_job_model(job, python_bin, stance=stance,
+                                               config_path=config_path)
+            if resolved:
+                entry["model"] = resolved
+                entry["model_source"] = ("explicit" if job.get("model") else "tier")
+                # A job that already failed in this run is re-dispatched one rung
+                # up. Reviewers are exempt: a sealed review receipt must carry a
+                # Claude Opus `reviewer_model`, so escalating one would invalidate
+                # the very receipt it exists to produce.
+                if not _is_reviewer_job(job) and prior_attempt_failed(abs_run_dir, job_id):
+                    stepped, capped = escalate_claude_model(resolved)
+                    if stepped != resolved:
+                        entry["model"] = stepped
+                        entry["model_source"] = "escalated"
+                        entry["model_note"] = (
+                            "re-attempt after a recorded non-success: %s → %s"
+                            % (resolved, stepped))
+                    else:
+                        entry["model_note"] = (
+                            "re-attempt not escalated (%s)" % capped)
+            else:
+                # Degrade OPEN, loudly. An unset opts.model inherits the session
+                # model, which is exactly today's behaviour — but the run records
+                # WHY, so "everything ran on opus" is never again a silent fact.
+                entry["model"] = None
+                entry["model_source"] = "inherit"
+                entry["model_note"] = merr
         artefacts[job_id] = {
             "prompt_file": entry["prompt_file"],
             "prompt_text": render_worker_prompt(job, run_id),
@@ -748,7 +862,8 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
                     "unmaterialized handoff is what 3.0.1 shipped"
                     % (job_id, backend, backend)
                 )
-            model, err = resolve_job_model(job, python_bin)
+            model, err = resolve_job_model(job, python_bin, stance=stance,
+                                           config_path=config_path)
             if not model:
                 raise ValueError(
                     "job %r cannot be launched: %s. `--model` is required by the "
@@ -761,6 +876,7 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
             entry["launch_argv_file"] = launch_argv_path(abs_run_dir, job_id)
             entry["launch_command"] = _shell_join(argv)
             entry["model"] = entry["model"] or model
+            entry["model_source"] = ("explicit" if job.get("model") else "tier")
             artefacts[job_id]["launch_argv"] = argv
             artefacts[job_id]["launch_argv_file"] = entry["launch_argv_file"]
         return entry
@@ -780,6 +896,10 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
         "max_parallel": max_parallel,
         "budget_reserve_per_agent": BUDGET_RESERVE_PER_AGENT,
         "narrow_disallowed": NARROW_DISALLOWED,
+        "routing_stance": stance,
+        "models_config": config_path,
+        "transport_model": transport_model,
+        "transport_model_note": transport_note,
         "waves": [[job_entry(j) for j in wave] for wave in waves],
     }
 
@@ -1002,6 +1122,7 @@ def emit_script(plan):
         "emitter": plan["emitter"],
         "budget_reserve_per_agent": plan["budget_reserve_per_agent"],
         "narrow_disallowed": plan["narrow_disallowed"],
+        "transport_model": plan["transport_model"],
         "waves": waves,
         "prompts": prompts,
     }
@@ -1182,6 +1303,8 @@ async function gateStage(prev, job) {
       label: 'gate ' + job.id,
       phase: 'Gate',
       schema: GATE_SCHEMA,
+      // Transport, not judgment: one clamped command, verbatim JSON back.
+      ...(CFG.transport_model ? { model: CFG.transport_model } : {}),
       // Narrow at spawn. Bash stays (a clamp on a Bash-less agent can bind
       // nothing and the runtime refuses the spawn); StructuredOutput stays or
       // schema mode is denied and the spawn is likewise refused.
@@ -1241,6 +1364,8 @@ async function recordStage(verdict, job) {
       label: 'record ' + job.id,
       phase: 'Record',
       schema: RECORD_SCHEMA,
+      // Transport, not judgment: one clamped command, verbatim JSON back.
+      ...(CFG.transport_model ? { model: CFG.transport_model } : {}),
       disallowedTools: CFG.narrow_disallowed,
       bashCommandClamp: [
         'Bash(' + CFG.python + ' ' + CFG.emitter + ' record:*)'
@@ -1298,6 +1423,8 @@ async function finalizeWave(waveIndex, wave) {
       label: 'finalize ' + title,
       phase: 'Finalize',
       schema: FINALIZE_SCHEMA,
+      // Transport, not judgment: one clamped command, verbatim JSON back.
+      ...(CFG.transport_model ? { model: CFG.transport_model } : {}),
       disallowedTools: CFG.narrow_disallowed,
       bashCommandClamp: [
         'Bash(' + CFG.python + ' ' + CFG.emitter + ' finalize-wave:*)'
@@ -2991,6 +3118,104 @@ def selftest():
         meta_line = script.split("\n", 1)[0]
         _check("meta is a pure literal on one statement",
                meta_line.startswith("export const meta = {"))
+
+        # ------------------------------------------------------------------
+        # v3.0.5 — THE WIRE. The tier vocabulary must reach opts.model, and the
+        # audit trail must say which lever set it. Before 3.0.5 every one of
+        # these was silently None for `backend: claude`.
+        # ------------------------------------------------------------------
+        routed = _plan_for(_tiny_manifest([
+            {"id": "r-deep", "tier": "deep", "write_allowed": ["a/**"]},
+            {"id": "r-std", "tier": "standard", "write_allowed": ["b/**"]},
+            {"id": "r-light", "tier": "light", "write_allowed": ["c/**"]},
+            {"id": "r-front", "tier": "frontier", "write_allowed": ["d/**"]},
+            {"id": "r-pin", "tier": "light", "model": "opus", "write_allowed": ["e/**"]},
+        ], max_parallel=5), tmp)
+        by_id = {}
+        for w in routed["waves"]:
+            for e in w:
+                by_id[e["id"]] = e
+        _check("a claude job's tier resolves to a concrete model",
+               by_id["r-deep"]["model"] == "opus", str(by_id["r-deep"]["model"]))
+        _check("standard is Sonnet under the default stance (execution, not judgment)",
+               by_id["r-std"]["model"] == "sonnet", str(by_id["r-std"]["model"]))
+        _check("light is Sonnet", by_id["r-light"]["model"] == "sonnet")
+        _check("frontier reaches Fable", by_id["r-front"]["model"] == "fable")
+        _check("a pinned model wins over its tier",
+               by_id["r-pin"]["model"] == "opus")
+        _check("model_source names the lever that set it",
+               by_id["r-std"]["model_source"] == "tier"
+               and by_id["r-pin"]["model_source"] == "explicit")
+        _check("a resolved model reaches the emitted opts",
+               "if (job.model) opts.model = job.model;" in emit_script(routed))
+        _check("transport agents are routed, not inherited",
+               routed["transport_model"] == "sonnet",
+               str(routed["transport_model"]))
+        tscript_r = emit_script(routed)
+        _check("all three transport stages read CFG.transport_model",
+               tscript_r.count("CFG.transport_model ? { model: CFG.transport_model }") == 3,
+               str(tscript_r.count("CFG.transport_model")))
+        _check("transport_model is carried into CFG",
+               '"transport_model"' in tscript_r.split("const IMPLEMENT_SCHEMA", 1)[0])
+
+        # A job with neither model nor tier degrades OPEN on claude (inherit the
+        # session model) and says why — the external branch still fails closed.
+        openless = _plan_for(_tiny_manifest(
+            [{"id": "bare", "write_allowed": ["f/**"]}]), tmp)
+        bare = openless["waves"][0][0]
+        _check("a claude job with no tier inherits, and records why",
+               bare["model"] is None and bare["model_source"] == "inherit"
+               and "neither" in (bare["model_note"] or ""))
+
+        # ---- escalation: earned by a recorded failure, never by a missing file
+        esc_dir = os.path.join(tmp, "escrun")
+        os.makedirs(os.path.join(esc_dir, "results"), exist_ok=True)
+        for jid, status in (("e-fail", "blocked"), ("e-ok", "success"),
+                            ("e-review", "error"), ("e-top", "timeout")):
+            with open(os.path.join(esc_dir, "results", "%s.json" % jid),
+                      "w", encoding="utf-8") as fh:
+                json.dump({"job_id": jid, "status": status}, fh)
+        _check("prior_attempt_failed reads the recorded status",
+               prior_attempt_failed(esc_dir, "e-fail") is True
+               and prior_attempt_failed(esc_dir, "e-ok") is False)
+        _check("an absent result is not a failure",
+               prior_attempt_failed(esc_dir, "never-ran") is False)
+        _check("the ladder steps one rung at a time",
+               escalate_claude_model("sonnet")[0] == "opus"
+               and escalate_claude_model("opus")[0] == "fable")
+        _check("the ladder caps at the top",
+               escalate_claude_model("fable")[0] == "fable"
+               and "top" in (escalate_claude_model("fable")[1] or ""))
+        _check("a model off the ladder is never escalated",
+               escalate_claude_model("gpt-5.6-sol")[0] == "gpt-5.6-sol")
+        esc_manifest = _tiny_manifest([
+            {"id": "e-fail", "tier": "standard", "write_allowed": ["g/**"]},
+            {"id": "e-ok", "tier": "standard", "write_allowed": ["h/**"]},
+            {"id": "e-review", "type": "review", "tier": "deep",
+             "write_allowed": ["i/**"]},
+            {"id": "e-top", "tier": "frontier", "write_allowed": ["j/**"]},
+        ], max_parallel=4)
+        esc_manifest["_manifest_path"] = os.path.join(esc_dir, "manifest.yaml")
+        esc_plan = build_plan(esc_manifest, esc_dir, tmp, "/usr/bin/python3",
+                              os.path.abspath(__file__), SCOPE_CHECK_DEFAULT,
+                              FASTPATH_DEFAULT, tmp)
+        esc = {}
+        for w in esc_plan["waves"]:
+            for e in w:
+                esc[e["id"]] = e
+        _check("a failed job is re-dispatched one rung up",
+               esc["e-fail"]["model"] == "opus"
+               and esc["e-fail"]["model_source"] == "escalated",
+               str(esc["e-fail"]["model"]))
+        _check("a successful job is not escalated",
+               esc["e-ok"]["model"] == "sonnet"
+               and esc["e-ok"]["model_source"] == "tier")
+        _check("a REVIEWER is never escalated (its receipt must stay Opus)",
+               esc["e-review"]["model"] == "opus"
+               and esc["e-review"]["model_source"] == "tier")
+        _check("a failed job already at the top stays there, and says so",
+               esc["e-top"]["model"] == "fable"
+               and "top" in (esc["e-top"]["model_note"] or ""))
 
         # A planted violation must be caught, or the check is decorative.
         planted = script + "\nconst t = Date.now();\n"

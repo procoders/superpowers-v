@@ -17,7 +17,7 @@ No backend-specific routing logic is baked in here — every backend is just a
      skips the map entirely.
 
 Vocabulary (never changes when models churn):
-  tier   ∈ { deep, standard, light }
+  tier   ∈ { frontier, deep, standard, light }
   effort ∈ { low, medium, high, xhigh }
                                    (orthogonal hint; passed through, default
                                     pairing deep→high / standard→medium /
@@ -67,27 +67,43 @@ import sys
 # Per-backend tier→model maps. `claude` has two stance variants — cost-aware routes the
 # `standard` tier to sonnet (Sonnet 5 via Claude Code's native alias); deep stays opus.
 # codex/antigravity/cursor are identical across stances. NEVER 'haiku' anywhere.
-_CLAUDE_DEFAULT = {"deep": "opus", "standard": "opus", "light": "sonnet"}
-_CLAUDE_COST_AWARE = {"deep": "opus", "standard": "sonnet", "light": "sonnet"}
+#
+# The claude ladder, set by the maintainer on 2026-09-02, on two axes:
+#   * EXECUTION vs JUDGMENT. Sonnet executes — a spec that survived brainstorming
+#     and planning, HTML/CSS, Node plumbing, translations, and READING code.
+#     Opus judges — deciding, and connecting parts of code to each other.
+#   * COUPLING. Business logic with many code-level dependencies is Opus, however
+#     mechanical each individual edit looks.
+# `frontier` is the extreme case and is deliberately hard to reach: it is what a
+# re-attempt escalates INTO, not a seat a planner routinely assigns.
+_CLAUDE_BALANCED = {"frontier": "fable", "deep": "opus",
+                    "standard": "sonnet", "light": "sonnet"}
+# Conservative keeps `standard` on Opus — that is what the stance means.
+_CLAUDE_CONSERVATIVE = {"frontier": "fable", "deep": "opus",
+                        "standard": "opus", "light": "sonnet"}
+# Cost-aware never reaches for the most expensive seat; its ceiling is Opus.
+_CLAUDE_COST_AWARE = {"frontier": "opus", "deep": "opus",
+                      "standard": "sonnet", "light": "sonnet"}
 # GPT-5.6 family (Sol/Terra/Luna), verified live 2026-07-10: all three confirmed working on
 # codex-cli 0.144.1. gpt-5.6-sol specifically requires codex-cli >= 0.143.0 (confirmed: broken
 # with a clear 400 "requires a newer version of Codex" on 0.142.5, works on 0.144.1) -- an
 # under-floor client fails LOUD (not silent; the failure-policy retries once then halts cleanly).
-_CODEX = {"deep": "gpt-5.6-sol", "standard": "gpt-5.6-terra", "light": "gpt-5.6-luna"}
+_CODEX = {"frontier": "gpt-5.6-sol", "deep": "gpt-5.6-sol",
+          "standard": "gpt-5.6-terra", "light": "gpt-5.6-luna"}
 # Antigravity (agy): FALLBACK default; the live catalog is discoverable headlessly
 # (`agy models </dev/null`), and /v:models/+/v:init pipe it through
 # compound-v-discover-models.py to OVERRIDE this map in .claude/compound-v.json. Names
 # VERIFIED against `agy models` (1.0.13). Effort is baked into the agy model NAME (no
 # separate effort flag); the worker omits --model if the value is empty. Gemini family
 # chosen for error-decorrelation; override with --model.
-_ANTIGRAVITY = {"deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)",
-                "light": "Gemini 3.5 Flash (Low)"}
+_ANTIGRAVITY = {"frontier": "Gemini 3.1 Pro (High)", "deep": "Gemini 3.1 Pro (High)",
+                "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)"}
 # Cursor (cursor-agent): "auto" is the SAFE DEFAULT for every tier — a FREE plan can ONLY
 # use Auto (named models error: "Named models unavailable"). Paid plans override per-tier
 # via /v:models — `cursor-agent models` lists the live catalog for manual discovery (not
 # auto-ranked: it spans unrelated vendor families with no shared naming convention).
 # Lower-trust tier (no kernel sandbox; headless -f required).
-_CURSOR = {"deep": "auto", "standard": "auto", "light": "auto"}
+_CURSOR = {"frontier": "auto", "deep": "auto", "standard": "auto", "light": "auto"}
 # Devin (devin-cli): multi-vendor model broker (like Cursor, unlike Codex/Antigravity's
 # single-family catalogs) -- `--model` is a free string, no `devin models`/`--list-models`
 # equivalent exists, so this curated map mirrors the Codex pattern (curated +
@@ -97,7 +113,8 @@ _CURSOR = {"deep": "auto", "standard": "auto", "light": "auto"}
 # --sandbox is a live [Research Preview] kernel flag (unlike antigravity/cursor), but its
 # non-shell-tool coverage and network confinement are unverified, so it ships in the same
 # opt-in/lower-trust tier for v1. NEVER haiku.
-_DEVIN = {"deep": "claude-opus-4.6", "standard": "claude-sonnet-4", "light": "gpt-5.5"}
+_DEVIN = {"frontier": "claude-opus-4.6", "deep": "claude-opus-4.6",
+          "standard": "claude-sonnet-4", "light": "gpt-5.5"}
 # opencode (opencode-ai): provider-agnostic router -- every cell is a full "provider/model"
 # string (e.g. "anthropic/claude-opus-4-6"), and the provider is allowed to DIFFER per
 # cell (unlike every other backend's single-vendor map) -- this is the key design point
@@ -110,6 +127,7 @@ _DEVIN = {"deep": "claude-opus-4.6", "standard": "claude-sonnet-4", "light": "gp
 # skills/backend-launcher/adapter-opencode.md for the mandatory env-scrub + pinned
 # opencode.json mitigation. NEVER haiku anywhere (light is a free model, not haiku).
 _OPENCODE = {
+    "frontier": "anthropic/claude-opus-4-6",
     "deep": "anthropic/claude-opus-4-6",
     "standard": "openai/gpt-5.6-terra",
     "light": "opencode/mimo-v2.5-free",
@@ -132,17 +150,17 @@ def _stance_map(claude_map):
 
 # Built-in default map, now keyed by STANCE.
 DEFAULT_MODELS_BY_STANCE = {
-    "balanced": _stance_map(_CLAUDE_DEFAULT),
-    "conservative": _stance_map(_CLAUDE_DEFAULT),
+    "balanced": _stance_map(_CLAUDE_BALANCED),
+    "conservative": _stance_map(_CLAUDE_CONSERVATIVE),
     "cost-aware": _stance_map(_CLAUDE_COST_AWARE),
-    "claude-only": _stance_map(_CLAUDE_DEFAULT),
+    "claude-only": _stance_map(_CLAUDE_BALANCED),
 }
 # Derived alias so stance-unaware references (selftest loop, the resolve() fallback) keep
 # working unchanged: balanced is the default stance.
 DEFAULT_MODELS = DEFAULT_MODELS_BY_STANCE["balanced"]
 
 BACKENDS = ("claude", "codex", "antigravity", "cursor", "devin", "opencode")
-TIERS = ("deep", "standard", "light")
+TIERS = ("frontier", "deep", "standard", "light")
 # `xhigh` is valid iff backend == "codex": it maps to codex's kernel
 # model_reasoning_effort dimension, which live-accepts xhigh (verified
 # 2026-07-11 on codex-cli 0.144.1). resolve() rejects xhigh for every other
@@ -154,7 +172,8 @@ VALID_STANCES = ("balanced", "conservative", "cost-aware", "claude-only")
 
 # Default effort pairing when --effort is omitted. Independently tunable per
 # task-type by passing --effort explicitly; this is only the fallback.
-DEFAULT_EFFORT_FOR_TIER = {"deep": "high", "standard": "medium", "light": "low"}
+DEFAULT_EFFORT_FOR_TIER = {"frontier": "high", "deep": "high",
+                           "standard": "medium", "light": "low"}
 
 
 def _project_config_module():
@@ -675,8 +694,8 @@ def _selftest():
     )
 
     # --- stance-aware resolution (v2.4.0) ---
-    expect("default stance is balanced (claude/standard -> opus)",
-           resolve("claude", "standard")["model"] == "opus")
+    expect("default stance is balanced (claude/standard -> sonnet)",
+           resolve("claude", "standard")["model"] == "sonnet")
     expect("cost-aware claude/standard -> sonnet",
            resolve("claude", "standard", stance="cost-aware")["model"] == "sonnet")
     expect("cost-aware claude/deep stays opus (sensitive/reviewer guard)",
@@ -686,8 +705,10 @@ def _selftest():
     expect("cost-aware codex/standard unchanged",
            resolve("codex", "standard", stance="cost-aware")["model"]
            == DEFAULT_MODELS["codex"]["standard"])
-    expect("balanced claude/standard -> opus",
-           resolve("claude", "standard", stance="balanced")["model"] == "opus")
+    expect("balanced claude/standard -> sonnet (execution, not judgment)",
+           resolve("claude", "standard", stance="balanced")["model"] == "sonnet")
+    expect("conservative claude/standard stays opus",
+           resolve("claude", "standard", stance="conservative")["model"] == "opus")
     expect("unknown stance raises", raises(lambda: resolve("claude", "deep", stance="turbo")))
     _flat = {"claude": {"standard": "flat-override"}}
     expect("legacy flat config applies under balanced",
@@ -699,7 +720,7 @@ def _selftest():
            resolve("claude", "standard", stance="cost-aware", config_models=_perstance)["model"]
            == "perstance-override")
     expect("per-stance config leaves other stances on built-in default",
-           resolve("claude", "standard", stance="balanced", config_models=_perstance)["model"] == "opus")
+           resolve("claude", "standard", stance="balanced", config_models=_perstance)["model"] == "sonnet")
 
     # --- load_config_models wrapper over the shared load_project_config (CR2-11) ---
     import tempfile
@@ -721,8 +742,29 @@ def _selftest():
     # Behaviour-preserving guarantees the dispatcher relies on between waves:
     expect("balanced claude/deep -> opus (regression guard)",
            resolve("claude", "deep")["model"] == "opus")
-    expect("balanced claude/standard -> opus (regression guard)",
-           resolve("claude", "standard")["model"] == "opus")
+    expect("balanced claude/standard -> sonnet (regression guard)",
+           resolve("claude", "standard")["model"] == "sonnet")
+
+    # --- the frontier tier (v3.0.5) -------------------------------------------
+    # Fable is the extreme seat. It exists so a re-attempt has somewhere to
+    # escalate INTO; it is not a routine planner assignment.
+    expect("balanced claude/frontier -> fable",
+           resolve("claude", "frontier")["model"] == "fable")
+    expect("conservative claude/frontier -> fable",
+           resolve("claude", "frontier", stance="conservative")["model"] == "fable")
+    expect("cost-aware never reaches fable (frontier caps at opus)",
+           resolve("claude", "frontier", stance="cost-aware")["model"] == "opus")
+    expect("frontier pairs with high effort by default",
+           resolve("claude", "frontier")["effort"] == "high")
+    expect("frontier resolves on every backend",
+           all(resolve(b, "frontier")["model"] for b in BACKENDS))
+    expect("no tier resolves to haiku on any backend or stance",
+           not any("haiku" in str(DEFAULT_MODELS_BY_STANCE[st][b][t]).lower()
+                   for st in VALID_STANCES for b in BACKENDS for t in TIERS))
+    expect("every stance/backend cell is populated for every tier",
+           all(isinstance(DEFAULT_MODELS_BY_STANCE[st][b].get(t), str)
+               and DEFAULT_MODELS_BY_STANCE[st][b][t].strip()
+               for st in VALID_STANCES for b in BACKENDS for t in TIERS))
 
     # --- advisor eligibility (v2.12, B1) ---
     expect("standard-tier implementer is advisor-eligible",
@@ -749,7 +791,7 @@ def _selftest():
     expect("resolve WITH docs job_type carries advisor_eligible=False",
            resolve("claude", "light", job_type="docs")["advisor_eligible"] is False)
     expect("resolve advisor_eligible does not disturb model key",
-           resolve("claude", "standard", job_type="bounded_crud")["model"] == "opus")
+           resolve("claude", "standard", job_type="bounded_crud")["model"] == "sonnet")
 
     # --- cross-brand advisor selector (v2.12, B1) ---
     expect("selector prefers codex over opus when codex available",

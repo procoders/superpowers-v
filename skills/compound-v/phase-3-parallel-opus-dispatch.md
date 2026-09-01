@@ -39,7 +39,7 @@ This phase replaces three defaults from `subagent-driven-development`:
 | Default | Compound V |
 |---------|---------------|
 | "Never dispatch multiple implementation subagents in parallel (conflicts)" | **Dispatch all parallel-batch jobs in parallel** (batched at 4-6 concurrent) — Partition Map + the manifest's disjoint `write_allowed` guarantee no conflicts |
-| "Use the least powerful model that can handle each role" / cheap model for mechanical tasks | **Opus by default; Sonnet allowed only when the job passes the strict junior-task taxonomy below.** The manifest's `model` already encodes this per job (routed by `routing-policy.md`); reviewers are always Opus. |
+| "Use the least powerful model that can handle each role" / cheap model for mechanical tasks | **Opus for judgment, Sonnet for execution — per the taxonomy below.** The manifest's `tier` encodes this per job (routed by `routing-policy.md`) and the emitter resolves it into `agent()`'s `opts.model`; reviewers are always Opus. |
 | Isolated workspace via git worktrees | **Per-job isolation** — the manifest's `isolation` field: `direct` writes to the active workspace where the partition is clean and the backend is in-harness; `worktree` where the job is risky or external. **Codex jobs are always `worktree`.** Either way the scope gate runs on return. |
 
 The first override is safe ONLY because Phase 2 produced a verified Partition Map and a validated manifest. Without them, revert to sequential dispatch.
@@ -50,17 +50,20 @@ The first override is safe ONLY because Phase 2 produced a verified Partition Ma
 
 ## Model Selection Taxonomy (Opus Default, Narrow Sonnet Exception)
 
-> In the v1.0 flow this decision is already made for you: [`routing-policy.md`](routing-policy.md) routes each job's `type` to a **`tier`** (`deep`/`standard`/`light`) when Phase 2 materializes the manifest, and the dispatcher resolves that tier to a concrete `model` via [`compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py) before dispatch (Step 2). Wherever this section says `model: opus` / `model: sonnet`, read it as **the resolved output of a tier** (`deep`/`standard`→`opus`, `light`→`sonnet`) — the literal strings are illustrative, not hardcoded call-site values. The taxonomy below is the *rationale* the routing policy encodes — keep it as the check when you author a job's `tier`, or when you run a bare-plan flow with no manifest yet. Either way the rule is identical.
+> In the v1.0 flow this decision is already made for you: [`routing-policy.md`](routing-policy.md) routes each job's `type` to a **`tier`** (`frontier`/`deep`/`standard`/`light`) when Phase 2 materializes the manifest, and the dispatcher resolves that tier to a concrete `model` via [`compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py) before dispatch (Step 2). Wherever this section says `model: opus` / `model: sonnet`, read it as **the resolved output of a tier** (`frontier`→`fable`, `deep`→`opus`, `standard`/`light`→`sonnet` under the default stance) — the literal strings are illustrative, not hardcoded call-site values. The taxonomy below is the *rationale* the routing policy encodes — keep it as the check when you author a job's `tier`, or when you run a bare-plan flow with no manifest yet. Either way the rule is identical.
 
-**Default: Opus.** Every Claude implementer runs on Opus unless the job passes ALL the boxes for Sonnet eligibility below. Reviewers (spec + quality) are ALWAYS Opus — they're the safety net, and a cheap reviewer is no reviewer. (Codex jobs carry their own model, e.g. `gpt-5.6-sol`, set by the routing policy — that is execution-layer data and never appears in any frontmatter.)
+**Updated 2026-09-02 by the maintainer.** The split is **execution vs judgment**, not "how much code does this touch". Sonnet *executes*: HTML/CSS, Node plumbing, translations, mechanical refactors, and anything whose spec already survived brainstorming and planning — plus *reading* code, which is execution however large the codebase. Opus *judges*: deciding, and connecting parts of code to each other. Business logic with many code-level dependencies is Opus **however mechanical each individual edit looks** — coupling is the signal, not line count. Fable (`tier: frontier`) is the extreme seat: it is what a failed job escalates into, and where interface-design work belongs.
+
+**Default: Opus for judgment, Sonnet for execution.** A Claude implementer runs on Opus unless the job passes ALL the boxes below. Reviewers (spec + quality) are ALWAYS Opus — they're the safety net, and a cheap reviewer is no reviewer. (Codex jobs carry their own model, e.g. `gpt-5.6-sol`, set by the routing policy — that is execution-layer data and never appears in any frontmatter.)
 
 ### When Sonnet IS allowed (the "Junior Dev" carve-out)
 
 A task may use `model: "sonnet"` ONLY if EVERY one of these is true:
 
-- [ ] **Single file**, ≤ 200 LOC change total
-- [ ] **Mechanical transformation** with no design judgment: rename, find-and-replace, format conversion, lint-fix, adding a known-pattern boilerplate (e.g. adding a translation key everywhere it's referenced)
-- [ ] **Spec is so explicit** a competent junior dev could complete it without asking design questions
+- [ ] **The spec is settled** — brainstorming and planning already happened, and the task says what to build rather than asking what to build
+- [ ] **No decision to make and nothing to connect** — the job does not choose between designs, and does not have to reconcile two parts of the codebase with each other
+- [ ] **No coupled business logic** — no rule whose correctness depends on state or invariants held somewhere else in the code
+- [ ] **Bounded surface**, and the change is a transformation rather than a design: rename, find-and-replace, format conversion, lint-fix, markup/styles, a known-pattern boilerplate, a translation, a scan/report over existing code
 - [ ] **No cross-file integration** — the change does not affect callers, types in other files, or any other task in the parallel batch
 - [ ] **Tests already exist OR test code is fully provided in the task** (the implementer is not designing tests, just adding minimal impl to make provided tests pass)
 - [ ] **Task description includes the EXACT before/after** for each meaningful change (no "figure out the pattern")
@@ -76,6 +79,9 @@ If you can't tick ALL boxes → Opus. There is no "mostly junior" tier.
 ✅ Convert a CommonJS `require`/`module.exports` file to ESM `import`/`export` syntax (mechanical 1:1)
 ✅ Apply a Prettier/eslint --fix style normalization to a generated file
 ✅ Add a CSV export that exactly mirrors a TSV export already in the codebase, file-for-file
+✅ Build the settled markup + styles for a screen whose layout was decided in planning
+✅ Translate an existing string table into a new locale
+✅ Scan the codebase and report every call site of a given function — reading is execution
 
 ### Canonical Sonnet-INELIGIBLE tasks (require Opus)
 
@@ -84,6 +90,8 @@ If you can't tick ALL boxes → Opus. There is no "mostly junior" tier.
 ❌ "Extend the existing pricing calculator to handle EU VAT" — domain reasoning
 ❌ "Write the unit tests for the new payments client" — designing tests = senior work
 ❌ "Refactor module X for clarity" — there's no clear before/after; it's all design judgment
+❌ "Make the discount rule respect the loyalty tier" — business logic whose correctness lives in three other files
+❌ "Decide how these two modules should talk and wire them up" — deciding and connecting is the definition of Opus work
 
 ### Defaults when in doubt
 

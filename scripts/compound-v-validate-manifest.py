@@ -23,7 +23,7 @@ Invariants enforced (from PRD §5.1/§5.5 + plan §5/§6)
 5. **Intent routing.** Jobs route by intent, not hardcoded model strings.
    Every job MUST carry ``model`` OR ``tier`` (model is now an optional
    override; existing explicit-model jobs stay valid — backward compatible).
-   If present, ``tier`` ∈ {deep, standard, light} and ``effort`` ∈
+   If present, ``tier`` ∈ {frontier, deep, standard, light} and ``effort`` ∈
    {low, medium, high, xhigh}. ``effort: xhigh`` is valid iff
    ``backend: codex`` (codex's kernel model_reasoning_effort accepts it —
    live-verified 2026-07-11 on codex-cli 0.144.1); any other backend with
@@ -42,7 +42,7 @@ are lower-trust, opt-in, WORKER-ONLY backends — see adapter-devin.md /
 adapter-opencode.md); ``isolation`` ∈ {direct, worktree};
 ``run`` ∈ {serial, parallel};
 ``routing_stance`` ∈ {balanced, conservative, cost-aware, claude-only};
-``tier`` ∈ {deep, standard, light}; ``effort`` ∈ {low, medium, high, xhigh}
+``tier`` ∈ {frontier, deep, standard, light}; ``effort`` ∈ {low, medium, high, xhigh}
 (``xhigh`` valid iff ``backend: codex``).
 
 Job ``id`` (and top-level ``run_id``) MUST match ``^[A-Za-z0-9._-]+$`` and not be
@@ -535,7 +535,11 @@ REVIEWER_TOKENS = ("review", "reviewer", "spec_review", "quality", "integration"
 # changes when concrete models churn. `xhigh` is valid iff backend == "codex"
 # (codex's kernel model_reasoning_effort accepts it — live-verified 2026-07-11
 # on codex-cli 0.144.1); validate() rejects xhigh on every other backend.
-VALID_TIERS = ("deep", "standard", "light")
+# `frontier` (v3.0.5) is the extreme seat — on claude it resolves to Fable. It is
+# what a failed re-attempt escalates INTO; a planner assigning it up front is
+# valid but unusual. Reviewers are NOT satisfied by it: Invariant 3 still
+# demands deep/opus, because a sealed review receipt must carry Claude Opus.
+VALID_TIERS = ("frontier", "deep", "standard", "light")
 VALID_EFFORTS = ("low", "medium", "high", "xhigh")
 
 # Enum vocabularies for required-field validation (per execution-manifest.md).

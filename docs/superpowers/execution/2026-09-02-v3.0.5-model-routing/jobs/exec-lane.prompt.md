@@ -1,0 +1,22 @@
+# Execution lane — a settled spec, no decision to make
+
+Compound V run `2026-09-02-v3.0.5-model-routing`, job `exec-lane`.
+
+## Write-allowed (your lane — anything else is a scope violation)
+
+- `docs/superpowers/dogfood/2026-09-02-routing-exec.md`
+
+## Read-allowed (advisory — git cannot enforce reads)
+
+- `docs/superpowers/execution/2026-09-02-v3.0.5-model-routing/spec.md`
+
+## Acceptance (your definition of done)
+
+- The file exists and names the model this agent is running on.
+
+## What you must NOT report
+
+Do not report `blocked`, `files_changed` or `violations`. Those are
+enforcement fields, they are derived from git by the caller, and a
+constrained party filling in its own enforcement fields is the
+fabricated-evidence pattern.

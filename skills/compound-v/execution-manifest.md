@@ -42,8 +42,8 @@ Worked example: [`examples/manifest.example.yaml`](../../examples/manifest.examp
 | `title` | string | yes | One-line job title. |
 | `type` | string | yes | Job-type token used by the routing policy (e.g. `shared_foundation`, `bounded_crud`, `large_isolated`, `core_slice`, `mechanical_refactor`, `docs`, `tests_new`, `external_api`, `review`). |
 | `backend` | enum | yes | `claude` \| `codex` \| `antigravity` \| `cursor` \| `devin` \| `opencode`. **Execution-layer data — NEVER appears in any frontmatter.** (`antigravity`/`cursor`/`opencode` are opt-in, lower-trust, no kernel sandbox ⇒ always `worktree`; `devin` has a Research-Preview kernel sandbox treated as unverified/no-confinement for v1 ⇒ also always `worktree`. `devin`/`opencode` are **worker-only** — never a routable arbiter/review-panel seat, since both are multi-provider brokers whose resolved model family is data-dependent.) |
-| `tier` | enum | yes¹ | `deep` \| `standard` \| `light`. The **intent** the routing policy assigns; the dispatcher resolves it to a concrete model. Stable vocabulary that survives model churn. |
-| `effort` | enum | no | `low` \| `medium` \| `high` \| `xhigh`. Orthogonal reasoning-effort hint. Default pairing `deep→high`, `standard→medium`, `light→low`, but independently tunable per task-type. For `codex` it maps to `-c model_reasoning_effort=<effort>`; for `claude` it is advisory (the `Task` path has no separate effort flag). `xhigh` is valid **iff** `backend: codex`; every other backend rejects it with a clear error naming the rule (use `high` instead). |
+| `tier` | enum | yes¹ | `frontier` \| `deep` \| `standard` \| `light`. The **intent** the routing policy assigns; the dispatcher resolves it to a concrete model and passes it as `agent()`'s `opts.model`. Stable vocabulary that survives model churn. |
+| `effort` | enum | no | `low` \| `medium` \| `high` \| `xhigh`. Orthogonal reasoning-effort hint. Default pairing `frontier→high`, `deep→high`, `standard→medium`, `light→low`, but independently tunable per task-type. For `codex` it maps to `-c model_reasoning_effort=<effort>`; for `claude` it is advisory (the `Task` path has no separate effort flag). `xhigh` is valid **iff** `backend: codex`; every other backend rejects it with a clear error naming the rule (use `high` instead). |
 | `model` | string | no¹ | Explicit override, e.g. `opus`, `sonnet`, `gpt-5.6-sol`. When present it **skips resolution** (the manifest pins the model directly). Execution-layer data — never in frontmatter. Backward-compatible: pre-tier manifests carrying only `model` remain valid. |
 | `isolation` | enum | yes | `direct` \| `worktree`. **`run: parallel` ⇒ `worktree`** (per-job scope attribution); `direct` is only valid with `run: serial`. |
 | `run` | enum | yes | `serial` \| `parallel`. A `parallel` job MUST be `isolation: worktree` (see the rule above). |
@@ -60,24 +60,43 @@ Worked example: [`examples/manifest.example.yaml`](../../examples/manifest.examp
 
 ### Tier vocabulary (stable — never changes when models churn)
 
+The ladder splits on **execution vs judgment**, not on how much code a job touches.
+Sonnet executes: a spec that already survived brainstorming and planning, HTML/CSS,
+Node plumbing, translations, and *reading* code. Opus judges: deciding, and connecting
+parts of code to each other. Business logic with many code-level dependencies is Opus
+however mechanical each individual edit looks.
+
 | Tier | Strongest fit | Routes to (Balanced) |
 |---|---|---|
-| `deep` | Strongest reasoning: architecture, security/auth/payments, designing tests, external APIs, **ALL reviewers**, shared-foundation Task 0. | claude `opus`, codex `gpt-5.6-sol`, antigravity top model, cursor `auto`, devin `claude-opus-4.6`, opencode `anthropic/claude-opus-4-6`. |
-| `standard` | Bounded core/feature build, incl. large isolated codex work. | claude `opus` (`sonnet` under the `cost-aware` stance), codex `gpt-5.6-terra`, antigravity mid model, cursor `auto`, devin `claude-sonnet-4`, opencode `openai/gpt-5.6-terra`. |
-| `light` | Mechanical single-file / docs / i18n. | claude `sonnet`, codex `gpt-5.6-luna`, antigravity flash model, cursor `auto`, devin `gpt-5.5`, opencode `opencode/mimo-v2.5-free` (a real credential-free model). |
+| `frontier` | The extreme case. Reachable by design, assigned rarely: it is what a **re-attempt escalates into** after a recorded failure, and where interface-design work belongs. | claude `fable`, codex `gpt-5.6-sol`, antigravity top model, cursor `auto`, devin `claude-opus-4.6`, opencode `anthropic/claude-opus-4-6`. Under `cost-aware` it caps at claude `opus`. |
+| `deep` | Judgment: architecture, security/auth/payments, coupled business logic, designing tests, external APIs, **ALL reviewers**, shared-foundation Task 0. | claude `opus`, codex `gpt-5.6-sol`, antigravity top model, cursor `auto`, devin `claude-opus-4.6`, opencode `anthropic/claude-opus-4-6`. |
+| `standard` | Execution against a spec that is already settled: bounded core/feature build, incl. large isolated codex work. | claude `sonnet` (`opus` under the `conservative` stance), codex `gpt-5.6-terra`, antigravity mid model, cursor `auto`, devin `claude-sonnet-4`, opencode `openai/gpt-5.6-terra`. |
+| `light` | Mechanical single-file / docs / i18n / scanning. Also where the pipeline's own **transport** stages run (Gate, Record, Finalize — each one clamped command, verbatim JSON back). | claude `sonnet`, codex `gpt-5.6-luna`, antigravity flash model, cursor `auto`, devin `gpt-5.5`, opencode `opencode/mimo-v2.5-free` (a real credential-free model). |
 
-`effort ∈ {low, medium, high, xhigh}` is orthogonal to tier. The default pairing (`deep→high`, `standard→medium`, `light→low`) is just a default — a task-type may pin a different effort independently. `xhigh` is valid **iff** `backend: codex`; every other backend rejects it with a clear error naming the rule (use `high` instead) — it maps to codex's `model_reasoning_effort=xhigh` (live-verified 2026-07-11 on codex-cli 0.144.1).
+**Reviewers are not satisfied by `frontier`.** Invariant 3 still demands `tier: deep` or
+`model: opus`, because a sealed review receipt must carry a Claude Opus `reviewer_model`.
+For the same reason a reviewer is **never** escalated on a re-attempt.
 
-Resolution is **stance-aware**: the `standard` Claude row resolves to `opus` under the `balanced` stance and `sonnet` under `cost-aware` (the resolver's `cost-aware.claude.standard = sonnet`; `cost-aware.claude.deep` stays `opus`). The dispatcher reads the manifest's `routing_stance` and passes it (`--stance`) to the resolver on every resolve; omitting it defaults to `balanced`. Only the `standard` Claude cell shifts — `deep` (incl. all reviewers + sensitive surfaces) is `opus` in every stance, and `codex`/`antigravity`/`cursor`/`devin`/`opencode` are identical across stances.
+**Escalation.** A job with a recorded non-success result in this run is re-dispatched one
+rung up the claude ladder — `sonnet → opus → fable` — and stops there. The signal is the
+recorded `results/<id>.json` status, not a counter: an absent result is not a failure. A
+model the manifest pinned explicitly is never escalated; escalating a value we did not
+choose would be a fabricated routing decision.
+
+`effort ∈ {low, medium, high, xhigh}` is orthogonal to tier. The default pairing (`frontier→high`, `deep→high`, `standard→medium`, `light→low`) is just a default — a task-type may pin a different effort independently. `xhigh` is valid **iff** `backend: codex`; every other backend rejects it with a clear error naming the rule (use `high` instead) — it maps to codex's `model_reasoning_effort=xhigh` (live-verified 2026-07-11 on codex-cli 0.144.1).
+
+Resolution is **stance-aware**: the `standard` Claude row resolves to `sonnet` under `balanced` / `cost-aware` / `claude-only`, and to `opus` under `conservative` — that is what the conservative stance means. `frontier` is `fable` everywhere except `cost-aware`, whose ceiling is `opus`. `deep` (incl. all reviewers + sensitive surfaces) is `opus` in every stance, and `codex`/`antigravity`/`cursor`/`devin`/`opencode` are identical across stances.
+
+The dispatcher reads the manifest's `routing_stance` and passes it (`--stance`) to the resolver on every resolve, along with `--config` for the project map; omitting the stance defaults to `balanced`. **Both were unwired until 3.0.5** — every resolution silently used the built-in balanced defaults, and on `backend: claude` the resolver was not called at all.
 
 ### Config `models` map (project `.claude/compound-v.json`)
 
-The concrete model behind each tier lives in a **refreshable** map in the project config — not hardcoded in any job. This is what lets the plugin survive model churn: when models change, refresh the map (`/v:models`), not the manifests. The map is **per-stance** — its shape is `{<stance>: {<backend>: {<tier>: model}}}`. Only the `claude` rows differ across stances (`cost-aware.claude.standard = sonnet`; everywhere else `standard` is `opus`); `codex`/`antigravity`/`cursor`/`devin`/`opencode` are identical in every stance. `opencode`'s cells are full `provider/model` strings (the provider may legitimately differ per tier — no schema change, the resolver already treats every cell as opaque):
+The concrete model behind each tier lives in a **refreshable** map in the project config — not hardcoded in any job. This is what lets the plugin survive model churn: when models change, refresh the map (`/v:models`), not the manifests. The map is **per-stance** — its shape is `{<stance>: {<backend>: {<tier>: model}}}`. Only the `claude` rows differ across stances (`conservative.claude.standard = opus`; everywhere else `standard` is `sonnet`, and `cost-aware.claude.frontier` caps at `opus`); `codex`/`antigravity`/`cursor`/`devin`/`opencode` are identical in every stance. `opencode`'s cells are full `provider/model` strings (the provider may legitimately differ per tier — no schema change, the resolver already treats every cell as opaque):
 
 ```jsonc
 "models": {
   "balanced": {
-    "claude":      { "deep": "opus",                      "standard": "opus",                       "light": "sonnet" },
+    "claude":      { "frontier": "fable", "deep": "opus",  "standard": "sonnet",                     "light": "sonnet" },
     "codex":       { "deep": "gpt-5.6-sol",                "standard": "gpt-5.6-terra",                "light": "gpt-5.6-luna" },
     "antigravity": { "deep": "Gemini 3.1 Pro (High)",     "standard": "Gemini 3.1 Pro (Low)",        "light": "Gemini 3.5 Flash (Low)" },
     "cursor":      { "deep": "auto",                       "standard": "auto",                        "light": "auto" },
@@ -85,14 +104,14 @@ The concrete model behind each tier lives in a **refreshable** map in the projec
     "opencode":    { "deep": "anthropic/claude-opus-4-6",  "standard": "openai/gpt-5.6-terra",         "light": "opencode/mimo-v2.5-free" }
   },
   "cost-aware": {
-    "claude":      { "deep": "opus",                      "standard": "sonnet",                     "light": "sonnet" },
+    "claude":      { "frontier": "opus",  "deep": "opus",  "standard": "sonnet",                     "light": "sonnet" },
     "codex":       { "deep": "gpt-5.6-sol",                "standard": "gpt-5.6-terra",                "light": "gpt-5.6-luna" },
     "antigravity": { "deep": "Gemini 3.1 Pro (High)",     "standard": "Gemini 3.1 Pro (Low)",        "light": "Gemini 3.5 Flash (Low)" },
     "cursor":      { "deep": "auto",                       "standard": "auto",                        "light": "auto" },
     "devin":       { "deep": "claude-opus-4.6",            "standard": "claude-sonnet-4",              "light": "gpt-5.5" },
     "opencode":    { "deep": "anthropic/claude-opus-4-6",  "standard": "openai/gpt-5.6-terra",         "light": "opencode/mimo-v2.5-free" }
   }
-  // conservative + claude-only mirror balanced
+  // claude-only mirrors balanced; conservative keeps standard on opus
 }
 ```
 
