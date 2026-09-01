@@ -695,7 +695,28 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
             "effort": job.get("effort"),
             "model": job.get("model"),
             "isolation": isolation,
-            "agent_isolation": "worktree" if isolation == "worktree" else None,
+            # AGENT-level isolation, which is NOT the manifest's isolation. A job
+            # with depends_on must run its agent in the MAIN checkout, because the
+            # runtime's `isolation: 'worktree'` branches from the default ref — not
+            # from local HEAD — so a fresh worktree does not contain the wave that
+            # just committed. Dogfooded 2026-09-01 on a two-wave run: wave 1
+            # committed 62716da, and wave 2's job still pinned baseline 5281d70,
+            # could not see alpha/beta/gamma, wrote nothing, had its unchanged
+            # worktree auto-removed, and the gate reported `unverifiable`.
+            #
+            # This is the same defect a cross-model review called CRITICAL in 3.0.1
+            # — "dependents cannot see their prerequisites" — in the half we did not
+            # fix. We closed the staging half (record no longer stages, the wave
+            # finalizer commits); this is the worktree half, and it is a runtime
+            # property we cannot configure away from here.
+            #
+            # Manifest isolation is unchanged: the validator still requires
+            # `worktree` for parallel jobs, and scope attribution still uses it.
+            # Only the agent runs in the main tree — and the direct-mode
+            # preexisting snapshot is what keeps that honest.
+            "agent_isolation": ("worktree"
+                                if isolation == "worktree" and not (job.get("depends_on") or [])
+                                else None),
             "timeout_sec": job.get("timeout_sec"),
             "write_allowed": job.get("write_allowed") or [],
             "read_allowed": job.get("read_allowed") or [],
@@ -1125,7 +1146,15 @@ async function gateStage(prev, job) {
       ' --repo-root ' + q(CFG.repo_root) +
       ' --worktree ' + q(gateRoot) +
       ' --manifest ' + q(CFG.manifest_path) +
-      ' --mode ' + q(job.isolation === 'worktree' ? 'worktree' : 'direct') +
+      // The gate's mode must follow where the AGENT actually ran, not what the
+      // manifest declares. A job with depends_on keeps `isolation: worktree` in the
+      // manifest (the validator requires it, and scope attribution uses it) while its
+      // agent runs in the main checkout, because a fresh worktree branches from the
+      // default ref and would not contain the wave that just committed. Passing the
+      // manifest's value here made the gate run in worktree mode over a direct run,
+      // so it skipped the pre-existing snapshot and charged the job with every dirty
+      // path in the tree. Two layers, one field name, opposite meanings.
+      ' --mode ' + q(job.agent_isolation === 'worktree' ? 'worktree' : 'direct') +
       (NOW ? ' --now ' + q(NOW) : '');
 
     const prompt =
