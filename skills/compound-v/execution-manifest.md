@@ -26,6 +26,8 @@ Worked example: [`examples/manifest.example.yaml`](../../examples/manifest.examp
 | `triage` | map | no† | v3.0 (Feature A2): `{tier, pre_eval_id, taxonomy_digest, decided_at}`. **Required under `--require-triage`**, which `/v:dispatch` passes on every live dispatch. See the v3.0 section below. |
 | `test_contract` | map | no | v3.0 (Feature B2): `{floor_command, full_command, impacted_map}`. Absent ⇒ every job runs `full`. See the v3.0 section below. |
 
+**`{path}` substitution is the contract, not an illustration.** Inside a rule's `run`, the literal token `{path}` is replaced by the changed path that matched the rule's `when` glob, once per matching path. It appeared only inside examples until now, so an implementer had to infer it; a rule whose `run` omits `{path}` is still valid and simply runs once per match.
+
 † `triage` is absent-valid for the mode-less CI sweep only, so the manifests committed before 3.0 stay valid without a back-filled record. Every live dispatch demands it.
 
 `acceptance_criteria` is feature-level and gates the final integration review. Each job *also* carries its own narrow `acceptance` (below) for its per-task review — do not confuse the two.
