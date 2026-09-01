@@ -236,6 +236,8 @@ jobs:
   - id: job-codex
     title: external backend
     backend: codex
+    model: gpt-5.6-sol
+    isolation: worktree
     test_scope: floor_only
     write_allowed:
       - "src/**"
@@ -253,6 +255,7 @@ cp "$RD/external.manifest.yaml" "$XRD/manifest.yaml"
 cp "$RD/external.state.json" "$XRD/state.json"
 
 "$PY" "$EMIT" register-lane --run-dir "$XRD" --job-id job-codex --cwd "$R" \
+  --repo-root "$R" --isolation worktree \
   > "$T/register.json" 2>"$T/register.err" \
   || fail "register-lane exited non-zero: $(cat "$T/register.err")"
 if [ -f "$XRD/jobs/job-codex.test-contract.json" ]; then
@@ -270,7 +273,7 @@ else
 "--test-contract-file would point at a file that does not exist"
 fi
 
-"$PY" "$EMIT" emit "$XRD/manifest.yaml" --run-dir "$XRD" \
+"$PY" "$EMIT" emit "$XRD/manifest.yaml" --run-dir "$XRD" --repo-root "$R" \
   --out "$XRD/dispatch.workflow.js" >/dev/null 2>"$T/emit.err" \
   || fail "emit exited non-zero: $(cat "$T/emit.err")"
 if grep -q -- "--test-contract-file" "$XRD/dispatch.workflow.js" 2>/dev/null; then
@@ -310,6 +313,426 @@ else
   fail "no triage-outcomes.jsonl written — the predicted<->actual join still has "\
 "no producer on the Engine C path"
 fi
+[ "$?" = "0" ] || fails=$((fails + 1))
+
+# ===========================================================================
+# 3.0.1's three DISABLING defects. Each block below reproduces one of them as
+# an OBSERVABLE outcome, not as an inspection of the source. Every one of them
+# failed against 3.0.1; that pre-fix failure is the only thing that makes them
+# worth running afterwards.
+# ===========================================================================
+
+# A sandboxed COPY of the toolchain, whose own `REPO_DEFAULT` (the directory
+# above the script) is a throwaway git repo standing in for an INSTALLED plugin.
+# This is what lets CRITICAL-1 be reproduced for real — the wrong-repository
+# write actually happens, into $PLUG — while a test can never touch the
+# developer's own checkout. Never point this at the real repo.
+PLUG="$T/plugins/superpowers-v"
+mkdir -p "$PLUG/scripts" "$PLUG/schemas"
+cp "$REPO"/scripts/compound-v-*.py "$PLUG/scripts/"
+cp "$REPO"/scripts/compound-v-*.sh "$PLUG/scripts/"
+cp "$REPO"/schemas/*.json "$PLUG/schemas/" 2>/dev/null || true
+# The plugin repo carries a README.md whose blob matches the project's. That is
+# not a contrivance to make the bug bite — this plugin HAS a README.md, and so
+# does almost every project it would be installed beside. It is what turns "the
+# patch was aimed at the wrong repository" from a failed apply into a landed one.
+echo "# project" > "$PLUG/README.md"
+git -C "$PLUG" init -q .
+git -C "$PLUG" config user.email test@example.com
+git -C "$PLUG" config user.name "plugin repo"
+git -C "$PLUG" add -A
+git -C "$PLUG" commit -qm "installed plugin"
+SANDBOX_EMIT="$PLUG/scripts/compound-v-emit-workflow.py"
+
+new_repo() {                       # $1 = path
+  mkdir -p "$1/src"
+  git -C "$1" init -q .
+  git -C "$1" config user.email test@example.com
+  git -C "$1" config user.name "engine c test"
+  echo "# project" > "$1/README.md"
+  echo "print(0)" > "$1/src/x.py"
+  git -C "$1" add -A
+  git -C "$1" commit -qm init
+}
+
+seed_state() {                     # $1 = run dir  $2 = job id  $3 = baseline|-
+  "$PY" - "$1/state.json" "$2" "$3" <<'PY'
+import json, sys
+out, job, base = sys.argv[1], sys.argv[2], sys.argv[3]
+entry = {"status": "pending"}
+if base != "-":
+    entry["baseline"] = base
+json.dump({"run_id": "d", "phase": "DISPATCHING", "jobs": {job: entry}},
+          open(out, "w"), indent=2)
+PY
+}
+
+seed_lane() {                      # $1 = run dir  $2 = job id  $3 = cwd
+  "$PY" - "$1/lane-map.json" "$2" "$3" "$1/manifest.yaml" <<'PY'
+import json, sys
+json.dump({"run_id": "d", "agents": {}, "manifest": sys.argv[4],
+           "worktrees": {sys.argv[3]: sys.argv[2]}},
+          open(sys.argv[1], "w"), indent=2)
+PY
+}
+
+# ---------------------------------------------------------------------------
+# CRITICAL 1 — a `direct` job's patch reaching the WRONG repository.
+#
+# The compliant implementer returns `pwd` as its `worktree`, so that locator is
+# never empty and `record` always took the merge_back branch; the emitted Record
+# command carried no `--repo-root`, so the destination fell back to the repo
+# containing the installed script. Both halves are exercised here.
+# ---------------------------------------------------------------------------
+APP="$T/app"
+new_repo "$APP"
+APPBASE="$(git -C "$APP" rev-parse HEAD)"
+D1="$T/d1"; mkdir -p "$D1"
+cat > "$D1/manifest.yaml" <<'YAML'
+run_id: d1
+jobs:
+  - id: job-direct
+    title: a direct job that edits the project's README
+    backend: claude
+    isolation: direct
+    write_allowed:
+      - "README.md"
+YAML
+seed_state "$D1" job-direct "$APPBASE"
+seed_lane  "$D1" job-direct "$APP"
+echo "edited by the job" >> "$APP/README.md"
+
+"$PY" "$SANDBOX_EMIT" gate-receipt --run-dir "$D1" --job-id job-direct \
+  --worktree "$APP" --mode direct --repo-root "$APP" \
+  > "$T/d1.gate.json" 2>"$T/d1.gate.err" \
+  || fail "D1: gate-receipt exited non-zero: $(cat "$T/d1.gate.err")"
+
+# Exactly the invocation 3.0.1 emitted: no --repo-root at all.
+"$PY" "$SANDBOX_EMIT" record --run-dir "$D1" --job-id job-direct \
+  --manifest "$D1/manifest.yaml" --verdict-json "$(cat "$T/d1.gate.json")" \
+  > "$T/d1.record.json" 2>"$T/d1.record.err"
+d1rc=$?
+
+if [ "$d1rc" != "0" ]; then
+  pass "D1: record with no --repo-root FAILS CLOSED instead of choosing a destination itself"
+else
+  fail "D1: record ran with no --repo-root and picked a destination itself"
+fi
+if [ -n "$(git -C "$PLUG" status --porcelain)" ]; then
+  fail "D1: the job's patch landed in the PLUGIN repository — $(git -C "$PLUG" status --porcelain | tr '\n' ' ')"
+else
+  pass "D1: the plugin repository is untouched"
+fi
+
+# The emitted Record command must name the destination explicitly.
+"$PY" "$EMIT" emit "$D1/manifest.yaml" --run-dir "$D1" --repo-root "$APP" \
+  --out "$D1/dispatch.workflow.js" >/dev/null 2>"$T/d1.emit.err" \
+  || fail "D1: emit exited non-zero: $(cat "$T/d1.emit.err")"
+if [ -f "$D1/dispatch.workflow.js" ]; then
+  "$PY" - "$D1/dispatch.workflow.js" <<'PY'
+import sys
+s = open(sys.argv[1], encoding="utf-8").read()
+def seg(marker):
+    i = s.find(marker)
+    return s[i:i + 800] if i >= 0 else ""
+rec = seg("' record' +")
+gate = seg("' gate-receipt' +")
+def check(ok, label):
+    print(("PASS " if ok else "FAIL ") + label)
+    return ok
+ok = check(bool(rec) and "--repo-root" in rec,
+           "D1: the emitted Record command passes --repo-root explicitly")
+ok = check(bool(gate) and "--repo-root" in gate,
+           "D1: the emitted Gate command passes --repo-root explicitly") and ok
+ok = check("CFG.repo_root" in rec,
+           "D1: the destination is the run's repo_root, never an agent-reported path") and ok
+sys.exit(0 if ok else 1)
+PY
+  [ "$?" = "0" ] || fails=$((fails + 1))
+fi
+
+# A `direct` result must carry `worktree: ""` even though a compliant agent
+# registered its project cwd — the branch is the manifest's `isolation`, and a
+# non-empty locator must never be what selects merge_back.
+D1C="$T/d1c"; mkdir -p "$D1C"
+cp "$D1/manifest.yaml" "$D1C/manifest.yaml"
+seed_state "$D1C" job-direct "$APPBASE"
+seed_lane  "$D1C" job-direct "$APP"
+"$PY" "$EMIT" record --run-dir "$D1C" --job-id job-direct \
+  --manifest "$D1C/manifest.yaml" --verdict-json "$(cat "$T/d1.gate.json")" \
+  --repo-root "$APP" >/dev/null 2>"$T/d1c.err"
+"$PY" - "$D1C/results/job-direct.json" <<'PY'
+import json, os, sys
+p = sys.argv[1]
+if not os.path.isfile(p):
+    print("FAIL D1: record wrote no result for the direct job")
+    sys.exit(1)
+doc = json.load(open(p, encoding="utf-8"))
+ok = doc.get("worktree") == ""
+print(("PASS " if ok else "FAIL ")
+      + "D1: a direct job's job_result carries worktree \"\" (the lane map's "
+        "project cwd is NOT a worktree locator)")
+if not ok:
+    print("     got: %r" % doc.get("worktree"))
+sys.exit(0 if ok else 1)
+PY
+[ "$?" = "0" ] || fails=$((fails + 1))
+
+# ---------------------------------------------------------------------------
+# CRITICAL 2 — Record integrated before the authority, and never committed.
+# ---------------------------------------------------------------------------
+APP2="$T/app2"
+new_repo "$APP2"
+APP2BASE="$(git -C "$APP2" rev-parse HEAD)"
+WT2="$T/wt2"
+git -C "$APP2" worktree add -q "$WT2" HEAD
+D2="$T/d2"; mkdir -p "$D2"
+cat > "$D2/manifest.yaml" <<'YAML'
+run_id: d2
+jobs:
+  - id: job-wt
+    title: a worktree job
+    backend: claude
+    isolation: worktree
+    write_allowed:
+      - "src/**"
+YAML
+seed_state "$D2" job-wt "$APP2BASE"
+seed_lane  "$D2" job-wt "$WT2"
+echo "print(1)" >> "$WT2/src/x.py"
+
+"$PY" "$EMIT" gate-receipt --run-dir "$D2" --job-id job-wt \
+  --worktree "$WT2" --mode worktree --repo-root "$APP2" \
+  > "$T/d2.gate.json" 2>"$T/d2.gate.err" \
+  || fail "D2: gate-receipt exited non-zero: $(cat "$T/d2.gate.err")"
+"$PY" "$EMIT" record --run-dir "$D2" --job-id job-wt \
+  --manifest "$D2/manifest.yaml" --verdict-json "$(cat "$T/d2.gate.json")" \
+  --repo-root "$APP2" >/dev/null 2>"$T/d2.record.err" \
+  || fail "D2: record exited non-zero: $(cat "$T/d2.record.err")"
+
+if [ -z "$(git -C "$APP2" diff --cached --name-only)" ]; then
+  pass "D2: record persists EVIDENCE ONLY — it stages nothing in the main checkout"
+else
+  fail "D2: record staged $(git -C "$APP2" diff --cached --name-only | tr '\n' ' ')in the main checkout, before the authority ever ran"
+fi
+
+# The wave finalizer: the authority runs, THEN the wave merges and COMMITS.
+D2HEAD_BEFORE="$(git -C "$APP2" rev-parse HEAD)"
+"$PY" "$EMIT" finalize-wave --run-dir "$D2" --repo-root "$APP2" \
+  --manifest "$D2/manifest.yaml" --jobs job-wt --wave 1 \
+  --now "2026-09-01T00:00:00Z" > "$T/d2.fin.json" 2>"$T/d2.fin.err"
+d2rc=$?
+if [ "$d2rc" = "0" ]; then
+  "$PY" - "$T/d2.fin.json" <<'PY'
+import json, sys
+doc = json.load(open(sys.argv[1], encoding="utf-8"))
+ok = doc.get("integrated") is True and bool(doc.get("commit"))
+print(("PASS " if ok else "FAIL ")
+      + "D2: the wave finalizer ran the integration authority and committed the wave")
+if not ok:
+    print("     got: %s" % json.dumps(doc)[:400])
+sys.exit(0 if ok else 1)
+PY
+  [ "$?" = "0" ] || fails=$((fails + 1))
+else
+  fail "D2: finalize-wave is missing or failed: $(head -3 "$T/d2.fin.err")"
+fi
+
+if [ "$(git -C "$APP2" rev-parse HEAD)" != "$D2HEAD_BEFORE" ]; then
+  pass "D2: the wave's work is COMMITTED, so no later plain git commit can sweep it in"
+else
+  fail "D2: HEAD did not move — the wave's patch is still merely staged"
+fi
+if [ -z "$(git -C "$APP2" diff --cached --name-only)" ]; then
+  pass "D2: nothing is left staged for an unrelated commit to pick up"
+else
+  fail "D2: the finalizer left $(git -C "$APP2" diff --cached --name-only | tr '\n' ' ')staged"
+fi
+git -C "$APP2" worktree add -q "$T/dep2" HEAD 2>/dev/null
+if grep -q "print(1)" "$T/dep2/src/x.py" 2>/dev/null; then
+  pass "D2: a DEPENDENT worktree created at HEAD now contains its prerequisite"
+else
+  fail "D2: a dependent worktree created at HEAD still cannot see its prerequisite"
+fi
+
+# The generated script must carry the finalizer, and must stop scheduling.
+"$PY" "$EMIT" emit "$D2/manifest.yaml" --run-dir "$D2" --repo-root "$APP2" \
+  --out "$D2/dispatch.workflow.js" >/dev/null 2>"$T/d2.emit.err" \
+  || fail "D2: emit exited non-zero: $(cat "$T/d2.emit.err")"
+if [ -f "$D2/dispatch.workflow.js" ]; then
+  "$PY" - "$D2/dispatch.workflow.js" <<'PY'
+import sys
+s = open(sys.argv[1], encoding="utf-8").read()
+def check(ok, label):
+    print(("PASS " if ok else "FAIL ") + label)
+    return ok
+ok = check("finalize-wave" in s,
+           "D2: the emitted script runs a serialized wave finalizer")
+ok = check("finalizeWave" in s,
+           "D2: the finalizer is a real stage, not a closing log line") and ok
+ok = check("waveHadFailure" in s and "summary.halted" in s,
+           "D2: the wave loop STOPS scheduling after a non-success result") and ok
+i = s.find("await pipeline")
+j = s.find("finalizeWave(", i if i >= 0 else 0)
+ok = check(i >= 0 and j > i,
+           "D2: the finalizer runs AFTER the wave's pipeline, before the next wave") and ok
+sys.exit(0 if ok else 1)
+PY
+  [ "$?" = "0" ] || fails=$((fails + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# HIGH 3 — the external handoff losing its invocation and its worktree.
+# ---------------------------------------------------------------------------
+APP3="$T/app3"
+new_repo "$APP3"
+APP3BASE="$(git -C "$APP3" rev-parse HEAD)"
+WT3="$T/wt3"
+git -C "$APP3" worktree add -q "$WT3" HEAD
+D3="$T/d3"; mkdir -p "$D3"
+cat > "$D3/manifest.yaml" <<'YAML'
+run_id: d3
+test_contract:
+  floor_command: "sh -c 'exit 0'"
+  full_command: "sh -c 'exit 0'"
+jobs:
+  - id: job-ext
+    title: an external worker job
+    backend: codex
+    model: gpt-5.6-sol
+    effort: high
+    isolation: worktree
+    test_scope: floor_only
+    timeout_sec: 900
+    write_allowed:
+      - "src/**"
+    acceptance:
+      - "src/x.py gains a line"
+YAML
+seed_state "$D3" job-ext "$APP3BASE"
+
+"$PY" "$EMIT" emit "$D3/manifest.yaml" --run-dir "$D3" --repo-root "$APP3" \
+  --out "$D3/dispatch.workflow.js" >/dev/null 2>"$T/d3.emit.err" \
+  || fail "D3: emit exited non-zero: $(cat "$T/d3.emit.err")"
+
+if [ -f "$D3/jobs/job-ext.prompt.md" ]; then
+  pass "D3: a complete per-job prompt file is materialized BEFORE the workflow runs"
+else
+  fail "D3: no jobs/job-ext.prompt.md — the worker's --prompt-file points at nothing"
+fi
+if [ -f "$D3/jobs/job-ext.launch.argv.json" ]; then
+  pass "D3: the launcher argv is materialized before the workflow runs"
+else
+  fail "D3: no jobs/job-ext.launch.argv.json — the invocation exists only as prose"
+fi
+if [ -f "$D3/dispatch.workflow.js" ]; then
+  "$PY" - "$D3/dispatch.workflow.js" "$D3/jobs/job-ext.launch.argv.json" <<'PY'
+import json, os, sys
+s = open(sys.argv[1], encoding="utf-8").read()
+def check(ok, label):
+    print(("PASS " if ok else "FAIL ") + label)
+    return ok
+required = ["--run-id", "--job-id", "--repo", "--prompt-file", "--model",
+            "--write-allowed"]
+missing = [f for f in required if f not in s]
+ok = check(not missing,
+           "D3: the emitted launcher carries a COMPLETE argv (missing: %s)"
+           % (", ".join(missing) or "none"))
+ok = check("compound-v-run-codex-worker.sh ..." not in s
+           and "worker-script ..." not in s,
+           "D3: the launcher is not an elided placeholder") and ok
+if os.path.isfile(sys.argv[2]):
+    argv = json.load(open(sys.argv[2], encoding="utf-8"))
+    ok = check(isinstance(argv, list) and "..." not in argv,
+               "D3: the materialized argv contains no elision") and ok
+    ok = check(isinstance(argv, list) and "--model" in argv
+               and argv[argv.index("--model") + 1] == "gpt-5.6-sol",
+               "D3: the argv pins the manifest's model") and ok
+else:
+    ok = False
+sys.exit(0 if ok else 1)
+PY
+  [ "$?" = "0" ] || fails=$((fails + 1))
+fi
+
+# The baseline must be pinned BEFORE the worker launches — register-lane is the
+# only Engine C step that runs early enough.
+"$PY" "$EMIT" register-lane --run-dir "$D3" --job-id job-ext --cwd "$WT3" \
+  --repo-root "$APP3" --isolation worktree --no-test-contract \
+  > "$T/d3.reg.json" 2>"$T/d3.reg.err"
+d3rc=$?
+if [ "$d3rc" = "0" ]; then
+  "$PY" - "$D3/state.json" "$D3" <<'PY'
+import json, os, re, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+pin = (state.get("jobs", {}).get("job-ext") or {}).get("baseline")
+if not pin:
+    p = os.path.join(sys.argv[2], "jobs", "job-ext.baseline")
+    if os.path.isfile(p):
+        pin = open(p, encoding="utf-8").read().strip()
+ok = bool(pin and re.match(r"^[0-9a-f]{40}$", pin))
+print(("PASS " if ok else "FAIL ")
+      + "D3: register-lane PINS the baseline before the worker launches")
+if not ok:
+    print("     got: %r" % pin)
+sys.exit(0 if ok else 1)
+PY
+  [ "$?" = "0" ] || fails=$((fails + 1))
+else
+  fail "D3: register-lane cannot pin a baseline: $(head -3 "$T/d3.reg.err")"
+fi
+
+# The Gate's OBSERVED worktree must reach Record. The lane map holds the wrapper
+# agent's project cwd, which is not where an external worker changed anything.
+seed_lane "$D3" job-ext "$APP3"
+echo "print(1)" >> "$WT3/src/x.py"
+"$PY" "$EMIT" gate-receipt --run-dir "$D3" --job-id job-ext \
+  --worktree "$WT3" --mode worktree --repo-root "$APP3" \
+  > "$T/d3.gate.json" 2>"$T/d3.gate.err" \
+  || fail "D3: gate-receipt exited non-zero: $(cat "$T/d3.gate.err")"
+"$PY" "$EMIT" record --run-dir "$D3" --job-id job-ext \
+  --manifest "$D3/manifest.yaml" --verdict-json "$(cat "$T/d3.gate.json")" \
+  --repo-root "$APP3" >/dev/null 2>"$T/d3.record.err"
+"$PY" - "$D3/results/job-ext.json" "$WT3" <<'PY'
+import json, os, sys
+p, wt = sys.argv[1], sys.argv[2]
+if not os.path.isfile(p):
+    print("FAIL D3: record wrote no result for the external job")
+    sys.exit(1)
+doc = json.load(open(p, encoding="utf-8"))
+ok = doc.get("worktree") == wt
+print(("PASS " if ok else "FAIL ")
+      + "D3: record carries the GATE's observed worktree, not the lane map's cwd")
+if not ok:
+    print("     got: %r  want: %r" % (doc.get("worktree"), wt))
+ok2 = doc.get("files_changed") == ["src/x.py"]
+print(("PASS " if ok2 else "FAIL ")
+      + "D3: the worker's real change is what reaches the result")
+if not ok2:
+    print("     got: %r" % (doc.get("files_changed"),))
+sys.exit(0 if (ok and ok2) else 1)
+PY
+[ "$?" = "0" ] || fails=$((fails + 1))
+
+# No pinned baseline ⇒ the gate must FAIL CLOSED, never fall back to a HEAD a
+# worker that commits can move.
+D3B="$T/d3b"; mkdir -p "$D3B"
+cp "$D3/manifest.yaml" "$D3B/manifest.yaml"
+seed_state "$D3B" job-ext -
+"$PY" "$EMIT" gate-receipt --run-dir "$D3B" --job-id job-ext \
+  --worktree "$WT3" --mode worktree --repo-root "$APP3" \
+  > "$T/d3b.gate.json" 2>/dev/null
+"$PY" - "$T/d3b.gate.json" <<'PY'
+import json, os, sys
+p = sys.argv[1]
+doc = json.load(open(p, encoding="utf-8")) if os.path.getsize(p) else {}
+ok = doc.get("verdict") == "error"
+print(("PASS " if ok else "FAIL ")
+      + "D3: an unpinned baseline FAILS CLOSED instead of falling back to HEAD")
+if not ok:
+    print("     got verdict: %r" % doc.get("verdict"))
+sys.exit(0 if ok else 1)
+PY
 [ "$?" = "0" ] || fails=$((fails + 1))
 
 if [ "$fails" = "0" ]; then
