@@ -79,7 +79,7 @@ Naming, structure, duplication, error handling, dead code, obvious complexity. F
 
 ### 2.2 — No regression
 
-Does the change break existing behavior? Check: tests still pass (run them or confirm they were run), existing callers of changed signatures are updated, no removed-but-still-referenced exports, no behavior silently altered. Any regression → **ISSUE: REGRESSION**.
+Does the change break existing behavior? Check: tests still pass (run them or confirm they were run), existing callers of changed signatures are updated, no removed-but-still-referenced exports, no behavior silently altered. Any regression → **ISSUE: REGRESSION**. *Which* tests the job owed, and whether it reported running any at all, is §3.3 — apply that check here too when you hold a job result, since a job reporting no test command fails regardless of what this one finds.
 
 ### 2.3 — Test alignment
 
@@ -133,9 +133,33 @@ Confirm no partition leaked across the composite. The per-job scope gate already
 
 Verify the seams hold: Task 0's types/contracts are *used* correctly by the parallel jobs (not redefined, not drifted); APIs one job exposes match what another consumes; shared config is read consistently. Any mismatch → **ISSUE: INTEGRATION_MISMATCH** (the two jobs + the divergence).
 
-### 3.3 — Build is green
+### 3.3 — Build is green, and the tests the tier owes actually ran
 
-The composite must build/compile and the test suite must pass. Run the build + tests (or confirm they were run and observe the output — never assert green without evidence). A red build or failing test → **ISSUE: BUILD_RED** (the failing command + output excerpt). Do not claim DONE on an unverified build.
+The composite must build/compile. What must have been *tested* is tier-aware, and the **floor is unconditional**: `test_contract.floor_command` runs at every tier, DIRECT included, and must exit 0. What is owed *beyond* the floor is set by the manifest's `triage.tier` and the job's `test_scope` ([`execution-manifest.md`](../skills/compound-v/execution-manifest.md)):
+
+| Tier | Required beyond the unconditional floor |
+|---|---|
+| **FULL** | `full_command` — ran, exit 0 |
+| **SCOPED** | the declared impacted set: every `impacted_map` rule whose `when` matches a changed path, unioned — not the first match |
+| **DIRECT** | the declared impacted set — **plus `full_command` when the change lands unattended** (the auto-route class): the floor alone does not carry the guarantee an auto-committing change trades on |
+| **any tier** | `full_command` whenever the job carries a changed path matching **no** `impacted_map` rule — an unmapped file is unknown blast radius, never "nothing to run" |
+
+The last row overrides the three above it: one unmapped path in a SCOPED or DIRECT job promotes that job to `full_command`. Derive it yourself — match each entry of the job's `files_changed` against the map — rather than taking "impacted" on the worker's word. (DIRECT dispatches no reviewer by default; that row governs the reviews that do happen at DIRECT and the bar an unattended landing must clear before it commits.)
+
+Read the evidence from the job result ([`job_result.schema.json`](../schemas/job_result.schema.json)), never from the summary prose:
+
+| Field | What it must show |
+|---|---|
+| `tests.command` | the command(s) actually executed, newline-separated. Non-empty. |
+| `tests.exit_code` | `0` iff every executed command exited 0; anything else is red |
+| `tests.scope` | the resolved `full` \| `impacted` \| `floor_only` — it must match what the tier owes above |
+| `tests.selected_count` | how many **commands** ran. Not test cases: no bundled worker parses a runner's output, so a case count would be fabricated. Never read this as a case count, and never ask for one. |
+
+**A job reporting no test command at all is a FAIL** → **ISSUE: NO_TEST_EVIDENCE**. That is a job claiming `status: "success"` with the `tests` object absent, or with `tests.command` empty or whitespace. Silence is not success — an absent record is exactly what a worker that skipped the step looks like, and it is indistinguishable from one that ran nothing on purpose. (`tests` is legitimately absent on a job that never reached the test step — `blocked`, `timeout`, `error` — and such a job fails this gate on its own terms.)
+
+**A red suite does not flip the job's `status`, deliberately.** The worker leaves `status` untouched on a non-zero `tests.exit_code` ([`backend-launcher/SKILL.md`](../skills/backend-launcher/SKILL.md)), because re-labelling a failing test as a backend `error` would feed it to the retry/reroute policy, which cannot fix a failing test. A red suite therefore arrives here wearing `status: "success"`. **You are the enforcement**: the worker reports, you refuse. Never infer green from `status`.
+
+Run the build + the required commands (or confirm they were run and observe the output — never assert green without evidence). A red build, a non-zero `tests.exit_code`, or a required command that never ran → **ISSUE: BUILD_RED** (the failing or missing command + output excerpt). Do not claim DONE on an unverified build.
 
 ### 3.4 — Feature acceptance criteria
 
@@ -181,8 +205,13 @@ ISSUE: REWARD_HACK  (PASS 2)
   - sequences/api.test.ts:41 — assert res.status === 200 loosened to assert res.status < 500
   → Restore the original assertion; fix the handler so it actually returns 200, don't relax the test
 
+ISSUE: NO_TEST_EVIDENCE  (PASS 3)
+  - task-4 reports status "success" with no tests.command — nothing is recorded as having run
+  → Re-run the job with the test contract passed as an argument; silence is not a pass
+
 ISSUE: BUILD_RED  (PASS 3)
   - `npm test` fails: 2 failing in sequences/api.test.ts (see excerpt)
+  - task-2 changed scripts/emit.py, which matches no impacted_map rule — full_command was owed and never ran
   → Fix before DONE
 
 ISSUE: ACCEPTANCE_GAP  (PASS 3)
@@ -194,7 +223,7 @@ ISSUE: ACCEPTANCE_GAP  (PASS 3)
 APPROVED
   PASS 1 SPEC:        requirements K/K · audit MUSTs M/M · over-build clean · job acceptance met
   PASS 2 QUALITY:     code-quality clean · no regression · every MUST has a guard test · no fabricated metrics · no reward-hacking
-  PASS 3 INTEGRATION: no partition leak · seams hold · build green (evidence: <cmd>) · feature AC J/J met
+  PASS 3 INTEGRATION: no partition leak · seams hold · build green (evidence: <cmd>) · floor + tier-owed tests ran, exit 0 (evidence: tests.command / tests.exit_code per job) · feature AC J/J met
   Scope lock: respected (scope gate PASS, confirmed at seam)
 ```
 
@@ -204,6 +233,7 @@ APPROVED
 - DO order the passes: SPEC first, then QUALITY, then (run-level) INTEGRATION. Don't review quality of code that fails spec.
 - DO NOT approve with "minor issues, close enough." Compound V policy: if you found an issue, the implementer fixes it before the next pass. No "close enough."
 - DO NOT claim the build is green without running it (or observing its output). Evidence before assertion.
+- DO FAIL a job that reports no test command at all, and DO refuse a job whose `tests.exit_code` is non-zero. The worker deliberately leaves `status` untouched on a red suite; you are the only thing standing between it and a merge.
 - DO NOT skip the over-build check, the fabricated-metric check, or the reward-hacking check — and, when reviewing a marathon CONFIRMED blocker or a `done_with_blockers` terminal, DO NOT skip the §2.6 confirmed-blocker integrity check (an auto-merging blocker is higher-stakes than a gamed PASS).
 - DO NOT propose code or edit files. The implementer fixes; you re-review on the next round.
 - DO cite file:line (or the failing command) for every claim.
