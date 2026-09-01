@@ -4,6 +4,40 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [3.0.2] - 2026-09-01
+
+### Fixed — Engine C's three criticals, and it is enabled again
+
+3.0.1 disabled Engine C after a cross-model review of the shipped code. All three are closed, and **each is pinned by a test observed red against 3.0.1** rather than asserted:
+
+- **A `direct` job's patch could land in the wrong repository.** `record` branched on whether the agent-reported worktree was empty — and a compliant direct agent always reports its cwd, so it always entered `merge_back` — while the emitted command carried no `--repo-root` and fell back to the repo containing the installed script. The reproduction observed `M README.md` **in the plugin repository**. The branch is now the manifest's `isolation`, `--repo-root` is required by every subcommand, and the default destination is deleted.
+- **A job could land with the integration authority never having run.** `record` staged into the checkout before the gate and never committed, so any later plain `git commit` swept it into history. `record` is now evidence-only; a serialized `finalize-wave` gates each wave, merges only what the authority permitted, and commits pathspec-restricted. The wave loop stops scheduling after any non-success result.
+- **The external worker lost its invocation and its worktree.** `emit` now materializes a per-job prompt and a complete launcher argv; the Gate carries its observed worktree into Record; `register-lane` pins the baseline before launch. An unpinned baseline fails closed.
+
+Also closed: the lane-map read-modify-write raced (a 12-writer subprocess test pins it; a mutant reverting only the lock loses 1–3 of 12 lanes); `GATE_SCHEMA` rejected the `tests` object the Gate emits on every passing verdict; and a throw in Implement dropped the item past both Gate and Record — the v2.6.4 audit-trail loss, reproduced structurally.
+
+### Fixed — the landing gate guarded `HEAD`, not the tree it committed
+
+A *passing* `full_command` that staged one extra line raised an authorised 19-line diff to 21 **after** the in-lock revalidation, and `commit-tree` committed it with all predicates reporting PASS. The floor now runs against an isolated candidate index, and the predicates are re-checked against the exact tree handed to `commit-tree`.
+
+### Fixed — DIRECT landings produce outcomes; the lane guard parses quotes
+
+The landed commit sha is now the outcome key, and a revert sweep appends a correction under it, so the auto-route breaker can see a bad landing. **CI failure still has no producer for a DIRECT decision** and the breaker's header now says so per negative, rather than claiming a numerator it cannot fill.
+
+The lane guard split Bash on `;` and `|` **before** parsing quotes, so `sed -i 's/a/b/; s/c/d/' README.md` was allowed — and, more expensively, `git commit -m "fix; rm README.md"` was denied. Replaced with a quote-aware scanner that also skips heredoc bodies. Fail-open discipline unchanged: nothing new can deny.
+
+### Fixed — two published latency figures, neither reproducible
+
+README said 63 ms, the hook's own header said ~112 ms. A re-measurement over 50 invocations per path reproduced **neither**. Both withdrawn; the measured range is **47–81 ms** (~31 ms bare-interpreter floor), and the deny path turns out not to be the expensive one — resolution and manifest parsing are.
+
+### Changed — `agentType`, the last unused native mechanism, is used for the review role
+
+A `type: review` job was receiving the generic implementer prompt with none of the reviewer's three-pass contract. Gate, Record and Finalize stay anonymous **on purpose**: their safety is `disallowedTools` plus `bashCommandClamp`, and no agent under `agents/` declares a `tools:` restriction, so spawning them by role would hand the whole toolbox back. The audit row says ⚠, not ✅.
+
+### Still true
+
+Engine C now carries 143 selftest checks and 50 contract assertions and **has still not run a real 18-job dispatch.** Treat the first live run as a first live run — that caveat is what 3.0 wrote and then ignored by shipping it as the default.
+
 ## [3.0.1] - 2026-09-01
 
 ### Fixed — Engine C is disabled by default; it had never run, and it has three critical defects
