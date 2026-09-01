@@ -184,6 +184,11 @@ jobs:
       - "commands/v-triage.md"
       - "commands/v-orchestrate.md"
       - "docs/superpowers/pre-eval/**"
+      # The outcomes stream had NO owner while AC-07 required it to receive predicted
+      # events and this command is their only producer. The scope gate caught it as a
+      # write outside lane, which is the gate working: the alternative -- suppressing
+      # the event to keep the worktree clean -- would have shipped Feature A5 inert.
+      - "docs/superpowers/memory/triage-outcomes.jsonl"
     read_allowed:
       - "docs/superpowers/specs/**"
       - "commands/**"
