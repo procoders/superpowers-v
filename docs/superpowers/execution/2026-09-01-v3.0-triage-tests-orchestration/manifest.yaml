@@ -459,6 +459,7 @@ jobs:
       - "hooks/triage-prompt-nudge.sh"
       - "hooks/postcompact-resume.sh"
       - "hooks/hooks.json"
+      - "tests/test-native-points.sh"
     read_allowed:
       - "docs/superpowers/specs/**"
       - "docs/superpowers/preflight/**"
