@@ -1743,8 +1743,16 @@ def cmd_gate_receipt(argv):
     # change nothing; a job with lanes is not.
     gate_changed = (parsed or {}).get("changed") or []
     if verdict == "pass" and (job.get("write_allowed") or []) and not gate_changed:
-        verdict = "no_work"
+        # `blocked`, not a new verdict word: job_result.schema.json pins
+        # gate_receipt.verdict to pass|blocked|error, and the authority cross-checks
+        # verdict against exit_code. A fourth value produced an INCOHERENT receipt
+        # that the authority correctly read as `forged` — a refusal for the wrong
+        # reason is only marginally better than no refusal, because it sends whoever
+        # reads it hunting a forgery that never happened.
+        verdict = "blocked"
         out["verdict"] = verdict
+        out["exit_code"] = 1
+        out["no_work"] = True
         out["reason"] = (
             "job %r declares write_allowed but changed no files. That is not a clean "
             "tree, it is an absent implementation — failing closed rather than "

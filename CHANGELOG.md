@@ -4,6 +4,30 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [3.0.4] - 2026-09-01
+
+### Fixed — the multi-wave dispatch, and one field name that meant two things
+
+3.0.3 discharged the "first live run" caveat for a **single-job** manifest. This release runs a real **two-wave, four-job dispatch with `depends_on`**, and it found six more defects. Five of them are the same defect wearing five hats.
+
+**`isolation` named two different things on two layers.** In the manifest it answers *"how are this job's changes attributed?"* — the validator requires `worktree` for parallel jobs and scope attribution depends on it. At the agent layer it answers *"where does this agent physically work?"* For an ordinary job the two answers coincide, which is why nothing ever caught this. For a **dependent** job they are opposite: the runtime's `isolation: 'worktree'` branches from the default ref, so a fresh worktree does **not** contain the wave that just committed — a dependent must run in the project checkout.
+
+Five readers each broke differently: the agent option, the gate's root, the gate's mode, Record's branch, and `register-lane` — which decides both where the baseline is pinned **and** whether the pre-existing snapshot is taken, so the job that most needed a snapshot was the only one that never got one. All five now read the agent layer.
+
+Proven live: wave 1's three parallel jobs merge into one commit, and the dependent job pins its baseline to **that commit**, not to the start of the run. The wave barrier is real.
+
+### Fixed — a job that changed nothing was recorded as a success
+
+The quietest defect of the release. The dependent job returned `files_changed: []`, the gate passed it, Record wrote `success`, and the wave finalizer honestly reported *"nothing left to commit"*. The whole chain reported success for work that never happened — **and every component was correct on its own terms**, because "no files changed" and "clean" are indistinguishable on a pass/blocked axis.
+
+The manifest makes it decidable: a job with an empty `write_allowed` (a reviewer) is expected to change nothing; a job that declares lanes and fills none did not do its job. That now fails closed, as `blocked` with a `no_work` reason — **not** as a fourth verdict word, because the schema pins `verdict` to `pass|blocked|error` and the authority cross-checks it against `exit_code`. The first attempt did invent a fourth value, and the authority correctly read the incoherent receipt as `forged`: a refusal for the wrong reason sends whoever reads it hunting a forgery that never happened.
+
+### Known and unfixed
+
+**Model routing is not routing.** `resolve_job_model` is invoked only for external backends, where `--model` is a required CLI argument. For `backend: claude` — every job in every real run — it is never called, `opts.model` is never set, and every agent inherits the session model. The tier vocabulary exists and never reaches `agent()`. Under `balanced`, `deep` and `standard` both resolve to `opus` anyway, `light` is used by no manifest in this repo, and **Fable appears nowhere in the routing map**. This is the thirteenth mechanism this project has shipped with no caller; it is recorded here rather than fixed, because changing it changes the cost of every future run and that is the maintainer's call.
+
+**The dependent job's implementer produced no file** across several runs. The machinery now refuses that correctly instead of blessing it, but why that particular agent declines to write is unresolved and is an agent-behaviour question, not an Engine C one.
+
 ## [3.0.3] - 2026-09-01
 
 ### Fixed — three defects found by dogfooding, none of which any gate had caught
