@@ -23,6 +23,10 @@ Worked example: [`examples/manifest.example.yaml`](../../examples/manifest.examp
 | `routing_stance` | enum | yes | `balanced` \| `conservative` \| `cost-aware` \| `claude-only`. |
 | `max_parallel` | integer | yes | Batch concurrency ceiling (the phase-3 reality, typically 4–6). |
 | `jobs` | list | yes | One entry per file-scoped job (schema below). |
+| `triage` | map | no† | v3.0 (Feature A2): `{tier, pre_eval_id, taxonomy_digest, decided_at}`. **Required under `--require-triage`**, which `/v:dispatch` passes on every live dispatch. See the v3.0 section below. |
+| `test_contract` | map | no | v3.0 (Feature B2): `{floor_command, full_command, impacted_map}`. Absent ⇒ every job runs `full`. See the v3.0 section below. |
+
+† `triage` is absent-valid for the mode-less CI sweep only, so the manifests committed before 3.0 stay valid without a back-filled record. Every live dispatch demands it.
 
 `acceptance_criteria` is feature-level and gates the final integration review. Each job *also* carries its own narrow `acceptance` (below) for its per-task review — do not confuse the two.
 
@@ -45,6 +49,7 @@ Worked example: [`examples/manifest.example.yaml`](../../examples/manifest.examp
 | `write_allowed` | string[] | yes | Glob list this job MAY write. The scope gate **enforces** it (git-derived). |
 | `read_allowed` | string[] | yes | Glob list this job MAY read. **ADVISORY only — NOT enforced** (git cannot track reads). Documents intent + scopes the prompt. Auto-includes Task 0 outputs + the three audits. |
 | `acceptance` | string[] | yes | This job's narrow acceptance, checked in its per-task review. |
+| `test_scope` | enum | no | v3.0 (Feature B2): `full` \| `impacted` \| `floor_only`. **Absent ⇒ `full`.** `floor_only` requires a non-empty `test_contract.floor_command`; `impacted` requires a non-empty `full_command` (an unmapped path resolves to it). |
 | `timeout_sec` | integer | no | Wall-clock seconds this job's worker gets before the supervisor kills it. Domain **60 … 21600** inclusive (a bool is rejected — `true` is not `1`). **Absent ⇒ the worker script's own `DEFAULT_TIMEOUT_SEC=900`, unchanged**, which is what every manifest committed before v2.18 relies on. Applies to the **worker-script backends** (`codex`, `antigravity`, `cursor`, `devin`, `opencode`), where the dispatcher passes it through as `--timeout-sec`; for `claude` (in-harness `Task`) there is no equivalent knob and the field is advisory. Anything above **600** MUST be dispatched on the background path — see the outer-bound rule in [`parallel-dispatcher.md`](../../agents/parallel-dispatcher.md). |
 
 ¹ **Every job MUST have `model` OR `tier`** (at least one). Most jobs carry `tier` (+ optional `effort`) and let the dispatcher resolve the concrete model; a job MAY instead pin an explicit `model` override that skips resolution. A job with neither is a validation failure.
@@ -110,7 +115,10 @@ The map is **documented, not committed** in this repo (it is project-local confi
 9. **Unclear scope never dispatches.** A job whose scope the planner can't pin returns to planning rather than shipping with a guessed partition.
 10. **`read_allowed` auto-includes** Task 0 outputs + the three audit files, so every job can read the shared foundation and the pre-flight findings without listing them.
 
-A violation of rule 1, 3, 4, 5, 6, 7, or 8 is a hard validation failure (non-zero exit + specifics). Rules 2/9/10 are partition-design rules enforced jointly by `partition-reviewer` and the validator.
+11. **Triage, on demand (v3.0).** Under `--require-triage`, a missing or malformed `triage` block, a `tier` outside `{DIRECT, SCOPED, FULL}`, or a `taxonomy_digest` that disagrees with the taxonomy on disk is a hard failure. Without the flag the block is ignored entirely.
+12. **A scope never resolves to nothing (v3.0).** `test_scope: floor_only` requires a non-empty `test_contract.floor_command`; `test_scope: impacted` requires a non-empty `full_command`; every `impacted_map` entry carries both `when` and `run`.
+
+A violation of rule 1, 3, 4, 5, 6, 7, 8, 11 or 12 is a hard validation failure (non-zero exit + specifics). Rules 2/9/10 are partition-design rules enforced jointly by `partition-reviewer` and the validator.
 
 ### Only `write_allowed` is enforced; `read_allowed` is advisory
 
@@ -286,6 +294,94 @@ extractor reads the events log into a variable and never writes stdout.
   run's `results/*.json`, summing `usage` per ticket / feature / epic. `measured:false` jobs are
   counted as **unmeasured** (an honest count), never folded in as zero. `/v:status` surfaces the
   rollup in a usage column; degrade-safe (results absent ⇒ shows `—`, never breaks the table).
+
+---
+
+## v3.0 — `triage` (Feature A2) and `test_contract` (Feature B2)
+
+Two optional top-level blocks land in 3.0. Both are **absent-valid**, so every manifest committed
+before 3.0 keeps validating unchanged; `triage` becomes mandatory the moment the validator is called
+with `--require-triage`.
+
+### The `triage` block — the mechanical consumer of the tier
+
+A triage decision is prose until something refuses to run without it. That something is this block:
+
+```yaml
+triage:
+  tier: SCOPED                              # DIRECT | SCOPED | FULL
+  pre_eval_id: 2026-09-01T101500Z-slug-a1b2 # names the committed pre-eval record
+  taxonomy_digest: "sha256:<64-hex>"        # content-address of the taxonomy's RAW bytes
+  decided_at: "2026-09-01T10:15:00Z"        # ISO-8601
+```
+
+| `triage` field | Meaning |
+|---|---|
+| `tier` | `DIRECT` \| `SCOPED` \| `FULL`. Compared **verbatim** downstream, so the value is case-sensitive — `direct` is not `DIRECT`. |
+| `pre_eval_id` | The write-once id of the record at `docs/superpowers/pre-eval/<id>.json`. It becomes a path segment, so `/`, `\`, `.` and `..` are rejected. |
+| `taxonomy_digest` | `sha256:<64-hex>` over the RAW bytes of the impact taxonomy that produced the decision. Verified against `.claude/compound-v-impact-taxonomy.yaml` (override with `--taxonomy FILE`) through the shared `compound-v-taxonomy.py` primitive, so a producer and this consumer can never diverge. |
+| `decided_at` | ISO-8601 timestamp. A trailing `Z` is stripped before parsing: Python 3.9 — the CI floor — rejects the Zulu suffix that every producer writes. |
+
+Unknown keys inside the block are rejected. A `taxonomy-digest` typo would otherwise pass silently
+and leave the digest unchecked, which is the one failure this block exists to prevent.
+
+**When it is required, and why not sooner.** `--require-triage` ships **default OFF in every mode**.
+A mode-scoped default (on for `--mode pre-dispatch`) was designed and removed as circular twice over:
+the block is emitted by the fast-path materializer, so defaulting it on would turn the e2e suite red
+inside the very task that adds the emitter — and because `pre-dispatch` is only ever selected for
+`fast_path` manifests, an ordinary future run would inherit exactly the mode-less pass 3.0 takes once
+during bootstrap, permanently rather than once.
+
+The closure is behavioural and load-bearing: **`/v:dispatch` passes `--require-triage` in every mode,
+on every live dispatch.** The CI historical sweep stays mode-less and flag-less, which is what keeps
+the committed run manifests and the shipped example valid **without back-filling** a `triage` block
+into them — a reconstructed audit trail is the fabricated-evidence pattern, not a repair.
+
+Under the flag, each of these is a hard failure: a **missing** block, a **malformed** one (non-mapping,
+missing field, unknown key, unparseable `decided_at`, mis-shaped digest), a `tier` **outside the enum**,
+and a `taxonomy_digest` that **does not match** the taxonomy bytes on disk. An **absent or unreadable**
+taxonomy also fails — a record whose rules cannot be found has outlived them, and that is the case the
+digest exists to catch, so it fails closed rather than skipping the comparison.
+
+### The `test_contract` block and per-job `test_scope`
+
+```yaml
+test_contract:
+  floor_command: "bash tests/run-floor.sh"   # always runs, every tier
+  full_command:  "bash tests/run-all.sh"
+  impacted_map:
+    - when: "scripts/compound-v-*.py"
+      run:  "python3 {path} --selftest"
+
+jobs:
+  - id: task-1
+    test_scope: impacted                     # full | impacted | floor_only
+```
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `test_contract` | map | no | Absent ⇒ no declared contract; every job runs `full`. |
+| `test_contract.floor_command` | string | no¹ | The merge-blocking floor. Runs at every tier. |
+| `test_contract.full_command` | string | no¹ | The full suite. Also the resolution of any changed path that matches no `when` glob. |
+| `test_contract.impacted_map` | list | no | Declarative `{when, run}` rules. **Both fields are mandatory per entry** — a half-declared rule selects nothing. Unknown keys are rejected. |
+| `test_scope` (per job) | enum | no | `full` \| `impacted` \| `floor_only`. **Absent ⇒ `full`**, which is what every pre-3.0 manifest relies on. |
+
+¹ Conditionally required by the two resolution rules the validator enforces, so that a scope can never
+resolve to running **nothing**:
+
+- a job with `test_scope: floor_only` requires a **non-empty `floor_command`** — `floor_only` means
+  *only the floor*, never nothing;
+- a job with `test_scope: impacted` requires a **non-empty `full_command`**, because a changed path
+  matching no `when` glob is unknown blast radius and resolves to the full suite.
+
+Overlapping `when` globs **union** (every matching `run` is selected); first-match-wins would silently
+drop coverage the map explicitly declares.
+
+**What the floor is, said without varnish.** The floor is an early-feedback optimization. It does not
+restore what the full suite guaranteed — CI does. The union of impacted, previously-failing and
+newly-added structurally omits every existing, previously-passing test the declared map fails to
+select, so an indirect break can pass the floor and be caught only by the merge-blocking CI run. Do not
+write, anywhere, that the floor preserves pre-merge safety.
 
 ---
 

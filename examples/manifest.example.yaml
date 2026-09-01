@@ -28,6 +28,29 @@ acceptance_criteria:
 routing_stance: balanced            # balanced | conservative | cost-aware | claude-only
 max_parallel: 5                     # batch ceiling (phase-3 concurrency reality)
 
+# v3.0 (Feature A2) — the triage decision this run was dispatched under. OPTIONAL by
+# default and MANDATORY under --require-triage, which /v:dispatch passes on every live
+# dispatch. The digest is an ILLUSTRATIVE placeholder here: under the flag it is
+# verified byte-for-byte against .claude/compound-v-impact-taxonomy.yaml, so a record
+# cannot outlive the rules that produced it.
+triage:
+  tier: FULL                        # DIRECT | SCOPED | FULL (compared verbatim — case matters)
+  pre_eval_id: 2026-06-26T090000Z-linkedin-sequence-editor-c3d4
+  taxonomy_digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  decided_at: "2026-06-26T09:00:00Z"
+
+# v3.0 (Feature B2) — the test contract. `floor_command` runs at every tier;
+# `full_command` is also what any changed path matching no `when` glob resolves to
+# (unknown blast radius is never "nothing to run"). Overlapping `when` globs UNION.
+test_contract:
+  floor_command: "npm run test:floor"
+  full_command: "npm test"
+  impacted_map:
+    - when: "src/features/sequences/api/**"
+      run: "npm test -- src/features/sequences/api"
+    - when: "src/db/**"
+      run: "npm run test:db"
+
 jobs:
   - id: task-0-schema
     title: "DB schema + migration + shared types"
@@ -77,6 +100,7 @@ jobs:
     effort: medium
     isolation: worktree             # parallel ⇒ worktree (per-job scope attribution)
     run: parallel
+    test_scope: impacted            # full | impacted | floor_only (absent ⇒ full)
     depends_on:
       - task-0-schema
     write_allowed:
@@ -96,6 +120,7 @@ jobs:
     effort: low
     isolation: worktree             # parallel ⇒ worktree (per-job scope attribution)
     run: parallel
+    test_scope: floor_only          # docs-only ⇒ the floor, and never nothing
     depends_on:
       - task-1-editor-ui
       - task-2-api
