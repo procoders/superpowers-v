@@ -1732,6 +1732,24 @@ def cmd_gate_receipt(argv):
     # Running them first would let a coverage file or a cache dir a test wrote
     # become a false violation. The flip side is the caller's problem and is
     # handled at merge: staging is restricted to the gate-approved paths.
+    # A job that declared write_allowed and changed NOTHING did not do its work.
+    # "No files changed" is not "clean" — it is "no work", and the two are opposite
+    # conclusions that the gate's pass/blocked axis cannot tell apart on its own.
+    # Dogfooded 2026-09-01 on a two-wave run: the dependent job returned
+    # files_changed: [], the gate passed it, Record wrote success, and the wave
+    # finalizer honestly reported "nothing left to commit" — so the whole chain
+    # reported success for work that never happened. The manifest is what makes
+    # this decidable: a job with an empty write_allowed (a reviewer) is expected to
+    # change nothing; a job with lanes is not.
+    gate_changed = (parsed or {}).get("changed") or []
+    if verdict == "pass" and (job.get("write_allowed") or []) and not gate_changed:
+        verdict = "no_work"
+        out["verdict"] = verdict
+        out["reason"] = (
+            "job %r declares write_allowed but changed no files. That is not a clean "
+            "tree, it is an absent implementation — failing closed rather than "
+            "recording a success nobody can point at." % job_id)
+
     if verdict == "pass":
         # Re-resolved here against the job's REALISED diff. The Implement stage
         # already wrote one (that is the copy an external worker was handed,
