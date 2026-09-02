@@ -1,0 +1,31 @@
+{
+  "run_id": "2026-09-02-df7-narrowing",
+  "phase": "DISPATCHED",
+  "jobs": {
+    "try-websearch": {
+      "baseline": "09195341ea96461fd9b62e008f0e4855031cd3ea",
+      "isolation": "worktree",
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_ee81a776-3b5-1",
+      "realised_commit": "09195341ea96461fd9b62e008f0e4855031cd3ea",
+      "status": "done",
+      "merged": {
+        "realised_commit": "09195341ea96461fd9b62e008f0e4855031cd3ea",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "aaddb0eb19eb5bc7373f96d1d1be556d80c1eb36"
+      }
+    }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "try-websearch"
+      ],
+      "merged": [
+        "try-websearch"
+      ],
+      "commit": "aaddb0eb19eb5bc7373f96d1d1be556d80c1eb36",
+      "integrated": true
+    }
+  }
+}
