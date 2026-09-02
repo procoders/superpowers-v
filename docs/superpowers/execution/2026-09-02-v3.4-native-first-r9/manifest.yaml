@@ -1,0 +1,109 @@
+run_id: 2026-09-02-v3.4-native-first-r9
+feature: v3.4 native-first r9 — the lane guard reads every manifest, register-lane takes a literal cwd, the acceptance greps cannot be gamed
+routing_stance: balanced
+max_parallel: 3
+spec_path: docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md
+plan_path: docs/superpowers/plans/2026-09-02-v3.4-native-first.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-09-02-v3-4-native-first.md
+  domain: docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md
+  library: docs/superpowers/library-audit/2026-09-02-v3-4-native-first.md
+triage:
+  tier: FULL
+  pre_eval_id: 2026-09-02T170442Z-v3-4-native-first-replace-the-epic-goal-feature-a-of-hooks-e-5664
+  taxonomy_digest: sha256:1f2a12f634422ca72a66cfa195b731a0e19743b5e7fe622fb799821cf5e88e85
+  decided_at: '2026-09-02T17:04:42Z'
+acceptance_criteria:
+- Every tests/*.sh and every script --selftest is green (CI's Python 3.9 floor).
+- grep for epic-watch|headless-shim|goal_arm|--goal-status|--arm-goal|autonomy.watch|record-watcher across commands skills agents hooks scripts tests .github CONVENTIONS.md returns nothing.
+- The UserPromptSubmit hook, driven with synthetic stdin, writes a pre-eval record bound to the stdin session and returns the tier in additionalContext; a question writes nothing.
+- No prose in commands/skills/agents instructs an agent to append task-outcomes.jsonl or to run compound-v-update-memory.py.
+- hooks/hooks.json registers no PostToolUseFailure hook; /v:dashboard has no serve mode.
+- Attended DIRECT is documented as an ordinary commit; Phase L is documented as unattended-only and tests/test-triage-landing.sh still passes.
+test_contract:
+  floor_command: bash tests/test-epic-goal-stop.sh
+  full_command: bash -c 'for t in tests/*.sh; do bash "$t" >/dev/null 2>&1 || { echo "FAIL $t"; exit 1; }; done; echo all-tests-ok'
+  impacted_map:
+  - when: hooks/**
+    run: bash -c 'bash tests/test-epic-goal-stop.sh && bash tests/test-native-points.sh'
+  - when: scripts/compound-v-*.py
+    run: bash -c '[ -f {path} ] || exit 0; /usr/bin/python3 {path} --selftest'
+  - when: commands/v-triage.md
+    run: bash tests/test-triage-landing.sh
+  - when: tests/*.sh
+    run: bash -c '[ -f {path} ] || exit 0; bash {path}'
+jobs:
+- id: guard-honest
+  title: 'Close the fifth review pass: a lane guard that actually enforces, a register-lane the clamp accepts, and honest acceptance greps'
+  type: core_slice
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: worktree
+  run: parallel
+  write_allowed:
+  - hooks/lane-guard.sh
+  - tests/test-lane-guard.sh
+  - scripts/compound-v-validate-manifest.py
+  - scripts/compound-v-emit-workflow.py
+  - scripts/compound-v-scope-check.py
+  - tests/test-integration-gate.sh
+  - CHANGELOG.md
+  - docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md
+  read_allowed:
+  - docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-5.md
+  - docs/superpowers/execution/2026-09-02-v3.4-native-first-r5/manifest.yaml
+  acceptance:
+  - hooks/lane-guard.sh prefers an interpreter that can `import yaml` (CV_PYTHON first, then the first of /usr/bin/python3, python3 that imports yaml, else the first found) and logs, by path, when the chosen one has no PyYAML; driven with the r5 manifest (a folded `feature:` scalar) and default PATH, an out-of-lane write is DENIED, not failed open.
+  - 'scripts/compound-v-validate-manifest.py: the PyYAML fallback is not silent — `_mini_yaml` parses a plain scalar folded across lines (as yaml.safe_dump width=100 writes), and a parse of text containing a top-level `jobs:` that yields no jobs raises a clear error instead of returning []; both pinned by selftests using a safe_dump-folded fixture.'
+  - tests/test-lane-guard.sh has a case with a folded top-level scalar in the manifest and asserts DENY under both the fallback parser and a PyYAML interpreter.
+  - 'scripts/compound-v-emit-workflow.py no longer emits `--cwd "$PWD"`: the Implement prompt tells the worker to run `pwd` (admitted) and pass the printed path as a literal `--cwd /abs/path`, because the clamp refuses shell substitution ("$PWD", $(...)) — and the comment at ~:1291, the prompt sentences, the selftest and CHANGELOG say substitution, not backslash-newline continuation; the ONE-line rule is dropped (external launches legitimately use _shell_join continuations). Selftest pins the literal-cwd instruction and the absence of "$PWD" in the rendered prompt.'
+  - 'The split literals are gone: scripts/compound-v-scope-check.py and tests/test-integration-gate.sh spell the symbol plainly where they must mention it, and the acceptance grep is definition-scoped: grep -rnE ''^PIPELINE_BOOKKEEPING\s*='' scripts hooks returns nothing.'
+  - CHANGELOG 3.4.0 gains '### Fixed — the lane guard read no manifest written with a folded scalar' and the spec gains 'After the fifth review pass (2026-09-02)'; bash tests/test-lane-guard.sh, bash tests/test-integration-gate.sh exit 0; /usr/bin/python3 -B --selftest is green for validate-manifest, emit-workflow and scope-check.
+  body: "Read docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-5.md, items 1–3, with its\nreproduction table (the r5 manifest under default PATH: FAILED OPEN; under\nCV_PYTHON=/usr/bin/python3: deny). Close all three in your worktree; you have a developer's shell.\nRun Python with -B. To register your lane, run `pwd` first and pass the printed path as a LITERAL\n--cwd value — the clamp refuses \"$PWD\".\n\nITEM 1 — the lane guard must read every manifest.\n  a. hooks/lane-guard.sh interpreter pick (~:191-195): CV_PYTHON if set; else the first candidate\n     among /usr/bin/python3 and `command -v python3` (then python3.12/3.11/3.10/3.9 if present)\n     for which `<py> -c 'import yaml'` succeeds; else the first candidate that exists, AND a log\n     line naming the chosen path and that it lacks PyYAML. Keep the fail-open contract.\n  b. scripts/compound-v-validate-manifest.py load_yaml/_mini_yaml (~:138-144): (i) `_mini_yaml`\n     handles a plain scalar folded across lines —\
+    \ a continuation line indented deeper than its\n     key that is not a `key:` and not a `- ` item joins the previous value with a space (this is\n     what yaml.safe_dump(width=100) writes for a long `feature:`); (ii) when the source text has a\n     top-level `jobs:` key and the parse yields no jobs, raise ValueError(\"manifest parse produced\n     no jobs — refusing a silent empty parse\") rather than returning jobs: []; (iii) load_yaml\n     records which loader ran (e.g. a module-level LAST_LOADER = 'pyyaml'|'fallback') so callers\n     and tests can tell. Selftests: a fixture produced by yaml.safe_dump(width=100) with a long\n     feature string parses to the same jobs under both loaders; a text with `jobs:` and a broken\n     body raises.\n  c. tests/test-lane-guard.sh: add a case whose sandbox manifest has a folded top-level scalar\n     (write it with a long `feature:` through python's yaml.safe_dump(width=100) when PyYAML is\n     present, else a hand-folded equivalent) and\
+    \ assert DENY for an out-of-lane write with\n     CV_PYTHON unset AND with CV_PYTHON=/usr/bin/python3.\nITEM 2 — register-lane and the four records.\n  d. scripts/compound-v-emit-workflow.py ~:1302: stop emitting `--cwd \"$PWD\"`. Emit the command\n     with `--cwd <ABSOLUTE PATH YOU PRINTED WITH pwd>` as a placeholder and a sentence right above\n     it: \"Run `pwd` first (it is admitted) and paste its output as a literal path: the clamp\n     refuses shell substitution such as \\\"$PWD\\\" or $(...) — the first tool call of every worker\n     in run r8 was denied for exactly this.\" Rewrite the comment at ~:1291-1300 and the Implement\n     prompt sentences at ~:1313-1317 to name substitution, delete the ONE-line rule (external\n     launches use _shell_join continuations by design), fix the selftest at ~:4448-4450 to pin the\n     new sentence and the absence of \"$PWD\" in the rendered prompt, and correct the CHANGELOG\n     sentence that blamed a continuation.\nITEM 3 — honest greps.\n\
+    \  e. scripts/compound-v-scope-check.py ~:773-776 and tests/test-integration-gate.sh ~:483-486:\n     replace the split literals with the plain symbol (in a comment or an assertion message), and\n     make the assertion definition-scoped: it must fail only if a line matching\n     ^PIPELINE_BOOKKEEPING\\s*= exists in scripts/ or hooks/.\nRECORDS — CHANGELOG 3.4.0: add \"### Fixed — the lane guard read no manifest written with a folded\nscalar\" (what failed, the blast radius the review measured: 6 of 45 manifests, r3–r8, every run\nof this feature; what changed). Spec: append \"After the fifth review pass (2026-09-02)\" with the\nthree items and their resolutions.\nThen run the acceptance commands and report per item: file, change, command, exit code.\n"
+- id: spec-review-6
+  title: Review Gate — three passes against the spec and the feature-level acceptance criteria
+  type: review
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: direct
+  run: serial
+  write_allowed:
+  - docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-6.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - The review-6 file exists with the five sections; it states, for each of the fifth pass's three items, closed or open with evidence; the verdict is APPROVED or ISSUES with a numbered list.
+  body: 'Your agent definition carries the three-pass Review Gate and a Step 0 (V-memory recall).
+
+    Follow it. This is the SIXTH pass. Read the five earlier passes under docs/superpowers/dogfood/.
+
+    The fifth pass raised three items (the lane guard failing open on folded-scalar manifests under a
+
+    PyYAML-less interpreter; the r8 clamp denial misdiagnosed as a continuation when it was "$PWD"
+
+    substitution; acceptance greps answered by splitting the literal). This run''s job guard-honest
+
+    closed them. Review its merge as new code: drive hooks/lane-guard.sh yourself with the r5
+
+    manifest and an out-of-lane write under the default PATH — it must DENY; confirm the fallback
+
+    parser refuses a zero-job parse loudly; confirm the emitted register-lane carries no "$PWD" and the
+
+    prompt names substitution; confirm the definition-scoped grep. Then run the acceptance commands on
+
+    the whole merged tree with /usr/bin/python3 -B. Write
+
+    docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-6.md with ## Recall, ## SPEC,
+
+    ## QUALITY, ## INTEGRATION, ## Verdict (APPROVED or ISSUES with a numbered list). Report what you
+
+    found, not what would be reassuring.
+
+    '
+  depends_on:
+  - guard-honest
