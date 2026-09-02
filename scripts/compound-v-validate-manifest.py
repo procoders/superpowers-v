@@ -634,13 +634,31 @@ def _id_is_safe(value):
 
 
 def _is_reviewer(job):
-    jtype = str(job.get("type", "")).lower()
-    jid = str(job.get("id", "")).lower()
-    title = str(job.get("title", "")).lower()
-    for tok in REVIEWER_TOKENS:
-        if tok in jtype or tok in jid or tok in title:
-            return True
-    return False
+    """True iff this job is a reviewer, and reviewers must resolve to deep/opus.
+
+    THE `type` FIELD DECIDES WHEN IT IS PRESENT. Until 3.3.0 this scanned type, id
+    AND title for a substring, and dogfood 10 walked straight into the consequence:
+    a job titled *"Writes the thing the reviewer reviews"* was classified a reviewer
+    and refused for not being deep-tier. The token list contains `integration` and
+    `quality`, so *"Add integration tests"* or *"Refactor the quality metrics"* were
+    forced onto Opus by a word in their name — silently, and in the direction that
+    costs money on every run.
+
+    A manifest that sets `type` has already said what the job is; second-guessing it
+    from prose is how a classifier acquires opinions nobody wrote. The id/title scan
+    survives ONLY as a fallback for a job with no `type` at all, and there it now
+    matches on WORD BOUNDARIES so `preview` is not `review` and `disintegration` is
+    not `integration`.
+
+    The guarantee is unchanged: anything this returns True for must be deep or opus.
+    """
+    jtype = str(job.get("type", "")).strip().lower()
+    if jtype:
+        return any(tok in jtype for tok in REVIEWER_TOKENS)
+    haystack = "%s %s" % (str(job.get("id", "")).lower(),
+                          str(job.get("title", "")).lower())
+    return any(re.search(r"(?<![a-z0-9])%s(?![a-z0-9])" % re.escape(tok), haystack)
+               for tok in REVIEWER_TOKENS)
 
 
 # --------------------------------------------------------------------------- #
@@ -4875,6 +4893,29 @@ def _selftest():
     if failures:
         print("\nSELFTEST FAILED: %d case(s)" % len(failures))
         return 1
+    # --- 3.3.0: `type` decides who is a reviewer ---------------------------
+    # Dogfood 10: a job TITLED "Writes the thing the reviewer reviews" was refused
+    # for not being deep-tier. `integration` and `quality` are in the token list,
+    # so ordinary titles were forcing jobs onto Opus by accident.
+    expect("a declared review type is a reviewer",
+           _is_reviewer({"type": "review", "id": "x", "title": "x"}) is True)
+    expect("a docs job whose TITLE mentions a reviewer is NOT one",
+           _is_reviewer({"type": "docs", "id": "impl-slice",
+                         "title": "Writes the thing the reviewer reviews"}) is False)
+    expect("'Add integration tests' is not a reviewer",
+           _is_reviewer({"type": "tests_new", "id": "t1",
+                         "title": "Add integration tests"}) is False)
+    expect("'Refactor the quality metrics' is not a reviewer",
+           _is_reviewer({"type": "mechanical_refactor", "id": "q1",
+                         "title": "Refactor the quality metrics module"}) is False)
+    expect("with NO type, the id/title fallback still catches a reviewer",
+           _is_reviewer({"id": "spec-review", "title": "gate"}) is True)
+    expect("the fallback matches WORD boundaries, so 'preview' is not 'review'",
+           _is_reviewer({"id": "preview-builder",
+                         "title": "build the preview"}) is False)
+    expect("the fallback does not fire on 'disintegration'",
+           _is_reviewer({"id": "d1", "title": "model disintegration study"}) is False)
+
     print("\nSELFTEST PASSED")
     return 0
 

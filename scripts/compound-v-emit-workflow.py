@@ -576,10 +576,19 @@ REVIEWER_TOKENS = ("review", "reviewer", "spec_review", "quality", "integration"
 
 
 def _is_reviewer_job(job):
-    """True iff this job is a reviewer, by type/id/title token."""
-    haystack = " ".join(str(job.get(k) or "").lower()
-                        for k in ("type", "id", "title"))
-    return any(tok in haystack for tok in REVIEWER_TOKENS)
+    """True iff this job is a reviewer. EXACT mirror of
+    compound-v-validate-manifest.py:_is_reviewer — `type` decides when present, and
+    the id/title fallback matches on word boundaries. Duplicated on purpose (both are
+    standalone stdlib CLIs); keep in sync. The looser substring scan classified a job
+    titled "Writes the thing the reviewer reviews" as a reviewer — see that docstring.
+    """
+    jtype = str(job.get("type") or "").strip().lower()
+    if jtype:
+        return any(tok in jtype for tok in REVIEWER_TOKENS)
+    haystack = "%s %s" % (str(job.get("id") or "").lower(),
+                          str(job.get("title") or "").lower())
+    return any(re.search(r"(?<![a-z0-9])%s(?![a-z0-9])" % re.escape(tok), haystack)
+               for tok in REVIEWER_TOKENS)
 
 
 def prior_attempt_failed(run_dir, job_id):

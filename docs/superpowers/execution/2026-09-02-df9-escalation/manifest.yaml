@@ -1,0 +1,36 @@
+run_id: 2026-09-02-df9-escalation
+feature: df9 — escalation on re-attempt
+routing_stance: balanced
+max_parallel: 1
+spec_path: docs/superpowers/execution/2026-09-02-df9-escalation/spec.md
+plan_path: docs/superpowers/execution/2026-09-02-df9-escalation/plan.md
+audits:
+  archaeology: docs/superpowers/execution/2026-09-02-df9-escalation/spec.md
+  domain: docs/superpowers/execution/2026-09-02-df9-escalation/spec.md
+  library: docs/superpowers/execution/2026-09-02-df9-escalation/spec.md
+acceptance_criteria:
+  - "A job with a recorded blocked result is re-emitted one model rung higher."
+test_contract:
+  floor_command: "/bin/echo floor-ok"
+  full_command: "/bin/echo full"
+  impacted_map:
+    - when: "docs/superpowers/dogfood/**"
+      run: "/bin/echo scoped"
+jobs:
+  - id: retried
+    title: "Standard tier; escalates to opus on a re-attempt"
+    type: docs
+    backend: claude
+    tier: standard
+    effort: medium
+    isolation: worktree
+    run: serial
+    write_allowed: ["docs/superpowers/dogfood/2026-09-02-df9-escalation.md"]
+    read_allowed: ["docs/superpowers/execution/2026-09-02-df9-escalation/spec.md"]
+    acceptance: ["The file exists."]
+    body: |
+      Create `docs/superpowers/dogfood/2026-09-02-df9-escalation.md` containing exactly:
+
+      # escalation
+
+      This job was re-dispatched after a recorded failure.
