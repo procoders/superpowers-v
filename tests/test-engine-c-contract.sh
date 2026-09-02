@@ -79,6 +79,8 @@ test_contract:
   full_command: "sh -c 'exit 3'"
 jobs:
   - id: job-happy
+    body: |
+      Contract-test fixture task text for job-happy.
     title: happy path — gate passes, floor passes
     backend: claude
     isolation: direct
@@ -86,6 +88,8 @@ jobs:
     write_allowed:
       - "src/**"
   - id: job-floorfail
+    body: |
+      Contract-test fixture task text for job-floorfail.
     title: floor ran and FAILED
     backend: claude
     isolation: direct
@@ -93,6 +97,8 @@ jobs:
     write_allowed:
       - "src/**"
   - id: job-blocked
+    body: |
+      Contract-test fixture task text for job-blocked.
     title: wrote outside its lane
     backend: claude
     isolation: direct
@@ -234,6 +240,8 @@ test_contract:
   full_command: "sh -c 'exit 0'"
 jobs:
   - id: job-codex
+    body: |
+      Contract-test fixture task text for job-codex.
     title: external backend
     backend: codex
     model: gpt-5.6-sol
@@ -392,6 +400,8 @@ cat > "$D1/manifest.yaml" <<'YAML'
 run_id: d1
 jobs:
   - id: job-direct
+    body: |
+      Contract-test fixture task text for job-direct.
     title: a direct job that edits the project's README
     backend: claude
     isolation: direct
@@ -491,6 +501,8 @@ cat > "$D2/manifest.yaml" <<'YAML'
 run_id: d2
 jobs:
   - id: job-wt
+    body: |
+      Contract-test fixture task text for job-wt.
     title: a worktree job
     backend: claude
     isolation: worktree
@@ -597,6 +609,8 @@ test_contract:
   full_command: "sh -c 'exit 0'"
 jobs:
   - id: job-ext
+    body: |
+      Contract-test fixture task text for job-ext.
     title: an external worker job
     backend: codex
     model: gpt-5.6-sol

@@ -1,0 +1,9 @@
+{
+  "agents": {},
+  "manifest": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-02-df25-recall-reachable/manifest.yaml",
+  "run_id": "2026-09-02-df25-recall-reachable",
+  "worktrees": {
+    "/Users/oleg/Dev/superpowers-v": "spec-review",
+    "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_814f9f74-b4d-1": "impl-slice"
+  }
+}

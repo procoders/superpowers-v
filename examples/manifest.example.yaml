@@ -53,6 +53,10 @@ test_contract:
 
 jobs:
   - id: task-0-schema
+    body: |
+      Create the migration, the shared TypeScript types and the DB
+      indexes the other four tasks depend on. Every later task imports these
+      types; nothing else may define them.
     title: "DB schema + migration + shared types"
     type: shared_foundation
     backend: claude
@@ -71,6 +75,10 @@ jobs:
       - "types exported"
 
   - id: task-1-editor-ui
+    body: |
+      Build the sequence editor screen against the shared types from
+      task-0. Wire the existing form components; do not introduce new state
+      management and do not touch the API layer.
     title: "Sequence editor UI slice"
     type: large_isolated
     backend: codex
@@ -93,6 +101,9 @@ jobs:
       - "no writes outside components/**"
 
   - id: task-2-api
+    body: |
+      Implement the CRUD endpoints for sequences using the shared types.
+      Validate input at the boundary; return the documented error shapes.
     title: "Sequence CRUD API slice"
     type: bounded_crud
     backend: claude
@@ -117,6 +128,9 @@ jobs:
       - "input validation"
 
   - id: task-3-docs
+    body: |
+      Add the user-facing documentation for the sequence editor and the
+      English + 4 existing locale strings. Exact copy is provided in the plan.
     title: "Sequence editor user docs"
     type: docs
     backend: claude
@@ -136,6 +150,9 @@ jobs:
       - "documents create/edit/delete flow"
 
   - id: task-4-review
+    body: |
+      Run the three-pass Review Gate over the merged work of tasks 0-3:
+      spec acceptance, quality and no-regression, then cross-job integration.
     title: "Integration review of the sequence editor"
     type: review
     backend: claude

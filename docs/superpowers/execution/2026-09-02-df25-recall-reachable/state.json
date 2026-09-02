@@ -1,0 +1,54 @@
+{
+  "run_id": "2026-09-02-df25-recall-reachable",
+  "phase": "DISPATCHED",
+  "jobs": {
+    "impl-slice": {
+      "baseline": "d0a79bc803e80c0119ca88cfd96ea146fda8266e",
+      "isolation": "worktree",
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_814f9f74-b4d-1",
+      "realised_commit": "d0a79bc803e80c0119ca88cfd96ea146fda8266e",
+      "status": "done",
+      "merged": {
+        "realised_commit": "d0a79bc803e80c0119ca88cfd96ea146fda8266e",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "29977a714c7721a21e6afc74081335abe4bceb44"
+      }
+    },
+    "spec-review": {
+      "baseline": "29977a714c7721a21e6afc74081335abe4bceb44",
+      "isolation": "direct",
+      "worktree": "",
+      "realised_commit": "29977a714c7721a21e6afc74081335abe4bceb44",
+      "status": "done",
+      "merged": {
+        "realised_commit": "29977a714c7721a21e6afc74081335abe4bceb44",
+        "mode": "direct",
+        "integrated": true,
+        "commit": "9e064e32d3665de51b4a9e4f9b160821d71f6457"
+      }
+    }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "impl-slice"
+      ],
+      "merged": [
+        "impl-slice"
+      ],
+      "commit": "29977a714c7721a21e6afc74081335abe4bceb44",
+      "integrated": true
+    },
+    "2": {
+      "jobs": [
+        "spec-review"
+      ],
+      "merged": [
+        "spec-review"
+      ],
+      "commit": "9e064e32d3665de51b4a9e4f9b160821d71f6457",
+      "integrated": true
+    }
+  }
+}

@@ -702,9 +702,37 @@ def render_worker_prompt(job, run_id):
              "",
              "Compound V run `%s`, job `%s`." % (run_id, job.get("id")),
              ""]
-    body = job.get("description") or job.get("prompt") or job.get("spec")
+    # `body` FIRST, because that is what every manifest in this repository writes.
+    #
+    # This line read `description or prompt or spec` and nothing else. Not one of
+    # the twenty-plus manifests written for this release uses any of those three
+    # names — they all use `body:` — so the names never intersected and **the task
+    # text was silently dropped from every worker prompt**. Workers received a
+    # title, their lanes and their acceptance criteria, and no instructions.
+    #
+    # Five reviews reported it (df10, df11, df12, df18, df20) and it stayed live,
+    # because each was read as a one-off finding about that run. Dogfood 25 is the
+    # one that closed it, and only because recall had just been made reachable: the
+    # reviewer's second query returned all five prior reports at once, and the
+    # finding stopped being "a spec gap" and became "the loop is not closing".
+    # That is the whole argument for recall, demonstrated on recall's own release.
+    body = (job.get("body") or job.get("description")
+            or job.get("prompt") or job.get("spec"))
     if isinstance(body, str) and body.strip():
         lines += [body.strip(), ""]
+    else:
+        # NO TASK TEXT IS NOT A JOB. A prompt carrying only a title and lanes asks a
+        # worker to guess, and a guess that lands inside its lane passes every gate
+        # this pipeline has — the scope gate checks WHICH files changed, never what
+        # they say. Refusing here is the mechanism that would have caught the
+        # dropped `body` on its first run instead of its twenty-fifth.
+        raise ValueError(
+            "job %r carries no task text: none of `body`, `description`, `prompt` "
+            "or `spec` is set. A worker prompt with lanes but no instructions asks "
+            "the worker to invent the task, and an invented task that stays in its "
+            "lane passes the scope gate — which is how this went unnoticed for "
+            "twenty-five runs." % job.get("id")
+        )
     deps = job.get("depends_on") or []
     if isinstance(deps, str):
         deps = [deps]
@@ -3600,10 +3628,29 @@ def _check(name, condition, detail=""):
 
 
 def _tiny_manifest(jobs, max_parallel=2):
+    # Every job gets task text unless the case is deliberately testing its absence.
+    # `render_worker_prompt` now REFUSES a job without it — a prompt with lanes and
+    # no instructions asks the worker to invent the task — so a fixture that omits
+    # it is testing the refusal, not the feature it meant to test.
+    for j in jobs:
+        if isinstance(j, dict) and not any(
+                j.get(k) for k in ("body", "description", "prompt", "spec")):
+            j["body"] = "Selftest fixture task text for job %s." % j.get("id")
     return {"run_id": "selftest-run", "max_parallel": max_parallel, "jobs": jobs}
 
 
+def _with_body(manifest):
+    """Give every job in an INLINE fixture task text. `_tiny_manifest` does this
+    for fixtures built through it; these are the ones written out by hand."""
+    for j in (manifest.get("jobs") or []):
+        if isinstance(j, dict) and not any(
+                j.get(k) for k in ("body", "description", "prompt", "spec")):
+            j["body"] = "Selftest fixture task text for job %s." % j.get("id")
+    return manifest
+
+
 def _plan_for(manifest, tmp, workers_dir=None):
+    _with_body(manifest)
     manifest["_manifest_path"] = os.path.join(tmp, "manifest.yaml")
     return build_plan(
         manifest, tmp, tmp, "/usr/bin/python3", os.path.abspath(__file__),
@@ -3968,6 +4015,24 @@ def selftest():
         # dogfood 24: the recall instruction was unreachable behind the clamp.
         _cl = _clamp_rules({"id": "j", "backend": "claude"}, "/usr/bin/python3",
                            os.path.abspath(__file__), lambda b: None)
+        # dogfood 25: the task text never reached the worker for 25 runs.
+        _bp = render_worker_prompt({"id": "j", "title": "T",
+                                    "body": "DO THE ACTUAL THING"}, "r")
+        _check("a manifest's `body` reaches the worker prompt",
+               "DO THE ACTUAL THING" in _bp, _bp[:120])
+        for _alias in ("description", "prompt", "spec"):
+            _check("the legacy alias %r still works" % _alias,
+                   "LEGACY" in render_worker_prompt(
+                       {"id": "j", "title": "T", _alias: "LEGACY"}, "r"))
+        _refused = False
+        try:
+            render_worker_prompt({"id": "j", "title": "T",
+                                  "write_allowed": ["a/**"]}, "r")
+        except ValueError as _e:
+            _refused = "no task text" in str(_e)
+        _check("a job with NO task text is refused, not silently emitted",
+               _refused)
+
         _check("the clamp admits the read-only recall search",
                any("compound-v-memory.py search:*" in r for r in (_cl or [])),
                str(_cl))
@@ -4100,7 +4165,7 @@ def selftest():
             {"id": "e-top", "tier": "frontier", "write_allowed": ["j/**"]},
         ], max_parallel=4)
         esc_manifest["_manifest_path"] = os.path.join(esc_dir, "manifest.yaml")
-        esc_plan = build_plan(esc_manifest, esc_dir, tmp, "/usr/bin/python3",
+        esc_plan = build_plan(_with_body(esc_manifest), esc_dir, tmp, "/usr/bin/python3",
                               os.path.abspath(__file__), SCOPE_CHECK_DEFAULT,
                               FASTPATH_DEFAULT, tmp)
         esc = {}
@@ -4499,7 +4564,7 @@ def selftest():
                       "model": "gpt-5.6-sol", "isolation": "worktree",
                       "write_allowed": ["src/**"]}],
         }
-        ext_plan = build_plan(ext_manifest, tmp, tmp, "/usr/bin/python3",
+        ext_plan = build_plan(_with_body(ext_manifest), tmp, tmp, "/usr/bin/python3",
                               os.path.abspath(__file__), SCOPE_CHECK_DEFAULT,
                               FASTPATH_DEFAULT, HERE)
         ext_job = ext_plan["waves"][0][0]
@@ -4510,10 +4575,10 @@ def selftest():
                "--test-contract-file" in ext_prompt
                and "# --test-contract-file" not in ext_prompt)
         no_contract = build_plan(
-            {"run_id": "r", "jobs": [{"id": "x", "backend": "codex",
+            _with_body({"run_id": "r", "jobs": [{"id": "x", "backend": "codex",
                                       "model": "gpt-5.6-sol",
                                       "isolation": "worktree",
-                                      "write_allowed": ["src/**"]}]},
+                                      "write_allowed": ["src/**"]}]}),
             tmp, tmp, "/usr/bin/python3", os.path.abspath(__file__),
             SCOPE_CHECK_DEFAULT, FASTPATH_DEFAULT, HERE)
         _check("no declared test_contract ⇒ no flag (the worker script would "
@@ -4632,11 +4697,13 @@ def selftest():
 
         # HIGH 3 — the handoff keeps its invocation, its worktree and its pin.
         ext2 = build_plan(
-            {"run_id": "r3", "test_contract": {"floor_command": "sh -c 'exit 0'"},
-             "jobs": [{"id": "e1", "backend": "codex", "isolation": "worktree",
-                       "model": "gpt-5.6-sol", "effort": "high",
-                       "timeout_sec": 900, "test_scope": "floor_only",
-                       "write_allowed": ["src/**"]}]},
+            _with_body({"run_id": "r3",
+                        "test_contract": {"floor_command": "sh -c 'exit 0'"},
+                        "jobs": [{"id": "e1", "backend": "codex",
+                                  "isolation": "worktree",
+                                  "model": "gpt-5.6-sol", "effort": "high",
+                                  "timeout_sec": 900, "test_scope": "floor_only",
+                                  "write_allowed": ["src/**"]}]}),
             tmp, tmp, "/usr/bin/python3", os.path.abspath(__file__),
             SCOPE_CHECK_DEFAULT, FASTPATH_DEFAULT, HERE)
         e1 = ext2["waves"][0][0]

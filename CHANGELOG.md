@@ -4,6 +4,40 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [3.3.4] - 2026-09-02
+
+### Fixed — the task text never reached the worker. For twenty-five runs.
+
+`render_worker_prompt` read the job's instructions as:
+
+```python
+body = job.get("description") or job.get("prompt") or job.get("spec")
+```
+
+Every manifest in this repository writes `body:`. The names never intersected, so **the task text was silently dropped from every worker prompt**. Workers received a title, their lanes and their acceptance criteria — and no instructions. They then wrote whatever seemed reasonable, inside their lane, and passed every gate: the scope gate checks *which* files changed and never what they say.
+
+Reading a prompt back confirms it: `jobs/impl-slice.prompt.md` carries title, write-allowed, read-allowed and acceptance, and no task at all.
+
+**Five prior reviews reported this** — df10, df11, df12, df18, df20 — and it stayed live, because each was read as a one-off spec gap in that run. Dogfood 25 is what closed it, and only because recall had been made reachable an hour earlier: the reviewer's second query returned all five reports at once, and the finding stopped being *"a spec gap"* and became *"the loop is not closing"*. That is the argument for recall, demonstrated on recall's own release, by the agent recall was given to.
+
+Fixed three ways, because one was not enough:
+
+* **`body` is read first**, with `description` / `prompt` / `spec` kept as aliases.
+* **A job with none of them is refused at emit.** A prompt with lanes and no instructions asks the worker to invent the task, and an invented task that stays in its lane is invisible to every check this pipeline has. This is the mechanism that would have caught it on run 1 instead of run 25.
+* **The field is documented**, in the per-job table it was missing from — which is a fair share of why the mismatch survived: nothing said what the field was called.
+
+The shipped `examples/manifest.example.yaml` was itself refused by the new guard — five jobs, no task text, and it is the file people copy. It now carries real instructions for all five.
+
+### Fixed — recall was unreachable behind the bash clamp
+
+3.3.3 told five agents to consult V-memory first. Dogfood 24 spawned `spec-reviewer` — the one agent Engine C spawns by role — and watched it try. The harness denied the recall query, a second phrasing, the `recall-check` bridge, and the form `/v:remember` itself instructs: the Implement clamp admitted exactly one command form, `register-lane`.
+
+The instruction was prose in an agent definition; the clamp is mechanism, and mechanism wins. This repository has a name for that failure, and it shipped into the feature meant to demonstrate recall.
+
+The clamp now admits `compound-v-memory.py search` and `recall-check`. Both only read — a SQLite index outside the repo, printed. `refresh` and `bootstrap`, which write, are deliberately not admitted, and a selftest asserts it.
+
+**Worth recording on its own:** that reviewer refused to write *"V-memory returned nothing"*, because it would have claimed an empty result set from a query that never ran. A less careful agent would have satisfied the acceptance criterion falsely. The gap is invisible unless the agent distinguishes an empty result from a blocked one.
+
 ## [3.3.3] - 2026-09-02
 
 ### Fixed — V-memory had no callers among the agents

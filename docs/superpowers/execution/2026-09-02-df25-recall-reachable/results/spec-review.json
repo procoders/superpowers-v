@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-02-df25-recall-reachable-review.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "29977a714c7721a21e6afc74081335abe4bceb44",
+    "diff_digest": "sha256:8a5d44fc1d441482124d20b0e1b936f97ec02aee5dea699d0d8fbd253452018e",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"29977a714c7721a21e6afc74081335abe4bceb44\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df25-recall-reachable-review.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df25-recall-reachable-review.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "29977a714c7721a21e6afc74081335abe4bceb44",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Review job \u2014 spawned by role, must consult V-memory first",
+  "tests": {
+    "command": "/bin/echo floor-ok\n/bin/echo scoped\n/bin/echo full",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 3
+  },
+  "violations": [],
+  "worktree": ""
+}
