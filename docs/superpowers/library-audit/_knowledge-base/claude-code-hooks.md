@@ -149,3 +149,68 @@ danger-full-access}`, `--dangerously-bypass-approvals-and-sandbox`,
 No `--timeout`, no `--detach`. `--ask-for-approval` remains absent from `exec` (top-level
 only) — the existing pin is still correct. With stdin attached, `codex exec` prints
 `Reading additional input from stdin...` to stderr; keep `</dev/null`.
+
+---
+
+## Updated 2026-09-02 — preflight-workflow-probe
+
+Local Claude Code **2.1.238**. Sources: `BINARY` = verbatim strings from
+`/Users/oleg/.local/share/claude/versions/2.1.238`; `FETCHED` = `https://code.claude.com/docs/en/hooks`
+(note: `https://docs.claude.com/en/docs/claude-code/hooks` now **301**s there).
+
+### The full event list (FETCHED 2026-09-02) — 33 events
+
+`SessionStart` · `Setup` · `UserPromptSubmit` · `UserPromptExpansion` · `PreToolUse` ·
+`PermissionRequest` · `PermissionDenied` · `PostToolUse` · `PostToolUseFailure` · `PostToolBatch` ·
+`Notification` · `MessageDisplay` · `SubagentStart` · `SubagentStop` · `TaskCreated` ·
+`TaskCompleted` · `Stop` · `StopFailure` · `TeammateIdle` · `InstructionsLoaded` · `ConfigChange` ·
+`CwdChanged` · `DirectoryAdded` · `FileChanged` · `WorktreeCreate` · `WorktreeRemove` · `PreCompact` ·
+`PostCompact` · `PreModelSwitch` · `PostModelSwitch` · `Elicitation` · `ElicitationResult` ·
+`SessionEnd`
+
+Corroborated by `BINARY` quoted-string counts in 2.1.238: `PreToolUse` 37, `Stop` 54,
+`UserPromptSubmit` 26, `SessionStart` 27, `PostToolUseFailure` 19, `SessionEnd` 9, `Notification` 9,
+`PreCompact` 7, `PostCompact` 6. Every event this plugin registers in `hooks/hooks.json` is real.
+
+### Which events promote plain stdout to model context (2026-09-02)
+
+**Only four:** `UserPromptSubmit`, `UserPromptExpansion`, `SessionStart`, `PostModelSwitch`.
+`FETCHED`: "For most events, Claude Code writes stdout to the debug log and doesn't show it in the
+transcript. The exceptions are `UserPromptSubmit`, `UserPromptExpansion`, `SessionStart`, and
+`PostModelSwitch`, where Claude Code adds plain-text stdout as context that Claude can see and act on."
+
+**`PostCompact` is NOT one of them** — its stdout is the compaction's display text. This independently
+confirms the claim already recorded in `hooks/hooks.json:5` for 2.1.238. Consequence: a PostCompact
+hook cannot inject model context via stdout, so "structured vs rendered" output there is
+presentational only.
+
+### PostCompact row (BINARY, embedded hooks reference, 2026-09-02)
+
+```
+| PreCompact  | "manual"/"auto" | Before compaction |
+| PostCompact | "manual"/"auto" | After compaction (receives summary) |
+```
+
+PostCompact receives the compaction summary; `SessionStart` does not.
+
+### Context-injection shape (BINARY, 2026-09-02)
+
+```json
+{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "..."}}
+```
+
+`hookSpecificOutput` "must include `hookEventName`"; `additionalContext` is "Text injected into model
+context". Top-level `additionalContext` without the wrapper is **not** supported — the binary carries
+the error string `Did you mean hookSpecificOutput.additionalContext (with a hookEventName)?`.
+`hooks/session-banner.sh:57-58` emits the correct shape.
+
+Also `BINARY`, worth pinning against future confabulation:
+`decision` — `"block"` for PostToolUse/Stop/UserPromptSubmit, **deprecated for PreToolUse** (use
+`hookSpecificOutput.permissionDecision`: `"allow" | "deny" | "ask"`). This matches the 2026-09-01 1C
+audit's finding and again contradicts the `"continue" | "stop"` values a WebFetch summary invented
+that day. **Grade hook-contract claims `BINARY`, not `FETCHED`.**
+
+### Hook types (BINARY, 2026-09-02)
+
+`command` · `prompt` (LLM condition) · `agent` (runs an agent with tools). The latter two are
+**only available for tool events**: `PreToolUse`, `PostToolUse`, `PermissionRequest`.

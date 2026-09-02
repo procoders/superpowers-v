@@ -45,12 +45,42 @@ if command -v python3 >/dev/null 2>&1 && [ -d "docs/superpowers/execution" ]; th
   fi
 fi
 
-# Detect platform and emit appropriate JSON shape
+# JSON, WITHOUT REQUIRING jq, AND IN THE SHAPE THE RUNTIME ACTUALLY READS.
+#
+# Two defects a Phase-1B audit found here, both live:
+#
+#   1. The generic branch emitted a bare top-level `{"additionalContext": ...}`.
+#      That key is only recognised INSIDE `hookSpecificOutput` alongside a
+#      `hookEventName` — the binary's own hook-output table lists exactly that
+#      shape — so a bare one is an unrecognised key and is DISCARDED. The branch
+#      was reached whenever `CLAUDE_PLUGIN_ROOT` was unset, which happens, and the
+#      banner then silently did nothing at all.
+#   2. `jq` is not installed by default on macOS or on most Linux images, and this
+#      script runs under `set -euo pipefail`. A missing `jq` did not degrade the
+#      banner — it killed it, on every session start, with no diagnostic.
+#
+# So: Claude's shape is the DEFAULT rather than a branch conditional on an
+# environment variable, and the JSON is written by hand when jq is absent. Only
+# two characters need escaping for a JSON string built from our own banner text —
+# backslash and double quote — plus the control characters a banner never carries
+# but a pasted run-id could.
+_json_escape() {
+  printf '%s' "$1" | LC_ALL=C sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' \
+    -e 's/\t/\\t/g' | LC_ALL=C tr -d '\000-\010\013\014\016-\037'
+}
+
+_emit_json() {
+  # $1 = the full JSON body, already escaped
+  printf '%s\n' "$1"
+}
+
+_ctx="$(_json_escape "$banner")"
 if [ -n "${CURSOR_PLUGIN_ROOT:-}" ]; then
-  jq -n --arg ctx "$banner" '{additional_context: $ctx}'
-elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -z "${COPILOT_CLI:-}" ]; then
-  jq -n --arg ctx "$banner" \
-    '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}'
+  _emit_json "{\"additional_context\": \"${_ctx}\"}"
+elif [ -n "${COPILOT_CLI:-}" ]; then
+  _emit_json "{\"additionalContext\": \"${_ctx}\"}"
 else
-  jq -n --arg ctx "$banner" '{additionalContext: $ctx}'
+  # Claude Code and anything that speaks its hook contract — the default, because
+  # a missing CLAUDE_PLUGIN_ROOT is not evidence of a different harness.
+  _emit_json "{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": \"${_ctx}\"}}"
 fi

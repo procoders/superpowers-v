@@ -115,7 +115,10 @@ _digest() {
 }
 
 # The snapshot path for one (project, session). Exported shape so the readers —
-# postcompact-resume.sh and session-banner.sh — can find it without guessing.
+# postcompact-resume.sh — can find it without guessing. `session-banner.sh` was
+# named here too and does NOT read the snapshot: it contains zero references to
+# it. A Phase-1B audit caught the claim; naming a reader that does not read is
+# the same defect as claiming a caller that does not call.
 snapshot_path() {
   local key
   key="$(_digest "${1}|${2}")" || return 1

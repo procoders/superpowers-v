@@ -541,6 +541,47 @@ run_fl "$(fl_json "$nopc" PostToolUseFailure Bash "x")"
 check "LEDGER: a project without Compound V is not recorded" \
   "$([ "$(find "$TMPDIR" -name 'fail-*.jsonl' | wc -l | tr -d ' ')" = "1" ] && echo 1 || echo 0)"
 
+
+# =========================================================================== #
+# v3.3.5 — three defects a Phase-1B audit found in these hooks
+# =========================================================================== #
+BANNER="${BANNER_SRC:-$REPO/hooks/session-banner.sh}"
+bnproj="$WORK/projBanner"; mkdir -p "$bnproj/docs/superpowers" "$WORK/nojq"
+printf '#!/bin/sh\nexit 127\n' > "$WORK/nojq/jq"; chmod +x "$WORK/nojq/jq"
+
+# jq is installed by default on neither macOS nor most Linux images, and this
+# hook runs under `set -euo pipefail`: a missing jq did not degrade the banner,
+# it killed it on every session start with no diagnostic.
+bn_out="$(printf '{"hook_event_name":"SessionStart","cwd":"%s","session_id":"s1"}' "$bnproj" \
+  | PATH="$WORK/nojq:$PATH" CLAUDE_PLUGIN_ROOT="$REPO" bash "$BANNER" 2>/dev/null)"
+check "BANNER: survives with NO jq on PATH" \
+  "$([ -n "$bn_out" ] && echo 1 || echo 0)"
+check "BANNER: still emits valid JSON without jq" \
+  "$(printf '%s' "$bn_out" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null && echo 1 || echo 0)"
+
+# A bare top-level additionalContext is an unrecognised key and is DISCARDED;
+# the runtime reads it only inside hookSpecificOutput with a hookEventName.
+check "BANNER: emits the shape the runtime actually reads" \
+  "$(printf '%s' "$bn_out" | python3 -c '
+import json,sys
+h=(json.load(sys.stdin) or {}).get("hookSpecificOutput") or {}
+sys.exit(0 if h.get("hookEventName")=="SessionStart" and h.get("additionalContext") else 1)
+' 2>/dev/null && echo 1 || echo 0)"
+check "BANNER: Claude shape is the DEFAULT, not conditional on CLAUDE_PLUGIN_ROOT" \
+  "$(printf '{"hook_event_name":"SessionStart","cwd":"%s","session_id":"s2"}' "$bnproj" \
+     | PATH="$WORK/nojq:$PATH" bash "$BANNER" 2>/dev/null \
+     | grep -q 'hookSpecificOutput' && echo 1 || echo 0)"
+
+# The snapshot hook named session-banner.sh as a reader. It contains zero
+# references to the snapshot; naming a reader that does not read is the same
+# defect as claiming a caller that does not call.
+check "SNAPSHOT: does not claim session-banner.sh reads it" \
+  "$(grep -q 'session-banner.sh . can find it' "$REPO/hooks/precompact-snapshot.sh" && echo 0 || echo 1)"
+check "RESUME: distinguishes a failed id query from an empty one" \
+  "$(grep -q 'ids_ok' "$REPO/hooks/postcompact-resume.sh" && echo 1 || echo 0)"
+check "RESUME: no longer claims the line and the ids can never disagree" \
+  "$(grep -q 'can never disagree' "$REPO/hooks/postcompact-resume.sh" && echo 0 || echo 1)"
+
 echo "-------------------------------------------"
 printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" = "0" ] || exit 1

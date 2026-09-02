@@ -123,3 +123,57 @@ from the installed binary; treat fetched summaries of truncated pages as unrelia
 | Save to nearest `.claude/workflows/` in a monorepo | v2.1.178 |
 
 Recommended floor for anything built on the Workflow runtime: **`>= 2.1.219`**.
+
+---
+
+## Updated 2026-09-02 — preflight-workflow-probe
+
+External runtime dependencies of this repo's bash+Python surface. No dependency manifest of any kind
+exists in the tree (`PROBE` 2026-09-02: no `package.json`, `requirements.txt`, `pyproject.toml`,
+`go.mod`, `Cargo.toml`, `Gemfile`, `composer.json`), so these are undeclared by construction.
+
+### CPython
+
+- **3.9 is EOL as of 2025-10-31**; **3.9.25** was the final security release. CVEs after that date
+  have no upstream patch (RHEL 9 backports are the only distro safety net; macOS is not one).
+  Sources: python.org release page for 3.9.25; Red Hat Developer, 2025-12-04.
+- This repo's floor is **3.9** on purpose — stock-macOS `/usr/bin/python3` is **3.9.6**
+  (`PROBE`), and `scripts/compound-v-scope-check.py:98` states the target. `CONVENTIONS.md`:
+  stdlib only, no third-party runtime deps.
+- **CI tests 3.9 and 3.12 only** (`.github/workflows/validate.yml:112,276,345`). **3.13 and 3.14 are
+  untested**, yet `hooks/session-banner.sh:42` invokes bare `python3`, which on this machine is
+  **3.14.7**. `hooks/postcompact-resume.sh:120-133` has a `_python` resolver; the banner does not —
+  so one session can run the same script under two interpreters.
+- `PROBE`: `compound-v-dashboard.py --selftest` **passes on both 3.9.6 and 3.14.7**.
+- **Deprecated-and-scheduled-for-removal APIs still in use** (5 occurrences across `scripts/*.py`):
+  `datetime.utcnow()` and `datetime.utcfromtimestamp()`, deprecated since **3.12**. In the dashboard:
+  `:262` (`_iso()`, which produces the `display_ts` field exported by `resume --json`) and `:1180`.
+  **No removal version has been announced upstream** — do not claim one. 3.9-safe replacement is
+  `datetime.timezone.utc`; `datetime.UTC` is 3.11+ and would break the floor. Warnings are currently
+  invisible because callers redirect `2>/dev/null`, so CI will not surface them either.
+
+### jq
+
+- **Current: 1.8.2, released 2026-06-20.** This machine: **1.7.1** at `/opt/homebrew/bin/jq`, plus a
+  separate `/usr/bin/jq`. No minimum version is declared anywhere in the repo.
+- Fixed since 1.7.1: **1.8.0** — CVE-2024-23337 (signed integer overflow in `jvp_array_write` /
+  `jvp_object_rehash`; array/object size now capped at 2^29) and CVE-2024-53427 (NaN-with-payload
+  accepted when parsing JSON). **1.8.1** — CVE-2025-49014 (heap use-after-free in `f_strftime` /
+  `f_strflocaltime`; also reverted 1.8.0's `reduce`/`foreach` state change over a perf regression).
+  The two parser fixes are the relevant ones: `hooks/postcompact-resume.sh:231` pipes the
+  model-generated `compact_summary` through jq. No hook calls `strftime`.
+- **Breaking change in 1.8.0:** binding syntax — `[-1 as $x | 1,$x]` now yields `[1,-1]` (was
+  `[-1,-1]`). This repo's filters use `--arg` and simple field access; none are affected.
+- **`jq` guard audit** (`PROBE` 2026-09-02, stub `jq` exiting 127 placed first on `PATH`):
+
+  | Hook | `command -v jq` guards | jq uses | stdout on jq failure | exit |
+  |---|---|---|---|---|
+  | `hooks/session-banner.sh` | **0** | 3 | *(empty)* | **127** |
+  | `hooks/plan-saved-nudge.sh` | **0** | 4 | — | — |
+  | `hooks/postcompact-resume.sh` | 1 (`:145`) | 6 | *(empty)* | **0** |
+  | `hooks/precompact-snapshot.sh` | 1 (`:128`) | 3 | — | — |
+  | `hooks/triage-prompt-nudge.sh` | 1 (`:233`) | 7 | — | — |
+
+  `session-banner.sh` runs `set -euo pipefail` (`:13`) with unguarded `jq -n` at `:50,52,55`, so a jq
+  failure loses the **entire** banner, not just the JSON envelope. Since `SessionStart` accepts
+  plain-text stdout as context (see `claude-code-hooks.md`), a jq-free fallback is available there.

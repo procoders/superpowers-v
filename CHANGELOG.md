@@ -4,6 +4,39 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [3.3.5] - 2026-09-02
+
+### Added — the Phase 1 pre-flight runs as a native Workflow
+
+The three auditors — `code-archaeologist` (1A), `domain-expert` (1B), `doc-validator` (1C) — have always run in parallel, as three separate `Task` calls. A developer watching saw three opaque spawns: no phase grouping, no progress tree, no shared budget ceiling, no structured result. The same "we built our own instead of using the native one" pattern this release line has been closing everywhere else.
+
+`scripts/compound-v-emit-preflight.py` emits them as one Workflow: `parallel()` under a single `Pre-flight` phase, each spawned **by role** via `agentType` so it arrives with its own definition rather than a re-pasted prompt.
+
+`parallel()` and not `pipeline()` is the documented exception to this repo's own default: the brainstorm cannot continue without **all three**, so the barrier is real rather than incidental, and there is no second stage to overlap with.
+
+**What it deliberately does not do**, each for a reason this release earned:
+
+* **No `bashCommandClamp`.** Dogfood 24 watched a clamped agent get its own documented first step denied. An auditor greps, reads, runs `git log` and queries recall.
+* **No tool narrowing.** The Implement stage denies `WebFetch`/`WebSearch` on purpose — research belongs to a pre-flight, and this **is** the pre-flight. `domain-expert` and `doc-validator` reference WebSearch four and six times in their own definitions.
+* **No `model` override.** Each agent's frontmatter decides: sonnet for the two scanners, opus for domain judgment. The one place in this whole release where *not* wiring something was the correct choice.
+* **No routing.** These produce evidence. `routing-policy.md` stays deterministic and untouched.
+
+An audit that returns `null` is recorded as **NOT RUN**, never as clean; one that throws cannot take the other two with it; and the caller is handed an `incomplete` list, because an audit that did not run is not an audit that found nothing.
+
+### Fixed — three defects the new pre-flight immediately found in our own hooks
+
+Its first real run audited a small spec and returned 14 + 13 findings. Three were bugs in code shipped hours earlier.
+
+**The SessionStart banner died without `jq`.** `jq` ships by default on neither macOS nor most Linux images, and `session-banner.sh` runs under `set -euo pipefail` — so a missing `jq` did not degrade the banner, it killed it on every session start with no diagnostic. The JSON is now written directly; `jq` is no longer required.
+
+**The banner emitted a shape the runtime discards.** Its generic branch produced a bare top-level `{"additionalContext": …}`. That key is recognised only *inside* `hookSpecificOutput` alongside a `hookEventName` — the binary's own hook-output table lists exactly that shape — so a bare one is unrecognised and dropped. The branch was reached whenever `CLAUDE_PLUGIN_ROOT` was unset, and the banner then silently did nothing. Claude's shape is now the **default**, not a branch conditional on an environment variable: a missing plugin root is not evidence of a different harness.
+
+**`postcompact-resume.sh` reported a successful empty query as a failed one**, and a comment above it claimed the rendered line and the live ids "can never disagree". Since 3.3.0 they can — the line may come from the PreCompact snapshot and the ids always come from a live query, and the audit reproduced the divergence. Both halves are correct; they describe different moments. Saying otherwise sends a reader hunting a bug that is not there, and the empty-vs-failed conflation had the hook reporting a check as not-run when it had run.
+
+**And one comment of mine naming a reader that does not read:** `precompact-snapshot.sh` said `session-banner.sh` finds the snapshot. It contains zero references to it. Naming a reader that does not read is the same defect as claiming a caller that does not call — the defect this entire release line has been about.
+
+`tests/test-native-points.sh`: 78 → **85 checks**, including the banner surviving with a stubbed-out `jq` on `PATH`.
+
 ## [3.3.4] - 2026-09-02
 
 ### Fixed — the task text never reached the worker. For twenty-five runs.

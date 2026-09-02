@@ -216,13 +216,24 @@ EOF
   fi
   [ -n "$line" ] || return 1
 
-  # The ids behind that line, from the same command's machine-readable mode, so
-  # the two can never disagree about which runs are active.
-  local ids
+  # The ids behind that line, from the same command's machine-readable mode.
+  #
+  # THEY CAN DISAGREE, and the comment here used to say they could not. Since
+  # 3.3.0 the LINE may come from the PreCompact snapshot — a picture of the
+  # session before compaction — while the ids always come from a live query. A
+  # Phase-1B audit reproduced the divergence with a snapshot naming a run that the
+  # live query no longer reports. Both halves are correct; they describe different
+  # moments, and saying otherwise sends a reader hunting a bug that is not there.
+  #
+  # `ids_ok` separates "the query failed" from "the query succeeded and returned
+  # nothing". Collapsing both into an empty string made the hook report "the id
+  # query did not return" for a successful empty answer — this repository gates on
+  # not lying, and the hook was.
+  local ids ids_ok=1
   ids="$(PYTHONDONTWRITEBYTECODE=1 "$py" "$dash" resume --json \
            --execution-root "$xroot" 2>/dev/null \
          | jq -r '.active[]? | .id // empty' 2>/dev/null \
-         | head -n "$_MAX_IDS")" || ids=""
+         | head -n "$_MAX_IDS")" || { ids=""; ids_ok=0; }
 
   # Which of them the compaction summary did NOT carry through.
   local id missing="" present=""
@@ -241,8 +252,16 @@ EOF
 
   local note
   if [ -z "$ids" ]; then
-    # The line exists but the id query failed. Say only what is known.
-    note="(the compaction summary was not checked for these ids — the id query did not return)"
+    # TWO DIFFERENT SITUATIONS. `ids_ok=0` means the query itself failed; an empty
+    # `ids` with `ids_ok=1` means it succeeded and there is nothing active — which
+    # is the ordinary case for a run that finished between the snapshot and now.
+    # Reporting the second as the first told the reader the check had not run when
+    # it had, and this repository gates on not lying.
+    if [ "$ids_ok" = "0" ]; then
+      note="(the compaction summary was not checked for these ids — the id query did not return)"
+    else
+      note="(no run is active now; the line above describes the session as it stood before compaction)"
+    fi
   elif [ -n "$missing" ]; then
     note="The compaction summary does NOT mention ${missing} — this position is not in the summary, so re-read it from disk (/v:status) rather than from context before acting."
   else
