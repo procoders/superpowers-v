@@ -1,0 +1,35 @@
+{
+  "run_id": "2026-09-02-df18-direct-digest",
+  "phase": "DISPATCHED",
+  "jobs": {
+    "impl-slice": {
+      "baseline": "5e226de2244da35a282d479f30dd2f888b11d590",
+      "isolation": "worktree",
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_c37ab0b0-dc5-1",
+      "realised_commit": "5e226de2244da35a282d479f30dd2f888b11d590",
+      "status": "done",
+      "merged": {
+        "realised_commit": "5e226de2244da35a282d479f30dd2f888b11d590",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "b16f5571222c3be81ae8f55f03ca07208d84a6c3"
+      }
+    },
+    "spec-review": {
+      "baseline": "b16f5571222c3be81ae8f55f03ca07208d84a6c3",
+      "isolation": "direct"
+    }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "impl-slice"
+      ],
+      "merged": [
+        "impl-slice"
+      ],
+      "commit": "b16f5571222c3be81ae8f55f03ca07208d84a6c3",
+      "integrated": true
+    }
+  }
+}
