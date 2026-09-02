@@ -66,6 +66,7 @@ at dispatch.
 | `mechanical_refactor` / rename / format | claude | light · low | direct | parallel |
 | `docs` / i18n strings | claude | light · low | direct | parallel |
 | `tests_new` — designing new tests | claude | deep · high | direct | parallel |
+| `interface_design` — the UI/UX surface itself, where the interface *is* the deliverable | claude | **frontier** · high | worktree | parallel |
 | `external_api` integration | claude | deep · high | worktree | parallel |
 | `review` — spec / quality / integration | claude | deep · high | direct | parallel/serial |
 | **Unclear scope** | **none → return to planning** | — | — | — |
@@ -92,8 +93,9 @@ Why these tiers — the split is **execution vs judgment**, set by the maintaine
   logic with many code-level dependencies is Opus **however mechanical each
   individual edit looks** — coupling, not line count, is the signal.
 * **Fable is the extreme seat** (`frontier`). It is what a failed job escalates
-  into, and where interface-design work belongs. A planner may assign it directly;
-  it is unusual, not forbidden.
+  into, and where interface-design work belongs — the `interface_design` row above
+  is how a planner reaches it by type. Assigning `frontier` to any other type is
+  unusual, not forbidden.
 
 So `deep` carries architecture, all sensitive surfaces, coupled business logic,
 designing new tests, external APIs, every reviewer, and shared-foundation Task 0.
@@ -130,6 +132,7 @@ keeps `standard` on Opus; that is what choosing it means.)
 | `mechanical_refactor` / rename / format | claude | light · low | direct | parallel |
 | `docs` / i18n strings | claude | light · low | direct | parallel |
 | `tests_new` | claude | deep · high | direct | parallel |
+| `interface_design` | claude | frontier · high | worktree | parallel |
 | `external_api` | claude | deep · high | worktree | parallel |
 | `review` | claude | deep · high | direct | parallel/serial |
 | Unclear scope | none → return to planning | — | — | — |
@@ -153,6 +156,7 @@ never the gate.
 | `mechanical_refactor` / rename / format | claude | light · low | direct | parallel |
 | `docs` / i18n strings | claude | light · low | direct | parallel |
 | `tests_new` | claude | standard · medium | direct | parallel |
+| `interface_design` | claude | frontier · high (this stance caps `frontier` at `opus`) | worktree | parallel |
 | `external_api` | claude | deep · high | worktree | parallel |
 | `review` | claude | deep · high | direct | parallel/serial |
 | Unclear scope | none → return to planning | — | — | — |
@@ -303,8 +307,8 @@ Precedence, lowest to highest:
 
 Resolution is **stance-aware**: the dispatcher reads the manifest's `routing_stance`
 and passes `--stance <stance>` (default `balanced`) on every resolve, so the
-`standard` Claude cell resolves to `opus` under `balanced` and `sonnet` under
-`cost-aware`. The dispatcher passes the resolved `model` to the worker (plus
+`standard` Claude cell resolves to `sonnet` under `balanced` and `cost-aware`, and
+to `opus` under `conservative`. The dispatcher passes the resolved `model` to the worker (plus
 `--effort` for codex → `-c model_reasoning_effort`). A job carrying an explicit
 manifest `model` **skips resolution** — the manifest pinned it directly. The resolver
 exits non-zero if a tier cannot be resolved for a backend, which the dispatcher treats

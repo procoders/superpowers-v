@@ -54,7 +54,7 @@ The first override is safe ONLY because Phase 2 produced a verified Partition Ma
 
 **Updated 2026-09-02 by the maintainer.** The split is **execution vs judgment**, not "how much code does this touch". Sonnet *executes*: HTML/CSS, Node plumbing, translations, mechanical refactors, and anything whose spec already survived brainstorming and planning — plus *reading* code, which is execution however large the codebase. Opus *judges*: deciding, and connecting parts of code to each other. Business logic with many code-level dependencies is Opus **however mechanical each individual edit looks** — coupling is the signal, not line count. Fable (`tier: frontier`) is the extreme seat: it is what a failed job escalates into, and where interface-design work belongs.
 
-**Default: Opus for judgment, Sonnet for execution.** A Claude implementer runs on Opus unless the job passes ALL the boxes below. Reviewers (spec + quality) are ALWAYS Opus — they're the safety net, and a cheap reviewer is no reviewer. (Codex jobs carry their own model, e.g. `gpt-5.6-sol`, set by the routing policy — that is execution-layer data and never appears in any frontmatter.)
+**Default: Opus for judgment, Sonnet for execution.** A Claude implementer's model is its manifest `tier`, resolved at dispatch — `deep` → Opus, `standard`/`light` → Sonnet under the default stance. The boxes below are what earns a job `standard`/`light` instead of `deep`. Reviewers (spec + quality) are ALWAYS Opus — they're the safety net, and a cheap reviewer is no reviewer. (Codex jobs carry their own model, e.g. `gpt-5.6-sol`, set by the routing policy — that is execution-layer data and never appears in any frontmatter.)
 
 ### When Sonnet IS allowed (the "Junior Dev" carve-out)
 
@@ -70,7 +70,7 @@ A task may use `model: "sonnet"` ONLY if EVERY one of these is true:
 - [ ] **No external API calls** — talking to APIs requires domain judgment Sonnet is more likely to miscall
 - [ ] **No security / auth / payments / PII / accessibility (a11y/ARIA) surface** — these always need senior-level reasoning regardless of how mechanical they look. (a11y is in the exclusion list because ADA/EAA legal exposure is real, and screen-reader/keyboard-nav correctness requires judgment a junior model frequently miscalls.)
 
-If you can't tick ALL boxes → Opus. There is no "mostly junior" tier.
+A job that fails any box is `deep` (Opus). A job that passes them all is execution — `standard` or `light` — and runs on Sonnet; a recorded failed attempt is re-dispatched one rung up (`sonnet → opus → fable`), so a misjudged box costs one retry, not a shipped bug.
 
 ### Canonical Sonnet-eligible tasks (real examples)
 
@@ -164,13 +164,13 @@ Each dispatch must include:
    MODEL=$(printf '%s' "$RESOLVED" | python3 -c 'import json,sys; print(json.load(sys.stdin)["model"])')
    ```
 
-   - **`claude`** resolves tier→model: `deep`→opus, `standard`→opus (sonnet under `cost-aware`), `light`→sonnet. The dispatcher passes `--stance` from the manifest's `routing_stance` (default `balanced`), which is what flips `standard` to Sonnet under `cost-aware`. Pass the resolved model to the `Task` call. `effort` is advisory on this path — the `Task` call has no separate effort flag.
+   - **`claude`** resolves tier→model: `frontier`→fable, `deep`→opus, `standard`→sonnet (opus under `conservative`), `light`→sonnet. The dispatcher passes `--stance` from the manifest's `routing_stance` (default `balanced`), which is what keeps `standard` on Opus under `conservative` and caps `frontier` at Opus under `cost-aware`. Pass the resolved model to the `Task` call. `effort` is advisory on this path — the `Task` call has no separate effort flag.
    - **`codex`** resolves tier→model (e.g. `deep`→`gpt-5.6-sol`) and passes `--model <resolved>` **and** `--effort <effort>` to [`scripts/compound-v-run-codex-worker.sh`](../../scripts/compound-v-run-codex-worker.sh) (`--effort` → `-c model_reasoning_effort=<effort>`; this is the one backend where `xhigh` is accepted). The execution-layer model never appears in any frontmatter.
    - **`antigravity`** resolves tier→model (a Gemini name, e.g. `deep`→`Gemini 3.1 Pro (High)`) and passes `--model <resolved>` to [`scripts/compound-v-run-antigravity-worker.sh`](../../scripts/compound-v-run-antigravity-worker.sh) (omitted when empty; agy has no effort flag). `--write-allowed` is colon-joined globs; always `worktree`.
    - **`cursor`** resolves tier→model (default `auto`) and passes `--model <resolved>` to [`scripts/compound-v-run-cursor-worker.sh`](../../scripts/compound-v-run-cursor-worker.sh) (cursor has no effort flag). On a Cursor **Free** plan only `auto` works (named models error); set named ids per tier via config on a paid plan. Always `worktree`; requires an authenticated `cursor-agent`.
    - **An explicit manifest `model:` override skips resolution** (call the resolver with `--explicit-model <M>`, or pass the model straight through). This keeps existing explicit-model jobs valid — a job MUST carry `model` OR `tier`.
 
-   A `claude` job lands on `opus` for `deep`/`standard` tiers (a `standard`-tier job lands on `sonnet` under the `cost-aware` stance), `sonnet` otherwise only where the manifest routed it `light` (the strict junior-task taxonomy above). Reviewer jobs always route `tier: deep` ⇒ opus.
+   A `claude` job lands on `opus` for `deep`, on `sonnet` for `standard` and `light` (`standard` stays on `opus` only under `conservative`), and on `fable` for `frontier`. Reviewer jobs always route `tier: deep` ⇒ opus and are never escalated.
 2. **Turn/time bound:** `maxTurns: 15` on Claude Task calls; `timeout_sec` in the `job_spec` for Codex workers. An implementer that hasn't finished in 15 turns is usually stuck and needs a re-dispatch with more *context*, not more turns.
 3. **`run_in_background: true`** is acceptable for the implementer batch — lets the orchestrator continue prep work while implementers run. The parent receives a notification per agent when it completes. Background subagents do NOT carry cwd state between Bash calls; **plan absolute paths in the prompt** (this is also why Codex worktree paths in the `job_spec` are always absolute).
 4. **Strict scope lock** — paste this verbatim at the top of the prompt (it is the *instructed* half; the git-diff scope gate in Step 2b is the *enforced* half):

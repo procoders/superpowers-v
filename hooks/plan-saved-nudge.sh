@@ -28,7 +28,7 @@ file_path=$(echo "$input" | jq -r '.tool_input.file_path // empty' 2>/dev/null |
 nudge=""
 case "$file_path" in
   *docs/superpowers/plans/*.md)
-    nudge="💉 Compound V — plan saved at $file_path. To execute: invoke compound-v:partition-reviewer first (verify Partition Map is disjoint), then compound-v:parallel-dispatcher. Shortcuts: /v:orchestrate $file_path materializes a manifest from the plan, or /v:dispatch $file_path runs the pipeline directly (it still accepts a bare plan path)."
+    nudge="💉 Compound V — plan saved at $file_path. To execute: run /v:dispatch $file_path yourself at the top level — it materializes the manifest, requires a /v:triage record, runs compound-v:partition-reviewer, then launches Engine C (the native Workflow) and the integration gate. /v:orchestrate $file_path only materializes the manifest. Delegate to compound-v:parallel-dispatcher only if this session has no Workflow tool."
     ;;
   *docs/superpowers/specs/*.md)
     nudge="💉 Compound V — spec saved at $file_path. If this came from brainstorming, dispatch the three pre-flights IN ONE MESSAGE WITH THREE PARALLEL TASK CALLS: compound-v:code-archaeologist, compound-v:domain-expert, compound-v:doc-validator. Then writing-plans with the three audits as design-constraint sources. ALL THREE: doc-validator is skipped only when the spec has ZERO technical dependencies — \"no NEW dependency\" is not the rule, because dependencies you already use go stale and acquire CVEs. If this spec RESCOPES work whose earlier features already went through the pipeline, that earlier compliance does not carry: the rescope re-enters at the top."

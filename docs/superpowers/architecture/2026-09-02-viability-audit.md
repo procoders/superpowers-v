@@ -1,0 +1,124 @@
+# Аудит жизнеспособности — 2026-09-02
+
+**Вопрос мейнтейнера, дословно по смыслу:** что избыточно, дублирует механизмы Claude Code CLI или является оверинжинирингом; правильно ли агенты раскидываются по сложности задач; правильно ли определяется уровень задачи и по какому flow она идёт (короткий «сделал и закоммитил» vs полный brainstorm → plan → …); что задекларировано, а по факту — заглушка; и «оранжерейная» ли это жизнеспособность — выживет ли система вне репозитория, в котором её растили.
+
+**Метод.** Только измеримое: `wc -l`, `grep` вызывающих, 37 прогонов под `docs/superpowers/execution/`, потоки событий в `docs/superpowers/memory/`, строки бинарника `2.1.238`. Ни одной оценки «на глаз». Сестринский документ — [native-mechanisms.md](native-mechanisms.md) (что у нас дублирует нативное); этот — что у нас вообще работало.
+
+---
+
+## 1. Цифры
+
+**Код: 58 395 строк** (`scripts/*.py`, `scripts/*.sh`, `hooks/*.sh`). **Проза для модели: 12 235 строк** (`skills/`, `commands/`, `agents/`); две команды длиннее 850 строк каждая (`/v:init` 859, `/v:triage` 851).
+
+Разбивка по тому, что реально исполнялось:
+
+| Группа | Строк | Что в ней | Реальных прогонов |
+|---|---|---|---|
+| **Ядро (spine)** | **21 236** | `emit-workflow`, `emit-preflight`, `integration-gate`, `scope-check`, `validate-manifest`, `fastpath-run` (пол тестов), `resolve-model`, `project-config`, codex-воркер, `run-with-timeout`, `codex-review`, `memory`, `lane-guard`, баннеры/снапшоты компакции | 37 прогонов, 27 dogfood, 3 раунда кросс-модельного ревью за 02.09; закалено |
+| **Эпик** | **12 996** | `epic-state` (6 312), `epic-arbiter` (3 465), `epic-watch`, `headless-shim`, `epic-goal-stop.sh` (911), `liveness` | **0 эпиков за всю историю; 0 файлов `epic-state.json` в репозитории** |
+| **Триаж** | **11 843** | `preeval` (2 167), `triage-outcomes` (2 564), `postdiff-reclassify`, `localize`, `taxonomy`, `validate-taxonomy`, `churn`, `classify-request`, `fastpath-materialize`, `triage-prompt-nudge` | **1 запись pre-eval (FULL), 0 событий `bind`, 37 из 37 манифестов без `triage`-блока** |
+| **Остальное** | **12 320** | `dashboard` (1 570), `preferences` (1 452), `onboard`, `cochange`, `usage-*`, `scorecard`, `update-memory`, `collect-results`, `classify-failure`, `failure-policy`, `discover-models`, `advisor-consult`, 4 внешних воркера, 4 хука | см. §3 |
+
+**Итог по цифре:** ~37 000 из 58 000 строк (63 %) не имеют ни одного реального прогона или не имеют вызывающего на движке по умолчанию. Это не «плохой код» — селфтесты зелёные — это код, который ни разу не встречался с реальностью.
+
+---
+
+## 2. Что дублирует Claude Code (новое к [native-mechanisms.md](native-mechanisms.md))
+
+| Наше | Нативное (из бинарника 2.1.238) | Вердикт |
+|---|---|---|
+| Feature A `epic-goal-stop.sh` — взведённая цель эпика, счётчик продолжений | `/goal <condition>` — одна цель на сессию, оценщик, «Goal check-in», `/goal clear` | **Дубликат.** `/v:epic` должен ставить `/goal`; хук оставляет Feature B (триаж-гейт) |
+| Авто-воскрешение: tier-1 `CronCreate`, tier-2 `scheduled-tasks` MCP, headless launchd/cron-шим (1 088 строк) | `/loop 30m /v:epic <id>`; `/schedule` для облачного запуска | **Дубликат ×3.** Ни один не срабатывал |
+| `/v:dashboard serve` — localhost HTTP-сервер с защитой от DNS-rebinding | `/workflows`, `/tasks` — живое дерево прогресса воркфлоу | **Частичный дубликат.** Остаётся ценным только `emit` (статический снимок прошлых прогонов) и `resume`-строка для хуков |
+| `compound-v-preferences.py` — «моя прошлая аргументация на развилках» | нативная auto-memory (`~/.claude/projects/<repo>/memory/`) — те же «решения и почему», per-user | **Дубликат по назначению.** Отличие — распилка на локальный raw + PII-scrubbed distillate; ценность не доказана ни одним прогоном |
+| Три хука «напомни» (`triage-prompt-nudge`, `brainstorm-trigger0-nudge`, `plan-saved-nudge`) | описание скилла само по себе — триггер; `UserPromptSubmit`/`PreToolUse` для напоминаний | Не дубликат, но **три механизма ради одной фразы** «не забудь /v:triage» |
+| `state.json` + `/v:resume` | `resumeFromRunId` + `claude --resume` — переживает смерть процесса | **Не дубликат**, единственное покрытие — потеря сессии/клон. Оставить |
+| `lane-guard.sh` (1 094 строки, 47–81 мс на каждый Write/Edit/Bash) | `permissions.deny: ["Edit(path/**)"]` — статично на сессию | **Не дубликат**, полоса у нас по джобе. Оставить; размер — цена парсинга шелла |
+| `/v:onboard` → `AGENTS.md`/`CLAUDE.md` мост | `/init` | Пересекается только мостом; цитируемая архитектурная база — своё. Оставить |
+
+---
+
+## 3. Задекларировано, а по факту — заглушка или без вызывающего
+
+Всё ниже — на **Engine C, движке по умолчанию с 3.0**. На residual-пути (`parallel-dispatcher`, субагент без Workflow) часть из этого проза описывает; прозу никто не исполнял.
+
+| Что заявлено | Где | По факту |
+|---|---|---|
+| Advisor mode «wired today for the Claude-executor case» | README §How it routes | `emit-workflow.py`: 0 упоминаний advisor. Есть только в `parallel-dispatcher.md` (residual). **Исправлено в README 3.3.7** |
+| Scorecard-aware routing, outcomes → lessons → routing | `routing-policy.md` §Scorecard | `task-outcomes.jsonl` последний коммит **2026-07-11**; Record-стадия Engine C не пишет туда; `scorecard.py` — 0 вызывающих в `scripts/`. Замкнутая петля разомкнута с 3.0 |
+| `PostToolUseFailure` ledger «кормит классификатор отказов» | 3.3.0, `tool-failure-ledger.sh` | читателя нет: `classify-failure.py` леджер не читает; единственная ссылка — `hooks.json`. **Механизм без вызывающего, добавленный вчера** |
+| Phase 1 «runs as a native Workflow» | 3.3.5, `emit-preflight.py` | **ни один .md не ссылался на скрипт**; `SKILL.md` велел «три Task-вызова». **Исправлено в 3.3.7** |
+| Phase 3 на Engine C | `SKILL.md` | велел «N concurrent Task calls, `model: opus`» — путь 1.x. **Исправлено в 3.3.7** |
+| `plan-saved-nudge` ведёт в пайплайн | хук | вёл на `partition-reviewer` + `parallel-dispatcher` как основной путь. **Исправлено в 3.3.7** |
+| SCOPED-тир | `phase-preeval.md` | 0 прогонов за всю историю |
+| DIRECT auto-route landing (`/v:triage --land`: lock-ref, CAS на HEAD, throwaway index, breaker) | `commands/v-triage.md` ~450 строк | 0 посадок. 851-строчная команда для «поправил одну строку и закоммитил» |
+| Бэкенды Antigravity / Cursor / Devin / opencode | README заголовок, 4 адаптера × ~200 строк, 4 воркера | проводка в Engine C generic (`run-<backend>-worker.sh`), но **0 из 37 прогонов** на любом внешнем бэкенде, включая Codex. Не заглушка — не проверено вживую на 3.x |
+| Marathon: arbiter panel, blocker ledger, circuit breakers | README, `epic-arbiter.py` 3 465 | 0 эпиков ⇒ 0 арбитражей |
+| Auto-resurrection tier-1/2, headless shim | README v2.11/v2.14 | 0 срабатываний; дублирует `/loop`/`/schedule` (§2) |
+| 5 собственных YAML-парсеров | `dashboard`, `emit-workflow`, `taxonomy`, `validate-taxonomy`, `validate-manifest` | stdlib без `yaml` — причина ясна; пять копий одного парсера — нет |
+
+---
+
+## 4. Маршрутизация по сложности — вердикт: **правильно, расхождения были только в прозе**
+
+Политика мейнтейнера от 02.09 — «Sonnet исполняет, Opus судит, Fable — крайнее место» — в коде реализована точно:
+
+| Место | Что | Проверено |
+|---|---|---|
+| `resolve-model.py` `_CLAUDE_BALANCED` | `frontier→fable, deep→opus, standard→sonnet, light→sonnet` | ✅ |
+| `emit-workflow.py` `resolve_job_model` → `opts.model` | тир доходит до `agent()` (с 3.0.5) | ✅ селфтест `r-std`/`r-light`/`r-front` |
+| `CLAUDE_ESCALATION = (sonnet, opus, fable)` | неудачная попытка — на ступень выше; ревьюер и явно закреплённая модель не эскалируются | ✅ |
+| Транспортные стадии Gate/Record/Finalize | `light` ⇒ sonnet | ✅ |
+| `agents/*.md` frontmatter | archaeologist/doc-validator `sonnet`, domain-expert/reviewers/dispatcher `opus`; `lint-frontmatter.py` держит allow-list | ✅ |
+| T3-классификатор триажа | `light` (Sonnet), выдаёт enum, не число | ✅ |
+
+Расхождения — три документа описывали карту до 3.0.5 (`standard→opus`): `routing-policy.md` §Resolution, `phase-3` ×3, `SKILL.md` ×3 («Opus by default, Sonnet only for junior»). **Исправлено.** Один пробел: «лучшие интерфейсы → Fable» не имел типа джобы, планировщик должен был знать это наизусть. **Добавлен `interface_design` → `frontier`** в три таблицы стоек.
+
+Что нельзя сделать нативно и честно сказано в `routing-policy.md`: `effort` на префлайтах (у Agent-tool есть `model`, нет `effort`).
+
+---
+
+## 5. Определение уровня задачи и выбор flow — вердикт: **матрица верна, но практически не участвует**
+
+Матрица 3×3 (`difficulty × impact`, `preeval.py:_TIER_MATRIX`), fail-closed, без «сырых» LLM-чисел — спроектирована правильно. Почему она не работает на практике:
+
+1. **Единственный продюсер — ручной `/v:triage`.** `UserPromptSubmit` только напоминает (один раз за сессию), `Stop` только держит ход. Модель, которая не набрала `/v:triage`, работает без тира. В этом репо так прошли **все 37 прогонов**: `--require-triage` у `/v:dispatch` ни разу не был пройден, потому что dogfood запускался эмиттером напрямую, мимо команды.
+2. **Локализация по токенам запроса.** `localize.py` ищет слова запроса в файлах; запрос без имени файла/идентификатора → `failed`/`ambiguous` → override #1 → FULL. «Сделай тёмную тему в настройках» — FULL. Практически DIRECT/SCOPED достижимы только для запросов, называющих один файл.
+3. **DIRECT — самый дорогой в обслуживании тир.** Чтобы поправить одну строку без ревью, нужны: таксономия с `auto_route_allow`, `test_contract.full_command`, взведённый breaker, и посадка через lock-ref + compare-and-swap + throwaway index (§3). Это правильные гарантии для *необслуживаемой* посадки — но необслуживаемых посадок не было ни одной, а обслуживаемая (человек посмотрел diff) в них не нуждается.
+4. **SCOPED — 0 прогонов.** Средний путь существует только в документации.
+
+**Практический итог:** система сейчас имеет два живых режима — FULL и «человек делает сам, Stop-гейт напоминает». Это не то, что обещает README («трижды короче для тривиального»). Варианты — в §7.
+
+---
+
+## 6. Оранжерейная жизнеспособность
+
+**Выживет вне оранжереи:** ядро. Манифест → `emit-workflow` → `Workflow({scriptPath})` → git-производный гейт → `integration-gate` → `spec-reviewer` по роли → коммит волны. Это то, что 27 dogfood-прогонов и три раунда Codex действительно ломали и чинили; там были найдены и закрыты реальные дыры (расширение полосы, доверие `state.json`, схема результата). Плюс V-memory (FTS5 без сервисов) и Phase 1 как воркфлоу.
+
+**Не выживет — потому что не жило и здесь:**
+- **эпик и всё вокруг него** (13 K строк): арбитр, блокер-леджер, три планировщика, цель в Stop-хуке. Первый реальный эпик найдёт дефекты, которых селфтесты не видят — ровно как первый реальный Engine C нашёл три CRITICAL в 3.0.1;
+- **триаж как автоматический механизм** (12 K строк): один артефакт за всю историю;
+- **внешние бэкенды на 3.x**: 0 прогонов даже на Codex через Engine C.
+
+**Что говорит история этого репо о «работает в селфтестах».** 3.0.1: три CRITICAL при первом живом запуске пути, который 143 селфтеста считали зелёным. 3.3.4: инструкция, физически недостижимая из-за clamp, — найдена только живым запуском. 3.3.6: цепочка расширения полосы, «закрытая» комментарием. Каждый раз — в коде, который до этого жил только в оранжерее. У эпика и триажа этот момент впереди.
+
+---
+
+## 7. Список на решение мейнтейнера (ничего из этого не сделано в 3.3.7)
+
+Отсортировано по (строк выкинуто) / (что теряем):
+
+| # | Вырезать | −строк | Заменить на | Что теряем |
+|---|---|---|---|---|
+| 1 | Feature A `epic-goal-stop.sh` + `epic-watch.py` + `headless-shim.py` + `/v:init` 1d-ter/3c + README §Auto-Resurrection/§Headless | ~2 600 код, ~150 прозы | `/v:epic` ставит `/goal <условие>`; воскрешение = `/loop 30m /v:epic <id>` или `/schedule` | ничего: ни одно не срабатывало |
+| 2 | `hooks/tool-failure-ledger.sh` + событие `PostToolUseFailure` | ~190 | ничего (или `classify-failure.py` читает леджер — если он кому-то нужен) | ничего: читателя нет |
+| 3 | `/v:dashboard serve` (HTTP-сервер, rebinding-guard) | ~350 | `/workflows` + `/tasks` для живого; `emit` остаётся | «живой браузер» для прошлых прогонов |
+| 4 | `/v:triage --land` (Phase L, CAS, lock-ref, throwaway index) + `tests/test-triage-landing.sh` | ~600 | DIRECT = человек правит и коммитит; запись триажа и Stop-гейт остаются | необслуживаемая посадка, которой не было |
+| 5 | `compound-v-preferences.py` + `/v:preferences` + `brainstorm.preferences` | ~1 600 | нативная auto-memory | локальный raw-лог развилок |
+| 6 | Заморозить (не удалять, не расширять) `epic-arbiter.py`, marathon, blocker ledger | 0 | — до первого реального эпика | ничего сейчас |
+| 7 | Advisor mode: либо провести в Engine C (одна стадия-консультация), либо убрать `advisor-consult.sh` + `adapter-advisor.md` + `advisor_eligible` + override #7 | ~600 | решение | второе мнение середины джобы — не измерено |
+| 8 | Scorecard-петля: `scorecard.py` читает `results/*.json` напрямую (они уже есть у Engine C) вместо `task-outcomes.jsonl`, которого Engine C не пишет; `update-memory.py` — убрать | ~−300 | использовать существующий артефакт | ничего |
+| 9 | Пять YAML-парсеров → один `compound-v-yaml.py` | ~−500 | внутренняя дедупликация | ничего |
+| 10 | Триаж-flow: **вариант А** — оставить три тира, но сделать `UserPromptSubmit` *исполнителем* `/v:triage` для промптов-запросов на изменение (одна запись вместо напоминания); **вариант Б** — два тира (DIRECT = человек сам под Stop-гейтом, FULL = пайплайн; «SCOPED» = FULL с уже существующими skip-правилами префлайтов), убрать `localize`/`taxonomy`/`churn`/`postdiff-reclassify` | А: +~100; Б: ~−6 000 | А: механизм вместо прозы; Б: меньше машин | А: авто-запись каждого запроса; Б: обещание «пропорционально» становится решением планировщика, не скорера |
+
+Рекомендация: **1, 2, 8 — сразу** (чистые дубликаты/без читателя, ноль потерь); **3, 4, 5 — да**, если мейнтейнер не видит сценария; **10Б** — обсудить: это единственный пункт, который меняет продукт, а не убирает лишнее.

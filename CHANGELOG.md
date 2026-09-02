@@ -4,6 +4,38 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [3.3.7] - 2026-09-02
+
+A viability audit, asked for by the maintainer in one sentence: *check what is redundant, duplicates Claude Code, or is over-engineered; whether agents are routed by task complexity correctly; whether the task tier and the short-vs-full flow are decided correctly; and what is declared but is in fact a stub.* The answer is [`docs/superpowers/architecture/2026-09-02-viability-audit.md`](docs/superpowers/architecture/2026-09-02-viability-audit.md). This release ships the fixes that needed no decision; the cut list in that document does.
+
+### The numbers the audit is built on
+
+58 395 lines of Python and shell, grouped by whether anything has ever exercised them: **21 236** in the spine that 37 runs, 27 dogfoods and three cross-model rounds hardened; **12 996** in epic mode, which has produced zero `epic-state.json` files in this repository's history; **11 843** in the triage engine, which has produced one pre-eval record, zero `bind` events, and no `triage` block on any of the 37 manifests; **12 320** elsewhere, most of it with no caller on the default engine.
+
+### Fixed — the flagship skill still described the 1.x dispatch
+
+`skills/compound-v/SKILL.md` — the document every session loads — told the model to dispatch Phase 3 as *"N concurrent Task calls, `model: "opus"`"* and Phase 1 as *"three concurrent Task calls"*. Engine C has been the default since 3.0 and the Phase 1 workflow emitter shipped in 3.3.5, and **no markdown file referenced `compound-v-emit-preflight.py` at all** — the feature the maintainer asked for two releases ago had no caller. Phase 1 and Phase 3 now point at the emitters and `Workflow({ scriptPath })`, with the `Task` form named as the residual path; the Stage −1 paragraph now says the triage record has exactly one producer, `/v:triage`; the override table, the Sonnet red flag and the one-sentence summary carry the execution-vs-judgment policy instead of "Opus by default, Sonnet for junior tasks".
+
+### Fixed — the plan-saved nudge pointed at the residual path
+
+`hooks/plan-saved-nudge.sh` told the model to *"invoke partition-reviewer, then parallel-dispatcher"* — the subagent path `/v:dispatch` explicitly says not to use — and mentioned `/v:dispatch` as a shortcut. It now names `/v:dispatch` as the path and the dispatcher as the fallback for a session with no Workflow tool.
+
+### Fixed — three documents still said `standard` resolves to Opus
+
+`routing-policy.md` §Resolution, and `phase-3-parallel-opus-dispatch.md` in three places, described the pre-3.0.5 map (`standard` → opus under `balanced`, sonnet only under `cost-aware`). They now match the resolver: `standard` → sonnet everywhere except `conservative`, `frontier` → fable, capped at opus under `cost-aware`. The "tick ALL boxes or it is Opus" paragraph now says what the boxes decide — `standard`/`light` versus `deep` — and that a failed attempt escalates one rung.
+
+### Added — `interface_design` job type → `frontier`
+
+The maintainer's policy places interface design on Fable, and the routing tables had no type that reached `frontier` — a planner had to know to assign the tier by hand. All three stance tables now carry an `interface_design` row (`frontier · high`, worktree; `cost-aware` caps it at opus as it caps every `frontier`).
+
+### Fixed — README overclaimed advisor mode
+
+*"This is wired today for the Claude-executor case"* described the residual `Task` path; Engine C emits no consult step. The README now says so.
+
+### Documented — three more native mechanisms we duplicate or ignore
+
+`native-mechanisms.md` gains `/goal` (the binary carries a native goal with an evaluator and check-ins; our Stop hook's Feature A re-implements it for an epic that has never run), `/loop` + `/schedule` (three schedulers of ours — session cron, `scheduled-tasks` MCP, a launchd/cron shim — for one native line), and the static `Edit(path/**)` permission rules (exist, do not cover a per-job lane; `lane-guard.sh` stays). The recount: 7 with no native mechanism, 4 where the native one does not cover, **15** where it exists and we did not use it or duplicated it.
+
 ## [3.3.6] - 2026-09-02
 
 Cross-model review round 3, on everything the 26 live runs produced. Eight defects: one critical, two high, three medium, two low. Every one real, and two of them were comments in this repo asserting a property the code did not have.
