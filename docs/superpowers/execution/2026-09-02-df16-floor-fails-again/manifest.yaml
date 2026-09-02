@@ -1,0 +1,36 @@
+run_id: 2026-09-02-df16-floor-fails-again
+feature: df16 — a failing test floor must block
+routing_stance: balanced
+max_parallel: 1
+spec_path: docs/superpowers/execution/2026-09-02-df16-floor-fails-again/spec.md
+plan_path: docs/superpowers/execution/2026-09-02-df16-floor-fails-again/plan.md
+audits:
+  archaeology: docs/superpowers/execution/2026-09-02-df16-floor-fails-again/spec.md
+  domain: docs/superpowers/execution/2026-09-02-df16-floor-fails-again/spec.md
+  library: docs/superpowers/execution/2026-09-02-df16-floor-fails-again/spec.md
+acceptance_criteria:
+  - "A job whose floor_command exits non-zero is not recorded as success."
+test_contract:
+  floor_command: "sh -c 'echo floor-deliberately-failing >&2; exit 3'"
+  full_command: "/bin/echo full"
+  impacted_map:
+    - when: "docs/superpowers/dogfood/**"
+      run: "/bin/echo scoped"
+jobs:
+  - id: floor-fails
+    title: "Writes correctly; the floor fails underneath it"
+    type: docs
+    backend: claude
+    tier: light
+    effort: low
+    isolation: worktree
+    run: serial
+    write_allowed: ["docs/superpowers/dogfood/2026-09-02-df16-floor-fails-again.md"]
+    read_allowed: ["docs/superpowers/execution/2026-09-02-df16-floor-fails-again/spec.md"]
+    acceptance: ["The file exists; the floor is expected to fail."]
+    body: |
+      Create `docs/superpowers/dogfood/2026-09-02-df16-floor-fails-again.md` containing exactly:
+
+      # floor
+
+      The test floor for this run fails on purpose.
