@@ -1,21 +1,64 @@
 {
   "run_id": "2026-09-02-v3.4-native-first-r10",
   "phase": "PARTITION_VERIFIED",
-  "updated_at": "2026-09-02T21:55:47Z",
+  "updated_at": "2026-09-02T23:10:00Z",
   "pre_eval_id": "2026-09-02T170442Z-v3-4-native-first-replace-the-epic-goal-feature-a-of-hooks-e-5664",
   "continues": "2026-09-02-v3.4-native-first-r9",
   "jobs": {
     "guard-viable": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_bf97e02d-ed3-1",
+      "session_id": null,
+      "baseline": "3b0550e40826ad1878133e9c6cd62bd657a9b961",
+      "realised_commit": "3b0550e40826ad1878133e9c6cd62bd657a9b961",
+      "merged": {
+        "realised_commit": "3b0550e40826ad1878133e9c6cd62bd657a9b961",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "3429a29ef111abbf1afdbabcd01bc54b1fc8ea70"
+      }
     },
     "spec-review-7": {
-      "status": "pending",
+      "status": "done",
       "isolation": "direct",
-      "worktree": null,
-      "session_id": null
+      "worktree": "",
+      "session_id": null,
+      "baseline": "3429a29ef111abbf1afdbabcd01bc54b1fc8ea70",
+      "realised_commit": "3429a29ef111abbf1afdbabcd01bc54b1fc8ea70",
+      "merged": {
+        "realised_commit": "3429a29ef111abbf1afdbabcd01bc54b1fc8ea70",
+        "mode": "direct",
+        "integrated": true,
+        "commit": "a31e200a3148a83c105d25289fa8aa7ee7fe883e"
+      }
     }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "guard-viable"
+      ],
+      "merged": [
+        "guard-viable"
+      ],
+      "commit": "3429a29ef111abbf1afdbabcd01bc54b1fc8ea70",
+      "integrated": true
+    },
+    "2": {
+      "jobs": [
+        "spec-review-7"
+      ],
+      "merged": [
+        "spec-review-7"
+      ],
+      "commit": "a31e200a3148a83c105d25289fa8aa7ee7fe883e",
+      "integrated": true
+    }
+  },
+  "triage_actual": {
+    "merge_pending": true,
+    "pre_eval_id": "2026-09-02T170442Z-v3-4-native-first-replace-the-epic-goal-feature-a-of-hooks-e-5664",
+    "run_id": "2026-09-02-v3.4-native-first-r10"
   }
 }

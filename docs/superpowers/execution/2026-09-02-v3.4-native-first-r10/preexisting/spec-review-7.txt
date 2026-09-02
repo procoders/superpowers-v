@@ -1,0 +1,15 @@
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/.run.lock
+029c19d124df65aafd33f133c45c5026c279c05ea4d317d426643bd3f50e1f7a  docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/jobs/guard-viable.baseline
+a554ee717dce7992ed7ff37493b05e36dd0dfca609d44908b053afd152451c25  docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/jobs/guard-viable.test-contract.json
+775c34f0ab3f0007dbef97c582fa786fd0ac0b090e24ee320628d047afd2653b  docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/lane-map.json
+4d004c31370b970efcc4e317e9d750afc941219e5662426f7dab01a4d857fa5c  docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/receipts/guard-viable.gate.json
+5e940633e0718289d3ac3c32961b66782c717452ac2591276c4ca0d709669b11  docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/results/guard-viable.json
+7d83e1b92c2b0b3a96deeca625187bf3b8adb6f0211d819a4762eec0dc21e4bc  docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/state.json
+ac1498deb12eeaa7e43346eb598205e266296c36b617c01464d76585300ce83c  docs/superpowers/memory/worker-performance.jsonl
+a631d029cd54c208be5003608872007f0e26f7f96c7ad377b9a0594932a004f9  docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/dispatch.workflow.js
+8e2a38abd1134dc3c7a8969d1155ecdad304bbc6ffc1484f2e49106a9ebfa500  docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/jobs/guard-viable.prompt.md
+a1a754e499dee6f91a0112c66190e6397889e963d16503c2c16b07ceb6b16ce8  docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/jobs/spec-review-7.baseline
+7f6112d8a82efb78db3f320bb2540f212131fe11df4bf01987fd0926c386b37c  docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/jobs/spec-review-7.prompt.md
+dfda0eec48b33851f62704799c7477abaa8aed55a26e254bbc1980dd02d427ea  docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/jobs/spec-review-7.test-contract.json
+a6570d133806279945c43a3c8b5472217447bd9177e3715ca5746ab704b2f772  docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/manifest.yaml
+0098ac7a30e5b71e6e5c1925d631d1df5b33a6ad3db866ec2bf7f73d154cfe1b  docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/preexisting/spec-review-7.txt

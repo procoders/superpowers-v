@@ -1,0 +1,34 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "AGENTS.md",
+    "CHANGELOG.md",
+    "README.md",
+    "docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md",
+    "hooks/lane-guard.sh",
+    "tests/test-lane-guard.sh"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "3b0550e40826ad1878133e9c6cd62bd657a9b961",
+    "diff_digest": "sha256:eea69b47e641b36296a950c717be50800d6408f2c9b41587658b5d437b8a312d",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"3b0550e40826ad1878133e9c6cd62bd657a9b961\",\n  \"changed\": [\n    \"AGENTS.md\",\n    \"CHANGELOG.md\",\n    \"README.md\",\n    \"docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md\",\n    \"hooks/lane-guard.sh\",\n    \"tests/test-lane-guard.sh\"\n  ],\n  \"allowed\": [\n    \"hooks/lane-guard.sh\",\n    \"tests/test-lane-guard.sh\",\n    \"CHANGELOG.md\",\n    \"README.md\",\n    \"AGENTS.md\",\n    \"docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "3b0550e40826ad1878133e9c6cd62bd657a9b961",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Close the sixth review pass: viability-checked interpreter pick, re-measured hook cost, honest counts, behavioural assertions",
+  "tests": {
+    "command": "bash tests/test-epic-goal-stop.sh\nbash -c 'bash tests/test-epic-goal-stop.sh && bash tests/test-native-points.sh'\nbash -c '[ -f tests/test-lane-guard.sh ] || exit 0; bash tests/test-lane-guard.sh'\nbash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 4
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_bf97e02d-ed3-1"
+}

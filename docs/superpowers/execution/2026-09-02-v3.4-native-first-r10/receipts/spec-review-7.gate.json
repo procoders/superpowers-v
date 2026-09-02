@@ -1,0 +1,56 @@
+{
+  "baseline_commit": "3429a29ef111abbf1afdbabcd01bc54b1fc8ea70",
+  "diff_digest": "sha256:25fada35a7bb42507a2fe5e972e37c7f6c1f4df7ae9ce44e3ccfb065cf4fecef",
+  "exit_code": 0,
+  "job_id": "spec-review-7",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"3429a29ef111abbf1afdbabcd01bc54b1fc8ea70\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-7.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-7.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "3429a29ef111abbf1afdbabcd01bc54b1fc8ea70",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-7.md",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/.run.lock",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/jobs/guard-viable.baseline",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/jobs/guard-viable.test-contract.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/jobs/spec-review-7.baseline",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/jobs/spec-review-7.test-contract.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/lane-map.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/preexisting/spec-review-7.txt",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/preexisting/spec-review-7.verified.txt",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/receipts/guard-viable.gate.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/results/guard-viable.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/state.json",
+      "docs/superpowers/memory/worker-performance.jsonl"
+    ],
+    "checks": [
+      {
+        "checker": "bash tests/test-epic-goal-stop.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (4 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 0 command(s) from 13 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)",
+      "unmapped: docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-7.md, docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/.run.lock, docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/jobs/guard-viable.baseline, docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/jobs/guard-viable.test-contract.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/jobs/spec-review-7.baseline, docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/jobs/spec-review-7.test-contract.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/lane-map.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/preexisting/spec-review-7.txt, docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/preexisting/spec-review-7.verified.txt, docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/receipts/guard-viable.gate.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/results/guard-viable.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r10/state.json, docs/superpowers/memory/worker-performance.jsonl matched no `when` glob \u2014 unknown blast radius resolves to full_command, never to nothing"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": ""
+}
