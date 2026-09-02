@@ -481,12 +481,15 @@ check "the authority writes no bytecode of its own" \
       "$(grep -q 'sys.dont_write_bytecode = True' "$GATE" && echo 1 || echo 0)"
 # FOURTH REVIEW PASS, item 4: the digest forgives the run directory and nothing
 # else. A tracked file excluded by name is a tracked file a worker may rewrite
-# unseen — and the pipeline commits triage-outcomes.jsonl by name. The withdrawn
-# constant's name is SPLIT here so that `grep -rn <name> scripts hooks tests`,
-# the acceptance check for "the carve-outs are gone", stays clean.
-BK_NAME="PIPELINE_""BOOKKEEPING"
+# unseen — and the pipeline commits triage-outcomes.jsonl by name.
+#
+# FIFTH REVIEW PASS: the name is SPELLED PLAINLY. It used to be written as
+# "PIPELINE_""BOOKKEEPING" so a bare `grep -rn <name> scripts hooks tests` would
+# stay clean — a test made unreadable to satisfy an acceptance check that was
+# matching the wrong thing. The acceptance grep is definition-scoped now:
+#     grep -rnE '^PIPELINE_BOOKKEEPING\s*=' scripts hooks   # -> nothing
 check "the authority excludes NO tracked file from the digest by name" \
-      "$(grep -q "$BK_NAME" "$GATE" && echo 0 || echo 1)"
+      "$(grep -q 'PIPELINE_BOOKKEEPING' "$GATE" && echo 0 || echo 1)"
 check "...and it still names triage-outcomes.jsonl in prose, so the reason is not lost" \
       "$(grep -q 'triage-outcomes.jsonl' "$GATE" && echo 1 || echo 0)"
 

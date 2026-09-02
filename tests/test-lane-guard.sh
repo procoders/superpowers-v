@@ -89,6 +89,76 @@ cat >"$RUN2/lane-map.json" <<JEOF
  "worktrees": {"$WT2": "job-under-test"}}
 JEOF
 
+# A run whose manifest is written THE WAY `yaml.safe_dump` WRITES ONE (fifth
+# review pass, 2026-09-02). Two shapes below defeated the embedded subset parser
+# the guard falls back to without PyYAML: a scalar FOLDED across lines at the
+# dump width (`feature`, and the `acceptance` item), and block SEQUENCES sitting
+# at their parent key's own indent (`jobs`, `write_allowed`). The parse stopped
+# at the first one, `jobs` was never reached, and the guard failed open on every
+# out-of-lane write of a real run. These are literal safe_dump(width=100) bytes.
+RUN4="$PROJ/docs/superpowers/execution/2099-01-04-folded"
+WT4="$PROJ/.claude/worktrees/wf_folded-1"
+mkdir -p "$RUN4" "$WT4/hooks"
+cat >"$RUN4/manifest.yaml" <<'YEOF'
+run_id: 2099-01-04-folded
+feature: 'Close the fifth review pass: a lane guard that actually enforces, a register-lane the clamp
+  accepts, and honest acceptance greps'
+jobs:
+- id: folded-job
+  type: core_slice
+  backend: claude
+  write_allowed:
+  - hooks/lane-guard.sh
+  acceptance:
+  - the guard reads this manifest through the fallback parser AND through PyYAML and denies the same
+    out-of-lane write under both
+YEOF
+cat >"$RUN4/lane-map.json" <<JEOF
+{"run_id": "2099-01-04-folded",
+ "agents": {"agent_folded": "folded-job"},
+ "worktrees": {"$WT4": "folded-job"}}
+JEOF
+
+# An interpreter that CANNOT import yaml, whatever the machine has installed: a
+# shim package that raises on import, in front of the real one on PYTHONPATH.
+# This is how the fallback parser is exercised deterministically rather than
+# only on whichever box happens to lack PyYAML.
+NOYAML_DIR="$WORK/noyaml"
+mkdir -p "$NOYAML_DIR"
+printf 'raise ImportError("PyYAML is blocked for this test")\n' >"$NOYAML_DIR/yaml.py"
+NOYAML_PY="$WORK/python3-without-yaml"
+{ printf '#!/bin/sh\n'
+  printf 'PYTHONPATH=%s exec %s "$@"\n' "$NOYAML_DIR" "$(command -v python3)"
+} >"$NOYAML_PY"
+chmod +x "$NOYAML_PY"
+
+# ...and an interpreter that CAN, if this machine has one at all.
+YAML_PY=""
+for _cand in /usr/bin/python3 "$(command -v python3 2>/dev/null || true)"; do
+  [ -n "$_cand" ] && [ -x "$_cand" ] || continue
+  if "$_cand" -c 'import yaml' >/dev/null 2>&1; then YAML_PY="$_cand"; break; fi
+done
+
+# The DELEGATION branch — the guard running under a yaml-less interpreter while
+# a yaml-capable one is on its candidate list — cannot be reached by pointing
+# CV_PYTHON at the shim above, because CV_PYTHON is honoured verbatim and is
+# then the ONLY candidate. So this wrapper overrides the candidate list from
+# inside the child, the way a machine whose first candidate lacks PyYAML would
+# present it. The second entry clears PYTHONPATH, or it would inherit the shim
+# that blocks yaml and prove nothing.
+FALLBACK_PY=""
+if [ -n "$YAML_PY" ]; then
+  CLEAN_PY="$WORK/python3-with-yaml"
+  { printf '#!/bin/sh\n'; printf 'PYTHONPATH= exec %s "$@"\n' "$YAML_PY"; } >"$CLEAN_PY"
+  chmod +x "$CLEAN_PY"
+  FALLBACK_PY="$WORK/python3-without-yaml-but-with-a-candidate"
+  { printf '#!/bin/sh\n'
+    printf 'PYTHONPATH=%s CV_PY_CANDIDATES=%s exec %s "$@"\n' \
+           "$NOYAML_DIR" "$NOYAML_PY:$CLEAN_PY" "$(command -v python3)"
+  } >"$FALLBACK_PY"
+  chmod +x "$FALLBACK_PY"
+fi
+
 # Isolated agent worktrees that NO lane map knows about — the shape of a worker
 # that wrote before it ran `register-lane`, or whose registration a concurrent
 # sibling's read-modify-write lost.
@@ -544,6 +614,72 @@ check "PLANTED: without the dedupe the same identity records twice" \
   "$([ "$(reclines)" = "2" ] && echo 1 || echo 0)"
 HOOK_UNDER_TEST=""
 recreset
+
+echo "=== 7c. a manifest as yaml.safe_dump writes it ============"
+# The regression this section exists for: driven with a REAL run's manifest and
+# the default PATH, the shipped guard resolved the job, could not find it in the
+# manifest its own fallback parser had truncated, and ALLOWED the out-of-lane
+# write. A guard that fails open on the ordinary output of the tool that writes
+# every manifest in this repo is not a guard. Both parsers are exercised, and
+# both must reach the same verdict.
+
+file_case "folded manifest, default PATH -> out-of-lane Write is DENIED" deny \
+  Write agent_folded "$WT4" "$WT4/README.md"
+check "the deny reads the lane out of the folded manifest" \
+  "$(printf '%s' "$OUT" | grep -q 'hooks/lane-guard.sh' && echo 1 || echo 0)"
+
+file_case "folded manifest, default PATH -> the in-lane Write still passes" allow \
+  Write agent_folded "$WT4" "$WT4/hooks/lane-guard.sh"
+
+run "$(encode Write agent_folded "$WT4" file_path "$WT4/README.md")" \
+    CV_PYTHON="$NOYAML_PY"
+verdict "folded manifest, FALLBACK parser (no PyYAML anywhere)" deny
+check "the fallback deny reads the same lane" \
+  "$(printf '%s' "$OUT" | grep -q 'hooks/lane-guard.sh' && echo 1 || echo 0)"
+check "the missing PyYAML is logged BY PATH, not swallowed" \
+  "$([ "$(logged 'PyYAML unavailable in ')" = yes ] && echo 1 || echo 0)"
+check "...and so is the decision to use the subset parser" \
+  "$([ "$(logged 'no candidate interpreter has PyYAML')" = yes ] \
+     && echo 1 || echo 0)"
+
+run "$(encode Write agent_folded "$WT4" file_path "$WT4/hooks/lane-guard.sh")" \
+    CV_PYTHON="$NOYAML_PY"
+verdict "folded manifest, FALLBACK parser, in-lane Write" allow
+
+if [ -n "$YAML_PY" ]; then
+  run "$(encode Write agent_folded "$WT4" file_path "$WT4/README.md")" \
+      CV_PYTHON="$YAML_PY"
+  verdict "folded manifest, PyYAML interpreter ($YAML_PY)" deny
+  check "the PyYAML deny reads the same lane as the fallback one" \
+    "$(printf '%s' "$OUT" | grep -q 'hooks/lane-guard.sh' && echo 1 || echo 0)"
+  check "a PyYAML interpreter logs no missing-PyYAML line" \
+    "$([ "$(logged 'PyYAML unavailable')" = no ] && echo 1 || echo 0)"
+  run "$(encode Write agent_folded "$WT4" file_path "$WT4/hooks/lane-guard.sh")" \
+      CV_PYTHON="$YAML_PY"
+  verdict "folded manifest, PyYAML interpreter, in-lane Write" allow
+
+  # DELEGATION: running under a yaml-less interpreter, with a yaml-capable one
+  # on the candidate list. The manifest read moves to the candidate; the verdict
+  # is the same, and the yaml-less interpreter is named in the log.
+  run "$(encode Write agent_folded "$WT4" file_path "$WT4/README.md")" \
+      CV_PYTHON="$FALLBACK_PY"
+  verdict "folded manifest, yaml-less interpreter DELEGATES to a candidate" deny
+  check "the yaml-less interpreter is still named BY PATH in the log" \
+    "$([ "$(logged 'PyYAML unavailable in ')" = yes ] && echo 1 || echo 0)"
+  check "the log names the candidate that actually parsed the manifest" \
+    "$([ "$(logged 'manifest parsed by ')" = yes ] && echo 1 || echo 0)"
+  check "delegation happened INSTEAD of the subset parser, not as well as it" \
+    "$([ "$(logged 'no candidate interpreter has PyYAML')" = no ] \
+       && echo 1 || echo 0)"
+else
+  printf 'SKIP folded manifest under a PyYAML interpreter — no python3 on this '
+  printf 'machine can import yaml (CI installs it; this half did NOT run)\n'
+fi
+
+check "the hook prefers an interpreter that can import yaml" \
+  "$(grep -q 'CV_PY_CANDIDATES' "$HOOK" && echo 1 || echo 0)"
+check "the hook says WHY the preference is resolved lazily, not by probing" \
+  "$(grep -q 'RESOLVED LAZILY' "$HOOK" && echo 1 || echo 0)"
 
 echo "=== 8. documented blind spots (asserted, not assumed) ====="
 # These are ALLOWED, and that is the honest limit of command inspection. They

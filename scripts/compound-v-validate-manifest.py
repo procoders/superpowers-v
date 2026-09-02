@@ -136,11 +136,26 @@ import sys
 # YAML loading: prefer PyYAML, fall back to an embedded subset parser.
 # --------------------------------------------------------------------------- #
 def load_yaml(text):
+    """Parse ``text``: PyYAML when importable, the embedded subset parser else.
+
+    THE FALLBACK IS NOT SILENT (fifth review pass, 2026-09-02). It used to be:
+    one ``except Exception`` covered both "PyYAML is not installed" and "PyYAML
+    read this document and REFUSED it", and the second case is not a fallback at
+    all — a document the full parser rejected is not a document the subset parser
+    understood better. It is announced on stderr so the degradation is visible to
+    whoever is looking at the failure, instead of surfacing three layers later as
+    a manifest that mysteriously has no jobs.
+    """
     try:
         import yaml  # noqa: WPS433 (intentional optional dep)
-
+    except ImportError:  # PyYAML absent — the designed, ordinary fallback
+        return _mini_yaml(text)
+    try:
         return yaml.safe_load(text)
-    except Exception:  # pragma: no cover - import or parse fallback
+    except Exception as exc:  # noqa: BLE001 - PyYAML READ it and refused
+        sys.stderr.write(
+            "compound-v: PyYAML rejected this document (%s); falling back to the "
+            "embedded subset parser, which models LESS YAML, not more\n" % exc)
         return _mini_yaml(text)
 
 
@@ -170,10 +185,13 @@ def _scalar(tok):
     tok = tok.strip()
     if tok == "" or tok == "~" or tok.lower() == "null":
         return None
-    if (tok.startswith('"') and tok.endswith('"')) or (
-        tok.startswith("'") and tok.endswith("'")
-    ):
-        return tok[1:-1]
+    if tok.startswith("'") and tok.endswith("'") and len(tok) >= 2:
+        # YAML escapes a single quote inside a single-quoted scalar by doubling
+        # it. Leaving `Gate''s` unescaped made the fallback parser disagree with
+        # PyYAML on the very field a folded manifest exercises.
+        return tok[1:-1].replace("''", "'")
+    if tok.startswith('"') and tok.endswith('"') and len(tok) >= 2:
+        return tok[1:-1].replace('\\"', '"').replace("\\\\", "\\")
     if tok.lower() == "true":
         return True
     if tok.lower() == "false":
@@ -214,11 +232,142 @@ def _split_commas(s):
     return parts
 
 
+def _open_quote(s):
+    """The quote character left OPEN at the end of ``s``, or ``None``.
+
+    Doubled quotes inside a quoted scalar (YAML's ``''`` escape) close and
+    reopen, so a complete ``'Gate''s seven issues'`` reads as balanced and a
+    truncated ``'Gate''s seven`` reads as open — which is exactly the signal a
+    folded quoted scalar leaves on its first line.
+    """
+    in_s = None
+    for ch in s:
+        if in_s:
+            if ch == in_s:
+                in_s = None
+        elif ch in ("'", '"'):
+            in_s = ch
+    return in_s
+
+
+def _value_part(content):
+    """The scalar VALUE a stripped line ends with, or ``None`` when it opens a
+    nested block (``key:`` with nothing after the colon)."""
+    if content.startswith("- "):
+        content = content[2:].strip()
+        if content == "":
+            return None
+    idx = _colon_index(content)
+    if idx < 0:
+        return content          # a plain list item, or a fold continuation
+    return content[idx + 1:].strip()
+
+
+def _is_continuation(prev, indent, content):
+    """True iff ``(indent, content)`` continues the scalar on line ``prev``."""
+    prev_indent, prev_content = prev
+    if indent <= prev_indent:
+        return False
+    if content.startswith("- "):
+        return False
+    value = _value_part(prev_content)
+    if not value:
+        return False            # `key:` opens a block; it has no scalar to fold
+    if value[:1] in ("'", '"') and _open_quote(value):
+        # An unterminated quoted scalar: the fold is unambiguous, and the
+        # continuation may legitimately contain a `: ` inside the quotes.
+        return True
+    return _colon_index(content) < 0
+
+
+# `key: |`, `key: >`, with the optional chomping and explicit-indent indicators.
+_BLOCK_SCALAR_RE = re.compile(r"^[|>][+-]?\d*$")
+
+
+def _fold_plain_scalars(lines):
+    """Join YAML's multi-line scalars back onto one line.
+
+    ``yaml.safe_dump`` wraps every long scalar at ``width`` — 80 by default, 100
+    for the manifests this repo writes — so a long value arrives as its first
+    line plus one or more MORE-INDENTED continuation lines::
+
+        feature: Close the fifth review pass, a lane guard that actually
+          enforces, and honest acceptance greps
+
+    The shipped parser had no notion of that. ``parse_map`` saw the deeper
+    continuation, broke out of the mapping, and EVERYTHING AFTER IT IN THE
+    DOCUMENT WAS SILENTLY DROPPED — ``jobs:`` included. That is the defect the
+    fifth review pass found in ``hooks/lane-guard.sh``: driven with a real run's
+    manifest on an interpreter without PyYAML, the guard read a manifest with no
+    jobs, resolved no lane, and failed open on every out-of-lane write.
+
+    A block scalar (``key: |`` / ``key: >``) is consumed here too, and FLATTENED
+    onto one line rather than reproduced: this parser has no line-preserving
+    representation, and what it did before was worse — it stored the bare ``|``
+    and then `parse_map` broke on the block's first line, dropping the remainder
+    of the document exactly as the fold did. The flattening is lossy (newlines
+    and blank lines become single spaces, and a ``#`` inside the block is still
+    treated as a comment); PyYAML is the parser that gets block scalars right,
+    and this one only has to keep the document intact enough to read a lane.
+    """
+    out = []
+    i = 0
+    while i < len(lines):
+        indent, content = lines[i]
+        i += 1
+        value = _value_part(content)
+        if value and _BLOCK_SCALAR_RE.match(value):
+            body = []
+            while i < len(lines) and lines[i][0] > indent:
+                body.append(lines[i][1])
+                i += 1
+            head = content[:content.rindex(value)]
+            out.append([indent, head + " ".join(body)])
+            continue
+        if out and _is_continuation(out[-1], indent, content):
+            out[-1][1] = out[-1][1] + " " + content
+            continue
+        out.append([indent, content])
+    return [(indent, content) for indent, content in out]
+
+
+# A top-level ``jobs:`` key, at column 0. ``(?m)`` so ``^`` is a line start.
+_TOP_LEVEL_JOBS_RE = re.compile(r"(?m)^jobs:[ \t]*(\S.*)?$")
+
+
+def _assert_jobs_survived(text, doc):
+    """A document whose top-level ``jobs:`` vanished in parsing is a PARSE
+    FAILURE, not a manifest with no jobs.
+
+    Every consumer spells the read ``(data or {}).get("jobs") or []``, so a
+    truncated parse and an empty manifest are indistinguishable downstream — and
+    the one place that matters most, ``hooks/lane-guard.sh``, turns "no jobs"
+    into "no lane to enforce" and allows the write. Raising here makes the
+    truncation loud at the only point that can still tell the difference.
+    """
+    match = _TOP_LEVEL_JOBS_RE.search(text)
+    if not match:
+        return
+    if (match.group(1) or "").strip() in ("[]", "{}"):
+        return                  # explicitly empty, and parsed faithfully
+    jobs = doc.get("jobs") if isinstance(doc, dict) else None
+    if jobs:
+        return
+    raise ValueError(
+        "the embedded YAML subset parser found a top-level `jobs:` in this "
+        "document but produced none: the parse is TRUNCATED, not empty. The "
+        "document uses YAML this parser does not model (an anchor, a block "
+        "scalar, a merge key). Install PyYAML — on macOS /usr/bin/python3 ships "
+        "it — or simplify the document. Do NOT read this as a manifest with no "
+        "jobs.")
+
+
 def _mini_yaml(text):
     """
     Minimal YAML-subset parser. Handles the manifest shape we emit:
-    nested mappings, lists of mappings, inline ``[a, b]`` lists, and block
-    ``- item`` lists of scalars. Indentation is significant (2 spaces).
+    nested mappings, lists of mappings, inline ``[a, b]`` lists, block
+    ``- item`` lists of scalars, and scalars folded across lines the way
+    ``yaml.safe_dump`` writes them.
 
     This is a fallback only; PyYAML is used when available.
     """
@@ -230,7 +379,9 @@ def _mini_yaml(text):
         if s.strip() == "---":
             continue
         indent = len(s) - len(s.lstrip(" "))
-        lines.append((indent, s.strip()))
+        lines.append([indent, s.strip()])
+
+    lines = _fold_plain_scalars(lines)
 
     pos = [0]
 
@@ -292,9 +443,25 @@ def _mini_yaml(text):
     def _assign(obj, key, val, child_indent):
         if val is not None and val != "":
             obj[key] = val
-        else:
-            child = parse_block(child_indent)
-            obj[key] = child if child is not None else None
+            return
+        child = parse_block(child_indent)
+        if child is None and pos[0] < len(lines):
+            # A BLOCK SEQUENCE MAY SIT AT ITS PARENT KEY'S OWN INDENTATION, and
+            # that is exactly how `yaml.safe_dump` writes one:
+            #
+            #     jobs:
+            #     - id: guard-honest
+            #
+            # The shipped parser only looked one level deeper, found nothing,
+            # recorded `jobs: None`, and then `parse_map` broke on the `- ` line
+            # — dropping the rest of the document. Every manifest this repo
+            # emits is safe_dump output, so the parser's happy path was the one
+            # shape it could not read. Deliberately narrow: only when the VERY
+            # NEXT line is a `- ` item at exactly this key's own indent.
+            n_indent, n_content = lines[pos[0]]
+            if n_indent == child_indent - 2 and n_content.startswith("- "):
+                child = parse_list(n_indent)
+        obj[key] = child
 
     def _kv(content):
         idx = _colon_index(content)
@@ -308,7 +475,9 @@ def _mini_yaml(text):
             return key, _inline_list(rest)
         return key, _scalar(rest)
 
-    return parse_block(0)
+    doc = parse_block(0)
+    _assert_jobs_survived(text, doc)
+    return doc
 
 
 def _looks_scalar(rest):
@@ -2531,6 +2700,36 @@ jobs:
     acceptance: ["AC met"]
 """
 
+# The shape `yaml.safe_dump(..., width=100)` actually emits, and the shape the
+# subset parser could not read until the fifth review pass: a folded plain
+# scalar (`feature`), a folded list item (`acceptance_criteria`), and block
+# sequences sitting at their parent key's OWN indent (`jobs`, `write_allowed`).
+# Kept as literal bytes so the fixture is evidence rather than a re-derivation;
+# `_selftest` re-dumps it through PyYAML and asserts it is byte-identical.
+FOLDED_FEATURE = ("Close the fifth review pass: a lane guard that actually "
+                  "enforces, a register-lane the clamp accepts, and honest "
+                  "acceptance greps")
+FOLDED_CRITERION = (r"grep -rnE '^PIPELINE_BOOKKEEPING\s*=' scripts hooks "
+                    "returns nothing, and the split literals are gone from "
+                    "both files")
+FOLDED_MANIFEST = r"""run_id: 2026-09-02-folded
+feature: 'Close the fifth review pass: a lane guard that actually enforces, a register-lane the clamp
+  accepts, and honest acceptance greps'
+acceptance_criteria:
+- grep -rnE '^PIPELINE_BOOKKEEPING\s*=' scripts hooks returns nothing, and the split literals are gone
+  from both files
+jobs:
+- id: guard-honest
+  type: core_slice
+  backend: claude
+  tier: deep
+  write_allowed:
+  - hooks/lane-guard.sh
+  - tests/test-lane-guard.sh
+  read_allowed:
+  - '**'
+"""
+
 # Deliberately broken: codex w/o worktree, reviewer w/ sonnet, overlapping
 # write globs, non-serial shared_foundation, unowned shared resource.
 BAD_MANIFEST = """
@@ -4608,6 +4807,66 @@ def _selftest():
     expect("fallback parser: good manifest clean (%r)" % fb, fb == [])
     fb_bad = validate(_mini_yaml(BAD_MANIFEST))
     expect("fallback parser: bad manifest flagged", len(fb_bad) > 0)
+
+    # ------------------------------------------------------------------ #
+    # FIFTH REVIEW PASS (2026-09-02) — the fallback parser could not read
+    # what safe_dump writes.
+    #
+    # Every manifest in this repo is `yaml.safe_dump` output, and safe_dump
+    # produces two shapes the shipped subset parser had no rule for: a scalar
+    # FOLDED across lines at `width`, and a block SEQUENCE at its parent key's
+    # own indentation. Each one made `parse_map` break early, so everything
+    # after it — `jobs:` included — was silently dropped. `hooks/lane-guard.sh`
+    # loads a manifest through this very function on an interpreter without
+    # PyYAML; it read "no jobs", resolved no lane, and allowed every out-of-lane
+    # write. FOLDED_MANIFEST below is literal safe_dump(width=100) output.
+    folded = _mini_yaml(FOLDED_MANIFEST)
+    expect("fallback parser: a folded plain scalar is joined, not truncated",
+           folded.get("feature") == FOLDED_FEATURE)
+    expect("fallback parser: a folded list item is joined too",
+           folded.get("acceptance_criteria") == [FOLDED_CRITERION])
+    expect("fallback parser: the document SURVIVES the fold (jobs present)",
+           [j.get("id") for j in (folded.get("jobs") or [])] == ["guard-honest"])
+    expect("fallback parser: the folded job's write_allowed lane is exact — "
+           "this is the value the lane guard enforces on",
+           folded["jobs"][0].get("write_allowed")
+           == ["hooks/lane-guard.sh", "tests/test-lane-guard.sh"])
+
+    # A TRUNCATED PARSE IS NOT A MANIFEST WITH NO JOBS. Multi-line flow
+    # sequences are outside this parser's subset, so it recovers no jobs from
+    # this document — and it must SAY SO rather than hand back a jobless
+    # mapping that every caller reads as "nothing to enforce".
+    _flow_jobs = "run_id: x\njobs: [\n  {id: a}\n]\n"
+    try:
+        _mini_yaml(_flow_jobs)
+        _truncation_raised = ""
+    except ValueError as _exc:
+        _truncation_raised = str(_exc)
+    expect("fallback parser: a top-level `jobs:` that yields no jobs RAISES",
+           "TRUNCATED, not empty" in _truncation_raised)
+    expect("...and the error says what to do about it (PyYAML)",
+           "PyYAML" in _truncation_raised)
+    expect("an explicitly empty `jobs: []` is parsed faithfully, not rejected",
+           _mini_yaml("run_id: x\njobs: []\n") == {"run_id": "x", "jobs": []})
+    expect("a document with no top-level `jobs:` at all is untouched by the check",
+           _mini_yaml("run_id: x\n") == {"run_id": "x"})
+
+    # The fixture is only evidence if it really is what safe_dump writes. When
+    # PyYAML is importable, re-dump it and compare byte for byte; the CI floor
+    # job installs PyYAML, so this runs there.
+    try:
+        import yaml as _y
+    except ImportError:  # pragma: no cover - exercised on a PyYAML-less box
+        expect("safe_dump cross-check SKIPPED — no PyYAML on this interpreter",
+               True)
+    else:
+        _redump = _y.safe_dump(_y.safe_load(FOLDED_MANIFEST), width=100,
+                               sort_keys=False, allow_unicode=True,
+                               default_flow_style=False)
+        expect("the folded fixture IS safe_dump(width=100) output, byte for byte",
+               _redump == FOLDED_MANIFEST)
+        expect("the fallback parser agrees with PyYAML on the folded manifest",
+               _y.safe_load(FOLDED_MANIFEST) == folded)
 
     # --- v2.12 (B1): optional per-job advisor block ---
     # A job WITHOUT an advisor block stays valid (backward compat): GOOD_MANIFEST

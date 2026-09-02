@@ -1285,22 +1285,38 @@ def _implement_prompt(job, plan):
     lines.append("FIRST COMMAND, BEFORE ANY OTHER TOOL CALL — register your lane.")
     lines.append("This is what lets `hooks/lane-guard.sh` resolve which job an")
     lines.append("out-of-lane write belongs to. Without it the guard resolves")
-    lines.append("nothing, fails open, and silently allows every write:")
+    lines.append("nothing, fails open, and silently allows every write.")
     lines.append("")
-    lines.append("```bash")
-    # ONE LINE. The clamp matches a literal command prefix, and the runtime
-    # refuses a command whose structure it cannot verify — a backslash-newline
-    # continuation is exactly that. This block used to render across three lines
-    # with `\` continuations and the very first command of a real run
-    # (2026-09-02, run r8) was DENIED for it, before the job could register at
-    # all. The AGENT layer's isolation, not the manifest's: register-lane uses it
-    # to decide both where to pin the baseline and whether to take the
+    # A LITERAL PATH, NEVER A SHELL SUBSTITUTION. The clamp matches a literal
+    # command prefix and refuses a command whose structure it cannot verify;
+    # `"$PWD"` and `$(...)` are exactly that structure, so the very first command
+    # of a real run (2026-09-02, run r9) was DENIED for the `--cwd "$PWD"` this
+    # block used to render — before the job could register at all, which is the
+    # one failure that silently disarms the lane guard for the whole job. `pwd`
+    # is itself an admitted form (IMPLEMENT_SHELL), so the worker runs it and
+    # pastes what it printed.
+    #
+    # The isolation below is the AGENT layer's, not the manifest's: register-lane
+    # uses it to decide both where to pin the baseline and whether to take the
     # pre-existing snapshot, and a depends_on job runs its agent in the project
     # checkout while declaring `worktree` in the manifest — passing the manifest
     # value here meant the job that most needs the snapshot, the one gated in a
     # shared already-dirty tree, was the only one that never got it.
-    lines.append('%s -B %s register-lane --run-dir %s --job-id %s --cwd "$PWD" '
-                 '--repo-root %s --isolation %s'
+    lines.append("Run `pwd` first — it is admitted — and write the absolute path")
+    lines.append("it prints in place of `<ABSOLUTE_CWD>` below, LITERALLY. The")
+    lines.append("clamp refuses shell substitution of any kind: a variable")
+    lines.append("expansion or a nested command is structure it cannot verify,")
+    lines.append("and a real run's very first command was denied for exactly")
+    lines.append("that — before the job could register, which leaves the lane")
+    lines.append("guard with nothing to resolve for the rest of the job.")
+    lines.append("")
+    lines.append("```bash")
+    lines.append("pwd")
+    lines.append("```")
+    lines.append("")
+    lines.append("```bash")
+    lines.append('%s -B %s register-lane --run-dir %s --job-id %s '
+                 '--cwd <ABSOLUTE_CWD> --repo-root %s --isolation %s'
                  % (plan["python"], plan["emitter"], plan["run_dir"], job["id"],
                     plan["repo_root"],
                     "worktree" if job.get("agent_isolation") == "worktree" else "direct"))
@@ -1313,8 +1329,6 @@ def _implement_prompt(job, plan):
     lines.append("Run Python with `-B` (or export PYTHONDONTWRITEBYTECODE=1) for EVERY")
     lines.append("python command you issue: the scope gate forgives no path by")
     lines.append("extension, so a stray .pyc left outside your lane BLOCKS your job.")
-    lines.append("Keep every admitted command on ONE line — the clamp matches a literal")
-    lines.append("prefix, and a backslash-newline continuation was denied in a real run.")
     lines.append("")
     if job["backend"] != "claude" and job["launch_command"]:
         lines.append("THIS JOB RUNS ON AN EXTERNAL BACKEND (%s)." % job["backend"])
@@ -4448,13 +4462,31 @@ def selftest():
         _bprompt = _implement_prompt(clamped["waves"][0][0], clamped)
         _check("the register-lane command in the prompt carries -B",
                "/usr/bin/python3 -B " in _bprompt, _bprompt[:400])
-        _check("the register-lane command in the prompt is ONE line (a "
-               "backslash-newline continuation is denied by the clamp)",
-               " \\\n" not in _bprompt and "register-lane --run-dir" in _bprompt)
+        # FIFTH REVIEW PASS (2026-09-02): the clamp refuses SHELL SUBSTITUTION,
+        # and this prompt used to hand the worker `--cwd "$PWD"`. Run r9's very
+        # first command was denied for it — the one denial that leaves the whole
+        # job unregistered and the lane guard disarmed. The prompt now tells the
+        # worker to run `pwd` (an admitted form) and paste a literal path.
+        #
+        # The old "keep every command on ONE line" rule went with it: it blamed
+        # a backslash-newline continuation for a denial that substitution caused,
+        # and it contradicted this emitter's own external launch commands, which
+        # `_shell_join` renders with ` \` continuations on purpose.
+        _check("the register-lane command in the prompt takes a LITERAL --cwd, "
+               "not a shell substitution",
+               "--cwd <ABSOLUTE_CWD>" in _bprompt and "register-lane --run-dir"
+               in _bprompt, _bprompt[:600])
+        _check("the rendered prompt spells no shell substitution ANYWHERE — not "
+               "even as an example of what not to write",
+               "$PWD" not in _bprompt and "$(" not in _bprompt, _bprompt)
+        _check("the Implement prompt tells the worker to run `pwd` first",
+               "Run `pwd` first" in _bprompt and "\npwd\n" in _bprompt)
+        _check("the Implement prompt says WHY: the clamp refuses substitution",
+               "refuses shell substitution" in _bprompt)
         _check("the Implement prompt tells the worker to run Python with -B",
                "PYTHONDONTWRITEBYTECODE=1" in _bprompt and "`-B`" in _bprompt)
-        _check("the Implement prompt tells the worker to keep a command on ONE line",
-               "ONE line" in _bprompt)
+        _check("the retired ONE-line rule is gone from the prompt",
+               "ONE line" not in _bprompt)
         _check("the gate command handed to the Gate stage carries -B",
                " -B " in _gate_command(clamped["waves"][0][0], clamped))
 

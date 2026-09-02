@@ -780,10 +780,15 @@ def _selftest():
                "src/__pycache__/id_rsa" in violations)
         expect("no carve-out: a real .py outside the lane still BLOCKS",
                "evil.py" in violations)
-        # The two names are SPLIT so that `grep -rn <name> scripts hooks tests`
-        # — the acceptance check for "the carve-outs are gone" — stays clean
-        # while this regression assertion keeps working.
-        _gone = ("is_bytecode" + "_noise", "PIPELINE_" + "BOOKKEEPING")
+        # SPELLED PLAINLY (fifth review pass, 2026-09-02). These two names used
+        # to be written as `"is_bytecode" + "_noise"` so that a bare
+        # `grep -rn <name> scripts hooks tests` would come up empty — which made
+        # the test that PROVES the carve-outs are gone unreadable in order to
+        # protect an acceptance check that was matching the wrong thing. The
+        # acceptance grep is definition-scoped instead, and this assertion says
+        # what it means:
+        #     grep -rnE '^PIPELINE_BOOKKEEPING\s*=' scripts hooks   # -> nothing
+        _gone = ("is_bytecode_noise", "PIPELINE_BOOKKEEPING")
         expect("no carve-out: no exemption predicate and no name list survives",
                not any(hasattr(sys.modules[__name__], n) for n in _gone))
         # The pipeline's own outcome streams are forgiven by nothing either: the

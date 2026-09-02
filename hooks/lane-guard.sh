@@ -135,7 +135,23 @@
 #
 # The glob matcher is IMPORTED from scripts/compound-v-scope-check.py, never
 # reimplemented: two glob engines that disagree is a bug factory, and that one
-# has reproduced-exploit selftests behind it.
+# has reproduced-exploit selftests behind it. The YAML loader is imported from
+# scripts/compound-v-validate-manifest.py for the same reason.
+#
+# READING THAT MANIFEST NEEDS PyYAML, AND THIS HOOK NOW ASKS FOR IT
+# ----------------------------------------------------------------
+# Without PyYAML the loader falls back to an embedded SUBSET parser, and until
+# the fifth review pass (2026-09-02) that parser could not read the shape
+# `yaml.safe_dump` writes -- a folded scalar, or a block sequence at its parent
+# key's own indent. The parse stopped at the first one and every later key,
+# `jobs:` included, was dropped. Pointed at a real run's manifest by a
+# `command -v python3` that happened to be a Homebrew build with no PyYAML, this
+# guard therefore read a manifest with NO JOBS, resolved no lane, and failed
+# open on every out-of-lane write. Both halves are fixed: the subset parser
+# reads safe_dump's output and raises instead of truncating, and
+# `load_manifest_data` below PREFERS an interpreter that has PyYAML, saying so
+# by path in the log when the one it is running under does not. See the
+# interpreter-selection block for why the preference is resolved lazily.
 #
 # ENV
 #   CV_LANE_MAP        explicit lane-map JSON (overrides discovery)
@@ -146,7 +162,15 @@
 #                      Defaults OUTSIDE the repo on purpose: a guard that logs
 #                      into the worktree would create the very untracked file
 #                      the scope gate then blocks the job for.
-#   CV_PYTHON          interpreter override
+#   CV_VALIDATE_MANIFEST  path to compound-v-validate-manifest.py (the YAML
+#                      loader)
+#   CV_PYTHON          interpreter override. Honoured VERBATIM: when it is set
+#                      it is the only candidate, and no PyYAML preference
+#                      overrides it.
+#   CV_PY_CANDIDATES   exported by this script, read by the payload: the
+#                      interpreter paths, in preference order, that the manifest
+#                      read may fall back to when this one has no PyYAML. Not an
+#                      input -- set CV_PYTHON to choose an interpreter.
 
 # No `set -e`: this hook must never fail closed.
 set -uo pipefail
@@ -188,11 +212,46 @@ if mkdir -p "$CV_PYCACHE_DIR" 2>/dev/null; then
   trap 'rm -rf -- "$CV_PYCACHE_DIR"' EXIT
 fi
 
+# WHICH PYTHON IS A CORRECTNESS QUESTION, NOT A TASTE ONE (fifth review pass,
+# 2026-09-02).
+#
+# This hook reads the acting job's lane out of a YAML manifest. With PyYAML the
+# read is exact; without it the repo's embedded SUBSET parser runs, and a subset
+# parser is defined by what it cannot read. On the machine this was found on,
+# `command -v python3` resolved to a Homebrew 3.14 with NO PyYAML while
+# /usr/bin/python3 (which ships it on macOS) sat right beside it — so the guard
+# picked the one interpreter that could not read the manifest it was pointed at,
+# parsed no jobs, and FAILED OPEN on every out-of-lane write of a real run.
+#
+# Two halves fix that, and both are needed: the subset parser now reads what
+# `yaml.safe_dump` writes (see compound-v-validate-manifest.py), and PyYAML is
+# PREFERRED here so the subset parser is the last resort it was meant to be.
+#
+# WHY THE PREFERENCE IS RESOLVED LAZILY, IN PYTHON, RATHER THAN BY PROBING HERE.
+# Probing a candidate costs a whole interpreter start plus a PyYAML import, and
+# this hook runs on EVERY Write/Edit/Bash call in every session. Paying that on
+# the unresolved path — the ordinary human session, ~47 ms, the only path a
+# session that never dispatches ever takes — would roughly double the ambient
+# cost of the plugin to answer a question that path never asks. So bash only
+# ORDERS the candidates (free) and exports them; `_load_manifest_data` in the
+# payload below consults the list at the one moment yaml matters, which is after
+# a job has already resolved. `CV_PYTHON`, when set, is honoured verbatim and is
+# the ONLY candidate: an explicit override exists to be obeyed, and a hook that
+# second-guessed it could not be pointed at a chosen interpreter by a test.
 PY="${CV_PYTHON:-}"
+CV_PY_CANDIDATES="$PY"
 if [ -z "$PY" ]; then
-  PY="$(command -v python3 2>/dev/null || true)"
+  _cv_path_py="$(command -v python3 2>/dev/null || true)"
+  for _cv_cand in /usr/bin/python3 "$_cv_path_py"; do
+    [ -n "$_cv_cand" ] || continue
+    [ -x "$_cv_cand" ] || continue
+    case ":$CV_PY_CANDIDATES:" in *":$_cv_cand:"*) continue ;; esac
+    CV_PY_CANDIDATES="${CV_PY_CANDIDATES:+$CV_PY_CANDIDATES:}$_cv_cand"
+  done
+  PY="${CV_PY_CANDIDATES%%:*}"
   [ -n "$PY" ] || PY=/usr/bin/python3
 fi
+export CV_PY_CANDIDATES
 
 # Read the Python source into a variable WITHOUT a $(...) command substitution:
 # bash parses the inside of $( ) even around a quoted heredoc, and a bare
@@ -550,10 +609,13 @@ def record_unresolved(map_path, agent_id, cwd, tool):
                 pass
 
 
-def write_allowed_for(manifest_path, job_id):
-    """Read the job's lane out of the manifest. Reuses the repo's own YAML
-    loader (scripts/compound-v-validate-manifest.py) rather than a third
-    parser."""
+def repo_loader():
+    """The repo's own YAML loader (scripts/compound-v-validate-manifest.py).
+
+    Never a third parser: two YAML parsers that disagree about what a lane is
+    would be a bug factory, and that module's `load_yaml` already prefers PyYAML
+    and carries the subset parser's selftests.
+    """
     import importlib.util
     src = os.environ.get("CV_VALIDATE_MANIFEST")
     if not src or not os.path.isfile(src):
@@ -561,8 +623,90 @@ def write_allowed_for(manifest_path, job_id):
     spec = importlib.util.spec_from_file_location("_cv_vm", src)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    return mod
+
+
+# Handed to a yaml-capable candidate interpreter: YAML in, JSON out. `default`
+# keeps a date or a similar non-JSON scalar from turning a readable manifest
+# into an unreadable one -- a lane is a list of strings either way.
+_YAML_TO_JSON = (
+    "import json,sys,yaml\n"
+    "sys.stdout.write(json.dumps(yaml.safe_load(open(sys.argv[1]).read()),"
+    " default=str))\n"
+)
+
+
+def _yaml_via(interpreter, manifest_path):
+    """Parse with another interpreter's PyYAML, or None if that cannot be done."""
+    import subprocess
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            [interpreter, "-B", "-c", _YAML_TO_JSON, manifest_path],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out, _err = proc.communicate(timeout=5)
+    except Exception as exc:  # noqa: BLE001 - a guard path never raises
+        # Including a timeout: PreToolUse has a budget, and a candidate that
+        # hangs must not take the session with it.
+        if proc is not None:
+            try:
+                proc.kill()
+                proc.communicate(timeout=1)
+            except Exception:
+                pass
+        log("candidate %s could not parse the manifest: %r" % (interpreter, exc))
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        return json.loads(out.decode("utf-8", "replace"))
+    except Exception:
+        return None
+
+
+def load_manifest_data(manifest_path):
+    """The manifest as a mapping, PREFERRING AN INTERPRETER THAT HAS PyYAML.
+
+    The embedded subset parser is a subset by definition, so it is the last
+    resort and never the silent default. Order:
+
+      1. PyYAML in THIS process -- the ordinary case, and free;
+      2. failing that, the first CV_PY_CANDIDATES entry whose PyYAML can read
+         the file (announced BY PATH in the log, because the interpreter this
+         hook was started under being yaml-less is the fact worth knowing);
+      3. failing that, the repo's subset parser, which raises rather than hand
+         back a truncated document.
+
+    Step 2 costs one subprocess and is reached only after a job has resolved --
+    the unresolved path every human session takes never gets here at all.
+    """
     with open(manifest_path, "r") as fh:
-        data = mod.load_yaml(fh.read())
+        text = fh.read()
+    try:
+        import yaml  # noqa: F401 - presence is the whole question
+    except ImportError:
+        pass
+    else:
+        return repo_loader().load_yaml(text)
+
+    log("PyYAML unavailable in %s; the embedded parser reads a SUBSET of YAML, "
+        "so a yaml-capable interpreter is preferred" % sys.executable)
+    mine = os.path.realpath(sys.executable or "")
+    for cand in (os.environ.get("CV_PY_CANDIDATES") or "").split(os.pathsep):
+        if not cand or os.path.realpath(cand) == mine:
+            continue
+        data = _yaml_via(cand, manifest_path)
+        if data is not None:
+            log("manifest parsed by %s (PyYAML)" % cand)
+            return data
+    log("no candidate interpreter has PyYAML; falling back to the embedded "
+        "subset parser for %s" % manifest_path)
+    return repo_loader().load_yaml(text)
+
+
+def write_allowed_for(manifest_path, job_id):
+    """Read the job's lane out of the manifest."""
+    data = load_manifest_data(manifest_path)
     jobs = (data or {}).get("jobs") or []
     if isinstance(jobs, dict):
         jobs = [dict(v, id=k) for k, v in jobs.items() if isinstance(v, dict)]
