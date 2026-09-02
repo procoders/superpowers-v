@@ -4,6 +4,33 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [3.3.2] - 2026-09-02
+
+### Fixed — V-memory was 43% machine output
+
+Asked whether recall still works under 3.x's dogfooding cadence, the measurement said no.
+
+`docs/superpowers/execution/<run>/` carries two machine-generated shapes that end in `.md`: the per-job worker prompt the emitter renders, and the `spec.md` / `plan.md` a run keeps when its real spec lives elsewhere (the manifest's `spec_path` points into `docs/superpowers/specs/`). On this repository, after a night of dogfooding, that was **71 worker prompts and 44 run-directory stubs out of 267 indexable files — 43% of the corpus**, and the prompts are ~40 lines of near-identical boilerplate.
+
+The effect, measured on a real query rather than argued:
+
+```
+"scope gate write_allowed violation"
+before:  1 useful result, then FIVE near-identical worker prompts
+after:   the PRD's Scope Gate section, a dogfood review, the architecture doc,
+         the implementation plan, another dogfood review
+```
+
+Both are excluded from the **index** now. They stay in git, stay in the audit trail, stay readable — they are simply not what anyone means by *"what do we know about X"*. Recall is evidence for planning and review, and evidence that is 43% copies of one template is worse than a smaller corpus.
+
+Deliberately **not** excluded: `docs/superpowers/dogfood/**`, which is hand-written and the densest record this project has of what actually went wrong. A query for *"why was a red test floor merged"* now returns that section first.
+
+Index: 196 → 152 files, 1712 chunks, all human prose.
+
+### Known
+
+The dense lane holds **0 vectors** — the venv is bootstrapped but nothing has been embedded, so recall is FTS5-only and the `>= 80 vectors` scale gate has never engaged. That is unchanged by this release and unrelated to it; `/v:memory-refresh --bootstrap` is what populates it.
+
 ## [3.3.1] - 2026-09-02
 
 > v3.3.0 was cut automatically mid-session, when its version bump reached `main`, and

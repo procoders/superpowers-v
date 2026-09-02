@@ -243,6 +243,50 @@ def _in_git_worktree(root: str) -> bool:
         return False
 
 
+# --------------------------------------------------------------------------- #
+# WHAT IS PROSE, AND WHAT IS EMITTER OUTPUT THAT HAPPENS TO END IN .md
+#
+# `docs/superpowers/execution/<run>/` is a run's audit trail, and two things in it
+# are machine-generated: the per-job worker prompt that `compound-v-emit-workflow.py`
+# renders, and the `spec.md` / `plan.md` a run carries when its real spec lives
+# elsewhere (`spec_path` in the manifest usually points into
+# `docs/superpowers/specs/`).
+#
+# Measured on this repository 2026-09-02, after a night of dogfooding: 71 worker
+# prompts and 44 run-directory stubs out of 267 indexable files — **43% of the
+# recall corpus**, and the prompts are ~40 lines of near-identical boilerplate.
+# A query for "scope gate write_allowed violation" returned five worker prompts in
+# its top six, burying the one document that actually explains the scope gate.
+#
+# Recall is evidence for planning and review. Evidence that is 43% copies of one
+# template is worse than a smaller corpus, so these are excluded from the INDEX.
+# They stay in git, stay in the audit trail, and stay readable — they are simply not
+# what anyone means by "what do we know about X".
+#
+# NOT excluded: `docs/superpowers/dogfood/**` (written by hand, and the densest
+# record this project has of what actually went wrong), and every run-directory file
+# that is not one of these two shapes.
+_EXEC_PREFIX = DOCS_REL.rstrip("/") + "/execution/"
+
+
+def is_generated_run_artifact(rel: str) -> bool:
+    """True for emitter-rendered prose inside a run directory."""
+    rel = str(rel or "").replace("\\", "/")
+    if not rel.startswith(_EXEC_PREFIX):
+        return False
+    tail = rel[len(_EXEC_PREFIX):]
+    parts = tail.split("/")
+    if len(parts) < 2:
+        return False
+    rest = parts[1:]
+    # <run>/jobs/<job>.prompt.md — rendered by render_worker_prompt()
+    if len(rest) == 2 and rest[0] == "jobs" and rest[1].endswith(".prompt.md"):
+        return True
+    # <run>/spec.md and <run>/plan.md — the manifest's spec_path/plan_path point at
+    # the real ones; these are the run's local copies or stubs.
+    return len(rest) == 1 and rest[0] in ("spec.md", "plan.md")
+
+
 def tracked_files(root: str):
     """Repo-relative *.md/*.jsonl under docs/superpowers, GIT-TRACKED only.
 
@@ -267,7 +311,9 @@ def tracked_files(root: str):
                 )
                 if roots.returncode == 0:
                     rels += [p for p in roots.stdout.decode("utf-8", "replace").split("\0") if p]
-                return sorted(r for r in rels if r.endswith(".md") or r.endswith(".jsonl"))
+                return sorted(r for r in rels
+                              if (r.endswith(".md") or r.endswith(".jsonl"))
+                              and not is_generated_run_artifact(r))
         except (OSError, subprocess.SubprocessError):
             pass
         return []  # fail closed: inside git but ls-files failed — index nothing, never untracked
@@ -276,7 +322,9 @@ def tracked_files(root: str):
     for dirpath, _dirs, files in os.walk(docs_abs):
         for f in files:
             if f.endswith(".md") or f.endswith(".jsonl"):
-                rels.append(os.path.relpath(os.path.join(dirpath, f), root))
+                rel = os.path.relpath(os.path.join(dirpath, f), root)
+                if not is_generated_run_artifact(rel):
+                    rels.append(rel)
     return sorted(rels)
 
 
@@ -1239,6 +1287,27 @@ def _selftest() -> int:
         shutil.rmtree(tmp, ignore_errors=True)
 
     # onboarding: doc_type_for clean labels for root files (no filename leak)
+    # --- generated run artefacts are not prose (3.3.2) --------------------
+    D = DOCS_REL.rstrip("/")
+    check("worker prompt is generated",
+          is_generated_run_artifact(D + "/execution/r1/jobs/impl.prompt.md"))
+    check("run-dir spec stub is generated",
+          is_generated_run_artifact(D + "/execution/r1/spec.md"))
+    check("run-dir plan stub is generated",
+          is_generated_run_artifact(D + "/execution/r1/plan.md"))
+    check("a real spec is NOT generated",
+          not is_generated_run_artifact(D + "/specs/2026-01-01-thing-design.md"))
+    check("a dogfood record is NOT generated",
+          not is_generated_run_artifact(D + "/dogfood/2026-01-01-run.md"))
+    check("an architecture doc is NOT generated",
+          not is_generated_run_artifact(D + "/architecture/native-mechanisms.md"))
+    check("a run-dir file that is neither shape is NOT generated",
+          not is_generated_run_artifact(D + "/execution/r1/notes.md"))
+    check("a nested jobs path outside a run dir is NOT generated",
+          not is_generated_run_artifact(D + "/jobs/impl.prompt.md"))
+    check("a non-execution path is never generated",
+          not is_generated_run_artifact("README.md"))
+
     check("doc_type root agents", doc_type_for("AGENTS.md") == "agents")
     check("doc_type root claude", doc_type_for("CLAUDE.md") == "claude")
     check("doc_type root conventions", doc_type_for("CONVENTIONS.md") == "conventions")
