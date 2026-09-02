@@ -73,7 +73,18 @@ _bounded() {
     waited=$((waited + 1))
   done
   if kill -0 "$pid" 2>/dev/null; then
+    # TERM, a SHORT grace, then KILL. A bare `wait` after TERM is not a bound: a
+    # child that traps or ignores TERM holds this hook until the registration's
+    # own timeout kills it, which is precisely the stall the bound exists to
+    # prevent. Reported by a cross-model review against the claim two comments up.
     kill -TERM "$pid" 2>/dev/null
+    local grace=0
+    while [ "$grace" -lt 10 ]; do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.1
+      grace=$((grace + 1))
+    done
+    kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
     wait "$pid" 2>/dev/null
     rm -f "$out" 2>/dev/null
     return 1

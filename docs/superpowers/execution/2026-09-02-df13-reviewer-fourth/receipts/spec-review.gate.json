@@ -1,0 +1,11 @@
+{
+  "baseline_commit": "eb9b9815dbb07c3194cb204b295c824e7bb0fed2",
+  "diff_digest": "sha256:cc5bf7d6becc5b76fada79241c0fcd05dd5ccb22f29b6c4ad8da25b17d31f46c",
+  "exit_code": 1,
+  "job_id": "spec-review",
+  "raw_stdout": "{\n  \"verdict\": \"blocked\",\n  \"mode\": \"direct\",\n  \"baseline\": \"eb9b9815dbb07c3194cb204b295c824e7bb0fed2\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df13-reviewer-fourth-review.md\",\n    \"docs/superpowers/execution/2026-09-02-df14-floor-fails/manifest.yaml\",\n    \"docs/superpowers/execution/2026-09-02-df14-floor-fails/plan.md\",\n    \"docs/superpowers/execution/2026-09-02-df14-floor-fails/spec.md\",\n    \"docs/superpowers/execution/2026-09-02-df15-dep-fails/plan.md\",\n    \"docs/superpowers/execution/2026-09-02-df15-dep-fails/spec.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df13-reviewer-fourth-review.md\"\n  ],\n  \"violations\": [\n    \"docs/superpowers/execution/2026-09-02-df14-floor-fails/manifest.yaml\",\n    \"docs/superpowers/execution/2026-09-02-df14-floor-fails/plan.md\",\n    \"docs/superpowers/execution/2026-09-02-df14-floor-fails/spec.md\",\n    \"docs/superpowers/execution/2026-09-02-df15-dep-fails/plan.md\",\n    \"docs/superpowers/execution/2026-09-02-df15-dep-fails/spec.md\"\n  ]\n}\n",
+  "realised_commit": "eb9b9815dbb07c3194cb204b295c824e7bb0fed2",
+  "source": "gate-receipt",
+  "verdict": "blocked",
+  "worktree": ""
+}

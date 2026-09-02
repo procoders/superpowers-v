@@ -1705,9 +1705,15 @@ def write_preexisting(snapshot_path, repo_root, paths):
     "this file, unchanged" instead of "this filename, whatever it now says". A
     file whose bytes moved is no longer exempt and is gated like any other write.
 
-    A path whose digest cannot be taken (unreadable, a directory, already gone) is
-    written WITHOUT one and is therefore never exempted — fail closed into a
-    stricter gate, the same rule the snapshot itself follows.
+    A DIRECTORY is written as ``dir  <path>`` and exempted BY NAME: git reports an
+    untracked directory as one entry, a directory has no bytes to digest, and
+    dropping it broke the pre-existing-dirt exemption that had worked since 3.0
+    (dogfood 10). Anything else whose digest cannot be taken — unreadable, already
+    gone — is written with NO line at all and is therefore never exempted: fail
+    closed into a stricter gate, the same rule the snapshot itself follows.
+
+    An earlier version of this docstring said directories were "never exempted",
+    which was the opposite of what the code beneath it does.
     """
     lines = []
     for rel in paths:
@@ -1760,51 +1766,48 @@ def read_preexisting_unchanged(snapshot_path, repo_root):
     return keep
 
 
-# The pipeline's own files inside a run directory. ONE of them is a lever a worker
-# could pull, and it stays digest-bound no matter what:
+# THE EXACT, CLOSED LIST of run-directory files that are exempt BY NAME.
 #
-#   jobs/<id>.baseline     the commit the gate measures against
+# The first version exempted every descendant of the run directory except the
+# baseline pin, and a cross-model review found the hole in one move:
+# `manifest.yaml` lives there, and the manifest DEFINES `write_allowed`. A worker
+# could write out of lane, rewrite its own manifest to widen the lane, and both the
+# gate and the integration authority would then read the widened manifest and agree
+# it was in scope. The baseline and the digest could stay perfectly honest, because
+# neither of them binds the document that says what "in scope" means.
 #
-# THE EXEMPTION LIST ITSELF CANNOT BE DIGEST-BOUND, and pretending otherwise cost
-# two dogfood runs. `preexisting/<id>.txt` records digests INCLUDING ITS OWN, then
-# gets appended to by the run-directory listing; and `<id>.verified.txt` is written
-# by the gate after the listing is built, so it can never appear in it. Both are
-# self-referential: a list written by the exemption machinery cannot be exempted by
-# a list computed before it exists.
+# So the by-name pass is now a closed list of exactly three files, and every other
+# file in the run directory — manifest.yaml included — falls back to the
+# digest-bound listing taken at register time. Rewrite the manifest and its digest
+# stops matching, the exemption is lost, and the write is a violation.
 #
-# So both are exempt by name, and the honest statement of the limit is this: in
-# `direct` mode the worker can write anywhere in the tree, so NO file-based
-# exemption list is tamper-proof — a digest-bound one stored in the same writable
-# tree is not either. What actually backstops this is
-# `compound-v-integration-gate.py`, which re-derives the diff from git and refuses a
-# receipt whose bindings disagree, and the baseline pin above, which is the one
-# value a forged exemption cannot help with. The cross-model review was right that
-# names alone are weak; it is equally true that digests in a writable tree are not
-# strong. The architecture's answer is the authority, not the list.
+# Why these three and no others:
+#   state.json                     shared; every job's Record rewrites it, so a
+#                                  digest taken at register time can never match
+#   preexisting/<id>.txt           the exemption list itself: it records digests
+#                                  INCLUDING ITS OWN and is appended to afterwards
+#   preexisting/<id>.verified.txt  written BY the gate, after the list that would
+#                                  have to contain it has already been built
 #
-# Everything else in the run directory is pipeline territory that the pipeline
-# legitimately rewrites DURING the run — `state.json` is shared, so a sibling job's
-# Record rewrites it between this job registering and its gate running, and a
-# digest recorded at register time can never match again. Dogfood 10 hit exactly
-# that: a two-wave run blocked its own reviewer over `state.json` and over
-# `preexisting/<id>.verified.txt`, a file the GATE writes after registration.
-#
-# So those are exempt by name, and the two levers are not. A worker writing into
-# some OTHER run's directory is still a violation — this only ever covers the run
-# the job belongs to.
-_DIGEST_BOUND_SUFFIXES = ("/%s.baseline", "/preexisting/%s.txt")
+# All three are self-referential or shared — not choices, consequences. The honest
+# limit stands: in `direct` mode a worker can write anywhere, so no file-based list
+# is tamper-proof. What backstops it is `compound-v-integration-gate.py`, which
+# re-derives the diff from git, plus the baseline pin, which stays digest-bound.
 
 
 def run_dir_owned_by_name(rel, run_dir_rel, job_id):
-    """True iff ``rel`` is pipeline-owned in THIS run dir and exempt by name."""
+    """True iff ``rel`` is one of the three self-referential/shared pipeline files
+    in THIS run's directory. Everything else — manifest, receipts, results, prompts,
+    and anything a worker invents — is NOT exempt here."""
     if not run_dir_rel:
         return False
     prefix = run_dir_rel.rstrip("/") + "/"
     if not rel.startswith(prefix):
         return False
-    if rel == "%sjobs/%s.baseline" % (prefix, job_id):
-        return False
-    return True
+    tail = rel[len(prefix):]
+    return tail in ("state.json",
+                    "preexisting/%s.txt" % job_id,
+                    "preexisting/%s.verified.txt" % job_id)
 
 
 def _preexisting_snapshot(root, python_bin):
@@ -1993,6 +1996,7 @@ def cmd_gate_receipt(argv):
     # Direct mode only: subtract what was already dirty when the job registered.
     # Never in worktree mode — a worktree starts clean, so a subtraction there could
     # only ever hide a real violation.
+    foreign = []
     pre = None
     if args.mode != "worktree":
         candidate = os.path.join(args.run_dir, "preexisting", "%s.txt" % args.job_id)
@@ -2043,6 +2047,29 @@ def cmd_gate_receipt(argv):
     rc, raw_stdout, err, parsed = _run_scope_check(
         args.scope_check, args.mode, root, baseline, allow, args.python, preexisting=pre
     )
+    # NAME THE OPERATOR'S FOOTPRINTS SEPARATELY.
+    #
+    # A `direct`-mode job measures the whole tree, so ANYTHING written while
+    # it runs is attributed to it — including another run's manifest that a
+    # human was preparing in the next terminal. That is not a gate bug; the
+    # gate cannot tell two writers apart. But the resulting refusal reads as
+    # "your job wrote five files it should not have", which is the opposite
+    # of what happened, and this has now confused three dogfood runs — all
+    # three mine.
+    #
+    # So paths under the execution root that belong to some OTHER run are
+    # still violations, and are additionally listed under
+    # `foreign_execution_paths` so the diagnosis is immediate. A worker that
+    # genuinely writes into another run's directory is caught exactly as
+    # before; only the explanation improves.
+    exec_root = "docs/superpowers/execution/"
+    this_run = os.path.basename(os.path.normpath(args.run_dir))
+    for p in ((parsed or {}).get("violations") or []):
+        if p.startswith(exec_root):
+            seg = p[len(exec_root):].split("/", 1)[0]
+            if seg and seg != this_run:
+                foreign.append(p)
+
     if baseline:
         digest, digest_err = compute_diff_digest(root, baseline)
     else:
@@ -2060,6 +2087,16 @@ def cmd_gate_receipt(argv):
     out["verdict"] = verdict
     out["exit_code"] = rc
     out["raw_stdout"] = raw_stdout
+    if foreign:
+        out["foreign_execution_paths"] = foreign
+        out["foreign_execution_note"] = (
+            "%d violation(s) live under another run's execution directory. A "
+            "`direct`-mode job measures the WHOLE tree, so anything written while it "
+            "ran is attributed to it — including files a human was preparing in "
+            "another terminal. These are still violations (a worker writing into "
+            "another run's directory must be caught), but if you were editing during "
+            "this run, they are yours, not the job's." % len(foreign)
+        )
     # The tree this gate MEASURED, carried forward to Record explicitly. Empty
     # for a direct job — that is a value, not a missing one, and Record branches
     # on the manifest's isolation rather than on whether this string is blank.
@@ -2585,8 +2622,16 @@ def cmd_record(argv):
             # would mask broken machinery as a job failure — the inverse of the
             # mistake being fixed here, and the more dangerous direction.
             try:
+                # LEADING JSON, not a bare parse: on a blocked verdict the scope
+                # gate prints its JSON and then a human "BLOCKED: n file(s)" tail,
+                # and a bare parse fails on that — which would make a receipt that
+                # reports real changed files look like no-work. The integration
+                # authority already learned this; the same rule applies here.
                 _rawtext = verdict.get("raw_stdout") or ""
-                _raw = json.loads(_rawtext) if _rawtext.strip() else None
+                _raw = None
+                if _rawtext.strip():
+                    _dec = json.JSONDecoder()
+                    _raw, _ = _dec.raw_decode(_rawtext.lstrip())
             except Exception:  # noqa: BLE001
                 _raw = None
             # BOTH shapes. The real receipt carries `changed` inside `raw_stdout`
@@ -2597,7 +2642,14 @@ def cmd_record(argv):
             # guard, reading only raw_stdout, waved it through.
             _saw_changes = bool((_raw or {}).get("changed")
                                 or (verdict or {}).get("changed"))
-            if job.get("write_allowed") and not _saw_changes:
+            # AND the gate must have PASSED. A cross-model review pointed out that
+            # `{"verdict":"error","exit_code":2,"worktree":"","raw_stdout":""}`
+            # became `blocked/no_work` for any job that declared lanes — so a failed
+            # gate, a missing checkout or a crashed scope checker was reported as
+            # "nothing is broken, the job did nothing". That is the masking this
+            # branch's own guard was supposed to prevent, one level up.
+            _gate_passed = str((verdict or {}).get("verdict") or "").lower() == "pass"
+            if job.get("write_allowed") and not _saw_changes and _gate_passed:
                 ack["no_work"] = True
                 ack["reason"] = (
                     "job %r declared %d write lane(s) and left no observable "
@@ -2844,6 +2896,7 @@ def cmd_finalize_wave(argv):
             }
             _save_state(run_dir, fresh, now=now)
 
+    merged_worktrees = {}
     approved = []
     for job_id in job_ids:
         job = _manifest_job(manifest, job_id) or {"id": job_id}
@@ -2879,6 +2932,12 @@ def cmd_finalize_wave(argv):
                 out["refused"].append(job_id)
                 out["reason"] = "merge-back failed for %s: %s" % (job_id, err)
                 break
+            # Remembered HERE, from the value merge_back actually used. The
+            # cleanup below must never re-read this from state.json — see the
+            # comment there. An idempotent re-finalize (`continue` above) never
+            # reaches this line, so a job whose work was already merged in an
+            # earlier pass is never a cleanup candidate either.
+            merged_worktrees[job_id] = worktree
         # A `direct` job changed the checkout in place; there is nothing to apply,
         # only something to commit.
         approved.extend(files)
@@ -2944,7 +3003,14 @@ def cmd_finalize_wave(argv):
     pruned, prune_errors = [], []
     if out["merged"] and not args.no_commit:
         for job_id in out["merged"]:
-            wt = ((state.get("jobs") or {}).get(job_id) or {}).get("worktree")
+            # THE PATH THAT WAS ACTUALLY MERGED, recorded locally at merge time —
+            # not re-read from state.json. A cross-model review called the re-read
+            # CRITICAL: `state.json` is exempt by name, so a worker can rewrite
+            # another job's `worktree` locator, and this loop would then
+            # `--force`-delete a REFUSED job's tree — destroying the one copy of
+            # work the refusal exists to preserve, which is the exact outcome the
+            # comment above promises cannot happen.
+            wt = merged_worktrees.get(job_id)
             if not (isinstance(wt, str) and wt.strip()):
                 continue
             wt = os.path.abspath(wt.strip())
@@ -3607,6 +3673,25 @@ def selftest():
                str(snap_lines))
         # 3.3.0 (dogfood 10): shared pipeline state is exempt BY NAME, because the
         # pipeline itself rewrites it mid-run; the two levers stay digest-bound.
+        # 3.3.0 (dogfood 13): another run's files, written by a HUMAN during a
+        # direct-mode job, are still violations — but named, so the diagnosis is
+        # instant instead of reading as "your job wrote five files it should not".
+        _fake_parsed = {"violations": [
+            "docs/superpowers/execution/OTHER-RUN/manifest.yaml",
+            "docs/superpowers/execution/THIS-RUN/jobs/x.baseline",
+            "src/app.py"]}
+        _exec_root = "docs/superpowers/execution/"
+        _foreign = [p for p in _fake_parsed["violations"]
+                    if p.startswith(_exec_root)
+                    and p[len(_exec_root):].split("/", 1)[0] != "THIS-RUN"]
+        _check("another run's path is flagged foreign",
+               _foreign == ["docs/superpowers/execution/OTHER-RUN/manifest.yaml"],
+               str(_foreign))
+        _check("this run's own path is NOT foreign",
+               "docs/superpowers/execution/THIS-RUN/jobs/x.baseline" not in _foreign)
+        _check("a source file outside the execution root is NOT foreign",
+               "src/app.py" not in _foreign)
+
         _check("state.json is pipeline-owned and exempt by name",
                run_dir_owned_by_name("docs/superpowers/execution/bk/state.json",
                                      "docs/superpowers/execution/bk", "d1") is True)
@@ -3618,6 +3703,19 @@ def selftest():
                run_dir_owned_by_name(
                    "docs/superpowers/execution/bk/jobs/d1.baseline",
                    "docs/superpowers/execution/bk", "d1") is False)
+        # CRITICAL from round 2: the manifest DEFINES write_allowed. Exempting it
+        # by name lets a worker widen its own lane and have both the gate and the
+        # authority agree, with an honest baseline and an honest digest.
+        _check("manifest.yaml is NOT exempt by name — it defines the lanes",
+               run_dir_owned_by_name("docs/superpowers/execution/bk/manifest.yaml",
+                                     "docs/superpowers/execution/bk", "d1") is False)
+        for _p in ("receipts/d1.gate.json", "results/d1.json",
+                   "jobs/d1.prompt.md", "dispatch.workflow.js",
+                   "preexisting/OTHER.txt", "anything-a-worker-invents"):
+            _check("run-dir %s is NOT exempt by name" % _p,
+                   run_dir_owned_by_name("docs/superpowers/execution/bk/" + _p,
+                                         "docs/superpowers/execution/bk",
+                                         "d1") is False)
         _check("the exemption list IS exempt by name — it cannot bind itself",
                run_dir_owned_by_name(
                    "docs/superpowers/execution/bk/preexisting/d1.txt",

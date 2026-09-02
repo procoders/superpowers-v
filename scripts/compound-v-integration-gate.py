@@ -667,7 +667,19 @@ def evaluate_job(job, state_job, run_dir, repo_root, scope_check):
         # verdicts refuse and neither re-derives; only the word and the remedy
         # differ, and the remedy matters: re-run the job, do not go hunting a
         # forgery that never happened.
-        if head_moved_under_job(receipt, observed_head, gate_root):
+        # STALE ONLY WHEN THE HEAD MOVE IS THE ONLY THING WRONG. The first version
+        # asked only "is realised_commit an ancestor of HEAD?", and a cross-model
+        # review showed what that lets through: a receipt with a FORGED
+        # baseline_commit, or an exit code contradicting its verdict, or raw
+        # evidence disagreeing with it, would be filed as `stale` — a race — purely
+        # because its realised_commit happened to be an ancestor. Ancestry may
+        # explain the HEAD mismatch and the digest mismatch that follows from it.
+        # It explains nothing else, and must not excuse anything else.
+        _race_only = all(
+            f.startswith("realised_commit ") or f.startswith("diff_digest ")
+            for f in faults
+        )
+        if _race_only and head_moved_under_job(receipt, observed_head, gate_root):
             out["verdict"] = "stale"
             out["reasons"].extend(faults)
             out["notes"].append(

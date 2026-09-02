@@ -284,7 +284,10 @@ def _scope_check():
 # Anything else that is ignored stays in the changed set and, matching no `when`
 # glob, resolves to `full_command` — the safe direction.
 _TEST_NOISE_PREFIXES = (".claude/worktrees/", ".worktrees/", ".v29-worktrees/")
-_TEST_NOISE_SUBSTRINGS = ("__pycache__/",)
+# A COMPONENT, not a substring: `fixtures_not__pycache__/` contains the string and
+# is not a bytecode cache, and dropping real generated fixtures from test selection
+# is exactly the silent narrowing this list was rewritten to avoid.
+_TEST_NOISE_COMPONENTS = ("__pycache__",)
 _TEST_NOISE_SUFFIXES = (".pyc", ".pyo")
 
 
@@ -298,7 +301,7 @@ def _is_test_noise(rel):
         r = r[2:]
     if any(r.startswith(p) for p in _TEST_NOISE_PREFIXES):
         return True
-    if any(sub in r for sub in _TEST_NOISE_SUBSTRINGS):
+    if any(part in _TEST_NOISE_COMPONENTS for part in r.split("/")):
         return True
     return any(r.endswith(suf) for suf in _TEST_NOISE_SUFFIXES)
 
@@ -2312,6 +2315,9 @@ def _selftest():
         expect("a source file is never noise",
                _is_test_noise("src/app.py") is False
                and _is_test_noise("tests/test_env.py") is False)
+        expect("__pycache__ must be a whole path COMPONENT",
+               _is_test_noise("src/__pycache__/a.txt") is True
+               and _is_test_noise("tests/fixtures_not__pycache__/data.json") is False)
         # `_gi`'s .gitignore is `build/` + `*.pyc`, so a harness-worktree path is
         # noise-SHAPED but not ignored there — and must survive. Both conditions
         # are required, which is what stops a real file under a similarly-named
