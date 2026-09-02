@@ -1,8 +1,0 @@
-{
-  "agents": {},
-  "manifest": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-02-df6-no-work/manifest.yaml",
-  "run_id": "2026-09-02-df6-no-work",
-  "worktrees": {
-    "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_062fb950-b7f-1": "writes-nothing"
-  }
-}
