@@ -1,0 +1,8 @@
+{
+  "agents": {},
+  "manifest": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-02-df2c-direct-retry/manifest.yaml",
+  "run_id": "2026-09-02-df2c-direct-retry",
+  "worktrees": {
+    "/Users/oleg/Dev/superpowers-v": "direct-writer"
+  }
+}

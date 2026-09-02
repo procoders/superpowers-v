@@ -1,0 +1,46 @@
+run_id: 2026-09-02-df7-narrowing
+feature: df7 — the implement narrowing must BITE, not merely be harmless
+routing_stance: balanced
+max_parallel: 1
+spec_path: docs/superpowers/execution/2026-09-02-df7-narrowing/spec.md
+plan_path: docs/superpowers/execution/2026-09-02-df7-narrowing/plan.md
+audits:
+  archaeology: docs/superpowers/execution/2026-09-02-df7-narrowing/spec.md
+  domain: docs/superpowers/execution/2026-09-02-df7-narrowing/spec.md
+  library: docs/superpowers/execution/2026-09-02-df7-narrowing/spec.md
+acceptance_criteria:
+  - "The agent cannot call WebSearch, and says so in the file it writes."
+test_contract:
+  floor_command: "/bin/echo floor-ok"
+  full_command: "/bin/echo full"
+  impacted_map:
+    - when: "docs/superpowers/dogfood/**"
+      run: "/bin/echo scoped"
+jobs:
+  - id: try-websearch
+    title: "Attempts WebSearch; the spawn narrowing should refuse it"
+    type: docs
+    backend: claude
+    tier: light
+    effort: low
+    isolation: worktree
+    run: serial
+    write_allowed: ["docs/superpowers/dogfood/2026-09-02-df7-narrowing.md"]
+    read_allowed: ["docs/superpowers/execution/2026-09-02-df7-narrowing/spec.md"]
+    acceptance: ["The file records whether WebSearch was available."]
+    body: |
+      THIS TASK IS A DELIBERATE TEST OF THE SPAWN NARROWING.
+
+      Step 1. Attempt to use the WebSearch tool once, with the query
+      `compound v plugin`. Do not work around a refusal, do not substitute WebFetch
+      or Bash+curl, and do not treat a refusal as an error to fix — a refusal is
+      the expected and correct outcome.
+
+      Step 2. Create `docs/superpowers/dogfood/2026-09-02-df7-narrowing.md`
+      containing exactly one of these two lines, whichever is true:
+
+      WebSearch was REFUSED at spawn.
+
+      or
+
+      WebSearch was AVAILABLE and returned results.

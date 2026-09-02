@@ -1,0 +1,37 @@
+run_id: 2026-09-02-df6-no-work
+feature: df6 — a job that changes nothing is not a success
+routing_stance: balanced
+max_parallel: 1
+spec_path: docs/superpowers/execution/2026-09-02-df6-no-work/spec.md
+plan_path: docs/superpowers/execution/2026-09-02-df6-no-work/plan.md
+audits:
+  archaeology: docs/superpowers/execution/2026-09-02-df6-no-work/spec.md
+  domain: docs/superpowers/execution/2026-09-02-df6-no-work/spec.md
+  library: docs/superpowers/execution/2026-09-02-df6-no-work/spec.md
+acceptance_criteria:
+  - "A job declaring write_allowed but writing nothing is blocked, not success."
+test_contract:
+  floor_command: "/bin/echo floor-ok"
+  full_command: "/bin/echo full"
+  impacted_map:
+    - when: "docs/superpowers/dogfood/**"
+      run: "/bin/echo scoped"
+jobs:
+  - id: writes-nothing
+    title: "Declares a lane, deliberately writes nothing"
+    type: docs
+    backend: claude
+    tier: light
+    effort: low
+    isolation: worktree
+    run: serial
+    write_allowed: ["docs/superpowers/dogfood/2026-09-02-df6-never-written.md"]
+    read_allowed: ["docs/superpowers/execution/2026-09-02-df6-no-work/spec.md"]
+    acceptance: ["Nothing is written. This is a deliberate test of the no-work check."]
+    body: |
+      THIS TASK IS A DELIBERATE TEST OF THE NO-WORK CHECK. Do NOT create any file.
+      Do not write, edit or touch anything at all.
+
+      Report that you deliberately wrote nothing. That is the whole task, and the
+      pipeline is expected to refuse it — a job that declares a lane and fills none
+      did not do its job.

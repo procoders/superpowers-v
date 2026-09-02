@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-02-df2c-direct-retry.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "c9fe7d5ccd7f0a15fb006fba7cce7c9f18200da2",
+    "diff_digest": "sha256:4728ecc00ae63885f6ef1344683679e031da9e501e5c650bfeba48146c26c4ea",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"c9fe7d5ccd7f0a15fb006fba7cce7c9f18200da2\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df2c-direct-retry.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df2c-direct-retry.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "c9fe7d5ccd7f0a15fb006fba7cce7c9f18200da2",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Direct-mode writer \u2014 the shape that was blocked by our own files",
+  "tests": {
+    "command": "/bin/echo floor-ok\n/bin/echo scoped\n/bin/echo full",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 3
+  },
+  "violations": [],
+  "worktree": ""
+}

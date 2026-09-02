@@ -1,0 +1,13 @@
+{
+  "run_id": "2026-09-02-df2c-direct-retry",
+  "phase": "DISPATCHED",
+  "jobs": {
+    "direct-writer": {
+      "baseline": "c9fe7d5ccd7f0a15fb006fba7cce7c9f18200da2",
+      "isolation": "direct",
+      "worktree": "",
+      "realised_commit": "c9fe7d5ccd7f0a15fb006fba7cce7c9f18200da2",
+      "status": "done"
+    }
+  }
+}
