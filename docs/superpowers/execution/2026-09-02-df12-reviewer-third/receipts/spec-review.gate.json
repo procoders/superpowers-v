@@ -1,0 +1,11 @@
+{
+  "baseline_commit": "cee5911769ba93cb34b459a178eab33fbd1346d8",
+  "diff_digest": "sha256:c103eff52060de5b1a3dfe40bd699524331b667cca3e0aac23045f3f6ba1557a",
+  "exit_code": 1,
+  "job_id": "spec-review",
+  "raw_stdout": "{\n  \"verdict\": \"blocked\",\n  \"mode\": \"direct\",\n  \"baseline\": \"cee5911769ba93cb34b459a178eab33fbd1346d8\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df12-reviewer-third-review.md\",\n    \"docs/superpowers/execution/2026-09-02-df12-reviewer-third/preexisting/spec-review.verified.txt\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df12-reviewer-third-review.md\"\n  ],\n  \"violations\": [\n    \"docs/superpowers/execution/2026-09-02-df12-reviewer-third/preexisting/spec-review.verified.txt\"\n  ]\n}\n",
+  "realised_commit": "cee5911769ba93cb34b459a178eab33fbd1346d8",
+  "source": "gate-receipt",
+  "verdict": "blocked",
+  "worktree": ""
+}

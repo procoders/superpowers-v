@@ -1,0 +1,25 @@
+{
+  "blocked": true,
+  "exit_code": 1,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-02-df12-reviewer-third-review.md",
+    "docs/superpowers/execution/2026-09-02-df12-reviewer-third/preexisting/spec-review.verified.txt"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "cee5911769ba93cb34b459a178eab33fbd1346d8",
+    "diff_digest": "sha256:c103eff52060de5b1a3dfe40bd699524331b667cca3e0aac23045f3f6ba1557a",
+    "exit_code": 1,
+    "raw_stdout": "{\n  \"verdict\": \"blocked\",\n  \"mode\": \"direct\",\n  \"baseline\": \"cee5911769ba93cb34b459a178eab33fbd1346d8\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df12-reviewer-third-review.md\",\n    \"docs/superpowers/execution/2026-09-02-df12-reviewer-third/preexisting/spec-review.verified.txt\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df12-reviewer-third-review.md\"\n  ],\n  \"violations\": [\n    \"docs/superpowers/execution/2026-09-02-df12-reviewer-third/preexisting/spec-review.verified.txt\"\n  ]\n}\n",
+    "realised_commit": "cee5911769ba93cb34b459a178eab33fbd1346d8",
+    "verdict": "blocked"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "blocked",
+  "summary": "Review job \u2014 must spawn by role",
+  "violations": [
+    "docs/superpowers/execution/2026-09-02-df12-reviewer-third/preexisting/spec-review.verified.txt"
+  ],
+  "worktree": ""
+}

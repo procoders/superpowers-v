@@ -2029,6 +2029,15 @@ def cmd_gate_receipt(argv):
                             seen.add(rel)
             verified = os.path.join(args.run_dir, "preexisting",
                                     "%s.verified.txt" % args.job_id)
+            # THE FILE MUST LIST ITSELF. It is written after `kept` is built, so the
+            # run-directory walk above cannot have seen it — dogfood 12 blocked on
+            # this one path and nothing else, the self-reference one layer deeper
+            # than dogfood 11's. Adding its own path is the whole fix: a list that
+            # does not exempt itself can never let a direct-mode job pass.
+            v_rel = os.path.relpath(os.path.abspath(verified),
+                                    os.path.abspath(root)).replace(os.sep, "/")
+            if not v_rel.startswith("../") and v_rel not in kept:
+                kept.append(v_rel)
             _atomic_write(verified, "\n".join(kept) + ("\n" if kept else ""))
             pre = verified
     rc, raw_stdout, err, parsed = _run_scope_check(
