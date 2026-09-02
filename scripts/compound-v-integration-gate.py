@@ -185,6 +185,18 @@ def head_commit(root):
     return out or None
 
 
+# The pipeline's OWN bookkeeping, written into tracked files OUTSIDE the run
+# directory between a direct-mode job's Gate and the authority's re-derivation:
+# Record appends the `merge_pending` actual to triage-outcomes.jsonl, and the wave
+# finalizer refreshes worker-performance.jsonl. Dogfood r4 (2026-09-02): the
+# Review Gate's own file read as `forged` because of the first. Excluded on BOTH
+# sides of the seam, by name, like the run directory (dogfood 15).
+PIPELINE_BOOKKEEPING = [
+    "docs/superpowers/memory/triage-outcomes.jsonl",
+    "docs/superpowers/memory/worker-performance.jsonl",
+]
+
+
 def compute_diff_digest(root, baseline, exclude_prefixes=None):
     """The PINNED recipe from schemas/job_result.schema.json (diff_digest).
 
@@ -232,7 +244,13 @@ def compute_diff_digest(root, baseline, exclude_prefixes=None):
             args.append("--")
             args.append(".")
             for p in prefixes:
-                args.append(":(exclude)%s" % str(p).strip().rstrip("/") + "/**")
+                p = str(p).strip().rstrip("/")
+                # A directory prefix is excluded with /**; an entry naming an
+                # existing FILE (the pipeline's bookkeeping) is excluded exactly.
+                if os.path.isfile(os.path.join(root, p)):
+                    args.append(":(exclude)%s" % p)
+                else:
+                    args.append(":(exclude)%s/**" % p)
         rc, blob, err = _git_bytes(root, args, env=env)
         if rc != 0:
             return None, "git diff --cached failed: %s" % (
@@ -767,7 +785,7 @@ def evaluate_job(job, state_job, run_dir, repo_root, scope_check):
     if mode != "worktree":
         _r = os.path.relpath(os.path.abspath(run_dir), os.path.abspath(gate_root))
         if not _r.startswith(".." + os.sep):
-            _excl = [_r.replace(os.sep, "/")]
+            _excl = [_r.replace(os.sep, "/")] + list(PIPELINE_BOOKKEEPING)
     observed_digest, digest_err = compute_diff_digest(gate_root, baseline,
                                                       exclude_prefixes=_excl)
     if digest_err:
@@ -1243,6 +1261,30 @@ def _selftest():
         # ---------- digest determinism ------------------------------------ #
         repo = os.path.join(tmp, "repo")
         base = _mkrepo(repo)
+
+        # The pipeline's own bookkeeping must not forge a direct-mode digest (r4).
+        _mem = os.path.join(repo, "docs", "superpowers", "memory")
+        os.makedirs(_mem, exist_ok=True)
+        _to = os.path.join(_mem, "triage-outcomes.jsonl")
+        with open(_to, "a") as _fh:
+            _fh.write('{"event":"predicted"}\n')
+        _d_b, _ = compute_diff_digest(repo, base, exclude_prefixes=list(PIPELINE_BOOKKEEPING))
+        with open(_to, "a") as _fh:
+            _fh.write('{"event":"actual","merge_pending":true}\n')
+        _d_a, _ = compute_diff_digest(repo, base, exclude_prefixes=list(PIPELINE_BOOKKEEPING))
+        expect("an append to triage-outcomes.jsonl between gate and authority does not move the "
+           "direct-mode digest when the bookkeeping is excluded", _d_b == _d_a)
+        _d_p, _ = compute_diff_digest(repo, base)
+        # leave the sandbox as it was: the next check asserts verification
+        # does not dirty the tree, and this block's appends are not verification
+        os.remove(_to)
+        for _d in (_mem, os.path.dirname(_mem), os.path.dirname(os.path.dirname(_mem))):
+            try:
+                os.rmdir(_d)
+            except OSError:
+                break
+        expect("...and without the exclusion the append IS visible (the exclusion is doing the work)",
+           _d_p != _d_a)
         d1, e1 = compute_diff_digest(repo, base)
         d2, e2 = compute_diff_digest(repo, base)
         expect("digest computes without error", e1 is None and e2 is None)

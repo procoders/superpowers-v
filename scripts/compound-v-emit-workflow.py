@@ -394,6 +394,18 @@ def _compute_diff_digest_local(root, baseline):
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+# The pipeline's OWN bookkeeping, written into tracked files OUTSIDE the run
+# directory between a direct-mode job's Gate and the authority's re-derivation:
+# Record appends the `merge_pending` actual to triage-outcomes.jsonl, and the wave
+# finalizer refreshes worker-performance.jsonl. Dogfood r4 (2026-09-02): the
+# Review Gate's own file read as `forged` because of the first. Twin of the
+# authority's list in compound-v-integration-gate.py; both sides must agree.
+PIPELINE_BOOKKEEPING = [
+    "docs/superpowers/memory/triage-outcomes.jsonl",
+    "docs/superpowers/memory/worker-performance.jsonl",
+]
+
+
 def compute_diff_digest(root, baseline, gate_module=None, exclude_prefixes=None):
     """Both sides of the seam MUST pass the same `exclude_prefixes`, or the gate and
     the authority compute different digests over the same tree and every honest
@@ -2346,7 +2358,7 @@ def cmd_gate_receipt(argv):
         if args.mode != "worktree":
             _rel = os.path.relpath(os.path.abspath(args.run_dir), os.path.abspath(root))
             if not _rel.startswith(".." + os.sep):
-                _digest_excl = [_rel.replace(os.sep, "/")]
+                _digest_excl = [_rel.replace(os.sep, "/")] + list(PIPELINE_BOOKKEEPING)
         digest, digest_err = compute_diff_digest(root, baseline,
                                                  exclude_prefixes=_digest_excl)
     else:
