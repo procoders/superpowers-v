@@ -1,0 +1,31 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-02-df16-floor-fails-again.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "5e226de2244da35a282d479f30dd2f888b11d590",
+    "diff_digest": "sha256:3dfff6e8e7a494812012a79de0801525007998237bcb89b184301be028f14aeb",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"5e226de2244da35a282d479f30dd2f888b11d590\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df16-floor-fails-again.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df16-floor-fails-again.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "5e226de2244da35a282d479f30dd2f888b11d590",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "blocked",
+  "summary": "Writes correctly; the floor fails underneath it",
+  "tests": {
+    "command": "sh -c 'echo floor-deliberately-failing >&2; exit 3'\n/bin/echo scoped",
+    "exit_code": 3,
+    "failures": [
+      "sh -c 'echo floor-deliberately-failing >&2; exit 3'"
+    ],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_555afb87-e27-1"
+}

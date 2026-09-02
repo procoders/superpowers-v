@@ -1,0 +1,23 @@
+{
+  "run_id": "2026-09-02-df16-floor-fails-again",
+  "phase": "DISPATCHED",
+  "jobs": {
+    "floor-fails": {
+      "baseline": "5e226de2244da35a282d479f30dd2f888b11d590",
+      "isolation": "worktree",
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_555afb87-e27-1",
+      "realised_commit": "5e226de2244da35a282d479f30dd2f888b11d590",
+      "status": "blocked"
+    }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "floor-fails"
+      ],
+      "merged": [],
+      "commit": "e4035e40aad8369e8a794e919a1f590b84e69ba5",
+      "integrated": false
+    }
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "baseline_commit": "5e226de2244da35a282d479f30dd2f888b11d590",
+  "diff_digest": "sha256:3dfff6e8e7a494812012a79de0801525007998237bcb89b184301be028f14aeb",
+  "exit_code": 0,
+  "job_id": "floor-fails",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"5e226de2244da35a282d479f30dd2f888b11d590\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df16-floor-fails-again.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df16-floor-fails-again.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "5e226de2244da35a282d479f30dd2f888b11d590",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "docs/superpowers/dogfood/2026-09-02-df16-floor-fails-again.md"
+    ],
+    "checks": [
+      {
+        "checker": "sh -c 'echo floor-deliberately-failing >&2; exit 3'",
+        "rc": 3,
+        "status": "fail",
+        "tier": 1
+      },
+      {
+        "checker": "/bin/echo scoped",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (1 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 1 command(s) from 1 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)"
+    ],
+    "failures": [
+      "sh -c 'echo floor-deliberately-failing >&2; exit 3'"
+    ],
+    "merge_blocked": true,
+    "passed": false,
+    "phase": "test_floor",
+    "reasons": [
+      "tier-1: configured tests failed (rc=3): sh -c 'echo floor-deliberately-failing >&2; exit 3'"
+    ],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_555afb87-e27-1"
+}

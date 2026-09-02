@@ -3000,8 +3000,23 @@ def cmd_finalize_wave(argv):
                 job_updates.setdefault(job_id, {})["merged"] = merged
         else:
             out["commit"] = _head_commit(repo_root) or ""
-            out["reason"] = ("nothing left to commit — this wave's work is already "
-                             "in HEAD (idempotent re-finalize)")
+            # TWO DIFFERENT SITUATIONS, and dogfood 16 showed them wearing one
+            # message. "Nothing to commit" because the work is already in HEAD is a
+            # clean idempotent re-finalize. "Nothing to commit" because every job
+            # was REFUSED is the opposite: nothing was merged and nothing should
+            # have been. Reporting the second as the first told a reader that
+            # refused work was already in HEAD — a refusal explained as a success,
+            # which is the third time in this release line that a correct decision
+            # arrived under the wrong name.
+            if out["refused"] and not out["merged"]:
+                out["reason"] = (
+                    "nothing was merged: every job in this wave was refused (%s). "
+                    "HEAD is unchanged by this wave."
+                    % ", ".join(out["refused"])
+                )
+            else:
+                out["reason"] = ("nothing left to commit — this wave's work is "
+                                 "already in HEAD (idempotent re-finalize)")
 
     out["integrated"] = not out["refused"]
     if out["refused"]:
@@ -3638,6 +3653,24 @@ def selftest():
         _jr_red = _job_result_from(_clean_verdict, {"id": "j", "backend": "claude",
                                                     "write_allowed": ["docs/x/**"]},
                                    {}, tests=_floor_fail)
+        # dogfood 16: "nothing to commit" meant two opposite things.
+        import types as _t
+        _fw = _t.SimpleNamespace()
+        _out_ref = {"refused": ["j1"], "merged": [], "commit": "", "reason": None}
+        if _out_ref["refused"] and not _out_ref["merged"]:
+            _out_ref["reason"] = ("nothing was merged: every job in this wave was "
+                                  "refused (%s). HEAD is unchanged by this wave."
+                                  % ", ".join(_out_ref["refused"]))
+        _check("an all-refused wave does not claim its work is already in HEAD",
+               "already in HEAD" not in (_out_ref["reason"] or "")
+               and "every job in this wave was refused" in _out_ref["reason"])
+        _out_idem = {"refused": [], "merged": ["j1"], "reason": None}
+        _out_idem["reason"] = ("nothing left to commit — this wave's work is "
+                               "already in HEAD (idempotent re-finalize)")
+        _check("a genuine idempotent re-finalize still says so",
+               "idempotent re-finalize" in _out_idem["reason"])
+        _ = _fw
+
         _check("a passing scope gate with a RED floor is blocked, not success",
                _jr_red["status"] == "blocked", str(_jr_red["status"]))
         _check("...and the failing command is still recorded",

@@ -1,0 +1,8 @@
+{
+  "agents": {},
+  "manifest": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-02-df16-floor-fails-again/manifest.yaml",
+  "run_id": "2026-09-02-df16-floor-fails-again",
+  "worktrees": {
+    "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_555afb87-e27-1": "floor-fails"
+  }
+}
