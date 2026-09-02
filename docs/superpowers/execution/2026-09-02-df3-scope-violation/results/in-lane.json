@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-02-df3-in-lane.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "09195341ea96461fd9b62e008f0e4855031cd3ea",
+    "diff_digest": "sha256:69e6f1336616ebf2d8fafadaa8db8e71f0f469f71e2964ccfff9dffed27fe99a",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"09195341ea96461fd9b62e008f0e4855031cd3ea\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df3-in-lane.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df3-in-lane.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "09195341ea96461fd9b62e008f0e4855031cd3ea",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Writes only inside its lane",
+  "tests": {
+    "command": "/bin/echo floor-ok\n/bin/echo scoped",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_9d4383e1-ba5-1"
+}

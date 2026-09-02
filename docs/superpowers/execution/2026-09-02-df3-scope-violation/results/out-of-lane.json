@@ -1,0 +1,25 @@
+{
+  "blocked": true,
+  "exit_code": 1,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-02-df3-declared.md",
+    "docs/superpowers/dogfood/2026-09-02-df3-undeclared.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "09195341ea96461fd9b62e008f0e4855031cd3ea",
+    "diff_digest": "sha256:8a1786f3e59ed56f28ba17c8f871c4fbf3418db22371bbcfcf3451c547fff7f3",
+    "exit_code": 1,
+    "raw_stdout": "{\n  \"verdict\": \"blocked\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"09195341ea96461fd9b62e008f0e4855031cd3ea\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df3-declared.md\",\n    \"docs/superpowers/dogfood/2026-09-02-df3-undeclared.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df3-declared.md\"\n  ],\n  \"violations\": [\n    \"docs/superpowers/dogfood/2026-09-02-df3-undeclared.md\"\n  ]\n}\n",
+    "realised_commit": "09195341ea96461fd9b62e008f0e4855031cd3ea",
+    "verdict": "blocked"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "blocked",
+  "summary": "Writes one file inside its lane and one OUTSIDE it \u2014 on purpose",
+  "violations": [
+    "docs/superpowers/dogfood/2026-09-02-df3-undeclared.md"
+  ],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_9d4383e1-ba5-2"
+}

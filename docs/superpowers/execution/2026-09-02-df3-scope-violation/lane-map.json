@@ -1,0 +1,9 @@
+{
+  "agents": {},
+  "manifest": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-02-df3-scope-violation/manifest.yaml",
+  "run_id": "2026-09-02-df3-scope-violation",
+  "worktrees": {
+    "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_9d4383e1-ba5-1": "in-lane",
+    "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_9d4383e1-ba5-2": "out-of-lane"
+  }
+}

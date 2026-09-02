@@ -1,0 +1,11 @@
+{
+  "baseline_commit": "09195341ea96461fd9b62e008f0e4855031cd3ea",
+  "diff_digest": "sha256:8a1786f3e59ed56f28ba17c8f871c4fbf3418db22371bbcfcf3451c547fff7f3",
+  "exit_code": 1,
+  "job_id": "out-of-lane",
+  "raw_stdout": "{\n  \"verdict\": \"blocked\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"09195341ea96461fd9b62e008f0e4855031cd3ea\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df3-declared.md\",\n    \"docs/superpowers/dogfood/2026-09-02-df3-undeclared.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df3-declared.md\"\n  ],\n  \"violations\": [\n    \"docs/superpowers/dogfood/2026-09-02-df3-undeclared.md\"\n  ]\n}\n",
+  "realised_commit": "09195341ea96461fd9b62e008f0e4855031cd3ea",
+  "source": "gate-receipt",
+  "verdict": "blocked",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_9d4383e1-ba5-2"
+}
