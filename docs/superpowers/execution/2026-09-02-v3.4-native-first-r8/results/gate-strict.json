@@ -1,0 +1,39 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    ".gitignore",
+    "CHANGELOG.md",
+    "docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md",
+    "hooks/lane-guard.sh",
+    "scripts/compound-v-emit-preflight.py",
+    "scripts/compound-v-emit-workflow.py",
+    "scripts/compound-v-integration-gate.py",
+    "scripts/compound-v-scope-check.py",
+    "tests/test-engine-c-contract.sh",
+    "tests/test-integration-gate.sh",
+    "tests/test-lane-guard.sh"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "036312094d5f3a49165ddf5493ec3b2eb16b798a",
+    "diff_digest": "sha256:ccac69ee8600c1c95519927382c2ba9aa0ab87171c84a7919e9098fb0215b829",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"036312094d5f3a49165ddf5493ec3b2eb16b798a\",\n  \"changed\": [\n    \".gitignore\",\n    \"CHANGELOG.md\",\n    \"docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md\",\n    \"hooks/lane-guard.sh\",\n    \"scripts/compound-v-emit-preflight.py\",\n    \"scripts/compound-v-emit-workflow.py\",\n    \"scripts/compound-v-integration-gate.py\",\n    \"scripts/compound-v-scope-check.py\",\n    \"tests/test-engine-c-contract.sh\",\n    \"tests/test-integration-gate.sh\",\n    \"tests/test-lane-guard.sh\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-scope-check.py\",\n    \"scripts/compound-v-integration-gate.py\",\n    \"scripts/compound-v-emit-workflow.py\",\n    \"scripts/compound-v-emit-preflight.py\",\n    \"hooks/lane-guard.sh\",\n    \"tests/test-lane-guard.sh\",\n    \"tests/test-integration-gate.sh\",\n    \"tests/test-engine-c-contract.sh\",\n    \".gitignore\",\n    \"CHANGELOG.md\",\n    \"docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "036312094d5f3a49165ddf5493ec3b2eb16b798a",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Close the fourth review pass: no scope-gate carve-outs, no bytecode written, no bookkeeping between gate and authority",
+  "tests": {
+    "command": "bash tests/test-epic-goal-stop.sh\nbash -c 'bash tests/test-epic-goal-stop.sh && bash tests/test-native-points.sh'\nbash -c '[ -f scripts/compound-v-emit-preflight.py ] || exit 0; /usr/bin/python3 scripts/compound-v-emit-preflight.py --selftest'\nbash -c '[ -f scripts/compound-v-emit-workflow.py ] || exit 0; /usr/bin/python3 scripts/compound-v-emit-workflow.py --selftest'\nbash -c '[ -f scripts/compound-v-integration-gate.py ] || exit 0; /usr/bin/python3 scripts/compound-v-integration-gate.py --selftest'\nbash -c '[ -f scripts/compound-v-scope-check.py ] || exit 0; /usr/bin/python3 scripts/compound-v-scope-check.py --selftest'\nbash -c '[ -f tests/test-engine-c-contract.sh ] || exit 0; bash tests/test-engine-c-contract.sh'\nbash -c '[ -f tests/test-integration-gate.sh ] || exit 0; bash tests/test-integration-gate.sh'\nbash -c '[ -f tests/test-lane-guard.sh ] || exit 0; bash tests/test-lane-guard.sh'\nbash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 10
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_2f3040d8-ef2-1"
+}
