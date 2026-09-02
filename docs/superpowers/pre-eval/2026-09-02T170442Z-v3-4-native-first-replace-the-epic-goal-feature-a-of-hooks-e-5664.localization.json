@@ -1,0 +1,22 @@
+{
+  "confidence": "ambiguous",
+  "digest": "sha256:ac51cca1bfaa9c38a888d97e44744915d31c8d5f67d1d9d05671773090b6cbe3",
+  "fan_out": 9,
+  "flags": [
+    "content:config_literal",
+    "content:feature_flag",
+    "content:i18n_placeholder",
+    "sensitive_path"
+  ],
+  "resolved_paths": [
+    "commands/v-triage.md",
+    "hooks/epic-goal-stop.sh",
+    "hooks/tool-failure-ledger.sh",
+    "hooks/triage-prompt-nudge.sh",
+    "scripts/compound-v-dashboard.py",
+    "scripts/compound-v-epic-watch.py",
+    "scripts/compound-v-headless-shim.py",
+    "scripts/compound-v-preeval.py",
+    "scripts/compound-v-scorecard.py"
+  ]
+}

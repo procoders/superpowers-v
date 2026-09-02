@@ -1,0 +1,58 @@
+{
+  "base_commit": "aeae409ecef127940c75893c73abb926be2a1cca",
+  "confidence": "localization:ambiguous; tiers:none",
+  "decision": "FULL_PIPELINE",
+  "declared_paths": [
+    "commands/v-triage.md",
+    "hooks/epic-goal-stop.sh",
+    "hooks/tool-failure-ledger.sh",
+    "hooks/triage-prompt-nudge.sh",
+    "scripts/compound-v-dashboard.py",
+    "scripts/compound-v-epic-watch.py",
+    "scripts/compound-v-headless-shim.py",
+    "scripts/compound-v-preeval.py",
+    "scripts/compound-v-scorecard.py"
+  ],
+  "difficulty": {
+    "band": "unknown",
+    "display": null
+  },
+  "digest": "sha256:74de72b3b730f40db88430c14e5f60fe477320bfe269b326ae005f149231c42b",
+  "impact": {
+    "band": "unknown",
+    "display": null
+  },
+  "localization": {
+    "confidence": "ambiguous",
+    "fan_out": 9,
+    "flags": [
+      "content:config_literal",
+      "content:feature_flag",
+      "content:i18n_placeholder",
+      "sensitive_path"
+    ],
+    "resolved_paths": [
+      "commands/v-triage.md",
+      "hooks/epic-goal-stop.sh",
+      "hooks/tool-failure-ledger.sh",
+      "hooks/triage-prompt-nudge.sh",
+      "scripts/compound-v-dashboard.py",
+      "scripts/compound-v-epic-watch.py",
+      "scripts/compound-v-headless-shim.py",
+      "scripts/compound-v-preeval.py",
+      "scripts/compound-v-scorecard.py"
+    ]
+  },
+  "min_sample_status": "insufficient",
+  "override_fired": 1,
+  "pre_eval_id": "2026-09-02T170442Z-v3-4-native-first-replace-the-epic-goal-feature-a-of-hooks-e-5664",
+  "request_slug": "v3-4-native-first-replace-the-epic-goal-feature-a-of-hooks-e",
+  "session_id": "e619cb38-ebe3-4b45-a1f4-c3007616291d",
+  "status": "PRE_EVAL_DONE",
+  "taxonomy_digest": "sha256:1f2a12f634422ca72a66cfa195b731a0e19743b5e7fe622fb799821cf5e88e85",
+  "taxonomy_ref": "docs/superpowers/pre-eval/2026-09-02T170442Z-v3-4-native-first-replace-the-epic-goal-feature-a-of-hooks-e-5664.taxonomy-snapshot.yaml",
+  "taxonomy_version": 1,
+  "tier": "FULL",
+  "tiers_signalled": [],
+  "ts": "2026-09-02T17:04:42Z"
+}
