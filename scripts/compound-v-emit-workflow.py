@@ -1507,7 +1507,8 @@ async function gateStage(prev, job) {
 
     const prompt =
       'Run EXACTLY this one command and return its JSON output verbatim as your ' +
-      'structured result. Do not summarise it, do not re-run it, do not run ' +
+      'structured result. Call the Bash tool with `timeout: 600000` (ten minutes): the command runs the test contract and can exceed the 120 s default, and a command the harness detaches to the background leaves you with no way to read its output — a verdict you did not read is not a verdict. ' +
+      'Do not summarise it, do not re-run it, do not run ' +
       'anything else — your shell is clamped to this command form and any other ' +
       'command is denied.\n\n```bash\n' + cmd + '\n```\n';
 
@@ -1569,7 +1570,8 @@ async function recordStage(verdict, job) {
 
     const prompt =
       'Run EXACTLY this one command and return its JSON output verbatim as your ' +
-      'structured result. It is idempotent; do not re-run it, and do not run ' +
+      'structured result. Call the Bash tool with `timeout: 600000`. ' +
+      'It is idempotent; do not re-run it, and do not run ' +
       'anything else.\n\n```bash\n' + cmd + '\n```\n';
 
     const ack = await agent(prompt, {
@@ -1626,7 +1628,8 @@ async function finalizeWave(waveIndex, wave) {
 
     const prompt =
       'Run EXACTLY this one command and return its JSON output verbatim as your ' +
-      'structured result. It runs the integration authority over this wave and, ' +
+      'structured result. Call the Bash tool with `timeout: 600000`. ' +
+      'It runs the integration authority over this wave and, ' +
       'only if the authority permits, merges and commits the wave. Do not ' +
       'summarise it, do not re-run it, do not run anything else.\n\n```bash\n' +
       cmd + '\n```\n';
@@ -4976,6 +4979,12 @@ def selftest():
                .split("async function finalizeWave", 1)[0])
         _check("a throwing Implement stage no longer skips Gate AND Record",
                "return { job: job, implement: null };" in rev_script)
+        # Dogfood r2 (wf_f0505df2-99c): the Gate's clamped command outran the Bash
+        # tool's 120 s default, the harness detached it, and the agent — no Read,
+        # one admitted command form — honestly reported `blocked` while the
+        # receipt on disk said pass. Every transport prompt now sets the timeout.
+        _check("every transport prompt tells the agent to call Bash with a 10-minute timeout",
+               rev_script.count("Call the Bash tool with `timeout: 600000`") == 3)
         # The inline fallback (dogfood wf_3b6697df-5e0: every by-role spawn threw
         # `agent type ... not found` after a mid-session plugin update).
         _check("a by-role job carries its agent's definition for the inline fallback",
