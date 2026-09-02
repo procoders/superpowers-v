@@ -540,8 +540,13 @@ def _js_parses(script):
         return True
     with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False,
                                      encoding="utf-8") as fh:
+        # The runtime evaluates a workflow as the BODY of an async function: top-level
+        # `await` and `return` are legal there and illegal in a bare module, so the
+        # parse mirrors that wrapping — otherwise `return {` at the end of every
+        # script reads as a syntax error.
+        fh.write("(async function () {\n")
         fh.write(script.replace("export const meta", "const meta", 1))
-        fh.write("\n")
+        fh.write("\n})();\n")
         name = fh.name
     try:
         r = subprocess.run([node, "--check", name], capture_output=True, text=True)
