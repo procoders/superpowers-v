@@ -1,0 +1,68 @@
+run_id: 2026-09-02-df24-recall-review
+feature: df24 — the role-spawned reviewer must actually consult V-memory
+routing_stance: balanced
+max_parallel: 2
+spec_path: docs/superpowers/execution/2026-09-02-df24-recall-review/spec.md
+plan_path: docs/superpowers/execution/2026-09-02-df24-recall-review/plan.md
+audits:
+  archaeology: docs/superpowers/execution/2026-09-02-df24-recall-review/spec.md
+  domain: docs/superpowers/execution/2026-09-02-df24-recall-review/spec.md
+  library: docs/superpowers/execution/2026-09-02-df24-recall-review/spec.md
+acceptance_criteria:
+  - "The reviewer reports what V-memory returned, or that it returned nothing."
+test_contract:
+  floor_command: "/bin/echo floor-ok"
+  full_command: "/bin/echo full"
+  impacted_map:
+    - when: "docs/superpowers/dogfood/**"
+      run: "/bin/echo scoped"
+jobs:
+  - id: impl-slice
+    title: "Writes the file the reviewer reviews"
+    type: docs
+    backend: claude
+    tier: light
+    effort: low
+    isolation: worktree
+    run: parallel
+    write_allowed: ["docs/superpowers/dogfood/2026-09-02-df24-impl.md"]
+    read_allowed: ["docs/superpowers/execution/2026-09-02-df24-recall-review/spec.md"]
+    acceptance: ["The file exists."]
+    body: |
+      Create `docs/superpowers/dogfood/2026-09-02-df24-impl.md` containing exactly:
+
+      # impl
+
+      A red test floor once merged because nothing read the tests block.
+  - id: spec-review
+    title: "Review job — spawned by role, must consult V-memory first"
+    type: review
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: direct
+    run: serial
+    depends_on: [impl-slice]
+    write_allowed: ["docs/superpowers/dogfood/2026-09-02-df24-review.md"]
+    read_allowed: ["docs/superpowers/dogfood/2026-09-02-df24-impl.md"]
+    acceptance:
+      - "The review names the recall command it ran and what came back."
+    body: |
+      Your agent definition carries a Step 0 telling you to consult V-memory before
+      reviewing. Follow it, then review
+      `docs/superpowers/dogfood/2026-09-02-df24-impl.md`.
+
+      Write `docs/superpowers/dogfood/2026-09-02-df24-review.md` with exactly these
+      three sections:
+
+      ## Recall
+      The exact command you ran, and the titles of what came back — or the words
+      "V-memory returned nothing" if it did. If the script was missing or errored,
+      say that instead. Do not invent results.
+
+      ## Review
+      Two sentences on whether the file under review is accurate.
+
+      ## Routing
+      One sentence confirming that nothing you recalled changed any routing
+      decision, because recall is never a routing input.
