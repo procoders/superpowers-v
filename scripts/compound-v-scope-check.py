@@ -13,6 +13,8 @@ Computes the set of files a job actually changed, purely from git:
               ∪ (git ls-files --others --exclude-standard -z)
               ∪ (git ls-files --others --ignored --exclude-standard -z -- .)
               − (preexisting untracked/ignored snapshot, direct mode only)
+              − (*.pyc / *.pyo — interpreter bytecode, never work, never merged)
+              − (the pipeline's own outcome streams, PIPELINE_BOOKKEEPING)
 
 All three probes use NUL-delimited (``-z``) output and are split on ``\0``, not
 ``\n`` — NUL is the only byte that cannot appear in a POSIX path, so a filename
@@ -151,7 +153,9 @@ def changed_files(cwd, baseline, preexisting=None):
     Source 3 is the one the old gate MISSED: --exclude-standard drops gitignored
     paths, so a worker could write a gitignored file (e.g. dist/, .env, build/)
     completely undetected. We union it in so any ignored write outside write_allowed
-    is reported as a violation.
+    is reported as a violation — with exactly two named exceptions, both stated in
+    the formula above: bytecode by extension, and the pipeline's own outcome
+    streams. Everything else that is ignored still counts.
 
     ``preexisting`` (optional set/iterable of repo-relative paths) is SUBTRACTED
     from the union: in direct mode the dispatcher snapshots untracked/ignored paths
@@ -196,16 +200,33 @@ def changed_files(cwd, baseline, preexisting=None):
     # rule that ignored paths count, wrong as an outcome: every Python project
     # would refuse its first job. A .pyc is never merged (merge-back lands only
     # approved paths), so dropping it here narrows nothing an attacker could use.
-    files = {f for f in files if not is_bytecode_noise(f)}
+    files = {f for f in files
+             if not is_bytecode_noise(f) and f not in PIPELINE_BOOKKEEPING}
     return sorted(files)
 
 
 def is_bytecode_noise(path):
-    """True for Python bytecode the interpreter writes beside the sources."""
-    parts = str(path or "").split("/")
-    if "__pycache__" in parts[:-1]:
-        return True
-    return parts[-1].endswith((".pyc", ".pyo"))
+    """True for Python bytecode — by EXTENSION only. The first version of this
+    predicate also dropped anything under a `__pycache__/` directory, which the
+    third review pass reproduced as a hole: `scripts/__pycache__/payload.py` or
+    an `id_rsa` there vanished from the changed set. A directory name is not
+    evidence of bytecode; the extension is."""
+    name = str(path or "").split("/")[-1]
+    return name.endswith((".pyc", ".pyo"))
+
+
+# The pipeline's OWN outcome streams: Record appends the merge_pending `actual`
+# to the first and the wave finalizer regenerates the second — both AFTER a
+# direct-mode job's gate ran and BEFORE the authority re-derives, so a job that
+# touched neither read as `blocked` on them (run v3.4-r6, the Review Gate's own
+# file: receipt pass, re-derivation blocked, refused as `contradicted`). They are
+# never a worker's work and never land through merge-back (which applies only
+# approved paths), so they leave the changed set here, on both sides of the seam.
+# Twin of the list in compound-v-integration-gate.py / compound-v-emit-workflow.py.
+PIPELINE_BOOKKEEPING = (
+    "docs/superpowers/memory/triage-outcomes.jsonl",
+    "docs/superpowers/memory/worker-performance.jsonl",
+)
 
 
 def glob_to_regex(pattern):
@@ -750,6 +771,28 @@ def _selftest():
         expect("is_bytecode_noise names exactly bytecode",
                is_bytecode_noise("a/__pycache__/b.pyc") and is_bytecode_noise("x.pyo")
                and not is_bytecode_noise("__pycache__") and not is_bytecode_noise("src/pycache.py"))
+        # Third review pass: a directory name is not evidence. A non-bytecode file
+        # hidden under __pycache__/ must still BLOCK.
+        with open(os.path.join(irepo, "src", "__pycache__", "payload.py"), "w") as f:
+            f.write("print(2)\n")
+        with open(os.path.join(irepo, "src", "__pycache__", "id_rsa"), "w") as f:
+            f.write("KEY\n")
+        changed, violations = check(irepo, "HEAD", ["docs/**"])
+        expect("bytecode: a .py hidden under __pycache__/ still BLOCKS",
+               "src/__pycache__/payload.py" in violations)
+        expect("bytecode: a non-bytecode file under __pycache__/ still BLOCKS",
+               "src/__pycache__/id_rsa" in violations)
+        # The pipeline's own outcome streams are not a worker's work.
+        os.makedirs(os.path.join(irepo, "docs", "superpowers", "memory"))
+        with open(os.path.join(irepo, "docs", "superpowers", "memory", "triage-outcomes.jsonl"), "a") as f:
+            f.write('{"event":"actual","merge_pending":true}\n')
+        with open(os.path.join(irepo, "docs", "superpowers", "memory", "other.jsonl"), "a") as f:
+            f.write('{"x":1}\n')
+        changed, violations = check(irepo, "HEAD", ["src/**"])
+        expect("bookkeeping: triage-outcomes.jsonl is not in the changed set",
+               "docs/superpowers/memory/triage-outcomes.jsonl" not in changed)
+        expect("bookkeeping: a sibling file in memory/ still BLOCKS",
+               "docs/superpowers/memory/other.jsonl" in violations)
 
         # UNUSUAL-FILENAME case: with NUL-delimited (-z) parsing, a path with a
         # space — and (where the OS allows) a literal newline — is attributed as a

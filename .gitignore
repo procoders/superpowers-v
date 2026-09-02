@@ -51,12 +51,13 @@ docs/superpowers/execution/2026-07-11-v2.9-pre-evaluation/baselines/
 # Python bytecode. A local run of the repo's own test sweep with a
 # bytecode-writing interpreter leaves .pyc files next to the scripts.
 #
-# CORRECTION to what an earlier commit message implied: ignoring these does NOT
-# hide them from the scope gate, and must not be expected to. The gate's third
-# term is `git ls-files --others --ignored --exclude-standard` precisely so a
-# worker cannot escape it by writing a gitignored path — see the header of
-# scripts/compound-v-scope-check.py. What ignoring buys is a clean `git status`
-# and a quiet linter; the gate still reports them, and the real fix there is
-# PYTHONDONTWRITEBYTECODE=1, which CI exports and every worker script now sets.
+# Ignoring these does NOT hide arbitrary ignored paths from the scope gate — its
+# third term is `git ls-files --others --ignored --exclude-standard` precisely so
+# a worker cannot escape it by writing a gitignored path. As of 3.4.0 the gate
+# itself drops *.pyc / *.pyo BY EXTENSION (scripts/compound-v-scope-check.py,
+# is_bytecode_noise) because bytecode is interpreter output, never work, and never
+# merged; anything else under __pycache__/ still counts. PYTHONDONTWRITEBYTECODE=1
+# (CI exports it; worker scripts set it) remains the hygiene that keeps the tree
+# quiet in the first place.
 __pycache__/
 *.pyc
