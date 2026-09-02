@@ -1,0 +1,54 @@
+{
+  "run_id": "2026-09-02-df22-closed",
+  "phase": "DISPATCHED",
+  "jobs": {
+    "impl-slice": {
+      "baseline": "5e226de2244da35a282d479f30dd2f888b11d590",
+      "isolation": "worktree",
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_e2a64b4b-a20-1",
+      "realised_commit": "5e226de2244da35a282d479f30dd2f888b11d590",
+      "status": "done",
+      "merged": {
+        "realised_commit": "5e226de2244da35a282d479f30dd2f888b11d590",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "5df400987cc15fc4b5a5a43440410f5f1b9aef53"
+      }
+    },
+    "spec-review": {
+      "baseline": "5df400987cc15fc4b5a5a43440410f5f1b9aef53",
+      "isolation": "direct",
+      "worktree": "",
+      "realised_commit": "5df400987cc15fc4b5a5a43440410f5f1b9aef53",
+      "status": "done",
+      "merged": {
+        "realised_commit": "5df400987cc15fc4b5a5a43440410f5f1b9aef53",
+        "mode": "direct",
+        "integrated": true,
+        "commit": "d299d1e839d8d212985a3cfba3b46bf8b78b6c06"
+      }
+    }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "impl-slice"
+      ],
+      "merged": [
+        "impl-slice"
+      ],
+      "commit": "5df400987cc15fc4b5a5a43440410f5f1b9aef53",
+      "integrated": true
+    },
+    "2": {
+      "jobs": [
+        "spec-review"
+      ],
+      "merged": [
+        "spec-review"
+      ],
+      "commit": "d299d1e839d8d212985a3cfba3b46bf8b78b6c06",
+      "integrated": true
+    }
+  }
+}

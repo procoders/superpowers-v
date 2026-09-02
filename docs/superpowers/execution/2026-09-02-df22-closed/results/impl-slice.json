@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-02-df22-closed-impl.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "5e226de2244da35a282d479f30dd2f888b11d590",
+    "diff_digest": "sha256:d1fd778e15995b83ce3c263b7e059868a86b911bfc920c980cd4f0eeee5869fa",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"5e226de2244da35a282d479f30dd2f888b11d590\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df22-closed-impl.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df22-closed-impl.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "5e226de2244da35a282d479f30dd2f888b11d590",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Writes the thing the reviewer reviews",
+  "tests": {
+    "command": "/bin/echo floor-ok\n/bin/echo scoped",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_e2a64b4b-a20-1"
+}
