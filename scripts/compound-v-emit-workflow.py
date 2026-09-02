@@ -362,11 +362,21 @@ def _compute_diff_digest_local(root, baseline):
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def compute_diff_digest(root, baseline, gate_module=None):
+def compute_diff_digest(root, baseline, gate_module=None, exclude_prefixes=None):
+    """Both sides of the seam MUST pass the same `exclude_prefixes`, or the gate and
+    the authority compute different digests over the same tree and every honest
+    direct-mode receipt reads as `forged` (dogfood 15)."""
     module = gate_module if gate_module is not None else _import_integration_gate()
     if module is not None and hasattr(module, "compute_diff_digest"):
         try:
-            return module.compute_diff_digest(root, baseline)
+            try:
+                return module.compute_diff_digest(
+                    root, baseline, exclude_prefixes=exclude_prefixes)
+            except TypeError:
+                # An older installed copy without the parameter: fall back rather
+                # than crash, and accept that it will disagree — loudly, as
+                # `forged`, which is at least a refusal and not a silent pass.
+                return module.compute_diff_digest(root, baseline)
         except Exception as exc:  # noqa: BLE001
             return None, "integration-gate digest raised: %s" % exc
     return _compute_diff_digest_local(root, baseline)
@@ -2071,7 +2081,17 @@ def cmd_gate_receipt(argv):
                 foreign.append(p)
 
     if baseline:
-        digest, digest_err = compute_diff_digest(root, baseline)
+        # In DIRECT mode the run directory sits inside the measured tree and the
+        # pipeline keeps writing into it after this point (Record, receipts,
+        # state.json). Excluding it here — and identically in the authority — is
+        # what makes the two digests comparable at all.
+        _digest_excl = None
+        if args.mode != "worktree":
+            _rel = os.path.relpath(os.path.abspath(args.run_dir), os.path.abspath(root))
+            if not _rel.startswith(".." + os.sep):
+                _digest_excl = [_rel.replace(os.sep, "/")]
+        digest, digest_err = compute_diff_digest(root, baseline,
+                                                 exclude_prefixes=_digest_excl)
     else:
         digest, digest_err = None, "no baseline to diff against"
 

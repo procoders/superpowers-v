@@ -185,13 +185,26 @@ def head_commit(root):
     return out or None
 
 
-def compute_diff_digest(root, baseline):
+def compute_diff_digest(root, baseline, exclude_prefixes=None):
     """The PINNED recipe from schemas/job_result.schema.json (diff_digest).
 
     Returns (digest, error). ``add -A`` runs against a COPY of the index under
     GIT_INDEX_FILE: the index CONTENT is what the diff reads, so the bytes are
     identical to the literal recipe, but verifying a receipt no longer mutates
     the tree under verification.
+
+    ``exclude_prefixes`` — repo-relative directory prefixes left OUT of the diff.
+    It exists for one reason, found by dogfood 15: a `direct`-mode job's digest is
+    taken over the whole tree, and the PIPELINE keeps writing into that tree after
+    the gate has run. Record writes `results/<id>.json`, `receipts/<id>.gate.json`
+    and `state.json` — all inside the run directory, all inside the measured tree —
+    so the authority, recomputing later, could NEVER match the gate's digest and
+    every honest direct-mode receipt read as `forged`.
+
+    Excluding the run directory from BOTH sides makes them comparable again. It
+    removes nothing a worker could hide behind: the run directory's contents are
+    covered by the scope gate's own violation list and by the digest-bound
+    exemption snapshot, and a worker writing anywhere ELSE is still in the diff.
     """
     rc, gitpath, err = _git_text(root, ["rev-parse", "--git-path", "index"])
     if rc != 0:
@@ -211,9 +224,16 @@ def compute_diff_digest(root, baseline):
         if rc != 0:
             return None, "git add -A failed: %s" % (err.strip() or "rc=%d" % rc)
 
-        rc, blob, err = _git_bytes(
-            root, ["diff", "--cached", "--binary", baseline], env=env
-        )
+        args = ["diff", "--cached", "--binary", baseline]
+        prefixes = [p for p in (exclude_prefixes or []) if str(p or "").strip()]
+        if prefixes:
+            # Pathspec exclusion, after `--`, so a prefix that looks like a flag
+            # cannot be read as one.
+            args.append("--")
+            args.append(".")
+            for p in prefixes:
+                args.append(":(exclude)%s" % str(p).strip().rstrip("/") + "/**")
+        rc, blob, err = _git_bytes(root, args, env=env)
         if rc != 0:
             return None, "git diff --cached failed: %s" % (
                 err.strip() or "rc=%d" % rc
@@ -558,6 +578,28 @@ def evaluate_job(job, state_job, run_dir, repo_root, scope_check):
     out["gate_root"] = gate_root
 
     if not os.path.isdir(gate_root):
+        # ALREADY MERGED IS NOT UNVERIFIABLE. Since 3.3.0 the wave finalizer
+        # retires the worktree of every job it merged, so re-running this authority
+        # over a finished run finds the gate root gone — and called it
+        # `unverifiable`, which reads as "we could not check this" rather than "this
+        # was checked, passed, merged and committed, and its scratch tree was tidied
+        # up afterwards". Dogfood 15 produced exactly that on a re-verification.
+        #
+        # The state file is the evidence, and it is specific: the job must be
+        # recorded merged AND integrated AND carry the commit it landed in. That
+        # combination is written only by a finalizer that already ran this authority
+        # over the job and got a pass, so this is not a shortcut around the check —
+        # it is the record OF the check.
+        _m = (state_job or {}).get("merged") or {}
+        if _m.get("integrated") and _m.get("commit"):
+            out["verdict"] = "pass"
+            out["receipt"] = "merged"
+            out["notes"].append(
+                "gate root is gone because this job was merged as %s and its "
+                "worktree retired; the recorded integration is the evidence"
+                % str(_m.get("commit"))[:12]
+            )
+            return out
         out["verdict"] = "unverifiable"
         out["reasons"].append(
             "gate root %s does not exist — nothing to derive a verdict from "
@@ -648,7 +690,18 @@ def evaluate_job(job, state_job, run_dir, repo_root, scope_check):
     # ---- PRESENT ⇒ verify bindings BEFORE anything else -------------------- #
     out["receipt"] = "present"
     observed_head = head_commit(gate_root)
-    observed_digest, digest_err = compute_diff_digest(gate_root, baseline)
+    # THE SAME EXCLUSION THE GATE USED. A direct job's run directory is inside the
+    # tree being digested and the pipeline writes into it between the gate and this
+    # point, so without this the two digests can never agree and an honest receipt
+    # is refused as forged. Worktree jobs exclude nothing: their run directory is
+    # outside the worktree entirely.
+    _excl = None
+    if mode != "worktree":
+        _r = os.path.relpath(os.path.abspath(run_dir), os.path.abspath(gate_root))
+        if not _r.startswith(".." + os.sep):
+            _excl = [_r.replace(os.sep, "/")]
+    observed_digest, digest_err = compute_diff_digest(gate_root, baseline,
+                                                      exclude_prefixes=_excl)
     if digest_err:
         out["verdict"] = "unverifiable"
         out["reasons"].append("cannot recompute diff_digest: %s" % digest_err)
@@ -1233,6 +1286,33 @@ def _selftest():
             "raw_stdout with the gate's human tail still parses ⇒ blocked, not forged",
             rep["results"][0]["verdict"] == "blocked",
         )
+
+        # (3d) A RETIRED WORKTREE OF AN ALREADY-MERGED JOB IS NOT UNVERIFIABLE.
+        wt_r, run_r = fresh_case("retired",
+                                 lambda w: write(w, "scripts/allowed.py", "1\n"))
+        _put_result(run_r, "job-a",
+                    _result(wt_r, receipt=_honest_receipt(scope_check, wt_r, base,
+                                                          allow)))
+        with open(os.path.join(run_r, "state.json")) as fh:
+            st_r = json.load(fh)
+        st_r["jobs"]["job-a"]["merged"] = {"integrated": True, "commit": "a" * 40}
+        with open(os.path.join(run_r, "state.json"), "w") as fh:
+            json.dump(st_r, fh)
+        shutil.rmtree(wt_r, ignore_errors=True)
+        rep_r = evaluate_run(run_r, repo, scope_check)
+        expect("a merged job whose worktree was retired reads pass, not unverifiable",
+               rep_r["results"][0]["verdict"] == "pass")
+        expect("...and says the recorded integration is the evidence",
+               any("worktree retired" in n for n in rep_r["results"][0]["notes"]))
+        wt_u, run_u = fresh_case("retired-unmerged",
+                                 lambda w: write(w, "scripts/allowed.py", "1\n"))
+        _put_result(run_u, "job-a",
+                    _result(wt_u, receipt=_honest_receipt(scope_check, wt_u, base,
+                                                          allow)))
+        shutil.rmtree(wt_u, ignore_errors=True)
+        rep_u = evaluate_run(run_u, repo, scope_check)
+        expect("a MISSING worktree with no recorded merge is still unverifiable",
+               rep_u["results"][0]["verdict"] == "unverifiable")
 
         # (3b-stale) THE TREE MOVED UNDER THE JOB. Dogfood 2c: someone committed
         # while a direct-mode job was in flight, HEAD advanced past the commit the

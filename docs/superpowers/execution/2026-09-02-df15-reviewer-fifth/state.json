@@ -1,0 +1,38 @@
+{
+  "run_id": "2026-09-02-df15-reviewer-fifth",
+  "phase": "DISPATCHED",
+  "jobs": {
+    "impl-slice": {
+      "baseline": "5e226de2244da35a282d479f30dd2f888b11d590",
+      "isolation": "worktree",
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_0093043f-f1a-1",
+      "realised_commit": "5e226de2244da35a282d479f30dd2f888b11d590",
+      "status": "done",
+      "merged": {
+        "realised_commit": "5e226de2244da35a282d479f30dd2f888b11d590",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "76f49fab36b667bbd35edac0e43fb7162a5df8b2"
+      }
+    },
+    "spec-review": {
+      "baseline": "76f49fab36b667bbd35edac0e43fb7162a5df8b2",
+      "isolation": "direct",
+      "worktree": "",
+      "realised_commit": "76f49fab36b667bbd35edac0e43fb7162a5df8b2",
+      "status": "done"
+    }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "impl-slice"
+      ],
+      "merged": [
+        "impl-slice"
+      ],
+      "commit": "76f49fab36b667bbd35edac0e43fb7162a5df8b2",
+      "integrated": true
+    }
+  }
+}
