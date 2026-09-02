@@ -1,15 +1,17 @@
 {
   "run_id": "2026-09-02-v3.4-native-first-r3",
-  "phase": "PARTITION_VERIFIED",
-  "updated_at": "2026-09-02T18:21:37Z",
+  "phase": "BLOCKED",
+  "updated_at": "2026-09-02T19:40:00Z",
   "pre_eval_id": "2026-09-02T170442Z-v3-4-native-first-replace-the-epic-goal-feature-a-of-hooks-e-5664",
   "continues": "2026-09-02-v3.4-native-first-r2",
   "jobs": {
     "deletions-fixup": {
-      "status": "pending",
+      "status": "blocked",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_8081c0ae-6f2-1",
+      "session_id": null,
+      "baseline": "aeae409ecef127940c75893c73abb926be2a1cca",
+      "realised_commit": "aeae409ecef127940c75893c73abb926be2a1cca"
     },
     "docs-release": {
       "status": "pending",
@@ -23,5 +25,16 @@
       "worktree": null,
       "session_id": null
     }
-  }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "deletions-fixup"
+      ],
+      "merged": [],
+      "commit": "ee1d039e8d8fb79e55517796c0d476dd329dfcce",
+      "integrated": false
+    }
+  },
+  "blocked_reason": "deletions-fixup's worktree branched from origin/main (aeae409, v3.3.7) \u2014 the runtime's default worktree.baseRef=fresh \u2014 so it edited a tree without r2's merges and its floor went red. Superseded by r4 with worktree.baseRef: head."
 }

@@ -1,0 +1,38 @@
+{
+  "blocked": true,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    ".github/workflows/validate.yml",
+    "CONVENTIONS.md",
+    "hooks/tool-failure-ledger.sh",
+    "scripts/compound-v-epic-watch.py",
+    "scripts/compound-v-headless-shim.py",
+    "tests/test-native-points.sh"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "aeae409ecef127940c75893c73abb926be2a1cca",
+    "diff_digest": "sha256:241114a08e3d2b6ab09107e15d1ecd9e7771ac59ce8a32656666abd28b90f726",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"aeae409ecef127940c75893c73abb926be2a1cca\",\n  \"changed\": [\n    \".github/workflows/validate.yml\",\n    \"CONVENTIONS.md\",\n    \"hooks/tool-failure-ledger.sh\",\n    \"scripts/compound-v-epic-watch.py\",\n    \"scripts/compound-v-headless-shim.py\",\n    \"tests/test-native-points.sh\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-epic-watch.py\",\n    \"scripts/compound-v-headless-shim.py\",\n    \"hooks/tool-failure-ledger.sh\",\n    \"tests/test-native-points.sh\",\n    \"skills/compound-v/phase-preeval.md\",\n    \".github/workflows/validate.yml\",\n    \"CONVENTIONS.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "aeae409ecef127940c75893c73abb926be2a1cca",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "blocked",
+  "summary": "The three deletions jobs A and B were denied by the clamp, plus one wrong sentence",
+  "tests": {
+    "command": "bash tests/test-epic-goal-stop.sh\nbash -c 'bash tests/test-epic-goal-stop.sh && bash tests/test-native-points.sh'\nbash -c '[ -f scripts/compound-v-epic-watch.py ] || exit 0; /usr/bin/python3 scripts/compound-v-epic-watch.py --selftest'\nbash -c '[ -f scripts/compound-v-headless-shim.py ] || exit 0; /usr/bin/python3 scripts/compound-v-headless-shim.py --selftest'\nbash -c '[ -f tests/test-native-points.sh ] || exit 0; bash tests/test-native-points.sh'\nbash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+    "exit_code": 1,
+    "failures": [
+      "bash -c 'bash tests/test-epic-goal-stop.sh && bash tests/test-native-points.sh'",
+      "bash -c '[ -f tests/test-native-points.sh ] || exit 0; bash tests/test-native-points.sh'",
+      "bash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'"
+    ],
+    "scope": "impacted",
+    "selected_count": 6
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_8081c0ae-6f2-1"
+}

@@ -1,0 +1,81 @@
+{
+  "baseline_commit": "aeae409ecef127940c75893c73abb926be2a1cca",
+  "diff_digest": "sha256:241114a08e3d2b6ab09107e15d1ecd9e7771ac59ce8a32656666abd28b90f726",
+  "exit_code": 0,
+  "job_id": "deletions-fixup",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"aeae409ecef127940c75893c73abb926be2a1cca\",\n  \"changed\": [\n    \".github/workflows/validate.yml\",\n    \"CONVENTIONS.md\",\n    \"hooks/tool-failure-ledger.sh\",\n    \"scripts/compound-v-epic-watch.py\",\n    \"scripts/compound-v-headless-shim.py\",\n    \"tests/test-native-points.sh\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-epic-watch.py\",\n    \"scripts/compound-v-headless-shim.py\",\n    \"hooks/tool-failure-ledger.sh\",\n    \"tests/test-native-points.sh\",\n    \"skills/compound-v/phase-preeval.md\",\n    \".github/workflows/validate.yml\",\n    \"CONVENTIONS.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "aeae409ecef127940c75893c73abb926be2a1cca",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      ".github/workflows/validate.yml",
+      "CONVENTIONS.md",
+      "hooks/tool-failure-ledger.sh",
+      "scripts/compound-v-epic-watch.py",
+      "scripts/compound-v-headless-shim.py",
+      "tests/test-native-points.sh"
+    ],
+    "checks": [
+      {
+        "checker": "bash tests/test-epic-goal-stop.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'bash tests/test-epic-goal-stop.sh && bash tests/test-native-points.sh'",
+        "rc": 1,
+        "status": "fail",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f scripts/compound-v-epic-watch.py ] || exit 0; /usr/bin/python3 scripts/compound-v-epic-watch.py --selftest'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f scripts/compound-v-headless-shim.py ] || exit 0; /usr/bin/python3 scripts/compound-v-headless-shim.py --selftest'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f tests/test-native-points.sh ] || exit 0; bash tests/test-native-points.sh'",
+        "rc": 1,
+        "status": "fail",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+        "rc": 1,
+        "status": "fail",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (4 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 4 command(s) from 6 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)",
+      "unmapped: .github/workflows/validate.yml, CONVENTIONS.md matched no `when` glob \u2014 unknown blast radius resolves to full_command, never to nothing"
+    ],
+    "failures": [
+      "bash -c 'bash tests/test-epic-goal-stop.sh && bash tests/test-native-points.sh'",
+      "bash -c '[ -f tests/test-native-points.sh ] || exit 0; bash tests/test-native-points.sh'",
+      "bash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'"
+    ],
+    "merge_blocked": true,
+    "passed": false,
+    "phase": "test_floor",
+    "reasons": [
+      "tier-1: configured tests failed (rc=1): bash -c 'bash tests/test-epic-goal-stop.sh && bash tests/test-native-points.sh'",
+      "tier-1: configured tests failed (rc=1): bash -c '[ -f tests/test-native-points.sh ] || exit 0; bash tests/test-native-points.sh'",
+      "tier-1: configured tests failed (rc=1): bash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'"
+    ],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_8081c0ae-6f2-1"
+}
