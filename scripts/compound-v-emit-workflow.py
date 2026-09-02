@@ -2830,6 +2830,55 @@ def cmd_register_lane(argv):
                 "no `tests` object"
             )
 
+    # ---- THE PIPELINE'S OWN BOOKKEEPING IS NOT THE JOB'S WORK -------------- #
+    # Dogfood 2 (2026-09-02) found this the only way it could be found: with a
+    # dependent job that actually wrote something. `register-lane` writes three
+    # files into the run directory for this job — the pre-existing snapshot, the
+    # baseline pin, and the resolved test contract — and in DIRECT mode the run
+    # directory is inside the tree the gate measures. The snapshot is taken
+    # FIRST, precisely so it precedes the work, which means it cannot contain the
+    # two files written after it. So the gate saw:
+    #
+    #   violations: jobs/<id>.baseline, jobs/<id>.test-contract.json,
+    #               preexisting/<id>.txt
+    #
+    # and blocked a job for three files the JOB never touched — our own machinery
+    # did, on its behalf, before it started. The wave then refused integration as
+    # `forged`, which sends whoever reads it hunting a forgery that never happened.
+    #
+    # 3.0.4's two-wave dogfood could not have caught it: there the dependent job
+    # wrote nothing at all, so its changed set was empty and the no-work check
+    # answered first.
+    #
+    # A worktree job never sees this — its run directory lives outside its
+    # worktree — which is exactly why the ONLY direct-mode job in the pipeline is
+    # where it hid.
+    #
+    # The fix appends these paths to the snapshot the gate already subtracts,
+    # rather than exempting `<run_dir>/**` wholesale: a worker writing into some
+    # OTHER job's run directory is still a violation, and must stay one.
+    if (args.isolation or "direct") != "worktree":
+        try:
+            own = []
+            for p in (os.path.join(run_dir, "preexisting", "%s.txt" % args.job_id),
+                      baseline_pin_path(run_dir, args.job_id),
+                      test_contract_path(run_dir, args.job_id)):
+                rel = os.path.relpath(os.path.abspath(p), os.path.abspath(args.repo_root))
+                if not rel.startswith(".." + os.sep) and rel != "..":
+                    own.append(rel.replace(os.sep, "/"))
+            snap = os.path.join(run_dir, "preexisting", "%s.txt" % args.job_id)
+            existing = []
+            if os.path.exists(snap):
+                with open(snap, "r", encoding="utf-8") as fh:
+                    existing = [ln.strip() for ln in fh if ln.strip()]
+            merged = existing + [p for p in own if p not in existing]
+            _atomic_write(snap, "\n".join(merged) + ("\n" if merged else ""))
+            ack["own_bookkeeping"] = own
+        except Exception as exc:  # noqa: BLE001
+            # Fail OPEN into a STRICTER gate, same rule as the snapshot itself:
+            # without the append the job is blocked for our files, which is loud.
+            ack["own_bookkeeping_error"] = str(exc)
+
     print(json.dumps(ack, indent=2, sort_keys=True))
     return 0
 
@@ -3145,6 +3194,55 @@ def selftest():
                "Bash" not in NARROW_DISALLOWED)
         _check("StructuredOutput survives the narrowing",
                "StructuredOutput" not in NARROW_DISALLOWED)
+        # ---- 3.3.0: register-lane's OWN files are not the job's work --------
+        # Dogfood 2 blocked a dependent job for three files our own machinery
+        # wrote for it. Direct mode only — a worktree job's run dir is outside
+        # the tree its gate measures.
+        bk_repo = os.path.join(tmp, "bkrepo")
+        _init_repo(bk_repo)
+        bk_run = os.path.join(bk_repo, "docs", "superpowers", "execution", "bk")
+        os.makedirs(bk_run, exist_ok=True)
+        bk_manifest = {"run_id": "bk", "max_parallel": 1,
+                       "test_contract": {"floor_command": "/bin/echo ok",
+                                         "full_command": "/bin/echo full"},
+                       "jobs": [{"id": "d1", "backend": "claude", "tier": "light",
+                                 "isolation": "direct",
+                                 "write_allowed": ["docs/superpowers/dogfood/**"]}]}
+        with open(os.path.join(bk_run, "manifest.yaml"), "w", encoding="utf-8") as fh:
+            json.dump(bk_manifest, fh)
+        rc_bk = cmd_register_lane([
+            "--run-dir", bk_run, "--job-id", "d1", "--cwd", bk_repo,
+            "--repo-root", bk_repo, "--isolation", "direct",
+            "--manifest", os.path.join(bk_run, "manifest.yaml"),
+        ])
+        snap_p = os.path.join(bk_run, "preexisting", "d1.txt")
+        snap_lines = []
+        if os.path.exists(snap_p):
+            with open(snap_p, "r", encoding="utf-8") as fh:
+                snap_lines = [ln.strip() for ln in fh if ln.strip()]
+        _check("register-lane succeeds in direct mode", rc_bk == 0, str(rc_bk))
+        _check("the baseline pin is exempted from the job's changed set",
+               any(l.endswith("jobs/d1.baseline") for l in snap_lines),
+               str(snap_lines))
+        _check("the snapshot file exempts ITSELF",
+               any(l.endswith("preexisting/d1.txt") for l in snap_lines),
+               str(snap_lines))
+        _check("the resolved test contract is exempted too",
+               any(l.endswith("jobs/d1.test-contract.json") for l in snap_lines),
+               str(snap_lines))
+        _check("nothing outside the repo root reaches the snapshot",
+               all(not l.startswith("..") for l in snap_lines), str(snap_lines))
+        # A WORKTREE job must not get the exemption — its run dir is not in the
+        # tree its gate measures, and adding paths there would be noise at best.
+        rc_wt = cmd_register_lane([
+            "--run-dir", bk_run, "--job-id", "w1", "--cwd", bk_repo,
+            "--repo-root", bk_repo, "--isolation", "worktree",
+            "--manifest", os.path.join(bk_run, "manifest.yaml"),
+        ])
+        _check("a worktree job writes no preexisting snapshot at all",
+               rc_wt == 0
+               and not os.path.exists(os.path.join(bk_run, "preexisting", "w1.txt")))
+
         # 3.1.2 — the invariant, not the description. A launched job ALWAYS carries
         # an implement clamp: the only clampless path (external backend, missing
         # worker script) is refused before it can launch.

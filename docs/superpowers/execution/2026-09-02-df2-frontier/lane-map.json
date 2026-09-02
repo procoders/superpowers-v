@@ -1,0 +1,11 @@
+{
+  "agents": {},
+  "manifest": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-02-df2-frontier/manifest.yaml",
+  "run_id": "2026-09-02-df2-frontier",
+  "worktrees": {
+    "/Users/oleg/Dev/superpowers-v": "tier-summary",
+    "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_a6f68c23-01d-1": "tier-frontier",
+    "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_a6f68c23-01d-2": "tier-deep",
+    "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_a6f68c23-01d-3": "tier-standard"
+  }
+}

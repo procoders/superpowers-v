@@ -1,0 +1,11 @@
+{
+  "baseline_commit": "20bb88c50d672463faa8aae75f20b658afb9de0f",
+  "diff_digest": "sha256:59f78ec5ada84efeb666695e5750819cea46c8a22ad4dba26973c0765376f1fd",
+  "exit_code": 1,
+  "job_id": "tier-summary",
+  "raw_stdout": "{\n  \"verdict\": \"blocked\",\n  \"mode\": \"direct\",\n  \"baseline\": \"20bb88c50d672463faa8aae75f20b658afb9de0f\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df2-summary.md\",\n    \"docs/superpowers/execution/2026-09-02-df2-frontier/jobs/tier-summary.baseline\",\n    \"docs/superpowers/execution/2026-09-02-df2-frontier/jobs/tier-summary.test-contract.json\",\n    \"docs/superpowers/execution/2026-09-02-df2-frontier/preexisting/tier-summary.txt\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df2-summary.md\"\n  ],\n  \"violations\": [\n    \"docs/superpowers/execution/2026-09-02-df2-frontier/jobs/tier-summary.baseline\",\n    \"docs/superpowers/execution/2026-09-02-df2-frontier/jobs/tier-summary.test-contract.json\",\n    \"docs/superpowers/execution/2026-09-02-df2-frontier/preexisting/tier-summary.txt\"\n  ]\n}\n",
+  "realised_commit": "20bb88c50d672463faa8aae75f20b658afb9de0f",
+  "source": "gate-receipt",
+  "verdict": "blocked",
+  "worktree": ""
+}
