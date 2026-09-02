@@ -140,6 +140,38 @@ NARROW_DISALLOWED = [
 # discovered by whoever wonders why their implementer cannot search.
 IMPLEMENT_DISALLOWED = ["Task", "Agent", "SlashCommand", "WebFetch", "WebSearch"]
 
+# What an implementer's shell may run, beyond the three plumbing forms.
+#
+# Dogfood r2 (2026-09-02, wf_f0505df2-99c) was the first REAL code job Engine C
+# dispatched, and it could not do the job: the clamp admitted register-lane and
+# two recall reads and nothing else, so the implementer could not run a test, a
+# selftest, shellcheck, or `git rm`. Job A wrote "NOTHING IS VERIFIED" in its
+# summary and was merged anyway because the Gate ran the floor; job B claimed a
+# deletion it had been denied. Every docs-only dogfood before it never needed a
+# shell, which is why the clamp survived 3.0.6 to 3.3.7 looking sound.
+#
+# The narrowing that matters is the one this list still expresses by OMISSION:
+# no network (curl, wget, ssh, scp), no privilege (sudo), no scheduler
+# (launchctl, crontab, open, osascript), no package installs, and no git that
+# commits, pushes, rewrites history, or touches worktrees/remotes — merge-back
+# and the wave commit belong to the finalizer. Writes outside the lane are still
+# refused by lane-guard where it can parse them and by the git-derived scope gate
+# in every case; the clamp is defence in depth, never the authority.
+IMPLEMENT_SHELL = [
+    "Bash(bash:*)", "Bash(sh:*)", "Bash(python3:*)", "Bash(/usr/bin/python3:*)",
+    "Bash(python:*)", "Bash(node:*)", "Bash(npm:*)", "Bash(npx:*)", "Bash(pytest:*)",
+    "Bash(make:*)", "Bash(go:*)", "Bash(cargo:*)", "Bash(shellcheck:*)",
+    "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)",
+    "Bash(git ls-files:*)", "Bash(git grep:*)", "Bash(git rm:*)", "Bash(git mv:*)",
+    "Bash(git add:*)", "Bash(git rev-parse:*)",
+    "Bash(ls:*)", "Bash(cat:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(grep:*)",
+    "Bash(find:*)", "Bash(wc:*)", "Bash(diff:*)", "Bash(sed:*)", "Bash(awk:*)",
+    "Bash(sort:*)", "Bash(uniq:*)", "Bash(cut:*)", "Bash(tr:*)", "Bash(xargs:*)",
+    "Bash(pwd:*)", "Bash(echo:*)", "Bash(printf:*)", "Bash(test:*)", "Bash(true:*)",
+    "Bash(mkdir:*)", "Bash(rm:*)", "Bash(mv:*)", "Bash(cp:*)", "Bash(touch:*)",
+    "Bash(chmod:*)", "Bash(cd:*)", "Bash(env:*)", "Bash(which:*)", "Bash(date:*)",
+]
+
 STAGE_PHASES = ["Implement", "Gate", "Record", "Finalize"]
 
 # Reserve, in tokens, assumed per queued agent when guarding fan-out against the
@@ -596,6 +628,10 @@ def _clamp_rules(job, python_bin, self_path, worker_script_for):
     if os.path.exists(memory):
         rules.append("Bash(%s %s search:*)" % (python_bin, memory))
         rules.append("Bash(%s %s recall-check:*)" % (python_bin, memory))
+    # A developer's shell (see IMPLEMENT_SHELL) — tests, selftests, linters,
+    # deletions and renames. Denied by omission: network, privilege, scheduler,
+    # installs, and every git form that commits or pushes.
+    rules.extend(IMPLEMENT_SHELL)
     if backend != "claude":
         worker = worker_script_for(backend)
         if not worker:
@@ -2456,7 +2492,14 @@ def merge_back(worktree, repo_root, baseline, files_changed):
     if not baseline:
         return False, "no pinned baseline; refusing to merge against a moving HEAD"
     if not files_changed:
-        return True, None  # nothing approved, nothing to land
+        # A worktree job that reached `success` and approved NO files is a record
+        # defect, not a no-op: Record marks a job that changed nothing as
+        # no_work/blocked, so it never gets here. Treating this as "nothing to
+        # land" let a finalizer mark a job merged and prune the only copy of
+        # its work (2026-09-02). Refuse, and keep the worktree.
+        return False, ("the record approved no files for this worktree job; a "
+                       "pass verdict with an empty changed list lands nothing "
+                       "and is refused rather than pruned")
     ok, err = _stage_paths(worktree, files_changed)
     if not ok:
         return False, err
@@ -2684,8 +2727,13 @@ def _job_result_from(verdict, job, state_job, tests=None, contract=None,
         scope = json.loads(raw) if raw.strip() else None
     except Exception:  # noqa: BLE001
         scope = None
-    changed = (scope or {}).get("changed") or []
-    violations = (scope or {}).get("violations") or []
+    # The gate-receipt JSON is the authority; when a caller hands over the parsed
+    # verdict without its `raw_stdout` (a by-hand re-record after a detached
+    # gate did exactly this on 2026-09-02), the same fields at the top level are
+    # the next best evidence — and an EMPTY list here is what let a passing
+    # worktree job be "merged" with nothing and then pruned.
+    changed = (scope or {}).get("changed") or verdict.get("changed") or []
+    violations = (scope or {}).get("violations") or verdict.get("violations") or []
     gate_verdict = verdict.get("verdict")
 
     if gate_verdict == "pass":
@@ -3288,8 +3336,15 @@ def cmd_finalize_wave(argv):
     #
     # Best-effort and never fatal: a wave that integrated correctly must not be
     # reported as failed because a directory could not be unlinked.
+    # AND ONLY WHEN THIS PASS PRODUCED A COMMIT. A re-finalize whose merge-back
+    # applied nothing (`sha` is None) has not put the worktree's diff in HEAD, and
+    # `git worktree remove --force` on it destroys the one copy of the work —
+    # which is what happened on 2026-09-02 to job triage-hook of run
+    # v3.4-native-first-r2 (recovered from the agent transcript). A worktree is
+    # retired only after the commit that carries its diff exists.
     pruned, prune_errors = [], []
-    if out["merged"] and not args.no_commit:
+    if out["merged"] and not args.no_commit and out.get("commit") and merged_worktrees \
+            and not str(out.get("reason") or "").startswith("nothing left to commit"):
         for job_id in out["merged"]:
             # THE PATH THAT WAS ACTUALLY MERGED, recorded locally at merge time —
             # not re-read from state.json. A cross-model review called the re-read
@@ -4237,6 +4292,19 @@ def selftest():
 
         _check("every launched job carries a bash clamp",
                all(e["implement_clamp"] for w in clamped["waves"] for e in w))
+        # Dogfood r2: the first real code job could not run a test or `git rm`.
+        _check("the implement clamp admits a developer's shell: tests, selftests, "
+               "shellcheck, git rm",
+               all(any(r == want for r in (_cl or []))
+                   for want in ("Bash(bash:*)", "Bash(python3:*)", "Bash(shellcheck:*)",
+                                "Bash(git rm:*)", "Bash(pytest:*)")), str(_cl))
+        _check("the implement clamp admits NO network, privilege, scheduler or committing git",
+               not any(r.startswith(("Bash(curl", "Bash(wget", "Bash(ssh", "Bash(scp",
+                                     "Bash(sudo", "Bash(launchctl", "Bash(crontab",
+                                     "Bash(git commit", "Bash(git push", "Bash(git reset",
+                                     "Bash(git checkout", "Bash(git worktree",
+                                     "Bash(git remote", "Bash(brew", "Bash(pip"))
+                       for r in (_cl or [])), str(_cl))
         _refused = False
         try:
             _plan_for(_tiny_manifest([
