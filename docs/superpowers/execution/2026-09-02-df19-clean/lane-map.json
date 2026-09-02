@@ -1,0 +1,9 @@
+{
+  "agents": {},
+  "manifest": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-02-df19-clean/manifest.yaml",
+  "run_id": "2026-09-02-df19-clean",
+  "worktrees": {
+    "/Users/oleg/Dev/superpowers-v": "spec-review",
+    "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_0d12eaa3-b79-1": "impl-slice"
+  }
+}

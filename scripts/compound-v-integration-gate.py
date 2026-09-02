@@ -647,7 +647,23 @@ def evaluate_job(job, state_job, run_dir, repo_root, scope_check):
             return out
     out["baseline"] = baseline
 
-    preexisting = os.path.join(run_dir, "preexisting", "%s.txt" % job_id)
+    # THE SAME LIST THE GATE USED, which is the `.verified.txt` the gate WROTE —
+    # not the raw `<id>.txt` it was derived from.
+    #
+    # The raw file is the digest-bound record. The gate turns it into the actual
+    # exemption set: it drops entries whose bytes moved, adds the pipeline files
+    # that are exempt by name, and adds itself. Re-deriving here from the RAW file
+    # gave the authority a different exemption set than the gate had, so the two
+    # reached different conclusions about the same tree — reported as
+    # `contradicted`, which is the verdict for exactly that, arrived at for a reason
+    # that was ours rather than the worker's. Dogfood 19, on a deliberately quiet
+    # tree, with nothing else left to blame.
+    #
+    # Falling back to the raw file keeps an older run verifiable; it will simply be
+    # stricter, which is the safe direction.
+    preexisting = os.path.join(run_dir, "preexisting", "%s.verified.txt" % job_id)
+    if not os.path.isfile(preexisting):
+        preexisting = os.path.join(run_dir, "preexisting", "%s.txt" % job_id)
     if not os.path.isfile(preexisting):
         preexisting = None
 
