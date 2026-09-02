@@ -496,6 +496,15 @@ def _clamp_rules(job, python_bin, self_path, worker_script_for):
     can bind nothing makes the runtime refuse the spawn — which fails loudly
     rather than degrading, but it still means the second family cannot launch.
 
+    THE `None` RETURN IS UNREACHABLE FOR A JOB THAT ACTUALLY LAUNCHES, and 3.0.6
+    described it wrongly. It happens only for an external backend whose worker
+    script is absent — and `job_entry` REFUSES that job outright a few lines later
+    ("the handoff cannot be materialized"). A `claude` job always carries the
+    register-lane rule. So no implementer that reaches `agent()` is ever unclamped;
+    the claim that one could be was a caveat written from reading this function
+    alone instead of the path around it. `_check("every launched job carries a
+    clamp", ...)` in the selftest now holds that shut.
+
     Rule syntax is the standard permission rule, validated by the runtime:
     `Bash(<command or prefix>)`, tool name case-sensitive, no whitespace padding
     inside the parens. An entry that parses to a tool with no rule content is an
@@ -3136,6 +3145,24 @@ def selftest():
                "Bash" not in NARROW_DISALLOWED)
         _check("StructuredOutput survives the narrowing",
                "StructuredOutput" not in NARROW_DISALLOWED)
+        # 3.1.2 — the invariant, not the description. A launched job ALWAYS carries
+        # an implement clamp: the only clampless path (external backend, missing
+        # worker script) is refused before it can launch.
+        clamped = _plan_for(_tiny_manifest([
+            {"id": "c-claude", "tier": "light", "write_allowed": ["k/**"]},
+            {"id": "c-deep", "tier": "deep", "write_allowed": ["l/**"]},
+        ]), tmp)
+        _check("every launched job carries a bash clamp",
+               all(e["implement_clamp"] for w in clamped["waves"] for e in w))
+        _refused = False
+        try:
+            _plan_for(_tiny_manifest([
+                {"id": "c-ext", "backend": "codex", "tier": "deep",
+                 "isolation": "worktree", "write_allowed": ["m/**"]}]), tmp)
+        except ValueError:
+            _refused = True
+        _check("the one clampless path is refused before it can launch", _refused)
+
         _check("the implement stage is narrowed at spawn",
                "opts.disallowedTools = CFG.implement_disallowed" in script)
         _check("an implementer keeps the tools it needs to write code",

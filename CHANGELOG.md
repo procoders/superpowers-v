@@ -4,6 +4,28 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [3.1.2] - 2026-09-02
+
+### Fixed — a caveat this project published about itself was wrong
+
+3.0.6 shipped with a stated limitation: *"`bashCommandClamp` on Implement is still conditional — `_clamp_rules` returns `None` for a non-`claude` job whose worker script is missing, and an implementer with no clamp is unnarrowed on Bash."*
+
+It is not true. That `None` is returned, but `job_entry` **refuses that job outright** a few lines later — an external backend with no worker script cannot launch at all. A `claude` job always carries the register-lane rule. **No implementer that reaches `agent()` is ever unclamped.**
+
+The caveat came from reading the function and not the path around it. Two selftests now hold the invariant shut — every launched job carries a clamp, and the one clampless path is refused before it can launch — because an invariant asserted is worth more than an invariant described. Corrected in the dogfood record and in the audit table, both of which repeated it.
+
+Understating a guarantee is a smaller sin than overstating one, but it is the same failure: a claim about the code that the code does not support.
+
+### The two remaining ⚠ rows are conclusions, not a to-do list
+
+Both were re-examined against the code. They are ⚠ for different reasons, and the difference matters.
+
+**`agentType` is at its designed end state.** Spawning by role happens where a role exists: `type: review` gets `superpowers-v:spec-reviewer`. Gate, Record and Finalize have no role and should not have one — each runs exactly one clamped command and returns its JSON verbatim, and their entire safety is `disallowedTools` + `bashCommandClamp`. Writing an `agents/gate.md` to spawn them by role would invent a role that describes nothing, and since **no agent under `agents/` declares a `tools:` restriction**, role-spawning would hand them the whole toolbox and undo the narrowing 3.0.6 just finished. ⚠ is more honest than ✅ — the mechanism is used as far as it applies here. Closed, not deferred.
+
+**Triage-at-prompt-arrival is half closed, and the other half is not an engineering decision.** The reminder is now accurate (3.1.1). The remaining gap is mechanical: a model that ignores the line leaves no triage record at all, and the only thing that would catch it is the Stop gate, off by default under `enforcement.triage_gate`.
+
+Turning that on by default is **not a fix, it is a default with a blast radius across every session of every install** — the gate blocks turn-end until a triage record covers the diff, including for sessions that never touched Compound V. That is the maintainer's call, and it is recorded here as a decision rather than as a forgotten task. If the answer is yes, what it takes: raise `enforcement.triage_gate` in the default config, re-run `tests/test-epic-goal-stop.sh` against the new default, and put the opt-out somewhere visible in the README.
+
 ## [3.1.1] - 2026-09-02
 
 ### Fixed — a question no longer burns the session's one triage nudge
