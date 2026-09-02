@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-3.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "5993cb0c2b3e209e445bb47ebac47a25b0df525d",
+    "diff_digest": "sha256:2d04e7e3587b514dd1b2e7f1c77a20988eba294c6445784ccaa5f8d34beb9e43",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"5993cb0c2b3e209e445bb47ebac47a25b0df525d\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-3.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-3.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "5993cb0c2b3e209e445bb47ebac47a25b0df525d",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Review Gate \u2014 three passes against the spec and the feature-level acceptance criteria",
+  "tests": {
+    "command": "bash tests/test-epic-goal-stop.sh\nbash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": ""
+}

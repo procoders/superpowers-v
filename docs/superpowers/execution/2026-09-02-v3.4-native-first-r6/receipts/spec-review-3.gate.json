@@ -1,0 +1,51 @@
+{
+  "baseline_commit": "5993cb0c2b3e209e445bb47ebac47a25b0df525d",
+  "diff_digest": "sha256:2d04e7e3587b514dd1b2e7f1c77a20988eba294c6445784ccaa5f8d34beb9e43",
+  "exit_code": 0,
+  "job_id": "spec-review-3",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"5993cb0c2b3e209e445bb47ebac47a25b0df525d\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-3.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-3.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "5993cb0c2b3e209e445bb47ebac47a25b0df525d",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-3.md",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/.run.lock",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/jobs/spec-review-3.baseline",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/jobs/spec-review-3.test-contract.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/lane-map.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/preexisting/spec-review-3.txt",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/preexisting/spec-review-3.verified.txt",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/state.json"
+    ],
+    "checks": [
+      {
+        "checker": "bash tests/test-epic-goal-stop.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (4 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 0 command(s) from 8 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)",
+      "unmapped: docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-3.md, docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/.run.lock, docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/jobs/spec-review-3.baseline, docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/jobs/spec-review-3.test-contract.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/lane-map.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/preexisting/spec-review-3.txt, docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/preexisting/spec-review-3.verified.txt, docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/state.json matched no `when` glob \u2014 unknown blast radius resolves to full_command, never to nothing"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": ""
+}

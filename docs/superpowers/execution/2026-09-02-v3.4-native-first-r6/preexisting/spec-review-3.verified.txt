@@ -1,0 +1,15 @@
+docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/.run.lock
+docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/lane-map.json
+scripts/__pycache__/compound-v-integration-gate.cpython-314.pyc
+scripts/__pycache__/compound-v-update-memory.cpython-314.pyc
+scripts/__pycache__/compound-v-validate-manifest.cpython-314.pyc
+docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/dispatch.workflow.js
+docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/jobs/spec-review-3.baseline
+docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/jobs/spec-review-3.prompt.md
+docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/jobs/spec-review-3.test-contract.json
+docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/manifest.yaml
+docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/state.json
+docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/preexisting/spec-review-3.txt
+docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/preexisting/spec-review-3.verified.txt
+docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/receipts/spec-review-3.gate.json
+docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/results/spec-review-3.json

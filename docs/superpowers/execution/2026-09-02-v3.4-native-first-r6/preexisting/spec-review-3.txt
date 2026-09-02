@@ -1,0 +1,12 @@
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/.run.lock
+ebc59781282fa9ecf16f77a5b32337ce23ab2fb3c69e666a9a0b156c3caa68dd  docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/lane-map.json
+aecbcdf987394310502880c79ab99ce223c1b2a938c155d594afca793886a0cf  scripts/__pycache__/compound-v-integration-gate.cpython-314.pyc
+c0c947e3d429d98e0e9a081031f81dfeac5c278f6212178691bc7c330516e80f  scripts/__pycache__/compound-v-update-memory.cpython-314.pyc
+3cd3e5784853a81b150faeddc16fe89e29b82054b9595b5b164893a2c219e14e  scripts/__pycache__/compound-v-validate-manifest.cpython-314.pyc
+dcf23109937e351c62aa3a663129a3c73ccbff60473440470e3b7547ce428bc1  docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/dispatch.workflow.js
+0d8350742c5f4e75caec27e3a3cd889978d52af77b154cc4f9421c524b3a8b19  docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/jobs/spec-review-3.baseline
+250436e84844da75300983ecaf43f882c1daad9bb395121308191f55727dcd0c  docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/jobs/spec-review-3.prompt.md
+dfda0eec48b33851f62704799c7477abaa8aed55a26e254bbc1980dd02d427ea  docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/jobs/spec-review-3.test-contract.json
+ee9e925175278ab62cffe6ae5287865c06d55d918fe4d20c9b228da076fe4b7d  docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/manifest.yaml
+b9b8787e731edf125aa877c29e7d7f749178c034e1ef590e38b5fee328338713  docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/preexisting/spec-review-3.txt
+5826af4d19c0f70ab297b59c83f8fa5c09fa3f8ef1af9a2706c1648d062d1467  docs/superpowers/execution/2026-09-02-v3.4-native-first-r6/state.json
