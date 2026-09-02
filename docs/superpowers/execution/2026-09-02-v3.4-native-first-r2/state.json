@@ -1,0 +1,39 @@
+{
+  "run_id": "2026-09-02-v3.4-native-first-r2",
+  "phase": "PARTITION_VERIFIED",
+  "updated_at": "2026-09-02T17:30:30Z",
+  "pre_eval_id": "2026-09-02T170442Z-v3-4-native-first-replace-the-epic-goal-feature-a-of-hooks-e-5664",
+  "supersedes": "2026-09-02-v3.4-native-first",
+  "jobs": {
+    "epic-native": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "triage-hook": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "observe-native": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "docs-release": {
+      "status": "pending",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null
+    },
+    "spec-review": {
+      "status": "pending",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null
+    }
+  }
+}
