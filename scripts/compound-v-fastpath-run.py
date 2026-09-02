@@ -270,14 +270,66 @@ def _scope_check():
     return mod
 
 
+def _drop_gitignored(worktree, paths):
+    """``paths`` minus everything git itself ignores. None when it cannot be decided.
+
+    ONE call, `git check-ignore --stdin`, whose exit status is 0 when at least one
+    path was ignored, 1 when none were, and >1 on a real error — so 1 is success
+    with an empty answer, not a failure.
+    """
+    if not paths:
+        return list(paths or [])
+    try:
+        # `universal_newlines=True` (not `text=`) — Python 3.6-compatible, and this
+        # file is 3.9-safe by policy. WITHOUT it, communicate() is handed a str on a
+        # bytes pipe, raises TypeError, and the except below quietly returns None —
+        # which falls back to the unfiltered union and looks exactly like "nothing
+        # was ignored". The first draft did precisely that, and the dogfood caught it
+        # by the path count not moving.
+        proc = subprocess.Popen(
+            ["git", "-C", worktree, "check-ignore", "--stdin"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            universal_newlines=True)
+        out, _ = proc.communicate("\n".join(paths) + "\n", timeout=30)
+    except Exception:  # noqa: BLE001
+        return None
+    if proc.returncode not in (0, 1):
+        return None
+    ignored = {ln.strip() for ln in (out or "").splitlines() if ln.strip()}
+    return [p for p in paths if p not in ignored]
+
+
 def _changed_from_scope(worktree, baseline):
+    """The changed set FOR TEST SELECTION — which is not the scope gate's set.
+
+    `compound-v-scope-check.py:changed_files` unions tracked edits, untracked files
+    AND gitignored ones, deliberately: a worker that writes `.env` or into `dist/`
+    must be caught, and dropping ignored paths there was a real exploit this project
+    fixed in 2.8. That same union is WRONG as the input to test selection, and
+    dogfood 1 caught it before the run started: twelve leftover `.claude/worktrees/**`
+    and `__pycache__/*.pyc` entries matched no `when` glob, the "unmapped path ⇒
+    unknown blast radius ⇒ full_command" rule fired on pure noise, and the scoping
+    3.1.0 shipped collapsed straight back to running everything. In any repository
+    with ordinary untracked churn it would have been defeated on arrival.
+
+    One function, two questions — the same defect `isolation` had in 3.0.4, where a
+    manifest-layer name and an agent-layer name were the same word.
+
+    So: tracked edits and untracked-but-not-ignored files (a brand-new source file is
+    a real change with a real blast radius) — and NOT the ignored set, which by
+    construction is not part of the build and cannot affect a test. If the ignored
+    set cannot be determined, the FULL union is returned unchanged: over-selecting
+    tests is the safe direction, and silently narrowing on a failed git call is not.
+    """
     mod = _scope_check()
     if mod is None:
         return None
     try:
-        return list(mod.changed_files(worktree, baseline))
+        full = list(mod.changed_files(worktree, baseline))
     except Exception:  # noqa: BLE001
         return None
+    filtered = _drop_gitignored(worktree, full)
+    return full if filtered is None else filtered
 
 
 # --------------------------------------------------------------------------- #
@@ -2192,6 +2244,31 @@ def _selftest():
                         "--out", os.path.join(tmp, "v-inv3.json")])
         expect("HIGH-1: invalidate-receipt with NO destination is refused (exit 2)",
                rc_inv3 == 2)
+
+        # --- v3.3.0: the test-selection change set is NOT the gate's --------
+        # Dogfood 1 caught this before its run started: leftover worktrees and
+        # __pycache__ matched no `when` glob, "unmapped ⇒ full_command" fired on
+        # pure noise, and 3.1.0's scoping collapsed back to running everything.
+        _gi = os.path.join(tmp, "girepo")
+        os.makedirs(os.path.join(_gi, "src"), exist_ok=True)
+        os.makedirs(os.path.join(_gi, "build"), exist_ok=True)
+        _git(_gi, ["init", "-q", "."])
+        open(os.path.join(_gi, ".gitignore"), "w").write("build/\n*.pyc\n")
+        open(os.path.join(_gi, "src", "a.py"), "w").write("x\n")
+        open(os.path.join(_gi, "build", "out.o"), "w").write("x\n")
+        open(os.path.join(_gi, "src", "a.pyc"), "w").write("x\n")
+        _kept = _drop_gitignored(_gi, ["src/a.py", "build/out.o", "src/a.pyc",
+                                       ".gitignore"])
+        expect("gitignored paths are dropped from the TEST change set",
+               _kept is not None and "build/out.o" not in _kept
+               and "src/a.pyc" not in _kept)
+        expect("real source changes survive the filter",
+               _kept is not None and "src/a.py" in _kept)
+        expect("an empty input is not an error",
+               _drop_gitignored(_gi, []) == [])
+        expect("a non-repo cannot decide, and says so rather than narrowing",
+               _drop_gitignored(os.path.join(tmp, "definitely-not-a-repo"),
+                                ["a"]) is None)
 
         # --- v3.1.0: the DERIVED default scope ------------------------------
         # The rule set 2026-09-02: running the whole project is a DECISION, not

@@ -1,0 +1,38 @@
+run_id: 2026-09-02-df1-test-scope
+routing_stance: balanced
+max_parallel: 2
+spec_path: docs/superpowers/execution/2026-09-02-df1-test-scope/spec.md
+plan_path: docs/superpowers/execution/2026-09-02-df1-test-scope/plan.md
+audits:
+  archaeology: docs/superpowers/execution/2026-09-02-df1-test-scope/spec.md
+  domain: docs/superpowers/execution/2026-09-02-df1-test-scope/spec.md
+  library: docs/superpowers/execution/2026-09-02-df1-test-scope/spec.md
+acceptance_criteria:
+  - "A job that declares no test_scope resolves to `impacted`, not `full`."
+test_contract:
+  floor_command: "/bin/echo floor-ok"
+  full_command: "/bin/echo WOULD-RUN-EVERYTHING"
+  impacted_map:
+    - when: "docs/superpowers/dogfood/**"
+      run: "/bin/echo scoped-to-dogfood"
+jobs:
+  - id: scoped-writer
+    title: "Writes one dogfood file; declares NO test_scope"
+    type: docs
+    backend: claude
+    tier: standard
+    effort: medium
+    isolation: worktree
+    run: parallel
+    write_allowed:
+      - "docs/superpowers/dogfood/2026-09-02-df1-scoped.md"
+    read_allowed:
+      - "docs/superpowers/execution/2026-09-02-df1-test-scope/spec.md"
+    acceptance:
+      - "The file exists."
+    body: |
+      Create `docs/superpowers/dogfood/2026-09-02-df1-scoped.md` containing exactly:
+
+      # Dogfood 1
+
+      This job declared no `test_scope`.
