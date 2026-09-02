@@ -59,7 +59,8 @@
 #      counter exhausted / state unreadable / store lost / persist failed
 #                                                    ... fall through, open
 #   5. TRIAGE GATE — only if the goal rule did not block, and only when
-#      `.enforcement.triage_gate == true` in .claude/compound-v.json:
+#      `.enforcement.triage_gate` in .claude/compound-v.json — ON when absent
+#      as of 3.2.0; set it to `false` to opt out:
 #      non-exempt files changed && NO pre-eval record COVERS that diff
 #        && this session's own marker unset ........ set marker, BLOCK
 #      a bounded check that could not finish ....... RECORD it, then open
@@ -563,9 +564,38 @@ _triage_rule() {
   local cfg="${proj}/.claude/compound-v.json"
   [ -f "$cfg" ] || return 1
   local on
-  on="$(jq -r '.enforcement.triage_gate // false' "$cfg" 2>/dev/null)" || on="false"
-  # OFF BY DEFAULT, and the default is the safe one: a false positive here does
-  # not fail a build, it holds a stranger's turn open.
+  # ON BY DEFAULT as of 3.2.0. It shipped off, on a blast-radius claim this
+  # project made about itself and never checked — "it would block turn-end in
+  # every session of every install, including sessions that never touched
+  # Compound V". A live probe on 2026-09-02 says otherwise, and the four cases
+  # are pinned in tests/test-epic-goal-stop.sh:
+  #
+  #   * no `.claude/compound-v.json`            -> silent. A project that never
+  #     ran /v:init is untouched, full stop. That is most installs.
+  #   * config present, no uncovered change     -> silent.
+  #   * `docs/superpowers/**` and this hook's own store are exempt.
+  #   * it fires AT MOST ONCE per session, on its own marker, and the marker is
+  #     written BEFORE the block is emitted, so it cannot loop.
+  #   * the whole rule is bounded (default 800 ms) and FAILS OPEN on every
+  #     timeout, unreadable record, or git error.
+  #
+  # So the real population is: a repository that deliberately initialised
+  # Compound V, once per session, when the tree carries code changes no triage
+  # record covers. That is exactly the failure this plugin exists to catch — the
+  # user complaint that started the 3.0 line was an agent skipping the pipeline
+  # — and leaving the one mechanism that catches it switched off was not caution,
+  # it was the mechanism-with-no-caller defect wearing a config key.
+  #
+  # OPT OUT with `"enforcement": {"triage_gate": false}` in
+  # .claude/compound-v.json. Absent means ON.
+  #
+  # NOT `// true`. jq's `//` is the ALTERNATIVE operator: it yields the right
+  # side when the left is `null` OR `false`, so `.enforcement.triage_gate // true`
+  # turns an explicit `"triage_gate": false` back into `true` and the opt-out this
+  # very block message documents would not work. Caught by its own test on the
+  # first run of the flip. Only a literal `false` (boolean or the string) opts out.
+  on="$(jq -r 'if (.enforcement.triage_gate == false or .enforcement.triage_gate == "false")
+               then "false" else "true" end' "$cfg" 2>/dev/null)" || on="true"
   [ "$on" = "true" ] || return 1
 
   command -v git >/dev/null 2>&1 || return 1

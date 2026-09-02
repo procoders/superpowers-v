@@ -544,7 +544,7 @@ was, in those two fields).
     }
   },
   "review": { "cross_model": false },
-  "enforcement": { "pipeline_bypass": false, "triage_gate": false },
+  "enforcement": { "pipeline_bypass": false, "triage_gate": true },
   "brainstorm": {
     "deep_research": "ask",
     "batch_elicitation": true
@@ -633,15 +633,24 @@ identically to `balanced`. Only `cost-aware.claude.standard` differs: `sonnet`, 
   fixed pair: each reader owns exactly one key and reads it fail-closed-to-OFF
   (`jq -r '.enforcement.<key> // false'`), so a key that is absent, misspelled, malformed or unknown
   to this version is simply OFF and a future release adds a gate by adding a key — never by changing
-  the shape. Seed the block above verbatim; seed a **`false`** for every gate the installed version
-  documents, and leave keys you do not recognize untouched when re-running `/v:init` over an existing
-  config. Shipped gates: **`pipeline_bypass`** (v2.18 — tracked source changed this session with no
-  run record and no accepted fast-path record; corrects toward the pipeline or its sanctioned
-  Pre-Evaluation shortcut) and **`triage_gate`** (v3.0 — non-exempt files changed with no committed
-  triage record covering that diff). **`/v:init` writes them OFF and never offers to turn one on.**
-  Enabling a gate is a deliberate human edit of this file, because a false positive costs a blocked
-  turn in every session of everyone who shares this repo, and both rules are **advisory and
-  best-effort by construction**: each blocks at most once while its own temp-dir marker survives, and
+  the shape. Seed the block above verbatim and leave keys you do not recognize untouched when
+  re-running `/v:init` over an existing config. Shipped gates: **`pipeline_bypass`** (v2.18 — tracked
+  source changed this session with no run record and no accepted fast-path record; corrects toward
+  the pipeline or its sanctioned Pre-Evaluation shortcut) and **`triage_gate`** (v3.0 — non-exempt
+  files changed with no committed triage record covering that diff).
+
+  **`triage_gate` is ON by default as of 3.2.0; `pipeline_bypass` is still OFF.** The two are not
+  symmetrical. `triage_gate` asks for the *first* step of the correction (`/v:triage`), it is exempt
+  on `docs/superpowers/**`, and a project with no `.claude/compound-v.json` never sees it at all —
+  so its population is exactly "a repo that deliberately initialised Compound V, once per session,
+  with uncovered code changes". It shipped OFF on a blast-radius claim this project made about
+  itself and never checked; a live probe on 2026-09-02 disproved the claim, and leaving the one
+  mechanism that catches a skipped pipeline switched off was the mechanism-with-no-caller defect
+  wearing a config key.
+
+  **Opt out with `"triage_gate": false`** — an explicit boolean `false` (or the string `"false"`),
+  which is the ONLY value that turns it off. Enabling `pipeline_bypass` is still a deliberate human
+  edit. Both rules are **advisory and best-effort by construction**: each blocks at most once while its own temp-dir marker survives, and
   the runtime silently discards a `Stop` block when a turn ends via a tool result, an MCP end-turn or
   a loop tick. They raise the cost of skipping the pipeline; they cannot make skipping impossible, so
   do not describe them to the user as enforcement that cannot be bypassed. The armed **epic goal**

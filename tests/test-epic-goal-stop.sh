@@ -385,7 +385,7 @@ run_hook "$(stdin_json Stop sess-N "$N")"
 check "ENFORCEMENT is OFF by default: source changed, no config -> silent, exit 0" \
   "$([ "$RC" = "0" ] && [ -z "$OUT" ] && echo 1 || echo 0)"
 
-printf '%s\n' '{"enforcement": {"pipeline_bypass": true}}' >"$N/.claude/compound-v.json"
+printf '%s\n' '{"enforcement": {"pipeline_bypass": true, "triage_gate": false}}' >"$N/.claude/compound-v.json"
 run_hook "$(stdin_json Stop sess-N "$N")"
 check "ENFORCEMENT on + source changed + no run record -> exactly ONE JSON block" \
   "$(is_block "$OUT" && echo 1 || echo 0)"
@@ -397,7 +397,7 @@ check "ENFORCEMENT blocks at most once while the marker survives" \
 
 # a run record present -> no correction
 O="$WORK/projO"; mkproj "$O"
-printf '%s\n' '{"enforcement": {"pipeline_bypass": true}}' >"$O/.claude/compound-v.json"
+printf '%s\n' '{"enforcement": {"pipeline_bypass": true, "triage_gate": false}}' >"$O/.claude/compound-v.json"
 printf 'print("changed")\n' >>"$O/scripts/app.py"
 mkdir -p "$O/docs/superpowers/execution/2026-07-26-run"
 printf '%s\n' '{"phase":"DISPATCHED"}' >"$O/docs/superpowers/execution/2026-07-26-run/state.json"
@@ -407,7 +407,7 @@ check "ENFORCEMENT: a run record present -> silent, exit 0" \
 
 # docs/superpowers/** alone is NOT source (arming a goal must not self-trigger)
 P="$WORK/projP"; mkproj "$P"
-printf '%s\n' '{"enforcement": {"pipeline_bypass": true}}' >"$P/.claude/compound-v.json"
+printf '%s\n' '{"enforcement": {"pipeline_bypass": true, "triage_gate": false}}' >"$P/.claude/compound-v.json"
 git -C "$P" add -A >/dev/null 2>&1
 git -C "$P" -c user.email=t@t -c user.name=t commit -qm cfg >/dev/null 2>&1
 arm "$P" sess-P 5   # mutates docs/superpowers/**/epic-state.json only
@@ -456,12 +456,27 @@ printf 'print("changed")\n' >>"$R/scripts/app.py"
 run_hook "$(stdin_json Stop sess-R "$R")"
 check "TRIAGE GATE is OFF by default: changes, no config -> silent, exit 0" \
   "$([ "$RC" = "0" ] && [ -z "$OUT" ] && echo 1 || echo 0)"
+# 3.2.0 flipped the default. An ABSENT `triage_gate` now means ON — but only
+# once a `.claude/compound-v.json` exists at all, which is what keeps a project
+# that never ran /v:init untouched (asserted immediately above).
 printf '%s\n' '{"enforcement": {"pipeline_bypass": false}}' >"$R/.claude/compound-v.json"
 run_hook "$(stdin_json Stop sess-R "$R")"
-check "TRIAGE GATE stays OFF when the config exists but omits triage_gate" \
+check "TRIAGE GATE is ON when the config exists and omits triage_gate (3.2.0)" \
+  "$([ "$RC" = "0" ] && [ -n "$OUT" ] \
+     && printf '%s' "$OUT" | jq -r '.reason' 2>/dev/null | grep -q 'no triage record' \
+     && echo 1 || echo 0)"
+check "TRIAGE GATE: the marker IS written when it fires" \
+  "$([ -e "$(triage_marker "$R" sess-R)" ] && echo 1 || echo 0)"
+
+# The opt-out, which is the whole reason flipping the default is reversible.
+RO="$WORK/projRO"; mkproj "$RO"
+printf '%s\n' '{"enforcement": {"triage_gate": false}}' >"$RO/.claude/compound-v.json"
+printf 'print("changed")\n' >>"$RO/scripts/app.py"
+run_hook "$(stdin_json Stop sess-RO "$RO")"
+check "TRIAGE GATE: an explicit false opts out" \
   "$([ "$RC" = "0" ] && [ -z "$OUT" ] && echo 1 || echo 0)"
-check "TRIAGE GATE: nothing was written to the store while it was off" \
-  "$([ ! -e "$(triage_marker "$R" sess-R)" ] && echo 1 || echo 0)"
+check "TRIAGE GATE: an explicit false writes nothing to the store" \
+  "$([ ! -e "$(triage_marker "$RO" sess-RO)" ] && echo 1 || echo 0)"
 
 # --- armed: blocks ONCE, and only once --------------------------------------
 S="$WORK/projS"; mkproj_gate "$S"
@@ -618,11 +633,36 @@ check "PRECEDENCE: the GOAL rule still outranks the triage gate" \
 check "PRECEDENCE: the goal rule blocking left the triage marker unset" \
   "$([ ! -e "$(triage_marker "$AB" sess-AB)" ] && echo 1 || echo 0)"
 
+# --- 3.2.0: the triage gate SHADOWS the bypass rule, deliberately -----------
+# Both rules say "you changed code without X" and only one response per event is
+# permitted, so the more specific diagnosis goes first: /v:triage is the first
+# step of the correction the bypass rule asks for. Flipping the triage default to
+# ON therefore CHANGES which message a project with `pipeline_bypass: true` and no
+# `triage_gate` key sees — from the bypass wording to the triage wording. That is
+# by design, and it is pinned here so it can never become an accident.
+SH="$WORK/projSH"; mkproj "$SH"
+printf '%s\n' '{"enforcement": {"pipeline_bypass": true}}' >"$SH/.claude/compound-v.json"
+printf 'print("changed")\n' >>"$SH/scripts/app.py"
+run_hook "$(stdin_json Stop sess-SH "$SH")"
+check "SHADOW: with both eligible, the TRIAGE diagnosis wins" \
+  "$(printf '%s' "$OUT" | jq -r '.reason' 2>/dev/null | grep -q 'no triage record' \
+     && echo 1 || echo 0)"
+check "SHADOW: still exactly ONE JSON response" \
+  "$([ "$(json_docs "$OUT")" = "1" ] && echo 1 || echo 0)"
+SH2="$WORK/projSH2"; mkproj "$SH2"
+printf '%s\n' '{"enforcement": {"pipeline_bypass": true, "triage_gate": false}}' \
+  >"$SH2/.claude/compound-v.json"
+printf 'print("changed")\n' >>"$SH2/scripts/app.py"
+run_hook "$(stdin_json Stop sess-SH2 "$SH2")"
+check "SHADOW: opting the triage gate out restores the bypass diagnosis" \
+  "$(printf '%s' "$OUT" | jq -r '.reason' 2>/dev/null | grep -qv 'no triage record' \
+     && [ -n "$OUT" ] && echo 1 || echo 0)"
+
 # ---------------------------------------------------------------------------
 # 14. PRECEDENCE — the goal rule and the bypass rule on one Stop
 # ---------------------------------------------------------------------------
 Q="$WORK/projQ"; mkproj "$Q"
-printf '%s\n' '{"enforcement": {"pipeline_bypass": true}}' >"$Q/.claude/compound-v.json"
+printf '%s\n' '{"enforcement": {"pipeline_bypass": true, "triage_gate": false}}' >"$Q/.claude/compound-v.json"
 printf 'print("changed")\n' >>"$Q/scripts/app.py"
 arm "$Q" sess-Q 5
 before_markers="$(find "$HOOK_STORE" -maxdepth 1 -name 'enforce-*' 2>/dev/null | wc -l | tr -d ' ')"

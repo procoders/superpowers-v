@@ -4,6 +4,44 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [3.2.0] - 2026-09-02
+
+### Changed — the triage gate is ON by default, and the claim that kept it off was wrong
+
+This is a behaviour change, and it exists because a limitation this project published about itself did not survive being checked. **Twice in two releases now.**
+
+The `Stop` triage gate shipped off under `enforcement.triage_gate`, and the audit table justified that with: *"turning it on by default blocks turn-end in every session of every install, including for sessions that never touched Compound V."* A live probe on 2026-09-02 disproved both halves:
+
+| State | Behaviour |
+|---|---|
+| no `.claude/compound-v.json` | **silent** — a project that never ran `/v:init` is untouched, which is most installs |
+| config present, no uncovered change | silent |
+| `docs/superpowers/**`, the hook's own store | exempt |
+| uncovered code changes | fires **once per session**, marker written *before* the block, so it cannot loop |
+| any timeout / unreadable record / git error | **fails open**, whole rule bounded at ~800 ms |
+
+The real population is *a repository that deliberately initialised Compound V, once per session, with code changes no triage record covers*. That is exactly the failure this plugin exists to catch — the complaint that started the 3.0 line was an agent skipping the pipeline — and leaving the one mechanism that catches it switched off was not caution. It was the mechanism-with-no-caller defect wearing a config key.
+
+**Opt out with `"enforcement": {"triage_gate": false}`** in `.claude/compound-v.json`. Documented in the README, in `/v:init`, and in the block message itself. `pipeline_bypass` is unchanged and still off.
+
+### Fixed — the flip introduced a bug that would have made the opt-out a lie
+
+`jq`'s `//` is the **alternative** operator: it yields the right-hand side when the left is `null` **or `false`**. So the obvious `.enforcement.triage_gate // true` turns an explicit `"triage_gate": false` back into `true`, and the opt-out documented in the gate's own block message would silently not work.
+
+Caught by its own test on the first run of the flip — the opt-out test was written before the flip was believed. The value is now read with an explicit `== false` comparison, and both the boolean and the string form turn it off.
+
+### Changed — the triage gate now shadows the bypass rule, deliberately
+
+Both rules say *"you changed code without X"*, and only one response per `Stop` event is permitted. The more specific diagnosis goes first: `/v:triage` **is** the first step of the correction the bypass rule asks for. So a project with `pipeline_bypass: true` and no `triage_gate` key now sees the triage wording instead of the bypass wording. Setting `"triage_gate": false` restores the old message. Pinned by three tests so it can never become an accident.
+
+`tests/test-epic-goal-stop.sh`: 88 → **98 checks**, including the opt-out, the shadowing, and the four live-probed states.
+
+### Where the native-mechanism audit stands now
+
+Eleven of the twelve "native mechanism exists, we were not using it" rows close fully. The remaining one is `agentType`, at its designed end state and explained in the table.
+
+Triage-at-prompt-arrival keeps a small, honest ⚠: `UserPromptSubmit` still carries a *reminder*, and the enforcement lands one turn later at `Stop`. Between those two points nothing stops work beginning without triage. The gate makes that expensive, not impossible — and no wording here should be read as saying otherwise.
+
 ## [3.1.2] - 2026-09-02
 
 ### Fixed — a caveat this project published about itself was wrong

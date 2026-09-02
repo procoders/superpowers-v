@@ -128,6 +128,13 @@ That's it.
 - **Epic mode is bounded by default** — it stops after each feature for a human checkpoint. It is *not* a fire-and-forget overnight build unless you raise the budget.
 - **Marathon mode (opt-in) is still not fire-and-forget-overnight.** It removes the per-feature checkpoint and adds an arbiter panel + blocker ledger + global breakers so it can run further unattended in one sitting — but on its own it does not self-revive after a hard death. If the session dies, you re-run `/v:epic <epic-id>` yourself; it resumes from the last committed state.
 - **Auto-Resurrection (opt-in, v2.11) is a bounded catch-up, not an always-on service.** With `epic.autonomy.watch` on, a scheduler wakes roughly every 30 minutes and resumes a genuinely-dead marathon epic for you, up to a resume cap. It pauses or misses fires while the session is busy/unavailable, only catches up once per app open/wake on the on-disk tier, and needs both a quota reset and a still-authenticated session to survive quota exhaustion. A machine that is truly off is not covered; that needs remote infrastructure, which this does not ship.
+- **The triage gate is ON by default (3.2.0), and here is how to turn it off.** Once per session, in a repo that has a `.claude/compound-v.json`, if the working tree carries code changes that no triage record covers, the `Stop` hook holds the turn open and asks for `/v:triage`. It is exempt on `docs/superpowers/**`, it fires at most once per session, it is bounded at ~800 ms and fails open on any timeout or error, and a project that never ran `/v:init` never sees it. To opt out:
+
+  ```json
+  { "enforcement": { "triage_gate": false } }
+  ```
+
+  in `.claude/compound-v.json`. An explicit `false` is the only value that turns it off. It is **advisory** — the runtime discards a `Stop` block when a turn ends via a tool result or a loop tick, and `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` (default 8) lets the harness override it outright. It raises the cost of skipping the pipeline; it cannot make skipping impossible.
 - No daemon, no server, no MCP service, no made-up cost numbers. Everything is small, readable scripts.
 
 ---
