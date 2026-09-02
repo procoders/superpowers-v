@@ -1,0 +1,27 @@
+{
+  "run_id": "2026-09-02-v3.4-native-first-r3",
+  "phase": "PARTITION_VERIFIED",
+  "updated_at": "2026-09-02T18:21:37Z",
+  "pre_eval_id": "2026-09-02T170442Z-v3-4-native-first-replace-the-epic-goal-feature-a-of-hooks-e-5664",
+  "continues": "2026-09-02-v3.4-native-first-r2",
+  "jobs": {
+    "deletions-fixup": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "docs-release": {
+      "status": "pending",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null
+    },
+    "spec-review": {
+      "status": "pending",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null
+    }
+  }
+}
