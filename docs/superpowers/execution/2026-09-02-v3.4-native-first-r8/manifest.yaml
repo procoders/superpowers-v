@@ -1,0 +1,167 @@
+run_id: 2026-09-02-v3.4-native-first-r8
+feature: 'v3.4 native-first — r8: the scope gate keeps no carve-outs; bytecode is never written; bookkeeping
+  moves after the authority'
+routing_stance: balanced
+max_parallel: 3
+spec_path: docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md
+plan_path: docs/superpowers/plans/2026-09-02-v3.4-native-first.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-09-02-v3-4-native-first.md
+  domain: docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md
+  library: docs/superpowers/library-audit/2026-09-02-v3-4-native-first.md
+triage:
+  tier: FULL
+  pre_eval_id: 2026-09-02T170442Z-v3-4-native-first-replace-the-epic-goal-feature-a-of-hooks-e-5664
+  taxonomy_digest: sha256:1f2a12f634422ca72a66cfa195b731a0e19743b5e7fe622fb799821cf5e88e85
+  decided_at: '2026-09-02T17:04:42Z'
+acceptance_criteria:
+- Every tests/*.sh and every script --selftest is green (CI's Python 3.9 floor).
+- grep for epic-watch|headless-shim|goal_arm|--goal-status|--arm-goal|autonomy.watch|record-watcher across
+  commands skills agents hooks scripts tests .github CONVENTIONS.md returns nothing.
+- The UserPromptSubmit hook, driven with synthetic stdin, writes a pre-eval record bound to the stdin
+  session and returns the tier in additionalContext; a question writes nothing.
+- No prose in commands/skills/agents instructs an agent to append task-outcomes.jsonl or to run compound-v-update-memory.py.
+- hooks/hooks.json registers no PostToolUseFailure hook; /v:dashboard has no serve mode.
+- Attended DIRECT is documented as an ordinary commit; Phase L is documented as unattended-only and tests/test-triage-landing.sh
+  still passes.
+test_contract:
+  floor_command: bash tests/test-epic-goal-stop.sh
+  full_command: bash -c 'for t in tests/*.sh; do bash "$t" >/dev/null 2>&1 || { echo "FAIL $t"; exit 1;
+    }; done; echo all-tests-ok'
+  impacted_map:
+  - when: hooks/**
+    run: bash -c 'bash tests/test-epic-goal-stop.sh && bash tests/test-native-points.sh'
+  - when: scripts/compound-v-*.py
+    run: bash -c '[ -f {path} ] || exit 0; /usr/bin/python3 {path} --selftest'
+  - when: commands/v-triage.md
+    run: bash tests/test-triage-landing.sh
+  - when: tests/*.sh
+    run: bash -c '[ -f {path} ] || exit 0; bash {path}'
+jobs:
+- id: gate-strict
+  title: 'Close the fourth review pass: no scope-gate carve-outs, no bytecode written, no bookkeeping
+    between gate and authority'
+  type: core_slice
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: worktree
+  run: parallel
+  write_allowed:
+  - scripts/compound-v-scope-check.py
+  - scripts/compound-v-integration-gate.py
+  - scripts/compound-v-emit-workflow.py
+  - scripts/compound-v-emit-preflight.py
+  - hooks/lane-guard.sh
+  - tests/test-lane-guard.sh
+  - tests/test-integration-gate.sh
+  - tests/test-engine-c-contract.sh
+  - .gitignore
+  - CHANGELOG.md
+  - docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md
+  read_allowed:
+  - docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-4.md
+  - docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-3.md
+  - hooks/triage-prompt-nudge.sh
+  acceptance:
+  - 'scripts/compound-v-scope-check.py has NO bytecode exemption and NO PIPELINE_BOOKKEEPING: a planted
+    scripts/__pycache__/x.cpython-314.pyc outside the lane BLOCKS (selftest), and grep -rn PIPELINE_BOOKKEEPING
+    scripts hooks tests returns nothing.'
+  - Every python command the emitter writes into a workflow script or a clamp rule carries -B (`<python>
+    -B <script> …`), and the Implement prompt tells the worker to run Python with -B / PYTHONDONTWRITEBYTECODE=1
+    and to keep every admitted command on ONE line; selftests pin all three.
+  - scripts/compound-v-scope-check.py, scripts/compound-v-integration-gate.py and scripts/compound-v-emit-workflow.py
+    set sys.dont_write_bytecode = True before any import of a sibling module; hooks/lane-guard.sh and
+    the authority's importlib loader of the matcher run with PYTHONPYCACHEPREFIX pointing at a private
+    temp directory so an in-tree __pycache__ is never read; lane-guard.sh's comment says why (the fourth
+    pass's item 3).
+  - The merge_pending `actual` is appended by finalize-wave AFTER the integration authority has run over
+    the wave (never by Record), so nothing the pipeline writes lands between a direct-mode job's gate
+    and its re-derivation; the digest exclusions in integration-gate.py and emit-workflow.py cover the
+    run directory only; a selftest proves a direct-mode job's receipt is neither forged nor contradicted
+    across a finalize.
+  - .gitignore's bytecode comment, scope-check's docstring formula and the CHANGELOG 3.4.0 entry describe
+    exactly this gate; the spec gains an amendment 'After the fourth review pass' saying the two carve-outs
+    were withdrawn and why.
+  - bash tests/test-lane-guard.sh, bash tests/test-integration-gate.sh, bash tests/test-engine-c-contract.sh
+    exit 0; /usr/bin/python3 -B <script> --selftest is green for the three scripts and compound-v-emit-preflight.py.
+  body: "Read docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-4.md, items 1–4. The decision,\n\
+    taken by the orchestrator and recorded in the spec amendment you will write: the scope gate keeps\n\
+    NO carve-outs. Both between-pass exemptions (bytecode by extension; the two pipeline outcome\nstreams)\
+    \ are withdrawn. The honest cases they served are handled upstream instead.\n\n1. scripts/compound-v-scope-check.py\
+    \ — delete is_bytecode_noise and PIPELINE_BOOKKEEPING and their\n   use in the changed set; restore\
+    \ the three-term formula in the docstring; keep the selftests\n   that plant scripts/__pycache__/x.cpython-314.pyc,\
+    \ __pycache__/payload.py and id_rsa and make ALL\n   of them BLOCK outside the lane; delete the bookkeeping\
+    \ selftests.\n2. Nobody writes bytecode. In scripts/compound-v-emit-workflow.py: every python command\
+    \ string the\n   emitted script runs (register-lane, gate-receipt, record, finalize-wave, test floors\
+    \ it\n   composes) and every clamp rule that admits them carry `-B` right after the interpreter\n\
+    \   (`<python> -B <script> …`) — rules and commands must keep matching each other. The Implement\n\
+    \   prompt (render_worker_prompt) gains two sentences: run Python with -B or\n   PYTHONDONTWRITEBYTECODE=1\
+    \ (a stray .pyc outside your lane blocks your job), and keep every\n   admitted command on ONE line\
+    \ — the clamp matches a literal prefix and a backslash-newline\n   continuation was denied in a real\
+    \ run. Same -B in compound-v-emit-preflight.py's clamp. Add\n   `sys.dont_write_bytecode = True` at\
+    \ the top of scope-check, integration-gate and emit-workflow\n   (before sibling imports). Selftests\
+    \ pin: the -B in commands and rules; the two prompt sentences.\n3. Loaders never read an in-tree cache.\
+    \ hooks/lane-guard.sh: replace the export block at :159-162\n   with PYTHONDONTWRITEBYTECODE=1 plus\
+    \ PYTHONPYCACHEPREFIX set to a private directory under\n   ${TMPDIR:-/tmp} (created with mkdir -p;\
+    \ if it cannot be created, fall through — the guard fails\n   open by contract), and a comment saying\
+    \ WHY: a forged .pyc beside the matcher would otherwise be\n   executed by this loader (fourth pass,\
+    \ item 1). scripts/compound-v-integration-gate.py: the\n   importlib loader of the matcher (~:638-650)\
+    \ sets sys.pycache_prefix to the same kind of private\n   directory before exec_module. Add a lane-guard\
+    \ test (tests/test-lane-guard.sh) that plants a\n   bogus scripts/__pycache__/compound-v-scope-check.cpython-<ver>.pyc\
+    \ beside a copy of the matcher\n   and shows the guard still denies an out-of-lane write.\n4. Bookkeeping\
+    \ after the authority. Move the merge_pending `actual` append\n   (_maybe_append_run_actual, called\
+    \ from cmd_record) into cmd_finalize_wave, AFTER the\n   integration authority has run over the wave\
+    \ and BEFORE the commit. Delete the digest exclusion\n   of PIPELINE_BOOKKEEPING in integration-gate.py\
+    \ and emit-workflow.py (keep the run-directory\n   exclusion). Selftest: a direct-mode job finalized\
+    \ after a Record leaves its receipt neither\n   forged nor contradicted. Note worker-performance.jsonl\
+    \ is refreshed after the commit already.\n5. Records: .gitignore's bytecode comment; scope-check's\
+    \ docstring; the CHANGELOG 3.4.0 entry\n   \"### Changed — the scope gate drops interpreter bytecode…\"\
+    \ rewritten to \"### Changed — the scope\n   gate keeps no carve-outs; the pipeline writes no bytecode\
+    \ and no bookkeeping between gate and\n   authority\"; the spec gets a section \"After the fourth\
+    \ review pass (2026-09-02)\" naming the two\n   withdrawn carve-outs and the reason (a forged .pyc\
+    \ executes through the lane guard's loader; a\n   worker's rewrite of triage-outcomes.jsonl would\
+    \ ride the next by-name commit).\n6. Run the acceptance commands; report per item what changed, the\
+    \ command, its exit code.\n"
+- id: spec-review-5
+  title: Review Gate — three passes against the spec and the feature-level acceptance criteria
+  type: review
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: direct
+  run: serial
+  write_allowed:
+  - docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-5.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - The review-5 file exists with the five sections; it states, for each of the fourth pass's four items,
+    closed or open with evidence; the verdict is APPROVED or ISSUES with a numbered list.
+  body: 'Your agent definition carries the three-pass Review Gate and a Step 0 (V-memory recall).
+
+    Follow it. This is the FIFTH pass. Read the four earlier passes under docs/superpowers/dogfood/
+
+    (…-review.md … -review-4.md). The fourth pass raised four items on the scope gate''s carve-outs;
+
+    this run''s job gate-strict withdrew both carve-outs and moved the bookkeeping append after the
+
+    authority. Review gate-strict''s merge as new code: re-run the fourth pass''s forged-.pyc probe
+
+    against the merged tree (the guard must deny; the gate must BLOCK); check that no pipeline write
+
+    now lands between a direct-mode job''s gate and its re-derivation; check the -B invariant in the
+
+    emitted commands, rules and prompts; check every record named. Then run the acceptance commands on
+
+    the whole merged tree with /usr/bin/python3 -B. Write
+
+    docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-5.md with ## Recall, ## SPEC,
+
+    ## QUALITY, ## INTEGRATION, ## Verdict (APPROVED or ISSUES with a numbered list). Report what you
+
+    found, not what would be reassuring.
+
+    '
+  depends_on:
+  - gate-strict
