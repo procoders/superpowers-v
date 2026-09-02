@@ -2902,6 +2902,47 @@ def cmd_finalize_wave(argv):
     out["integrated"] = not out["refused"]
     if out["refused"]:
         out.setdefault("reason", "some jobs did not reach `success`")
+
+    # ---- RETIRE THE WORKTREES THIS WAVE ACTUALLY MERGED --------------------- #
+    # A worktree whose diff is committed to the project is dead weight, and the
+    # runtime only auto-removes the ones that CHANGED NOTHING. Eleven runs into a
+    # day of dogfooding this repository had nineteen of them, and they are not
+    # merely untidy: `git status` fills up, and in `direct` mode the scope gate —
+    # which deliberately sees gitignored paths — attributed all fifteen leftovers
+    # to the next job and blocked it. Dogfood 10 died of exactly that.
+    #
+    # ONLY the merged ones. A refused job's worktree still holds the work someone
+    # will want to look at, and deleting it would destroy the one copy — the v2.6.4
+    # incident in this project was `git worktree remove` taking an audit trail with
+    # it, and the lesson was to be specific about what is safe to drop.
+    #
+    # Best-effort and never fatal: a wave that integrated correctly must not be
+    # reported as failed because a directory could not be unlinked.
+    pruned, prune_errors = [], []
+    if out["merged"] and not args.no_commit:
+        for job_id in out["merged"]:
+            wt = ((state.get("jobs") or {}).get(job_id) or {}).get("worktree")
+            if not (isinstance(wt, str) and wt.strip()):
+                continue
+            wt = os.path.abspath(wt.strip())
+            # Never outside the project, never the project itself.
+            if wt == os.path.abspath(repo_root):
+                continue
+            if os.path.relpath(wt, repo_root).startswith(".." + os.sep):
+                continue
+            rc, _o, err = _run(["git", "-C", repo_root, "worktree", "remove",
+                                "--force", wt])
+            if rc == 0:
+                pruned.append(job_id)
+            else:
+                prune_errors.append("%s: %s" % (job_id, (err or "").strip()[:120]))
+        if pruned:
+            _run(["git", "-C", repo_root, "worktree", "prune"])
+    if pruned:
+        out["worktrees_pruned"] = pruned
+    if prune_errors:
+        out["worktrees_prune_errors"] = prune_errors
+
     _apply(now=args.now)
     return emit(0 if out["integrated"] else 1)
 
