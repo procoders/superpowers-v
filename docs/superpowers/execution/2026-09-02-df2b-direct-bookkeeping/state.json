@@ -1,0 +1,13 @@
+{
+  "run_id": "2026-09-02-df2b-direct-bookkeeping",
+  "phase": "DISPATCHED",
+  "jobs": {
+    "direct-writer": {
+      "baseline": "90478b1e1eb3af6066a50a627f01199cfa8cf58c",
+      "isolation": "direct",
+      "worktree": "",
+      "realised_commit": "90478b1e1eb3af6066a50a627f01199cfa8cf58c",
+      "status": "blocked"
+    }
+  }
+}

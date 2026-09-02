@@ -1,0 +1,11 @@
+{
+  "baseline_commit": "90478b1e1eb3af6066a50a627f01199cfa8cf58c",
+  "diff_digest": "sha256:9095c50458e66ae86d3824542e1e5898bec696c5be88034823057a43c7a7f72a",
+  "exit_code": 1,
+  "job_id": "direct-writer",
+  "raw_stdout": "{\n  \"verdict\": \"blocked\",\n  \"mode\": \"direct\",\n  \"baseline\": \"90478b1e1eb3af6066a50a627f01199cfa8cf58c\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df2b-direct-bookkeeping.md\",\n    \"docs/superpowers/execution/2026-09-02-df2b-direct-bookkeeping/state.json\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df2b-direct-bookkeeping.md\"\n  ],\n  \"violations\": [\n    \"docs/superpowers/execution/2026-09-02-df2b-direct-bookkeeping/state.json\"\n  ]\n}\n",
+  "realised_commit": "90478b1e1eb3af6066a50a627f01199cfa8cf58c",
+  "source": "gate-receipt",
+  "verdict": "blocked",
+  "worktree": ""
+}

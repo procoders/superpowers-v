@@ -2831,52 +2831,51 @@ def cmd_register_lane(argv):
             )
 
     # ---- THE PIPELINE'S OWN BOOKKEEPING IS NOT THE JOB'S WORK -------------- #
-    # Dogfood 2 (2026-09-02) found this the only way it could be found: with a
-    # dependent job that actually wrote something. `register-lane` writes three
-    # files into the run directory for this job — the pre-existing snapshot, the
-    # baseline pin, and the resolved test contract — and in DIRECT mode the run
-    # directory is inside the tree the gate measures. The snapshot is taken
-    # FIRST, precisely so it precedes the work, which means it cannot contain the
-    # two files written after it. So the gate saw:
+    # In DIRECT mode the run directory sits inside the tree the gate measures, so
+    # every file this command writes for a job — the pre-existing snapshot, the
+    # baseline pin, the resolved test contract, state.json — lands in that job's
+    # changed set. Dogfood 2 (2026-09-02) blocked a dependent job for three of
+    # them and the wave then refused integration as `forged`, which sends whoever
+    # reads it hunting a forgery that never happened.
     #
-    #   violations: jobs/<id>.baseline, jobs/<id>.test-contract.json,
-    #               preexisting/<id>.txt
+    # THE FIRST FIX ENUMERATED THREE FILENAMES AND WAS WRONG. Dogfood 2b — the
+    # narrowest reproduction, one direct-mode job — came back blocked for a
+    # FOURTH, `state.json`, which the enumeration had missed because it was
+    # written from reading the code path rather than from the evidence. A list of
+    # names answers "did I remember them all?", and the honest answer is "not
+    # yet".
     #
-    # and blocked a job for three files the JOB never touched — our own machinery
-    # did, on its behalf, before it started. The wave then refused integration as
-    # `forged`, which sends whoever reads it hunting a forgery that never happened.
+    # So the exemption is DERIVED: after this command has finished all of its own
+    # writes, it lists the run directory as it stands and records that listing.
+    # Whatever `register-lane` wrote is exempt BY CONSTRUCTION, and — the part
+    # that matters for safety — anything the WORKER later adds to the run
+    # directory is NOT in the listing and is still a violation. A worker cannot
+    # forge a receipt or rewrite another job's baseline and have it ignored.
     #
-    # 3.0.4's two-wave dogfood could not have caught it: there the dependent job
-    # wrote nothing at all, so its changed set was empty and the no-work check
-    # answered first.
-    #
-    # A worktree job never sees this — its run directory lives outside its
-    # worktree — which is exactly why the ONLY direct-mode job in the pipeline is
-    # where it hid.
-    #
-    # The fix appends these paths to the snapshot the gate already subtracts,
-    # rather than exempting `<run_dir>/**` wholesale: a worker writing into some
-    # OTHER job's run directory is still a violation, and must stay one.
+    # A worktree job needs none of this: its run directory is outside its
+    # worktree, and it gets no snapshot at all.
     if (args.isolation or "direct") != "worktree":
         try:
+            repo_abs = os.path.abspath(args.repo_root)
             own = []
-            for p in (os.path.join(run_dir, "preexisting", "%s.txt" % args.job_id),
-                      baseline_pin_path(run_dir, args.job_id),
-                      test_contract_path(run_dir, args.job_id)):
-                rel = os.path.relpath(os.path.abspath(p), os.path.abspath(args.repo_root))
-                if not rel.startswith(".." + os.sep) and rel != "..":
+            for dirpath, _dirnames, filenames in os.walk(run_dir):
+                for name in filenames:
+                    full = os.path.abspath(os.path.join(dirpath, name))
+                    rel = os.path.relpath(full, repo_abs)
+                    if rel.startswith(".." + os.sep) or rel == "..":
+                        continue          # outside the repo: not ours to exempt
                     own.append(rel.replace(os.sep, "/"))
             snap = os.path.join(run_dir, "preexisting", "%s.txt" % args.job_id)
             existing = []
             if os.path.exists(snap):
                 with open(snap, "r", encoding="utf-8") as fh:
                     existing = [ln.strip() for ln in fh if ln.strip()]
-            merged = existing + [p for p in own if p not in existing]
+            merged = existing + sorted(p for p in own if p not in existing)
             _atomic_write(snap, "\n".join(merged) + ("\n" if merged else ""))
-            ack["own_bookkeeping"] = own
+            ack["own_bookkeeping"] = len(own)
         except Exception as exc:  # noqa: BLE001
             # Fail OPEN into a STRICTER gate, same rule as the snapshot itself:
-            # without the append the job is blocked for our files, which is loud.
+            # without the listing the job is blocked for our files, which is loud.
             ack["own_bookkeeping_error"] = str(exc)
 
     print(json.dumps(ack, indent=2, sort_keys=True))
@@ -3221,15 +3220,21 @@ def selftest():
             with open(snap_p, "r", encoding="utf-8") as fh:
                 snap_lines = [ln.strip() for ln in fh if ln.strip()]
         _check("register-lane succeeds in direct mode", rc_bk == 0, str(rc_bk))
-        _check("the baseline pin is exempted from the job's changed set",
-               any(l.endswith("jobs/d1.baseline") for l in snap_lines),
+        # The exemption is DERIVED from the run dir as it stands, so these are
+        # spot-checks of a listing, not the listing itself. `state.json` is here
+        # because enumerating three names missed it and dogfood 2b found it.
+        for _want in ("jobs/d1.baseline", "preexisting/d1.txt",
+                      "jobs/d1.test-contract.json", "state.json"):
+            _check("register-lane's own %s is exempted" % _want,
+                   any(l.endswith(_want) for l in snap_lines), str(snap_lines))
+        _check("EVERY file register-lane left in the run dir is exempted",
+               all(any(l.endswith(os.path.relpath(os.path.join(dp, fn), bk_run)
+                                  .replace(os.sep, "/"))
+                       for l in snap_lines)
+                   for dp, _dn, fns in os.walk(bk_run) for fn in fns),
                str(snap_lines))
-        _check("the snapshot file exempts ITSELF",
-               any(l.endswith("preexisting/d1.txt") for l in snap_lines),
-               str(snap_lines))
-        _check("the resolved test contract is exempted too",
-               any(l.endswith("jobs/d1.test-contract.json") for l in snap_lines),
-               str(snap_lines))
+        _check("a file the WORKER adds later is NOT exempt",
+               "receipts/d1.gate.json" not in "\n".join(snap_lines))
         _check("nothing outside the repo root reaches the snapshot",
                all(not l.startswith("..") for l in snap_lines), str(snap_lines))
         # A WORKTREE job must not get the exemption — its run dir is not in the
