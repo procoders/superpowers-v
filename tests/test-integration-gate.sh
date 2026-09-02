@@ -38,6 +38,13 @@ REPO="$(cd "$(dirname "$0")/.." && pwd -P)"
 GATE="${INTEGRATION_GATE_SRC:-$REPO/scripts/compound-v-integration-gate.py}"
 SCOPE="$REPO/scripts/compound-v-scope-check.py"
 PY="${PY:-python3}"
+# NOBODY WRITES BYTECODE, this suite included. Its seam probe below imports the
+# authority BY PATH, and on a bytecode-writing interpreter that left a real
+# scripts/__pycache__/compound-v-integration-gate.<tag>.pyc in the checkout —
+# which the scope gate, now carrying no extension carve-out, correctly reports as
+# an out-of-lane write (fourth review pass, 2026-09-02). Same export the other
+# suites and CI already use.
+export PYTHONDONTWRITEBYTECODE=1
 
 pass=0
 fail=0
@@ -196,7 +203,7 @@ reasons_of() {
 read -r WT RUN <<<"$(new_case seam)"
 printf 'lane\n' >"$WT/scripts/allowed.py"
 LITERAL="$(literal_digest "$WT")"
-GATE_DIGEST="$("$PY" - "$GATE" "$WT" "$BASE" <<'PY'
+GATE_DIGEST="$("$PY" -B - "$GATE" "$WT" "$BASE" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("gate", sys.argv[1])
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
@@ -455,12 +462,33 @@ check "it passes the pinned baseline and the job's write_allowed to that gate" \
       "$(grep -q -- "--baseline $BASE" "$WORK/stub.log" \
          && grep -q -- "--allow scripts/allowed.py" "$WORK/stub.log" && echo 1 || echo 0)"
 
-# And it must not have modified the matcher it consumes: that file belongs to
-# task-15's lane, and a second glob engine is the bug factory this avoids.
-if git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
-  check "compound-v-scope-check.py is unmodified in the working tree" \
-        "$([ -z "$(git -C "$REPO" status --porcelain -- scripts/compound-v-scope-check.py)" ] && echo 1 || echo 0)"
-fi
+# And it must CONSUME that matcher rather than growing its own: a second glob
+# engine is the bug factory this avoids. Asserted on the authority's source, not
+# on whether the matcher happens to be dirty in someone's checkout — the earlier
+# form of this check read `git status -- scripts/compound-v-scope-check.py` and
+# so failed for every session that legitimately edited the file, including the
+# one that removed the scope gate's carve-outs.
+check "the authority defines NO second glob engine" \
+      "$(grep -qE 'def glob_to_regex|import fnmatch' "$GATE" && echo 0 || echo 1)"
+check "the authority loads is_allowed from compound-v-scope-check.py itself" \
+      "$(grep -q 'spec_from_file_location("cv_scope_check"' "$GATE" \
+         && grep -q '"is_allowed"' "$GATE" && echo 1 || echo 0)"
+# FOURTH REVIEW PASS, item 3: it loads that matcher FROM SOURCE. A forged
+# unchecked hash-based .pyc beside it would otherwise execute in this process.
+check "the authority redirects the bytecode cache before exec_module" \
+      "$(grep -q 'sys.pycache_prefix' "$GATE" && echo 1 || echo 0)"
+check "the authority writes no bytecode of its own" \
+      "$(grep -q 'sys.dont_write_bytecode = True' "$GATE" && echo 1 || echo 0)"
+# FOURTH REVIEW PASS, item 4: the digest forgives the run directory and nothing
+# else. A tracked file excluded by name is a tracked file a worker may rewrite
+# unseen — and the pipeline commits triage-outcomes.jsonl by name. The withdrawn
+# constant's name is SPLIT here so that `grep -rn <name> scripts hooks tests`,
+# the acceptance check for "the carve-outs are gone", stays clean.
+BK_NAME="PIPELINE_""BOOKKEEPING"
+check "the authority excludes NO tracked file from the digest by name" \
+      "$(grep -q "$BK_NAME" "$GATE" && echo 0 || echo 1)"
+check "...and it still names triage-outcomes.jsonl in prose, so the reason is not lost" \
+      "$(grep -q 'triage-outcomes.jsonl' "$GATE" && echo 1 || echo 0)"
 
 # --------------------------------------------------------------------------- #
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

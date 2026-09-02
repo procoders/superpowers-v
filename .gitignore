@@ -51,13 +51,22 @@ docs/superpowers/execution/2026-07-11-v2.9-pre-evaluation/baselines/
 # Python bytecode. A local run of the repo's own test sweep with a
 # bytecode-writing interpreter leaves .pyc files next to the scripts.
 #
-# Ignoring these does NOT hide arbitrary ignored paths from the scope gate — its
-# third term is `git ls-files --others --ignored --exclude-standard` precisely so
-# a worker cannot escape it by writing a gitignored path. As of 3.4.0 the gate
-# itself drops *.pyc / *.pyo BY EXTENSION (scripts/compound-v-scope-check.py,
-# is_bytecode_noise) because bytecode is interpreter output, never work, and never
-# merged; anything else under __pycache__/ still counts. PYTHONDONTWRITEBYTECODE=1
-# (CI exports it; worker scripts set it) remains the hygiene that keeps the tree
-# quiet in the first place.
+# GIT IGNORES THESE; THE SCOPE GATE DOES NOT. Its third term is
+# `git ls-files --others --ignored --exclude-standard` precisely so a worker
+# cannot escape it by writing a gitignored path, and as of the fourth review pass
+# (2026-09-02) the gate keeps NO carve-outs at all: a `.pyc` outside a job's lane
+# is a violation exactly like any other file. The extension exemption 3.4.0
+# briefly carried was withdrawn — a forged unchecked hash-based `.pyc` is executed
+# in place by hooks/lane-guard.sh's loader and by the integration authority's, so
+# the gate was the only signal left for it and the exemption removed that too.
+#
+# So this stanza is HYGIENE ONLY (a quiet `git status`, a quiet linter). What
+# actually keeps bytecode out of a job's changed set is that nobody writes any:
+# every python command the pipeline emits carries `-B`, the scripts set
+# `sys.dont_write_bytecode`, CI exports PYTHONDONTWRITEBYTECODE=1, and the
+# implementer prompt tells the worker to do the same. Note that `-B` and
+# PYTHONDONTWRITEBYTECODE stop Python WRITING a cache, never READING one — the
+# loaders that import the matcher set PYTHONPYCACHEPREFIX / sys.pycache_prefix
+# for that half.
 __pycache__/
 *.pyc

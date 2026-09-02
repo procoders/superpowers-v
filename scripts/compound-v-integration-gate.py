@@ -108,6 +108,13 @@ import subprocess
 import sys
 import tempfile
 
+# Nobody writes bytecode. The scope gate forgives no path by extension (fourth
+# review pass, 2026-09-02), so a `__pycache__` entry this authority leaves beside
+# a script is an out-of-lane write that BLOCKS the job it just judged. Set before
+# the importlib load of the scope-gate matcher below, which is exactly when a
+# cache entry would otherwise be written.
+sys.dont_write_bytecode = True
+
 HEX_COMMIT = re.compile(r"^[0-9a-f]{40}([0-9a-f]{24})?$")
 DIGEST = re.compile(r"^[a-z0-9]+:[0-9a-f]+$")
 VERDICTS = ("pass", "blocked", "error")
@@ -185,16 +192,15 @@ def head_commit(root):
     return out or None
 
 
-# The pipeline's OWN bookkeeping, written into tracked files OUTSIDE the run
-# directory between a direct-mode job's Gate and the authority's re-derivation:
-# Record appends the `merge_pending` actual to triage-outcomes.jsonl, and the wave
-# finalizer refreshes worker-performance.jsonl. Dogfood r4 (2026-09-02): the
-# Review Gate's own file read as `forged` because of the first. Excluded on BOTH
-# sides of the seam, by name, like the run directory (dogfood 15).
-PIPELINE_BOOKKEEPING = [
-    "docs/superpowers/memory/triage-outcomes.jsonl",
-    "docs/superpowers/memory/worker-performance.jsonl",
-]
+# THE RUN DIRECTORY IS THE ONLY DIGEST EXCLUSION, here and in the gate's twin
+# (compound-v-emit-workflow.py). 3.4.0 development also excluded two tracked
+# files by name, because the pipeline wrote them between a direct-mode job's
+# Gate and this re-derivation and an honest receipt read as `contradicted`. The
+# fourth review pass withdrew that: a path this authority does not digest is a
+# path a worker may rewrite unseen, and the pipeline commits
+# triage-outcomes.jsonl by name. The ordering was fixed instead — the wave
+# finalizer appends the run's `actual` AFTER this authority has run — so the
+# window those exclusions papered over no longer exists.
 
 
 def compute_diff_digest(root, baseline, exclude_prefixes=None):
@@ -635,15 +641,38 @@ def evaluate_job(job, state_job, run_dir, repo_root, scope_check):
             # The SAME matcher the scope gate uses — never a second one. A
             # verifier that matches differently from the gate is a verifier that
             # can disagree with it for reasons neither of them is about.
+            #
+            # AND IT IS LOADED FROM SOURCE, never from a cache beside it. A
+            # forged `.pyc` at scripts/__pycache__/compound-v-scope-check.<tag>.pyc
+            # — an unchecked hash-based one, which CPython never validates against
+            # its source — would otherwise be executed HERE, in this process, and
+            # could hand back an `is_allowed` that returns True for every path.
+            # `sys.pycache_prefix` moves both the read and the write of that cache
+            # to a private directory outside the tree, so the in-tree entry is
+            # never consulted (fourth review pass, item 1, 2026-09-02).
             _sc = None
+            _prev_prefix = getattr(sys, "pycache_prefix", None)
+            _tmp_pycache = None
             try:
                 import importlib.util as _ilu
+                try:
+                    _tmp_pycache = tempfile.mkdtemp(prefix="cv-pycache-")
+                    sys.pycache_prefix = _tmp_pycache
+                except Exception:  # noqa: BLE001
+                    _tmp_pycache = None
                 _spec = _ilu.spec_from_file_location("cv_scope_check", scope_check)
                 if _spec and _spec.loader:
                     _sc = _ilu.module_from_spec(_spec)
                     _spec.loader.exec_module(_sc)
             except Exception:  # noqa: BLE001
                 _sc = None
+            finally:
+                try:
+                    sys.pycache_prefix = _prev_prefix
+                except Exception:  # noqa: BLE001
+                    pass
+                if _tmp_pycache:
+                    shutil.rmtree(_tmp_pycache, ignore_errors=True)
             _m_fn = getattr(_sc, "is_allowed", None) if _sc else None
             if _m_fn is None:
                 in_lane = False
@@ -780,12 +809,13 @@ def evaluate_job(job, state_job, run_dir, repo_root, scope_check):
     # tree being digested and the pipeline writes into it between the gate and this
     # point, so without this the two digests can never agree and an honest receipt
     # is refused as forged. Worktree jobs exclude nothing: their run directory is
-    # outside the worktree entirely.
+    # outside the worktree entirely. And the run directory is ALL that is excluded
+    # — see the note beside compute_diff_digest.
     _excl = None
     if mode != "worktree":
         _r = os.path.relpath(os.path.abspath(run_dir), os.path.abspath(gate_root))
         if not _r.startswith(".." + os.sep):
-            _excl = [_r.replace(os.sep, "/")] + list(PIPELINE_BOOKKEEPING)
+            _excl = [_r.replace(os.sep, "/")]
     observed_digest, digest_err = compute_diff_digest(gate_root, baseline,
                                                       exclude_prefixes=_excl)
     if digest_err:
@@ -1262,19 +1292,25 @@ def _selftest():
         repo = os.path.join(tmp, "repo")
         base = _mkrepo(repo)
 
-        # The pipeline's own bookkeeping must not forge a direct-mode digest (r4).
+        # NO tracked file is excluded by name any more (fourth review pass). An
+        # append to triage-outcomes.jsonl MOVES the direct-mode digest, and that is
+        # the point: an unreported rewrite of that stream by a worker must be
+        # visible to this authority, because the pipeline commits it by name.
         _mem = os.path.join(repo, "docs", "superpowers", "memory")
         os.makedirs(_mem, exist_ok=True)
         _to = os.path.join(_mem, "triage-outcomes.jsonl")
         with open(_to, "a") as _fh:
             _fh.write('{"event":"predicted"}\n')
-        _d_b, _ = compute_diff_digest(repo, base, exclude_prefixes=list(PIPELINE_BOOKKEEPING))
+        _d_b, _ = compute_diff_digest(repo, base)
         with open(_to, "a") as _fh:
             _fh.write('{"event":"actual","merge_pending":true}\n')
-        _d_a, _ = compute_diff_digest(repo, base, exclude_prefixes=list(PIPELINE_BOOKKEEPING))
-        expect("an append to triage-outcomes.jsonl between gate and authority does not move the "
-           "direct-mode digest when the bookkeeping is excluded", _d_b == _d_a)
-        _d_p, _ = compute_diff_digest(repo, base)
+        _d_a, _ = compute_diff_digest(repo, base)
+        expect("an append to triage-outcomes.jsonl MOVES the digest — no path is "
+               "forgiven by name", _d_b != _d_a)
+        _d_run, _ = compute_diff_digest(
+            repo, base, exclude_prefixes=["docs/superpowers/execution/some-run"])
+        expect("...and the run-directory exclusion does not forgive it either",
+               _d_run == _d_a)
         # leave the sandbox as it was: the next check asserts verification
         # does not dirty the tree, and this block's appends are not verification
         os.remove(_to)
@@ -1283,8 +1319,6 @@ def _selftest():
                 os.rmdir(_d)
             except OSError:
                 break
-        expect("...and without the exclusion the append IS visible (the exclusion is doing the work)",
-           _d_p != _d_a)
         d1, e1 = compute_diff_digest(repo, base)
         d2, e2 = compute_diff_digest(repo, base)
         expect("digest computes without error", e1 is None and e2 is None)

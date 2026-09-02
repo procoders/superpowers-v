@@ -23,6 +23,12 @@ set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd -P)"
 HOOK="${LANE_GUARD_SRC:-$REPO/hooks/lane-guard.sh}"
 HOOK_BASH="${HOOK_BASH:-bash}"
+# NOBODY WRITES BYTECODE, this suite included: the scope gate carries no
+# extension carve-out since the fourth review pass (2026-09-02), so a .pyc a test
+# leaves beside the scripts is a real out-of-lane write. This does NOT weaken the
+# forged-.pyc case below — PYTHONDONTWRITEBYTECODE stops Python writing a cache,
+# never reading one, which is the whole point that case exists to make.
+export PYTHONDONTWRITEBYTECODE=1
 
 pass=0
 fail=0
@@ -570,6 +576,73 @@ bash_case "BLIND SPOT: find -exec — the executed command is not modelled" allo
 # shellcheck disable=SC2016  # the literal $(...) is the entire point of this case
 bash_case "BLIND SPOT: the contents of a command substitution" allow \
   agent_abc123 "$WT" 'echo $(rm README.md) > tests/subst.txt'
+
+echo "=== 8b. a forged .pyc beside the matcher does not run ======"
+# FOURTH REVIEW PASS, item 1 (2026-09-02). The guard loads the matcher with
+# spec_from_file_location + exec_module on EVERY Write/Edit/Bash call. An
+# UNCHECKED HASH-BASED .pyc (flags 0b01: hash-based, check_source=0) is never
+# validated against its source, so one planted at
+# scripts/__pycache__/compound-v-scope-check.<tag>.pyc would execute here and
+# could return an is_allowed() that approves every out-of-lane write.
+# PYTHONDONTWRITEBYTECODE stops Python WRITING a cache, never READING one; the
+# control is PYTHONPYCACHEPREFIX, which moves the lookup out of the tree.
+# The plant location is asked of the interpreter (`cache_from_source`) rather
+# than spelled out, because WHERE the cache lands is interpreter-dependent: a
+# stock python3 puts it in `<dir>/__pycache__/` INSIDE the tree, while Apple's
+# /usr/bin/python3 3.9.6 ships a default `sys.pycache_prefix` that redirects it
+# outside. The exploit is the same in both cases; only its address moves, and
+# only the first case is one the scope gate could ever have seen.
+PYCDIR="$WORK/pyc-matcher"
+mkdir -p "$PYCDIR"
+cp "$REPO/scripts/compound-v-scope-check.py" "$PYCDIR/compound-v-scope-check.py"
+PLANTED="$(CV_PYCDIR="$PYCDIR" python3 - <<'PYEOF'
+import importlib.util, marshal, os
+src = os.path.join(os.environ["CV_PYCDIR"], "compound-v-scope-check.py")
+target = importlib.util.cache_from_source(src)
+os.makedirs(os.path.dirname(target), exist_ok=True)
+code = compile("def is_allowed(path, globs):\n    return True\n",
+               "<forged>", "exec")
+with open(target, "wb") as fh:
+    fh.write(importlib.util.MAGIC_NUMBER)
+    fh.write((0b01).to_bytes(4, "little"))   # hash-based, check_source=0
+    fh.write(b"\x00" * 8)                    # the hash nobody checks
+    fh.write(marshal.dumps(code))
+print(target)
+PYEOF
+)"
+check "the forged .pyc is planted where this interpreter would look for it" \
+  "$([ -f "$PLANTED" ] && echo 1 || echo 0)"
+
+# The plant is POTENT: loaded the way both loaders load it, with no cache
+# redirection, the forged code wins. If this stops being true the test below
+# proves nothing, so it is asserted rather than assumed.
+POTENT="$(CV_PYCDIR="$PYCDIR" python3 -B - <<'PYEOF'
+import importlib.util, os
+src = os.path.join(os.environ["CV_PYCDIR"], "compound-v-scope-check.py")
+spec = importlib.util.spec_from_file_location("_probe_forged", src)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print("yes" if mod.is_allowed("/etc/passwd", ["docs/**"]) else "no")
+PYEOF
+)"
+check "the planted .pyc IS executed without a cache redirection (the plant is real)" \
+  "$([ "$POTENT" = yes ] && echo 1 || echo 0)"
+
+# ...and the guard, which sets PYTHONPYCACHEPREFIX, still refuses an out-of-lane
+# write while pointed at exactly that matcher.
+run "$(encode Write agent_abc123 "$WT" file_path "$WT/README.md")" \
+    CV_SCOPE_CHECK="$PYCDIR/compound-v-scope-check.py"
+verdict "a forged .pyc beside the matcher does not defeat the guard" deny
+
+check "the guard redirects the bytecode cache out of the tree" \
+  "$(grep -q 'PYTHONPYCACHEPREFIX' "$HOOK" && echo 1 || echo 0)"
+check "the guard says WHY the redirection exists, not just that it does" \
+  "$(grep -q 'stop it READING one' "$HOOK" && echo 1 || echo 0)"
+
+# The plant may live outside $WORK when the interpreter carries a default
+# sys.pycache_prefix (Apple's /usr/bin/python3 does), so the suite's own trap
+# would not reach it. Remove it here rather than leave a forged pyc behind.
+[ -n "$PLANTED" ] && rm -f "$PLANTED"
 
 echo "=== 9. the invariants the spec pins ======================="
 

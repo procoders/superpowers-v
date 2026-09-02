@@ -156,10 +156,37 @@ HOOK_DIR="$(cd "$(dirname "$0")" && pwd -P 2>/dev/null || echo .)"
 : "${CV_VALIDATE_MANIFEST:=${CLAUDE_PLUGIN_ROOT:-$HOOK_DIR/..}/scripts/compound-v-validate-manifest.py}"
 export CV_SCOPE_CHECK CV_VALIDATE_MANIFEST
 
-# Importing the matcher must not leave __pycache__/*.pyc next to the scripts:
-# those are untracked files the scope gate unions into the job's changed set,
-# i.e. the guard would BLOCK the job it is guarding.
+# WHY BOTH, and the second one is the load-bearing half (fourth review pass,
+# item 3, 2026-09-02).
+#
+# WRITING: this hook runs on every Write/Edit/Bash call, and importing the
+# matcher must not leave __pycache__/*.pyc next to the scripts. The scope gate
+# forgives no path by extension, so a cache entry the guard itself dropped
+# outside a job's lane would BLOCK the job it is guarding.
+#
+# READING: `PYTHONDONTWRITEBYTECODE=1` stops Python WRITING a cache; it does not
+# stop it READING one. A forged unchecked hash-based `.pyc` planted at
+# scripts/__pycache__/compound-v-scope-check.<tag>.pyc is never validated against
+# its source, and `load_matcher` below would execute it — in this process, on
+# every tool call — handing back an `is_allowed` that approves every out-of-lane
+# write. `PYTHONPYCACHEPREFIX` moves both the lookup and the write to a private
+# directory outside the tree, so the in-tree entry is never consulted. If that
+# directory cannot be created we fall through WITHOUT it: this guard fails open
+# by contract and must never refuse a session because a temp dir was missing.
+#
+# The directory is per-invocation and removed on exit; a fixed, predictable name
+# would merely move the plantable location out of the repo, where the scope gate
+# cannot see it at all. Nothing is ever written into it either — the export above
+# is still in force — so even a hijacked directory only turns a cache lookup into
+# a miss, and a miss loads the source, which is the outcome we want.
 export PYTHONDONTWRITEBYTECODE=1
+CV_PYCACHE_DIR="${TMPDIR:-/tmp}/cv-lane-guard-pycache.$$.${RANDOM:-0}"
+if mkdir -p "$CV_PYCACHE_DIR" 2>/dev/null; then
+  export PYTHONPYCACHEPREFIX="$CV_PYCACHE_DIR"
+  # Single-quoted on purpose: the variable is never reassigned, so expanding it
+  # at trap time is correct AND cannot be broken by a quote inside $TMPDIR.
+  trap 'rm -rf -- "$CV_PYCACHE_DIR"' EXIT
+fi
 
 PY="${CV_PYTHON:-}"
 if [ -z "$PY" ]; then

@@ -195,8 +195,13 @@ def build_plan(spec_path, topic, today, skip=(), recon=None, root=None):
         # the pipeline. WebSearch/WebFetch are deliberately ABSENT from this list.
         "disallowed": ["Task", "Agent", "SlashCommand", "NotebookEdit"],
         # The one shell form an auditor needs, and the one its own Step 0 names.
-        "clamp": (["Bash(%s %s search:*)" % (sys.executable or "python3", memory),
-                   "Bash(%s %s recall-check:*)" % (sys.executable or "python3", memory)]
+        # `-B` is part of the admitted form: the scope gate forgives no path by
+        # extension, so a `__pycache__` entry this read-only query left beside the
+        # scripts would be an out-of-lane write (fourth review pass, 2026-09-02).
+        # A clamp is a literal prefix match, so the rule and the command the agent
+        # is told to run must carry it identically.
+        "clamp": (["Bash(%s -B %s search:*)" % (sys.executable or "python3", memory),
+                   "Bash(%s -B %s recall-check:*)" % (sys.executable or "python3", memory)]
                   if os.path.exists(memory) else None),
     }
 
@@ -474,6 +479,12 @@ def _selftest():
     check("Bash is clamped to the recall query, not denied outright",
           plan["clamp"] is None
           or all("compound-v-memory.py" in r for r in plan["clamp"]))
+    # Nobody writes bytecode: the scope gate forgives no path by extension since
+    # the fourth review pass, so the admitted form carries -B (and rule and
+    # command must agree literally, or the clamp denies the query).
+    check("every clamped python command carries -B after the interpreter",
+          plan["clamp"] is None
+          or all(" -B " in r for r in plan["clamp"]), str(plan["clamp"]))
     check("the emitted script passes both narrowings",
           "disallowedTools: CFG.disallowed" in script
           and "bashCommandClamp: CFG.clamp" in script)

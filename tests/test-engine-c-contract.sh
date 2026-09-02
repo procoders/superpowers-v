@@ -294,9 +294,30 @@ else
   fail "the emitted worker invocation carries no --test-contract-file at all"
 fi
 
-# ORPHAN-9: the `actual` event must have a producer on the DEFAULT path. All
-# three jobs above reached a terminal state, so the last `record` appended it.
+# ORPHAN-9: the `actual` event must have a producer on the DEFAULT path.
+#
+# THE PRODUCER IS FINALIZE-WAVE, NOT RECORD (fourth review pass, 2026-09-02).
+# Record writes nothing outside the run directory: an append to a TRACKED file
+# from there lands between a direct-mode job's gate and the authority's
+# re-derivation of the same tree, and an honest receipt then reads as
+# `contradicted`. The append happens once the authority HAS run over the wave —
+# run, not permitted, because a refused wave is still an outcome the
+# predicted<->actual join has to carry. This wave contains `job-blocked`, so the
+# authority here refuses and the `actual` must appear anyway.
 STREAM="$R/docs/superpowers/memory/triage-outcomes.jsonl"
+if [ -f "$STREAM" ]; then
+  fail "record appended the run's actual — that write belongs to the finalizer, after the authority"
+else
+  pass "record appends no actual: it writes nothing outside the run directory"
+fi
+"$PY" "$EMIT" finalize-wave --run-dir "$RD" --repo-root "$R" \
+  --manifest "$RD/manifest.yaml" --jobs job-happy,job-floorfail,job-blocked \
+  --wave 1 >"$T/orphan9.fin.json" 2>"$T/orphan9.fin.err" || true
+if grep -q 'REFUSED by scripts/compound-v-integration-gate.py' "$T/orphan9.fin.json"; then
+  pass "a wave carrying a blocked job is REFUSED by the authority"
+else
+  fail "the authority did not refuse a wave carrying a blocked job: $(head -c 300 "$T/orphan9.fin.json")"
+fi
 if [ -f "$STREAM" ]; then
   "$PY" - "$STREAM" <<'PY' || exit 1
 import json, sys
@@ -311,8 +332,8 @@ for line in open(sys.argv[1], encoding="utf-8"):
 ok = len(actuals) == 1 and actuals[0].get("merge_pending") is True \
      and actuals[0].get("pre_eval_id") == "pre-eval-engine-c-contract"
 print(("PASS " if ok else "FAIL ")
-      + "the record/merge path appends exactly one precision-IGNORED `actual` "
-        "(the terminal one is /v:dispatch's, after the merge/commit boundary)")
+      + "the FINALIZER appends exactly one precision-IGNORED `actual`, after the "
+        "authority (the terminal one is /v:dispatch's, after the merge/commit boundary)")
 if not ok:
     print("     got: %s" % json.dumps(actuals)[:400])
 sys.exit(0 if ok else 1)

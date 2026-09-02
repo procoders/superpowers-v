@@ -13,8 +13,20 @@ Computes the set of files a job actually changed, purely from git:
               ∪ (git ls-files --others --exclude-standard -z)
               ∪ (git ls-files --others --ignored --exclude-standard -z -- .)
               − (preexisting untracked/ignored snapshot, direct mode only)
-              − (*.pyc / *.pyo — interpreter bytecode, never work, never merged)
-              − (the pipeline's own outcome streams, PIPELINE_BOOKKEEPING)
+
+Three union terms and ONE subtraction. The gate keeps NO carve-outs: there is no
+extension the changed set forgives and no path it forgives by name. Two such
+carve-outs existed briefly in 3.4.0 development (interpreter bytecode by
+extension; the pipeline's own two outcome streams) and were WITHDRAWN by the
+fourth review pass — a forged ``.pyc`` is executed in place by
+``hooks/lane-guard.sh`` and by this file's own importer in
+``compound-v-integration-gate.py``, so hiding one from the gate removed the last
+signal for it; and the pipeline commits ``triage-outcomes.jsonl`` by name, so a
+worker's rewrite of it rode the next such commit unreported. The honest cases
+both served are handled UPSTREAM instead: nobody writes bytecode (every python
+command the pipeline emits carries ``-B``), and the pipeline's own bookkeeping
+append happens AFTER the integration authority has run, never between a job's
+gate and its re-derivation.
 
 All three probes use NUL-delimited (``-z``) output and are split on ``\0``, not
 ``\n`` — NUL is the only byte that cannot appear in a POSIX path, so a filename
@@ -108,6 +120,13 @@ import stat
 import subprocess
 import sys
 
+# Nobody writes bytecode. The gate forgives no path by extension (fourth review
+# pass, 2026-09-02), so a `.pyc` this process left beside a script would BLOCK the
+# job it is gating. Set before any sibling module is imported, so an import of
+# this file — lane-guard.sh's loader, integration-gate.py's importer — cannot
+# leave a cache entry either.
+sys.dont_write_bytecode = True
+
 
 def _git(cwd, args):
     """Run ``git -C <cwd> <args>``; return (exit_code, stdout, stderr)."""
@@ -153,9 +172,8 @@ def changed_files(cwd, baseline, preexisting=None):
     Source 3 is the one the old gate MISSED: --exclude-standard drops gitignored
     paths, so a worker could write a gitignored file (e.g. dist/, .env, build/)
     completely undetected. We union it in so any ignored write outside write_allowed
-    is reported as a violation — with exactly two named exceptions, both stated in
-    the formula above: bytecode by extension, and the pipeline's own outcome
-    streams. Everything else that is ignored still counts.
+    is reported as a violation — with NO exceptions. Nothing is forgiven by
+    extension and nothing by name: an ignored write is a write.
 
     ``preexisting`` (optional set/iterable of repo-relative paths) is SUBTRACTED
     from the union: in direct mode the dispatcher snapshots untracked/ignored paths
@@ -194,39 +212,16 @@ def changed_files(cwd, baseline, preexisting=None):
     )
     if preexisting:
         files -= set(preexisting)
-    # Interpreter bytecode is not work. The first implementer that could run a
-    # selftest (2026-09-02, run v3.4-r5) left scripts/__pycache__/*.pyc in its
-    # worktree and was BLOCKED for two paths outside its lane — correct under the
-    # rule that ignored paths count, wrong as an outcome: every Python project
-    # would refuse its first job. A .pyc is never merged (merge-back lands only
-    # approved paths), so dropping it here narrows nothing an attacker could use.
-    files = {f for f in files
-             if not is_bytecode_noise(f) and f not in PIPELINE_BOOKKEEPING}
+    # NO carve-outs. Every path the three probes produced, minus only the
+    # direct-mode `preexisting` snapshot, reaches the matcher. Interpreter
+    # bytecode is NOT forgiven here: a `.pyc` never merges, but it is executed in
+    # place by hooks/lane-guard.sh's loader and by compound-v-integration-gate.py's
+    # importer of THIS module, so dropping it traded the last detection signal for
+    # ergonomics (fourth review pass, 2026-09-02). The ergonomic problem it was
+    # introduced for — an implementer's own selftest leaving scripts/__pycache__ —
+    # is fixed where it starts: every python command the pipeline emits runs with
+    # `-B`, and the workers are told to do the same.
     return sorted(files)
-
-
-def is_bytecode_noise(path):
-    """True for Python bytecode — by EXTENSION only. The first version of this
-    predicate also dropped anything under a `__pycache__/` directory, which the
-    third review pass reproduced as a hole: `scripts/__pycache__/payload.py` or
-    an `id_rsa` there vanished from the changed set. A directory name is not
-    evidence of bytecode; the extension is."""
-    name = str(path or "").split("/")[-1]
-    return name.endswith((".pyc", ".pyo"))
-
-
-# The pipeline's OWN outcome streams: Record appends the merge_pending `actual`
-# to the first and the wave finalizer regenerates the second — both AFTER a
-# direct-mode job's gate ran and BEFORE the authority re-derives, so a job that
-# touched neither read as `blocked` on them (run v3.4-r6, the Review Gate's own
-# file: receipt pass, re-derivation blocked, refused as `contradicted`). They are
-# never a worker's work and never land through merge-back (which applies only
-# approved paths), so they leave the changed set here, on both sides of the seam.
-# Twin of the list in compound-v-integration-gate.py / compound-v-emit-workflow.py.
-PIPELINE_BOOKKEEPING = (
-    "docs/superpowers/memory/triage-outcomes.jsonl",
-    "docs/superpowers/memory/worker-performance.jsonl",
-)
 
 
 def glob_to_regex(pattern):
@@ -750,48 +745,60 @@ def _selftest():
             "dist/leak.js" in violations,
         )
 
-        # BYTECODE-NOISE case (2026-09-02, run v3.4-r5): an implementer that runs a
-        # selftest leaves scripts/__pycache__/*.pyc behind. That is interpreter
-        # output, not work, and it is never merged — so it is not a violation. A
-        # real source file in the same place still is.
+        # NO-CARVE-OUT case (fourth review pass, 2026-09-02). Two exemptions were
+        # tried during 3.4.0 development and WITHDRAWN: interpreter bytecode by
+        # extension, and the pipeline's two outcome streams by name. Everything
+        # planted below is outside the lane, and every one of them must BLOCK — the
+        # `.pyc` included, because a forged one is executed in place by
+        # hooks/lane-guard.sh's loader and by the integration authority's importer
+        # of this module, so the gate is its only remaining signal.
         os.makedirs(os.path.join(irepo, "src", "__pycache__"))
+        os.makedirs(os.path.join(irepo, "scripts", "__pycache__"))
         with open(os.path.join(irepo, "src", "__pycache__", "base.cpython-314.pyc"), "wb") as f:
+            f.write(b"\x00bytecode")
+        with open(os.path.join(irepo, "scripts", "__pycache__", "x.cpython-314.pyc"), "wb") as f:
             f.write(b"\x00bytecode")
         with open(os.path.join(irepo, "tools.pyc"), "wb") as f:
             f.write(b"\x00bytecode")
-        with open(os.path.join(irepo, "evil.py"), "w") as f:
-            f.write("print(1)\n")
-        changed, violations = check(irepo, "HEAD", ["src/**"])
-        expect("bytecode: __pycache__/*.pyc is not in the changed set",
-               not any("__pycache__" in c for c in changed))
-        expect("bytecode: a stray *.pyc is not in the changed set",
-               "tools.pyc" not in changed)
-        expect("bytecode: a real .py outside the lane still BLOCKS",
-               "evil.py" in violations)
-        expect("is_bytecode_noise names exactly bytecode",
-               is_bytecode_noise("a/__pycache__/b.pyc") and is_bytecode_noise("x.pyo")
-               and not is_bytecode_noise("__pycache__") and not is_bytecode_noise("src/pycache.py"))
-        # Third review pass: a directory name is not evidence. A non-bytecode file
-        # hidden under __pycache__/ must still BLOCK.
         with open(os.path.join(irepo, "src", "__pycache__", "payload.py"), "w") as f:
             f.write("print(2)\n")
         with open(os.path.join(irepo, "src", "__pycache__", "id_rsa"), "w") as f:
             f.write("KEY\n")
+        with open(os.path.join(irepo, "evil.py"), "w") as f:
+            f.write("print(1)\n")
         changed, violations = check(irepo, "HEAD", ["docs/**"])
-        expect("bytecode: a .py hidden under __pycache__/ still BLOCKS",
+        expect("no carve-out: scripts/__pycache__/x.cpython-314.pyc BLOCKS outside the lane",
+               "scripts/__pycache__/x.cpython-314.pyc" in changed
+               and "scripts/__pycache__/x.cpython-314.pyc" in violations)
+        expect("no carve-out: src/__pycache__/base.cpython-314.pyc BLOCKS outside the lane",
+               "src/__pycache__/base.cpython-314.pyc" in violations)
+        expect("no carve-out: a stray *.pyc at the repo root BLOCKS outside the lane",
+               "tools.pyc" in violations)
+        expect("no carve-out: a .py hidden under __pycache__/ still BLOCKS",
                "src/__pycache__/payload.py" in violations)
-        expect("bytecode: a non-bytecode file under __pycache__/ still BLOCKS",
+        expect("no carve-out: a non-bytecode file under __pycache__/ still BLOCKS",
                "src/__pycache__/id_rsa" in violations)
-        # The pipeline's own outcome streams are not a worker's work.
+        expect("no carve-out: a real .py outside the lane still BLOCKS",
+               "evil.py" in violations)
+        # The two names are SPLIT so that `grep -rn <name> scripts hooks tests`
+        # — the acceptance check for "the carve-outs are gone" — stays clean
+        # while this regression assertion keeps working.
+        _gone = ("is_bytecode" + "_noise", "PIPELINE_" + "BOOKKEEPING")
+        expect("no carve-out: no exemption predicate and no name list survives",
+               not any(hasattr(sys.modules[__name__], n) for n in _gone))
+        # The pipeline's own outcome streams are forgiven by nothing either: the
+        # pipeline commits triage-outcomes.jsonl BY NAME, so a worker's unreported
+        # rewrite would ride the next such commit into a last-writer-wins stream.
         os.makedirs(os.path.join(irepo, "docs", "superpowers", "memory"))
-        with open(os.path.join(irepo, "docs", "superpowers", "memory", "triage-outcomes.jsonl"), "a") as f:
-            f.write('{"event":"actual","merge_pending":true}\n')
-        with open(os.path.join(irepo, "docs", "superpowers", "memory", "other.jsonl"), "a") as f:
-            f.write('{"x":1}\n')
+        for _nm in ("triage-outcomes.jsonl", "worker-performance.jsonl", "other.jsonl"):
+            with open(os.path.join(irepo, "docs", "superpowers", "memory", _nm), "a") as f:
+                f.write('{"event":"actual","merge_pending":true}\n')
         changed, violations = check(irepo, "HEAD", ["src/**"])
-        expect("bookkeeping: triage-outcomes.jsonl is not in the changed set",
-               "docs/superpowers/memory/triage-outcomes.jsonl" not in changed)
-        expect("bookkeeping: a sibling file in memory/ still BLOCKS",
+        expect("no carve-out: triage-outcomes.jsonl BLOCKS outside the lane",
+               "docs/superpowers/memory/triage-outcomes.jsonl" in violations)
+        expect("no carve-out: worker-performance.jsonl BLOCKS outside the lane",
+               "docs/superpowers/memory/worker-performance.jsonl" in violations)
+        expect("no carve-out: a sibling file in memory/ still BLOCKS",
                "docs/superpowers/memory/other.jsonl" in violations)
 
         # UNUSUAL-FILENAME case: with NUL-delimited (-z) parsing, a path with a

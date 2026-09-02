@@ -61,6 +61,14 @@ import subprocess
 import sys
 import tempfile
 
+# Nobody writes bytecode. The scope gate forgives no path by extension (fourth
+# review pass, 2026-09-02), so a `__pycache__` entry this process leaves beside a
+# script is an out-of-lane write that BLOCKS the job it is plumbing. Set before
+# any sibling module is imported — `_import_integration_gate` and
+# `_import_triage_outcomes` below both load repo scripts by path, and an import
+# is exactly when a cache entry would be written.
+sys.dont_write_bytecode = True
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # THERE IS NO DEFAULT REPOSITORY ROOT, and its absence is the point.
@@ -353,18 +361,44 @@ def forbidden_hits(script_text):
 # index under GIT_INDEX_FILE, so the index CONTENT the diff reads is the same
 # while producing a receipt does not mutate the tree being gated.
 # --------------------------------------------------------------------------- #
-def _import_integration_gate(path=None):
-    target = path or INTEGRATION_GATE_DEFAULT
-    if not os.path.exists(target):
-        return None
+def _load_module_from_path(name, target):
+    """Load a repo script by path, FROM SOURCE — never from a cache beside it.
+
+    `sys.pycache_prefix` moves both the read and the write of the bytecode cache
+    to a private directory outside the tree, so a forged
+    `scripts/__pycache__/<mod>.<tag>.pyc` — an unchecked hash-based one, which
+    CPython never validates against its source — cannot be executed in this
+    process (fourth review pass, item 3, 2026-09-02). Returns None on any failure.
+    """
+    prev_prefix = getattr(sys, "pycache_prefix", None)
+    tmp_pycache = None
     try:
         import importlib.util
-        spec = importlib.util.spec_from_file_location("cv_integration_gate", target)
+        try:
+            tmp_pycache = tempfile.mkdtemp(prefix="cv-pycache-")
+            sys.pycache_prefix = tmp_pycache
+        except Exception:  # noqa: BLE001
+            tmp_pycache = None
+        spec = importlib.util.spec_from_file_location(name, target)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module
     except Exception:  # noqa: BLE001
         return None
+    finally:
+        try:
+            sys.pycache_prefix = prev_prefix
+        except Exception:  # noqa: BLE001
+            pass
+        if tmp_pycache:
+            shutil.rmtree(tmp_pycache, ignore_errors=True)
+
+
+def _import_integration_gate(path=None):
+    target = path or INTEGRATION_GATE_DEFAULT
+    if not os.path.exists(target):
+        return None
+    return _load_module_from_path("cv_integration_gate", target)
 
 
 def _compute_diff_digest_local(root, baseline):
@@ -394,16 +428,17 @@ def _compute_diff_digest_local(root, baseline):
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-# The pipeline's OWN bookkeeping, written into tracked files OUTSIDE the run
-# directory between a direct-mode job's Gate and the authority's re-derivation:
-# Record appends the `merge_pending` actual to triage-outcomes.jsonl, and the wave
-# finalizer refreshes worker-performance.jsonl. Dogfood r4 (2026-09-02): the
-# Review Gate's own file read as `forged` because of the first. Twin of the
-# authority's list in compound-v-integration-gate.py; both sides must agree.
-PIPELINE_BOOKKEEPING = [
-    "docs/superpowers/memory/triage-outcomes.jsonl",
-    "docs/superpowers/memory/worker-performance.jsonl",
-]
+# THE RUN DIRECTORY IS THE ONLY DIGEST EXCLUSION, on both sides of the seam.
+#
+# 3.4.0 development briefly excluded two tracked files by name as well
+# (triage-outcomes.jsonl, worker-performance.jsonl), because the pipeline wrote
+# them BETWEEN a direct-mode job's Gate and the authority's re-derivation and an
+# honest receipt read as `contradicted`. The fourth review pass withdrew that: a
+# path excluded from the digest is also a path a worker may rewrite unseen, and
+# the pipeline commits triage-outcomes.jsonl by name. The ordering is fixed
+# instead — `cmd_finalize_wave` appends the run's `actual` AFTER the authority
+# has run over the wave, so nothing the pipeline writes lands inside that window
+# and there is nothing left to forgive.
 
 
 def compute_diff_digest(root, baseline, gate_module=None, exclude_prefixes=None):
@@ -622,7 +657,13 @@ def _clamp_rules(job, python_bin, self_path, worker_script_for):
     "inert clamp entry" and the spawn is refused.
     """
     backend = job.get("backend") or "claude"
-    rules = ["Bash(%s %s register-lane:*)" % (python_bin, self_path)]
+    # `-B` IS PART OF THE ADMITTED FORM, and the rule and the command it admits
+    # must carry it identically. The scope gate forgives no path by extension
+    # since the fourth review pass, so a `__pycache__` entry this plumbing left
+    # beside a script is an out-of-lane write that BLOCKS the job. A clamp is a
+    # literal prefix match: `<python> -B <script>` in the rule and `<python>
+    # <script>` in the command is a DENY, which is why both are built here.
+    rules = ["Bash(%s -B %s register-lane:*)" % (python_bin, self_path)]
     # THE RECALL LAYER, READ-ONLY, OR THE INSTRUCTION TO USE IT IS UNREACHABLE.
     #
     # v3.3.3 told five agents to consult V-memory first. Dogfood 24 spawned the one
@@ -638,8 +679,8 @@ def _clamp_rules(job, python_bin, self_path, worker_script_for):
     # unaffected either way — it measures the tree, not the commands.
     memory = os.path.join(os.path.dirname(self_path), "compound-v-memory.py")
     if os.path.exists(memory):
-        rules.append("Bash(%s %s search:*)" % (python_bin, memory))
-        rules.append("Bash(%s %s recall-check:*)" % (python_bin, memory))
+        rules.append("Bash(%s -B %s search:*)" % (python_bin, memory))
+        rules.append("Bash(%s -B %s recall-check:*)" % (python_bin, memory))
     # A developer's shell (see IMPLEMENT_SHELL) — tests, selftests, linters,
     # deletions and renames. Denied by omission: network, privilege, scheduler,
     # installs, and every git form that commits or pushes.
@@ -780,7 +821,7 @@ def resolve_job_model(job, python_bin, resolve_model=None, stance=None,
     target = resolve_model or RESOLVE_MODEL_DEFAULT
     if not os.path.exists(target):
         return None, "model resolver not found at %s" % target
-    cmd = [python_bin, target, "--backend", job.get("backend") or "claude",
+    cmd = [python_bin, "-B", target, "--backend", job.get("backend") or "claude",
            "--tier", tier.strip()]
     if isinstance(stance, str) and stance.strip():
         cmd += ["--stance", stance.strip()]
@@ -1196,6 +1237,11 @@ FINALIZE_SCHEMA = {
         "merged": {"type": "array", "items": {"type": "string"}},
         "refused": {"type": "array", "items": {"type": "string"}},
         "reason": {"type": "string"},
+        # The FINALIZER reports whether it appended the run's triage `actual`.
+        # It moved here from RECORD in the fourth review pass: the append must
+        # happen after the integration authority has re-derived this wave, never
+        # between a direct-mode job's gate and that re-derivation.
+        "triage_actual": {"type": "string"},
     },
 }
 
@@ -1210,12 +1256,12 @@ RECORD_SCHEMA = {
         "status": {"type": "string"},
         "result_path": {"type": "string"},
         "reason": {"type": "string"},
-        # The Record stage reports whether it appended the run's triage `actual`.
-        # RECORD_SCHEMA is additionalProperties:false, so a field the ack emits
-        # and the schema does not declare would make the Record agent's
-        # structured result invalid — and Record is the stage that must never be
-        # the thing that fails.
-        "triage_actual": {"type": "string"},
+        # NO `triage_actual` HERE. Record no longer appends the run's triage
+        # `actual` — that write is the finalizer's, after the authority (fourth
+        # review pass). RECORD_SCHEMA is additionalProperties:false, so declaring
+        # a field the ack cannot emit is dead schema, and the ack emitting a
+        # field the schema does not declare would make Record's structured result
+        # invalid. Both halves moved together, to FINALIZE_SCHEMA.
     },
 }
 
@@ -1242,24 +1288,33 @@ def _implement_prompt(job, plan):
     lines.append("nothing, fails open, and silently allows every write:")
     lines.append("")
     lines.append("```bash")
-    lines.append('%s %s register-lane \\' % (plan["python"], plan["emitter"]))
-    lines.append('  --run-dir %s --job-id %s --cwd "$PWD" \\'
-                 % (plan["run_dir"], job["id"]))
-    # The AGENT layer, not the manifest's. register-lane uses this to decide both
-    # where to pin the baseline and whether to take the pre-existing snapshot, and
-    # a depends_on job runs its agent in the project checkout while declaring
-    # `worktree` in the manifest. Passing the manifest value here meant the job
-    # that most needs the snapshot — the one gated in a shared, already-dirty tree
-    # — was the only one that never got it. Fifth place today where one field name
-    # meant two different things on two layers.
-    lines.append('  --repo-root %s --isolation %s'
-                 % (plan["repo_root"],
+    # ONE LINE. The clamp matches a literal command prefix, and the runtime
+    # refuses a command whose structure it cannot verify — a backslash-newline
+    # continuation is exactly that. This block used to render across three lines
+    # with `\` continuations and the very first command of a real run
+    # (2026-09-02, run r8) was DENIED for it, before the job could register at
+    # all. The AGENT layer's isolation, not the manifest's: register-lane uses it
+    # to decide both where to pin the baseline and whether to take the
+    # pre-existing snapshot, and a depends_on job runs its agent in the project
+    # checkout while declaring `worktree` in the manifest — passing the manifest
+    # value here meant the job that most needs the snapshot, the one gated in a
+    # shared already-dirty tree, was the only one that never got it.
+    lines.append('%s -B %s register-lane --run-dir %s --job-id %s --cwd "$PWD" '
+                 '--repo-root %s --isolation %s'
+                 % (plan["python"], plan["emitter"], plan["run_dir"], job["id"],
+                    plan["repo_root"],
                     "worktree" if job.get("agent_isolation") == "worktree" else "direct"))
     lines.append("```")
     lines.append("")
     lines.append("That command also PINS this job's baseline commit before anything")
     lines.append("changes, and it fails closed if it cannot. A gate measured against a")
     lines.append("HEAD that moved is a gate that passes the run it should have caught.")
+    lines.append("")
+    lines.append("Run Python with `-B` (or export PYTHONDONTWRITEBYTECODE=1) for EVERY")
+    lines.append("python command you issue: the scope gate forgives no path by")
+    lines.append("extension, so a stray .pyc left outside your lane BLOCKS your job.")
+    lines.append("Keep every admitted command on ONE line — the clamp matches a literal")
+    lines.append("prefix, and a backslash-newline continuation was denied in a real run.")
     lines.append("")
     if job["backend"] != "claude" and job["launch_command"]:
         lines.append("THIS JOB RUNS ON AN EXTERNAL BACKEND (%s)." % job["backend"])
@@ -1315,7 +1370,7 @@ def _implement_prompt(job, plan):
 
 def _gate_command(job, plan):
     return (
-        "%s %s gate-receipt --run-dir %s --job-id %s --repo-root %s "
+        "%s -B %s gate-receipt --run-dir %s --job-id %s --repo-root %s "
         "--mode %s --worktree <ABSOLUTE_GATE_ROOT>"
         % (plan["python"], plan["emitter"], plan["run_dir"], job["id"],
            plan["repo_root"],
@@ -1536,7 +1591,7 @@ async function gateStage(prev, job) {
       gateRoot = CFG.repo_root;
     }
 
-    const cmd = CFG.python + ' ' + CFG.emitter + ' gate-receipt' +
+    const cmd = CFG.python + ' -B ' + CFG.emitter + ' gate-receipt' +
       ' --run-dir ' + q(CFG.run_dir) +
       ' --job-id ' + q(job.id) +
       ' --repo-root ' + q(CFG.repo_root) +
@@ -1571,7 +1626,7 @@ async function gateStage(prev, job) {
       // schema mode is denied and the spawn is likewise refused.
       disallowedTools: CFG.narrow_disallowed,
       bashCommandClamp: [
-        'Bash(' + CFG.python + ' ' + CFG.emitter + ' gate-receipt:*)'
+        'Bash(' + CFG.python + ' -B ' + CFG.emitter + ' gate-receipt:*)'
       ]
     };
 
@@ -1608,7 +1663,7 @@ async function gateStage(prev, job) {
 async function recordStage(verdict, job) {
   try {
     const v = verdict || gateFailure(job.id, 'record received a null verdict');
-    const cmd = CFG.python + ' ' + CFG.emitter + ' record' +
+    const cmd = CFG.python + ' -B ' + CFG.emitter + ' record' +
       ' --run-dir ' + q(CFG.run_dir) +
       ' --job-id ' + q(job.id) +
       ' --repo-root ' + q(CFG.repo_root) +
@@ -1630,7 +1685,7 @@ async function recordStage(verdict, job) {
       ...(CFG.transport_model ? { model: CFG.transport_model } : {}),
       disallowedTools: CFG.narrow_disallowed,
       bashCommandClamp: [
-        'Bash(' + CFG.python + ' ' + CFG.emitter + ' record:*)'
+        'Bash(' + CFG.python + ' -B ' + CFG.emitter + ' record:*)'
       ]
     });
     if (ack === null || ack === undefined) {
@@ -1666,7 +1721,7 @@ async function finalizeWave(waveIndex, wave) {
   const title = 'Wave ' + (waveIndex + 1);
   try {
     const ids = wave.map(function (j) { return j.id; }).join(',');
-    const cmd = CFG.python + ' ' + CFG.emitter + ' finalize-wave' +
+    const cmd = CFG.python + ' -B ' + CFG.emitter + ' finalize-wave' +
       ' --run-dir ' + q(CFG.run_dir) +
       ' --repo-root ' + q(CFG.repo_root) +
       ' --manifest ' + q(CFG.manifest_path) +
@@ -1690,7 +1745,7 @@ async function finalizeWave(waveIndex, wave) {
       ...(CFG.transport_model ? { model: CFG.transport_model } : {}),
       disallowedTools: CFG.narrow_disallowed,
       bashCommandClamp: [
-        'Bash(' + CFG.python + ' ' + CFG.emitter + ' finalize-wave:*)'
+        'Bash(' + CFG.python + ' -B ' + CFG.emitter + ' finalize-wave:*)'
       ]
     });
     if (res === null || res === undefined) {
@@ -2088,7 +2143,7 @@ def _preexisting_snapshot(root, python_bin):
     snapshot is the job's and is still gated. A worktree job needs none of this —
     its tree starts clean by construction.
     """
-    out = _run([python_bin, "-c", (
+    out = _run([python_bin, "-B", "-c", (
         "import subprocess,sys\n"
         "def q(*a):\n"
         "    r = subprocess.run(['git','-C',sys.argv[1]]+list(a),"
@@ -2103,7 +2158,7 @@ def _preexisting_snapshot(root, python_bin):
 
 def _run_scope_check(scope_check, mode, root, baseline, allow, python_bin,
                      preexisting=None):
-    cmd = [python_bin, scope_check]
+    cmd = [python_bin, "-B", scope_check]
     cmd += ["--worktree" if mode == "worktree" else "--repo", root]
     if baseline:
         cmd += ["--baseline", baseline]
@@ -2136,7 +2191,7 @@ def _run_test_floor(fastpath, manifest_path, job_id, worktree, baseline,
     """
     if not os.path.exists(fastpath):
         return None, "fastpath-run.py not found at %s" % fastpath
-    cmd = [python_bin, fastpath, "test-floor", "--worktree", worktree,
+    cmd = [python_bin, "-B", fastpath, "test-floor", "--worktree", worktree,
            "--manifest", manifest_path, "--job-id", job_id]
     if baseline:
         cmd += ["--baseline", baseline]
@@ -2164,7 +2219,7 @@ def _resolve_test_contract(fastpath, manifest_path, job_id, worktree, baseline,
     """
     if not os.path.exists(fastpath):
         return None
-    cmd = [python_bin, fastpath, "resolve-tests", "--worktree", worktree,
+    cmd = [python_bin, "-B", fastpath, "resolve-tests", "--worktree", worktree,
            "--manifest", manifest_path, "--job-id", job_id, "--out", out_path,
            "--no-prior-run"]
     if baseline:
@@ -2353,12 +2408,14 @@ def cmd_gate_receipt(argv):
         # In DIRECT mode the run directory sits inside the measured tree and the
         # pipeline keeps writing into it after this point (Record, receipts,
         # state.json). Excluding it here — and identically in the authority — is
-        # what makes the two digests comparable at all.
+        # what makes the two digests comparable at all. It is the ONLY exclusion:
+        # everything else the pipeline writes now happens after the authority has
+        # run, so no tracked file needs forgiving by name.
         _digest_excl = None
         if args.mode != "worktree":
             _rel = os.path.relpath(os.path.abspath(args.run_dir), os.path.abspath(root))
             if not _rel.startswith(".." + os.sep):
-                _digest_excl = [_rel.replace(os.sep, "/")] + list(PIPELINE_BOOKKEEPING)
+                _digest_excl = [_rel.replace(os.sep, "/")]
         digest, digest_err = compute_diff_digest(root, baseline,
                                                  exclude_prefixes=_digest_excl)
     else:
@@ -2692,14 +2749,7 @@ def _import_triage_outcomes(path=None):
     target = path or TRIAGE_OUTCOMES_DEFAULT
     if not os.path.exists(target):
         return None
-    try:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("cv_triage_outcomes", target)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-    except Exception:  # noqa: BLE001
-        return None
+    return _load_module_from_path("cv_triage_outcomes", target)
 
 
 def _run_test_result(run_dir, job_ids):
@@ -3110,19 +3160,20 @@ def cmd_record(argv):
     }.get(result["status"], "failed")
     state_job["isolation"] = isolation
 
-    # Merge this job's entry into a FRESHLY READ state.json, under the lock. The
-    # triage join's third event is appended by whichever Record call finds every
-    # job terminal — inside the same critical section, so "am I the last?" is
-    # answered against the state that is about to be written, not a stale copy,
-    # and the idempotence latch lands in the same write.
+    # Merge this job's entry into a FRESHLY READ state.json, under the lock.
+    #
+    # RECORD WRITES NOTHING OUTSIDE THE RUN DIRECTORY, and that is the whole
+    # point of this stage. Until the fourth review pass it also appended the
+    # run's `merge_pending` actual to docs/superpowers/memory/triage-outcomes.jsonl
+    # from here — a tracked file, written BETWEEN a direct-mode job's gate and the
+    # authority's re-derivation of the same tree, so an honest receipt read as
+    # `contradicted`. That was papered over by excluding the path from both
+    # digests, which also made a worker's rewrite of it invisible. The append now
+    # belongs to `cmd_finalize_wave`, after the authority has run; no exclusion is
+    # needed, and nothing lands inside that window.
     with _run_dir_lock(run_dir):
         state = _load_state(run_dir)
         state["jobs"].setdefault(job_id, {}).update(state_job)
-        note = _maybe_append_run_actual(
-            run_dir, manifest, state, os.path.abspath(args.repo_root)
-        )
-        if note:
-            ack["triage_actual"] = note
         _save_state(run_dir, state, now=args.now)
 
     print(json.dumps(ack, indent=2, sort_keys=True))
@@ -3223,7 +3274,7 @@ def cmd_finalize_wave(argv):
 
     # ---- 1. THE AUTHORITY, first ------------------------------------------- #
     rc, gate_out, gate_err = _run([
-        args.python, args.integration_gate,
+        args.python, "-B", args.integration_gate,
         "--run-dir", run_dir, "--repo-root", repo_root,
         "--manifest", manifest_path, "--jobs", ",".join(job_ids), "--json",
     ])
@@ -3235,6 +3286,40 @@ def cmd_finalize_wave(argv):
         out["reason"] = ("the integration authority produced no report (rc=%d): %s"
                          % (rc, (gate_err or gate_out)[:300]))
         return emit(1)
+
+    manifest = {}
+    if os.path.exists(manifest_path):
+        try:
+            manifest = _load_yaml(manifest_path) or {}
+        except Exception:  # noqa: BLE001
+            manifest = {}
+
+    # ---- 1a. THE RUN'S `actual` — AFTER the authority, BEFORE the commit ---- #
+    #
+    # This is the pipeline's one write into a TRACKED file outside the run
+    # directory, and its POSITION is the safety property. Record used to do it,
+    # which put that append between a direct-mode job's gate and this authority's
+    # re-derivation of the same tree: the digests disagreed and an honest receipt
+    # was refused as `contradicted` (run v3.4-r6). 3.4.0 development answered that
+    # by excluding the path from both digests — which also made a WORKER's rewrite
+    # of it invisible, in a stream the pipeline commits by name and which resolves
+    # last-writer-wins into the Tier-2 precision gate. The fourth review pass
+    # withdrew the exclusion and moved the write here: the authority has already
+    # re-derived this wave, so nothing it measures can be disturbed, and the
+    # commit below is pathspec-restricted so this file is never swept into it.
+    #
+    # AFTER THE AUTHORITY RAN, NOT AFTER IT PERMITTED. A refused wave is still an
+    # outcome the predicted<->actual join has to carry, and gating the append on
+    # `permitted` would silently drop the `actual` for exactly the runs whose
+    # outcome matters most. `_maybe_append_run_actual` is latched on state.json
+    # and fires at most once per run, only once EVERY manifest job is terminal.
+    with _run_dir_lock(run_dir):
+        _fresh = _load_state(run_dir)
+        _note = _maybe_append_run_actual(run_dir, manifest, _fresh, repo_root)
+        if _note:
+            out["triage_actual"] = _note
+        _save_state(run_dir, _fresh, now=args.now)
+
     if report.get("integration") != "permitted":
         out["refused"] = report.get("refused") or job_ids
         out["reason"] = (
@@ -3245,12 +3330,6 @@ def cmd_finalize_wave(argv):
         return emit(1)
 
     # ---- 2. merge the permitted slices ------------------------------------- #
-    manifest = {}
-    if os.path.exists(manifest_path):
-        try:
-            manifest = _load_yaml(manifest_path) or {}
-        except Exception:  # noqa: BLE001
-            manifest = {}
     # Read once for the git work; every WRITE goes through _apply below, which
     # re-reads under the run-dir lock. The finalizer is serialized by the wave
     # loop, but a straggler Record from a relaunched wave is not, and an unlocked
@@ -3443,7 +3522,7 @@ def cmd_finalize_wave(argv):
         exec_root = os.path.dirname(run_dir.rstrip(os.sep)) or run_dir
         if os.path.exists(scorecard_script) and os.path.isdir(exec_root):
             rc_sc, _out_sc, err_sc = _run([
-                args.python, scorecard_script, "--update",
+                args.python, "-B", scorecard_script, "--update",
                 "--from-runs", exec_root,
             ], cwd=repo_root)
             if rc_sc == 0:
@@ -4347,6 +4426,38 @@ def selftest():
                not any(("memory.py refresh" in r) or ("memory.py bootstrap" in r)
                        for r in (_cl or [])), str(_cl))
 
+        # NOBODY WRITES BYTECODE (fourth review pass, 2026-09-02). The gate
+        # forgives no path by extension, so every python command this emitter
+        # writes — into a clamp rule, into the workflow script, into a prompt —
+        # carries `-B`, and the rule and the command it admits must agree
+        # literally or the clamp denies the one command the stage may run.
+        # Only the rules that name a SCRIPT: `Bash(/usr/bin/python3:*)` is the
+        # developer shell's generic interpreter form (it already admits `-B`),
+        # not a command this emitter composed.
+        _py_rules = [r for r in (_cl or []) if "/usr/bin/python3 " in r]
+        _check("every python clamp rule this emitter composes carries -B right "
+               "after the interpreter",
+               _py_rules and all(r.startswith("Bash(/usr/bin/python3 -B ")
+                                 for r in _py_rules), str(_py_rules))
+        for _stage in ("gate-receipt", "record", "finalize-wave"):
+            _check("the emitted script runs `%s` with -B" % _stage,
+                   ("CFG.python + ' -B ' + CFG.emitter + ' %s'" % _stage) in script)
+            _check("...and its clamp rule admits exactly that form (%s)" % _stage,
+                   ("'Bash(' + CFG.python + ' -B ' + CFG.emitter + ' %s:*)'" % _stage)
+                   in script)
+        _bprompt = _implement_prompt(clamped["waves"][0][0], clamped)
+        _check("the register-lane command in the prompt carries -B",
+               "/usr/bin/python3 -B " in _bprompt, _bprompt[:400])
+        _check("the register-lane command in the prompt is ONE line (a "
+               "backslash-newline continuation is denied by the clamp)",
+               " \\\n" not in _bprompt and "register-lane --run-dir" in _bprompt)
+        _check("the Implement prompt tells the worker to run Python with -B",
+               "PYTHONDONTWRITEBYTECODE=1" in _bprompt and "`-B`" in _bprompt)
+        _check("the Implement prompt tells the worker to keep a command on ONE line",
+               "ONE line" in _bprompt)
+        _check("the gate command handed to the Gate stage carries -B",
+               " -B " in _gate_command(clamped["waves"][0][0], clamped))
+
         _check("every launched job carries a bash clamp",
                all(e["implement_clamp"] for w in clamped["waves"] for e in w))
         # Dogfood r2: the first real code job could not run a test or `git rm`.
@@ -5049,6 +5160,96 @@ def selftest():
             _check("a wave whose job produced no result is REFUSED", rc != 0)
             _check("a refused wave commits nothing",
                    _head_commit(fin_repo) == head_before)
+
+        # ---- FOURTH REVIEW PASS, item 4 -------------------------------------- #
+        # NOTHING THE PIPELINE WRITES LANDS BETWEEN A DIRECT JOB'S GATE AND ITS
+        # RE-DERIVATION. Driven end to end against the REAL authority, in a repo
+        # of its own: register-lane -> the worker's edit -> gate-receipt ->
+        # record -> the authority -> finalize-wave. Until this pass Record
+        # appended the run's `actual` to a TRACKED file at the third arrow, the
+        # digest moved under the authority, and an honest receipt came back
+        # `contradicted`; the answer then was to exclude the path from both
+        # digests, which also hid a worker's rewrite of it. The append is the
+        # finalizer's now, so the receipt survives with NO exclusion in play.
+        if have_yaml and os.path.exists(INTEGRATION_GATE_DEFAULT):
+            import yaml as _yaml_bk
+            bk4_repo = os.path.join(tmp, "bk4-repo")
+            bk4_base = _init_repo(bk4_repo)
+            bk4_run = os.path.join(bk4_repo, "docs", "superpowers",
+                                   "execution", "bk4")
+            os.makedirs(bk4_run, exist_ok=True)
+            bk4_man = os.path.join(bk4_run, "manifest.yaml")
+            with open(bk4_man, "w", encoding="utf-8") as fh:
+                _yaml_bk.safe_dump({
+                    "run_id": "bk4",
+                    "triage": {"pre_eval_id": "pe-bk4"},
+                    "jobs": [{"id": "d1", "isolation": "direct",
+                              "write_allowed": ["src/**"]}],
+                }, fh)
+            with _quiet():
+                cmd_register_lane([
+                    "--run-dir", bk4_run, "--job-id", "d1", "--cwd", bk4_repo,
+                    "--repo-root", bk4_repo, "--isolation", "direct",
+                    "--manifest", bk4_man, "--no-test-contract",
+                ])
+            os.makedirs(os.path.join(bk4_repo, "src"), exist_ok=True)
+            with open(os.path.join(bk4_repo, "src", "work.txt"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("the direct job's work\n")
+            with _quiet():
+                rc_bg = cmd_gate_receipt([
+                    "--run-dir", bk4_run, "--job-id", "d1",
+                    "--repo-root", bk4_repo, "--worktree", bk4_repo,
+                    "--manifest", bk4_man, "--mode", "direct",
+                ])
+            _check("the direct job's gate passes on an in-lane write", rc_bg == 0)
+            bk4_receipt = _read_json(
+                os.path.join(bk4_run, "receipts", "d1.gate.json"), {})
+            _check("the gate wrote a receipt", bool(bk4_receipt.get("diff_digest")))
+            with _quiet():
+                cmd_record([
+                    "--run-dir", bk4_run, "--job-id", "d1", "--manifest", bk4_man,
+                    "--verdict-json", json.dumps(bk4_receipt),
+                    "--repo-root", bk4_repo, "--now", "2026-09-02T00:00:00Z",
+                ])
+            bk4_stream = os.path.join(bk4_repo, "docs", "superpowers", "memory",
+                                      "triage-outcomes.jsonl")
+            _check("RECORD appends no `actual` — it writes nothing outside the "
+                   "run directory",
+                   not os.path.exists(bk4_stream)
+                   and "triage_actual" not in _load_state(bk4_run))
+            # The authority, at exactly the moment finalize-wave runs it.
+            _rc_auth, _auth_out, _auth_err = _run([
+                sys.executable or "python3", "-B", INTEGRATION_GATE_DEFAULT,
+                "--run-dir", bk4_run, "--repo-root", bk4_repo,
+                "--manifest", bk4_man, "--jobs", "d1", "--json",
+            ])
+            try:
+                _auth = json.loads(_auth_out) if _auth_out.strip() else {}
+            except Exception:  # noqa: BLE001
+                _auth = {}
+            _bk4_verdict = ((_auth.get("results") or [{}])[0] or {}).get("verdict")
+            _check("the direct job's receipt is neither forged nor contradicted",
+                   _bk4_verdict == "pass",
+                   "%s / %s" % (_bk4_verdict, (_auth_err or _auth_out)[:200]))
+            _check("...so the authority permits the wave",
+                   _auth.get("integration") == "permitted", str(_auth)[:300])
+            with _quiet():
+                rc_fin = cmd_finalize_wave([
+                    "--run-dir", bk4_run, "--repo-root", bk4_repo,
+                    "--manifest", bk4_man, "--jobs", "d1", "--wave", "1",
+                    "--now", "2026-09-02T00:00:00Z",
+                ])
+            _check("the wave integrates", rc_fin == 0)
+            _check("FINALIZE-WAVE appends the run's `actual`, after the authority",
+                   os.path.exists(bk4_stream)
+                   and (_load_state(bk4_run).get("triage_actual") or {})
+                   .get("merge_pending") is True)
+            _rc_c, _committed, _ = _git(bk4_repo,
+                                        ["show", "--name-only", "--format=", "HEAD"])
+            _check("the wave's commit carries the job's work and NOT the stream",
+                   "src/work.txt" in _committed
+                   and "triage-outcomes.jsonl" not in _committed, _committed)
 
         # HIGH 3 — the handoff keeps its invocation, its worktree and its pin.
         ext2 = build_plan(
