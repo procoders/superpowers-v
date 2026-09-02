@@ -1711,9 +1711,22 @@ def write_preexisting(snapshot_path, repo_root, paths):
     """
     lines = []
     for rel in paths:
-        dig = _file_digest(os.path.join(repo_root, rel))
+        full = os.path.join(repo_root, rel)
+        dig = _file_digest(full)
         if dig:
             lines.append("%s  %s" % (dig, rel))
+        elif os.path.isdir(full.rstrip("/")) or rel.endswith("/"):
+            # A DIRECTORY CANNOT BE DIGESTED, AND DROPPING IT BREAKS THE SNAPSHOT.
+            # git reports an untracked directory as ONE entry (`.claude/worktrees/x/`),
+            # and the first digest-only version silently dropped every such entry —
+            # so fifteen leftover harness worktrees, which the path-only snapshot had
+            # correctly exempted since 3.0, came back as violations against the next
+            # direct-mode job. Dogfood 10 blocked on exactly that.
+            #
+            # `dir` is a by-name exemption, and it is the right trade here: a
+            # directory entry says nothing about its contents either way, and the
+            # files INSIDE it are listed separately when git reports them.
+            lines.append("dir  %s" % rel)
     _atomic_write(snapshot_path, "\n".join(lines) + ("\n" if lines else ""))
     return len(lines)
 
@@ -1740,9 +1753,44 @@ def read_preexisting_unchanged(snapshot_path, repo_root):
             rel = parts[1].strip()
             if _file_digest(os.path.join(repo_root, rel)) == parts[0]:
                 keep.append(rel)
+        elif len(parts) == 2 and parts[0] == "dir":
+            keep.append(parts[1].strip())      # by-name: see write_preexisting
         else:
             keep.append(line)          # legacy path-only line
     return keep
+
+
+# The pipeline's own files inside a run directory. Two of them are LEVERS a worker
+# could pull to hide its writes, and those stay digest-bound no matter what:
+#
+#   jobs/<id>.baseline     the commit the gate measures against
+#   preexisting/<id>.txt   the exemption list itself
+#
+# Everything else in the run directory is pipeline territory that the pipeline
+# legitimately rewrites DURING the run — `state.json` is shared, so a sibling job's
+# Record rewrites it between this job registering and its gate running, and a
+# digest recorded at register time can never match again. Dogfood 10 hit exactly
+# that: a two-wave run blocked its own reviewer over `state.json` and over
+# `preexisting/<id>.verified.txt`, a file the GATE writes after registration.
+#
+# So those are exempt by name, and the two levers are not. A worker writing into
+# some OTHER run's directory is still a violation — this only ever covers the run
+# the job belongs to.
+_DIGEST_BOUND_SUFFIXES = ("/%s.baseline", "/preexisting/%s.txt")
+
+
+def run_dir_owned_by_name(rel, run_dir_rel, job_id):
+    """True iff ``rel`` is pipeline-owned in THIS run dir and exempt by name."""
+    if not run_dir_rel:
+        return False
+    prefix = run_dir_rel.rstrip("/") + "/"
+    if not rel.startswith(prefix):
+        return False
+    if rel == "%sjobs/%s.baseline" % (prefix, job_id):
+        return False
+    if rel == "%spreexisting/%s.txt" % (prefix, job_id):
+        return False
+    return True
 
 
 def _preexisting_snapshot(root, python_bin):
@@ -1941,6 +1989,30 @@ def cmd_gate_receipt(argv):
             # `--preexisting` takes a plain path list, so the verified subset is
             # materialised next to the snapshot rather than handed over whole.
             kept = read_preexisting_unchanged(candidate, root)
+            # Plus everything the pipeline owns in THIS run directory, by name.
+            # `state.json` is shared — a sibling job's Record rewrites it between
+            # this job registering and its gate running, so a digest taken at
+            # register time can never match again — and `<id>.verified.txt` is
+            # written by this very block, after registration. Both were violations
+            # until dogfood 10 ran a two-wave direct-mode job and blocked its own
+            # reviewer over them. The two levers a worker could actually pull —
+            # `jobs/<id>.baseline` and `preexisting/<id>.txt` — are excluded from
+            # this by-name pass and stay digest-bound.
+            run_rel = os.path.relpath(os.path.abspath(args.run_dir),
+                                      os.path.abspath(root))
+            if not run_rel.startswith(".." + os.sep):
+                run_rel = run_rel.replace(os.sep, "/")
+                seen = set(kept)
+                for dirpath, _dn, filenames in os.walk(args.run_dir):
+                    for name in filenames:
+                        rel = os.path.relpath(
+                            os.path.abspath(os.path.join(dirpath, name)),
+                            os.path.abspath(root)).replace(os.sep, "/")
+                        if rel in seen:
+                            continue
+                        if run_dir_owned_by_name(rel, run_rel, args.job_id):
+                            kept.append(rel)
+                            seen.add(rel)
             verified = os.path.join(args.run_dir, "preexisting",
                                     "%s.verified.txt" % args.job_id)
             _atomic_write(verified, "\n".join(kept) + ("\n" if kept else ""))
@@ -3469,6 +3541,43 @@ def selftest():
                        for l in snap_lines)
                    for dp, _dn, fns in os.walk(bk_run) for fn in fns),
                str(snap_lines))
+        # 3.3.0 (dogfood 10): shared pipeline state is exempt BY NAME, because the
+        # pipeline itself rewrites it mid-run; the two levers stay digest-bound.
+        _check("state.json is pipeline-owned and exempt by name",
+               run_dir_owned_by_name("docs/superpowers/execution/bk/state.json",
+                                     "docs/superpowers/execution/bk", "d1") is True)
+        _check("the gate's own verified list is exempt by name",
+               run_dir_owned_by_name(
+                   "docs/superpowers/execution/bk/preexisting/d1.verified.txt",
+                   "docs/superpowers/execution/bk", "d1") is True)
+        _check("the BASELINE PIN is never exempt by name",
+               run_dir_owned_by_name(
+                   "docs/superpowers/execution/bk/jobs/d1.baseline",
+                   "docs/superpowers/execution/bk", "d1") is False)
+        _check("the exemption LIST itself is never exempt by name",
+               run_dir_owned_by_name(
+                   "docs/superpowers/execution/bk/preexisting/d1.txt",
+                   "docs/superpowers/execution/bk", "d1") is False)
+        _check("another run's directory is never pipeline-owned here",
+               run_dir_owned_by_name("docs/superpowers/execution/OTHER/state.json",
+                                     "docs/superpowers/execution/bk", "d1") is False)
+        _check("a path outside any run dir is never pipeline-owned",
+               run_dir_owned_by_name("src/app.py",
+                                     "docs/superpowers/execution/bk", "d1") is False)
+        # A DIRECTORY entry must survive the snapshot: git reports an untracked
+        # directory as one entry, and the digest-only version dropped every one —
+        # fifteen leftover harness worktrees came back as violations.
+        _dsnap = os.path.join(tmp, "dirsnap.txt")
+        os.makedirs(os.path.join(bk_repo, "leftover"), exist_ok=True)
+        write_preexisting(_dsnap, bk_repo, ["leftover/", "seed.txt"])
+        _dkept = read_preexisting_unchanged(_dsnap, bk_repo)
+        _check("a directory entry survives the snapshot as a by-name exemption",
+               "leftover/" in _dkept, str(_dkept))
+        _check("...and a real file alongside it is still digest-bound",
+               "seed.txt" in _dkept
+               and any(l.startswith("dir  ") for l in
+                       open(_dsnap, encoding="utf-8").read().splitlines()))
+
         _check("a file the WORKER adds later is NOT exempt",
                "receipts/d1.gate.json" not in "\n".join(snap_lines))
         # CRITICAL, from a cross-model review: an exemption by NAME lets a worker

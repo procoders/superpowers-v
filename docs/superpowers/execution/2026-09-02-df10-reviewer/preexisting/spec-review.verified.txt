@@ -1,0 +1,16 @@
+docs/superpowers/execution/2026-09-02-df10-reviewer/.run.lock
+docs/superpowers/execution/2026-09-02-df10-reviewer/jobs/impl-slice.baseline
+docs/superpowers/execution/2026-09-02-df10-reviewer/jobs/impl-slice.test-contract.json
+docs/superpowers/execution/2026-09-02-df10-reviewer/lane-map.json
+docs/superpowers/execution/2026-09-02-df10-reviewer/receipts/impl-slice.gate.json
+docs/superpowers/execution/2026-09-02-df10-reviewer/results/impl-slice.json
+scripts/__pycache__/compound-v-integration-gate.cpython-314.pyc
+scripts/__pycache__/compound-v-validate-manifest.cpython-314.pyc
+docs/superpowers/execution/2026-09-02-df10-reviewer/dispatch.workflow.js
+docs/superpowers/execution/2026-09-02-df10-reviewer/jobs/impl-slice.prompt.md
+docs/superpowers/execution/2026-09-02-df10-reviewer/jobs/spec-review.baseline
+docs/superpowers/execution/2026-09-02-df10-reviewer/jobs/spec-review.prompt.md
+docs/superpowers/execution/2026-09-02-df10-reviewer/jobs/spec-review.test-contract.json
+docs/superpowers/execution/2026-09-02-df10-reviewer/manifest.yaml
+docs/superpowers/execution/2026-09-02-df10-reviewer/plan.md
+docs/superpowers/execution/2026-09-02-df10-reviewer/spec.md
