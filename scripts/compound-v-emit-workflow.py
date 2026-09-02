@@ -2475,7 +2475,25 @@ def cmd_record(argv):
             # and this project has now made that same mistake three times: `no_work`
             # dressed as a fourth verdict (3.0.4), a moved HEAD dressed as `forged`
             # (3.3.0), and this.
-            if job.get("write_allowed"):
+            # ...AND the gate must also have seen no changes. A verdict that
+            # reports changed files but no worktree is a genuine locator fault
+            # wearing the no-work shape, and recording it as "the job did nothing"
+            # would mask broken machinery as a job failure — the inverse of the
+            # mistake being fixed here, and the more dangerous direction.
+            try:
+                _rawtext = verdict.get("raw_stdout") or ""
+                _raw = json.loads(_rawtext) if _rawtext.strip() else None
+            except Exception:  # noqa: BLE001
+                _raw = None
+            # BOTH shapes. The real receipt carries `changed` inside `raw_stdout`
+            # (which is what `_job_result_from` reads), but a caller may hand the
+            # verdict with it at the top level, and a guard that only looks in one
+            # place is a guard that can be walked around by the other. Its own test
+            # caught exactly that: the fixture used the top-level shape and the
+            # guard, reading only raw_stdout, waved it through.
+            _saw_changes = bool((_raw or {}).get("changed")
+                                or (verdict or {}).get("changed"))
+            if job.get("write_allowed") and not _saw_changes:
                 ack["no_work"] = True
                 ack["reason"] = (
                     "job %r declared %d write lane(s) and left no observable "
@@ -2493,10 +2511,13 @@ def cmd_record(argv):
             else:
                 ack["reason"] = (
                     "the gate verdict for worktree job %r carries no observed "
-                    "`worktree`, and the job declares no write lanes, so this is a "
-                    "locator failure rather than a job that did nothing. Record will "
-                    "not reconstruct one from lane-map.json — that map holds the "
-                    "wrapper agent's cwd — so this fails closed" % job_id
+                    "`worktree`%s, so this is a locator failure rather than a job "
+                    "that did nothing. Record will not reconstruct one from "
+                    "lane-map.json — that map holds the wrapper agent's cwd — so "
+                    "this fails closed"
+                    % (job_id,
+                       " even though it reports changed files"
+                       if _saw_changes else " and it declares no write lanes")
                 )
                 print(json.dumps(ack, indent=2, sort_keys=True))
                 return 2
@@ -3353,6 +3374,12 @@ def selftest():
                   "jobs": [{"id": "j-lanes", "backend": "claude", "tier": "light",
                             "isolation": "worktree",
                             "write_allowed": ["docs/x/**"]},
+                           {"id": "j-lanes2", "backend": "claude", "tier": "light",
+                            "isolation": "worktree",
+                            "write_allowed": ["docs/x/**"]},
+                           {"id": "j-lanes3", "backend": "claude", "tier": "light",
+                            "isolation": "worktree",
+                            "write_allowed": ["docs/x/**"]},
                            {"id": "j-review", "type": "review", "backend": "claude",
                             "tier": "deep", "isolation": "worktree",
                             "write_allowed": []}]}
@@ -3374,6 +3401,24 @@ def selftest():
                              "--verdict-json", nw_verdict])
         _check("a job with NO lanes still fails closed as a locator fault",
                rc_rev == 2, str(rc_rev))
+        # A verdict reporting CHANGES but no worktree is broken machinery wearing
+        # the no-work shape. Recording it as "the job did nothing" would mask a
+        # locator fault as a job failure — the more dangerous direction.
+        nw_changed = json.dumps({"verdict": "pass", "worktree": "",
+                                 "changed": ["docs/x/a.md"]})
+        rc_ch = cmd_record(["--run-dir", nw_run, "--job-id", "j-lanes2",
+                            "--manifest", nw_man_p, "--repo-root", tmp,
+                            "--verdict-json", nw_changed])
+        _check("changes but no worktree is still a locator fault, not no-work",
+               rc_ch == 2, str(rc_ch))
+        nw_changed_raw = json.dumps({
+            "verdict": "pass", "worktree": "",
+            "raw_stdout": json.dumps({"verdict": "pass",
+                                      "changed": ["docs/x/b.md"]})})
+        rc_ch2 = cmd_record(["--run-dir", nw_run, "--job-id", "j-lanes3",
+                             "--manifest", nw_man_p, "--repo-root", tmp,
+                             "--verdict-json", nw_changed_raw])
+        _check("...in the raw_stdout shape too", rc_ch2 == 2, str(rc_ch2))
 
         # ---- 3.3.0: register-lane's OWN files are not the job's work --------
         # Dogfood 2 blocked a dependent job for three files our own machinery

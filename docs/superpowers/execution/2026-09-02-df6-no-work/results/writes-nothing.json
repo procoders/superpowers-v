@@ -1,0 +1,12 @@
+{
+  "blocked": true,
+  "exit_code": 2,
+  "failure_class": null,
+  "files_changed": [],
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "blocked",
+  "summary": "gate root does not exist: /Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_d1707360-b37-1",
+  "violations": [],
+  "worktree": ""
+}
