@@ -1,0 +1,43 @@
+{
+  "baseline_commit": "378176031ebba7287d85fbe15d018ba4c25b3e47",
+  "diff_digest": "sha256:3d04c042fb1feebe68bcf50b05ebcce45fcc16ff11b876f444ca0cc078fb2277",
+  "exit_code": 0,
+  "job_id": "retried",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"378176031ebba7287d85fbe15d018ba4c25b3e47\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df9-escalation.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df9-escalation.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "378176031ebba7287d85fbe15d018ba4c25b3e47",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "docs/superpowers/dogfood/2026-09-02-df9-escalation.md"
+    ],
+    "checks": [
+      {
+        "checker": "/bin/echo floor-ok",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "/bin/echo scoped",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (1 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 1 command(s) from 1 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_b10e144b-06b-1"
+}

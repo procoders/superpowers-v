@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-02-df9-escalation.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "378176031ebba7287d85fbe15d018ba4c25b3e47",
+    "diff_digest": "sha256:3d04c042fb1feebe68bcf50b05ebcce45fcc16ff11b876f444ca0cc078fb2277",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"378176031ebba7287d85fbe15d018ba4c25b3e47\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df9-escalation.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df9-escalation.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "378176031ebba7287d85fbe15d018ba4c25b3e47",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Standard tier; escalates to opus on a re-attempt",
+  "tests": {
+    "command": "/bin/echo floor-ok\n/bin/echo scoped",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_b10e144b-06b-1"
+}

@@ -1,0 +1,31 @@
+{
+  "run_id": "2026-09-02-df9-escalation",
+  "phase": "DISPATCHED",
+  "jobs": {
+    "retried": {
+      "baseline": "378176031ebba7287d85fbe15d018ba4c25b3e47",
+      "isolation": "worktree",
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_b10e144b-06b-1",
+      "realised_commit": "378176031ebba7287d85fbe15d018ba4c25b3e47",
+      "status": "done",
+      "merged": {
+        "realised_commit": "378176031ebba7287d85fbe15d018ba4c25b3e47",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "02341caf3c4a3a40c28c302bc926be1366eb12b3"
+      }
+    }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "retried"
+      ],
+      "merged": [
+        "retried"
+      ],
+      "commit": "02341caf3c4a3a40c28c302bc926be1366eb12b3",
+      "integrated": true
+    }
+  }
+}
