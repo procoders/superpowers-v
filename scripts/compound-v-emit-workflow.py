@@ -531,6 +531,25 @@ def agent_definition(role, root=None):
     return {"model": model, "body": body.strip()}
 
 
+def _js_parses(script):
+    """True when `node --check` accepts the script, or when node is absent (the
+    check is then skipped, not passed). Twin of compound-v-emit-preflight.py's."""
+    import shutil, subprocess, tempfile
+    node = shutil.which("node")
+    if not node:
+        return True
+    with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False,
+                                     encoding="utf-8") as fh:
+        fh.write(script.replace("export const meta", "const meta", 1))
+        fh.write("\n")
+        name = fh.name
+    try:
+        r = subprocess.run([node, "--check", name], capture_output=True, text=True)
+        return r.returncode == 0
+    finally:
+        os.unlink(name)
+
+
 def _clamp_rules(job, python_bin, self_path, worker_script_for):
     """The bashCommandClamp for one job's IMPLEMENT agent.
 
@@ -1363,8 +1382,8 @@ function isAgentTypeMissing(err) {
 }
 function inlineDefinition(job, prompt) {
   return 'Your agent definition (' + job.agent_type + ') could not be spawned by role in ' +
-    'this session, so it follows verbatim. Follow it exactly, including its Step 0.\n\n' +
-    job.agent_definition.body + '\n\n---\n\n' + prompt;
+    'this session, so it follows verbatim. Follow it exactly, including its Step 0.\\n\\n' +
+    job.agent_definition.body + '\\n\\n---\\n\\n' + prompt;
 }
 
 async function implementStage(job) {
@@ -4950,6 +4969,8 @@ def selftest():
                < rev_script.index("async function gateStage"))
         _check("the fallback keeps the tier-resolved model when one was set",
                "if (!inl.model && job.agent_definition.model)" in rev_script)
+        _check("the emitted script PARSES as JavaScript (node --check; skipped without node)",
+               _js_parses(rev_script), "node --check rejected the emitted script")
 
         # --- the lane map under real CONCURRENCY -------------------------------
         # `_atomic_write` makes one write atomic and does nothing for the read

@@ -91,14 +91,8 @@ function isAgentTypeMissing(err) {
 }
 function inlineDefinition(e, prompt) {
   return 'Your agent definition (' + e.role + ') could not be spawned by role in this ' +
-    'session, so it follows verbatim. Follow it exactly, including its Step 0.
-
-' +
-    e.definition.body + '
-
----
-
-' + prompt;
+    'session, so it follows verbatim. Follow it exactly, including its Step 0.\n\n' +
+    e.definition.body + '\n\n---\n\n' + prompt;
 }
 
 const results = await parallel(CFG.entries.map(function (e) {

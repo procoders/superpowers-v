@@ -224,8 +224,8 @@ function isAgentTypeMissing(err) {
 }
 function inlineDefinition(e, prompt) {
   return 'Your agent definition (' + e.role + ') could not be spawned by role in this ' +
-    'session, so it follows verbatim. Follow it exactly, including its Step 0.\n\n' +
-    e.definition.body + '\n\n---\n\n' + prompt;
+    'session, so it follows verbatim. Follow it exactly, including its Step 0.\\n\\n' +
+    e.definition.body + '\\n\\n---\\n\\n' + prompt;
 }
 
 const results = await parallel(CFG.entries.map(function (e) {
@@ -369,6 +369,27 @@ def main(argv):
     return 0
 
 
+def _js_parses(script):
+    """True when `node --check` accepts the script, or when node is absent (then
+    the check is skipped, not passed — the caller's message says so)."""
+    import shutil, subprocess, tempfile
+    node = shutil.which("node")
+    if not node:
+        return True
+    with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False,
+                                     encoding="utf-8") as fh:
+        # Top-level await + `export const meta` need module syntax; the runtime
+        # wraps the script in an async module, so mirror that for the parse.
+        fh.write(script.replace("export const meta", "const meta", 1))
+        fh.write("\n")
+        name = fh.name
+    try:
+        r = subprocess.run([node, "--check", name], capture_output=True, text=True)
+        return r.returncode == 0
+    finally:
+        os.unlink(name)
+
+
 def _selftest():
     ok = fail = 0
 
@@ -420,6 +441,11 @@ def _selftest():
     check("no forbidden runtime constructs", forbidden_hits(script) == [],
           str(forbidden_hits(script)))
     check("uses parallel(), the documented barrier case", "await parallel(" in script)
+    # A substring assertion cannot see a broken string literal; the runtime can
+    # (2026-09-02: an escape typed at the wrong level shipped as an unterminated
+    # JS string and only the Workflow tool noticed). Parse it when node is here.
+    check("the emitted script PARSES as JavaScript (node --check; skipped without node)",
+          _js_parses(script), "node --check rejected the emitted script")
     check("the script retries ONCE without agentType on 'agent type not found', "
           "with the inlined definition and its model",
           "isAgentTypeMissing(spawnErr)" in script
