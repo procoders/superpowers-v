@@ -125,6 +125,36 @@ def agent_available(role, root=None):
     return os.path.exists(os.path.join(root or PLUGIN_ROOT, "agents", "%s.md" % role))
 
 
+def agent_definition(role, root=None):
+    """The agent's own definition, for the INLINE FALLBACK.
+
+    `agentType` selects a registered agent — and registration is a property of the
+    session, not of this repository. Dogfood 2026-09-02 (run wf_3b6697df-5e0): the
+    plugin was updated mid-session, its agents dropped out of the registry, and
+    every `agent({agentType})` spawn threw `agent type '...' not found` in 26 ms.
+    The emitted script therefore carries each role's definition verbatim and, on
+    exactly that error, retries once WITHOUT `agentType`: the definition body as
+    the prompt's preamble, the frontmatter `model` as `opts.model`, every other
+    option (schema, disallowedTools, clamp) unchanged. Returns
+    {"model": str|None, "body": str} or None when the file is absent.
+    """
+    path = os.path.join(root or PLUGIN_ROOT, "agents", "%s.md" % role)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    model, body = None, text
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) == 3:
+            fm, body = parts[1], parts[2]
+            for line in fm.splitlines():
+                if line.strip().startswith("model:"):
+                    model = line.split(":", 1)[1].strip() or None
+    return {"model": model, "body": body.strip()}
+
+
 def build_plan(spec_path, topic, today, skip=(), recon=None, root=None):
     """Everything the emitted script needs, as plain data."""
     name = plugin_name(root)
@@ -150,6 +180,7 @@ def build_plan(spec_path, topic, today, skip=(), recon=None, root=None):
             "phase": phase,
             "role": role,
             "agent_type": "%s:%s" % (name, role),
+            "definition": agent_definition(role, root),
             "out": "%s/%s-%s.md" % (outdir, today, slug),
             "purpose": purpose,
         })
@@ -184,6 +215,19 @@ const CFG = __CFG__;
 phase('Pre-flight');
 log('Auditing ' + CFG.spec_path + ' — ' + CFG.entries.length + ' pre-flight(s)');
 
+// The registry, not the repository, decides whether an agentType can spawn. When
+// it cannot (plugin updated mid-session, not installed, renamed), the auditor is
+// run from its inlined definition instead of not at all.
+function isAgentTypeMissing(err) {
+  const m = String(err && err.message ? err.message : err);
+  return /agent type '[^']*' not found/i.test(m);
+}
+function inlineDefinition(e, prompt) {
+  return 'Your agent definition (' + e.role + ') could not be spawned by role in this ' +
+    'session, so it follows verbatim. Follow it exactly, including its Step 0.\n\n' +
+    e.definition.body + '\n\n---\n\n' + prompt;
+}
+
 const results = await parallel(CFG.entries.map(function (e) {
   return async function () {
     if (e.skipped) {
@@ -202,7 +246,7 @@ const results = await parallel(CFG.entries.map(function (e) {
       'plan MUST honour. Report what you found, not what would be reassuring.';
 
     try {
-      const r = await agent(prompt, {
+      const opts = {
         label: e.phase + ' ' + e.role,
         phase: 'Pre-flight',
         schema: CFG.schema,
@@ -215,7 +259,24 @@ const results = await parallel(CFG.entries.map(function (e) {
         // through a clamp, because dogfood 24 proved it is denied without one.
         disallowedTools: CFG.disallowed,
         bashCommandClamp: CFG.clamp,
-      });
+      };
+      let r;
+      let inlined = false;
+      try {
+        r = await agent(prompt, opts);
+      } catch (spawnErr) {
+        if (!e.definition || !isAgentTypeMissing(spawnErr)) throw spawnErr;
+        log('Phase ' + e.phase + ': ' + e.agent_type + ' is not loaded in this session — ' +
+            'running the auditor from its inlined definition');
+        const inl = Object.assign({}, opts);
+        delete inl.agentType;
+        if (e.definition.model) inl.model = e.definition.model;
+        r = await agent(inlineDefinition(e, prompt), inl);
+        inlined = true;
+      }
+      if (r && inlined) {
+        r.notes = ((r.notes || '') + ' [spawned from the inlined definition, not by role]').trim();
+      }
       if (r === null || r === undefined) {
         log('Phase ' + e.phase + ' returned nothing');
         return { phase: e.phase, wrote: '', findings: 0, blocking: [],
@@ -336,6 +397,18 @@ def _selftest():
     check("agentType is not assembled from a directory name",
           all(e["agent_type"].split(":")[0] == plugin_name()
               for e in plan["entries"]))
+    # The inline fallback (dogfood wf_3b6697df-5e0: every by-role spawn threw
+    # `agent type ... not found` after a mid-session plugin update).
+    check("every entry carries its agent's definition for the inline fallback",
+          all(isinstance(e.get("definition"), dict) and e["definition"]["body"]
+              for e in plan["entries"]))
+    check("the definition carries the frontmatter model, so the fallback keeps "
+          "the role's model (sonnet scanners, opus judgment)",
+          {e["role"]: (e["definition"] or {}).get("model") for e in plan["entries"]}
+          == {"code-archaeologist": "sonnet", "domain-expert": "opus",
+              "doc-validator": "sonnet"})
+    check("a missing agent file yields no definition, not a guessed one",
+          agent_definition("no-such-agent") is None)
 
     skipped = build_plan("s.md", "t", "2026-01-02", skip=["1b"])
     check("--skip drops exactly that phase",
@@ -347,6 +420,14 @@ def _selftest():
     check("no forbidden runtime constructs", forbidden_hits(script) == [],
           str(forbidden_hits(script)))
     check("uses parallel(), the documented barrier case", "await parallel(" in script)
+    check("the script retries ONCE without agentType on 'agent type not found', "
+          "with the inlined definition and its model",
+          "isAgentTypeMissing(spawnErr)" in script
+          and "delete inl.agentType" in script
+          and "inl.model = e.definition.model" in script
+          and "inlineDefinition(e, prompt)" in script)
+    check("any OTHER spawn error is still surfaced, not swallowed by the fallback",
+          "if (!e.definition || !isAgentTypeMissing(spawnErr)) throw spawnErr;" in script)
     check("uses the native progress surface",
           "phase('Pre-flight')" in script and "log(" in script)
     check("spawns BY ROLE", "agentType: e.agent_type" in script)

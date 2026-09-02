@@ -498,6 +498,39 @@ def resolve_agent_type(job_type, plugin_dir=None):
     return "%s:%s" % (name.strip(), role), None
 
 
+PLUGIN_ROOT = os.path.dirname(HERE)
+
+
+def agent_definition(role, root=None):
+    """The agent's own definition, for the INLINE FALLBACK.
+
+    `agentType` selects a registered agent — and registration is a property of the
+    session, not of this repository. Dogfood 2026-09-02 (run wf_3b6697df-5e0): the
+    plugin was updated mid-session, its agents dropped out of the registry, and
+    every `agent({agentType})` spawn threw `agent type '...' not found` in 26 ms.
+    The emitted script therefore carries each role's definition verbatim and, on
+    exactly that error, retries once WITHOUT `agentType`: the definition body as
+    the prompt's preamble, the frontmatter `model` as `opts.model`, every other
+    option (schema, disallowedTools, clamp) unchanged. Returns
+    {"model": str|None, "body": str} or None when the file is absent.
+    """
+    path = os.path.join(root or PLUGIN_ROOT, "agents", "%s.md" % role)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    model, body = None, text
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) == 3:
+            fm, body = parts[1], parts[2]
+            for line in fm.splitlines():
+                if line.strip().startswith("model:"):
+                    model = line.split(":", 1)[1].strip() or None
+    return {"model": model, "body": body.strip()}
+
+
 def _clamp_rules(job, python_bin, self_path, worker_script_for):
     """The bashCommandClamp for one job's IMPLEMENT agent.
 
@@ -885,11 +918,15 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
         agent_type, agent_type_note = (None, None)
         if backend == "claude":
             agent_type, agent_type_note = resolve_agent_type(job.get("type"))
+        agent_def = None
+        if agent_type:
+            agent_def = agent_definition(AGENT_TYPE_BY_JOB_TYPE[(job.get("type") or "").strip()])
         entry = {
             "id": job_id,
             "job_type": job.get("type"),
             "agent_type": agent_type,
             "agent_type_note": agent_type_note,
+            "agent_definition": agent_def,
             "title": job.get("title") or job_id,
             "backend": backend,
             "tier": job.get("tier"),
@@ -1317,6 +1354,19 @@ function budgetAllows(n) {
 // ---------------------------------------------------------------------------
 // Stage 1 — Implement. Returns a RAW result, never a job_result.
 // ---------------------------------------------------------------------------
+// The registry, not the repository, decides whether an agentType can spawn. When it
+// cannot (plugin updated mid-session, not installed, renamed), the role is run from
+// its inlined definition instead of the job silently failing its Gate.
+function isAgentTypeMissing(err) {
+  const m = String(err && err.message ? err.message : err);
+  return /agent type '[^']*' not found/i.test(m);
+}
+function inlineDefinition(job, prompt) {
+  return 'Your agent definition (' + job.agent_type + ') could not be spawned by role in ' +
+    'this session, so it follows verbatim. Follow it exactly, including its Step 0.\n\n' +
+    job.agent_definition.body + '\n\n---\n\n' + prompt;
+}
+
 async function implementStage(job) {
   try {
     const p = CFG.prompts[job.id];
@@ -1340,7 +1390,18 @@ async function implementStage(job) {
     // `bashCommandClamp`, and every agent definition here declares no `tools:`
     // restriction, so spawning them by role would hand back the whole toolbox.
     if (job.agent_type) opts.agentType = job.agent_type;
-    const raw = await agent(p.implement, opts);
+    let raw;
+    try {
+      raw = await agent(p.implement, opts);
+    } catch (spawnErr) {
+      if (!job.agent_definition || !isAgentTypeMissing(spawnErr)) throw spawnErr;
+      log('implement ' + job.id + ': ' + job.agent_type + ' is not loaded in this session — ' +
+          'spawning from its inlined definition');
+      const inl = Object.assign({}, opts);
+      delete inl.agentType;
+      if (!inl.model && job.agent_definition.model) inl.model = job.agent_definition.model;
+      raw = await agent(inlineDefinition(job, p.implement), inl);
+    }
     return { job: job, implement: raw };
   } catch (e) {
     // A THROW here would drop the item and skip Gate AND Record — the v2.6.4
@@ -4872,6 +4933,23 @@ def selftest():
                .split("async function finalizeWave", 1)[0])
         _check("a throwing Implement stage no longer skips Gate AND Record",
                "return { job: job, implement: null };" in rev_script)
+        # The inline fallback (dogfood wf_3b6697df-5e0: every by-role spawn threw
+        # `agent type ... not found` after a mid-session plugin update).
+        _check("a by-role job carries its agent's definition for the inline fallback",
+               isinstance(rev_entries["rev"].get("agent_definition"), dict)
+               and bool(rev_entries["rev"]["agent_definition"]["body"])
+               and rev_entries["rev"]["agent_definition"]["model"] == "opus")
+        _check("an anonymous job carries no definition",
+               rev_entries["impl"].get("agent_definition") is None)
+        _check("Implement retries ONCE without agentType on 'agent type not found', "
+               "inside its own try so Gate and Record still run",
+               "isAgentTypeMissing(spawnErr)" in rev_script
+               and "delete inl.agentType" in rev_script
+               and "inlineDefinition(job, p.implement)" in rev_script
+               and rev_script.index("isAgentTypeMissing(spawnErr)")
+               < rev_script.index("async function gateStage"))
+        _check("the fallback keeps the tier-resolved model when one was set",
+               "if (!inl.model && job.agent_definition.model)" in rev_script)
 
         # --- the lane map under real CONCURRENCY -------------------------------
         # `_atomic_write` makes one write atomic and does nothing for the read
