@@ -1,0 +1,11 @@
+{
+  "baseline_commit": "b221488c5120d24e9e10857be97b3b6d6526d028",
+  "diff_digest": "sha256:087468c3d75af01d83556ca85a345a5dcc83be82041679db47df7ea7dcdb133b",
+  "exit_code": 1,
+  "job_id": "spec-review",
+  "raw_stdout": "{\n  \"verdict\": \"blocked\",\n  \"mode\": \"direct\",\n  \"baseline\": \"b221488c5120d24e9e10857be97b3b6d6526d028\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df11-reviewer-retry-review.md\",\n    \"docs/superpowers/execution/2026-09-02-df11-reviewer-retry/preexisting/spec-review.txt\",\n    \"docs/superpowers/execution/2026-09-02-df11-reviewer-retry/preexisting/spec-review.verified.txt\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df11-reviewer-retry-review.md\"\n  ],\n  \"violations\": [\n    \"docs/superpowers/execution/2026-09-02-df11-reviewer-retry/preexisting/spec-review.txt\",\n    \"docs/superpowers/execution/2026-09-02-df11-reviewer-retry/preexisting/spec-review.verified.txt\"\n  ]\n}\n",
+  "realised_commit": "44adc5c24a1b3be8b3c5d095e3b4eddf4b22b1c0",
+  "source": "gate-receipt",
+  "verdict": "blocked",
+  "worktree": ""
+}

@@ -1760,11 +1760,27 @@ def read_preexisting_unchanged(snapshot_path, repo_root):
     return keep
 
 
-# The pipeline's own files inside a run directory. Two of them are LEVERS a worker
-# could pull to hide its writes, and those stay digest-bound no matter what:
+# The pipeline's own files inside a run directory. ONE of them is a lever a worker
+# could pull, and it stays digest-bound no matter what:
 #
 #   jobs/<id>.baseline     the commit the gate measures against
-#   preexisting/<id>.txt   the exemption list itself
+#
+# THE EXEMPTION LIST ITSELF CANNOT BE DIGEST-BOUND, and pretending otherwise cost
+# two dogfood runs. `preexisting/<id>.txt` records digests INCLUDING ITS OWN, then
+# gets appended to by the run-directory listing; and `<id>.verified.txt` is written
+# by the gate after the listing is built, so it can never appear in it. Both are
+# self-referential: a list written by the exemption machinery cannot be exempted by
+# a list computed before it exists.
+#
+# So both are exempt by name, and the honest statement of the limit is this: in
+# `direct` mode the worker can write anywhere in the tree, so NO file-based
+# exemption list is tamper-proof — a digest-bound one stored in the same writable
+# tree is not either. What actually backstops this is
+# `compound-v-integration-gate.py`, which re-derives the diff from git and refuses a
+# receipt whose bindings disagree, and the baseline pin above, which is the one
+# value a forged exemption cannot help with. The cross-model review was right that
+# names alone are weak; it is equally true that digests in a writable tree are not
+# strong. The architecture's answer is the authority, not the list.
 #
 # Everything else in the run directory is pipeline territory that the pipeline
 # legitimately rewrites DURING the run — `state.json` is shared, so a sibling job's
@@ -1787,8 +1803,6 @@ def run_dir_owned_by_name(rel, run_dir_rel, job_id):
     if not rel.startswith(prefix):
         return False
     if rel == "%sjobs/%s.baseline" % (prefix, job_id):
-        return False
-    if rel == "%spreexisting/%s.txt" % (prefix, job_id):
         return False
     return True
 
@@ -3595,9 +3609,13 @@ def selftest():
                run_dir_owned_by_name(
                    "docs/superpowers/execution/bk/jobs/d1.baseline",
                    "docs/superpowers/execution/bk", "d1") is False)
-        _check("the exemption LIST itself is never exempt by name",
+        _check("the exemption list IS exempt by name — it cannot bind itself",
                run_dir_owned_by_name(
                    "docs/superpowers/execution/bk/preexisting/d1.txt",
+                   "docs/superpowers/execution/bk", "d1") is True)
+        _check("the BASELINE PIN remains the one digest-bound lever",
+               run_dir_owned_by_name(
+                   "docs/superpowers/execution/bk/jobs/d1.baseline",
                    "docs/superpowers/execution/bk", "d1") is False)
         _check("another run's directory is never pipeline-owned here",
                run_dir_owned_by_name("docs/superpowers/execution/OTHER/state.json",
