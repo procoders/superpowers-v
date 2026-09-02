@@ -590,14 +590,66 @@ def evaluate_job(job, state_job, run_dir, repo_root, scope_check):
         # combination is written only by a finalizer that already ran this authority
         # over the job and got a pass, so this is not a shortcut around the check —
         # it is the record OF the check.
+        # A RECORDED MERGE IS A CLAIM, NOT A PROOF — and this branch treated it as
+        # one. A cross-model review pointed out that `state.json` is exempt by name
+        # and writable by a direct worker, so any truthy `integrated` + `commit`
+        # bought a `pass` BEFORE receipt, baseline, digest, result or scope were
+        # checked. The commit did not even have to exist.
+        #
+        # It must still exist, be reachable from HEAD, and actually contain this
+        # job's declared lanes — three things a worker cannot fabricate by editing a
+        # JSON file, because they are git's answer and not ours. Anything less is
+        # `unverifiable`: the honest word for "the tree that would prove this is
+        # gone".
         _m = (state_job or {}).get("merged") or {}
-        if _m.get("integrated") and _m.get("commit"):
-            out["verdict"] = "pass"
-            out["receipt"] = "merged"
-            out["notes"].append(
-                "gate root is gone because this job was merged as %s and its "
-                "worktree retired; the recorded integration is the evidence"
-                % str(_m.get("commit"))[:12]
+        _commit = str(_m.get("commit") or "").strip()
+        if _m.get("integrated") and re.match(r"^[0-9a-f]{7,40}$", _commit):
+            rc_e, _o, _e = _git_text(repo_root, ["cat-file", "-e", _commit + "^{commit}"])
+            rc_a, _o2, _e2 = _git_text(repo_root, ["merge-base", "--is-ancestor",
+                                                   _commit, "HEAD"])
+            touched = set()
+            if rc_e == 0:
+                rc_s, out_s, _ = _git_text(
+                    repo_root, ["show", "--name-only", "--pretty=format:", _commit])
+                if rc_s == 0:
+                    touched = {p.strip() for p in out_s.splitlines() if p.strip()}
+            allow_globs = job.get("write_allowed") or []
+            # The SAME matcher the scope gate uses — never a second one. A
+            # verifier that matches differently from the gate is a verifier that
+            # can disagree with it for reasons neither of them is about.
+            _sc = None
+            try:
+                import importlib.util as _ilu
+                _spec = _ilu.spec_from_file_location("cv_scope_check", scope_check)
+                if _spec and _spec.loader:
+                    _sc = _ilu.module_from_spec(_spec)
+                    _spec.loader.exec_module(_sc)
+            except Exception:  # noqa: BLE001
+                _sc = None
+            _m_fn = getattr(_sc, "is_allowed", None) if _sc else None
+            if _m_fn is None:
+                in_lane = False
+                out["notes"].append(
+                    "could not load the scope matcher to check the merge's lanes")
+            else:
+                in_lane = bool(touched) and any(_m_fn(p, allow_globs)
+                                                for p in touched)
+            if rc_e == 0 and rc_a == 0 and in_lane:
+                out["verdict"] = "pass"
+                out["receipt"] = "merged"
+                out["notes"].append(
+                    "gate root is gone because this job was merged as %s, which "
+                    "EXISTS, is an ancestor of HEAD, and touches this job's declared "
+                    "lanes — verified from git, not from state.json" % _commit[:12]
+                )
+                return out
+            out["verdict"] = "unverifiable"
+            out["reasons"].append(
+                "state.json claims this job merged as %s but git does not confirm "
+                "it (exists=%s ancestor-of-HEAD=%s touches-its-lanes=%s). A recorded "
+                "merge is a claim; state.json is writable by a direct worker, so it "
+                "cannot prove one." % (_commit[:12] or "?", rc_e == 0, rc_a == 0,
+                                       in_lane)
             )
             return out
         out["verdict"] = "unverifiable"
@@ -1311,15 +1363,32 @@ def _selftest():
                                                           allow)))
         with open(os.path.join(run_r, "state.json")) as fh:
             st_r = json.load(fh)
-        st_r["jobs"]["job-a"]["merged"] = {"integrated": True, "commit": "a" * 40}
+        # A REAL merge: the commit must exist, be an ancestor of HEAD, and touch
+        # this job's declared lanes. A fabricated sha is the thing being excluded.
+        write(repo, "scripts/allowed.py", "merged for real\n")
+        _sh(repo, "git", "add", "-A")
+        _sh(repo, "git", "commit", "-q", "-m", "wave merged")
+        rc_h, real_sha, _ = _git_text(repo, ["rev-parse", "HEAD"])
+        real_sha = real_sha.strip()
+        st_r["jobs"]["job-a"]["merged"] = {"integrated": True, "commit": real_sha}
         with open(os.path.join(run_r, "state.json"), "w") as fh:
             json.dump(st_r, fh)
         shutil.rmtree(wt_r, ignore_errors=True)
         rep_r = evaluate_run(run_r, repo, scope_check)
-        expect("a merged job whose worktree was retired reads pass, not unverifiable",
+        expect("a REAL merge whose worktree was retired reads pass",
                rep_r["results"][0]["verdict"] == "pass")
-        expect("...and says the recorded integration is the evidence",
-               any("worktree retired" in n for n in rep_r["results"][0]["notes"]))
+        expect("...and says git confirmed it, not state.json",
+               any("verified from git" in n for n in rep_r["results"][0]["notes"]))
+        # HIGH from round 3: state.json is worker-writable, so a claimed merge with
+        # a fabricated sha must NOT buy a pass before anything is verified.
+        st_r["jobs"]["job-a"]["merged"] = {"integrated": True, "commit": "a" * 40}
+        with open(os.path.join(run_r, "state.json"), "w") as fh:
+            json.dump(st_r, fh)
+        rep_f = evaluate_run(run_r, repo, scope_check)
+        expect("a FABRICATED merge commit is unverifiable, never pass",
+               rep_f["results"][0]["verdict"] == "unverifiable")
+        expect("...and says a recorded merge is a claim, not a proof",
+               any("is a claim" in r for r in rep_f["results"][0]["reasons"]))
         wt_u, run_u = fresh_case("retired-unmerged",
                                  lambda w: write(w, "scripts/allowed.py", "1\n"))
         _put_result(run_u, "job-a",

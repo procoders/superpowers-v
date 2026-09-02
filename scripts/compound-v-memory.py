@@ -282,9 +282,36 @@ def is_generated_run_artifact(rel: str) -> bool:
     # <run>/jobs/<job>.prompt.md — rendered by render_worker_prompt()
     if len(rest) == 2 and rest[0] == "jobs" and rest[1].endswith(".prompt.md"):
         return True
-    # <run>/spec.md and <run>/plan.md — the manifest's spec_path/plan_path point at
-    # the real ones; these are the run's local copies or stubs.
-    return len(rest) == 1 and rest[0] in ("spec.md", "plan.md")
+    # <run>/spec.md and <run>/plan.md are the run's local copies ONLY when the
+    # manifest points its spec_path/plan_path somewhere else. When it points HERE,
+    # this file IS the spec and excluding it would delete real prose from recall on
+    # the strength of its pathname — a cross-model review's point, and correct: the
+    # comment said "usually", which means not always.
+    if len(rest) == 1 and rest[0] in ("spec.md", "plan.md"):
+        key = "spec_path" if rest[0] == "spec.md" else "plan_path"
+        manifest = os.path.join(os.path.dirname(rel), "manifest.yaml")
+        pointer = _manifest_pointer(manifest, key)
+        if pointer is None:
+            return True          # no manifest to ask: it is a run-dir copy
+        return os.path.normpath(pointer) != os.path.normpath(rel)
+    return False
+
+
+def _manifest_pointer(manifest_rel, key):
+    """The manifest's `spec_path` / `plan_path`, or None when it cannot be read.
+
+    Deliberately a line scan and not a YAML parse: this runs during indexing, the
+    two keys are top-level scalars in every manifest this project writes, and a
+    parser failure must not decide whether real prose is recallable.
+    """
+    try:
+        with open(manifest_rel, "r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith(key + ":"):
+                    return line.split(":", 1)[1].strip().strip("'\"")
+    except OSError:
+        return None
+    return None
 
 
 def tracked_files(root: str):
@@ -1291,10 +1318,29 @@ def _selftest() -> int:
     D = DOCS_REL.rstrip("/")
     check("worker prompt is generated",
           is_generated_run_artifact(D + "/execution/r1/jobs/impl.prompt.md"))
-    check("run-dir spec stub is generated",
-          is_generated_run_artifact(D + "/execution/r1/spec.md"))
-    check("run-dir plan stub is generated",
-          is_generated_run_artifact(D + "/execution/r1/plan.md"))
+    # A run-dir spec is generated only when the manifest points ELSEWHERE.
+    import tempfile as _tf
+    _cwd0 = os.getcwd()
+    with _tf.TemporaryDirectory() as _td:
+        os.chdir(_td)
+        try:
+            _rd = os.path.join(D, "execution", "r1")
+            os.makedirs(_rd, exist_ok=True)
+            with open(os.path.join(_rd, "manifest.yaml"), "w") as fh:
+                fh.write("spec_path: %s/specs/real-design.md\nplan_path: %s/plans/p.md\n"
+                         % (D, D))
+            check("a run-dir spec is generated when the manifest points elsewhere",
+                  is_generated_run_artifact(D + "/execution/r1/spec.md"))
+            check("...and so is the plan",
+                  is_generated_run_artifact(D + "/execution/r1/plan.md"))
+            with open(os.path.join(_rd, "manifest.yaml"), "w") as fh:
+                fh.write("spec_path: %s/execution/r1/spec.md\n" % D)
+            check("a run-dir spec the manifest POINTS AT is real prose, not generated",
+                  not is_generated_run_artifact(D + "/execution/r1/spec.md"))
+        finally:
+            os.chdir(_cwd0)
+    check("with no manifest to ask, a run-dir stub is still generated",
+          is_generated_run_artifact(D + "/execution/no-such-run/spec.md"))
     check("a real spec is NOT generated",
           not is_generated_run_artifact(D + "/specs/2026-01-01-thing-design.md"))
     check("a dogfood record is NOT generated",

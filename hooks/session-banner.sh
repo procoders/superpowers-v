@@ -64,9 +64,25 @@ fi
 # two characters need escaping for a JSON string built from our own banner text —
 # backslash and double quote — plus the control characters a banner never carries
 # but a pasted run-id could.
+# NEWLINE AND CARRIAGE RETURN ARE THE TWO THAT MATTER, and the first version of
+# this function deleted every control byte EXCEPT those two — so a banner carrying
+# a newline emitted a literal LF inside a JSON string, which is invalid JSON. A
+# cross-model review probed it byte-for-byte; the comment claiming control
+# characters were handled was false.
+#
+# python3 is already a hard dependency of this hook's own resume query, so the
+# escaping is done by the one thing on this machine that is definitionally correct
+# about JSON. The sed path remains only for a machine with no python3 at all, and
+# it now escapes LF and CR rather than passing them through.
 _json_escape() {
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s' "$1" | python3 -c 'import json,sys; s=json.dumps(sys.stdin.read()); sys.stdout.write(s[1:-1])'
+    return
+  fi
   printf '%s' "$1" | LC_ALL=C sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' \
-    -e 's/\t/\\t/g' | LC_ALL=C tr -d '\000-\010\013\014\016-\037'
+    -e 's/\t/\\t/g' -e 's/\r/\\r/g' \
+    | LC_ALL=C awk 'NR>1{printf "\\n"} {printf "%s", $0}' \
+    | LC_ALL=C tr -d '\000-\010\013\014\016-\037'
 }
 
 _emit_json() {

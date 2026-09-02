@@ -726,13 +726,37 @@ def render_worker_prompt(job, run_id):
         # this pipeline has — the scope gate checks WHICH files changed, never what
         # they say. Refusing here is the mechanism that would have caught the
         # dropped `body` on its first run instead of its twenty-fifth.
-        raise ValueError(
-            "job %r carries no task text: none of `body`, `description`, `prompt` "
-            "or `spec` is set. A worker prompt with lanes but no instructions asks "
-            "the worker to invent the task, and an invented task that stays in its "
-            "lane passes the scope gate — which is how this went unnoticed for "
-            "twenty-five runs." % job.get("id")
-        )
+        # A TITLE PLUS ACCEPTANCE CRITERIA IS A TASK. A cross-model review was
+        # right that the first version of this refusal broke manifest shapes that
+        # were valid before it, and right about the tell: the fixtures were made to
+        # pass by injecting synthetic `body` strings rather than by showing the
+        # contract required one. This function RENDERS the title and the acceptance
+        # list itself, so a job carrying both is not a job with no instructions.
+        #
+        # What stays refused is the shape that actually caused the damage: lanes and
+        # a title and NOTHING to check the work against. That is the prompt a worker
+        # has to invent a task from, and an invented task inside its lane passes
+        # every gate here.
+        acceptance = [a for a in (job.get("acceptance") or [])
+                      if isinstance(a, str) and a.strip()]
+        title = str(job.get("title") or "").strip()
+        if title and acceptance:
+            lines += ["_No `body` was declared. The title above and the acceptance "
+                      "criteria below are the whole of this task; if they are not "
+                      "enough to act on, report BLOCKED rather than inventing "
+                      "scope._", ""]
+        else:
+            raise ValueError(
+                "job %r carries no task text and no title+acceptance to stand in "
+                "for one: none of `body`, `description`, `prompt` or `spec` is set, "
+                "and %s. A prompt with lanes and nothing to check the work against "
+                "asks the worker to invent the task, and an invented task that "
+                "stays in its lane passes the scope gate — which is how this went "
+                "unnoticed for twenty-five runs."
+                % (job.get("id"),
+                   "the title is empty" if not title
+                   else "no acceptance criteria are declared")
+            )
     deps = job.get("depends_on") or []
     if isinstance(deps, str):
         deps = [deps]
@@ -1795,11 +1819,13 @@ def write_preexisting(snapshot_path, repo_root, paths):
 def read_preexisting_unchanged(snapshot_path, repo_root):
     """The exempt paths whose bytes still match the digest recorded at register time.
 
-    Accepts the legacy path-only format too — a line with no digest is a snapshot
-    written before 3.3.0, and is honoured as a bare path so an in-flight run from an
-    older version still resolves. Nothing new writes that shape.
+    A line with no digest is DROPPED, loudly. It used to be honoured as a legacy
+    bare path, which let a worker append one and exempt any file it liked — the
+    lane-widening chain in the comment below. Nothing this project writes produces
+    that shape, and an old snapshot that exempts nothing fails closed.
     """
     keep = []
+    skipped_legacy = []
     try:
         with open(snapshot_path, "r", encoding="utf-8") as fh:
             raw = [ln.rstrip("\n") for ln in fh]
@@ -1817,7 +1843,29 @@ def read_preexisting_unchanged(snapshot_path, repo_root):
         elif len(parts) == 2 and parts[0] == "dir":
             keep.append(parts[1].strip())      # by-name: see write_preexisting
         else:
-            keep.append(line)          # legacy path-only line
+            # A LINE WITHOUT A DIGEST IS NOT AN EXEMPTION, and accepting one was a
+            # full attack chain. A cross-model review walked it: a direct worker
+            # writes out of lane, edits `manifest.yaml` to widen `write_allowed`,
+            # then appends a bare `manifest.yaml` line here. This branch accepted
+            # it as "legacy", the manifest became exempt, the gate loaded the
+            # WIDENED manifest, the digest excluded the run directory so both
+            # forgeries were invisible, and the authority independently derived the
+            # same false pass from the same widened manifest. The out-of-lane write
+            # was then committed.
+            #
+            # The comments above this function claimed that attack was closed. It
+            # was not, and backward compatibility for a format that shipped the same
+            # day is not worth a lane-widening hole. An unparsable line is DROPPED:
+            # a snapshot written by an older build simply exempts nothing, which
+            # blocks loudly instead of passing quietly.
+            skipped_legacy.append(line)
+    if skipped_legacy:
+        sys.stderr.write(
+            "compound-v: ignored %d exemption line(s) with no digest in %s — "
+            "an exemption without a digest cannot be trusted (see the comment "
+            "above read_preexisting_unchanged)\n"
+            % (len(skipped_legacy), snapshot_path)
+        )
     return keep
 
 
@@ -2581,6 +2629,12 @@ def _job_result_from(verdict, job, state_job, tests=None, contract=None,
         t_exit = tests_block.get("exit_code")
         if isinstance(t_exit, int) and not isinstance(t_exit, bool) and t_exit != 0:
             status = "blocked"
+            # The schema's required `blocked` boolean must follow the FINAL status,
+            # not the gate verdict it was derived from. A scope-pass/test-fail
+            # result emitted {"status": "blocked", "blocked": false} — the
+            # finalizer reads `status` and refused correctly, but every other
+            # consumer of the boolean got the opposite conclusion.
+            pass
 
     # The three REQUIRED fields below are typed `string`/`string`/`integer` in the
     # schema, with the empty string and 0 documented as their own "not applicable"
@@ -2607,7 +2661,11 @@ def _job_result_from(verdict, job, state_job, tests=None, contract=None,
 
     result = {
         "status": status,
-        "blocked": gate_verdict == "blocked",
+        # Follows the FINAL status, not the gate verdict it started from: a
+        # scope-pass/test-fail result emitted {"status": "blocked",
+        # "blocked": false}, and every consumer of the boolean got the opposite
+        # conclusion from the one the finalizer acted on.
+        "blocked": status == "blocked",
         "files_changed": changed,
         "violations": violations,
         "summary": verdict.get("reason") or (job.get("title") or job.get("id") or ""),
@@ -3795,6 +3853,17 @@ def selftest():
                "idempotent re-finalize" in _out_idem["reason"])
         _ = _fw
 
+        _check("the `blocked` boolean follows the FINAL status, not the verdict",
+               _job_result_from({"verdict": "pass", "exit_code": 0,
+                                 "raw_stdout": json.dumps({"verdict": "pass",
+                                                           "changed": ["d/a.md"]}),
+                                 "worktree": "/tmp/wt"},
+                                {"id": "j", "backend": "claude",
+                                 "write_allowed": ["d/**"]},
+                                {}, tests={"phase": "floor", "passed": False,
+                                           "checks": [{"checker": "x", "rc": 3}],
+                                           "failures": ["x"]})["blocked"] is True)
+
         _check("a passing scope gate with a RED floor is blocked, not success",
                _jr_red["status"] == "blocked", str(_jr_red["status"]))
         _check("...and the failing command is still recorded",
@@ -4030,8 +4099,23 @@ def selftest():
                                   "write_allowed": ["a/**"]}, "r")
         except ValueError as _e:
             _refused = "no task text" in str(_e)
-        _check("a job with NO task text is refused, not silently emitted",
-               _refused)
+        _check("lanes + a title and NOTHING to check against is refused", _refused)
+        # ...but a title WITH acceptance criteria is a task, and was valid before
+        # this refusal existed. Round 3 was right that the first version broke it.
+        _ta = render_worker_prompt({"id": "j", "title": "Rename getUser",
+                                    "acceptance": ["every call site updated"],
+                                    "write_allowed": ["a/**"]}, "r")
+        _check("a title PLUS acceptance criteria is accepted as the task",
+               "Rename getUser" in _ta and "every call site updated" in _ta)
+        _check("...and the prompt says so, so the worker does not invent scope",
+               "report BLOCKED rather than inventing scope" in _ta)
+        _refused2 = False
+        try:
+            render_worker_prompt({"id": "j", "acceptance": ["x"],
+                                  "write_allowed": ["a/**"]}, "r")
+        except ValueError:
+            _refused2 = True
+        _check("acceptance with NO title is still refused", _refused2)
 
         _check("the clamp admits the read-only recall search",
                any("compound-v-memory.py search:*" in r for r in (_cl or [])),

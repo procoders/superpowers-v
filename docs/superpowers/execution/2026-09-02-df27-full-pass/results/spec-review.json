@@ -1,0 +1,25 @@
+{
+  "blocked": true,
+  "exit_code": 1,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-02-df27-full-pass-review.md",
+    "scripts/compound-v-emit-workflow.py"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "0291e53bad0d7d555e21ee5cdb6b5ac1950d8615",
+    "diff_digest": "sha256:a483d15ee359a5872490d089e97c64b4403a2041e3d415ffc4221015e73f03e2",
+    "exit_code": 1,
+    "raw_stdout": "{\n  \"verdict\": \"blocked\",\n  \"mode\": \"direct\",\n  \"baseline\": \"0291e53bad0d7d555e21ee5cdb6b5ac1950d8615\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df27-full-pass-review.md\",\n    \"scripts/compound-v-emit-workflow.py\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df27-full-pass-review.md\"\n  ],\n  \"violations\": [\n    \"scripts/compound-v-emit-workflow.py\"\n  ]\n}\n",
+    "realised_commit": "0291e53bad0d7d555e21ee5cdb6b5ac1950d8615",
+    "verdict": "blocked"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "blocked",
+  "summary": "Review job \u2014 spawned by role, must consult V-memory first",
+  "violations": [
+    "scripts/compound-v-emit-workflow.py"
+  ],
+  "worktree": ""
+}

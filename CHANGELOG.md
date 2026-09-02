@@ -4,6 +4,54 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [3.3.6] - 2026-09-02
+
+Cross-model review round 3, on everything the 26 live runs produced. Eight defects: one critical, two high, three medium, two low. Every one real, and two of them were comments in this repo asserting a property the code did not have.
+
+### Fixed — CRITICAL: a direct worker could widen its own lane and get the write committed
+
+The chain, as the review walked it:
+
+1. The worker writes `X`, outside its `write_allowed`.
+2. It edits `manifest.yaml` to add `X` to `write_allowed`.
+3. It appends a **bare** `manifest.yaml` path to `preexisting/<id>.txt`.
+4. `read_preexisting_unchanged` accepted that as a *legacy* line — no digest required.
+5. The manifest is now exempt, so the closed by-name list never gets a say.
+6. The gate loads the **widened** manifest and sees `X` as in-lane.
+7. The digest excludes the run directory, so both forgeries are invisible.
+8. The authority reloads the same widened manifest and independently derives the same false pass.
+9. `finalize-wave` commits `X`.
+
+The hole was backward compatibility for a format that shipped **the same day**. A line without a digest is now dropped, with a message on stderr: an old snapshot exempts nothing, which blocks loudly rather than passing quietly.
+
+### Fixed — HIGH: a recorded merge is a claim, and `state.json` is worker-writable
+
+The retired-worktree branch read `merged.integrated` and `merged.commit` from `state.json` — a file on the by-name exempt list — and returned `pass` **before** receipt, baseline, digest, result or scope were checked. The commit did not have to exist.
+
+It must now exist, be an ancestor of `HEAD`, and touch this job's declared lanes: three answers that come from git rather than from us, and none of them forgeable by editing JSON. The lane check uses the scope gate's **own** matcher, because a verifier that matches differently from the gate can disagree with it for reasons neither is about. Anything short of all three is `unverifiable`.
+
+### Fixed — HIGH: the pre-flight auditors had arbitrary shell and arbitrary writes
+
+`compound-v-emit-preflight.py` shipped yesterday with no `disallowedTools` and no clamp, while its own docstring said each auditor "writes ONE document into its own directory". `agentType` selects instructions; it enforces nothing.
+
+The review named the confusion exactly: *not removing the network* is not the same as *not narrowing at all*. The network stays — this is the research phase, and two of the three auditors are network-dependent by definition. What goes is the authority to change anything else: `Task` and `Agent` (an auditor that spawns is not an auditor), `SlashCommand`, `NotebookEdit`. `Bash` is admitted through a clamp for exactly one command — the recall query dogfood 24 proved is denied without one.
+
+### Fixed — the smaller four, each with a probe behind it
+
+**`_json_escape` emitted invalid JSON.** It deleted every control byte *except* LF and CR — the two that matter inside a JSON string. Probed byte-for-byte by the reviewer; the comment claiming control characters were handled was false. `python3` now serializes it, and it is already a hard dependency of this hook's own query.
+
+**`{"status": "blocked", "blocked": false}`.** A red test floor moved `status` but left the schema's required boolean reading the gate verdict it started from. The finalizer reads `status` and refused correctly; every other consumer got the opposite conclusion.
+
+**The busiest repositories got the wrong answer.** `head -n` closed the pipe, upstream `jq` died of SIGPIPE, `pipefail` reported 141, and the failure handler cleared every id — but only when there were *more* active runs than the display limit. The limit now lives inside `jq`.
+
+**A real spec could vanish from recall because of its pathname.** 3.3.2 excluded every `<run>/spec.md`; its own comment said the manifest "usually" points elsewhere, which means not always. The exclusion now asks the manifest where its spec actually is.
+
+### Fixed — MEDIUM: the task-text refusal broke manifests that were valid
+
+3.3.4 refused any job without `body`/`description`/`prompt`/`spec`. The review caught both the compatibility break and the tell: the fixtures were made to pass by **injecting synthetic `body` strings**, not by showing the contract required one.
+
+A title plus acceptance criteria **is** a task — this function renders both itself. That shape is accepted again, with a line in the prompt telling the worker to report BLOCKED rather than invent scope. What stays refused is the shape that caused the damage: lanes, a title, and nothing to check the work against.
+
 ## [3.3.5] - 2026-09-02
 
 ### Added — the Phase 1 pre-flight runs as a native Workflow

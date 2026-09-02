@@ -29,10 +29,24 @@ WHAT IT DELIBERATELY DOES NOT DO
   * NO `bashCommandClamp`. Dogfood 24 watched a clamped agent get its own
     documented first step denied. An auditor greps, reads, runs `git log`, and
     queries the recall layer; a clamp here would break the audit the same way.
-  * NO `disallowedTools` that removes the network. The Implement stage denies
-    WebFetch/WebSearch on purpose — research belongs to a PRE-FLIGHT, and this IS
-    the pre-flight. `domain-expert` and `doc-validator` are network-dependent by
-    definition (4 and 6 references respectively in their own files).
+  * NO removal of the NETWORK. The Implement stage denies WebFetch/WebSearch on
+    purpose — research belongs to a PRE-FLIGHT, and this IS the pre-flight.
+    `domain-expert` and `doc-validator` are network-dependent by definition (4 and
+    6 references respectively in their own files).
+
+    That is NOT the same as "no narrowing at all", and the first version of this
+    file conflated the two. A cross-model review called it HIGH: with no
+    `disallowedTools` an auditor could run arbitrary commands, rewrite any file in
+    the repository and spawn further agents, while this docstring claimed it
+    "writes ONE document into its own directory". `agentType` selects instructions;
+    it enforces nothing.
+
+    So the narrowing is now the OPPOSITE selection from Implement's: the network
+    stays, and the authority to mutate anything beyond the audit goes. `Task` and
+    `Agent` go because an auditor that spawns is no longer an auditor; `Bash` goes
+    because nothing in these three definitions needs a shell that `Grep`, `Glob`
+    and `Read` do not already give — with ONE exception, admitted through a clamp:
+    the recall query, which dogfood 24 proved is denied without one.
   * NO isolation. An auditor writes ONE document into its own directory and reads
     everything else; a worktree would only hide the repository it exists to read.
   * NO routing decisions. These produce evidence. Backend, tier and isolation for
@@ -139,12 +153,20 @@ def build_plan(spec_path, topic, today, skip=(), recon=None, root=None):
             "out": "%s/%s-%s.md" % (outdir, today, slug),
             "purpose": purpose,
         })
+    memory = os.path.join(HERE, "compound-v-memory.py")
     return {
         "spec_path": spec_path,
         "topic": topic,
         "slug": slug,
         "recon": recon or "",
         "entries": entries,
+        # Read, grep, search, write ONE document. Not: spawn, shell out, re-enter
+        # the pipeline. WebSearch/WebFetch are deliberately ABSENT from this list.
+        "disallowed": ["Task", "Agent", "SlashCommand", "NotebookEdit"],
+        # The one shell form an auditor needs, and the one its own Step 0 names.
+        "clamp": (["Bash(%s %s search:*)" % (sys.executable or "python3", memory),
+                   "Bash(%s %s recall-check:*)" % (sys.executable or "python3", memory)]
+                  if os.path.exists(memory) else None),
     }
 
 
@@ -186,10 +208,13 @@ const results = await parallel(CFG.entries.map(function (e) {
         schema: CFG.schema,
         // agentType, so the auditor arrives as itself. No model override: its own
         // frontmatter decides (sonnet for the two scanners, opus for judgment).
-        // No clamp and no tool narrowing — an auditor greps, reads, searches the
-        // web and queries recall, and dogfood 24 showed what a clamp does to an
-        // agent's own documented first step.
         agentType: e.agent_type,
+        // The network STAYS — this is the research phase. What goes is the
+        // authority to change anything: an auditor reads, greps and searches, and
+        // writes exactly one document. Bash is admitted only for the recall query,
+        // through a clamp, because dogfood 24 proved it is denied without one.
+        disallowedTools: CFG.disallowed,
+        bashCommandClamp: CFG.clamp,
       });
       if (r === null || r === undefined) {
         log('Phase ' + e.phase + ' returned nothing');
@@ -327,8 +352,19 @@ def _selftest():
     check("spawns BY ROLE", "agentType: e.agent_type" in script)
     check("passes NO model override — the agent frontmatter decides",
           "opts.model" not in script and "model:" not in script)
-    check("does NOT narrow tools: research is what a pre-flight IS",
-          "disallowedTools" not in script and "bashCommandClamp" not in script)
+    check("the NETWORK is never taken away — research is what a pre-flight IS",
+          "WebSearch" not in json.dumps(plan.get("disallowed"))
+          and "WebFetch" not in json.dumps(plan.get("disallowed")))
+    check("but the authority to spawn or re-enter the pipeline is",
+          {"Task", "Agent", "SlashCommand"} <= set(plan["disallowed"]))
+    check("Read/Grep/Glob/Write are never denied — the audit needs them",
+          not ({"Read", "Grep", "Glob", "Write", "Edit"} & set(plan["disallowed"])))
+    check("Bash is clamped to the recall query, not denied outright",
+          plan["clamp"] is None
+          or all("compound-v-memory.py" in r for r in plan["clamp"]))
+    check("the emitted script passes both narrowings",
+          "disallowedTools: CFG.disallowed" in script
+          and "bashCommandClamp: CFG.clamp" in script)
     check("a null return is NOT reported as a clean audit",
           "never as clean" in script)
     check("one audit throwing cannot take the others with it",

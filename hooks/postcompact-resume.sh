@@ -230,10 +230,17 @@ EOF
   # query did not return" for a successful empty answer — this repository gates on
   # not lying, and the hook was.
   local ids ids_ok=1
+  # The limit is applied INSIDE jq, not by `head`. Under `pipefail`, `head` closes
+  # the pipe once it has enough lines, upstream jq dies of SIGPIPE, the pipeline
+  # reports 141, and the failure handler fired — clearing every id and reporting a
+  # successful query as a failed one, but ONLY when there were more active runs
+  # than the limit. A cross-model review probed the 141. The busiest repositories
+  # were the ones getting the wrong answer.
   ids="$(PYTHONDONTWRITEBYTECODE=1 "$py" "$dash" resume --json \
            --execution-root "$xroot" 2>/dev/null \
-         | jq -r '.active[]? | .id // empty' 2>/dev/null \
-         | head -n "$_MAX_IDS")" || { ids=""; ids_ok=0; }
+         | jq -r --argjson max "$_MAX_IDS" \
+             '[.active[]? | .id // empty][:$max][]' 2>/dev/null)" \
+    || { ids=""; ids_ok=0; }
 
   # Which of them the compaction summary did NOT carry through.
   local id missing="" present=""
