@@ -2454,15 +2454,54 @@ def cmd_record(argv):
     if isolation == "worktree":
         gate_worktree = verdict.get("worktree")
         if not (isinstance(gate_worktree, str) and gate_worktree.strip()):
-            ack["reason"] = (
-                "the gate verdict for worktree job %r carries no observed "
-                "`worktree`. Record will not reconstruct one from lane-map.json — "
-                "that map holds the wrapper agent's cwd — so this fails closed"
-                % job_id
-            )
-            print(json.dumps(ack, indent=2, sort_keys=True))
-            return 2
-        state_job["worktree"] = os.path.abspath(gate_worktree.strip())
+            # A JOB THAT DID NOTHING IS NOT A BROKEN PIPELINE.
+            #
+            # Dogfood 6 (2026-09-02) asked a worktree job to write nothing, on
+            # purpose, and got `status: error` with a paragraph about lane-map.json
+            # reconstruction. Both halves were unhelpful. The runtime REMOVES an
+            # unchanged worktree — that is documented behaviour, not a fault — so a
+            # job that wrote nothing leaves no worktree for the gate to observe, and
+            # the fail-closed branch written for a genuine locator problem answered
+            # instead.
+            #
+            # The distinction that matters to a reader is intent, and the manifest
+            # settles it: a job that declared `write_allowed` and produced no
+            # observable tree did not do its job — `blocked`, the same class the
+            # direct-mode no-work check has used since 3.0.4. A job that declared no
+            # lanes (a reviewer) is expected to leave nothing, and a missing locator
+            # there really is a machinery failure — `error`, unchanged.
+            #
+            # Both refuse and neither merges. Only the word and the remedy differ,
+            # and this project has now made that same mistake three times: `no_work`
+            # dressed as a fourth verdict (3.0.4), a moved HEAD dressed as `forged`
+            # (3.3.0), and this.
+            if job.get("write_allowed"):
+                ack["no_work"] = True
+                ack["reason"] = (
+                    "job %r declared %d write lane(s) and left no observable "
+                    "worktree — the runtime removes an unchanged worktree, so there "
+                    "is no evidence any work happened. Refused as blocked (no_work), "
+                    "not as a machinery error: nothing is broken, the job did not do "
+                    "its job." % (job_id, len(job.get("write_allowed") or []))
+                )
+                verdict = dict(verdict or {})
+                verdict["verdict"] = "blocked"
+                verdict["no_work"] = True
+                verdict.setdefault("changed", [])
+                state_job["worktree"] = ""
+                gate_worktree = ""
+            else:
+                ack["reason"] = (
+                    "the gate verdict for worktree job %r carries no observed "
+                    "`worktree`, and the job declares no write lanes, so this is a "
+                    "locator failure rather than a job that did nothing. Record will "
+                    "not reconstruct one from lane-map.json — that map holds the "
+                    "wrapper agent's cwd — so this fails closed" % job_id
+                )
+                print(json.dumps(ack, indent=2, sort_keys=True))
+                return 2
+        if gate_worktree:
+            state_job["worktree"] = os.path.abspath(gate_worktree.strip())
     else:
         state_job["worktree"] = ""
 
@@ -3303,6 +3342,39 @@ def selftest():
                "Bash" not in NARROW_DISALLOWED)
         _check("StructuredOutput survives the narrowing",
                "StructuredOutput" not in NARROW_DISALLOWED)
+        # ---- 3.3.0: a worktree job that did NOTHING is blocked, not error ---
+        # Dogfood 6: the runtime removes an UNCHANGED worktree, so a job that
+        # wrote nothing leaves no worktree to observe and the fail-closed branch
+        # written for a genuine locator fault answered instead — `error`, with a
+        # paragraph about lane-map reconstruction.
+        nw_run = os.path.join(tmp, "nowork")
+        os.makedirs(os.path.join(nw_run, "results"), exist_ok=True)
+        nw_man = {"run_id": "nw", "max_parallel": 1,
+                  "jobs": [{"id": "j-lanes", "backend": "claude", "tier": "light",
+                            "isolation": "worktree",
+                            "write_allowed": ["docs/x/**"]},
+                           {"id": "j-review", "type": "review", "backend": "claude",
+                            "tier": "deep", "isolation": "worktree",
+                            "write_allowed": []}]}
+        nw_man_p = os.path.join(nw_run, "manifest.yaml")
+        with open(nw_man_p, "w", encoding="utf-8") as fh:
+            json.dump(nw_man, fh)
+        nw_verdict = json.dumps({"verdict": "pass", "changed": [], "worktree": ""})
+        rc_nw = cmd_record(["--run-dir", nw_run, "--job-id", "j-lanes",
+                            "--manifest", nw_man_p, "--repo-root", tmp,
+                            "--verdict-json", nw_verdict])
+        nw_res = _read_json(os.path.join(nw_run, "results", "j-lanes.json"), None)
+        _check("a lane-declaring job with no observable worktree is RECORDED",
+               rc_nw == 0 and isinstance(nw_res, dict), str(rc_nw))
+        _check("...and its status is blocked, not error",
+               (nw_res or {}).get("status") == "blocked",
+               str((nw_res or {}).get("status")))
+        rc_rev = cmd_record(["--run-dir", nw_run, "--job-id", "j-review",
+                             "--manifest", nw_man_p, "--repo-root", tmp,
+                             "--verdict-json", nw_verdict])
+        _check("a job with NO lanes still fails closed as a locator fault",
+               rc_rev == 2, str(rc_rev))
+
         # ---- 3.3.0: register-lane's OWN files are not the job's work --------
         # Dogfood 2 blocked a dependent job for three files our own machinery
         # wrote for it. Direct mode only — a worktree job's run dir is outside
