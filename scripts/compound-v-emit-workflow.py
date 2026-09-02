@@ -1668,6 +1668,74 @@ def _manifest_job(manifest, job_id):
 # --------------------------------------------------------------------------- #
 # gate-receipt — the Gate stage's single clamped command
 # --------------------------------------------------------------------------- #
+def _file_digest(path):
+    """sha256 of a file's bytes, or None when it cannot be read."""
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as fh:
+            while True:
+                chunk = fh.read(65536)
+                if not chunk:
+                    break
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def write_preexisting(snapshot_path, repo_root, paths):
+    """Write the exemption as ``<sha256>  <relpath>`` lines.
+
+    PATHS ALONE ARE NOT AN EXEMPTION. A cross-model review called that CRITICAL and
+    was right: once a run-directory file is listed by name, a worker can rewrite its
+    CONTENTS — another job's baseline, a receipt, `state.json` — and the gate cannot
+    tell that from untouched bookkeeping. The comment above it claimed a worker
+    "cannot forge a receipt"; the code did not support the claim.
+
+    Binding each path to the digest it had at registration turns the exemption into
+    "this file, unchanged" instead of "this filename, whatever it now says". A
+    file whose bytes moved is no longer exempt and is gated like any other write.
+
+    A path whose digest cannot be taken (unreadable, a directory, already gone) is
+    written WITHOUT one and is therefore never exempted — fail closed into a
+    stricter gate, the same rule the snapshot itself follows.
+    """
+    lines = []
+    for rel in paths:
+        dig = _file_digest(os.path.join(repo_root, rel))
+        if dig:
+            lines.append("%s  %s" % (dig, rel))
+    _atomic_write(snapshot_path, "\n".join(lines) + ("\n" if lines else ""))
+    return len(lines)
+
+
+def read_preexisting_unchanged(snapshot_path, repo_root):
+    """The exempt paths whose bytes still match the digest recorded at register time.
+
+    Accepts the legacy path-only format too — a line with no digest is a snapshot
+    written before 3.3.0, and is honoured as a bare path so an in-flight run from an
+    older version still resolves. Nothing new writes that shape.
+    """
+    keep = []
+    try:
+        with open(snapshot_path, "r", encoding="utf-8") as fh:
+            raw = [ln.rstrip("\n") for ln in fh]
+    except Exception:  # noqa: BLE001
+        return keep
+    for line in raw:
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split("  ", 1)
+        if len(parts) == 2 and re.match(r"^[0-9a-f]{64}$", parts[0]):
+            rel = parts[1].strip()
+            if _file_digest(os.path.join(repo_root, rel)) == parts[0]:
+                keep.append(rel)
+        else:
+            keep.append(line)          # legacy path-only line
+    return keep
+
+
 def _preexisting_snapshot(root, python_bin):
     """Repo-relative paths already dirty BEFORE this job ran (direct mode only).
 
@@ -1858,7 +1926,16 @@ def cmd_gate_receipt(argv):
     if args.mode != "worktree":
         candidate = os.path.join(args.run_dir, "preexisting", "%s.txt" % args.job_id)
         if os.path.isfile(candidate):
-            pre = candidate
+            # The snapshot binds each path to the digest it had at register time.
+            # Only paths whose bytes STILL match are exempt; a bookkeeping file the
+            # worker rewrote is gated like any other write. scope-check's
+            # `--preexisting` takes a plain path list, so the verified subset is
+            # materialised next to the snapshot rather than handed over whole.
+            kept = read_preexisting_unchanged(candidate, root)
+            verified = os.path.join(args.run_dir, "preexisting",
+                                    "%s.verified.txt" % args.job_id)
+            _atomic_write(verified, "\n".join(kept) + ("\n" if kept else ""))
+            pre = verified
     rc, raw_stdout, err, parsed = _run_scope_check(
         args.scope_check, args.mode, root, baseline, allow, args.python, preexisting=pre
     )
@@ -2734,9 +2811,17 @@ def cmd_register_lane(argv):
     if (args.isolation or "direct") != "worktree":
         try:
             pre = _preexisting_snapshot(args.repo_root, sys.executable)
-            _atomic_write(os.path.join(run_dir, "preexisting", "%s.txt" % args.job_id),
-                          "\n".join(pre) + ("\n" if pre else ""))
-            ack["preexisting"] = len(pre)
+            snap_p = os.path.join(run_dir, "preexisting", "%s.txt" % args.job_id)
+            os.makedirs(os.path.dirname(snap_p), exist_ok=True)
+            # ONE-SHOT. A second `register-lane` for the same job must not re-take
+            # the picture: the clamp admits repeated calls, so a worker that made
+            # its changes and then re-registered could refresh the snapshot to
+            # cover them. Re-running is otherwise legitimate (resume does it), so
+            # this refuses the REWRITE rather than the call.
+            if not os.path.exists(snap_p):
+                ack["preexisting"] = write_preexisting(snap_p, args.repo_root, pre)
+            else:
+                ack["preexisting"] = "unchanged (snapshot already taken)"
         except Exception as exc:  # noqa: BLE001
             # Fail OPEN into a stricter gate, never a looser one: with no snapshot
             # the gate subtracts nothing and a dirty tree blocks. Loud, not silent.
@@ -2866,13 +2951,38 @@ def cmd_register_lane(argv):
                         continue          # outside the repo: not ours to exempt
                     own.append(rel.replace(os.sep, "/"))
             snap = os.path.join(run_dir, "preexisting", "%s.txt" % args.job_id)
-            existing = []
+            # EXISTING LINES ARE CARRIED FORWARD VERBATIM, never re-digested.
+            #
+            # The one-shot guard above covers the dirt snapshot; this block runs on
+            # every call, and a first attempt re-digested the whole list here. Its
+            # own test caught that: a worker could rewrite an exempted file, call
+            # `register-lane` again — the clamp admits it — and the fresh digest
+            # would re-bless the tampered bytes. Exactly the refresh-after-tamper
+            # attack the cross-model review described, surviving in the half the
+            # first fix did not cover.
+            #
+            # So an already-recorded path keeps the digest it was first bound to,
+            # and only paths NEW to this listing are digested now.
+            existing_lines, existing_rel = [], set()
             if os.path.exists(snap):
                 with open(snap, "r", encoding="utf-8") as fh:
-                    existing = [ln.strip() for ln in fh if ln.strip()]
-            merged = existing + sorted(p for p in own if p not in existing)
-            _atomic_write(snap, "\n".join(merged) + ("\n" if merged else ""))
-            ack["own_bookkeeping"] = len(own)
+                    for ln in fh:
+                        ln = ln.rstrip("\n").strip()
+                        if not ln:
+                            continue
+                        existing_lines.append(ln)
+                        parts = ln.split("  ", 1)
+                        existing_rel.add(parts[1].strip()
+                                         if len(parts) == 2 else ln)
+            fresh = sorted(p for p in own if p not in existing_rel)
+            new_lines = []
+            for rel in fresh:
+                dig = _file_digest(os.path.join(args.repo_root, rel))
+                if dig:
+                    new_lines.append("%s  %s" % (dig, rel))
+            all_lines = existing_lines + new_lines
+            _atomic_write(snap, "\n".join(all_lines) + ("\n" if all_lines else ""))
+            ack["own_bookkeeping"] = len(new_lines)
         except Exception as exc:  # noqa: BLE001
             # Fail OPEN into a STRICTER gate, same rule as the snapshot itself:
             # without the listing the job is blocked for our files, which is loud.
@@ -3235,6 +3345,35 @@ def selftest():
                str(snap_lines))
         _check("a file the WORKER adds later is NOT exempt",
                "receipts/d1.gate.json" not in "\n".join(snap_lines))
+        # CRITICAL, from a cross-model review: an exemption by NAME lets a worker
+        # rewrite an exempted file's CONTENTS. Each line binds a digest.
+        _check("every exemption line carries a sha256, not a bare path",
+               all(re.match(r"^[0-9a-f]{64}  \S", l) for l in snap_lines),
+               str(snap_lines[:2]))
+        _kept_before = read_preexisting_unchanged(snap_p, bk_repo)
+        _check("an untouched exempted file stays exempt",
+               any(k.endswith("jobs/d1.baseline") for k in _kept_before))
+        with open(os.path.join(bk_run, "jobs", "d1.baseline"), "a",
+                  encoding="utf-8") as fh:
+            fh.write("tampered\n")
+        _kept_after = read_preexisting_unchanged(snap_p, bk_repo)
+        _check("a REWRITTEN exempted file loses its exemption",
+               not any(k.endswith("jobs/d1.baseline") for k in _kept_after),
+               str(_kept_after))
+        _check("rewriting one file does not un-exempt the others",
+               len(_kept_after) == len(_kept_before) - 1,
+               "%d vs %d" % (len(_kept_after), len(_kept_before)))
+        # ONE-SHOT: a second register-lane must not re-take the picture.
+        _before_snap = open(snap_p, encoding="utf-8").read()
+        cmd_register_lane([
+            "--run-dir", bk_run, "--job-id", "d1", "--cwd", bk_repo,
+            "--repo-root", bk_repo, "--isolation", "direct",
+            "--manifest", os.path.join(bk_run, "manifest.yaml"),
+        ])
+        _check("a second register-lane does not re-snapshot the tampered file",
+               not any(k.endswith("jobs/d1.baseline")
+                       for k in read_preexisting_unchanged(snap_p, bk_repo)))
+        _ = _before_snap
         _check("nothing outside the repo root reaches the snapshot",
                all(not l.startswith("..") for l in snap_lines), str(snap_lines))
         # A WORKTREE job must not get the exemption — its run dir is not in the

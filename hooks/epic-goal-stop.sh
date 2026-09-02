@@ -70,7 +70,9 @@
 #   7. otherwise ................................... exit 0, silent
 #
 # WHY THE TRIAGE GATE SITS ABOVE THE BYPASS RULE.  Both are "you changed code
-# without X", both are off by default, and only one response per event is
+# without X". The triage gate is ON by default as of 3.2.0 (an explicit
+# `enforcement.triage_gate: false` opts out); the bypass rule is still off. Only
+# one response per event is
 # permitted.  The triage gate is the more specific diagnosis, and its correction
 # — `/v:triage` — is the first step of the correction the bypass rule asks for.
 # Firing the general one first would send the reader to a pipeline that now
@@ -885,7 +887,8 @@ hook_main() {
   fi
 
   # Then the triage gate, then the older bypass rule.  Both are "you changed
-  # code without X", both are off by default, and only ONE response per event is
+  # code without X". The triage gate is ON by default as of 3.2.0; the bypass
+  # rule is still off. Only ONE response per event is
   # permitted — so the more specific diagnosis goes first: `/v:triage` is the
   # first step of the correction the bypass rule asks for, and the pipeline it
   # points at now refuses to run without that record.

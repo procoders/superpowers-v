@@ -27,11 +27,19 @@
 #     store. A failure ledger is diagnostics, not audit; the v2.6.4 incident was
 #     audit written where it could be deleted, and the fix was to commit audit
 #     properly, not to promote diagnostics into it.
-#   * It records NO tool INPUT beyond the tool name. A failed Write carries file
-#     content and a failed Bash carries a command line; both routinely contain
-#     secrets, and a ledger that quietly accumulates them in a world-readable
-#     temp directory would be a data-exposure surface built for convenience.
-#     Tool name, agent id, timestamp, and a bounded error excerpt only.
+#   * It records no tool INPUT field. Tool name, agent id, timestamp, and a
+#     bounded error excerpt only.
+#
+#     AND THAT IS NOT THE SAME AS "NO SECRETS", which is what an earlier version of
+#     this comment implied. A cross-model review called that out: tool errors
+#     routinely echo the command, its arguments, a URL with a token in it, or the
+#     content that was rejected. Omitting `tool_input` does not make the excerpt
+#     safe — it only stops the OBVIOUS copy.
+#
+#     So the excerpt stays (a category with no text diagnoses nothing), and the
+#     store is treated as sensitive instead of pretending it is not: `umask 077`,
+#     directory 0700, files 0600, under the invoking user's own TMPDIR. Anyone
+#     shipping this ledger anywhere else should read it as "may contain secrets".
 #
 # FIRE CONDITION (any doubt writes nothing)
 #   1. the payload parses and is a PostToolUseFailure event
@@ -44,6 +52,11 @@
 
 trap 'exit 0' EXIT
 set -uo pipefail
+
+# BEFORE anything is created. A ledger of error text inherits the caller's umask
+# otherwise, which on a default 022 means a world-readable 0644 file of whatever
+# those errors echoed.
+umask 077
 
 _HOOK_TAG="compound-v/tool-failure-ledger"
 _log() { printf '%s: %s\n' "$_HOOK_TAG" "$*" >&2; }
@@ -123,6 +136,9 @@ EOF
   local store path
   store="$(_store_dir)"
   mkdir -p "$store" 2>/dev/null || return 1
+  # Explicit, not merely umask-derived: the directory may predate this version, or
+  # have been created by something with a looser umask.
+  chmod 700 "$store" 2>/dev/null || true
   path="$(ledger_path "$cwdv" "$sid")" || return 1
 
   # `date` is the timestamp source on purpose: the hook has no other clock, and
@@ -139,6 +155,7 @@ EOF
   [ -n "$line" ] || return 1
 
   printf '%s\n' "$line" >>"$path" 2>/dev/null || return 1
+  chmod 600 "$path" 2>/dev/null || true
 
   # Trim from the FRONT: the newest failures are the ones a caller wants.
   local n

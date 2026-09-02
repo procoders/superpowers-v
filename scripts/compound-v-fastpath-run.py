@@ -270,8 +270,46 @@ def _scope_check():
     return mod
 
 
+# Paths that are BOOKKEEPING NOISE — never build inputs, never test inputs. This
+# is a NAMED list, not "whatever git ignores", and the difference is the whole
+# point: a cross-model review called the ignored-status proxy HIGH and was right.
+# `.env`, generated sources, fixtures, vendored artifacts and local config are all
+# routinely gitignored AND can absolutely change what a test does. Using git's
+# ignore status to mean "cannot affect tests" would silently narrow the selected
+# set on exactly the changes that most deserve a full run.
+#
+# So only these two shapes are dropped, and only when git also ignores them:
+#   * this project's own harness worktrees (`.claude/worktrees/`, `.worktrees/`)
+#   * Python bytecode caches
+# Anything else that is ignored stays in the changed set and, matching no `when`
+# glob, resolves to `full_command` — the safe direction.
+_TEST_NOISE_PREFIXES = (".claude/worktrees/", ".worktrees/", ".v29-worktrees/")
+_TEST_NOISE_SUBSTRINGS = ("__pycache__/",)
+_TEST_NOISE_SUFFIXES = (".pyc", ".pyo")
+
+
+def _is_test_noise(rel):
+    # NOT `lstrip("./")` — lstrip strips CHARACTERS, so it ate the leading dot of
+    # `.claude/worktrees/...` and turned it into `claude/worktrees/...`, which
+    # matched no prefix and made this predicate answer False for the single most
+    # common noise path in this repo. Caught by its own test on the first run.
+    r = str(rel or "")
+    while r.startswith("./"):
+        r = r[2:]
+    if any(r.startswith(p) for p in _TEST_NOISE_PREFIXES):
+        return True
+    if any(sub in r for sub in _TEST_NOISE_SUBSTRINGS):
+        return True
+    return any(r.endswith(suf) for suf in _TEST_NOISE_SUFFIXES)
+
+
 def _drop_gitignored(worktree, paths):
-    """``paths`` minus everything git itself ignores. None when it cannot be decided.
+    """``paths`` minus IGNORED BOOKKEEPING NOISE. None when it cannot be decided.
+
+    Two conditions, both required: the path must look like harness noise
+    (`_is_test_noise`) AND git must actually ignore it. The second stops a real
+    source file that merely lives under a similarly-named directory from vanishing;
+    the first stops the ignore list from being read as "irrelevant to tests".
 
     ONE call, `git check-ignore --stdin`, whose exit status is 0 when at least one
     path was ignored, 1 when none were, and >1 on a real error — so 1 is success
@@ -279,6 +317,9 @@ def _drop_gitignored(worktree, paths):
     """
     if not paths:
         return list(paths or [])
+    candidates = [p for p in paths if _is_test_noise(p)]
+    if not candidates:
+        return list(paths)
     try:
         # `universal_newlines=True` (not `text=`) — Python 3.6-compatible, and this
         # file is 3.9-safe by policy. WITHOUT it, communicate() is handed a str on a
@@ -290,7 +331,7 @@ def _drop_gitignored(worktree, paths):
             ["git", "-C", worktree, "check-ignore", "--stdin"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             universal_newlines=True)
-        out, _ = proc.communicate("\n".join(paths) + "\n", timeout=30)
+        out, _ = proc.communicate("\n".join(candidates) + "\n", timeout=30)
     except Exception:  # noqa: BLE001
         return None
     if proc.returncode not in (0, 1):
@@ -2259,16 +2300,33 @@ def _selftest():
         open(os.path.join(_gi, "src", "a.pyc"), "w").write("x\n")
         _kept = _drop_gitignored(_gi, ["src/a.py", "build/out.o", "src/a.pyc",
                                        ".gitignore"])
-        expect("gitignored paths are dropped from the TEST change set",
-               _kept is not None and "build/out.o" not in _kept
-               and "src/a.pyc" not in _kept)
+        expect("ignored BYTECODE is dropped from the TEST change set",
+               _kept is not None and "src/a.pyc" not in _kept)
+        expect("an ignored file that is NOT harness noise SURVIVES — .env, "
+               "fixtures and generated sources can all change what a test does",
+               _kept is not None and "build/out.o" in _kept)
         expect("real source changes survive the filter",
                _kept is not None and "src/a.py" in _kept)
+        expect("a harness worktree path is noise",
+               _is_test_noise(".claude/worktrees/wf_x-1/") is True)
+        expect("a source file is never noise",
+               _is_test_noise("src/app.py") is False
+               and _is_test_noise("tests/test_env.py") is False)
+        # `_gi`'s .gitignore is `build/` + `*.pyc`, so a harness-worktree path is
+        # noise-SHAPED but not ignored there — and must survive. Both conditions
+        # are required, which is what stops a real file under a similarly-named
+        # directory from vanishing.
+        expect("a noise-SHAPED path that git does not ignore still survives",
+               ".claude/worktrees/x/a.py"
+               in (_drop_gitignored(_gi, [".claude/worktrees/x/a.py"]) or []))
         expect("an empty input is not an error",
                _drop_gitignored(_gi, []) == [])
         expect("a non-repo cannot decide, and says so rather than narrowing",
                _drop_gitignored(os.path.join(tmp, "definitely-not-a-repo"),
-                                ["a"]) is None)
+                                ["src/a.pyc"]) is None)
+        expect("nothing noise-shaped means nothing to decide, not a failure",
+               _drop_gitignored(os.path.join(tmp, "definitely-not-a-repo"),
+                                ["src/app.py"]) == ["src/app.py"])
 
         # --- v3.1.0: the DERIVED default scope ------------------------------
         # The rule set 2026-09-02: running the whole project is a DECISION, not

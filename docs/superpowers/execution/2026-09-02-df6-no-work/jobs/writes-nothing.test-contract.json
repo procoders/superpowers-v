@@ -1,0 +1,8 @@
+{
+  "scope": "impacted",
+  "resolved_commands": [
+    "/bin/echo floor-ok"
+  ],
+  "floor_command": "/bin/echo floor-ok",
+  "full_command": "/bin/echo full"
+}

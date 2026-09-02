@@ -53,6 +53,39 @@ set -uo pipefail
 _HOOK_TAG="compound-v/precompact-snapshot"
 _log() { printf '%s: %s\n' "$_HOOK_TAG" "$*" >&2; }
 
+# Seconds. Comfortably under the 10 s the hooks.json registration allows, so this
+# hook always fails on its own terms rather than being killed mid-write.
+_PRECOMPACT_QUERY_TIMEOUT=5
+
+# Run a command with a wall-clock bound, portably. macOS has no `timeout(1)`, and
+# this project has been bitten by assuming it does, so the bound is a background
+# child plus a polling waiter — no coreutils, no `perl`, no GNU-only flags.
+_bounded() {
+  local limit="$1"; shift
+  local out rc waited
+  out="$(mktemp "${TMPDIR:-/tmp}/cv-precompact.XXXXXX" 2>/dev/null)" || return 1
+  ( "$@" >"$out" 2>/dev/null ) &
+  local pid=$!
+  waited=0
+  while [ "$waited" -lt "$((limit * 10))" ]; do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -TERM "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    rm -f "$out" 2>/dev/null
+    return 1
+  fi
+  wait "$pid" 2>/dev/null
+  rc=$?
+  if [ "$rc" -ne 0 ]; then rm -f "$out" 2>/dev/null; return 1; fi
+  cat "$out" 2>/dev/null
+  rm -f "$out" 2>/dev/null
+  return 0
+}
+
 _store_dir() {
   local t="${TMPDIR:-/tmp}"
   while [ "${t}" != "/" ] && [ "${t%/}" != "${t}" ]; do t="${t%/}"; done
@@ -133,25 +166,53 @@ EOF
   done
   [ -n "$py" ] || return 1
 
-  local dash="${cwdv}/scripts/compound-v-dashboard.py"
-  if [ ! -f "$dash" ]; then
-    dash="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)/scripts/compound-v-dashboard.py"
+  # THE DASHBOARD IS RESOLVED FROM THE PLUGIN, NEVER FROM THE PROJECT.
+  #
+  # The first version of this hook preferred `${cwd}/scripts/compound-v-dashboard.py`
+  # and fell back to the plugin. A cross-model review called that CRITICAL and was
+  # right: any repository that merely contains a `docs/superpowers/` directory would
+  # then have its own Python executed automatically, with the user's privileges,
+  # every time a conversation compacted. Cloning a repo would be enough. The sibling
+  # PostCompact hook never had this hole — it resolves from CLAUDE_PLUGIN_ROOT — and
+  # this one now matches it.
+  local dash=""
+  if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] \
+     && [ -f "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v-dashboard.py" ]; then
+    dash="${CLAUDE_PLUGIN_ROOT}/scripts/compound-v-dashboard.py"
+  else
+    local here
+    here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)" || return 1
+    [ -n "$here" ] && [ -f "${here}/scripts/compound-v-dashboard.py" ] || return 1
+    dash="${here}/scripts/compound-v-dashboard.py"
   fi
-  [ -f "$dash" ] || return 1
-
-  # `--execution-root`, NOT an invented `--repo`. The first draft of this hook
-  # passed `--repo`, argparse rejected it, the query exited non-zero and the hook
-  # silently wrote nothing — caught by its own live probe before it ever shipped.
-  # This project has killed an invented flag this way before (`--advisor`, v2.12).
-  local line
-  line="$("$py" "$dash" resume --execution-root "${cwdv}/docs/superpowers/execution" 2>/dev/null)" || return 1
-  line="$(printf '%s' "$line" | sed '/^$/d')"
-  [ -n "$line" ] || return 1
 
   local snap store
   store="$(_store_dir)"
   mkdir -p "$store" 2>/dev/null || return 1
   snap="$(snapshot_path "$rootv" "$sid")" || return 1
+
+  # CLEAR THE PRIOR SNAPSHOT BEFORE QUERYING, not after succeeding.
+  # A session compacts more than once. If the first compaction snapshotted
+  # unfinished work and a later one finds none — or cannot ask — a surviving file
+  # would have PostCompact announce work that has since finished. The snapshot must
+  # describe THIS compaction or not exist.
+  rm -f "$snap" 2>/dev/null
+
+  # `--execution-root`, NOT an invented `--repo`. The first draft of this hook
+  # passed `--repo`, argparse rejected it, the query exited non-zero and the hook
+  # silently wrote nothing — caught by its own live probe before it ever shipped.
+  # This project has killed an invented flag this way before (`--advisor`, v2.12).
+  #
+  # BOUNDED. This is a synchronous hook on the compaction path: an unbounded query
+  # against a slow filesystem would hold the conversation until the registration's
+  # own 10 s timeout killed the process, and a hook that can stall compaction is not
+  # honestly described as one that "never blocks" it. The internal bound is well
+  # under the outer one, so the hook always gets to fail silently on its own terms.
+  local line
+  line="$(_bounded "$_PRECOMPACT_QUERY_TIMEOUT" "$py" "$dash" resume \
+            --execution-root "${cwdv}/docs/superpowers/execution")" || return 1
+  line="$(printf '%s' "$line" | sed '/^$/d')"
+  [ -n "$line" ] || return 1
 
   # Written whole, then moved: a reader that arrives mid-write must never see a
   # half-file and believe it.
