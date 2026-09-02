@@ -2477,12 +2477,25 @@ def cmd_gate_receipt(argv):
 #     land at merge.
 # --------------------------------------------------------------------------- #
 def _stage_paths(worktree, paths):
-    """Stage exactly these paths. Returns (ok, error)."""
+    """Stage exactly these paths. Returns (ok, error).
+
+    A DELETION the worker already staged (`git rm`) leaves nothing on disk and
+    nothing in the index for the pathspec to match, so `git add -A -- path`
+    fails with "did not match any files" — which meant no `git rm` could ever
+    merge back (dogfood r4, 2026-09-02: three deletions the gate approved were
+    refused by the finalizer). A path whose removal is already in the index is
+    already staged; accept it. A path that is neither on disk, nor in the index,
+    nor staged as removed is still an error.
+    """
     for path in paths:
         if not path:
             continue
         rc, _, err = _git(worktree, ["add", "-A", "--", path])
         if rc != 0:
+            rc2, staged, _e2 = _git(worktree, ["diff", "--cached", "--name-only",
+                                              "--diff-filter=D", "--", path])
+            if rc2 == 0 and path in [l.strip() for l in (staged or "").splitlines()]:
+                continue  # the removal is already staged; nothing more to add
             return False, "git add failed for %r: %s" % (path, err.strip())
     return True, None
 
@@ -3308,11 +3321,16 @@ def cmd_finalize_wave(argv):
             # which is the third time in this release line that a correct decision
             # arrived under the wrong name.
             if out["refused"] and not out["merged"]:
-                out["reason"] = (
+                # Keep the SPECIFIC refusal (a merge-back error names its cause);
+                # this generic line was overwriting it, and r4's "pathspec did
+                # not match" had to be reproduced by hand to be seen at all.
+                generic = (
                     "nothing was merged: every job in this wave was refused (%s). "
                     "HEAD is unchanged by this wave."
                     % ", ".join(out["refused"])
                 )
+                out["reason"] = ("%s — %s" % (out["reason"], generic)
+                                 if out.get("reason") else generic)
             else:
                 out["reason"] = ("nothing left to commit — this wave's work is "
                                  "already in HEAD (idempotent re-finalize)")
@@ -5047,6 +5065,26 @@ def selftest():
                .split("async function finalizeWave", 1)[0])
         _check("a throwing Implement stage no longer skips Gate AND Record",
                "return { job: job, implement: null };" in rev_script)
+        # Dogfood r4: `git rm` in a worktree could never merge back.
+        _del_repo = os.path.join(tmp, "delrepo"); os.makedirs(_del_repo)
+        _run(["git", "-C", _del_repo, "init", "-q"])
+        _run(["git", "-C", _del_repo, "config", "user.email", "t@t"]); _run(["git", "-C", _del_repo, "config", "user.name", "t"])
+        with open(os.path.join(_del_repo, "gone.txt"), "w") as fh: fh.write("x\n")
+        with open(os.path.join(_del_repo, "kept.txt"), "w") as fh: fh.write("k\n")
+        _run(["git", "-C", _del_repo, "add", "-A"]); _run(["git", "-C", _del_repo, "commit", "-q", "-m", "base"])
+        _base_sha = (_run(["git", "-C", _del_repo, "rev-parse", "HEAD"])[1] or "").strip()
+        _del_wt = os.path.join(tmp, "delwt")
+        _run(["git", "-C", _del_repo, "worktree", "add", "-q", _del_wt, "-b", "del-branch"])
+        _run(["git", "-C", _del_wt, "rm", "-q", "gone.txt"])
+        _ok_del, _err_del = _stage_paths(_del_wt, ["gone.txt"])
+        _check("a deletion the worker already staged is accepted by _stage_paths",
+               _ok_del, str(_err_del))
+        _ok_mb, _err_mb = merge_back(_del_wt, _del_repo, _base_sha, ["gone.txt"])
+        _check("merge_back lands a `git rm` into the main tree",
+               _ok_mb and not os.path.exists(os.path.join(_del_repo, "gone.txt")), str(_err_mb))
+        _ok_missing, _err_missing = _stage_paths(_del_wt, ["never-existed.txt"])
+        _check("a path that is neither on disk nor staged as removed is still an error",
+               not _ok_missing and "did not match" in (_err_missing or ""))
         # Dogfood r2 (wf_f0505df2-99c): the Gate's clamped command outran the Bash
         # tool's 120 s default, the harness detached it, and the agent — no Read,
         # one admitted command form — honestly reported `blocked` while the
