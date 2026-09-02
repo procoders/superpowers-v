@@ -4,6 +4,42 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [3.4.0] - 2026-09-02
+
+Native-first: the cut list from [`2026-09-02-viability-audit.md`](docs/superpowers/architecture/2026-09-02-viability-audit.md) §7, decided by the maintainer through four structured questions and shipped through [`docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md`](docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md). The constraint: the functionality stays, but leans as far as possible on Claude Code's own mechanisms.
+
+### Removed — three schedulers and a goal engine, for `/goal` + `/loop` + `/schedule`
+
+`hooks/epic-goal-stop.sh` Feature A (the armed goal condition, its counter, `stop_hook_active` handling), `scripts/compound-v-epic-watch.py`, and `scripts/compound-v-headless-shim.py` are deleted — ~2 000 lines, none of which had ever fired, because no epic in this repository's history has run. `scripts/compound-v-epic-state.py` drops the goal surface (`--arm-goal`, `--goal-status`, …) and the watch surface (`--watch`, `--claim-resume`, `--liveness`, the watcher registry, …); the marathon loop, arbiter, and breakers are untouched. `/v:epic` now *offers*, never arms silently: `/loop 30m /v:epic <epic-id>` to keep resuming in this session, or a `/schedule` routine for the cloud, plus `ProposeGoal` (or a printed `/goal <condition>` where the tool is absent from the listing) for the harness's own goal evaluator. `/v:epic` is re-entrant, so every firing is a plain resume, and it stops its own loop/schedule once the epic is terminal.
+
+### Removed — `tool-failure-ledger` and its `PostToolUseFailure` registration
+
+Registered in 3.3.0, read by nothing since. `hooks/tool-failure-ledger.sh` and the `PostToolUseFailure` entry in `hooks/hooks.json` are gone; `native-mechanisms.md`'s event table drops from 8/10 to 7/10 documented events, with the row kept and marked "removed 3.4.0 — re-register when a consumer exists."
+
+### Removed — `/v:dashboard serve`
+
+The HTTP server, its rebinding guard, and every serve selftest are gone. A live run is watched natively — `/workflows` and `/tasks` — and `emit`'s static snapshot is unchanged.
+
+### Changed — `UserPromptSubmit` now runs the triage scorer, not just a reminder
+
+`scripts/compound-v-preeval.py` gains a `triage` subcommand — the body of `/v:triage` T2, now importable and callable without a monkey-patch (`run_preeval` takes a real `binding=None` parameter). `hooks/triage-prompt-nudge.sh` calls it, bounded, on the first non-slash, non-question prompt of a session, writes the scored record (uncommitted — `/v:orchestrate` commits it at bind, a DIRECT commit includes it by hand), and injects the tier and predicates into context; on any failure or timeout it falls back to today's reminder text, unchanged. `/v:triage` stays for the T3 escalation path and manual runs. The once-per-session marker is retired — the record itself is the marker.
+
+### Changed — attended DIRECT is an ordinary commit
+
+`/v:triage` T4's DIRECT path is now: implement, run the floor, commit on the current branch, including `docs/superpowers/pre-eval/<id>.*` for the Stop gate to see. Phase L (`--land`, the CAS/lock-ref/throwaway-index machinery) is retitled "unattended landings only" and scoped to `/loop`- or `/schedule`-driven sessions and `--permission-mode dontAsk` — where no human sees the diff before it lands.
+
+### Changed — the scorecard reads run results, not a jsonl the engine never wrote
+
+`compound-v-scorecard.py --update` gains `--from-runs <execution-root>`, building one record per `<run>/results/<id>.json` (Engine C's real output) instead of relying solely on `task-outcomes.jsonl`, which Engine C has never appended to. Legacy `task-outcomes.jsonl` lines are still read and unioned in. `finalize-wave` runs the update after every successful wave, best-effort, never fatal. `compound-v-update-memory.py` is **not** deleted — the pre-flight audit found `append_line` imported by `compound-v-triage-outcomes.py` and `compound-v-preferences.py` at module load; only its prose role as the task-outcomes appender goes.
+
+### Found live, 2026-09-02
+
+Probed from the top-level session (`ProposeGoal` and `ScheduleWakeup` are main-session tools, invisible to subagents): `ScheduleWakeup` is present in the tool listing; `ProposeGoal` is **absent** — the `@internal` setting was not enabled on this install. `/v:epic`'s printed `/goal <condition>` fallback is therefore the path that must always work, not a rare corner case.
+
+### Documented
+
+`native-mechanisms.md`: the goal, resurrection and triage rows move from ⚠/❌ to ✅, with the 3.4.0 reason recorded in each; the event table's registered-event count drops to 7/10. The viability audit's §7 table gets a Status column — rows 1, 2, 3, 4, 8 and 10 (variant A) are marked done in 3.4.0; row 5 (`preferences`) is closed by decision to keep it as-is; rows 6, 7 and 9 stay open.
+
 ## [3.3.7] - 2026-09-02
 
 A viability audit, asked for by the maintainer in one sentence: *check what is redundant, duplicates Claude Code, or is over-engineered; whether agents are routed by task complexity correctly; whether the task tier and the short-vs-full flow are decided correctly; and what is declared but is in fact a stub.* The answer is [`docs/superpowers/architecture/2026-09-02-viability-audit.md`](docs/superpowers/architecture/2026-09-02-viability-audit.md). This release ships the fixes that needed no decision; the cut list in that document does.
