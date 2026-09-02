@@ -1,0 +1,8 @@
+{
+  "scope": "impacted",
+  "resolved_commands": [
+    "bash tests/test-epic-goal-stop.sh"
+  ],
+  "floor_command": "bash tests/test-epic-goal-stop.sh",
+  "full_command": "bash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'"
+}

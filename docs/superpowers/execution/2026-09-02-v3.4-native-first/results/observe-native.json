@@ -1,0 +1,36 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "agents/parallel-dispatcher.md",
+    "commands/v-collect.md",
+    "commands/v-dashboard.md",
+    "scripts/compound-v-dashboard.py",
+    "scripts/compound-v-emit-workflow.py",
+    "scripts/compound-v-scorecard.py",
+    "skills/compound-v/memory.md",
+    "skills/compound-v/routing-policy.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "aeae409ecef127940c75893c73abb926be2a1cca",
+    "diff_digest": "sha256:ff7e56bd07edec2ccbc68586e57a87e6080df622bf3ff665ea0b7f8b7f71025c",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"aeae409ecef127940c75893c73abb926be2a1cca\",\n  \"changed\": [\n    \"agents/parallel-dispatcher.md\",\n    \"commands/v-collect.md\",\n    \"commands/v-dashboard.md\",\n    \"scripts/compound-v-dashboard.py\",\n    \"scripts/compound-v-emit-workflow.py\",\n    \"scripts/compound-v-scorecard.py\",\n    \"skills/compound-v/memory.md\",\n    \"skills/compound-v/routing-policy.md\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-dashboard.py\",\n    \"scripts/compound-v-scorecard.py\",\n    \"scripts/compound-v-update-memory.py\",\n    \"scripts/compound-v-emit-workflow.py\",\n    \"commands/v-dashboard.md\",\n    \"commands/v-collect.md\",\n    \"agents/parallel-dispatcher.md\",\n    \"skills/compound-v/routing-policy.md\",\n    \"skills/compound-v/memory.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "aeae409ecef127940c75893c73abb926be2a1cca",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "dashboard serve \u2192 /workflows; the scorecard reads results/*.json; update-memory removed",
+  "tests": {
+    "command": "bash tests/test-epic-goal-stop.sh\nbash -c '[ -f scripts/compound-v-dashboard.py ] || exit 0; /usr/bin/python3 scripts/compound-v-dashboard.py --selftest'\nbash -c '[ -f scripts/compound-v-emit-workflow.py ] || exit 0; /usr/bin/python3 scripts/compound-v-emit-workflow.py --selftest'\nbash -c '[ -f scripts/compound-v-scorecard.py ] || exit 0; /usr/bin/python3 scripts/compound-v-scorecard.py --selftest'\nbash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 5
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_a9324bde-2cb-3"
+}

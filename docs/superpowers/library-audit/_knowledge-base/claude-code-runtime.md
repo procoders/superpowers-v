@@ -177,3 +177,57 @@ exists in the tree (`PROBE` 2026-09-02: no `package.json`, `requirements.txt`, `
   `session-banner.sh` runs `set -euo pipefail` (`:13`) with unguarded `jq -n` at `:50,52,55`, so a jq
   failure loses the **entire** banner, not just the JSON envelope. Since `SessionStart` accepts
   plain-text stdout as context (see `claude-code-hooks.md`), a jq-free fallback is available there.
+
+---
+
+## Updated 2026-09-02 — v3.4-native-first (epic resurrection tools)
+
+Validated for [`docs/superpowers/library-audit/2026-09-02-v3-4-native-first.md`](../2026-09-02-v3-4-native-first.md).
+Source: **live tool schemas fetched via `ToolSearch` from inside a Phase-1C subagent**, same session,
+same machine as the 2026-09-02 CPython/jq entry above. Local Claude Code: `2.1.238`.
+
+### `CronCreate` / `CronList` / `CronDelete` (live schema, verbatim)
+
+```
+CronCreate: {cron: string (5-field, local time), prompt: string,
+             recurring?: boolean (default true), durable?: boolean (no effect — see below)}
+CronList:   {}  — lists this session's jobs
+CronDelete: {id: string} — cancels one of this session's jobs
+```
+
+- **Session-only, in-memory, no disk persistence.** *"Jobs live only in this Claude session — nothing
+  is written to disk, and the job is gone when Claude exits."* `durable: true` has **no effect** — the
+  tool description says so explicitly, in case a caller assumes the parameter does something.
+- **Recurring jobs auto-expire after 7 days: "they fire one final time, then are deleted."** The tool's
+  own guidance: *"Tell the user about the 7-day limit when scheduling recurring jobs."* This applies to
+  any `/loop <interval> <cmd>` invocation whose interval mode is backed by `CronCreate` — confirmed by
+  this audit to be a real, currently-live constraint, not a documentation artifact of an older build.
+- **Jitter, not a fixed offset.** *"The scheduler adds a small deterministic jitter... recurring tasks
+  fire up to 10% of their period late (max 15 min); one-shot tasks landing on :00/:30 fire up to 90s
+  early."* Jobs additionally only fire while the REPL is idle (not mid-query).
+- One-shot (`recurring: false`) jobs fire once at the next cron match, then auto-delete — the "remind
+  me at X" shape, not the "keep resurrecting a marathon" shape.
+
+### Subagent tool-surface visibility — a now three-times-reproduced pattern
+
+| Tool | Visible via `ToolSearch` from inside a subagent? | First observed |
+|---|---|---|
+| `Workflow` / `RunWorkflow` | ❌ no match | 2026-09-01 1C audit, 🟠-4 |
+| `CronCreate` / `CronList` / `CronDelete` | ✅ full schema returned | 2026-09-02, this entry |
+| `ProposeGoal` | ❌ no match | 2026-09-02, this entry |
+| `ScheduleWakeup` | ❌ no match | 2026-09-02, this entry |
+
+Pattern: session-scoped interactive tools (dynamic workflow launch, goal-setting, dynamic self-pacing)
+are not exposed to a spawned subagent; stateless session-store tools (the Cron trio) are. Treat any
+future spec claim about `ProposeGoal` or `ScheduleWakeup`'s exact shape as requiring a **main-session**
+live probe — a Phase 1C (or any other) subagent cannot independently confirm it, only cite prior
+same-day evidence gathered elsewhere.
+
+### `/loop` and `/schedule` skill descriptions (live, this session's own skill listing)
+
+`/loop`: *"Run a prompt or slash command on a recurring interval (e.g. `/loop 5m /foo`). Omit the
+interval to let the model self-pace."* — confirms the interval-mode/dynamic-mode split the spec assumes.
+
+`/schedule`: *"Create, update, list, or run scheduled cloud agents (routines) that execute on a cron
+schedule... Also use when the user wants a one-time scheduled run."* — confirms both the recurring-cloud
+case and the one-time case; no session-lifetime coupling documented (unlike `/loop`/`CronCreate`).

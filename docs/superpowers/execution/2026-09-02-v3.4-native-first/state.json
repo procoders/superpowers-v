@@ -1,26 +1,30 @@
 {
   "run_id": "2026-09-02-v3.4-native-first",
-  "phase": "PARTITION_VERIFIED",
-  "updated_at": "2026-09-02T17:12:30Z",
+  "phase": "BLOCKED",
+  "updated_at": "2026-09-02T17:16:00Z",
   "pre_eval_id": "2026-09-02T170442Z-v3-4-native-first-replace-the-epic-goal-feature-a-of-hooks-e-5664",
   "jobs": {
     "epic-native": {
       "status": "pending",
       "isolation": "worktree",
       "worktree": null,
-      "session_id": null
+      "session_id": null,
+      "baseline": "aeae409ecef127940c75893c73abb926be2a1cca"
     },
     "triage-hook": {
       "status": "pending",
       "isolation": "worktree",
       "worktree": null,
-      "session_id": null
+      "session_id": null,
+      "baseline": "aeae409ecef127940c75893c73abb926be2a1cca"
     },
     "observe-native": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_a9324bde-2cb-3",
+      "session_id": null,
+      "baseline": "aeae409ecef127940c75893c73abb926be2a1cca",
+      "realised_commit": "aeae409ecef127940c75893c73abb926be2a1cca"
     },
     "docs-release": {
       "status": "pending",
@@ -34,5 +38,6 @@
       "worktree": null,
       "session_id": null
     }
-  }
+  },
+  "blocked_reason": "aborted by the orchestrator before wave-1 finalize: the Phase 1 pre-flight (run concurrently, out of pipeline order) found that job observe-native's instruction to delete scripts/compound-v-update-memory.py would break two importers (triage-outcomes.py, preferences.py) outside any job's lane. Nothing merged. Superseded by run 2026-09-02-v3.4-native-first-r2."
 }

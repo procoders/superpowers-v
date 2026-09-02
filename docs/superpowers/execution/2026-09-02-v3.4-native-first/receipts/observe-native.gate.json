@@ -1,0 +1,69 @@
+{
+  "baseline_commit": "aeae409ecef127940c75893c73abb926be2a1cca",
+  "diff_digest": "sha256:ff7e56bd07edec2ccbc68586e57a87e6080df622bf3ff665ea0b7f8b7f71025c",
+  "exit_code": 0,
+  "job_id": "observe-native",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"aeae409ecef127940c75893c73abb926be2a1cca\",\n  \"changed\": [\n    \"agents/parallel-dispatcher.md\",\n    \"commands/v-collect.md\",\n    \"commands/v-dashboard.md\",\n    \"scripts/compound-v-dashboard.py\",\n    \"scripts/compound-v-emit-workflow.py\",\n    \"scripts/compound-v-scorecard.py\",\n    \"skills/compound-v/memory.md\",\n    \"skills/compound-v/routing-policy.md\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-dashboard.py\",\n    \"scripts/compound-v-scorecard.py\",\n    \"scripts/compound-v-update-memory.py\",\n    \"scripts/compound-v-emit-workflow.py\",\n    \"commands/v-dashboard.md\",\n    \"commands/v-collect.md\",\n    \"agents/parallel-dispatcher.md\",\n    \"skills/compound-v/routing-policy.md\",\n    \"skills/compound-v/memory.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "aeae409ecef127940c75893c73abb926be2a1cca",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "agents/parallel-dispatcher.md",
+      "commands/v-collect.md",
+      "commands/v-dashboard.md",
+      "scripts/compound-v-dashboard.py",
+      "scripts/compound-v-emit-workflow.py",
+      "scripts/compound-v-scorecard.py",
+      "skills/compound-v/memory.md",
+      "skills/compound-v/routing-policy.md"
+    ],
+    "checks": [
+      {
+        "checker": "bash tests/test-epic-goal-stop.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f scripts/compound-v-dashboard.py ] || exit 0; /usr/bin/python3 scripts/compound-v-dashboard.py --selftest'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f scripts/compound-v-emit-workflow.py ] || exit 0; /usr/bin/python3 scripts/compound-v-emit-workflow.py --selftest'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f scripts/compound-v-scorecard.py ] || exit 0; /usr/bin/python3 scripts/compound-v-scorecard.py --selftest'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (4 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 3 command(s) from 8 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)",
+      "unmapped: agents/parallel-dispatcher.md, commands/v-collect.md, commands/v-dashboard.md, skills/compound-v/memory.md, skills/compound-v/routing-policy.md matched no `when` glob \u2014 unknown blast radius resolves to full_command, never to nothing"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_a9324bde-2cb-3"
+}
