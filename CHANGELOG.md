@@ -35,6 +35,62 @@ The first draft of the snapshot hook passed an invented `--repo` flag to the das
 
 `tests/test-native-points.sh`: 65 → **78 checks**, including the cross-hook one that writes with `PreCompact` and reads with `PostCompact` against a **deliberately divergent disk** — remove the reader and exactly one check reddens.
 
+## [3.3.0] - 2026-09-02
+
+Twenty-two Engine C runs and two adversarial cross-model review rounds found **nineteen defects**. Six of them were defects in the fixes for earlier defects. This entry is long because the failures were, and because most of them were invisible from the page.
+
+### Added — two native hook events, each with a reader
+
+**8 of the runtime's 10 documented hook events**, up from 6.
+
+**`PreCompact` → `hooks/precompact-snapshot.sh`.** The last moment at which a session still knows what it was doing. `PostCompact` receives the summary but its stdout is display-only on 2.1.238 — the context-injection path is exactly `SessionStart`, `UserPromptSubmit`, `UserPromptExpansion`, read out of the binary with `strings` — and `SessionStart` runs a session later. The complaint that started the 3.0 line was *"Клод забывает"*, and both existing answers **read** state when they run; this one **writes** it while it is still true, and `postcompact-resume.sh` reads it back. It never blocks compaction, writes one file into the session's temp store, and re-derives nothing.
+
+**`PostToolUseFailure` → `hooks/tool-failure-ledger.sh`.** The only event that sees a failure as it happens. The failure classifier has existed since 2.x and only external workers ever fed it; a `backend: claude` implementer's failed Bash was seen by nobody. The ledger appends one JSON line and exits — no classifying, no deciding, no retrying. It stores no `tool_input`, and that is **not** the same as "no secrets": tool errors routinely echo the command, its arguments, or a URL with a token, so the store is treated as sensitive (`umask 077`, 0700/0600) rather than described as safe.
+
+### Fixed — a red test floor was merged
+
+Dogfood 14 declared a floor that exits 3. It ran, failed, and was recorded with perfect honesty. **The job was recorded `success` and merged.** Status came from the scope verdict alone, and the scope gate has no opinion about whether code works.
+
+The `tests` block was the fourteenth mechanism this project built and left without a consumer — and the only one that did worse than nothing: it gave a green light to red tests. A red floor is now `blocked`, not `error`: the machinery is fine, the work did not pass its own declared tests.
+
+### Fixed — in direct mode, the pipeline blocked the job that produced its evidence
+
+The largest chain of the release, five runs long. A `direct`-mode job's run directory sits **inside** the tree the scope gate measures, and the pipeline never stops writing into it. Each fix revealed the next file, because a file only becomes visible once the ones before it are exempt: `state.json` (a sibling's Record rewrites it) → `preexisting/<id>.txt` (records digests including its own) → `<id>.verified.txt` (written by the gate, after the list that would contain it) → `receipts/<id>.gate.json` and `results/<id>.json` (written after the gate).
+
+The fix that held was not another filename. The exemption list is now built from **the three writers, by construction**, at the point the list is made.
+
+Alongside it, two seams that made the gate and the authority disagree about the same tree: the digest was taken over the whole tree by both sides at different moments (now both exclude the run directory, in direct mode only), and the authority re-derived from the raw exemption list while the gate used the verified one (now both use the verified one).
+
+### Fixed — two CRITICALs a review found and no run would
+
+**The manifest defines the lanes, and it was exempt by name.** A worker could write out of lane, rewrite its own `manifest.yaml` to widen `write_allowed`, and have the gate **and** the authority read the widened manifest and agree — with an honest baseline and an honest digest, because neither binds the document that says what "in scope" means. The by-name pass is now a closed list; everything else falls back to a digest bound at register time.
+
+**The worktree cleanup re-read its target from `state.json`**, which is on that closed list. A worker could redirect it at a **refused** job's tree and have the finalizer `--force`-delete the one copy of work the refusal exists to preserve.
+
+**A hook executed a script from the project.** `PreCompact` preferred `${cwd}/scripts/compound-v-dashboard.py`; any repository merely containing `docs/superpowers/` would have had its own Python run automatically, with the user's privileges, on every compaction. Cloning a repo was enough.
+
+### Fixed — five refusals under the wrong name
+
+`no_work` as a fourth verdict word · a moved HEAD as `forged` (now `stale`, decided by ancestry **and** the absence of any other fault) · a job that did nothing as `error` (now `blocked`, and only when the gate also passed and saw no changes) · an all-refused wave as *"already in HEAD"* · a retired worktree as `unverifiable` (now `merged`, on the recorded integration).
+
+Every decision was correct. Every name cost a debugging session, and two cost a dogfood run each.
+
+### Changed — the finalizer retires the worktrees it merged
+
+The runtime only auto-removes worktrees that changed **nothing**, so eleven runs into a day this repository had nineteen. They are not merely untidy: in direct mode the gate attributed all fifteen leftovers to the next job and blocked it. Only merged worktrees are removed — a refused job's tree still holds the only copy of its work.
+
+### Fixed — the inventory section's own numbers
+
+It claimed *"6 of 13 hook events"* and counted `SubagentStop` as unused. The binary's own table lists **ten** registrable events; `SessionEnd` and `UserPromptExpansion` exist as executors but are absent from it, and are now recorded as **unverified** rather than counted. `SubagentStop` is *received* and deliberately refused — the runtime converts a `Stop` registration into it for subagents, and `epic-goal-stop.sh` rejects it first thing or a subagent burns the main session's counter.
+
+### Known, and stated rather than fixed
+
+**In `direct` mode a worker can write anywhere in the tree, so no file-based exemption list is tamper-proof** — and a digest-bound one stored in that same writable tree is not either. The cross-model review was right that names alone are weak; it is equally true that digests in a writable tree are not strong. What backstops this is the integration authority, which re-derives the diff from git and refuses a receipt whose bindings disagree, plus the baseline pin, which stays digest-bound. The architecture's answer is the authority, not the list.
+
+**The plugin you edit is not the plugin you run.** The session that built this was running a July build the whole time; every hook here was verified by direct invocation with real payloads, and the registration path is asserted by `hooks.json` and its tests, not by observing a hook fire inside a live dispatch.
+
+**A `direct`-mode run needs a quiet repository.** Editing during one attributes your edits to the job. Four runs died of that. The gate now lists such paths under `foreign_execution_paths` so the diagnosis is immediate.
+
 ## [3.2.0] - 2026-09-02
 
 ### Changed — the triage gate is ON by default, and the claim that kept it off was wrong
