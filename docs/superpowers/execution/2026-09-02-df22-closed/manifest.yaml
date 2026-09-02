@@ -1,0 +1,55 @@
+run_id: 2026-09-02-df22-closed
+feature: df22 — the direct-mode class, closed
+routing_stance: balanced
+max_parallel: 2
+spec_path: docs/superpowers/execution/2026-09-02-df22-closed/spec.md
+plan_path: docs/superpowers/execution/2026-09-02-df22-closed/plan.md
+audits:
+  archaeology: docs/superpowers/execution/2026-09-02-df22-closed/spec.md
+  domain: docs/superpowers/execution/2026-09-02-df22-closed/spec.md
+  library: docs/superpowers/execution/2026-09-02-df22-closed/spec.md
+acceptance_criteria:
+  - "The review job carries agentType superpowers-v:spec-reviewer."
+test_contract:
+  floor_command: "/bin/echo floor-ok"
+  full_command: "/bin/echo full"
+  impacted_map:
+    - when: "docs/superpowers/dogfood/**"
+      run: "/bin/echo scoped"
+jobs:
+  - id: impl-slice
+    title: "Writes the thing the reviewer reviews"
+    type: docs
+    backend: claude
+    tier: light
+    effort: low
+    isolation: worktree
+    run: parallel
+    write_allowed: ["docs/superpowers/dogfood/2026-09-02-df22-closed-impl.md"]
+    read_allowed: ["docs/superpowers/execution/2026-09-02-df22-closed/spec.md"]
+    acceptance: ["The file exists."]
+    body: |
+      Create `docs/superpowers/dogfood/2026-09-02-df22-closed-impl.md` containing exactly:
+
+      # impl
+
+      Written for the reviewer to read.
+  - id: spec-review
+    title: "Review job — must spawn by role"
+    type: review
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: direct
+    run: serial
+    depends_on: [impl-slice]
+    write_allowed: ["docs/superpowers/dogfood/2026-09-02-df22-closed-review.md"]
+    read_allowed: ["docs/superpowers/dogfood/2026-09-02-df22-closed-impl.md"]
+    acceptance: ["The review file exists and names the file it reviewed."]
+    body: |
+      Read `docs/superpowers/dogfood/2026-09-02-df22-closed-impl.md`, then create
+      `docs/superpowers/dogfood/2026-09-02-df22-closed-review.md` containing exactly:
+
+      # review
+
+      Reviewed: 2026-09-02-df22-closed-impl.md
