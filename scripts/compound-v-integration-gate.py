@@ -142,6 +142,18 @@ def _git_text(root, args):
     return proc.returncode, proc.stdout, proc.stderr
 
 
+def _is_ancestor(maybe_ancestor, descendant, root=None):
+    """True iff ``maybe_ancestor`` is an ancestor of ``descendant`` in ``root``.
+
+    `git merge-base --is-ancestor` exits 0 for yes, 1 for no, and something else
+    for a real error. Only a clean 0 is a yes: an unknown commit or a broken repo
+    must not be read as "the tree merely moved forward".
+    """
+    rc, _out, _err = _git_text(root or ".", ["merge-base", "--is-ancestor",
+                                             maybe_ancestor, descendant])
+    return rc == 0
+
+
 def _git_bytes(root, args, env=None):
     """``git -C root <args>`` → (rc, stdout BYTES, stderr text).
 
@@ -316,10 +328,34 @@ def receipt_is_missing(receipt):
     return False
 
 
+def head_moved_under_job(receipt, observed_head, root=None):
+    """True iff the ONLY thing wrong is that the tree's HEAD advanced past the
+    commit this job was measured at — a `stale` receipt, not a forged one.
+
+    Dogfood 2c (2026-09-02) produced exactly this, and the run reported FORGED. The
+    cause was mundane: a human committed to the repository while a `direct`-mode job
+    was in flight, so HEAD moved under it. Nothing was forged; the ground truth
+    moved. `forged` is the authority's accusation of tampering, and spending it on
+    an ordinary race sends whoever reads it hunting a forgery that never happened —
+    the same mistake 3.0.4 corrected when a no-work refusal was dressed as one.
+
+    The distinction is decidable: the receipt's realised_commit must be an ANCESTOR
+    of the observed HEAD. An ancestor means the tree moved forward past a real
+    commit the job was measured at. A non-ancestor means the receipt names a commit
+    on no path to HEAD, which is not a race — that stays `forged`.
+    """
+    realised = receipt.get("realised_commit")
+    if not (realised and observed_head) or realised == observed_head:
+        return False
+    return _is_ancestor(realised, observed_head, root)
+
+
 def receipt_binding_faults(receipt, pinned_baseline, observed_head, observed_digest):
     """Reasons this PRESENT, well-formed receipt disagrees with the tree.
 
-    A non-empty list ⇒ `forged`: refused outright, with NO re-derivation.
+    A non-empty list ⇒ `forged`: refused outright, with NO re-derivation — UNLESS
+    `head_moved_under_job` says the tree simply advanced, in which case the caller
+    reports `stale`. Both refuse; only the word and the remedy differ.
     """
     faults = []
     if pinned_baseline and receipt["baseline_commit"] != pinned_baseline:
@@ -622,6 +658,24 @@ def evaluate_job(job, state_job, run_dir, repo_root, scope_check):
     if faults:
         # Refused OUTRIGHT. No re-derivation: a present-but-wrong receipt is a
         # forged claim, and re-deriving would hand it a second chance at clean.
+        #
+        # STALE IS NOT FORGED (3.3.0). If the receipt's realised_commit is an
+        # ANCESTOR of the observed HEAD, the tree simply advanced past the commit
+        # this job was measured at — someone committed while a `direct`-mode job
+        # was in flight. Dogfood 2c produced exactly that and the run said FORGED,
+        # which is an accusation of tampering spent on an ordinary race. Both
+        # verdicts refuse and neither re-derives; only the word and the remedy
+        # differ, and the remedy matters: re-run the job, do not go hunting a
+        # forgery that never happened.
+        if head_moved_under_job(receipt, observed_head, gate_root):
+            out["verdict"] = "stale"
+            out["reasons"].extend(faults)
+            out["notes"].append(
+                "STALE, not forged: realised_commit is an ancestor of HEAD, so the "
+                "tree advanced under this job — re-run it against the current HEAD. "
+                "A `direct`-mode run needs an otherwise-quiet repository."
+            )
+            return out
         out["verdict"] = "forged"
         out["reasons"].extend(faults)
         out["notes"].append(
@@ -1167,6 +1221,39 @@ def _selftest():
             "raw_stdout with the gate's human tail still parses ⇒ blocked, not forged",
             rep["results"][0]["verdict"] == "blocked",
         )
+
+        # (3b-stale) THE TREE MOVED UNDER THE JOB. Dogfood 2c: someone committed
+        # while a direct-mode job was in flight, HEAD advanced past the commit the
+        # job was measured at, and the run reported FORGED — an accusation of
+        # tampering spent on an ordinary race. Both verdicts refuse; the remedy
+        # differs, and that is the whole point of separating them.
+        expect("head_moved_under_job: an unrelated pair is not 'moved'",
+               head_moved_under_job({"realised_commit": "a" * 40}, "b" * 40, ".")
+               is False)
+        expect("head_moved_under_job: identical commits are not 'moved'",
+               head_moved_under_job({"realised_commit": "c" * 40}, "c" * 40, ".")
+               is False)
+        expect("head_moved_under_job: a missing side is never 'moved'",
+               head_moved_under_job({"realised_commit": ""}, "d" * 40, ".") is False
+               and head_moved_under_job({"realised_commit": "d" * 40}, "", ".")
+               is False)
+        wt, run_dir = fresh_case(
+            "stale", lambda w: write(w, "scripts/allowed.py", "1\n")
+        )
+        stale_receipt = _honest_receipt(scope_check, wt, base, allow)
+        _put_result(run_dir, "job-a", _result(wt, receipt=stale_receipt))
+        # Advance the tree the receipt was measured against, exactly as a human
+        # committing mid-run does.
+        write(wt, "unrelated.txt", "moved on\n")
+        _sh(wt, "git", "add", "-A")
+        _git_text(wt, ["commit", "-q", "-m", "someone committed mid-run"])
+        rep = evaluate_run(run_dir, repo, scope_check)
+        expect("a tree that advanced under the job reads STALE, not forged",
+               rep["results"][0]["verdict"] == "stale")
+        expect("STALE still refuses integration",
+               rep["integration"] == "refused")
+        expect("STALE names the remedy, not a forgery",
+               any("re-run it" in n for n in rep["results"][0]["notes"]))
 
         # (3c) state.json pins NO baseline, but the receipt names one. The digest
         # and the re-derivation must use the SAME reference, or the gate invents a
