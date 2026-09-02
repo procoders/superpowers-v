@@ -1,0 +1,103 @@
+run_id: 2026-09-02-v3.4-native-first-r10
+feature: v3.4 native-first r10 — the lane guard picks an interpreter by viability, the records carry measured numbers, the tests assert behaviour
+routing_stance: balanced
+max_parallel: 3
+spec_path: docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md
+plan_path: docs/superpowers/plans/2026-09-02-v3.4-native-first.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-09-02-v3-4-native-first.md
+  domain: docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md
+  library: docs/superpowers/library-audit/2026-09-02-v3-4-native-first.md
+triage:
+  tier: FULL
+  pre_eval_id: 2026-09-02T170442Z-v3-4-native-first-replace-the-epic-goal-feature-a-of-hooks-e-5664
+  taxonomy_digest: sha256:1f2a12f634422ca72a66cfa195b731a0e19743b5e7fe622fb799821cf5e88e85
+  decided_at: '2026-09-02T17:04:42Z'
+acceptance_criteria:
+- Every tests/*.sh and every script --selftest is green (CI's Python 3.9 floor).
+- grep for epic-watch|headless-shim|goal_arm|--goal-status|--arm-goal|autonomy.watch|record-watcher across commands skills agents hooks scripts tests .github CONVENTIONS.md returns nothing.
+- The UserPromptSubmit hook, driven with synthetic stdin, writes a pre-eval record bound to the stdin session and returns the tier in additionalContext; a question writes nothing.
+- No prose in commands/skills/agents instructs an agent to append task-outcomes.jsonl or to run compound-v-update-memory.py.
+- hooks/hooks.json registers no PostToolUseFailure hook; /v:dashboard has no serve mode.
+- Attended DIRECT is documented as an ordinary commit; Phase L is documented as unattended-only and tests/test-triage-landing.sh still passes.
+test_contract:
+  floor_command: bash tests/test-epic-goal-stop.sh
+  full_command: bash -c 'for t in tests/*.sh; do bash "$t" >/dev/null 2>&1 || { echo "FAIL $t"; exit 1; }; done; echo all-tests-ok'
+  impacted_map:
+  - when: hooks/**
+    run: bash -c 'bash tests/test-epic-goal-stop.sh && bash tests/test-native-points.sh'
+  - when: scripts/compound-v-*.py
+    run: bash -c '[ -f {path} ] || exit 0; /usr/bin/python3 {path} --selftest'
+  - when: commands/v-triage.md
+    run: bash tests/test-triage-landing.sh
+  - when: tests/*.sh
+    run: bash -c '[ -f {path} ] || exit 0; bash {path}'
+jobs:
+- id: guard-viable
+  title: 'Close the sixth review pass: viability-checked interpreter pick, re-measured hook cost, honest counts, behavioural assertions'
+  type: core_slice
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: worktree
+  run: parallel
+  write_allowed:
+  - hooks/lane-guard.sh
+  - tests/test-lane-guard.sh
+  - CHANGELOG.md
+  - README.md
+  - AGENTS.md
+  - docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md
+  read_allowed:
+  - docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-6.md
+  - docs/superpowers/execution/
+  acceptance:
+  - 'hooks/lane-guard.sh picks the first candidate interpreter for which `<py> -c ''import yaml''` exits 0; if none, the first for which `<py> -c pass` exits 0 plus a log line naming it and its missing PyYAML; if none can run, a log line saying so — never a silent no-decision exit. tests/test-lane-guard.sh proves it with an executable-but-broken `python3` first on PATH: the guard still DENIES an out-of-lane write and logs which interpreter it used.'
+  - CHANGELOG.md's manifest count says 46 (measured over every manifest under docs/superpowers/execution/ at the time of the job — state the number you counted), with the fallback-vs-PyYAML result stated as measured (jobs identical N/N; divergences confined to `body`).
+  - The hook's ambient cost is re-measured on this machine with the README recipe (50 invocations, unresolved path) under the interpreter the hook now picks, and README.md, AGENTS.md and the CHANGELOG carry the measured figure and method, not the 47 ms carried forward.
+  - tests/test-lane-guard.sh has no assertion that greps the hook's source for a variable name or a comment as a stand-in for behaviour; the two at ~:678-682 are replaced by behavioural cases or removed; bash tests/test-lane-guard.sh exits 0.
+  - The spec gains 'After the sixth review pass (2026-09-02)'; shellcheck -S warning hooks/lane-guard.sh is clean.
+  body: "Read docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-6.md, items 1–4. Close all four\nin your worktree; you have a developer's shell; run Python with -B; register your lane with a\nLITERAL --cwd (run `pwd` first; the clamp refuses \"$PWD\").\n\nITEM 1 hooks/lane-guard.sh ~:245-251 — pick the interpreter by VIABILITY, not by [ -x ]: iterate\n  the candidates (CV_PYTHON first if set, then /usr/bin/python3, `command -v python3`,\n  python3.12/3.11/3.10/3.9 if present) and take the first for which `<py> -B -c 'import yaml'`\n  exits 0; if none, the first for which `<py> -B -c pass` exits 0, plus a stderr log line naming\n  the path and that it lacks PyYAML (the fallback parser will run); if none can run, a log line\n  saying the guard could not find a working interpreter and is failing open. Keep the fail-open\n  contract and the 1.5 s budget: the probes are two tiny -c calls; measure that they do not add\n  more than a few ms (see ITEM 3). Test in tests/test-lane-guard.sh:\
+    \ put an executable shell\n  script named python3 that exits 1 first on PATH (and unset CV_PYTHON) → the guard must still\n  DENY an out-of-lane write and its log must name the interpreter it used; a second case with NO\n  working interpreter at all → exit 0, no decision, and a log line saying so.\nITEM 2 CHANGELOG.md ~:53 — count the manifests under docs/superpowers/execution/*/manifest.yaml\n  yourself and state that number; state the fallback-vs-PyYAML comparison as you measure it\n  (jobs identical N/N; where the two loaders differ, name the field — the sixth pass found only\n  `body`).\nITEM 3 — re-measure the ambient cost with the README recipe (50 invocations of the unresolved\n  path, `time`, from the repo root) under the interpreter the hook now selects; report the\n  numbers you got and put the measured figure + method + date into README.md's \"One ambient\n  cost\" paragraph, AGENTS.md's copy of it, and the CHANGELOG line that carried 47 ms forward.\n  Never publish a number\
+    \ you did not measure.\nITEM 4 tests/test-lane-guard.sh ~:678-682 — the two assertions that grep the hook's source for a\n  variable name / a comment: replace each with a behavioural case (drive the hook) or delete it\n  if the behaviour is already covered by the cases above it; say which in your report.\nRECORDS — spec: append \"After the sixth review pass (2026-09-02)\" with the four items and their\n  resolutions. Run the acceptance commands; report per item: file, change, command, exit code.\n"
+- id: spec-review-7
+  title: Review Gate — three passes against the spec and the feature-level acceptance criteria
+  type: review
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: direct
+  run: serial
+  write_allowed:
+  - docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-7.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - The review-7 file exists with the five sections; it states, for each of the sixth pass's four items, closed or open with evidence; the verdict is APPROVED or ISSUES with a numbered list.
+  body: 'Your agent definition carries the three-pass Review Gate and a Step 0 (V-memory recall).
+
+    Follow it. This is the SEVENTH pass. Read the six earlier passes under docs/superpowers/dogfood/.
+
+    The sixth pass raised four items (interpreter picked by [ -x ] not viability; a manifest count of
+
+    35 vs 46; the 47 ms hook cost carried forward across an interpreter change; two source-grepping
+
+    assertions). This run''s job guard-viable closed them. Review its merge as new code: drive
+
+    hooks/lane-guard.sh with a broken python3 first on PATH and an out-of-lane write (must DENY and
+
+    log the interpreter); check the measured numbers in README/AGENTS/CHANGELOG against a measurement
+
+    of your own with the README recipe; check the test assertions assert behaviour. Then run the
+
+    acceptance commands on the whole merged tree with /usr/bin/python3 -B. Write
+
+    docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-7.md with ## Recall, ## SPEC,
+
+    ## QUALITY, ## INTEGRATION, ## Verdict (APPROVED or ISSUES with a numbered list). Report what you
+
+    found, not what would be reassuring. Run python with -B; register your lane with a literal --cwd.
+
+    '
+  depends_on:
+  - guard-viable
