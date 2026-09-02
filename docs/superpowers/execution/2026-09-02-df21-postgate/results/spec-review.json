@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-02-df21-postgate-review.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "fd68476ce95d3ae25c9a49cf6362495e67626969",
+    "diff_digest": "sha256:a4efab2c6a6e66b358ca4bbcb6226d41a77618f739b24ea3b0c9cb1a97181220",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"fd68476ce95d3ae25c9a49cf6362495e67626969\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df21-postgate-review.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df21-postgate-review.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "fd68476ce95d3ae25c9a49cf6362495e67626969",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Review job \u2014 must spawn by role",
+  "tests": {
+    "command": "/bin/echo floor-ok\n/bin/echo scoped\n/bin/echo full",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 3
+  },
+  "violations": [],
+  "worktree": ""
+}

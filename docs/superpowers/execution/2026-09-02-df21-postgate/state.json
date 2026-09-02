@@ -1,0 +1,38 @@
+{
+  "run_id": "2026-09-02-df21-postgate",
+  "phase": "DISPATCHED",
+  "jobs": {
+    "impl-slice": {
+      "baseline": "5e226de2244da35a282d479f30dd2f888b11d590",
+      "isolation": "worktree",
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_01ab46be-d26-1",
+      "realised_commit": "5e226de2244da35a282d479f30dd2f888b11d590",
+      "status": "done",
+      "merged": {
+        "realised_commit": "5e226de2244da35a282d479f30dd2f888b11d590",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "fd68476ce95d3ae25c9a49cf6362495e67626969"
+      }
+    },
+    "spec-review": {
+      "baseline": "fd68476ce95d3ae25c9a49cf6362495e67626969",
+      "isolation": "direct",
+      "worktree": "",
+      "realised_commit": "fd68476ce95d3ae25c9a49cf6362495e67626969",
+      "status": "done"
+    }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "impl-slice"
+      ],
+      "merged": [
+        "impl-slice"
+      ],
+      "commit": "fd68476ce95d3ae25c9a49cf6362495e67626969",
+      "integrated": true
+    }
+  }
+}

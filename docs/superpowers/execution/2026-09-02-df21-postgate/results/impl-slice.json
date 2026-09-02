@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-02-df21-postgate-impl.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "5e226de2244da35a282d479f30dd2f888b11d590",
+    "diff_digest": "sha256:21a2e6c4c3d837b8290425e65dc40f87500e2fd7c86124ae0f313529fb7475fb",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"5e226de2244da35a282d479f30dd2f888b11d590\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df21-postgate-impl.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df21-postgate-impl.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "5e226de2244da35a282d479f30dd2f888b11d590",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Writes the thing the reviewer reviews",
+  "tests": {
+    "command": "/bin/echo floor-ok\n/bin/echo scoped",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_01ab46be-d26-1"
+}

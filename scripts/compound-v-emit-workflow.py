@@ -2072,10 +2072,26 @@ def cmd_gate_receipt(argv):
             # this one path and nothing else, the self-reference one layer deeper
             # than dogfood 11's. Adding its own path is the whole fix: a list that
             # does not exempt itself can never let a direct-mode job pass.
-            v_rel = os.path.relpath(os.path.abspath(verified),
-                                    os.path.abspath(root)).replace(os.sep, "/")
-            if not v_rel.startswith("../") and v_rel not in kept:
-                kept.append(v_rel)
+            # THE FILES THAT DO NOT EXIST YET, ADDED BY CONSTRUCTION.
+            #
+            # The walk above can only list what is on disk NOW. Three of this job's
+            # pipeline files are written LATER — this verified list, the gate's own
+            # receipt, and Record's result — so a predicate that recognises them is
+            # not enough; they have to be named. Dogfood 21 proved that the hard
+            # way: the predicate was right, the walk simply could not see them, and
+            # the run failed on the same two paths as dogfood 20.
+            #
+            # Chasing these one per run cost five dogfoods. They are enumerated here
+            # ONCE, from the three places in this file that write them.
+            for _later in (verified,
+                           os.path.join(args.run_dir, "receipts",
+                                        "%s.gate.json" % args.job_id),
+                           os.path.join(args.run_dir, "results",
+                                        "%s.json" % args.job_id)):
+                _rel = os.path.relpath(os.path.abspath(_later),
+                                       os.path.abspath(root)).replace(os.sep, "/")
+                if not _rel.startswith("../") and _rel not in kept:
+                    kept.append(_rel)
             _atomic_write(verified, "\n".join(kept) + ("\n" if kept else ""))
             pre = verified
     rc, raw_stdout, err, parsed = _run_scope_check(
