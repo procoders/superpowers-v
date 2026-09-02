@@ -4,6 +4,24 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [3.1.1] - 2026-09-02
+
+### Fixed — a question no longer burns the session's one triage nudge
+
+The `UserPromptSubmit` nudge fires **at most once per session**. The native-mechanism audit named the consequence precisely and it sat there unfixed: a session whose first prompt is *"what does this do?"* spent the reminder on a question, and the real change request that followed got nothing.
+
+A prompt of at most 200 characters ending in `?` now returns **before** the marker is written — the session stays armed, and the cost is the ~9 ms early exit rather than the ~89 ms eligibility path.
+
+The test is deliberately narrow, because "is this a change request?" is not decidable in a hook. Only a *short* prompt ending in `?` counts as a question; a long prompt that happens to end in `?` is a description with a question attached and still nudges. The direction of the error is chosen: a missed nudge costs a reminder, a spent one costs the session's **only** reminder.
+
+Six regression tests, and the guard was watched failing — removed from a copy of the hook, exactly three checks go red. A guard nobody has seen fail is a guard nobody should trust.
+
+**The audit row stays ⚠, and the reason is unchanged:** a model that ignores the line still leaves no triage record at all, and the Stop gate that would catch that is still off by default (`enforcement.triage_gate // false`). The reminder got more accurate. It did not become a mechanism.
+
+### Fixed — the auto-generated release title was a date
+
+The CHANGELOG heading is `## [X.Y.Z] - YYYY-MM-DD`, so the text after the dash is the date. v3.0.6 and v3.1.0 — the first two releases the repaired gate published on its own, and the first two where nobody passed `--title` by hand — both shipped as *"vX.Y.Z — 2026-09-02"*. The title now comes from the entry's first `###` heading, where a release actually names itself, and falls back to no suffix rather than to a date. Both releases retitled.
+
 ## [3.1.0] - 2026-09-02
 
 Three maintainer requirements, set 2026-09-02. Each one turned out to be a mechanism that already existed and was defaulted, named, or gated wrong.

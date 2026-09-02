@@ -40,6 +40,9 @@
 #   1. the payload parses and is a UserPromptSubmit event
 #   2. the prompt does not begin with `/` (a slash command is an invocation, not
 #      a change request — and `/v:triage` itself is one)
+#   2b. the prompt is not a SHORT QUESTION (<=200 chars ending in `?`). A question
+#      is not a change request, and spending the session's one nudge on it is the
+#      hole the audit named. Skipping here leaves the session ARMED.
 #   3. a `session_id` is present (without it there is nothing to deduplicate on,
 #      and a nudge on every prompt is worse than no nudge)
 #   4. the project looks Compound-V-enabled: `docs/superpowers/` or
@@ -104,7 +107,7 @@
 #
 # COST, measured on the development machine (macOS, /usr/bin/python3, mean of
 # 10 runs against this repository):
-#   early exit (slash command, or the marker already set)   ~9 ms
+#   early exit (slash command, short question, or marker set) ~9 ms
 #   full eligibility path (records scan + resume query)     ~89 ms
 # The full path runs at most once per session — except while a run is active,
 # when no marker is written and conditions 6-7 are re-evaluated on each prompt.
@@ -246,16 +249,21 @@ hook_main() {
     ((.hook_event_name // "") | tostring | gsub("[^A-Za-z]"; "")),
     (((.prompt // "") | tostring)[0:1] | gsub("[^/]"; "")),
     (((.session_id // "") | tostring) | gsub("[^A-Za-z0-9._:-]"; "")),
-    (((.cwd // "") | tostring) | gsub("[\n\r]"; ""))
+    (((.cwd // "") | tostring) | gsub("[\n\r]"; "")),
+    (((.prompt // "") | tostring) | ascii_downcase
+       | gsub("^[[:space:]]+"; "") | gsub("[[:space:]]+$"; "")
+       | if (length > 0 and length <= 200 and (.[-1:] == "?"))
+         then "q" else "" end)
   ' 2>/dev/null)" || return 1
   [ -n "$fields" ] || return 1
 
-  local ev slash sid cwdv
+  local ev slash sid cwdv question
   {
     read -r ev
     read -r slash
     read -r sid
     read -r cwdv
+    read -r question
   } <<EOF
 ${fields}
 EOF
@@ -269,6 +277,26 @@ EOF
   # A slash command is an invocation, not a change request — `/v:triage`,
   # `/v:status` and `/clear` all arrive here.
   [ -z "${slash:-}" ] || return 1
+
+  # A SHORT QUESTION IS NOT A CHANGE REQUEST, AND MUST NOT SPEND THE NUDGE.
+  #
+  # The nudge is once per session, and the audit named the hole precisely: a
+  # session whose first prompt is "what does this do?" burns the reminder on a
+  # question and the real change request that follows gets nothing. Returning
+  # here — BEFORE the marker is written and before the ~89 ms eligibility path —
+  # leaves the session armed and costs the ~9 ms early exit.
+  #
+  # The test is deliberately narrow, because the general problem (is this a
+  # change request?) is not decidable in a hook: a prompt of at most 200
+  # characters that ENDS IN A QUESTION MARK. Nothing else is treated as a
+  # question. "Rename getUser to fetchUser, ok?" is 33 characters and ends in
+  # `?` and will be skipped — that is the deliberate direction of the error: a
+  # missed nudge costs a reminder, a spent one costs the session's only reminder.
+  # A long prompt that happens to end in `?` is a description with a question
+  # attached, and still nudges.
+  if [ "${question:-}" = "q" ]; then
+    return 1
+  fi
 
   # No session id ⇒ nothing to deduplicate on ⇒ stay silent.
   [ -n "${sid:-}" ] || return 1

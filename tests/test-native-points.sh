@@ -169,6 +169,35 @@ check "a second prompt in the SAME session is silent (idempotent)" \
 out3="$(run_nudge sess-B 'rename the config key')"
 check "a different session fires again" "$([ -n "$out3" ] && echo 1 || echo 0)"
 
+# --- 3.1.0: a QUESTION must not spend the session's one nudge -----------------
+# The audit named this hole precisely: the nudge fires at most once per session,
+# so a session whose first prompt is "what does this do?" burned the reminder and
+# the real change request that followed got nothing. A short question now returns
+# BEFORE the marker is written, leaving the session armed.
+q_out="$(run_nudge sess-Q 'what does this do?')"
+check "a short question does not nudge" "$([ -z "$q_out" ] && echo 1 || echo 0)"
+q_after="$(run_nudge sess-Q 'add a retry to the uploader')"
+check "the question did NOT burn the session's nudge" \
+  "$([ -n "$q_after" ] && echo 1 || echo 0)"
+q_third="$(run_nudge sess-Q 'and bump the timeout too')"
+check "the nudge is still once-per-session after a question" \
+  "$([ -z "$q_third" ] && echo 1 || echo 0)"
+markers_before="$(find "$TMPDIR" -name 'nudged-*' 2>/dev/null | wc -l | tr -d ' ')"
+_="$(run_nudge sess-Q2 'why is this failing?')"
+markers_after="$(find "$TMPDIR" -name 'nudged-*' 2>/dev/null | wc -l | tr -d ' ')"
+check "a question leaves NO marker behind (the session stays armed)" \
+  "$([ "$markers_before" = "$markers_after" ] && echo 1 || echo 0)"
+# The test is narrow on purpose: only a SHORT prompt ending in `?` is a question.
+long_q="refactor the pricing module and propagate the new type to every caller, \
+then re-check the callers in the billing package and the reporting package, and \
+make sure the VAT rounding still matches the fixtures, right?"
+lq_out="$(run_nudge sess-LQ "$long_q")"
+check "a long prompt that merely ends in '?' still nudges" \
+  "$([ -n "$lq_out" ] && echo 1 || echo 0)"
+nq_out="$(run_nudge sess-NQ 'rename getUser to fetchUser')"
+check "a plain change request is unaffected" \
+  "$([ -n "$nq_out" ] && echo 1 || echo 0)"
+
 # --------------------------------------------------------------------------- #
 # 2. Exemptions.
 # --------------------------------------------------------------------------- #
