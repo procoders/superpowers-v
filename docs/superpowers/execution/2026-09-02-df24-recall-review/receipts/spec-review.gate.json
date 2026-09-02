@@ -1,0 +1,61 @@
+{
+  "baseline_commit": "e51b00ed839000e2b52995c131c32413741fedcd",
+  "diff_digest": "sha256:5a74c6afc8feb73f539ef30f0a2ba657790ae3170bbb04cdacd73a4eaa234a42",
+  "exit_code": 0,
+  "job_id": "spec-review",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"e51b00ed839000e2b52995c131c32413741fedcd\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df24-review.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df24-review.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "e51b00ed839000e2b52995c131c32413741fedcd",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "docs/superpowers/dogfood/2026-09-02-df24-review.md",
+      "docs/superpowers/execution/2026-09-02-df24-recall-review/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df24-recall-review/jobs/impl-slice.baseline",
+      "docs/superpowers/execution/2026-09-02-df24-recall-review/jobs/impl-slice.test-contract.json",
+      "docs/superpowers/execution/2026-09-02-df24-recall-review/jobs/spec-review.baseline",
+      "docs/superpowers/execution/2026-09-02-df24-recall-review/jobs/spec-review.test-contract.json",
+      "docs/superpowers/execution/2026-09-02-df24-recall-review/lane-map.json",
+      "docs/superpowers/execution/2026-09-02-df24-recall-review/preexisting/spec-review.txt",
+      "docs/superpowers/execution/2026-09-02-df24-recall-review/preexisting/spec-review.verified.txt",
+      "docs/superpowers/execution/2026-09-02-df24-recall-review/receipts/impl-slice.gate.json",
+      "docs/superpowers/execution/2026-09-02-df24-recall-review/results/impl-slice.json",
+      "docs/superpowers/execution/2026-09-02-df24-recall-review/state.json"
+    ],
+    "checks": [
+      {
+        "checker": "/bin/echo floor-ok",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "/bin/echo scoped",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "/bin/echo full",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (1 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 1 command(s) from 12 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)",
+      "unmapped: docs/superpowers/execution/2026-09-02-df24-recall-review/.run.lock, docs/superpowers/execution/2026-09-02-df24-recall-review/jobs/impl-slice.baseline, docs/superpowers/execution/2026-09-02-df24-recall-review/jobs/impl-slice.test-contract.json, docs/superpowers/execution/2026-09-02-df24-recall-review/jobs/spec-review.baseline, docs/superpowers/execution/2026-09-02-df24-recall-review/jobs/spec-review.test-contract.json, docs/superpowers/execution/2026-09-02-df24-recall-review/lane-map.json, docs/superpowers/execution/2026-09-02-df24-recall-review/preexisting/spec-review.txt, docs/superpowers/execution/2026-09-02-df24-recall-review/preexisting/spec-review.verified.txt, docs/superpowers/execution/2026-09-02-df24-recall-review/receipts/impl-slice.gate.json, docs/superpowers/execution/2026-09-02-df24-recall-review/results/impl-slice.json, docs/superpowers/execution/2026-09-02-df24-recall-review/state.json matched no `when` glob \u2014 unknown blast radius resolves to full_command, never to nothing"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": ""
+}

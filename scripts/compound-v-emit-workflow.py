@@ -522,6 +522,23 @@ def _clamp_rules(job, python_bin, self_path, worker_script_for):
     """
     backend = job.get("backend") or "claude"
     rules = ["Bash(%s %s register-lane:*)" % (python_bin, self_path)]
+    # THE RECALL LAYER, READ-ONLY, OR THE INSTRUCTION TO USE IT IS UNREACHABLE.
+    #
+    # v3.3.3 told five agents to consult V-memory first. Dogfood 24 spawned the one
+    # agent Engine C spawns by role and watched it try: the clamp admitted exactly
+    # one command form — `register-lane` — and denied the recall query, a third
+    # phrasing of it, the `recall-check` bridge, and the form `/v:remember` itself
+    # instructs. The instruction was prose in an agent definition; the clamp is
+    # mechanism, and mechanism wins. This repository already has a name for that
+    # failure and shipped it into the feature meant to demonstrate recall.
+    #
+    # `search` and `recall-check` only READ: they open a SQLite index outside the
+    # repo and print. Admitting them widens no write surface, and the scope gate is
+    # unaffected either way — it measures the tree, not the commands.
+    memory = os.path.join(os.path.dirname(self_path), "compound-v-memory.py")
+    if os.path.exists(memory):
+        rules.append("Bash(%s %s search:*)" % (python_bin, memory))
+        rules.append("Bash(%s %s recall-check:*)" % (python_bin, memory))
     if backend != "claude":
         worker = worker_script_for(backend)
         if not worker:
@@ -3948,6 +3965,20 @@ def selftest():
             {"id": "c-claude", "tier": "light", "write_allowed": ["k/**"]},
             {"id": "c-deep", "tier": "deep", "write_allowed": ["l/**"]},
         ]), tmp)
+        # dogfood 24: the recall instruction was unreachable behind the clamp.
+        _cl = _clamp_rules({"id": "j", "backend": "claude"}, "/usr/bin/python3",
+                           os.path.abspath(__file__), lambda b: None)
+        _check("the clamp admits the read-only recall search",
+               any("compound-v-memory.py search:*" in r for r in (_cl or [])),
+               str(_cl))
+        _check("the clamp admits the recall-check bridge",
+               any("compound-v-memory.py recall-check:*" in r for r in (_cl or [])))
+        _check("the clamp still admits register-lane",
+               any("register-lane:*" in r for r in (_cl or [])))
+        _check("the clamp admits NO write-capable memory subcommand",
+               not any(("memory.py refresh" in r) or ("memory.py bootstrap" in r)
+                       for r in (_cl or [])), str(_cl))
+
         _check("every launched job carries a bash clamp",
                all(e["implement_clamp"] for w in clamped["waves"] for e in w))
         _refused = False
