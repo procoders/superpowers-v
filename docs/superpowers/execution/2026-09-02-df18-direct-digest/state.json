@@ -17,7 +17,10 @@
     },
     "spec-review": {
       "baseline": "b16f5571222c3be81ae8f55f03ca07208d84a6c3",
-      "isolation": "direct"
+      "isolation": "direct",
+      "worktree": "",
+      "realised_commit": "23e5181051b4c0a75206b579d3d1385fb309fd05",
+      "status": "blocked"
     }
   },
   "waves": {

@@ -1,0 +1,25 @@
+{
+  "blocked": true,
+  "exit_code": 1,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-02-df18-direct-digest-review.md",
+    "docs/superpowers/dogfood/2026-09-02-v3.3.0-four-runs.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "b16f5571222c3be81ae8f55f03ca07208d84a6c3",
+    "diff_digest": "sha256:6a37f4211b996c6e7b32a3adba1bcf0b077cc1ae761370bc6fe08ae73c906081",
+    "exit_code": 1,
+    "raw_stdout": "{\n  \"verdict\": \"blocked\",\n  \"mode\": \"direct\",\n  \"baseline\": \"b16f5571222c3be81ae8f55f03ca07208d84a6c3\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df18-direct-digest-review.md\",\n    \"docs/superpowers/dogfood/2026-09-02-v3.3.0-four-runs.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df18-direct-digest-review.md\"\n  ],\n  \"violations\": [\n    \"docs/superpowers/dogfood/2026-09-02-v3.3.0-four-runs.md\"\n  ]\n}\n",
+    "realised_commit": "23e5181051b4c0a75206b579d3d1385fb309fd05",
+    "verdict": "blocked"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "blocked",
+  "summary": "Review job \u2014 must spawn by role",
+  "violations": [
+    "docs/superpowers/dogfood/2026-09-02-v3.3.0-four-runs.md"
+  ],
+  "worktree": ""
+}
