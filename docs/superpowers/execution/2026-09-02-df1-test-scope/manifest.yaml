@@ -1,4 +1,5 @@
 run_id: 2026-09-02-df1-test-scope
+feature: df1 — the derived test scope in a real run
 routing_stance: balanced
 max_parallel: 2
 spec_path: docs/superpowers/execution/2026-09-02-df1-test-scope/spec.md
