@@ -1,0 +1,35 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    ".claude-plugin/marketplace.json",
+    ".claude-plugin/plugin.json",
+    "CHANGELOG.md",
+    "README.md",
+    "docs/superpowers/architecture/2026-09-02-viability-audit.md",
+    "docs/superpowers/architecture/native-mechanisms.md",
+    "skills/compound-v/SKILL.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "4c7ef986e669114c87a71b5dcccc0f46da5bd13e",
+    "diff_digest": "sha256:5ebf6b53242a9cdbfeaad4d3a4b3297ad5157c590e11961cdf3d8d288f0dec9d",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"4c7ef986e669114c87a71b5dcccc0f46da5bd13e\",\n  \"changed\": [\n    \".claude-plugin/marketplace.json\",\n    \".claude-plugin/plugin.json\",\n    \"CHANGELOG.md\",\n    \"README.md\",\n    \"docs/superpowers/architecture/2026-09-02-viability-audit.md\",\n    \"docs/superpowers/architecture/native-mechanisms.md\",\n    \"skills/compound-v/SKILL.md\"\n  ],\n  \"allowed\": [\n    \"README.md\",\n    \"CHANGELOG.md\",\n    \".claude-plugin/plugin.json\",\n    \".claude-plugin/marketplace.json\",\n    \"skills/compound-v/SKILL.md\",\n    \"docs/superpowers/architecture/native-mechanisms.md\",\n    \"docs/superpowers/architecture/2026-09-02-viability-audit.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "4c7ef986e669114c87a71b5dcccc0f46da5bd13e",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "README, SKILL.md, native-mechanisms, audit, CHANGELOG 3.4.0, version bump",
+  "tests": {
+    "command": "bash tests/test-epic-goal-stop.sh\nbash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": ""
+}

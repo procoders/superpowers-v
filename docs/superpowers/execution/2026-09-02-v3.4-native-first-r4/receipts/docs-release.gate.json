@@ -1,0 +1,62 @@
+{
+  "baseline_commit": "4c7ef986e669114c87a71b5dcccc0f46da5bd13e",
+  "diff_digest": "sha256:5ebf6b53242a9cdbfeaad4d3a4b3297ad5157c590e11961cdf3d8d288f0dec9d",
+  "exit_code": 0,
+  "job_id": "docs-release",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"4c7ef986e669114c87a71b5dcccc0f46da5bd13e\",\n  \"changed\": [\n    \".claude-plugin/marketplace.json\",\n    \".claude-plugin/plugin.json\",\n    \"CHANGELOG.md\",\n    \"README.md\",\n    \"docs/superpowers/architecture/2026-09-02-viability-audit.md\",\n    \"docs/superpowers/architecture/native-mechanisms.md\",\n    \"skills/compound-v/SKILL.md\"\n  ],\n  \"allowed\": [\n    \"README.md\",\n    \"CHANGELOG.md\",\n    \".claude-plugin/plugin.json\",\n    \".claude-plugin/marketplace.json\",\n    \"skills/compound-v/SKILL.md\",\n    \"docs/superpowers/architecture/native-mechanisms.md\",\n    \"docs/superpowers/architecture/2026-09-02-viability-audit.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "4c7ef986e669114c87a71b5dcccc0f46da5bd13e",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      ".claude-plugin/marketplace.json",
+      ".claude-plugin/plugin.json",
+      "CHANGELOG.md",
+      "README.md",
+      "docs/superpowers/architecture/2026-09-02-viability-audit.md",
+      "docs/superpowers/architecture/native-mechanisms.md",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/.run.lock",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/jobs/deletions-fixup.baseline",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/jobs/deletions-fixup.test-contract.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/jobs/docs-release.baseline",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/jobs/docs-release.test-contract.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/lane-map.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/preexisting/docs-release.txt",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/preexisting/docs-release.verified.txt",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/receipts/deletions-fixup.gate.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/results/deletions-fixup.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/state.json",
+      "docs/superpowers/memory/worker-performance.jsonl",
+      "skills/compound-v/SKILL.md"
+    ],
+    "checks": [
+      {
+        "checker": "bash tests/test-epic-goal-stop.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (4 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 0 command(s) from 19 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)",
+      "unmapped: .claude-plugin/marketplace.json, .claude-plugin/plugin.json, CHANGELOG.md, README.md, docs/superpowers/architecture/2026-09-02-viability-audit.md, docs/superpowers/architecture/native-mechanisms.md, docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/.run.lock, docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/jobs/deletions-fixup.baseline, docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/jobs/deletions-fixup.test-contract.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/jobs/docs-release.baseline, docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/jobs/docs-release.test-contract.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/lane-map.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/preexisting/docs-release.txt, docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/preexisting/docs-release.verified.txt, docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/receipts/deletions-fixup.gate.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/results/deletions-fixup.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/state.json, docs/superpowers/memory/worker-performance.jsonl, skills/compound-v/SKILL.md matched no `when` glob \u2014 unknown blast radius resolves to full_command, never to nothing"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": ""
+}

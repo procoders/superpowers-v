@@ -4,3 +4,4 @@
 {"event": "bind", "ts": "2026-09-02T17:30:30Z", "pre_eval_id": "2026-09-02T170442Z-v3-4-native-first-replace-the-epic-goal-feature-a-of-hooks-e-5664", "run_id": "2026-09-02-v3.4-native-first-r2"}
 {"event": "bind", "ts": "2026-09-02T18:21:37Z", "pre_eval_id": "2026-09-02T170442Z-v3-4-native-first-replace-the-epic-goal-feature-a-of-hooks-e-5664", "run_id": "2026-09-02-v3.4-native-first-r3"}
 {"event": "bind", "ts": "2026-09-02T18:27:23Z", "pre_eval_id": "2026-09-02T170442Z-v3-4-native-first-replace-the-epic-goal-feature-a-of-hooks-e-5664", "run_id": "2026-09-02-v3.4-native-first-r4"}
+{"event": "actual", "ts": "2026-09-02T18:55:58Z", "pre_eval_id": "2026-09-02T170442Z-v3-4-native-first-replace-the-epic-goal-feature-a-of-hooks-e-5664", "run_id": "2026-09-02-v3.4-native-first-r4", "escalated": false, "review_result": null, "test_result": "pass", "demoted": false, "ci_failed": false, "reverted": false, "merge_pending": true}

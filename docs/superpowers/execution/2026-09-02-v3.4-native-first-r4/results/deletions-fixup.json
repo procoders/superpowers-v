@@ -1,0 +1,32 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "hooks/tool-failure-ledger.sh",
+    "scripts/compound-v-epic-watch.py",
+    "scripts/compound-v-headless-shim.py",
+    "skills/compound-v/phase-preeval.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "f9bb4867c8aa7050f9d3acb30c5be49d04095b3e",
+    "diff_digest": "sha256:1dce3d2fcf22fb8818540031df43ea32ced5ef0dc735c35574b9b2c2b16a6d83",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"f9bb4867c8aa7050f9d3acb30c5be49d04095b3e\",\n  \"changed\": [\n    \"hooks/tool-failure-ledger.sh\",\n    \"scripts/compound-v-epic-watch.py\",\n    \"scripts/compound-v-headless-shim.py\",\n    \"skills/compound-v/phase-preeval.md\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-epic-watch.py\",\n    \"scripts/compound-v-headless-shim.py\",\n    \"hooks/tool-failure-ledger.sh\",\n    \"tests/test-native-points.sh\",\n    \"skills/compound-v/phase-preeval.md\",\n    \".github/workflows/validate.yml\",\n    \"CONVENTIONS.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "f9bb4867c8aa7050f9d3acb30c5be49d04095b3e",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "The three deletions jobs A and B were denied by the clamp, plus one wrong sentence",
+  "tests": {
+    "command": "bash tests/test-epic-goal-stop.sh\nbash -c 'bash tests/test-epic-goal-stop.sh && bash tests/test-native-points.sh'\nbash -c '[ -f scripts/compound-v-epic-watch.py ] || exit 0; /usr/bin/python3 scripts/compound-v-epic-watch.py --selftest'\nbash -c '[ -f scripts/compound-v-headless-shim.py ] || exit 0; /usr/bin/python3 scripts/compound-v-headless-shim.py --selftest'\nbash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 5
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_c4213c2f-507-1"
+}

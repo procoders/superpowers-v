@@ -1,0 +1,9 @@
+{
+  "agents": {},
+  "manifest": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/manifest.yaml",
+  "run_id": "2026-09-02-v3.4-native-first-r4",
+  "worktrees": {
+    "/Users/oleg/Dev/superpowers-v": "spec-review",
+    "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_c4213c2f-507-1": "deletions-fixup"
+  }
+}

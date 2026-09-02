@@ -1,0 +1,62 @@
+{
+  "baseline_commit": "2bb4b55d07ef423a4995e094ecc1677cd758a204",
+  "diff_digest": "sha256:9abb4f83ff9abf496e4f1d8f5828b68106253c764fbc723342fd15a07064242a",
+  "exit_code": 0,
+  "job_id": "spec-review",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"2bb4b55d07ef423a4995e094ecc1677cd758a204\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "2bb4b55d07ef423a4995e094ecc1677cd758a204",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review.md",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/.run.lock",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/jobs/deletions-fixup.baseline",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/jobs/deletions-fixup.test-contract.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/jobs/docs-release.baseline",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/jobs/docs-release.test-contract.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/jobs/spec-review.baseline",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/jobs/spec-review.test-contract.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/lane-map.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/preexisting/docs-release.txt",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/preexisting/docs-release.verified.txt",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/preexisting/spec-review.txt",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/preexisting/spec-review.verified.txt",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/receipts/deletions-fixup.gate.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/receipts/docs-release.gate.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/results/deletions-fixup.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/results/docs-release.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/state.json",
+      "docs/superpowers/memory/worker-performance.jsonl"
+    ],
+    "checks": [
+      {
+        "checker": "bash tests/test-epic-goal-stop.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (4 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 0 command(s) from 19 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)",
+      "unmapped: docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review.md, docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/.run.lock, docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/jobs/deletions-fixup.baseline, docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/jobs/deletions-fixup.test-contract.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/jobs/docs-release.baseline, docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/jobs/docs-release.test-contract.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/jobs/spec-review.baseline, docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/jobs/spec-review.test-contract.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/lane-map.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/preexisting/docs-release.txt, docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/preexisting/docs-release.verified.txt, docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/preexisting/spec-review.txt, docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/preexisting/spec-review.verified.txt, docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/receipts/deletions-fixup.gate.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/receipts/docs-release.gate.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/results/deletions-fixup.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/results/docs-release.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r4/state.json, docs/superpowers/memory/worker-performance.jsonl matched no `when` glob \u2014 unknown blast radius resolves to full_command, never to nothing"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": ""
+}

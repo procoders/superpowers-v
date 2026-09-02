@@ -1,0 +1,65 @@
+{
+  "baseline_commit": "f9bb4867c8aa7050f9d3acb30c5be49d04095b3e",
+  "diff_digest": "sha256:1dce3d2fcf22fb8818540031df43ea32ced5ef0dc735c35574b9b2c2b16a6d83",
+  "exit_code": 0,
+  "job_id": "deletions-fixup",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"f9bb4867c8aa7050f9d3acb30c5be49d04095b3e\",\n  \"changed\": [\n    \"hooks/tool-failure-ledger.sh\",\n    \"scripts/compound-v-epic-watch.py\",\n    \"scripts/compound-v-headless-shim.py\",\n    \"skills/compound-v/phase-preeval.md\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-epic-watch.py\",\n    \"scripts/compound-v-headless-shim.py\",\n    \"hooks/tool-failure-ledger.sh\",\n    \"tests/test-native-points.sh\",\n    \"skills/compound-v/phase-preeval.md\",\n    \".github/workflows/validate.yml\",\n    \"CONVENTIONS.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "f9bb4867c8aa7050f9d3acb30c5be49d04095b3e",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "hooks/tool-failure-ledger.sh",
+      "scripts/compound-v-epic-watch.py",
+      "scripts/compound-v-headless-shim.py",
+      "skills/compound-v/phase-preeval.md"
+    ],
+    "checks": [
+      {
+        "checker": "bash tests/test-epic-goal-stop.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'bash tests/test-epic-goal-stop.sh && bash tests/test-native-points.sh'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f scripts/compound-v-epic-watch.py ] || exit 0; /usr/bin/python3 scripts/compound-v-epic-watch.py --selftest'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f scripts/compound-v-headless-shim.py ] || exit 0; /usr/bin/python3 scripts/compound-v-headless-shim.py --selftest'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (4 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 3 command(s) from 4 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)",
+      "unmapped: skills/compound-v/phase-preeval.md matched no `when` glob \u2014 unknown blast radius resolves to full_command, never to nothing"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_c4213c2f-507-1"
+}
