@@ -1,5 +1,5 @@
 ---
-description: Classify one change request before any work starts — resolve, score, and write plus COMMIT the pre-eval triage record, then print the tier (DIRECT | SCOPED | FULL) with the predicates that decided it. `--land` is the DIRECT auto-route landing gate — it re-checks predicates 7, 8 and 9 and commits behind an expected-HEAD compare-and-swap.
+description: Classify one change request before any work starts — resolve, score, and write plus COMMIT the pre-eval triage record, then print the tier (DIRECT | SCOPED | FULL) with the predicates that decided it. `--land` is the UNATTENDED DIRECT auto-route landing gate — it re-checks predicates 7, 8 and 9 and commits behind an expected-HEAD compare-and-swap; an attended DIRECT change is an ordinary commit and does not use it.
 ---
 
 You are running **`/v:triage`** — the **entry point** to Compound V's sizing engine.
@@ -8,29 +8,68 @@ You are running **`/v:triage`** — the **entry point** to Compound V's sizing e
 that, until this command existed, **nothing ever called**: `docs/superpowers/pre-eval/` had never
 appeared in this repository's git history and no run had ever been bound to a record. Every other
 v3.0 mechanism — the validator's `triage` block, the Stop-hook coverage gate, the outcome stream,
-the circuit breaker — consumes a record that only this command produces.
+the circuit breaker — consumes a record that only Phase T produces.
 
 The argument is `{{args}}`.
+
+## You are not the only producer any more (v3.4)
+
+`hooks/triage-prompt-nudge.sh` fires on `UserPromptSubmit` and runs **the same subcommand Phase T
+runs below**, so a change request that arrives as an ordinary prompt is usually already sized and
+already has a record — written, bound to the session, and **uncommitted**, because a hook must not
+run git. Before scoring, check whether that record exists and covers this work:
+
+```bash
+ls -t docs/superpowers/pre-eval/*.json 2>/dev/null | head -5
+```
+
+If one carries this session's id, **do not mint a second**: commit it (step T3) and go. A record per
+prompt is how the outcome stream the circuit breaker reads stops meaning anything. Run Phase T when
+the hook did not fire — a slash-command invocation, a second request in the same session, a request
+that needed the T3 classify step, or any session the hook was not registered in.
 
 ## Two modes
 
 | Invocation | What it does | When |
 |---|---|---|
-| `/v:triage <request>` | **Phase T** — resolve localization, classify, score, write **and commit** the record, print the tier and predicates 1-6. | Before any work starts. |
-| `/v:triage --land <pre_eval_id>` | **Phase L** — the DIRECT **auto-route landing gate**. Re-checks predicates 7, 8 and 9 against the realised diff and commits behind an expected-HEAD compare-and-swap. | After the edit, immediately before the commit, and only for a DIRECT record. |
+| `/v:triage <request>` | **Phase T** — resolve localization, classify, score, write **and commit** the record, print the tier and predicates 1-6. | Before any work starts, when no record already covers the request. |
+| `/v:triage --land <pre_eval_id>` | **Phase L** — the **UNATTENDED** DIRECT auto-route landing gate. Re-checks predicates 7, 8 and 9 against the realised diff and commits behind an expected-HEAD compare-and-swap. | Only when a DIRECT change is landing with **no human in the loop**. |
 
-Phase L is *not* a general commit helper. SCOPED and FULL still require a human offer and
-acceptance, then `/v:orchestrate` and `/v:dispatch`; only the DIRECT auto-route class may land
-without one, and only through this gate.
+### An attended DIRECT change is an ordinary commit
+
+**Phase L is not the normal way to commit a DIRECT change, and it is not a general commit helper.**
+DIRECT means "implement in place, run the floor, commit on the branch". When a human is in the
+session — the overwhelmingly common case — that commit is an **ordinary `git commit`**: make the
+edit, run the test floor, commit it together with the triage record, and let review and the human
+be the enforcement they already are.
+
+Phase L exists for the one case that has neither: an **unattended** landing, where no person and no
+reviewer is downstream of the commit. DIRECT dispatches no reviewer, so for that case predicates
+7-9 are the only enforcement there is, which is why the gate is as heavy as it is — a full test
+contract including `full_command`, a post-diff re-validation against the pre-edit taxonomy snapshot,
+a lock ref, an expected-HEAD compare-and-swap, and a re-validation of the tree itself. Paying that
+cost on a change a human is watching buys nothing and refuses a great deal: a repository that
+declares no `full_command` cannot pass predicate 7 at all, and an attended DIRECT change routed
+through `--land` would be demoted to SCOPED for a reason that does not apply to it.
+
+So:
+
+- **Attended DIRECT** → implement, run the floor, `git add` the change **and** the record, `git
+  commit`. Do not invoke `--land`.
+- **Unattended DIRECT** (an autonomous loop, `/v:epic`, a scheduled run) → `--land`, or nothing
+  commits.
+
+SCOPED and FULL are unchanged in both cases: they still require a human offer and acceptance, then
+`/v:orchestrate` and `/v:dispatch`.
 
 ## The vocabulary rule
 
 **Never re-spell a decision string or a tier token.** `DECISION_FASTPATH` / `DECISION_SCOPED` /
-`DECISION_FULL` and the `DECISION_TO_TIER` map are read **from `scripts/compound-v-preeval.py`**, by
-import, in every snippet below. A duplicated wire vocabulary is how the two halves of this release
-drift apart, and the one ratified exception (a sibling analyser consuming the value as JSON off a
-record, with a selftest asserting equality) does not apply here — this command imports the engine
-already.
+`DECISION_FULL` and the `DECISION_TO_TIER` map live in `scripts/compound-v-preeval.py`; Phase T
+reads them by calling the engine's own `triage` subcommand, and Phase L imports the module. A
+duplicated wire vocabulary is how the two halves of this release drift apart, and the one ratified
+exception (a sibling analyser consuming the value as JSON off a record, with a selftest asserting
+equality) does not apply here.
 
 The same rule governs the `sensitive` set: it comes from the taxonomy via
 `compound-v-taxonomy.match_auto_route()`, **never** from a list written here. `MANDATORY_SENSITIVE`
@@ -49,22 +88,26 @@ re-opening the self-widening hole; this command adds nothing to it.
 | 4 | Path matches the taxonomy's `auto_route_allow` | Phase T, via `match_auto_route` | yes |
 | 5 | Path matches **no** entry in the `sensitive` set | Phase T, via `match_auto_route` (taxonomy + mandatory floor) | yes |
 | 6 | **No test file touched** | Phase T (resolved path), Phase L (realised path) | yes |
-| 7 | **The floor has been run and passed** — and an *unattended* landing additionally requires `full_command` | Phase L | yes (the floor result is bound to a diff digest; a moved diff re-runs it, against a throwaway index) |
+| 7 | **The floor has been run and passed**, and `full_command` is declared and part of it | Phase L | yes (the floor result is bound to a diff digest; a moved diff re-runs it, against a throwaway index) |
 | 8 | **Full post-diff re-validation** against the immutable pre-edit taxonomy snapshot: path identity, allowlist, sensitive set, no test file, line budget, taxonomy digest unchanged | Phase L | yes — and a **third** time against the exact tree handed to `commit-tree` |
 | 9 | **Circuit breaker armed** (`compound-v-triage-outcomes.py breaker`, exit 3 = disarmed) | Phase L | yes |
 
-Predicates 1-6 decide *membership*. Predicates 7-9 decide *landing*, and they are the only
-enforcement the DIRECT tier has: DIRECT dispatches **no reviewer**, so a review cannot be the
-enforcement point for the one tier that commits without a human. Any failure **demotes to SCOPED
-before the commit**, and the demotion is recorded on the outcome stream.
+Predicates 1-6 decide *membership*, and Phase T reports them for every record — a DIRECT change
+that is attended still gets the six, as evidence, and then commits ordinarily. Predicates 7-9
+decide the **unattended landing**, and they are the only enforcement that case has: DIRECT
+dispatches **no reviewer**, so a review cannot be the enforcement point for a tier that would
+otherwise commit with nobody watching. Any failure **demotes to SCOPED before the commit**, and the
+demotion is recorded on the outcome stream.
 
 ### Why predicate 7 demands `full_command`, not just the floor
 
 The floor is an early-feedback optimization; it does not restore what the full suite guaranteed
 (ADR 0003). An attended change survives that gap because a human and a reviewer are downstream of
-it. An unattended DIRECT landing has neither, so it must clear the bar the class is trading on —
+it — which is precisely why an attended DIRECT change does not come through this gate at all. An
+unattended landing has neither, so it must clear the bar the class is trading on:
 `test_contract.full_command`. **A repository that declares no `full_command` cannot auto-route at
-all**, and that is the intended fail-closed outcome, not a defect to route around.
+all**, and that is the intended fail-closed outcome, not a defect to route around — and not a
+reason to push an attended change through `--land` to "check the box", which would only demote it.
 
 ### Why the recheck sits behind a compare-and-swap
 
@@ -112,185 +155,66 @@ git rev-parse --show-toplevel
 printf '%s\n' "${CLAUDE_CODE_SESSION_ID:-}"
 ```
 
-`CLAUDE_CODE_SESSION_ID` is the harness session id as a Bash call in this session sees it, and it is
-what the record binds. **If it is empty, say so and continue** — the record is still written and
-still classifies, but with `session_id: null` it covers nothing for the Stop-hook triage gate
-(`hooks/epic-goal-stop.sh` compares it exactly, and an empty value can never match). That is the
-fail-closed direction; do not substitute a pid or an invented uuid.
+Read what that prints before running T2 — it is what the record binds, and its consequences are
+under "On the session id" below.
 
-### T2. Score, bind, write the record
+### T2. Score, bind, write the record — one call
 
-Run from the repo root, with the request text in `V_TRIAGE_REQUEST`.
+The whole of Phase T is a subcommand of the engine. Put the request text in
+`V_TRIAGE_REQUEST` (never on argv: a request is arbitrary text, it has to survive shell
+quoting, and argv is visible to every process on the machine) and run this from the repo root:
 
 ```bash
-V_TRIAGE_REQUEST='<the request text>' python3 - <<'PY'
-import importlib.util, json, os, re, subprocess, sys
-
-REPO = os.path.abspath(os.environ.get("V_TRIAGE_REPO", "."))
-
-def _load(basename, modname):
-    path = os.path.join(REPO, "scripts", basename)
-    spec = importlib.util.spec_from_file_location(modname, path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-pe = _load("compound-v-preeval.py", "cv_preeval")      # the engine — vocabulary comes from here
-tx = _load("compound-v-taxonomy.py", "cv_taxonomy")    # match_auto_route == predicates 4 and 5
-
-request = (os.environ.get("V_TRIAGE_REQUEST") or "").strip()
-if not request:
-    sys.exit("REFUSED: /v:triage needs a request")
-
-session = (os.environ.get("CLAUDE_CODE_SESSION_ID") or "").strip()
-head = subprocess.run(["git", "-C", REPO, "rev-parse", "HEAD"],
-                      capture_output=True, text=True).stdout.strip()
-
-# declared_paths: what this record's classification COVERS, in the exact vocabulary
-# hooks/epic-goal-stop.sh can read back — an exact path, a `dir/` prefix, or a `*` glob.
-# A bare `scripts` deliberately does NOT cover `scripts/app.py`. Entries the hook would
-# silently DROP (control characters, a leading `/`, a `..` segment) are dropped HERE
-# instead, where the producer still learns about it.
-_CTRL = re.compile(r"[\x00-\x1f]")
-def declare(paths):
-    out, refused = [], []
-    for p in paths or []:
-        if not isinstance(p, str) or not p:
-            continue
-        if p.startswith("/") or _CTRL.search(p) or ".." in p.split("/"):
-            refused.append(p)
-            continue
-        if p not in out:
-            out.append(p)
-    for p in refused:
-        print("WARNING: declared path refused (unreadable by the triage gate): %r" % p)
-    return out
-
-# THE BINDING GOES THROUGH build_record's kwarg, never onto the record afterwards.
-# `digest` covers the whole record, so a producer that attached these fields after the
-# fact would ship a record whose own integrity digest no longer verifies — silently,
-# because `digest` is optional and only checked when present. Wrapping build_record is
-# how the binding reaches the ONE place that keeps the digest correct by construction,
-# while `run_preeval` keeps owning the config kill-switch, the taxonomy snapshot, the
-# Tier-2 lookup and the `predicted` event. Re-implementing that orchestration here to
-# get a kwarg through would be the drift this release is trying to stop.
-binding = {"session_id": session or None, "base_commit": head or None}
-_orig_build_record = pe.build_record
-def _build_record_bound(pre_eval_id, req, verdict, localization, *a, **kw):
-    kw["binding"] = dict(binding,
-                         declared_paths=declare(localization.get("resolved_paths")))
-    return _orig_build_record(pre_eval_id, req, verdict, localization, *a, **kw)
-pe.build_record = _build_record_bound
-
-t3 = os.environ.get("V_TRIAGE_T3_CATEGORY") or None
-res = pe.run_preeval(request, repo=REPO, t3_category=t3)
-
-if res.get("pre_eval_disabled"):
-    print("pre_eval.enabled is false — the stage is a no-op and this change is %s."
-          % pe.DECISION_TO_TIER[pe.DECISION_FULL])
-    raise SystemExit(0)
-
-if res.get("needs_t3"):
-    print("NEEDS T3: the deterministic layers cannot band this request. Run the light "
-          "classify Task with the prompt below, then re-invoke with "
-          "V_TRIAGE_T3_CATEGORY=<%s>." % "|".join(pe.T3_CATEGORIES))
-    print("--- t3 prompt ---")
-    print(res["t3_prompt"])
-    raise SystemExit(0)
-
-rec, pid = res["record"], res["pre_eval_id"]
-decision = rec["decision"]
-tier = pe.DECISION_TO_TIER.get(decision)          # never re-spelled here
-paths = (rec.get("localization") or {}).get("resolved_paths") or []
-
-# The taxonomy as PINNED BY THIS RECORD — the immutable pre-edit snapshot predicate 8
-# re-validates against later. Reading it back (rather than re-reading .claude/) is what
-# makes predicate 3 a real digest match instead of a restatement.
-snap = os.path.join(REPO, "docs", "superpowers", "pre-eval",
-                    pid + ".taxonomy-snapshot.yaml")
-taxonomy = snap_digest = None
-if os.path.isfile(snap):
-    with open(snap, "rb") as fh:
-        snap_bytes = fh.read()
-    snap_digest = tx.taxonomy_digest_bytes(snap_bytes)
-    taxonomy = tx.load_taxonomy(text=snap_bytes.decode("utf-8"))
-
-# Predicate 6's test-path set. The taxonomy has no test-file key, so this is a
-# deliberately BROAD heuristic: every extra shape it catches removes a change from the
-# auto-route class, which is the safe direction. Widen it freely; narrowing it is a
-# policy change.
-_TEST_SEGMENTS = ("test", "tests", "spec", "specs", "__tests__", "testing")
-def is_test_path(p):
-    segs = p.split("/")
-    if any(s.lower() in _TEST_SEGMENTS for s in segs[:-1]):
-        return True
-    base = segs[-1]
-    if base in ("conftest.py",):
-        return True
-    stem = base.split(".")[0].lower()
-    if stem.startswith(("test_", "test-")) or stem.endswith(("_test", "-test")):
-        return True
-    return any((".%s." % k) in base.lower() for k in ("test", "spec"))
-
-single = pe._is_single_literal_path(paths)
-one = paths[0] if single else None
-ar = tx.match_auto_route(taxonomy, one) if (taxonomy and one) else None
-bands_known = (rec["difficulty"]["band"] in ("low", "medium", "high")
-               and rec["impact"]["band"] in ("low", "medium", "high"))
-
-P = []
-P.append((1, "tier is DIRECT and no override fired",
-          decision == pe.DECISION_FASTPATH and rec["override_fired"] is None,
-          "decision=%s override_fired=%s" % (decision, rec["override_fired"])))
-P.append((2, "exactly one resolved path, and it is a literal", single,
-          "resolved_paths=%s" % (paths,)))
-P.append((3, "taxonomy present, digest-matched, bands not unknown",
-          bool(taxonomy) and snap_digest == rec.get("taxonomy_digest") and bands_known,
-          "snapshot=%s record=%s bands=%s/%s"
-          % (snap_digest, rec.get("taxonomy_digest"),
-             rec["difficulty"]["band"], rec["impact"]["band"])))
-P.append((4, "path matches auto_route_allow", bool(ar and ar["allowed"]),
-          "; ".join(ar["reasons"]) if ar else "not evaluated (no single literal path)"))
-P.append((5, "path matches NO entry in the sensitive set",
-          bool(ar and not ar["sensitive"]),
-          "sensitive=%s" % (ar["sensitive"] if ar else "not evaluated")))
-P.append((6, "no test file touched", bool(one) and not is_test_path(one),
-          "path=%s" % one))
-
-print("")
-print("pre_eval_id : %s" % pid)
-print("TIER        : %s   (decision %s)" % (tier, decision))
-print("record      : %s" % res["record_ref"])
-print("binding     : session_id=%s base_commit=%s declared_paths=%s"
-      % (rec.get("session_id"), rec.get("base_commit"), rec.get("declared_paths")))
-print("")
-print("auto-route predicates (spec A4):")
-for n, name, okp, why in P:
-    print("  %d. [%s] %s — %s" % (n, "PASS" if okp else "FAIL", name, why))
-for n, name in ((7, "floor run and passed (+ full_command when unattended)"),
-                (8, "full post-diff re-validation"),
-                (9, "circuit breaker armed")):
-    print("  %d. [ -- ] %s — deferred to `/v:triage --land %s`" % (n, name, pid))
-
-member = all(okp for _, _, okp, _ in P)
-print("")
-if decision != pe.DECISION_FASTPATH:
-    print("NOT in the auto-route class: %s requires a human offer and acceptance." % tier)
-elif member:
-    print("IN the auto-route candidate class on predicates 1-6. Make the change, then run "
-          "`/v:triage --land %s` — it enforces 7, 8 and 9 and commits, or demotes to %s."
-          % (pid, pe.DECISION_TO_TIER[pe.DECISION_SCOPED]))
-else:
-    print("DIRECT, but NOT auto-routable — implement it, then offer it to the user as usual.")
-PY
+V_TRIAGE_REQUEST='<the request text>' python3 scripts/compound-v-preeval.py triage \
+  --request-env V_TRIAGE_REQUEST --repo . \
+  --session-id "${CLAUDE_CODE_SESSION_ID:-}" --base-commit "$(git rev-parse HEAD)" --json
 ```
+
+It prints one JSON object: `pre_eval_id`, `tier`, `decision`, `needs_t3`, `record_ref`,
+`predicates` (spec §A4's 1-6, each with a `pass` and a `why`), `declared_paths`, plus `member`
+(all six hold), `refused_paths`, `disabled` and the binding echoed back.
+
+**This is the same call `hooks/triage-prompt-nudge.sh` makes** — see `triage_request`'s docstring
+in the engine, which names both callers. That is the point of it being a subcommand rather than
+prose: the scoring, the binding, the declared-path vocabulary and the six predicates have one
+implementation, it is covered by `compound-v-preeval.py --selftest`, and a second producer is one
+line rather than a copy.
+
+Add `--t3-category <plumbing|user-facing-minor|user-facing-major|unknown>` on the re-invocation
+after a `needs_t3` result. Add `--taxonomy PATH` only to point at a non-default taxonomy.
+
+**Two results are not a tier, and each has one right response:**
+
+- `"disabled": true` — `pre_eval.enabled` is false. The stage is a no-op, **nothing was written**,
+  and this change is FULL by the operator's own configuration. Say so; do not hand-write a record.
+- `"needs_t3": true` — the deterministic layers cannot band the request without the light classify
+  Task. Run **one** `light`-tier Task (Sonnet, never Haiku) with the returned `t3_prompt`, turn the
+  reply into one of the returned `t3_categories`, and re-invoke with `--t3-category <enum>`. The
+  re-invocation resumes the same `pre_eval_id` (discovered by request fingerprint) rather than
+  minting a second. Any error, timeout, or non-enum reply is `unknown`, which is FULL.
+
+**On the session id.** `CLAUDE_CODE_SESSION_ID` is the harness session id as a Bash call in this
+session sees it, and it is what the record binds. **If it is empty, say so and continue** — the
+record is still written and still classifies, but with `session_id: null` it covers nothing for the
+Stop-hook triage gate (`hooks/epic-goal-stop.sh` compares it exactly, and an empty value can never
+match). That is the fail-closed direction; do not substitute a pid or an invented uuid. The engine
+binds what it is given and refuses to invent, so passing an empty value is safe.
+
+**On `refused_paths`.** A non-empty list means the localizer resolved a path the triage gate cannot
+read back (a leading `/`, a `..` segment, a control character). Those are dropped from
+`declared_paths` — report them, because coverage the record claims and does not have is worse than
+coverage it never claimed.
 
 ### T3. Commit the record
 
-The engine deliberately **never runs git**; committing is this command's job, and it is not
-optional. An uncommitted record is invisible to the Stop-hook triage gate (which reads committed
-files back with `jq`) and is destroyed by `git worktree remove` the moment a branch is merged or
-discarded — the v2.6.4 data-loss shape.
+The engine deliberately **never runs git**, and neither does the UserPromptSubmit hook; committing
+is this command's job, and it is not optional. An uncommitted record is invisible to the Stop-hook
+triage gate (which reads committed files back with `jq`) and is destroyed by `git worktree remove`
+the moment a branch is merged or discarded — the v2.6.4 data-loss shape.
+
+**This step also applies to a record the hook wrote.** If you skipped T2 because
+`hooks/triage-prompt-nudge.sh` had already sized this session's request, its record is sitting
+uncommitted; commit it here with the same two commands.
 
 ```bash
 git add docs/superpowers/pre-eval/<pre_eval_id>.json docs/superpowers/pre-eval/<pre_eval_id>.intent.json docs/superpowers/pre-eval/<pre_eval_id>.localization.json docs/superpowers/pre-eval/<pre_eval_id>.taxonomy-snapshot.yaml docs/superpowers/memory/triage-outcomes.jsonl
@@ -307,16 +231,22 @@ taxonomy, and no localization artifact when localization failed. `git add` the o
 
 Print the tier, the predicate list exactly as T2 emitted it, and the next step:
 
-- **DIRECT, in the class** → make the change, then `/v:triage --land <id>`.
-- **DIRECT, not in the class** → implement, then offer it to the user as usual.
-- **SCOPED** → `/v:orchestrate` (manifest, run dir, scope gate, floor, one combined SPEC+QUALITY review; recon and the three pre-flights are skipped).
-- **FULL** → the unchanged pipeline.
+- **DIRECT, attended** (a human is in this session — the usual case) → implement it, run the test
+  floor, and commit it as an **ordinary commit**. Do not invoke `--land`; a human and a review are
+  downstream of you, which is the enforcement that class is trading on.
+- **DIRECT, unattended and `"member": true`** → make the change, then `/v:triage --land <id>`. It
+  enforces predicates 7, 8 and 9 and commits, or demotes to SCOPED and records the demotion.
+- **DIRECT, unattended and `"member": false`** → it cannot auto-route. Stop and get a human, or
+  route it through `/v:orchestrate` as SCOPED.
+- **SCOPED** → offer it; on acceptance `/v:orchestrate` (manifest, run dir, scope gate, floor, one combined SPEC+QUALITY review; recon and the three pre-flights are skipped).
+- **FULL** → offer it; on acceptance the unchanged pipeline.
 
 ---
 
-## Phase L — the landing gate
+## Phase L — the UNATTENDED landing gate
 
-Run **after** the edit and **instead of** `git commit`. It refuses anything that is not a DIRECT
+Run **after** the edit and **instead of** `git commit`, and **only when nobody is watching** — see
+"An attended DIRECT change is an ordinary commit" above. It refuses anything that is not a DIRECT
 record, demotes on any predicate failure, and records the demotion. Set `V_TRIAGE_DRY_RUN=1` to
 evaluate 7, 8 and 9 and stop before the CAS window.
 
@@ -802,8 +732,13 @@ commit does not itself need a record.
 
 ## Safety
 
+- **Never use Phase L for an attended change.** It is the unattended landing gate, not a commit
+  helper. An attended DIRECT change is an ordinary commit.
 - **Never widen the class.** `auto_route_allow`, the `sensitive` set and the line budget come from
   the taxonomy through `match_auto_route`; do not add a special case here.
+- **Never hand-write or re-score a record that already exists.** The UserPromptSubmit hook and
+  Phase T are the two producers and they call the same subcommand; a third copy of the scoring is
+  the drift v3.4 removed.
 - **Never edit the taxonomy inside a landing.** The two policy files are sensitive in code
   (`compound-v-taxonomy.MANDATORY_SENSITIVE`) as well as in this repo's taxonomy, so a taxonomy that
   forgets them still cannot be self-widened — but the digest check is what makes that guarantee hold
@@ -816,10 +751,18 @@ commit does not itself need a record.
 - **No fabricated metrics.** Print the floor's real exit codes and the breaker's real rate, nothing
   derived or estimated.
 
-## Selftest — `tests/test-triage-landing.sh`
+## Selftests
 
-Phase L's proofs live in **`tests/test-triage-landing.sh`**. Run it from the repo root; it exits
-non-zero on any failure, and CI's `tests` job discovers it recursively and always runs it.
+Phase T is no longer prose, so its proofs are no longer here: the scoring, the binding, the
+declared-path vocabulary and predicates 1-6 are covered by the engine's own suite, which CI runs.
+
+```bash
+python3 scripts/compound-v-preeval.py --selftest
+```
+
+Phase L is still prose-hosted, and its proofs live in **`tests/test-triage-landing.sh`**. Run it
+from the repo root; it exits non-zero on any failure, and CI's `tests` job discovers it recursively
+and always runs it.
 
 ```bash
 bash tests/test-triage-landing.sh

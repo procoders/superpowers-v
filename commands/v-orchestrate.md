@@ -24,16 +24,23 @@ The manifest schema and rules are defined in [`skills/compound-v/execution-manif
    files this plan touches. If `{{args}}` already *is* a `pre_eval_id` or a record path, that is the
    record — skip to Step 0.
 
+   One may already exist without anyone having asked for it: since v3.4 the `UserPromptSubmit`
+   hook (`hooks/triage-prompt-nudge.sh`) runs the same scorer `/v:triage` step T2 runs, once per
+   session, so the record for this work may be sitting there **uncommitted**. If so, commit it
+   (`/v:triage` step T3) and use it rather than minting a second.
+
    **If none exists, run [`/v:triage <the request>`](v-triage.md) now** and use the record it writes
    and commits. Do not hand-write a record, do not invent a `pre_eval_id`, and do not proceed
-   without one: `/v:triage` is the only producer, and a reconstructed audit trail is the
+   without one: those two producers are the only ones, and a reconstructed audit trail is the
    fabricated-evidence pattern rather than a repair. Carry the resulting `pre_eval_id` into Step 6's
    `state.json`, Step 8b's `bind`, and the manifest's `triage` block.
 
-   `/v:triage` may come back **DIRECT**. A DIRECT change has no manifest, no run directory and no
-   worktree, so **this command is not its next step** — `/v:triage --land <pre_eval_id>` is. Only a
-   DIRECT record whose landing gate demoted it to SCOPED, or a record that was SCOPED or FULL to
-   begin with, arrives here.
+   Triage may come back **DIRECT**. A DIRECT change has no manifest, no run directory and no
+   worktree, so **this command is not its next step**. Implement it in place, run the test floor,
+   and commit it as an ordinary commit together with its record; `/v:triage --land` is the
+   *unattended* landing gate and is not what an attended change needs. Only a DIRECT record whose
+   unattended landing gate demoted it to SCOPED, or a record that was SCOPED or FULL to begin with,
+   arrives here.
 
 0. **Fast-path branch (accepted pre-eval → committed single-job run).** If `{{args}}` resolves to an accepted `FASTPATH_ELIGIBLE` pre-eval record (a `pre_eval_id`, or a `docs/superpowers/pre-eval/<pre_eval_id>.json` path with `decision: FASTPATH_ELIGIBLE`), do **not** run the plan-based flow below — the fast path has no full plan and no three audits. Instead delegate to the deterministic materializer, which runs the authoritative **Phase-M** lifecycle (mint a deterministic run-id from `pre_eval_id` → copy the pinned taxonomy snapshot into the run → write spec/plan **stubs**, block-YAML audit **skip-records**, the single-job `fast_path` manifest with the review **declaration** only, and the captured implementer prompt → **commit all artifacts except `state.json`** → **append + commit the `bind` event** → **commit `state.json` at `FASTPATH_DISPATCHED` LAST**). It also runs the validator in `--mode pre-dispatch` as an in-code gate before binding, so a manifest the validator would reject never reaches dispatch.
    ```bash

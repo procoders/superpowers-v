@@ -6,9 +6,18 @@
 
 > Think of Pre-Eval as Stan Edgar reading the one-pager before the board convenes: a fast, deterministic read on whether this even needs the full room. He does not vote for you — he only decides whether to *offer* the short meeting, and the one decision he signs alone is the one the standing rules already settled in writing: §A4's DIRECT auto-route class. Everything outside it is an OFFER a human accepts.
 
-**Reliability, stated plainly:** Pre-Eval is **description-driven and UNENFORCEABLE** (AC-6) — exactly as weak as Trigger 0, with the same reminder-only `PreToolUse(Skill)` hook as its only backstop. This is safe **only** because a missed or skipped Pre-Eval degrades to the normal pipeline (Iron-Invariant #5, fail-closed). Do **not** claim Pre-Eval is enforced.
+**Reliability, stated plainly (updated v3.4):** Pre-Eval used to be **description-driven and UNENFORCEABLE** (AC-6) — exactly as weak as Trigger 0 — and it showed: the engine had produced **zero** artifacts in its entire history, because the only thing that was supposed to start it was a skill description firing at phase transitions that all happen *after* the size of the change is decided.
 
-The engine is [`scripts/compound-v-preeval.py`](../../scripts/compound-v-preeval.py); the record schema is [`schemas/pre-eval-record.schema.json`](../../schemas/pre-eval-record.schema.json); the config + digest + commit conventions live in [`docs/superpowers/architecture/pre-eval-config.md`](../../docs/superpowers/architecture/pre-eval-config.md); the truth-table authority is spec §2.
+The scoring now has a **mechanical trigger**: `hooks/triage-prompt-nudge.sh` fires on the native `UserPromptSubmit` event and runs `compound-v-preeval.py triage` — the same subcommand [`/v:triage`](../../commands/v-triage.md) step T2 runs — writing a session-bound record before any work starts. That is a real change in kind, and it is bounded rather than absolute, so state it precisely:
+
+- **It runs at most once per session**, and never on a slash command, a short question, a session that already has a covering record, or a session with an active run. The prompt at turn 20 of a long session is not scored by the hook; `/v:triage` is still how that gets a record.
+- **It never commits.** The engine never runs git and neither does a hook, so the record it writes is uncommitted — and an uncommitted record is invisible to `--require-triage` and to the Stop-time gate, and dies with `git worktree remove` (the v2.6.4 shape). Committing it is `/v:triage` step T3's job, and it is not optional.
+- **It is not enforcement.** Nothing here blocks. The mechanical closures are still `compound-v-validate-manifest.py --require-triage` (passed by `/v:dispatch` in every mode) and the triage rule in `hooks/epic-goal-stop.sh`. The hook makes sure a record EXISTS for those two to find.
+- **The tier is a size decision, never permission.** SCOPED and FULL still require a human offer and acceptance (Iron-Invariant #4).
+
+A missed or skipped Pre-Eval still degrades to the normal pipeline (Iron-Invariant #5, fail-closed). Do **not** claim Pre-Eval is enforced; claim that it now runs.
+
+The engine is [`scripts/compound-v-preeval.py`](../../scripts/compound-v-preeval.py) — `triage_request` is the Phase-T entry point, and its docstring names its two callers; the record schema is [`schemas/pre-eval-record.schema.json`](../../schemas/pre-eval-record.schema.json); the config + digest + commit conventions live in [`docs/superpowers/architecture/pre-eval-config.md`](../../docs/superpowers/architecture/pre-eval-config.md); the truth-table authority is spec §2.
 
 ---
 
@@ -82,7 +91,7 @@ The **parent harness** then runs **ONE `light`-tier Task** (Sonnet, **never Haik
 
 ## 4. Phase P — lifecycle & commit ordering (parent-owned; NO run_id yet)
 
-All artifacts live under `docs/superpowers/pre-eval/` — **not** `execution/<run-id>/` (that dir does not exist at pre-brainstorm time, AC-2). The engine WRITES; the **orchestrator/dispatcher COMMITS** (v2.6.4 discipline — an uncommitted artifact vanishes on `git worktree remove` and never indexes into V-memory). The engine **never runs git**.
+All artifacts live under `docs/superpowers/pre-eval/` — **not** `execution/<run-id>/` (that dir does not exist at pre-brainstorm time, AC-2). The engine WRITES; the **orchestrator/dispatcher COMMITS** (v2.6.4 discipline — an uncommitted artifact vanishes on `git worktree remove` and never indexes into V-memory). The engine **never runs git**, which is why `base_commit` is an *input* to `triage_request` rather than something it reads, and why the UserPromptSubmit hook leaves its record uncommitted for `/v:triage` step T3.
 
 1. **Intent record** `<pre_eval_id>.intent.json` (write-once, request-fingerprint → `pre_eval_id`) — written FIRST, ahead of localization, so a fresh-process resume with only the request text finds partial state (CR5-10).
 2. **Localization artifact** `<pre_eval_id>.localization.json` (A1's write-once writer) — the resolved paths/fan-out/flags + its own content-digest bound across manifest+record+artifact (AC-13).

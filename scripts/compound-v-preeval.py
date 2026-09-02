@@ -110,6 +110,12 @@ Python 3.9-safe, stdlib only; soft-PyYAML via the shared taxonomy loader (never 
 `import yaml`); no external CLI is launched from here (localize owns the supervisor boundary).
 
 Usage:
+    compound-v-preeval.py triage --request-env VAR --repo DIR [--session-id S]
+        [--base-commit SHA] [--t3-category C] [--json]
+        # Phase T: score + BIND + write the record, and report the tier with spec §A4
+        # predicates 1-6. Its two callers are `hooks/triage-prompt-nudge.sh` (the
+        # UserPromptSubmit producer) and `commands/v-triage.md` step T2 — see
+        # `triage_request`, which both of them are one line on top of.
     compound-v-preeval.py --request "<text>" --repo DIR [--taxonomy PATH]
         [--t3-category plumbing|user-facing-minor|user-facing-major|unknown]
         [--pre-eval-id ID]                       # end-to-end Phase-P run (writes artifacts)
@@ -1146,11 +1152,300 @@ def run_preeval(request, repo=".", taxonomy_path=None, t3_category=None,
 
 
 # --------------------------------------------------------------------------- #
+# Phase T — the ONE implementation of "score this request and bind it", shared by
+# BOTH of its callers.
+#
+# THE TWO CALLERS, NAMED (this is the point of the function existing):
+#
+#   1. `hooks/triage-prompt-nudge.sh` — the UserPromptSubmit hook. It is the
+#      MECHANICAL producer: a change request arriving is the native event, and the
+#      hook runs this subcommand on it, so a record exists before any work starts
+#      without anyone remembering to ask for one.
+#   2. `commands/v-triage.md`, step T2 — the human/agent entry point, for a request
+#      the hook did not see (a second request in the same session, a slash-command
+#      invocation, a re-score after `--t3-category`).
+#
+# BOTH used to carry their own copy of this logic — the hook carried none at all and
+# the command carried ~120 lines of it inside a markdown heredoc, where nothing could
+# test it and a second caller could only be written by copying it. A prose-hosted
+# scorer with two producers is the drift this release exists to stop, so the logic
+# lives here, in the module that already owns the vocabulary, and both callers are
+# one line.
+#
+# WHAT THIS DOES NOT DO: git. The engine's standing invariant is that it never runs
+# git (the orchestrator commits; v2.6.4 discipline), and Phase T is inside the engine,
+# so `base_commit` is an INPUT. A caller that wants the binding runs `git rev-parse
+# HEAD` itself and passes it; a caller that cannot gets a record with `base_commit`
+# null, which is honest rather than invented.
+# --------------------------------------------------------------------------- #
+
+# Predicate 6's test-path set. The taxonomy has no test-file key, so this is a
+# deliberately BROAD heuristic: every extra shape it catches removes a change from the
+# auto-route class, which is the safe direction. Widen it freely; narrowing it is a
+# policy change. `commands/v-triage.md` Phase L carries the same set for the REALISED
+# path, which it re-derives post-diff.
+_TEST_PATH_SEGMENTS = ("test", "tests", "spec", "specs", "__tests__", "testing")
+
+# Control characters in a declared path. `hooks/epic-goal-stop.sh` silently DROPS a
+# path it cannot read, so this producer refuses it loudly instead.
+_CTRL_RE = re.compile(r"[\x00-\x1f]")
+
+
+def is_test_path(path):
+    """True when `path` looks like a test file (auto-route predicate 6)."""
+    segs = str(path or "").split("/")
+    if any(s.lower() in _TEST_PATH_SEGMENTS for s in segs[:-1]):
+        return True
+    base = segs[-1]
+    if base in ("conftest.py",):
+        return True
+    stem = base.split(".")[0].lower()
+    if stem.startswith(("test_", "test-")) or stem.endswith(("_test", "-test")):
+        return True
+    return any((".%s." % k) in base.lower() for k in ("test", "spec"))
+
+
+def declare_paths(paths):
+    """(declared, refused) in the exact vocabulary `hooks/epic-goal-stop.sh` reads back —
+    an exact path, a `dir/` prefix, or a `*` glob. A bare `scripts` deliberately does NOT
+    cover `scripts/app.py`.
+
+    Entries that gate would silently DROP (a control character, a leading `/`, a `..`
+    segment) are refused HERE instead, where the producer still learns about it: a
+    declared path the reader discards is coverage the record claims and does not have.
+    """
+    declared, refused = [], []
+    for p in paths or []:
+        if not isinstance(p, str) or not p:
+            continue
+        if p.startswith("/") or _CTRL_RE.search(p) or ".." in p.split("/"):
+            refused.append(p)
+            continue
+        if p not in declared:
+            declared.append(p)
+    return declared, refused
+
+
+def auto_route_predicates(record, repo, pre_eval_id):
+    """Spec §A4 predicates 1-6 for a written record — the six this side of the edit can
+    establish. Returns a list of `{"n", "name", "pass", "why"}` in spec order.
+
+    Predicates 7 (the floor), 8 (the full post-diff re-validation) and 9 (the circuit
+    breaker) are POST-EDIT and belong to `commands/v-triage.md` Phase L; they are not
+    evaluated here and are not reported as passing.
+
+    Predicate 3 is a real digest match, not a restatement: the taxonomy is read back from
+    the snapshot THIS RECORD PINNED and re-content-addressed, so a taxonomy edited between
+    the record and this call is caught.
+    """
+    tax = _tax()
+    decision = record.get("decision")
+    paths = (record.get("localization") or {}).get("resolved_paths") or []
+
+    snap = snapshot_path(repo, pre_eval_id)
+    taxonomy = snap_digest = None
+    if os.path.isfile(snap):
+        try:
+            with open(snap, "rb") as fh:
+                snap_bytes = fh.read()
+            snap_digest = tax.taxonomy_digest_bytes(snap_bytes)
+            taxonomy = tax.load_taxonomy(text=snap_bytes.decode("utf-8", "replace"))
+        except (OSError, ValueError, RuntimeError):
+            taxonomy = snap_digest = None
+
+    single = _is_single_literal_path(paths)
+    one = paths[0] if single else None
+    ar = tax.match_auto_route(taxonomy, one) if (taxonomy and one) else None
+    bands_known = ((record.get("difficulty") or {}).get("band") in ("low", "medium", "high")
+                   and (record.get("impact") or {}).get("band")
+                   in ("low", "medium", "high"))
+
+    out = [
+        (1, "tier is DIRECT and no override fired",
+         decision == DECISION_FASTPATH and record.get("override_fired") is None,
+         "decision=%s override_fired=%s" % (decision, record.get("override_fired"))),
+        (2, "exactly one resolved path, and it is a literal", bool(single),
+         "resolved_paths=%s" % (paths,)),
+        (3, "taxonomy present, digest-matched, bands not unknown",
+         bool(taxonomy) and snap_digest == record.get("taxonomy_digest") and bands_known,
+         "snapshot=%s record=%s bands=%s/%s"
+         % (snap_digest, record.get("taxonomy_digest"),
+            (record.get("difficulty") or {}).get("band"),
+            (record.get("impact") or {}).get("band"))),
+        (4, "path matches auto_route_allow", bool(ar and ar["allowed"]),
+         "; ".join(ar["reasons"]) if ar else "not evaluated (no single literal path)"),
+        (5, "path matches NO entry in the sensitive set", bool(ar and not ar["sensitive"]),
+         "sensitive=%s" % (ar["sensitive"] if ar else "not evaluated")),
+        (6, "no test file touched", bool(one) and not is_test_path(one),
+         "path=%s" % one),
+    ]
+    return [{"n": n, "name": name, "pass": bool(ok), "why": why}
+            for n, name, ok, why in out]
+
+
+def triage_request(request, repo=".", session_id=None, base_commit=None,
+                   t3_category=None, ts=None, **kwargs):
+    """Score ONE change request, bind it, write its record, and report the tier.
+
+    Called by `hooks/triage-prompt-nudge.sh` (the UserPromptSubmit hook, which is the
+    mechanical producer) and by `commands/v-triage.md` step T2 (the human/agent entry
+    point). Both go through here; neither re-derives any of it.
+
+    Returns a dict with, always:
+        pre_eval_id, tier, decision, needs_t3, record_ref, predicates, declared_paths
+    plus `disabled` (the `pre_eval.enabled: false` no-op), `t3_prompt` when `needs_t3`,
+    `member` (all six predicates hold), `override_fired`, `refused_paths`, and the
+    binding echoed back.
+
+    THE BINDING GOES THROUGH `build_record`'s kwarg, never onto the record afterwards.
+    `digest` covers the whole record, so attaching the binding after the fact would ship
+    a record whose own integrity digest no longer verifies — silently, because `digest`
+    is optional and only checked when present. Wrapping `build_record` is how the binding
+    reaches the ONE place that keeps the digest correct by construction, while
+    `run_preeval` keeps owning the config kill-switch, the taxonomy snapshot, the Tier-2
+    lookup and the `predicted` event.
+
+    `session_id` is bound EXACTLY as given, and an empty one binds null. The Stop-time
+    triage gate compares it verbatim, so an invented value would claim coverage that does
+    not exist — the fail-closed direction is a record that covers nothing.
+    """
+    request = (request or "").strip()
+    if not request:
+        raise ValueError("triage needs a request")
+
+    sid = (session_id or "").strip() or None
+    base = (base_commit or "").strip() or None
+
+    # THE OUTCOME STREAM BELONGS TO THE REPO THE RECORD BELONGS TO, and it has to be
+    # said out loud here: `compound-v-triage-outcomes.default_stream_path()` derives its
+    # path from the MODULE's location (the parent of `scripts/`), not from `repo`. In a
+    # dogfooding checkout those are the same directory and the difference is invisible;
+    # for `hooks/triage-prompt-nudge.sh`, which runs an installed plugin's engine against
+    # a different project, they are not, and the `predicted` event would land in the
+    # plugin checkout while the record it keys landed in the project. Pinning it from
+    # `repo` keeps the pair together. A caller that knows better still wins.
+    kwargs.setdefault("stream_path",
+                      os.path.join(repo or ".", "docs", "superpowers", "memory",
+                                   "triage-outcomes.jsonl"))
+
+    binding = {"session_id": sid, "base_commit": base}
+    refused_box = []
+
+    orig_build_record = build_record
+
+    def _bound_build_record(pre_eval_id, req, verdict, localization, *a, **kw):
+        declared, refused = declare_paths(localization.get("resolved_paths"))
+        refused_box.extend(refused)
+        kw["binding"] = dict(binding, declared_paths=declared)
+        return orig_build_record(pre_eval_id, req, verdict, localization, *a, **kw)
+
+    globals()["build_record"] = _bound_build_record
+    try:
+        res = run_preeval(request, repo=repo, t3_category=t3_category, ts=ts, **kwargs)
+    finally:
+        globals()["build_record"] = orig_build_record
+
+    base_out = {
+        "pre_eval_id": res.get("pre_eval_id"),
+        "needs_t3": bool(res.get("needs_t3")),
+        "record_ref": res.get("record_ref"),
+        "predicates": [],
+        "declared_paths": [],
+        "refused_paths": list(refused_box),
+        "session_id": sid,
+        "base_commit": base,
+        "disabled": bool(res.get("pre_eval_disabled")),
+        "member": False,
+        "override_fired": res.get("override_fired"),
+    }
+
+    # `pre_eval.enabled: false` — the whole stage is a no-op. NOTHING was written, so
+    # there is no record to report and no predicate to evaluate; the change is FULL by
+    # the operator's own configuration.
+    if res.get("pre_eval_disabled"):
+        base_out.update(decision=DECISION_FULL,
+                        tier=DECISION_TO_TIER[DECISION_FULL])
+        return base_out
+
+    # The deterministic layers could not band this request. No record was written and no
+    # `predicted` event appended; the caller runs the light classify Task and re-invokes
+    # with `t3_category`. A hook cannot run a Task, which is why the hook treats this as
+    # "hand it to /v:triage" rather than as a result.
+    if res.get("needs_t3"):
+        base_out.update(decision=None, tier=None, t3_prompt=res.get("t3_prompt"),
+                        t3_categories=list(T3_CATEGORIES))
+        return base_out
+
+    rec = res["record"]
+    predicates = auto_route_predicates(rec, repo, res["pre_eval_id"])
+    base_out.update(
+        decision=rec["decision"],
+        tier=DECISION_TO_TIER.get(rec["decision"]),
+        predicates=predicates,
+        declared_paths=list(rec.get("declared_paths") or []),
+        member=all(p["pass"] for p in predicates),
+        override_fired=rec.get("override_fired"),
+    )
+    return base_out
+
+
+def _triage_cli(argv):
+    """`compound-v-preeval.py triage …` — the subcommand both callers invoke."""
+    ap = argparse.ArgumentParser(prog="compound-v-preeval.py triage")
+    src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("--request", help="the change request as text")
+    src.add_argument("--request-env", dest="request_env", metavar="NAME",
+                     help="read the request from environment variable NAME. This is the "
+                          "form both shipped callers use: a prompt is arbitrary user text "
+                          "and does not belong on argv, where it is visible to every "
+                          "process on the machine and has to survive shell quoting.")
+    ap.add_argument("--repo", default=".", help="repo root (default: cwd)")
+    ap.add_argument("--session-id", dest="session_id", default=None,
+                    help="the harness session id to BIND this record to. Bound verbatim; "
+                         "absent binds null, which covers nothing at the Stop gate.")
+    ap.add_argument("--base-commit", dest="base_commit", default=None,
+                    help="HEAD as the caller sees it. Supplied rather than read: this "
+                         "module never runs git.")
+    ap.add_argument("--t3-category", dest="t3_category", choices=list(T3_CATEGORIES),
+                    help="pre-resolved T3 enum for a needs_t3 re-invocation")
+    ap.add_argument("--taxonomy", help="taxonomy YAML path (default: .claude/…yaml)")
+    ap.add_argument("--json", action="store_true",
+                    help="emit the result as JSON (the only supported output today; the "
+                         "flag is accepted so both callers can be explicit)")
+    args = ap.parse_args(argv)
+
+    if args.request_env:
+        request = os.environ.get(args.request_env) or ""
+    else:
+        request = args.request or ""
+    if not request.strip():
+        sys.stderr.write("REFUSED: triage needs a non-empty request\n")
+        return 2
+
+    try:
+        out = triage_request(request, repo=args.repo, session_id=args.session_id,
+                             base_commit=args.base_commit,
+                             t3_category=args.t3_category,
+                             taxonomy_path=args.taxonomy)
+    except (OSError, ValueError, RuntimeError) as exc:
+        sys.stderr.write("triage failed: %s\n" % exc)
+        return 1
+    print(json.dumps(out, indent=2, sort_keys=True, default=str))
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 # CLI.
 # --------------------------------------------------------------------------- #
 def main(argv):
     if "--selftest" in argv[1:]:
         return _selftest()
+
+    # A subcommand, not a flag: `triage` is a different verb from "score this
+    # localization", and argparse cannot express both in one flag namespace without
+    # making every existing flag optional-but-meaningless on the new path.
+    if len(argv) > 1 and argv[1] == "triage":
+        return _triage_cli(argv[2:])
 
     ap = argparse.ArgumentParser(prog="compound-v-preeval.py")
     ap.add_argument("--request", help="the free-text change request")
@@ -2124,6 +2419,93 @@ def _selftest():
         _outside = os.path.join(os.path.dirname(os.path.realpath(repo)), "outside-run")
         expect("FIX8: outside-repo absolute run_dir is rejected",
                _run_dir_contained(repo, _outside) is False)
+
+    # ----------------------------------------------------------------------- #
+    # Phase T — `triage_request`, the ONE implementation both callers sit on.
+    #
+    # It used to live inside a markdown heredoc in commands/v-triage.md, where
+    # nothing could reach it: the binding, the declared-path vocabulary and the six
+    # predicates were all untested, and the only way to add the hook as a second
+    # caller was to copy them. These cases are what makes the move real.
+    # ----------------------------------------------------------------------- #
+    with tempfile.TemporaryDirectory() as repo:
+        os.makedirs(os.path.join(repo, ".claude"))
+        with open(os.path.join(repo, ".claude", "compound-v-impact-taxonomy.yaml"),
+                  "w", encoding="utf-8") as fh:
+            fh.write(_EXAMPLE_TAXONOMY_TEXT
+                     + "\nauto_route_allow:\n  - \"src/ui/**/*.css\"\n"
+                     + "auto_route_max_lines: 20\n")
+        stream = os.path.join(repo, "docs", "superpowers", "memory",
+                              "triage-outcomes.jsonl")
+
+        fk_t = fake_localize_factory(_loc(["src/ui/button.css"], flags=[], fan_out=1))
+        t = triage_request("tweak local button padding", repo=repo,
+                           session_id="sess-1", base_commit="cafe1234",
+                           ts="2026-09-02T10:00:00Z",
+                           _localize=fk_t, stream_path=stream)
+        expect("TRIAGE: reports every key both callers read",
+               all(k in t for k in ("pre_eval_id", "tier", "decision", "needs_t3",
+                                    "record_ref", "predicates", "declared_paths")))
+        expect("TRIAGE: tier is DERIVED from the decision, never re-spelled",
+               t["tier"] == DECISION_TO_TIER[t["decision"]] == "DIRECT")
+        expect("TRIAGE: reports the six pre-edit predicates and no more",
+               [p["n"] for p in t["predicates"]] == [1, 2, 3, 4, 5, 6])
+        expect("TRIAGE: an eligible CSS path is a member of the auto-route class",
+               t["member"] is True)
+        expect("TRIAGE: declared_paths carries the resolved path",
+               t["declared_paths"] == ["src/ui/button.css"])
+
+        # THE BINDING IS INSIDE THE DIGEST. A producer that attached session_id after
+        # build_record would ship a record whose own integrity digest silently no
+        # longer verifies, so assert the digest over the WRITTEN record.
+        with open(os.path.join(repo, t["record_ref"]), "r", encoding="utf-8") as fh:
+            written = json.load(fh)
+        expect("TRIAGE: the record is bound to the session id it was given",
+               written.get("session_id") == "sess-1"
+               and written.get("base_commit") == "cafe1234"
+               and written.get("tier") == "DIRECT")
+        expect("TRIAGE: the bound record's own digest still verifies",
+               _tax().record_digest(written, exclude_field="digest")
+               == written["digest"])
+        # A DIFFERENT request text on purpose: the same one would resume the intent
+        # record above and hit write-once with different bindings, which is a real
+        # conflict rather than the thing under test.
+        expect("TRIAGE: an empty session id binds NULL, never an invented value",
+               triage_request("nudge the button padding again", repo=repo,
+                              session_id="  ", ts="2026-09-02T10:00:30Z",
+                              _localize=fk_t, stream_path=stream)["session_id"] is None)
+
+        # A sensitive path is refused by predicate 5 even though it bands FULL anyway —
+        # the predicates are reported independently of the tier, which is what lets a
+        # caller explain WHY something is not in the class.
+        fk_auth = fake_localize_factory(_loc(["src/auth/login.py"], flags=[], fan_out=1))
+        ta = triage_request("touch the login handler", repo=repo, session_id="sess-2",
+                            ts="2026-09-02T10:01:00Z", _localize=fk_auth,
+                            stream_path=stream)
+        expect("TRIAGE: a sensitive path is FULL and not a member",
+               ta["tier"] == "FULL" and ta["member"] is False)
+
+    # `pre_eval.enabled: false` — the stage is a no-op, so there is NO record, no
+    # predicate, and the change is FULL by the operator's own configuration. The hook
+    # reads exactly this to decide to stay silent.
+    with tempfile.TemporaryDirectory() as repo:
+        os.makedirs(os.path.join(repo, ".claude"))
+        with open(os.path.join(repo, ".claude", "compound-v.json"), "w",
+                  encoding="utf-8") as fh:
+            fh.write('{"pre_eval": {"enabled": false}}\n')
+        td = triage_request("anything at all", repo=repo, session_id="sess-3")
+        expect("TRIAGE: pre_eval.enabled=false is a no-op that writes NO record",
+               td["disabled"] is True and td["record_ref"] is None
+               and td["tier"] == "FULL"
+               and not os.path.isdir(os.path.join(repo, PRE_EVAL_DIR_REL)))
+
+    expect("TRIAGE: declare_paths refuses what the Stop gate would silently drop",
+           declare_paths(["ok/a.md", "/abs.md", "../up.md", "ok/a.md"])
+           == (["ok/a.md"], ["/abs.md", "../up.md"]))
+    expect("TRIAGE: is_test_path catches the shapes predicate 6 removes",
+           all(is_test_path(p) for p in ("tests/x.py", "a/test_x.py", "a/x_test.go",
+                                         "a/x.spec.ts", "a/conftest.py"))
+           and not is_test_path("src/ui/button.css"))
 
     if failures:
         print("\nSELFTEST FAILED: %d case(s)" % len(failures))

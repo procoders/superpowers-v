@@ -9,13 +9,19 @@
 #
 # THE THREE RULES THIS FILE EXISTS TO DEFEND
 #
-#   1. THE NUDGE MUST NOT BECOME AN INVOCATION. The hook fires on EVERY prompt
-#      while `/v:triage` WRITES AND COMMITS a record. If eligibility or dedup
-#      breaks, a mid-run "status?" mints a record that lands in the outcome
-#      stream the miscalibration breaker computes its rolling rate from, and
-#      changes which record the Stop rule sees as covering the diff. So: no
-#      covering record, no active run, once per session — each asserted here,
-#      and the project tree is asserted UNCHANGED after a fire.
+#   1. THE HOOK SCORES, AND EVERY GATE THAT BOUNDS THE SCORING HOLDS. As of
+#      v3.4 the UserPromptSubmit hook RUNS `compound-v-preeval.py triage` — it
+#      writes a session-bound pre-eval record and appends a `predicted` event to
+#      the stream the miscalibration breaker computes its rolling rate from. The
+#      hook fires on EVERY prompt, so if eligibility or dedup breaks, a mid-run
+#      "status?" mints a record that pollutes that stream and changes which
+#      record the Stop rule sees as covering the diff. So: no covering record,
+#      no active run, no slash command, no short question, once per session —
+#      each asserted here. And what a fire writes is asserted to be EXACTLY the
+#      pre-eval artifacts and the outcome stream: a hook that started touching
+#      anything else in the project would be a different and much worse thing.
+#      The one write it must never do is a commit; the emitted context says the
+#      record is uncommitted and whose job the commit is, and that is asserted.
 #
 #   2. UNPARSEABLE STDIN MUST NOT ANSWER FOR THE CURRENT DIRECTORY. This is a
 #      REGRESSION TEST for a defect a live probe caught and reasoning had not:
@@ -64,6 +70,8 @@ command -v python3 >/dev/null 2>&1 || { echo "FATAL: python3 required"; exit 1; 
 command -v shasum >/dev/null 2>&1 || { echo "FATAL: shasum required"; exit 1; }
 [ -f "$REPO/scripts/compound-v-dashboard.py" ] \
   || { echo "FATAL: the resume renderer both hooks reuse is missing"; exit 1; }
+[ -f "$REPO/scripts/compound-v-preeval.py" ] \
+  || { echo "FATAL: the scorer the UserPromptSubmit hook now runs is missing"; exit 1; }
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -132,55 +140,127 @@ run_pc() {
   printf '%s' "$out"
 }
 
-tree_digest() { find "$PROJ" -type f -exec shasum -a 256 {} + 2>/dev/null | sort | shasum -a 256; }
+proj_files() { ( cd "$PROJ" && find . -type f 2>/dev/null | sed 's|^\./||' | sort ); }
+
+# The context line the runtime actually reads, or empty.
+ctx() { printf '%s' "$1" | jq -r '.hookSpecificOutput.additionalContext // ""' 2>/dev/null; }
+
+# Every pre-eval record in the sandbox that is bound to session "$1".
+records_for() {
+  find "$PREEVAL" -maxdepth 1 -type f -name '*.json' 2>/dev/null \
+    | while IFS= read -r f; do
+        jq -e --arg s "$1" '(type == "object") and (.session_id == $s)' "$f" \
+          >/dev/null 2>&1 && printf '%s\n' "$f"
+      done
+}
+count_records() { find "$PREEVAL" -maxdepth 1 -type f -name '*.json' 2>/dev/null | wc -l | tr -d ' '; }
 
 # --------------------------------------------------------------------------- #
-# 1. The nudge fires exactly once, and only when it is entitled to.
+# 1. The hook scores exactly once, and only when it is entitled to.
 # --------------------------------------------------------------------------- #
 set_run_phase MERGED            # nothing active
 
+files_before="$WORK/files-before"; files_after="$WORK/files-after"
+proj_files >"$files_before"
 out="$(run_nudge sess-A 'add a retry to the uploader')"
+proj_files >"$files_after"
+
 check "eligible prompt exits 0" "$([ "$NUDGE_RC" = 0 ] && echo 1 || echo 0)"
 check "eligible prompt emits UserPromptSubmit additionalContext" \
   "$(printf '%s' "$out" | jq -e '.hookSpecificOutput.hookEventName == "UserPromptSubmit"
-                                 and (.hookSpecificOutput.additionalContext | test("/v:triage"))' \
+                                 and ((.hookSpecificOutput.additionalContext | length) > 0)' \
      >/dev/null 2>&1 && echo 1 || echo 0)"
-check "the nudge names the tiers it is asking about" \
-  "$(printf '%s' "$out" | grep -q 'DIRECT' && printf '%s' "$out" | grep -q 'SCOPED' && echo 1 || echo 0)"
-check "the nudge says it writes nothing itself" \
-  "$(printf '%s' "$out" | grep -qi 'never writes or commits' && echo 1 || echo 0)"
-check "the nudge does NOT tell the model to triage unconditionally" \
-  "$(printf '%s' "$out" | grep -qi 'if this prompt is NOT a change request' && echo 1 || echo 0)"
 
-# RULE 1, mechanically: firing must leave the project tree byte-identical.
-tree_before="$(tree_digest)"
-out_again="$(run_nudge sess-A2 'change the parser')"
-tree_after="$(tree_digest)"
-check "a fire writes NOTHING into the project (no record is minted)" \
-  "$([ "$tree_before" = "$tree_after" ] && [ -n "$out_again" ] && echo 1 || echo 0)"
+# THE POINT OF v3.4: the hook RAN THE SCORER. A record exists, it is bound to the
+# session id that arrived on stdin (not to a pid, not to an invented value), and
+# the emitted line names the tier the engine returned rather than asking someone
+# to go and find it out.
+rec_A="$(records_for sess-A | head -1)"
+check "the hook WROTE a pre-eval record" "$([ -n "$rec_A" ] && echo 1 || echo 0)"
+check "the record is bound to the session id from stdin" \
+  "$([ -n "$rec_A" ] && jq -e '.session_id == "sess-A"' "$rec_A" >/dev/null 2>&1 \
+     && echo 1 || echo 0)"
+# The binding has to be INSIDE the digest. A producer that attached session_id
+# after build_record would ship a record whose self-integrity digest silently no
+# longer verifies — `digest` is optional and only checked when present, so the
+# damage would be invisible until something tried to trust the record.
+digest_ok=0
+if [ -n "$rec_A" ]; then
+  python3 - "$REPO" "$rec_A" >/dev/null 2>&1 <<'PYEOF'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location(
+    "cv_tax", sys.argv[1] + "/scripts/compound-v-taxonomy.py")
+tx = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(tx)
+rec = json.load(open(sys.argv[2]))
+sys.exit(0 if tx.record_digest(rec, exclude_field="digest") == rec["digest"] else 1)
+PYEOF
+  [ $? = 0 ] && digest_ok=1
+fi
+check "the record's own integrity digest covers the binding" "$digest_ok"
+tier_A="$([ -n "$rec_A" ] && jq -r '.tier // ""' "$rec_A" 2>/dev/null || printf '')"
+check "the emitted line names the tier the engine actually returned ($tier_A)" \
+  "$([ -n "$tier_A" ] && ctx "$out" | grep -q "TIER: ${tier_A}" && echo 1 || echo 0)"
+check "the emitted line says the record is UNCOMMITTED and names it" \
+  "$(ctx "$out" | grep -q 'UNCOMMITTED' \
+     && ctx "$out" | grep -q 'docs/superpowers/pre-eval/' && echo 1 || echo 0)"
+check "the emitted line does not treat a size decision as permission" \
+  "$(ctx "$out" | grep -qi 'still need a human offer' && echo 1 || echo 0)"
+
+# RULE 1, mechanically: a fire writes the pre-eval artifacts and the outcome
+# stream, and NOTHING else in the project.
+stray=0
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  case "$f" in
+    docs/superpowers/pre-eval/*|docs/superpowers/memory/*) : ;;
+    *) stray=$((stray + 1)) ;;
+  esac
+done <<EOF
+$(comm -13 "$files_before" "$files_after")
+EOF
+check "a fire writes ONLY pre-eval artifacts and the outcome stream" \
+  "$([ "$stray" = 0 ] && echo 1 || echo 0)"
+check "a fire appends the predicted event the breaker reads" \
+  "$([ -s "$PROJ/docs/superpowers/memory/triage-outcomes.jsonl" ] && echo 1 || echo 0)"
 check "the once-marker lives OUTSIDE the project (under TMPDIR)" \
   "$([ -z "$(find "$PROJ" -name 'nudged-*' 2>/dev/null)" ] \
      && [ -n "$(find "$TMPDIR" -name 'nudged-*' 2>/dev/null)" ] && echo 1 || echo 0)"
 
+n_before="$(count_records)"
 out2="$(run_nudge sess-A 'and also bump the timeout')"
 check "a second prompt in the SAME session is silent (idempotent)" \
   "$([ -z "$out2" ] && [ "$NUDGE_RC" = 0 ] && echo 1 || echo 0)"
+check "and it mints NO second record" \
+  "$([ "$(count_records)" = "$n_before" ] && echo 1 || echo 0)"
 
 out3="$(run_nudge sess-B 'rename the config key')"
 check "a different session fires again" "$([ -n "$out3" ] && echo 1 || echo 0)"
+check "and its record is bound to THAT session" \
+  "$([ -n "$(records_for sess-B)" ] && echo 1 || echo 0)"
 
-# --- 3.1.0: a QUESTION must not spend the session's one nudge -----------------
-# The audit named this hole precisely: the nudge fires at most once per session,
-# so a session whose first prompt is "what does this do?" burned the reminder and
-# the real change request that followed got nothing. A short question now returns
-# BEFORE the marker is written, leaving the session armed.
+# --- 3.1.0: a QUESTION must not spend the session --------------------------- #
+# The audit named this hole precisely: the hook fires at most once per session,
+# so a session whose first prompt is "what does this do?" burned it and the real
+# change request that followed got nothing. A short question now returns BEFORE
+# the marker is written, leaving the session armed. Since v3.4 the stake is
+# higher than a lost reminder: a question that got through would mint a record
+# and a `predicted` event for a prompt that changes nothing.
+#
+# Every request text below is DELIBERATELY UNIQUE. The engine resumes an existing
+# intent record by request fingerprint, so a repeated request text reuses its
+# pre_eval_id and then meets write-once with a different session binding — a real
+# conflict, and one that would make these assertions measure the conflict path
+# instead of the thing they name.
 q_out="$(run_nudge sess-Q 'what does this do?')"
-check "a short question does not nudge" "$([ -z "$q_out" ] && echo 1 || echo 0)"
-q_after="$(run_nudge sess-Q 'add a retry to the uploader')"
-check "the question did NOT burn the session's nudge" \
+check "a short question does not score" "$([ -z "$q_out" ] && echo 1 || echo 0)"
+check "and it writes no record for that session" \
+  "$([ -z "$(records_for sess-Q)" ] && echo 1 || echo 0)"
+q_after="$(run_nudge sess-Q 'add a retry to the downloader as well')"
+check "the question did NOT burn the session" \
   "$([ -n "$q_after" ] && echo 1 || echo 0)"
 q_third="$(run_nudge sess-Q 'and bump the timeout too')"
-check "the nudge is still once-per-session after a question" \
+check "the hook is still once-per-session after a question" \
   "$([ -z "$q_third" ] && echo 1 || echo 0)"
 markers_before="$(find "$TMPDIR" -name 'nudged-*' 2>/dev/null | wc -l | tr -d ' ')"
 _="$(run_nudge sess-Q2 'why is this failing?')"
@@ -192,7 +272,7 @@ long_q="refactor the pricing module and propagate the new type to every caller, 
 then re-check the callers in the billing package and the reporting package, and \
 make sure the VAT rounding still matches the fixtures, right?"
 lq_out="$(run_nudge sess-LQ "$long_q")"
-check "a long prompt that merely ends in '?' still nudges" \
+check "a long prompt that merely ends in '?' is still scored" \
   "$([ -n "$lq_out" ] && echo 1 || echo 0)"
 nq_out="$(run_nudge sess-NQ 'rename getUser to fetchUser')"
 check "a plain change request is unaffected" \
@@ -202,42 +282,50 @@ check "a plain change request is unaffected" \
 # 2. Exemptions.
 # --------------------------------------------------------------------------- #
 i=0
+n_before="$(count_records)"
 for cmd in '/v:status' '/v:triage add a retry' '/clear'; do
   i=$((i + 1))
   o="$(run_nudge "sess-slash-$i" "$cmd")"
   check "a slash command is silent: $cmd" "$([ -z "$o" ] && echo 1 || echo 0)"
 done
+check "and no slash command minted a record" \
+  "$([ "$(count_records)" = "$n_before" ] && echo 1 || echo 0)"
 
 # A covering record for THIS session silences it; one for another session does not.
 jq -n '{id:"2099-01-01-x", session_id:"sess-D", decision:"FASTPATH_ELIGIBLE",
         tier:"DIRECT", declared_paths:["README.md"]}' >"$PREEVAL/x.json"
 o="$(run_nudge sess-D 'change the readme')"
 check "a pre-eval record for this session silences it" "$([ -z "$o" ] && echo 1 || echo 0)"
-o="$(run_nudge sess-E 'change the readme')"
+o="$(run_nudge sess-E 'change the readme intro')"
 check "a record for ANOTHER session does not silence it" "$([ -n "$o" ] && echo 1 || echo 0)"
 
 # A record that cannot be read is NOT an exemption (the Stop rule's stance).
 printf '{ this is not json' >"$PREEVAL/broken.json"
-o="$(run_nudge sess-D2 'change the readme')"
+o="$(run_nudge sess-D2 'change the readme footer')"
 check "an unreadable record is not an exemption" "$([ -n "$o" ] && echo 1 || echo 0)"
 rm -f "$PREEVAL/broken.json"
 
-# An active run silences it; a finished one does not.
+# An active run silences it; a finished one does not. This is the gate that keeps
+# the hook from minting a record mid-pipeline, which would contaminate the very
+# stream the run is being measured by.
 set_run_phase DISPATCHED
-o="$(run_nudge sess-F 'add a retry')"
+n_before="$(count_records)"
+o="$(run_nudge sess-F 'add a retry to the mailer')"
 check "an active run silences it" "$([ -z "$o" ] && echo 1 || echo 0)"
-o="$(run_nudge sess-F2 'add a retry')"
+o="$(run_nudge sess-F2 'add a retry to the scheduler')"
 check "an active run silences it on EVERY prompt, not just the first" \
   "$([ -z "$o" ] && echo 1 || echo 0)"
+check "and an active run mints NO record" \
+  "$([ "$(count_records)" = "$n_before" ] && echo 1 || echo 0)"
 set_run_phase MERGED
-o="$(run_nudge sess-G 'add a retry')"
+o="$(run_nudge sess-G 'add a retry to the indexer')"
 check "a MERGED run no longer silences it" "$([ -n "$o" ] && echo 1 || echo 0)"
 
 # Freshness comes from the RECORDED timestamp, never an mtime -- git rewrites
 # mtimes on clone and branch switch, which would make every historical run in
 # the repository look seconds old.
 set_run_phase DISPATCHED "2020-01-01T00:00:00Z"
-o="$(run_nudge sess-G2 'add a retry')"
+o="$(run_nudge sess-G2 'add a retry to the exporter')"
 check "a run whose RECORDED timestamp is ancient does not silence it (fresh mtime notwithstanding)" \
   "$([ -n "$o" ] && echo 1 || echo 0)"
 set_run_phase MERGED
@@ -255,16 +343,68 @@ check "a non-object JSON payload: exit 0 and no output" \
 
 o="$(jq -n --arg c "$PROJ" '{hook_event_name:"PreToolUse", session_id:"sess-H",
                              cwd:$c, tool_name:"Write"}' | bash "$NUDGE" 2>/dev/null)"
-check "a non-UserPromptSubmit payload is silent (a mis-registration must not nudge on tool calls)" \
+check "a non-UserPromptSubmit payload is silent (a mis-registration must not score on every tool call)" \
   "$([ -z "$o" ] && echo 1 || echo 0)"
 
 o="$(run_nudge sess-I 'add a retry' "$OTHER")"
 check "a project with no Compound V surface is silent" "$([ -z "$o" ] && echo 1 || echo 0)"
 
+n_before="$(count_records)"
 o="$(jq -n --arg c "$PROJ" '{hook_event_name:"UserPromptSubmit", cwd:$c,
-                             prompt:"add a retry"}' | bash "$NUDGE" 2>/dev/null)"
-check "a payload with no session_id is silent (nothing to deduplicate on)" \
-  "$([ -z "$o" ] && echo 1 || echo 0)"
+                             prompt:"add a retry to the webhook"}' \
+     | bash "$NUDGE" 2>/dev/null)"
+check "a payload with no session_id is silent (nothing to deduplicate on, and nothing to BIND to)" \
+  "$([ -z "$o" ] && [ "$(count_records)" = "$n_before" ] && echo 1 || echo 0)"
+
+# --------------------------------------------------------------------------- #
+# 3b. The engine's own kill-switch, and the engine failing.
+#
+# `pre_eval.enabled: false` makes the whole stage a no-op that writes nothing.
+# An operator who turned the stage off must get SILENCE, not a hook narrating
+# that the stage is off — and above all not a record.
+# --------------------------------------------------------------------------- #
+DISPROJ="$WORK/projDisabled"
+DISRUN="$DISPROJ/docs/superpowers/execution/2099-01-01-off"
+mkdir -p "$DISPROJ/.git" "$DISPROJ/.claude" "$DISRUN"
+printf '{"pre_eval": {"enabled": false}}\n' >"$DISPROJ/.claude/compound-v.json"
+# A FINISHED run, not an absent execution root: "cannot tell" is treated as
+# ACTIVE, so a sandbox the resume query cannot answer for would silence the hook
+# for the wrong reason and this test would pass without ever reaching the engine.
+printf 'feature: off\njobs:\n  - id: task-1\n' >"$DISRUN/manifest.yaml"
+jq -n --arg ts "$(now_ts)" \
+  '{run_id:"2099-01-01-off", phase:"MERGED", updated_at:$ts,
+    jobs:{"task-1":{status:"done"}}}' >"$DISRUN/state.json"
+o="$(prompt_payload sess-OFF 'add a retry to the disabled project' "$DISPROJ" \
+     | bash "$NUDGE" 2>/dev/null)"; rc=$?
+check "pre_eval.enabled=false: exit 0 and no output" \
+  "$([ "$rc" = 0 ] && [ -z "$o" ] && echo 1 || echo 0)"
+check "pre_eval.enabled=false: NO record is written" \
+  "$([ ! -d "$DISPROJ/docs/superpowers/pre-eval" ] && echo 1 || echo 0)"
+
+# A PLANTED ENGINE FAILURE. The hook now depends on a real program with real
+# dependencies; it can be absent, raise, or be killed by the registration's
+# timeout. Every one of those must degrade to the REMINDER the hook used to print
+# unconditionally — asking for the thing that failed — and never to silence, and
+# never to a non-zero exit (which on this event REJECTS THE USER'S PROMPT).
+#
+# The WHOLE scripts/ tree is copied and only the engine is replaced. Copying the
+# engine's neighbours out from under it would break the resume query too, the
+# hook would go silent for that reason instead, and this test would report a
+# green reminder path it never took.
+FAKEROOT="$WORK/fakeplugin"
+mkdir -p "$FAKEROOT"
+cp -R "$REPO/scripts" "$FAKEROOT/scripts"
+printf '#!/usr/bin/env python3\nimport sys\nsys.stderr.write("boom\\n")\nsys.exit(3)\n' \
+  >"$FAKEROOT/scripts/compound-v-preeval.py"
+n_before="$(count_records)"
+o="$(prompt_payload sess-BOOM 'add a retry to the broken engine path' \
+     | CLAUDE_PLUGIN_ROOT="$FAKEROOT" bash "$NUDGE" 2>/dev/null)"; rc=$?
+check "a planted engine failure still exits 0" "$([ "$rc" = 0 ] && echo 1 || echo 0)"
+check "a planted engine failure yields the REMINDER text" \
+  "$(ctx "$o" | grep -q 'could not size this prompt' \
+     && ctx "$o" | grep -q '/v:triage' && echo 1 || echo 0)"
+check "a planted engine failure mints no record" \
+  "$([ "$(count_records)" = "$n_before" ] && echo 1 || echo 0)"
 
 # --------------------------------------------------------------------------- #
 # 4. PostCompact.
@@ -451,18 +591,34 @@ EOF
 check "REGISTRATION: every registered command points at an executable hook file" \
   "$([ "$missing" = "0" ] && echo 1 || echo 0)"
 
+# THE LEDGER IS GONE (v3.4). v3.3.0 registered hooks/tool-failure-ledger.sh on
+# PostToolUseFailure and this suite asserted that the file it wrote grew. Nothing
+# ever READ that file — not `compound-v-classify-failure.py`, not the scorecard,
+# not any command — so the only thing the suite proved was that a hook could
+# append to a temp file. A mechanism with no caller is the exact defect the
+# native-mechanisms pass exists to find, so the event, the registration and the
+# assertions went together, and `hooks/tool-failure-ledger.sh` is deleted with
+# them. What is asserted here is the REGISTRATION, not the file: an unregistered
+# script is inert, while an event still pointing at a script that is not there is
+# a half-removal and worse than either end state.
+check "REGISTRATION: there is NO PostToolUseFailure block (the ledger had no reader)" \
+  "$(jq -e '.hooks | has("PostToolUseFailure") | not' "$HOOKS_JSON" \
+     >/dev/null 2>&1 && echo 1 || echo 0)"
+check "REGISTRATION: nothing registers tool-failure-ledger.sh any more" \
+  "$(jq -r '.hooks | to_entries[] | .value[]? | .hooks[]? | .command // empty' "$HOOKS_JSON" \
+     2>/dev/null | grep -q 'tool-failure-ledger' && echo 0 || echo 1)"
+
 
 # =========================================================================== #
-# v3.3.0 — PreCompact snapshot and the PostToolUseFailure ledger
+# v3.3.0 — the PreCompact snapshot
 #
-# The point of these two is NOT that they run. It is that each has a CALLER:
-# the snapshot is READ BACK by hooks/postcompact-resume.sh, and the ledger is a
-# file a human or a script can open. This file's job is to prove the first one
-# by writing with one hook and reading with the other — never by comparing the
-# two sources, which would pass even if both agreed on a path nobody uses.
+# The point of this one is NOT that it runs. It is that it has a CALLER: the
+# snapshot is READ BACK by hooks/postcompact-resume.sh. This file's job is to
+# prove that by writing with one hook and reading with the other — never by
+# comparing the two sources, which would pass even if both agreed on a path
+# nobody uses.
 # =========================================================================== #
 PRECOMPACT="${PRECOMPACT_SRC:-$REPO/hooks/precompact-snapshot.sh}"
-FAILLEDGER="${FAILLEDGER_SRC:-$REPO/hooks/tool-failure-ledger.sh}"
 
 npc_proj="$WORK/projPC"
 mkdir -p "$npc_proj/scripts" "$npc_proj/docs/superpowers/execution/2026-01-01-x"
@@ -476,7 +632,6 @@ JSON
 printf 'run_id: 2026-01-01-x\n' >"$npc_proj/docs/superpowers/execution/2026-01-01-x/manifest.yaml"
 
 run_pc() { OUT="$(printf '%s' "$1" | bash "$PRECOMPACT" 2>/dev/null)"; RC=$?; }
-run_fl() { OUT="$(printf '%s' "$1" | bash "$FAILLEDGER" 2>/dev/null)"; RC=$?; }
 pc_json() { jq -n --arg cwd "$1" --arg sid "$2" --arg ev "$3" \
   '{hook_event_name:$ev,session_id:$sid,cwd:$cwd,trigger:"auto"}'; }
 
@@ -515,31 +670,6 @@ OUT2="$(printf '%s' "$(jq -n --arg cwd "$npc_proj" \
   | bash "${POSTCOMPACT_SRC:-$REPO/hooks/postcompact-resume.sh}" 2>/dev/null)"
 check "THE CALLER: without a snapshot it falls back to the live query" \
   "$([ -z "$OUT2" ] && echo 1 || echo 0)"
-
-# --- the failure ledger -----------------------------------------------------
-fl_json() { jq -n --arg cwd "$1" --arg ev "$2" --arg tool "$3" --arg err "$4" \
-  '{hook_event_name:$ev,session_id:"fl-1",cwd:$cwd,tool_name:$tool,agent_id:"ag-1",
-    tool_response:{error:$err}}'; }
-run_fl "$(fl_json "$npc_proj" PostToolUseFailure Bash "pytest: not found")"
-led="$(find "$TMPDIR" -name 'fail-*.jsonl' 2>/dev/null | head -1)"
-check "LEDGER: records a failure" \
-  "$([ -n "$led" ] && grep -q '"tool":"Bash"' "$led" && echo 1 || echo 0)"
-check "LEDGER: says NOTHING on stdout (the tool error is already visible)" \
-  "$([ -z "$OUT" ] && echo 1 || echo 0)"
-run_fl "$(fl_json "$npc_proj" PostToolUseFailure Write "EACCES")"
-check "LEDGER: appends rather than overwrites" \
-  "$([ "$(wc -l <"$led" | tr -d ' ')" = "2" ] && echo 1 || echo 0)"
-check "LEDGER: every line is valid JSON" \
-  "$(jq -e . "$led" >/dev/null 2>&1 && echo 1 || echo 0)"
-check "LEDGER: stores NO tool input — a failed Write must not leak its content" \
-  "$(jq -r 'keys | join(",")' "$led" 2>/dev/null | head -1 \
-     | grep -qv 'tool_input\|content\|command' && echo 1 || echo 0)"
-run_fl "$(fl_json "$npc_proj" PostToolUse Bash "x")"
-check "LEDGER: ignores every event but PostToolUseFailure" \
-  "$([ "$(wc -l <"$led" | tr -d ' ')" = "2" ] && echo 1 || echo 0)"
-run_fl "$(fl_json "$nopc" PostToolUseFailure Bash "x")"
-check "LEDGER: a project without Compound V is not recorded" \
-  "$([ "$(find "$TMPDIR" -name 'fail-*.jsonl' | wc -l | tr -d ' ')" = "1" ] && echo 1 || echo 0)"
 
 
 # =========================================================================== #
