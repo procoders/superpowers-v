@@ -57,30 +57,69 @@
 # most 8 run directories are inspected, resolution stops at the first match, and
 # the manifest is only parsed AFTER a job has been resolved.
 #
-# RE-MEASURED 2026-09-01 (macOS 26.5.2, arm64, /usr/bin/python3 3.9.6), mean of
-# 50 invocations per path, against a checkout carrying 12 run directories:
-#   bare interpreter start          ~31 ms  (the floor -- nothing can beat it)
-#   unresolved job (human session)  ~47 ms  (no manifest parse)
-#   resolved, write in lane         ~81 ms  (manifest parsed)
-#   resolved, write out of lane     ~80 ms  (the deny is NOT the expensive path)
-# So the honest published figure is a RANGE, 47-81 ms, not a single number: the
-# split that matters is resolution + manifest parse (~34 ms), not the verdict.
+# RE-MEASURED 2026-09-02 (sixth review pass) on macOS 26.5.2 / arm64 with
+# /usr/bin/python3 3.9.6, 50 invocations per cell, old hook and new interleaved
+# in one round so a shared machine loads both arms equally, against a project
+# carrying copies of this repository's 47 run directories:
 #
-# These supersede the ~54/~112/~152 ms this header carried before, which were a
-# mean of 10 and disagreed with the 63 ms README.md published for the same
-# unresolved path. Re-measurement reproduced NEITHER set; both are withdrawn
-# rather than reconciled. README.md and AGENTS.md now carry these same figures
-# and the reproduction command.
+#   bare interpreter start (`-c pass`)      30 ms   the floor, taken in the
+#                                                   SAME round as the rows below
+#   unresolved job (human session)         120 ms -> 167 ms
+#   resolved, write in lane                202 ms -> 245 ms
+#   resolved, write out of lane            201 ms -> 298 ms*
+#
+# The arrow is this pass's viability ladder: +47 ms on the unresolved path,
+# +43 ms on the resolved allow, which is one `import yaml` probe and matches the
+# ~44 ms that probe costs measured on its own. (*The deny cell was the last one
+# taken and the round's closing floor had drifted up; the earlier baseline had
+# in-lane 208.5 ms and deny 209.5 ms, so read the deny as EQUAL to the allow --
+# the verdict has never been the expensive part, resolution and the manifest
+# parse are.)
+#
+# HOW MANY ROUNDS THAT IS, HONESTLY: ONE. The rows above are the single round
+# taken while this machine was quiet (opening floor 30.0 ms). Every later
+# attempt was DISCARDED by the rule two paragraphs down -- a parallel dogfood
+# run held the cores and the floor sat at 45-390 ms, where the same cells read
+# 250-680 ms. Two independent things corroborate the delta rather than the
+# absolutes: the probe measured on its own costs ~44 ms (`import yaml`, cache
+# prefix stripped), which is the +47/+43 seen here; and the OLD hook measured
+# 127 ms unresolved / 208 ms in lane / 209 ms deny in a separate quiet round,
+# which is the "before" column again. The sixth review pass, measuring
+# independently on this box, also could not reproduce 47 ms for any variant and
+# reported 115-175 ms per invocation.
+#
+# THE 47-81 ms THIS HEADER PUBLISHED IS WITHDRAWN, AND SO IS THE REASON IT WAS
+# NEVER RE-TAKEN. Those figures were measured 2026-09-01. On 2026-09-02 the
+# fourth review pass added the PYTHONPYCACHEPREFIX redirection below, and nobody
+# re-measured: the UNCHANGED hook now costs 120 ms on the path that published
+# 47 ms. The redirection is why, and the mechanism is worth knowing before
+# anyone "optimises" it away: PYTHONPYCACHEPREFIX moves the bytecode-cache
+# LOOKUP into a private per-invocation directory while PYTHONDONTWRITEBYTECODE
+# forbids populating it, so EVERY stdlib module is recompiled from source on
+# every single invocation. Measured directly, `-c 'import json,os,re,shlex,sys,
+# time'`: 31 ms plain, 32 ms with PYTHONDONTWRITEBYTECODE alone, 35 ms with the
+# prefix alone (it populates once and reuses), 90 ms with both. That ~59 ms is
+# the price of refusing to execute a planted .pyc, and it is worth paying --
+# but it should be paid knowingly, and it is not what the README said it was.
+#
+# So the ambient figure is a RANGE, 167-245 ms, on this machine, in this state.
+# Roughly: ~30 ms interpreter floor + ~59 ms cache-miss tax + ~45 ms viability
+# probe + ~33 ms bash, payload compile and resolution; a resolved call adds the
+# manifest parse and the matcher import on top.
 #
 # To reproduce: drive this hook with the synthetic PreToolUse payloads that
-# tests/test-lane-guard.sh builds (its sandbox is what the resolved rows above
-# were measured against) and time the loop. Set CV_LANE_GUARD_LOG and read it
-# back to confirm which path you hit -- an in-lane allow logs NOTHING and an
-# unresolved allow logs "ALLOW (job unresolved)", and the two are otherwise
-# indistinguishable from stdout, which is empty for both.
+# tests/test-lane-guard.sh builds (its sandbox is the shape the resolved rows
+# above were measured against) and time the loop. Take the bare-interpreter
+# floor in the same round and DISCARD any round whose floor is above ~31 ms --
+# a machine running a parallel dogfood run doubles every number here, which is
+# how a "measured" figure ends up being about the load. Set CV_LANE_GUARD_LOG
+# and read it back to confirm which path you hit -- an in-lane allow logs
+# NOTHING and an unresolved allow logs "ALLOW (job unresolved)", and the two are
+# otherwise indistinguishable from stdout, which is empty for both.
 #
-# A result cache was considered and rejected: it would save ~34 ms and buy a
-# cache-invalidation bug in the one component whose failure mode is a false deny.
+# A result cache was considered and rejected: it would save the resolution and
+# parse and buy a cache-invalidation bug in the one component whose failure mode
+# is a false deny.
 #
 # The quote-aware tokenizer and the unresolved-identity record made this source
 # ~250 lines longer, and the source is COMPILED ON EVERY INVOCATION (it is
@@ -148,10 +187,18 @@
 # `command -v python3` that happened to be a Homebrew build with no PyYAML, this
 # guard therefore read a manifest with NO JOBS, resolved no lane, and failed
 # open on every out-of-lane write. Both halves are fixed: the subset parser
-# reads safe_dump's output and raises instead of truncating, and
-# `load_manifest_data` below PREFERS an interpreter that has PyYAML, saying so
-# by path in the log when the one it is running under does not. See the
-# interpreter-selection block for why the preference is resolved lazily.
+# reads safe_dump's output and raises instead of truncating, and the interpreter
+# this hook runs under is CHOSEN BY ASKING (`<py> -c 'import yaml'`) rather than
+# by ordering guesses -- see the viability ladder below, which also says what
+# that costs. `load_manifest_data` keeps its own delegation as a second line:
+# the ladder settles which interpreter runs, the payload can still hand a
+# manifest to a yaml-capable candidate, and it says by path when it does.
+#
+# Measured over all 47 manifests under docs/superpowers/execution/ (2026-09-02):
+# both parsers read every one, and the ONLY field they disagree on anywhere is
+# `jobs[].body`, the block scalars the subset parser flattens. With `body` set
+# aside the jobs lists are identical 47/47, `write_allowed` included -- which is
+# why the fallback is survivable, and not why it is acceptable as a default.
 #
 # ENV
 #   CV_LANE_MAP        explicit lane-map JSON (overrides discovery)
@@ -167,10 +214,13 @@
 #   CV_PYTHON          interpreter override. Honoured VERBATIM: when it is set
 #                      it is the only candidate, and no PyYAML preference
 #                      overrides it.
-#   CV_PY_CANDIDATES   exported by this script, read by the payload: the
-#                      interpreter paths, in preference order, that the manifest
-#                      read may fall back to when this one has no PyYAML. Not an
-#                      input -- set CV_PYTHON to choose an interpreter.
+#   CV_PY_CANDIDATES   the interpreter paths, in probe order. Computed here and
+#                      exported for the payload, which may hand the manifest
+#                      read to one of them. It is ALSO honoured on input: when
+#                      it is set, it IS the ordered candidate list (each entry
+#                      still put through the viability ladder below) -- that is
+#                      the seam the tests use to put a broken interpreter first.
+#                      CV_PYTHON still wins over it.
 
 # No `set -e`: this hook must never fail closed.
 set -uo pipefail
@@ -203,6 +253,13 @@ export CV_SCOPE_CHECK CV_VALIDATE_MANIFEST
 # cannot see it at all. Nothing is ever written into it either — the export above
 # is still in force — so even a hijacked directory only turns a cache lookup into
 # a miss, and a miss loads the source, which is the outcome we want.
+#
+# IT IS ALSO, MEASURED, THE MOST EXPENSIVE LINE IN THIS FILE: a redirected
+# lookup that is never populated recompiles every stdlib module from source on
+# every invocation — 31 ms plain, 90 ms with both variables set. That is ~59 ms
+# of the hook's ambient cost, and it is why the 47 ms this file used to publish
+# stopped being true the day this landed. Worth paying; see COST above before
+# changing it, and re-measure if you do.
 export PYTHONDONTWRITEBYTECODE=1
 CV_PYCACHE_DIR="${TMPDIR:-/tmp}/cv-lane-guard-pycache.$$.${RANDOM:-0}"
 if mkdir -p "$CV_PYCACHE_DIR" 2>/dev/null; then
@@ -213,7 +270,7 @@ if mkdir -p "$CV_PYCACHE_DIR" 2>/dev/null; then
 fi
 
 # WHICH PYTHON IS A CORRECTNESS QUESTION, NOT A TASTE ONE (fifth review pass,
-# 2026-09-02).
+# 2026-09-02; the pick is VIABILITY-CHECKED as of the sixth, same day).
 #
 # This hook reads the acting job's lane out of a YAML manifest. With PyYAML the
 # read is exact; without it the repo's embedded SUBSET parser runs, and a subset
@@ -223,35 +280,122 @@ fi
 # picked the one interpreter that could not read the manifest it was pointed at,
 # parsed no jobs, and FAILED OPEN on every out-of-lane write of a real run.
 #
-# Two halves fix that, and both are needed: the subset parser now reads what
-# `yaml.safe_dump` writes (see compound-v-validate-manifest.py), and PyYAML is
-# PREFERRED here so the subset parser is the last resort it was meant to be.
+# The fifth pass answered that by ORDERING the candidates: take the first path
+# that is executable, and leave `import yaml` to be discovered later, inside the
+# payload. Two things an ordering cannot decide:
+#   * `-x` IS NOT "CAN RUN". A wrapper script, a stale shim, a virtualenv
+#     interpreter whose framework was upgraded out from under it — all
+#     executable, all exit non-zero on anything. Picked as THE interpreter, the
+#     payload never runs, the wrapper below discards the empty output, and the
+#     hook produces NO DECISION AT ALL: a silent no-op indistinguishable from an
+#     allow, in the component whose entire job is to not be silent.
+#   * an ordering is a GUESS about which path has PyYAML. The property is cheap
+#     to ask for, and asking is not a guess.
 #
-# WHY THE PREFERENCE IS RESOLVED LAZILY, IN PYTHON, RATHER THAN BY PROBING HERE.
-# Probing a candidate costs a whole interpreter start plus a PyYAML import, and
-# this hook runs on EVERY Write/Edit/Bash call in every session. Paying that on
-# the unresolved path — the ordinary human session, ~47 ms, the only path a
-# session that never dispatches ever takes — would roughly double the ambient
-# cost of the plugin to answer a question that path never asks. So bash only
-# ORDERS the candidates (free) and exports them; `_load_manifest_data` in the
-# payload below consults the list at the one moment yaml matters, which is after
-# a job has already resolved. `CV_PYTHON`, when set, is honoured verbatim and is
-# the ONLY candidate: an explicit override exists to be obeyed, and a hook that
-# second-guessed it could not be pointed at a chosen interpreter by a test.
-PY="${CV_PYTHON:-}"
-CV_PY_CANDIDATES="$PY"
-if [ -z "$PY" ]; then
+# So the pick is a VIABILITY LADDER, resolved here, before anything else runs:
+#   1. the first candidate for which `<py> -c 'import yaml'` exits 0;
+#   2. failing that, the first for which `<py> -c pass` exits 0 — logged BY
+#      PATH with its missing PyYAML named, because the manifest read is then a
+#      delegated candidate's or the subset parser's problem;
+#   3. failing that, nothing here can run: log that the guard is INERT for this
+#      call and exit. Fail-open stays the contract; silence does not.
+#
+# WHAT THE LADDER COSTS, MEASURED (2026-09-02, macOS 26.5.2 / arm64,
+# /usr/bin/python3 3.9.6, 50 invocations per path). One probe, ~44 ms, on every
+# Write/Edit/Bash call in every session: 127 ms unresolved before, 171 ms after.
+# The fifth pass refused to pay it and said so in this header. That reasoning is
+# withdrawn: it was weighing the probe against a 47 ms ambient cost that no
+# longer exists (the real figure is measured in COST above), and it was buying
+# speed with the one property this hook exists to have. A guard that picks an
+# interpreter which cannot run is not a cheap guard, it is not a guard.
+#
+# Two things keep the bill to one probe on an ordinary machine:
+#   * ORDER. /usr/bin/python3 is tried before the one on PATH because on macOS
+#     it is the one that ships PyYAML — now purely a COST heuristic (which
+#     candidate is likeliest to answer first), never a correctness claim: the
+#     probe decides, and on a machine where PATH's python3 has PyYAML and
+#     /usr/bin/python3 does not, PATH's is what gets picked.
+#   * NO PYCACHE PREFIX ON THE PROBE. The probes strip PYTHONPYCACHEPREFIX
+#     (leaving PYTHONDONTWRITEBYTECODE in force, so they still write nothing).
+#     The prefix exists to stop a planted in-tree `.pyc` being executed when
+#     this hook imports a REPO module; a probe imports `yaml` and nothing else,
+#     so the redirection protects nothing there — and costs 60 ms, because a
+#     redirected lookup that may not be populated recompiles every stdlib module
+#     from source on every call. Measured: 31 ms plain, 90 ms with both.
+#
+# `CV_PYTHON`, when set, is the ONLY candidate — an explicit override exists to
+# be obeyed, and a hook that silently substituted another interpreter could not
+# be pointed at a chosen one by a test. It is still put through the same ladder:
+# obeying an override is not the same as pretending a dead interpreter works.
+_cv_log() {
+  # The payload's log file, resolved the same way it resolves it. Best effort:
+  # a logging failure must never influence a decision.
+  printf '%s\n' "$1" \
+    >>"${CV_LANE_GUARD_LOG:-${TMPDIR:-/tmp}/compound-v-lane-guard.log}" \
+    2>/dev/null || true
+}
+
+# Kept as one-line functions on purpose: tests/test-lane-guard.sh plants a
+# violation by rewriting these two lines, and a mutation that cannot be applied
+# proves nothing.
+_cv_can_yaml() { env -u PYTHONPYCACHEPREFIX "$1" -B -c 'import yaml' >/dev/null 2>&1; }
+_cv_can_run() { env -u PYTHONPYCACHEPREFIX "$1" -B -c pass >/dev/null 2>&1; }
+
+_cv_cands=()
+if [ -n "${CV_PYTHON:-}" ]; then
+  _cv_cands=("$CV_PYTHON")
+elif [ -n "${CV_PY_CANDIDATES:-}" ]; then
+  # An explicit ordered list. Honoured as given, and every entry still probed.
+  IFS=':' read -r -a _cv_cands <<<"$CV_PY_CANDIDATES"
+else
   _cv_path_py="$(command -v python3 2>/dev/null || true)"
   for _cv_cand in /usr/bin/python3 "$_cv_path_py"; do
     [ -n "$_cv_cand" ] || continue
-    [ -x "$_cv_cand" ] || continue
-    case ":$CV_PY_CANDIDATES:" in *":$_cv_cand:"*) continue ;; esac
-    CV_PY_CANDIDATES="${CV_PY_CANDIDATES:+$CV_PY_CANDIDATES:}$_cv_cand"
+    _cv_dupe=""
+    for _cv_seen in ${_cv_cands+"${_cv_cands[@]}"}; do
+      [ "$_cv_seen" = "$_cv_cand" ] && _cv_dupe=1
+    done
+    [ -n "$_cv_dupe" ] && continue
+    _cv_cands+=("$_cv_cand")
   done
-  PY="${CV_PY_CANDIDATES%%:*}"
-  [ -n "$PY" ] || PY=/usr/bin/python3
 fi
+
+CV_PY_CANDIDATES=""
+for _cv_cand in ${_cv_cands+"${_cv_cands[@]}"}; do
+  CV_PY_CANDIDATES="${CV_PY_CANDIDATES:+$CV_PY_CANDIDATES:}$_cv_cand"
+done
 export CV_PY_CANDIDATES
+
+PY=""
+_cv_runnable=""
+_cv_passed_over=""
+for _cv_cand in ${_cv_cands+"${_cv_cands[@]}"}; do
+  if _cv_can_yaml "$_cv_cand"; then PY="$_cv_cand"; break; fi
+  if [ -z "$_cv_runnable" ] && _cv_can_run "$_cv_cand"; then
+    _cv_runnable="$_cv_cand"
+  fi
+  _cv_passed_over="${_cv_passed_over:+$_cv_passed_over, }$_cv_cand"
+done
+
+if [ -n "$PY" ]; then
+  # An ordinary machine takes rung 1 on the first candidate and logs NOTHING: a
+  # line on every tool call would bury the DENYs this log exists for. A pick
+  # that had to pass over a candidate is not ordinary, and is named.
+  [ -z "$_cv_passed_over" ] \
+    || _cv_log "lane-guard: interpreter $PY (imports yaml); passed over: $_cv_passed_over"
+elif [ -n "$_cv_runnable" ]; then
+  PY="$_cv_runnable"
+  _cv_log "lane-guard: interpreter $PY CANNOT import PyYAML and no candidate on \
+this list could (tried: $CV_PY_CANDIDATES); the manifest read falls back to a \
+yaml-capable candidate if the payload finds one, else to the embedded parser, \
+which reads a SUBSET of YAML"
+else
+  _cv_log "lane-guard: NO candidate interpreter could be run (tried: \
+${CV_PY_CANDIDATES:-<none>}); the guard is INERT for this tool call and this \
+write was NOT checked against any lane. The git-derived scope gate \
+(scripts/compound-v-scope-check.py) is unaffected and remains the authority."
+  exit 0
+fi
 
 # Read the Python source into a variable WITHOUT a $(...) command substitution:
 # bash parses the inside of $( ) even around a quoted heredoc, and a bare

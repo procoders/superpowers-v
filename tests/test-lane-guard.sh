@@ -508,6 +508,8 @@ run "$(encode Write agent_abc123 "$WT" file_path "$WT/README.md")" \
     CV_PYTHON="$WORK/no-such-python"
 check "a missing interpreter fails OPEN (no output, exit 0)" \
   "$([ -z "$OUT" ] && [ "$RC" = "0" ] && echo 1 || echo 0)"
+check "...and says so in the log — fail-open is never a silent no-decision" \
+  "$([ "$(logged 'INERT for this tool call')" = yes ] && echo 1 || echo 0)"
 
 run "$(encode Write agent_abc123 "$WT" file_path "$WT/README.md")" \
     CV_SCOPE_CHECK="$WORK/no-such-matcher.py"
@@ -676,10 +678,94 @@ else
   printf 'machine can import yaml (CI installs it; this half did NOT run)\n'
 fi
 
-check "the hook prefers an interpreter that can import yaml" \
-  "$(grep -q 'CV_PY_CANDIDATES' "$HOOK" && echo 1 || echo 0)"
-check "the hook says WHY the preference is resolved lazily, not by probing" \
-  "$(grep -q 'RESOLVED LAZILY' "$HOOK" && echo 1 || echo 0)"
+echo "=== 7d. the interpreter pick is VIABILITY-CHECKED ========="
+# Until the sixth review pass (2026-09-02) the pick was an ordering over
+# whatever was executable, and `-x` is not "can run": a wrapper, a stale shim or
+# a virtualenv whose framework moved is executable and exits non-zero on
+# everything. Picked as THE interpreter, the payload never runs, the wrapper
+# discards the empty output, and the hook produces no decision at all — a silent
+# no-op that reads exactly like an allow. These cases are behavioural on
+# purpose: the two assertions that used to live here grepped this hook's own
+# source for a variable name and a comment, which a rewrite of the mechanism
+# would have kept green.
+
+BROKEN_DIR="$WORK/brokenpath"
+mkdir -p "$BROKEN_DIR"
+BROKEN_PY="$BROKEN_DIR/python3"
+{ printf '#!/bin/sh\n'
+  printf 'echo "this python3 cannot run anything" >&2\n'
+  printf 'exit 1\n'
+} >"$BROKEN_PY"
+chmod +x "$BROKEN_PY"
+
+# The literal shape this was found in: a python3 on PATH that is executable and
+# dead. The guard must still reach a verdict.
+run "$(encode Write agent_folded "$WT4" file_path "$WT4/README.md")" \
+    PATH="$BROKEN_DIR:$PATH"
+verdict "an executable-but-broken python3 FIRST ON PATH still denies" deny
+check "and the deny still reads the lane out of the manifest" \
+  "$(printf '%s' "$OUT" | grep -q 'hooks/lane-guard.sh' && echo 1 || echo 0)"
+
+if [ -n "$YAML_PY" ]; then
+  # ...and the same interpreter FIRST IN THE CANDIDATE LIST, which is where the
+  # ladder actually has to step over it.
+  run "$(encode Write agent_folded "$WT4" file_path "$WT4/README.md")" \
+      CV_PY_CANDIDATES="$BROKEN_PY:$YAML_PY"
+  verdict "a broken interpreter FIRST IN THE CANDIDATE LIST is stepped over" deny
+  check "the log names the interpreter it actually used" \
+    "$([ "$(logged "interpreter $YAML_PY")" = yes ] && echo 1 || echo 0)"
+  check "the log names the candidate it passed over" \
+    "$([ "$(logged "passed over: $BROKEN_PY")" = yes ] && echo 1 || echo 0)"
+
+  # PLANTED VIOLATION 5: neuter the viability probe and the ladder is back to an
+  # ordering over executables — the broken shim wins, the payload never runs,
+  # and the out-of-lane write sails through with NO output at all.
+  MUTANT_VIABLE="$MUTROOT/hooks/lane-guard-no-viability.sh"
+  sed 's/^_cv_can_yaml() {.*/_cv_can_yaml() { return 0; }/' "$HOOK" \
+    >"$MUTANT_VIABLE"
+  chmod +x "$MUTANT_VIABLE"
+  grep -q '_cv_can_yaml() { return 0; }' "$MUTANT_VIABLE" \
+    || { echo "FATAL: the viability mutation did not apply"; exit 1; }
+  HOOK_UNDER_TEST="$MUTANT_VIABLE"
+  run "$(encode Write agent_folded "$WT4" file_path "$WT4/README.md")" \
+      CV_PY_CANDIDATES="$BROKEN_PY:$YAML_PY"
+  check "PLANTED: without the probe the broken interpreter is picked -> no deny" \
+    "$([ "$(is_deny)" = no ] && [ "$RC" = "0" ] && echo 1 || echo 0)"
+  check "PLANTED: and the out-of-lane write is allowed in COMPLETE silence" \
+    "$([ "$(silent)" = yes ] && echo 1 || echo 0)"
+  HOOK_UNDER_TEST=""
+else
+  printf 'SKIP the viability ladder under a PyYAML interpreter — no python3 on '
+  printf 'this machine can import yaml (CI installs it; this half did NOT run)\n'
+fi
+
+# Rung 2: nothing on the list has PyYAML, but something can run. The guard uses
+# it, and says by path what it settled for.
+run "$(encode Write agent_folded "$WT4" file_path "$WT4/README.md")" \
+    CV_PY_CANDIDATES="$BROKEN_PY:$NOYAML_PY"
+verdict "no candidate has PyYAML -> the first that RUNS is used" deny
+check "rung 2 names the interpreter and its missing PyYAML" \
+  "$([ "$(logged "interpreter $NOYAML_PY CANNOT import PyYAML")" = yes ] \
+     && echo 1 || echo 0)"
+
+# Rung 3: nothing can run at all. Fail open — and never silently.
+run "$(encode Write agent_folded "$WT4" file_path "$WT4/README.md")" \
+    CV_PY_CANDIDATES="$BROKEN_PY"
+check "no runnable interpreter -> no deny, exit 0" \
+  "$([ "$(is_deny)" = no ] && [ "$RC" = "0" ] && echo 1 || echo 0)"
+check "...and the guard says in the log that it was INERT for that call" \
+  "$([ "$(logged 'INERT for this tool call')" = yes ] && echo 1 || echo 0)"
+check "...naming the candidate it could not run" \
+  "$([ "$(logged "$BROKEN_PY")" = yes ] && echo 1 || echo 0)"
+
+# CV_PYTHON is still obeyed rather than second-guessed — and a dead one is
+# reported, not silently replaced by a working interpreter beside it.
+run "$(encode Write agent_folded "$WT4" file_path "$WT4/README.md")" \
+    CV_PYTHON="$BROKEN_PY"
+check "a dead CV_PYTHON is NOT silently replaced -> no deny, exit 0" \
+  "$([ "$(is_deny)" = no ] && [ "$RC" = "0" ] && echo 1 || echo 0)"
+check "a dead CV_PYTHON is reported in the log" \
+  "$([ "$(logged 'INERT for this tool call')" = yes ] && echo 1 || echo 0)"
 
 echo "=== 8. documented blind spots (asserted, not assumed) ====="
 # These are ALLOWED, and that is the honest limit of command inspection. They
