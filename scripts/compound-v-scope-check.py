@@ -190,7 +190,22 @@ def changed_files(cwd, baseline, preexisting=None):
     )
     if preexisting:
         files -= set(preexisting)
+    # Interpreter bytecode is not work. The first implementer that could run a
+    # selftest (2026-09-02, run v3.4-r5) left scripts/__pycache__/*.pyc in its
+    # worktree and was BLOCKED for two paths outside its lane — correct under the
+    # rule that ignored paths count, wrong as an outcome: every Python project
+    # would refuse its first job. A .pyc is never merged (merge-back lands only
+    # approved paths), so dropping it here narrows nothing an attacker could use.
+    files = {f for f in files if not is_bytecode_noise(f)}
     return sorted(files)
+
+
+def is_bytecode_noise(path):
+    """True for Python bytecode the interpreter writes beside the sources."""
+    parts = str(path or "").split("/")
+    if "__pycache__" in parts[:-1]:
+        return True
+    return parts[-1].endswith((".pyc", ".pyo"))
 
 
 def glob_to_regex(pattern):
@@ -713,6 +728,28 @@ def _selftest():
             "ignored: dist/leak.js BLOCKS (violation outside write_allowed)",
             "dist/leak.js" in violations,
         )
+
+        # BYTECODE-NOISE case (2026-09-02, run v3.4-r5): an implementer that runs a
+        # selftest leaves scripts/__pycache__/*.pyc behind. That is interpreter
+        # output, not work, and it is never merged — so it is not a violation. A
+        # real source file in the same place still is.
+        os.makedirs(os.path.join(irepo, "src", "__pycache__"))
+        with open(os.path.join(irepo, "src", "__pycache__", "base.cpython-314.pyc"), "wb") as f:
+            f.write(b"\x00bytecode")
+        with open(os.path.join(irepo, "tools.pyc"), "wb") as f:
+            f.write(b"\x00bytecode")
+        with open(os.path.join(irepo, "evil.py"), "w") as f:
+            f.write("print(1)\n")
+        changed, violations = check(irepo, "HEAD", ["src/**"])
+        expect("bytecode: __pycache__/*.pyc is not in the changed set",
+               not any("__pycache__" in c for c in changed))
+        expect("bytecode: a stray *.pyc is not in the changed set",
+               "tools.pyc" not in changed)
+        expect("bytecode: a real .py outside the lane still BLOCKS",
+               "evil.py" in violations)
+        expect("is_bytecode_noise names exactly bytecode",
+               is_bytecode_noise("a/__pycache__/b.pyc") and is_bytecode_noise("x.pyo")
+               and not is_bytecode_noise("__pycache__") and not is_bytecode_noise("src/pycache.py"))
 
         # UNUSUAL-FILENAME case: with NUL-delimited (-z) parsing, a path with a
         # space — and (where the OS allows) a literal newline — is attributed as a
