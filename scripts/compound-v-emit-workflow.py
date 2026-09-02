@@ -1815,9 +1815,33 @@ def run_dir_owned_by_name(rel, run_dir_rel, job_id):
     if not rel.startswith(prefix):
         return False
     tail = rel[len(prefix):]
-    return tail in ("state.json",
-                    "preexisting/%s.txt" % job_id,
-                    "preexisting/%s.verified.txt" % job_id)
+    if tail in ("state.json",
+                "preexisting/%s.txt" % job_id,
+                "preexisting/%s.verified.txt" % job_id,
+                # WRITTEN AFTER THE GATE, BY THE PIPELINE, FOR THIS JOB.
+                #
+                # The gate writes its own receipt after computing its verdict, and
+                # Record writes the result after that. Neither can appear in a list
+                # the gate produced — they do not exist yet — and both ALWAYS appear
+                # in the authority's later re-derivation. Dogfood 20, on a quiet
+                # tree, was refused as `contradicted` for exactly these two paths
+                # and nothing else. Without this, every `direct`-mode job is
+                # permanently blocked by the pipeline's own evidence.
+                #
+                # Exempting them from the SCOPE check does not make them trusted:
+                # the authority verifies the receipt's digest against the tree and
+                # refuses a receipt whose bindings disagree, and it requires exactly
+                # one result file per job. Trust in these two files comes from that
+                # verification, never from the scope gate, and the documented limit
+                # stands — in direct mode a worker can write anywhere, which is why
+                # the authority is the backstop.
+                "receipts/%s.gate.json" % job_id,
+                "results/%s.json" % job_id):
+        return True
+    # A re-attempt archives its predecessor as results/attempts/<id>.<n>.json,
+    # written by the same Record call, for the same reason.
+    return bool(re.match(r"^results/attempts/%s\.\d+\.json$" % re.escape(job_id),
+                         tail))
 
 
 def _preexisting_snapshot(root, python_bin):
@@ -3814,7 +3838,15 @@ def selftest():
         _check("manifest.yaml is NOT exempt by name — it defines the lanes",
                run_dir_owned_by_name("docs/superpowers/execution/bk/manifest.yaml",
                                      "docs/superpowers/execution/bk", "d1") is False)
+        # Written after the gate by the pipeline, for THIS job — cannot be in a
+        # list the gate produced, always in the authority's re-derivation.
         for _p in ("receipts/d1.gate.json", "results/d1.json",
+                   "results/attempts/d1.2.json"):
+            _check("run-dir %s IS exempt (written after the gate)" % _p,
+                   run_dir_owned_by_name("docs/superpowers/execution/bk/" + _p,
+                                         "docs/superpowers/execution/bk",
+                                         "d1") is True)
+        for _p in ("receipts/OTHER.gate.json", "results/OTHER.json",
                    "jobs/d1.prompt.md", "dispatch.workflow.js",
                    "preexisting/OTHER.txt", "anything-a-worker-invents"):
             _check("run-dir %s is NOT exempt by name" % _p,
