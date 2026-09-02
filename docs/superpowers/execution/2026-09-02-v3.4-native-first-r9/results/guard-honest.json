@@ -1,0 +1,36 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "CHANGELOG.md",
+    "docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md",
+    "hooks/lane-guard.sh",
+    "scripts/compound-v-emit-workflow.py",
+    "scripts/compound-v-scope-check.py",
+    "scripts/compound-v-validate-manifest.py",
+    "tests/test-integration-gate.sh",
+    "tests/test-lane-guard.sh"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "1755126897e486ca2ace421eb6467b958b955331",
+    "diff_digest": "sha256:0039b9002e6385a0b1a8b576bafcca8c2a649fbdb4d734e9c000a959c8108ac8",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"1755126897e486ca2ace421eb6467b958b955331\",\n  \"changed\": [\n    \"CHANGELOG.md\",\n    \"docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md\",\n    \"hooks/lane-guard.sh\",\n    \"scripts/compound-v-emit-workflow.py\",\n    \"scripts/compound-v-scope-check.py\",\n    \"scripts/compound-v-validate-manifest.py\",\n    \"tests/test-integration-gate.sh\",\n    \"tests/test-lane-guard.sh\"\n  ],\n  \"allowed\": [\n    \"hooks/lane-guard.sh\",\n    \"tests/test-lane-guard.sh\",\n    \"scripts/compound-v-validate-manifest.py\",\n    \"scripts/compound-v-emit-workflow.py\",\n    \"scripts/compound-v-scope-check.py\",\n    \"tests/test-integration-gate.sh\",\n    \"CHANGELOG.md\",\n    \"docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "1755126897e486ca2ace421eb6467b958b955331",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Close the fifth review pass: a lane guard that actually enforces, a register-lane the clamp accepts, and honest acceptance greps",
+  "tests": {
+    "command": "bash tests/test-epic-goal-stop.sh\nbash -c 'bash tests/test-epic-goal-stop.sh && bash tests/test-native-points.sh'\nbash -c '[ -f scripts/compound-v-emit-workflow.py ] || exit 0; /usr/bin/python3 scripts/compound-v-emit-workflow.py --selftest'\nbash -c '[ -f scripts/compound-v-scope-check.py ] || exit 0; /usr/bin/python3 scripts/compound-v-scope-check.py --selftest'\nbash -c '[ -f scripts/compound-v-validate-manifest.py ] || exit 0; /usr/bin/python3 scripts/compound-v-validate-manifest.py --selftest'\nbash -c '[ -f tests/test-integration-gate.sh ] || exit 0; bash tests/test-integration-gate.sh'\nbash -c '[ -f tests/test-lane-guard.sh ] || exit 0; bash tests/test-lane-guard.sh'\nbash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 8
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_5962797a-397-1"
+}

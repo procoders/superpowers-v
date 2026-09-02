@@ -1,0 +1,87 @@
+{
+  "baseline_commit": "1755126897e486ca2ace421eb6467b958b955331",
+  "diff_digest": "sha256:0039b9002e6385a0b1a8b576bafcca8c2a649fbdb4d734e9c000a959c8108ac8",
+  "exit_code": 0,
+  "job_id": "guard-honest",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"1755126897e486ca2ace421eb6467b958b955331\",\n  \"changed\": [\n    \"CHANGELOG.md\",\n    \"docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md\",\n    \"hooks/lane-guard.sh\",\n    \"scripts/compound-v-emit-workflow.py\",\n    \"scripts/compound-v-scope-check.py\",\n    \"scripts/compound-v-validate-manifest.py\",\n    \"tests/test-integration-gate.sh\",\n    \"tests/test-lane-guard.sh\"\n  ],\n  \"allowed\": [\n    \"hooks/lane-guard.sh\",\n    \"tests/test-lane-guard.sh\",\n    \"scripts/compound-v-validate-manifest.py\",\n    \"scripts/compound-v-emit-workflow.py\",\n    \"scripts/compound-v-scope-check.py\",\n    \"tests/test-integration-gate.sh\",\n    \"CHANGELOG.md\",\n    \"docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "1755126897e486ca2ace421eb6467b958b955331",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "CHANGELOG.md",
+      "docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md",
+      "hooks/lane-guard.sh",
+      "scripts/compound-v-emit-workflow.py",
+      "scripts/compound-v-scope-check.py",
+      "scripts/compound-v-validate-manifest.py",
+      "tests/test-integration-gate.sh",
+      "tests/test-lane-guard.sh"
+    ],
+    "checks": [
+      {
+        "checker": "bash tests/test-epic-goal-stop.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'bash tests/test-epic-goal-stop.sh && bash tests/test-native-points.sh'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f scripts/compound-v-emit-workflow.py ] || exit 0; /usr/bin/python3 scripts/compound-v-emit-workflow.py --selftest'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f scripts/compound-v-scope-check.py ] || exit 0; /usr/bin/python3 scripts/compound-v-scope-check.py --selftest'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f scripts/compound-v-validate-manifest.py ] || exit 0; /usr/bin/python3 scripts/compound-v-validate-manifest.py --selftest'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f tests/test-integration-gate.sh ] || exit 0; bash tests/test-integration-gate.sh'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f tests/test-lane-guard.sh ] || exit 0; bash tests/test-lane-guard.sh'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (4 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 6 command(s) from 8 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)",
+      "unmapped: CHANGELOG.md, docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md matched no `when` glob \u2014 unknown blast radius resolves to full_command, never to nothing"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_5962797a-397-1"
+}

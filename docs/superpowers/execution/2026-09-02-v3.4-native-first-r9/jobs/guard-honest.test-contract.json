@@ -1,0 +1,15 @@
+{
+  "scope": "impacted",
+  "resolved_commands": [
+    "bash tests/test-epic-goal-stop.sh",
+    "bash -c 'bash tests/test-epic-goal-stop.sh && bash tests/test-native-points.sh'",
+    "bash -c '[ -f scripts/compound-v-emit-workflow.py ] || exit 0; /usr/bin/python3 scripts/compound-v-emit-workflow.py --selftest'",
+    "bash -c '[ -f scripts/compound-v-scope-check.py ] || exit 0; /usr/bin/python3 scripts/compound-v-scope-check.py --selftest'",
+    "bash -c '[ -f scripts/compound-v-validate-manifest.py ] || exit 0; /usr/bin/python3 scripts/compound-v-validate-manifest.py --selftest'",
+    "bash -c '[ -f tests/test-integration-gate.sh ] || exit 0; bash tests/test-integration-gate.sh'",
+    "bash -c '[ -f tests/test-lane-guard.sh ] || exit 0; bash tests/test-lane-guard.sh'",
+    "bash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'"
+  ],
+  "floor_command": "bash tests/test-epic-goal-stop.sh",
+  "full_command": "bash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'"
+}
