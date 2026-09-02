@@ -1,0 +1,37 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "commands/v-status.md",
+    "docs/superpowers/architecture/2026-09-02-viability-audit.md",
+    "docs/superpowers/architecture/native-mechanisms.md",
+    "hooks/triage-prompt-nudge.sh",
+    "scripts/compound-v-emit-workflow.py",
+    "scripts/compound-v-preeval.py",
+    "scripts/compound-v-scorecard.py",
+    "skills/compound-v/phase-preeval.md",
+    "tests/test-native-points.sh"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "18a694c0774e82458bdf21dcedc7aedb0b5a1839",
+    "diff_digest": "sha256:8950c64474af8f132591eeaba956c865225f3cbabfab392cd1de730d8d72d83a",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"18a694c0774e82458bdf21dcedc7aedb0b5a1839\",\n  \"changed\": [\n    \"commands/v-status.md\",\n    \"docs/superpowers/architecture/2026-09-02-viability-audit.md\",\n    \"docs/superpowers/architecture/native-mechanisms.md\",\n    \"hooks/triage-prompt-nudge.sh\",\n    \"scripts/compound-v-emit-workflow.py\",\n    \"scripts/compound-v-preeval.py\",\n    \"scripts/compound-v-scorecard.py\",\n    \"skills/compound-v/phase-preeval.md\",\n    \"tests/test-native-points.sh\"\n  ],\n  \"allowed\": [\n    \"commands/v-status.md\",\n    \"scripts/compound-v-preeval.py\",\n    \"scripts/compound-v-scorecard.py\",\n    \"hooks/triage-prompt-nudge.sh\",\n    \"tests/test-native-points.sh\",\n    \"scripts/compound-v-emit-workflow.py\",\n    \"docs/superpowers/architecture/2026-09-02-viability-audit.md\",\n    \"docs/superpowers/architecture/native-mechanisms.md\",\n    \"skills/compound-v/phase-preeval.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "18a694c0774e82458bdf21dcedc7aedb0b5a1839",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Close the Review Gate's ISSUES 1\u20138 from docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review.md",
+  "tests": {
+    "command": "bash tests/test-epic-goal-stop.sh\nbash -c 'bash tests/test-epic-goal-stop.sh && bash tests/test-native-points.sh'\nbash -c '[ -f scripts/compound-v-emit-workflow.py ] || exit 0; /usr/bin/python3 scripts/compound-v-emit-workflow.py --selftest'\nbash -c '[ -f scripts/compound-v-preeval.py ] || exit 0; /usr/bin/python3 scripts/compound-v-preeval.py --selftest'\nbash -c '[ -f scripts/compound-v-scorecard.py ] || exit 0; /usr/bin/python3 scripts/compound-v-scorecard.py --selftest'\nbash -c '[ -f tests/test-native-points.sh ] || exit 0; bash tests/test-native-points.sh'\nbash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 7
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_57a519fd-c58-1"
+}

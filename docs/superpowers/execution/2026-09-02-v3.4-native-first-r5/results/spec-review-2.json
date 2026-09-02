@@ -1,0 +1,25 @@
+{
+  "blocked": true,
+  "exit_code": 1,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-2.md",
+    "scripts/__pycache__/compound-v-integration-gate.cpython-314.pyc"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "b930c3ffa67820ed54db6e15eb5ff11d0f19e45b",
+    "diff_digest": "sha256:869e32054369a1acd44ba06db1e7651bb4a50c94285ee18a18788f378cefb023",
+    "exit_code": 1,
+    "raw_stdout": "{\n  \"verdict\": \"blocked\",\n  \"mode\": \"direct\",\n  \"baseline\": \"b930c3ffa67820ed54db6e15eb5ff11d0f19e45b\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-2.md\",\n    \"scripts/__pycache__/compound-v-integration-gate.cpython-314.pyc\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-2.md\"\n  ],\n  \"violations\": [\n    \"scripts/__pycache__/compound-v-integration-gate.cpython-314.pyc\"\n  ]\n}\n",
+    "realised_commit": "b930c3ffa67820ed54db6e15eb5ff11d0f19e45b",
+    "verdict": "blocked"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "blocked",
+  "summary": "Review Gate \u2014 three passes against the spec and the feature-level acceptance criteria",
+  "violations": [
+    "scripts/__pycache__/compound-v-integration-gate.cpython-314.pyc"
+  ],
+  "worktree": ""
+}

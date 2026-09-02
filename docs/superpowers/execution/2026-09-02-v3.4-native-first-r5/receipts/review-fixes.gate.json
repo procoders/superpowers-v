@@ -1,0 +1,82 @@
+{
+  "baseline_commit": "18a694c0774e82458bdf21dcedc7aedb0b5a1839",
+  "diff_digest": "sha256:8950c64474af8f132591eeaba956c865225f3cbabfab392cd1de730d8d72d83a",
+  "exit_code": 0,
+  "job_id": "review-fixes",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"18a694c0774e82458bdf21dcedc7aedb0b5a1839\",\n  \"changed\": [\n    \"commands/v-status.md\",\n    \"docs/superpowers/architecture/2026-09-02-viability-audit.md\",\n    \"docs/superpowers/architecture/native-mechanisms.md\",\n    \"hooks/triage-prompt-nudge.sh\",\n    \"scripts/compound-v-emit-workflow.py\",\n    \"scripts/compound-v-preeval.py\",\n    \"scripts/compound-v-scorecard.py\",\n    \"skills/compound-v/phase-preeval.md\",\n    \"tests/test-native-points.sh\"\n  ],\n  \"allowed\": [\n    \"commands/v-status.md\",\n    \"scripts/compound-v-preeval.py\",\n    \"scripts/compound-v-scorecard.py\",\n    \"hooks/triage-prompt-nudge.sh\",\n    \"tests/test-native-points.sh\",\n    \"scripts/compound-v-emit-workflow.py\",\n    \"docs/superpowers/architecture/2026-09-02-viability-audit.md\",\n    \"docs/superpowers/architecture/native-mechanisms.md\",\n    \"skills/compound-v/phase-preeval.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "18a694c0774e82458bdf21dcedc7aedb0b5a1839",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "commands/v-status.md",
+      "docs/superpowers/architecture/2026-09-02-viability-audit.md",
+      "docs/superpowers/architecture/native-mechanisms.md",
+      "hooks/triage-prompt-nudge.sh",
+      "scripts/compound-v-emit-workflow.py",
+      "scripts/compound-v-preeval.py",
+      "scripts/compound-v-scorecard.py",
+      "skills/compound-v/phase-preeval.md",
+      "tests/test-native-points.sh"
+    ],
+    "checks": [
+      {
+        "checker": "bash tests/test-epic-goal-stop.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'bash tests/test-epic-goal-stop.sh && bash tests/test-native-points.sh'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f scripts/compound-v-emit-workflow.py ] || exit 0; /usr/bin/python3 scripts/compound-v-emit-workflow.py --selftest'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f scripts/compound-v-preeval.py ] || exit 0; /usr/bin/python3 scripts/compound-v-preeval.py --selftest'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f scripts/compound-v-scorecard.py ] || exit 0; /usr/bin/python3 scripts/compound-v-scorecard.py --selftest'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f tests/test-native-points.sh ] || exit 0; bash tests/test-native-points.sh'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (4 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 5 command(s) from 9 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)",
+      "unmapped: commands/v-status.md, docs/superpowers/architecture/2026-09-02-viability-audit.md, docs/superpowers/architecture/native-mechanisms.md, skills/compound-v/phase-preeval.md matched no `when` glob \u2014 unknown blast radius resolves to full_command, never to nothing"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_57a519fd-c58-1"
+}

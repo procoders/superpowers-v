@@ -1,21 +1,48 @@
 {
   "run_id": "2026-09-02-v3.4-native-first-r5",
   "phase": "PARTITION_VERIFIED",
-  "updated_at": "2026-09-02T19:00:30Z",
+  "updated_at": "2026-09-02T20:45:00Z",
   "pre_eval_id": "2026-09-02T170442Z-v3-4-native-first-replace-the-epic-goal-feature-a-of-hooks-e-5664",
   "continues": "2026-09-02-v3.4-native-first-r4",
   "jobs": {
     "review-fixes": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_57a519fd-c58-1",
+      "session_id": null,
+      "baseline": "18a694c0774e82458bdf21dcedc7aedb0b5a1839",
+      "realised_commit": "18a694c0774e82458bdf21dcedc7aedb0b5a1839",
+      "merged": {
+        "realised_commit": "18a694c0774e82458bdf21dcedc7aedb0b5a1839",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "b930c3ffa67820ed54db6e15eb5ff11d0f19e45b"
+      }
     },
     "spec-review-2": {
-      "status": "pending",
+      "status": "blocked",
       "isolation": "direct",
-      "worktree": null,
-      "session_id": null
+      "worktree": "",
+      "session_id": null,
+      "baseline": "b930c3ffa67820ed54db6e15eb5ff11d0f19e45b",
+      "realised_commit": "b930c3ffa67820ed54db6e15eb5ff11d0f19e45b"
     }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "review-fixes"
+      ],
+      "merged": [
+        "review-fixes"
+      ],
+      "commit": "b930c3ffa67820ed54db6e15eb5ff11d0f19e45b",
+      "integrated": true
+    }
+  },
+  "triage_actual": {
+    "merge_pending": true,
+    "pre_eval_id": "2026-09-02T170442Z-v3-4-native-first-replace-the-epic-goal-feature-a-of-hooks-e-5664",
+    "run_id": "2026-09-02-v3.4-native-first-r5"
   }
 }
