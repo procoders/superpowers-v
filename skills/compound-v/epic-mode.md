@@ -165,150 +165,71 @@ Per feature, marathon adds `"attempts": 0, "last_error": null, "disposition": nu
 
 **Terminal states:** `done` (all features done **and** `final_review.status=="passed"` — feature completion alone is never `done`); **`done_with_blockers`** (v2.14 — a **SUCCESSFUL** terminal: every feature `done` **or** `blocked` with a **confirmed** ledger entry, no `abandoned`/`halt_feature` remainder, no `sample_audit_due`, **and** `final_review.status=="passed"`; the epic **auto-merges** via `finishing-a-development-branch`, carrying the blocked remainder into its report for human eyes — the blocker is proven external by ≥2 distinct external families agreeing on the same `blocker_category`); `blocked_needing_human` (a `halt_epic` verdict, a tripped breaker, a SUSPECTED/unconfirmed blocker with no other reachable work, or exhausted reachable work — the v2.10 blocker terminal); `running_with_failures` (non-terminal, work still runnable, all done and awaiting final review, or the `done_with_blockers`-pending pre-terminal awaiting that review).
 
-**Human recovery from a halt (resume the marathon — not a fallback to checkpoint).** `blocked_needing_human` is a latch, but it is not a dead end: a human resolves the root cause and **re-runs `/v:epic <epic-id>` to resume the marathon**. A tripped breaker is cleared and re-armed with `--clear-breaker` (`--reset-wall-clock` for the wall-clock cap, `--set-max-total-attempts N` for the attempt cap — without re-arming, the same cap re-trips on the first pass); a sticky `halt_epic` verdict is cleared with `--clear-disposition --feature F`; a mid-pipeline crash is recovered in place with `/v:resume <run-id>` (the feature's recorded `run_id`), distinct from a full `--update --status pending` restart from the spec. All human-gated — **nothing un-trips or re-runs automatically UNLESS the epic also opted into `watch`** (below), in which case a scheduler-fired resume prompt performs the atomic `--claim-resume` on your behalf instead of a human running these same commands. The exact runbook (every field + copy-paste commands) is [`v-epic.md`](../../commands/v-epic.md) §7.
+**Human recovery from a halt (resume the marathon — not a fallback to checkpoint).** `blocked_needing_human` is a latch, but it is not a dead end: a human resolves the root cause and **re-runs `/v:epic <epic-id>` to resume the marathon**. A tripped breaker is cleared and re-armed with `--clear-breaker` (`--reset-wall-clock` for the wall-clock cap, `--set-max-total-attempts N` for the attempt cap — without re-arming, the same cap re-trips on the first pass); a sticky `halt_epic` verdict is cleared with `--clear-disposition --feature F`; a mid-pipeline crash is recovered in place with `/v:resume <run-id>` (the feature's recorded `run_id`), distinct from a full `--update --status pending` restart from the spec. **Clearing the latch stays human-gated.** A `/loop` or `/schedule` firing re-enters `/v:epic`, but a tripped breaker is terminal until a human clears it — the firing reports the terminal status and stops the loop rather than un-tripping anything. The exact runbook (every field + copy-paste commands) is [`v-epic.md`](../../commands/v-epic.md) §7.
 
 ---
 
-## Auto-resurrection watch (v2.11, opt-in, marathon-only)
+## Goal and resurrection are native (3.4.0)
 
-`marathon` on its own (above) is **human-resumable, not self-resumable** — a hard death still needs a person to re-invoke `/v:epic <epic-id>`. `watch` is an ADDITIVE opt-in on top of marathon (never without it — `--watch` at `--init` is rejected without `--stance marathon`) that arms a scheduler watcher so a hard death can be resurrected automatically, bounded by a resume cap. The full driver sequence — **arming both tiers FIRST, before the `last_progress_at` heartbeat bump or any other watch-surface call (v2.11 HIGH-2 fix — arm before work, closing the window where an invocation has made real progress but no watcher yet exists to resurrect it)**, keeping the heartbeat fresh thereafter, and terminal disarm — lives in [`v-epic.md`](../../commands/v-epic.md) "Autonomous marathon loop" §0c and its "Watch disarm" section; this section is the authority for *what* watch is and *why* it's shaped this way. A death before arming completes is harmless — nothing has happened yet this invocation, and a human re-invoking `/v:epic <epic-id>` simply arms fresh on re-entry.
+`marathon` on its own (above) is **human-resumable, not self-resumable** — a hard death still needs a
+re-entry. Compound V used to ship its own two-tier scheduler and its own armed-goal `Stop` rule for
+that. Both were removed in 3.4.0, because Claude Code covers them:
 
-**Schema (watch-only, additive on top of the marathon shape above).** Absent/false `autonomy.watch` ⇒ every marathon code path is byte-identical to v2.10 — none of these fields are ever written for a watch-off epic. **Post-integration-review correction:** the original v2.11 design bound liveness/ownership to a lease object (`{"owner_pid","claimed_at","expires_at"}`) plus an OS-level pid-alive probe — but the Claude Code harness has no stable driver pid (every shell call gets a fresh `$$`), so that design let a duplicate resurrection slip through. `owner_pid`/the `lease` object are **removed entirely**; `last_progress_at` (bumped by the live driver's own `--renew-lease` heartbeat, and by a winning `--claim-resume`) is now the sole liveness signal, and the `fcntl.flock`-guarded transaction inside `--claim-resume` is the sole ownership/serialization authority:
-
-```json
-{
-  "autonomy": {"stance": "marathon", "watch": true, "max_resume_count": 20, "...": "... (v2.10 fields unchanged)"},
-  "last_progress_at": "2026-07-13T00:00:00+00:00",
-  "resume_count": 0,
-  "watcher_registry": [
-    {"provider": "cron", "task_id": "...", "armed_at": "...", "disarmed_at": null, "status": "armed"}
-  ]
-}
-```
-
-**CLI additions** (every one below REJECTS a non-marathon OR watch-off state; see [`compound-v-epic-state.py`](../../scripts/compound-v-epic-state.py)'s docstring for the authoritative, full argument list):
-
-| Command | Effect |
+| What we needed | What ships in the harness |
 |---|---|
-| `--init --stance marathon --watch [--max-resume-count N]` | opts a NEW marathon epic into the watch surface (default `max_resume_count` **20**); `--max-resume-count` is REJECTED without `--watch`. No in-place upgrade — same rule as `--stance marathon` itself |
-| `--liveness --state S --now T [--stale-after-min N]` | **read-only** watcher poll → `{"incomplete","stale","epic_status","terminal","resume_count"}`; `stale` = incomplete, non-terminal, AND the `last_progress_at` heartbeat is older than the threshold (default **45 min**) — this single heartbeat age is the whole staleness signal, no lease, no pid |
-| `--claim-resume --state S --now T [--stale-after-min N]` | **the crux** — ONE `fcntl.flock`-guarded atomic transaction → `{"claimed","reason":"claimed\|live\|terminal\|resume-cap","resume_count"}`. A FRESH heartbeat loses with reason `"live"` (renamed from the original design's `"live-lease-held"` — there is no lease left to hold); a losing claim (`claimed:false`) is a normal, successful outcome, not an error. Takes no `--owner-pid` |
-| `--renew-lease --state S --now T` | the live driver's own heartbeat — simply bumps `last_progress_at` to now; no pid, no lease object, no TTL to create-or-renew. Kept under its original flag name for driver-side stability |
-| `--record-watcher-armed --provider cron\|scheduled-tasks --task-id ID --state S` | records a scheduler task as armed; idempotent by `(provider, task-id)` — a replay against an already-`"armed"` entry is a no-op, never a duplicate; a replay against a `"disarmed"` entry for the SAME pair **REACTIVATES** it to `"armed"` (v2.11 MEDIUM-5 fix — a genuine re-arm legitimately reuses the same deterministic taskId, so the registry must not keep reporting a stale `"disarmed"` status) |
-| `--record-watcher-disarmed --provider cron\|scheduled-tasks --task-id ID --state S` | marks a matching entry disarmed; idempotent re-disarm (original `disarmed_at` preserved). An **unknown `(provider, task-id)` pair is a controlled no-op, not an error** (v2.11 MEDIUM-4 fix — the provider-list disarm sweep legitimately deletes tasks this registry never recorded, and erroring there would abort a multi-task sweep mid-way) |
-| `--list-watchers --state S` | **read-only** → the armed-not-disarmed `watcher_registry` entries |
-| `--clear-breaker --reset-resume-count --state S` | (extends the v2.10 `--clear-breaker`) re-arms the resume-count axis to 0 after a resume-cap trip; **watch-only** — rejected on a watch-off marathon epic (it has no `resume_count` axis to reset) |
+| Re-enter the epic on an interval, in this session | **`/loop 30m /v:epic <epic-id>`** |
+| Re-enter it with the machine off | **A `/schedule` routine** running `/v:epic <epic-id>` |
+| Hold the turn open until the work is actually done | **`/goal`** (and its optional `ProposeGoal` tool) |
 
-**The canonical terminal classifier.** `is_terminal(state)` — done, **`done_with_blockers`** (v2.14, via the `reason.startswith("done_with_blockers:")` prefix — MANDATORY, or the watcher would poll a settled confirmed-blocked epic forever), breaker-tripped, `halt_epic`, or exhausted-reachable-work (including a structurally unsatisfiable DAG a hand-resumed state could carry) — is the SAME classifier folded into both `--liveness`'s `terminal` field and `--claim-resume`'s `"terminal"` no-op reason, and it is what `compound-v-epic-watch.py plan`'s `disarm` flags derive from. It is defined in terms of `next_feature_autonomous`'s own reason-token vocabulary (never a second, independently-derived DAG walk that could silently drift from it) — see the script's own docstring for the full reasoning.
+`/v:epic` is re-entrant, so **every firing is a plain resume** — the same thing a human re-running it
+gets. That is why no scheduler state, heartbeat, lease, watcher registry or resume counter survives
+in `epic-state.json`: there is nothing for this plugin to own. The bound is the marathon's existing
+global breakers; there is no second counter.
 
-**The resume-count breaker.** `resume_count` is a NEW global breaker axis, alongside the v2.10 attempt/no-progress/wall-clock axes: a cap of `max_resume_count = N` **permits N resumes and blocks the (N+1)th** — `--claim-resume` checks `resume_count >= max_resume_count` BEFORE incrementing, so the Nth successful claim is the last one; the (N+1)th losing claim trips the SAME `breaker_trip` shape `--trip-breaker` writes (parking the epic at `blocked_needing_human`), so `--clear-breaker --reset-resume-count` re-arms it uniformly with every other breaker axis. The terminal latch is persisted BEFORE the scheduler task that fired the losing claim is ever deleted, so an orphaned scheduler firing after the cap trips is a harmless no-op on its own next `--claim-resume` (reads `terminal`, not `resume-cap`, on that later attempt).
+**Offered, never armed silently.** A loop keeps *the user's* session busy and a goal holds *their*
+turn open, so `/v:epic` §0c and §0d offer each one and wait for an explicit yes. The exact wording,
+the verbatim goal condition, and the termination sequence are in
+[`v-epic.md`](../../commands/v-epic.md) §0c/§0d and "Stop the loop at EVERY terminal exit".
 
-**The two-tier watcher.** [`compound-v-epic-watch.py`](../../scripts/compound-v-epic-watch.py) (NEW in v2.11) never talks to a scheduler directly and never re-implements any of the above — it only (1) `emit-prompt --epic-id E --state S` prints a SELF-CONTAINED resume prompt for a scheduler to hand to a fresh, memoryless session (that session calls `--claim-resume`, branches on the result, and on a terminal/resume-cap verdict PAUSES its own Tier-2 task inline — never a full disarm, see "Scheduled self-disarm vs. a live driver's full disarm" below), and (2) `plan --state S --now T` advises the two tiers' cadence (off-minute `:17`/`:47`, ~30 min apart) and whether to disarm, purely by reading `--liveness`. The DRIVER (`/v:epic`, not this script) makes the actual scheduler calls — `CronCreate`/`CronList`/`CronDelete` for Tier-1, `mcp__scheduled-tasks__create_scheduled_task`/`list_scheduled_tasks`/`delete_scheduled_task`/`update_scheduled_task` for Tier-2 — and owns the real arm/disarm wiring, idempotently, via `--record-watcher-armed`/`--record-watcher-disarmed`/`--list-watchers` (see [`v-epic.md`](../../commands/v-epic.md) §0c and its "Watch disarm" section for the exact sequence). **Arming Tier-2 MUST pass a `cronExpression`** (the same off-minute `:17`/`:47` schedule as Tier-1) — `create_scheduled_task` accepts `cronExpression` OR `fireAt`, and omitting BOTH creates an ad-hoc, manual-only task that never auto-fires, silently defeating the entire point of Tier-2 as a resurrection watcher.
+**The goal condition is deterministic on purpose.** It points the harness's evaluator at
+`compound-v-epic-state.py --stats` output on disk — "every feature `done`, or the epic terminal" —
+rather than at prose a model could declare satisfied. A terminal epic is **not** a finished one:
+report completion from `--stats`, never from the fact that a loop or a goal stopped.
 
-**Scheduled self-disarm vs. a live driver's full disarm (v2.11 BLOCKER fix).** A SCHEDULED firing of `emit-prompt`'s output — whichever tier launched it — can never delete the very Tier-2 task that launched it (`delete_scheduled_task` REFUSES self-deletion), so its terminal branch only ever **pauses** its own Tier-2 task (`update_scheduled_task` with `enabled: false`) and **records that as a disarm** (a permanently paused task never fires again, so the registry treats it identically to deleted). It never touches Tier-1 at all — Tier-1 is session-scoped, and by the time any scheduled firing of this prompt runs, the original session that might have held a Tier-1 `CronCreate` task is already gone, taking that task with it. A **LIVE, non-scheduled** `/v:epic` driver session — reaching a terminal outcome on its own, never via a scheduler firing — is the only place that performs the real HARD DELETE of both tiers (`delete_scheduled_task` for Tier-2, `CronDelete` for Tier-1); see [`v-epic.md`](../../commands/v-epic.md)'s "Watch disarm" section, unchanged by this fix.
+**Honesty boundary (state it to the user).**
 
-**Crash-idempotent arm/disarm, reconciled against the provider's own list, matched EXACTLY (v2.11 fix, hardened).** Both arm and disarm key off the SAME per-epic deterministic id/marker, matched **exactly, never by a shared string prefix**: `compound-v-watch-<epic-id>-tier2` is Tier-2's exact `taskId` (`mcp__scheduled-tasks__create_scheduled_task` **requires** and stores a caller-chosen id, verified against its live schema — matched by `==`, never `startswith`); `[compound-v-watch|<epic-id>|tier1]` is Tier-1's cron marker — an UNAMBIGUOUS `|`-delimited token embedded in the cron task's own prompt text, since session-cron creation has no documented caller-chosen id (matched as a substring search for this ONE exact token, never a bare prefix). **The marker is a MATCH key, never the recorded task id (v2.11 BLOCKER fix):** `CronCreate` takes no caller-chosen id and RETURNS an opaque job id on every call — that RETURNED id, and only that id, is ever valid as Tier-1's `--record-watcher-armed`/`--record-watcher-disarmed --task-id`. The old bug recorded the marker text itself as the Tier-1 `task_id` at arm time while disarm correctly used the `CronList`-returned opaque id, so the two never matched and `--list-watchers` reported a phantom armed watcher forever; the marker's only legitimate job is letting a `CronList` sweep FIND a matching (or orphaned) entry by searching its prompt text, never serving as the id itself. Unlike Tier-2's deterministic `taskId`, Tier-1's recorded id is **not** deterministic — every `CronCreate` call mints a fresh opaque id, so a Tier-1 re-arm after expiry/deletion is always a brand-new registry row, never a reactivation of the old one. **Namespace-safety (v2.11 HIGH-1 fix):** epic ids legally contain hyphens, so the earlier bare-prefix convention (`compound-v-watch-<epic-id>-`) was unsafe — that string for epic `foo` is itself a literal prefix of epic `foo-bar`'s own id/marker, so a prefix sweep for `foo` would also match (and delete) `foo-bar`'s watcher. The `|`-delimited Tier-1 marker and the exact-equality Tier-2 `taskId` check both close this: no epic's id/marker can ever be mistaken for a substring of a different epic's. (`_validate_epic_id`'s fixed charset, shared with `--init`'s own `ID_RE_OK`, never contains `|`, so no valid epic id can break the delimiter.) Arming lists the provider FIRST (`list_scheduled_tasks`/`CronList`), dedupes defensively if more than one entry matches this epic's exact id/marker for a tier (keeping one, deleting the rest), and only creates when the id/marker is absent from that list; disarming lists the provider first and deletes only the task/entry matching this epic's EXACT id/marker. Neither ever trusts the `epic-state.json` watcher_registry alone for existence — it is written only as a synced cache via `--record-watcher-armed`/`-disarmed`, and `--record-watcher-disarmed` on a pair the registry never recorded succeeds as a no-op (v2.11 MEDIUM-4 fix) rather than aborting the sweep. This closes the v2.11 crash window: a create that succeeds but crashes before its registry write is still found (and adopted, never duplicated) by the next list-first check; a registry record whose task the provider no longer has is found absent and recreated; and a terminal disarm sweeps the provider's own list by exact id/marker, so an unrecorded orphan is still found and deleted while a DIFFERENT epic's watcher is never touched — no crash window leaves a Tier-2 task orphaned forever, and no cross-epic collision. The Tier-1 7-day refresh retires the stale task BEFORE creating its replacement (v2.11 MEDIUM-3 fix — delete-before-create, never create-before-delete, so a crash between the two calls leaves the epic temporarily unarmed on that tier rather than doubled). (See [`v-epic.md`](../../commands/v-epic.md) §0c and its "Watch disarm" section for the exact command-by-command sequence.)
-
-**Persisted state is the sole authority, config is init-only.** Exactly like `stance` (§0 in `v-epic.md`), `epic.autonomy.watch` in `.claude/compound-v.json` is advisory config that gates **only** the initial `--init --watch` call for a NEW epic — it decides whether that ONE call passes `--watch`. After the epic exists, the config key is never consulted again: the epic's OWN persisted `autonomy.watch` is the **sole** authority for *whether* arming, disarming, or any other watch command may run for it at all. A later config flip does not retroactively arm or disarm an already-initialized epic. **Whether a watch-on epic's disarm runs is gated on the persisted `autonomy.watch`, never on config — but WHAT it deletes is decided by sweeping each scheduler provider's own list (`list_scheduled_tasks`/`CronList`), never by the `epic-state.json` watcher_registry** (see [`v-epic.md`](../../commands/v-epic.md) "Watch disarm") — the registry is written only as a synced cache via `--record-watcher-armed`/`-disarmed`, and cannot be trusted for existence. A watch-off marathon epic is **byte-identical** to v2.10 — none of `last_progress_at` / `resume_count` / `watcher_registry` are ever written for it.
-
-**Corrected honest boundary (state it to the user — not "survives while you sleep"):**
-
-- **Tier-1 (session `CronCreate`)** pauses while the session is unavailable or busy, **MISSES** any fire that elapses while paused (no catch-up), MAY restore on the next conversation turn while still unexpired, and **expires after 7 days** even inside a continuously open session; its recurring fires carry jitter — `:17`/`:47` is approximate, not exact. **Tier-1 is session-only, so its `watcher_registry` entry is moot the instant the session that created it dies** — a hard death takes the actual `CronCreate` task and any reason to still reconcile its registry row with it in the same moment; Tier-2 is the mechanism that actually survives a hard death, not Tier-1.
-- **Tier-2 (`scheduled-tasks`, on-disk)** runs only while the desktop app is **open AND the machine is awake**; it performs exactly **ONE** catch-up for the most recent missed run on app start/wake, within 7 days — it is not a truly always-on server.
-- **"Survives quota exhaustion"** holds only if the quota has since **reset** and the session is still **authenticated** — an expired OAuth token still needs a human.
-- **A machine that is truly off (laptop closed, asleep) is not covered by either tier.** A local `launchd`/cron shim removes the app-open dependency but still does not run while the laptop sleeps; genuine machine-off execution needs REMOTE infrastructure plus a remotely-reachable state substrate — documented as an optional user-side add-on, **never claimed built-in** here.
-- **Resurrection is bounded**, not infinite — `max_resume_count` (default 20) stops a persistently-dying run from looping forever; it halts at `blocked_needing_human` for a human, same as any other tripped breaker.
+- **`/loop` shares the session's fate** — paused while the session is busy, gone when the session is
+  gone. That is the same limit the in-session scheduler tier it replaced always had.
+- **`/loop`'s interval mode is a `CronCreate` job, and recurring `CronCreate` jobs fire one final
+  time after 7 days and are then deleted** (1C, live schema). A marathon expected to outlive a week
+  needs a re-arm or `/schedule`. **Marathons longer than 7 days are out of scope for 3.4.0** — said
+  plainly, not silently relied on.
+- **`/schedule` is the genuine machine-off path**, and it needs the cloud routine's own auth. An
+  expired credential still needs a human, and the routine is the user's to remove.
+- **`ProposeGoal` and `ScheduleWakeup` are main-session tools, invisible to subagents.** `/v:epic`
+  runs at the top level (it must, for `Workflow`), so both are reachable there — never from a
+  dispatched worker. `ProposeGoal` is **OPTIONAL**: it was probed **absent** from the maintainer's
+  own session on 2026-09-02 (an `@internal` setting can disable it), so the printed
+  `/goal <condition>` line is the path that must always work.
+- No fabricated cost or token metrics anywhere — breakers report counts and wall-clock hours only.
 
 ---
 
-## Armed goal condition (v2.18, opt-in, marathon-only)
+## Removed in 3.4.0, and why (kept for readers of older runs)
 
-Marathon and watch both answer *"how does this epic come back after a death?"*. The **armed goal**
-answers a different question: *why did the turn end at all while runnable work remained?* It is the
-only **blocking** primitive in this plugin — a `Stop` hook that refuses to let the turn end while a
-deterministically-evaluated goal is armed and unmet.
+Older `epic-state.json` files may still carry the retired scheduler and goal keys — the `watch`
+toggle and its resume cap under `autonomy`, the `last_progress_at` heartbeat, the resume counter, the
+old `lease` object, the watcher registry, and the goal-arm record. They are **inert legacy data**:
+`validate_marathon_state` leaves them completely unvalidated so an old state still loads clean, and
+nothing reads or writes them.
 
-**What arming means.** `/v:epic` (never the hook) writes a top-level `goal_arm` record into
-`epic-state.json` — exactly `{condition, session_id, arm_id, max_continues}`, **lazily created** on
-the first `--arm-goal` and **popped entirely** by `--disarm-goal`, so a never-armed epic's key set is
-unchanged. The record is a *statement of intent plus its bound*; it holds no counter. At the end of
-every turn [`hooks/epic-goal-stop.sh`](../../hooks/epic-goal-stop.sh) reads it through
-[`compound-v-epic-state.py`](../../scripts/compound-v-epic-state.py) `--goal-status` (strictly
-read-only) and, when the goal is armed, this session's, and not yet met, emits
-`{"decision":"block"}` instead of letting the turn end. **The hook never writes
-`epic-state.json`** — `_atomic_write_json` has ~35 call sites documented as "not flock-guarded, only
-the single live driver calls this", so the continue counter and the enforcement once-marker live in
-the hook's own store under the OS temp dir instead. Arming is therefore the *only* write, and
-`/v:epic` is still the single writer of the epic spine.
+Also gone: the two scheduler helper scripts (the watcher and the headless launchd/cron shim), every
+watch-surface flag on `compound-v-epic-state.py` (the watch opt-in and its cap, the liveness poll,
+the claim/renew/registry commands and the resume-count re-arm), and the three goal-arm flags. The
+`Stop` hook keeps its two other rules — the triage gate and the bypass rule — and no longer reads
+`epic-state.json` at all.
 
-**Exactly two conditions ship**, both resolved from on-disk state and never by model judgment (a goal
-a model may declare met is prose again, which is the thing this release exists to replace):
-`all_features_done` (the strict `done:` terminal — every feature done **and** the final review
-passed) and `final_review_passed` (which `--record-final-review` already refuses to record while any
-sample-audit or confirmed-blocker obligation is outstanding). `no_incomplete_jobs` is **refused at
-arm time with the reason**: it is *run*-scoped, lives in a `state.json` this module never opens, and
-a naive read would be **wrong** rather than merely missing — a job marked `done` whose files are not
-in git is not done.
-
-**The lifecycle.**
-
-| Phase | What happens | Who acts |
-|---|---|---|
-| **arm** | `--arm-goal --condition C --session-id ID --max-continues N` writes `goal_arm`, minting a fresh `arm_id` | `/v:epic` §0d |
-| **live** | each `Stop` with `should_continue == true` increments the hook's own counter, **persists it, then** blocks | the hook |
-| **exhausted** | `continue_count` reaches `max_continues` → the hook releases the turn and says so on stderr; the record stays armed | the hook |
-| **met / terminal** | `should_continue` goes false → the hook stops holding the turn open **by itself**; nothing is un-armed | the hook |
-| **disarm** | `--disarm-goal` pops the record (idempotent: `mutated: false` when nothing was armed) | `/v:epic`, or a human |
-
-**At most one armed epic per project — enforced in two halves.** Per *file*: a second `--arm-goal`
-is REFUSED naming the existing arm unless `--replace-arm` is passed, which replaces it **explicitly**
-and says so on stderr. Across *files*: the hook's discovery walk canonicalizes its `cwd`, finds the
-project root, and looks for `docs/superpowers/execution/epics/*/epic-state.json` — **zero or multiple
-matches FAIL OPEN**, because guessing which epic to hold a session open for is worse than not
-holding it. So do not leave two epic-state files armed and expect either to hold: the honest outcome
-is that neither does.
-
-**The goal rule matches on `session_id`.** The armed record stores the id of the session that armed
-it; the hook compares it to the `session_id` on the `Stop` payload and **exits 0 silently on any
-mismatch** — a second session working in the same project is never held open by someone else's epic.
-An **empty** session id is refused at arm time *and* re-checked in the hook, because an empty stored
-id disables isolation entirely and would hold **every** session in the project open. The practical
-consequence for the driver: an arm made with the wrong id is not an error anywhere — it is simply
-inert. `/v:epic` §0d states how to obtain the id and what to check afterwards.
-
-**`max_continues` is the bound, and `0` is invalid, not "unlimited".** There is no unlimited setting.
-The counter is keyed on `digest(project root) + session_id + arm_id`: the root, so project A cannot
-suppress project B in the same session; the `arm_id`, so a disarm/re-arm inside one live session
-starts a **fresh** count instead of a sequential second epic inheriting the first's. A `--replace-arm`
-mints a new `arm_id` for exactly that reason — it abandons the previous arm's counter rather than
-inheriting it. If the hook's store is swept mid-arm (a temp sweep, a reboot), the hook **fails open**
-rather than recreating the counter at zero: autonomy stopping is an acceptable failure, an unbounded
-loop is not. Re-arm to resume goal-held continuation.
-
-**A terminal-but-unmet epic yields "do not continue", never "met".** `--goal-status` reports both
-answers separately and they are not interchangeable:
-
-```
-# an epic halted by a halt_epic disposition, with an armed all_features_done goal:
-{"armed": true, "condition": "all_features_done", …, "met": false,
- "category": "halted_needing_human", "terminal": true,
- "reason": "blocked_needing_human: halt_epic disposition on a", "should_continue": false}
-```
-
-`should_continue` is `armed AND NOT met AND NOT terminal` — the one boolean the hook needs, and it
-correctly says *stop* for a tripped breaker, a `halt_epic` verdict, exhausted reachable work or an
-unsatisfiable DAG. A caller that wants *"did it FINISH?"* must read **`met`**. Conflating the two —
-treating "the hook stopped holding the turn" as "the epic completed" — is a **fabricated completion
-claim**, and it is the specific bug this split exists to prevent: a stopped epic is not a finished
-one. `done_with_confirmed_blockers` deliberately does not satisfy `all_features_done` either — that
-epic is terminal, so the loop stops, but it stops **without** claiming the epic finished.
-
-**Honest boundary (state it to the user).** A `Stop` block is **best-effort**: the runtime silently
-discards one when the turn ends via a tool result, an MCP end-turn or a loop tick, and the harness
-cap (`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`, default 8) is a backstop we do not rely on — our own
-`continue_count` is *the* bound and the epic circuit breakers stay authoritative above both. This
-buys meaningfully longer unattended runs **with a ceiling**; it is not eight hours, and it is still
-not "survives while you sleep".
+**The canonical terminal classifier stays.** `is_terminal(state)` — done, **`done_with_blockers`** (v2.14, via the `reason.startswith("done_with_blockers:")` prefix — MANDATORY, or a re-entry driver would restart a settled confirmed-blocked epic forever), breaker-tripped, `halt_epic`, or exhausted-reachable-work (including a structurally unsatisfiable DAG a hand-resumed state could carry). It is defined in terms of `next_feature_autonomous`'s own reason-token vocabulary (never a second, independently-derived DAG walk that could silently drift from it), and `completion_category` reads the SAME table so "terminal" can never be mistaken for "finished" — see the script's own docstring for the full reasoning.
 
 ---
 
@@ -320,19 +241,18 @@ State this to the user — epic mode is bounded, not magic:
 - **Bounded, not unbounded (checkpoint stance).** An epic is *N full v1.0 runs*; it runs under a `MAX_FEATURES` budget (default 1) and **STOPS at a human checkpoint** after the budget is spent — not a fire-and-forget overnight build. The checkpoint is a **driver-enforced cadence** (default: stop after every feature), the human-in-the-loop point — not a script-enforced token meter.
 - **Large epics run sequentially, feature-by-feature.** Parallelism is *within* a feature (the v1.0 batch dispatch); features advance one runnable-front at a time in topological order. Independent features at the same depth still run one after another — there is **no cross-feature parallel dispatch** in v1.1.
 - **Quality is bounded by per-feature spec + partition quality.** A weak decomposition (overlapping features, missed deps) produces a weak epic. The state spine guarantees **order and resumability**, not that your decomposition was right.
-- **Marathon (v2.10, opt-in) — "survives a fall" is honest, not magic.** *In-session:* the loop continues past a soft per-feature error to the next runnable feature automatically, within the one live `/v:epic` invocation; a crashed feature is caught by the existing `running` → reconcile path on the next pass. *Hard death* (quota, closed terminal, crashed machine): a **human re-invokes `/v:epic <epic-id>`**, re-entrant, resuming from `epic-state.json` — unless the epic also opted into `watch`.
-- **Watch (v2.11, opt-in, marathon-only) — bounded auto-resurrection, still not "survives while you sleep."** See "Auto-resurrection watch" above for the full corrected boundary: Tier-1 `CronCreate` pauses/misses fires/expires after 7 days; Tier-2 `scheduled-tasks` performs one catch-up on app start/wake, not an always-on server; "survives quota exhaustion" needs both a reset AND continued authentication; a truly machine-off (laptop closed/asleep) resurrection needs remote infrastructure, never claimed built-in; `max_resume_count` bounds it so a persistently-dying run halts for a human instead of looping forever. No fabricated cost/token metrics anywhere in either stance.
-- **Armed goal (v2.18, opt-in, marathon-only) — a bounded blocking primitive, not an unbounded loop.** See "Armed goal condition" above: a `Stop` block is best-effort (the runtime discards one when a turn ends via a tool result, an MCP end-turn or a loop tick), `max_continues` is a finite, immutable ceiling (`0` is invalid, not "unlimited"), a lost hook store fails OPEN rather than granting a fresh tranche, and a **terminal-but-unmet** epic reports `should_continue: false` with `met: false` — the loop stops **without** claiming the epic finished. Never report a released turn as a completed epic.
+- **Marathon (v2.10, opt-in) — "survives a fall" is honest, not magic.** *In-session:* the loop continues past a soft per-feature error to the next runnable feature automatically, within the one live `/v:epic` invocation; a crashed feature is caught by the existing `running` → reconcile path on the next pass. *Hard death* (quota, closed terminal, crashed machine): something must **re-invoke `/v:epic <epic-id>`** — a human, a `/loop`, or a `/schedule` routine — re-entrant, resuming from `epic-state.json`.
+- **Re-entry and goals are the harness's (3.4.0), offered and never armed silently.** See "Goal and resurrection are native" above for the full boundary: `/loop` shares the session's fate and its interval mode is a `CronCreate` job that fires one final time after 7 days and is then deleted (marathons longer than a week are out of scope for 3.4.0); `/schedule` is the machine-off path and needs its own auth; `ProposeGoal` is optional and was probed absent, so a printed `/goal <condition>` line is the path that always works. No fabricated cost/token metrics anywhere in either stance.
+- **A terminal epic is not a finished epic.** `is_terminal` is true for a tripped breaker, a `halt_epic` verdict, exhausted reachable work and an unsatisfiable DAG; `completion_category` is what tells those apart from "all features done". Report completion from `--stats`, never from the fact that a loop or a goal stopped — that conflation is a fabricated completion claim.
 
 ---
 
 ## Cross-references
 
-- Epic state spine (CLI + validation, incl. the v2.11 watch surface — liveness/claim-resume/watcher-registry): [`scripts/compound-v-epic-state.py`](../../scripts/compound-v-epic-state.py)
+- Epic state spine (CLI + validation): [`scripts/compound-v-epic-state.py`](../../scripts/compound-v-epic-state.py)
 - Marathon arbiter panel (v2.10): [`scripts/compound-v-epic-arbiter.py`](../../scripts/compound-v-epic-arbiter.py)
-- Auto-resurrection watcher (v2.11, NEW): [`scripts/compound-v-epic-watch.py`](../../scripts/compound-v-epic-watch.py) — `emit-prompt`/`plan`
-- Driver command: [`commands/v-epic.md`](../../commands/v-epic.md) (`/v:epic`) — the marathon loop's exact command sequence, incl. §0c (watch arm) and "Watch disarm"; §0d (goal arm) and "Goal disarm"
-- Armed-goal `Stop` hook (v2.18): [`hooks/epic-goal-stop.sh`](../../hooks/epic-goal-stop.sh) — reads `--goal-status`, writes only its own store; registered in [`hooks/hooks.json`](../../hooks/hooks.json) as `"<script>" || true`
+- Driver command: [`commands/v-epic.md`](../../commands/v-epic.md) (`/v:epic`) — the marathon loop's exact command sequence, incl. §0c (the `/loop` · `/schedule` offer), §0d (the `/goal` offer) and "Stop the loop at EVERY terminal exit"
+- The `Stop` hook: [`hooks/epic-goal-stop.sh`](../../hooks/epic-goal-stop.sh) — since 3.4.0 it carries only the triage gate and the bypass rule, reads no epic state, and writes only its own store; registered in [`hooks/hooks.json`](../../hooks/hooks.json) as `"<script>" || true`
 - Per-run state machine + crash-resume (one level down): [`state-machine.md`](state-machine.md)
 - The per-feature manifest contract: [`execution-manifest.md`](execution-manifest.md)
 - The main skill: [`SKILL.md`](SKILL.md)

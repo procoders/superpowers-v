@@ -106,168 +106,22 @@ nonzero, no write); a negative/non-numeric cap is rejected at --init:
     left a stale blocker_audit_due (permanently rejecting a later final_review=passed) plus an
     invalid still-active confirmed ledger entry. attempts is NOT touched (no ->running occurred).
 
-## CLI contract (v2.11 V1 — Scheduler Auto-Resurrection, epic-state.py component only)
+## Resurrection and goals are NATIVE as of 3.4.0
 
-Everything below is OPT-IN on top of marathon: it requires BOTH `--stance marathon` AND the
-persisted `autonomy.watch` toggle (set only via `--init --stance marathon --watch`). A
-marathon epic initialized WITHOUT `--watch`, and every checkpoint epic, is untouched by any
-of this — no new top-level/`autonomy` key is ever written, so `--init`/`--update` stay
-byte-identical to v2.10. This is the CONTRACT that V2 (the watcher,
-`compound-v-epic-watch.py`) and V3 (driver/`/v:init` wiring) consume; do not change these
-shapes without updating both.
+The v2.11 scheduler auto-resurrection surface (the watch opt-in and its resume cap, the liveness
+poll, the claim/renew/registry commands, `resume_count`, `watcher_registry`, `last_progress_at`)
+and the v2.18 armed-goal surface (its three flags and the goal-arm record) were REMOVED in
+3.4.0. Claude Code's own mechanisms cover both: `/loop` (this session) or a
+`/schedule` routine (cloud) re-enter `/v:epic`, which is re-entrant, and `/goal` /
+`ProposeGoal` hold a session open against a user-approved condition the harness evaluates.
+See `commands/v-epic.md` §0c/§0d and `skills/compound-v/epic-mode.md`.
 
-epic-state.json (marathon + watch, v2.11, additive on top of v2.10's marathon shape):
-  top-level adds: "last_progress_at" (ISO `+00:00`, bumped on every marathon mutation while
-    watch is on), "resume_count" (int, absent until the first `--claim-resume`).
-  `autonomy` adds: "watch": true (only ever written as `true` — a `--init` without `--watch`
-    never writes the key at all, so "absent" IS "false"), "max_resume_count" (int|null,
-    default 20, the new global breaker axis; also written only when watch is on).
-
-  Cross-unit integration review (post-v2.11, BLOCKER fix — "auto-resurrection"): the ORIGINAL
-  v2.11 design bound liveness/ownership to a lease `{"owner_pid","claimed_at","expires_at"}`
-  and an OS-level `_pid_alive` probe. The Claude Code harness has NO stable driver pid — every
-  shell call gets a fresh `$$`, so a watcher's `--claim-resume --owner-pid $$` recorded a
-  Python subprocess pid that died the instant that subprocess exited, permitting duplicate
-  resurrection. `owner_pid`/the `lease` object are REMOVED ENTIRELY. `last_progress_at`
-  (bumped by the live driver at every sub-phase, and by a winning `--claim-resume`) is now the
-  SOLE liveness signal; the `fcntl.flock`-guarded transaction in `--claim-resume` is the SOLE
-  ownership/serialization authority (it decides who may act, not who "holds" anything
-  afterward — there is nothing left to hold). A legacy on-disk `lease` key from a state
-  written before this fix is inert and ignored (back-compat — see `validate_marathon_state`).
-
-  --init --stance marathon --watch [--max-resume-count N]
-    Opts a marathon epic into the watch surface. `--max-resume-count` is REJECTED unless
-    `--watch` is also given (mirrors every other marathon-only-arg rejection discipline in
-    this file); a missing value defaults to 20; an explicit 'null'/'none' is unbounded
-    (same `_cap_arg` convention as the other caps).
-
-  --liveness --state S --now T [--stale-after-min 45]
-    -> {"incomplete","stale","epic_status","terminal","resume_count"}
-    (read-only; requires marathon+watch). This is the watcher's poll target. `terminal` is
-    `is_terminal(state)` (below). `incomplete` = status != "done". `stale` = incomplete AND
-    NOT terminal AND the heartbeat (`last_progress_at`) is older than `stale_after_min`
-    (missing/unparseable FAILS SAFE as stale-eligible, mirroring `breaker_check`'s started_at
-    fail-safe) — this single heartbeat age is now the WHOLE staleness signal (no lease, no
-    pid). Cross-reference: this is a DIFFERENT granularity from the per-JOB
-    `compound-v-liveness.py` (git+filesystem probe over a dispatch run's `state.json`, one job
-    at a time) — `--liveness` here is per-EPIC, driven purely by the heartbeat this file
-    itself owns, never git/filesystem state.
-
-  --claim-resume --state S --now T [--stale-after-min 45]
-    -> {"claimed","reason":"claimed|live|terminal|resume-cap","resume_count"}
-    THE CRUX (v2.11, post-integration-review). ONE `fcntl.flock`-guarded atomic transaction
-    against `<state>.lock` (BLOCKING `LOCK_EX`, not `compound-v-memory.py`'s `LOCK_NB`
-    loser-noop idiom — every contender must evaluate on the merits so `reason` is always one
-    of the four documented values, never a fifth "lock busy" outcome; see `claim_resume`'s
-    docstring for why this deliberately diverges from the reused locking idiom). Inside the
-    lock: reloads `state` fresh from disk (never trusts a caller's in-memory copy), derives
-    terminality via the shared `is_terminal` classifier, uses OS time (`--now` is test-only,
-    range-checked against the real clock — see `_now_arg_in_range`). Decision order:
-      1. `is_terminal(state)` -> lose, reason "terminal".
-      2. FRESH (`now - last_progress_at < stale_after_min`, i.e. something is actively
-         bumping the heartbeat) -> lose, reason "live" (replaces the old "live-lease-held").
-         Checked BEFORE the resume-cap so an actively-progressing epic that merely happens to
-         already sit at its resume cap is never spuriously tripped to `blocked_needing_human`
-         by a routine watcher poll — only a STALE epic can ever reach the resume-cap check.
-      3. `resume_count >= max_resume_count` (boundary: mirrors `can_retry_info`'s
-         `attempts < cap` convention elsewhere in this file; a cap of N allows N successful
-         claims and blocks the (N+1)th) -> trip to `blocked_needing_human`, persist, lose,
-         reason "resume-cap". The persisted latch means a later orphaned scheduler firing
-         sees terminal on its own next `--claim-resume` and is a harmless no-op.
-      4. Else: WIN — increment `resume_count`, bump `last_progress_at` to `now` (so a second
-         concurrent claim now observes a FRESH heartbeat and loses at step 2 — this bump IS
-         the serialization signal that replaces the old lease), write atomically, reason
-         "claimed".
-    A LOSING claim (`claimed: false`) is still a SUCCESSFUL call (`ok`); the loser does not
-    resume.
-
-  --renew-lease --state S --now T
-    -> {"last_progress_at"} (atomic write). The live driver's own periodic heartbeat —
-    post-integration-review, this is now simply "bump `last_progress_at` to now"; there is no
-    lease object left to create-or-renew (no pid, no TTL, no ownership record). Kept under
-    its original flag name for driver-side stability (an alias would work identically; the
-    name was kept rather than adding `--bump-progress` — see this file's CLI contract intro).
-    Not flock-guarded (only the single live driver calls this, so there is no multi-writer
-    race to arbitrate). Call at an interval COMFORTABLY below `--stale-after-min` (default
-    45min) so a live marathon that renews on schedule never reads as stale to `--liveness` or
-    `--claim-resume`.
-
-  --clear-breaker ... [--reset-resume-count]
-    v2.10's human re-arm now also accepts `--reset-resume-count`, which zeroes
-    `resume_count` (re-arming the resume axis) exactly as `--reset-wall-clock` /
-    `--set-max-total-attempts` already re-arm their axes — the resume-cap breaker fits into
-    the SAME existing human-in-the-loop re-arm surface, not a parallel mechanism. V1-review
-    fix 2: `--reset-resume-count` is REJECTED (controlled error, no write) on a watch-off
-    marathon epic — it has no `resume_count` axis to reset — and the summary's
-    `resume_count_reset`/`resume_count_reset_from` keys are emitted ONLY for a watch-on
-    epic, so a watch-off `--clear-breaker` output stays byte-identical to v2.10's.
-
-  --record-watcher-armed --state S --provider cron|scheduled-tasks --task-id ID [--now T]
-  --record-watcher-disarmed --state S --provider P --task-id ID [--now T]
-  --list-watchers --state S
-    v2.11 Layer B (the V3 watcher registry, additive, watch-only): `watcher_registry` is a
-    top-level list of `{"provider","task_id","armed_at","disarmed_at","status"}` entries,
-    created lazily (never present until the FIRST `--record-watcher-armed` OR
-    `--record-watcher-disarmed`, same lazy-creation discipline as `lease`/`resume_count`) —
-    so a watch-on epic that never arms a watcher is unaffected, and a watch-off/checkpoint
-    epic never carries this key at all. `--record-watcher-armed` is IDEMPOTENT by
-    `(provider, task_id)`: a replay against an already-`"armed"` entry preserves the ORIGINAL
-    `armed_at`, creates no duplicate, and bumps no heartbeat (arming is a registry fact, not
-    a liveness signal); a replay against a `"disarmed"` entry for the SAME pair instead
-    **REACTIVATES** it (`status` -> `"armed"`, `disarmed_at` -> `None`, `armed_at` refreshed —
-    v2.11 MEDIUM-5 fix, since a genuine re-arm legitimately reuses the same deterministic
-    taskId). `--record-watcher-disarmed` marks a matching entry disarmed (idempotent
-    re-disarm, original `disarmed_at` preserved); an UNKNOWN `(provider, task_id)` pair is a
-    controlled **no-op success** (v2.11 MEDIUM-4 fix — the provider-list disarm sweep
-    legitimately deletes tasks this registry never recorded, and a hard error there would
-    abort a multi-task sweep mid-way), recording a `"disarmed"` entry for it rather than
-    erroring. `--list-watchers` is read-only and returns every armed-not-disarmed entry — the
-    set a terminal-status disarm sweep still needs to retry deleting. `validate_marathon_state`
-    rejects a structurally malformed registry at load time (non-list, non-object entry,
-    invalid provider/task_id/status, non-ISO timestamps).
-
-  --arm-goal --state S --condition all_features_done|final_review_passed
-    --session-id ID --max-continues N [--replace-arm]
-  --disarm-goal --state S
-  --goal-status --state S
-    v2.18 Feature A (the armed goal condition a `Stop` hook reads to decide whether to hold
-    the turn open). `goal_arm` is a top-level `{"condition","session_id","arm_id",
-    "max_continues"}` record, marathon-only and **LAZILY CREATED** — absent until the first
-    `--arm-goal`, and POPPED entirely by `--disarm-goal`, so a never-armed epic's key set is
-    byte-identical to v2.17's (the three golden key-set selftests are what enforce this).
-    **This file writes the armed record; it does NOT own the continue counter.** The counter
-    and the enforcement once-marker live in the hook's OWN store outside this file — the hook
-    reads `epic-state.json` and never writes it, because `_atomic_write_json` is not
-    flock-guarded and a second writer would break that invariant.
-      - `--condition` accepts exactly TWO values. `no_incomplete_jobs` is REFUSED with an
-        explanation rather than silently rejected: it is RUN-scoped, lives in a
-        `docs/superpowers/execution/<run-id>/state.json` this module never opens, and a naive
-        read of it would be WRONG rather than merely missing — a job marked `done` whose files
-        are not in git is not done (the git-wins reconcile).
-      - An EMPTY `--session-id` is REFUSED: an empty stored id disables session isolation, so
-        the hook would hold EVERY session in the project open, not just the arming one.
-      - `--max-continues` must be an integer > 0. **`0` is INVALID, not "unlimited"** — there
-        is no unlimited setting.
-      - `arm_id` is a fresh `uuid4().hex` minted on EVERY arm, including a `--replace-arm`.
-        It is never reused, because the hook's store is keyed partly on it: an inherited id
-        would let a sequential second epic inherit the first epic's continue count.
-      - AT MOST ONE armed goal per epic-state: a second `--arm-goal` is REFUSED naming the
-        existing arm, unless `--replace-arm` is given — which replaces it EXPLICITLY and says
-        so on stderr, never silently. (Cross-FILE "at most one armed epic per project" is the
-        hook's discovery job — this module only sees the one state file it is pointed at.)
-      - `--goal-status` is READ-ONLY (it is the only one of the three not gated on marathon
-        stance, so the hook can poll any epic-state without an error path) ->
-        `{"armed","condition","session_id","arm_id","max_continues","met","category",
-          "terminal","reason","should_continue"}`. `met` is the strictly honest answer to
-        "did the goal happen?"; `should_continue` is `armed AND NOT met AND NOT terminal` —
-        an epic that STOPPED without finishing is not a reason to keep burning the counter.
-
-is_terminal(state) -- the canonical terminal classifier (v2.11, shared by `--liveness`,
-`--claim-resume`, and `next_feature_autonomous`): True for done / breaker-tripped /
+is_terminal(state) -- the canonical terminal classifier (v2.11, used by
+`next_feature_autonomous` and `completion_category`): True for done / breaker-tripped /
 halt_epic / exhausted-reachable-work->blocked_needing_human / (V1-review fix 4) a
 structurally unsatisfiable DAG (a dependency cycle or a dangling depends_on reference among
-still-pending features — "epic blocked: ... unsatisfiable dependencies ..."), so the
-watcher can never resurrect a graph that can NEVER progress without a human editing it.
+still-pending features — "epic blocked: ... unsatisfiable dependencies ..."), so a re-entry
+can never restart a graph that can NEVER progress without a human editing it.
 False for every recoverable mid-epic state (needs_arbitration, needs_blocker_recording,
 running/reconcile, sample_audit_due, all-done-but-final-review-pending). Implemented as a
 thin wrapper over `next_feature_autonomous`'s own "done:"/"blocked_needing_human:"/
@@ -276,12 +130,12 @@ truth for the DAG-derived terminal states, zero risk of two independent classifi
 silently drifting apart, and zero risk to `next_feature_autonomous`'s own already-selftested
 behavior, which is untouched).
 
-completion_category(state) -- v2.18 Feature A: THE canonical COMPLETION classifier, and a
-DIFFERENT question from `is_terminal`. `is_terminal` answers "will this epic ever progress
-again without a human?" -- which is ALSO true for a tripped breaker, a `halt_epic` verdict,
-exhausted reachable work and a structurally unsatisfiable DAG. Resolving a goal condition of
-"all features are done" through `is_terminal` would therefore report SUCCESS at the exact
-moment the epic FAILED: a fabricated completion claim. `completion_category` returns one of
+completion_category(state) -- THE canonical COMPLETION classifier, and a DIFFERENT question
+from `is_terminal`. `is_terminal` answers "will this epic ever progress again without a
+human?" -- which is ALSO true for a tripped breaker, a `halt_epic` verdict, exhausted
+reachable work and a structurally unsatisfiable DAG. Answering "are all the features done?"
+through `is_terminal` would therefore report SUCCESS at the exact moment the epic FAILED: a
+fabricated completion claim. `completion_category` returns one of
 `COMPLETION_CATEGORIES` -- "all_features_done", "done_with_confirmed_blockers",
 "halted_needing_human", "unsatisfiable_dag", or "in_progress" -- and BOTH classifiers are
 derived from the SAME `_TERMINAL_REASON_CATEGORIES` table, so they can never drift apart:
@@ -300,14 +154,12 @@ breakers bound counts and wall-clock hours only.
 """
 
 import argparse
-import fcntl
 import json
 import math
 import os
 import sys
 import tempfile
-import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 ID_RE_OK = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-"
 # Checkpoint (legacy/default) status set — UNCHANGED since v1.1. `blocked` is a MARATHON-only
@@ -404,32 +256,10 @@ _CAP_DEFAULTS = {
     "max_attempts_per_feature": 2,
     "max_no_progress_cycles": 3,
     "max_wall_clock_hours": 10,
-    "max_resume_count": 20,  # v2.11: new global breaker axis, watch-only (see build_state)
 }
 # Bound on the remembered processed-cycle-id set (Codex review #5) — global idempotency
 # without unbounded growth over an all-night run.
 _PROCESSED_CYCLE_CAP = 512
-
-# -- v2.11 (Scheduler Auto-Resurrection) module-level constants ---------------------------
-# Staleness threshold for --liveness/--claim-resume: set ABOVE the worst-case silent
-# single-feature-pipeline window (pre-flights + dispatch + review can legitimately run long).
-# Post-integration-review: this is now the ONLY liveness knob in the file — owner_pid and the
-# lease TTL were removed entirely (see the module docstring's "Cross-unit integration review"
-# note); a live driver's --renew-lease heartbeat must fire comfortably below this interval.
-_DEFAULT_STALE_AFTER_MIN = 45
-# --now is TEST-ONLY (deterministic selftests / the concurrency selftest below) — production
-# callers never pass it, always using the real OS clock. This bounds how far --now may drift
-# from the real clock so it can never become a production lever for defeating staleness
-# timing by injecting an arbitrary clock value. V1-review fix 5: TIGHTENED from an
-# initial 3650-day (10-year) placeholder to ~1 day — a real deterministic selftest injects a
-# --now within seconds/minutes of "now" (or a fixed historical date compared against another
-# fixed date, never against the live clock), so a generous multi-year allowance was never
-# actually exercising the "test-only" boundary; ~1 day is enough slack for clock skew/CI
-# latency while still closing off --now as a practical lever against staleness timing.
-_NOW_ARG_MAX_SKEW_DAYS = 1
-# v2.11 Layer B: the two scheduler providers the watcher registry knows about (Component 3 /
-# V3 driver wiring — Tier-1 Cron, Tier-2 Desktop scheduled-tasks).
-_WATCHER_PROVIDERS = ("cron", "scheduled-tasks")
 
 
 def _id_ok(s):
@@ -607,7 +437,7 @@ def build_state(features, epic_id, title, stance=None, caps=None):
         # negative/non-numeric cap up front, so it can never be persisted and then silently
         # mis-treated as unbounded at check time.
         for _cap_name in ("max_attempts_per_feature", "max_no_progress_cycles",
-                          "max_total_attempts", "max_wall_clock_hours", "max_resume_count"):
+                          "max_total_attempts", "max_wall_clock_hours"):
             if _cap_name in caps:
                 _err = _validate_cap_value(_cap_name, caps[_cap_name])
                 if _err:
@@ -636,17 +466,6 @@ def build_state(features, epic_id, title, stance=None, caps=None):
             if not isinstance(start_sha, str):
                 raise ValueError("start_sha must be a string (got %r)" % (start_sha,))
             state["autonomy"]["start_sha"] = start_sha
-        # v2.11 watch opt-in (V1): OMITTED entirely unless caps["watch"] is True — a plain
-        # marathon build_state(...) call (no caps["watch"]) keeps the existing autonomy
-        # schema AND the existing top-level key set byte-for-byte (golden tests assert this
-        # below). Only when watch is True do we add autonomy.watch/autonomy.max_resume_count
-        # and the top-level `last_progress_at` heartbeat (seeded to the same `started_at`
-        # so a freshly-initialized watch-on epic is never immediately "stale").
-        if caps.get("watch") is True:
-            state["autonomy"]["watch"] = True
-            state["autonomy"]["max_resume_count"] = _cap_or_default(
-                caps, "max_resume_count", _CAP_DEFAULTS["max_resume_count"])
-            state["last_progress_at"] = started_at
         state["final_review"] = {"status": "pending"}
         state["blocker_ledger"] = []
         state["no_progress_cycles"] = 0
@@ -1114,8 +933,8 @@ def next_feature_autonomous(state):
 # WHY A SECOND CLASSIFIER EXISTS AT ALL. `is_terminal` is NOT a completion classifier — its
 # own docstring says it is true whenever the epic will never progress again WITHOUT A HUMAN,
 # which includes a tripped breaker, a `halt_epic` verdict, exhausted reachable work and a
-# structurally unsatisfiable DAG. A goal condition of "all features are done" resolved through
-# `is_terminal` would therefore declare the goal MET at the exact moment the epic FAILED — a
+# structurally unsatisfiable DAG. The question "are all features done?" resolved through
+# `is_terminal` would therefore answer YES at the exact moment the epic FAILED — a
 # fabricated completion claim, and precisely the kind of thing this project's review gate
 # exists to catch. `completion_category` keeps the single source of truth (this table, over
 # `next_feature_autonomous`'s already-selftested reason vocabulary) while telling COMPLETED
@@ -1154,7 +973,7 @@ def _completion_category_for_reason(reason):
 
 def is_terminal(state):
     """v2.11 (Plan-review corrections, BINDING #3): the CANONICAL terminal classifier,
-    shared by `--liveness`, `--claim-resume`, and (in spirit — see below) this file's own
+    shared with `completion_category` and (in spirit — see below) this file's own
     routing. True iff the epic will never make autonomous progress again without a human:
     done, breaker-tripped, halt_epic, exhausted-reachable-work, or (V1-review fix 4) a
     structurally unsatisfiable DAG (all of which `next_feature_autonomous` already reports via
@@ -1170,13 +989,11 @@ def is_terminal(state):
     rejected up front: a dependency CYCLE among still-pending features, or a pending feature
     whose `depends_on` names an id that is not (or is no longer) a feature in this state at
     all (a dangling reference). Neither can ever resolve on its own — no amount of autonomous
-    routing, retries, or scheduler resurrection makes a cycle or a dangling dependency
-    satisfiable — so a scheduler that only recognized "done:"/"blocked_needing_human:" would
-    poll `--liveness` and re-invoke `/v:epic` on this state FOREVER (it is perpetually
-    `incomplete` and, with no lease/owner ever winning any real work, perpetually `stale` too).
-    Treating this reason prefix as terminal closes that loop: `--claim-resume` reports
-    "terminal" (a harmless no-op, not a resume) and the watcher's `plan` disarms, exactly like
-    every other unrecoverable-without-a-human state.
+    routing, retries, or re-entry makes a cycle or a dangling dependency satisfiable — so a
+    re-entry driver that only recognized "done:"/"blocked_needing_human:" would re-invoke
+    `/v:epic` on this state FOREVER (it is perpetually incomplete). Treating this reason
+    prefix as terminal closes that loop: `/v:epic` reports the epic terminal and stops the
+    loop, exactly like every other unrecoverable-without-a-human state.
 
     Implementation note (conservative reading of "refactor next_feature_autonomous to call
     it"): `next_feature_autonomous`'s DAG-derived terminal facts (done/exhausted/unsatisfiable
@@ -1188,13 +1005,12 @@ def is_terminal(state):
     next_feature_autonomous's already-selftested reason-token vocabulary: a single source of
     truth, next_feature_autonomous's own body and behavior are UNTOUCHED (verified by its
     full existing selftest suite still passing unmodified), and is_terminal can never disagree
-    with it because it IS it, read differently. `--claim-resume` and `--liveness` both call
-    is_terminal(state) directly, per the spec.
+    with it because it IS it, read differently.
 
     v2.18: the four terminal reason prefixes this used to spell out inline
     ("done:", "blocked_needing_human:", "epic blocked:", and v2.14's MANDATORY
-    "done_with_blockers:" — without which the watcher would poll a settled confirmed-blocker
-    epic forever) now live in `_TERMINAL_REASON_CATEGORIES`, shared verbatim with
+    "done_with_blockers:" — without which a re-entry driver would restart a settled
+    confirmed-blocker epic forever) now live in `_TERMINAL_REASON_CATEGORIES`, shared with
     `completion_category`. The classification is UNCHANGED — same four prefixes, same
     non-marathon short-circuit — it just cannot drift from the completion classifier any more,
     because both read the one table. The awaiting-final-review pre-terminal is a
@@ -1230,9 +1046,7 @@ def completion_category(state):
                                      final-review-still-pending). Also what a NON-marathon
                                      (checkpoint) state reports, mirroring `is_terminal`'s own
                                      non-marathon short-circuit exactly — a checkpoint epic has
-                                     no autonomous routing to derive a category from, and
-                                     that is why `--arm-goal` REFUSES a checkpoint epic up
-                                     front rather than arming a goal that could never be met.
+                                     no autonomous routing to derive a category from.
 
     `is_terminal(state)` is exactly `completion_category(state) != COMPLETION_IN_PROGRESS`,
     by construction — both read `_TERMINAL_REASON_CATEGORIES`."""
@@ -1283,81 +1097,6 @@ def _parse_csv_list(s):
 def _is_marathon(state):
     autonomy = state.get("autonomy")
     return isinstance(autonomy, dict) and autonomy.get("stance") == "marathon"
-
-
-def _watch_on(state):
-    """v2.11: is this marathon epic opted into the watch surface? Absent/false/not-marathon
-    are all indistinguishable — every one of them means "behave exactly like v2.10"."""
-    autonomy = state.get("autonomy")
-    return isinstance(autonomy, dict) and autonomy.get("watch") is True
-
-
-def _bump_last_progress(state, now_dt):
-    """v2.11: bump the top-level liveness heartbeat on every marathon mutation — but ONLY
-    when the epic has opted into `watch`. A pure no-op otherwise: never adds a
-    `last_progress_at` key that didn't already exist, which is the whole byte-identical
-    guarantee for a checkpoint state or a watch-off marathon."""
-    if _watch_on(state):
-        state["last_progress_at"] = _now_iso(now_dt)
-
-
-def _heartbeat_stale(state, now_dt, stale_after_min):
-    """Post-integration-review (v2.11 auto-resurrection fix): the SOLE liveness primitive,
-    shared by `liveness_check` and `claim_resume` — no lease, no pid, just the age of
-    `last_progress_at`. A missing/unparseable heartbeat FAILS SAFE as stale-eligible (mirrors
-    `breaker_check`'s started_at fail-safe: an unproven heartbeat can never prove liveness),
-    exactly like the old `time_stale` computation inside `liveness_check` used to — this just
-    extracts it into one shared helper so `claim_resume` can use the IDENTICAL definition of
-    "fresh" instead of re-deriving it (or, worse, drifting from it)."""
-    lp = state.get("last_progress_at")
-    if not isinstance(lp, str):
-        return True
-    try:
-        age_min = (now_dt - _parse_iso(lp)).total_seconds() / 60.0
-    except (ValueError, TypeError):
-        return True
-    return age_min >= stale_after_min
-
-
-def _now_arg_in_range(now_dt):
-    """v2.11: `--now` is test-only (deterministic selftests) — production callers of
-    --liveness/--claim-resume/--renew-lease always use the real OS clock. This sanity-bounds
-    an injected `--now` against the real clock so it can never become a production lever for
-    defeating staleness timing by injecting an arbitrary value. V1-review fix 5:
-    tightened to `_NOW_ARG_MAX_SKEW_DAYS` (~1 day, see its definition)."""
-    skew_days = abs((now_dt - datetime.now(timezone.utc)).total_seconds()) / 86400.0
-    return skew_days <= _NOW_ARG_MAX_SKEW_DAYS
-
-
-def _validate_stale_after(value):
-    """V1-review fix 5: `--stale-after-min` (for `--liveness`) must be a FINITE POSITIVE
-    number. A non-finite (NaN/inf) or non-positive value would either always read as stale
-    (0/negative: every heartbeat age is `>= 0`) or never read as stale (inf: no age ever
-    reaches it) — silently disabling or permanently arming the watcher's core staleness
-    signal, the exact fail-open/fail-closed footgun `breaker_check`'s cap validation already
-    guards against for the OTHER numeric knobs in this file. Returns an error string, or None
-    if valid."""
-    if not _is_number(value):
-        return "--stale-after-min must be a number (got %r)" % (value,)
-    if not math.isfinite(value):
-        return "--stale-after-min must be finite (got %r)" % (value,)
-    if value <= 0:
-        return "--stale-after-min must be > 0 (got %r)" % (value,)
-    return None
-
-
-def _validate_provider_task(provider, task_id):
-    """v2.11 Layer B: shared validation for the watcher-registry provider/task_id pair used by
-    `--record-watcher-armed`/`--record-watcher-disarmed`. `provider` must be one of
-    `_WATCHER_PROVIDERS`; `task_id` must be a non-empty string (the scheduler's own opaque
-    identifier — this file never interprets it, only stores/dedupes on it). Returns an error
-    string, or None if valid."""
-    if provider not in _WATCHER_PROVIDERS:
-        return ("--provider must be one of: %s (got %r)"
-                % (", ".join(_WATCHER_PROVIDERS), provider))
-    if not isinstance(task_id, str) or not task_id.strip():
-        return "--task-id must be a non-empty string (got %r)" % (task_id,)
-    return None
 
 
 def _find_feature(state, feature_id):
@@ -1584,7 +1323,6 @@ def apply_update(state, feature_id, status, run_id=None, now_dt=None,
                 state["final_review"] = {"status": "pending"}
         state["total_attempts"] = _total_attempts(state)  # recompute, never trust a stale field
         _recompute_top_status(state)
-        _bump_last_progress(state, now_dt)  # v2.11: no-op unless watch is on
     else:
         sts = [f["status"] for f in state["features"]]
         if all(s == "done" for s in sts):
@@ -1635,7 +1373,6 @@ def record_disposition(state, feature_id, disposition, reason=None,
         "recorded_at": _now_iso(now_dt),
     }
     state["total_attempts"] = _total_attempts(state)  # recompute on every marathon mutation (#9)
-    _bump_last_progress(state, now_dt)  # v2.11: no-op unless watch is on
     return True, None
 
 
@@ -1684,7 +1421,6 @@ def record_final_review(state, status, now_dt=None):
     state["final_review"] = {"status": status}
     state["total_attempts"] = _total_attempts(state)  # recompute on every marathon mutation (#9)
     _recompute_top_status(state)
-    _bump_last_progress(state, now_dt or datetime.now(timezone.utc))  # v2.11: watch-gated no-op
     return True, None
 
 
@@ -1724,18 +1460,13 @@ def _effective_cap(autonomy, name, default):
 
 def breaker_check(state, now_dt):
     """A7: READ-ONLY. {"tripped","which":[...],"detail":{...}}. Trips on
-    total_attempts>=max_total_attempts, no_progress_cycles>=max_no_progress_cycles,
-    wall-clock(now - autonomy.started_at)>=max_wall_clock_hours, or (v2.11)
-    resume_count>=max_resume_count. Counts and hours only — never a fabricated cost. A
-    non-marathon state (no `autonomy`) never trips. Caps are resolved fail-SAFE: a missing
-    cap key uses the documented default, not unbounded (Codex review #4).
-
-    v2.11: `resume_count`/`max_resume_count` are absent on every pre-v2.11 and every
-    watch-off state, so this new axis is a pure no-op for them (0 >= the default cap of 20
-    is always False) — `--claim-resume` is the primary writer of `resume_count`, but folding
-    the cap into `breaker_check`/`trip_breaker` too means `--breaker-check`/`--trip-breaker`
-    (and `--clear-breaker`'s fail-safe re-trip warning, which calls `breaker_check`
-    internally) stay the single source of truth for ALL four axes, not just three."""
+    total_attempts>=max_total_attempts, no_progress_cycles>=max_no_progress_cycles, or
+    wall-clock(now - autonomy.started_at)>=max_wall_clock_hours. Counts and hours only —
+    never a fabricated cost. A non-marathon state (no `autonomy`) never trips. Caps are
+    resolved fail-SAFE: a missing cap key uses the documented default, not unbounded (Codex
+    review #4). `--breaker-check`/`--trip-breaker` (and `--clear-breaker`'s fail-safe
+    re-trip warning, which calls this internally) are the single source of truth for all
+    three axes."""
     autonomy = state.get("autonomy") if isinstance(state.get("autonomy"), dict) else {}
     which = []
     detail = {}
@@ -1789,15 +1520,6 @@ def breaker_check(state, now_dt):
                 detail["max_wall_clock_hours"] = {"value": round(elapsed_hours, 4),
                                                   "cap": max_hours}
 
-    # v2.11: resume_count axis. Boundary mirrors can_retry_info's `attempts < cap`
-    # convention elsewhere in this file: a cap of N allows N successful claims (resume_count
-    # 0..N-1 at check time) and trips once resume_count has already reached N.
-    resume_count = state.get("resume_count", 0)
-    max_resume = _effective_cap(autonomy, "max_resume_count", _CAP_DEFAULTS["max_resume_count"])
-    if max_resume is not None and resume_count >= max_resume:
-        which.append("max_resume_count")
-        detail["max_resume_count"] = {"value": resume_count, "cap": max_resume}
-
     return {"tripped": bool(which), "which": which, "detail": detail}
 
 
@@ -1811,7 +1533,6 @@ def trip_breaker(state, now_dt):
         state["breaker_trip"] = {"which": result["which"], "detail": result["detail"],
                                  "tripped_at": _now_iso(now_dt)}
         state["total_attempts"] = _total_attempts(state)  # recompute on every mutation (#9)
-        _bump_last_progress(state, now_dt)  # v2.11: no-op unless watch is on
         result["mutated"] = True
     else:
         result["mutated"] = False
@@ -1848,7 +1569,6 @@ def record_progress_cycle(state, cycle_id, now_dt=None):
         processed = processed[-_PROCESSED_CYCLE_CAP:]
     state["processed_cycle_ids"] = processed
     state["total_attempts"] = _total_attempts(state)  # recompute on every marathon mutation (#9)
-    _bump_last_progress(state, now_dt or datetime.now(timezone.utc))  # v2.11: watch-gated no-op
     return {"cycle_id": cycle_id, "no_progress_cycles": state["no_progress_cycles"],
             "replayed": False}
 
@@ -1861,12 +1581,10 @@ _BREAKER_AXIS_HINTS = {
     "max_total_attempts": "raise the cap with --set-max-total-attempts",
     "max_wall_clock_hours": "restart the clock with --reset-wall-clock (or raise "
                              "autonomy.max_wall_clock_hours by hand)",
-    "max_resume_count": "re-arm with --clear-breaker --reset-resume-count",
 }
 
 
-def clear_breaker(state, now_dt, reset_wall_clock=False, set_max_total_attempts=_UNSET,
-                   reset_resume_count=False):
+def clear_breaker(state, now_dt, reset_wall_clock=False, set_max_total_attempts=_UNSET):
     """The human's re-arm after a breaker trip / halt (v2.10 resume support). Marathon-only.
 
     Clears the `blocked_needing_human` latch: removes any `breaker_trip` record, resets
@@ -1878,19 +1596,7 @@ def clear_breaker(state, now_dt, reset_wall_clock=False, set_max_total_attempts=
     `reset_wall_clock=True` restarts the wall-clock axis (`autonomy.started_at = now`).
     `set_max_total_attempts` (an int, None for explicit-unbounded, or the `_UNSET` sentinel
     for "leave it alone") re-arms that axis, validated with the same non-negative/finite
-    rules as --init. `reset_resume_count=True` (v2.11) re-arms the resume axis by zeroing
-    `resume_count` — the SAME opt-in-flag shape as `reset_wall_clock`, since (unlike
-    `max_total_attempts`, a cap you raise) `resume_count` is a genuine counter you reset.
-
-    V1-review fix 2 (byte-identity): `--reset-resume-count` is WATCH-ONLY — a watch-off
-    marathon epic has no `resume_count` axis at all (it is never written for one), so
-    honoring the flag there would silently CREATE a `resume_count` key that a watch-off
-    state must never carry. It is therefore a controlled error, exactly like every other
-    watch-only-arg-on-a-non-watch-state rejection in this file, rather than a silent no-op.
-    For the SAME reason, `summary["resume_count_reset"]`/`["resume_count_reset_from"]` are
-    only ever emitted when the epic IS watch-on (with or without `--reset-resume-count`
-    supplied) — a watch-off `--clear-breaker` summary is therefore byte-identical to what
-    v2.10 (pre-v2.11) always produced: no trace of the resume-count axis in its output at all.
+    rules as --init.
 
     Fail-safe: after clearing, `breaker_check` is re-run against the (possibly re-armed)
     state; if it would IMMEDIATELY re-trip (e.g. total_attempts is still >= max_total_attempts
@@ -1904,19 +1610,9 @@ def clear_breaker(state, now_dt, reset_wall_clock=False, set_max_total_attempts=
         err = _validate_cap_value("max_total_attempts", set_max_total_attempts)
         if err:
             return False, err, None
-    watch_on = _watch_on(state)
-    if reset_resume_count and not watch_on:
-        return False, ("--reset-resume-count requires the marathon epic's watch opt-in "
-                       "(re-init with --stance marathon --watch) — a watch-off epic has no "
-                       "resume_count axis to reset"), None
-
     had_trip = state.pop("breaker_trip", None) is not None
     prior_no_progress = state.get("no_progress_cycles", 0)
     state["no_progress_cycles"] = 0
-
-    prior_resume_count = state.get("resume_count", 0)
-    if reset_resume_count:
-        state["resume_count"] = 0
 
     autonomy = state.setdefault("autonomy", {})
     if reset_wall_clock:
@@ -1928,7 +1624,6 @@ def clear_breaker(state, now_dt, reset_wall_clock=False, set_max_total_attempts=
     # instead of its no-op early-return for 'blocked_needing_human'.
     state["status"] = "running"
     state["total_attempts"] = _total_attempts(state)  # recompute on every mutation (#9)
-    _bump_last_progress(state, now_dt)  # v2.11: no-op unless watch is on
     _recompute_top_status(state)
 
     summary = {
@@ -1938,12 +1633,6 @@ def clear_breaker(state, now_dt, reset_wall_clock=False, set_max_total_attempts=
         "max_total_attempts_set": (set_max_total_attempts
                                     if set_max_total_attempts is not _UNSET else None),
     }
-    # V1-review fix 2: resume_count_* keys ONLY for a watch-on epic (byte-identity for
-    # watch-off/checkpoint) — inserted here so they land BEFORE epic_status, matching the
-    # v2.11 V1 base's original (pre-fix) key order for a watch-on state.
-    if watch_on:
-        summary["resume_count_reset"] = bool(reset_resume_count)
-        summary["resume_count_reset_from"] = prior_resume_count if reset_resume_count else None
     summary["epic_status"] = state["status"]
 
     recheck = breaker_check(state, now_dt)
@@ -1970,7 +1659,6 @@ def clear_disposition(state, feature_id, now_dt=None):
         return False, "no feature %r" % feature_id
     hit["disposition"] = None
     state["total_attempts"] = _total_attempts(state)  # recompute on every mutation (#9)
-    _bump_last_progress(state, now_dt or datetime.now(timezone.utc))  # v2.11: watch-gated no-op
     return True, None
 
 
@@ -1992,7 +1680,6 @@ def mark_sample_audit_due(state, feature_id, now_dt=None):
     # recorded) must not survive marking a sample-audit due — recompute now, not just at the
     # next unrelated mutation.
     _recompute_top_status(state)
-    _bump_last_progress(state, now_dt or datetime.now(timezone.utc))  # v2.11: watch-gated no-op
     return True, None
 
 
@@ -2008,7 +1695,6 @@ def clear_sample_audit_due(state, feature_id, now_dt=None):
     hit["sample_audit_due"] = False
     state["total_attempts"] = _total_attempts(state)  # recompute on every mutation (#9)
     _recompute_top_status(state)
-    _bump_last_progress(state, now_dt or datetime.now(timezone.utc))  # v2.11: watch-gated no-op
     return True, None
 
 
@@ -2027,7 +1713,6 @@ def mark_blocker_audit_due(state, feature_id, now_dt=None):
     hit["blocker_audit_due"] = True
     state["total_attempts"] = _total_attempts(state)  # recompute on every mutation (#9)
     _recompute_top_status(state)
-    _bump_last_progress(state, now_dt or datetime.now(timezone.utc))  # v2.11: watch-gated no-op
     return True, None
 
 
@@ -2043,7 +1728,6 @@ def clear_blocker_audit_due(state, feature_id, now_dt=None):
     hit["blocker_audit_due"] = False
     state["total_attempts"] = _total_attempts(state)  # recompute on every mutation (#9)
     _recompute_top_status(state)
-    _bump_last_progress(state, now_dt or datetime.now(timezone.utc))  # v2.11: watch-gated no-op
     return True, None
 
 
@@ -2087,7 +1771,6 @@ def record_audit_failed(state, feature_id, last_error=None, now_dt=None):
             state["final_review"] = {"status": "pending"}
     state["total_attempts"] = _total_attempts(state)  # recompute on every mutation (#9)
     _recompute_top_status(state)
-    _bump_last_progress(state, now_dt or datetime.now(timezone.utc))  # v2.11: watch-gated no-op
     return True, None
 
 
@@ -2149,291 +1832,7 @@ def record_blocker_audit_failed(state, feature_id, last_error=None, now_dt=None)
             state["final_review"] = {"status": "pending"}
     state["total_attempts"] = _total_attempts(state)  # recompute on every mutation (#9)
     _recompute_top_status(state)
-    _bump_last_progress(state, now_dt)  # v2.11: watch-gated no-op
     return True, None
-
-
-def record_watcher_armed(state, provider, task_id, now_dt=None):
-    """v2.11 Layer B (V3 watcher registry): records that a scheduler task (Tier-1 `cron` or
-    Tier-2 `scheduled-tasks`) has been ARMED to resurrect this epic. Marathon+watch-only.
-
-    IDEMPOTENT by (provider, task_id): a replay of the SAME pair (e.g. the driver re-arms
-    after a crash and re-entry, or a scheduler fires the same task twice) is a pure no-op — it
-    returns the EXISTING entry unchanged, preserving the ORIGINAL `armed_at`, never creating a
-    duplicate, and never bumping `last_progress_at` (arming is a registry FACT, not a liveness
-    signal; only `--claim-resume`/`--renew-lease` bump the heartbeat). This holds ONLY while the
-    entry's current `status` is already `"armed"`.
-
-    v2.11 MEDIUM-5 fix: a replay against an already-DISARMED (provider, task_id) REACTIVATES
-    it — `status` -> `"armed"`, `disarmed_at` -> `None`, `armed_at` refreshed to `now_dt` — it
-    is NOT treated as an inert no-op. The deterministic per-(epic, tier) taskId convention
-    (`compound-v-epic-watch.py`'s `deterministic_task_id`/Tier-1 marker) means a genuine re-arm
-    (e.g. the Tier-1 7-day refresh, or a driver re-entry after a terminal disarm was later
-    un-tripped) legitimately REUSES the same id — the registry must reflect that this exact
-    pair is armed again, not keep reporting a stale `"disarmed"` status that no longer matches
-    reality (a `--list-watchers` caller, or a later disarm sweep, would otherwise silently skip
-    a task that is actually live again).
-
-    `state["watcher_registry"]` is created lazily (via `setdefault`) on the FIRST call — a
-    watch-on epic that has never armed a watcher carries no `watcher_registry` key at all,
-    same lazy-creation discipline as `lease`/`resume_count` (byte-identical golden states stay
-    byte-identical until the first real use of the surface).
-
-    Returns (ok, error|None, entry|None)."""
-    if not _is_marathon(state):
-        return False, "--record-watcher-armed requires a marathon-stance epic", None
-    if not _watch_on(state):
-        return False, ("--record-watcher-armed requires the marathon epic's watch opt-in "
-                       "(re-init with --stance marathon --watch)"), None
-    err = _validate_provider_task(provider, task_id)
-    if err:
-        return False, err, None
-    registry = state.setdefault("watcher_registry", [])
-    for e in registry:
-        if isinstance(e, dict) and e.get("provider") == provider and e.get("task_id") == task_id:
-            if e.get("status") == "disarmed":
-                # v2.11 MEDIUM-5: reactivate — this exact pair is armed again, not a replay.
-                e["status"] = "armed"
-                e["disarmed_at"] = None
-                e["armed_at"] = _now_iso(now_dt)
-                return True, None, e
-            return True, None, e  # idempotent replay: already armed, no dup, no field change
-    entry = {"provider": provider, "task_id": task_id, "armed_at": _now_iso(now_dt),
-             "disarmed_at": None, "status": "armed"}
-    registry.append(entry)
-    return True, None, entry
-
-
-def record_watcher_disarmed(state, provider, task_id, now_dt=None):
-    """v2.11 Layer B: the counterpart to `record_watcher_armed` — marks a previously-armed
-    (provider, task_id) as disarmed (`disarmed_at` set, `status` -> "disarmed"). Marathon+
-    watch-only. Re-disarming an ALREADY-disarmed entry is idempotent: `ok=True`, the existing
-    record is returned UNCHANGED (its original `disarmed_at` is preserved, not bumped to
-    `now_dt` again).
-
-    v2.11 MEDIUM-4 fix: an unknown (provider, task_id) — one never armed through THIS
-    registry — is a controlled NO-OP, not an error. The terminal-disarm sweep (see
-    `compound-v-epic-watch.py`'s emit-prompt / `v-epic.md`'s "Watch disarm") reconciles
-    against each scheduler PROVIDER'S OWN LIST, which legitimately includes tasks this
-    registry never recorded — an older-naming-convention id from before a fix, or a create
-    call that crashed before its `--record-watcher-armed` write. Erroring on that pair would
-    abort a multi-task sweep loop mid-way (a caller that stops on first nonzero exit would
-    leave every LATER task in that same sweep un-swept and un-recorded), so this now records
-    a `"disarmed"` entry for the pair (armed_at defaults to `now_dt` too, since the true arm
-    time is unknown) and returns `ok=True` — idempotent by (provider, task_id) exactly like
-    every other path here, so sweeping the same never-recorded pair twice is still safe.
-
-    Returns (ok, error|None, entry|None)."""
-    if not _is_marathon(state):
-        return False, "--record-watcher-disarmed requires a marathon-stance epic", None
-    if not _watch_on(state):
-        return False, ("--record-watcher-disarmed requires the marathon epic's watch opt-in "
-                       "(re-init with --stance marathon --watch)"), None
-    err = _validate_provider_task(provider, task_id)
-    if err:
-        return False, err, None
-    now_dt = now_dt or datetime.now(timezone.utc)
-    registry = state.setdefault("watcher_registry", [])
-    for e in registry:
-        if isinstance(e, dict) and e.get("provider") == provider and e.get("task_id") == task_id:
-            if e.get("status") != "disarmed":
-                e["status"] = "disarmed"
-                e["disarmed_at"] = _now_iso(now_dt)
-            return True, None, e
-    # v2.11 MEDIUM-4: unrecorded pair — no-op success, not "no watcher record ... error".
-    entry = {"provider": provider, "task_id": task_id, "armed_at": _now_iso(now_dt),
-             "disarmed_at": _now_iso(now_dt), "status": "disarmed"}
-    registry.append(entry)
-    return True, None, entry
-
-
-def list_watchers(state):
-    """v2.11 Layer B `--list-watchers`: read-only. Returns every registry entry whose
-    `status == 'armed'` (armed-not-disarmed) — the set of scheduler tasks a terminal-status
-    disarm sweep still needs to retry deleting. Tolerates a missing/malformed
-    `watcher_registry` (returns [] rather than crashing; `validate_marathon_state` is the
-    place that REJECTS a structurally bad registry at load time)."""
-    registry = state.get("watcher_registry")
-    registry = registry if isinstance(registry, list) else []
-    return [e for e in registry if isinstance(e, dict) and e.get("status") == "armed"]
-
-
-# --- v2.18 Feature A: the armed goal condition ---------------------------------------------
-#
-# Exactly TWO conditions ship. Both are resolved DETERMINISTICALLY from on-disk state, never
-# by model judgment — the whole point of this release is replacing prose with mechanism, and a
-# goal a model gets to decide it has met is prose again.
-GOAL_CONDITIONS = ("all_features_done", "final_review_passed")
-
-# Conditions that are REFUSED with a specific explanation rather than the generic "not one
-# of" message. A refusal a caller does not understand gets worked around; a refusal that says
-# WHY gets respected.
-_GOAL_CONDITION_REFUSALS = {
-    "no_incomplete_jobs": (
-        "--condition no_incomplete_jobs is REFUSED. It is RUN-scoped, not epic-scoped: it "
-        "lives in docs/superpowers/execution/<run-id>/state.json, a file this module never "
-        "opens. And a naive read of it would be WRONG rather than merely missing — a job "
-        "marked `done` whose files are not in git is NOT done (the git-wins reconcile in "
-        "/v:resume is what settles that), so a goal armed on it would report completion over "
-        "work that never landed. Use all_features_done or final_review_passed."),
-}
-
-
-def _goal_condition_met(state, condition, category):
-    """Deterministic evaluation of ONE armed goal condition against on-disk state. `category`
-    is the already-computed `completion_category(state)`, passed in so a caller evaluating a
-    goal walks the DAG once rather than twice. Fail-CLOSED: an unknown/hand-edited condition
-    is never "met" — the failure direction that stops autonomy instead of faking a finish."""
-    if condition == "all_features_done":
-        # STRICTLY the "done:" terminal — every feature done AND final_review passed.
-        # `done_with_confirmed_blockers` deliberately does NOT satisfy this: a confirmed-
-        # blocked feature is not a done feature. That epic is still TERMINAL, so `goal_status`
-        # sets `should_continue` false and the caller stops — it just stops WITHOUT claiming
-        # the epic finished, which is the whole distinction this helper exists to draw.
-        return category == "all_features_done"
-    if condition == "final_review_passed":
-        # `record_final_review` already refuses to record `passed` while any feature is
-        # neither done nor confirmed-blocked, or while any sample-audit / confirmed-blocker
-        # re-review obligation is outstanding — so reading the stored status here inherits
-        # every one of those gates instead of re-deriving (and possibly weakening) them.
-        fr = state.get("final_review")
-        fr = fr if isinstance(fr, dict) else {}
-        return fr.get("status") == "passed"
-    return False
-
-
-def arm_goal(state, condition, session_id, max_continues, replace=False):
-    """v2.18 Feature A `--arm-goal`: record the goal condition a `Stop` hook will hold this
-    session open for. Marathon-only. Returns (ok, error|None, result|None).
-
-    `state["goal_arm"]` is created LAZILY on the first successful arm — a never-armed epic
-    carries no such key at all, exactly like `watcher_registry`/`resume_count`/`lease`. This
-    is not cosmetic: three golden selftests assert the EXACT top-level and autonomy key sets
-    of a checkpoint state, a watch-off marathon state and a marathon autonomy block, and an
-    unconditionally-written field would fail all three.
-
-    The record holds exactly four fields — {condition, session_id, arm_id, max_continues} —
-    and NOT the counter. `continue_count` lives in the hook's own store outside this file,
-    because the hook must never write `epic-state.json`: `_atomic_write_json` has ~35 call
-    sites documented as "not flock-guarded — only the single live driver calls this", and a
-    lock inside it would self-deadlock `claim_resume`, which already calls it while holding
-    the lock.
-
-    Every refusal below is a fail-CLOSED guard against a specific, named failure — see each
-    message. `arm_id` is a fresh uuid4 hex on EVERY arm, including a `--replace-arm`: the
-    hook's store is keyed partly on it, so an inherited id would let a sequential second epic
-    silently inherit the first epic's continue count.
-
-    "At most one armed epic" has two halves. THIS half — at most one armed goal per
-    epic-state file — is enforced here, by refusal or by an EXPLICIT `replace`, never
-    silently. The cross-FILE half (at most one armed epic per project) belongs to the hook's
-    discovery walk, which is the only party that sees more than one state file."""
-    if not _is_marathon(state):
-        return False, ("--arm-goal requires a marathon-stance epic — the goal condition is "
-                       "resolved from `--next --autonomous`'s terminal vocabulary, which a "
-                       "checkpoint epic has no autonomous routing to produce, so an armed "
-                       "goal there could never be met (re-init with --stance marathon)"), None
-    if condition in _GOAL_CONDITION_REFUSALS:
-        return False, _GOAL_CONDITION_REFUSALS[condition], None
-    if condition not in GOAL_CONDITIONS:
-        return False, ("--condition must be one of: %s (got %r)"
-                       % (", ".join(GOAL_CONDITIONS), condition)), None
-    if not isinstance(session_id, str) or not session_id.strip():
-        return False, ("--session-id must be a non-empty string (got %r). An EMPTY stored "
-                       "session id disables session isolation entirely: the hook compares the "
-                       "stored id to the one on stdin, so an empty one matches nothing "
-                       "meaningfully and the guard falls through — holding EVERY session in "
-                       "this project open, not just the one that armed the goal"
-                       % (session_id,)), None
-    # `bool` is an int subclass in Python, so `--max-continues True` would otherwise land as 1.
-    if isinstance(max_continues, bool) or not isinstance(max_continues, int):
-        return False, ("--max-continues must be an integer (got %r)" % (max_continues,)), None
-    if max_continues <= 0:
-        return False, ("--max-continues must be > 0 (got %r) — 0 is INVALID, not "
-                       "'unlimited'. There is no unlimited setting: our own continue counter "
-                       "is THE bound on this feature, and a zero that read as unbounded would "
-                       "remove it" % (max_continues,)), None
-    existing = state.get("goal_arm")
-    existing = existing if isinstance(existing, dict) else None
-    if existing is not None and not replace:
-        return False, ("a goal is already armed on this epic (condition=%r arm_id=%r) — at "
-                       "most ONE armed goal per epic-state. Disarm it first (--disarm-goal), "
-                       "or pass --replace-arm to replace it EXPLICITLY; a replacement mints a "
-                       "fresh arm_id, which abandons the previous arm's continue counter "
-                       "rather than inheriting it"
-                       % (existing.get("condition"), existing.get("arm_id"))), None
-    record = {"condition": condition, "session_id": session_id,
-              "arm_id": uuid.uuid4().hex, "max_continues": max_continues}
-    state["goal_arm"] = record
-    # Deliberately NO `_bump_last_progress` here: arming is a stored FACT, not a liveness
-    # signal — the same reasoning `record_watcher_armed` documents. Bumping the heartbeat
-    # would also make a watch-off marathon state stop being byte-identical.
-    return True, None, {"armed": record, "replaced": existing}
-
-
-def disarm_goal(state):
-    """v2.18 Feature A `--disarm-goal`: REMOVE the armed record entirely, returning the state
-    to its lazily-uncreated shape (a popped key, not a `None` placeholder — a placeholder
-    would defeat the golden key-set guarantee arming was built to preserve). Marathon-only.
-
-    Idempotent: disarming when nothing is armed is a clean success with `mutated: false`, so
-    the caller writes nothing at all. Returns (ok, error|None, result|None)."""
-    if not _is_marathon(state):
-        return False, ("--disarm-goal requires a marathon-stance epic (this state has no "
-                       "'autonomy' block, so it can never have carried an armed goal)"), None
-    if "goal_arm" not in state:
-        return True, None, {"disarmed": False, "mutated": False, "arm_id": None}
-    existing = state.pop("goal_arm")
-    return True, None, {"disarmed": True, "mutated": True,
-                        "arm_id": (existing.get("arm_id")
-                                   if isinstance(existing, dict) else None)}
-
-
-def goal_status(state):
-    """v2.18 Feature A `--goal-status`: THE read path the `Stop` hook calls. STRICTLY
-    READ-ONLY — it never mutates `state` and its CLI caller never writes the file, which is
-    what lets the hook use it without becoming a second writer of `epic-state.json`.
-
-    Deliberately NOT gated on marathon stance (unlike arm/disarm): the hook should be able to
-    poll any epic-state and get a clean `armed: false` rather than an error path it would have
-    to distinguish from a real fault. A non-marathon state can never carry an armed record
-    anyway, because `arm_goal` refuses it.
-
-    Returns {"armed","condition","session_id","arm_id","max_continues","met","category",
-             "terminal","reason","should_continue"}:
-
-      met             the STRICTLY honest answer to "did the armed goal actually happen?".
-                      False for a breaker-tripped, halted or unsatisfiable epic — those
-                      stopped, they did not finish.
-      terminal        `is_terminal(state)`, derived from the SAME single DAG walk as
-                      `category` (they are the same computation read two ways).
-      should_continue `armed AND NOT met AND NOT terminal` — the one boolean a hook needs.
-                      A terminal-but-unmet epic yields FALSE: nothing further will happen
-                      without a human, so continuing would burn the counter against a dead
-                      epic. A caller that wants "did it FINISH?" must read `met`, never
-                      `should_continue` — that conflation is the fabricated-completion bug
-                      this whole helper exists to prevent."""
-    record = state.get("goal_arm")
-    record = record if isinstance(record, dict) else None
-    reason = None
-    if _is_marathon(state):
-        _, reason, _ = next_feature_autonomous(state)
-    category = _completion_category_for_reason(reason) or COMPLETION_IN_PROGRESS
-    # Identical to `is_terminal(state)` by construction (both read the one table), computed
-    # from the walk already done above instead of walking the DAG a second time.
-    terminal = category != COMPLETION_IN_PROGRESS
-    out = {"armed": record is not None, "condition": None, "session_id": None,
-           "arm_id": None, "max_continues": None, "met": False, "category": category,
-           "terminal": terminal, "reason": reason, "should_continue": False}
-    if record is None:
-        return out
-    out["condition"] = record.get("condition")
-    out["session_id"] = record.get("session_id")
-    out["arm_id"] = record.get("arm_id")
-    out["max_continues"] = record.get("max_continues")
-    out["met"] = _goal_condition_met(state, out["condition"], category)
-    out["should_continue"] = bool(not out["met"] and not terminal)
-    return out
 
 
 def validate_marathon_state(state):
@@ -2521,7 +1920,7 @@ def validate_marathon_state(state):
     autonomy = state.get("autonomy")
     if isinstance(autonomy, dict):
         for cap_name in ("max_attempts_per_feature", "max_no_progress_cycles",
-                         "max_total_attempts", "max_wall_clock_hours", "max_resume_count"):
+                         "max_total_attempts", "max_wall_clock_hours"):
             if cap_name in autonomy:
                 e = _validate_cap_value("autonomy.%s" % cap_name, autonomy[cap_name])
                 if e:
@@ -2544,284 +1943,21 @@ def validate_marathon_state(state):
         if "start_sha" in autonomy and not isinstance(autonomy["start_sha"], str):
             errs.append("autonomy.start_sha is malformed %r (want a string or absent)"
                         % (autonomy["start_sha"],))
-        # v2.11: watch is bool-or-absent — a hand-edited non-bool (e.g. "true" the string, or
-        # a truthy int) must be rejected, not silently coerced.
-        if "watch" in autonomy and not isinstance(autonomy["watch"], bool):
-            errs.append("autonomy.watch is malformed %r (want a bool or absent)"
-                        % (autonomy["watch"],))
-    # v2.11: last_progress_at is an ISO-8601 string-or-absent (absent = never bumped yet, or
-    # watch is off — not an error either way).
-    lpa = state.get("last_progress_at")
-    if lpa is not None:
-        if not isinstance(lpa, str):
-            errs.append("'last_progress_at' is malformed %r (want an ISO-8601 string or "
-                        "absent)" % (lpa,))
-        else:
-            try:
-                _parse_iso(lpa)
-            except (ValueError, TypeError):
-                errs.append("'last_progress_at' %r is not a valid ISO-8601 timestamp" % (lpa,))
-    # v2.11: resume_count is a non-negative int-or-absent (absent = never claimed yet).
-    rc = state.get("resume_count")
-    if rc is not None and not _is_nonneg_int(rc):
-        errs.append("'resume_count' is malformed %r (want a non-negative int or absent)" % (rc,))
-    # Post-integration-review (v2.11 auto-resurrection fix): `lease`/`owner_pid` are REMOVED
-    # from the current schema — `last_progress_at` + the --claim-resume flock are now the sole
-    # liveness/ownership authority (see the module docstring's "Cross-unit integration review"
-    # note). A state written BEFORE this fix may still carry an old-shape `lease` object
-    # (with `owner_pid`); it is deliberately left COMPLETELY UNVALIDATED here — back-compat
-    # means such a state must still LOAD cleanly (never a hard error over an inert, no-longer-
-    # read legacy key), not that its shape is policed. This script never reads or writes
-    # `lease` again after this point.
-    # v2.11 Layer B: watcher_registry is a list of {"provider","task_id","armed_at",
-    # "disarmed_at","status"} entries, or absent entirely (never armed a watcher yet, or
-    # watch is off). Every entry's shape is validated regardless of the epic's current watch
-    # state — a hand-edited/corrupt registry is rejected the same way any other malformed
-    # marathon field is, whether or not watch happens to still be on.
-    wr = state.get("watcher_registry")
-    if wr is not None:
-        if not isinstance(wr, list):
-            errs.append("'watcher_registry' is malformed %r (want a list)" % (wr,))
-        else:
-            for j, e in enumerate(wr):
-                if not isinstance(e, dict):
-                    errs.append("watcher_registry entry at index %d is not an object" % j)
-                    continue
-                if e.get("provider") not in _WATCHER_PROVIDERS:
-                    errs.append("watcher_registry entry at index %d has an invalid provider "
-                                "%r (want one of: %s)"
-                                % (j, e.get("provider"), ", ".join(_WATCHER_PROVIDERS)))
-                if not isinstance(e.get("task_id"), str) or not e.get("task_id"):
-                    errs.append("watcher_registry entry at index %d has a malformed task_id "
-                                "%r (want a non-empty string)" % (j, e.get("task_id")))
-                if e.get("status") not in ("armed", "disarmed"):
-                    errs.append("watcher_registry entry at index %d has an invalid status %r "
-                                "(want 'armed' or 'disarmed')" % (j, e.get("status")))
-                v = e.get("armed_at")
-                if not isinstance(v, str):
-                    errs.append("watcher_registry entry at index %d has a malformed armed_at "
-                                "%r (want an ISO-8601 string)" % (j, v))
-                else:
-                    try:
-                        _parse_iso(v)
-                    except (ValueError, TypeError):
-                        errs.append("watcher_registry entry at index %d armed_at %r is not a "
-                                    "valid ISO-8601 timestamp" % (j, v))
-                dv = e.get("disarmed_at")
-                if dv is not None:
-                    if not isinstance(dv, str):
-                        errs.append("watcher_registry entry at index %d has a malformed "
-                                    "disarmed_at %r (want an ISO-8601 string or null)"
-                                    % (j, dv))
-                    else:
-                        try:
-                            _parse_iso(dv)
-                        except (ValueError, TypeError):
-                            errs.append("watcher_registry entry at index %d disarmed_at %r "
-                                        "is not a valid ISO-8601 timestamp" % (j, dv))
-    # v2.18 Feature A: `goal_arm` is an object-or-ABSENT. Absent is the normal case — the
-    # record is lazily created by `--arm-goal` and popped entirely by `--disarm-goal`. When
-    # present, every field is policed at load time rather than trusted, because each one is a
-    # value `arm_goal` already refuses and a hand edit is the only way it could get here: an
-    # empty session_id would silently disable the hook's session isolation, a max_continues of
-    # 0 would read as "unlimited" to a naive caller, and an unknown condition would be
-    # evaluated fail-closed forever (never met) with no explanation.
-    ga = state.get("goal_arm")
-    if ga is not None:
-        if not isinstance(ga, dict):
-            errs.append("'goal_arm' is malformed %r (want an object or absent)" % (ga,))
-        else:
-            if ga.get("condition") not in GOAL_CONDITIONS:
-                errs.append("goal_arm.condition is invalid %r (want one of: %s)"
-                            % (ga.get("condition"), ", ".join(GOAL_CONDITIONS)))
-            sid = ga.get("session_id")
-            if not isinstance(sid, str) or not sid.strip():
-                errs.append("goal_arm.session_id is malformed %r (want a non-empty string — "
-                            "an empty id disables session isolation)" % (sid,))
-            aid = ga.get("arm_id")
-            if not isinstance(aid, str) or not aid.strip():
-                errs.append("goal_arm.arm_id is malformed %r (want a non-empty string)"
-                            % (aid,))
-            mc = ga.get("max_continues")
-            if isinstance(mc, bool) or not isinstance(mc, int) or mc <= 0:
-                errs.append("goal_arm.max_continues is malformed %r (want an integer > 0 — "
-                            "0 is invalid, not 'unlimited')" % (mc,))
+    # 3.4.0 back-compat: EVERY key the retired watch/goal surface used to write — the `watch`
+    # toggle and its resume cap under `autonomy`, `last_progress_at`, `resume_count`, the old
+    # `lease` object, the watcher registry and the goal-arm record — is deliberately left
+    # COMPLETELY UNVALIDATED here, exactly as the older `lease` key already was. Any unknown
+    # top-level key is simply ignored, so a state written by an earlier release still LOADS
+    # cleanly instead of hard-erroring over inert, no-longer-read data.
     return errs
-
-
-def liveness_check(state, now_dt, stale_after_min=_DEFAULT_STALE_AFTER_MIN):
-    """v2.11 `--liveness` (post-integration-review auto-resurrection fix): the watcher's
-    single read-only poll target. Never mutates `state`. Returns exactly:
-      {"incomplete","stale","epic_status","terminal","resume_count"}
-
-    - `terminal` = `is_terminal(state)` — the shared classifier.
-    - `incomplete` = `state["status"] != "done"` (a `blocked_needing_human` epic is BOTH
-      terminal and incomplete — it halted before finishing successfully).
-    - `stale` = incomplete AND NOT terminal AND `_heartbeat_stale(state, now_dt,
-      stale_after_min)` — the heartbeat's age is now the WHOLE staleness signal. No lease, no
-      pid: the original design's `held`/`lease_expired` fields and the owner-pid
-      belt-and-suspenders check are GONE (see the module docstring's "Cross-unit integration
-      review" note) — the harness has no stable driver pid to check in the first place."""
-    terminal = is_terminal(state)
-    incomplete = state.get("status") != "done"
-    stale = bool(incomplete and not terminal and _heartbeat_stale(state, now_dt, stale_after_min))
-    return {
-        "incomplete": incomplete,
-        "stale": stale,
-        "epic_status": state.get("status"),
-        "terminal": terminal,
-        "resume_count": state.get("resume_count", 0),
-    }
-
-
-def renew_lease(state, now_dt):
-    """v2.11 `--renew-lease` (post-integration-review auto-resurrection fix): the live
-    driver's own periodic heartbeat. Simply bumps `last_progress_at` to `now`.
-
-    This USED to be a lease create-or-renew keyed by `owner_pid` — that whole mechanism is
-    GONE (see the module docstring's "Cross-unit integration review" note): the Claude Code
-    harness has no stable driver pid to key a lease on, so there is nothing left to "own" or
-    "renew" except the timestamp itself. The flag name is kept as `--renew-lease` (rather than
-    introducing a `--bump-progress` alias) for driver-side stability — callers that already
-    invoke `--renew-lease --owner-pid $$ ...` need only drop the now-rejected `--owner-pid`
-    argument, not learn a new flag name.
-
-    Not flock-guarded: only the single live driver calls this (never a concurrent watcher —
-    that is exactly what `--claim-resume`'s flock arbitrates), so there is no multi-writer
-    race to arbitrate here — an ordinary mutate-then-let-the-caller-atomic-write path (same as
-    every other mutator in this file) is sufficient. Returns (ok, error|None)."""
-    if not _is_marathon(state):
-        return False, "--renew-lease requires a marathon-stance epic"
-    if not _watch_on(state):
-        return False, ("--renew-lease requires the marathon epic's watch opt-in (re-init "
-                       "with --stance marathon --watch)")
-    state["last_progress_at"] = _now_iso(now_dt)
-    return True, None
-
-
-def claim_resume(state_path, now_dt, stale_after_min=_DEFAULT_STALE_AFTER_MIN):
-    """v2.11 `--claim-resume` — THE CRUX (post-integration-review auto-resurrection fix). ONE
-    `fcntl.flock`-guarded atomic transaction against `<state_path>.lock`.
-
-    BLOCKER FIX (cross-unit integration review): the ORIGINAL v2.11 design bound ownership to
-    a lease `{"owner_pid","claimed_at","expires_at"}` and an OS-level `_pid_alive` probe. The
-    Claude Code harness has NO stable driver pid — every shell call gets a fresh `$$`, so a
-    watcher's `--owner-pid $$` recorded a Python subprocess pid that died the instant that
-    subprocess exited, permitting duplicate resurrection. `owner_pid` and the `lease` object
-    are REMOVED ENTIRELY. `last_progress_at` + this very flock are now the SOLE liveness/
-    ownership authority — there is no separate "who holds it" record left to check; the flock
-    only serializes WHO gets to evaluate first, and the loser's own reload sees the winner's
-    freshly-bumped heartbeat.
-
-    Deliberately diverges from the reused `compound-v-memory.py:542` idiom in ONE respect:
-    that idiom is `fcntl.flock(fd, LOCK_EX | LOCK_NB)` with a loser-noop (best-effort — "someone
-    else is already refreshing, just skip"). Here every contender MUST evaluate on the merits
-    so its `reason` is always one of the four documented values ("claimed", "live",
-    "terminal", "resume-cap") — never a fifth "lock busy" outcome that the documented CLI
-    contract has no slot for. So this uses a BLOCKING `fcntl.flock(fd, LOCK_EX)` instead of
-    `LOCK_NB`. The underlying lock+unlock mechanism (`fcntl.flock` on a sidecar `.lock` file,
-    released via `LOCK_UN` in a `finally`) is the same idiom; only the NB/blocking choice
-    differs, for the reason above. A plain advisory POSIX flock tied to the open fd is
-    released automatically if this process dies while holding it, so a blocking wait here can
-    never deadlock past a crashed holder.
-
-    Inside the lock:
-      1. Reload `state_path` from disk (never trusts a caller's possibly-stale in-memory
-         copy — the whole point of taking the lock is to see the freshest on-disk truth).
-      2. Validate stance/watch/structure (marathon + watch required; `validate_marathon_state`
-         must be clean) — a structural problem is `ok=False`, no write.
-      3. `is_terminal(state)` -> lose with reason "terminal" (no write: nothing changed).
-      4. FRESH (`not _heartbeat_stale(state, now_dt, stale_after_min)`, i.e. something bumped
-         the heartbeat recently) -> lose with reason "live" (no write) — replaces the old
-         "live-lease-held". Checked BEFORE the resume-cap so a routine watcher poll against an
-         actively-progressing epic that merely happens to already sit at its resume cap can
-         never spuriously trip `blocked_needing_human`; only a STALE epic ever reaches step 5.
-      5. `resume_count >= max_resume_count` (boundary: mirrors `can_retry_info`'s
-         `attempts < cap` convention elsewhere in this file — a cap of N allows N successful
-         claims and blocks the (N+1)th, which is what this check catches BEFORE incrementing)
-         -> trip to `blocked_needing_human` (same `breaker_trip` shape `trip_breaker` writes,
-         so `--clear-breaker` clears it uniformly), persist, lose with reason "resume-cap".
-         The persisted latch means a later orphaned scheduler firing sees a terminal state on
-         its own next `--claim-resume` and is a harmless no-op (reason "terminal").
-      6. Else: WIN — increment `resume_count`, bump `last_progress_at` to `now`, atomic-write,
-         reason "claimed". The heartbeat bump IS the serialization signal: a second concurrent
-         contender that reloads after this write observes a FRESH heartbeat and loses at
-         step 4, exactly like a real live owner would.
-
-    Returns (ok, result|None, error|None):
-      - `ok=False` only for a structural problem (bad --stale-after-min, lock/read failure,
-        non-marathon/non-watch state, a `validate_marathon_state` error) — no write in that
-        case.
-      - `ok=True` always carries a `result` dict {"claimed","reason","resume_count"}. A LOSING
-        claim is still `ok=True` — losing is an expected, successful outcome of the
-        transaction, not a script failure; the loser simply does not resume."""
-    sa_err = _validate_stale_after(stale_after_min)
-    if sa_err:
-        return False, None, sa_err
-    lock_path = state_path + ".lock"
-    lock_dir = os.path.dirname(os.path.abspath(lock_path)) or "."
-    if not os.path.isdir(lock_dir):
-        os.makedirs(lock_dir)
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)  # BLOCKING — see docstring for why not LOCK_NB
-        try:
-            state = _read_json(state_path)
-        except (OSError, ValueError) as e:
-            return False, None, "could not read %r: %s" % (state_path, e)
-        if not _is_marathon(state):
-            return False, None, "--claim-resume requires a marathon-stance epic"
-        if not _watch_on(state):
-            return False, None, ("--claim-resume requires the marathon epic's watch opt-in "
-                                 "(re-init with --stance marathon --watch)")
-        merrs = validate_marathon_state(state)
-        if merrs:
-            return False, None, "epic-state error: %s" % "; ".join(merrs)
-
-        resume_count = state.get("resume_count", 0)
-
-        if is_terminal(state):
-            return True, {"claimed": False, "reason": "terminal",
-                          "resume_count": resume_count}, None
-
-        if not _heartbeat_stale(state, now_dt, stale_after_min):
-            return True, {"claimed": False, "reason": "live",
-                          "resume_count": resume_count}, None
-
-        autonomy = state.get("autonomy", {})
-        max_resume = _effective_cap(autonomy, "max_resume_count",
-                                    _CAP_DEFAULTS["max_resume_count"])
-        if max_resume is not None and resume_count >= max_resume:
-            state["status"] = "blocked_needing_human"
-            state["breaker_trip"] = {"which": ["max_resume_count"],
-                                     "detail": {"value": resume_count, "cap": max_resume},
-                                     "tripped_at": _now_iso(now_dt)}
-            _bump_last_progress(state, now_dt)
-            _atomic_write_json(state_path, state)
-            return True, {"claimed": False, "reason": "resume-cap",
-                          "resume_count": resume_count}, None
-
-        new_count = resume_count + 1
-        state["resume_count"] = new_count
-        _bump_last_progress(state, now_dt)
-        _atomic_write_json(state_path, state)
-        return True, {"claimed": True, "reason": "claimed", "resume_count": new_count}, None
-    finally:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        finally:
-            os.close(fd)
 
 
 def _atomic_write_json(path, obj):
     """Atomic state write: tmp file in the SAME directory + os.replace (mirrors the idiom
     at compound-v-fastpath-run.py:704) — a reader can never observe a truncated write. No
-    cross-process lock HERE — the marathon is still single-writer-at-a-time by construction
-    for every v2.10 command (unchanged). v2.11's `--claim-resume` is the one exception that
-    genuinely needs multi-writer arbitration (a scheduler can fire concurrently with a still-
-    running worker); it wraps ITS OWN read-reload-write sequence in an external
-    `fcntl.flock`(see `claim_resume`) and still calls this same unlocked primitive for the
-    actual write, exactly like every other mutator in this file."""
+    cross-process lock HERE — the marathon is single-writer-at-a-time by construction for
+    every command in this file: the driver is the only writer, and the concurrent-scheduler
+    case that once needed arbitration went away with the watch surface in 3.4.0."""
     d = os.path.dirname(os.path.abspath(path)) or "."
     if not os.path.isdir(d):
         os.makedirs(d)
@@ -2841,25 +1977,6 @@ def _atomic_write_json(path, obj):
 def _read_json(path):
     with open(path, "r", errors="replace") as fh:
         return json.load(fh)
-
-
-def _cr_worker(state_path, now_iso, barrier, q, stale_after_min=_DEFAULT_STALE_AFTER_MIN):
-    """Module-level (picklable) worker for the --claim-resume concurrency selftest below —
-    must live at module scope for multiprocessing's 'spawn' start method (the macOS default)
-    to locate it in the freshly re-imported child. Waits on a shared Barrier so all N
-    processes call `claim_resume` at (as close to) the same instant as the OS scheduler
-    allows, exercising the real cross-process `fcntl.flock` contention path — not just
-    in-process threading, which Python's GIL could mask bugs under. No more `owner_pid`
-    (removed — see the module docstring's "Cross-unit integration review" note);
-    `stale_after_min` is parameterized so the SAME harness can also drive the invalid-
-    --stale-after-min zero-winners concurrency selftest below."""
-    try:
-        barrier.wait(timeout=10)
-        now_dt = _parse_iso(now_iso)
-        ok, result, err = claim_resume(state_path, now_dt, stale_after_min=stale_after_min)
-        q.put((ok, result, err))
-    except Exception as e:  # pragma: no cover - defensive; surfaces in the parent's queue
-        q.put((False, None, "worker exception: %r" % (e,)))
 
 
 def _selftest():
@@ -4463,711 +3580,49 @@ def _selftest():
     check("v2.14 H3: record_blocker_audit_failed on a checkpoint state -> controlled error",
           ok_rbf_chk is False and "marathon" in err_rbf_chk)
 
-    # --- build_state: v2.11 watch schema ---------------------------------------------------
-    v11_feats = [{"id": "a", "depends_on": []}]
-    v11_watch_off = build_state(v11_feats, "e", "E", stance="marathon", caps={})
-    check("v2.11: watch-off marathon build_state has no 'watch' key in autonomy",
-          "watch" not in v11_watch_off["autonomy"])
-    check("v2.11: watch-off marathon build_state has no top-level 'last_progress_at' key",
-          "last_progress_at" not in v11_watch_off)
-    check("v2.11: watch-off marathon build_state has no 'lease'/'resume_count' keys",
-          "lease" not in v11_watch_off and "resume_count" not in v11_watch_off)
-    check("v2.11: watch-off marathon autonomy key set UNCHANGED from v2.10 (still exactly 6)",
-          set(v11_watch_off["autonomy"].keys()) == {
+    # --- GOLDEN: the marathon/checkpoint schema, after 3.4.0 dropped the watch surface -----
+    g_feats = [{"id": "a", "depends_on": []}]
+    g_mar = build_state(g_feats, "e", "E", stance="marathon", caps={})
+    check("golden: marathon autonomy key set is exactly the six documented caps",
+          set(g_mar["autonomy"].keys()) == {
               "stance", "max_attempts_per_feature", "max_no_progress_cycles",
               "max_total_attempts", "max_wall_clock_hours", "started_at"})
-
-    v11_live_started = "2026-01-01T00:00:00+00:00"
-    v11_watch_on = build_state(v11_feats, "e", "E", stance="marathon",
-                               caps={"watch": True, "started_at": v11_live_started})
-    check("v2.11: watch-on marathon build_state autonomy.watch is True",
-          v11_watch_on["autonomy"]["watch"] is True)
-    check("v2.11: watch-on marathon build_state default max_resume_count == 20",
-          v11_watch_on["autonomy"]["max_resume_count"] == 20)
-    check("v2.11: watch-on marathon build_state seeds last_progress_at == started_at",
-          v11_watch_on["last_progress_at"] == v11_watch_on["autonomy"]["started_at"]
-          == v11_live_started)
-
-    v11_watch_on_cap = build_state(v11_feats, "e", "E", stance="marathon",
-                                   caps={"watch": True, "max_resume_count": 5})
-    check("v2.11: explicit --max-resume-count is honored",
-          v11_watch_on_cap["autonomy"]["max_resume_count"] == 5)
-
-    # --- Golden: byte-identical guarantees --------------------------------------------------
-    v11_chk = build_state(v11_feats, "e", "E")
-    check("v2.11 golden: checkpoint build_state exact top-level keys UNCHANGED",
-          set(v11_chk.keys()) == {"epic_id", "title", "status", "features"})
-
-    apply_update(v11_watch_off, "a", "running", now_dt=T0)
-    apply_update(v11_watch_off, "a", "done", now_dt=T0)
-    check("v2.11 golden: watch-off marathon --update adds NO last_progress_at/lease/"
-          "resume_count", "last_progress_at" not in v11_watch_off
-          and "lease" not in v11_watch_off and "resume_count" not in v11_watch_off)
-    check("v2.11 golden: watch-off marathon --update top-level key set UNCHANGED from v2.10",
-          set(v11_watch_off.keys()) == {"epic_id", "title", "status", "features", "autonomy",
-                                        "final_review", "blocker_ledger", "no_progress_cycles",
-                                        "total_attempts"})
-
-    # --- v2.11: watch-ON mutations bump last_progress_at (the mutation-path contract) ------
-    def _v11_fresh_watch_state():
-        return build_state(v11_feats, "e", "E", stance="marathon",
-                           caps={"watch": True, "started_at": "2020-01-01T00:00:00+00:00"})
-
-    t_new = _parse_iso("2027-01-01T00:00:00+00:00")
-
-    v11_bump = build_state(v11_feats, "e", "E", stance="marathon",
-                           caps={"watch": True, "started_at": v11_live_started})
-    t_before = v11_bump["last_progress_at"]
-    apply_update(v11_bump, "a", "running", now_dt=_parse_iso("2026-06-01T00:00:00+00:00"))
-    check("v2.11: watch-on apply_update bumps last_progress_at forward",
-          v11_bump["last_progress_at"] == "2026-06-01T00:00:00+00:00" != t_before)
-
-    s_rd = _v11_fresh_watch_state()
-    record_disposition(s_rd, "a", "retry_fix", now_dt=t_new)
-    check("v2.11: record_disposition bumps last_progress_at when watch is on",
-          s_rd["last_progress_at"] == _now_iso(t_new))
-
-    s_rfr = _v11_fresh_watch_state()
-    apply_update(s_rfr, "a", "running", now_dt=t_new)
-    apply_update(s_rfr, "a", "done", now_dt=t_new)
-    record_final_review(s_rfr, "passed", now_dt=t_new)
-    check("v2.11: record_final_review bumps last_progress_at when watch is on",
-          s_rfr["last_progress_at"] == _now_iso(t_new))
-
-    s_rpc = _v11_fresh_watch_state()
-    record_progress_cycle(s_rpc, "v11-c1", now_dt=t_new)
-    check("v2.11: record_progress_cycle bumps last_progress_at when watch is on",
-          s_rpc["last_progress_at"] == _now_iso(t_new))
-
-    s_tb = build_state(v11_feats, "e", "E", stance="marathon",
-                       caps={"watch": True, "max_total_attempts": 0,
-                             "started_at": "2020-01-01T00:00:00+00:00"})
-    trip_breaker(s_tb, t_new)
-    check("v2.11: trip_breaker bumps last_progress_at when it actually trips",
-          s_tb["last_progress_at"] == _now_iso(t_new))
-
-    s_cb = _v11_fresh_watch_state()
-    s_cb["status"] = "blocked_needing_human"
-    clear_breaker(s_cb, t_new)
-    check("v2.11: clear_breaker bumps last_progress_at when watch is on",
-          s_cb["last_progress_at"] == _now_iso(t_new))
-
-    s_cd = _v11_fresh_watch_state()
-    record_disposition(s_cd, "a", "halt_epic", now_dt=_parse_iso("2020-01-01T00:00:00+00:00"))
-    clear_disposition(s_cd, "a", now_dt=t_new)
-    check("v2.11: clear_disposition bumps last_progress_at when watch is on",
-          s_cd["last_progress_at"] == _now_iso(t_new))
-
-    s_ms = _v11_fresh_watch_state()
-    apply_update(s_ms, "a", "running", now_dt=_parse_iso("2020-01-01T00:00:00+00:00"))
-    apply_update(s_ms, "a", "done", now_dt=_parse_iso("2020-01-01T00:00:00+00:00"))
-    mark_sample_audit_due(s_ms, "a", now_dt=t_new)
-    check("v2.11: mark_sample_audit_due bumps last_progress_at when watch is on",
-          s_ms["last_progress_at"] == _now_iso(t_new))
-    t_clear = _parse_iso("2028-01-01T00:00:00+00:00")
-    clear_sample_audit_due(s_ms, "a", now_dt=t_clear)
-    check("v2.11: clear_sample_audit_due bumps last_progress_at when watch is on",
-          s_ms["last_progress_at"] == _now_iso(t_clear))
-
-    s_raf = _v11_fresh_watch_state()
-    apply_update(s_raf, "a", "running", now_dt=_parse_iso("2020-01-01T00:00:00+00:00"))
-    apply_update(s_raf, "a", "done", now_dt=_parse_iso("2020-01-01T00:00:00+00:00"))
-    record_audit_failed(s_raf, "a", now_dt=t_new)
-    check("v2.11: record_audit_failed bumps last_progress_at when watch is on",
-          s_raf["last_progress_at"] == _now_iso(t_new))
-
-    # --- _heartbeat_stale (the sole liveness primitive, post-integration-review fix) --------
-    check("v2.11 _heartbeat_stale: no last_progress_at -> stale (fail-safe)",
-          _heartbeat_stale({}, t_new, 45) is True)
-    check("v2.11 _heartbeat_stale: a recent heartbeat -> not stale",
-          _heartbeat_stale({"last_progress_at": _now_iso(_parse_iso(
-              "2026-12-31T23:59:00+00:00"))}, t_new, 45) is False)
-    check("v2.11 _heartbeat_stale: an old heartbeat -> stale",
-          _heartbeat_stale({"last_progress_at": _now_iso(_parse_iso(
-              "2026-01-01T00:00:00+00:00"))}, t_new, 45) is True)
-    check("v2.11 _heartbeat_stale: a malformed last_progress_at -> stale (fail-safe)",
-          _heartbeat_stale({"last_progress_at": 12345}, t_new, 45) is True)
-
-    # --- liveness_check (post-fix: last_progress_at only, no lease/pid fields) --------------
-    t0 = _parse_iso(v11_live_started)
-    v11_live = build_state(v11_feats, "e", "E", stance="marathon",
-                           caps={"watch": True, "started_at": v11_live_started})
-    lv0 = liveness_check(v11_live, t0)
-    check("v2.11 liveness: a fresh watch-on epic is not stale",
-          lv0["stale"] is False and lv0["incomplete"] is True and lv0["terminal"] is False
-          and lv0["resume_count"] == 0)
-    check("v2.11 liveness: output shape has NO lease/pid fields (held/lease_expired dropped)",
-          set(lv0.keys()) == {"incomplete", "stale", "epic_status", "terminal", "resume_count"})
-
-    t_past = _parse_iso("2026-01-01T00:46:00+00:00")  # 46min > default 45min threshold
-    lv1 = liveness_check(v11_live, t_past)
-    check("v2.11 liveness: past the default 45min threshold -> stale",
-          lv1["stale"] is True)
-
-    v11_live_done = build_state(v11_feats, "e", "E", stance="marathon",
-                                caps={"watch": True, "started_at": v11_live_started})
-    apply_update(v11_live_done, "a", "running", now_dt=t0)
-    apply_update(v11_live_done, "a", "done", now_dt=t0)
-    record_final_review(v11_live_done, "passed", now_dt=t0)
-    lv3 = liveness_check(v11_live_done, t_past)
-    check("v2.11 liveness: a done epic is never stale regardless of age",
-          lv3["terminal"] is True and lv3["incomplete"] is False and lv3["stale"] is False)
-
-    v11_live_blocked = build_state(v11_feats, "e", "E", stance="marathon",
-                                   caps={"watch": True, "started_at": v11_live_started})
-    v11_live_blocked["status"] = "blocked_needing_human"
-    lv4 = liveness_check(v11_live_blocked, t_past)
-    check("v2.11 liveness: a terminal (blocked_needing_human) epic is never stale",
-          lv4["terminal"] is True and lv4["stale"] is False)
-
-    v11_live_missing_lpa = build_state(v11_feats, "e", "E", stance="marathon",
-                                       caps={"watch": True, "started_at": v11_live_started})
-    del v11_live_missing_lpa["last_progress_at"]
-    lv5 = liveness_check(v11_live_missing_lpa, t0)
-    check("v2.11 liveness: a missing last_progress_at FAILS SAFE as stale-eligible",
-          lv5["stale"] is True)
-
-    # --- claim_resume: THE CRUX (post-integration-review fix -- staleness-based, no pid) ----
-    v11_cr_dir = _tempfile.mkdtemp()
-    try:
-        v11_cr_path = os.path.join(v11_cr_dir, "epic-state.json")
-        _atomic_write_json(v11_cr_path, build_state(v11_feats, "e", "E", stance="marathon",
-                                                     caps={"watch": True,
-                                                           "started_at": v11_live_started}))
-        # FRESH: only 1 minute after start -- well under the default 45min stale_after_min ->
-        # BLOCKER FIX PROOF: a fresh marathon is NEVER resurrected -- loses, reason "live".
-        t_fresh = _parse_iso("2026-01-01T00:01:00+00:00")
-        ok_fr, res_fr, err_fr = claim_resume(v11_cr_path, t_fresh)
-        check("v2.11 claim_resume: a FRESH marathon (recent last_progress_at) loses "
-              "(reason 'live') -- the BLOCKER fix",
-              ok_fr and res_fr["claimed"] is False and res_fr["reason"] == "live"
-              and res_fr["resume_count"] == 0)
-        on_disk_fresh = _read_json(v11_cr_path)
-        check("v2.11 claim_resume: a losing FRESH claim does NOT mutate resume_count/"
-              "last_progress_at",
-              on_disk_fresh.get("resume_count") is None
-              and on_disk_fresh["last_progress_at"] == v11_live_started)
-
-        # STALE: 60 minutes after start -- past the default 45min threshold -> WINS.
-        t_stale = _parse_iso("2026-01-01T01:00:00+00:00")
-        ok_c1, res_c1, err_c1 = claim_resume(v11_cr_path, t_stale)
-        check("v2.11 claim_resume: a STALE watch-on epic wins",
-              ok_c1 and res_c1["claimed"] is True and res_c1["reason"] == "claimed"
-              and res_c1["resume_count"] == 1)
-        on_disk1 = _read_json(v11_cr_path)
-        check("v2.11 claim_resume: last_progress_at bumped to now on a win",
-              on_disk1["last_progress_at"] == _now_iso(t_stale))
-        check("v2.11 claim_resume: resume_count persisted", on_disk1["resume_count"] == 1)
-        check("v2.11 claim_resume: no 'lease' key is ever written by a win",
-              "lease" not in on_disk1)
-
-        # A second claim right after the win sees the JUST-BUMPED heartbeat -- FRESH -> loses
-        # "live". This is the concurrency-race mechanism in single-process miniature: the
-        # heartbeat bump IS the serialization signal, replacing the old lease.
-        t_claim2 = t_stale + timedelta(minutes=2)  # well under the 45min threshold
-        ok_c2, res_c2, err_c2 = claim_resume(v11_cr_path, t_claim2)
-        check("v2.11 claim_resume: a second claim on the now-fresh epic loses (reason 'live')",
-              ok_c2 and res_c2["claimed"] is False and res_c2["reason"] == "live"
-              and res_c2["resume_count"] == 1)
-        on_disk2 = _read_json(v11_cr_path)
-        check("v2.11 claim_resume: a losing claim does NOT mutate resume_count/"
-              "last_progress_at",
-              on_disk2["resume_count"] == 1
-              and on_disk2["last_progress_at"] == on_disk1["last_progress_at"])
-
-        v11_cr_chk_path = os.path.join(v11_cr_dir, "chk.json")
-        _atomic_write_json(v11_cr_chk_path, build_state(v11_feats, "e", "E"))
-        ok_c3, res_c3, err_c3 = claim_resume(v11_cr_chk_path, t_stale)
-        check("v2.11 claim_resume: a checkpoint state -> ok=False, marathon-only error",
-              ok_c3 is False and res_c3 is None and "marathon" in err_c3)
-
-        v11_cr_nowatch_path = os.path.join(v11_cr_dir, "nowatch.json")
-        _atomic_write_json(v11_cr_nowatch_path,
-                          build_state(v11_feats, "e", "E", stance="marathon", caps={}))
-        ok_c4, res_c4, err_c4 = claim_resume(v11_cr_nowatch_path, t_stale)
-        check("v2.11 claim_resume: marathon-without-watch -> ok=False, watch-only error",
-              ok_c4 is False and res_c4 is None and "watch" in err_c4)
-
-        v11_cr_done_path = os.path.join(v11_cr_dir, "done.json")
-        v11_cr_done = build_state(v11_feats, "e", "E", stance="marathon",
-                                  caps={"watch": True, "started_at": v11_live_started})
-        apply_update(v11_cr_done, "a", "running", now_dt=t0)
-        apply_update(v11_cr_done, "a", "done", now_dt=t0)
-        record_final_review(v11_cr_done, "passed", now_dt=t0)
-        _atomic_write_json(v11_cr_done_path, v11_cr_done)
-        ok_c5, res_c5, err_c5 = claim_resume(v11_cr_done_path, t_stale)
-        check("v2.11 claim_resume: a terminal (done) epic loses with reason 'terminal'",
-              ok_c5 and res_c5["claimed"] is False and res_c5["reason"] == "terminal")
-        on_disk5 = _read_json(v11_cr_done_path)
-        check("v2.11 claim_resume: a terminal loss does NOT write resume_count",
-              "resume_count" not in on_disk5)
-
-        # --- resume-cap (cap=1): the 1st claim wins on a STALE epic; the epic must go STALE
-        # AGAIN (not merely "past its old TTL") before the 2nd claim can even reach the
-        # resume-cap check -- see claim_resume's docstring for why FRESH is checked first.
-        v11_cr_cap_path = os.path.join(v11_cr_dir, "cap.json")
-        _atomic_write_json(v11_cr_cap_path,
-                          build_state(v11_feats, "e", "E", stance="marathon",
-                                     caps={"watch": True, "max_resume_count": 1,
-                                           "started_at": v11_live_started}))
-        ok_cap1, res_cap1, _ = claim_resume(v11_cr_cap_path, t_stale)
-        check("v2.11 claim_resume resume-cap: the 1st claim (cap=1, epic stale) succeeds",
-              ok_cap1 and res_cap1["claimed"] is True and res_cap1["resume_count"] == 1)
-        t_claim_late = t_stale + timedelta(minutes=50)  # >45min since the bump at t_stale
-        ok_cap2, res_cap2, _ = claim_resume(v11_cr_cap_path, t_claim_late)
-        check("v2.11 claim_resume resume-cap: the 2nd claim (== cap, epic stale again) is "
-              "BLOCKED, reason resume-cap",
-              ok_cap2 and res_cap2["claimed"] is False and res_cap2["reason"] == "resume-cap")
-        on_disk_cap = _read_json(v11_cr_cap_path)
-        check("v2.11 claim_resume resume-cap: trips the epic to blocked_needing_human",
-              on_disk_cap["status"] == "blocked_needing_human"
-              and on_disk_cap["breaker_trip"]["which"] == ["max_resume_count"])
-        ok_cap3, res_cap3, _ = claim_resume(v11_cr_cap_path, t_claim_late + timedelta(minutes=1))
-        check("v2.11 claim_resume resume-cap: the persisted latch makes a 3rd attempt a "
-              "harmless no-op (reason 'terminal', not re-tripping)",
-              ok_cap3 and res_cap3["claimed"] is False and res_cap3["reason"] == "terminal")
-
-        cleared_state = _read_json(v11_cr_cap_path)
-        ok_clr, err_clr, sum_clr = clear_breaker(cleared_state, t_claim_late,
-                                                 reset_resume_count=True)
-        check("v2.11 clear_breaker --reset-resume-count: clears + reports the reset",
-              ok_clr and sum_clr["resume_count_reset"] is True
-              and sum_clr["resume_count_reset_from"] == 1
-              and cleared_state["resume_count"] == 0
-              and cleared_state["status"] != "blocked_needing_human")
-        _atomic_write_json(v11_cr_cap_path, cleared_state)
-        # clear_breaker ITSELF bumps last_progress_at to t_claim_late (a human re-arm counts
-        # as fresh progress too) -- the epic is FRESH again right after the re-arm, so the
-        # next claim must wait past the staleness threshold once more before it can win.
-        t_claim_rearmed = t_claim_late + timedelta(minutes=50)
-        ok_cap4, res_cap4, _ = claim_resume(v11_cr_cap_path, t_claim_rearmed)
-        check("v2.11 claim_resume resume-cap: a claim succeeds again after "
-              "--reset-resume-count",
-              ok_cap4 and res_cap4["claimed"] is True and res_cap4["resume_count"] == 1)
-
-        # --- integration-review fix (Layer C #2, unaffected by the pid fix): resume_count
-        # contract = "permits N, blocks N+1" -- re-verify the FULL boundary at cap=2 (two
-        # claims succeed, the third is blocked), not just the cap=1 edge case above.
-        v11_cr_cap2_path = os.path.join(v11_cr_dir, "cap2.json")
-        _atomic_write_json(v11_cr_cap2_path,
-                          build_state(v11_feats, "e", "E", stance="marathon",
-                                     caps={"watch": True, "max_resume_count": 2,
-                                           "started_at": v11_live_started}))
-        ok_c2a, res_c2a, _ = claim_resume(v11_cr_cap2_path, t_stale)
-        check("v2.11 claim_resume resume-cap=2: the 1st claim succeeds",
-              ok_c2a and res_c2a["claimed"] is True and res_c2a["resume_count"] == 1)
-        t_c2b = t_stale + timedelta(minutes=50)
-        ok_c2b, res_c2b, _ = claim_resume(v11_cr_cap2_path, t_c2b)
-        check("v2.11 claim_resume resume-cap=2: the 2nd claim (== cap) still succeeds",
-              ok_c2b and res_c2b["claimed"] is True and res_c2b["resume_count"] == 2)
-        t_c2c = t_c2b + timedelta(minutes=50)
-        ok_c2c, res_c2c, _ = claim_resume(v11_cr_cap2_path, t_c2c)
-        check("v2.11 claim_resume resume-cap=2: the 3rd claim (cap+1) is BLOCKED",
-              ok_c2c and res_c2c["claimed"] is False and res_c2c["reason"] == "resume-cap")
-
-        # --- --stale-after-min is validated BEFORE the transaction (replaces the old
-        # --lease-ttl-min validation -- there is no lease/TTL left to validate) -------------
-        sa_path = os.path.join(v11_cr_dir, "sa.json")
-        _atomic_write_json(sa_path, build_state(v11_feats, "e", "E", stance="marathon",
-                                                caps={"watch": True,
-                                                      "started_at": v11_live_started}))
-        ok_sa0, res_sa0, err_sa0 = claim_resume(sa_path, t_stale, stale_after_min=0)
-        check("v2.11 claim_resume: --stale-after-min=0 is rejected BEFORE the transaction "
-              "(ok=False)", ok_sa0 is False and res_sa0 is None and "stale-after-min" in err_sa0)
-        check("v2.11 claim_resume: a rejected --stale-after-min call makes NO write at all",
-              _read_json(sa_path).get("resume_count") is None)
-        ok_sanan, _, err_sanan = claim_resume(sa_path, t_stale, stale_after_min=float("nan"))
-        check("v2.11 claim_resume: a NaN --stale-after-min is rejected", ok_sanan is False
-              and "finite" in err_sanan)
-        ok_saok, res_saok, _ = claim_resume(sa_path, t_stale, stale_after_min=1)
-        check("v2.11 claim_resume: a small positive --stale-after-min is accepted",
-              ok_saok and res_saok["claimed"] is True)
-    finally:
-        shutil.rmtree(v11_cr_dir, ignore_errors=True)
-
-    # --- renew_lease (post-fix: pure last_progress_at bump -- no pid, no lease, no TTL) -----
-    rl_state = build_state(v11_feats, "e", "E", stance="marathon",
-                           caps={"watch": True, "started_at": v11_live_started})
-    old_lpa = rl_state["last_progress_at"]
-    t_renew = _parse_iso(v11_live_started) + timedelta(minutes=5)
-    ok_rl1, err_rl1 = renew_lease(rl_state, t_renew)
-    check("v2.11 renew_lease: bumps last_progress_at to now",
-          ok_rl1 and rl_state["last_progress_at"] == _now_iso(t_renew) != old_lpa)
-    check("v2.11 renew_lease: writes no 'lease' key", "lease" not in rl_state)
-
-    rl_nowatch = build_state(v11_feats, "e", "E", stance="marathon", caps={})
-    ok_rl4, err_rl4 = renew_lease(rl_nowatch, t_renew)
-    check("v2.11 renew_lease: marathon-without-watch is rejected",
-          ok_rl4 is False and "watch" in err_rl4)
-
-    rl_chk = build_state(v11_feats, "e", "E")
-    ok_rl5, err_rl5 = renew_lease(rl_chk, t_renew)
-    check("v2.11 renew_lease: a checkpoint state is rejected",
-          ok_rl5 is False and "marathon" in err_rl5)
-
-    # --- validate_marathon_state: v2.11 fields ------------------------------------------------
-    v11_vm_good = build_state(v11_feats, "e", "E", stance="marathon",
-                              caps={"watch": True, "started_at": v11_live_started})
-    check("v2.11 validate: a well-formed watch-on state validates clean",
-          validate_marathon_state(v11_vm_good) == [])
-
-    v11_vm_bad_watch = build_state(v11_feats, "e", "E", stance="marathon", caps={})
-    v11_vm_bad_watch["autonomy"]["watch"] = "yes"
-    check("v2.11 validate: a non-bool autonomy.watch -> error",
-          any("watch" in e for e in validate_marathon_state(v11_vm_bad_watch)))
-
-    v11_vm_bad_rc = build_state(v11_feats, "e", "E", stance="marathon", caps={})
-    v11_vm_bad_rc["resume_count"] = -1
-    check("v2.11 validate: a negative resume_count -> error",
-          any("resume_count" in e for e in validate_marathon_state(v11_vm_bad_rc)))
-
-    v11_vm_bad_lpa = build_state(v11_feats, "e", "E", stance="marathon", caps={})
-    v11_vm_bad_lpa["last_progress_at"] = "not-a-timestamp"
-    check("v2.11 validate: a malformed last_progress_at -> error",
-          any("last_progress_at" in e for e in validate_marathon_state(v11_vm_bad_lpa)))
-
-    # --- back-compat (integration-review fix): an OLD-SHAPE lease (with owner_pid), written
-    # by a pre-fix version of this script, must still LOAD cleanly -- it is dead, unvalidated,
-    # unread data now, never a hard error over an inert legacy key.
-    v11_vm_legacy_lease = build_state(v11_feats, "e", "E", stance="marathon", caps={})
-    v11_vm_legacy_lease["lease"] = {"owner_pid": 4242, "claimed_at": v11_live_started,
-                                    "expires_at": v11_live_started}
-    check("v2.11 validate back-compat: an old-shape lease (with owner_pid) still loads clean",
-          validate_marathon_state(v11_vm_legacy_lease) == [])
-
-    v11_vm_legacy_lease_garbage = build_state(v11_feats, "e", "E", stance="marathon", caps={})
-    v11_vm_legacy_lease_garbage["lease"] = {"owner_pid": -(2 ** 62), "claimed_at": "not-iso",
-                                            "expires_at": "also-not-iso"}
-    check("v2.11 validate back-compat: an old-shape lease with garbage fields ALSO loads "
-          "clean (the whole 'lease' key is inert, unvalidated legacy data now)",
-          validate_marathon_state(v11_vm_legacy_lease_garbage) == [])
-
-    v11_vm_bad_cap = build_state(v11_feats, "e", "E", stance="marathon", caps={"watch": True})
-    v11_vm_bad_cap["autonomy"]["max_resume_count"] = -5
-    check("v2.11 validate: a negative autonomy.max_resume_count -> error",
-          validate_marathon_state(v11_vm_bad_cap) != [])
-
-    # --- Layer B: watcher_registry validation -------------------------------------------
-    v11_vm_wr_good = build_state(v11_feats, "e", "E", stance="marathon", caps={"watch": True})
-    v11_vm_wr_good["watcher_registry"] = [
-        {"provider": "cron", "task_id": "t1", "armed_at": v11_live_started,
-         "disarmed_at": None, "status": "armed"},
-        {"provider": "scheduled-tasks", "task_id": "t2", "armed_at": v11_live_started,
-         "disarmed_at": v11_live_started, "status": "disarmed"},
-    ]
-    check("v2.11 Layer B validate: a well-formed watcher_registry validates clean",
-          validate_marathon_state(v11_vm_wr_good) == [])
-
-    v11_vm_wr_notlist = build_state(v11_feats, "e", "E", stance="marathon", caps={"watch": True})
-    v11_vm_wr_notlist["watcher_registry"] = "junk"
-    check("v2.11 Layer B validate: a non-list watcher_registry -> error",
-          any("watcher_registry" in e for e in validate_marathon_state(v11_vm_wr_notlist)))
-
-    v11_vm_wr_badentry = build_state(v11_feats, "e", "E", stance="marathon", caps={"watch": True})
-    v11_vm_wr_badentry["watcher_registry"] = ["junk"]
-    check("v2.11 Layer B validate: a non-object registry entry -> error",
-          any("not an object" in e for e in validate_marathon_state(v11_vm_wr_badentry)))
-
-    v11_vm_wr_badprov = build_state(v11_feats, "e", "E", stance="marathon", caps={"watch": True})
-    v11_vm_wr_badprov["watcher_registry"] = [
-        {"provider": "carrier-pigeon", "task_id": "t1", "armed_at": v11_live_started,
-         "disarmed_at": None, "status": "armed"}]
-    check("v2.11 Layer B validate: an invalid provider -> error",
-          any("invalid provider" in e for e in validate_marathon_state(v11_vm_wr_badprov)))
-
-    v11_vm_wr_badtask = build_state(v11_feats, "e", "E", stance="marathon", caps={"watch": True})
-    v11_vm_wr_badtask["watcher_registry"] = [
-        {"provider": "cron", "task_id": "", "armed_at": v11_live_started,
-         "disarmed_at": None, "status": "armed"}]
-    check("v2.11 Layer B validate: an empty task_id -> error",
-          any("task_id" in e for e in validate_marathon_state(v11_vm_wr_badtask)))
-
-    v11_vm_wr_badstatus = build_state(v11_feats, "e", "E", stance="marathon", caps={"watch": True})
-    v11_vm_wr_badstatus["watcher_registry"] = [
-        {"provider": "cron", "task_id": "t1", "armed_at": v11_live_started,
-         "disarmed_at": None, "status": "pending"}]
-    check("v2.11 Layer B validate: an invalid status -> error",
-          any("invalid status" in e for e in validate_marathon_state(v11_vm_wr_badstatus)))
-
-    v11_vm_wr_badts = build_state(v11_feats, "e", "E", stance="marathon", caps={"watch": True})
-    v11_vm_wr_badts["watcher_registry"] = [
-        {"provider": "cron", "task_id": "t1", "armed_at": "not-a-timestamp",
-         "disarmed_at": None, "status": "armed"}]
-    check("v2.11 Layer B validate: a malformed armed_at timestamp -> error",
-          any("armed_at" in e for e in validate_marathon_state(v11_vm_wr_badts)))
-
-    # --- Layer B: record_watcher_armed / record_watcher_disarmed / list_watchers ----------
-    wr_state = build_state(v11_feats, "e", "E", stance="marathon",
-                           caps={"watch": True, "started_at": v11_live_started})
-    lpa_before_arm = wr_state.get("last_progress_at")
-    ok_wa1, err_wa1, entry_wa1 = record_watcher_armed(wr_state, "cron", "task-1", now_dt=t0)
-    check("v2.11 Layer B: record_watcher_armed creates a new armed entry",
-          ok_wa1 and entry_wa1["provider"] == "cron" and entry_wa1["task_id"] == "task-1"
-          and entry_wa1["status"] == "armed" and entry_wa1["disarmed_at"] is None)
-    check("v2.11 Layer B: record_watcher_armed does NOT bump last_progress_at (a registry "
-          "fact, not a liveness signal)", wr_state.get("last_progress_at") == lpa_before_arm)
-    first_armed_at = entry_wa1["armed_at"]
-
-    ok_wa2, err_wa2, entry_wa2 = record_watcher_armed(wr_state, "cron", "task-1",
-                                                       now_dt=t_new)
-    check("v2.11 Layer B: record_watcher_armed is IDEMPOTENT by (provider, task_id) -- "
-          "replay preserves the ORIGINAL armed_at, no duplicate",
-          ok_wa2 and entry_wa2["armed_at"] == first_armed_at
-          and len(wr_state["watcher_registry"]) == 1)
-
-    ok_wa3, err_wa3, entry_wa3 = record_watcher_armed(wr_state, "scheduled-tasks", "task-2",
-                                                       now_dt=t0)
-    check("v2.11 Layer B: a second (provider, task_id) is a distinct new entry",
-          ok_wa3 and len(wr_state["watcher_registry"]) == 2)
-
-    ok_wd1, err_wd1, entry_wd1 = record_watcher_disarmed(wr_state, "cron", "task-1",
-                                                          now_dt=t_new)
-    check("v2.11 Layer B: record_watcher_disarmed marks the matching entry disarmed",
-          ok_wd1 and entry_wd1["status"] == "disarmed"
-          and entry_wd1["disarmed_at"] == _now_iso(t_new))
-
-    listed = list_watchers(wr_state)
-    check("v2.11 Layer B: list_watchers returns ONLY the still-armed entry",
-          len(listed) == 1 and listed[0]["task_id"] == "task-2")
-
-    ok_wd1b, err_wd1b, entry_wd1b = record_watcher_disarmed(wr_state, "cron", "task-1",
-                                                             now_dt=_parse_iso(
-                                                                 "2029-01-01T00:00:00+00:00"))
-    check("v2.11 Layer B: re-disarming an already-disarmed entry is idempotent (unchanged "
-          "disarmed_at, still ok=True)",
-          ok_wd1b and entry_wd1b["disarmed_at"] == _now_iso(t_new))
-
-    # v2.11 MEDIUM-4 fix: disarming an unrecorded (provider, task_id) pair is a controlled
-    # NO-OP, not an error -- the provider-list disarm sweep legitimately deletes tasks that
-    # were never armed through this registry (an older-convention id, or a create that
-    # crashed before its --record-watcher-armed write), and a hard error there would abort
-    # a multi-task sweep loop mid-way, leaving later tasks in that same sweep undeleted.
-    ok_wd_unknown, err_wd_unknown, entry_wd_unknown = record_watcher_disarmed(
-        wr_state, "cron", "no-such-task", now_dt=t_new)
-    check("v2.11 MEDIUM-4: disarming an unknown (provider, task_id) succeeds as a no-op "
-          "(never a hard error)", ok_wd_unknown is True and err_wd_unknown is None)
-    check("v2.11 MEDIUM-4: the no-op disarm records a disarmed entry for future reference",
-          entry_wd_unknown is not None and entry_wd_unknown["provider"] == "cron"
-          and entry_wd_unknown["task_id"] == "no-such-task"
-          and entry_wd_unknown["status"] == "disarmed")
-    check("v2.11 MEDIUM-4: disarming the SAME unknown pair again is still idempotent (no dup)",
-          len([e for e in wr_state["watcher_registry"]
-               if e.get("provider") == "cron" and e.get("task_id") == "no-such-task"]) == 1)
-    ok_wd_unknown2, err_wd_unknown2, _ = record_watcher_disarmed(wr_state, "cron", "no-such-task")
-    check("v2.11 MEDIUM-4: re-disarming the same unknown pair is ALSO a no-op success "
-          "(sweep can safely process the same task twice)",
-          ok_wd_unknown2 is True and err_wd_unknown2 is None)
-
-    ok_wa_badprov, err_wa_badprov, _ = record_watcher_armed(wr_state, "smoke-signal", "task-3")
-    check("v2.11 Layer B: record_watcher_armed rejects an invalid --provider",
-          ok_wa_badprov is False and "provider" in err_wa_badprov)
-
-    wr_nowatch = build_state(v11_feats, "e", "E", stance="marathon", caps={})
-    ok_wa_nowatch, err_wa_nowatch, _ = record_watcher_armed(wr_nowatch, "cron", "task-1")
-    check("v2.11 Layer B: record_watcher_armed rejects a watch-off marathon epic",
-          ok_wa_nowatch is False and "watch" in err_wa_nowatch
-          and "watcher_registry" not in wr_nowatch)
-
-    wr_chk = build_state(v11_feats, "e", "E")
-    ok_wa_chk, err_wa_chk, _ = record_watcher_armed(wr_chk, "cron", "task-1")
-    check("v2.11 Layer B: record_watcher_armed rejects a checkpoint epic",
-          ok_wa_chk is False and "marathon" in err_wa_chk)
-
-    # v2.11 MEDIUM-5 fix: re-arming reuses the SAME deterministic taskId -- record_watcher_armed
-    # must REACTIVATE a matching (provider, task_id) that is currently "disarmed", not leave it
-    # disarmed forever (the old idempotent-replay behavior treated a disarmed match as an inert
-    # no-op, which let the registry keep lying about a watcher that is, in fact, newly armed).
-    wr_reactivate = build_state(v11_feats, "e", "E", stance="marathon",
-                                caps={"watch": True, "started_at": v11_live_started})
-    ok_ra1, err_ra1, entry_ra1 = record_watcher_armed(wr_reactivate, "cron", "reused-task", now_dt=t0)
-    check("v2.11 MEDIUM-5 setup: first arm of 'reused-task' succeeds",
-          ok_ra1 and entry_ra1["status"] == "armed")
-    ok_ra2, err_ra2, entry_ra2 = record_watcher_disarmed(wr_reactivate, "cron", "reused-task",
-                                                          now_dt=t_new)
-    check("v2.11 MEDIUM-5 setup: disarming 'reused-task' succeeds",
-          ok_ra2 and entry_ra2["status"] == "disarmed" and entry_ra2["disarmed_at"] is not None)
-    t_rearm = _parse_iso("2029-06-01T00:00:00+00:00")
-    ok_ra3, err_ra3, entry_ra3 = record_watcher_armed(wr_reactivate, "cron", "reused-task",
-                                                       now_dt=t_rearm)
-    check("v2.11 MEDIUM-5: re-arming the SAME (provider, task_id) REACTIVATES it to 'armed'",
-          ok_ra3 and entry_ra3["status"] == "armed")
-    check("v2.11 MEDIUM-5: reactivation clears disarmed_at",
-          entry_ra3["disarmed_at"] is None)
-    check("v2.11 MEDIUM-5: reactivation refreshes armed_at to the re-arm time",
-          entry_ra3["armed_at"] == _now_iso(t_rearm))
-    check("v2.11 MEDIUM-5: reactivation is the SAME registry entry, not a duplicate",
-          len(wr_reactivate["watcher_registry"]) == 1)
-    listed_reactivated = list_watchers(wr_reactivate)
-    check("v2.11 MEDIUM-5: list_watchers now reports the reactivated entry as armed",
-          len(listed_reactivated) == 1 and listed_reactivated[0]["task_id"] == "reused-task")
-
-    # --- breaker_check / clear_breaker: the resume_count axis --------------------------------
-    v11_bc = build_state(v11_feats, "e", "E", stance="marathon",
-                         caps={"watch": True, "max_resume_count": 3,
-                               "started_at": v11_live_started})
-    v11_bc["resume_count"] = 2
-    check("v2.11 breaker_check: resume_count just under cap -> not tripped on this axis",
-          "max_resume_count" not in breaker_check(v11_bc, t0)["which"])
-    v11_bc["resume_count"] = 3
-    r_v11 = breaker_check(v11_bc, t0)
-    check("v2.11 breaker_check: resume_count >= cap trips",
-          r_v11["tripped"] and "max_resume_count" in r_v11["which"]
-          and r_v11["detail"]["max_resume_count"] == {"value": 3, "cap": 3})
-
-    v11_bc_null = build_state(v11_feats, "e", "E", stance="marathon",
-                              caps={"watch": True, "max_resume_count": None,
-                                    "started_at": v11_live_started})
-    v11_bc_null["resume_count"] = 999
-    check("v2.11 breaker_check: an explicit-null max_resume_count is unbounded",
-          "max_resume_count" not in breaker_check(v11_bc_null, t0)["which"])
-
-    v11_bc_missing = build_state(v11_feats, "e", "E", stance="marathon",
-                                 caps={"watch": True, "started_at": v11_live_started})
-    del v11_bc_missing["autonomy"]["max_resume_count"]
-    v11_bc_missing["resume_count"] = 20
-    r_v11missing = breaker_check(v11_bc_missing, t0)
-    check("v2.11 breaker_check: a MISSING max_resume_count key uses the documented default "
-          "(20), never unbounded",
-          r_v11missing["tripped"] and "max_resume_count" in r_v11missing["which"])
-
-    # --- _now_arg_in_range (V1-review fix 5: tightened to ~1 day) -------------------------
-    check("v2.11 _now_arg_in_range: near-now is in range",
-          _now_arg_in_range(datetime.now(timezone.utc)) is True)
-    check("v2.11 _now_arg_in_range: 20 years off is OUT of range",
-          _now_arg_in_range(datetime.now(timezone.utc) - timedelta(days=365 * 20)) is False)
-    check("v2.11 _now_arg_in_range fix 5: ~12h off is still IN the tightened ~1-day range",
-          _now_arg_in_range(datetime.now(timezone.utc) - timedelta(hours=12)) is True)
-    check("v2.11 _now_arg_in_range fix 5: 3 days off is OUT of the tightened ~1-day range "
-          "(would have passed the old 3650-day placeholder)",
-          _now_arg_in_range(datetime.now(timezone.utc) - timedelta(days=3)) is False)
-
-    # --- V1-review fix 5: _validate_stale_after (the sole timing knob left, post pid-fix) --
-    check("v2.11 _validate_stale_after: a positive number is valid",
-          _validate_stale_after(45) is None and _validate_stale_after(0.5) is None)
-    check("v2.11 _validate_stale_after: zero is rejected",
-          _validate_stale_after(0) is not None)
-    check("v2.11 _validate_stale_after: a negative number is rejected",
-          _validate_stale_after(-5) is not None)
-    check("v2.11 _validate_stale_after: NaN/inf are rejected",
-          _validate_stale_after(float("nan")) is not None
-          and _validate_stale_after(float("inf")) is not None)
-    check("v2.11 _validate_stale_after: a non-number is rejected",
-          _validate_stale_after("45") is not None)
-
-    # --- post-integration-review concurrency: an invalid --stale-after-min -> ZERO winners
-    # (replaces the old TTL=0 test -- there is no lease/TTL left, but --stale-after-min is
-    # STILL validated BEFORE the transaction, before the lock is even opened);
-    # --reset-resume-count is watch-gated and a watch-off --clear-breaker stays byte-
-    # identical to v2.10 -----------------------------------------------------------------
-    import multiprocessing  # imported again (cheap, cached) below the concurrency section too
-    sa0_conc_dir = _tempfile.mkdtemp()
-    try:
-        sa0_conc_path = os.path.join(sa0_conc_dir, "epic-state.json")
-        _atomic_write_json(sa0_conc_path, build_state(
-            v11_feats, "e", "E", stance="marathon",
-            caps={"watch": True, "started_at": v11_live_started}))
-        N0 = 6
-        barrier0 = multiprocessing.Barrier(N0)
-        q0 = multiprocessing.Queue()
-        now_iso_sa0 = _now_iso(_parse_iso("2026-01-01T01:00:00+00:00"))
-        procs0 = [multiprocessing.Process(target=_cr_worker,
-                                          args=(sa0_conc_path, now_iso_sa0, barrier0, q0, 0))
-                 for i in range(N0)]
-        for pr in procs0:
-            pr.start()
-        for pr in procs0:
-            pr.join(timeout=20)
-        results0 = [q0.get(timeout=10) for _ in range(N0)]
-        check("v2.11 claim_resume concurrency invalid --stale-after-min: every call is "
-              "rejected (ok=False), none proceed to the transaction",
-              all(r[0] is False for r in results0))
-        winners0 = [r for r in results0 if r[0] and r[1] and r[1].get("claimed") is True]
-        check("v2.11 claim_resume concurrency invalid --stale-after-min: ZERO winners",
-              len(winners0) == 0)
-        check("v2.11 claim_resume concurrency invalid --stale-after-min: no write occurred "
-              "at all", _read_json(sa0_conc_path).get("resume_count") is None)
-    finally:
-        shutil.rmtree(sa0_conc_dir, ignore_errors=True)
-
-    # V1-review fix 2: --reset-resume-count on a watch-OFF marathon is a controlled error.
-    cb_watchoff = build_state(v11_feats, "e", "E", stance="marathon", caps={})
-    ok_cbwo, err_cbwo, sum_cbwo = clear_breaker(cb_watchoff, t0, reset_resume_count=True)
-    check("v2.11 clear_breaker fix 2: --reset-resume-count on watch-off -> controlled error, "
-          "no write", ok_cbwo is False and "watch" in err_cbwo and sum_cbwo is None
-          and "resume_count" not in cb_watchoff)
-
-    # V1-review fix 2: a watch-off --clear-breaker summary carries NO resume_count_* keys at
-    # all -- the exact key set (and order) v2.10 (pre-v2.11) always produced.
-    cb_watchoff2 = build_state(v11_feats, "e", "E", stance="marathon",
-                               caps={"max_total_attempts": 0,
-                                     "started_at": "2020-01-01T00:00:00+00:00"})
-    trip_breaker(cb_watchoff2, t0)
-    ok_cbwo2, err_cbwo2, sum_cbwo2 = clear_breaker(cb_watchoff2, t0)
-    check("v2.11 clear_breaker fix 2 (golden): a watch-off summary's key set is BYTE-"
-          "IDENTICAL to v2.10's (no resume_count_reset/resume_count_reset_from at all)",
-          ok_cbwo2 and set(sum_cbwo2.keys()) == {
-              "cleared_breaker_trip", "no_progress_cycles_reset_from", "wall_clock_reset",
-              "max_total_attempts_set", "epic_status", "would_immediately_retrip",
-              "would_retrip_which"})
-
-    # A watch-ON --clear-breaker DOES carry the resume_count_* keys, whether or not
-    # --reset-resume-count was actually supplied this call.
-    cb_watchon = build_state(v11_feats, "e", "E", stance="marathon",
-                             caps={"watch": True, "started_at": v11_live_started})
-    ok_cbwon, err_cbwon, sum_cbwon = clear_breaker(cb_watchon, t0)
-    check("v2.11 clear_breaker fix 2: a watch-on summary DOES carry resume_count_reset "
-          "(False when not requested this call)",
-          ok_cbwon and sum_cbwon["resume_count_reset"] is False
-          and sum_cbwon["resume_count_reset_from"] is None)
-
-    # --- claim_resume concurrency: exactly one of N wins under a REAL OS-level flock race
-    # (multiprocessing.Barrier synchronizes N separate PROCESSES, not just threads/coroutines,
-    # so this exercises the actual fcntl.flock contention path, not something the GIL could
-    # mask). DoD proof #3: the epic must be genuinely STALE at race time (1 HOUR past
-    # started_at, past the default 45min threshold) -- the first process through the flock
-    # wins and bumps last_progress_at to "now"; every other process then reloads and sees a
-    # FRESH heartbeat, losing with reason "live" -- this IS the mechanism that guarantees a
-    # FRESH marathon is never resurrected, proven under real multi-process contention, not
-    # just in the single-process scenarios above. ------------------------------------------
-    import multiprocessing
-    cr_conc_dir = _tempfile.mkdtemp()
-    try:
-        cr_conc_path = os.path.join(cr_conc_dir, "epic-state.json")
-        _atomic_write_json(cr_conc_path, build_state(
-            v11_feats, "e", "E", stance="marathon",
-            caps={"watch": True, "started_at": v11_live_started}))
-        N = 8
-        barrier = multiprocessing.Barrier(N)
-        q = multiprocessing.Queue()
-        now_iso_conc = _now_iso(_parse_iso("2026-01-01T01:00:00+00:00"))  # 60min -> STALE
-        procs = [multiprocessing.Process(target=_cr_worker,
-                                         args=(cr_conc_path, now_iso_conc, barrier, q))
-                for i in range(N)]
-        for pr in procs:
-            pr.start()
-        for pr in procs:
-            pr.join(timeout=20)
-        results = [q.get(timeout=10) for _ in range(N)]
-        oks = [r for r in results if r[0]]
-        check("v2.11 claim_resume concurrency: all %d calls returned ok=True "
-              "(no lock/read errors)" % N, len(oks) == N)
-        winners = [r for r in results if r[0] and r[1] and r[1].get("claimed") is True]
-        check("v2.11 claim_resume concurrency: exactly ONE of %d concurrent claims wins on a "
-              "STALE epic" % N, len(winners) == 1)
-        losers = [r for r in results if r[0] and r[1] and r[1].get("claimed") is False]
-        check("v2.11 claim_resume concurrency: the other %d all lose, and ALL with reason "
-              "'live' -- the winner's heartbeat bump is what every loser observed" % (N - 1),
-              len(losers) == N - 1 and all(r[1]["reason"] == "live" for r in losers))
-        final_conc_state = _read_json(cr_conc_path)
-        check("v2.11 claim_resume concurrency: resume_count landed at exactly 1 "
-              "(one winner, no double-counting)",
-              final_conc_state.get("resume_count") == 1)
-        check("v2.11 claim_resume concurrency: no 'lease' key is ever written",
-              "lease" not in final_conc_state)
-    finally:
-        shutil.rmtree(cr_conc_dir, ignore_errors=True)
-
-    # === v2.18 Feature A: completion category + the armed goal condition ==================
+    # The EXACT top-level key set is asserted further down, which is what proves no retired
+    # key (heartbeat, resume counter, lease, registry, goal record) is written at all; this
+    # check pins the two `autonomy` sub-keys that top-level set does not reach.
+    check("3.4.0: build_state writes no watch opt-in or resume cap under autonomy",
+          "watch" not in g_mar["autonomy"]
+          and "max_resume_count" not in g_mar["autonomy"])
+    check("golden: checkpoint build_state exact top-level keys UNCHANGED",
+          set(build_state(g_feats, "e", "E").keys())
+          == {"epic_id", "title", "status", "features"})
+
+    apply_update(g_mar, "a", "running", now_dt=T0)
+    apply_update(g_mar, "a", "done", now_dt=T0)
+    check("golden: a marathon --update adds no heartbeat/resume key",
+          not ({"last_progress_at", "resume_count", "lease"} & set(g_mar.keys())))
+    check("golden: marathon --update top-level key set UNCHANGED",
+          set(g_mar.keys()) == {"epic_id", "title", "status", "features", "autonomy",
+                                "final_review", "blocker_ledger", "no_progress_cycles",
+                                "total_attempts"})
+
+    # 3.4.0 back-compat: a state written by an earlier release still carries the retired
+    # watch/goal keys, every one of them structurally garbage here on purpose. Nothing
+    # validates them any more, so the load must stay clean — the same rule that already
+    # covered the older `lease` object now covers the whole retired surface, and it holds for
+    # ANY unknown top-level key, including the goal record this fixture does not spell out.
+    g_legacy = build_state(g_feats, "e", "E", stance="marathon", caps={})
+    g_legacy["autonomy"]["watch"] = "yes"
+    g_legacy["autonomy"]["max_resume_count"] = -5
+    g_legacy["last_progress_at"] = "not-a-timestamp"
+    g_legacy["resume_count"] = -1
+    g_legacy["lease"] = {"owner_pid": 4242, "claimed_at": "not-iso"}
+    g_legacy["watcher_registry"] = "junk"
+    check("3.4.0 back-compat: a legacy state carrying the retired watch/goal keys still "
+          "loads clean (inert, unvalidated, unread data)",
+          validate_marathon_state(g_legacy) == [])
+
+    # === completion category vs. is_terminal: the two classifiers, one table ==============
     # --- (1) the anti-drift structure of the shared reason-vocabulary table ---------------
     check("v2.18 A: COMPLETION_CATEGORIES is exactly the table's categories + in_progress",
           set(COMPLETION_CATEGORIES)
@@ -5222,8 +3677,7 @@ def _selftest():
           g_dwb_why.startswith("done_with_blockers:")
           and completion_category(g_dwb) == "done_with_confirmed_blockers"
           and is_terminal(g_dwb) is True
-          and _goal_condition_met(g_dwb, "all_features_done",
-                                  completion_category(g_dwb)) is False)
+          and completion_category(g_dwb) != "all_features_done")
 
     # (c) "blocked_needing_human:" -> halted_needing_human. THE headline case.
     g_brk = _v218_state(("a", "b"))
@@ -5240,13 +3694,11 @@ def _selftest():
           g_brk_why.startswith("blocked_needing_human:")
           and completion_category(g_brk) == "halted_needing_human")
     check("v2.18 A HEADLINE: a BREAKER-TRIPPED epic is is_terminal TRUE yet is NOT 'all "
-          "features done' — resolving the goal through is_terminal would have declared "
-          "success at the exact moment the epic FAILED (a fabricated completion claim), and "
-          "feature b never ran at all",
+          "features done' — answering 'did it finish?' through is_terminal would have "
+          "declared success at the exact moment the epic FAILED (a fabricated completion "
+          "claim), and feature b never ran at all",
           is_terminal(g_brk) is True
           and completion_category(g_brk) != "all_features_done"
-          and _goal_condition_met(g_brk, "all_features_done",
-                                  completion_category(g_brk)) is False
           and [f for f in g_brk["features"] if f["id"] == "b"][0]["status"] == "pending")
 
     # (c2) the OTHER "blocked_needing_human:" producer: exhausted reachable work (halt_feature)
@@ -5260,8 +3712,7 @@ def _selftest():
     check("v2.18 A: exhausted-reachable-work also -> halted_needing_human, NOT completed",
           g_exh_why.startswith("blocked_needing_human:")
           and completion_category(g_exh) == "halted_needing_human"
-          and _goal_condition_met(g_exh, "all_features_done",
-                                  completion_category(g_exh)) is False)
+          and completion_category(g_exh) != "all_features_done")
 
     # (d) "epic blocked:" -> unsatisfiable_dag (a dangling depends_on a hand edit can carry)
     g_uns = _v218_state()
@@ -5271,8 +3722,7 @@ def _selftest():
           g_uns_why.startswith("epic blocked:")
           and completion_category(g_uns) == "unsatisfiable_dag"
           and is_terminal(g_uns) is True
-          and _goal_condition_met(g_uns, "all_features_done",
-                                  completion_category(g_uns)) is False)
+          and completion_category(g_uns) != "all_features_done")
 
     # (e) the non-terminal category, including the two recoverable stops most easily mistaken
     # for completion
@@ -5286,9 +3736,7 @@ def _selftest():
     check("v2.18 A: all-features-done-but-final-review-PENDING is in_progress, NOT completed "
           "(a passed review can still land without a human)",
           completion_category(g_afr) == COMPLETION_IN_PROGRESS
-          and is_terminal(g_afr) is False
-          and _goal_condition_met(g_afr, "all_features_done",
-                                  completion_category(g_afr)) is False)
+          and is_terminal(g_afr) is False)
     check("v2.18 A: a checkpoint epic reports in_progress — mirrors is_terminal's own "
           "non-marathon short-circuit exactly",
           completion_category(build_state([{"id": "a", "depends_on": []}], "e", "E"))
@@ -5302,275 +3750,6 @@ def _selftest():
     check("v2.18 A: is_terminal == (category != in_progress) on every fixture above",
           all(is_terminal(s) == (completion_category(s) != COMPLETION_IN_PROGRESS)
               for s in (g_done, g_dwb, g_brk, g_exh, g_uns, g_fresh, g_afr)))
-
-    # --- (3) --arm-goal: the lazily-created record ----------------------------------------
-    check("v2.18 A golden: build_state emits NO goal_arm key on ANY stance — the three "
-          "golden key-set selftests above are unaffected",
-          all("goal_arm" not in s for s in (
-              build_state([{"id": "a", "depends_on": []}], "e", "E"),
-              build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon",
-                          caps={}),
-              build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon",
-                          caps={"watch": True}))))
-
-    g_arm = _v218_state()
-    g_arm_keys_before = set(g_arm.keys())
-    ok_ag, err_ag, res_ag = arm_goal(g_arm, "all_features_done", "sess-1", 5)
-    check("v2.18 A: --arm-goal stores EXACTLY the four contracted fields",
-          ok_ag and err_ag is None
-          and set(g_arm["goal_arm"].keys()) == {"condition", "session_id", "arm_id",
-                                                "max_continues"})
-    check("v2.18 A: arming adds EXACTLY ONE lazily-created top-level key and nothing else",
-          set(g_arm.keys()) - g_arm_keys_before == {"goal_arm"}
-          and g_arm_keys_before - set(g_arm.keys()) == set())
-    check("v2.18 A: the armed record round-trips its fields",
-          g_arm["goal_arm"]["condition"] == "all_features_done"
-          and g_arm["goal_arm"]["session_id"] == "sess-1"
-          and g_arm["goal_arm"]["max_continues"] == 5
-          and isinstance(g_arm["goal_arm"]["arm_id"], str)
-          and len(g_arm["goal_arm"]["arm_id"]) > 0)
-    check("v2.18 A: arming bumps NO heartbeat (a goal is a stored fact, not a liveness "
-          "signal — same reasoning as record_watcher_armed)",
-          "last_progress_at" not in g_arm and res_ag["replaced"] is None)
-    check("v2.18 A: an armed marathon state still validates clean",
-          validate_marathon_state(g_arm) == [])
-
-    # --- (4) every refusal --------------------------------------------------------------
-    ok_nij, err_nij, _ = arm_goal(_v218_state(), "no_incomplete_jobs", "s", 5)
-    check("v2.18 A REFUSAL: no_incomplete_jobs is refused WITH the reason — run-scoped, in a "
-          "file this module never opens, and a naive read would be WRONG (a `done` job whose "
-          "files are not in git is not done)",
-          not ok_nij and "no_incomplete_jobs" in err_nij and "RUN-scoped" in err_nij
-          and "never opens" in err_nij and "not in git" in err_nij)
-    g_nij_nowrite = _v218_state()
-    arm_goal(g_nij_nowrite, "no_incomplete_jobs", "s", 5)
-    check("v2.18 A: a REFUSED arm writes nothing at all",
-          "goal_arm" not in g_nij_nowrite)
-    ok_uc, err_uc, _ = arm_goal(_v218_state(), "vibes", "s", 5)
-    check("v2.18 A REFUSAL: an unknown condition is refused, naming the two that ship",
-          not ok_uc and "must be one of" in err_uc
-          and all(c in err_uc for c in GOAL_CONDITIONS))
-    for bad_sid, sid_label in (("", "empty"), ("   ", "whitespace-only"),
-                               (None, "missing"), (7, "non-string")):
-        ok_sid, err_sid, _ = arm_goal(_v218_state(), "all_features_done", bad_sid, 5)
-        check("v2.18 A REFUSAL: a %s session id is refused (an empty stored id disables "
-              "session isolation and would hold EVERY session in the project open)"
-              % sid_label,
-              not ok_sid and "--session-id" in err_sid and "isolation" in err_sid)
-    ok_mc0, err_mc0, _ = arm_goal(_v218_state(), "all_features_done", "s", 0)
-    check("v2.18 A REFUSAL: max_continues 0 is INVALID, explicitly NOT 'unlimited'",
-          not ok_mc0 and "0 is INVALID" in err_mc0 and "unlimited" in err_mc0)
-    ok_mcn, err_mcn, _ = arm_goal(_v218_state(), "all_features_done", "s", -3)
-    check("v2.18 A REFUSAL: a negative max_continues is refused",
-          not ok_mcn and "must be > 0" in err_mcn)
-    ok_mcb, err_mcb, _ = arm_goal(_v218_state(), "all_features_done", "s", True)
-    check("v2.18 A REFUSAL: a BOOL max_continues is refused (bool is an int subclass, so "
-          "True would otherwise land as a silent 1)",
-          not ok_mcb and "must be an integer" in err_mcb)
-    ok_mcf, err_mcf, _ = arm_goal(_v218_state(), "all_features_done", "s", 2.5)
-    check("v2.18 A REFUSAL: a float max_continues is refused",
-          not ok_mcf and "must be an integer" in err_mcf)
-    g_chk_arm = build_state([{"id": "a", "depends_on": []}], "e", "E")
-    ok_chk, err_chk, _ = arm_goal(g_chk_arm, "all_features_done", "s", 5)
-    check("v2.18 A REFUSAL: a CHECKPOINT epic cannot arm — it has no autonomous routing, so "
-          "the goal could never be met",
-          not ok_chk and "marathon" in err_chk and "goal_arm" not in g_chk_arm)
-    ok_dchk, err_dchk, _ = disarm_goal(build_state([{"id": "a", "depends_on": []}], "e", "E"))
-    check("v2.18 A: --disarm-goal also rejects a checkpoint epic",
-          not ok_dchk and "marathon" in err_dchk)
-
-    # --- (5) at most one armed goal; replacement is explicit and never inherits -----------
-    g_one = _v218_state()
-    arm_goal(g_one, "all_features_done", "sess-1", 5)
-    g_one_first_id = g_one["goal_arm"]["arm_id"]
-    ok_two, err_two, _ = arm_goal(g_one, "final_review_passed", "sess-2", 9)
-    check("v2.18 A: a SECOND arm is REFUSED (at most one armed goal per epic-state) and the "
-          "existing record is left completely untouched",
-          not ok_two and "already armed" in err_two
-          and g_one["goal_arm"]["arm_id"] == g_one_first_id
-          and g_one["goal_arm"]["condition"] == "all_features_done"
-          and g_one["goal_arm"]["session_id"] == "sess-1")
-    ok_rep, err_rep, res_rep = arm_goal(g_one, "final_review_passed", "sess-2", 9,
-                                        replace=True)
-    check("v2.18 A: --replace-arm replaces EXPLICITLY and reports exactly what it replaced "
-          "(never silently)",
-          ok_rep and err_rep is None and isinstance(res_rep.get("replaced"), dict)
-          and res_rep["replaced"]["arm_id"] == g_one_first_id
-          and res_rep["replaced"]["condition"] == "all_features_done"
-          and g_one["goal_arm"]["condition"] == "final_review_passed")
-    check("v2.18 A: a REPLACEMENT mints a FRESH arm_id — the hook's store is keyed partly on "
-          "arm_id, so inheriting it would carry the previous arm's continue count forward",
-          g_one["goal_arm"]["arm_id"] != g_one_first_id)
-
-    # --- (6) disarm + the SEQUENTIAL re-arm that must not inherit a counter ---------------
-    g_seq = _v218_state()
-    arm_goal(g_seq, "all_features_done", "sess-1", 3)
-    g_seq_id1 = g_seq["goal_arm"]["arm_id"]
-    ok_ds, err_ds, res_ds = disarm_goal(g_seq)
-    check("v2.18 A: --disarm-goal POPS the key entirely, back to the lazily-uncreated shape "
-          "(not a null placeholder, which would defeat the golden key-set guarantee)",
-          ok_ds and res_ds["disarmed"] is True and res_ds["mutated"] is True
-          and res_ds["arm_id"] == g_seq_id1 and "goal_arm" not in g_seq)
-    arm_goal(g_seq, "all_features_done", "sess-1", 3)
-    check("v2.18 A: a SEQUENTIAL re-arm (same session, same condition) mints a NEW arm_id — "
-          "a reused id would let epic #2 inherit epic #1's continue count",
-          g_seq["goal_arm"]["arm_id"] != g_seq_id1)
-    ok_dn, err_dn, res_dn = disarm_goal(_v218_state())
-    check("v2.18 A: disarming when nothing is armed is a clean no-op with mutated=False "
-          "(so the CLI writes nothing)",
-          ok_dn and res_dn["disarmed"] is False and res_dn["mutated"] is False
-          and res_dn["arm_id"] is None)
-    g_arm_ids = set()
-    for _ in range(64):
-        _g_u = _v218_state()
-        arm_goal(_g_u, "all_features_done", "s", 1)
-        g_arm_ids.add(_g_u["goal_arm"]["arm_id"])
-    check("v2.18 A: arm_id is unique across 64 arms", len(g_arm_ids) == 64)
-
-    # --- (7) goal_status: the hook's read path -------------------------------------------
-    gs_unarmed = goal_status(_v218_state())
-    check("v2.18 A goal_status: unarmed -> armed False, met False, should_continue False",
-          gs_unarmed["armed"] is False and gs_unarmed["met"] is False
-          and gs_unarmed["should_continue"] is False
-          and gs_unarmed["category"] == COMPLETION_IN_PROGRESS)
-    check("v2.18 A goal_status: the response key set is the documented contract",
-          set(gs_unarmed.keys()) == {"armed", "condition", "session_id", "arm_id",
-                                     "max_continues", "met", "category", "terminal",
-                                     "reason", "should_continue"})
-    gs_run = _v218_state()
-    arm_goal(gs_run, "all_features_done", "sess-x", 4)
-    r_run = goal_status(gs_run)
-    check("v2.18 A goal_status: armed + still runnable -> met False, should_continue True, "
-          "and the record is echoed back for the hook's session/arm keying",
-          r_run["armed"] is True and r_run["met"] is False and r_run["terminal"] is False
-          and r_run["should_continue"] is True
-          and r_run["condition"] == "all_features_done"
-          and r_run["session_id"] == "sess-x" and r_run["max_continues"] == 4
-          and r_run["arm_id"] == gs_run["goal_arm"]["arm_id"])
-    gs_done = _v218_state()
-    arm_goal(gs_done, "all_features_done", "s", 4)
-    apply_update(gs_done, "a", "running", now_dt=T0)
-    apply_update(gs_done, "a", "done", now_dt=T0)
-    record_final_review(gs_done, "passed", now_dt=T0)
-    r_done = goal_status(gs_done)
-    check("v2.18 A goal_status: the goal genuinely MET -> met True, should_continue False",
-          r_done["met"] is True and r_done["terminal"] is True
-          and r_done["should_continue"] is False
-          and r_done["category"] == "all_features_done")
-    gs_brk = _v218_state(("a", "b"))
-    gs_brk["autonomy"]["max_wall_clock_hours"] = 1
-    gs_brk["autonomy"]["started_at"] = "2026-01-01T00:00:00+00:00"
-    arm_goal(gs_brk, "all_features_done", "s", 4)
-    trip_breaker(gs_brk, _parse_iso("2026-01-01T09:00:00+00:00"))
-    r_brk = goal_status(gs_brk)
-    check("v2.18 A goal_status HEADLINE: a BREAKER-TRIPPED armed epic reports met=False "
-          "(never a fabricated completion) AND should_continue=False (terminal — do not burn "
-          "the counter against a dead epic)",
-          r_brk["armed"] is True and r_brk["met"] is False and r_brk["terminal"] is True
-          and r_brk["should_continue"] is False
-          and r_brk["category"] == "halted_needing_human")
-    gs_dwb = _dwb_state(final_status=None)
-    clear_blocker_audit_due(gs_dwb, "b")
-    record_final_review(gs_dwb, "passed", now_dt=T0)
-    arm_goal(gs_dwb, "all_features_done", "s", 4)
-    r_dwb = goal_status(gs_dwb)
-    check("v2.18 A goal_status: done_with_confirmed_blockers -> met False (not all features "
-          "are done) but should_continue False (terminal) — it stops WITHOUT claiming a finish",
-          r_dwb["met"] is False and r_dwb["terminal"] is True
-          and r_dwb["should_continue"] is False
-          and r_dwb["category"] == "done_with_confirmed_blockers")
-    gs_frp = _dwb_state(final_status=None)
-    clear_blocker_audit_due(gs_frp, "b")
-    record_final_review(gs_frp, "passed", now_dt=T0)
-    arm_goal(gs_frp, "final_review_passed", "s", 4)
-    check("v2.18 A goal_status: condition final_review_passed is MET on a passed review",
-          goal_status(gs_frp)["met"] is True)
-    gs_frp2 = _v218_state()
-    apply_update(gs_frp2, "a", "running", now_dt=T0)
-    apply_update(gs_frp2, "a", "done", now_dt=T0)
-    arm_goal(gs_frp2, "final_review_passed", "s", 4)
-    r_frp2 = goal_status(gs_frp2)
-    check("v2.18 A goal_status: final_review_passed is NOT met while the review is pending, "
-          "and the epic is still continuable",
-          r_frp2["met"] is False and r_frp2["should_continue"] is True)
-    gs_bad = _v218_state()
-    gs_bad["goal_arm"] = {"condition": "hand_edited", "session_id": "s", "arm_id": "i",
-                          "max_continues": 1}
-    check("v2.18 A goal_status: an unknown/hand-edited condition is FAIL-CLOSED — never met",
-          goal_status(gs_bad)["met"] is False)
-    gs_ro = _v218_state()
-    arm_goal(gs_ro, "all_features_done", "s", 2)
-    gs_ro_snapshot = json.dumps(gs_ro, sort_keys=True)
-    goal_status(gs_ro)
-    completion_category(gs_ro)
-    check("v2.18 A: goal_status and completion_category are strictly READ-ONLY (state is "
-          "byte-identical after both calls) — this is what lets the hook read without ever "
-          "becoming a second writer of epic-state.json",
-          json.dumps(gs_ro, sort_keys=True) == gs_ro_snapshot)
-    check("v2.18 A goal_status: safe and quiet on a CHECKPOINT state (armed False, no error "
-          "path for the hook to disambiguate)",
-          goal_status(build_state([{"id": "a", "depends_on": []}], "e", "E"))["armed"]
-          is False)
-
-    # --- (8) a hand-edited goal_arm is rejected at LOAD time ------------------------------
-    for ga_bad, ga_label in (
-            ({"condition": "nope", "session_id": "s", "arm_id": "i", "max_continues": 1},
-             "condition"),
-            ({"condition": "all_features_done", "session_id": "", "arm_id": "i",
-              "max_continues": 1}, "empty session_id"),
-            ({"condition": "all_features_done", "session_id": "s", "arm_id": "",
-              "max_continues": 1}, "empty arm_id"),
-            ({"condition": "all_features_done", "session_id": "s", "arm_id": "i",
-              "max_continues": 0}, "max_continues 0"),
-            ({"condition": "all_features_done", "session_id": "s", "arm_id": "i",
-              "max_continues": True}, "bool max_continues"),
-            ("not-an-object", "non-object goal_arm")):
-        _g_v = _v218_state()
-        _g_v["goal_arm"] = ga_bad
-        check("v2.18 A validate: a hand-edited goal_arm with a bad %s is REJECTED at load"
-              % ga_label,
-              any("goal_arm" in e for e in validate_marathon_state(_g_v)))
-
-    # --- (9) disk round-trip + the breaker fail-safes are untouched -----------------------
-    g_disk_dir = _tempfile.mkdtemp()
-    try:
-        g_disk_path = os.path.join(g_disk_dir, "epic-state.json")
-        g_disk = _v218_state()
-        _atomic_write_json(g_disk_path, g_disk)
-        check("v2.18 A golden: an un-armed marathon epic carries NO goal_arm key ON DISK",
-              "goal_arm" not in _read_json(g_disk_path))
-        arm_goal(g_disk, "all_features_done", "sess-disk", 7)
-        _atomic_write_json(g_disk_path, g_disk)
-        g_disk_read = _read_json(g_disk_path)
-        check("v2.18 A: the armed record round-trips through _atomic_write_json and reloads "
-              "clean",
-              g_disk_read["goal_arm"]["session_id"] == "sess-disk"
-              and g_disk_read["goal_arm"]["max_continues"] == 7
-              and g_disk_read["goal_arm"]["condition"] == "all_features_done"
-              and validate_marathon_state(g_disk_read) == [])
-        check("v2.18 A: goal_status agrees across the disk round-trip",
-              goal_status(g_disk_read)["arm_id"] == g_disk["goal_arm"]["arm_id"])
-    finally:
-        shutil.rmtree(g_disk_dir, ignore_errors=True)
-
-    g_fs_missing = build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon",
-                               caps={"max_wall_clock_hours": 10,
-                                     "started_at": "2026-01-01T00:00:00+00:00"})
-    arm_goal(g_fs_missing, "all_features_done", "s", 5)
-    g_fs_missing["autonomy"]["started_at"] = None
-    check("v2.18 A: with a goal ARMED, a MISSING started_at still TRIPS the wall-clock "
-          "breaker fail-safe — the new record changes no safety path",
-          breaker_check(g_fs_missing, T0)["tripped"] is True
-          and "max_wall_clock_hours" in breaker_check(g_fs_missing, T0)["which"])
-    g_fs_bad = build_state([{"id": "a", "depends_on": []}], "e", "E", stance="marathon",
-                           caps={"max_wall_clock_hours": 10,
-                                 "started_at": "2026-01-01T00:00:00+00:00"})
-    arm_goal(g_fs_bad, "all_features_done", "s", 5)
-    g_fs_bad["autonomy"]["started_at"] = "garbage"
-    check("v2.18 A: with a goal ARMED, an UNPARSEABLE started_at still TRIPS the wall-clock "
-          "breaker fail-safe",
-          breaker_check(g_fs_bad, T0)["tripped"] is True
-          and "max_wall_clock_hours" in breaker_check(g_fs_bad, T0)["which"])
 
     print("SELFTEST: %d ok, %d fail" % (ok, fail))
     return 0 if fail == 0 else 1
@@ -5686,77 +3865,6 @@ def main(argv):
                         "confirmed blocker ledger entry, clear its blocker_audit_due obligation, "
                         "optionally set --last-error, and invalidate a passed final_review back "
                         "to pending — so a later retry->done leaves no stale obligation/ledger")
-    # -- v2.11 (Scheduler Auto-Resurrection) flags ------------------------------------------
-    # Post-integration-review BLOCKER fix: --owner-pid and --lease-ttl-min are REMOVED from
-    # --claim-resume/--renew-lease entirely (no stable driver pid exists in this harness —
-    # see the module docstring's "Cross-unit integration review" note). --stale-after-min is
-    # now shared by BOTH --liveness and --claim-resume (it used to be --liveness-only).
-    p.add_argument("--watch", action="store_true",
-                   help="(with --init --stance marathon) opt into the v2.11 watch surface "
-                        "(last_progress_at/resume_count); rejected without --stance marathon")
-    p.add_argument("--max-resume-count", type=_cap_arg(int), default=_UNSET,
-                   help="(with --init --stance marathon --watch) the new resume-count "
-                        "breaker axis; default 20; 'null'/'none' for unbounded; rejected "
-                        "without --watch")
-    p.add_argument("--liveness", action="store_true",
-                   help="(marathon + watch) read-only watcher poll -> {incomplete,stale,"
-                        "epic_status,terminal,resume_count}")
-    p.add_argument("--stale-after-min", type=float, default=None,
-                   help="(with --liveness / --claim-resume) staleness threshold in minutes "
-                        "(default 45)")
-    p.add_argument("--claim-resume", action="store_true",
-                   help="(marathon + watch) THE CRUX: one flock-guarded atomic transaction "
-                        "-> {claimed,reason,resume_count}; last_progress_at + the flock are "
-                        "the sole liveness/ownership authority (no --owner-pid)")
-    p.add_argument("--renew-lease", action="store_true",
-                   help="(marathon + watch) the live driver's own heartbeat -- bumps "
-                        "last_progress_at to now (no --owner-pid, no lease)")
-    p.add_argument("--reset-resume-count", action="store_true",
-                   help="(with --clear-breaker) re-arm the v2.11 resume-count axis to 0; "
-                        "watch-only — rejected on a watch-off marathon epic")
-    # -- v2.11 Layer B (V3 watcher registry) flags ------------------------------------------
-    p.add_argument("--record-watcher-armed", action="store_true",
-                   help="(marathon + watch) record a scheduler task as armed -> "
-                        "watcher_registry entry; idempotent by (--provider, --task-id); "
-                        "needs --provider and --task-id")
-    p.add_argument("--record-watcher-disarmed", action="store_true",
-                   help="(marathon + watch) mark a previously-armed (--provider, --task-id) "
-                        "as disarmed; idempotent re-disarm; unknown pair is an error")
-    p.add_argument("--list-watchers", action="store_true",
-                   help="(marathon + watch, read-only) -> the armed-not-disarmed "
-                        "watcher_registry entries")
-    p.add_argument("--provider", choices=_WATCHER_PROVIDERS,
-                   help="(with --record-watcher-armed / --record-watcher-disarmed) the "
-                        "scheduler tier")
-    p.add_argument("--task-id", help="(with --record-watcher-armed / "
-                                     "--record-watcher-disarmed) the scheduler's own opaque "
-                                     "task identifier")
-    # -- v2.18 Feature A (the armed goal condition the Stop hook reads) flags ---------------
-    p.add_argument("--arm-goal", action="store_true",
-                   help="(marathon) arm a goal condition -> a lazily-created goal_arm record "
-                        "{condition,session_id,arm_id,max_continues}; needs --condition, "
-                        "--session-id and --max-continues")
-    p.add_argument("--disarm-goal", action="store_true",
-                   help="(marathon) remove the armed goal record entirely; idempotent")
-    p.add_argument("--goal-status", action="store_true",
-                   help="READ-ONLY -> {armed,condition,session_id,arm_id,max_continues,met,"
-                        "category,terminal,reason,should_continue} — the Stop hook's read path")
-    # Deliberately NO argparse `choices=` here: `no_incomplete_jobs` must reach `arm_goal` so
-    # it is refused with the explanation of WHY (run-scoped, another file, and a naive read
-    # would be wrong), not with argparse's generic "invalid choice".
-    p.add_argument("--condition",
-                   help="(with --arm-goal) %s" % "|".join(GOAL_CONDITIONS))
-    p.add_argument("--session-id",
-                   help="(with --arm-goal) the harness session id the armed goal is bound to; "
-                        "an EMPTY value is refused (it would disable session isolation)")
-    # `type=int` keeps a non-numeric value a controlled argparse error; 0 and negatives parse
-    # fine here on purpose, so `arm_goal` can refuse them with the real reason.
-    p.add_argument("--max-continues", type=int, default=None,
-                   help="(with --arm-goal) the immutable, finite, POSITIVE continue bound; "
-                        "0 is INVALID, not 'unlimited'")
-    p.add_argument("--replace-arm", action="store_true",
-                   help="(with --arm-goal) replace an existing arm EXPLICITLY — a fresh "
-                        "arm_id is minted, abandoning the previous arm's continue counter")
     args = p.parse_args(argv)
 
     if args.selftest:
@@ -5807,17 +3915,6 @@ def main(argv):
                 caps["started_at"] = args.now
             if args.start_sha:
                 caps["start_sha"] = args.start_sha
-            # v2.11: --watch is presence-based-opt-in; --max-resume-count is REJECTED unless
-            # --watch is also given (same rejection discipline as every other marathon-only
-            # arg in this file — never silently discarded).
-            if args.watch:
-                caps["watch"] = True
-                if args.max_resume_count is not _UNSET:
-                    caps["max_resume_count"] = args.max_resume_count
-            elif args.max_resume_count is not _UNSET:
-                print("epic-init error: --max-resume-count is watch-only — not valid "
-                      "without --watch", file=sys.stderr)
-                return 1
         elif args.start_sha:
             # Non-marathon --init must REJECT --start-sha (not silently discard it) — same
             # presence-based-rejection discipline as every other marathon-only arg in this
@@ -5825,11 +3922,6 @@ def main(argv):
             # reaches build_state with a caps dict at all).
             print("epic-init error: --start-sha is marathon-only — not valid without "
                   "--stance marathon", file=sys.stderr)
-            return 1
-        elif args.watch or args.max_resume_count is not _UNSET:
-            # v2.11: same discipline — --watch/--max-resume-count are marathon-only.
-            print("epic-init error: --watch/--max-resume-count are marathon-only — not "
-                  "valid without --stance marathon", file=sys.stderr)
             return 1
         try:
             state = build_state(feats, args.epic_id, args.title or args.epic_id,
@@ -5878,32 +3970,6 @@ def main(argv):
                   file=sys.stderr)
             return False
         return True
-
-    def _needs_watch(cmd):
-        """v2.11: every watch-only command (--liveness, --claim-resume, --renew-lease, and
-        Layer B's --record-watcher-armed / --record-watcher-disarmed / --list-watchers)
-        requires BOTH marathon stance AND the persisted watch opt-in — their whole purpose
-        (a heartbeat/lease/registry that is never written unless watch is on) is meaningless
-        otherwise, so this rejects the same way `_needs_marathon` does."""
-        if not _needs_marathon(cmd):
-            return False
-        if not _watch_on(state):
-            print("epic error: %s requires the marathon epic's watch opt-in (re-init with "
-                  "--stance marathon --watch)" % cmd, file=sys.stderr)
-            return False
-        return True
-
-    def _resolve_now_ranged(cmd):
-        """v2.11: resolve --now (or the real clock) and range-check an EXPLICITLY supplied
-        --now against the real clock (_now_arg_in_range) — --now is test-only, this bounds it
-        so it can never become a production lever for defeating staleness/lease timing.
-        Returns the resolved datetime, or None on an out-of-range --now (caller returns 1)."""
-        now_dt = _resolve_now(args.now)
-        if args.now and not _now_arg_in_range(now_dt):
-            print("epic error: %s --now is test-only and must be within a sane range of "
-                  "the real clock" % cmd, file=sys.stderr)
-            return None
-        return now_dt
 
     if args.check_specs:
         errs = check_state_specs(state, base_dir=os.path.dirname(os.path.abspath(args.state)))
@@ -5954,8 +4020,7 @@ def main(argv):
         now_dt = _resolve_now(args.now)
         ok, err, summary = clear_breaker(state, now_dt,
                                          reset_wall_clock=args.reset_wall_clock,
-                                         set_max_total_attempts=args.set_max_total_attempts,
-                                         reset_resume_count=args.reset_resume_count)
+                                         set_max_total_attempts=args.set_max_total_attempts)
         if not ok:
             print("epic-clear-breaker error: %s" % err, file=sys.stderr)
             return 1
@@ -6106,129 +4171,6 @@ def main(argv):
         print(json.dumps({"final_review": state["final_review"], "epic_status": state["status"]}))
         return 0
 
-    if args.liveness:
-        if not _needs_watch("--liveness"):
-            return 1
-        now_dt = _resolve_now_ranged("--liveness")
-        if now_dt is None:
-            return 1
-        stale_after = (args.stale_after_min if args.stale_after_min is not None
-                      else _DEFAULT_STALE_AFTER_MIN)
-        sa_err = _validate_stale_after(stale_after)
-        if sa_err:
-            print("epic-liveness error: %s" % sa_err, file=sys.stderr)
-            return 1
-        print(json.dumps(liveness_check(state, now_dt, stale_after_min=stale_after)))
-        return 0
-
-    if args.claim_resume:
-        if not _needs_watch("--claim-resume"):
-            return 1
-        now_dt = _resolve_now_ranged("--claim-resume")
-        if now_dt is None:
-            return 1
-        stale_after = (args.stale_after_min if args.stale_after_min is not None
-                      else _DEFAULT_STALE_AFTER_MIN)
-        sa_err = _validate_stale_after(stale_after)
-        if sa_err:
-            print("epic-claim-resume error: %s" % sa_err, file=sys.stderr)
-            return 1
-        ok, result, err = claim_resume(args.state, now_dt, stale_after_min=stale_after)
-        if not ok:
-            print("epic-claim-resume error: %s" % err, file=sys.stderr)
-            return 1
-        print(json.dumps(result))
-        return 0
-
-    if args.renew_lease:
-        if not _needs_watch("--renew-lease"):
-            return 1
-        now_dt = _resolve_now_ranged("--renew-lease")
-        if now_dt is None:
-            return 1
-        ok, err = renew_lease(state, now_dt)
-        if not ok:
-            print("epic-renew-lease error: %s" % err, file=sys.stderr)
-            return 1
-        _atomic_write_json(args.state, state)
-        print(json.dumps({"last_progress_at": state["last_progress_at"]}))
-        return 0
-
-    if args.record_watcher_armed:
-        if not _needs_watch("--record-watcher-armed"):
-            return 1
-        if not args.provider or not args.task_id:
-            p.error("--record-watcher-armed needs --provider and --task-id")
-        ok, err, entry = record_watcher_armed(state, args.provider, args.task_id,
-                                              now_dt=_resolve_now(args.now))
-        if not ok:
-            print("epic-watcher-armed error: %s" % err, file=sys.stderr)
-            return 1
-        _atomic_write_json(args.state, state)
-        print(json.dumps(entry))
-        return 0
-
-    if args.record_watcher_disarmed:
-        if not _needs_watch("--record-watcher-disarmed"):
-            return 1
-        if not args.provider or not args.task_id:
-            p.error("--record-watcher-disarmed needs --provider and --task-id")
-        ok, err, entry = record_watcher_disarmed(state, args.provider, args.task_id,
-                                                 now_dt=_resolve_now(args.now))
-        if not ok:
-            print("epic-watcher-disarmed error: %s" % err, file=sys.stderr)
-            return 1
-        _atomic_write_json(args.state, state)
-        print(json.dumps(entry))
-        return 0
-
-    if args.list_watchers:
-        if not _needs_watch("--list-watchers"):
-            return 1
-        print(json.dumps(list_watchers(state)))
-        return 0
-
-    if args.arm_goal:
-        if not _needs_marathon("--arm-goal"):
-            return 1
-        # `is None`, not falsiness: an explicitly-supplied empty --session-id must REACH
-        # arm_goal so it is refused with the session-isolation explanation, and a supplied
-        # --max-continues 0 must reach it so it is refused with the "0 is not unlimited" one.
-        if not args.condition or args.session_id is None or args.max_continues is None:
-            p.error("--arm-goal needs --condition, --session-id and --max-continues")
-        ok, err, result = arm_goal(state, args.condition, args.session_id,
-                                   args.max_continues, replace=args.replace_arm)
-        if not ok:
-            print("epic-arm-goal error: %s" % err, file=sys.stderr)
-            return 1
-        if result.get("replaced"):
-            # Never silent: a replacement abandons the previous arm's continue counter.
-            print("epic-arm-goal: REPLACED the previously armed goal (condition=%s arm_id=%s)"
-                  " — a fresh arm_id was minted, so the hook's continue counter for this epic "
-                  "starts at 0 again" % (result["replaced"].get("condition"),
-                                         result["replaced"].get("arm_id")), file=sys.stderr)
-        _atomic_write_json(args.state, state)
-        print(json.dumps(result))
-        return 0
-
-    if args.disarm_goal:
-        if not _needs_marathon("--disarm-goal"):
-            return 1
-        ok, err, result = disarm_goal(state)
-        if not ok:
-            print("epic-disarm-goal error: %s" % err, file=sys.stderr)
-            return 1
-        if result.get("mutated"):
-            _atomic_write_json(args.state, state)
-        print(json.dumps(result))
-        return 0
-
-    if args.goal_status:
-        # Deliberately NOT marathon-gated: read-only, and the hook wants a clean
-        # `armed: false` from any epic-state rather than an error it must tell from a fault.
-        print(json.dumps(goal_status(state)))
-        return 0
-
     if args.want_next:
         if args.autonomous:
             if not _needs_marathon("--next --autonomous"):
@@ -6302,10 +4244,7 @@ def main(argv):
            "--mark-sample-audit-due / --clear-sample-audit-due / --record-audit-failed / "
            "--mark-blocker-audit-due / --clear-blocker-audit-due / "
            "--record-blocker-audit-failed / "
-           "--record-final-review / --liveness / --claim-resume / --renew-lease / "
-           "--record-watcher-armed / --record-watcher-disarmed / --list-watchers / "
-           "--arm-goal / --disarm-goal / --goal-status / "
-           "--selftest is required")
+           "--record-final-review / --selftest is required")
 
 
 if __name__ == "__main__":

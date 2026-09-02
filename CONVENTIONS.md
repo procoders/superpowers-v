@@ -14,7 +14,8 @@ Deltas from default practice that this repo actually enforces.
 - Write helper scripts in **pure Python standard library** — no third-party runtime deps. The scope
   gate is "Python 3.9-safe, stdlib only. Targets stock-macOS python3 3.9.6." (`scripts/compound-v-scope-check.py:98`)
 - Ship a built-in **`--selftest`** that runs offline (builds throwaway git repos in `$TMPDIR`). (`scripts/compound-v-scope-check.py:514-516`, `scripts/compound-v-onboard.py:1185-1186`) CI runs the
-  epic-state / epic-arbiter / epic-watch / headless-shim self-tests under a **Python 3.9 floor**. (`.github/workflows/validate.yml:225-244`)
+  epic-state / epic-arbiter self-tests under a **Python 3.9 floor**, then every other script's
+  `--selftest` on the same interpreter. (`.github/workflows/validate.yml:269-282`)
 - Reuse canonical shared constants instead of forking a second copy (e.g. secret-pattern families are
   imported from `compound-v-memory.py`, not redefined). (`scripts/compound-v-onboard.py:5-9`)
 

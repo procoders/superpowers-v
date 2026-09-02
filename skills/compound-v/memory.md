@@ -1,11 +1,16 @@
 # V-memory — recall over docs/superpowers (PRD §V-memory / v2.0)
 
 A local-first **recall layer** over `docs/superpowers/**` prose. It **extends** Compound V's
-two-half memory — the machine-appended `task-outcomes.jsonl` → scorecard (`worker-performance.jsonl`)
+two-half memory — the scorecard (`worker-performance.jsonl`, regenerated **from run
+results**: `compound-v-scorecard.py --update --from-runs docs/superpowers/execution`
+joins manifest jobs against `results/*.json`, unioned with the legacy `task-outcomes.jsonl`)
 and the human-curated [`routing-lessons.md`](../../docs/superpowers/memory/routing-lessons.md) —
 and **never rewrites either**. Where the scorecard is the *structured* routing signal, V-memory
 is the *prose* recall surface: "have we seen this before?" across specs, plans, reviews,
 archaeology, and lessons. Engine: [`scripts/compound-v-memory.py`](../../scripts/compound-v-memory.py).
+
+For a **live** view of a run in progress, use the native `/workflows` and `/tasks` surfaces —
+V-memory and the scorecard are both post-hoc, file-derived signals, never a live feed.
 
 It is **the same discipline as the rest of the toolchain**: pure-stdlib core, offline,
 `--selftest`'d, no daemon, no fabricated metrics. Commands: [`/v:remember`](../../commands/v-remember.md),

@@ -1,15 +1,22 @@
 #!/usr/bin/env bash
-# Compound V — Stop hook: the armed epic goal condition (Feature A) and the
-# off-by-default pipeline-bypass correction (Feature B).  v2.18.
+# Compound V — Stop hook: the triage gate and the off-by-default pipeline-bypass
+# correction.  v3.4.
+#
+# The armed-epic-goal rule that used to run first in this file was REMOVED in
+# 3.4.0, because Claude Code's own `/goal` covers it: the harness holds the
+# session open against a user-approved condition and evaluates it itself, so a
+# second, home-grown continuation engine in the highest-blast-radius file of
+# this plugin bought nothing.  `commands/v-epic.md` §0d now offers that native
+# goal instead of arming one here.
 #
 # ┌──────────────────────────────────────────────────────────────────────────┐
 # │ HIGHEST BLAST RADIUS IN THIS PLUGIN.  This file runs at the end of EVERY  │
 # │ turn of EVERY Claude Code session of every user who installs Compound V.  │
 # │ A bug here does not fail a build — it wedges a stranger's session so they │
-# │ cannot end their turn.  Read the two invariants below before editing.     │
+# │ cannot end their turn.  Read the invariant below before editing.          │
 # └──────────────────────────────────────────────────────────────────────────┘
 #
-# INVARIANT 1 — A BLOCK IS ONLY EVER VALID JSON, NEVER AN EXIT CODE.
+# THE INVARIANT — A BLOCK IS ONLY EVER VALID JSON, NEVER AN EXIT CODE.
 #   A non-zero exit from a `Stop` hook *is itself a block*.  So any ordinary
 #   bash failure — a bad assignment, a missing `jq`, an unbound variable, a
 #   syntax error — would hold the user's turn open forever.  Fail-open is
@@ -36,15 +43,9 @@
 #   instead, and every pipeline is guarded (under `set -e` a no-match `grep`
 #   aborts the script, and an aborted Stop hook exits non-zero = a block).
 #
-# INVARIANT 2 — THIS HOOK NEVER WRITES epic-state.json.
-#   That file has ~35 `_atomic_write_json` call sites documented as "not
-#   flock-guarded — only the single live driver calls this", and a lock inside
-#   `_atomic_write_json` would self-deadlock `claim_resume`, which already
-#   calls it while holding the lock.  The hook READS it, exclusively through
-#   `scripts/compound-v-epic-state.py --goal-status` (strictly read-only).
-#   `continue_count` and the enforcement once-marker live in this hook's own
-#   store under the OS temp dir.  tests/test-epic-goal-stop.sh asserts zero
-#   writes (content digest + mtime unchanged across a blocking event).
+# THIS HOOK WRITES NOTHING OUTSIDE ITS OWN STORE.  The once-per-session markers
+# and the incomplete-check ledger live under the OS temp dir; no file in the
+# repository is created, edited or committed by this script on any path.
 #
 # DECISION TABLE (evaluated top to bottom; exactly ONE state update and exactly
 # ONE JSON response per event):
@@ -53,21 +54,16 @@
 #   2. hook_event_name != "Stop" ................... exit 0, silent   [GATE FIRST]
 #        SubagentStop / StopFailure / unknown / missing all land here.
 #   3. session_id empty ............................ exit 0 (cannot isolate)
-#   4. GOAL RULE — armed && session matches && !met && !terminal
-#        && continue_count < max_continues ......... increment, PERSIST, BLOCK, done
-#      any of: not armed / session mismatch / goal met / epic terminal /
-#      counter exhausted / state unreadable / store lost / persist failed
-#                                                    ... fall through, open
-#   5. TRIAGE GATE — only if the goal rule did not block, and only when
-#      `.enforcement.triage_gate` in .claude/compound-v.json — ON when absent
-#      as of 3.2.0; set it to `false` to opt out:
+#   4. THE TRIAGE GATE — only when `.enforcement.triage_gate` in
+#      .claude/compound-v.json — ON when absent as of 3.2.0; set it to `false`
+#      to opt out:
 #      non-exempt files changed && NO pre-eval record COVERS that diff
 #        && this session's own marker unset ........ set marker, BLOCK
 #      a bounded check that could not finish ....... RECORD it, then open
-#   6. ENFORCEMENT — only if neither rule above blocked, and only when
+#   5. THE BYPASS RULE — only if the triage gate did not block, and only when
 #      `.enforcement.pipeline_bypass == true` in .claude/compound-v.json:
 #      source changed && no run record && marker unset ... set marker, BLOCK
-#   7. otherwise ................................... exit 0, silent
+#   6. otherwise ................................... exit 0, silent
 #
 # WHY THE TRIAGE GATE SITS ABOVE THE BYPASS RULE.  Both are "you changed code
 # without X". The triage gate is ON by default as of 3.2.0 (an explicit
@@ -77,8 +73,8 @@
 # — `/v:triage` — is the first step of the correction the bypass rule asks for.
 # Firing the general one first would send the reader to a pipeline that now
 # refuses to run without the very record the triage gate is asking them to make.
-# The bypass rule keeps its own relative position, so absorbing v2.18 changes
-# nothing about how that rule already behaved.
+# The bypass rule keeps its own relative position, so its behaviour is unchanged
+# from the release that introduced it.
 #
 # COVERAGE, NOT MERE EXISTENCE.  `/v:triage` COMMITS its record, so the record is
 # never in the dirty changed-set — its presence has to be read off disk, and a
@@ -106,30 +102,6 @@
 # is to the bypass rule beside it.  This is a nudge at the end of a turn, not a
 # proof that every change in a session was triaged; the mechanical authority is
 # the validator's `--require-triage` on the dispatch path.
-#
-# STORE LOSS, AND THE ONE CONSERVATIVE EDGE IT COSTS.  A temp sweep or a reboot
-# can remove the store mid-arm.  Recreating the counter at zero would silently
-# grant another full tranche of continuations beyond `max_continues`, so a
-# missing store during an ACTIVE arm fails OPEN and says so on stderr.  "Active"
-# is decided by two independent signals: the arm's slot DIRECTORY (present but
-# counter-less = partial loss) and `stop_hook_active` (true = a Stop block
-# already happened this turn, so a vanished slot is loss, not novelty).  The
-# cost, stated: a disarm/re-arm INSIDE a turn that already blocked is
-# indistinguishable from a sweep and therefore fails open — the epic simply is
-# not held that turn.  Autonomy stopping is an acceptable failure; an unbounded
-# loop is not.  Covered by tests/test-epic-goal-stop.sh.
-#
-# `stop_hook_active` is READ and LOGGED but never returned on.  The flag is set
-# on the first block and never cleared for the rest of the turn, so returning on
-# it would cap this feature at exactly one block — while a synthetic-stdin
-# selftest still passed.  (Anthropic's own `ralph-loop`, the one shipped Stop
-# hook that actually loops, never reads the flag at all.)  It IS used as
-# corroborating evidence in one place: see "store loss" below.
-#
-# BOUNDS, HONESTLY RANKED.  Our own `continue_count` is THE bound.  The harness
-# cap (CLAUDE_CODE_STOP_HOOK_BLOCK_CAP, default 8) is a backstop we do not rely
-# on — it is gated `if (n > 0 && …)`, so 0 disables blocking limits entirely.
-# The epic circuit breakers remain unchanged and authoritative above both.
 #
 # ENFORCEMENT IS BEST-EFFORT AND NOTHING HERE CLAIMS OTHERWISE.  The runtime
 # silently discards a `Stop` block when a turn ends via a tool result, an MCP
@@ -187,203 +159,7 @@ _project_root() {
   printf '%s' "$1"
 }
 
-# At most ONE armed epic per project.  Zero or multiple matches FAIL OPEN rather
-# than guessing which epic to hold the session open for.
-_discover_state() {
-  local base="$1/docs/superpowers/execution/epics"
-  [ -d "$base" ] || return 1
-  local n=0 found="" d f
-  for d in "$base"/*/; do
-    f="${d}epic-state.json"
-    [ -f "$f" ] || continue
-    n=$((n + 1))
-    found="$f"
-  done
-  if [ "$n" -gt 1 ]; then
-    _log "discovery found $n epic-state.json files under $base — FAILING OPEN (at most one armed epic per project)"
-    return 1
-  fi
-  [ "$n" -eq 1 ] || return 1
-  printf '%s' "$found"
-}
-
-# The read-only CLI that owns the completion vocabulary.  Plugin root first
-# (how the hook actually runs), then a repo-relative sibling (how the tests and
-# a source checkout run).
-_locate_cli() {
-  local c
-  if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
-    c="${CLAUDE_PLUGIN_ROOT}/scripts/compound-v-epic-state.py"
-    [ -f "$c" ] && { printf '%s' "$c"; return 0; }
-  fi
-  c="$(dirname "$0")/../scripts/compound-v-epic-state.py"
-  [ -f "$c" ] && { printf '%s' "$c"; return 0; }
-  return 1
-}
-
 _is_uint() { case "${1:-}" in '' | *[!0-9]*) return 1 ;; *) return 0 ;; esac; }
-
-# --- rule 1: the armed goal condition ---------------------------------------
-# Returns 0 ONLY when it printed a block on stdout (which also means it made the
-# single permitted state update).  Any other outcome returns non-zero and the
-# caller falls through to the enforcement rule.
-_goal_rule() {
-  local proj="$1" sid="$2" sha="$3"
-
-  local state cli
-  state="$(_discover_state "$proj")" || return 1
-
-  # Cheap NEGATIVE fast-path, and nothing more.  This hook runs at the end of
-  # every turn of every session, so it must not pay a Python interpreter start
-  # for an epic that carries no armed record at all.  `goal_arm` is lazily
-  # created by --arm-goal and POPPED by --disarm-goal, so its presence is an
-  # exact, non-semantic test.  Only a DEFINITIVE "absent" skips; any jq failure
-  # falls through to the canonical helper, which stays the sole authority on
-  # met / terminal / should_continue.
-  local has_arm
-  has_arm="$(jq -r 'if has("goal_arm") then "y" else "n" end' "$state" 2>/dev/null)" || has_arm=""
-  [ "$has_arm" = "n" ] && return 1
-
-  cli="$(_locate_cli)" || { _log "epic-state CLI not found — goal rule inert"; return 1; }
-  command -v python3 >/dev/null 2>&1 || { _log "python3 absent — goal rule inert"; return 1; }
-
-  # STRICTLY read-only (`--goal-status` never writes, and its CLI branch never
-  # calls _atomic_write_json).  Any non-zero — corrupt JSON, a failed marathon
-  # validation, a vanished file — FAILS OPEN.
-  local gs rc
-  gs="$(python3 "$cli" --goal-status --state "$state" 2>/dev/null)"
-  rc=$?
-  if [ "$rc" -ne 0 ] || [ -z "$gs" ]; then
-    _log "--goal-status failed (rc=$rc) on $state — FAILING OPEN"
-    return 1
-  fi
-
-  local armed
-  armed="$(printf '%s' "$gs" | jq -r '.armed // false' 2>/dev/null)" || armed="false"
-  [ "$armed" = "true" ] || return 1
-
-  # Session isolation.  An EMPTY stored id is refused here as well as at arm
-  # time: an empty id matches nothing meaningfully, and a fall-through would
-  # hold EVERY session in the project open, not just the one that armed it.
-  local ssid
-  ssid="$(printf '%s' "$gs" | jq -r '.session_id // empty' 2>/dev/null)" || ssid=""
-  [ -n "$ssid" ] || { _log "armed record carries an empty session_id — FAILING OPEN"; return 1; }
-  [ "$ssid" = "$sid" ] || return 1
-
-  local arm_id maxc cond should
-  arm_id="$(printf '%s' "$gs" | jq -r '.arm_id // empty' 2>/dev/null)" || arm_id=""
-  maxc="$(printf '%s' "$gs" | jq -r '.max_continues // empty' 2>/dev/null)" || maxc=""
-  cond="$(printf '%s' "$gs" | jq -r '.condition // empty' 2>/dev/null)" || cond=""
-  should="$(printf '%s' "$gs" | jq -r '.should_continue // false' 2>/dev/null)" || should="false"
-
-  [ -n "$arm_id" ] || { _log "armed record carries an empty arm_id — FAILING OPEN"; return 1; }
-  # `0` is INVALID, not "unlimited".  There is no unlimited setting.
-  # Written as an explicit negative rather than `A && B || C`: shellcheck SC2015
-  # flags that form because C also runs when A succeeds and B fails — which is
-  # what is wanted here, but a reader cannot tell that from the shape alone, and
-  # a fail-open guard is the last place to leave intent to inference.
-  if ! _is_uint "$maxc" || [ "$maxc" -le 0 ]; then
-    _log "max_continues is not a positive integer (${maxc:-<empty>}) — FAILING OPEN"
-    return 1
-  fi
-
-  # `should_continue` is `armed AND NOT met AND NOT terminal`.  A terminal-but-
-  # unmet epic (tripped breaker, halt_epic, exhausted work, unsatisfiable DAG)
-  # yields false: it STOPPED, it did not finish — continuing would burn the
-  # counter against a dead epic, and calling it "met" would be a fabricated
-  # completion claim.
-  [ "$should" = "true" ] || return 1
-
-  # --- the counter, in this hook's own store --------------------------------
-  # Keyed on all THREE of root + session + arm_id.  Root, because keying on the
-  # session alone lets project A suppress project B in the same session.
-  # arm_id, because a disarm/rearm inside one live session would otherwise reuse
-  # the slot and a SEQUENTIAL second epic would inherit the first epic's count.
-  local store key dir cnt_file cnt
-  store="$(_store_dir)"
-  key="$(_digest "${proj}|${sid}|${arm_id}")" || {
-    _log "no sha256 tool available — cannot key the store, FAILING OPEN"
-    return 1
-  }
-  [ -n "$key" ] || return 1
-  dir="${store}/goal-${key}"
-  cnt_file="${dir}/count"
-
-  if [ -d "$dir" ]; then
-    # The DIRECTORY is the arm's existence marker; the file is the counter.
-    # Directory present but counter gone = the store was lost mid-arm.
-    # Recreating it at zero would silently grant another full tranche of
-    # continuations beyond max_continues, so: FAIL OPEN.  Autonomy stopping is
-    # an acceptable failure; an unbounded loop is not.
-    if [ ! -f "$cnt_file" ]; then
-      _log "counter file missing under an existing arm slot ($dir) — the store was swept mid-arm. FAILING OPEN; NOT recreating the counter at zero. Re-arm with /v:epic to resume goal-held continuation."
-      return 1
-    fi
-    cnt="$(cat "$cnt_file" 2>/dev/null)" || cnt=""
-    cnt="$(printf '%s' "$cnt" | tr -d '[:space:]')" || cnt=""
-    _is_uint "$cnt" || {
-      _log "counter file is corrupt (${cnt:-<empty>}) — FAILING OPEN"
-      return 1
-    }
-  else
-    # No slot at all.  Either a genuinely new arm (count starts at 0), or the
-    # WHOLE store was swept.  `stop_hook_active` disambiguates the dangerous
-    # half: it is true only when a Stop hook already blocked this turn, which
-    # means a slot must have existed — so its absence is loss, not novelty.
-    if [ "$sha" = "true" ]; then
-      _log "arm slot absent although a Stop block already occurred this turn — the store was swept. FAILING OPEN; NOT restarting the counter at zero."
-      return 1
-    fi
-    mkdir -p "$dir" 2>/dev/null || {
-      _log "cannot create the hook store at $dir — FAILING OPEN"
-      return 1
-    }
-    cnt=0
-  fi
-
-  if [ "$cnt" -ge "$maxc" ]; then
-    _log "continue budget exhausted for arm ${arm_id} (${cnt}/${maxc}) — releasing the turn."
-    return 1
-  fi
-
-  local next tmp
-  next=$((cnt + 1))
-  # PERSIST BEFORE THE BLOCK IS EMITTED.  A failed persist OPENS the hook — a
-  # block we could not count is a block we could not bound.
-  tmp="${cnt_file}.tmp.$$"
-  if ! printf '%s\n' "$next" >"$tmp" 2>/dev/null; then
-    rm -f "$tmp" 2>/dev/null
-    _log "could not write the continue counter — FAILING OPEN (a block we cannot count is a block we cannot bound)"
-    return 1
-  fi
-  if ! mv -f "$tmp" "$cnt_file" 2>/dev/null; then
-    rm -f "$tmp" 2>/dev/null
-    _log "could not commit the continue counter — FAILING OPEN"
-    return 1
-  fi
-
-  _log "goal armed (condition=${cond}) and unmet — continuation ${next}/${maxc} for arm ${arm_id}"
-
-  local reason
-  reason="Compound V — an epic goal is armed for this session and is NOT yet met.
-
-  goal condition : ${cond}
-  epic state     : ${state}
-  continuation   : ${next} of ${maxc}
-
-Do not end the turn. Resume the epic loop in commands/v-epic.md: read the epic
-state, take the next runnable feature, and drive it through the pipeline. The
-goal is evaluated DETERMINISTICALLY from that file — you cannot satisfy it by
-declaring it satisfied, only by the work landing on disk. When the condition is
-genuinely met (or the epic goes terminal), this hook stops holding the turn open
-by itself; to stop sooner, disarm with:
-  python3 scripts/compound-v-epic-state.py --disarm-goal --state ${state}"
-
-  jq -n --arg reason "$reason" \
-    --arg msg "Compound V: epic goal unmet — continuation ${next}/${maxc}" \
-    '{decision: "block", reason: $reason, systemMessage: $msg}' 2>/dev/null || return 1
-  return 0
-}
 
 # --- bounded execution -------------------------------------------------------
 # Every `Stop` hook on the machine shares ONE 1.5 second budget, and an external
@@ -456,10 +232,10 @@ _bounded_capture() {
   return 1
 }
 
-# --- rule 2: the triage gate (OFF by default) --------------------------------
+# --- rule 1: the triage gate (ON by default as of 3.2.0) ---------------------
 # Fires when the turn is ending, non-exempt files have changed, and NO pre-eval
-# record covers that diff.  Runs ONLY when the goal rule did not block.  Returns
-# 0 having printed a block, or non-zero having printed nothing.
+# record covers that diff.  It is the first rule evaluated.  Returns 0 having
+# printed a block, or non-zero having printed nothing.
 
 # One jq pass over every candidate record, emitting `tier<US>run_id<US>path` for
 # each declared path of each record belonging to THIS session.  The separator is
@@ -749,9 +525,9 @@ enforcement.triage_gate to false in .claude/compound-v.json."
   return 0
 }
 
-# --- rule 3: pipeline-bypass enforcement (OFF by default) -------------------
-# Runs ONLY when neither rule above blocked.  Returns 0 having printed a block,
-# or non-zero having printed nothing.
+# --- rule 2: the bypass rule — pipeline-bypass enforcement (OFF by default) --
+# Runs ONLY when the triage gate did not block.  Returns 0 having printed a
+# block, or non-zero having printed nothing.
 _enforcement_rule() {
   local proj="$1" sid="$2"
 
@@ -786,7 +562,7 @@ _enforcement_rule() {
   # Source = everything except the pipeline's own paper trail and this hook's
   # own store (normally in $TMPDIR and therefore outside the repo entirely —
   # excluded explicitly for the case where TMPDIR is set INSIDE the worktree,
-  # where arming a goal would otherwise count as "source changed").
+  # where this hook's own markers would otherwise count as "source changed").
   local store_rel="" src
   case "$store" in
     "$proj"/*) store_rel="${store#"$proj"/}" ;;
@@ -852,8 +628,8 @@ hook_main() {
   # ---- EVENT GATE, FIRST, BEFORE ANY STATE READ OR WRITE -------------------
   # The harness converts a `Stop` registration to `SubagentStop` for subagents,
   # and Compound V dispatches subagents constantly.  Without this gate a
-  # subagent shares the session id, passes session isolation, is continued
-  # repeatedly, and burns the main session's counter.
+  # subagent shares the main session's id, so it would consume that session's
+  # once-per-session marker and correct the wrong party.
   local ev
   ev="$(printf '%s' "$input" | jq -r '.hook_event_name // empty' 2>/dev/null)" || ev=""
   [ "$ev" = "Stop" ] || return 1
@@ -863,7 +639,10 @@ hook_main() {
   # No session id ⇒ no isolation ⇒ we would risk holding a session we do not own.
   [ -n "$sid" ] || return 1
 
-  # Read it, log it, do NOT return on it.  See the header.
+  # Read and logged for diagnostics, never returned on.  The flag is set on the
+  # first block of a turn and never cleared, so returning on it would cap every
+  # rule below at exactly one block per session while a synthetic-stdin selftest
+  # still passed.  Each rule bounds itself with its own marker instead.
   local sha
   sha="$(printf '%s' "$input" | jq -r 'if .stop_hook_active == true then "true" else "false" end' 2>/dev/null)" || sha="false"
   _log "event=Stop session=${sid} stop_hook_active=${sha}"
@@ -877,21 +656,14 @@ hook_main() {
   [ -n "$proj" ] || return 1
 
   # ---- PRECEDENCE ----------------------------------------------------------
-  # The goal rule first.  If it blocked, it already made the one permitted state
-  # update and printed the one permitted response — NEITHER correction rule
-  # runs.  A goal-driven continuation is the system working as intended; a
-  # pipeline correction on the same turn would be noise, and two blocks on one
-  # event is undefined behaviour.
-  if _goal_rule "$proj" "$sid" "$sha"; then
-    return 0
-  fi
-
-  # Then the triage gate, then the older bypass rule.  Both are "you changed
-  # code without X". The triage gate is ON by default as of 3.2.0; the bypass
-  # rule is still off. Only ONE response per event is
-  # permitted — so the more specific diagnosis goes first: `/v:triage` is the
-  # first step of the correction the bypass rule asks for, and the pipeline it
-  # points at now refuses to run without that record.
+  # The triage gate, then the older bypass rule.  Both are "you changed code
+  # without X". The triage gate is ON by default as of 3.2.0; the bypass rule is
+  # still off. Only ONE response per event is permitted — so the more specific
+  # diagnosis goes first: `/v:triage` is the first step of the correction the
+  # bypass rule asks for, and the pipeline it points at now refuses to run
+  # without that record.  If the gate blocked, it already made the one permitted
+  # state update and printed the one permitted response, and the bypass rule
+  # does not run.
   if _triage_rule "$proj" "$sid"; then
     return 0
   fi

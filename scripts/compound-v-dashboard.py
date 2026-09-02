@@ -3,19 +3,18 @@
 Compound V observability dashboard -- v2.15.0 (NEW file, PRESENT-ONLY, read-only).
 
 Closes the plugin's observability gap over docs/superpowers/execution/** WITHOUT a daemon,
-a persistent service, or any write/control surface. Two subcommands + a self-test:
+a persistent service, or any write/control surface. Subcommands + a self-test:
 
-  * emit  -- read the run/epic JSON under an execution root and write ONE self-contained,
+  * emit   -- read the run/epic JSON under an execution root and write ONE self-contained,
             theme-aware HTML snapshot (all CSS/JS inlined, offline, no CDN, no external
             http(s) resource). Prints the path. The static page stamps
             "snapshot -- generated from files as of <newest state-file mtime>".
 
-  * serve -- an EPHEMERAL, READ-ONLY, foreground http.server viewer. Binds the loopback
-            address ONLY (never a public/hostname bind), default port 8787 (falls back to an
-            OS-chosen free port if taken). GET/HEAD only -- every other method is 405.
-            Realpath-contained to the execution root; serves only .json/.html/.yaml/.yml;
-            no directory index. Serves a live page at "/" that re-polls every ~3s and
-            re-renders. Runs serve_forever() until Ctrl-C, then shuts down cleanly.
+  * resume -- print one line naming unfinished runs/epics (the SessionStart banner input).
+
+For a LIVE view, use the harness's native `/workflows` (running Compound V dispatches) and
+`/tasks` (state.json / epic-state.json progress) surfaces instead of a bespoke HTTP server --
+this script no longer ships one (removed in v3.4: native-first).
 
 Design posture -- "observe in the UI, act via the CLI": there is NO merge/kill/retry/edit
 control anywhere. Enforcement stays with the git-derived gates; the dashboard only reflects.
@@ -35,9 +34,9 @@ DEGRADE-SAFE:
   * Malformed/partial JSON -> an "unparseable" note on that card, never a crash.
   * Empty execution root -> "no runs yet".
 
-Pure Python 3.9-safe stdlib only (json, html, http.server, socketserver, argparse, pathlib,
-urllib.parse, os, io, socket, inspect, ast, datetime). No third-party imports. LANG=C clean
-(all file I/O is explicitly utf-8; the source is ASCII-only and emits HTML entities for symbols).
+Pure Python 3.9-safe stdlib only (json, html, argparse, os, inspect, ast, datetime). No
+third-party imports. LANG=C clean (all file I/O is explicitly utf-8; the source is ASCII-only
+and emits HTML entities for symbols).
 
 Run the self-test with:  python3 scripts/compound-v-dashboard.py --selftest
 """
@@ -46,15 +45,11 @@ import argparse
 import ast
 import datetime
 import html
-import http.server
 import inspect
-import io
 import json
 import os
-import socketserver
 import sys
 import time
-import urllib.parse
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -62,11 +57,6 @@ import urllib.parse
 
 DEFAULT_EXECUTION_ROOT = "docs/superpowers/execution"
 DEFAULT_OUT = "docs/superpowers/execution/dashboard.html"
-DEFAULT_PORT = 8787
-# Loopback bind ONLY -- unreachable from the network. A public/all-interfaces bind is never
-# constructed anywhere in this file (the self-test asserts the literal is absent from source).
-BIND_HOST = "127.0.0.1"
-ALLOWED_SUFFIXES = (".json", ".html", ".yaml", ".yml")
 
 DONE_JOB_STATES = ("done", "success")
 MDASH = "&mdash;"
@@ -86,13 +76,6 @@ TERMINAL_EPIC_STATUSES = ("done", "completed")
 DEFAULT_RESUME_MAX_AGE_HOURS = 72.0
 # The banner is a single line. Cap how much of it one feature may claim.
 RESUME_MAX_RECORDS = 2
-
-CONTENT_TYPES = {
-    ".json": "application/json; charset=utf-8",
-    ".html": "text/html; charset=utf-8",
-    ".yaml": "text/plain; charset=utf-8",
-    ".yml": "text/plain; charset=utf-8",
-}
 
 
 # ---------------------------------------------------------------------------
@@ -848,196 +831,10 @@ def cmd_emit(args):
 
 
 # ---------------------------------------------------------------------------
-# serve -- ephemeral, read-only, loopback-only
-# ---------------------------------------------------------------------------
-
-class _ReadOnlyHandler(http.server.BaseHTTPRequestHandler):
-    """GET/HEAD only, realpath-contained, allowed-suffix only, no directory index.
-
-    serve_root and html_provider are injected as class attributes by _make_handler.
-    Every non-GET/HEAD verb is answered 405 -- there is NO write/upload code path.
-    """
-
-    protocol_version = "HTTP/1.1"
-    serve_root = ""            # absolute realpath of the execution root
-    html_provider = None       # callable -> str (regenerated from files each request)
-
-    # -- silence the default stderr access log (keeps the foreground console clean) --
-    def log_message(self, fmt, *a):  # noqa: A003
-        return
-
-    # -- read verbs --
-    def do_GET(self):  # noqa: N802
-        self._handle(write_body=True)
-
-    def do_HEAD(self):  # noqa: N802
-        self._handle(write_body=False)
-
-    # -- every mutating / non-read verb is rejected; NO write path exists --
-    def _reject(self):
-        self.send_error(405, "Method Not Allowed")
-
-    do_POST = _reject
-    do_PUT = _reject
-    do_DELETE = _reject
-    do_PATCH = _reject
-    do_OPTIONS = _reject
-    do_CONNECT = _reject
-    do_TRACE = _reject
-
-    # MEDIUM-5: any verb other than GET/HEAD -- including unknown ones like BREW or a
-    # lowercase `post` -- resolves to _reject (405), never BaseHTTPRequestHandler's 501.
-    def __getattr__(self, name):
-        if name.startswith("do_"):
-            return self._reject
-        raise AttributeError(name)
-
-    # HIGH-2: reject DNS-rebinding. Only an exact loopback host+port (the one we bound) is
-    # accepted; a missing or foreign Host header is a same-origin attempt from a rebinding
-    # page and is refused before any file or the dashboard is served.
-    def _host_allowed(self):
-        host = self.headers.get("Host") if self.headers is not None else None
-        if not host:
-            return False
-        try:
-            port = self.server.server_address[1]
-        except Exception:  # noqa: BLE001 -- fail-closed if the port is unknowable
-            return False
-        return host in ("127.0.0.1:{}".format(port), "localhost:{}".format(port))
-
-    def _send_bytes(self, code, content_type, payload, write_body):
-        self.send_response(code)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(payload)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        if write_body:
-            self.wfile.write(payload)
-
-    def _handle(self, write_body):
-        # HIGH-2: validate Host before serving ANYTHING (the dashboard or any file).
-        if not self._host_allowed():
-            self.send_error(403, "Forbidden")
-            return
-
-        parsed = urllib.parse.urlsplit(self.path)
-        raw = urllib.parse.unquote(parsed.path)
-        if "\x00" in raw:
-            self.send_error(400, "Bad Request")
-            return
-
-        # live dashboard at the root
-        if raw in ("", "/"):
-            body = self.html_provider().encode("utf-8")
-            self._send_bytes(200, "text/html; charset=utf-8", body, write_body)
-            return
-
-        rel = raw.lstrip("/")
-        # explicit parent-traversal is refused outright
-        if any(seg == ".." for seg in rel.split("/")):
-            self.send_error(403, "Forbidden")
-            return
-
-        root = self.serve_root
-        candidate = os.path.realpath(os.path.join(root, rel))
-        # realpath containment (shared gate): rejects symlink escapes and any path outside the root
-        if not _contained(candidate, root):
-            self.send_error(403, "Forbidden")
-            return
-
-        suffix = os.path.splitext(candidate)[1].lower()
-        if suffix not in ALLOWED_SUFFIXES:
-            self.send_error(404, "Not Found")
-            return
-        if not os.path.isfile(candidate):
-            # directories included -> no listing leak
-            self.send_error(404, "Not Found")
-            return
-
-        try:
-            with open(candidate, "rb") as fh:
-                payload = fh.read()
-        except OSError:
-            self.send_error(404, "Not Found")
-            return
-        ctype = CONTENT_TYPES.get(suffix, "application/octet-stream")
-        self._send_bytes(200, ctype, payload, write_body)
-
-
-def _make_handler(serve_root, html_provider):
-    class _H(_ReadOnlyHandler):
-        pass
-    _H.serve_root = os.path.realpath(serve_root)
-    _H.html_provider = staticmethod(html_provider)
-    return _H
-
-
-def _build_server(serve_root, port):
-    """Construct a loopback-bound server. Falls back to an OS-chosen free port if `port` is taken."""
-    # HIGH-1 (TOCTOU): resolve the root ONCE and thread the SAME realpath'd value into both the
-    # request handler AND the HTML provider, so a retargeted root symlink can never make direct
-    # file-serving and dashboard rendering operate on two different roots.
-    resolved_root = os.path.realpath(serve_root)
-    handler = _make_handler(resolved_root, lambda: render_html(resolved_root, live=True))
-    server_cls = http.server.ThreadingHTTPServer
-    try:
-        return server_cls((BIND_HOST, port), handler)
-    except OSError:
-        # requested port taken -> bind an ephemeral free port (0) and report the chosen one
-        return server_cls((BIND_HOST, 0), handler)
-
-
-def cmd_serve(args):
-    root = args.execution_root
-    if not os.path.isdir(root):
-        print("execution root not found: {}".format(root), file=sys.stderr)
-        return 1
-    server = _build_server(root, args.port)
-    host, port = server.server_address[0], server.server_address[1]
-    url = "http://{host}:{port}/".format(host=host, port=port)
-    print("Compound V dashboard (read-only, loopback, ephemeral)")
-    print("serving {root}".format(root=os.path.realpath(root)))
-    print(url)
-    print("Ctrl-C to stop.")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\nstopping...")
-    finally:
-        server.shutdown()
-        server.server_close()
-    print("stopped. no files were modified.")
-    return 0
-
-
-# ---------------------------------------------------------------------------
 # Self-test
 # ---------------------------------------------------------------------------
-
-class _FakeServer(object):
-    """Minimal stand-in so a bare handler can read the bound port for the Host check."""
-    def __init__(self, port=8787):
-        self.server_address = ("127.0.0.1", port)
-
-
-def _invoke_handler(handler_cls, method, path, host="127.0.0.1:8787"):
-    """Drive a handler without opening a socket: construct bare, set the request, dispatch.
-    `host` defaults to the exact loopback host+port the HIGH-2 Host gate accepts; pass a
-    foreign/None host to exercise the DNS-rebinding rejection."""
-    h = handler_cls.__new__(handler_cls)
-    h.server = _FakeServer(8787)
-    h.wfile = io.BytesIO()
-    h.rfile = io.BytesIO()
-    h.headers = {"Host": host} if host is not None else {}
-    h.command = method
-    h.path = path
-    h.client_address = ("127.0.0.1", 0)
-    h.request_version = "HTTP/1.1"
-    h.requestline = "{} {} HTTP/1.1".format(method, path)
-    getattr(h, "do_" + method)()
-    data = h.wfile.getvalue()
-    status_line = data.split(b"\r\n", 1)[0].decode("latin-1")
-    return int(status_line.split()[1])
+# (the ephemeral http.server live viewer was removed in v3.4: native-first --
+# use the harness's native /workflows and /tasks surfaces for a live view.)
 
 
 def _selftest():
@@ -1196,58 +993,6 @@ def _selftest():
         os.makedirs(empty_root)
         check("no runs yet" in render_html(empty_root, live=False), "degrade: empty root")
 
-        # ---- (2) serve handler security (no live network) ----
-        handler_cls = _make_handler(root, lambda: "<html></html>")
-
-        # non-GET methods -> 405
-        for m in ("POST", "PUT", "DELETE", "PATCH", "OPTIONS"):
-            check(_invoke_handler(handler_cls, m, "/") == 405, "serve: {} not 405".format(m))
-
-        # legit .json under root -> 200
-        rel_json = "2099-06-01-fullrun/state.json"
-        check(_invoke_handler(handler_cls, "GET", "/" + rel_json) == 200,
-              "serve: legit .json not served")
-        # root dashboard -> 200
-        check(_invoke_handler(handler_cls, "GET", "/") == 200, "serve: root not served")
-
-        # .. traversal -> 403
-        check(_invoke_handler(handler_cls, "GET", "/../../etc/passwd") == 403,
-              "serve: .. traversal not blocked")
-        # absolute-ish path outside allowed suffix -> 404 (contained, wrong suffix)
-        check(_invoke_handler(handler_cls, "GET", "/etc/passwd") == 404,
-              "serve: outside path not 404")
-        # .py / .sh suffix -> 404
-        _write_text(os.path.join(run_dir, "evil.py"), "print('x')\n")
-        _write_text(os.path.join(run_dir, "evil.sh"), "echo x\n")
-        check(_invoke_handler(handler_cls, "GET", "/2099-06-01-fullrun/evil.py") == 404,
-              "serve: .py suffix not 404")
-        check(_invoke_handler(handler_cls, "GET", "/2099-06-01-fullrun/evil.sh") == 404,
-              "serve: .sh suffix not 404")
-
-        # symlink escaping the root -> 403 (realpath containment)
-        outside = os.path.join(tmp, "outside_secret.json")
-        _write_text(outside, "{}")
-        link = os.path.join(run_dir, "escape.json")
-        try:
-            os.symlink(outside, link)
-            check(_invoke_handler(handler_cls, "GET", "/2099-06-01-fullrun/escape.json") == 403,
-                  "serve: symlink escape not blocked")
-        except (OSError, NotImplementedError):
-            pass  # symlinks unsupported on this platform -> skip that assertion only
-
-        # HIGH-2 (DNS-rebinding): a foreign or missing Host -> 403 even for the dashboard root;
-        # only the exact loopback host+port the server bound is accepted.
-        check(_invoke_handler(handler_cls, "GET", "/", host="evil.example.com:8787") == 403,
-              "serve: foreign Host not rejected (DNS-rebinding)")
-        check(_invoke_handler(handler_cls, "GET", "/", host=None) == 403,
-              "serve: missing Host not rejected")
-        check(_invoke_handler(handler_cls, "GET", "/", host="localhost:8787") == 200,
-              "serve: exact localhost Host not accepted")
-
-        # MEDIUM-5 (blanket 405): an UNKNOWN verb and a lowercase verb -> 405, never 501.
-        check(_invoke_handler(handler_cls, "BREW", "/") == 405, "serve: unknown verb (BREW) not 405")
-        check(_invoke_handler(handler_cls, "get", "/") == 405, "serve: lowercase verb not 405")
-
         # HIGH-1 (render-path containment): a run whose state.json symlinks OUTSIDE the root must
         # be skipped by GET / (render_html), not read+rendered. Direct requests already 403 above.
         leak_run = os.path.join(root, "2099-01-01-leakrun")
@@ -1283,14 +1028,7 @@ def _selftest():
         cnt_html = render_html(root, live=False)
         check("3/2" not in cnt_html, "render: impossible progress count (3/2) -- denominator not unioned")
 
-        # ---- server binds loopback ONLY (introspect, no serve_forever, no public socket) ----
-        srv = _build_server(root, 0)
-        try:
-            check(srv.server_address[0] == BIND_HOST, "serve: server not bound to loopback")
-        finally:
-            srv.server_close()
-
-        # ---- (3) present-only, via source introspection ----
+        # ---- present-only, via source introspection ----
         # Needles built via concatenation so this self-test's own assertion strings
         # do not themselves trip the "present in source" checks.
         src = inspect.getsource(sys.modules[__name__])
@@ -1524,8 +1262,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="compound-v-dashboard.py",
         description="Present-only, read-only observability dashboard over "
-                    "docs/superpowers/execution/** (emit a static snapshot or serve an "
-                    "ephemeral loopback-only live viewer).")
+                    "docs/superpowers/execution/** (emit a static snapshot; for a live view "
+                    "use the harness's native /workflows and /tasks surfaces).")
     parser.add_argument("--selftest", action="store_true",
                         help="run the built-in self-test and exit")
     sub = parser.add_subparsers(dest="cmd")
@@ -1535,12 +1273,6 @@ def main(argv=None):
                         help="execution root to read (default: %(default)s)")
     p_emit.add_argument("--out", default=DEFAULT_OUT,
                         help="output HTML path (default: %(default)s)")
-
-    p_serve = sub.add_parser("serve", help="ephemeral read-only loopback live viewer")
-    p_serve.add_argument("--execution-root", default=DEFAULT_EXECUTION_ROOT,
-                         help="execution root to serve (default: %(default)s)")
-    p_serve.add_argument("--port", type=int, default=DEFAULT_PORT,
-                         help="preferred port (default: %(default)s; falls back to a free port)")
 
     p_resume = sub.add_parser("resume",
                               help="print one line naming unfinished runs/epics (banner input)")
@@ -1558,8 +1290,6 @@ def main(argv=None):
         return _selftest()
     if args.cmd == "emit":
         return cmd_emit(args)
-    if args.cmd == "serve":
-        return cmd_serve(args)
     if args.cmd == "resume":
         return cmd_resume(args)
     parser.print_help()

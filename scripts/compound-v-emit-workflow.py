@@ -3317,6 +3317,25 @@ def cmd_finalize_wave(argv):
     if prune_errors:
         out["worktrees_prune_errors"] = prune_errors
 
+    # ---- BEST-EFFORT scorecard refresh, after a successful wave commit ------ #
+    # The scorecard is regenerated FROM FILES (manifest jobs x results/*.json),
+    # so this is a convenience re-run, never the source of truth -- a run whose
+    # finalize is skipped or fails here is just as readable next time someone
+    # runs the scorecard by hand. Never fatal: a wave that integrated correctly
+    # must not be reported as failed because the scorecard update hiccuped.
+    if out["integrated"]:
+        scorecard_script = os.path.join(HERE, "compound-v-scorecard.py")
+        exec_root = os.path.dirname(run_dir.rstrip(os.sep)) or run_dir
+        if os.path.exists(scorecard_script) and os.path.isdir(exec_root):
+            rc_sc, _out_sc, err_sc = _run([
+                args.python, scorecard_script, "--update",
+                "--from-runs", exec_root,
+            ], cwd=repo_root)
+            if rc_sc == 0:
+                out["scorecard_updated"] = True
+            else:
+                out["scorecard_update_error"] = (err_sc or "").strip()[:200]
+
     _apply(now=args.now)
     return emit(0 if out["integrated"] else 1)
 

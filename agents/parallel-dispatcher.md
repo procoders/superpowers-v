@@ -408,29 +408,40 @@ The reason this step is spelled out rather than assumed: the cross-model review 
 fix reproducing the defect it fixes. A correct script with no caller is exactly what the
 7,883-line sizing engine was.
 
-### Step 6 — Post-run memory (outcomes → scorecard)
+### Step 6 — Post-run memory (run results → scorecard)
 
-After the run settles, append one outcome line per job to
-`docs/superpowers/memory/task-outcomes.jsonl` via
-[`scripts/compound-v-update-memory.py`](../scripts/compound-v-update-memory.py), then
-refresh the machine-generated scorecard:
+After the run settles, refresh the machine-generated scorecard **from files** — no manual
+outcome-logging step, no intermediate ledger to keep in sync:
 
 ```bash
-python3 scripts/compound-v-scorecard.py --update
-# regenerates docs/superpowers/memory/worker-performance.jsonl
+python3 scripts/compound-v-scorecard.py --update --from-runs docs/superpowers/execution
+# regenerates docs/superpowers/memory/worker-performance.jsonl FROM manifest jobs x
+# results/*.json across every run dir, unioned with the legacy task-outcomes.jsonl
 # (one row per (backend, type): success/block/error rates + health)
 ```
 
-This closes the routing loop: `task-outcomes.jsonl` is the raw record, and
-`worker-performance.jsonl` is its deterministic aggregate. The dispatcher/planner then
-consults `compound-v-scorecard.py --query --backend <default> --type <task-type>` when
-routing a job (per [`routing-policy.md`](../skills/compound-v/routing-policy.md)
+`--from-runs` walks `docs/superpowers/execution/**`, joins each `manifest.yaml`'s `jobs[]`
+(`id`, `type`, `backend`, `tier`/`model`) against that same run's `results/<job-id>.json`
+(`status`, `blocked` — the SAME git-derived `job_result` the scope gate and the integration
+gate wrote), and tallies from that join. A job never dispatched (no results file yet) is
+skipped, never fabricated as a zero. **This step is usually already done for you**: `finalize-wave`
+([`scripts/compound-v-emit-workflow.py`](../scripts/compound-v-emit-workflow.py)) runs this
+same update **best-effort** after every successful wave commit — re-running it here is a
+cheap, idempotent no-op unless something skipped that path.
+
+This closes the routing loop: the run directories under `docs/superpowers/execution/` are
+the raw record, and `worker-performance.jsonl` is their deterministic aggregate. The
+dispatcher/planner then consults `compound-v-scorecard.py --query --backend <default> --type
+<task-type>` when routing a job (per [`routing-policy.md`](../skills/compound-v/routing-policy.md)
 §Scorecard-aware routing): an `unhealthy` cell **escalates to an equal-or-higher-trust
 seat** (Codex → Opus/`deep` by default; it **never auto-downgrades to a lower-trust
 backend** like Antigravity), `watch` is noted, `healthy`/`insufficient_data` keeps the
 static default.
 The scorecard is regenerated each run and never hand-edited (unlike the human-curated
 `routing-lessons.md`); it emits no cost/token metrics.
+
+For a **live** view of a run in progress, use the native `/workflows` and `/tasks` surfaces
+rather than waiting for the post-hoc scorecard/dashboard artifacts.
 
 ### Step 7 — Advance to `MERGED`, commit EVERYTHING in that one commit, THEN hand off
 
@@ -441,8 +452,7 @@ this returns (committing the substrate *before* flipping the phase, or flipping 
 re-committing it, both leave the git-recorded phase permanently one step behind reality):
 
 ```bash
-git add docs/superpowers/execution/<run-id>/ docs/superpowers/memory/task-outcomes.jsonl \
-        docs/superpowers/memory/worker-performance.jsonl
+git add docs/superpowers/execution/<run-id>/ docs/superpowers/memory/worker-performance.jsonl
 git commit -m "chore(v-dispatch): run <run-id> reviewed and merged"
 ```
 

@@ -462,7 +462,9 @@ planner/router checks how that backend has *actually* performed for that task-ty
 The signal comes from [`worker-performance.jsonl`](../../docs/superpowers/memory/),
 the machine-generated scorecard that
 [`scripts/compound-v-scorecard.py`](../../scripts/compound-v-scorecard.py) aggregates
-from `task-outcomes.jsonl` — one row per `(backend, type)` with a `health` verdict.
+**from run results** (`--from-runs docs/superpowers/execution` — every manifest
+job joined against its own `results/<job-id>.json`), unioned with the legacy
+`task-outcomes.jsonl` — one row per `(backend, type)` with a `health` verdict.
 Query a single cell at routing time:
 
 ```bash
@@ -501,13 +503,22 @@ Act on `health`:
 
 ### Where the scorecard comes from
 
-`worker-performance.jsonl` is **regenerated each run** by
-`compound-v-scorecard.py --update` after the dispatcher appends fresh outcomes to
-`task-outcomes.jsonl` (see [`parallel-dispatcher.md`](../../agents/parallel-dispatcher.md)
-post-run memory step). It is **machine-generated and never hand-edited** — unlike the
-human-curated `routing-lessons.md`, which remains the authoritative override. The
-loop is the same closed loop, with one extra derived artifact: outcomes →
-{lessons (hand-curated), scorecard (auto-aggregated)} → routing.
+`worker-performance.jsonl` is **regenerated each run FROM FILES** by
+`compound-v-scorecard.py --update --from-runs docs/superpowers/execution` — it joins
+every manifest.yaml's `jobs[]` against that run's own `results/<job-id>.json` (the
+SAME git-derived `job_result` the scope gate and integration gate wrote), unioned
+with whatever the legacy `task-outcomes.jsonl` still carries. No separate
+outcome-logging step is required: `finalize-wave`
+([`scripts/compound-v-emit-workflow.py`](../../scripts/compound-v-emit-workflow.py))
+runs this update **best-effort** after every successful wave commit (see
+[`parallel-dispatcher.md`](../../agents/parallel-dispatcher.md) post-run memory
+step for the manual re-run form). It is **machine-generated and never hand-edited**
+— unlike the human-curated `routing-lessons.md`, which remains the authoritative
+override. The loop is the same closed loop, with one extra derived artifact: run
+results → {lessons (hand-curated), scorecard (auto-aggregated)} → routing.
+
+For a **live** view of a run's jobs as they progress — rather than the post-hoc
+scorecard/dashboard snapshot — use the native `/workflows` and `/tasks` surfaces.
 
 ---
 
