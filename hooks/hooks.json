@@ -94,6 +94,31 @@
           }
         ]
       }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/precompact-snapshot.sh\" || true",
+            "async": false,
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/tool-failure-ledger.sh\" || true",
+            "async": true,
+            "timeout": 5
+          }
+        ]
+      }
     ]
   }
 }

@@ -91,6 +91,26 @@ _project_root() {
 
 # Plugin root first (how the hook actually runs), then a repo-relative sibling
 # (how a source checkout runs).
+# Where hooks/precompact-snapshot.sh put the pre-compaction line. DUPLICATED
+# from that hook on purpose — both are standalone shell hooks with no shared
+# library, which is this repo's house style. The two must agree on the store
+# name and the key, and tests/test-native-points.sh asserts they do by writing
+# with one and reading with the other rather than by comparing the source.
+_snapshot_path() {
+  local t="${TMPDIR:-/tmp}" key
+  while [ "${t}" != "/" ] && [ "${t%/}" != "${t}" ]; do t="${t%/}"; done
+  [ -n "$t" ] || t="/tmp"
+  if command -v shasum >/dev/null 2>&1; then
+    key="$(printf '%s' "${1}|${2}" | shasum -a 256 2>/dev/null | cut -d' ' -f1)"
+  elif command -v sha256sum >/dev/null 2>&1; then
+    key="$(printf '%s' "${1}|${2}" | sha256sum 2>/dev/null | cut -d' ' -f1)"
+  else
+    return 1
+  fi
+  [ -n "${key:-}" ] || return 1
+  printf '%s/compound-v-precompact/snap-%s' "$t" "$key"
+}
+
 _locate_dashboard() {
   local c
   if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
@@ -140,15 +160,17 @@ hook_main() {
   fields="$(printf '%s' "$input" | jq -r '
     ((.hook_event_name // "") | tostring | gsub("[^A-Za-z]"; "")),
     (((.trigger // "") | tostring) | gsub("[^a-z]"; "")),
-    (((.cwd // "") | tostring) | gsub("[\n\r]"; ""))
+    (((.cwd // "") | tostring) | gsub("[\n\r]"; "")),
+    (((.session_id // "") | tostring) | gsub("[^A-Za-z0-9._:-]"; ""))
   ' 2>/dev/null)" || return 1
   [ -n "$fields" ] || return 1
 
-  local ev trigger cwdv
+  local ev trigger cwdv sid
   {
     read -r ev
     read -r trigger
     read -r cwdv
+    read -r sid
   } <<EOF
 ${fields}
 EOF
@@ -174,9 +196,24 @@ EOF
 
   # The line, rendered by the one function that owns the vocabulary. Empty means
   # nothing is unfinished — the common case, and the hook says nothing.
-  local line
-  line="$(PYTHONDONTWRITEBYTECODE=1 "$py" "$dash" resume \
-            --execution-root "$xroot" 2>/dev/null)" || return 1
+  #
+  # THE SNAPSHOT COMES FIRST (v3.3.0). `hooks/precompact-snapshot.sh` writes this
+  # exact line at `PreCompact`, i.e. while the session still knew what it was
+  # doing. Re-deriving it here would usually agree — but not always: a job that
+  # finished during the compaction, or a worktree removed between the two events,
+  # changes the answer, and the line the user is being handed is supposed to
+  # describe the session that just got compacted, not the disk a moment later.
+  # A missing snapshot is not an error; the live query is the fallback, which is
+  # exactly what this hook did before the snapshot existed.
+  local line snap
+  snap="$(_snapshot_path "$root" "${sid:-}")" || snap=""
+  if [ -n "$snap" ] && [ -r "$snap" ]; then
+    line="$(sed '/^$/d' "$snap" 2>/dev/null | head -n 1)" || line=""
+  fi
+  if [ -z "${line:-}" ]; then
+    line="$(PYTHONDONTWRITEBYTECODE=1 "$py" "$dash" resume \
+              --execution-root "$xroot" 2>/dev/null)" || return 1
+  fi
   [ -n "$line" ] || return 1
 
   # The ids behind that line, from the same command's machine-readable mode, so

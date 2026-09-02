@@ -4,6 +4,37 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [3.3.0] - 2026-09-02
+
+### Added — two native hook events this plugin had never registered
+
+**8 of the runtime's 10 documented hook events**, up from 6. Both additions have a reader; a hook that writes where nobody looks is the defect this whole release line has been about.
+
+**`PreCompact` → `hooks/precompact-snapshot.sh`.** The last moment at which a session still knows what it was doing. The other two compaction-adjacent events both arrive too late to *know*: `PostCompact` receives the summary but its stdout is display-only on 2.1.238 (the context-injection path lists exactly `SessionStart`, `UserPromptSubmit` and `UserPromptExpansion` — read out of the binary with `strings`, not from docs), and `SessionStart` runs a session later. The complaint that started the 3.0 line was *"Клод забывает"*, and both existing answers **read** state at the moment they run; this one **writes** it while it is still true.
+
+It never blocks compaction — the runtime supports that and a blocked compaction on a full context is a wedged session. It writes one file into the session's temp store, never into the project. And it re-derives nothing: `compound-v-dashboard.py resume` still owns what unfinished means.
+
+**`PostToolUseFailure` → `hooks/tool-failure-ledger.sh`.** The only event that sees a failure at the moment it happens. Compound V has had a failure classifier since 2.x, but only external worker scripts ever fed it — a `backend: claude` implementer's failed Bash was seen by nobody. The ledger appends one JSON line and exits: it does not classify, decide, retry or block, because a hook that started routing from a single failed call would be inventing a policy nobody wrote.
+
+It records **no tool input**. A failed `Write` carries file content and a failed `Bash` carries a command line; both routinely contain secrets, and a ledger quietly accumulating them in a world-readable temp directory would be a data-exposure surface built for convenience. Tool name, agent id, timestamp, bounded error excerpt.
+
+### Fixed — the inventory section's own numbers were wrong
+
+It claimed *"6 of 13 hook events"* and counted `SubagentStop` as unused. Both from reading `strings` without reading the code:
+
+* **Thirteen is not the registrable set.** The binary's own `### Hook Events` table lists **ten**. `SessionEnd` and `UserPromptExpansion` exist as executors but are absent from it; whether they can be registered is **unverified**, and is now recorded as unverified rather than counted.
+* **`SubagentStop` is received and deliberately ignored.** The runtime converts a `Stop` registration into `SubagentStop` for subagents, and `epic-goal-stop.sh` rejects it in its first gate — otherwise a subagent shares the session id, passes session isolation and burns the main session's counter. That is "received and refused", with the reason in the code, not "never used".
+
+`PermissionRequest` and `Notification` stay unregistered with verified reasons: the first never fires in bypass mode and is a weaker second path to a decision `PreToolUse` already makes; the second carries nothing any guarantee here needs.
+
+### Also verified while building this
+
+The `prompt` and `agent` hook types (available on `PreToolUse`/`PostToolUse`/`PermissionRequest`) are deliberately unused: a model call per tool invocation contradicts the proportionality policy 3.1.0 just established. `updatedInput` on `PreToolUse` — rewriting a caller's tool input instead of refusing it — is deliberately unused too.
+
+The first draft of the snapshot hook passed an invented `--repo` flag to the dashboard, argparse rejected it, and the hook silently wrote nothing. Its own live probe caught it before it shipped. This project has killed an invented flag this way before.
+
+`tests/test-native-points.sh`: 65 → **78 checks**, including the cross-hook one that writes with `PreCompact` and reads with `PostCompact` against a **deliberately divergent disk** — remove the reader and exactly one check reddens.
+
 ## [3.2.0] - 2026-09-02
 
 ### Changed — the triage gate is ON by default, and the claim that kept it off was wrong

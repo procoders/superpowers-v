@@ -451,6 +451,96 @@ EOF
 check "REGISTRATION: every registered command points at an executable hook file" \
   "$([ "$missing" = "0" ] && echo 1 || echo 0)"
 
+
+# =========================================================================== #
+# v3.3.0 — PreCompact snapshot and the PostToolUseFailure ledger
+#
+# The point of these two is NOT that they run. It is that each has a CALLER:
+# the snapshot is READ BACK by hooks/postcompact-resume.sh, and the ledger is a
+# file a human or a script can open. This file's job is to prove the first one
+# by writing with one hook and reading with the other — never by comparing the
+# two sources, which would pass even if both agreed on a path nobody uses.
+# =========================================================================== #
+PRECOMPACT="${PRECOMPACT_SRC:-$REPO/hooks/precompact-snapshot.sh}"
+FAILLEDGER="${FAILLEDGER_SRC:-$REPO/hooks/tool-failure-ledger.sh}"
+
+npc_proj="$WORK/projPC"
+mkdir -p "$npc_proj/scripts" "$npc_proj/docs/superpowers/execution/2026-01-01-x"
+cp "$REPO/scripts/compound-v-dashboard.py" "$npc_proj/scripts/" 2>/dev/null || true
+cat >"$npc_proj/docs/superpowers/execution/2026-01-01-x/state.json" <<'JSON'
+{"run_id":"2026-01-01-x","phase":"DISPATCHED","updated_at":"2026-09-02T00:00:00Z",
+ "jobs":{"a":{"status":"pending"},"b":{"status":"done"}}}
+JSON
+# A run dir is only a run dir to the dashboard when it carries a manifest as well
+# as a state file — found by probing the real scanner, not by reading it.
+printf 'run_id: 2026-01-01-x\n' >"$npc_proj/docs/superpowers/execution/2026-01-01-x/manifest.yaml"
+
+run_pc() { OUT="$(printf '%s' "$1" | bash "$PRECOMPACT" 2>/dev/null)"; RC=$?; }
+run_fl() { OUT="$(printf '%s' "$1" | bash "$FAILLEDGER" 2>/dev/null)"; RC=$?; }
+pc_json() { jq -n --arg cwd "$1" --arg sid "$2" --arg ev "$3" \
+  '{hook_event_name:$ev,session_id:$sid,cwd:$cwd,trigger:"auto"}'; }
+
+run_pc "$(pc_json "$npc_proj" pc-1 PreCompact)"
+check "PRECOMPACT: takes a snapshot when work is unfinished" \
+  "$([ "$RC" = 0 ] && [ -n "$(find "$TMPDIR" -name 'snap-*' 2>/dev/null)" ] && echo 1 || echo 0)"
+check "PRECOMPACT: never blocks compaction (no continue:false, no decision)" \
+  "$(printf '%s' "$OUT" | jq -e 'has("continue") or has("decision")' >/dev/null 2>&1 \
+     && echo 0 || echo 1)"
+run_pc "$(pc_json "$npc_proj" pc-1 PostCompact)"
+check "PRECOMPACT: ignores every event but PreCompact" \
+  "$([ -z "$OUT" ] && echo 1 || echo 0)"
+nopc="$WORK/projNoPC"; mkdir -p "$nopc"
+run_pc "$(pc_json "$nopc" pc-2 PreCompact)"
+check "PRECOMPACT: a project without Compound V gets nothing" \
+  "$([ -z "$OUT" ] && echo 1 || echo 0)"
+
+# THE CALLER. Write with PreCompact, then make the DISK disagree, then read with
+# PostCompact: the reported line must be the snapshot's, not the disk's.
+/usr/bin/python3 - "$npc_proj" <<'PYX'
+import io, json, sys, os
+p = os.path.join(sys.argv[1], "docs/superpowers/execution/2026-01-01-x/state.json")
+d = json.load(io.open(p))
+d["phase"] = "MERGED"
+for v in d["jobs"].values():
+    v["status"] = "done"
+io.open(p, "w").write(json.dumps(d))
+PYX
+OUT="$(printf '%s' "$(jq -n --arg cwd "$npc_proj" \
+  '{hook_event_name:"PostCompact",session_id:"pc-1",cwd:$cwd,trigger:"auto",compact_summary:"nothing"}')" \
+  | bash "${POSTCOMPACT_SRC:-$REPO/hooks/postcompact-resume.sh}" 2>/dev/null)"
+check "THE CALLER: PostCompact reports the SNAPSHOT, not the changed disk" \
+  "$(printf '%s' "$OUT" | grep -q 'UNFINISHED COMPOUND V WORK' && echo 1 || echo 0)"
+OUT2="$(printf '%s' "$(jq -n --arg cwd "$npc_proj" \
+  '{hook_event_name:"PostCompact",session_id:"no-snap",cwd:$cwd,trigger:"auto",compact_summary:"x"}')" \
+  | bash "${POSTCOMPACT_SRC:-$REPO/hooks/postcompact-resume.sh}" 2>/dev/null)"
+check "THE CALLER: without a snapshot it falls back to the live query" \
+  "$([ -z "$OUT2" ] && echo 1 || echo 0)"
+
+# --- the failure ledger -----------------------------------------------------
+fl_json() { jq -n --arg cwd "$1" --arg ev "$2" --arg tool "$3" --arg err "$4" \
+  '{hook_event_name:$ev,session_id:"fl-1",cwd:$cwd,tool_name:$tool,agent_id:"ag-1",
+    tool_response:{error:$err}}'; }
+run_fl "$(fl_json "$npc_proj" PostToolUseFailure Bash "pytest: not found")"
+led="$(find "$TMPDIR" -name 'fail-*.jsonl' 2>/dev/null | head -1)"
+check "LEDGER: records a failure" \
+  "$([ -n "$led" ] && grep -q '"tool":"Bash"' "$led" && echo 1 || echo 0)"
+check "LEDGER: says NOTHING on stdout (the tool error is already visible)" \
+  "$([ -z "$OUT" ] && echo 1 || echo 0)"
+run_fl "$(fl_json "$npc_proj" PostToolUseFailure Write "EACCES")"
+check "LEDGER: appends rather than overwrites" \
+  "$([ "$(wc -l <"$led" | tr -d ' ')" = "2" ] && echo 1 || echo 0)"
+check "LEDGER: every line is valid JSON" \
+  "$(jq -e . "$led" >/dev/null 2>&1 && echo 1 || echo 0)"
+check "LEDGER: stores NO tool input — a failed Write must not leak its content" \
+  "$(jq -r 'keys | join(",")' "$led" 2>/dev/null | head -1 \
+     | grep -qv 'tool_input\|content\|command' && echo 1 || echo 0)"
+run_fl "$(fl_json "$npc_proj" PostToolUse Bash "x")"
+check "LEDGER: ignores every event but PostToolUseFailure" \
+  "$([ "$(wc -l <"$led" | tr -d ' ')" = "2" ] && echo 1 || echo 0)"
+run_fl "$(fl_json "$nopc" PostToolUseFailure Bash "x")"
+check "LEDGER: a project without Compound V is not recorded" \
+  "$([ "$(find "$TMPDIR" -name 'fail-*.jsonl' | wc -l | tr -d ' ')" = "1" ] && echo 1 || echo 0)"
+
 echo "-------------------------------------------"
 printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" = "0" ] || exit 1
