@@ -1,27 +1,52 @@
 {
   "run_id": "2026-09-02-v3.4-native-first-r2",
   "phase": "PARTITION_VERIFIED",
-  "updated_at": "2026-09-02T17:30:30Z",
+  "updated_at": "2026-09-02T19:26:00Z",
   "pre_eval_id": "2026-09-02T170442Z-v3-4-native-first-replace-the-epic-goal-feature-a-of-hooks-e-5664",
   "supersedes": "2026-09-02-v3.4-native-first",
   "jobs": {
     "epic-native": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_f0505df2-99c-1",
+      "session_id": null,
+      "baseline": "aeae409ecef127940c75893c73abb926be2a1cca",
+      "realised_commit": "aeae409ecef127940c75893c73abb926be2a1cca",
+      "merged": {
+        "realised_commit": "aeae409ecef127940c75893c73abb926be2a1cca",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "8b24c6b40142a0de6823953a0373201175927438"
+      }
     },
     "triage-hook": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_f0505df2-99c-2",
+      "session_id": null,
+      "baseline": "aeae409ecef127940c75893c73abb926be2a1cca",
+      "realised_commit": "edbccaa99ec1aa2d3a40b5aa9ba899cc3bf2c54e",
+      "merged": {
+        "realised_commit": "edbccaa99ec1aa2d3a40b5aa9ba899cc3bf2c54e",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "edbccaa99ec1aa2d3a40b5aa9ba899cc3bf2c54e",
+        "note": "recovered: the finalizer pruned the worktree after a no-op merge; the job's edits were replayed from the agent transcript and committed by the orchestrator"
+      }
     },
     "observe-native": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_f0505df2-99c-3",
+      "session_id": null,
+      "baseline": "aeae409ecef127940c75893c73abb926be2a1cca",
+      "realised_commit": "aeae409ecef127940c75893c73abb926be2a1cca",
+      "merged": {
+        "realised_commit": "aeae409ecef127940c75893c73abb926be2a1cca",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "8b24c6b40142a0de6823953a0373201175927438"
+      }
     },
     "docs-release": {
       "status": "pending",
@@ -34,6 +59,23 @@
       "isolation": "direct",
       "worktree": null,
       "session_id": null
+    }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "epic-native",
+        "triage-hook",
+        "observe-native"
+      ],
+      "merged": [
+        "epic-native",
+        "triage-hook",
+        "observe-native"
+      ],
+      "commit": "edbccaa99ec1aa2d3a40b5aa9ba899cc3bf2c54e",
+      "integrated": true,
+      "note": "epic-native+observe-native in 8b24c6b; triage-hook in edbccaa99ec1aa2d3a40b5aa9ba899cc3bf2c54e"
     }
   }
 }

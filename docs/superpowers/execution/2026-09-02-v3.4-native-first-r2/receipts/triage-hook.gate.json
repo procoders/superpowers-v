@@ -1,0 +1,74 @@
+{
+  "baseline_commit": "aeae409ecef127940c75893c73abb926be2a1cca",
+  "diff_digest": "sha256:5a1bdb3fd45484798bd012d3a251eb2acdd483314edaffcdac81c1c1bc1f9155",
+  "exit_code": 0,
+  "job_id": "triage-hook",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"aeae409ecef127940c75893c73abb926be2a1cca\",\n  \"changed\": [\n    \"commands/v-orchestrate.md\",\n    \"commands/v-triage.md\",\n    \"hooks/hooks.json\",\n    \"hooks/triage-prompt-nudge.sh\",\n    \"scripts/compound-v-preeval.py\",\n    \"skills/compound-v/phase-preeval.md\",\n    \"tests/test-native-points.sh\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-preeval.py\",\n    \"hooks/triage-prompt-nudge.sh\",\n    \"hooks/tool-failure-ledger.sh\",\n    \"hooks/hooks.json\",\n    \"tests/test-native-points.sh\",\n    \"commands/v-triage.md\",\n    \"commands/v-orchestrate.md\",\n    \"skills/compound-v/phase-preeval.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "aeae409ecef127940c75893c73abb926be2a1cca",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "commands/v-orchestrate.md",
+      "commands/v-triage.md",
+      "hooks/hooks.json",
+      "hooks/triage-prompt-nudge.sh",
+      "scripts/compound-v-preeval.py",
+      "skills/compound-v/phase-preeval.md",
+      "tests/test-native-points.sh"
+    ],
+    "checks": [
+      {
+        "checker": "bash tests/test-epic-goal-stop.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash tests/test-triage-landing.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'bash tests/test-epic-goal-stop.sh && bash tests/test-native-points.sh'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f scripts/compound-v-preeval.py ] || exit 0; /usr/bin/python3 scripts/compound-v-preeval.py --selftest'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f tests/test-native-points.sh ] || exit 0; bash tests/test-native-points.sh'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (4 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 5 command(s) from 7 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)",
+      "unmapped: commands/v-orchestrate.md, skills/compound-v/phase-preeval.md matched no `when` glob \u2014 unknown blast radius resolves to full_command, never to nothing"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_f0505df2-99c-2"
+}

@@ -1,0 +1,39 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    ".github/workflows/validate.yml",
+    "CONVENTIONS.md",
+    "commands/v-epic.md",
+    "commands/v-init.md",
+    "commands/v-onboard.md",
+    "commands/v-status.md",
+    "docs/superpowers/loops.md",
+    "hooks/epic-goal-stop.sh",
+    "scripts/compound-v-epic-state.py",
+    "skills/compound-v/epic-mode.md",
+    "tests/test-epic-goal-stop.sh"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "aeae409ecef127940c75893c73abb926be2a1cca",
+    "diff_digest": "sha256:cb93ca310c7063e0d27a25e6b1ebe296e496e54a0ad15d3fbd2cb08a1a86346d",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"aeae409ecef127940c75893c73abb926be2a1cca\",\n  \"changed\": [\n    \".github/workflows/validate.yml\",\n    \"CONVENTIONS.md\",\n    \"commands/v-epic.md\",\n    \"commands/v-init.md\",\n    \"commands/v-onboard.md\",\n    \"commands/v-status.md\",\n    \"docs/superpowers/loops.md\",\n    \"hooks/epic-goal-stop.sh\",\n    \"scripts/compound-v-epic-state.py\",\n    \"skills/compound-v/epic-mode.md\",\n    \"tests/test-epic-goal-stop.sh\"\n  ],\n  \"allowed\": [\n    \"hooks/epic-goal-stop.sh\",\n    \"tests/test-epic-goal-stop.sh\",\n    \"scripts/compound-v-epic-state.py\",\n    \"scripts/compound-v-epic-watch.py\",\n    \"scripts/compound-v-headless-shim.py\",\n    \"commands/v-epic.md\",\n    \"commands/v-init.md\",\n    \"commands/v-onboard.md\",\n    \"commands/v-status.md\",\n    \"skills/compound-v/epic-mode.md\",\n    \"docs/superpowers/loops.md\",\n    \".github/workflows/validate.yml\",\n    \"CONVENTIONS.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "aeae409ecef127940c75893c73abb926be2a1cca",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Epic goal and resurrection go native: /goal, /loop, /schedule replace Feature A and the schedulers",
+  "tests": {
+    "command": "bash tests/test-epic-goal-stop.sh\nbash -c 'bash tests/test-epic-goal-stop.sh && bash tests/test-native-points.sh'\nbash -c '[ -f scripts/compound-v-epic-state.py ] || exit 0; /usr/bin/python3 scripts/compound-v-epic-state.py --selftest'\nbash -c '[ -f tests/test-epic-goal-stop.sh ] || exit 0; bash tests/test-epic-goal-stop.sh'\nbash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 5
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_f0505df2-99c-1"
+}

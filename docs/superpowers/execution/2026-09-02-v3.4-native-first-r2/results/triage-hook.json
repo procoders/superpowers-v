@@ -1,0 +1,19 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [],
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "The UserPromptSubmit hook runs the scorer; attended DIRECT is an ordinary commit; the failure ledger is removed",
+  "tests": {
+    "command": "bash tests/test-epic-goal-stop.sh\nbash tests/test-triage-landing.sh\nbash -c 'bash tests/test-epic-goal-stop.sh && bash tests/test-native-points.sh'\nbash -c '[ -f scripts/compound-v-preeval.py ] || exit 0; /usr/bin/python3 scripts/compound-v-preeval.py --selftest'\nbash -c '[ -f tests/test-native-points.sh ] || exit 0; bash tests/test-native-points.sh'\nbash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 6
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_f0505df2-99c-2"
+}

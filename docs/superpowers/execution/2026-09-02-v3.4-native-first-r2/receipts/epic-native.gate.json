@@ -1,0 +1,72 @@
+{
+  "baseline_commit": "aeae409ecef127940c75893c73abb926be2a1cca",
+  "diff_digest": "sha256:cb93ca310c7063e0d27a25e6b1ebe296e496e54a0ad15d3fbd2cb08a1a86346d",
+  "exit_code": 0,
+  "job_id": "epic-native",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"aeae409ecef127940c75893c73abb926be2a1cca\",\n  \"changed\": [\n    \".github/workflows/validate.yml\",\n    \"CONVENTIONS.md\",\n    \"commands/v-epic.md\",\n    \"commands/v-init.md\",\n    \"commands/v-onboard.md\",\n    \"commands/v-status.md\",\n    \"docs/superpowers/loops.md\",\n    \"hooks/epic-goal-stop.sh\",\n    \"scripts/compound-v-epic-state.py\",\n    \"skills/compound-v/epic-mode.md\",\n    \"tests/test-epic-goal-stop.sh\"\n  ],\n  \"allowed\": [\n    \"hooks/epic-goal-stop.sh\",\n    \"tests/test-epic-goal-stop.sh\",\n    \"scripts/compound-v-epic-state.py\",\n    \"scripts/compound-v-epic-watch.py\",\n    \"scripts/compound-v-headless-shim.py\",\n    \"commands/v-epic.md\",\n    \"commands/v-init.md\",\n    \"commands/v-onboard.md\",\n    \"commands/v-status.md\",\n    \"skills/compound-v/epic-mode.md\",\n    \"docs/superpowers/loops.md\",\n    \".github/workflows/validate.yml\",\n    \"CONVENTIONS.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "aeae409ecef127940c75893c73abb926be2a1cca",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      ".github/workflows/validate.yml",
+      "CONVENTIONS.md",
+      "commands/v-epic.md",
+      "commands/v-init.md",
+      "commands/v-onboard.md",
+      "commands/v-status.md",
+      "docs/superpowers/loops.md",
+      "hooks/epic-goal-stop.sh",
+      "scripts/compound-v-epic-state.py",
+      "skills/compound-v/epic-mode.md",
+      "tests/test-epic-goal-stop.sh"
+    ],
+    "checks": [
+      {
+        "checker": "bash tests/test-epic-goal-stop.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'bash tests/test-epic-goal-stop.sh && bash tests/test-native-points.sh'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f scripts/compound-v-epic-state.py ] || exit 0; /usr/bin/python3 scripts/compound-v-epic-state.py --selftest'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f tests/test-epic-goal-stop.sh ] || exit 0; bash tests/test-epic-goal-stop.sh'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (4 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 3 command(s) from 11 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)",
+      "unmapped: .github/workflows/validate.yml, CONVENTIONS.md, commands/v-epic.md, commands/v-init.md, commands/v-onboard.md, commands/v-status.md, docs/superpowers/loops.md, skills/compound-v/epic-mode.md matched no `when` glob \u2014 unknown blast radius resolves to full_command, never to nothing"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_f0505df2-99c-1"
+}

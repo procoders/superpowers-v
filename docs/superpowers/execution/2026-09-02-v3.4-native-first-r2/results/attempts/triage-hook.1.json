@@ -1,0 +1,19 @@
+{
+  "blocked": true,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [],
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "blocked",
+  "summary": "Command ran exactly as specified and exited 0, but it did not finish inside the 120s foreground window, so the harness auto-detached it to a background task (id b7p3b8n4z, output file /private/tmp/claude-501/-Users-oleg-Dev-superpowers-v/e619cb38-ebe3-4b45-a1f4-c3007616291d/tasks/b7p3b8n4z.output). A completion notification confirmed exit code 0, but my Bash tool is clamped to only the exact 'gate-receipt' command form given, so I cannot cat/read that output file, and no Read/file-viewer tool is available in this session to retrieve its stdout another way. Per instructions I did not re-run the command or run any other command to work around this. Result: the command succeeded, but I cannot relay its JSON output verbatim as required \u2014 reporting blocked rather than fabricating or approximating content.",
+  "tests": {
+    "command": "bash tests/test-epic-goal-stop.sh\nbash tests/test-triage-landing.sh\nbash -c 'bash tests/test-epic-goal-stop.sh && bash tests/test-native-points.sh'\nbash -c '[ -f scripts/compound-v-preeval.py ] || exit 0; /usr/bin/python3 scripts/compound-v-preeval.py --selftest'\nbash -c '[ -f tests/test-native-points.sh ] || exit 0; bash tests/test-native-points.sh'\nbash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 6
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_f0505df2-99c-2"
+}
