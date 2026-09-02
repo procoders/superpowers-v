@@ -2454,6 +2454,29 @@ def _job_result_from(verdict, job, state_job, tests=None, contract=None,
     else:
         status = "error"
 
+    # A RED TEST FLOOR BLOCKS, and until dogfood 14 nothing read it.
+    #
+    # That run declared `floor_command: sh -c 'echo ...; exit 3'`. The floor ran,
+    # failed, and was recorded with perfect honesty — `exit_code: 3`, the failing
+    # command listed under `failures` — and the job was still `success` and still
+    # merged, because status came from the SCOPE verdict alone. The scope gate
+    # answers "did this job write outside its lane"; it has no opinion about
+    # whether the code works, and nothing else was asking.
+    #
+    # The `tests` block is the fourteenth mechanism this project built and left
+    # without a consumer. A floor is early feedback by charter — it does not
+    # restore what a full suite guarantees, and nothing here claims it does — but a
+    # floor that FAILED is not a weak signal, it is a definite one.
+    #
+    # `blocked`, not `error`: nothing is broken about the machinery, the job's work
+    # did not pass its own declared tests. Same class as an out-of-lane write, for
+    # the same reason — the work is refused, not the pipeline.
+    tests_block = _tests_block_from_floor(tests, contract, job) if tests else None
+    if status == "success" and isinstance(tests_block, dict):
+        t_exit = tests_block.get("exit_code")
+        if isinstance(t_exit, int) and not isinstance(t_exit, bool) and t_exit != 0:
+            status = "blocked"
+
     # The three REQUIRED fields below are typed `string`/`string`/`integer` in the
     # schema, with the empty string and 0 documented as their own "not applicable"
     # values ("Empty string when the backend has no resumable session"; "empty
@@ -2491,7 +2514,6 @@ def _job_result_from(verdict, job, state_job, tests=None, contract=None,
         "failure_class": None if status in ("success", "blocked") else "other",
         "retry_after_seconds": retry_after,
     }
-    tests_block = _tests_block_from_floor(tests, contract, job)
     if tests_block is not None:
         result["tests"] = tests_block
 
@@ -3602,6 +3624,36 @@ def selftest():
                             "--manifest", nw_man_p, "--repo-root", tmp,
                             "--verdict-json", nw_verdict])
         nw_res = _read_json(os.path.join(nw_run, "results", "j-lanes.json"), None)
+        # ---- 3.3.0 (dogfood 14): a RED FLOOR blocks -------------------------
+        _floor_fail = {"phase": "floor", "passed": False,
+                       "checks": [{"checker": "sh -c 'exit 3'", "rc": 3}],
+                       "failures": ["sh -c 'exit 3'"]}
+        _floor_ok = {"phase": "floor", "passed": True,
+                     "checks": [{"checker": "/bin/echo ok", "rc": 0}],
+                     "failures": []}
+        _clean_verdict = {"verdict": "pass", "exit_code": 0,
+                          "raw_stdout": json.dumps({"verdict": "pass",
+                                                    "changed": ["docs/x/a.md"]}),
+                          "worktree": "/tmp/wt"}
+        _jr_red = _job_result_from(_clean_verdict, {"id": "j", "backend": "claude",
+                                                    "write_allowed": ["docs/x/**"]},
+                                   {}, tests=_floor_fail)
+        _check("a passing scope gate with a RED floor is blocked, not success",
+               _jr_red["status"] == "blocked", str(_jr_red["status"]))
+        _check("...and the failing command is still recorded",
+               _jr_red.get("tests", {}).get("exit_code") == 3)
+        _jr_green = _job_result_from(_clean_verdict,
+                                     {"id": "j", "backend": "claude",
+                                      "write_allowed": ["docs/x/**"]},
+                                     {}, tests=_floor_ok)
+        _check("a green floor leaves success alone",
+               _jr_green["status"] == "success", str(_jr_green["status"]))
+        _jr_none = _job_result_from(_clean_verdict,
+                                    {"id": "j", "backend": "claude",
+                                     "write_allowed": ["docs/x/**"]}, {})
+        _check("no floor at all is not a failure",
+               _jr_none["status"] == "success")
+
         _check("a lane-declaring job with no observable worktree is RECORDED",
                rc_nw == 0 and isinstance(nw_res, dict), str(rc_nw))
         _check("...and its status is blocked, not error",

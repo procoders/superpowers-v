@@ -1,0 +1,9 @@
+{
+  "scope": "impacted",
+  "resolved_commands": [
+    "sh -c 'echo floor-deliberately-failing >&2; exit 3'",
+    "/bin/echo scoped"
+  ],
+  "floor_command": "sh -c 'echo floor-deliberately-failing >&2; exit 3'",
+  "full_command": "/bin/echo full"
+}
