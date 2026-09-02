@@ -14,6 +14,38 @@ You may be running in parallel with code-archaeology (Phase 1A) and the domain-e
   - Phase 1B handles the DOMAIN/regulatory reality
   - YOU handle LIBRARY currency and API signatures only
 
+## Step 0 — ask what this project already knows (V-memory)
+
+**Before you read a single file, ask the recall layer.** This repository keeps its
+own prose — specs, ADRs, architecture notes, dogfood records of what actually broke
+— and it is searchable. Rediscovering something already written down is the most
+common way an audit wastes its budget and, worse, contradicts a decision nobody
+told you about.
+
+```bash
+python3 scripts/compound-v-memory.py search "<3-8 words from the spec>" --intent planning --top 8
+```
+
+Run it two or three times with different phrasings: the feature's own words, the
+subsystem it touches, and the failure you most expect. If the plugin is installed
+rather than checked out, the script is at `${CLAUDE_PLUGIN_ROOT}/scripts/`.
+
+**What to do with it, and what NOT to do.**
+
+* Treat every hit as **evidence with a citation**, exactly like a file you read: name
+  the document when you use it, and quote rather than paraphrase a constraint.
+* A recalled claim can be **stale**. The prose was true when written; the code is
+  the present tense. Where they disagree, the code wins and you say so — that
+  disagreement is itself a finding worth reporting.
+* **Recall is never a routing input.** It does not decide backend, tier, isolation
+  or model; that order is deterministic and lives in `routing-policy.md`. It informs
+  what you look at and what you warn about, nothing else.
+* An empty result is a normal answer. Say "V-memory returned nothing for X" and
+  carry on; silence is not permission to invent history.
+
+If the script is missing or errors, note that in your output and proceed — a recall
+layer that is absent must never block the audit it was meant to accelerate.
+
 ## Required inputs (the dispatcher should provide)
 
 1. **Spec text** — full verbatim text of the brainstorming output.

@@ -4,6 +4,32 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [3.3.3] - 2026-09-02
+
+### Fixed — V-memory had no callers among the agents
+
+V-memory shipped in v2.0. Asked whether the design subagents use it, the answer was measurable and blunt: **all six agents contained zero references** to V-memory, `/v:remember` or `compound-v-memory.py`.
+
+Recall was a command a human ran. So the code archaeologist re-read code this repository had already described, the domain expert re-derived conclusions already written into an ADR, and the doc validator re-checked libraries a previous audit had checked. That is the same defect this release line kept finding — **a mechanism with no caller** — one layer up, in prose instead of code.
+
+**Five agents now consult it, each at the right intent:**
+
+| Agent | Call | What it is for |
+|---|---|---|
+| `code-archaeologist` | `search --intent planning` | do not re-derive what the repo already documents |
+| `domain-expert` | `search --intent planning` | do not re-litigate a settled domain decision |
+| `doc-validator` | `search --intent planning` | a previous audit may already have checked this library |
+| `spec-reviewer` | `search --intent review` + `recall-check` | the failure this shape produced last time |
+| `partition-reviewer` | `recall-check --files <lanes>` | a partition can be disjoint and still one this repo has failed on |
+
+`parallel-dispatcher` is **deliberately excluded**: it executes a decided manifest and must not acquire opinions from prose mid-dispatch.
+
+**The rules that keep it safe are written into every one of them.** A recalled claim is evidence with a citation, not authority — name the document, quote the constraint, and where prose and code disagree the code wins and the disagreement is itself a finding. Recall is **never a routing input**; that order stays deterministic in `routing-policy.md`. The one path from recall back into action is `recall-check`'s `tighten`, which is escalation-only: it can force worktree isolation or an extra review pass, and can never loosen a control, reroute to a cheaper backend, or turn a FAIL into a PASS. An empty result is a normal answer, and a missing script is noted and stepped past — a recall layer that is absent must never block the audit it was meant to accelerate.
+
+### Added — `tests/test-agent-recall.sh`
+
+A prose instruction has no compiler, so this file is its compiler: 29 checks that the instruction is present in each of the five, that it names a command that really exists with the flags it uses, that it states both safety rules, and that the dispatcher has *not* acquired one. Watched failing — strip the block from one agent and four checks redden.
+
 ## [3.3.2] - 2026-09-02
 
 ### Fixed — V-memory was 43% machine output

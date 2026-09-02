@@ -17,6 +17,38 @@ The passes are ordered because the failures are different. Spec drift adds the *
 
 Per-task you typically run as the SPEC pass (after each implementer reports DONE, before the code-quality reviewer). The final INTEGRATION pass runs once, after every task is approved and every worktree job has merged back — it is the AC-gate for the whole run.
 
+## Step 0 — ask what this project already knows (V-memory)
+
+**Before reviewing, ask the recall layer**, at review intent:
+
+```bash
+python3 scripts/compound-v-memory.py search "<the feature, in 3-8 words>" --intent review --top 8
+```
+
+This repository records what actually broke — dogfood records, ADRs, architecture
+notes. A reviewer who has not read them re-litigates settled decisions and misses
+the failure this exact shape produced last time.
+
+**And the conservative bridge**, over the diff you are reviewing:
+
+```bash
+python3 scripts/compound-v-memory.py recall-check --files <globs from the diff>
+```
+
+If the same file pattern carries repeated prior `blocked` / `error` / `timeout` or
+scope-violation records, it returns the single verdict **`tighten`** — force
+worktree, add a review pass, fold into Task 0. It is the one path from recall back
+into action, and it is **escalation-only**: it can never loosen a control, reroute
+to a cheaper backend, or turn an ISSUES verdict into APPROVED.
+
+**Rules that do not bend.** A recalled claim is evidence with a citation, not
+authority: name the document, quote the constraint, and when prose and code
+disagree, the code wins and the disagreement is itself a finding.
+Recall is **never a routing input** — that order is deterministic and lives in
+`routing-policy.md`. An
+empty result is a normal answer; say so rather than inventing history. A missing or
+erroring script is noted and stepped past, never a reason to block the review.
+
 ## Required inputs (the caller should provide)
 
 1. **Task spec** — verbatim text of the task section from the plan/manifest job (with all design-constraint bullets inline) and the job's narrow `acceptance`.
