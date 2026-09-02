@@ -2583,17 +2583,27 @@ def merge_back(worktree, repo_root, baseline, files_changed):
 #     `full_command` instead of silently dropping the previously-failing set.
 #     Nothing here measures duration, so nothing here invents one.
 #   * `scope` is copied from the resolved contract slice the same floor ran, and
-#     falls back to the job's declared `test_scope`, then to `full` — which is
-#     the resolver's OWN default for an unset scope, not a guess about this run.
+#     falls back to the job's declared `test_scope`, then to a MIRROR of the
+#     resolver's own default — `default_scope_for(contract, tier)` — which needs
+#     the manifest's triage tier as well as the contract. Until 3.4.1 that last
+#     fallback read the `impacted_map` alone and never saw the tier, so a job the
+#     resolver had scoped `floor_only` (DIRECT tier with a declared floor) was
+#     recorded as `impacted`: a scope in the audit record that no run ever used.
+#     `tests.scope` is exactly the field a reviewer checks against the tier, so a
+#     label derived from less than the resolver used cannot do that job.
 # --------------------------------------------------------------------------- #
 TESTS_SCOPES = ("full", "impacted", "floor_only")
 
 
-def _tests_block_from_floor(floor, contract=None, job=None):
+def _tests_block_from_floor(floor, contract=None, job=None, tier=None):
     """Translate a `test-floor` document into the schema's `tests` block.
 
     Returns None when the floor ran no command — the schema says to omit the
     object entirely rather than report a fabricated zero.
+
+    `tier` is the manifest's `triage.tier`. It is only consulted by the last-resort
+    scope fallback, which mirrors the resolver's own default; the resolved slice's
+    own `scope` still wins whenever the caller has one.
     """
     if not isinstance(floor, dict):
         return None
@@ -2623,13 +2633,23 @@ def _tests_block_from_floor(floor, contract=None, job=None):
             scope = candidate
             break
     if scope is None:
-        # Mirror of compound-v-fastpath-run.py:default_scope_for. DUPLICATED on
-        # purpose — both are standalone stdlib CLIs with no shared import (house
-        # style). Keep in sync. Reporting a flat "full" here after the resolver
-        # derived "impacted" would put a scope in the audit record that no run
-        # ever used, which is a fabricated field wearing a schema-valid value.
+        # Mirror of compound-v-fastpath-run.py:default_scope_for(contract, tier).
+        # DUPLICATED on purpose — both are standalone stdlib CLIs with no shared
+        # import (house style). Keep in sync, and keep ALL THREE branches: this
+        # read the `impacted_map` alone until 3.4.1 and so could never report
+        # `floor_only`, labelling a DIRECT-tier job that ran only its floor as
+        # `impacted`. Reporting a scope the resolver did not select puts a value in
+        # the audit record that no run ever used — a fabricated field wearing a
+        # schema-valid value, in the one field a reviewer checks against the tier.
+        tier_s = str(tier or "").strip().upper()
+        floor_cmd = (contract or {}).get("floor_command")
         rows = (contract or {}).get("impacted_map")
-        scope = "impacted" if isinstance(rows, list) and rows else "full"
+        if tier_s == "DIRECT" and isinstance(floor_cmd, str) and floor_cmd.strip():
+            scope = "floor_only"
+        elif isinstance(rows, list) and rows:
+            scope = "impacted"
+        else:
+            scope = "full"
 
     block = {
         "command": "\n".join(commands),
@@ -2740,12 +2760,14 @@ def _maybe_append_run_actual(run_dir, manifest, state, repo_root):
 
 
 def _job_result_from(verdict, job, state_job, tests=None, contract=None,
-                     isolation=None):
+                     isolation=None, tier=None):
     """The canonical job_result. Enforcement fields come from the GATE, not the
     implementer: `blocked`, `files_changed` and `violations` are git-derived.
 
     `tests` is the RAW `test-floor` document; it is translated here into the
-    schema's four-field block (see `_tests_block_from_floor`)."""
+    schema's four-field block (see `_tests_block_from_floor`). `tier` is the
+    manifest's `triage.tier`, which that translation needs to label `tests.scope`
+    the way the resolver would."""
     raw = verdict.get("raw_stdout") or ""
     scope = None
     try:
@@ -2785,7 +2807,7 @@ def _job_result_from(verdict, job, state_job, tests=None, contract=None,
     # `blocked`, not `error`: nothing is broken about the machinery, the job's work
     # did not pass its own declared tests. Same class as an out-of-lane write, for
     # the same reason — the work is refused, not the pipeline.
-    tests_block = _tests_block_from_floor(tests, contract, job) if tests else None
+    tests_block = _tests_block_from_floor(tests, contract, job, tier) if tests else None
     if status == "success" and isinstance(tests_block, dict):
         t_exit = tests_block.get("exit_code")
         if isinstance(t_exit, int) and not isinstance(t_exit, bool) and t_exit != 0:
@@ -3034,8 +3056,13 @@ def cmd_record(argv):
     elif verdict.get("baseline_commit"):
         state_job["baseline"] = verdict["baseline_commit"]
 
+    # The manifest's triage tier is one of the two inputs the resolver used to pick
+    # this job's scope, so the label has to see it too (see `_tests_block_from_floor`).
+    _triage = manifest.get("triage")
+    tier = _triage.get("tier") if isinstance(_triage, dict) else None
+
     result = _job_result_from(verdict, job, state_job, tests=tests,
-                              contract=contract, isolation=isolation)
+                              contract=contract, isolation=isolation, tier=tier)
 
     # ---- ONE result file per job -------------------------------------------
     # results/<id>.json is the primary and there is exactly one. The integration
@@ -4826,6 +4853,45 @@ def selftest():
                _tests_block_from_floor(
                    {"phase": "test_floor", "tier_used": 0, "passed": False,
                     "merge_blocked": True, "checks": [], "reasons": ["x"]}) is None)
+
+        # --- tests.scope is the RESOLVER's answer, not an impacted_map sniff ----
+        # `tests.scope` is the field a reviewer checks against the manifest's tier,
+        # so the fallback has to mirror `default_scope_for(contract, tier)` — ALL
+        # THREE branches. Reading the map alone could never say `floor_only`, and
+        # a DIRECT job that ran only its floor was recorded as `impacted`.
+        _c_map = {"impacted_map": [{"when": "src/**", "run": "pytest src"}],
+                  "floor_command": "sh -c 'exit 0'", "full_command": "pytest"}
+        _c_nomap = {"floor_command": "sh -c 'exit 0'", "full_command": "pytest"}
+        _check("DIRECT tier with a declared floor is recorded as floor_only",
+               _tests_block_from_floor(floor_pass, _c_map, {},
+                                       "DIRECT")["scope"] == "floor_only")
+        _check("the tier is matched case-insensitively, like the resolver's",
+               _tests_block_from_floor(floor_pass, _c_map, {},
+                                       " direct ")["scope"] == "floor_only")
+        _check("DIRECT with NO floor does not invent floor_only",
+               _tests_block_from_floor(
+                   floor_pass, {"impacted_map": _c_map["impacted_map"]}, {},
+                   "DIRECT")["scope"] == "impacted")
+        _check("SCOPED and FULL tiers still honour the map, exactly as the resolver",
+               _tests_block_from_floor(floor_pass, _c_map, {},
+                                       "FULL")["scope"] == "impacted"
+               and _tests_block_from_floor(floor_pass, _c_map, {},
+                                           "SCOPED")["scope"] == "impacted")
+        _check("no map and no DIRECT floor is full, the resolver's own default",
+               _tests_block_from_floor(floor_pass, _c_nomap, {},
+                                       "FULL")["scope"] == "full")
+        _check("the resolved slice's own scope still WINS over any re-derivation",
+               _tests_block_from_floor(floor_pass, dict(_c_map, scope="full"), {},
+                                       "DIRECT")["scope"] == "full")
+        _check("a job's declared test_scope outranks the fallback too",
+               _tests_block_from_floor(floor_pass, _c_map,
+                                       {"test_scope": "floor_only"},
+                                       "FULL")["scope"] == "floor_only")
+        _check("every recorded scope is one the schema allows",
+               all(_tests_block_from_floor(floor_pass, c, {}, t)["scope"]
+                   in TESTS_SCOPES
+                   for c in (_c_map, _c_nomap, {})
+                   for t in ("DIRECT", "SCOPED", "FULL", None)))
 
         # --- the three fields that used to be null against integer/string ------
         result = _job_result_from(

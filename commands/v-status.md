@@ -106,16 +106,20 @@ probe fails, render an em-dash or skip the section — never invent an epic stat
     with `—` in every column and a plain note that the epic state could not be read; never break the
     table and never guess.
 
-## Dashboard (v2.15) — `--html` / `--serve`
+## Dashboard (v2.15) — `--html`
 
 The same read-only state this command renders as text can be rendered as a **browser dashboard** via
 [`scripts/compound-v-dashboard.py`](../scripts/compound-v-dashboard.py) — a **present-only** generator (no daemon,
-no persistent service, no control surface; observe in the browser, act via the CLI). Both modes are read-only and
-render **only** what is in the state files — measured-only usage (`—` when unmeasured), real counts (never a
+no persistent service, no control surface; observe in the browser, act via the CLI). It is read-only and
+renders **only** what is in the state files — measured-only usage (`—` when unmeasured), real counts (never a
 fabricated `%`-progress), real timestamps only.
 
+**For a LIVE view, use the native surfaces.** The bespoke local HTTP server was removed in v3.4 (native-first):
+[`/workflows`](https://code.claude.com/docs/en/workflows) shows a running dispatch's live progress, and `/tasks`
+shows `state.json` / `epic-state.json` progress for runs and epics without a snapshot step. `emit` is for a
+shareable, offline artifact — not for watching a dispatch in progress.
+
 - **`/v:status --html [run-id]`** → `python3 scripts/compound-v-dashboard.py emit [--execution-root docs/superpowers/execution] [--out docs/superpowers/execution/dashboard.html]`. Writes a **self-contained static HTML snapshot** (data inlined, offline, theme-aware — good for sharing / audit) of every run + epic, and prints the file path to open (`file://…`). The generated `dashboard.html` is git-ignored (a build artifact).
-- **`/v:status --serve [--port N]`** → `python3 scripts/compound-v-dashboard.py serve [--port 8787]`. Starts an **ephemeral, read-only, `127.0.0.1`-only** live viewer (GET/HEAD only, realpath-contained to the execution root, no directory-listing leak) that auto-refreshes as a run/epic progresses — the local, read-only equivalent of a competitor's live agent UI. It is a **foreground** process you Ctrl-C when done; it never backgrounds, never auto-launches, and writes nothing to any run dir. Control (merge/kill/retry) stays in the CLI by design.
 - **Resume context (banner-internal, v2.19)** → `python3 scripts/compound-v-dashboard.py resume [--max-age-hours N] [--json]`. Prints ONE line naming unfinished runs/epics, or nothing at all. It exists because `SessionStart` fires on **`compact`** and the banner is otherwise stateless: a compaction destroys the agent's *position* in a pipeline, not its knowledge of the rules. Freshness comes from the **recorded** `updated_at`/`last_progress_at`, never a file mtime — git rewrites mtimes on clone and branch-switch, which would make every historical run look seconds old on a fresh checkout. A record with no recorded timestamp stays **silent** rather than being assigned a fabricated age.
 
 The discoverable alias is [`/v:dashboard`](v-dashboard.md).

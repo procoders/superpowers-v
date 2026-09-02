@@ -993,9 +993,22 @@ def _run_dir_contained(repo, run_dir):
 def run_preeval(request, repo=".", taxonomy_path=None, t3_category=None,
                 pre_eval_id=None, ts=None, config_values=None, tier2=None,
                 churn_hot=None, advisor_hot=None, run_dir=None, _localize=None,
-                write_localization=True, stream_path=None, append_predicted=True):
+                write_localization=True, stream_path=None, append_predicted=True,
+                binding=None):
     """End-to-end Phase-P run. Writes intent → (localization) → taxonomy snapshot → record,
     then appends the `predicted` triage event. NEVER runs git (the orchestrator commits).
+
+    `binding` is the OPTIONAL Feature-C coverage binding (`session_id` / `base_commit`) that
+    `triage_request` supplies. When given, `declared_paths` is derived HERE from the
+    localization this run actually produced and the pair is threaded into `build_record`'s
+    own `binding=` kwarg, so the record's `digest` covers the binding by construction. Paths
+    `declare_paths` refuses come back on the result as `refused_paths`.
+
+    This is a REAL parameter rather than a `globals()["build_record"]` patch (pre-flight
+    amendment 2). The patch form captured the module global at call time, so two overlapping
+    `triage_request` calls in one interpreter would leave the global pointing at the first
+    call's closure — every later record bound to a stale `session_id`, which is a record
+    claiming Stop-gate coverage it does not have. A parameter cannot do that.
 
     `_localize` is injectable for tests (a callable `(request, repo, taxonomy) -> loc dict`);
     defaults to A1's real `localize()`. On `needs_t3`, returns the payload WITHOUT writing
@@ -1118,8 +1131,17 @@ def run_preeval(request, repo=".", taxonomy_path=None, t3_category=None,
         }
 
     # Phase-P step 4 (write) + 5 (append): write-once record, then predicted event.
+    # `declared_paths` is derived from THIS run's localization and rides in on the same
+    # kwarg as the rest of the binding, so the digest covers all of it (build_record's
+    # docstring: attaching binding fields after the fact silently breaks the digest).
+    record_binding = None
+    refused_paths = []
+    if binding:
+        declared, refused_paths = declare_paths(localization.get("resolved_paths"))
+        record_binding = dict(binding, declared_paths=declared)
     record = build_record(pre_eval_id, request, verdict, localization,
-                          taxonomy_version, taxonomy_ref, taxonomy_digest, ts=ts)
+                          taxonomy_version, taxonomy_ref, taxonomy_digest, ts=ts,
+                          binding=record_binding)
     record_rel, record_already_existed = write_record(repo, pre_eval_id, record)
 
     predicted_event = None
@@ -1148,6 +1170,7 @@ def run_preeval(request, repo=".", taxonomy_path=None, t3_category=None,
         "taxonomy_ref": taxonomy_ref,
         "taxonomy_digest": taxonomy_digest,
         "predicted_event": predicted_event,
+        "refused_paths": refused_paths,
     }
 
 
@@ -1300,10 +1323,12 @@ def triage_request(request, repo=".", session_id=None, base_commit=None,
     THE BINDING GOES THROUGH `build_record`'s kwarg, never onto the record afterwards.
     `digest` covers the whole record, so attaching the binding after the fact would ship
     a record whose own integrity digest no longer verifies — silently, because `digest`
-    is optional and only checked when present. Wrapping `build_record` is how the binding
+    is optional and only checked when present. `run_preeval(binding=…)` is how the binding
     reaches the ONE place that keeps the digest correct by construction, while
     `run_preeval` keeps owning the config kill-switch, the taxonomy snapshot, the Tier-2
-    lookup and the `predicted` event.
+    lookup and the `predicted` event. It is a plain parameter, never a monkey-patch of the
+    module's `build_record` global: a patch is not re-entrant, and two overlapping calls in
+    one interpreter would leave later records bound to an earlier call's session.
 
     `session_id` is bound EXACTLY as given, and an empty one binds null. The Stop-time
     triage gate compares it verbatim, so an invented value would claim coverage that does
@@ -1329,21 +1354,9 @@ def triage_request(request, repo=".", session_id=None, base_commit=None,
                                    "triage-outcomes.jsonl"))
 
     binding = {"session_id": sid, "base_commit": base}
-    refused_box = []
 
-    orig_build_record = build_record
-
-    def _bound_build_record(pre_eval_id, req, verdict, localization, *a, **kw):
-        declared, refused = declare_paths(localization.get("resolved_paths"))
-        refused_box.extend(refused)
-        kw["binding"] = dict(binding, declared_paths=declared)
-        return orig_build_record(pre_eval_id, req, verdict, localization, *a, **kw)
-
-    globals()["build_record"] = _bound_build_record
-    try:
-        res = run_preeval(request, repo=repo, t3_category=t3_category, ts=ts, **kwargs)
-    finally:
-        globals()["build_record"] = orig_build_record
+    res = run_preeval(request, repo=repo, t3_category=t3_category, ts=ts,
+                      binding=binding, **kwargs)
 
     base_out = {
         "pre_eval_id": res.get("pre_eval_id"),
@@ -1351,7 +1364,7 @@ def triage_request(request, repo=".", session_id=None, base_commit=None,
         "record_ref": res.get("record_ref"),
         "predicates": [],
         "declared_paths": [],
-        "refused_paths": list(refused_box),
+        "refused_paths": list(res.get("refused_paths") or []),
         "session_id": sid,
         "base_commit": base,
         "disabled": bool(res.get("pre_eval_disabled")),
@@ -2484,6 +2497,24 @@ def _selftest():
                             stream_path=stream)
         expect("TRIAGE: a sensitive path is FULL and not a member",
                ta["tier"] == "FULL" and ta["member"] is False)
+
+        # AMENDMENT 2: the binding is a REAL parameter on `run_preeval`, threaded to
+        # `build_record` — never a `globals()["build_record"]` patch. It is asserted two
+        # ways because the patch form passed every behavioural case above: the parameter
+        # must be DECLARED, and driving `run_preeval` directly with it must actually bind.
+        _argnames = run_preeval.__code__.co_varnames[:run_preeval.__code__.co_argcount]
+        expect("TRIAGE: run_preeval declares `binding` as a real parameter",
+               "binding" in _argnames)
+        fk_b = fake_localize_factory(_loc(["src/ui/panel.css"], flags=[], fan_out=1))
+        rp = run_preeval("restyle the side panel", repo=repo,
+                         ts="2026-09-02T10:02:00Z", _localize=fk_b, stream_path=stream,
+                         binding={"session_id": "sess-4", "base_commit": "beef5678"})
+        expect("TRIAGE: run_preeval(binding=…) binds the record and leaves the "
+               "module global alone",
+               rp["record"].get("session_id") == "sess-4"
+               and rp["record"].get("base_commit") == "beef5678"
+               and rp["record"].get("declared_paths") == ["src/ui/panel.css"]
+               and build_record.__name__ == "build_record")
 
     # `pre_eval.enabled: false` — the stage is a no-op, so there is NO record, no
     # predicate, and the change is FULL by the operator's own configuration. The hook

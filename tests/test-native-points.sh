@@ -206,6 +206,16 @@ check "the emitted line says the record is UNCOMMITTED and names it" \
      && ctx "$out" | grep -q 'docs/superpowers/pre-eval/' && echo 1 || echo 0)"
 check "the emitted line does not treat a size decision as permission" \
   "$(ctx "$out" | grep -qi 'still need a human offer' && echo 1 || echo 0)"
+# THE REASON FOR THE COMMIT IS DURABILITY, NOT VISIBILITY. `epic-goal-stop.sh`
+# enumerates docs/superpowers/pre-eval with `find`, never with git, so an
+# uncommitted record covers the turn exactly as a committed one does. This line
+# reaches a model's context every session, so a false reason here teaches every
+# session to believe a written record protects nothing.
+check "the emitted line does NOT claim the Stop gate cannot see an uncommitted record" \
+  "$(ctx "$out" | grep -qi 'invisible[^.]*stop' && echo 0 || echo 1)"
+check "the emitted line gives DURABILITY as the reason to commit" \
+  "$(ctx "$out" | grep -qi 'reads records off disk' \
+     && ctx "$out" | grep -qi 'DURABILITY' && echo 1 || echo 0)"
 
 # RULE 1, mechanically: a fire writes the pre-eval artifacts and the outcome
 # stream, and NOTHING else in the project.

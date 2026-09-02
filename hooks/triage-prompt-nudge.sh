@@ -54,10 +54,19 @@
 # orchestrator commits), and a hook that ran `git commit` on the user's behalf
 # mid-prompt would be a far worse idea than the reminder it replaced. So the
 # record it writes is UNCOMMITTED, and the emitted context says so and says whose
-# job the commit is. An uncommitted record is invisible to `/v:dispatch
-# --require-triage` and to the Stop-time triage gate, and `git worktree remove`
-# deletes it (the v2.6.4 data-loss shape) — which is exactly why the instruction
-# to commit it is in the message rather than assumed.
+# job the commit is.
+#
+# THE REASON FOR THE COMMIT IS DURABILITY, NOT VISIBILITY — say it precisely,
+# because this hook's message reaches a model's context every session and the
+# wrong reason teaches the wrong model. The Stop-time triage gate reads records
+# OFF DISK (`hooks/epic-goal-stop.sh` enumerates `docs/superpowers/pre-eval`
+# with `find`, never with git), so an uncommitted record covers a turn exactly
+# as a committed one does. What the commit buys is survival: an uncommitted
+# record fails `compound-v-validate-manifest.py --require-triage` on ANOTHER
+# clone or worktree, and `git worktree remove` deletes it outright (the v2.6.4
+# data-loss shape). That is why the instruction to commit is in the message
+# rather than assumed — see `skills/compound-v/phase-preeval.md`, which carries
+# the same wording.
 #
 # It also does not ENFORCE. Nothing here blocks. The mechanical closures stay
 # where the spec put them: `compound-v-validate-manifest.py --require-triage`,
@@ -99,6 +108,20 @@
 # statement gets no record from here, and `/v:triage` is still the way to size
 # it. A per-prompt score was rejected outright — it is the pollution above,
 # multiplied by every turn.
+#
+# TWO GATES, ON PURPOSE (spec WS2, AMENDED 2026-09-02). The spec first said the
+# temp-dir marker was to be retired and "the record itself is the marker"
+# (`_has_session_record`). It is not, and the amendment records why: the record
+# only exists AFTER the engine returns. A crashed, killed or timed-out engine
+# would leave the session still armed, and the next prompt would mint a second
+# record for the same session — the exact per-turn pollution the once-rule
+# exists to prevent, arriving through the failure path instead of the happy one.
+# So the marker is written BEFORE the engine runs and both gates stand:
+# `_has_session_record` answers "is this session already sized", the marker
+# answers "has this session already been ATTEMPTED". The observable difference
+# the amendment accepts: a session whose first scoring failed is spent, and only
+# `/v:triage` can recover it. That is the fail-closed direction — one attempt
+# per session, whatever the outcome.
 #
 # FAIL-OPEN CONTRACT — and here it is sharper than for a Stop hook.
 # Probed in the installed runtime (2.1.238): UserPromptSubmit is in the
@@ -291,8 +314,9 @@ check, or work an existing record already covers), size it first: run /v:triage 
 the change is>. It classifies the change, writes and COMMITS the pre-eval record, and \
 prints the tier — DIRECT (implement in place, run the floor, commit) or SCOPED \
 (manifest + run dir + scope gate + one combined review pass) or FULL (the whole \
-pipeline). That committed record is what /v:dispatch's --require-triage and the \
-Stop-time triage gate both look for. If this prompt is NOT a change request, ignore \
+pipeline). The Stop-time triage gate looks for that record ON DISK, committed or not; \
+committing it is what makes it survive — /v:dispatch's --require-triage on another \
+clone or worktree, and \`git worktree remove\`. If this prompt is NOT a change request, ignore \
 this line and do not mint a record for it — a record per question is how the outcome \
 stream stops meaning anything."
 }
@@ -499,8 +523,10 @@ Read ${record_ref} and route it by hand."
   msg="💉 Compound V sized this prompt before you read it. TIER: ${tier} (decision \
 ${decision}, pre_eval_id ${pid}). ${next} The record ${record_ref} is WRITTEN AND \
 UNCOMMITTED — this hook never runs git, so committing it is yours to do and it is not \
-optional: an uncommitted record is invisible to /v:dispatch's --require-triage and to \
-the Stop-time triage gate, and \`git worktree remove\` deletes it. Commit it with the \
+optional. The Stop-time triage gate reads records off disk, so this one already covers \
+this turn; the commit is for DURABILITY — an uncommitted record fails /v:dispatch's \
+--require-triage on another clone or worktree, and \`git worktree remove\` deletes it. \
+Commit it with the \
 localization artifact, the taxonomy snapshot and \
 docs/superpowers/memory/triage-outcomes.jsonl. Its declared_paths are: ${declared:-none} \
 — if the work you are about to do is somewhere else, that record does not cover it and \

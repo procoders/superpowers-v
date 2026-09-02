@@ -37,6 +37,7 @@ Python 3.9-safe, stdlib only. NEVER reads/writes routing-lessons.md (human-curat
 import argparse
 import json
 import os
+import re
 import sys
 
 MIN_SAMPLES = 5  # below this we cannot judge a backend fairly -> insufficient_data
@@ -187,6 +188,28 @@ def _read_result(results_dir, job_id):
     return obj if isinstance(obj, dict) else None
 
 
+def count_attempts(results_dir, job_id):
+    """Rework rounds for one job = how many superseded receipts it archived.
+
+    `cmd_record` in `compound-v-emit-workflow.py` archives a job's PREVIOUS receipt as
+    `results/attempts/<job_id>.<n>.json` whenever a re-attempt records a different
+    result, so the count of those files is the number of times the job had to be run
+    again -- a measured count off disk, never a self-reported figure.
+
+    The name is matched EXACTLY (`^<id>\\.\\d+\\.json$`, `job_id` escaped) because
+    `results/attempts/` holds every job's archive: a substring match would let job
+    `d1` absorb `d1-docs`'s attempts. An absent directory means zero rework, which is
+    the truth for a run where nothing was ever re-attempted.
+    """
+    attempts_dir = os.path.join(results_dir, "attempts")
+    try:
+        names = os.listdir(attempts_dir)
+    except OSError:
+        return 0
+    pat = re.compile(r"^%s\.\d+\.json$" % re.escape(str(job_id)))
+    return sum(1 for n in names if pat.match(n))
+
+
 def records_from_runs(execution_root):
     """Walk `execution_root`; every (manifest job, matching results/*.json) pair
     becomes one outcome record, in the same shape `_read_outcomes` produces.
@@ -225,9 +248,13 @@ def records_from_runs(execution_root):
                 "model": job.get("model") or job.get("tier"),
                 "status": status,
                 "blocked": bool(result.get("blocked")),
-                # rework_rounds is not part of job_result -- absent from this source
-                # means "not tracked here", left at 0 rather than fabricated.
-                "rework_rounds": 0,
+                # rework_rounds is NOT a job_result field -- it is measured from the
+                # run directory instead: one archived `results/attempts/<id>.<n>.json`
+                # per superseded attempt. `avg_rework` is one of `_health`'s three
+                # thresholds, so leaving it a constant 0 would score a backend that
+                # needed three attempts on every job exactly like one that never
+                # missed.
+                "rework_rounds": count_attempts(results_dir, job_id),
             })
     return out
 
@@ -372,6 +399,14 @@ def _selftest():
             json.dump({"status": "blocked", "blocked": True, "files_changed": ["oops.txt"],
                        "violations": ["oops.txt"], "summary": "", "session_id": "", "worktree": "",
                        "exit_code": 0, "failure_class": None, "retry_after_seconds": 0}, fh)
+        # job-a was re-attempted twice: two superseded receipts archived under
+        # results/attempts/. `job-a-docs.1.json` is a DIFFERENT job whose name shares
+        # job-a's prefix -- it must not be counted against job-a.
+        os.makedirs(os.path.join(run_dir, "results", "attempts"))
+        for name in ("job-a.1.json", "job-a.2.json", "job-a-docs.1.json",
+                     "job-a.notanumber.json"):
+            with open(os.path.join(run_dir, "results", "attempts", name), "w") as fh:
+                json.dump({"status": "error"}, fh)
         # a dir with NO manifest.yaml -> silently skipped
         os.makedirs(os.path.join(tmp, "not-a-run"))
 
@@ -389,9 +424,17 @@ def _selftest():
         check("from-runs: never-dispatched job skipped, not zero-filled",
               all(r.get("run_id") != "2099-01-01-sandbox" or "never-dispatched" not in json.dumps(r)
                   for r in recs))
+        # rework_rounds is COUNTED off disk, not left at a constant 0
+        check("from-runs: rework_rounds counts results/attempts/<id>.<n>.json",
+              ra is not None and ra["rework_rounds"] == 2)
+        check("from-runs: a prefix-sharing job's attempts are not absorbed",
+              rb is not None and rb["rework_rounds"] == 0)
+        check("from-runs: no attempts dir -> 0 rework, never a crash",
+              count_attempts(os.path.join(tmp, "not-a-run"), "job-a") == 0)
         # aggregate() accepts run-derived records the same as legacy ones
         row = query(recs, "codex", "large_isolated")
         check("from-runs: aggregates through the same pipeline", row["total"] == 1 and row["success"] == 1)
+        check("from-runs: counted rework reaches avg_rework", row["avg_rework"] == 2.0)
         # empty / missing root -> empty, never a crash
         check("from-runs: missing root -> []", records_from_runs(os.path.join(tmp, "does-not-exist")) == [])
     finally:
