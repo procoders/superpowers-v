@@ -37,9 +37,10 @@ repos in `$TMPDIR` and run offline. The scope gate's `_selftest()` covers glob s
 integration cases — good/bad scope, `**` recursion, worktree mode, the committed-inside-worktree
 baseline case, the preexisting-snapshot case, ignored files, and the escaping-symlink exploits. (`scripts/compound-v-scope-check.py:537-571`, `scripts/compound-v-scope-check.py:574-946`)
 The onboard toolkit's `--selftest` is the entry point that runs its self-tests instead of a
-subcommand. (`scripts/compound-v-onboard.py:1185-1186`) CI additionally runs the epic-state,
-epic-arbiter, epic-watch, and headless-shim self-tests under a **Python 3.9 floor** — the documented
-minimum for the marathon scripts. (`.github/workflows/validate.yml:225-244`)
+subcommand. (`scripts/compound-v-onboard.py:1185-1186`) CI additionally runs the epic-state and
+epic-arbiter self-tests under a **Python 3.9 floor** — the documented minimum for the marathon scripts;
+the epic-watch and headless-shim scripts were deleted in 3.4.0 (`.github/workflows/validate.yml`,
+`CONVENTIONS.md:17`).
 
 ## Key scripts
 
@@ -58,11 +59,10 @@ minimum for the marathon scripts. (`.github/workflows/validate.yml:225-244`)
   a concrete model, so routing survives model churn without editing call sites. (`scripts/compound-v-resolve-model.py:2-4`)
 - `scripts/compound-v-preeval.py` — the v2.9 Pre-Evaluation scorer (two axes: difficulty ⊥ impact)
   that gates the proportionate fast-path. (`scripts/compound-v-preeval.py:2-5`)
-- `scripts/compound-v-epic-state.py` · `-epic-arbiter.py` · `-epic-watch.py` — the epic spine
-  (topological state), the marathon cross-model failure arbiter, and the v2.11 auto-resurrection
-  watcher. (`scripts/compound-v-epic-state.py:2-5`, `scripts/compound-v-epic-arbiter.py:2-3`, `scripts/compound-v-epic-watch.py:2-5`)
-- `scripts/compound-v-headless-shim.py` — a v2.14 present-only generator that prints (never installs)
-  a launchd/crontab artifact for OS-level headless resurrection. (`scripts/compound-v-headless-shim.py:2-5`)
+- `scripts/compound-v-epic-state.py` · `-epic-arbiter.py` — the epic spine (topological state) and the
+  marathon cross-model failure arbiter. (`scripts/compound-v-epic-state.py:2-5`, `scripts/compound-v-epic-arbiter.py:2-3`)
+  The v2.11 auto-resurrection watcher and the v2.14 headless shim were deleted in 3.4.0 — resurrection is
+  the native `/loop` / `/schedule`, the goal is the native `/goal` (`docs/superpowers/architecture/native-mechanisms.md`).
 - `scripts/compound-v-usage-extract.py` · `-usage-aggregate.py` — v2.12 measured-only usage:
   extract a canonical per-job `usage` object from a backend's own events log, then aggregate honest
   per-run totals. (`scripts/compound-v-usage-extract.py:2-8`, `scripts/compound-v-usage-aggregate.py:2-7`)

@@ -36,7 +36,7 @@ brainstorm ─► spec (carries feature-level Acceptance Criteria)
    ▼ DISPATCH — /v:dispatch ─► Engine C (native Workflow: dependency waves, one agent() per job, Claude or a Codex worker); per-job worktree|direct
 ★ GATE + INTEGRATION AUTHORITY  git-derived scope verdict in-run, compound-v-integration-gate.py before any commit lands   (violation → BLOCKED → HALT)
    ▼ REVIEW  spec + quality + final integration (Opus), AC-gated   (unfixable ISSUES → HALT)
-   ▼ MEMORY  append task-outcomes.jsonl + routing-lessons.md
+   ▼ MEMORY  scorecard regenerated from results/*.json → worker-performance.jsonl (routing-lessons.md stays human-curated)
    ▼ finishing-a-development-branch
                           state.json updated after every phase ──► /v:status · /v:resume
 ```

@@ -116,10 +116,12 @@ of the four triggers. (`skills/compound-v/SKILL.md:14`, `skills/compound-v/SKILL
 deterministic topological spine (`epic-state.json` via `scripts/compound-v-epic-state.py`).
 (`skills/compound-v/SKILL.md:46`, `scripts/compound-v-epic-state.py:2-5`) The v2.10 **marathon** stance
 adds a resumable no-daemon loop with a cross-model **arbiter** panel that classifies a feature failure
-(`scripts/compound-v-epic-arbiter.py:2-3`); v2.11 **watch** arms a two-tier scheduler watcher for
-automatic resurrection of a hard death, bounded by a resume cap (`scripts/compound-v-epic-watch.py:2-5`,
-`skills/compound-v/epic-mode.md:172`); and v2.14 adds a present-only headless shim that prints — never
-installs — a launchd/crontab artifact for OS-level resurrection (`scripts/compound-v-headless-shim.py:2-5`).
+(`scripts/compound-v-epic-arbiter.py:2-3`). **As of 3.4.0 the resurrection of a hard death and the
+session goal are native, not ours:** the v2.11 two-tier watcher (`compound-v-epic-watch.py`), the v2.14
+headless launchd/crontab shim (`compound-v-headless-shim.py`) and the v2.18 goal rule in the Stop hook were
+deleted; `/v:epic` offers `/loop <interval> /v:epic <id>` or a `/schedule` routine for resurrection and a
+`/goal <condition>` line (or the `ProposeGoal` tool when present) for the goal
+(`skills/compound-v/epic-mode.md:172`, `docs/superpowers/architecture/native-mechanisms.md`).
 A **confirmed**-blocker feature — a blocker proven external by ≥2 distinct model families agreeing on the
 same category, bound to the frozen arbiter audit — lets an epic reach the **`done_with_blockers`** success
 terminal and auto-merge; an unconfirmed (SUSPECTED) blocker resolves to `blocked_needing_human` instead.

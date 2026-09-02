@@ -2585,7 +2585,7 @@ def merge_back(worktree, repo_root, baseline, files_changed):
 #   * `scope` is copied from the resolved contract slice the same floor ran, and
 #     falls back to the job's declared `test_scope`, then to a MIRROR of the
 #     resolver's own default — `default_scope_for(contract, tier)` — which needs
-#     the manifest's triage tier as well as the contract. Until 3.4.1 that last
+#     the manifest's triage tier as well as the contract. Until the r5 fix in 3.4.0 that last
 #     fallback read the `impacted_map` alone and never saw the tier, so a job the
 #     resolver had scoped `floor_only` (DIRECT tier with a declared floor) was
 #     recorded as `impacted`: a scope in the audit record that no run ever used.
@@ -2636,7 +2636,7 @@ def _tests_block_from_floor(floor, contract=None, job=None, tier=None):
         # Mirror of compound-v-fastpath-run.py:default_scope_for(contract, tier).
         # DUPLICATED on purpose — both are standalone stdlib CLIs with no shared
         # import (house style). Keep in sync, and keep ALL THREE branches: this
-        # read the `impacted_map` alone until 3.4.1 and so could never report
+        # read the `impacted_map` alone until the r5 fix in 3.4.0 and so could never report
         # `floor_only`, labelling a DIRECT-tier job that ran only its floor as
         # `impacted`. Reporting a scope the resolver did not select puts a value in
         # the audit record that no run ever used — a fabricated field wearing a
