@@ -1,0 +1,31 @@
+{
+  "run_id": "2026-09-02-df1-test-scope",
+  "phase": "DISPATCHED",
+  "jobs": {
+    "scoped-writer": {
+      "baseline": "09195341ea96461fd9b62e008f0e4855031cd3ea",
+      "isolation": "worktree",
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_c186a639-eac-1",
+      "realised_commit": "09195341ea96461fd9b62e008f0e4855031cd3ea",
+      "status": "done",
+      "merged": {
+        "realised_commit": "09195341ea96461fd9b62e008f0e4855031cd3ea",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "5eb022d44b9b6c91d708c333be60ee8328bcd680"
+      }
+    }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "scoped-writer"
+      ],
+      "merged": [
+        "scoped-writer"
+      ],
+      "commit": "5eb022d44b9b6c91d708c333be60ee8328bcd680",
+      "integrated": true
+    }
+  }
+}

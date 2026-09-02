@@ -1,0 +1,8 @@
+{
+  "agents": {},
+  "manifest": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-02-df1-test-scope/manifest.yaml",
+  "run_id": "2026-09-02-df1-test-scope",
+  "worktrees": {
+    "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_c186a639-eac-1": "scoped-writer"
+  }
+}

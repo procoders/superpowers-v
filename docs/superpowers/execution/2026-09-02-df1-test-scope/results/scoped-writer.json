@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-02-df1-scoped.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "09195341ea96461fd9b62e008f0e4855031cd3ea",
+    "diff_digest": "sha256:e918eaccea0598869f0870ecaf3b21a8b0c2938889f84d5a892b601cbabc8b17",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"09195341ea96461fd9b62e008f0e4855031cd3ea\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df1-scoped.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-df1-scoped.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "09195341ea96461fd9b62e008f0e4855031cd3ea",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Writes one dogfood file; declares NO test_scope",
+  "tests": {
+    "command": "/bin/echo floor-ok\n/bin/echo scoped-to-dogfood",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_c186a639-eac-1"
+}

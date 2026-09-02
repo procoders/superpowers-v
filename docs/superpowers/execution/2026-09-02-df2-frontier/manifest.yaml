@@ -1,0 +1,94 @@
+run_id: 2026-09-02-df2-frontier
+feature: df2 — three tiers in one wave, and a dependent second wave
+routing_stance: balanced
+max_parallel: 3
+spec_path: docs/superpowers/execution/2026-09-02-df2-frontier/spec.md
+plan_path: docs/superpowers/execution/2026-09-02-df2-frontier/plan.md
+audits:
+  archaeology: docs/superpowers/execution/2026-09-02-df2-frontier/spec.md
+  domain: docs/superpowers/execution/2026-09-02-df2-frontier/spec.md
+  library: docs/superpowers/execution/2026-09-02-df2-frontier/spec.md
+acceptance_criteria:
+  - "frontier, deep and standard each resolve to a different model and all three run."
+  - "The dependent job pins its baseline to wave 1's commit."
+test_contract:
+  floor_command: "/bin/echo floor-ok"
+  full_command: "/bin/echo full"
+  impacted_map:
+    - when: "docs/superpowers/dogfood/**"
+      run: "/bin/echo scoped"
+jobs:
+  - id: tier-frontier
+    title: "frontier tier — the extreme seat"
+    type: core_slice
+    backend: claude
+    tier: frontier
+    effort: high
+    isolation: worktree
+    run: parallel
+    write_allowed: ["docs/superpowers/dogfood/2026-09-02-df2-frontier.md"]
+    read_allowed: ["docs/superpowers/execution/2026-09-02-df2-frontier/spec.md"]
+    acceptance: ["The file exists."]
+    body: |
+      Create `docs/superpowers/dogfood/2026-09-02-df2-frontier.md` containing exactly:
+
+      # frontier
+
+      Routed by `tier: frontier`.
+  - id: tier-deep
+    title: "deep tier — judgment"
+    type: core_slice
+    backend: claude
+    tier: deep
+    effort: high
+    isolation: worktree
+    run: parallel
+    write_allowed: ["docs/superpowers/dogfood/2026-09-02-df2-deep.md"]
+    read_allowed: ["docs/superpowers/execution/2026-09-02-df2-frontier/spec.md"]
+    acceptance: ["The file exists."]
+    body: |
+      Create `docs/superpowers/dogfood/2026-09-02-df2-deep.md` containing exactly:
+
+      # deep
+
+      Routed by `tier: deep`.
+  - id: tier-standard
+    title: "standard tier — execution"
+    type: docs
+    backend: claude
+    tier: standard
+    effort: medium
+    isolation: worktree
+    run: parallel
+    write_allowed: ["docs/superpowers/dogfood/2026-09-02-df2-standard.md"]
+    read_allowed: ["docs/superpowers/execution/2026-09-02-df2-frontier/spec.md"]
+    acceptance: ["The file exists."]
+    body: |
+      Create `docs/superpowers/dogfood/2026-09-02-df2-standard.md` containing exactly:
+
+      # standard
+
+      Routed by `tier: standard`.
+  - id: tier-summary
+    title: "dependent — must see wave 1's commit"
+    type: docs
+    backend: claude
+    tier: light
+    effort: low
+    isolation: direct
+    run: serial
+    depends_on: [tier-frontier, tier-deep, tier-standard]
+    write_allowed: ["docs/superpowers/dogfood/2026-09-02-df2-summary.md"]
+    read_allowed:
+      - "docs/superpowers/dogfood/2026-09-02-df2-frontier.md"
+      - "docs/superpowers/dogfood/2026-09-02-df2-deep.md"
+      - "docs/superpowers/dogfood/2026-09-02-df2-standard.md"
+    acceptance: ["The file lists all three wave-1 files."]
+    body: |
+      Read the three files listed in your read_allowed. They were written by wave 1
+      and committed before you started. Then create
+      `docs/superpowers/dogfood/2026-09-02-df2-summary.md` containing exactly:
+
+      # summary
+
+      Wave 1 wrote: frontier, deep, standard.
