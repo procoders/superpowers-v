@@ -47,7 +47,7 @@ Gemini's `activate_skill` tool can load the SKILL.md content on demand. Trigger:
 This plugin was authored for the Anthropic Claude family. On Gemini:
 
 - "Opus default" → **Gemini 3.1 Pro** (or whatever is currently the most capable model)
-- "Sonnet exception" → **Gemini 3.6 Flash** for the same narrow junior-task taxonomy
+- "Sonnet exception" → **Gemini 3.8 Flash** for the same narrow junior-task taxonomy
 - "Never Haiku" → Never use Gemini Flash-Lite or smaller; the project's reasoning bar is high
 
 See `skills/compound-v/phase-3-parallel-opus-dispatch.md` § "Model Selection Taxonomy" for the strict 8-box criteria that gate the cheaper-model carve-out, and `skills/compound-v/routing-policy.md` for the env-aware stances (Balanced / Conservative / Cost-aware). Reviewers are always the top-tier model; the cheaper-model carve-out never applies to a reviewer.

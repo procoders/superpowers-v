@@ -114,7 +114,14 @@ def propose(catalog_lines, family="Gemini"):
         return (g[0]["strength"], g[0]["version"])
 
     labels = sorted(series_groups, key=series_key)  # weakest .. strongest
-    strongest, weakest = labels[-1], labels[0]
+    strongest = labels[-1]
+    # `light` is the NEWEST series of the weakest strength class at its lowest effort —
+    # the Flash line ships a new version every few weeks, and the newest one is the
+    # cheap, fast, current model (3.4.14: the catalog carried 3.6/3.7/3.8 Flash and the
+    # oldest was being proposed). The oldest series is never the answer for a moving line.
+    weakest_strength = series_groups[labels[0]][0]["strength"]
+    weakest = max((l for l in labels if series_groups[l][0]["strength"] == weakest_strength),
+                  key=lambda l: series_groups[l][0]["version"])
 
     deep = max(series_groups[strongest], key=lambda p: p["effort_rank"])["full"]
     light = min(series_groups[weakest], key=lambda p: p["effort_rank"])["full"]
@@ -223,6 +230,16 @@ def _selftest():
     check("tsv: light = Flash Low", p4["light"] == "Gemini 3.8 Flash (Low)")
     check("tsv: no tab or id in any value", all("\t" not in v and not v.startswith("gemini-") for v in p4.values()))
     check("tsv: avoids non-Gemini families", all("Gemini" in v for v in p4.values()))
+
+    # 3.4.14: three Flash generations in the catalog -> light is the NEWEST Flash at Low,
+    # standard stays the Pro line's cheaper effort, deep the Pro line's top effort.
+    cat5 = ["Gemini 3.8 Flash (High)", "Gemini 3.8 Flash (Low)", "Gemini 3.7 Flash (Low)",
+            "Gemini 3.6 Flash (High)", "Gemini 3.6 Flash (Low)",
+            "Gemini 3.1 Pro (High)", "Gemini 3.1 Pro (Low)"]
+    p5 = propose(cat5, family="Gemini")["proposed"]
+    check("moving Flash line: light = newest Flash (Low)", p5["light"] == "Gemini 3.8 Flash (Low)")
+    check("moving Flash line: deep/standard stay on Pro", p5["deep"] == "Gemini 3.1 Pro (High)"
+          and p5["standard"] == "Gemini 3.1 Pro (Low)")
 
     # Per-stance config (/v:init Step 4a shape): the seed lands in EVERY stance block and
     # never as a flat sibling key, and the resolver actually reads it back (finding 142).

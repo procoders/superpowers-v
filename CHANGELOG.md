@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [3.4.14] - 2026-09-03
+
+### Changed — the Antigravity `light` default is the newest Flash, `Gemini 3.8 Flash (Low)`
+
+3.4.11 replaced the vanished 3.5 Flash with 3.6 Flash because the discovery ranker proposed the
+*oldest* series of the weakest class. The maintainer pointed out the catalog already carries
+3.8 Flash. The ranker now proposes the newest series of the weakest class at its lowest effort
+(the Flash line ships a new generation every few weeks and the newest is the cheap, current one);
+a selftest pins it on a three-generation catalog, and every built-in default and doc that named
+3.6 Flash names 3.8 Flash. Live proposal on 2026-09-03: frontier/deep `Gemini 3.1 Pro (High)`,
+standard `Gemini 3.1 Pro (Low)`, light `Gemini 3.8 Flash (Low)`.
+
 ## [3.4.13] - 2026-09-03
 
 Stage 8 of the verification program, the last: an ordinary small feature through the whole pipeline
