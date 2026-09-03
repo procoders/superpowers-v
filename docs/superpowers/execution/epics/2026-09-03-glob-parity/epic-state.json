@@ -1,7 +1,7 @@
 {
   "epic_id": "2026-09-03-glob-parity",
   "title": "One glob matcher for recall and the scope gate (stage 7)",
-  "status": "running",
+  "status": "done",
   "features": [
     {
       "id": "one-matcher",
@@ -50,12 +50,12 @@
     "start_sha": "c011d6edb4b408d818ec1f2ba64ad4a46d90c5f6"
   },
   "final_review": {
-    "status": "failed"
+    "status": "passed"
   },
   "blocker_ledger": [],
   "no_progress_cycles": 1,
   "total_attempts": 6,
-  "updated_at": "2026-09-03T21:04:16Z",
+  "updated_at": "2026-09-03T21:08:02Z",
   "last_done_count": 2,
   "processed_cycle_ids": [
     "c1",
