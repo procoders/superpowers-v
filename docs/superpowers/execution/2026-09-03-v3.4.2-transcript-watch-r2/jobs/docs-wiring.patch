@@ -1,0 +1,148 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 8440b51..3dccf97 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -26,9 +26,26 @@ exit), **`stall`** (no tool activity past a threshold on an agent that has not r
+ signal, and exits 0 on every advisory path. Discovery needs no new state: it scans the session's
+ Workflow transcripts for the run directory's own absolute path — every worker's `register-lane` call
+ carries it — and the newest matching workflow wins, so `--wf`/`--transcripts` are overrides, not
+-requirements. `/v:status --live` runs it once after the state table; `/v:dispatch` step 6 runs it every
+-two minutes in the background and treats `out-of-lane`/`wrong-cwd` as reason enough to `TaskStop` and
+-re-orchestrate early.
++requirements. `/v:status --live` runs it once after the state table; `/v:dispatch` runs it every
++two minutes in the background as its own step and treats `out-of-lane`/`wrong-cwd` as reason enough to
++`TaskStop` and re-orchestrate early.
++
++### Fixed — review-1's ten findings against the watcher (detector precision, tick-safety, wiring)
++
++A first review pass against the watcher's own real transcripts (`docs/superpowers/dogfood/2026-09-03-v3.4.2-transcript-watch-review-1.md`)
++found ten issues, closed in a second wave: `out-of-lane` no longer fires on a Bash redirect or a path
++outside the repository (issue 1); `denied` and `error` now anchor to the matching transcript line
++instead of a generic substring match, so quoting the lane-guard's deny text or the word `BLOCKED` in
++documentation no longer trips a false positive (issues 2, 2b); `register-lane` resolution survives a
++poll landing between the tool call and its result instead of leaving the agent permanently
++`(unregistered)` (issue 3); default transcript discovery degrades to an explicit no-match message
++instead of a traceback when the run directory sits outside a git checkout (issue 4); the test suite
++gained one fixture per false-positive class plus a discovery test exercising the untested default path
++(issue 6); `/v:dispatch`'s background-watch guidance moved out of step 6's prose into its own numbered
++step, keeping step 6 narrowly scoped as the archaeology audit required (issue 8); and dead code in the
++state-save path was removed (issue 10). `/v:status --live` gained explicit
++`{{args}}` flag-parsing prose and the same degrade-to-one-line contract every other optional section in
++that file already carries (issue 5).
+ 
+ ### Fixed — a finished run's lane map claimed the checkout forever (finding 68)
+ 
+diff --git a/commands/v-dispatch.md b/commands/v-dispatch.md
+index b6dead4..8a03694 100644
+--- a/commands/v-dispatch.md
++++ b/commands/v-dispatch.md
+@@ -56,7 +56,7 @@ delegating, the epic inherits Engine C along with everything else.
+    The flag also carries the SCOPED+ rule: a manifest with `triage.flavor: scoped_plus` is
+    rejected unless it declares a `type: review` job with `tier: deep` and `backend: claude`. That
+    half is checkable here because the reviewer is *declared*; the cross-model half is evidence
+-   that does not exist yet, and step 8 checks it after the fact.
++   that does not exist yet, and step 9 checks it after the fact.
+ 
+    Pick the mode by manifest kind (CR5-1): a `fast_path` block ⇒ `--mode pre-dispatch`; a legacy
+    plan-based manifest carries no such block and is validated mode-lessly, as before — a mode-less
+@@ -99,7 +99,7 @@ delegating, the epic inherits Engine C along with everything else.
+    > both Gate and Record — the v2.6.4 audit-trail loss, reproduced structurally.
+    >
+    > **Two authority passes, deliberately.** `finalize-wave` gates each wave before committing it;
+-   > step 7 re-runs the gate run-wide afterwards. The first is what makes a dependent's worktree see
++   > step 8 re-runs the gate run-wide afterwards. The first is what makes a dependent's worktree see
+    > its prerequisite; the second is the run-level authority and is cheap. Neither replaces the other.
+    >
+    > **Still true, and the reason 3.0.1 existed:** Engine C has now been exercised by 143 selftest
+@@ -123,7 +123,7 @@ delegating, the epic inherits Engine C along with everything else.
+    - Probe succeeds → **Engine C** (step 5). `engine_c: false` in `.claude/compound-v.json` still
+      forces the residual path for anyone who wants it.
+    - Probe fails, or this is a subagent context → the **residual subagent path**
+-     ([`parallel-dispatcher.md`](../agents/parallel-dispatcher.md)), then rejoin at step 7.
++     ([`parallel-dispatcher.md`](../agents/parallel-dispatcher.md)), then rejoin at step 8.
+ 
+    **Do not justify the fallback by claiming workflows are unavailable headless.** They are
+    available in `claude -p` and in the Agent SDK; only the `ultracode` keyword is route-restricted.
+@@ -166,11 +166,11 @@ delegating, the epic inherits Engine C along with everything else.
+    - `receipts/<job-id>.gate.json` and `results/<job-id>.json` — one result per job, exactly one;
+    - `state.json` per-job `worktree`, `baseline`, `status` and `merged`;
+    - `docs/superpowers/memory/triage-outcomes.jsonl` — the precision-IGNORED `merge_pending`
+-     `actual`, appended once every job is terminal. Step 9 writes the terminal one.
++     `actual`, appended once every job is terminal. Step 10 writes the terminal one.
+ 
+-   **Watch the live transcripts in the background (v3.4.2).** While the workflow runs, use the
+-   Monitor tool to run the read-only transcript watch every two minutes rather than waiting for the
+-   gate to catch a problem after the fact:
++7. **Watch the live transcripts in the background (v3.4.2).** While the workflow launched in step 6
++   runs, use the Monitor tool to run the read-only transcript watch every two minutes rather than
++   waiting for the gate to catch a problem after the fact:
+ 
+    ```bash
+    python3 scripts/compound-v-transcript-watch.py --run-dir docs/superpowers/execution/<run-id> --every 120
+@@ -181,9 +181,9 @@ delegating, the epic inherits Engine C along with everything else.
+    (a write outside the job's `write_allowed`) and **`wrong-cwd`** (a `register-lane` whose isolation or
+    cwd disagrees with the manifest). Either one, seen live, is reason enough to `TaskStop` the workflow
+    and re-orchestrate early — the same move that would have caught 3.4.0's r1 defect and 3.4.1's r2
+-   defect in their first minute instead of at the gate.
++   defect early, before the gate, instead of only after it.
+ 
+-7. **Gate integration on the authority — BEFORE any job commit is integrated.**
++8. **Gate integration on the authority — BEFORE any job commit is integrated.**
+ 
+    ```
+    python3 scripts/compound-v-integration-gate.py \
+@@ -202,7 +202,7 @@ delegating, the epic inherits Engine C along with everything else.
+    authority as a correct script with no caller, which is the exact defect this release exists to
+    fix, reproduced in its own cure.
+ 
+-8. **Review Gate — three passes (Opus), AC-gated.** [`spec-reviewer`](../agents/spec-reviewer.md):
++9. **Review Gate — three passes (Opus), AC-gated.** [`spec-reviewer`](../agents/spec-reviewer.md):
+    SPEC (each job's `acceptance`), QUALITY (no regressions, no fabricated metrics), INTEGRATION
+    (cross-job seams, feature-level `acceptance_criteria`). DONE is gated on all three.
+ 
+@@ -241,9 +241,9 @@ delegating, the epic inherits Engine C along with everything else.
+    bytes — which is why the validator refuses a receipt whose ids do not bind, whose
+    `diff_digest` is not the patch you sealed, or whose self-digest does not re-derive. A run whose
+    receipt does not verify does not proceed to the merge; fix it or re-run the review. Commit the
+-   receipt and the patch with the rest of the run substrate in step 9.
++   receipt and the patch with the rest of the run substrate in step 10.
+ 
+-9. **Append the terminal `actual`, commit the run substrate, then hand off**
++10. **Append the terminal `actual`, commit the run substrate, then hand off**
+    to `superpowers:finishing-a-development-branch`. **Do not write `phase: MERGED` into
+    `state.json` by hand** — the workflow finalizer has advanced the phase itself since stage 1
+    (`fix(finalize)`, commit f0dfc30), so a hand-written phase here is at best a duplicate and at
+diff --git a/commands/v-status.md b/commands/v-status.md
+index 12d538e..18b2834 100644
+--- a/commands/v-status.md
++++ b/commands/v-status.md
+@@ -8,8 +8,14 @@ The run-id (optional) is `{{args}}`.
+ 
+ ## Steps
+ 
+-1. **Locate the run.**
+-   - If `{{args}}` names a run-id, the run dir is `docs/superpowers/execution/{{args}}/`.
++1. **Parse `{{args}}`, then locate the run.** `--live` is the only flag this command recognizes. If
++   `{{args}}` is exactly `--live`, or starts with `--live` followed by whitespace, strip that leading
++   token, note that the live watch (step "Live watch" below) is requested, and treat whatever remains
++   (trimmed) as the run-id for the rest of this step — e.g. `--live 2026-09-01-foo` locates run
++   `2026-09-01-foo` and requests the watch; a bare `--live` requests the watch with no run-id, same as
++   the no-argument case below. `{{args}}` with no leading `--live` is a bare run-id (or empty), exactly
++   as before, and the live watch is not requested.
++   - If the (flag-stripped) `{{args}}` names a run-id, the run dir is `docs/superpowers/execution/<run-id>/`.
+    - If `{{args}}` is empty, list the subdirectories of `docs/superpowers/execution/` — **except `epics/`**, which holds epic spines (`epics/<epic-id>/epic-state.json`), not runs; it is rendered by the "Epic progress" section below, never as a run row. If there is exactly one, use it. If there are several, show them (newest first by run-id date prefix) and render the most recent, noting the others.
+    - If `docs/superpowers/execution/` is absent or empty, tell the user there are no **Compound V**
+      orchestrator runs yet. Before stopping, do one cheap check: does `.superpowers/sdd/` exist in
+@@ -123,6 +129,12 @@ It is advisory only — it never acts on a signal, never mutates the run, and ex
+ its lines verbatim under the per-job table; a clean pass with no new signals is worth stating explicitly
+ ("no new signals") rather than silently omitting the section.
+ 
++**Degrade-safe, same rule as every other optional section in this file.** If
++`scripts/compound-v-transcript-watch.py` is missing, the run's transcripts cannot be found, or the
++probe errors or exits non-zero, say so in one line ("live watch unavailable: no transcripts found for
++this run" or similar) and stop there — never show a traceback or raw stack output, and never break the
++state table rendered above it.
++
+ ## Dashboard (v2.15) — `--html`
+ 
+ The same read-only state this command renders as text can be rendered as a **browser dashboard** via

@@ -1,0 +1,604 @@
+diff --git a/scripts/compound-v-transcript-watch.py b/scripts/compound-v-transcript-watch.py
+index 850529f..7b954aa 100755
+--- a/scripts/compound-v-transcript-watch.py
++++ b/scripts/compound-v-transcript-watch.py
+@@ -58,6 +58,16 @@ AND ONE STRING IT DOES NOT GET TO GUESS
+   is unrelated to lanes and fires on routine retries. Folding either into
+   `denied` would train the reader to ignore the signal.
+ 
++  MATCHING THAT LITERAL IS NOT THE SAME AS FINDING IT ANYWHERE. Every detector
++  here is ANCHORED, because this repository's prose is largely ABOUT denials,
++  blocked jobs and tracebacks: an agent reading its own manifest, plan, audit or
++  the guard's own source quotes all three, and a bare substring match reported
++  twelve such quotes as violations. A denial counts only when it comes back from
++  a tool the guard is registered on AND either the harness marked the result
++  `is_error` or the literal stands at the start of a line; the error patterns
++  carry the same start-of-line rule. Both render the MATCHING line as evidence,
++  never the result's first line.
++
+ THE `(unregistered)` POLICY, STATED
+   A write seen before any successful `register-lane` has no lane to be measured
+   against, so it is reported as `out-of-lane` — the same semantics as the lane
+@@ -65,6 +75,12 @@ THE `(unregistered)` POLICY, STATED
+   write visible rather than dropping it. Reporting nothing would make the one
+   gap the guard documents about itself invisible here too.
+ 
++  A path with NO repository-relative form is a different case and is not
++  reported at all: `/dev/null`, a scratchpad file, another checkout. A lane is a
++  repository-relative contract, so such a path is not a lane question, and
++  reporting it made the first out-of-lane signal of every real run a redirect to
++  `/dev/null` — on the one signal the orchestrator is told to stop a run for.
++
+ Pure stdlib beyond those two by-path imports. Python 3.9-safe.
+ """
+ 
+@@ -76,7 +92,6 @@ import sys
+ sys.dont_write_bytecode = True
+ 
+ import argparse  # noqa: E402
+-import errno  # noqa: E402
+ import glob as globmod  # noqa: E402
+ import hashlib  # noqa: E402
+ import json  # noqa: E402
+@@ -111,6 +126,16 @@ ERROR_PATTERNS = [
+ # Tools whose input names a file this agent is about to write.
+ WRITE_TOOLS = {"Write": "file_path", "Edit": "file_path", "NotebookEdit": "notebook_path"}
+ 
++# The tools hooks/lane-guard.sh is registered on, and therefore the only ones
++# whose result can carry a genuine denial. A `Read` result that happens to
++# contain the literal is a document ABOUT the guard, not a refusal by it. An
++# unknown tool (an id whose tool_use fell outside the window) is left in.
++DENIABLE_TOOLS = {"Write", "Edit", "NotebookEdit", "Bash", ""}
++
++# How many tool_use ids to carry forward between ticks. The table exists to
++# survive a poll landing mid-exchange, not to remember a whole run.
++TOOL_NAME_CAP = 400
++
+ _SEPARATORS = {";", "&&", "||", "|", "&", "\n"}
+ _REDIRECT = re.compile(r"^(\d*)(>>?)(.*)$")
+ 
+@@ -207,9 +232,12 @@ def _rel_under(path, root):
+ 
+ 
+ def _real(path):
++    """realpath, or None. TypeError is caught alongside the OS errors on
++    purpose: `repo_root_for` returns None for a run directory outside any git
++    checkout, and a watcher that raises there fails the run it is watching."""
+     try:
+         return os.path.realpath(path)
+-    except (OSError, ValueError):
++    except (OSError, ValueError, TypeError):
+         return None
+ 
+ 
+@@ -449,9 +477,17 @@ def encoded_project(path):
+ 
+ 
+ def session_roots(repo_root):
+-    """The session directories of this project, newest first."""
++    """The session directories of this project, newest first.
++
++    A falsy `repo_root` — the run directory sits outside any git checkout — has
++    no encoded project directory to look in, so it is an empty answer, not an
++    error. `~/.claude` is overridable by CLAUDE_CONFIG_DIR, which is how the
++    suite exercises this default path without pointing at a real session.
++    """
++    if not repo_root:
++        return []
+     base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+-    proj = os.path.join(base, "projects", encoded_project(_real(repo_root) or repo_root or ""))
++    proj = os.path.join(base, "projects", encoded_project(_real(repo_root) or repo_root))
+     try:
+         entries = [os.path.join(proj, n) for n in os.listdir(proj)]
+     except OSError:
+@@ -644,9 +680,17 @@ def out_of_lane_targets(event, job, reg, ctx, repo_root, is_allowed):
+     for tool, target in raw_targets:
+         path = target if os.path.isabs(target) else os.path.join(base, target)
+         rel = _repo_relative(path, roots)
+-        if job and allowed and rel is not None and is_allowed(rel, allowed):
++        if rel is None:
++            # Under no root this agent owns: /dev/null, a scratchpad file, a
++            # path in another checkout entirely. A lane is a repository-relative
++            # contract, so a path that HAS no repository-relative form is not a
++            # lane question at all. Reporting it anyway is what made the first
++            # out-of-lane signal of every real run `Bash /dev/null` — on the one
++            # signal v-dispatch tells the orchestrator to stop a workflow for.
+             continue
+-        out.append("%s %s" % (tool, rel if rel is not None else _norm(path)))
++        if job and allowed and is_allowed(rel, allowed):
++            continue
++        out.append("%s %s" % (tool, rel))
+     return out
+ 
+ 
+@@ -668,38 +712,103 @@ def wrong_cwd_reason(reg, ctx, repo_root):
+     return None
+ 
+ 
+-def error_evidence(text):
+-    """The first line of a Bash result that reads as a failure, or None."""
++def _matching_line(text, index):
++    """The whole line `index` falls on, stripped — the evidence a reader needs
++    in order to see WHAT fired. Never the first line of the result: this file
++    once rendered `splitlines()[0]` for a denial and printed `total 184`."""
++    start = text.rfind("\n", 0, index) + 1
++    end = text.find("\n", index)
++    return text[start:end if end != -1 else len(text)].strip()
++
++
++def _at_line_start(text, index):
++    return index == 0 or text[index - 1] == "\n"
++
++
++def error_evidence(text, is_error=False):
++    """The failing line of a Bash result, or None.
++
++    ANCHORED, because this repository's prose is largely ABOUT blocked jobs and
++    tracebacks. On a result the harness itself marked `is_error` the pattern may
++    match anywhere; on an ordinary result it must stand at the START of a line —
++    which is where a real traceback, a real `command not found` and a real
++    `Permission denied` all appear, and where a sentence mentioning one does
++    not. Without this the watcher reported its own selftest output (`PASS exit
++    code 0 is not an error, exit code 1 is`) as an error.
++    """
+     if not text:
+         return None
+     for pattern in ERROR_PATTERNS:
+-        match = pattern.search(text)
+-        if not match:
+-            continue
+-        start = text.rfind("\n", 0, match.start()) + 1
+-        end = text.find("\n", match.start())
+-        line = text[start:end if end != -1 else len(text)].strip()
+-        return line or match.group(0)
++        for match in pattern.finditer(text):
++            if not is_error and not _at_line_start(text, match.start()):
++                continue
++            return _matching_line(text, match.start()) or match.group(0)
+     return None
+ 
+ 
+-def is_lane_denial(text):
+-    return bool(text) and DENY_LITERAL in text
++def denial_evidence(text, is_error=False, tool_name=None):
++    """The lane guard's own denial line, or None.
++
++    Anchored the same way, and once more besides. A denial is a REFUSAL that
++    came back from a call the guard is registered on, so it must (a) come from
++    one of those tools and (b) either be the harness's error result or stand at
++    the start of a line. A bare `DENY_LITERAL in text` reported five quotes of
++    the literal — the manifest, the spec, the plan, the audit, and the guard's
++    own source — as violations in the run this detector was reviewed against,
++    every one of them from an agent reading its own instructions.
++    """
++    if not text:
++        return None
++    if tool_name is not None and tool_name not in DENIABLE_TOOLS:
++        return None
++    index = text.find(DENY_LITERAL) if is_error else -1
++    if index < 0:
++        if text.startswith(DENY_LITERAL):
++            index = 0
++        else:
++            found = text.find("\n" + DENY_LITERAL)
++            index = found + 1 if found >= 0 else -1
++    if index < 0:
++        return None
++    return _matching_line(text, index) or DENY_LITERAL
+ 
+ 
+ # --------------------------------------------------------------------------- #
+ # Per-agent analysis
+ # --------------------------------------------------------------------------- #
++def _cap_tools(table, cap=TOOL_NAME_CAP):
++    """The most recent `cap` entries of an insertion-ordered id -> name table."""
++    if len(table) <= cap:
++        return table
++    keys = list(table)[-cap:]
++    return dict((k, table[k]) for k in keys)
++
++
+ def analyze_agent(path, agent_id, ctx, repo_root, is_allowed, start_line=0,
+-                  prior_job=None, prior_reg=None):
+-    """(signals, last_line, last_ts, job, reg) for one agent transcript."""
++                  prior_job=None, prior_reg=None, prior_tools=None,
++                  prior_pending=None):
++    """(signals, last_line, last_ts, job, reg, tools, pending) for one agent.
++
++    `tools` (tool_use id -> tool name) and `pending` (the register-lane calls
++    whose result has not arrived yet) are taken in AND handed back, so the
++    caller can persist them. They used to be locals, which meant a poll landing
++    between a register-lane and its result orphaned that result for good: the
++    agent stayed `(unregistered)` for the rest of the run, every in-lane write
++    it made was then reported out-of-lane, and every Bash failure was missed
++    because the tool behind the id was no longer known. `--every` is the mode
++    v-dispatch prescribes, and register-lane is the first command every job runs.
++    """
+     job = prior_job
+     reg = dict(prior_reg) if prior_reg else None
+     signals = []
+     last_line = start_line
+     last_ts = None
+-    tool_names = {}
++    tool_names = dict(prior_tools) if isinstance(prior_tools, dict) else {}
+     pending_register = {}
++    if isinstance(prior_pending, dict):
++        for uid, rec in prior_pending.items():
++            if isinstance(rec, dict) and isinstance(rec.get("parsed"), dict):
++                pending_register[uid] = rec
+ 
+     for event in iter_tool_events(path, start_line):
+         last_line = max(last_line, event["line"])
+@@ -711,7 +820,9 @@ def analyze_agent(path, agent_id, ctx, repo_root, is_allowed, start_line=0,
+             tool_names[event.get("id")] = event.get("name") or ""
+             parsed = parse_register_lane((event.get("input") or {}).get("command"))
+             if parsed is not None:
+-                pending_register[event.get("id")] = (parsed, event)
++                pending_register[event.get("id")] = {
++                    "parsed": parsed, "line": event["line"], "ts": event.get("ts"),
++                }
+                 continue
+             for evidence in out_of_lane_targets(event, job, reg, ctx, repo_root, is_allowed):
+                 signals.append({
+@@ -726,7 +837,8 @@ def analyze_agent(path, agent_id, ctx, repo_root, is_allowed, start_line=0,
+ 
+         use_id = event.get("tool_use_id")
+         if use_id in pending_register:
+-            parsed, use_event = pending_register.pop(use_id)
++            rec = pending_register.pop(use_id)
++            parsed = rec["parsed"]
+             # ONLY the call that succeeded. A clamp-denied first attempt carries
+             # an unexpanded "$PWD", not a path.
+             if not event.get("is_error"):
+@@ -737,29 +849,32 @@ def analyze_agent(path, agent_id, ctx, repo_root, is_allowed, start_line=0,
+                 if reason:
+                     signals.append({
+                         "signal": "wrong-cwd", "job": job or UNREGISTERED,
+-                        "agent": agent_id, "line": use_event["line"],
+-                        "ts": use_event.get("ts") or event.get("ts"),
++                        "agent": agent_id, "line": rec.get("line") or event["line"],
++                        "ts": rec.get("ts") or event.get("ts"),
+                         "evidence": reason,
+                     })
+             continue
+ 
+         text = event.get("text") or ""
+-        if is_lane_denial(text):
++        tool = tool_names.get(use_id)
++        evidence = denial_evidence(text, event.get("is_error"), tool)
++        if evidence:
+             signals.append({
+                 "signal": "denied", "job": job or UNREGISTERED, "agent": agent_id,
+                 "line": event["line"], "ts": event.get("ts"),
+-                "evidence": text.strip().splitlines()[0] if text.strip() else DENY_LITERAL,
++                "evidence": evidence,
+             })
+             continue
+-        if tool_names.get(use_id) == "Bash":
+-            evidence = error_evidence(text)
++        if tool == "Bash":
++            evidence = error_evidence(text, event.get("is_error"))
+             if evidence:
+                 signals.append({
+                     "signal": "error", "job": job or UNREGISTERED, "agent": agent_id,
+                     "line": event["line"], "ts": event.get("ts"), "evidence": evidence,
+                 })
+ 
+-    return signals, last_line, last_ts, job, reg
++    return (signals, last_line, last_ts, job, reg,
++            _cap_tools(tool_names), pending_register)
+ 
+ 
+ # --------------------------------------------------------------------------- #
+@@ -801,8 +916,6 @@ def save_state(path, state):
+         os.replace(tmp, path)
+         return True
+     except OSError as exc:
+-        if exc.errno not in (errno.EACCES, errno.EROFS, errno.ENOSPC, errno.ENOENT, errno.EPERM):
+-            pass
+         sys.stderr.write("transcript-watch: state file not written (%s); "
+                          "signals may repeat next tick\n" % exc)
+         return False
+@@ -817,22 +930,24 @@ def signal_key(sig):
+ # --------------------------------------------------------------------------- #
+ # One tick
+ # --------------------------------------------------------------------------- #
+-def tick(run_dir, wf_dir, ctx, state, repo_root, is_allowed, stall_minutes, now=None):
++def tick(wf_dir, ctx, state, repo_root, is_allowed, stall_minutes, now=None):
+     """(new_signals, summary) for one pass over one workflow directory."""
+     now = now if now is not None else time.time()
+     journal = read_journal(wf_dir)
+     agents = sorted(globmod.glob(os.path.join(wf_dir, "agent-*.jsonl")))
+     emitted = set(state.get("emitted", []))
+     fresh = []
++    roster = []
+     live = returned = 0
+ 
+     for path in agents:
+         agent_id = os.path.basename(path)[len("agent-"):-len(".jsonl")]
+         rec = state["agents"].get(agent_id) or {}
+-        signals, last_line, last_ts, job, reg = analyze_agent(
++        signals, last_line, last_ts, job, reg, tools, pending = analyze_agent(
+             path, agent_id, ctx, repo_root, is_allowed,
+             start_line=int(rec.get("line") or 0),
+             prior_job=rec.get("job"), prior_reg=rec.get("reg"),
++            prior_tools=rec.get("tools"), prior_pending=rec.get("pending"),
+         )
+         if last_ts is None:
+             last_ts = rec.get("last_ts") or _mtime(path)
+@@ -850,8 +965,10 @@ def tick(run_dir, wf_dir, ctx, state, repo_root, is_allowed, stall_minutes, now=
+                     "evidence": "no tool use for %d min (still running)" % int(idle // 60),
+                 })
+ 
++        roster.append((agent_id, job or UNREGISTERED, status))
+         state["agents"][agent_id] = {
+             "line": last_line, "last_ts": last_ts, "job": job, "reg": reg,
++            "tools": tools, "pending": pending,
+         }
+         for sig in signals:
+             key = signal_key(sig)
+@@ -865,8 +982,13 @@ def tick(run_dir, wf_dir, ctx, state, repo_root, is_allowed, stall_minutes, now=
+         "%s=%s" % (jid, ctx["status"].get(jid, "?"))
+         for jid in sorted(set(list(ctx["jobs"].keys()) + list(ctx["status"].keys())))
+     ) or "(none)"
+-    summary = "jobs: %s  agents: %d live, %d returned" % (jobs_text, live, returned)
+-    return fresh, summary
++    # A ROSTER, not just counts: one line per agent of the workflow with the job
++    # it registered and whether it is still running, so a reader can see the
++    # agents that emitted nothing — including any that never registered a lane.
++    lines = ["jobs: %s  agents: %d live, %d returned" % (jobs_text, live, returned)]
++    for agent_id, job, status in roster:
++        lines.append("%-8s %-24s %s" % (agent_id[:8], job, status))
++    return fresh, "\n".join(lines)
+ 
+ 
+ def render(sig):
+@@ -968,7 +1090,7 @@ def main(argv):
+                     os.path.basename(wf_dir.rstrip("/")),
+                     len(globmod.glob(os.path.join(wf_dir, "agent-*.jsonl"))),
+                     os.path.basename(run_dir)))
+-            signals, summary = tick(run_dir, wf_dir, ctx, state, repo_root,
++            signals, summary = tick(wf_dir, ctx, state, repo_root,
+                                     is_allowed, args.stall_minutes)
+             for sig in signals:
+                 if args.json:
+@@ -1054,14 +1176,25 @@ def _selftest():  # noqa: C901 - a linear list of cases reads better than five h
+     expect("a command that is not register-lane parses to None",
+            parse_register_lane("git status") is None)
+ 
+-    # --- the denial literal --------------------------------------------------
++    # --- the denial literal, and its two anchors -----------------------------
++    real_denial = "Compound V lane guard: job 'a' is not allowed to write 'x'"
+     expect("the lane guard's real denial is a denial",
+-           is_lane_denial("Compound V lane guard: job 'a' is not allowed to write 'x'"))
++           denial_evidence(real_denial, True, "Write") == real_denial)
++    expect("...and at the start of a line, even without is_error",
++           denial_evidence("ok\n" + real_denial, False, "Bash") == real_denial)
+     expect("the hyphenated FAILED-OPEN notice is NOT a denial",
+-           not is_lane_denial("Compound V lane-guard FAILED OPEN: no manifest"))
++           denial_evidence("Compound V lane-guard FAILED OPEN: no manifest", True, "Bash")
++           is None)
+     expect("the harness's bashCommandClamp denial is NOT a lane denial",
+-           not is_lane_denial("Permission to use Bash with command foo has been denied: "
+-                              "this agent's Bash use is clamped"))
++           denial_evidence("Permission to use Bash with command foo has been denied: "
++                           "this agent's Bash use is clamped", True, "Bash") is None)
++    quoting = "The plan says the literal `" + real_denial + "` must anchor."
++    expect("a result that merely QUOTES the literal mid-line is NOT a denial",
++           denial_evidence(quoting, False, "Bash") is None)
++    expect("...nor when a Read of that same document is what returned it",
++           denial_evidence(real_denial, True, "Read") is None)
++    expect("an unknown tool is still allowed to carry a denial",
++           denial_evidence(real_denial, True, None) == real_denial)
+ 
+     # --- error evidence ------------------------------------------------------
+     expect("a Traceback reads as an error",
+@@ -1070,6 +1203,19 @@ def _selftest():  # noqa: C901 - a linear list of cases reads better than five h
+            error_evidence("File created successfully at: /a/b") is None)
+     expect("exit code 0 is not an error, exit code 1 is",
+            error_evidence("exit code 0") is None and error_evidence("exit code 1") is not None)
++    expect("a pattern quoted mid-sentence is not an error",
++           error_evidence("PASS exit code 0 is not an error, exit code 1 is") is None
++           and error_evidence("show the phase, one of SPEC_READY to BLOCKED to DONE") is None)
++    expect("...but on a result the harness marked is_error it counts anywhere",
++           error_evidence("job a is BLOCKED by the gate", True) is not None)
++    expect("the evidence is the MATCHING line, never the first",
++           error_evidence("total 184\nTraceback (most recent call last):\n  File x")
++           == "Traceback (most recent call last):")
++
++    # --- the advisory paths that must never raise ---------------------------
++    expect("a run directory outside any git checkout yields no session roots",
++           session_roots(None) == [] and session_roots("") == [])
++    expect("realpath of None is None, not a TypeError", _real(None) is None)
+ 
+     # --- transcript shapes ---------------------------------------------------
+     tmp = tempfile.mkdtemp(prefix="cv-watch-selftest-")
+@@ -1158,7 +1304,7 @@ def _selftest():  # noqa: C901 - a linear list of cases reads better than five h
+                find_transcripts(run_dir, os.path.join(tmp, "repo")) == [])
+ 
+         state = {"version": 1, "agents": {}, "emitted": []}
+-        signals, summary = tick(run_dir, wf, ctx, state, repo, is_allowed, 8)
++        signals, summary = tick(wf, ctx, state, repo, is_allowed, 8)
+         kinds = sorted(s["signal"] for s in signals)
+         expect("one pass yields exactly denied+error+out-of-lane+stall",
+                kinds == ["denied", "error", "out-of-lane", "stall"])
+@@ -1172,7 +1318,7 @@ def _selftest():  # noqa: C901 - a linear list of cases reads better than five h
+         expect("the summary names the job and counts the agents",
+                "a=running" in summary and "1 live, 1 returned" in summary)
+ 
+-        again, _ = tick(run_dir, wf, ctx, state, repo, is_allowed, 8)
++        again, _ = tick(wf, ctx, state, repo, is_allowed, 8)
+         expect("a second pass over the same state repeats nothing", again == [])
+ 
+         rendered = render(signals[0])
+@@ -1200,7 +1346,7 @@ def _selftest():  # noqa: C901 - a linear list of cases reads better than five h
+             fh.write(line({"type": "started", "agentId": "ccc3"}))
+             fh.write(line({"type": "result", "agentId": "ccc3"}))
+         state2 = {"version": 1, "agents": {}, "emitted": []}
+-        sigs2, _ = tick(run_dir, wf2, ctx, state2, repo, is_allowed, 8)
++        sigs2, _ = tick(wf2, ctx, state2, repo, is_allowed, 8)
+         expect("a mis-declared isolation is one wrong-cwd signal",
+                [s["signal"] for s in sigs2] == ["wrong-cwd"])
+         expect("...attributed to the job of the call that SUCCEEDED",
+@@ -1216,7 +1362,7 @@ def _selftest():  # noqa: C901 - a linear list of cases reads better than five h
+         with open(os.path.join(wf3, "journal.jsonl"), "w") as fh:
+             fh.write(line({"type": "result", "agentId": "ddd4"}))
+         state3 = {"version": 1, "agents": {}, "emitted": []}
+-        sigs3, _ = tick(run_dir, wf3, ctx, state3, repo, is_allowed, 8)
++        sigs3, _ = tick(wf3, ctx, state3, repo, is_allowed, 8)
+         expect("a write with no lane registered is an out-of-lane candidate",
+                [s["signal"] for s in sigs3] == ["out-of-lane"]
+                and sigs3[0]["job"] == UNREGISTERED)
+diff --git a/tests/test-transcript-watch.sh b/tests/test-transcript-watch.sh
+index bab8928..ebe5d6b 100755
+--- a/tests/test-transcript-watch.sh
++++ b/tests/test-transcript-watch.sh
+@@ -342,7 +342,147 @@ check "...so a FAILED-OPEN notice on its own produces no signal at all" \
+       "$([ "$(grep -cE ' (out-of-lane|wrong-cwd|error|denied|stall) ' "$OUT6")" = 0 ] && echo 1 || echo 0)"
+ 
+ # --------------------------------------------------------------------------- #
+-# 7. The script's own --selftest, run through this suite so CI cannot lose it.
++# 7. THE ROSTER (review-1 issue 7). The per-tick summary must name EVERY agent
++#    of the workflow with the job it registered, not only the ones that emitted
++#    a signal — which is what "names every agent of the run with its job" asks
++#    for. Checked on the section-1 output, which has all four agents.
++# --------------------------------------------------------------------------- #
++check "the summary carries a roster line per agent, naming its job" \
++      "$(grep -qE '^a1111111 +a +returned' "$OUT" \
++         && grep -qE '^a2222222 +b +returned' "$OUT" \
++         && grep -qE '^a4444444 +\(unregistered\) +live' "$OUT" && echo 1 || echo 0)"
++check "...one line for every agent transcript, including the silent ones" \
++      "$([ "$(grep -cE '^a[0-9]+ ' "$OUT")" = 4 ] && echo 1 || echo 0)"
++
++# --------------------------------------------------------------------------- #
++# 8. THE FALSE-POSITIVE CLASSES OF REVIEW 1 — one fixture each, in one agent
++#    that is correctly registered and does nothing wrong at all.
++#
++#    Against this run's own transcripts the shipped detectors reported five
++#    out-of-lane signals that were all `Bash /dev/null`, and twelve denials that
++#    were all an agent READING its own instructions. Every line below is an
++#    idiom out of that traffic; the whole fixture must be silent.
++# --------------------------------------------------------------------------- #
++WF4="$SESSION/subagents/workflows/wf_falsepos"
++mkdir -p "$WF4" "$T/scratch"
++A6=a666666666666666
++DENY="Compound V lane guard: job 'a' is not allowed to write 'x'"
++REG6="$PY -B $EMIT register-lane --run-dir $RUN --job-id a --cwd $WTA --repo-root $SANDBOX --isolation worktree"
++
++cat >"$WF4/agent-$A6.jsonl" <<JSONL
++{"type":"user","agentId":"$A6","timestamp":"$NOW","message":{"role":"user","content":"Implementer for job a of $RUN."}}
++{"type":"assistant","agentId":"$A6","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"q1","name":"Bash","input":{"command":"$REG6"}}]}}
++{"type":"user","agentId":"$A6","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"q1","is_error":false,"content":"{\"registered\": \"a\"}"}]}}
++{"type":"assistant","agentId":"$A6","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"q2","name":"Bash","input":{"command":"ls -la $RUN && cat $RUN/manifest.yaml 2>/dev/null | head -100"}}]}}
++{"type":"user","agentId":"$A6","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"q2","content":"run_id: run1"}]}}
++{"type":"assistant","agentId":"$A6","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"q3","name":"Write","input":{"file_path":"$T/scratch/notes.md","content":"scratch"}}]}}
++{"type":"user","agentId":"$A6","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"q3","content":"File created successfully at: $T/scratch/notes.md"}]}}
++{"type":"assistant","agentId":"$A6","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"q4","name":"Bash","input":{"command":"true"}}]}}
++{"type":"user","agentId":"$A6","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"q4","content":"The plan says the literal $DENY must anchor to a refused call."}]}}
++{"type":"assistant","agentId":"$A6","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"q5","name":"Bash","input":{"command":"true"}}]}}
++{"type":"user","agentId":"$A6","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"q5","content":"3. Render the run-level phase, one of SPEC_READY to BLOCKED to REVIEWED."}]}}
++{"type":"assistant","agentId":"$A6","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"q6","name":"Bash","input":{"command":"true"}}]}}
++{"type":"user","agentId":"$A6","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"q6","content":"PASS exit code 0 is not an error, exit code 1 is"}]}}
++{"type":"assistant","agentId":"$A6","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"q7","name":"Read","input":{"file_path":"$SANDBOX/docs/guard.md"}}]}}
++{"type":"user","agentId":"$A6","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"q7","content":"$DENY"}]}}
++JSONL
++
++cat >"$WF4/journal.jsonl" <<JSONL
++{"type":"started","key":"k6","agentId":"$A6"}
++{"type":"result","key":"k6","agentId":"$A6"}
++JSONL
++
++OUT7="$T/out7.txt"
++"$PY" -B "$WATCH" --run-dir "$RUN" --transcripts "$SESSION" --wf wf_falsepos --once \
++      --state "$T/state7.json" >"$OUT7" 2>&1
++check "a Bash 2>/dev/null redirect is NOT an out-of-lane write" \
++      "$(grep -q 'dev/null' "$OUT7" && echo 0 || echo 1)"
++check "a write to a path outside the repository is NOT an out-of-lane write" \
++      "$(grep -q 'scratch/notes.md' "$OUT7" && echo 0 || echo 1)"
++check "a tool_result that merely QUOTES the deny literal is NOT a denial" \
++      "$(grep -q 'denied' "$OUT7" && echo 0 || echo 1)"
++check "prose naming BLOCKED, and a selftest line naming exit code 1, are NOT errors" \
++      "$(grep -qE ' error ' "$OUT7" && echo 0 || echo 1)"
++check "so the whole clean-agent fixture emits NO signal at all" \
++      "$([ "$(grep -cE ' (out-of-lane|wrong-cwd|error|denied|stall) ' "$OUT7")" = 0 ] && echo 1 || echo 0)"
++check "...and it still appears in the roster, with its job" \
++      "$(grep -qE '^a6666666 +a +returned' "$OUT7" && echo 1 || echo 0)"
++
++# --------------------------------------------------------------------------- #
++# 9. A TICK BOUNDARY between a register-lane and its result (review-1 issue 3).
++#    The first --once sees the tool_use alone; the result and an IN-LANE write
++#    land afterwards. The agent must still be job `a` on the second pass — the
++#    pending exchange is state, not a local — and its in-lane write must be
++#    silent. Read whole, this transcript emits nothing; read across a boundary
++#    it used to emit a false out-of-lane against a phantom (unregistered) agent.
++# --------------------------------------------------------------------------- #
++WF5="$SESSION/subagents/workflows/wf_tick"
++mkdir -p "$WF5"
++A7=a777777777777777
++REG7="$PY -B $EMIT register-lane --run-dir $RUN --job-id a --cwd $WTA --repo-root $SANDBOX --isolation worktree"
++
++cat >"$WF5/agent-$A7.jsonl" <<JSONL
++{"type":"user","agentId":"$A7","timestamp":"$NOW","message":{"role":"user","content":"Implementer for job a of $RUN."}}
++{"type":"assistant","agentId":"$A7","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"r1","name":"Bash","input":{"command":"$REG7"}}]}}
++JSONL
++cat >"$WF5/journal.jsonl" <<JSONL
++{"type":"started","key":"k7","agentId":"$A7"}
++JSONL
++
++STT="$T/state_tick.json"
++"$PY" -B "$WATCH" --run-dir "$RUN" --transcripts "$SESSION" --wf wf_tick --once \
++      --state "$STT" >"$T/tick1.txt" 2>&1
++check "tick 1, the register-lane result not yet written, emits no signal" \
++      "$([ "$(grep -cE ' (out-of-lane|wrong-cwd|error|denied|stall) ' "$T/tick1.txt")" = 0 ] && echo 1 || echo 0)"
++
++cat >>"$WF5/agent-$A7.jsonl" <<JSONL
++{"type":"user","agentId":"$A7","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"r1","is_error":false,"content":"{\"registered\": \"a\"}"}]}}
++{"type":"assistant","agentId":"$A7","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"r2","name":"Write","input":{"file_path":"$WTA/src/ok2.py","content":"print(2)"}}]}}
++{"type":"user","agentId":"$A7","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"r2","content":"File created successfully at: $WTA/src/ok2.py"}]}}
++JSONL
++
++"$PY" -B "$WATCH" --run-dir "$RUN" --transcripts "$SESSION" --wf wf_tick --once \
++      --state "$STT" >"$T/tick2.txt" 2>&1
++check "a register-lane split across two ticks keeps the agent registered" \
++      "$(grep -qE '^a7777777 +a +live' "$T/tick2.txt" && echo 1 || echo 0)"
++check "...so the in-lane write that follows the boundary is NOT out-of-lane" \
++      "$([ "$(grep -cE ' (out-of-lane|wrong-cwd|error|denied|stall) ' "$T/tick2.txt")" = 0 ] && echo 1 || echo 0)"
++
++# --------------------------------------------------------------------------- #
++# 10. A RUN DIRECTORY OUTSIDE ANY GIT CHECKOUT (review-1 issue 4), on the
++#     DEFAULT discovery path — no --transcripts, which is what masked this.
++#     Advisory means exit 0 and a sentence, never a traceback.
++# --------------------------------------------------------------------------- #
++mkdir -p "$T/norepo/run"
++OUT8="$T/out8.txt"
++"$PY" -B "$WATCH" --run-dir "$T/norepo/run" --once --state "$T/state8.json" >"$OUT8" 2>&1
++RC8=$?
++check "a run directory outside any git checkout exits 0" \
++      "$([ "$RC8" = 0 ] && echo 1 || echo 0)"
++check "...with no traceback, on the default discovery path" \
++      "$(grep -q 'Traceback' "$OUT8" && echo 0 || echo 1)"
++
++# --------------------------------------------------------------------------- #
++# 11. DISCOVERY THROUGH CLAUDE_CONFIG_DIR — the session_roots branch, which no
++#     test in this repository exercised because every invocation above passes
++#     --transcripts. Only wf_test-1 is copied under the fake config root, so the
++#     assertion names the workflow discovery had to find on its own.
++# --------------------------------------------------------------------------- #
++ENC="$("$PY" -B -c 'import os,sys;print(os.path.realpath(sys.argv[1]).replace("/","-"))' "$SANDBOX")"
++CFG="$T/cfg"
++mkdir -p "$CFG/projects/$ENC/sess/subagents/workflows"
++cp -R "$WF1" "$CFG/projects/$ENC/sess/subagents/workflows/"
++OUT9="$T/out9.txt"
++CLAUDE_CONFIG_DIR="$CFG" "$PY" -B "$WATCH" --run-dir "$RUN" --once \
++      --state "$T/state9.json" >"$OUT9" 2>&1
++RC9=$?
++check "discovery resolves the session root through CLAUDE_CONFIG_DIR" \
++      "$([ "$RC9" = 0 ] && grep -q 'wf_test-1' "$OUT9" && echo 1 || echo 0)"
++check "...and reports the same roster it does under --transcripts" \
++      "$(grep -qE '^a1111111 +a +returned' "$OUT9" && echo 1 || echo 0)"
++
++# --------------------------------------------------------------------------- #
++# 12. The script's own --selftest, run through this suite so CI cannot lose it.
+ # --------------------------------------------------------------------------- #
+ "$PY" -B "$WATCH" --selftest >"$T/selftest.txt" 2>&1
+ RC7=$?

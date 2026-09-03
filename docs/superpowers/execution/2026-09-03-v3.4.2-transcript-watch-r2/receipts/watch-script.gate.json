@@ -1,0 +1,56 @@
+{
+  "baseline_commit": "ed742058498a04ae675fa1d08afd2b287943b9fa",
+  "diff_digest": "sha256:edc4fdddb8a64af6e67ded2275197bbd226d84547c2f11f895446b9c075b1601",
+  "exit_code": 0,
+  "job_id": "watch-script",
+  "patch_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-v3.4.2-transcript-watch-r2/jobs/watch-script.patch",
+  "patch_paths": [
+    "scripts/compound-v-transcript-watch.py",
+    "tests/test-transcript-watch.sh"
+  ],
+  "patch_sha256": "sha256:edc4fdddb8a64af6e67ded2275197bbd226d84547c2f11f895446b9c075b1601",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"ed742058498a04ae675fa1d08afd2b287943b9fa\",\n  \"changed\": [\n    \"scripts/compound-v-transcript-watch.py\",\n    \"tests/test-transcript-watch.sh\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-transcript-watch.py\",\n    \"tests/test-transcript-watch.sh\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "ed742058498a04ae675fa1d08afd2b287943b9fa",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "scripts/compound-v-transcript-watch.py",
+      "tests/test-transcript-watch.sh"
+    ],
+    "checks": [
+      {
+        "checker": "/usr/bin/python3 -B scripts/compound-v-scope-check.py --selftest",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f scripts/compound-v-transcript-watch.py ] || exit 0; grep -q -- \"--selftest\" scripts/compound-v-transcript-watch.py || exit 0; /usr/bin/python3 -B scripts/compound-v-transcript-watch.py --selftest'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f tests/test-transcript-watch.sh ] || exit 0; bash tests/test-transcript-watch.sh'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (5 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 2 command(s) from 2 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_09947bdf-568-1"
+}

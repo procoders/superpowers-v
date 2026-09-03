@@ -1,0 +1,30 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "scripts/compound-v-transcript-watch.py",
+    "tests/test-transcript-watch.sh"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "ed742058498a04ae675fa1d08afd2b287943b9fa",
+    "diff_digest": "sha256:edc4fdddb8a64af6e67ded2275197bbd226d84547c2f11f895446b9c075b1601",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"ed742058498a04ae675fa1d08afd2b287943b9fa\",\n  \"changed\": [\n    \"scripts/compound-v-transcript-watch.py\",\n    \"tests/test-transcript-watch.sh\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-transcript-watch.py\",\n    \"tests/test-transcript-watch.sh\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "ed742058498a04ae675fa1d08afd2b287943b9fa",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task A' \u2014 the watcher's detectors made precise and tick-safe (review-1 issues 1, 2, 2b, 3, 4, 6, 7, 10)",
+  "tests": {
+    "command": "/usr/bin/python3 -B scripts/compound-v-scope-check.py --selftest\nbash -c '[ -f scripts/compound-v-transcript-watch.py ] || exit 0; grep -q -- \"--selftest\" scripts/compound-v-transcript-watch.py || exit 0; /usr/bin/python3 -B scripts/compound-v-transcript-watch.py --selftest'\nbash -c '[ -f tests/test-transcript-watch.sh ] || exit 0; bash tests/test-transcript-watch.sh'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 3
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_09947bdf-568-1"
+}
