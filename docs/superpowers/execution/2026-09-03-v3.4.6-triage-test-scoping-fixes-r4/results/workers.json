@@ -1,0 +1,33 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "scripts/compound-v-run-antigravity-worker.sh",
+    "scripts/compound-v-run-codex-worker.sh",
+    "scripts/compound-v-run-cursor-worker.sh",
+    "scripts/compound-v-run-devin-worker.sh",
+    "scripts/compound-v-run-opencode-worker.sh"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "f76a6f3e81d2bfa11733244011090b21ea8eda7c",
+    "diff_digest": "sha256:23992cc988f5d2a1d408b0206a787eec8c64ad6b9b0e59a55288db64e74d9b11",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"f76a6f3e81d2bfa11733244011090b21ea8eda7c\",\n  \"changed\": [\n    \"scripts/compound-v-run-antigravity-worker.sh\",\n    \"scripts/compound-v-run-codex-worker.sh\",\n    \"scripts/compound-v-run-cursor-worker.sh\",\n    \"scripts/compound-v-run-devin-worker.sh\",\n    \"scripts/compound-v-run-opencode-worker.sh\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-run-codex-worker.sh\",\n    \"scripts/compound-v-run-antigravity-worker.sh\",\n    \"scripts/compound-v-run-cursor-worker.sh\",\n    \"scripts/compound-v-run-opencode-worker.sh\",\n    \"scripts/compound-v-run-devin-worker.sh\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "f76a6f3e81d2bfa11733244011090b21ea8eda7c",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task B3 \u2014 the five run-*-worker.sh: tc_validate accepts timeout_s, tc_run honours it",
+  "tests": {
+    "command": "bash tests/test-engine-c-contract.sh\nbash -c '[ -f scripts/compound-v-run-antigravity-worker.sh ] || exit 0; shellcheck scripts/compound-v-run-antigravity-worker.sh'\nbash -c '[ -f scripts/compound-v-run-codex-worker.sh ] || exit 0; shellcheck scripts/compound-v-run-codex-worker.sh'\nbash -c '[ -f scripts/compound-v-run-cursor-worker.sh ] || exit 0; shellcheck scripts/compound-v-run-cursor-worker.sh'\nbash -c '[ -f scripts/compound-v-run-devin-worker.sh ] || exit 0; shellcheck scripts/compound-v-run-devin-worker.sh'\nbash -c '[ -f scripts/compound-v-run-opencode-worker.sh ] || exit 0; shellcheck scripts/compound-v-run-opencode-worker.sh'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 6
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_ecd8382e-523-3"
+}

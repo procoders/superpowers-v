@@ -1,0 +1,13 @@
+{
+  "scope": "impacted",
+  "resolved_commands": [
+    "bash tests/test-engine-c-contract.sh",
+    "bash -c '[ -f scripts/compound-v-run-antigravity-worker.sh ] || exit 0; shellcheck scripts/compound-v-run-antigravity-worker.sh'",
+    "bash -c '[ -f scripts/compound-v-run-codex-worker.sh ] || exit 0; shellcheck scripts/compound-v-run-codex-worker.sh'",
+    "bash -c '[ -f scripts/compound-v-run-cursor-worker.sh ] || exit 0; shellcheck scripts/compound-v-run-cursor-worker.sh'",
+    "bash -c '[ -f scripts/compound-v-run-devin-worker.sh ] || exit 0; shellcheck scripts/compound-v-run-devin-worker.sh'",
+    "bash -c '[ -f scripts/compound-v-run-opencode-worker.sh ] || exit 0; shellcheck scripts/compound-v-run-opencode-worker.sh'"
+  ],
+  "floor_command": "bash tests/test-engine-c-contract.sh",
+  "full_command": "bash -c 'for s in scripts/compound-v-*.py; do grep -q -- \"--selftest\" \"$s\" || continue; /usr/bin/python3 -B \"$s\" --selftest >/dev/null 2>&1 || { echo \"FAIL $s\"; exit 1; }; done; for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'"
+}

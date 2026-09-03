@@ -2045,9 +2045,19 @@ async function gateStage(prev, job) {
     if (prev === null || prev === undefined) {
       return gateFailure(job.id, 'implement stage produced null (skipped, or a terminal API error)');
     }
-    const impl = prev.implement;
+    let impl = prev.implement;
     if (impl === null || impl === undefined) {
-      return gateFailure(job.id, 'implement agent returned null — treated as FAIL, never as a clean tree');
+      // The runtime hands back null when the implementer hit its turn cap or
+      // died. r4 of v3.4.6 (finding 113): the fallback below only saw an EMPTY
+      // object, so a null result still voided the wave. A null is the same
+      // fact — no locator, unfinished work — so it takes the same path: gate
+      // the registered tree with --impl-no-result for a Claude job; an external
+      // worker's tree is outside the checkout, so that one still fails closed.
+      const externalNull = job.backend && job.backend !== 'claude';
+      if (externalNull) {
+        return gateFailure(job.id, 'external worker returned null — treated as FAIL, never as a clean tree');
+      }
+      impl = {};
     }
 
     // WHERE TO GATE follows where the AGENT actually ran (`agent_isolation`),
@@ -2083,6 +2093,7 @@ async function gateStage(prev, job) {
       }
     } else {
       gateRoot = CFG.repo_root;
+      if (!(impl.worktree || '').trim() && !(impl.status || '').trim()) implNoResult = true;
     }
 
     const cmd = CFG.python + ' -B ' + CFG.emitter + ' gate-receipt' +
@@ -6188,6 +6199,8 @@ def selftest():
                "gateRoot = CFG.repo_root" in script_2)
 
         # --- findings 107/108: an implementer that returned nothing no longer voids the wave.
+        _check("gate JS routes a NULL implementer result through the same fallback (finding 113)",
+               "external worker returned null" in script_2 and "impl = {};" in script_2)
         _check("gate JS falls back to the registered lane for a claude worktree job with no result",
               "(implNoResult ? ' --impl-no-result' : '')" in script_2
               and "external worker reported no worktree" in script_2)

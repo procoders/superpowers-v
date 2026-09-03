@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "scripts/compound-v-validate-manifest.py"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "f76a6f3e81d2bfa11733244011090b21ea8eda7c",
+    "diff_digest": "sha256:b220ea9714afb8e7e35a4b5749c5b6ba15703f2b0ece99c6e74a502c2d515f1b",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"f76a6f3e81d2bfa11733244011090b21ea8eda7c\",\n  \"changed\": [\n    \"scripts/compound-v-validate-manifest.py\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-validate-manifest.py\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "f76a6f3e81d2bfa11733244011090b21ea8eda7c",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task B2a \u2014 validate-manifest.py accepts test_contract.timeout_s",
+  "tests": {
+    "command": "bash tests/test-engine-c-contract.sh\n/usr/bin/python3 -B scripts/compound-v-validate-manifest.py --selftest",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_ecd8382e-523-1"
+}

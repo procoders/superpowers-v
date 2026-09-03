@@ -1,0 +1,80 @@
+{
+  "baseline_commit": "f76a6f3e81d2bfa11733244011090b21ea8eda7c",
+  "diff_digest": "sha256:23992cc988f5d2a1d408b0206a787eec8c64ad6b9b0e59a55288db64e74d9b11",
+  "exit_code": 0,
+  "job_id": "workers",
+  "patch_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r4/jobs/workers.patch",
+  "patch_paths": [
+    "scripts/compound-v-run-antigravity-worker.sh",
+    "scripts/compound-v-run-codex-worker.sh",
+    "scripts/compound-v-run-cursor-worker.sh",
+    "scripts/compound-v-run-devin-worker.sh",
+    "scripts/compound-v-run-opencode-worker.sh"
+  ],
+  "patch_sha256": "sha256:23992cc988f5d2a1d408b0206a787eec8c64ad6b9b0e59a55288db64e74d9b11",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"f76a6f3e81d2bfa11733244011090b21ea8eda7c\",\n  \"changed\": [\n    \"scripts/compound-v-run-antigravity-worker.sh\",\n    \"scripts/compound-v-run-codex-worker.sh\",\n    \"scripts/compound-v-run-cursor-worker.sh\",\n    \"scripts/compound-v-run-devin-worker.sh\",\n    \"scripts/compound-v-run-opencode-worker.sh\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-run-codex-worker.sh\",\n    \"scripts/compound-v-run-antigravity-worker.sh\",\n    \"scripts/compound-v-run-cursor-worker.sh\",\n    \"scripts/compound-v-run-opencode-worker.sh\",\n    \"scripts/compound-v-run-devin-worker.sh\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "f76a6f3e81d2bfa11733244011090b21ea8eda7c",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "scripts/compound-v-run-antigravity-worker.sh",
+      "scripts/compound-v-run-codex-worker.sh",
+      "scripts/compound-v-run-cursor-worker.sh",
+      "scripts/compound-v-run-devin-worker.sh",
+      "scripts/compound-v-run-opencode-worker.sh"
+    ],
+    "checks": [
+      {
+        "checker": "bash tests/test-engine-c-contract.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f scripts/compound-v-run-antigravity-worker.sh ] || exit 0; shellcheck scripts/compound-v-run-antigravity-worker.sh'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f scripts/compound-v-run-codex-worker.sh ] || exit 0; shellcheck scripts/compound-v-run-codex-worker.sh'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f scripts/compound-v-run-cursor-worker.sh ] || exit 0; shellcheck scripts/compound-v-run-cursor-worker.sh'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f scripts/compound-v-run-devin-worker.sh ] || exit 0; shellcheck scripts/compound-v-run-devin-worker.sh'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f scripts/compound-v-run-opencode-worker.sh ] || exit 0; shellcheck scripts/compound-v-run-opencode-worker.sh'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (10 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 5 command(s) from 5 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_ecd8382e-523-3"
+}

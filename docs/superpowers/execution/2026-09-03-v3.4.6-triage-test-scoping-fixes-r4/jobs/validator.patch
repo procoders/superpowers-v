@@ -1,0 +1,28 @@
+diff --git a/scripts/compound-v-validate-manifest.py b/scripts/compound-v-validate-manifest.py
+index 7f26c73..1190294 100755
+--- a/scripts/compound-v-validate-manifest.py
++++ b/scripts/compound-v-validate-manifest.py
+@@ -842,7 +842,7 @@ DEFAULT_TAXONOMY_REL = os.path.join(".claude", "compound-v-impact-taxonomy.yaml"
+ # --------------------------------------------------------------------------- #
+ VALID_TEST_SCOPES = ("full", "impacted", "floor_only")
+ DEFAULT_TEST_SCOPE = "full"
+-TEST_CONTRACT_ALLOWED_KEYS = ("floor_command", "full_command", "impacted_map")
++TEST_CONTRACT_ALLOWED_KEYS = ("floor_command", "full_command", "impacted_map", "timeout_s")
+ IMPACTED_MAP_REQUIRED_KEYS = ("when", "run")
+ 
+ # Top-level required fields (per execution-manifest.md "Top-level fields").
+@@ -2255,6 +2255,14 @@ def _validate_test_contract(manifest, job_scopes):
+             if val is not None and not isinstance(val, str):
+                 problems.append("manifest test_contract.%s must be a string "
+                                 "(got %r)" % (key, val))
++        if "timeout_s" in contract:
++            tval = contract.get("timeout_s")
++            if (isinstance(tval, bool) or not isinstance(tval, int)
++                    or not (1 <= tval <= 540)):
++                problems.append(
++                    "manifest test_contract.timeout_s must be an integer "
++                    "between 1 and 540 (got %r)" % (tval,)
++                )
+         imap = contract.get("impacted_map")
+         if imap is not None:
+             if not isinstance(imap, list):
