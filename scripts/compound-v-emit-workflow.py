@@ -3860,6 +3860,15 @@ def cmd_finalize_wave(argv):
             "Nothing was merged and nothing was committed."
             % json.dumps(report.get("tally") or {})
         )
+        # The workflow halts on this wave, so the RUN is halted: record it as
+        # BLOCKED with the reason (see the same rule in `_apply`), so the run is
+        # not left PARTITION_VERIFIED with jobs pending forever.
+        with _run_dir_lock(run_dir):
+            _halted = _load_state(run_dir)
+            _halted["phase"] = "BLOCKED"
+            _halted["blocked_reason"] = ("wave %s: %s" % (args.wave, out["reason"]))[:300]
+            _halted["blocked_at"] = args.now or _utc_stamp()
+            _save_state(run_dir, _halted, now=args.now)
         return emit(1)
 
     # ---- 2. merge the permitted slices ------------------------------------- #
@@ -3896,6 +3905,18 @@ def cmd_finalize_wave(argv):
                 fresh["phase"] = "MERGED" if _done else "DISPATCHED"
                 if _done:
                     fresh["merged_at"] = now or _utc_stamp()
+            elif out["refused"]:
+                # A refused job halts the workflow (the script stops on a wave
+                # that did not integrate), so the RUN is halted: say BLOCKED,
+                # with the reason, instead of leaving PARTITION_VERIFIED with
+                # jobs pending forever. The banner still lists it (unfinished);
+                # the triage hook's narrower question (`--open-jobs`) excludes a
+                # BLOCKED run, so a halted run no longer silences sizing for the
+                # follow-up that repairs it (stage-2 r2, finding 47's residual).
+                fresh["phase"] = "BLOCKED"
+                fresh["blocked_reason"] = ("wave %s refused: %s" % (
+                    args.wave, ", ".join(out["refused"])))[:300]
+                fresh["blocked_at"] = now or _utc_stamp()
             _save_state(run_dir, fresh, now=now)
 
     merged_worktrees = {}
@@ -5841,6 +5862,10 @@ def selftest():
             _check("a wave whose job produced no result is REFUSED", rc != 0)
             _check("a refused wave commits nothing",
                    _head_commit(fin_repo) == head_before)
+            _check("a refused wave marks the run BLOCKED with the reason (finding 47 residual)",
+                   _load_state(ref_dir).get("phase") == "BLOCKED"
+                   and "REFUSED" in str(_load_state(ref_dir).get("blocked_reason")),
+                   str(_load_state(ref_dir)))
             # finding 56: with NO merge there is no wave commit, so no
             # bookkeeping commit either — the record stays for the caller.
             # (The merged-and-refused shape is asserted in the bk4 block.)

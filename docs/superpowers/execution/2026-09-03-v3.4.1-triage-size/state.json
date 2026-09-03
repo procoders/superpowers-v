@@ -1,6 +1,6 @@
 {
   "run_id": "2026-09-03-v3.4.1-triage-size",
-  "phase": "PARTITION_VERIFIED",
+  "phase": "BLOCKED",
   "pre_eval_id": "2026-09-03T022331Z-implement-the-v3-4-1-triage-size-feature-per-docs-superpower-538f",
   "updated_at": "2026-09-03T02:26:38Z",
   "jobs": {
@@ -99,5 +99,8 @@
       "commit": "028b264668d069eb0566fedd45ccd304d7ec4573",
       "integrated": false
     }
-  }
+  },
+  "blocked_reason": "wave 1: integration not permitted \u2014 test-scope refused (a test-contract row of the orchestrator's; landed in r2)",
+  "blocked_at": "2026-09-03T02:59:52Z",
+  "phase_note": "retro-marked 2026-09-03: the finalizer did not mark halted runs BLOCKED before this commit (finding 47 residual)"
 }

@@ -20,6 +20,10 @@ Stage verification, cycle 1 (DIRECT attended), 2026-09-03 — the first real req
 
 The per-run mutex is gitignored and untracked; the finalizer's bookkeeping commit resets it explicitly.
 
+### Fixed — a halted run is marked BLOCKED, not left PARTITION_VERIFIED with jobs pending
+
+When a wave is refused (by the authority, or because a job did not reach `success`) the workflow halts; the finalizer now writes `phase: BLOCKED` with the reason and time. The banner still lists the run as unfinished; the triage hook's `--open-jobs` question excludes it, so a halted run no longer silences the sizing of the follow-up that repairs it.
+
 ### Fixed — a partially merged wave now commits its own record
 
 Stage-2 r1 merged four jobs and refused one: HEAD moved, but the finalizer's bookkeeping commit was gated on `integrated`, so state, receipts and results stayed untracked — the audit-trail gate reds on push. The bookkeeping commit now follows every wave that produced a commit.
