@@ -1,7 +1,7 @@
 {
   "epic_id": "2026-09-03-verification-index",
   "title": "The verification-program index (stage 5, the first epic)",
-  "status": "running",
+  "status": "done",
   "features": [
     {
       "id": "review-index",
@@ -18,9 +18,9 @@
         "review-index"
       ],
       "spec_path": "docs/superpowers/execution/epics/2026-09-03-verification-index/specs/readme-section.md",
-      "status": "running",
-      "run_id": "2026-09-03-verification-index-readme-section"
+      "status": "done",
+      "run_id": "2026-09-03-verification-index-readme-section-r2"
     }
   ],
-  "updated_at": "2026-09-03T09:08:08Z"
+  "updated_at": "2026-09-03T09:35:47Z"
 }
