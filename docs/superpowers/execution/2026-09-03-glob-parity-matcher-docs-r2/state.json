@@ -1,0 +1,28 @@
+{
+  "run_id": "2026-09-03-glob-parity-matcher-docs-r2",
+  "phase": "PARTITION_VERIFIED",
+  "updated_at": "2026-09-03T20:28:56Z",
+  "pre_eval_id": "2026-09-03T202855Z-epic-feature-matcher-docs-attempt-2-retry-after-attempt-1-pa-8e3e",
+  "escalated_to": null,
+  "total_retries": 0,
+  "max_total_retries": 12,
+  "cooldowns": {},
+  "circuit_open": {},
+  "attempts": {},
+  "jobs": {
+    "docs-contract": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null,
+      "log": null
+    },
+    "spec-review-1": {
+      "status": "pending",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null,
+      "log": null
+    }
+  }
+}

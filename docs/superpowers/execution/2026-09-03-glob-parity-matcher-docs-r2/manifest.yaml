@@ -1,0 +1,59 @@
+run_id: 2026-09-03-glob-parity-matcher-docs-r2
+feature: 'epic 2026-09-03-glob-parity · F2 matcher-docs attempt 2: undo attempt 1, state the six-rule contract verbatim in both files'
+routing_stance: balanced
+max_parallel: 2
+spec_path: docs/superpowers/execution/epics/2026-09-03-glob-parity/specs/matcher-docs.md
+plan_path: docs/superpowers/plans/2026-09-03-epic-gp-matcher-docs-r2.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-09-03-epic-gp-matcher-docs.md
+  domain: docs/superpowers/execution/epics/2026-09-03-glob-parity/specs/matcher-docs.md
+  library: docs/superpowers/library-audit/2026-09-03-epic-gp-matcher-docs.md
+triage:
+  tier: SCOPED
+  pre_eval_id: 2026-09-03T202855Z-epic-feature-matcher-docs-attempt-2-retry-after-attempt-1-pa-8e3e
+  taxonomy_digest: sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a
+  decided_at: '2026-09-03T20:28:55Z'
+acceptance_criteria:
+- grep -n fnmatch skills/compound-v/memory.md skills/compound-v/execution-manifest.md prints nothing; both files contain the phrase "the same matcher" and a pointer to the parity rows in compound-v-memory.py --selftest.
+- execution-manifest.md gains exactly one "Glob semantics" paragraph after the end of its "Per-job fields" section (before the "### Tier vocabulary" heading, never inside the table) and no other section changes; memory.md's recall-check row is rewritten IN PLACE as a same-line-count replacement (wc -l unchanged) with the identical six-rule sentence plus the recall-only bare-path reading, and no other line changes.
+- Every relative link in both files resolves; the execution-manifest.md paragraph wraps at 120 characters or less and the memory.md row does not exceed the file's longest pre-existing line; the paragraph does not claim the bare-path reading for write_allowed/read_allowed.
+test_contract:
+  floor_command: bash -c '/usr/bin/python3 scripts/lint-frontmatter.py >/dev/null'
+  full_command: bash -c '/usr/bin/python3 scripts/lint-frontmatter.py >/dev/null && for f in skills/compound-v/memory.md skills/compound-v/execution-manifest.md; do grep -q "the same matcher" "$f" || { echo "missing phrase in $f"; exit 1; }; grep -q "matches within one path segment" "$f" || { echo "six-rule sentence missing in $f"; exit 1; }; done'
+  impacted_map:
+  - when: skills/**/*.md
+    run: bash -c '[ -f {path} ] || exit 0; /usr/bin/python3 scripts/lint-frontmatter.py >/dev/null'
+jobs:
+- id: docs-contract
+  title: Task A — the same six glob rules in memory.md and execution-manifest.md, each naming the other and the parity selftest
+  type: implement
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: worktree
+  run: parallel
+  write_allowed:
+  - skills/compound-v/memory.md
+  - skills/compound-v/execution-manifest.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - grep -c "the same matcher" prints 1 for each of the two files; grep -n fnmatch on both prints nothing; no other section of either file changed (git diff --stat shows only the two files, each with one hunk region); lint-frontmatter clean.
+  body: 'Implement Task A of docs/superpowers/plans/2026-09-03-epic-gp-matcher-docs-r2.md EXACTLY, starting with its Step 0 (undo attempt 1''s two hunks from commit d7dc25d). The paragraph (Step 2) and the row (Step 3) are pasted VERBATIM from the plan — do not paraphrase, shorten or move them. Placement: the paragraph goes after the end of the Per-job fields section (after its footnote and trailing paragraph, immediately before the ### Tier vocabulary heading), never inside the table; the memory.md row replaces ONE physical line so the file''s line count is unchanged. If you believe any constraint cannot be met, STOP, change nothing further, and say exactly which one in your summary. Only skills/compound-v/memory.md and skills/compound-v/execution-manifest.md may change. Verify with the plan''s Step 4 commands and commit in your worktree.'
+- id: spec-review-1
+  title: Review Gate — three passes against the spec and the feature acceptance criteria
+  type: review
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: direct
+  run: serial
+  depends_on:
+  - docs-contract
+  write_allowed:
+  - docs/superpowers/dogfood/2026-09-03-epic-gp-matcher-docs-r2-review-1.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - The r2-review-1 file exists with ## Recall, ## SPEC, ## QUALITY, ## INTEGRATION, ## Verdict and one line VERDICT APPROVED or VERDICT ISSUES; every acceptance criterion of the spec is named with a pass/fail and the command that proved it; the INTEGRATION pass compares the quoted rules with scripts/compound-v-scope-check.py''s docstring.
+  body: 'Your agent definition carries the three-pass Review Gate and a Step 0 (V-memory recall). Follow it. Feature F2 matcher-docs of epic 2026-09-03-glob-parity: spec docs/superpowers/execution/epics/2026-09-03-glob-parity/specs/matcher-docs.md (read its Amendment section), plan docs/superpowers/plans/2026-09-03-epic-gp-matcher-docs.md. Review the merged diff of job docs-contract (attempt 2; the attempt-1 review is docs/superpowers/dogfood/2026-09-03-epic-gp-matcher-docs-review-1.md — state whether each of its 2 SPEC_GAP and 3 CONSTRAINT_VIOLATION items is closed). Run /usr/bin/python3 scripts/lint-frontmatter.py yourself and check every relative link in the two files resolves. Write docs/superpowers/dogfood/2026-09-03-epic-gp-matcher-docs-r2-review-1.md and nothing else.'
