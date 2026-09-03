@@ -8,9 +8,9 @@
       "title": "F1 \u2014 recall-check uses the scope gate's glob matcher",
       "depends_on": [],
       "spec_path": "docs/superpowers/execution/epics/2026-09-03-glob-parity/specs/one-matcher.md",
-      "status": "pending",
-      "run_id": null,
-      "attempts": 0,
+      "status": "running",
+      "run_id": "2026-09-03-glob-parity-one-matcher",
+      "attempts": 1,
       "last_error": null,
       "disposition": null
     },
@@ -42,6 +42,10 @@
   },
   "blocker_ledger": [],
   "no_progress_cycles": 0,
-  "total_attempts": 0,
-  "updated_at": "2026-09-03T19:07:31Z"
+  "total_attempts": 1,
+  "updated_at": "2026-09-03T19:07:53Z",
+  "last_done_count": 0,
+  "processed_cycle_ids": [
+    "c1"
+  ]
 }
