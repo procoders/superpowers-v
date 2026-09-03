@@ -1,0 +1,57 @@
+run_id: 2026-09-03-v3.4.1-triage-size-r4
+feature: 'v3.4.1 triage-size r4: review pass 2 — the five issues of review-1, closed by the orchestrator, verified'
+routing_stance: balanced
+max_parallel: 1
+spec_path: docs/superpowers/specs/2026-09-03-v3.4.1-triage-size-design.md
+plan_path: docs/superpowers/plans/2026-09-03-v3.4.1-triage-size.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-09-03-v3-4-1-triage-size.md
+  domain: docs/superpowers/specs/2026-09-03-v3.4.1-triage-size-design.md
+  library: docs/superpowers/library-audit/2026-09-03-v3-4-1-triage-size.md
+triage:
+  tier: DIRECT
+  pre_eval_id: 2026-09-03T035057Z-review-pass-2-of-v3-4-1-triage-size-verify-that-the-five-iss-c296
+  taxonomy_digest: sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a
+  decided_at: '2026-09-03T03:50:57Z'
+acceptance_criteria:
+- Every scripts/compound-v-*.py --selftest and every tests/*.sh is green under /usr/bin/python3 -B (CI's Python 3.9 floor); tests/v2.9-e2e passes under python3 -m unittest.
+- Driven with synthetic UserPromptSubmit stdin against the merged tree, the hook returns TIER SCOPED for a small edit to scripts/compound-v-scorecard.py, TIER SCOPED with flavor scoped_plus for a small edit to scripts/compound-v-scope-check.py, TIER FULL for an edit naming a .env file, and TIER DIRECT for a README.md typo — each with a committed-shape record that validates against schemas/pre-eval-record.schema.json.
+- compound-v-localize.py never searches a plain word (a request with no identifier returns failed without invoking the search backend), resolves a trailing-period path, and returns new_file for a named non-existent file whose parent exists.
+- compound-v-fastpath-run.py at tier SCOPED resolves an unmapped changed path to at most five referencing tests plus the floor and never to full_command; at tier FULL an unmapped path still resolves to full_command.
+- compound-v-validate-manifest.py --require-triage rejects a scoped_plus manifest without a deep Claude review job and accepts one with it; --require-cross-model-receipt rejects a missing or digest-mismatched receipt.
+- No prose in commands/skills/agents still says the hook degrades to a reminder on needs_t3, or that /v:dispatch step 9 writes phase MERGED by hand.
+test_contract:
+  floor_command: /usr/bin/python3 -B scripts/compound-v-preeval.py --selftest
+  full_command: bash -c 'for s in scripts/compound-v-preeval.py scripts/compound-v-localize.py scripts/compound-v-taxonomy.py scripts/compound-v-validate-taxonomy.py scripts/compound-v-fastpath-run.py scripts/compound-v-classify-request.py scripts/compound-v-validate-manifest.py; do /usr/bin/python3 -B "$s" --selftest >/dev/null 2>&1 || { echo "FAIL $s"; exit 1; }; done; for t in tests/*.sh; do bash "$t" >/dev/null 2>&1 || { echo "FAIL $t"; exit 1; }; done; /usr/bin/python3 -B -m unittest discover -s tests/v2.9-e2e -p "test_*.py" >/dev/null 2>&1 || { echo "FAIL e2e"; exit 1; }; echo all-tests-ok'
+  impacted_map:
+  - when: hooks/**
+    run: bash -c 'bash tests/test-native-points.sh && bash tests/test-epic-goal-stop.sh'
+  - when: scripts/compound-v-*.py
+    run: bash -c '[ -f {path} ] || exit 0; /usr/bin/python3 -B {path} --selftest'
+  - when: tests/*.sh
+    run: bash -c '[ -f {path} ] || exit 0; bash {path}'
+  - when: tests/v2.9-e2e/*.py
+    run: bash -c '[ -f {path} ] || exit 0; /usr/bin/python3 -B -m unittest discover -s "$(dirname {path})" -p "$(basename {path})"'
+  - when: schemas/*.json
+    run: bash -c 'for r in docs/superpowers/pre-eval/*.json; do /usr/bin/python3 -B -c "import json,sys; json.load(open(sys.argv[1]))" "$r" || exit 1; done; /usr/bin/python3 -B scripts/compound-v-preeval.py --selftest'
+  - when: .claude/compound-v-impact-taxonomy*.yaml
+    run: bash -c '/usr/bin/python3 -B scripts/compound-v-validate-taxonomy.py .claude/compound-v-impact-taxonomy.yaml && /usr/bin/python3 -B scripts/compound-v-taxonomy.py --selftest'
+  - when: commands/v-triage.md
+    run: bash tests/test-triage-landing.sh
+jobs:
+- id: spec-review-2
+  title: Review Gate pass 2 — the five issues of review-1 against the merged tree
+  type: review
+  backend: claude
+  tier: deep
+  effort: medium
+  isolation: direct
+  run: serial
+  write_allowed:
+  - docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-2.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - 'The review-2 file exists with ## Recall, ## SPEC, ## QUALITY, ## INTEGRATION, ## Verdict; for each of review-1''s five issues it states closed or open with the command and output that proves it; the verdict is APPROVED or ISSUES with a numbered list.'
+  body: 'Your agent definition carries the three-pass Review Gate and a Step 0 (V-memory recall). Follow it. This is the SECOND pass. Read docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-1.md: it found ISSUES (5). The ORCHESTRATOR closed them in commit e9ab86f ("fix(v3.4.1 review-1): …") — review that commit as new code. Issue 1: reproduce your predecessor''s sandbox probe (git ls-files copy, fresh git init, empty pre-eval dir — the hook is silent on a checkout with an active run, and THIS run is active) for the four requests of acceptance criterion 2 plus a `.github/workflows/validate.yml` edit (the never-demote case) and a new file under scripts/; quote the tiers, flavors and t3_demotion fields. Issue 2: grep the four documents for any instruction to write MERGED by hand. Issue 3: read the CHANGELOG/README claims against your probe. Issue 4: run compound-v-fastpath-run.py resolve-tests at tier FULL with an unmapped path and quote the label. Issue 5: the 3.4.1 intro line.
+    Then run every feature-level acceptance criterion of the r1 manifest (docs/superpowers/execution/2026-09-03-v3.4.1-triage-size/manifest.yaml) on the merged tree with /usr/bin/python3 -B. Report everything in one pass, ranked. Write docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-2.md with ## Recall, ## SPEC, ## QUALITY, ## INTEGRATION, ## Verdict (APPROVED or ISSUES with a numbered list). Run python with -B; register your lane with a literal --cwd.'

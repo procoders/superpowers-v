@@ -1,0 +1,9 @@
+{
+  "confidence": "exact",
+  "digest": "sha256:e7aa705727a44dc49097536453fa769b6ecd7bcfae978214fbffefd103bbe9f0",
+  "fan_out": 1,
+  "flags": [],
+  "resolved_paths": [
+    "docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-1.md"
+  ]
+}

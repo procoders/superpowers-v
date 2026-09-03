@@ -1,0 +1,40 @@
+{
+  "base_commit": "e9ab86f9a033a846d1ad01bf1689f2afafa1790c",
+  "confidence": "localization:exact; tiers:localization,T1",
+  "decision": "FASTPATH_ELIGIBLE",
+  "declared_paths": [
+    "docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-1.md"
+  ],
+  "difficulty": {
+    "band": "low",
+    "display": 2
+  },
+  "digest": "sha256:d685ba4c6b6ebac3d2f1e3e26f3b2f3573c93a978b37ab9ae6c6fd9690637018",
+  "impact": {
+    "band": "low",
+    "display": 2
+  },
+  "localization": {
+    "confidence": "exact",
+    "fan_out": 1,
+    "flags": [],
+    "resolved_paths": [
+      "docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-1.md"
+    ]
+  },
+  "min_sample_status": "insufficient",
+  "override_fired": null,
+  "pre_eval_id": "2026-09-03T035057Z-review-pass-2-of-v3-4-1-triage-size-verify-that-the-five-iss-c296",
+  "request_slug": "review-pass-2-of-v3-4-1-triage-size-verify-that-the-five-iss",
+  "session_id": "stage2r4-1788407457",
+  "status": "PRE_EVAL_DONE",
+  "taxonomy_digest": "sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a",
+  "taxonomy_ref": "docs/superpowers/pre-eval/2026-09-03T035057Z-review-pass-2-of-v3-4-1-triage-size-verify-that-the-five-iss-c296.taxonomy-snapshot.yaml",
+  "taxonomy_version": 1,
+  "tier": "DIRECT",
+  "tiers_signalled": [
+    "localization",
+    "T1"
+  ],
+  "ts": "2026-09-03T03:50:57Z"
+}
