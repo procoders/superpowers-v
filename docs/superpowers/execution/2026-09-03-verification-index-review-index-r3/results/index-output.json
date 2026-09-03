@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/README.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "b3375454480dccca71da44905f25ea16cb5f67aa",
+    "diff_digest": "sha256:c3fb79ade9ead057e370232552e5faf8884ffc4d76a3f9c4b10807d9489755e5",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"b3375454480dccca71da44905f25ea16cb5f67aa\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/README.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/README.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "b3375454480dccca71da44905f25ea16cb5f67aa",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task B \u2014 the generated docs/superpowers/dogfood/README.md",
+  "tests": {
+    "command": "bash tests/test-engine-c-contract.sh\nbash -c 'test -s docs/superpowers/dogfood/README.md && grep -q \"^Reviews: \" docs/superpowers/dogfood/README.md'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_2c2ae049-51e-5"
+}
