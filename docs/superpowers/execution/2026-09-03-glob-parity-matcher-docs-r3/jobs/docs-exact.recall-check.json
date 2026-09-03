@@ -13,6 +13,6 @@
   ],
   "k": 2,
   "match_count": 2,
-  "recall_check_ms": 134,
+  "recall_check_ms": 120,
   "verdict": "tighten"
 }
