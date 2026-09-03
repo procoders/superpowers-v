@@ -277,7 +277,9 @@ esac
 # after ADVICE was produced. collect-results COUNTS the lines to DERIVE usage.advisor_calls.
 # Both --run-dir and --job-id must be present to log; omitting both => no logging (backward compat).
 if [ -n "$RUN_DIR" ] || [ -n "$JOB_ID" ]; then
-  [ -n "$RUN_DIR" ] && [ -n "$JOB_ID" ] || die "--run-dir and --job-id must be given together"
+  if [ -z "$RUN_DIR" ] || [ -z "$JOB_ID" ]; then
+    die "--run-dir and --job-id must be given together"
+  fi
   id_is_safe "$JOB_ID" || die "--job-id has invalid characters (allowed: A-Za-z0-9._-, not . or ..): $JOB_ID"
   [ -d "$RUN_DIR" ] || die "--run-dir is not an existing directory: $RUN_DIR"
   # Realpath the run dir, then build the log dir strictly beneath it and assert containment.
