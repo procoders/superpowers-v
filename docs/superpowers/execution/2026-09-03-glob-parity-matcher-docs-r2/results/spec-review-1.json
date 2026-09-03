@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-03-epic-gp-matcher-docs-r2-review-1.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "ff13a16607975087569a99324ae75ae4f60f9e78",
+    "diff_digest": "sha256:a8769e8287d687806037339dbc6a27e6db116ab75a386ce34eb56df57fad8661",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"ff13a16607975087569a99324ae75ae4f60f9e78\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-03-epic-gp-matcher-docs-r2-review-1.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-03-epic-gp-matcher-docs-r2-review-1.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "ff13a16607975087569a99324ae75ae4f60f9e78",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Review Gate \u2014 three passes against the spec and the feature acceptance criteria",
+  "tests": {
+    "command": "bash -c '/usr/bin/python3 scripts/lint-frontmatter.py >/dev/null'\nbash tests/test-engine-c-contract.sh\nbash tests/test-epic-goal-stop.sh\nbash tests/test-hook-recursion-guard.sh\nbash tests/test-integration-gate.sh\nbash tests/test-lane-guard.sh",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted+referencing",
+    "selected_count": 6
+  },
+  "violations": [],
+  "worktree": ""
+}

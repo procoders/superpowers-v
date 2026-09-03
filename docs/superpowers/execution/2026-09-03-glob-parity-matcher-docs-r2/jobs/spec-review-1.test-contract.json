@@ -1,0 +1,14 @@
+{
+  "scope": "impacted+referencing",
+  "resolved_commands": [
+    "bash -c '/usr/bin/python3 scripts/lint-frontmatter.py >/dev/null'",
+    "bash tests/test-engine-c-contract.sh",
+    "bash tests/test-epic-goal-stop.sh",
+    "bash tests/test-hook-recursion-guard.sh",
+    "bash tests/test-integration-gate.sh",
+    "bash tests/test-lane-guard.sh"
+  ],
+  "selected_count": 6,
+  "floor_command": "bash -c '/usr/bin/python3 scripts/lint-frontmatter.py >/dev/null'",
+  "full_command": "bash -c '/usr/bin/python3 scripts/lint-frontmatter.py >/dev/null && for f in skills/compound-v/memory.md skills/compound-v/execution-manifest.md; do grep -q \"the same matcher\" \"$f\" || { echo \"missing phrase in $f\"; exit 1; }; grep -q \"matches within one path segment\" \"$f\" || { echo \"six-rule sentence missing in $f\"; exit 1; }; done'"
+}
