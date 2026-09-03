@@ -28,8 +28,8 @@ jobs:
   title: Task A — the same six glob rules in memory.md and execution-manifest.md, each naming the other and the parity selftest
   type: implement
   backend: claude
-  tier: light
-  effort: low
+  tier: standard
+  effort: medium
   isolation: worktree
   run: parallel
   write_allowed:
@@ -39,7 +39,7 @@ jobs:
   - '**'
   acceptance:
   - grep -c "the same matcher" prints 1 for each of the two files; grep -n fnmatch on both prints nothing; no other section of either file changed (git diff --stat shows only the two files, each with one hunk region); lint-frontmatter clean.
-  body: 'Implement Task A of docs/superpowers/plans/2026-09-03-epic-gp-matcher-docs.md exactly (the text to add and the row to replace are in the plan). Only skills/compound-v/memory.md and skills/compound-v/execution-manifest.md may change. Keep every relative link resolvable ([memory.md](memory.md) and [execution-manifest.md](execution-manifest.md) are siblings in the same directory). Do not exceed the longest pre-existing line length of each file (check with awk before editing). Verify with the plan''s Step 4 commands and commit in your worktree.'
+  body: 'Implement Task A of docs/superpowers/plans/2026-09-03-epic-gp-matcher-docs.md exactly (the text to add and the row to replace are in the plan). Only skills/compound-v/memory.md and skills/compound-v/execution-manifest.md may change. Keep every relative link resolvable ([memory.md](memory.md) and [execution-manifest.md](execution-manifest.md) are siblings in the same directory). Line length per the plan's Step 4 (memory.md row ≤ the file's longest existing line; execution-manifest.md paragraph wrapped ≤ 120 chars); no other fallback. Verify with the plan''s Step 4 commands and commit in your worktree.'
 - id: spec-review-1
   title: Review Gate — three passes against the spec and the feature acceptance criteria
   type: review

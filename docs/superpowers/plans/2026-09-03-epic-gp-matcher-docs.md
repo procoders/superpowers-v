@@ -19,7 +19,7 @@
 
 | Task | write_allowed | type |
 |---|---|---|
-| A `docs-contract` | `skills/compound-v/memory.md`, `skills/compound-v/execution-manifest.md` | implement (claude · light · low · worktree) |
+| A `docs-contract` | `skills/compound-v/memory.md`, `skills/compound-v/execution-manifest.md` | implement (claude · standard · medium · worktree — two files with a verbatim-in-both constraint: not a junior box) |
 | R `spec-review-1` | `docs/superpowers/dogfood/2026-09-03-epic-gp-matcher-docs-review-1.md` | review (claude · deep · high · direct, depends_on A) |
 
 Shared resources: none. Task 0: none.
@@ -56,7 +56,7 @@ matcher — see [`memory.md`](memory.md); the proof is the parity rows in `pytho
 - [ ] **Step 4: Verify**
 
 Run: `grep -c 'the same matcher' skills/compound-v/memory.md skills/compound-v/execution-manifest.md` and `grep -n fnmatch skills/compound-v/memory.md skills/compound-v/execution-manifest.md` and `awk 'length > 200 {print FILENAME": "FNR}' skills/compound-v/memory.md skills/compound-v/execution-manifest.md`
-Expected: each file counts 1; the fnmatch grep prints nothing; the awk prints nothing (the table row may exceed 200 characters only if the file's existing rows already do — check `awk 'length > 200' skills/compound-v/memory.md | wc -l` before editing and do not add a longer line than the longest existing one; if the row must be shorter, drop the parenthetical rule list and keep the link + "the same matcher" + the proof pointer).
+Expected: each file counts 1; the fnmatch grep prints nothing. Line length, decided up front (partition review 2026-09-03): `memory.md` already carries table rows longer than 200 characters, so the rewritten `recall-check` row may exceed 200 characters but must stay at or below the longest line already in the file (measure it with `awk 'length>max{max=length} END{print max}' skills/compound-v/memory.md` before editing); the `execution-manifest.md` paragraph is wrapped at ≤ 120 characters per line. No other fallback: the rule list, the link, "the same matcher" and the proof pointer are all mandatory in both files.
 
 - [ ] **Step 5: Commit**
 
