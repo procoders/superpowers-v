@@ -22,10 +22,10 @@
         "one-matcher"
       ],
       "spec_path": "docs/superpowers/execution/epics/2026-09-03-glob-parity/specs/matcher-docs.md",
-      "status": "running",
+      "status": "failed",
       "run_id": "2026-09-03-glob-parity-matcher-docs-r2",
       "attempts": 2,
-      "last_error": null,
+      "last_error": "attempt 2: reviewer ISSUES \u2014 six rules present but paraphrased (not the plan's verbatim sentence), placed inside the write_allowed table cell (1170 chars), memory.md +7 lines (not same-line-count), Step 0 (undo attempt 1) skipped; proof pointer not verbatim",
       "disposition": {
         "disposition": "retry_fix",
         "attempt": 1,
@@ -55,7 +55,7 @@
   "blocker_ledger": [],
   "no_progress_cycles": 1,
   "total_attempts": 5,
-  "updated_at": "2026-09-03T20:30:04Z",
+  "updated_at": "2026-09-03T20:42:52Z",
   "last_done_count": 1,
   "processed_cycle_ids": [
     "c1",
