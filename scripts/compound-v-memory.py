@@ -970,8 +970,8 @@ def _staleness_warning(new, changed, removed, why="--no-refresh"):
     # multi-dev: a teammate's pulled/changed docs aren't indexed yet (or some were removed).
     # The advice names the path that was actually taken: with --no-refresh the caller asked
     # to read the index as it is; when another refresh holds the lock this search read the
-    # stale index rather than wait. Neither is "run /v:memory-refresh first" — a plain
-    # search refreshes the FTS5 lane itself (review-2 of v3.4.5, item 2).
+    # stale index rather than wait. Neither path should send the caller to a manual
+    # refresh — a plain search refreshes the FTS5 lane itself (review-2 of v3.4.5, item 2).
     if why == "lock":
         advice = "another refresh holds the lock, so this search read the index as it is"
     else:

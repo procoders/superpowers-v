@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [3.4.5] - 2026-09-03
+
+Stage 5a of the verification program — is V-memory recall real? It was real and stale: every reviewer of the
+first epic recalled against an index 110–118 files behind the repository, because nothing in the pipeline
+refreshed it. Three runs (r1 merged the engine and docs; r2's docs job was refused by a 300 s test-suite
+stopwatch, not by its diff — finding 102; r3 merged the docs) and two review passes; the second pass was
+closed by the orchestrator at the review cap with a sweep by meaning, after three separate prose files
+turned out to carry the retired "refresh first" instruction (findings 101, 103).
+
 ### Fixed — `search` refreshes the FTS5 lane inline instead of just warning stale (finding 98)
 
 Every reviewer in the 2026-09-03 epic ran Step 0 faithfully and every one of them recalled
@@ -21,6 +30,22 @@ no index yet builds one on the first search. The inline refresh is FTS5-only —
 the `--quick` cap and never touches embeddings, so a file it re-chunks loses its vector until
 the next `/v:memory-refresh --with-embeddings`, degrading that file to FTS5-only in the
 meantime, never breaking it.
+
+### Fixed — three prose files still told the agent to refresh before a search (findings 101, 103)
+
+Pre-flight 1A counted "exactly one prose file"; review pass 1 found `phase-0-recon.md`, pass 2 found
+`skills/compound-v/SKILL.md` twice. All gone, and the engine's own staleness warning no longer sends the
+caller to `/v:memory-refresh` on the two paths where the search itself declined to refresh — it names the
+path taken (`--no-refresh`, or another refresh holding the lock). Verified by a grep for the retired
+phrases across skills, commands, agents, hooks and scripts: zero hits.
+
+### Known, next release — the tier-1 test checker's fixed 300 s cap (finding 102)
+
+A FULL-tier job whose lane path matches no `impacted_map` rule runs `full_command`; this repository's full
+suite now takes 340 s under load, and `compound-v-fastpath-run.py` caps it at a constant 300 s, so the job
+is refused with `failure_class` unset. Until `test_contract.timeout_s` ships, map every lane path at FULL
+tier. Also recorded: pre-flight 1C's knowledge-base append lands outside the paths its result reports
+(finding 100).
 
 ## [3.4.4] - 2026-09-03
 
