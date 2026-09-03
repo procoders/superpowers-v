@@ -1,0 +1,99 @@
+diff --git a/docs/superpowers/dogfood/2026-09-03-v3.4.6-triage-test-scoping-fixes-review-2.md b/docs/superpowers/dogfood/2026-09-03-v3.4.6-triage-test-scoping-fixes-review-2.md
+new file mode 100644
+index 0000000..7c8253f
+--- /dev/null
++++ b/docs/superpowers/dogfood/2026-09-03-v3.4.6-triage-test-scoping-fixes-review-2.md
+@@ -0,0 +1,93 @@
++# v3.4.6 triage/test-scoping fixes — Review Gate, pass 2 (run r11)
++
++Run `2026-09-03-v3.4.6-triage-test-scoping-fixes-r11` · reviewer `superpowers-v:spec-reviewer` on the frontier tier (a dispatch-time escalation after three Opus 529s in r8–r10, not a policy change) · under review: the closure commit `20866b2` against review-1 (`docs/superpowers/dogfood/2026-09-03-v3.4.6-triage-test-scoping-fixes-review.md`, ISSUES 7) · isolation `direct`, baseline pinned `1af70b9d608464c8cf5ba944dd1f2c3f042563d2` · `git log 20866b2..HEAD -- <the four closure files>` is empty, so the closure is what HEAD runs.
++
++**VERDICT: ISSUES** — one finding. All seven review-1 items are closed in the code and the text, AC 2 and AC 5 re-run green, the owed suites are green; but the three code closures (items 1, 6, 7) landed with zero new assertions, so each one would silently regress.
++
++| Pass | Status |
++|---|---|
++| PASS 1 SPEC | ✅ — 7/7 review-1 items closed by live command; no scope leak; no over-build |
++| PASS 2 QUALITY | **ISSUES** — finding 1 (TEST_GAP on the three code closures); reward-hacking clean; no fabricated metric |
++| PASS 3 INTEGRATION | ✅ — floor + every impacted rule ran, exit 0; AC 2 and AC 5 re-run on HEAD; seams unchanged |
++
++## 1. Recall (Step 0)
++
++`compound-v-memory.py search "triage test scoping timeout_s content scan exclusion" --intent review --top 8` returned the archaeology, the design spec, the plan, the library audit and review-1 itself — nothing new beyond what review-1 already cited. The one load-bearing constraint carried forward: archaeology line 88 (`docs/superpowers/archaeology/2026-09-03-v3-4-6-triage-test-scoping-fixes.md:88`) records the workers' `TEST_TIMEOUT_SEC=900` as "not implicated in the observed incident", which is why item 1 was closed on the *emitter* side (always pass the flag) and the five worker defaults were left at 900 — consistent with the audit.
++
++`recall-check --files scripts/compound-v-emit-workflow.py scripts/compound-v-fastpath-run.py CHANGELOG.md scripts/compound-v-validate-manifest.py` → **`tighten`** (4 prior `blocked`/`error` records: r3 validator, r5 emitter, 3.4.1 test-scope, df27 spec-review). Recommendation `extra_review_pass` is satisfied by this pass existing. Escalation-only; nothing here loosens or reroutes.
++
++## 2. Review-1's seven items — closed or open, one command each
++
++| # | Item | Command | Output | Status |
++|---|---|---|---|---|
++| 1 | Docs say absent ⇒ 480; external path really defaulted to 900 | `grep -n 'test-timeout-sec' scripts/compound-v-emit-workflow.py` | `1367: argv += ["--test-timeout-sec", str(_tc_timeout_s)]` — unconditional inside the `if entry.get("test_contract_file")` block; `:1364-1366` coerce anything outside int 1..540 to 480. Live: `build_launch_argv` with `test_contract_timeout_s=None` → `['--test-timeout-sec', '480']`; `45` → `'45'`; `541`/`True`/`"480"` → `'480'`; no contract file → no flag (the worker then runs no tests, which `parallel-dispatcher.md:174` documents as honest). `execution-manifest.md:452` "Absent ⇒ 480" and `parallel-dispatcher.md:173` "always passed; 480 when the manifest is silent" are now true of the runtime. | **closed** |
++| 2 | CHANGELOG attributed finding 99's four-request probe to the 300 s constant | `grep -n "four-request" CHANGELOG.md` | no hits. The replacement sentence (`CHANGELOG.md:43-44`) cites the refused job's receipt: `2026-09-03-v3.4.5-recall-freshness-r2/results/docs-2.json` carries `tests.exit_code: 124`, `failure_class: null`, `scope: full`, the `full_command` in `failures[]` — verified. The 340 s figure is the previously published measurement (`CHANGELOG.md:82`, the 3.4.5 "Known" entry; archaeology `:88` "340-350 s"), not a number in that receipt; the receipt proves ≥300 s against the constant, the earlier entry supplies the 340. | **closed** |
++| 3 | "in place of the previously hardcoded 900" / "defaults to 480 s, not 600 s" | `grep -n "hardcoded 900\|600 s\|900 s fallback\|on every path" CHANGELOG.md` | `:38` keeps the harness's "600 s foreground ceiling" (a different, true claim); `:41` now reads "passed through … always, so the worker scripts' own 900 s fallback no longer decides anything"; `:43` "Absent from the manifest, the budget is 480 s on every path (Engine C and external)". True on both paths: `compound-v-fastpath-run.py:122 TEST_TIMEOUT_S = 480`; item 1 for external. | **closed** |
++| 4 | 66,677 B stale | `wc -c scripts/compound-v-memory.py` → `76230`; `grep -n "66,677\|76,230" CHANGELOG.md` → `:11` says 76,230 B, no 66,677 remains | matches the file today | **closed** |
++| 5 | No finding-105 entry | `grep -n "finding 105" CHANGELOG.md` | `:23` `### Fixed — run-dir bookkeeping and gitignored paths no longer promote a test slice to the full suite; .run.lock retires at a terminal phase (finding 105)`, with the 46-stale-locks story and both halves of the fix (`:25-30`) | **closed** |
++| 6 | `.run.lock` retirement gated on `_retire_lane_map`'s return at 2 of 3 sites | `grep -n "_retire_run_lock\|lane_map_retired" scripts/compound-v-emit-workflow.py` | `:4090-4092` — `_retire_run_lock` reads `state.json` itself and returns False unless `phase ∈ {MERGED, BLOCKED}`; call sites `:4251`, `:4441`, `:4583` all unconditional (no `if out.get("lane_map_retired")` survives). Live on a temp run dir: `DISPATCHED`/`PARTITION_VERIFIED` → lock kept; `MERGED`/`BLOCKED` → lock removed; **MERGED with no `lane-map.json` present → lock removed** (the exact failure mode review-1 named). Ordering checked: `_apply` writes the phase under its own `_run_dir_lock` and releases before each call (`:4262-4306`); the step-1 refusal path writes BLOCKED at `:4241-4246` before `:4251`. Site 2 (`_commit_paths` error, `:4437-4442`) leaves the phase non-terminal and therefore keeps the lock — same as before, and correct: that run is not finished. | **closed** |
++| 7 | Resolver accepted floats / unbounded `timeout_s` | live `resolve_test_commands(dict(CONTRACT, timeout_s=v), "floor_only")` | `0.5`, `480.0`, `541`, `0`, `True`, `"480"` → `TestContractError: test_contract.timeout_s must be an integer in 1..540 when declared (got …)`; `540` and `1` accepted and copied verbatim (`compound-v-fastpath-run.py:1017-1027`). Same domain as the manifest validator. | **closed** |
++
++Scope: the closure touches `CHANGELOG.md`, `agents/parallel-dispatcher.md`, `scripts/compound-v-emit-workflow.py`, `scripts/compound-v-fastpath-run.py` — all inside the lanes the earlier runs owned; this job's own lane is this file only. No over-build: every hunk maps to one of the seven items and says which.
++
++## 3. Quality
++
++**Reward-hacking: clean.** `git show 20866b2 --stat -- tests/` is empty and no `expect(`/`_check(` line in either script is removed, skipped or loosened; the only threshold touched is the resolver's domain, and it got *tighter* (float/unbounded → int 1..540), matching the manifest validator.
++
++**Fabricated metrics: clean.** The two numbers the closure introduces — 76,230 B and the rc 124 receipt — are both re-measured here (`wc -c`; `results/docs-2.json`). The 340 s is a prior published measurement with a citation (item 2 above), not a new invention.
++
++**Finding 1 — TEST_GAP: the three code closures have no guard test.** The closure commit adds 0 assertions. Checked each MUST for the test that would fail if it broke:
++
++- Item 1 (`compound-v-emit-workflow.py:1364-1367`): `grep -n '"480"\|test-timeout-sec' scripts/compound-v-emit-workflow.py` matches only the implementation (`:1363,1367,1445,1529,1532`) — no selftest asserts that `build_launch_argv` emits `--test-timeout-sec 480` when `test_contract_timeout_s` is `None`. Reverting to the old `if … > 0:` gate passes all 428/428 emitter checks. This was review-1's highest-value item, and it is the one a future "clean-up" is most likely to undo.
++- Item 6 (`:4090-4092`): the two existing finding-105 assertions (`:6392`, `:6524`) build a run that still has its `lane-map.json` at the terminal transition, so re-introducing `if out.get("lane_map_retired"):` at `:4441`/`:4583` passes them. No assertion covers "lane map already gone, run MERGED → lock still retired", nor "non-terminal phase → lock kept".
++- Item 7 (`compound-v-fastpath-run.py:1019-1020`): the existing assertions at `:2170-2175` cover `True` and `0` only; `0.5` and `541` — the two values review-1 named — are asserted nowhere, so reverting to `(int, float)`/`> 0` passes the fastpath selftest.
++
++→ Three assertions, one per item, in the scripts' own `--selftest` blocks (emitter: absent ⇒ `'480'` on the argv; finalizer: lock retired at MERGED with no lane map present, kept at DISPATCHED; resolver: `0.5` and `541` refused). Not a code change; the code is right.
++
++## 4. Integration — tests owed and run
++
++Tier `FULL` with a declared `impacted_map`; every changed path in the closure plus this file matches a rule (`CHANGELOG.md`, `agents/parallel-dispatcher.md`, `docs/superpowers/dogfood/*.md` → lint-frontmatter; `scripts/compound-v-emit-workflow.py`, `scripts/compound-v-fastpath-run.py` → their selftests), so `full_command` is not owed. Ran the floor, every matching rule, and the rest of AC 3 anyway:
++
++```
++bash tests/test-engine-c-contract.sh                              exit 0  (✅ engine-c contract …)
++/usr/bin/python3 -B scripts/compound-v-fastpath-run.py --selftest exit 0
++/usr/bin/python3 -B scripts/compound-v-emit-workflow.py --selftest exit 0  (428/428 checks passed)
++/usr/bin/python3 -B scripts/compound-v-validate-manifest.py --selftest  green
++/usr/bin/python3 -B scripts/compound-v-localize.py --selftest      green
++/usr/bin/python3 -B scripts/compound-v-preeval.py --selftest       green
++/usr/bin/python3 -B scripts/lint-frontmatter.py .                  exit 0  (✅ All frontmatter clean)
++shellcheck scripts/compound-v-run-{codex,antigravity,cursor,devin,opencode}-worker.sh  exit 0
++```
++
++**AC 2 re-run** (`run_test_floor(repo, "HEAD", changed_paths=["a.py"], test_commands=["sh -c 'sleep 5'"], test_timeout_s=1)` on a fresh git repo):
++
++```
++failures      = ["timeout after 1 s: sh -c 'sleep 5'"]
++merge_blocked = true   passed = false   failure_class = null   (pre-flight 1A's reversal, honoured)
++_tests_block_from_floor(...) → {"command": "sh -c 'sleep 5'", "exit_code": 124,
++   "failures": ["timeout after 1 s: sh -c 'sleep 5'"], "scope": "impacted", "selected_count": 1}
++```
++
++`schemas/job_result.schema.json` is untouched by `20866b2` (not in its stat). ✅
++
++**AC 5 re-run** (`resolve_test_commands` against a one-rule contract):
++
++```
++3 × docs/superpowers/execution/*/.run.lock + mapped scripts/a.py
++   → scope=impacted  cmds=[floor, lint]  note "ignored 3 bookkeeping path(s) for the unmapped rule"
+++ REAL unmapped src/real.py → scope=full  cmds=[floor, lint, FULL]        (the rule still fires)
++gitignored build/out.bin in a live repo (.gitignore=build/) → scope=impacted, "ignored 1 bookkeeping path(s)"
++tracked unmapped src_real.py, same repo → scope=full                      (control)
++```
++
++Lock retirement at both terminals: the two finding-105 selftest assertions green, plus the live phase table under item 6. ✅
++
++Seams: the closure changes no key, signature or file format — `timeout_s` still flows manifest → validator → slice → the five workers' `tc_validate` (10 contract-test rows green) and → `--test-timeout-sec` on the argv; `_retire_run_lock` keeps its signature and its outside-the-lock call discipline.
++
++## 5. Verdict
++
++**ISSUES.**
++
++1. **TEST_GAP** — `20866b2` closes review-1 items 1, 6 and 7 in code with no assertion that would fail if any of them regressed (`scripts/compound-v-emit-workflow.py:1364-1367` absent ⇒ `--test-timeout-sec 480`; `:4090-4092` phase-gated lock retirement with the lane map already gone; `scripts/compound-v-fastpath-run.py:1019-1020` refusing `0.5` and `541`). Add the three selftest assertions; nothing else in this pass is open.
++
++Everything else review-1 asked for is done and verified above; with that one addition this is APPROVED.
