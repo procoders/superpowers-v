@@ -1,0 +1,13 @@
+{
+  "confidence": "exact",
+  "digest": "sha256:4277221eec6bf8804bc26f8033d9af39c7d06c866a6d241145d472a6ad5e2c55",
+  "fan_out": 3,
+  "flags": [
+    "sensitive_path"
+  ],
+  "resolved_paths": [
+    "docs/superpowers/execution/epics/2026-09-03-glob-parity/specs/matcher-docs.md",
+    "skills/compound-v/execution-manifest.md",
+    "skills/compound-v/memory.md"
+  ]
+}

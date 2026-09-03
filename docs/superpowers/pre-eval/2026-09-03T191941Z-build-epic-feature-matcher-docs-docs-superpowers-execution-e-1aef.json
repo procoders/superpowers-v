@@ -1,0 +1,46 @@
+{
+  "base_commit": "47a7a73319670e03644c9d5c6568424b089da788",
+  "confidence": "localization:exact; tiers:localization,T1",
+  "decision": "FULL_PIPELINE",
+  "declared_paths": [
+    "docs/superpowers/execution/epics/2026-09-03-glob-parity/specs/matcher-docs.md",
+    "skills/compound-v/execution-manifest.md",
+    "skills/compound-v/memory.md"
+  ],
+  "difficulty": {
+    "band": "high",
+    "display": 8
+  },
+  "digest": "sha256:5eecd91cf0a31c5a6b487357627c77cb486f4f93541482b99b0c6b5577b1a222",
+  "impact": {
+    "band": "high",
+    "display": 8
+  },
+  "localization": {
+    "confidence": "exact",
+    "fan_out": 3,
+    "flags": [
+      "sensitive_path"
+    ],
+    "resolved_paths": [
+      "docs/superpowers/execution/epics/2026-09-03-glob-parity/specs/matcher-docs.md",
+      "skills/compound-v/execution-manifest.md",
+      "skills/compound-v/memory.md"
+    ]
+  },
+  "min_sample_status": "insufficient",
+  "override_fired": 2,
+  "pre_eval_id": "2026-09-03T191941Z-build-epic-feature-matcher-docs-docs-superpowers-execution-e-1aef",
+  "request_slug": "build-epic-feature-matcher-docs-docs-superpowers-execution-e",
+  "session_id": "e619cb38-ebe3-4b45-a1f4-c3007616291d",
+  "status": "PRE_EVAL_DONE",
+  "taxonomy_digest": "sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a",
+  "taxonomy_ref": "docs/superpowers/pre-eval/2026-09-03T191941Z-build-epic-feature-matcher-docs-docs-superpowers-execution-e-1aef.taxonomy-snapshot.yaml",
+  "taxonomy_version": 1,
+  "tier": "FULL",
+  "tiers_signalled": [
+    "localization",
+    "T1"
+  ],
+  "ts": "2026-09-03T19:19:41Z"
+}
