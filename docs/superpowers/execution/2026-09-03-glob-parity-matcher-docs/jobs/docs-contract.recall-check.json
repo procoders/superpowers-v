@@ -1,0 +1,18 @@
+{
+  "evidence": [
+    {
+      "file": "skills/compound-v/execution-manifest.md",
+      "run": "2026-09-03-v3.4.1-triage-size/results/test-scope.json",
+      "status": "blocked"
+    },
+    {
+      "file": "skills/compound-v/memory.md",
+      "run": "2026-09-03-v3.4.5-recall-freshness-r2/results/docs-2.json",
+      "status": "blocked"
+    }
+  ],
+  "k": 2,
+  "match_count": 2,
+  "recall_check_ms": 124,
+  "verdict": "tighten"
+}
