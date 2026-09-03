@@ -52,8 +52,7 @@ Three gamified episodes walk you through the whole pipeline, and the **[cheatshe
 - **DIRECT** — a trivial, unambiguous edit: one worker edits, runs the test floor, commits. No model routing happens: it is an ordinary commit by whichever model is already in the session.
 - **SCOPED** — a bounded change: only the tests that reference what changed run, not the whole suite. The Opus reviewer still gates done.
 - **SCOPED+** — a small edit on a sensitive path: SCOPED plus a mandatory deep review and a cross-model (Codex) second opinion, with you accepting.
-- **FULL** — anything real: recon, three pre-flights (code archaeology, domain expert, library check), a plan, a manifest, parallel dispatch in isolated worktrees, a three-pass Opus review,
-  then an optional Codex review of the finished diff (mandatory in SCOPED+).
+- **FULL** — anything real: recon, three pre-flights (archaeology, domain, library), plan, manifest, parallel dispatch in worktrees, a three-pass Opus review, then an optional Codex diff review.
 
 **Who does what.** Opus plans, judges and reviews; Fable (the frontier tier) is opt-in for business-critical jobs and lifts the reviewer when Opus is overloaded. Sonnet runs junior slices
 and the two scanning agents. Codex is an opt-in sandboxed worker and the second opinion; Antigravity and Cursor are lower-trust opt-in workers. The scope gate blocks out-of-lane writes.
