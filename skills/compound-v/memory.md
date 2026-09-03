@@ -137,8 +137,10 @@ truth is the git-tracked files, and the index is only a local, disposable cache 
   conflicts, model/OS mismatches, and stale blobs; instead each dev's cache rebuilds from the
   pulled files. After a pull, the index refreshes on the next SessionStart (the silent hook), on
   the next write under `docs/superpowers/`, or via an explicit `/v:memory-refresh`.
-- **Freshness by construction:** `search` checks (cheaply, one `git ls-files`) whether the FTS5
-  index is behind the working tree and, unless `--no-refresh` is passed, refreshes it inline
+- **Freshness by construction:** `search` checks whether the FTS5 index is behind the working
+  tree by running `git ls-files` plus a content hash of every tracked doc (~0.09s over ~275
+  docs, measured) — still cheap enough to pay before every search — and, unless `--no-refresh`
+  is passed, refreshes it inline
   before the query runs — printing one stderr line, `V-memory: refreshed N stale doc(s) before
   recall (FTS5 lane)`. So a dev who just pulled a teammate's docs gets current recall on the
   very next search, with no separate `/v:memory-refresh` step. `--no-refresh` searches whatever

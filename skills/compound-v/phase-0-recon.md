@@ -42,7 +42,7 @@ Before searching the web, check what the repo already knows. From the **repo roo
 python3 scripts/compound-v-memory.py search "<topic>" --top 8 --json
 ```
 
-- **If the output warns the index is behind** ("index is N new / M removed docs behind the repo") → run `python3 scripts/compound-v-memory.py refresh` first, then re-run the search; otherwise recent recon docs false-miss.
+- **The search refreshes the FTS5 lane itself** — it checks the index against the working tree and, if stale, refreshes inline before the query runs, printing one stderr line: `V-memory: refreshed N stale doc(s) before recall (FTS5 lane)`. No separate refresh step is needed; recent recon docs are already visible to the very next search.
 - **Exclude `doc_type: "memory"` rows** (jsonl telemetry noise) before judging; then **open and read the top remaining results**. The JSON has **no score field** — numeric thresholds are impossible; **rank alone never suffices**.
 - **Strong hit** = ALL of: same product/domain, AND same task class, AND written under the current framework/runtime constraints, AND **fresh** — volatile material (libraries, APIs, regulations, availability, best practices) **older than ~30 days degrades to partial**: still evidence for the brainstorm, no longer skip-authority.
 - **Epic rule:** a sibling feature's recon inside the same epic is **partial by default**; strong only if it covers this feature's specific delta (actors, workflow, external systems, constraints, currentness).
