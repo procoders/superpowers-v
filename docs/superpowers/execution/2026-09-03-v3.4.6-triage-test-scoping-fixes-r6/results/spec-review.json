@@ -1,0 +1,20 @@
+{
+  "blocked": false,
+  "exit_code": 1,
+  "failure_class": "other",
+  "files_changed": [],
+  "gate_receipt": {
+    "baseline_commit": "0b6bc71a257ef273823a2ac1a5e85a2a472da266",
+    "diff_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "exit_code": 1,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"0b6bc71a257ef273823a2ac1a5e85a2a472da266\",\n  \"changed\": [],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.6-triage-test-scoping-fixes-review.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "0b6bc71a257ef273823a2ac1a5e85a2a472da266",
+    "verdict": "blocked"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "error",
+  "summary": "implementer returned no result (turn cap or crash); the registered worktree was gated as evidence \u2014 job 'spec-review' declares write_allowed but changed no files. That is not a clean tree, it is an absent implementation \u2014 failing closed rather than recording a success nobody can point at.",
+  "violations": [],
+  "worktree": ""
+}

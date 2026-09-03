@@ -1,6 +1,6 @@
 {
   "run_id": "2026-09-03-v3.4.6-triage-test-scoping-fixes-r6",
-  "phase": "DISPATCHED",
+  "phase": "BLOCKED",
   "pre_eval_id": "2026-09-03T113149Z-implement-v3-4-6-per-docs-superpowers-specs-2026-09-03-v3-4-0cb5",
   "updated_at": "2026-09-03T12:50:03Z",
   "jobs": {
@@ -19,10 +19,12 @@
       }
     },
     "spec-review": {
-      "status": "pending",
+      "status": "failed",
       "isolation": "direct",
-      "worktree": null,
-      "session_id": null
+      "worktree": "",
+      "session_id": null,
+      "baseline": "0b6bc71a257ef273823a2ac1a5e85a2a472da266",
+      "realised_commit": "0b6bc71a257ef273823a2ac1a5e85a2a472da266"
     }
   },
   "waves": {
@@ -36,5 +38,12 @@
       "commit": "633525359c43516842a1e370bc73c027ae120697",
       "integrated": true
     }
-  }
+  },
+  "triage_actual": {
+    "merge_pending": true,
+    "pre_eval_id": "2026-09-03T113149Z-implement-v3-4-6-per-docs-superpowers-specs-2026-09-03-v3-4-0cb5",
+    "run_id": "2026-09-03-v3.4.6-triage-test-scoping-fixes-r6"
+  },
+  "blocked_reason": "wave 2: integration REFUSED by scripts/compound-v-integration-gate.py: {\"blocked\": 1}. Nothing was merged and nothing was committed.",
+  "blocked_at": "2026-09-03T13:00:10Z"
 }
