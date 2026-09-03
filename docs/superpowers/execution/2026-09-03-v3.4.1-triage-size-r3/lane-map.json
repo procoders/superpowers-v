@@ -3,6 +3,7 @@
   "manifest": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r3/manifest.yaml",
   "run_id": "2026-09-03-v3.4.1-triage-size-r3",
   "worktrees": {
+    "/Users/oleg/Dev/superpowers-v": "spec-review",
     "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_49a1ed1e-8be-2": "release"
   }
 }

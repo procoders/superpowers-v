@@ -1,0 +1,84 @@
+{
+  "baseline_commit": "e0b4a33134b8011e9eccffa973730ecc14afecf6",
+  "diff_digest": "sha256:8e9fa21c8ac90949fd6d891fe8ee00aa67892458c4bf9b51466b8464209c43f9",
+  "exit_code": 0,
+  "job_id": "spec-review",
+  "patch_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r3/jobs/spec-review.patch",
+  "patch_paths": [
+    "docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-1.md"
+  ],
+  "patch_sha256": "sha256:8e9fa21c8ac90949fd6d891fe8ee00aa67892458c4bf9b51466b8464209c43f9",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"e0b4a33134b8011e9eccffa973730ecc14afecf6\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-1.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-1.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "e0b4a33134b8011e9eccffa973730ecc14afecf6",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-1.md",
+      "docs/superpowers/execution/2026-09-02-df1-test-scope/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df10-reviewer/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df11-reviewer-retry/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df12-reviewer-third/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df13-reviewer-fourth/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df14-floor-fails/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df15-reviewer-fifth/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df16-floor-fails-again/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df18-direct-digest/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df19-clean/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df2-frontier/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df20-final/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df21-postgate/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df22-closed/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df24-recall-review/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df25-recall-reachable/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df27-full-pass/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df2b-direct-bookkeeping/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df2c-direct-retry/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df3-scope-violation/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df6-no-work/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df7-narrowing/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df9-escalation/.run.lock",
+      "docs/superpowers/execution/2026-09-02-v3.0.5-model-routing/.run.lock",
+      "docs/superpowers/execution/2026-09-02-v3.0.6-implement-narrowing/.run.lock",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r13/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r2/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r3/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r3/jobs/spec-review.baseline",
+      "docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r3/jobs/spec-review.test-contract.json",
+      "docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r3/lane-map.json",
+      "docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r3/preexisting/spec-review.txt",
+      "docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r3/preexisting/spec-review.verified.txt",
+      "docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r3/state.json",
+      "docs/superpowers/execution/2026-09-03-v3.4.1-triage-size/.run.lock"
+    ],
+    "checks": [
+      {
+        "checker": "/usr/bin/python3 -B scripts/compound-v-preeval.py --selftest",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'for s in scripts/compound-v-preeval.py scripts/compound-v-localize.py scripts/compound-v-taxonomy.py scripts/compound-v-validate-taxonomy.py scripts/compound-v-fastpath-run.py scripts/compound-v-classify-request.py scripts/compound-v-validate-manifest.py; do /usr/bin/python3 -B \"$s\" --selftest >/dev/null 2>&1 || { echo \"FAIL $s\"; exit 1; }; done; for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; /usr/bin/python3 -B -m unittest discover -s tests/v2.9-e2e -p \"test_*.py\" >/dev/null 2>&1 || { echo \"FAIL e2e\"; exit 1; }; echo all-tests-ok'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (7 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 0 command(s) from 36 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)",
+      "unmapped: docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-1.md, docs/superpowers/execution/2026-09-02-df1-test-scope/.run.lock, docs/superpowers/execution/2026-09-02-df10-reviewer/.run.lock, docs/superpowers/execution/2026-09-02-df11-reviewer-retry/.run.lock, docs/superpowers/execution/2026-09-02-df12-reviewer-third/.run.lock, docs/superpowers/execution/2026-09-02-df13-reviewer-fourth/.run.lock, docs/superpowers/execution/2026-09-02-df14-floor-fails/.run.lock, docs/superpowers/execution/2026-09-02-df15-reviewer-fifth/.run.lock, docs/superpowers/execution/2026-09-02-df16-floor-fails-again/.run.lock, docs/superpowers/execution/2026-09-02-df18-direct-digest/.run.lock, docs/superpowers/execution/2026-09-02-df19-clean/.run.lock, docs/superpowers/execution/2026-09-02-df2-frontier/.run.lock, docs/superpowers/execution/2026-09-02-df20-final/.run.lock, docs/superpowers/execution/2026-09-02-df21-postgate/.run.lock, docs/superpowers/execution/2026-09-02-df22-closed/.run.lock, docs/superpowers/execution/2026-09-02-df24-recall-review/.run.lock, docs/superpowers/execution/2026-09-02-df25-recall-reachable/.run.lock, docs/superpowers/execution/2026-09-02-df27-full-pass/.run.lock, docs/superpowers/execution/2026-09-02-df2b-direct-bookkeeping/.run.lock, docs/superpowers/execution/2026-09-02-df2c-direct-retry/.run.lock, docs/superpowers/execution/2026-09-02-df3-scope-violation/.run.lock, docs/superpowers/execution/2026-09-02-df6-no-work/.run.lock, docs/superpowers/execution/2026-09-02-df7-narrowing/.run.lock, docs/superpowers/execution/2026-09-02-df9-escalation/.run.lock, docs/superpowers/execution/2026-09-02-v3.0.5-model-routing/.run.lock, docs/superpowers/execution/2026-09-02-v3.0.6-implement-narrowing/.run.lock, docs/superpowers/execution/2026-09-02-v3.4-native-first-r13/.run.lock, docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r2/.run.lock, docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r3/.run.lock, docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r3/jobs/spec-review.baseline, docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r3/jobs/spec-review.test-contract.json, docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r3/lane-map.json, docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r3/preexisting/spec-review.txt, docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r3/preexisting/spec-review.verified.txt, docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r3/state.json, docs/superpowers/execution/2026-09-03-v3.4.1-triage-size/.run.lock matched no `when` glob \u2014 unknown blast radius resolves to full_command, never to nothing"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": ""
+}

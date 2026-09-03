@@ -1,0 +1,527 @@
+diff --git a/docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-1.md b/docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-1.md
+new file mode 100644
+index 0000000..9916e38
+--- /dev/null
++++ b/docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-1.md
+@@ -0,0 +1,521 @@
++# Review Gate — run `2026-09-03-v3.4.1-triage-size-r3`
++
++**FINAL INTEGRATION — v3.4.1 triage-size, release + review gate**
++**Reviewer:** `compound-v:spec-reviewer` (job `spec-review`, `direct` isolation)
++**Merged tree reviewed:** `e0b4a33` (wave-1 merge `561dbe9`, release job baseline `e9aa8f0`)
++**Manifest:** `docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r3/manifest.yaml`
++**Date:** 2026-09-03
++
++```plaintext
++VERDICT: ISSUES
++  PASS 1 SPEC        (job `release`):  ✅
++  PASS 2 QUALITY     (job `release`):  ✅ (one documentation-accuracy finding, ranked #3)
++  PASS 3 INTEGRATION (run-level AC):   ISSUES — acceptance criterion 2 fails 2 of its 4 cases
++```
++
++The run is **not DONE**. Five of the six feature-level acceptance criteria pass on the merged
++tree, verified by running them. Criterion 2 — the one that decides whether the whole release
++does what its own CHANGELOG says it does — fails, reproducibly and deterministically, for a
++reason that is one line of configuration rather than a defect in any of the five feature jobs.
++
++---
++
++## Step 0 — V-memory recall
++
++```bash
++python3 scripts/compound-v-memory.py search "v3.4.1 triage size release review gate" --intent review --top 8
++python3 scripts/compound-v-memory.py recall-check --files CHANGELOG.md README.md '.claude-plugin/*.json' docs/superpowers/architecture/native-mechanisms.md
++```
++
++Recall returned the 3.0 spec, the three 3.0 pre-flights, ADR-0004 and the 3.0 plan's Global
++Constraints — of which two bear on this review and were applied: **Python 3.9 is the CI floor**
++(every command below ran under `/usr/bin/python3 -B`, 3.9.6), and **anti-ruflo: counts only,
++never estimated or fabricated metrics** (§2.4 below). `recall-check` over the release diff's
++globs returned `none` (0/2) — **no `tighten` escalation**, so no control was raised.
++
++The index reported itself 82 documents behind the repo. That does not change any finding here;
++it is worth a `/v:memory-refresh` before the next review leans on recall harder than this one did.
++
++---
++
++## PASS 1 — SPEC (job `release`, Task F)
++
++### 1.1 Scope lock
++
++Git-derived, from `results/release.json` and re-confirmed at the seam against
++`git diff e9aa8f0..561dbe9 --name-only`:
++
++| Changed path | In `write_allowed`? |
++|---|---|
++| `CHANGELOG.md` | ✅ |
++| `README.md` | ✅ |
++| `.claude-plugin/plugin.json` | ✅ |
++| `.claude-plugin/marketplace.json` | ✅ |
++| `docs/superpowers/architecture/native-mechanisms.md` | ✅ |
++
++Five changed, five allowed, `violations: []`, gate receipt `verdict: "pass"` bound to baseline
++`e9aa8f0`. **No scope leak.** The r2 defect this job existed to repair (finding 60 — the job ran
++in the main checkout and could not merge) did not recur: `state.json` records
++`merged.mode: "worktree"`, `integrated: true`.
++
++### 1.2 Spec coverage
++
++| Task F requirement | Implemented in | Status |
++|---|---|---|
++| Apply `release.draft.patch`, then verify against the merged tree rather than trusting the draft | `CHANGELOG.md:7-90` — the section carries all six stage-2 fixes that landed *after* the draft was cut | ✅ |
++| Keep every stage-2 `[Unreleased]` entry under the 3.4.1 heading | `CHANGELOG.md:91-107` — all six sections retained verbatim under `## [3.4.1]` | ✅ |
++| Add anything the draft missed, per `git log --oneline 20ed725..HEAD` | see table below | ✅ |
++| No fabricated metrics | §2.4 | ✅ |
++
++Commit-by-commit coverage of `20ed725..e9aa8f0` (the range the job body named):
++
++| Commit | CHANGELOG section |
++|---|---|
++| `1607624` fix(emit) finding 60 | "Fixed — a dependent worktree job could never integrate on Engine C" ✅ |
++| `c952179` fix(preeval) flavor | folded into the SCOPED+ section: "`cross_model_review_for` gains a `flavor` parameter (archaeology constraint 11)" ✅ |
++| `b8ff035` fix(finalize) refused wave → BLOCKED | "Fixed — a halted run is marked BLOCKED, not left PARTITION_VERIFIED" ✅ |
++| `3be989e` fix(finalize) partial wave commits its record | "Fixed — a partially merged wave now commits its own record" ✅ |
++| `f0dfc30` fix(finalize) phase advance | "Fixed — the phase advance to MERGED was a prose step" ✅ |
++| validator / PyYAML | "Fixed — the validator said 'valid' for a manifest PyYAML refuses" ✅ |
++
++Nothing missing.
++
++### 1.3 Audit constraints
++
++| Audit | Constraint | Satisfied? |
++|---|---|---|
++| Archaeology §11 | a `scoped_plus` record or manifest gets a **mandatory** cross-model second opinion regardless of the tier it maps to | ✅ — `compound-v-preeval.py:197`, and its selftest at `:1956` |
++| Archaeology §7.10 / plan step 4 | `.claude/compound-v-impact-taxonomy.yaml` gains the enforcement paths in `sensitive_path_list` and `content_scan_exclude: ["**/*.md"]` | ✅ as written — **and this is exactly what issue #1 is about**: the plan's own configuration line cannot deliver the spec's own acceptance criterion 2 |
++
++### 1.4 Job acceptance
++
++| Job acceptance criterion | Evidence | Status |
++|---|---|---|
++| `CHANGELOG.md` top heading is `## [3.4.1] - 2026-09-03` | `CHANGELOG.md:7` | ✅ |
++| `[Unreleased]` renamed, stage-2 sections appended | diff `e9aa8f0..561dbe9` | ✅ (one note, ranked #5) |
++| `plugin.json` and `marketplace.json` both say 3.4.1 | `.claude-plugin/plugin.json:4`, `.claude-plugin/marketplace.json:12` | ✅ |
++| `lint-frontmatter.py .` green | ran: `✅ All frontmatter clean`, exit 0 | ✅ |
++| README triage paragraph names the three tiers **and** SCOPED+ in one sentence | `README.md:125` — "…one of three tiers — DIRECT (…), SCOPED (… a small edit on a sensitive path is the SCOPED+ flavor …), and FULL (…)" — one sentence, all four names | ✅ |
++| `native-mechanisms.md` has a row for the headless one-shot classify | `docs/superpowers/architecture/native-mechanisms.md:48`, and the "Нативного нет" tally correctly moves 7 → 8 at `:57` | ✅ |
++
++### 1.5 Over-build
++
++None. The diff is five files: two version bumps, one CHANGELOG section, one README sentence,
++one architecture row plus its tally correction. No flags, no helpers, no speculative surface.
++
++**PASS 1: ✅**
++
++---
++
++## PASS 2 — QUALITY (job `release`)
++
++### 2.1 Code quality
++
++No code in this diff. The prose is specific and cites its own commits; the `native-mechanisms.md`
++row correctly updates the dependent count in the section below it (`7` → `8`) rather than leaving
++the tally to drift, which is the failure mode that table has had before.
++
++### 2.2 No regression
++
++Ran on the merged tree, `/usr/bin/python3 -B` (3.9.6):
++
++- **floor** — `scripts/compound-v-preeval.py --selftest` → `SELFTEST PASSED`, exit 0
++- **full_command** — the manifest's full contract → `all-tests-ok`, exit 0 (2m18s wall)
++- **beyond the contract** — all **34** `scripts/compound-v-*.py --selftest`: zero failures
++- **9** `tests/*.sh`: all green (inside `full_command`)
++- **e2e** — `unittest discover -s tests/v2.9-e2e` → `Ran 24 tests … OK`
++
++No regression.
++
++### 2.3 Test alignment
++
++Every MUST in this diff is documentation, so the guard is the doc-consistency chain, not a unit
++test — and that chain is where finding #2 sits. The *mechanisms* the CHANGELOG describes each
++carry selftests (`compound-v-preeval.py:2186-2269` covers both the §A2 demotion and §A3 SCOPED+,
++including the negative cases). What no test guards is the **repository's own taxonomy** as a
++fixture: every one of those selftests builds a synthetic taxonomy, so all of them pass while the
++live configuration produces the opposite outcome. That gap is issue #1's reason for surviving to
++the review gate.
++
++### 2.4 No fabricated metrics (anti-ruflo)
++
++Checked every number the diff introduces:
++
++| Number | Verdict |
++|---|---|
++| "an eight-request probe of the 3.4 scorer" | a count of an actual probe — ✅ |
++| "capped at 15 s + 3 s grace" | configured caps (`_CLASSIFY_TIMEOUT_S`, supervisor grace) — declared, not measured-and-claimed ✅ |
++| "`timeout: 10` to `timeout: 25`" | literal registration values ✅ |
++| "the ordinary prompt keeps its ~1 s path" | restates the spec §3 flow ceiling, and is corroborated by observation: four hook invocations in this review completed inside ~3 s wall clock end to end ✅ |
++| "landed as five parallel jobs (A/B/C/D/E)" | a count ✅ |
++
++No token-cost claim, no savings meter, no hardcoded baseline, no speedup percentage. **Clean.**
++
++### 2.5 No reward-hacking
++
++The release job touched no test, spec, scorer or grader file — its five paths are two JSON version
++fields and three prose documents. Diffed the whole change against `e9aa8f0`: no assertion removed,
++no threshold loosened, no test skipped, no exception swallowed. **Clean.**
++
++### 2.6 Confirmed-blocker integrity
++
++**n/a** — no marathon, no `blocked_external` verdict, no `done_with_blockers` terminal in this run.
++
++**PASS 2: ✅** (finding #3 is a documentation-accuracy consequence of #1, not an independent defect
++in this diff.)
++
++---
++
++## PASS 3 — INTEGRATION (run-level, gates DONE)
++
++### 3.1 Partition integrity
++
++One implementation job in the run. Gate receipt PASS, `files_changed ⊆ write_allowed`, no path
++claimed by two jobs. **No partition leak.**
++
++### 3.2 Cross-job seams
++
++The seams between this release job and the five feature jobs that preceded it hold at the level of
++content — every mechanism the CHANGELOG describes exists at the file:line it implies. One
++cross-document seam does **not** hold; see issue #2.
++
++### 3.3 Build green, and the tests the tier owes
++
++`triage.tier: FULL`. From `results/release.json`, not from prose:
++
++| Field | Value | Reading |
++|---|---|---|
++| `tests.command` | floor + the manifest's `full_command`, verbatim | non-empty ✅ |
++| `tests.exit_code` | `0` | green ✅ |
++| `tests.scope` | `"impacted"` | see finding #4 — the *label*; the resolved command set at `jobs/release.test-contract.json` contains `full_command` in full, so the FULL tier's obligation was **met in substance** |
++| `tests.selected_count` | `2` | two commands ✅ |
++
++I did not take that on the worker's word — I re-ran both commands myself on the merged tree
++(§2.2). Floor exit 0, `full_command` exit 0. **Build green, on evidence.**
++
++### 3.4 Feature acceptance criteria
++
++| # | Acceptance criterion | Evidence | Status |
++|---|---|---|---|
++| 1 | every `compound-v-*.py --selftest` + every `tests/*.sh` green under `/usr/bin/python3 -B`; `tests/v2.9-e2e` passes under `unittest` | 34/34 selftests, 9/9 shell tests, `Ran 24 tests … OK` | ✅ |
++| 2 | hook returns SCOPED · SCOPED+ · FULL · DIRECT for the four named requests, each with a schema-valid record | **2 of 4 wrong** — see issue #1 | ❌ |
++| 3 | localizer never searches a plain word; resolves a trailing-period path; returns `new_file` | all three run below | ✅ |
++| 4 | `fastpath-run` at SCOPED resolves an unmapped path to ≤5 referencing tests + floor, never `full_command`; at FULL still `full_command` | both run below | ✅ |
++| 5 | `--require-triage` rejects `scoped_plus` without a deep review job and accepts with; `--require-cross-model-receipt` rejects missing / digest-mismatched | all four run below | ✅ |
++| 6 | no prose says the hook degrades to a reminder on `needs_t3`, or that `/v:dispatch` step 9 writes phase MERGED by hand | grep sweep below | ✅ (with finding #2 alongside) |
++
++**PASS 3: ISSUES.**
++
++---
++
++# Findings, ranked
++
++## ISSUE #1 — ACCEPTANCE_GAP (PASS 3) · **blocks DONE**
++
++**Acceptance criterion 2 fails 2 of its 4 cases. Neither new routing path — the §A2 demotion nor
++the §A3 SCOPED+ flavor — can fire on any file in this repository's own `scripts/**` or `hooks/**`.**
++
++### What I ran
++
++The real checkout has an active run (`spec-review` pending), and the hook's fire-condition 7 makes
++it deliberately silent mid-pipeline — so driving it here would have proved nothing. I built a
++sandbox from `git ls-files` (byte-identical tracked content, fresh `git init`, no execution
++directory, empty pre-eval directory) and drove `hooks/triage-prompt-nudge.sh` with synthetic
++`UserPromptSubmit` stdin, one throwaway session id per case.
++
++| # | Request | AC demands | Actual | |
++|---|---|---|---|---|
++| 1 | small edit to `scripts/compound-v-scorecard.py` | `TIER SCOPED` | **`TIER FULL`** (`FULL_PIPELINE`, `override_fired: null`, **no `t3_demotion` key at all**) | ❌ |
++| 2 | small edit to `scripts/compound-v-scope-check.py` | `TIER SCOPED`, `flavor: scoped_plus` | **`TIER FULL`** (`override_fired: 2`, `flavor: null`) | ❌ |
++| 3 | an edit naming a `.env` file | `TIER FULL` | `TIER FULL` | ✅ (but see the note below) |
++| 4 | a `README.md` typo | `TIER DIRECT` | `TIER DIRECT` (`FASTPATH_ELIGIBLE`) | ✅ |
++
++All four records are **schema-valid** against `schemas/pre-eval-record.schema.json` (validated with
++`jsonschema`), so the criterion's second half holds for every case. It is the tiers that are wrong.
++
++### Root cause — one configuration line, not a code defect
++
++Both new routes are gated on the same predicate:
++
++- `scripts/compound-v-preeval.py:565` — `scoped_plus_open = … and not _content_raises_impact(flags)`
++- `scripts/compound-v-preeval.py:644` — `t1_from_broad_glob = … and not content_impact_high`
++
++`_content_raises_impact` (`compound-v-preeval.py:428-435`) returns True on **any** `content:*` flag.
++Those flags come from scanning the **file's own content** against `content_patterns`, and
++`.claude/compound-v-impact-taxonomy.yaml:66-71` carries:
++
++```yaml
++  - match: '%[sd]'
++    pattern_type: regex
++    kind: i18n_placeholder
++    impact_band: high
++```
++
++`%s` / `%d` is ordinary Python string formatting. `scripts/compound-v-scope-check.py` contains 12
++of them (`:277`, `:283`, `:291`, …); `scripts/compound-v-scorecard.py` contains 4. Decision 2's fix
++— `content_scan_exclude` (`.claude/compound-v-impact-taxonomy.yaml:160-161`) — is set to
++`["**/*.md"]` only, so it never reaches code.
++
++The blast radius is not two files. Counted on the merged tree:
++
++> **42 of the 44 files under `scripts/*.py` + `hooks/*.sh` match at least one content pattern**
++> (`%s`/`%d`, or the literal `timeout` — which alone hits 28 of them, `rate_limit`, `price`,
++> `isEnabled`, `consent`).
++
++Every one of those is pinned to `FULL` regardless of how small the change is. That is the exact
++defect decision 1 and decision 3 were written to remove, relocated from the taxonomy's path globs
++into its content patterns.
++
++The taxonomy row itself is not the problem — I checked, and it is correctly broad:
++
++```
++scripts/compound-v-scorecard.py  -> sensitive=False diff=high impact=high  row glob='scripts/**' broad=True
++scripts/compound-v-scope-check.py-> sensitive=True  diff=high impact=high  row glob='scripts/**' broad=True
++```
++
++`broad=True` on both. The demotion had everything it needed except a content scan that did not
++veto it.
++
++### Counterfactual — the engine code is correct
++
++To separate a configuration defect from a code defect I changed **one thing** in the sandbox:
++appended `"**/*.py"` and `"**/*.sh"` to `content_scan_exclude`. Nothing else. Same hook, same
++engine, same requests, fresh pre-eval directory:
++
++```
++LOG: the request needs T3 (reason=demotion) — running the headless classify
++LOG: headless T3 classify: plumbing (backend=claude)
++CTX: TIER: SCOPED (decision SCOPED_PIPELINE …)
++     t3_demotion={"applied": true, "category": "plumbing", "from": {"difficulty":"high","impact":"high"}}
++
++LOG: the request needs T3 (reason=sensitive) — running the headless classify
++LOG: headless T3 classify: plumbing (backend=claude)
++CTX: TIER: SCOPED … SCOPED+ — a small edit on a sensitive path …
++     flavor=scoped_plus
++     t3_demotion={"applied": true, "category":"plumbing", …, "sensitive": true}
++```
++
++Exactly the two outcomes criterion 2 demands. So:
++
++- **The §A2 demotion works.** `t3_reason: "demotion"`, bands capped to `(medium, medium)`, record
++  carries `t3_demotion` with `applied: true`.
++- **The §A3 SCOPED+ flavor works.** `t3_reason: "sensitive"`, `flavor: scoped_plus`,
++  `override_fired: null`, `t3_demotion.sensitive: true`.
++- **Finding 50's headless T3 works live.** `backend=claude` — the nested one-shot ran, answered
++  `plumbing`, and the re-entry with `--t3-category` re-scored cleanly. This is the first evidence in
++  this run that the whole 3.4.1 T3 chain executes end to end, and it does.
++
++Five feature jobs built the mechanism correctly. The configuration the same spec prescribed
++(plan step 4: `content_scan_exclude: ["**/*.md"]`) does not let any of it run here.
++
++→ **Fix at the taxonomy, not at the engine.** The narrow correction is to stop scanning source
++files for prose-shaped patterns — widen `content_scan_exclude`, or make `%[sd]`/`timeout` scoped to
++the file types where they mean what the pattern thinks they mean. Do **not** relax
++`_content_raises_impact`: it is the fail-closed guard, and weakening a check to make a case pass is
++precisely the §2.5 pattern. Then re-run the four-case probe as the acceptance evidence.
++
++### Note on case 3 — it passes, but vacuously
++
++`.env` reached `FULL` through **override #1** (ambiguous localization: the localizer resolved the
++token `.env` to **25 unrelated files** whose text merely contains the string), not through
++`sensitive_path_list` and not through `NEVER_DEMOTE_GLOBS`. The repository has no `.env` file, so
++the hard never-demote list the criterion is really about was never exercised by its own test case.
++The tier is right; the criterion does not prove what it was written to prove. Worth a case that
++actually names an existing secret-shaped path.
++
++---
++
++## ISSUE #2 — INTEGRATION_MISMATCH (PASS 3)
++
++**Three documents still instruct the operator to hand-write `phase: MERGED`, which `/v:dispatch`
++step 9 and the shipped finalizer both now forbid.**
++
++Acceptance criterion 6 names `/v:dispatch` step 9 specifically, and that one is correct —
++`commands/v-dispatch.md:232`:
++
++> **Do not write `phase: MERGED` into `state.json` by hand** — the workflow finalizer has advanced
++> the phase itself since stage 1 (`fix(finalize)`, commit f0dfc30) …
++
++So **criterion 6 passes as written**. But the instruction it repealed still stands, verbatim, in
++three places the pipeline actually reads:
++
++| File:line | Text |
++|---|---|
++| `agents/parallel-dispatcher.md:449` | "**Write `state.json`'s phase as `MERGED` FIRST**, then stage and commit it together with the rest" (Step 7's heading at `:446` is literally "Advance to `MERGED`") |
++| `agents/parallel-dispatcher.md:349` | "Advance `phase` to `MERGED`, commit `state.json` + the run dir …" |
++| `commands/v-resume.md:53` | "On reaching `MERGED` … `state.json` (phase written as `MERGED` first, then committed together with the rest)" |
++| `commands/v-collect.md:114` | "Commit `state.json` (phase `MERGED`) together with the run substrate" |
++
++`agents/parallel-dispatcher.md` is the agent the dispatch path loads. An agent following it does
++the thing `/v:dispatch` step 9 calls "at best a duplicate and at worst a regression of what the
++finalizer recorded" — and the run that produced this very review is a dispatcher run.
++
++This is the same class of defect the 3.4.1 CHANGELOG describes two entries above it ("the phase
++advance to MERGED was a prose step"): the mechanism moved, and only one of the four documents
++that describe it moved with it. It is out of the release job's lane, so it is not that job's
++miss — it is the run's.
++
++→ Bring all four documents onto the finalizer's story: read the phase back, never author it.
++
++---
++
++## ISSUE #3 — QUALITY (PASS 2)
++
++**Two shipped documents assert an outcome this repository's configuration cannot produce.**
++
++- `CHANGELOG.md:31-36` — "This repository's own taxonomy now marks the enforcement chain itself
++  sensitive — `compound-v-scope-check.py`, … and `hooks/**` — **so a small edit there is SCOPED+**
++  (mandatory deep review + a cross-model second opinion + the human accept), while a small edit to
++  any other script (the scorecard renderer, say) is **plain SCOPED**."
++
++  Both halves of that sentence are falsified by issue #1's probe, and the two examples it picks are
++  the two cases that fail. A reader is told the release delivered exactly the behavior it did not.
++
++- `README.md:125` — "…sized to the change itself, not just the glob its path happens to match
++  (3.4.1)." True of the mechanism, not true of this repo, where the glob still decides.
++
++Not a fabricated *metric* (§2.4 is clean), and not the release job's error — the job was told to
++describe what the five feature jobs built, and it described it accurately as designed. But the
++statements ship as fact and are not. They become true the moment issue #1 is fixed, which is the
++right order: **fix #1, then these two need no edit.** If #1 is instead deferred, both sentences
++have to be softened before release.
++
++---
++
++## ISSUE #4 — QUALITY, low (PASS 3, contract wording)
++
++`results/release.json` reports `tests.scope: "impacted"` on a job whose manifest `triage.tier` is
++`FULL`. `agents/spec-reviewer.md` §3.3 says the resolved scope "must match what the tier owes", and
++FULL owes `full`. Read literally, a correct FULL run trips its own reviewer contract.
++
++It is a label, not a gap: `jobs/release.test-contract.json` carries `full_command` verbatim in
++`resolved_commands`, it ran, and it exited 0. I reproduced the labelling directly — at
++`triage.tier: FULL` with an unmapped changed path, `resolve-tests` emits `"scope": "impacted"`
++while resolving floor + `full_command`, because `scope` reports the job's declared/derived slice
++and the tier's escalation is applied on top of it.
++
++→ Either the resolver should promote the label to `full` when it adds `full_command`, or §3.3
++should say that `scope` reports the declared slice and the tier obligation is checked against
++`resolved_commands`. As it stands the two documents disagree, and the next reviewer will either
++raise a false BUILD_RED or learn to ignore the field.
++
++---
++
++## ISSUE #5 — note, lowest (PASS 1)
++
++The `[Unreleased]` rename dropped its one-line intro rather than folding it in:
++
++```diff
++-## [Unreleased]
++-
++-Stage verification, cycle 1 (DIRECT attended), 2026-09-03 — the first real request after 3.4.0 got no triage at all.
+++## [3.4.1] - 2026-09-03
++```
++
++The *finding* survives — the "phase advance to MERGED was a prose step" section documents it in
++full. What is lost is the framing that these six fixes came out of stage-verification cycle 1 and
++that the trigger was a real request getting no triage at all. Job acceptance said "renamed", and it
++was renamed; this is a sentence worth a line in the 3.4.1 intro, not a defect.
++
++---
++
++# Verification log
++
++Every command below was run by this reviewer on the merged tree (or, where noted, on a
++byte-identical sandbox of it), under `/usr/bin/python3 -B`, macOS, Python 3.9.6.
++
++### AC1 — the suites
++
++```
++/usr/bin/python3 -B scripts/compound-v-preeval.py --selftest          → SELFTEST PASSED, exit 0
++<manifest full_command>                                               → all-tests-ok, exit 0 (2m18s)
++for s in scripts/compound-v-*.py; do "$s" --selftest; done            → 34/34, zero failures
++/usr/bin/python3 -B -m unittest discover -s tests/v2.9-e2e            → Ran 24 tests, OK
++/usr/bin/python3 -B scripts/lint-frontmatter.py .                     → ✅ All frontmatter clean
++```
++
++### AC2 — the hook (issue #1)
++
++Four synthetic `UserPromptSubmit` payloads → `hooks/triage-prompt-nudge.sh`, sandbox at
++`…/scratchpad/tree`, one throwaway session id each. Results in issue #1. Records written (left
++uncommitted, in the sandbox — **not** in this checkout, because `docs/superpowers/pre-eval/` is
++outside this job's write lane and the real checkout's active run makes the hook silent by design):
++
++```
++<sandbox>/docs/superpowers/pre-eval/2026-09-03T033033Z-fix-the-column-alignment-…-d379.{json,intent.json,localization.json,taxonomy-snapshot.yaml}
++<sandbox>/docs/superpowers/pre-eval/2026-09-03T033033Z-fix-the-trailing-slash-…-7266.{json,intent.json,localization.json,taxonomy-snapshot.yaml}
++<sandbox>/docs/superpowers/pre-eval/2026-09-03T033034Z-rotate-the-credential-…-84ee.{json,intent.json,localization.json,taxonomy-snapshot.yaml}
++<sandbox>/docs/superpowers/pre-eval/2026-09-03T033036Z-fix-the-typo-in-readme-md-…-2ba7.{json,intent.json,localization.json,taxonomy-snapshot.yaml}
++```
++
++All four validated against `schemas/pre-eval-record.schema.json` with `jsonschema`: **VALID**.
++`git status` on the checkout after every probe: only this run's own bookkeeping, no stray writes,
++no stray `.pyc`.
++
++### AC3 — the localizer
++
++```
++--request "make the button red and friendly"
++  → {"confidence": "failed", "fan_out": 0, "resolved_paths": []}          ✅ no repo scan
++--request "Update the guard in hooks/triage-prompt-nudge.sh."
++  → {"confidence": "exact", "resolved_paths": ["hooks/triage-prompt-nudge.sh"]}  ✅ trailing period
++--request "Create scripts/compound-v-brand-new-thing.py to do the thing"
++  → {"confidence": "new_file", "flags": ["new_file"]}                     ✅
++```
++
++### AC4 — proportionate tests
++
++Sandbox git repo, unmapped changed path `src/widget.go`, the r3 `test_contract` with only
++`triage.tier` varied:
++
++| tier | resolved | `full_command` present? |
++|---|---|---|
++| SCOPED | `scope: "impacted+referencing"`, floor + **5** referencing suites, `selected_count: 6` | **no** ✅ |
++| FULL | `scope: "impacted"`, floor + `full_command` | yes ✅ |
++
++The SCOPED note reads: "matched no `when` glob — at tier SCOPED that resolves to the 5 test(s)
++REFERENCING the changed module(s), not to full_command (v3.4.1 decision 4; capped at 5)." Cap
++honoured, `full_command` never reached at SCOPED.
++
++### AC5 — the validator
++
++```
++--require-triage, scoped_plus WITHOUT a deep claude review job → invalid, exit 1
++    "triage.flavor 'scoped_plus' requires a review job with type: review, tier: deep and backend: claude"
++--require-triage, scoped_plus WITH one                          → {"verdict": "valid", "violations": []}
++--require-cross-model-receipt <missing file>                    → invalid: "could not be read … (fail-closed)"
++--require-cross-model-receipt <digest mismatch>                 → invalid: "diff_digest … != the sealed patch
++                                                                   the caller reviewed … (stale-replay, fail-closed)"
++```
++
++Four for four.
++
++### AC6 — the prose sweep
++
++`grep -rn` over `commands/ skills/ agents/`:
++
++- **`needs_t3` → reminder:** no document says it. `commands/v-triage.md:32-34` states the new
++  behavior explicitly ("as of v3.4.1 a request needing T3 is no longer one of those cases … It
++  falls back to its reminder only when no classifier could be RUN at all"), which matches the hook
++  at `hooks/triage-prompt-nudge.sh:613-618`. ✅
++- **`/v:dispatch` step 9 writes MERGED by hand:** `commands/v-dispatch.md:232` forbids it. ✅
++  (Three other documents still instruct it — issue #2.)
++
++---
++
++# What must happen before DONE
++
++1. **Fix #1** — widen `content_scan_exclude` (or narrow the prose-shaped content patterns) so a
++   small edit under `scripts/**` / `hooks/**` is not pinned to FULL by `%s` and `timeout`. Then
++   re-run the four-case hook probe and attach it as the acceptance evidence. Do not touch
++   `_content_raises_impact`.
++2. **Fix #2** — `agents/parallel-dispatcher.md` (Step 7 and §344-349), `commands/v-resume.md:53`,
++   `commands/v-collect.md:114`: read the phase back, never author it.
++3. **#3** resolves itself once #1 lands. If #1 is deferred, soften `CHANGELOG.md:31-36` and
++   `README.md:125` before this version ships.
++4. **#4** — pick one side of the `tests.scope` disagreement and make the other match.
++5. **#5** — optional; one sentence in the 3.4.1 intro.
++
++The release job itself needs no rework: its diff is in scope, correct, tested, honest about its
++numbers, and complete against every commit it was told to cover. What blocks DONE is the run's
++composite against its own acceptance criteria.

@@ -1,6 +1,6 @@
 {
   "run_id": "2026-09-03-v3.4.1-triage-size-r3",
-  "phase": "DISPATCHED",
+  "phase": "MERGED",
   "pre_eval_id": "2026-09-03T025952Z-land-task-c-of-the-v3-4-1-triage-size-feature-from-the-seale-b142",
   "updated_at": "2026-09-03T03:18:30Z",
   "jobs": {
@@ -19,10 +19,18 @@
       }
     },
     "spec-review": {
-      "status": "pending",
+      "status": "done",
       "isolation": "direct",
-      "worktree": null,
-      "session_id": null
+      "worktree": "",
+      "session_id": null,
+      "baseline": "e0b4a33134b8011e9eccffa973730ecc14afecf6",
+      "realised_commit": "e0b4a33134b8011e9eccffa973730ecc14afecf6",
+      "merged": {
+        "realised_commit": "e0b4a33134b8011e9eccffa973730ecc14afecf6",
+        "mode": "direct",
+        "integrated": true,
+        "commit": "702b6247f3c6419c697bf3debe23c47ad662f88c"
+      }
     }
   },
   "waves": {
@@ -35,6 +43,22 @@
       ],
       "commit": "561dbe9c3e33a4d299334efac23dc82efdc72b00",
       "integrated": true
+    },
+    "2": {
+      "jobs": [
+        "spec-review"
+      ],
+      "merged": [
+        "spec-review"
+      ],
+      "commit": "702b6247f3c6419c697bf3debe23c47ad662f88c",
+      "integrated": true
     }
-  }
+  },
+  "triage_actual": {
+    "merge_pending": true,
+    "pre_eval_id": "2026-09-03T025952Z-land-task-c-of-the-v3-4-1-triage-size-feature-from-the-seale-b142",
+    "run_id": "2026-09-03-v3.4.1-triage-size-r3"
+  },
+  "merged_at": "2026-09-03T03:44:19Z"
 }
