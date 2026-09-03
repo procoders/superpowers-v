@@ -4,7 +4,24 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
-## [Unreleased]
+## [3.4.3] - 2026-09-03
+
+Stage 4 of the post-3.4.0 verification program: the first feature dispatched across two backends on
+Engine C in one run — a Codex worker builds the deliverable, Claude writes the docs and does the
+review — proving the multi-model contract (worktree outside the repository, UUID session id, the
+scope gate measuring the worker's own tree) end to end rather than in isolation.
+
+### Added — `scripts/compound-v-sandbox-checkout.sh`, built by a Codex worker on Engine C
+
+A byte-identical, git-only checkout helper (`<dest> [--keep-execution] [--empty-pre-eval] [--taxonomy-from <path>]`)
+that copies every `git ls-files` path of the current repository into `<dest>`, drops
+`docs/superpowers/execution/**` unless asked to keep it, and can empty `docs/superpowers/pre-eval/` —
+so a reviewer can drive `hooks/triage-prompt-nudge.sh` (the UserPromptSubmit hook) against a clean sandbox
+without touching a run's own working tree, instead of hand-building one. `tests/test-sandbox-checkout.sh`
+covers byte identity, dropped/kept execution history, the emptied pre-eval dir, and the refusal on a
+non-empty destination. Implemented by a `codex exec` worker (`gpt-5.6-terra`) in its own worktree under
+`$TMPDIR/compound-v/<run>/<job>`, gated by the git-derived scope check against that same tree — no
+timing or token figures are claimed here; none were measured for this job.
 
 ### Fixed — an external job's gate measures the worker's worktree, and its wrapper never claims the checkout (findings 78, 79)
 
