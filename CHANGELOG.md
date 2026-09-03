@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [3.4.10] - 2026-09-03
+
+Stage 5b of the verification program: does recall ever *act*? It could have — the deterministic
+`recall-check` bridge would have said `tighten` for 7 of the 27 runs dispatched today, every one of
+them a run whose emitter job later died to the implementer's turn cap — but nothing consumed it. Now
+the emitter asks at emit time and acts on the answer. This release also carries the hook-recursion
+guard (findings 131, 132): the headless T3 classifier's nested `claude -p` was re-entering the
+plugin's own hooks, and the fix only reaches a nested session once it is installed — hence a release.
+
 ### Added — the recall→action bridge acts at emit time (stage 5b, finding 130)
 
 `recall-check` said `tighten` for 7 of the 27 runs dispatched today, and nothing consumed the
@@ -14,6 +23,22 @@ budget always land in the implementer's prompt, and under `memory.auto_tighten` 
 is raised one rung and the review job gains a re-check clause — conservative-only, an explicit
 `model:` pin untouched. `emit --no-recall` and engine failures degrade to `unavailable`, never a
 refusal.
+
+### Fixed — every hook stays silent inside the headless T3 classifier (findings 131, 132)
+
+`compound-v-classify-request.py --classify-headless` spawns a nested `claude -p` that loads the same
+project hooks, so the UserPromptSubmit hook triaged the classifier's own prompt as a change request —
+junk pre-eval records, an outer classify starved of its budget, and a real request left with no
+triage record. The classifier now marks the child's environment (`CV_HEADLESS_CLASSIFY=1`) and all
+nine hooks exit 0 first thing when they see it (`tests/test-hook-recursion-guard.sh`). A nested
+session reads the *installed* plugin, so the guard takes effect after `claude plugin update`.
+
+### Known — recall's glob semantics differ from the scope gate's (Codex receipt, finding 1)
+
+`recall-check` matches lanes with `fnmatch` (`*` crosses `/`, brackets are classes); the scope gate's
+matcher is segment-local with literal brackets. A `tighten` can therefore land on a job whose lane the
+gate would not have matched, or miss one it would. Conservative either way (a wasted rung or a missed
+warning, never a loosening), and deferred: one canonical lane matcher with parity tests is the follow-up.
 
 ## [3.4.9] - 2026-09-03
 
