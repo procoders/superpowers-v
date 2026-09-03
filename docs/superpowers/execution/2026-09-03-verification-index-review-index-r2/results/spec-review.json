@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-03-epic-vi-review-index-review-1.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "ef588f33c86b190cd4c0da3a184d1c6f17e902ab",
+    "diff_digest": "sha256:cc8b085e6cb7e8728e0ec1af7237c20bcfb4db9bd19cb7156f4fc9ad4706a78f",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"ef588f33c86b190cd4c0da3a184d1c6f17e902ab\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-03-epic-vi-review-index-review-1.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-03-epic-vi-review-index-review-1.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "ef588f33c86b190cd4c0da3a184d1c6f17e902ab",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Review Gate \u2014 three passes against the spec and the feature acceptance criteria",
+  "tests": {
+    "command": "bash tests/test-engine-c-contract.sh\nbash -c 'for s in scripts/compound-v-*.py; do grep -q -- \"--selftest\" \"$s\" || continue; /usr/bin/python3 -B \"$s\" --selftest >/dev/null 2>&1 || { echo \"FAIL $s\"; exit 1; }; done; for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "full",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": ""
+}
