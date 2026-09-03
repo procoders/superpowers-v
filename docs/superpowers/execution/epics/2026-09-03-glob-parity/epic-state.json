@@ -8,12 +8,12 @@
       "title": "F1 \u2014 recall-check uses the scope gate's glob matcher",
       "depends_on": [],
       "spec_path": "docs/superpowers/execution/epics/2026-09-03-glob-parity/specs/one-matcher.md",
-      "status": "done",
+      "status": "failed",
       "run_id": "2026-09-03-glob-parity-one-matcher",
       "attempts": 1,
-      "last_error": null,
+      "last_error": "sample-audit ISSUES: TEST_GAP \u2014 no selftest row for the fail-closed mkdtemp branch (pre-flight amendment 1); two LOW notes",
       "disposition": null,
-      "sample_audit_due": true
+      "sample_audit_due": false
     },
     {
       "id": "matcher-docs",
@@ -44,7 +44,7 @@
   "blocker_ledger": [],
   "no_progress_cycles": 0,
   "total_attempts": 1,
-  "updated_at": "2026-09-03T19:40:05Z",
+  "updated_at": "2026-09-03T19:42:54Z",
   "last_done_count": 0,
   "processed_cycle_ids": [
     "c1",
