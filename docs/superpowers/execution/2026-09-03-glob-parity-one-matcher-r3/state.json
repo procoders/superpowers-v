@@ -1,7 +1,7 @@
 {
   "run_id": "2026-09-03-glob-parity-one-matcher-r3",
-  "phase": "PARTITION_VERIFIED",
-  "updated_at": "2026-09-03T20:04:51Z",
+  "phase": "DISPATCHED",
+  "updated_at": "2026-09-03T20:07:00Z",
   "pre_eval_id": "2026-09-03T200450Z-epic-feature-one-matcher-attempt-3-replace-the-non-load-bear-0bd6",
   "escalated_to": null,
   "total_retries": 0,
@@ -11,11 +11,19 @@
   "attempts": {},
   "jobs": {
     "load-bearing-row": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_8eb3aec3-b82-1",
       "session_id": null,
-      "log": null
+      "log": null,
+      "baseline": "c83e9dc20ce083900e3a874566e18d865b41bf7e",
+      "realised_commit": "c83e9dc20ce083900e3a874566e18d865b41bf7e",
+      "merged": {
+        "realised_commit": "c83e9dc20ce083900e3a874566e18d865b41bf7e",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "70cdfa15fdaa04999e07524c77cf6ee1036acbe3"
+      }
     },
     "spec-review-1": {
       "status": "pending",
@@ -23,6 +31,18 @@
       "worktree": null,
       "session_id": null,
       "log": null
+    }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "load-bearing-row"
+      ],
+      "merged": [
+        "load-bearing-row"
+      ],
+      "commit": "70cdfa15fdaa04999e07524c77cf6ee1036acbe3",
+      "integrated": true
     }
   }
 }

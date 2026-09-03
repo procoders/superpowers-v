@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "scripts/compound-v-memory.py"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "c83e9dc20ce083900e3a874566e18d865b41bf7e",
+    "diff_digest": "sha256:d4f08809ab7f3a7a4c51033c42480e9573cc98bba29ddadfae6359960c0072cf",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"c83e9dc20ce083900e3a874566e18d865b41bf7e\",\n  \"changed\": [\n    \"scripts/compound-v-memory.py\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-memory.py\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "c83e9dc20ce083900e3a874566e18d865b41bf7e",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task A \u2014 replace the attempt-2 row with a load-bearing one (spy on spec_from_file_location)",
+  "tests": {
+    "command": "bash -c 'python3 -B scripts/compound-v-memory.py --selftest >/dev/null && python3 -B scripts/compound-v-scope-check.py --selftest >/dev/null'\nbash -c '[ -f scripts/compound-v-memory.py ] || exit 0; grep -q -- \"--selftest\" scripts/compound-v-memory.py || exit 0; /usr/bin/python3 -B scripts/compound-v-memory.py --selftest >/dev/null'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_8eb3aec3-b82-1"
+}
