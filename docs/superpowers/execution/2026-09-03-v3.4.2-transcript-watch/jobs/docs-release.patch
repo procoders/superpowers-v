@@ -1,0 +1,126 @@
+diff --git a/.claude-plugin/marketplace.json b/.claude-plugin/marketplace.json
+index 4f8feef..c01a15b 100644
+--- a/.claude-plugin/marketplace.json
++++ b/.claude-plugin/marketplace.json
+@@ -9,7 +9,7 @@
+     {
+       "name": "superpowers-v",
+       "description": "Compound V for Superpowers: triple parallel pre-flight (code archaeology + domain-expert + Context7 library validator), disjoint partitioning, manifest-driven multi-backend dispatch (Claude + Codex + Antigravity + Cursor), git-diff scope enforcement, crash-resumable runs, adaptive tier-based routing, epic mode, research-grounded brainstorming (gated pre-brainstorm recon + batched elicitation), V-memory local-first semantic+lexical recall over docs/superpowers (opt-in pure-python embeddings + a deterministic recall→action bridge), and batched parallel dispatch (Opus default, narrow Sonnet exception)",
+-      "version": "3.4.1",
++      "version": "3.4.2",
+       "source": "./",
+       "author": {
+         "name": "Oleg",
+diff --git a/.claude-plugin/plugin.json b/.claude-plugin/plugin.json
+index 6399577..e124a96 100644
+--- a/.claude-plugin/plugin.json
++++ b/.claude-plugin/plugin.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "superpowers-v",
+   "description": "Compound V for Superpowers: triple parallel pre-flight (code archaeology + domain-expert advisor + library/doc validator via Context7), disjoint file partitioning, manifest-driven multi-backend dispatch (Claude + headless Codex + Antigravity + Cursor workers), git-diff scope enforcement, crash-resumable runs, adaptive tier-based routing, epic mode for multi-feature builds, V-memory local-first semantic+lexical recall over docs/superpowers (opt-in pure-python embeddings + a deterministic recall\u2192action bridge), and batched parallel dispatch (Opus default, Sonnet for narrow junior-task carve-out), plus /v:onboard — a project-onboarding command that builds a citation-verified knowledge base + AGENTS.md/CLAUDE.md bridge behind a human gate. Auto-intercepts four transitions: pre-brainstorm recon \u2192 brainstorming \u2192 writing-plans \u2192 execution.",
+-  "version": "3.4.1",
++  "version": "3.4.2",
+   "author": {
+     "name": "Oleg",
+     "email": "copeus@gmail.com"
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 5d1f845..81555d6 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -4,7 +4,27 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
+ 
+ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
+ 
+-## [Unreleased]
++## [3.4.2] - 2026-09-03
++
++Stage 3 of the post-3.4.0 verification program: a FULL normal task, run through the pipeline with zero
++manual interventions. The feature is the mechanism the maintainer endorsed after using it by hand
++through five runs of 3.4.1 — reading a live worker's transcript surfaces a problem minutes before the
++gate records it.
++
++### Added — read the workers' transcripts before their results (`compound-v-transcript-watch.py`)
++
++A read-only, advisory script watches a run's live Workflow agent transcripts and reports five mechanical
++signals, one line each, with no model in the loop: **`out-of-lane`** (a Write/Edit or Bash redirect
++outside the job's `write_allowed`), **`wrong-cwd`** (a `register-lane` whose isolation or cwd disagrees
++with the manifest), **`error`** (a Bash result carrying a traceback, permission denial, or a non-zero
++exit), **`stall`** (no tool activity past a threshold on an agent that has not returned), and
++**`denied`** (a lane-guard `PreToolUse` denial). It never writes into the run directory, never acts on a
++signal, and exits 0 on every advisory path. Discovery needs no new state: it scans the session's
++Workflow transcripts for the run directory's own absolute path — every worker's `register-lane` call
++carries it — and the newest matching workflow wins, so `--wf`/`--transcripts` are overrides, not
++requirements. `/v:status --live` runs it once after the state table; `/v:dispatch` step 6 runs it every
++two minutes in the background and treats `out-of-lane`/`wrong-cwd` as reason enough to `TaskStop` and
++re-orchestrate early.
+ 
+ ### Fixed — a finished run's lane map claimed the checkout forever (finding 68)
+ 
+diff --git a/README.md b/README.md
+index 8278e61..4a89cc5 100644
+--- a/README.md
++++ b/README.md
+@@ -137,7 +137,7 @@ That's it.
+ 
+ The orchestration, scope enforcement, routing, and memory are plain bash + Python scripts and skill docs you can read. Start here:
+ 
+-- [skills/compound-v/SKILL.md](skills/compound-v/SKILL.md) — the orchestrator
++- [skills/compound-v/SKILL.md](skills/compound-v/SKILL.md) — the orchestrator, which can play back a dispatch's live agent transcripts (`scripts/compound-v-transcript-watch.py`, `/v:status --live`) to catch an out-of-lane write or a stall minutes before the gate would
+ - [skills/compound-v/epic-mode.md](skills/compound-v/epic-mode.md) — epic mode
+ - [skills/compound-v/memory.md](skills/compound-v/memory.md) — V-memory
+ - [skills/backend-launcher/SKILL.md](skills/backend-launcher/SKILL.md) — the backend workers
+diff --git a/commands/v-dispatch.md b/commands/v-dispatch.md
+index 0157985..b6dead4 100644
+--- a/commands/v-dispatch.md
++++ b/commands/v-dispatch.md
+@@ -168,6 +168,21 @@ delegating, the epic inherits Engine C along with everything else.
+    - `docs/superpowers/memory/triage-outcomes.jsonl` — the precision-IGNORED `merge_pending`
+      `actual`, appended once every job is terminal. Step 9 writes the terminal one.
+ 
++   **Watch the live transcripts in the background (v3.4.2).** While the workflow runs, use the
++   Monitor tool to run the read-only transcript watch every two minutes rather than waiting for the
++   gate to catch a problem after the fact:
++
++   ```bash
++   python3 scripts/compound-v-transcript-watch.py --run-dir docs/superpowers/execution/<run-id> --every 120
++   ```
++
++   It is advisory only — it never writes into the run directory or acts on a signal — but two of its
++   signals are worth acting on immediately rather than waiting for the run to finish: **`out-of-lane`**
++   (a write outside the job's `write_allowed`) and **`wrong-cwd`** (a `register-lane` whose isolation or
++   cwd disagrees with the manifest). Either one, seen live, is reason enough to `TaskStop` the workflow
++   and re-orchestrate early — the same move that would have caught 3.4.0's r1 defect and 3.4.1's r2
++   defect in their first minute instead of at the gate.
++
+ 7. **Gate integration on the authority — BEFORE any job commit is integrated.**
+ 
+    ```
+diff --git a/commands/v-status.md b/commands/v-status.md
+index 4c03f79..12d538e 100644
+--- a/commands/v-status.md
++++ b/commands/v-status.md
+@@ -106,6 +106,23 @@ probe fails, render an em-dash or skip the section — never invent an epic stat
+     with `—` in every column and a plain note that the epic state could not be read; never break the
+     table and never guess.
+ 
++## Live watch (v3.4.2) — `--live`
++
++**`/v:status --live [run-id]`** runs a single, read-only advisory pass over the run's live agent
++transcripts — the same transcripts the harness's own `/workflows`/`/tasks` views draw from — and prints
++what it finds **after** the state table above, never in place of it:
++
++```bash
++python3 scripts/compound-v-transcript-watch.py --run-dir docs/superpowers/execution/<run-id> --once
++```
++
++The script discovers the run's workflow transcript directory itself (no `--wf` needed — it scans for the
++run directory's absolute path inside the agents' own `register-lane` calls, newest match wins) and emits
++one line per **new** signal since its last state: `out-of-lane`, `wrong-cwd`, `error`, `stall`, `denied`.
++It is advisory only — it never acts on a signal, never mutates the run, and exits 0 on every path. Print
++its lines verbatim under the per-job table; a clean pass with no new signals is worth stating explicitly
++("no new signals") rather than silently omitting the section.
++
+ ## Dashboard (v2.15) — `--html`
+ 
+ The same read-only state this command renders as text can be rendered as a **browser dashboard** via

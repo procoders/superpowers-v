@@ -1,0 +1,34 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    ".claude-plugin/marketplace.json",
+    ".claude-plugin/plugin.json",
+    "CHANGELOG.md",
+    "README.md",
+    "commands/v-dispatch.md",
+    "commands/v-status.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "b72c9bdd197388eedf7f6e981fe338c512e82d46",
+    "diff_digest": "sha256:66f73cce2c39161af691c1870975857a47e33397143aaa229e28485fc4d9d7ae",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"b72c9bdd197388eedf7f6e981fe338c512e82d46\",\n  \"changed\": [\n    \".claude-plugin/marketplace.json\",\n    \".claude-plugin/plugin.json\",\n    \"CHANGELOG.md\",\n    \"README.md\",\n    \"commands/v-dispatch.md\",\n    \"commands/v-status.md\"\n  ],\n  \"allowed\": [\n    \"commands/v-status.md\",\n    \"commands/v-dispatch.md\",\n    \"CHANGELOG.md\",\n    \".claude-plugin/plugin.json\",\n    \".claude-plugin/marketplace.json\",\n    \"README.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "b72c9bdd197388eedf7f6e981fe338c512e82d46",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task B \u2014 /v:status --live, /v:dispatch step 6 advice, CHANGELOG 3.4.2, versions, README sentence",
+  "tests": {
+    "command": "/usr/bin/python3 -B scripts/compound-v-scope-check.py --selftest\nbash -c 'jq empty .claude-plugin/plugin.json && jq empty .claude-plugin/marketplace.json'\n/usr/bin/python3 -B scripts/lint-frontmatter.py .\nbash -c 'for s in scripts/compound-v-*.py; do grep -q -- \"--selftest\" \"$s\" || continue; /usr/bin/python3 -B \"$s\" --selftest >/dev/null 2>&1 || { echo \"FAIL $s\"; exit 1; }; done; for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "full",
+    "selected_count": 4
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_b544c252-dc8-2"
+}

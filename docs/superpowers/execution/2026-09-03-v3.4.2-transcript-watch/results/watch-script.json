@@ -1,0 +1,30 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "scripts/compound-v-transcript-watch.py",
+    "tests/test-transcript-watch.sh"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "b72c9bdd197388eedf7f6e981fe338c512e82d46",
+    "diff_digest": "sha256:fc6e51a598bab8e8164f69027e9705cc1d177bd9ae2128fa831959be01bba918",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"b72c9bdd197388eedf7f6e981fe338c512e82d46\",\n  \"changed\": [\n    \"scripts/compound-v-transcript-watch.py\",\n    \"tests/test-transcript-watch.sh\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-transcript-watch.py\",\n    \"tests/test-transcript-watch.sh\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "b72c9bdd197388eedf7f6e981fe338c512e82d46",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task A \u2014 scripts/compound-v-transcript-watch.py and tests/test-transcript-watch.sh: five signals, discovery by run-dir path, read-only",
+  "tests": {
+    "command": "/usr/bin/python3 -B scripts/compound-v-scope-check.py --selftest\nbash -c '[ -f scripts/compound-v-transcript-watch.py ] || exit 0; grep -q -- \"--selftest\" scripts/compound-v-transcript-watch.py || exit 0; /usr/bin/python3 -B scripts/compound-v-transcript-watch.py --selftest'\nbash -c '[ -f tests/test-transcript-watch.sh ] || exit 0; bash tests/test-transcript-watch.sh'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 3
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_b544c252-dc8-1"
+}

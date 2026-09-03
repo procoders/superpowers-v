@@ -1,0 +1,1606 @@
+diff --git a/scripts/compound-v-transcript-watch.py b/scripts/compound-v-transcript-watch.py
+new file mode 100755
+index 0000000..850529f
+--- /dev/null
++++ b/scripts/compound-v-transcript-watch.py
+@@ -0,0 +1,1240 @@
++#!/usr/bin/env python3
++"""
++Compound V — transcript play-ahead (read-only).
++
++Reads the workers' OWN transcripts while they are still running and reports, per
++job, the five things that a person watching `/workflows` would otherwise learn
++minutes later from the gate: an out-of-lane write, a wrong cwd, an error, a lane
++guard denial, and a stall. It is ADVISORY. It decides nothing, acts on nothing,
++and — this is the load-bearing property — writes nothing except its own state
++file, which lives in the OS temp directory, never in the run directory and never
++in the repository.
++
++    scripts/compound-v-transcript-watch.py --run-dir <run> [--wf <wf_id>]
++        [--transcripts <dir>] [--once | --every <s>] [--state <file>] [--json]
++        [--stall-minutes N] [--selftest]
++
++Exit code is 0 on every advisory path — including "no transcripts found", an
++unreadable manifest, and a state file it could not write. Only a usage fault
++(no --run-dir, a run directory that is not a directory, --every 0) exits 2. A
++watcher that fails the run it is watching is worse than no watcher.
++
++WHAT IT READS (all of it native, none of it ours)
++  <session>/subagents/workflows/<wf_id>/agent-<id>.jsonl — one JSON object per
++  line. `message.content` arrives in THREE shapes and a parser that knows only
++  one crashes on a real transcript: a bare string (the worker's prompt, the
++  first line), an array of `tool_use` / `text` / `thinking` items (assistant
++  lines), and an array of `tool_result` items (the following user lines). Lines
++  of `type:"attachment"` carry no `message` key at all. All four are handled.
++  Alongside them: `agent-<id>.meta.json` (every key optional — `model` is absent
++  on some agents, so every read is `.get()`) and `journal.jsonl`
++  (`started` / `result` / `failed` per agent).
++
++THREE RULES THIS FILE DOES NOT GET TO RE-DECIDE
++  1. ONE PATH MATCHER. `is_allowed` is imported by path from
++     `compound-v-scope-check.py`, exactly as `hooks/lane-guard.sh` does. A second
++     glob matcher that disagreed with the gate's would report lanes the gate does
++     not enforce, which is worse than reporting nothing.
++  2. ONE YAML LOADER. "Python 3.9 stdlib" cannot read `manifest.yaml`;
++     `load_yaml` is imported by path from `compound-v-validate-manifest.py`,
++     which already prefers PyYAML and carries the subset parser's selftests.
++     There is no `import yaml` in this file.
++  3. AGENT → JOB COMES FROM THE AGENT'S OWN `register-lane --job-id`, never from
++     `lane-map.json`'s cwd→worktree map. That map's entry for a *direct* job is
++     the bare repository root, which prefix-matches every cwd in the checkout;
++     reusing it is what let a finished run's job claim an unrelated agent
++     (finding 68), and it would misattribute signals here the same way. An agent
++     with no successful `register-lane` is reported as `(unregistered)`.
++
++     `lane-map.json` IS read, for one narrow purpose: turning an absolute path
++     into a repo-relative one for a job whose worktree the map already names.
++     Only the worktrees mapped to THIS agent's own job are consulted, so another
++     job's worktree can never launder a path into a lane that allows it.
++
++AND ONE STRING IT DOES NOT GET TO GUESS
++  The `denied` signal matches the literal `Compound V lane guard: job '` and
++  nothing else. `Compound V lane-guard FAILED OPEN:` (hyphenated) is an
++  allow-with-notice, not a denial, and the harness's own bashCommandClamp denial
++  is unrelated to lanes and fires on routine retries. Folding either into
++  `denied` would train the reader to ignore the signal.
++
++THE `(unregistered)` POLICY, STATED
++  A write seen before any successful `register-lane` has no lane to be measured
++  against, so it is reported as `out-of-lane` — the same semantics as the lane
++  guard's own `lane-guard-unresolved.jsonl` record, which keeps the unresolved
++  write visible rather than dropping it. Reporting nothing would make the one
++  gap the guard documents about itself invisible here too.
++
++Pure stdlib beyond those two by-path imports. Python 3.9-safe.
++"""
++
++import sys
++
++# Nobody writes bytecode. The scope gate forgives no path by extension, so a
++# `.pyc` this process left beside a sibling script would BLOCK the very job it
++# is watching. Set before either by-path import runs.
++sys.dont_write_bytecode = True
++
++import argparse  # noqa: E402
++import errno  # noqa: E402
++import glob as globmod  # noqa: E402
++import hashlib  # noqa: E402
++import json  # noqa: E402
++import os  # noqa: E402
++import re  # noqa: E402
++import shlex  # noqa: E402
++import tempfile  # noqa: E402
++import time  # noqa: E402
++from datetime import datetime, timezone  # noqa: E402
++
++SIGNALS = ("out-of-lane", "wrong-cwd", "error", "denied", "stall")
++DEFAULT_STALL_MINUTES = 8
++UNREGISTERED = "(unregistered)"
++
++# The lane guard's genuine denial, and only that. See the module docstring.
++DENY_LITERAL = "Compound V lane guard: job '"
++
++# Read at most this much of a transcript when only asking "does it mention the
++# run directory?" — discovery must stay cheap on a session with many workflows.
++DISCOVERY_HEAD_BYTES = 1024 * 1024
++
++ERROR_PATTERNS = [
++    re.compile(r"Traceback \(most recent"),
++    re.compile(r"Permission denied"),
++    re.compile(r"command not found"),
++    re.compile(r"No such file or directory"),
++    re.compile(r"SELFTEST FAILED"),
++    re.compile(r"\bBLOCKED\b"),
++    re.compile(r"exit code [1-9]"),
++]
++
++# Tools whose input names a file this agent is about to write.
++WRITE_TOOLS = {"Write": "file_path", "Edit": "file_path", "NotebookEdit": "notebook_path"}
++
++_SEPARATORS = {";", "&&", "||", "|", "&", "\n"}
++_REDIRECT = re.compile(r"^(\d*)(>>?)(.*)$")
++
++
++# --------------------------------------------------------------------------- #
++# The two by-path imports. Never a second matcher, never a third YAML parser.
++# --------------------------------------------------------------------------- #
++def _sibling(env_var, filename):
++    src = os.environ.get(env_var)
++    if src and os.path.isfile(src):
++        return src
++    here = os.path.dirname(os.path.abspath(__file__))
++    return os.path.join(here, filename)
++
++
++def _load_module(name, path):
++    import importlib.util
++
++    if not os.path.isfile(path):
++        raise RuntimeError("%s not found at %s" % (name, path))
++    spec = importlib.util.spec_from_file_location(name, path)
++    mod = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(mod)
++    return mod
++
++
++def load_matcher():
++    """`is_allowed` from scripts/compound-v-scope-check.py — the gate's own."""
++    return _load_module(
++        "_cv_scope", _sibling("CV_SCOPE_CHECK", "compound-v-scope-check.py")
++    ).is_allowed
++
++
++def load_yaml_fn():
++    """`load_yaml` from scripts/compound-v-validate-manifest.py — the repo's own."""
++    return _load_module(
++        "_cv_vm", _sibling("CV_VALIDATE_MANIFEST", "compound-v-validate-manifest.py")
++    ).load_yaml
++
++
++# --------------------------------------------------------------------------- #
++# Small, total helpers. Every one of them degrades instead of raising: this
++# process reads files another process is still writing.
++# --------------------------------------------------------------------------- #
++def _read_json(path, default=None):
++    try:
++        with open(path, "r") as fh:
++            return json.load(fh)
++    except Exception:  # noqa: BLE001 - missing, partial, or malformed: same answer
++        return default
++
++
++def _parse_ts(raw):
++    """ISO-8601 (with a trailing Z) -> epoch seconds, or None."""
++    if not isinstance(raw, str) or not raw:
++        return None
++    text = raw.strip()
++    if text.endswith("Z"):
++        text = text[:-1] + "+00:00"
++    try:
++        dt = datetime.fromisoformat(text)
++    except ValueError:
++        return None
++    if dt.tzinfo is None:
++        dt = dt.replace(tzinfo=timezone.utc)
++    return dt.timestamp()
++
++
++def _hhmmss(epoch):
++    if not epoch:
++        return time.strftime("%H:%M:%S")
++    return time.strftime("%H:%M:%S", time.localtime(epoch))
++
++
++def _norm(path):
++    return os.path.normpath(path) if path else path
++
++
++def _rel_under(path, root):
++    """Repo-relative form of `path` under `root`, or None. normpath first, then
++    realpath — a temp dir reached through a symlink (macOS /var) matches on the
++    second attempt and would silently miss on the first."""
++    if not path or not root:
++        return None
++    for a, b in ((_norm(path), _norm(root)), (_real(path), _real(root))):
++        if not a or not b:
++            continue
++        if a == b:
++            return ""
++        base = b.rstrip("/") + "/"
++        if a.startswith(base):
++            return a[len(base):]
++    return None
++
++
++def _real(path):
++    try:
++        return os.path.realpath(path)
++    except (OSError, ValueError):
++        return None
++
++
++def _text_of(content):
++    """A tool_result's content: a string, or a list of blocks, or something else."""
++    if isinstance(content, str):
++        return content
++    if isinstance(content, list):
++        parts = []
++        for item in content:
++            if isinstance(item, str):
++                parts.append(item)
++            elif isinstance(item, dict):
++                for key in ("text", "content"):
++                    val = item.get(key)
++                    if isinstance(val, str):
++                        parts.append(val)
++                        break
++        return "\n".join(parts)
++    if content is None:
++        return ""
++    try:
++        return json.dumps(content)
++    except (TypeError, ValueError):
++        return str(content)
++
++
++# --------------------------------------------------------------------------- #
++# Bash write-target extraction — a HEURISTIC, and conservative in both
++# directions, the same posture hooks/lane-guard.sh documents about its own. It
++# skips whatever it cannot resolve (a $var, a substitution, a glob) rather than
++# guessing, because a false out-of-lane line costs the reader more than a missed
++# one: this is a play-ahead, and the gate is still the authority.
++# --------------------------------------------------------------------------- #
++def _tokenize(command):
++    try:
++        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
++        lexer.whitespace_split = True
++        return list(lexer)
++    except ValueError:
++        try:
++            return shlex.split(command)
++        except ValueError:
++            return command.split()
++
++
++def _unresolvable(token):
++    return (not token) or any(ch in token for ch in ("$", "`", "*", "?"))
++
++
++def _args_until_separator(tokens):
++    out = []
++    for tok in tokens:
++        if tok in _SEPARATORS:
++            break
++        out.append(tok)
++    return out
++
++
++def bash_write_targets(command):
++    """Paths a shell command would WRITE, as far as this can honestly tell."""
++    if not isinstance(command, str) or not command.strip():
++        return []
++    tokens = _tokenize(command)
++    targets = []
++    i = 0
++    while i < len(tokens):
++        tok = tokens[i]
++        match = _REDIRECT.match(tok) if tok.startswith((">", "1", "2", "3")) else None
++        if match and match.group(2):
++            rest = match.group(3)
++            if rest.startswith("&"):  # 2>&1 — a descriptor, not a file
++                i += 1
++                continue
++            if rest:
++                targets.append(rest)
++                i += 1
++                continue
++            if i + 1 < len(tokens):
++                targets.append(tokens[i + 1])
++                i += 2
++                continue
++            i += 1
++            continue
++        if tok in ("mv", "cp"):
++            args = [a for a in _args_until_separator(tokens[i + 1:]) if not a.startswith("-")]
++            if len(args) >= 2:
++                targets.append(args[-1])
++        elif tok == "git" and tokens[i + 1:i + 2] == ["rm"]:
++            for arg in _args_until_separator(tokens[i + 2:]):
++                if not arg.startswith("-"):
++                    targets.append(arg)
++        i += 1
++    return [t for t in targets if not _unresolvable(t)]
++
++
++# --------------------------------------------------------------------------- #
++# register-lane parsing. The call that SUCCEEDED is the one that counts: the
++# bashCommandClamp routinely denies a first attempt that used "$PWD", and its
++# --cwd is an unexpanded shell variable, not a path.
++# --------------------------------------------------------------------------- #
++_REGISTER_FLAGS = ("--job-id", "--cwd", "--isolation", "--run-dir", "--repo-root")
++
++
++def parse_register_lane(command):
++    """{flag: value} for a `register-lane` command line, or None."""
++    if not isinstance(command, str) or "register-lane" not in command:
++        return None
++    tokens = _tokenize(command)
++    if "register-lane" not in tokens:
++        return None
++    found = {}
++    i = 0
++    while i < len(tokens):
++        tok = tokens[i]
++        for flag in _REGISTER_FLAGS:
++            if tok == flag and i + 1 < len(tokens):
++                found[flag] = tokens[i + 1]
++                i += 1
++                break
++            if tok.startswith(flag + "="):
++                found[flag] = tok[len(flag) + 1:]
++                break
++        i += 1
++    for key, val in list(found.items()):
++        if _unresolvable(val):
++            found.pop(key)
++    return found or None
++
++
++# --------------------------------------------------------------------------- #
++# Transcript reading
++# --------------------------------------------------------------------------- #
++def iter_tool_events(path, start_line=0):
++    """Yield the tool_use / tool_result events of one agent transcript.
++
++    `start_line` skips lines already accounted for by a previous tick. A partial
++    trailing line (the file is being appended to right now) is skipped, not
++    raised on — the same discipline compound-v-liveness.py uses for a growing
++    worker log.
++    """
++    try:
++        fh = open(path, "r")
++    except OSError:
++        return
++    with fh:
++        for lineno, raw in enumerate(fh, start=1):
++            if lineno <= start_line:
++                continue
++            raw = raw.strip()
++            if not raw:
++                continue
++            try:
++                obj = json.loads(raw)
++            except ValueError:
++                continue
++            if not isinstance(obj, dict):
++                continue
++            ts = _parse_ts(obj.get("timestamp"))
++            message = obj.get("message")
++            if not isinstance(message, dict):
++                yield {"kind": "other", "line": lineno, "ts": ts}
++                continue
++            content = message.get("content")
++            if not isinstance(content, list):  # a bare string prompt, or nothing
++                yield {"kind": "other", "line": lineno, "ts": ts}
++                continue
++            for item in content:
++                if not isinstance(item, dict):
++                    continue
++                kind = item.get("type")
++                if kind == "tool_use":
++                    yield {
++                        "kind": "tool_use",
++                        "line": lineno,
++                        "ts": ts,
++                        "id": item.get("id"),
++                        "name": item.get("name") or "",
++                        "input": item.get("input") if isinstance(item.get("input"), dict) else {},
++                    }
++                elif kind == "tool_result":
++                    yield {
++                        "kind": "tool_result",
++                        "line": lineno,
++                        "ts": ts,
++                        "tool_use_id": item.get("tool_use_id"),
++                        "is_error": bool(item.get("is_error")),
++                        "text": _text_of(item.get("content")),
++                    }
++                else:
++                    yield {"kind": "other", "line": lineno, "ts": ts}
++
++
++def read_journal(wf_dir):
++    """agentId -> "returned" | "live", from the workflow's own journal."""
++    out = {}
++    path = os.path.join(wf_dir, "journal.jsonl")
++    try:
++        fh = open(path, "r")
++    except OSError:
++        return out
++    with fh:
++        for raw in fh:
++            raw = raw.strip()
++            if not raw:
++                continue
++            try:
++                obj = json.loads(raw)
++            except ValueError:
++                continue
++            if not isinstance(obj, dict):
++                continue
++            agent = obj.get("agentId")
++            if not agent:
++                continue
++            kind = obj.get("type")
++            if kind in ("result", "failed"):
++                out[agent] = "returned"
++            elif kind == "started":
++                out.setdefault(agent, "live")
++    return out
++
++
++def agent_meta(wf_dir, agent_id):
++    """`.meta.json` for one agent. EVERY key is optional — `model` is missing on
++    real agents, not null — so callers must use .get() on what comes back."""
++    meta = _read_json(os.path.join(wf_dir, "agent-%s.meta.json" % agent_id), {})
++    return meta if isinstance(meta, dict) else {}
++
++
++# --------------------------------------------------------------------------- #
++# Discovery: find the workflow directory by the run directory's own path.
++# --------------------------------------------------------------------------- #
++def encoded_project(path):
++    """~/.claude/projects/<cwd with every "/" replaced by "-">."""
++    return (path or "").replace("/", "-")
++
++
++def session_roots(repo_root):
++    """The session directories of this project, newest first."""
++    base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
++    proj = os.path.join(base, "projects", encoded_project(_real(repo_root) or repo_root or ""))
++    try:
++        entries = [os.path.join(proj, n) for n in os.listdir(proj)]
++    except OSError:
++        return []
++    dirs = [d for d in entries if os.path.isdir(d)]
++    return sorted(dirs, key=_mtime, reverse=True)
++
++
++def _mtime(path):
++    try:
++        return os.path.getmtime(path)
++    except OSError:
++        return 0.0
++
++
++def workflow_dirs(root):
++    """Every plausible workflow directory at or under `root`.
++
++    Workflow-spawned agents — the only kind Compound V dispatches — live under
++    `<session>/subagents/workflows/<wf_id>/`. A plain Task agent lands one level
++    higher, in `<session>/subagents/`, and is deliberately NOT matched. `root`
++    itself is accepted when it already holds `agent-*.jsonl`, so `--transcripts`
++    can name either a session directory or a workflow directory outright.
++    """
++    if not root or not os.path.isdir(root):
++        return []
++    found = []
++    if globmod.glob(os.path.join(root, "agent-*.jsonl")):
++        found.append(root)
++    for pattern in ("subagents/workflows/*", "workflows/*", "*/subagents/workflows/*"):
++        for cand in globmod.glob(os.path.join(root, pattern)):
++            if os.path.isdir(cand) and globmod.glob(os.path.join(cand, "agent-*.jsonl")):
++                found.append(cand)
++    seen = set()
++    out = []
++    for d in found:
++        key = _norm(d)
++        if key not in seen:
++            seen.add(key)
++            out.append(d)
++    return out
++
++
++def mentions_run_dir(wf_dir, run_dir):
++    """Does any agent in this workflow name the run directory?
++
++    Every worker prompt carries it, in the `register-lane` command the worker is
++    told to run first — which is why discovery needs no new state field.
++    """
++    needles = {n for n in (run_dir, _norm(run_dir), _real(run_dir)) if n}
++    for path in sorted(globmod.glob(os.path.join(wf_dir, "agent-*.jsonl"))):
++        try:
++            with open(path, "r") as fh:
++                head = fh.read(DISCOVERY_HEAD_BYTES)
++        except OSError:
++            continue
++        for needle in needles:
++            if needle in head:
++                return True
++    return False
++
++
++def find_transcripts(run_dir, transcripts=None, wf=None, repo_root=None):
++    """Candidate workflow directories for this run, newest first."""
++    if wf and os.path.isdir(wf) and globmod.glob(os.path.join(wf, "agent-*.jsonl")):
++        return [wf]
++
++    roots = [transcripts] if transcripts else session_roots(repo_root)
++    cands = []
++    for root in roots:
++        cands.extend(workflow_dirs(root))
++
++    if wf:
++        cands = [c for c in cands if os.path.basename(c.rstrip("/")) == wf]
++    else:
++        cands = [c for c in cands if mentions_run_dir(c, run_dir)]
++    return sorted(cands, key=_mtime, reverse=True)
++
++
++# --------------------------------------------------------------------------- #
++# The run's own context: manifest lanes, lane map, job statuses.
++# --------------------------------------------------------------------------- #
++def repo_root_for(run_dir):
++    """Walk up from the run directory to the checkout that contains it."""
++    cur = _norm(os.path.abspath(run_dir))
++    while True:
++        if os.path.exists(os.path.join(cur, ".git")):
++            return cur
++        parent = os.path.dirname(cur)
++        if parent == cur:
++            return None
++        cur = parent
++
++
++def load_run_context(run_dir, load_yaml=None):
++    """{jobs: {id: {isolation, write_allowed}}, worktrees: {path: job}, status:{}}."""
++    ctx = {"jobs": {}, "worktrees": {}, "status": {}, "notes": []}
++
++    manifest_path = os.path.join(run_dir, "manifest.yaml")
++    data = None
++    if os.path.isfile(manifest_path):
++        try:
++            loader = load_yaml or load_yaml_fn()
++            with open(manifest_path, "r") as fh:
++                data = loader(fh.read())
++        except Exception as exc:  # noqa: BLE001 - advisory: degrade, never fail
++            ctx["notes"].append("manifest unreadable (%s)" % exc)
++    else:
++        ctx["notes"].append("no manifest.yaml in the run directory")
++
++    jobs = (data or {}).get("jobs") if isinstance(data, dict) else None
++    if isinstance(jobs, dict):
++        jobs = [dict(v, id=k) for k, v in jobs.items() if isinstance(v, dict)]
++    for job in jobs or []:
++        if not isinstance(job, dict) or not job.get("id"):
++            continue
++        allowed = job.get("write_allowed") or []
++        ctx["jobs"][job["id"]] = {
++            "isolation": job.get("isolation"),
++            "write_allowed": [g for g in allowed if isinstance(g, str)],
++        }
++
++    lane_map = _read_json(os.path.join(run_dir, "lane-map.json"), {}) or {}
++    worktrees = lane_map.get("worktrees") if isinstance(lane_map, dict) else None
++    if isinstance(worktrees, dict):
++        ctx["worktrees"] = {k: v for k, v in worktrees.items() if isinstance(v, str)}
++
++    state = _read_json(os.path.join(run_dir, "state.json"), {}) or {}
++    sjobs = state.get("jobs") if isinstance(state, dict) else None
++    if isinstance(sjobs, dict):
++        for jid, rec in sjobs.items():
++            ctx["status"][jid] = (rec or {}).get("status", "?") if isinstance(rec, dict) else "?"
++    return ctx
++
++
++# --------------------------------------------------------------------------- #
++# The five detectors
++# --------------------------------------------------------------------------- #
++def _roots_for(job, reg, ctx, repo_root):
++    """Where an absolute path may be made repo-relative FOR THIS AGENT.
++
++    Its own registered cwd, the checkout, and the worktrees the lane map assigns
++    to ITS OWN job — never another job's worktree, which would let a path be
++    laundered into a lane that happens to allow it.
++    """
++    roots = []
++    if reg and reg.get("--cwd"):
++        roots.append(reg["--cwd"])
++    for path, mapped in (ctx.get("worktrees") or {}).items():
++        if job and mapped == job:
++            roots.append(path)
++    if repo_root:
++        roots.append(repo_root)
++    return roots
++
++
++def _repo_relative(path, roots):
++    """The DEEPEST root that contains `path` wins: a worktree nested inside the
++    checkout must yield `src/x.py`, not `.claude/worktrees/wf-1/src/x.py`."""
++    best = None
++    for root in roots:
++        rel = _rel_under(path, root)
++        if rel is None or rel == "":
++            continue
++        if best is None or len(rel) < len(best):
++            best = rel
++    return best
++
++
++def out_of_lane_targets(event, job, reg, ctx, repo_root, is_allowed):
++    """[(evidence, rel_or_abs)] for the writes this tool_use would perform."""
++    name = event.get("name") or ""
++    inp = event.get("input") or {}
++    raw_targets = []
++    if name in WRITE_TOOLS:
++        val = inp.get(WRITE_TOOLS[name])
++        if isinstance(val, str) and val:
++            raw_targets.append((name, val))
++    elif name == "Bash":
++        for target in bash_write_targets(inp.get("command")):
++            raw_targets.append(("Bash", target))
++    if not raw_targets:
++        return []
++
++    allowed = ((ctx.get("jobs") or {}).get(job) or {}).get("write_allowed") or []
++    roots = _roots_for(job, reg, ctx, repo_root)
++    base = (reg or {}).get("--cwd") or repo_root or os.getcwd()
++
++    out = []
++    for tool, target in raw_targets:
++        path = target if os.path.isabs(target) else os.path.join(base, target)
++        rel = _repo_relative(path, roots)
++        if job and allowed and rel is not None and is_allowed(rel, allowed):
++            continue
++        out.append("%s %s" % (tool, rel if rel is not None else _norm(path)))
++    return out
++
++
++def wrong_cwd_reason(reg, ctx, repo_root):
++    """Why this register-lane call disagrees with the manifest, or None."""
++    job = reg.get("--job-id")
++    if not job:
++        return None
++    declared = ((ctx.get("jobs") or {}).get(job) or {}).get("isolation")
++    if not declared:
++        return None
++    got = reg.get("--isolation")
++    if got and got != declared:
++        return "registered --isolation %s but the manifest says %s" % (got, declared)
++    cwd = reg.get("--cwd")
++    root = reg.get("--repo-root") or repo_root
++    if declared == "worktree" and cwd and root and _rel_under(cwd, root) == "":
++        return "registered --cwd at the repository root while the manifest says worktree"
++    return None
++
++
++def error_evidence(text):
++    """The first line of a Bash result that reads as a failure, or None."""
++    if not text:
++        return None
++    for pattern in ERROR_PATTERNS:
++        match = pattern.search(text)
++        if not match:
++            continue
++        start = text.rfind("\n", 0, match.start()) + 1
++        end = text.find("\n", match.start())
++        line = text[start:end if end != -1 else len(text)].strip()
++        return line or match.group(0)
++    return None
++
++
++def is_lane_denial(text):
++    return bool(text) and DENY_LITERAL in text
++
++
++# --------------------------------------------------------------------------- #
++# Per-agent analysis
++# --------------------------------------------------------------------------- #
++def analyze_agent(path, agent_id, ctx, repo_root, is_allowed, start_line=0,
++                  prior_job=None, prior_reg=None):
++    """(signals, last_line, last_ts, job, reg) for one agent transcript."""
++    job = prior_job
++    reg = dict(prior_reg) if prior_reg else None
++    signals = []
++    last_line = start_line
++    last_ts = None
++    tool_names = {}
++    pending_register = {}
++
++    for event in iter_tool_events(path, start_line):
++        last_line = max(last_line, event["line"])
++        if event.get("ts"):
++            last_ts = event["ts"]
++        kind = event["kind"]
++
++        if kind == "tool_use":
++            tool_names[event.get("id")] = event.get("name") or ""
++            parsed = parse_register_lane((event.get("input") or {}).get("command"))
++            if parsed is not None:
++                pending_register[event.get("id")] = (parsed, event)
++                continue
++            for evidence in out_of_lane_targets(event, job, reg, ctx, repo_root, is_allowed):
++                signals.append({
++                    "signal": "out-of-lane", "job": job or UNREGISTERED,
++                    "agent": agent_id, "line": event["line"], "ts": event.get("ts"),
++                    "evidence": evidence,
++                })
++            continue
++
++        if kind != "tool_result":
++            continue
++
++        use_id = event.get("tool_use_id")
++        if use_id in pending_register:
++            parsed, use_event = pending_register.pop(use_id)
++            # ONLY the call that succeeded. A clamp-denied first attempt carries
++            # an unexpanded "$PWD", not a path.
++            if not event.get("is_error"):
++                if parsed.get("--job-id"):
++                    job = parsed["--job-id"]
++                reg = parsed
++                reason = wrong_cwd_reason(parsed, ctx, repo_root)
++                if reason:
++                    signals.append({
++                        "signal": "wrong-cwd", "job": job or UNREGISTERED,
++                        "agent": agent_id, "line": use_event["line"],
++                        "ts": use_event.get("ts") or event.get("ts"),
++                        "evidence": reason,
++                    })
++            continue
++
++        text = event.get("text") or ""
++        if is_lane_denial(text):
++            signals.append({
++                "signal": "denied", "job": job or UNREGISTERED, "agent": agent_id,
++                "line": event["line"], "ts": event.get("ts"),
++                "evidence": text.strip().splitlines()[0] if text.strip() else DENY_LITERAL,
++            })
++            continue
++        if tool_names.get(use_id) == "Bash":
++            evidence = error_evidence(text)
++            if evidence:
++                signals.append({
++                    "signal": "error", "job": job or UNREGISTERED, "agent": agent_id,
++                    "line": event["line"], "ts": event.get("ts"), "evidence": evidence,
++                })
++
++    return signals, last_line, last_ts, job, reg
++
++
++# --------------------------------------------------------------------------- #
++# State — per-agent line offsets and the keys already emitted, so `--every`
++# never repeats itself. It lives in the OS temp directory by default and is
++# NEVER written into the run directory or the repository.
++# --------------------------------------------------------------------------- #
++STATE_EMITTED_CAP = 5000
++
++
++def default_state_path(run_dir):
++    digest = hashlib.sha1(os.path.abspath(run_dir).encode("utf-8")).hexdigest()[:12]
++    return os.path.join(tempfile.gettempdir(), "cv-transcript-watch-%s.json" % digest)
++
++
++def load_state(path):
++    data = _read_json(path, None)
++    if not isinstance(data, dict):
++        return {"version": 1, "agents": {}, "emitted": []}
++    data.setdefault("agents", {})
++    data.setdefault("emitted", [])
++    if not isinstance(data["agents"], dict):
++        data["agents"] = {}
++    if not isinstance(data["emitted"], list):
++        data["emitted"] = []
++    return data
++
++
++def save_state(path, state):
++    """Atomic, and advisory: an unwritable state file degrades to "repeats every
++    tick", never to a failed run."""
++    state["emitted"] = state.get("emitted", [])[-STATE_EMITTED_CAP:]
++    directory = os.path.dirname(os.path.abspath(path)) or "."
++    try:
++        os.makedirs(directory, exist_ok=True)
++        fd, tmp = tempfile.mkstemp(dir=directory, prefix=".cv-watch-", suffix=".json")
++        with os.fdopen(fd, "w") as fh:
++            json.dump(state, fh)
++        os.replace(tmp, path)
++        return True
++    except OSError as exc:
++        if exc.errno not in (errno.EACCES, errno.EROFS, errno.ENOSPC, errno.ENOENT, errno.EPERM):
++            pass
++        sys.stderr.write("transcript-watch: state file not written (%s); "
++                         "signals may repeat next tick\n" % exc)
++        return False
++
++
++def signal_key(sig):
++    if sig["signal"] == "stall":  # one per agent, not one per tick
++        return "%s|stall" % sig["agent"]
++    return "%s|%s|%s|%s" % (sig["agent"], sig["signal"], sig["line"], sig["evidence"][:80])
++
++
++# --------------------------------------------------------------------------- #
++# One tick
++# --------------------------------------------------------------------------- #
++def tick(run_dir, wf_dir, ctx, state, repo_root, is_allowed, stall_minutes, now=None):
++    """(new_signals, summary) for one pass over one workflow directory."""
++    now = now if now is not None else time.time()
++    journal = read_journal(wf_dir)
++    agents = sorted(globmod.glob(os.path.join(wf_dir, "agent-*.jsonl")))
++    emitted = set(state.get("emitted", []))
++    fresh = []
++    live = returned = 0
++
++    for path in agents:
++        agent_id = os.path.basename(path)[len("agent-"):-len(".jsonl")]
++        rec = state["agents"].get(agent_id) or {}
++        signals, last_line, last_ts, job, reg = analyze_agent(
++            path, agent_id, ctx, repo_root, is_allowed,
++            start_line=int(rec.get("line") or 0),
++            prior_job=rec.get("job"), prior_reg=rec.get("reg"),
++        )
++        if last_ts is None:
++            last_ts = rec.get("last_ts") or _mtime(path)
++
++        status = journal.get(agent_id, "live")
++        if status == "returned":
++            returned += 1
++        else:
++            live += 1
++            idle = now - float(last_ts or 0)
++            if last_ts and idle > stall_minutes * 60:
++                signals.append({
++                    "signal": "stall", "job": job or UNREGISTERED, "agent": agent_id,
++                    "line": last_line, "ts": last_ts,
++                    "evidence": "no tool use for %d min (still running)" % int(idle // 60),
++                })
++
++        state["agents"][agent_id] = {
++            "line": last_line, "last_ts": last_ts, "job": job, "reg": reg,
++        }
++        for sig in signals:
++            key = signal_key(sig)
++            if key in emitted:
++                continue
++            emitted.add(key)
++            state.setdefault("emitted", []).append(key)
++            fresh.append(sig)
++
++    jobs_text = " ".join(
++        "%s=%s" % (jid, ctx["status"].get(jid, "?"))
++        for jid in sorted(set(list(ctx["jobs"].keys()) + list(ctx["status"].keys())))
++    ) or "(none)"
++    summary = "jobs: %s  agents: %d live, %d returned" % (jobs_text, live, returned)
++    return fresh, summary
++
++
++def render(sig):
++    return "%s %s %s %s %s" % (
++        _hhmmss(sig.get("ts")), sig["job"], (sig["agent"] or "")[:8],
++        sig["signal"], (sig.get("evidence") or "")[:140],
++    )
++
++
++def as_json(sig):
++    ts = sig.get("ts")
++    return {
++        "ts": datetime.fromtimestamp(ts, timezone.utc).isoformat().replace("+00:00", "Z")
++        if ts else datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
++        "job": sig["job"],
++        "agent": sig["agent"],
++        "signal": sig["signal"],
++        "evidence": (sig.get("evidence") or "")[:140],
++        "line": sig.get("line"),
++    }
++
++
++# --------------------------------------------------------------------------- #
++# CLI
++# --------------------------------------------------------------------------- #
++def build_parser():
++    ap = argparse.ArgumentParser(
++        prog="compound-v-transcript-watch.py",
++        description="Read a Compound V run's live worker transcripts and report "
++                    "out-of-lane writes, wrong cwds, errors, lane-guard denials "
++                    "and stalls. Read-only, advisory, exit 0.",
++    )
++    ap.add_argument("--run-dir", help="docs/superpowers/execution/<run-id>/")
++    ap.add_argument("--wf", help="workflow id (or directory) — overrides discovery")
++    ap.add_argument("--transcripts", help="session or workflow directory — overrides discovery")
++    ap.add_argument("--once", action="store_true", help="one pass (the default)")
++    ap.add_argument("--every", type=int, metavar="SECONDS",
++                    help="poll every SECONDS until interrupted")
++    ap.add_argument("--state", help="offsets file (default: the OS temp directory)")
++    ap.add_argument("--json", action="store_true", help="one JSON object per signal")
++    ap.add_argument("--stall-minutes", type=int, default=DEFAULT_STALL_MINUTES)
++    ap.add_argument("--selftest", action="store_true")
++    return ap
++
++
++def main(argv):
++    args = build_parser().parse_args(argv[1:])
++    if args.selftest:
++        return _selftest()
++
++    if not args.run_dir:
++        sys.stderr.write("usage fault: --run-dir is required\n")
++        return 2
++    run_dir = os.path.abspath(args.run_dir)
++    if not os.path.isdir(run_dir):
++        sys.stderr.write("usage fault: %s is not a directory\n" % run_dir)
++        return 2
++    if args.every is not None and args.every <= 0:
++        sys.stderr.write("usage fault: --every must be a positive number of seconds\n")
++        return 2
++    if args.every is not None and args.once:
++        sys.stderr.write("usage fault: --once and --every are mutually exclusive\n")
++        return 2
++
++    # Everything past this point is advisory and must exit 0.
++    out = sys.stdout
++    note = sys.stderr if args.json else sys.stdout
++
++    try:
++        is_allowed = load_matcher()
++    except Exception as exc:  # noqa: BLE001
++        note.write("transcript-watch: the scope gate's matcher could not be "
++                   "imported (%s); nothing to report\n" % exc)
++        return 0
++
++    repo_root = repo_root_for(run_dir)
++    ctx = load_run_context(run_dir)
++    for line in ctx["notes"]:
++        note.write("transcript-watch: %s\n" % line)
++
++    state_path = args.state or default_state_path(run_dir)
++    state = load_state(state_path)
++
++    interval = args.every
++    announced = None
++    while True:
++        cands = find_transcripts(run_dir, args.transcripts, args.wf, repo_root)
++        if not cands:
++            note.write("no transcripts found for %s (searched %s)\n" % (
++                run_dir, args.transcripts or args.wf or "~/.claude/projects/%s/*"
++                % encoded_project(repo_root or "")))
++            if interval is None:
++                return 0
++        else:
++            wf_dir = cands[0]
++            if announced != wf_dir:
++                announced = wf_dir
++                note.write("watching %s (%d agent transcripts) for %s\n" % (
++                    os.path.basename(wf_dir.rstrip("/")),
++                    len(globmod.glob(os.path.join(wf_dir, "agent-*.jsonl"))),
++                    os.path.basename(run_dir)))
++            signals, summary = tick(run_dir, wf_dir, ctx, state, repo_root,
++                                    is_allowed, args.stall_minutes)
++            for sig in signals:
++                if args.json:
++                    out.write(json.dumps(as_json(sig)) + "\n")
++                else:
++                    out.write(render(sig) + "\n")
++            note.write(summary + "\n")
++            out.flush()
++            save_state(state_path, state)
++
++        if interval is None:
++            return 0
++        try:
++            time.sleep(interval)
++        except KeyboardInterrupt:
++            return 0
++        ctx = load_run_context(run_dir)  # statuses move while we watch
++
++
++# --------------------------------------------------------------------------- #
++# --selftest — the parsers and one end-to-end pass, on fixtures built here.
++# --------------------------------------------------------------------------- #
++def _selftest():  # noqa: C901 - a linear list of cases reads better than five helpers
++    import shutil
++
++    failures = []
++
++    def expect(name, cond):
++        if cond:
++            print("PASS %s" % name)
++        else:
++            failures.append(name)
++            print("FAIL %s" % name)
++
++    # --- the two by-path imports are real, and are the repo's own -----------
++    try:
++        is_allowed = load_matcher()
++        expect("the matcher imports from compound-v-scope-check.py", True)
++    except Exception as exc:  # noqa: BLE001
++        expect("the matcher imports from compound-v-scope-check.py (%s)" % exc, False)
++        return 1
++    expect("...and it is the gate's matcher, not a local one",
++           is_allowed("src/a.py", ["src/**"]) and not is_allowed("README.md", ["src/**"]))
++    try:
++        loader = load_yaml_fn()
++        expect("load_yaml imports from compound-v-validate-manifest.py",
++               loader("a: 1") == {"a": 1})
++    except Exception as exc:  # noqa: BLE001
++        expect("load_yaml imports from compound-v-validate-manifest.py (%s)" % exc, False)
++        return 1
++
++    # --- bash write-target extraction ---------------------------------------
++    expect("a > redirect is a write target",
++           bash_write_targets("echo x > /r/notes.txt") == ["/r/notes.txt"])
++    expect("...and so is >> with no space",
++           bash_write_targets("echo x >>/r/n.txt") == ["/r/n.txt"])
++    expect("2>&1 is a descriptor, not a file",
++           bash_write_targets("run 2>&1") == [])
++    expect("mv/cp name their destination",
++           bash_write_targets("mv a.py b.py") == ["b.py"]
++           and bash_write_targets("cp -r a b") == ["b"])
++    expect("git rm names its operands",
++           bash_write_targets("git rm -f docs/x.md") == ["docs/x.md"])
++    expect("an unresolvable target is skipped, never guessed",
++           bash_write_targets("echo x > $OUT") == []
++           and bash_write_targets("echo x > /r/*.txt") == [])
++    expect("a '>' inside a quoted argument is not a redirect",
++           bash_write_targets('echo "a > b"') == [])
++
++    # --- register-lane parsing ----------------------------------------------
++    parsed = parse_register_lane(
++        "python3 emit.py register-lane --run-dir /r/run --job-id a --cwd /wt "
++        "--isolation worktree")
++    expect("register-lane flags parse in the spaced form",
++           parsed and parsed.get("--job-id") == "a" and parsed.get("--cwd") == "/wt")
++    parsed_eq = parse_register_lane("emit.py register-lane --job-id=b --isolation=direct")
++    expect("...and in the --flag=value form",
++           parsed_eq and parsed_eq.get("--job-id") == "b"
++           and parsed_eq.get("--isolation") == "direct")
++    parsed_var = parse_register_lane('emit.py register-lane --job-id a --cwd "$PWD"')
++    expect("an unexpanded $PWD is dropped, never treated as a path",
++           parsed_var is not None and "--cwd" not in parsed_var)
++    expect("a command that is not register-lane parses to None",
++           parse_register_lane("git status") is None)
++
++    # --- the denial literal --------------------------------------------------
++    expect("the lane guard's real denial is a denial",
++           is_lane_denial("Compound V lane guard: job 'a' is not allowed to write 'x'"))
++    expect("the hyphenated FAILED-OPEN notice is NOT a denial",
++           not is_lane_denial("Compound V lane-guard FAILED OPEN: no manifest"))
++    expect("the harness's bashCommandClamp denial is NOT a lane denial",
++           not is_lane_denial("Permission to use Bash with command foo has been denied: "
++                              "this agent's Bash use is clamped"))
++
++    # --- error evidence ------------------------------------------------------
++    expect("a Traceback reads as an error",
++           error_evidence("ok\nTraceback (most recent call last):\n  File x") is not None)
++    expect("a clean result does not",
++           error_evidence("File created successfully at: /a/b") is None)
++    expect("exit code 0 is not an error, exit code 1 is",
++           error_evidence("exit code 0") is None and error_evidence("exit code 1") is not None)
++
++    # --- transcript shapes ---------------------------------------------------
++    tmp = tempfile.mkdtemp(prefix="cv-watch-selftest-")
++    try:
++        run_dir = os.path.join(tmp, "repo", "run")
++        repo = os.path.join(tmp, "repo")
++        wt = os.path.join(tmp, "wt-a")
++        wf = os.path.join(tmp, "session", "subagents", "workflows", "wf_x")
++        os.makedirs(run_dir)
++        os.makedirs(wf)
++        os.makedirs(os.path.join(wt, "src"))
++        os.makedirs(os.path.join(repo, ".git"))
++        with open(os.path.join(run_dir, "manifest.yaml"), "w") as fh:
++            fh.write("run_id: r\njobs:\n  - id: a\n    isolation: worktree\n"
++                     "    write_allowed:\n      - \"src/**\"\n")
++        with open(os.path.join(run_dir, "lane-map.json"), "w") as fh:
++            json.dump({"worktrees": {wt: "a"}, "run_id": "r"}, fh)
++        with open(os.path.join(run_dir, "state.json"), "w") as fh:
++            json.dump({"jobs": {"a": {"status": "running"}}}, fh)
++
++        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
++        old_iso = datetime.fromtimestamp(time.time() - 7200, timezone.utc).strftime(
++            "%Y-%m-%dT%H:%M:%S.000Z")
++
++        def line(obj):
++            return json.dumps(obj) + "\n"
++
++        def use(agent, ts, uid, name, inp):
++            return line({"type": "assistant", "agentId": agent, "timestamp": ts,
++                         "message": {"role": "assistant", "content": [
++                             {"type": "tool_use", "id": uid, "name": name, "input": inp}]}})
++
++        def result(agent, ts, uid, text, is_error=False):
++            return line({"type": "user", "agentId": agent, "timestamp": ts,
++                         "message": {"role": "user", "content": [
++                             {"type": "tool_result", "tool_use_id": uid,
++                              "is_error": is_error, "content": text}]}})
++
++        reg_cmd = ("python3 emit.py register-lane --run-dir %s --job-id a --cwd %s "
++                   "--repo-root %s --isolation worktree" % (run_dir, wt, repo))
++        with open(os.path.join(wf, "agent-aaa1.jsonl"), "w") as fh:
++            # a bare-string prompt line, and an attachment line with no message
++            fh.write(line({"type": "user", "agentId": "aaa1", "timestamp": now_iso,
++                           "message": {"role": "user", "content": "prompt for %s" % run_dir}}))
++            fh.write(line({"type": "attachment", "agentId": "aaa1", "timestamp": now_iso,
++                           "attachment": {"type": "skill_listing"}}))
++            fh.write(use("aaa1", now_iso, "t1", "Bash", {"command": reg_cmd}))
++            fh.write(result("aaa1", now_iso, "t1", "{\"registered\": \"a\"}"))
++            fh.write(use("aaa1", now_iso, "t2", "Write",
++                         {"file_path": os.path.join(wt, "src", "ok.py")}))
++            fh.write(result("aaa1", now_iso, "t2", "File created successfully"))
++            fh.write(use("aaa1", now_iso, "t3", "Write",
++                         {"file_path": os.path.join(wt, "README.md")}))
++            fh.write(result("aaa1", now_iso, "t3", "File created successfully"))
++            fh.write(use("aaa1", now_iso, "t4", "Bash",
++                         {"command": "python3 x.py"}))
++            fh.write(result("aaa1", now_iso, "t4",
++                            "Traceback (most recent call last):\n  File x", True))
++            fh.write(result("aaa1", now_iso, "t5",
++                            "Compound V lane guard: job 'a' is not allowed to write 'z'"))
++        with open(os.path.join(wf, "agent-aaa1.meta.json"), "w") as fh:
++            json.dump({"agentType": "workflow-subagent", "spawnDepth": 1}, fh)
++        with open(os.path.join(wf, "agent-bbb2.jsonl"), "w") as fh:
++            fh.write(use("bbb2", old_iso, "u1", "Read", {"file_path": "/x"}))
++        with open(os.path.join(wf, "journal.jsonl"), "w") as fh:
++            fh.write(line({"type": "started", "agentId": "aaa1"}))
++            fh.write(line({"type": "result", "agentId": "aaa1"}))
++            fh.write(line({"type": "started", "agentId": "bbb2"}))
++
++        expect("meta.json without a `model` key reads as None, and does not raise",
++               agent_meta(wf, "aaa1").get("model") is None
++               and agent_meta(wf, "aaa1").get("agentType") == "workflow-subagent")
++        expect("a missing meta.json is an empty dict, not a crash",
++               agent_meta(wf, "nope") == {})
++
++        ctx = load_run_context(run_dir)
++        expect("the manifest's lane and isolation load through load_yaml",
++               ctx["jobs"]["a"]["write_allowed"] == ["src/**"]
++               and ctx["jobs"]["a"]["isolation"] == "worktree")
++        expect("the lane map's worktrees load", ctx["worktrees"].get(wt) == "a")
++
++        found = find_transcripts(run_dir, os.path.join(tmp, "session"))
++        expect("discovery finds the workflow that mentions the run directory",
++               found and os.path.basename(found[0]) == "wf_x")
++        expect("discovery of an unrelated tree finds nothing, cleanly",
++               find_transcripts(run_dir, os.path.join(tmp, "repo")) == [])
++
++        state = {"version": 1, "agents": {}, "emitted": []}
++        signals, summary = tick(run_dir, wf, ctx, state, repo, is_allowed, 8)
++        kinds = sorted(s["signal"] for s in signals)
++        expect("one pass yields exactly denied+error+out-of-lane+stall",
++               kinds == ["denied", "error", "out-of-lane", "stall"])
++        expect("the in-lane write produced no signal",
++               not any("ok.py" in (s.get("evidence") or "") for s in signals))
++        expect("the out-of-lane write is repo-relative, against its own worktree",
++               any(s["signal"] == "out-of-lane" and s["evidence"].endswith("README.md")
++                   for s in signals))
++        expect("the stalled agent has no lane and is named (unregistered)",
++               any(s["signal"] == "stall" and s["job"] == UNREGISTERED for s in signals))
++        expect("the summary names the job and counts the agents",
++               "a=running" in summary and "1 live, 1 returned" in summary)
++
++        again, _ = tick(run_dir, wf, ctx, state, repo, is_allowed, 8)
++        expect("a second pass over the same state repeats nothing", again == [])
++
++        rendered = render(signals[0])
++        expect("the text line is <time> <job> <agent8> <signal> <evidence>",
++               len(rendered.split(" ", 4)) == 5
++               and re.match(r"^\d\d:\d\d:\d\d ", rendered) is not None)
++        payload = as_json(signals[0])
++        expect("the JSON object carries ts/job/agent/signal/evidence/line",
++               set(payload) == {"ts", "job", "agent", "signal", "evidence", "line"})
++
++        # A wrong-cwd registration, read off the call that SUCCEEDED.
++        wf2 = os.path.join(tmp, "session2", "subagents", "workflows", "wf_y")
++        os.makedirs(wf2)
++        bad = ("python3 emit.py register-lane --run-dir %s --job-id a --cwd %s "
++               "--repo-root %s --isolation direct" % (run_dir, repo, repo))
++        clamped = ('python3 emit.py register-lane --run-dir %s --job-id nope '
++                   '--cwd "$PWD" --isolation worktree' % run_dir)
++        with open(os.path.join(wf2, "agent-ccc3.jsonl"), "w") as fh:
++            fh.write(use("ccc3", now_iso, "v1", "Bash", {"command": clamped}))
++            fh.write(result("ccc3", now_iso, "v1",
++                            "Permission to use Bash with command ... has been denied", True))
++            fh.write(use("ccc3", now_iso, "v2", "Bash", {"command": bad}))
++            fh.write(result("ccc3", now_iso, "v2", "{\"registered\": \"a\"}"))
++        with open(os.path.join(wf2, "journal.jsonl"), "w") as fh:
++            fh.write(line({"type": "started", "agentId": "ccc3"}))
++            fh.write(line({"type": "result", "agentId": "ccc3"}))
++        state2 = {"version": 1, "agents": {}, "emitted": []}
++        sigs2, _ = tick(run_dir, wf2, ctx, state2, repo, is_allowed, 8)
++        expect("a mis-declared isolation is one wrong-cwd signal",
++               [s["signal"] for s in sigs2] == ["wrong-cwd"])
++        expect("...attributed to the job of the call that SUCCEEDED",
++               sigs2[0]["job"] == "a")
++
++        # An unregistered agent's write is an out-of-lane candidate.
++        wf3 = os.path.join(tmp, "session3", "subagents", "workflows", "wf_z")
++        os.makedirs(wf3)
++        with open(os.path.join(wf3, "agent-ddd4.jsonl"), "w") as fh:
++            fh.write(use("ddd4", now_iso, "w1", "Write",
++                         {"file_path": os.path.join(repo, "zzz.md")}))
++            fh.write(result("ddd4", now_iso, "w1", "File created successfully"))
++        with open(os.path.join(wf3, "journal.jsonl"), "w") as fh:
++            fh.write(line({"type": "result", "agentId": "ddd4"}))
++        state3 = {"version": 1, "agents": {}, "emitted": []}
++        sigs3, _ = tick(run_dir, wf3, ctx, state3, repo, is_allowed, 8)
++        expect("a write with no lane registered is an out-of-lane candidate",
++               [s["signal"] for s in sigs3] == ["out-of-lane"]
++               and sigs3[0]["job"] == UNREGISTERED)
++
++        # A malformed / half-written trailing line is skipped, never raised on.
++        with open(os.path.join(wf3, "agent-ddd4.jsonl"), "a") as fh:
++            fh.write('{"type":"assistant","message":{"role":"assis')
++        expect("a partial trailing line is skipped, not raised on",
++               list(iter_tool_events(os.path.join(wf3, "agent-ddd4.jsonl"))) is not None)
++    finally:
++        shutil.rmtree(tmp, ignore_errors=True)
++
++    if failures:
++        print("\nSELFTEST FAILED: %d case(s)" % len(failures))
++        return 1
++    print("\nSELFTEST PASSED")
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main(sys.argv))
+diff --git a/tests/test-transcript-watch.sh b/tests/test-transcript-watch.sh
+new file mode 100755
+index 0000000..bab8928
+--- /dev/null
++++ b/tests/test-transcript-watch.sh
+@@ -0,0 +1,354 @@
++#!/usr/bin/env bash
++# tests/test-transcript-watch.sh — the transcript play-ahead watcher, driven END
++# TO END through its CLI against a SYNTHETIC but shape-faithful session tree.
++#
++# WHY THIS FILE EXISTS SEPARATELY FROM --selftest
++#   The script's own --selftest exercises its parsers. This file exercises what a
++#   caller gets: discovery with no --wf, the exact signal SET, the dedup across
++#   two --once runs with one --state, the --json shape, the exit code, and — the
++#   claim the whole feature rests on — that a read-only watcher writes NOTHING
++#   into the run directory or the repository.
++#
++# THE FIXTURE IS BUILT FROM THE REAL ON-DISK SHAPE, verified live in the Phase 1A
++# archaeology (docs/superpowers/archaeology/2026-09-03-v3-4-2-transcript-watch.md):
++#   <session>/subagents/workflows/<wf_id>/agent-<id>.jsonl + agent-<id>.meta.json
++#   + journal.jsonl, one JSON object per line, `message.content` being EITHER a
++#   bare string (the first line) or an array of tool_use / tool_result / text /
++#   thinking items, plus `type:"attachment"` lines that carry no `message` at all.
++#   A parser written against prose alone does not anticipate those three shapes,
++#   so all three are planted here.
++#
++# TWO TRAPS FROM THE ARCHAEOLOGY ARE PLANTED DELIBERATELY:
++#   * agent-3's FIRST register-lane is denied by the harness's bashCommandClamp
++#     (a routine, real event) and its SECOND succeeds — the watcher must read the
++#     job/cwd/isolation off the call that SUCCEEDED, never the denied attempt.
++#   * agent-2 carries both the lane guard's real denial text and its
++#     FAILED-OPEN notice. The first is a denial; the second is an
++#     allow-with-notice and must NOT be reported as `denied`.
++
++set -uo pipefail
++
++REPO="$(cd "$(dirname "$0")/.." && pwd -P)"
++WATCH="${TRANSCRIPT_WATCH_SRC:-$REPO/scripts/compound-v-transcript-watch.py}"
++PY="${PY:-/usr/bin/python3}"
++# NOBODY WRITES BYTECODE, this suite included: the watcher imports two sibling
++# scripts BY PATH, and a bytecode-writing interpreter would leave a real
++# scripts/__pycache__/*.pyc in the checkout — which the scope gate, carrying no
++# extension carve-out, correctly reports as an out-of-lane write.
++export PYTHONDONTWRITEBYTECODE=1
++
++pass=0
++fail=0
++ok()  { pass=$((pass + 1)); printf 'PASS %s\n' "$1"; }
++bad() { fail=$((fail + 1)); printf 'FAIL %s\n' "$1"; }
++check(){ if [ "$2" = "1" ]; then ok "$1"; else bad "$1"; fi; }
++
++# --------------------------------------------------------------------------- #
++# Preconditions — loud, never silently skipped. A test that quietly no-ops is
++# how 25 of 29 selftests stopped running in v2.14.
++# --------------------------------------------------------------------------- #
++[ -f "$WATCH" ] || { echo "FATAL: $WATCH missing"; exit 1; }
++command -v "$PY" >/dev/null 2>&1 || { echo "FATAL: $PY required"; exit 1; }
++command -v git   >/dev/null 2>&1 || { echo "FATAL: git required"; exit 1; }
++[ -f "$REPO/scripts/compound-v-scope-check.py" ] || {
++  echo "FATAL: scope-check missing — the watcher IMPORTS its matcher"; exit 1; }
++[ -f "$REPO/scripts/compound-v-validate-manifest.py" ] || {
++  echo "FATAL: validate-manifest missing — the watcher IMPORTS its load_yaml"; exit 1; }
++
++T="$(mktemp -d)"
++cleanup() { rm -rf "$T"; }
++trap cleanup EXIT
++
++# --------------------------------------------------------------------------- #
++# The sandbox: a git repo, a run directory inside it, one worktree-isolated job
++# and one direct job, and a session tree with two workflow directories.
++# --------------------------------------------------------------------------- #
++SANDBOX="$T/repo"
++RUN="$SANDBOX/docs/superpowers/execution/run1"
++WTA="$T/wt-a"
++SESSION="$T/session"
++WF1="$SESSION/subagents/workflows/wf_test-1"
++WF2="$SESSION/subagents/workflows/wf_other"
++
++mkdir -p "$RUN" "$WTA/src" "$WF1" "$WF2"
++git -C "$SANDBOX" init -q 2>/dev/null
++git -C "$SANDBOX" config user.email t@t.t
++git -C "$SANDBOX" config user.name t
++
++cat >"$RUN/manifest.yaml" <<YAML
++run_id: run1
++jobs:
++  - id: a
++    isolation: worktree
++    write_allowed:
++      - "src/**"
++  - id: b
++    isolation: direct
++    write_allowed:
++      - "docs/**"
++YAML
++
++cat >"$RUN/lane-map.json" <<JSON
++{
++  "agents": {},
++  "manifest": "$RUN/manifest.yaml",
++  "run_id": "run1",
++  "worktrees": {
++    "$WTA": "a",
++    "$SANDBOX": "b"
++  }
++}
++JSON
++
++cat >"$RUN/state.json" <<JSON
++{
++  "run_id": "run1",
++  "phase": "DISPATCHING",
++  "jobs": {
++    "a": {"status": "running", "isolation": "worktree"},
++    "b": {"status": "running", "isolation": "direct"}
++  }
++}
++JSON
++
++git -C "$SANDBOX" add -A >/dev/null 2>&1
++git -C "$SANDBOX" commit -qm fixture >/dev/null 2>&1
++
++NOW="$("$PY" -c 'import datetime;print(datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"))')"
++OLD="$("$PY" -c 'import datetime;print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S.000Z"))')"
++EMIT="$SANDBOX/scripts/compound-v-emit-workflow.py"
++
++A1=a111111111111111
++A2=a222222222222222
++A3=a333333333333333
++A4=a444444444444444
++A5=a555555555555555
++
++# --- agent-1: job `a` in its worktree. One in-lane write (no signal), one
++# out-of-lane Write, one out-of-lane Bash redirect, one Traceback result. -----
++cat >"$WF1/agent-$A1.jsonl" <<JSONL
++{"type":"user","agentId":"$A1","timestamp":"$NOW","message":{"role":"user","content":"You are the implementer for Compound V job \`a\`. Register your lane against $RUN before anything else."}}
++{"type":"attachment","agentId":"$A1","timestamp":"$NOW","attachment":{"type":"skill_listing","content":"- ads: ..."}}
++{"type":"assistant","agentId":"$A1","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"x"}]}}
++{"type":"assistant","agentId":"$A1","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"$PY -B $EMIT register-lane --run-dir $RUN --job-id a --cwd $WTA --repo-root $SANDBOX --isolation worktree"}}]}}
++{"type":"user","agentId":"$A1","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","is_error":false,"content":"{\"registered\": \"a\"}"}]}}
++{"type":"assistant","agentId":"$A1","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Write","input":{"file_path":"$WTA/src/ok.py","content":"print(1)"}}]}}
++{"type":"user","agentId":"$A1","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"File created successfully at: $WTA/src/ok.py"}]}}
++{"type":"assistant","agentId":"$A1","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"t3","name":"Write","input":{"file_path":"$WTA/README.md","content":"nope"}}]}}
++{"type":"user","agentId":"$A1","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t3","content":"File created successfully at: $WTA/README.md"}]}}
++{"type":"assistant","agentId":"$A1","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"t4","name":"Bash","input":{"command":"echo x > $SANDBOX/notes.txt"}}]}}
++{"type":"user","agentId":"$A1","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t4","content":""}]}}
++{"type":"assistant","agentId":"$A1","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"t5","name":"Bash","input":{"command":"$PY -B $SANDBOX/x.py"}}]}}
++{"type":"user","agentId":"$A1","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t5","is_error":true,"content":"Traceback (most recent call last):\n  File \"x.py\", line 1, in <module>\nValueError: boom"}]}}
++JSONL
++
++cat >"$WF1/agent-$A1.meta.json" <<JSON
++{"agentType":"workflow-subagent","worktreePath":"$WTA","spawnedWithWorktree":true,"spawnDepth":1,"model":"opus"}
++JSON
++
++# --- agent-2: job `b`, direct, correctly registered. One REAL lane-guard denial
++# and one FAILED-OPEN notice that must not be mistaken for one. ---------------
++cat >"$WF1/agent-$A2.jsonl" <<JSONL
++{"type":"user","agentId":"$A2","timestamp":"$NOW","message":{"role":"user","content":"You are the implementer for Compound V job \`b\` of $RUN."}}
++{"type":"assistant","agentId":"$A2","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"u1","name":"Bash","input":{"command":"$PY -B $EMIT register-lane --run-dir $RUN --job-id b --cwd $SANDBOX --repo-root $SANDBOX --isolation direct"}}]}}
++{"type":"user","agentId":"$A2","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"u1","is_error":false,"content":"{\"registered\": \"b\"}"}]}}
++{"type":"assistant","agentId":"$A2","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"u2","name":"Write","input":{"file_path":"$SANDBOX/docs/note.md","content":"in lane"}}]}}
++{"type":"user","agentId":"$A2","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"u2","is_error":true,"content":"Compound V lane guard: job 'b' is not allowed to write 'scripts/y.py'. Its lane is: docs/**"}]}}
++{"type":"assistant","agentId":"$A2","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"u3","name":"Bash","input":{"command":"true"}}]}}
++{"type":"user","agentId":"$A2","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"u3","content":"Compound V lane-guard FAILED OPEN: no manifest could be read; allowing"}]}}
++JSONL
++
++cat >"$WF1/agent-$A2.meta.json" <<JSON
++{"agentType":"workflow-subagent","spawnDepth":1,"model":"opus"}
++JSON
++
++# --- agent-3: job `a` again, but registered with --isolation direct and --cwd
++# at the repository root while the manifest says worktree (finding 60's shape).
++# Its FIRST attempt is denied by the bashCommandClamp for using "\$PWD". -------
++cat >"$WF1/agent-$A3.jsonl" <<JSONL
++{"type":"user","agentId":"$A3","timestamp":"$NOW","message":{"role":"user","content":"Second worker for job \`a\` of $RUN."}}
++{"type":"assistant","agentId":"$A3","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"v1","name":"Bash","input":{"command":"$PY -B $EMIT register-lane --run-dir $RUN --job-id zzz-never-read --cwd \"\$PWD\" --isolation worktree"}}]}}
++{"type":"user","agentId":"$A3","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"v1","is_error":true,"content":"Permission to use Bash with command ... has been denied: this agent's Bash use is clamped to a fixed set of command forms (per-spawn bashCommandClamp)."}]}}
++{"type":"assistant","agentId":"$A3","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"v2","name":"Bash","input":{"command":"$PY -B $EMIT register-lane --run-dir $RUN --job-id a --cwd $SANDBOX --repo-root $SANDBOX --isolation direct"}}]}}
++{"type":"user","agentId":"$A3","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"v2","is_error":false,"content":"{\"registered\": \"a\"}"}]}}
++JSONL
++
++cat >"$WF1/agent-$A3.meta.json" <<JSON
++{"agentType":"workflow-subagent","spawnDepth":1}
++JSON
++
++# --- agent-4: never registered a lane, one read two hours ago, no journal
++# result. `meta.json` deliberately carries NO `model` key (amendment 5). -------
++cat >"$WF1/agent-$A4.jsonl" <<JSONL
++{"type":"user","agentId":"$A4","timestamp":"$OLD","message":{"role":"user","content":"A worker with no lane."}}
++{"type":"assistant","agentId":"$A4","timestamp":"$OLD","message":{"role":"assistant","content":[{"type":"tool_use","id":"w1","name":"Read","input":{"file_path":"$SANDBOX/README.md"}}]}}
++{"type":"user","agentId":"$A4","timestamp":"$OLD","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"w1","content":"1\thello"}]}}
++JSONL
++
++cat >"$WF1/agent-$A4.meta.json" <<JSON
++{"agentType":"workflow-subagent","description":"no model key here","spawnDepth":1}
++JSON
++
++cat >"$WF1/journal.jsonl" <<JSONL
++{"type":"started","key":"k1","agentId":"$A1"}
++{"type":"started","key":"k2","agentId":"$A2"}
++{"type":"started","key":"k3","agentId":"$A3"}
++{"type":"started","key":"k4","agentId":"$A4"}
++{"type":"result","key":"k1","agentId":"$A1"}
++{"type":"result","key":"k2","agentId":"$A2"}
++{"type":"result","key":"k3","agentId":"$A3"}
++JSONL
++
++# --- wf_other: a DIFFERENT workflow in the same session that never mentions the
++# run directory. Discovery must not pick it; addressed directly it shows the
++# `(unregistered)` write policy. ----------------------------------------------
++cat >"$WF2/agent-$A5.jsonl" <<JSONL
++{"type":"user","agentId":"$A5","timestamp":"$NOW","message":{"role":"user","content":"An unrelated worker."}}
++{"type":"assistant","agentId":"$A5","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"z1","name":"Write","input":{"file_path":"$SANDBOX/zzz.md","content":"x"}}]}}
++{"type":"user","agentId":"$A5","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"z1","content":"File created successfully"}]}}
++JSONL
++cat >"$WF2/journal.jsonl" <<JSONL
++{"type":"started","key":"k9","agentId":"$A5"}
++{"type":"result","key":"k9","agentId":"$A5"}
++JSONL
++
++# --------------------------------------------------------------------------- #
++# 1. Discovery with NO --wf, and the exact signal set.
++# --------------------------------------------------------------------------- #
++ST="$T/state1.json"
++OUT="$T/out1.txt"
++"$PY" -B "$WATCH" --run-dir "$RUN" --transcripts "$SESSION" --once --state "$ST" >"$OUT" 2>"$T/err1.txt"
++RC=$?
++
++check "exit 0 on the advisory path" "$([ "$RC" = 0 ] && echo 1 || echo 0)"
++check "discovery with no --wf found wf_test-1 by the run directory's path" \
++      "$(grep -q 'wf_test-1' "$OUT" && echo 1 || echo 0)"
++check "the out-of-lane Write is reported against job a (README.md)" \
++      "$(grep -E '\ba\b.*out-of-lane.*README\.md' "$OUT" >/dev/null && echo 1 || echo 0)"
++check "the out-of-lane Bash redirect is reported against job a (notes.txt)" \
++      "$(grep -E '\ba\b.*out-of-lane.*notes\.txt' "$OUT" >/dev/null && echo 1 || echo 0)"
++check "the IN-LANE write (src/ok.py) produces NO signal" \
++      "$(grep -q 'src/ok.py' "$OUT" && echo 0 || echo 1)"
++check "the Traceback result is reported as error" \
++      "$(grep -E '\ba\b.*\berror\b.*Traceback' "$OUT" >/dev/null && echo 1 || echo 0)"
++check "the lane guard's real denial is reported as denied against job b" \
++      "$(grep -E '\bb\b.*\bdenied\b' "$OUT" >/dev/null && echo 1 || echo 0)"
++check "...and the FAILED-OPEN notice is NOT a second denial" \
++      "$([ "$(grep -c 'denied' "$OUT")" = 1 ] && echo 1 || echo 0)"
++check "the mis-registered isolation is reported as wrong-cwd" \
++      "$(grep -q 'wrong-cwd' "$OUT" && echo 1 || echo 0)"
++check "...attributed to job a, read off the register-lane call that SUCCEEDED" \
++      "$(grep -E 'wrong-cwd' "$OUT" | grep -qE '\ba\b' && echo 1 || echo 0)"
++check "...never off the clamp-denied attempt (zzz-never-read is invisible)" \
++      "$(grep -q 'zzz-never-read' "$OUT" && echo 0 || echo 1)"
++check "the two-hour-old agent that never returned is reported as stall" \
++      "$(grep -q 'stall' "$OUT" && echo 1 || echo 0)"
++check "an agent with no register-lane call is named (unregistered)" \
++      "$(grep -q '(unregistered)' "$OUT" && echo 1 || echo 0)"
++check "EXACTLY six signals — no more, no fewer" \
++      "$([ "$(grep -cE ' (out-of-lane|wrong-cwd|error|denied|stall) ' "$OUT")" = 6 ] && echo 1 || echo 0)"
++check "the per-tick summary names the jobs and the agent counts" \
++      "$(grep -E '^jobs: .*agents: [0-9]+ live, [0-9]+ returned' "$OUT" >/dev/null && echo 1 || echo 0)"
++
++# --------------------------------------------------------------------------- #
++# 2. The state file dedups: a second --once emits the summary and nothing else.
++# --------------------------------------------------------------------------- #
++OUT2="$T/out2.txt"
++"$PY" -B "$WATCH" --run-dir "$RUN" --transcripts "$SESSION" --once --state "$ST" >"$OUT2" 2>&1
++check "a second --once with the same --state repeats no signal" \
++      "$([ "$(grep -cE ' (out-of-lane|wrong-cwd|error|denied|stall) ' "$OUT2")" = 0 ] && echo 1 || echo 0)"
++check "...but still prints the summary" \
++      "$(grep -q '^jobs: ' "$OUT2" && echo 1 || echo 0)"
++
++# --------------------------------------------------------------------------- #
++# 3. --json: one object per signal, with the six contracted keys.
++# --------------------------------------------------------------------------- #
++JOUT="$T/out3.json"
++"$PY" -B "$WATCH" --run-dir "$RUN" --transcripts "$SESSION" --once --state "$T/state3.json" \
++      --json >"$JOUT" 2>/dev/null
++check "--json emits six parseable objects carrying ts/job/agent/signal/evidence/line" \
++      "$("$PY" -B -c '
++import json,sys
++need={"ts","job","agent","signal","evidence","line"}
++n=0
++for raw in open(sys.argv[1]):
++    raw=raw.strip()
++    if not raw: continue
++    o=json.loads(raw)
++    if not isinstance(o,dict): sys.exit(1)
++    if not need.issubset(o.keys()): sys.exit(1)
++    n+=1
++sys.exit(0 if n==6 else 1)' "$JOUT" && echo 1 || echo 0)"
++
++# --------------------------------------------------------------------------- #
++# 4. --wf overrides discovery; a session with no matching workflow says so
++#    without crashing.
++# --------------------------------------------------------------------------- #
++OUT4="$T/out4.txt"
++"$PY" -B "$WATCH" --run-dir "$RUN" --transcripts "$SESSION" --wf wf_other --once \
++      --state "$T/state4.json" >"$OUT4" 2>&1
++check "--wf overrides discovery and reads the named workflow" \
++      "$(grep -q 'wf_other' "$OUT4" && echo 1 || echo 0)"
++check "an unregistered agent's write is an out-of-lane candidate" \
++      "$(grep -E '\(unregistered\).*out-of-lane.*zzz\.md' "$OUT4" >/dev/null && echo 1 || echo 0)"
++
++mkdir -p "$T/empty"
++OUT5="$T/out5.txt"
++"$PY" -B "$WATCH" --run-dir "$RUN" --transcripts "$T/empty" --once \
++      --state "$T/state5.json" >"$OUT5" 2>&1
++RC5=$?
++check "a session with no matching transcripts says so and exits 0" \
++      "$([ "$RC5" = 0 ] && grep -qi 'no transcripts found' "$OUT5" && echo 1 || echo 0)"
++
++# --------------------------------------------------------------------------- #
++# 5. READ-ONLY: nothing is written into the run directory or the repository,
++#    including when --state is left to its default (the OS temp dir).
++# --------------------------------------------------------------------------- #
++BEFORE="$(cd "$RUN" && find . | sort)"
++"$PY" -B "$WATCH" --run-dir "$RUN" --transcripts "$SESSION" --once >/dev/null 2>&1
++AFTER="$(cd "$RUN" && find . | sort)"
++check "the run directory is byte-for-byte unchanged in its file list" \
++      "$([ "$BEFORE" = "$AFTER" ] && echo 1 || echo 0)"
++check "the repository working tree stays clean (default --state is NOT in it)" \
++      "$([ -z "$(git -C "$SANDBOX" status --porcelain)" ] && echo 1 || echo 0)"
++
++# --------------------------------------------------------------------------- #
++# 6. One matcher, one YAML loader, one denial literal — verified in the source.
++# --------------------------------------------------------------------------- #
++check "the path matcher is imported BY PATH from compound-v-scope-check.py" \
++      "$(grep -q 'compound-v-scope-check.py' "$WATCH" && grep -q 'spec_from_file_location' "$WATCH" && echo 1 || echo 0)"
++check "...and no second glob matcher is written here (no fnmatch, no glob_to_regex)" \
++      "$(grep -qE 'fnmatch|def glob_to_regex' "$WATCH" && echo 0 || echo 1)"
++check "load_yaml is imported BY PATH from compound-v-validate-manifest.py" \
++      "$(grep -q 'compound-v-validate-manifest.py' "$WATCH" && echo 1 || echo 0)"
++check "...with no PyYAML import of its own" \
++      "$(grep -qE '^ *import yaml|^ *import +yaml' "$WATCH" && echo 0 || echo 1)"
++check "the denied signal's literal is defined exactly once, as a constant" \
++      "$([ "$(grep -c "^DENY_LITERAL = \"Compound V lane guard: job '\"" "$WATCH")" = 1 ] && echo 1 || echo 0)"
++
++# ...and the FAILED-OPEN notice is checked by BEHAVIOUR, not by a grep: the
++# script is allowed to NAME the string in prose (it explains why it is not a
++# denial); what it must never do is signal on it.
++WF3="$SESSION/subagents/workflows/wf_openonly"
++mkdir -p "$WF3"
++cat >"$WF3/agent-$A5.jsonl" <<JSONL
++{"type":"assistant","agentId":"$A5","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"y1","name":"Bash","input":{"command":"true"}}]}}
++{"type":"user","agentId":"$A5","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"y1","content":"Compound V lane-guard FAILED OPEN: no manifest could be read; allowing"}]}}
++JSONL
++OUT6="$T/out6.txt"
++"$PY" -B "$WATCH" --run-dir "$RUN" --transcripts "$SESSION" --wf wf_openonly --once \
++      --state "$T/state6.json" >"$OUT6" 2>&1
++check "...so a FAILED-OPEN notice on its own produces no signal at all" \
++      "$([ "$(grep -cE ' (out-of-lane|wrong-cwd|error|denied|stall) ' "$OUT6")" = 0 ] && echo 1 || echo 0)"
++
++# --------------------------------------------------------------------------- #
++# 7. The script's own --selftest, run through this suite so CI cannot lose it.
++# --------------------------------------------------------------------------- #
++"$PY" -B "$WATCH" --selftest >"$T/selftest.txt" 2>&1
++RC7=$?
++check "--selftest is green" "$([ "$RC7" = 0 ] && echo 1 || echo 0)"
++
++# --------------------------------------------------------------------------- #
++printf '\n%d passed, %d failed\n' "$pass" "$fail"
++[ "$fail" = "0" ] || exit 1
++exit 0

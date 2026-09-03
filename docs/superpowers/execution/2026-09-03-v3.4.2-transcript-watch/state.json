@@ -1,26 +1,56 @@
 {
   "run_id": "2026-09-03-v3.4.2-transcript-watch",
-  "phase": "PARTITION_VERIFIED",
+  "phase": "DISPATCHED",
   "pre_eval_id": "2026-09-03T042847Z-implement-v3-4-2-transcript-play-ahead-per-docs-superpowers-47e6",
   "updated_at": "2026-09-03T04:48:45Z",
   "jobs": {
     "watch-script": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_b544c252-dc8-1",
+      "session_id": null,
+      "baseline": "b72c9bdd197388eedf7f6e981fe338c512e82d46",
+      "realised_commit": "b72c9bdd197388eedf7f6e981fe338c512e82d46",
+      "merged": {
+        "realised_commit": "b72c9bdd197388eedf7f6e981fe338c512e82d46",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "8401e2bb03da619ea05777f108d58738f9e2b840"
+      }
     },
     "docs-release": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_b544c252-dc8-2",
+      "session_id": null,
+      "baseline": "b72c9bdd197388eedf7f6e981fe338c512e82d46",
+      "realised_commit": "b72c9bdd197388eedf7f6e981fe338c512e82d46",
+      "merged": {
+        "realised_commit": "b72c9bdd197388eedf7f6e981fe338c512e82d46",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "8401e2bb03da619ea05777f108d58738f9e2b840"
+      }
     },
     "spec-review": {
       "status": "pending",
       "isolation": "direct",
       "worktree": null,
       "session_id": null
+    }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "watch-script",
+        "docs-release"
+      ],
+      "merged": [
+        "watch-script",
+        "docs-release"
+      ],
+      "commit": "8401e2bb03da619ea05777f108d58738f9e2b840",
+      "integrated": true
     }
   }
 }
