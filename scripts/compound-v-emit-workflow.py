@@ -1314,6 +1314,11 @@ def render_worker_prompt(job, run_id):
     return "\n".join(lines) + "\n"
 
 
+# A harness Bash call is capped at 600 s. The external worker runs INSIDE one, and
+# then runs the test floor, so its own wall-clock cap must leave headroom.
+EXTERNAL_WORKER_TIMEOUT_CAP = 480
+
+
 def build_launch_argv(job, entry, run_id, repo_root, run_dir, model):
     """The COMPLETE worker argv — every flag the worker script requires."""
     argv = [
@@ -1327,7 +1332,11 @@ def build_launch_argv(job, entry, run_id, repo_root, run_dir, model):
     ]
     timeout = job.get("timeout_sec")
     if isinstance(timeout, int) and not isinstance(timeout, bool) and timeout > 0:
-        argv += ["--timeout-sec", str(timeout)]
+        # The wrapper that runs this argv is a harness Bash call, whose ceiling is
+        # ten minutes; a worker allowed more than that would be killed from the
+        # outside with nothing recorded (stage-4 dogfood, finding 75). Cap the
+        # worker below the ceiling and leave room for its own test floor.
+        argv += ["--timeout-sec", str(min(timeout, EXTERNAL_WORKER_TIMEOUT_CAP))]
     effort = job.get("effort")
     if isinstance(effort, str) and effort.strip():
         argv += ["--effort", effort.strip()]
@@ -1751,6 +1760,12 @@ def _implement_prompt(job, plan):
         lines.append("```bash")
         lines.append(job["launch_command"])
         lines.append("```")
+        lines.append("")
+        lines.append("Call the Bash tool with `timeout: 600000` (ten minutes, the harness")
+        lines.append("maximum): the worker's own cap is set below it on purpose, and a")
+        lines.append("command the harness detaches to the background leaves you with no")
+        lines.append("job_result to return — a worker you did not wait for is a job that")
+        lines.append("did not run.")
         lines.append("")
         lines.append("The full argv is also committed at `%s`, so the invocation that ran"
                      % job["launch_argv_file"])
@@ -4893,6 +4908,22 @@ def selftest():
         script = emit_script(plan)
         _check("no forbidden constructs in the emitted script",
                forbidden_hits(script) == [], str(forbidden_hits(script)))
+        # finding 75: the external wrapper is a harness Bash call (600 s ceiling).
+        _ext_workers = os.path.join(tmp, "workers-f75"); os.makedirs(_ext_workers, exist_ok=True)
+        with open(os.path.join(_ext_workers, "compound-v-run-codex-worker.sh"), "w") as _fh:
+            _fh.write("#!/bin/sh\nexit 0\n")
+        _ext_plan = _plan_for(_tiny_manifest([
+            {"id": "ext", "backend": "codex", "isolation": "worktree", "tier": "standard",
+             "timeout_sec": 900, "write_allowed": ["src/**"]}]), tmp, workers_dir=_ext_workers)
+        _ext = [e for w in _ext_plan["waves"] for e in w if e["id"] == "ext"][0]
+        _ext_argv = _ext.get("launch_argv") or []
+        _check("finding 75: an external worker's --timeout-sec is capped below the harness ceiling",
+               "--timeout-sec" in _ext_argv
+               and _ext_argv[_ext_argv.index("--timeout-sec") + 1] == str(EXTERNAL_WORKER_TIMEOUT_CAP),
+               str(_ext_argv)[:300])
+        _ext_script = emit_script(_ext_plan)
+        _check("finding 75: the external wrapper prompt tells the agent the Bash timeout",
+               "ten minutes, the harness" in _ext_script and "timeout: 600000" in _ext_script)
         _check("finding 69: the emitted Record command passes the receipt by PATH, "
                "bound by --expect-verdict/--expect-diff-digest, and keeps the inline "
                "form only for a verdict without a receipt",

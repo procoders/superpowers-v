@@ -4,6 +4,12 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [Unreleased]
+
+### Fixed — an external worker's cap fits inside the harness Bash ceiling, and the wrapper is told to wait (finding 75)
+
+The emitted prompt for a `codex`/`antigravity`/`cursor`/`opencode`/`devin` job now tells the wrapper agent to call Bash with `timeout: 600000` — the harness maximum — and `build_launch_argv` caps the worker's `--timeout-sec` at 480 so the worker plus its own test floor finish inside it. Before this a `timeout_sec: 900` job would have been killed from outside with nothing recorded, and the default 120 s would have detached the worker to the background. Found by reading the emitted stage-4 script before launch.
+
 ## [3.4.2] - 2026-09-03
 
 Stage 3 of the post-3.4.0 verification program: a FULL normal task, run through the pipeline with zero
