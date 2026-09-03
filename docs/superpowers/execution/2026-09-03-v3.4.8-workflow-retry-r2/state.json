@@ -1,14 +1,40 @@
 {
   "run_id": "2026-09-03-v3.4.8-workflow-retry-r2",
-  "phase": "PARTITION_VERIFIED",
+  "phase": "MERGED",
   "pre_eval_id": "2026-09-03T152726Z-implement-v3-4-8-per-docs-superpowers-specs-2026-09-03-v3-4-3862",
   "updated_at": "2026-09-03T16:16:03Z",
   "jobs": {
     "spec-review-2": {
-      "status": "pending",
+      "status": "done",
       "isolation": "direct",
-      "worktree": null,
-      "session_id": null
+      "worktree": "",
+      "session_id": null,
+      "baseline": "d51c5160977b6e8fc979d80f64c74dfc1aa55238",
+      "realised_commit": "d51c5160977b6e8fc979d80f64c74dfc1aa55238",
+      "merged": {
+        "realised_commit": "d51c5160977b6e8fc979d80f64c74dfc1aa55238",
+        "mode": "direct",
+        "integrated": true,
+        "commit": "5acb7819310299230ea4150f28060a3254f3b244"
+      }
     }
-  }
+  },
+  "triage_actual": {
+    "merge_pending": true,
+    "pre_eval_id": "2026-09-03T152726Z-implement-v3-4-8-per-docs-superpowers-specs-2026-09-03-v3-4-3862",
+    "run_id": "2026-09-03-v3.4.8-workflow-retry-r2"
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "spec-review-2"
+      ],
+      "merged": [
+        "spec-review-2"
+      ],
+      "commit": "5acb7819310299230ea4150f28060a3254f3b244",
+      "integrated": true
+    }
+  },
+  "merged_at": "2026-09-03T16:34:02Z"
 }

@@ -1,0 +1,252 @@
+diff --git a/docs/superpowers/dogfood/2026-09-03-v3.4.8-workflow-retry-review-2.md b/docs/superpowers/dogfood/2026-09-03-v3.4.8-workflow-retry-review-2.md
+new file mode 100644
+index 0000000..b20cbc4
+--- /dev/null
++++ b/docs/superpowers/dogfood/2026-09-03-v3.4.8-workflow-retry-review-2.md
+@@ -0,0 +1,246 @@
++# v3.4.8 workflow retry — Review Gate, pass 2 (over review-1's five closures)
++
++**Reviewer:** `compound-v:spec-reviewer`, pass 2 · **Date:** 2026-09-03 · **Run:**
++`2026-09-03-v3.4.8-workflow-retry-r2`, job `spec-review-2`, isolation `direct` ·
++**Tree reviewed:** `HEAD` = `d51c516` (orchestrate r2), closure commit
++`95c94a6` on top of the reviewed-in-pass-1 tree `c2e5314`.
++
++**VERDICT: APPROVED** — PASS 1 SPEC ✅ · PASS 2 QUALITY ✅ · PASS 3 INTEGRATION ✅.
++All five of review-1's issues are **closed in code and in prose**, and the low observation (6) is
++closed by explicit documentation. Two new LOW observations are recorded below; neither is blocking
++and neither is a defect in the closure.
++
++---
++
++## Recall
++
++`compound-v-memory.py search "workflow retry backoff reviewer escalation" --intent review --top 8`
++returned the run's own spec, plan, archaeology §6/§7, and **review-1 itself** — the pre-flight corpus
++plus the pass this one is auditing. No prior incident of this shape outside the run.
++
++`compound-v-memory.py recall-check --files scripts/compound-v-emit-workflow.py
++scripts/compound-v-validate-manifest.py skills/compound-v/execution-manifest.md` →
++
++```
++recall-check: tighten (4/2 match on scripts/compound-v-emit-workflow.py,
++  scripts/compound-v-validate-manifest.py, skills/compound-v/execution-manifest.md)
++  recommend (conservative-only): force_worktree, extra_review_pass, fold_into_task0
++  - 2026-09-03-v3.4.6-...-r3/results/validator.json:  blocked on compound-v-validate-manifest.py
++  - 2026-09-03-v3.4.6-...-r5/results/emitter.json:    error   on compound-v-emit-workflow.py
++  - 2026-09-03-v3.4.1-triage-size/results/test-scope.json: blocked on execution-manifest.md
++  - 2026-09-02-df27-full-pass/results/spec-review.json:    blocked on compound-v-emit-workflow.py
++```
++
++**`tighten` honoured, escalation-only:** this run **is** the `extra_review_pass` the bridge asks for.
++It loosened nothing and changed no routing decision — recall is evidence, never a routing input.
++
++---
++
++## Review-1 closure verification (items 1–5, plus the low observation 6)
++
++Closure commit: `git log -1 --format=%H --grep='v3.4.8 review-1 closure'` → **`95c94a6`**,
++6 files, +100/−44: `CHANGELOG.md`, `agents/parallel-dispatcher.md`,
++`schemas/job_result.schema.json`, `scripts/compound-v-emit-workflow.py`,
++`skills/compound-v/execution-manifest.md`, `skills/compound-v/failure-policy.md`.
++
++| # | Review-1 issue | Command | Output | Status |
++|---|---|---|---|---|
++| 1 | Docs describe a class-filtering retry that does not exist; signature is `withRetry(label, fn)` | `grep -rn "withRetry(stage, jobId, fn)\|unclassified" skills/compound-v/execution-manifest.md skills/compound-v/failure-policy.md CHANGELOG.md` | `execution-manifest.md:151 withRetry(stage, jobId, fn)`; `:152 retries **any** failed call … **unclassified**`; `failure-policy.md:18 retries **any** failed call … unclassified, because the script sees no error text`; `CHANGELOG.md:18 retries any failed call … unclassified, since the script sees no error text` | **CLOSED** |
++| 2 | `retries[]` / `escalated_from` are not on the job_result, and the docs say they are | `git show 95c94a6 -- schemas/job_result.schema.json scripts/compound-v-emit-workflow.py`; `python3 -B scripts/compound-v-emit-workflow.py --selftest`; `bash tests/test-engine-c-contract.sh` | schema gains top-level `retries` (array of `{stage,job,attempt,wait_ms,escalated_from,model}`, `required:[stage,attempt]`, `additionalProperties:false`) and `escalated_from` (`["string","null"]`); `cmd_record` now writes `result["retries"]` (`:4280`) and `result["escalated_from"]` (`:4291`); selftest **465/465 passed** exit 0 — the old "…leaves the result free of both keys" assertion is now "…and onto the job_result itself", asserting `escalated_from == "opus"` and `retries[0].wait_ms == 2000`; engine-c contract **exit 0** | **CLOSED** |
++| 3 | `escalated_from` documented as a tier (`deep`), the value is a model rung | `grep -n "escalated_from: opus" agents/parallel-dispatcher.md` | `:289 escalated_from: opus (the MODEL rung it was lifted from, never a tier)` | **CLOSED** |
++| 4 | Invariant 4 itself left stale (`deep` OR `model: opus`), contradicting the corrected paragraph | `sed -n '193p' skills/compound-v/execution-manifest.md`; `grep -n "fable\|frontier" scripts/compound-v-validate-manifest.py` | doc: *"Reviewers ⇒ deep or stronger … `tier: deep` or `tier: frontier`, OR an explicit `model: opus` or `model: fable`"*; code: `:2720 in ("deep","frontier")`, `:2721 in ("opus","fable")`, error text `(tier: deep\|frontier or model: opus\|fable)` — doc and validator now say the same thing | **CLOSED** |
++| 5 | `wait_ms` called "**measured**, never estimated" | `grep -rn "requested\|measured\*\*, never estimated" skills/compound-v/execution-manifest.md CHANGELOG.md` | `execution-manifest.md:166 the wait that was **requested** — the script cannot read a clock`; `CHANGELOG.md:22 (the requested wait; the script cannot read a clock)`; **zero** hits for "measured, never estimated" | **CLOSED** |
++| 6 (low) | Permanent throws (`auth`, `out_of_credits`) are retried too | `sed -n '148,158p' skills/compound-v/execution-manifest.md` | *"A permanent failure (`auth`, `out_of_credits`) is therefore retried too; the cost is bounded (two extra spawns, 6 s) and the dispatcher's own breaker still sees it."* | **CLOSED as documented-accepted** — the behaviour is unchanged, but the doc no longer promises a protection the code does not have, which was the actual defect |
++
++---
++
++## PASS 1 — SPEC
++
++### Scope lock
++
++This job's only write is
++`docs/superpowers/dogfood/2026-09-03-v3.4.8-workflow-retry-review-2.md` — its entire
++`write_allowed`. No `SCOPE_LOCK_VIOLATION`.
++
++**One fact worth recording, not an issue:** `95c94a6` is an orchestrator **closure** commit, not a
++lane-scoped job, so no per-job gate receipt covers it. It touches
++`schemas/job_result.schema.json` — a shared-foundation file that, dispatched as a job, would have
++belonged to a serial Task 0. Reviewed here directly, in full, against the schema's consumers.
++
++### Coverage — the closure's own spec (review-1 items 1–5)
++
++Table above: 5/5 implemented, each verified by a command whose output is quoted. Nothing in the
++closure diff is outside those five items.
++
++### Audit constraint check
++
++Archaeology §7 constraint **5** ("resolve the reviewer-invariant contradiction *in the same edit*,
++or the doc will contradict itself in two adjacent paragraphs") was the one MUST review-1 marked
++unsatisfied. It is now satisfied at `skills/compound-v/execution-manifest.md:193`, and the
++validator's own error string is the same sentence. Constraint **7** (a naive classifier
++misclassifies `out_of_credits`) is satisfied by *not building a classifier* and, since the closure,
++by docs that say so.
++
++### Over-build
++
++Clean. The closure adds two schema properties, three result assignments, and prose. No new flags,
++no new exports, no speculative fields. The schema's `retries` item keys are exactly
++`RETRY_ENTRY_KEYS` (`scripts/compound-v-emit-workflow.py:1156`) — no wider.
++
++**PASS 1 SPEC: ✅**
++
++---
++
++## PASS 2 — QUALITY
++
++### Code quality
++
++The result-side write is three lines and reuses the value already sanitized for `state.json`, so
++`state.json`, Record's ack and the result cannot diverge. `_sanitize_retry_meta` (`:1159-1201`) is
++unchanged and still the only gate the argv-delivered log passes through: unknown keys dropped,
++`bool` rejected where an int is wanted, strings pinned to `^[A-Za-z0-9_.:@+-]{1,120}$` — so the
++array that now reaches an `additionalProperties: false` schema cannot carry a key the schema
++forbids. The reviewer-lift entry (`:2302-2304`) carries both schema-`required` keys
++(`stage: 'implement'`, `attempt: max_attempts + 1`).
++
++`apply_retry_meta`'s docstring was rewritten to explain the *new* division of labour rather than
++left describing the constraint that no longer holds — the failure mode that produced review-1's
++issue 1 in the first place.
++
++### No regression
++
++Floor + both named selftests + `full_command` all green on this tree (evidence in PASS 3).
++`schemas/job_result.schema.json` was only **widened** — two optional properties added, plus
++mojibake repair (`⇒` → `⇒`, `—` → `—`) and JSON re-formatting of three `type` arrays. No
++property removed, no `required` list changed, so every pre-3.4.8 result still conforms. The
++schema-driven conformance checker in `scripts/compound-v-collect-results.py:440-499` already handles
++list-typed `type` and array items, so it needed no change and got none.
++
++### Test alignment
++
++Every closed item has a guard that fails if it regresses:
++
++| Item | Guard |
++|---|---|
++| 2 (result carries the log) | `compound-v-emit-workflow.py:7761-7764` — a real `cmd_record` run against a real git worktree, asserting `_rt_result["escalated_from"] == "opus"` and `_rt_result["retries"][0]["wait_ms"] == 2000` |
++| 2 (helper stays honest) | `:7706-7708` — `apply_retry_meta` still adds neither key; only Record stamps them |
++| 2 (schema conformance) | `tests/test-engine-c-contract.sh` — every generated `job_result` validated against the schema, exit 0 |
++| 4 | `compound-v-validate-manifest.py:5157-5167` — "reviewer via tier:frontier accepted — stronger passes (finding 119)" |
++
++Items 1, 3, 5 are prose corrections; their guard is this review's grep table, which is the
++appropriate ceiling for a doc/code agreement claim.
++
++### No fabricated metrics
++
++No token count, baseline, speedup or duration anywhere in the closure. The word **measured** was
++*removed* from the one place it was wrong (item 5) and replaced with **requested**, and the schema's
++new `retries` description repeats the reason: *"wait_ms is the wait that was REQUESTED (a workflow
++script cannot read a clock)"*. This is the anti-ruflo charter enforced against itself.
++
++### No reward-hacking
++
++Diffed both touched selftest assertions against their pre-change versions:
++
++- `:7706-7708` — text reworded, **predicate unchanged** (`"retries" not in _rt_res and
++  "escalated_from" not in _rt_res`). Not a loosening.
++- `:7762-7764` — an absence check (`"retries" not in _rt_result`) replaced by a **value** check
++  (`== "opus"`, `wait_ms == 2000`). Strictly stronger: the old form passed if Record wrote nothing,
++  the new one does not.
++
++No test deleted, renamed, skipped, or `.skip`-marked; no threshold widened; no scorer edited; no
++exception newly swallowed. Check count held at 465/465 because the closure re-pointed two existing
++checks rather than adding any — consistent with a diff that changes where a field lives, not what
++is asserted about it.
++
++**PASS 2 QUALITY: ✅** (two LOW observations in the Verdict.)
++
++---
++
++## PASS 3 — INTEGRATION
++
++### Partition integrity
++
++The r2 run has a single job (this one), so there is no cross-job seam inside it. The seam that
++leaked in pass 1 — Task A's code and Task C's docs describing different mechanisms — is closed:
++`execution-manifest.md:151-166`, `failure-policy.md:18`, `CHANGELOG.md:18-22`,
++`agents/parallel-dispatcher.md:289` and `scripts/compound-v-emit-workflow.py:2166-2320` now describe
++one mechanism. No `PARTITION_LEAK`, no `INTEGRATION_MISMATCH`.
++
++### Cross-consumer seam — the widened schema
++
++`schemas/job_result.schema.json` is read by 27 files. The two that *validate* against it are
++schema-driven, not key-listed: `scripts/compound-v-collect-results.py:449-459` reads
++`additionalProperties` and `properties` from the file itself, so the new keys are accepted by
++construction; `scripts/compound-v-integration-gate.py:509` only relies on the six-field
++`gate_receipt` sub-object, untouched. Both are in the green full run.
++
++### Build + tests owed
++
++Tier `FULL`. This job's own changed path (`docs/superpowers/dogfood/*.md`) matches an
++`impacted_map` rule; the tree under review additionally carries `schemas/job_result.schema.json`,
++which matches **no** rule — so `full_command` is owed at run level and was run.
++
++| Command | Output | Exit |
++|---|---|---|
++| `bash tests/test-engine-c-contract.sh` (floor, unconditional) | `✅ engine-c contract: every generated job_result conforms, the contract reaches the worker, and the join has a producer` | 0 |
++| `/usr/bin/python3 -B scripts/compound-v-emit-workflow.py --selftest` | `465/465 checks passed` | 0 |
++| `/usr/bin/python3 -B scripts/compound-v-validate-manifest.py --selftest` | `SELFTEST PASSED` | 0 |
++| `/usr/bin/python3 -B scripts/lint-frontmatter.py .` (impacted rule for this job's path) | `✅ All frontmatter clean` | 0 |
++| `full_command` (every `--selftest` + every `tests/*.sh`) | `all-tests-ok` | 0 |
++
++No `NO_TEST_EVIDENCE`, no red suite, no unrun owed command.
++
++**Dogfood note (evidence, not a claim):** this run's own
++`docs/superpowers/execution/2026-09-03-v3.4.8-workflow-retry-r2/dispatch.workflow.js` contains
++11 occurrences of `withRetry` — the feature under review is the one that dispatched the review.
++Nothing was retried during this job, and no timing is claimed.
++
++### Feature acceptance criteria
++
++| # | Criterion | Evidence | Status |
++|---|---|---|---|
++| 1 | `withRetry` wraps every stage's `agent()`; null-or-throw; 2/4 cap 60 up to `max_attempts` (default 3); `setTimeout` only; no `Date.now`/`Math.random`/`new Date`; selftest proves it with string checks + a Python mirror | emitter selftest 465/465 (per-stage body extraction, the mirror table, `forbidden_hits == []`) | ✅ |
++| 2 | Exhaustion ⇒ today's null path; Record writes `retries[]` and `failure_class: other` with the verbatim reason | null path ✅; class + verbatim reason ✅; **`retries[]` now on the job_result** (`:4280`), schema-backed, asserted by a live `cmd_record` selftest — the pass-1 partial is closed | ✅ |
++| 3 | Reviewer lifted once via `CLAUDE_ESCALATION`; off-ladder pin never escalated; gate-receipt takes `--escalated-from`; **receipt/result carry `escalated_from`**; implementers never escalated; fast-path out of scope | receipt ✅ (`:3384`); **result** ✅ (`:4291`), asserted `== "opus"`; ladder ✅ (`:2292-2294`, no literal `'fable'`); implementers excluded ✅ (`isReviewJob` guard); fast-path stated out of scope in all four docs | ✅ |
++| 4 | `retry: {max_attempts, escalate_reviewer}` validates; 0, 4, `"3"`, bool-for-int, non-bool flag, unknown keys refused naming the key | validator `SELFTEST PASSED`, 17 cases incl. fallback-parser parity | ✅ |
++| 5 | `execution-manifest.md` documents the block and corrects the reviewer invariant to deep-or-stronger; `failure-policy.md` + `parallel-dispatcher.md` Step 2c carry parity; CHANGELOG `[Unreleased]` with no timing claim; every named selftest + `test-engine-c-contract.sh` + lint green | block documented ✅; invariant 4 corrected at `:193` ✅; parity present in both docs ✅; CHANGELOG free of timing claims ✅; all suites exit 0 ✅ — and the prose now matches the code, which was the pass-1 blocker | ✅ |
++
++**PASS 3 INTEGRATION: ✅ — 5/5 feature acceptance criteria met.**
++
++---
++
++## Verdict
++
++**APPROVED.** The run is **DONE**.
++
++- **PASS 1 SPEC:** review-1 items 1–5 closed 5/5 · archaeology §7 constraint 5 now satisfied ·
++  over-build clean · job acceptance met.
++- **PASS 2 QUALITY:** code clean · no regression (schema widened only) · every closed item guarded ·
++  no fabricated metrics (the one "measured" removed) · no reward-hacking (both touched assertions
++  strengthened or unchanged).
++- **PASS 3 INTEGRATION:** no partition leak · schema consumers are schema-driven and unaffected ·
++  build green (`test-engine-c-contract.sh`, exit 0) · floor + tier-owed `full_command` ran, exit 0 ·
++  feature AC 5/5 met.
++- **Scope lock:** respected — one file written, exactly the `write_allowed` entry.
++
++### LOW observations (non-blocking, recorded so the next round need not re-derive them)
++
++1. **`retries[]` items are not deep-validated by the conformance checker.**
++   `scripts/compound-v-collect-results.py:496-499` deep-validates the `usage` sub-object with an
++   explicit rationale — *"without this a schema-INVALID usage payload (unknown keys, wrong field
++   types) would pass conformance"*. The new `retries` array gets only the shallow
++   `items.type == "object"` check at `:483-489`, so a retry entry with an unknown key or a missing
++   `stage`/`attempt` would pass. Unreachable from the shipped producer —
++   `_sanitize_retry_meta` (`:1159-1201`) is the only writer and pins the key set — so this is an
++   asymmetry with a documented precedent, not a live hole. Worth closing when that function is next
++   touched.
++2. **`skills/backend-launcher/SKILL.md` does not list the two new result fields.** It is the
++   human-readable `job_spec → job_result` contract, and it now describes a strictly smaller result
++   than the schema does. No test binds the two, so nothing detects the drift. A one-paragraph
++   addition; not required by any acceptance criterion.
++3. **`escalate_reviewer` is documented as tier-keyed, implemented as rung-keyed.**
++   `execution-manifest.md:146` says the lift fires "when a **review** stage exhausts `max_attempts`
++   on `tier: deep`"; the code (`:2291-2294`) keys on `opts.model` being a rung of
++   `CFG.escalation`, whatever the tier. Invariant 4 makes a sub-`deep` reviewer invalid, so the two
++   agree for every manifest that validates — but the doc states a narrower trigger than the code
++   has.
