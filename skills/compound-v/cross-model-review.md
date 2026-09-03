@@ -22,7 +22,7 @@ small to hand to a second model family — there is no plan for it to read. Ask 
 rather than remembering the rule:
 
 ```bash
-python3 scripts/compound-v-preeval.py --cross-model-review "$TIER"
+python3 scripts/compound-v-preeval.py --cross-model-review "$TIER" --flavor "$FLAVOR"   # FLAVOR = manifest triage.flavor, empty when none
 ```
 
 | Triage tier | Second opinion | Why |

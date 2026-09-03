@@ -185,13 +185,20 @@ CROSS_MODEL_REVIEW_BY_DECISION = {
 }
 
 
-def cross_model_review_for(decision_or_tier):
-    """(required, why). Accepts either a decision constant or a manifest triage tier.
+def cross_model_review_for(decision_or_tier, flavor=None):
+    """(required, why). Accepts either a decision constant or a manifest triage tier,
+    plus the record's / manifest's `flavor` (v3.4.1): `scoped_plus` is the one SCOPED
+    shape whose second opinion is mandatory, not a judgment call (spec §A3).
 
     Unknown input falls to True: not knowing the size of a change is itself a reason
     to have a second family read it, and this gate only ever spends tokens — it can
     never let a worse plan through.
     """
+    if str(flavor or "").strip().lower() == "scoped_plus":
+        return (True, "SCOPED+ (flavor scoped_plus) — a small edit on a SENSITIVE path: the "
+                      "deep review and the cross-model second opinion are the obligation "
+                      "that makes the flavor a promise instead of a label (v3.4.1 §A3); "
+                      "run it on the sealed diff, never skip it")
     key = str(decision_or_tier or "").strip()
     if key in CROSS_MODEL_REVIEW_BY_DECISION:
         return CROSS_MODEL_REVIEW_BY_DECISION[key]
@@ -1688,6 +1695,9 @@ def main(argv):
                          "triage tier or decision constant, as JSON, and exit. "
                          "Derived from the tier — the same entry criterion as "
                          "brainstorming: no brainstorm, no second opinion.")
+    ap.add_argument("--flavor", default=None,
+                    help="with --cross-model-review: the record's/manifest's triage "
+                         "flavor (scoped_plus makes the second opinion mandatory)")
     ap.add_argument("--score-only", action="store_true",
                     help="pure scoring from --localization-json, no writes")
     ap.add_argument("--localization-json", dest="localization_json",
@@ -1696,7 +1706,8 @@ def main(argv):
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv[1:])
     if getattr(args, "cross_model_review", None):
-        required, why = cross_model_review_for(args.cross_model_review)
+        required, why = cross_model_review_for(args.cross_model_review,
+                                               flavor=getattr(args, "flavor", None))
         print(json.dumps({"input": args.cross_model_review,
                           "cross_model_review": required,
                           "why": why}, indent=2, sort_keys=True))
@@ -1939,6 +1950,15 @@ def _selftest():
     expect("the manifest's tier token answers identically to the decision constant",
            all(cross_model_review_for(t)[0] == cross_model_review_for(d)[0]
                for d, t in DECISION_TO_TIER.items()))
+    # v3.4.1 (archaeology constraint 11): SCOPED+ is the one SCOPED shape whose
+    # second opinion is mandatory — the helper must say so, or /v:dispatch would
+    # read "no by default" for the very run the flavor exists to review harder.
+    expect("SCOPED+ (flavor scoped_plus) asks for a second opinion, mandatory",
+           cross_model_review_for(DECISION_SCOPED, flavor="scoped_plus")[0] is True
+           and cross_model_review_for("SCOPED", flavor="scoped_plus")[0] is True)
+    expect("a plain SCOPED with no flavor still asks for none",
+           cross_model_review_for("SCOPED", flavor=None)[0] is False
+           and cross_model_review_for("SCOPED", flavor="")[0] is False)
     expect("an unrecognised size falls to 'review', never to 'skip'",
            cross_model_review_for("something-else")[0] is True
            and cross_model_review_for(None)[0] is True)
