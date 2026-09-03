@@ -44,6 +44,41 @@ The changed set is now three union terms minus only the direct-mode `preexisting
 
 Pinned by tests, not by comments: `compound-v-scope-check.py --selftest` plants `scripts/__pycache__/x.cpython-314.pyc`, a `payload.py` and an `id_rsa` under `__pycache__/`, and both outcome streams, and requires **all** of them to BLOCK outside the lane; `tests/test-lane-guard.sh` forges a real unchecked hash-based `.pyc`, asserts it *would* execute without the redirection, and then shows the guard still denying an out-of-lane write; `compound-v-emit-workflow.py --selftest` drives register-lane → gate-receipt → record → the real authority → finalize-wave over a direct-mode job and requires the receipt to come back neither forged nor contradicted.
 
+### Changed — implementers arrive as a role with a turn cap and the official Opus 5 conciseness guidance
+
+Every Claude implementation job is now spawned as `agents/implementer.md` (`agentType: <plugin>:implementer`); `type: review` still spawns `spec-reviewer`, and the other reviewer-ish types stay anonymous rather than being told to write inside a lane. Until now an implementer arrived with no role at all: the whole of its contract was whatever the emitted prompt restated inline, it inherited the session's own turn budget, and nothing carried the model's own guidance on scope, narration or deliverable length.
+
+Arriving as a role is also **the only native way a workflow job gets a turn cap**. `maxTurns` is a field of an agent *definition*; the workflow `agent()` options are `label`, `phase`, `schema`, `model`, `effort`, `isolation`, `agentType` plus `disallowedTools` and `bashCommandClamp` — there is no equivalent. `implementer` declares `maxTurns: 60`, `spec-reviewer` `maxTurns: 80`, and `scripts/lint-frontmatter.py` now rejects a malformed `maxTurns` (a string, a float, a bool, anything below 1), because the runtime ignores one silently and the agent then runs uncapped while its file says otherwise. The inline-definition fallback — the path taken when the plugin is not registered in the session — carries the definition body verbatim so the guidance survives, and **logs that the cap is lost on that path**, since an inline spawn is not a definition and `agent()` cannot re-impose it.
+
+Three things follow from Anthropic's Opus 5 guidance, and each is a subtraction:
+
+- `agents/implementer.md` carries the official scope, cadence and deliverables snippets verbatim. Effort buys *thinking*, not output length, so length is asked for explicitly instead of hoped for.
+- `render_worker_prompt` adds **no** "verify", "re-check" or "report per item" imperative of its own. Explicit verification instructions make this model verify more than the task needs, and the Gate re-derives every enforcement fact from git after the worker is gone. The task's own `body` may ask for whatever it likes; the template asks for the lanes, the acceptance list and the cap.
+- The worker prompt states the job's turn cap — `max_turns` from the manifest, else the tier default (`light` 30, `standard` 50, `deep`/`frontier` 80). For an external worker that is a budget it is *told*, not a ceiling any runtime imposes, and it says so. The manifest validator already accepts the key: it rejects no unknown per-job key by design (verified against `examples/manifest.example.yaml` + `max_turns: 40` → `valid`).
+
+**Effort is now a policy, by job kind** (`routing-policy.md` § Effort by job kind, `execution-manifest.md`, `commands/v-orchestrate.md` step 4): new code and design decisions `deep`·`high`; a **fix job minted from a review finding** `medium`, because the finding already names the file, the defect and the bar and high effort there re-derives a conclusion the job was handed; a reviewer `high` on its first pass and `medium` on a re-pass over the same diff; the pipeline's own transports `low`.
+
+`/v:init` gains one **offer** (never a write): `CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT=0` in the user's own `~/.claude/settings.json` `env` block. Sourced honestly — it is a **community claim** about a harness variable, this project has measured **no** before/after difference in length, latency or cost, and it publishes no number for it.
+
+### Fixed — the lane guard's PATH case could not fail, and the published cost had been measured on the wrong path
+
+Two items from the seventh review pass, both about evidence rather than behaviour.
+
+**The `PATH` case proved nothing.** `tests/test-lane-guard.sh` asserted that an executable-but-broken `python3` first on `PATH` still produces a DENY — and it would have, under the plain ordering the viability ladder replaced, because `/usr/bin/python3` is probed *first* and the broken one is never a candidate the ladder has to step over. The case that discriminates is the one the hook's header actually claims: `PATH`'s python3 imports yaml and the OS one does not, so the **probe** and not the order decides. It cannot be produced by editing `PATH` alone, so the suite now drives a copy of the hook whose OS candidate is the dead interpreter, asserts the log **names the interpreter it used** and the one it passed over, and then plants the pre-change order (`_cv_can_yaml() { return 0; }`) and asserts the same write sails through in complete silence. That is the third check in three passes found to be incapable of failing. The hook now logs its chosen interpreter on **every** path, not only the fallback ones — the pick was otherwise unobservable on the one path where it matters.
+
+**One probe on the healthy machine, and the cost re-measured for both populations.** The `-c pass` probe moved out of the `import yaml` loop into its own, entered only when nothing on the list has PyYAML. Stated precisely, because the tempting claim is wrong: this changes **nothing** for the ordinary machine (it already broke out on its first candidate) and nothing for a machine with no PyYAML anywhere (still three probes); it removes one probe from the machine whose **second** candidate has PyYAML, 3 → 2.
+
+Re-measured 2026-09-03, 50 invocations per cell, **two** qualifying rounds (floor 25.6/25.9 ms opening, 26.2/26.3 ms closing), macOS 26.5.2 / arm64, `/usr/bin/python3` 3.9.6, against a sandbox project carrying copies of this repository's 48 run directories:
+
+| path | probes | measured |
+|---|---|---|
+| unresolved, first candidate has PyYAML | 1 | **149 ms** |
+| unresolved, second candidate has PyYAML | 2 | ≈175 ms (**derived**, not timed end to end) |
+| unresolved, no candidate has PyYAML | 3 | **200 ms** |
+| resolved, write in lane | 1 | **240 ms** |
+
+The 167/245 ms published one entry ago is **superseded as noisy, not withdrawn as wrong** — same protocol, same code on both paths, ordinary round-to-round variation on a shared machine. What *was* wrong is a method error worth naming: the first attempt at this round drove the "unresolved" loop from the checkout itself, which a **live** run's lane map claims, and produced 247 ms — the *resolved* path wearing the wrong label. Measure the unresolved path somewhere actually unresolved, and read `CV_LANE_GUARD_LOG` back to confirm which one you hit. `README.md`, `AGENTS.md` and the hook's own COST header all carry the table, the method and the date.
+
 ### Fixed — the lane guard read no manifest written with a folded scalar
 
 The `PreToolUse` lane guard reads the acting job's `write_allowed` out of the run's `manifest.yaml`. Without PyYAML it falls back to the embedded subset parser in `compound-v-validate-manifest.py`, and that parser could not read the two shapes `yaml.safe_dump` emits for **every manifest this pipeline writes**: a scalar folded across lines at the dump width, and a block sequence sitting at its parent key's own indentation. The parse stopped at the first of either and every later key was dropped silently — `jobs:` included. Driven with run r5's real manifest on a machine whose `command -v python3` was a Homebrew build with no PyYAML (while `/usr/bin/python3`, which ships it, sat right beside it), the guard resolved the job, found no jobs in the manifest, logged `ALLOW (guard degraded)` and **let the out-of-lane write through**. A guard that fails open on the ordinary output of the tool that writes its own input is not a guard.

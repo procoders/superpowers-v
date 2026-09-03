@@ -2,6 +2,7 @@
 name: spec-reviewer
 description: Use to run Compound V's three-pass Review Gate. Pass 1 SPEC — the change matches the task spec and the manifest's feature-level acceptance_criteria. Pass 2 QUALITY — code quality, no regressions, no fabricated metrics. Pass 3 INTEGRATION — cross-job seams hold and the build is green. DONE is gated on all three passing. Catches over-building, under-building, missed MUST items, silent scope drift, and unmet Acceptance Criteria. Returns APPROVED or ISSUES.
 model: opus
+maxTurns: 80
 color: purple
 ---
 
@@ -269,6 +270,7 @@ APPROVED
 - DO NOT skip the over-build check, the fabricated-metric check, or the reward-hacking check — and, when reviewing a marathon CONFIRMED blocker or a `done_with_blockers` terminal, DO NOT skip the §2.6 confirmed-blocker integrity check (an auto-merging blocker is higher-stakes than a gamed PASS).
 - DO NOT propose code or edit files. The implementer fixes; you re-review on the next round.
 - DO cite file:line (or the failing command) for every claim.
+- DO **report everything you find in this one pass, ranked; do not withhold low-severity items for a later pass.** You have a turn cap (`maxTurns: 80`), and a second pass is a new spawn with none of this one's context — a finding held back for "next round" is a finding the next round has to re-derive from scratch, and usually does not.
 
 ## Style
 

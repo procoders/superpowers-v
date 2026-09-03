@@ -206,6 +206,25 @@ available on the pre-flight path: the Agent/Task tool takes a `model` override a
 effort parameter, so "raise the effort for a harder brainstorm" cannot be done there today.
 Raising the *model* is the lever that exists at that stage. Stated rather than promised.
 
+### Effort by job kind
+
+Effort buys thinking, not output: it changes how much the model reasons before it
+acts, and **not** how long its answer is. (Prompt for length explicitly — that is
+what `agents/implementer.md`'s deliverables paragraph is for.) So spend it where a
+wrong first move is expensive, and not where the work is already decided:
+
+| Job kind | Effort | Why |
+|---|---|---|
+| New code, and any design decision — a shared foundation, an interface, a security or data-shape choice | `deep` · **high** | The cost of a wrong shape lands on every job downstream, and there is nothing yet to correct against |
+| A **fix job minted from a review finding** | **medium** | The thinking is already done and written down: the finding names the file, the defect and the bar. High effort here re-derives a conclusion it was handed |
+| A **reviewer's first pass** | **high** | Nobody has looked yet; everything it misses ships |
+| A reviewer's **re-pass** over the same diff | **medium** | It is checking named findings against a small delta, not searching an unread change |
+| The pipeline's own **transports** — Gate, Record, Finalize | **low** | Each runs one clamped command and returns its JSON; the logic is Python the integration authority re-verifies from git |
+
+These are defaults for the orchestrator that mints the manifest, not a validator
+rule: a job may pin any effort its author can justify, and the manifest is where
+that choice is recorded.
+
 ---
 
 ## Tiers, the models map, and the resolver

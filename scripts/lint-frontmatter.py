@@ -158,6 +158,17 @@ def lint_file(path: pathlib.Path, rel=None) -> list:
                 f"(found {found}) — project model policy"
             )
 
+    # `maxTurns` (3.4.0) — the turn cap an agent definition carries natively. It is
+    # optional, and a typo is silent: a string, a float or a negative is ignored by
+    # the runtime, so the agent runs uncapped while its file says otherwise.
+    if "maxTurns" in data:
+        turns = data.get("maxTurns")
+        if not isinstance(turns, int) or isinstance(turns, bool) or turns < 1:
+            issues.append(
+                f"maxTurns must be a positive integer (got {turns!r}) — a "
+                "malformed cap is ignored, and the agent runs uncapped"
+            )
+
     # Common gotcha: unquoted glob in paths field
     paths_val = data.get("paths")
     if isinstance(paths_val, str) and any(c in paths_val for c in "{}[]"):
@@ -203,6 +214,20 @@ def _selftest() -> int:
               issues_for("skills/foo/reference.md", "# doc\n") == [])
         check("nested agents/ dir NOT gated (anchored at root)",
               issues_for("docs/agents/readme.md", "# doc\n") == [])
+
+        # maxTurns: optional, but a malformed cap is silently ignored by the
+        # runtime, so the linter is the only thing that can notice it.
+        check("agent with a valid maxTurns clean",
+              issues_for("agents/cap.md",
+                         "---\nname: x\ndescription: d\nmodel: opus\n"
+                         "maxTurns: 60\n---\nbody\n") == [])
+        for bad in ("'60'", "0", "-1", "1.5", "true"):
+            check(f"agent with maxTurns: {bad} flagged",
+                  any("maxTurns must be a positive integer" in i
+                      for i in issues_for("agents/badcap.md",
+                                          "---\nname: x\ndescription: d\n"
+                                          f"model: opus\nmaxTurns: {bad}\n"
+                                          "---\nbody\n")))
 
         # happy paths
         check("valid agent clean", issues_for("agents/good.md", AGENT_OK) == [])

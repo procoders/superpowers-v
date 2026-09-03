@@ -560,10 +560,38 @@ def topo_waves(jobs, max_parallel):
 # --------------------------------------------------------------------------- #
 AGENT_TYPE_BY_JOB_TYPE = {"review": "spec-reviewer"}
 
+# ...and, from 3.4.0, a DEFAULT for everything else. An implementer used to arrive
+# anonymous: the whole of its role was whatever `_implement_prompt` restated inline,
+# it inherited the session's own turn budget, and nothing carried the model's own
+# guidance on scope, narration or deliverable length. `agents/implementer.md` is that
+# role, and arriving as a role is also the ONLY native way to carry a turn cap —
+# `maxTurns:` is a field of an agent DEFINITION; the workflow `agent()` options have
+# no equivalent (binary 2.1.238: label, phase, schema, model, effort, isolation,
+# agentType, plus disallowedTools and bashCommandClamp).
+DEFAULT_AGENT_ROLE = "implementer"
+
+
+def agent_role_for(job_type):
+    """The registered role a job's declared `type` maps to, or None.
+
+    `review` maps to the Review Gate. Every other type maps to the implementer —
+    EXCEPT the other reviewer-ish types (`integration_review` and friends, by
+    REVIEWER_TOKENS), which stay anonymous exactly as they did before 3.4.0. They
+    are not implementers, and handing one the implementer's role would tell a
+    reviewer to write code inside a lane.
+    """
+    t = (job_type or "").strip().lower()
+    role = AGENT_TYPE_BY_JOB_TYPE.get(t)
+    if role:
+        return role
+    if any(tok in t for tok in REVIEWER_TOKENS):
+        return None
+    return DEFAULT_AGENT_ROLE
+
 
 def resolve_agent_type(job_type, plugin_dir=None):
     """(agent_type or None, reason). Never guesses a name."""
-    role = AGENT_TYPE_BY_JOB_TYPE.get((job_type or "").strip())
+    role = agent_role_for(job_type)
     if not role:
         return None, None
     root = plugin_dir or os.path.dirname(HERE)
@@ -599,7 +627,7 @@ def agent_definition(role, root=None):
             text = fh.read()
     except OSError:
         return None
-    model, body = None, text
+    model, max_turns, body = None, None, text
     if text.startswith("---"):
         parts = text.split("---", 2)
         if len(parts) == 3:
@@ -607,7 +635,18 @@ def agent_definition(role, root=None):
             for line in fm.splitlines():
                 if line.strip().startswith("model:"):
                     model = line.split(":", 1)[1].strip() or None
-    return {"model": model, "body": body.strip()}
+                # The TURN CAP, read only so the fallback can say what it lost.
+                # `maxTurns` belongs to the DEFINITION; an inline spawn is not a
+                # definition, and `agent()` has no option to re-impose it — so on
+                # that path the cap is gone and the log has to say so rather than
+                # let a job quietly run uncapped.
+                elif line.strip().startswith("maxTurns:"):
+                    raw = line.split(":", 1)[1].strip()
+                    try:
+                        max_turns = int(raw)
+                    except ValueError:
+                        max_turns = None
+    return {"model": model, "max_turns": max_turns, "body": body.strip()}
 
 
 def _js_parses(script):
@@ -842,8 +881,39 @@ def resolve_job_model(job, python_bin, resolve_model=None, stance=None,
     return model.strip(), None
 
 
+# The turn cap a job is expected to finish inside. `maxTurns` is a field of an
+# agent DEFINITION, so a Claude implementer gets its cap natively from
+# `agents/implementer.md`; an EXTERNAL worker has no such definition, and this is
+# the only place its cap is ever stated. The defaults are proportionate to the
+# tier the manifest already declares, and `max_turns` on the job overrides them.
+#
+# Nothing enforces this number on an external backend — it is a budget the worker
+# is told, not a ceiling the runtime imposes — and saying so is the honest form.
+TURN_CAP_BY_TIER = {"light": 30, "standard": 50, "deep": 80, "frontier": 80}
+TURN_CAP_DEFAULT = 50
+
+
+def job_turn_cap(job):
+    """(cap, source) — the manifest's `max_turns`, else the tier's default."""
+    declared = job.get("max_turns")
+    if isinstance(declared, int) and not isinstance(declared, bool) and declared > 0:
+        return declared, "manifest max_turns"
+    tier = str(job.get("tier") or "").strip().lower()
+    if tier in TURN_CAP_BY_TIER:
+        return TURN_CAP_BY_TIER[tier], "default for tier %s" % tier
+    return TURN_CAP_DEFAULT, "default"
+
+
 def render_worker_prompt(job, run_id):
-    """The task itself, as the file the worker is handed via `--prompt-file`."""
+    """The task itself, as the file the worker is handed via `--prompt-file`.
+
+    WHAT THIS TEMPLATE DELIBERATELY DOES NOT ADD: an imperative to verify, to
+    re-check, or to report per item. Anthropic's own Opus 5 guidance is that
+    explicit verification instructions make the model verify MORE than the task
+    needs, and this pipeline already re-derives every enforcement fact from git
+    after the worker is gone. The task's own `body` may ask for whatever it likes;
+    the template asks for nothing beyond the lanes, the acceptance list and the cap.
+    """
     lines = ["# %s" % (job.get("title") or job.get("id")),
              "",
              "Compound V run `%s`, job `%s`." % (run_id, job.get("id")),
@@ -925,6 +995,9 @@ def render_worker_prompt(job, run_id):
         for item in acceptance:
             lines.append("- %s" % item)
         lines.append("")
+    cap, cap_src = job_turn_cap(job)
+    lines += ["Turn cap: %d (%s; default light 30 / standard 50 / deep 80). "
+              "Plan to finish inside it." % (cap, cap_src), ""]
     lines += [
         "## What you must NOT report",
         "",
@@ -1033,7 +1106,7 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
             agent_type, agent_type_note = resolve_agent_type(job.get("type"))
         agent_def = None
         if agent_type:
-            agent_def = agent_definition(AGENT_TYPE_BY_JOB_TYPE[(job.get("type") or "").strip()])
+            agent_def = agent_definition(agent_role_for(job.get("type")))
         entry = {
             "id": job_id,
             "job_type": job.get("type"),
@@ -1273,9 +1346,13 @@ def _implement_prompt(job, plan):
         # Spawned BY ROLE. The role contract lives in that agent's own
         # definition, so this prompt supplies the job's inputs and nothing else —
         # restating the contract here is how the two copies drift apart.
-        lines.append("You are spawned as `%s`. Your role, your passes and your "
-                     "verdict vocabulary come from your OWN agent definition; "
-                     "this prompt carries only Compound V job `%s`'s inputs."
+        # Deliberately ROLE-NEUTRAL wording. Until 3.4.0 only the reviewer arrived
+        # by role, and this line said "your passes and your verdict vocabulary" —
+        # reviewer language that reads as nonsense to an implementer, which is now
+        # the other role that lands here.
+        lines.append("You are spawned as `%s`. Your role and its standing "
+                     "instructions come from your OWN agent definition; this "
+                     "prompt carries only Compound V job `%s`'s inputs."
                      % (job["agent_type"], job["id"]))
     else:
         lines.append("You are the implementer for Compound V job `%s`." % job["id"])
@@ -1537,7 +1614,12 @@ async function implementStage(job) {
     } catch (spawnErr) {
       if (!job.agent_definition || !isAgentTypeMissing(spawnErr)) throw spawnErr;
       log('implement ' + job.id + ': ' + job.agent_type + ' is not loaded in this session — ' +
-          'spawning from its inlined definition');
+          'spawning from its inlined definition' +
+          (job.agent_definition.max_turns
+            ? '; its maxTurns cap of ' + job.agent_definition.max_turns +
+              ' is LOST on this path (maxTurns is a property of a registered ' +
+              'definition, and agent() has no option to re-impose it)'
+            : ''));
       const inl = Object.assign({}, opts);
       delete inl.agentType;
       if (!inl.model && job.agent_definition.model) inl.model = job.agent_definition.model;
@@ -5349,8 +5431,21 @@ def selftest():
                or expected == "%s:spec-reviewer" % (_read_json(os.path.join(
                    os.path.dirname(HERE), ".claude-plugin", "plugin.json"),
                    {}) or {}).get("name"))
-        _check("an ordinary implementation job stays anonymous",
-               rev_entries["impl"]["agent_type"] is None)
+        impl_expected, impl_why = resolve_agent_type("bounded_crud")
+        _check("this plugin's own agents/implementer.md resolves a real "
+               "agentType", bool(impl_expected), str(impl_why))
+        _check("an ordinary implementation job arrives AS THE IMPLEMENTER ROLE "
+               "(3.4.0) — that is the only native way it carries a turn cap",
+               rev_entries["impl"]["agent_type"] == impl_expected
+               and impl_expected.endswith(":implementer"))
+        _check("...and it carries agents/implementer.md's own maxTurns, so the "
+               "cap is a definition property and not a number we invented",
+               (rev_entries["impl"].get("agent_definition") or {})
+               .get("max_turns") == 60)
+        _check("a reviewer type with no registered role stays ANONYMOUS — it is "
+               "not an implementer, and must never be told to write in a lane",
+               agent_role_for("integration_review") is None
+               and resolve_agent_type("integration_review")[0] is None)
         ext_rev = _plan_for(_tiny_manifest(
             [{"id": "xr", "type": "review", "backend": "codex",
               "model": "gpt-5.6-sol", "isolation": "worktree",
@@ -5408,8 +5503,21 @@ def selftest():
                isinstance(rev_entries["rev"].get("agent_definition"), dict)
                and bool(rev_entries["rev"]["agent_definition"]["body"])
                and rev_entries["rev"]["agent_definition"]["model"] == "opus")
-        _check("an anonymous job carries no definition",
-               rev_entries["impl"].get("agent_definition") is None)
+        _check("the implementer job carries agents/implementer.md's BODY too, so "
+               "the guidance survives a session where the plugin is unregistered",
+               isinstance(rev_entries["impl"].get("agent_definition"), dict)
+               and "Deliver what was asked, at the scope intended"
+               in rev_entries["impl"]["agent_definition"]["body"])
+        _check("an anonymous job (a reviewer type with no role) carries no "
+               "definition — there is nothing to inline",
+               (_plan_for(_tiny_manifest(
+                   [{"id": "ir", "type": "integration_review", "backend": "claude",
+                     "isolation": "direct", "write_allowed": ["docs/**"]}]), tmp)
+                ["waves"][0][0].get("agent_definition")) is None)
+        _check("the fallback SAYS the maxTurns cap is lost, rather than letting "
+               "an uncapped spawn look identical to a capped one",
+               "is LOST on this path" in rev_script
+               and "job.agent_definition.max_turns" in rev_script)
         _check("Implement retries ONCE without agentType on 'agent type not found', "
                "inside its own try so Gate and Record still run",
                "isAgentTypeMissing(spawnErr)" in rev_script
@@ -5421,6 +5529,28 @@ def selftest():
                "if (!inl.model && job.agent_definition.model)" in rev_script)
         _check("the emitted script PARSES as JavaScript (node --check; skipped without node)",
                _js_parses(rev_script), "node --check rejected the emitted script")
+
+        # --- the worker prompt asks for the work, and for nothing around it ----
+        # Anthropic's Opus 5 guidance: explicit verification instructions CAUSE
+        # over-verification. The template therefore adds no such imperative of its
+        # own — and states the turn cap, which for an external worker is the only
+        # place a cap is ever mentioned (`maxTurns` is a Claude agent-definition
+        # field and an external backend has no definition).
+        _wp = render_worker_prompt(
+            {"id": "j", "title": "T", "body": "do the thing", "tier": "standard",
+             "write_allowed": ["src/**"], "acceptance": ["it works"]}, "r")
+        _check("the template adds no verify / re-check / report-per-item imperative",
+               not any(tok in _wp.lower() for tok in
+                       ("verify", "re-check", "recheck", "report per item")), _wp)
+        _check("the worker prompt states the job's turn cap",
+               "Turn cap: 50 (default for tier standard" in _wp, _wp)
+        _check("a manifest `max_turns` overrides the tier default",
+               "Turn cap: 12 (manifest max_turns" in render_worker_prompt(
+                   {"id": "j", "title": "T", "body": "b", "tier": "light",
+                    "max_turns": 12, "write_allowed": ["src/**"]}, "r"))
+        _check("the tier defaults are the documented ones",
+               [job_turn_cap({"tier": t})[0] for t in ("light", "standard", "deep")]
+               == [30, 50, 80])
 
         # --- the lane map under real CONCURRENCY -------------------------------
         # `_atomic_write` makes one write atomic and does nothing for the read

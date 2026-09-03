@@ -706,6 +706,72 @@ verdict "an executable-but-broken python3 FIRST ON PATH still denies" deny
 check "and the deny still reads the lane out of the manifest" \
   "$(printf '%s' "$OUT" | grep -q 'hooks/lane-guard.sh' && echo 1 || echo 0)"
 
+# THE PATH CASE THAT CAN ACTUALLY FAIL (seventh review pass, 2026-09-03).
+#
+# The case immediately above cannot: /usr/bin/python3 is probed FIRST, so a broken
+# python3 on PATH is never a candidate the ladder has to step over, and that
+# assertion stays green under the plain ORDERING the ladder replaced. It is a
+# regression case for "the guard still reaches a verdict", not evidence for the
+# ladder.
+#
+# The shape that discriminates is the one the hook's own header claims to handle:
+# PATH's python3 imports yaml and the OS one does not, so the PROBE and not the
+# order decides. It cannot be produced by editing PATH alone -- the first candidate
+# is the literal /usr/bin/python3 -- so this drives a copy of the hook whose OS
+# candidate is the dead interpreter. Under the pre-change order (first executable
+# wins, modelled exactly by neutering the probe) the dead one is picked, the
+# payload never runs, and the case reds.
+if [ -n "$YAML_PY" ]; then
+  YAMLPATH_DIR="$WORK/yamlpath"
+  mkdir -p "$YAMLPATH_DIR"
+  YAMLPATH_PY="$YAMLPATH_DIR/python3"
+  { printf '#!/bin/sh\n'; printf 'PYTHONPATH= exec %s "$@"\n' "$YAML_PY"; } >"$YAMLPATH_PY"
+  chmod +x "$YAMLPATH_PY"
+
+  CAND_ANCHOR='^  for _cv_cand in /usr/bin/python3 "\$_cv_path_py"; do$'
+  if [ "$(grep -cE "$CAND_ANCHOR" "$HOOK")" != "1" ]; then
+    echo "FATAL: the default-candidate line is not unique -- this case tests nothing"
+    exit 1
+  fi
+  OSDEAD="$MUTROOT/hooks/lane-guard-os-python-dead.sh"
+  sed -E "s|$CAND_ANCHOR|  for _cv_cand in $BROKEN_PY \"\$_cv_path_py\"; do|" \
+    "$HOOK" >"$OSDEAD"
+  chmod +x "$OSDEAD"
+  grep -q "for _cv_cand in $BROKEN_PY " "$OSDEAD" \
+    || { echo "FATAL: the dead-OS-interpreter substitution did not apply"; exit 1; }
+
+  HOOK_UNDER_TEST="$OSDEAD"
+  run "$(encode Write agent_folded "$WT4" file_path "$WT4/README.md")" \
+      PATH="$YAMLPATH_DIR:$PATH"
+  verdict "OS python3 dead, PATH's imports yaml -> the PROBE picks PATH's" deny
+  check "the log NAMES the interpreter it used (PATH's), on the ordinary path" \
+    "$([ "$(logged "interpreter $YAMLPATH_PY (imports yaml)")" = yes ] \
+       && echo 1 || echo 0)"
+  check "...and names the dead OS candidate it passed over" \
+    "$([ "$(logged "passed over: $BROKEN_PY")" = yes ] && echo 1 || echo 0)"
+
+  # PLANTED VIOLATION 6 -- the PRE-CHANGE CANDIDATE ORDER, exactly: with the yaml
+  # probe neutered the ladder degenerates to "take the first candidate", which is
+  # what the fifth pass shipped. The dead OS interpreter wins, the payload never
+  # runs, and the out-of-lane write sails through in silence. This case must red.
+  OSDEAD_ORDER="$MUTROOT/hooks/lane-guard-os-python-dead-ordering.sh"
+  sed 's/^_cv_can_yaml() {.*/_cv_can_yaml() { return 0; }/' "$OSDEAD" >"$OSDEAD_ORDER"
+  chmod +x "$OSDEAD_ORDER"
+  grep -q '_cv_can_yaml() { return 0; }' "$OSDEAD_ORDER" \
+    || { echo "FATAL: the ordering mutation did not apply"; exit 1; }
+  HOOK_UNDER_TEST="$OSDEAD_ORDER"
+  run "$(encode Write agent_folded "$WT4" file_path "$WT4/README.md")" \
+      PATH="$YAMLPATH_DIR:$PATH"
+  check "PLANTED: the pre-change ORDER picks the dead OS python3 -> no deny" \
+    "$([ "$(is_deny)" = no ] && [ "$RC" = "0" ] && echo 1 || echo 0)"
+  check "PLANTED: and the out-of-lane write is allowed in COMPLETE silence" \
+    "$([ "$(silent)" = yes ] && echo 1 || echo 0)"
+  HOOK_UNDER_TEST=""
+else
+  printf 'SKIP the PATH-wins case -- no python3 on this machine can import yaml '
+  printf '(CI installs it; this half did NOT run)\n'
+fi
+
 if [ -n "$YAML_PY" ]; then
   # ...and the same interpreter FIRST IN THE CANDIDATE LIST, which is where the
   # ladder actually has to step over it.

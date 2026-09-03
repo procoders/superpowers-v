@@ -57,65 +57,70 @@
 # most 8 run directories are inspected, resolution stops at the first match, and
 # the manifest is only parsed AFTER a job has been resolved.
 #
-# RE-MEASURED 2026-09-02 (sixth review pass) on macOS 26.5.2 / arm64 with
-# /usr/bin/python3 3.9.6, 50 invocations per cell, old hook and new interleaved
-# in one round so a shared machine loads both arms equally, against a project
-# carrying copies of this repository's 47 run directories:
+# RE-MEASURED 2026-09-03 (seventh review pass) on macOS 26.5.2 / arm64 with
+# /usr/bin/python3 3.9.6, 50 invocations per cell, TWO qualifying rounds, against
+# a sandbox project carrying copies of this repository's 48 run directories:
 #
-#   bare interpreter start (`-c pass`)      30 ms   the floor, taken in the
-#                                                   SAME round as the rows below
-#   unresolved job (human session)         120 ms -> 167 ms
-#   resolved, write in lane                202 ms -> 245 ms
-#   resolved, write out of lane            201 ms -> 298 ms*
+#   bare interpreter start (`-c pass`)             25.6 / 25.9 ms   the floor
+#   one viability probe (`import yaml`, alone)     38.3 / 38.5 ms
+#   A  unresolved, 1st candidate has PyYAML       148.9 / 150.4 ms  ONE probe
+#   C  unresolved, NO candidate has PyYAML        199.1 / 204.0 ms  THREE probes
+#   R  resolved, write in lane (live lane map)    244.1 / 235.0 ms  ONE probe
 #
-# The arrow is this pass's viability ladder: +47 ms on the unresolved path,
-# +43 ms on the resolved allow, which is one `import yaml` probe and matches the
-# ~44 ms that probe costs measured on its own. (*The deny cell was the last one
-# taken and the round's closing floor had drifted up; the earlier baseline had
-# in-lane 208.5 ms and deny 209.5 ms, so read the deny as EQUAL to the allow --
-# the verdict has never been the expensive part, resolution and the manifest
-# parse are.)
+# THE POPULATIONS, NAMED, because the ambient cost is not one number:
+#   * ~149 ms -- the machine whose FIRST candidate imports yaml. This is the
+#     ordinary macOS box (/usr/bin/python3 ships PyYAML) and it pays exactly ONE
+#     probe. It is also the only path a session that never dispatches will take.
+#   * ~200 ms -- the machine where NO candidate imports yaml: two `import yaml`
+#     probes plus one `-c pass` probe, three in all.
+#   * ~175 ms -- the machine whose SECOND candidate imports yaml: two probes.
+#     DERIVED, not measured end to end (A plus one in-loop probe, whose marginal
+#     cost here is ~25 ms -- the 38 ms row above includes an `env` exec that the
+#     in-loop probe does not pay). Said plainly rather than published as if it
+#     had been timed.
 #
-# HOW MANY ROUNDS THAT IS, HONESTLY: ONE. The rows above are the single round
-# taken while this machine was quiet (opening floor 30.0 ms). Every later
-# attempt was DISCARDED by the rule two paragraphs down -- a parallel dogfood
-# run held the cores and the floor sat at 45-390 ms, where the same cells read
-# 250-680 ms. Two independent things corroborate the delta rather than the
-# absolutes: the probe measured on its own costs ~44 ms (`import yaml`, cache
-# prefix stripped), which is the +47/+43 seen here; and the OLD hook measured
-# 127 ms unresolved / 208 ms in lane / 209 ms deny in a separate quiet round,
-# which is the "before" column again. The sixth review pass, measuring
-# independently on this box, also could not reproduce 47 ms for any variant and
-# reported 115-175 ms per invocation.
+# WHAT THE SEVENTH PASS ACTUALLY CHANGED, AND WHAT IT DID NOT. Splitting the
+# `-c pass` probe out of the `import yaml` loop below removes ONE probe from the
+# second-candidate population (3 -> 2) and changes NOTHING for the other two: a
+# healthy machine already broke out of the loop on its first candidate, and a
+# machine with no PyYAML anywhere still pays three. The honest claim is "one
+# probe on the healthy path", not "one probe saved on the healthy path".
 #
-# THE 47-81 ms THIS HEADER PUBLISHED IS WITHDRAWN, AND SO IS THE REASON IT WAS
-# NEVER RE-TAKEN. Those figures were measured 2026-09-01. On 2026-09-02 the
-# fourth review pass added the PYTHONPYCACHEPREFIX redirection below, and nobody
-# re-measured: the UNCHANGED hook now costs 120 ms on the path that published
-# 47 ms. The redirection is why, and the mechanism is worth knowing before
-# anyone "optimises" it away: PYTHONPYCACHEPREFIX moves the bytecode-cache
-# LOOKUP into a private per-invocation directory while PYTHONDONTWRITEBYTECODE
-# forbids populating it, so EVERY stdlib module is recompiled from source on
-# every single invocation. Measured directly, `-c 'import json,os,re,shlex,sys,
-# time'`: 31 ms plain, 32 ms with PYTHONDONTWRITEBYTECODE alone, 35 ms with the
-# prefix alone (it populates once and reuses), 90 ms with both. That ~59 ms is
-# the price of refusing to execute a planted .pyc, and it is worth paying --
-# but it should be paid knowingly, and it is not what the README said it was.
+# ON THE 167/245 ms THIS HEADER PUBLISHED ON 2026-09-02: not withdrawn as wrong,
+# superseded as noisy. Today's rounds put the same cells at ~149 and ~240 by the
+# same protocol, and no code between them touches either path. That gap is
+# round-to-round variation on a shared machine, which is the standing reason this
+# file publishes a method and a floor rather than a single number. Two things did
+# get fixed in the measuring, and both inflate a figure silently:
+#   * MEASURE THE UNRESOLVED PATH SOMEWHERE UNRESOLVED. Driving the loop from a
+#     checkout that a LIVE run's lane map claims measures the RESOLVED path and
+#     calls it unresolved -- 247 ms in the first attempt at this round, which is
+#     cell R, not cell A. Set CV_LANE_GUARD_LOG and read back which path you hit.
+#   * TAKE THE FLOOR IN THE SAME ROUND AND DISCARD ABOVE ~31 ms. A machine
+#     sharing its cores with a parallel dogfood run doubles every number here.
+#     Both rounds above opened at 25.6/25.9 ms and closed at 26.2/26.3 ms.
 #
-# So the ambient figure is a RANGE, 167-245 ms, on this machine, in this state.
-# Roughly: ~30 ms interpreter floor + ~59 ms cache-miss tax + ~45 ms viability
-# probe + ~33 ms bash, payload compile and resolution; a resolved call adds the
-# manifest parse and the matcher import on top.
+# WHERE THE ~149 ms GOES, roughly: ~26 ms interpreter floor + ~59 ms bytecode
+# cache-miss tax + ~25 ms viability probe + the rest in bash, payload compile and
+# run-directory resolution. A resolved call adds the manifest parse and the
+# matcher import on top, which is the whole of the A -> R gap; the DENY costs the
+# same as the resolved allow, because the verdict has never been the expensive
+# part.
 #
-# To reproduce: drive this hook with the synthetic PreToolUse payloads that
-# tests/test-lane-guard.sh builds (its sandbox is the shape the resolved rows
-# above were measured against) and time the loop. Take the bare-interpreter
-# floor in the same round and DISCARD any round whose floor is above ~31 ms --
-# a machine running a parallel dogfood run doubles every number here, which is
-# how a "measured" figure ends up being about the load. Set CV_LANE_GUARD_LOG
-# and read it back to confirm which path you hit -- an in-lane allow logs
-# NOTHING and an unresolved allow logs "ALLOW (job unresolved)", and the two are
-# otherwise indistinguishable from stdout, which is empty for both.
+# THE CACHE-MISS TAX IS OURS AND IT IS DELIBERATE, and it is worth knowing before
+# anyone "optimises" it away: PYTHONPYCACHEPREFIX moves the bytecode-cache LOOKUP
+# into a private per-invocation directory while PYTHONDONTWRITEBYTECODE forbids
+# populating it, so EVERY stdlib module is recompiled from source on every single
+# invocation. Measured directly, `-c 'import json,os,re,shlex,sys,time'`: 31 ms
+# plain, 32 ms with PYTHONDONTWRITEBYTECODE alone, 35 ms with the prefix alone,
+# 90 ms with both. That ~59 ms is the price of refusing to execute a planted
+# .pyc. The 47-81 ms this file published on 2026-09-01 predates it and stays
+# withdrawn.
+#
+# To reproduce: build a sandbox project (copy `docs/superpowers/execution/` into
+# a temp dir), drive the hook with a synthetic PreToolUse payload whose `cwd` is
+# that sandbox, and time 50 invocations. Take the bare-interpreter floor in the
+# same round. `tests/test-lane-guard.sh` builds the shape the resolved cell needs.
 #
 # A result cache was considered and rejected: it would save the resolution and
 # parse and buy a cache-invalidation bug in the one component whose failure mode
@@ -300,16 +305,22 @@ fi
 #   3. failing that, nothing here can run: log that the guard is INERT for this
 #      call and exit. Fail-open stays the contract; silence does not.
 #
-# WHAT THE LADDER COSTS, MEASURED (2026-09-02, macOS 26.5.2 / arm64,
-# /usr/bin/python3 3.9.6, 50 invocations per path). One probe, ~44 ms, on every
-# Write/Edit/Bash call in every session: 127 ms unresolved before, 171 ms after.
-# The fifth pass refused to pay it and said so in this header. That reasoning is
-# withdrawn: it was weighing the probe against a 47 ms ambient cost that no
-# longer exists (the real figure is measured in COST above), and it was buying
-# speed with the one property this hook exists to have. A guard that picks an
-# interpreter which cannot run is not a cheap guard, it is not a guard.
+# WHAT THE LADDER COSTS, MEASURED (re-taken 2026-09-03, seventh pass; macOS
+# 26.5.2 / arm64, /usr/bin/python3 3.9.6, 50 invocations per cell, two qualifying
+# rounds). ONE probe on the ordinary machine -- ~25 ms marginal, ~38 ms measured
+# standalone -- on every Write/Edit/Bash call in every session. The full cell
+# table and the other two populations are in COST above. The fifth pass refused
+# to pay this and said so in this header. That reasoning is withdrawn: it was
+# weighing the probe against a 47 ms ambient cost that no longer exists, and it
+# was buying speed with the one property this hook exists to have. A guard that
+# picks an interpreter which cannot run is not a cheap guard, it is not a guard.
 #
-# Two things keep the bill to one probe on an ordinary machine:
+# Three things keep the bill to one probe on an ordinary machine:
+#   * RUNG 2 IS NOT COMPUTED ON THE WAY TO RUNG 1. The `-c pass` probe lives in
+#     its own loop, entered only when nothing on the list imports yaml (seventh
+#     pass). It never made the healthy machine pay -- that one breaks out on its
+#     first candidate either way -- but it did cost the machine whose SECOND
+#     candidate has PyYAML a third probe it had no use for.
 #   * ORDER. /usr/bin/python3 is tried before the one on PATH because on macOS
 #     it is the one that ships PyYAML — now purely a COST heuristic (which
 #     candidate is likeliest to answer first), never a correctness claim: the
@@ -366,23 +377,37 @@ for _cv_cand in ${_cv_cands+"${_cv_cands[@]}"}; do
 done
 export CV_PY_CANDIDATES
 
+# RUNG 1 ONLY, first. The `-c pass` probe used to run INSIDE this loop, on every
+# candidate that failed `import yaml` — so a machine whose FIRST candidate has
+# PyYAML paid one probe (it breaks immediately), but a machine whose second one
+# has it paid three, and a machine with none paid two plus the loop. Rung 2 is the
+# unhealthy path by construction; it does not need to be computed on the way to
+# rung 1. Split, the healthy machine pays exactly one probe and the unhealthy one
+# pays at most one per candidate per rung.
 PY=""
 _cv_runnable=""
 _cv_passed_over=""
 for _cv_cand in ${_cv_cands+"${_cv_cands[@]}"}; do
   if _cv_can_yaml "$_cv_cand"; then PY="$_cv_cand"; break; fi
-  if [ -z "$_cv_runnable" ] && _cv_can_run "$_cv_cand"; then
-    _cv_runnable="$_cv_cand"
-  fi
   _cv_passed_over="${_cv_passed_over:+$_cv_passed_over, }$_cv_cand"
 done
 
+# RUNG 2, reached only when nothing on the list can import yaml.
+if [ -z "$PY" ]; then
+  for _cv_cand in ${_cv_cands+"${_cv_cands[@]}"}; do
+    if _cv_can_run "$_cv_cand"; then _cv_runnable="$_cv_cand"; break; fi
+  done
+fi
+
 if [ -n "$PY" ]; then
-  # An ordinary machine takes rung 1 on the first candidate and logs NOTHING: a
-  # line on every tool call would bury the DENYs this log exists for. A pick
-  # that had to pass over a candidate is not ordinary, and is named.
-  [ -z "$_cv_passed_over" ] \
-    || _cv_log "lane-guard: interpreter $PY (imports yaml); passed over: $_cv_passed_over"
+  # THE INTERPRETER IS NAMED ON EVERY PATH, not only on the fallback ones. It used
+  # to be logged only when a candidate had been passed over, and the consequence
+  # was that the ORDER could not be observed: on a machine where PATH's python3
+  # has PyYAML and /usr/bin/python3 does not, the pick is the whole difference
+  # between the ladder and the ordering it replaced, and nothing said which one
+  # ran. One line per call is the price of that being checkable — the same log
+  # already carries a line on the unresolved path, which is the common one.
+  _cv_log "lane-guard: interpreter $PY (imports yaml)${_cv_passed_over:+; passed over: $_cv_passed_over}"
 elif [ -n "$_cv_runnable" ]; then
   PY="$_cv_runnable"
   _cv_log "lane-guard: interpreter $PY CANNOT import PyYAML and no candidate on \
