@@ -515,7 +515,7 @@ def _selftest():
     # result carries it per-audit and de-duplicated at the top level, and all
     # three bypass branches (skipped / null / catch) default it to [].
     check("the wrapper prompt asks for kb_files BY NAME",
-          "kb_files:" in script and "you created or " in script)
+          "and kb_files: the knowledge-base paths you created or " in script)
     check("RESULT_SCHEMA carries kb_files as an array of strings",
           RESULT_SCHEMA["properties"]["kb_files"]
           == {"type": "array", "items": {"type": "string"}})

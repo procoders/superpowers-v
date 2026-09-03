@@ -8,10 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed — the pre-flight result names the knowledge-base files it appended (finding 100)
 
-`compound-v-emit-preflight.py`'s three auditors (archaeology, domain expert, library validator)
-each write into their own `_knowledge-base` directory, but the emitted result never said which
-files it had touched — `v-orchestrate.md` Step 8's audit commit staged the KB directories
-wholesale, with no record of what a given pre-flight run actually added. The wrapper prompt text
+The library validator (1C, at its Step 7) and the domain expert (1B) append to their
+`_knowledge-base` directories — the code archaeologist (1A) has no knowledge-base write step, so its
+list is empty in practice — but the emitted pre-flight result reported only `wrote:` (the audit
+file), and `v-orchestrate.md` Step 8's audit commit staged the run directory alone, no knowledge-base
+path at all, so an appended KB file stayed uncommitted and was charged to the next direct-mode
+job's scope gate (the orchestrator had to stash one mid-run on 2026-09-03). The wrapper prompt text
 now asks each auditor for `kb_files` by name, `RESULT_SCHEMA['properties']` carries it, and the
 result object carries `kb_files` per audit plus a de-duplicated top-level list — the three bypass
 branches (skipped / null / catch) default it to `[]` rather than omitting the key. 1A has no
