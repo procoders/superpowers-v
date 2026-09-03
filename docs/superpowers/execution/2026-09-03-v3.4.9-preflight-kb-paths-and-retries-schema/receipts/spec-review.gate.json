@@ -1,0 +1,65 @@
+{
+  "baseline_commit": "52cccdc9c3d6b9f470910eb4447645b040648173",
+  "diff_digest": "sha256:ba8ffb7922ff04879044d7d1050c6f08747c78b077a81654247475fe46d766bd",
+  "exit_code": 0,
+  "job_id": "spec-review",
+  "patch_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-v3.4.9-preflight-kb-paths-and-retries-schema/jobs/spec-review.patch",
+  "patch_paths": [
+    "docs/superpowers/dogfood/2026-09-03-v3.4.9-preflight-kb-paths-and-retries-schema-review.md"
+  ],
+  "patch_sha256": "sha256:ba8ffb7922ff04879044d7d1050c6f08747c78b077a81654247475fe46d766bd",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"52cccdc9c3d6b9f470910eb4447645b040648173\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.9-preflight-kb-paths-and-retries-schema-review.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.9-preflight-kb-paths-and-retries-schema-review.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "52cccdc9c3d6b9f470910eb4447645b040648173",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "docs/superpowers/dogfood/2026-09-03-v3.4.9-preflight-kb-paths-and-retries-schema-review.md",
+      "docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r2/logs/sandbox-helper.events.jsonl",
+      "docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r3/logs/sandbox-helper.events.jsonl",
+      "docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r4/logs/sandbox-helper-fix.events.jsonl",
+      "docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r5/logs/sandbox-helper-fix.events.jsonl",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r2/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r3/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r4/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r5/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.9-preflight-kb-paths-and-retries-schema/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.9-preflight-kb-paths-and-retries-schema/jobs/spec-review.baseline",
+      "docs/superpowers/execution/2026-09-03-v3.4.9-preflight-kb-paths-and-retries-schema/jobs/spec-review.test-contract.json",
+      "docs/superpowers/execution/2026-09-03-v3.4.9-preflight-kb-paths-and-retries-schema/lane-map.json",
+      "docs/superpowers/execution/2026-09-03-v3.4.9-preflight-kb-paths-and-retries-schema/preexisting/spec-review.txt",
+      "docs/superpowers/execution/2026-09-03-v3.4.9-preflight-kb-paths-and-retries-schema/preexisting/spec-review.verified.txt",
+      "docs/superpowers/execution/2026-09-03-v3.4.9-preflight-kb-paths-and-retries-schema/state.json"
+    ],
+    "checks": [
+      {
+        "checker": "bash tests/test-engine-c-contract.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "/usr/bin/python3 -B scripts/lint-frontmatter.py .",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (5 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 1 command(s) from 17 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)",
+      "ignored 16 bookkeeping path(s) for the unmapped rule"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": ""
+}
