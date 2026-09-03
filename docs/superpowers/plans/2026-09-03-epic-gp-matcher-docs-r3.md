@@ -30,11 +30,11 @@ grep -c 'Glob semantics' skills/compound-v/execution-manifest.md   # expect 0
 - [ ] **Step 1: Insert the paragraph in `execution-manifest.md`** immediately before the line `### Tier vocabulary (stable — never changes when models churn)`, with one blank line before and after. Paste exactly:
 
 ```markdown
-**Glob semantics (`write_allowed`, `read_allowed`, `impacted_map.when`).** `*` matches within one path segment (never `/`);
-`**` matches across segments; `dir/**` also matches `dir` itself; `?` matches one non-`/` character; `[` and `]` are literal
-(no character classes — `app/[locale]/**` is a real directory); matching is anchored to the full repo-relative path. This is
-the scope gate's own matcher (`scripts/compound-v-scope-check.py` `matches`), and V-memory's `recall-check` uses
-the same matcher — see [`memory.md`](memory.md); the proof is the `parity …` rows of
+**Glob semantics (`write_allowed`, `read_allowed`, `impacted_map.when`).** `*` matches within one path segment
+(never `/`); `**` matches across segments; `dir/**` also matches `dir` itself; `?` matches one non-`/` character;
+`[` and `]` are literal (no character classes — `app/[locale]/**` is a real directory); matching is anchored to the
+full repo-relative path. This is the scope gate's own matcher (`scripts/compound-v-scope-check.py` `matches`), and
+V-memory's `recall-check` uses the same matcher — see [`memory.md`](memory.md); the proof is the `parity …` rows of
 `python3 scripts/compound-v-memory.py --selftest`.
 ```
 
