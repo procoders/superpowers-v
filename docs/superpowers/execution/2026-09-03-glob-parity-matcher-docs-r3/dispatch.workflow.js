@@ -199,7 +199,7 @@ const CFG = {
           ],
           "k": 2,
           "match_count": 2,
-          "recall_check_ms": 113,
+          "recall_check_ms": 134,
           "verdict": "tighten"
         },
         "recall_check_file": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-glob-parity-matcher-docs-r3/jobs/docs-exact.recall-check.json",
