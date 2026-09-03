@@ -29,7 +29,6 @@ reached via subprocess. Exit 0 on success; 1 on usage/runtime error; --selftest 
 
 import argparse
 import fcntl
-import fnmatch
 import hashlib
 import json
 import os
@@ -1058,13 +1057,70 @@ def scan_failures(results_root):
     return out
 
 
+_SCOPE_CHECK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "compound-v-scope-check.py")
+_SCOPE_MATCH = None      # the loaded `matches` callable, once per process
+_SCOPE_MATCH_ERR = None  # a cached load failure — never retried within the process
+
+
+def _scope_matches():
+    """The scope gate's matcher, loaded ONCE from source — one matcher for recall and the gate.
+    Same hardening as compound-v-integration-gate.py load_scope_matcher: the bytecode cache is
+    redirected to a private directory for the import (a forged in-tree .pyc would otherwise run
+    here), and NOTHING is loaded when that directory cannot be created. Raises RuntimeError with
+    the reason on failure; the failure is cached so recall_check never re-execs per pair."""
+    global _SCOPE_MATCH, _SCOPE_MATCH_ERR
+    if _SCOPE_MATCH is not None:
+        return _SCOPE_MATCH
+    if _SCOPE_MATCH_ERR is not None:
+        raise RuntimeError(_SCOPE_MATCH_ERR)
+    import importlib.util as _ilu
+    import shutil as _shutil
+    import tempfile as _tempfile
+    prev_prefix = getattr(sys, "pycache_prefix", None)
+    tmp_pycache = None
+    module = None
+    err = None
+    try:
+        try:
+            tmp_pycache = _tempfile.mkdtemp(prefix="cv-pycache-")
+            sys.pycache_prefix = tmp_pycache
+        except Exception as exc:  # noqa: BLE001
+            err = ("refusing to import the scope matcher without a private bytecode cache (%s)" % exc)
+        if err is None:
+            spec = _ilu.spec_from_file_location("cv_scope_check", _SCOPE_CHECK_PATH)
+            if not (spec and spec.loader):
+                err = "no import spec for %s" % _SCOPE_CHECK_PATH
+            else:
+                module = _ilu.module_from_spec(spec)
+                spec.loader.exec_module(module)
+    except Exception as exc:  # noqa: BLE001
+        err = "loading %s raised: %s" % (_SCOPE_CHECK_PATH, exc)
+    finally:
+        try:
+            sys.pycache_prefix = prev_prefix
+        except Exception:  # noqa: BLE001
+            pass
+        if tmp_pycache:
+            _shutil.rmtree(tmp_pycache, ignore_errors=True)
+    fn = getattr(module, "matches", None) if err is None else None
+    if err is None and not callable(fn):
+        err = "%s defines no matches()" % _SCOPE_CHECK_PATH
+    if err is not None:
+        _SCOPE_MATCH_ERR = err
+        raise RuntimeError(err)
+    _SCOPE_MATCH = fn
+    return fn
+
+
 def _file_matches(changed, globs):
-    """Anchored match only — no substring fallback (so `src/api` can't match `src/api2/…`).
-    A bare directory/prefix means "anything under it" via an explicit `<g>/*` form."""
+    """Anchored match with the scope gate's glob semantics — no substring fallback (so `src/api`
+    can't match `src/api2/…`). A bare path with no wildcard means "this path or anything under it"
+    (`<g>/**`), the same reading the gate gives `dir/**`."""
+    m = _scope_matches()
     for g in globs:
-        if fnmatch.fnmatch(changed, g):
+        if m(changed, g):
             return True
-        if fnmatch.fnmatch(changed, g.rstrip("/") + "/*"):
+        if "*" not in g and "?" not in g and m(changed, g.rstrip("/") + "/**"):
             return True
     return False
 
@@ -1072,6 +1128,12 @@ def _file_matches(changed, globs):
 def recall_check(file_globs, results_root, k):
     """Conservative-only verdict: N>=k structurally-recorded failures on the same file pattern
     => TIGHTEN. Never reroutes, never loosens. Gated by structured match, not embeddings."""
+    try:
+        _scope_matches()
+    except RuntimeError as e:
+        return {"verdict": "unavailable", "match_count": 0, "k": k, "files_queried": file_globs,
+                "actions": [], "evidence": [],
+                "note": "scope-check matcher unavailable: %s" % e}
     failures = scan_failures(results_root)
     matched = []
     for fl in failures:
@@ -1566,6 +1628,32 @@ def _selftest() -> int:
               and "/v:memory-refresh" in buf.getvalue())
     finally:
         shutil.rmtree(d2, ignore_errors=True)
+
+    # glob parity with the scope gate (epic 2026-09-03-glob-parity F1): one matcher, two callers.
+    _scope = _scope_matches()
+    parity = [
+        ("src/*.py", "src/a.py", True), ("src/*.py", "src/a/b.py", False),
+        ("src/**", "src/a/b.py", True), ("src/**", "src", True),
+        ("app/[locale]/**", "app/[locale]/page.tsx", True), ("app/[locale]/**", "app/l/page.tsx", False),
+        ("README.md", "README.md", True), ("README.md", "docs/README.md", False),
+        ("**/x.py", "x.py", True), ("docs/**", "docs/a/b.md", True),
+    ]
+    for pat, path, want in parity:
+        check("parity %s ~ %s" % (pat, path),
+              _scope(path, pat) is want and _file_matches(path, [pat]) is want)
+    # bare-dir form: recall-only sugar, equal to the gate's `dir/**`
+    check("bare dir == dir/**", _file_matches("docs/a/b.md", ["docs"]) is True
+          and _scope("docs/a/b.md", "docs/**") is True and _file_matches("docs2/a.md", ["docs"]) is False)
+    # loader failure -> unavailable, never none
+    saved = globals()["_SCOPE_CHECK_PATH"]
+    globals()["_SCOPE_CHECK_PATH"] = "/nonexistent/compound-v-scope-check.py"
+    globals()["_SCOPE_MATCH"] = None; globals()["_SCOPE_MATCH_ERR"] = None
+    v = recall_check(["src/**"], "/nonexistent-results", 1)
+    v2 = recall_check(["src/**"], "/nonexistent-results", 1)   # cached failure, same shape
+    globals()["_SCOPE_CHECK_PATH"] = saved
+    globals()["_SCOPE_MATCH"] = None; globals()["_SCOPE_MATCH_ERR"] = None
+    check("matcher missing -> unavailable", v["verdict"] == "unavailable"
+          and v["note"].startswith("scope-check matcher unavailable") and v2 == v)
 
     print("\n%d failed" % len(fails))
     if fails:
