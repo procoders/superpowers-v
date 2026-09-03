@@ -140,15 +140,16 @@ tc_validate() {
   [ -f "$_tc_f" ] || die "--test-contract-file not found: $_tc_f"
   jq -e '
       (type == "object")
-      and (((keys) - ["scope","floor_command","full_command","resolved_commands","selected_count"]) | length) == 0
+      and (((keys) - ["scope","floor_command","full_command","resolved_commands","selected_count","timeout_s"]) | length) == 0
       and has("scope")
       and (.scope as $s | ["full","impacted","floor_only","impacted+referencing"] | index($s) != null)
       and ((has("selected_count") | not) or ((.selected_count | type) == "number" and .selected_count >= 0))
+      and ((has("timeout_s") | not) or ((.timeout_s | type) == "number" and .timeout_s >= 1))
       and ((.resolved_commands | type) == "array")
       and ((.resolved_commands | length) > 0)
       and (.resolved_commands | map(type == "string") | all)
     ' "$_tc_f" >/dev/null 2>&1 \
-    || die "--test-contract-file is malformed; want {\"scope\":\"full|impacted|floor_only|impacted+referencing\",\"resolved_commands\":[\"...\"]} with optional floor_command/full_command/selected_count (3.4.1) and no other keys: $_tc_f"
+    || die "--test-contract-file is malformed; want {\"scope\":\"full|impacted|floor_only|impacted+referencing\",\"resolved_commands\":[\"...\"]} with optional floor_command/full_command/selected_count (3.4.1)/timeout_s (>=1) and no other keys: $_tc_f"
   # A scope must NEVER resolve to running nothing (execution-manifest.md invariant 12:
   # floor_only means ONLY the floor, never nothing). An all-whitespace command would
   # `bash -c` to a silent exit 0 — a fabricated pass wearing a green tick.
@@ -186,6 +187,8 @@ tc_run() {
   # merge, so do not create it in the first place.
   export PYTHONDONTWRITEBYTECODE=1
   _tc_scope=$(jq -r '.scope' "$_tc_f")
+  _tc_timeout=$(jq -r 'if has("timeout_s") then (.timeout_s | floor) else empty end' "$_tc_f")
+  [ -n "$_tc_timeout" ] || _tc_timeout="$TEST_TIMEOUT_SEC"
   _tc_n=$(jq -r '.resolved_commands | length' "$_tc_f")
   _tc_ran='[]'
   _tc_failed='[]'
@@ -195,7 +198,7 @@ tc_run() {
   while [ "$_tc_i" -lt "$_tc_n" ]; do
     _tc_c=$(tc_command_at "$_tc_f" "$_tc_i")
     set +e
-    python3 "$SUPERVISOR" --timeout "$TEST_TIMEOUT_SEC" --grace 3 --cwd "$_tc_wt" \
+    python3 "$SUPERVISOR" --timeout "$_tc_timeout" --grace 3 --cwd "$_tc_wt" \
       --stdout "$_tc_logdir/test_$_tc_i.out" --stderr "$_tc_logdir/test_$_tc_i.err" \
       --max-output-bytes 1048576 -- /bin/bash -c "$_tc_c" </dev/null
     _tc_crc=$?

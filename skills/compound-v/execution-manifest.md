@@ -176,7 +176,7 @@ Since 3.4.1 the unmapped rule is tier-aware:
 
 | `triage.tier` | An unmapped changed path resolves to |
 |---|---|
-| `FULL`, or no `triage` block at all | `full_command` — unchanged. With no size decision to honour, "all of them" is still the only truthful answer. |
+| `FULL`, or no `triage` block at all | `full_command` — unchanged. With no size decision to honour, "all of them" is still the only truthful answer. **An unmapped path runs `full_command` at this tier — map every lane path in `impacted_map`, or accept and budget the full suite; there is no third option.** |
 | `SCOPED` / `DIRECT` | the **referencing tests**: test files that name the changed path's basename or module name, at most **5**. |
 | `SCOPED` / `DIRECT`, none found | the **floor alone** — never `full_command`, and never nothing. |
 
@@ -449,6 +449,7 @@ jobs:
 | `test_contract.floor_command` | string | no¹ | The merge-blocking floor. Runs at every tier. |
 | `test_contract.full_command` | string | no¹ | The full suite. Also the resolution of a changed path that matches no `when` glob **at tier FULL** (3.4.1 sends SCOPED/DIRECT to the referencing tests instead), and of an uncomputable previously-failing set at every tier. |
 | `test_contract.impacted_map` | list | no | Declarative `{when, run}` rules. **Both fields are mandatory per entry** — a half-declared rule selects nothing. Unknown keys are rejected. |
+| `test_contract.timeout_s` | integer | no | Wall-clock seconds allowed **per checker command** — `floor_command`, `full_command`, and every `impacted_map` `run`, alike; not a whole-suite budget, each resolved command gets its own clock. **Absent ⇒ 480.** Domain capped at **540**, under the harness's 600-second foreground ceiling for one Bash call, leaving headroom for teardown so the outer bound doesn't kill the launcher first and misreport a command that actually finished as a timeout — the same outer/inner relationship `timeout_sec` has with the 600s ceiling (see the rule in [`parallel-dispatcher.md`](../../agents/parallel-dispatcher.md)), applied one level down, per command. A command that overruns exits **124**: the runner records that as `tests.exit_code: 124` plus a `timeout after <N>s` entry in `tests.failures` — **never** as `failure_class`, which stays reserved for backend-level failure (rate-limit, overload, auth, network, environmental). A slow test suite is data about the suite, not a claim about the worker that ran it. |
 | `test_scope` (per job) | enum | no | `full` \| `impacted` \| `floor_only`. **Absent ⇒ DERIVED** — see *The derived default* below. |
 
 ¹ Conditionally required by the two resolution rules the validator enforces, so that a scope can never
@@ -462,6 +463,14 @@ resolve to running **nothing**:
 
 Overlapping `when` globs **union** (every matching `run` is selected); first-match-wins would silently
 drop coverage the map explicitly declares.
+
+**Run-dir bookkeeping never promotes the slice.** The changed-path set a worker's own write leaves
+behind — `docs/superpowers/execution/<run-id>/**` (state, logs, the job's own `test-contract.json`
+and prompt/baseline files) and any path this session's `.gitignore` excludes — is transient run
+substrate, not application surface. It is excluded before glob matching runs, so it can neither
+match an `impacted_map` `when` glob nor fall through as an "unmapped path" that promotes a SCOPED or
+DIRECT job to `full_command` (or a FULL job's slice to something larger than it already is). A job
+that only touched its own bookkeeping stays at whatever `test_scope` it already resolved to.
 
 **What the floor is, said without varnish.** The floor is an early-feedback optimization. It does not
 restore what the full suite guaranteed — CI does. The union of impacted, previously-failing and

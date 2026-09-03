@@ -170,7 +170,7 @@ worktree path is absolute.)
 
    scripts/compound-v-run-<backend>-worker.sh … \
      --test-contract-file "$RUN_DIR/jobs/$JOB_ID.test-contract.json" \
-     [--test-timeout-sec 900]
+     [--test-timeout-sec <test_contract.timeout_s, default 480>]
    ```
 
    The slice is `{ scope, floor_command?, full_command?, resolved_commands }`; only `scope` and `resolved_commands` are required and unknown keys are rejected, so a `resolved_command` typo cannot pass silently as "nothing to run". **Resolution belongs to the caller, execution to the worker** — that glob matching stays in the caller's Python for the same reason the scope gate does: a second, weaker matcher written in bash five times over would diverge from the authority, and a divergence here silently *drops* tests. The worker never re-derives the set; it executes exactly the list it was handed. The file is structurally validated before the model runs, so a malformed contract is a usage fault (`exit 2`) rather than an hour of wasted model time, and a blank command is rejected there too — `bash -c "   "` exits 0, and a silent zero is a fabricated pass. Omit the flag and the worker runs no tests and reports no `tests` object; **absent is honest, an invented zero is not.**
