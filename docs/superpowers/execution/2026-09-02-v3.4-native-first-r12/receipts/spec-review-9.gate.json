@@ -1,0 +1,69 @@
+{
+  "baseline_commit": "c8b9b059b5d33770887ccbf28080d9d6bac7217c",
+  "diff_digest": "sha256:a8ae3937781419b5198894596dc63b159683f1ac3cd517322ab7841fa3ab2f6b",
+  "exit_code": 0,
+  "job_id": "spec-review-9",
+  "patch_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/jobs/spec-review-9.patch",
+  "patch_paths": [
+    "docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-9.md"
+  ],
+  "patch_sha256": "sha256:98e1cd2d6127c66dac1c857e0e991ec5d76344748e981fe6cafb5d23564c9b2f",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"c8b9b059b5d33770887ccbf28080d9d6bac7217c\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-9.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-9.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "c8b9b059b5d33770887ccbf28080d9d6bac7217c",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-9.md",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/.run.lock",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/jobs/guard-hardening.baseline",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/jobs/guard-hardening.test-contract.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/jobs/patch-artifact.baseline",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/jobs/patch-artifact.test-contract.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/jobs/records.baseline",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/jobs/records.test-contract.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/jobs/spec-review-9.baseline",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/jobs/spec-review-9.test-contract.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/lane-map.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/preexisting/spec-review-9.txt",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/preexisting/spec-review-9.verified.txt",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/receipts/guard-hardening.gate.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/receipts/patch-artifact.gate.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/receipts/records.gate.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/results/guard-hardening.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/results/patch-artifact.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/results/records.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/state.json",
+      "docs/superpowers/memory/worker-performance.jsonl"
+    ],
+    "checks": [
+      {
+        "checker": "bash tests/test-epic-goal-stop.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (4 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 0 command(s) from 21 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)",
+      "unmapped: docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-9.md, docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/.run.lock, docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/jobs/guard-hardening.baseline, docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/jobs/guard-hardening.test-contract.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/jobs/patch-artifact.baseline, docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/jobs/patch-artifact.test-contract.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/jobs/records.baseline, docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/jobs/records.test-contract.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/jobs/spec-review-9.baseline, docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/jobs/spec-review-9.test-contract.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/lane-map.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/preexisting/spec-review-9.txt, docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/preexisting/spec-review-9.verified.txt, docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/receipts/guard-hardening.gate.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/receipts/patch-artifact.gate.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/receipts/records.gate.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/results/guard-hardening.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/results/patch-artifact.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/results/records.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r12/state.json, docs/superpowers/memory/worker-performance.jsonl matched no `when` glob \u2014 unknown blast radius resolves to full_command, never to nothing"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": ""
+}

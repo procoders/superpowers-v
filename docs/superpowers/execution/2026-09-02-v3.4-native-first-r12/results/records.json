@@ -1,0 +1,34 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "CHANGELOG.md",
+    "agents/implementer.md",
+    "commands/v-init.md",
+    "docs/superpowers/architecture/2026-09-02-viability-audit.md",
+    "docs/superpowers/architecture/native-mechanisms.md",
+    "docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "06ae1c79b53b20678a3d672a88bfda3cbd1b0b38",
+    "diff_digest": "sha256:0b067cee02be989be091d14a3bc6425739703b80f1bc2e65db5f9409e0e5cbc7",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"06ae1c79b53b20678a3d672a88bfda3cbd1b0b38\",\n  \"changed\": [\n    \"CHANGELOG.md\",\n    \"agents/implementer.md\",\n    \"commands/v-init.md\",\n    \"docs/superpowers/architecture/2026-09-02-viability-audit.md\",\n    \"docs/superpowers/architecture/native-mechanisms.md\",\n    \"docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md\"\n  ],\n  \"allowed\": [\n    \"commands/v-init.md\",\n    \"agents/implementer.md\",\n    \"CHANGELOG.md\",\n    \"docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md\",\n    \"docs/superpowers/architecture/native-mechanisms.md\",\n    \"docs/superpowers/architecture/2026-09-02-viability-audit.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "06ae1c79b53b20678a3d672a88bfda3cbd1b0b38",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "The env offer says what the setting does; the implementer cap agrees with the docs; CHANGELOG and spec carry Codex round 4 and the eighth pass",
+  "tests": {
+    "command": "bash tests/test-epic-goal-stop.sh\nbash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_1f1cf209-0b1-6"
+}

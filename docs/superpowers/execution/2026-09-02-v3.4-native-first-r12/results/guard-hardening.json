@@ -1,0 +1,35 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "AGENTS.md",
+    "README.md",
+    "hooks/hooks.json",
+    "hooks/lane-guard.sh",
+    "scripts/compound-v-scope-check.py",
+    "scripts/compound-v-validate-manifest.py",
+    "tests/test-lane-guard.sh"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "06ae1c79b53b20678a3d672a88bfda3cbd1b0b38",
+    "diff_digest": "sha256:72e62be763b4a042dc487a575eab6e8b9b27bfc97070b57fbfc27451a7b609a4",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"06ae1c79b53b20678a3d672a88bfda3cbd1b0b38\",\n  \"changed\": [\n    \"AGENTS.md\",\n    \"README.md\",\n    \"hooks/hooks.json\",\n    \"hooks/lane-guard.sh\",\n    \"scripts/compound-v-scope-check.py\",\n    \"scripts/compound-v-validate-manifest.py\",\n    \"tests/test-lane-guard.sh\"\n  ],\n  \"allowed\": [\n    \"hooks/lane-guard.sh\",\n    \"hooks/hooks.json\",\n    \"tests/test-lane-guard.sh\",\n    \"scripts/compound-v-scope-check.py\",\n    \"scripts/compound-v-validate-manifest.py\",\n    \"README.md\",\n    \"AGENTS.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "06ae1c79b53b20678a3d672a88bfda3cbd1b0b38",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "The lane guard's probes are bounded, its loaders never import without a safe cache prefix, its imports cannot be shadowed, its tests discriminate",
+  "tests": {
+    "command": "bash tests/test-epic-goal-stop.sh\nbash -c 'bash tests/test-epic-goal-stop.sh && bash tests/test-native-points.sh'\nbash -c '[ -f scripts/compound-v-scope-check.py ] || exit 0; /usr/bin/python3 scripts/compound-v-scope-check.py --selftest'\nbash -c '[ -f scripts/compound-v-validate-manifest.py ] || exit 0; /usr/bin/python3 scripts/compound-v-validate-manifest.py --selftest'\nbash -c '[ -f tests/test-lane-guard.sh ] || exit 0; bash tests/test-lane-guard.sh'\nbash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 6
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_1f1cf209-0b1-4"
+}

@@ -1,33 +1,96 @@
 {
   "run_id": "2026-09-02-v3.4-native-first-r12",
   "phase": "PARTITION_VERIFIED",
-  "updated_at": "2026-09-03T00:38:25Z",
+  "updated_at": "2026-09-03T01:40:00Z",
   "pre_eval_id": "2026-09-02T170442Z-v3-4-native-first-replace-the-epic-goal-feature-a-of-hooks-e-5664",
   "continues": "2026-09-02-v3.4-native-first-r11",
   "jobs": {
     "patch-artifact": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_1f1cf209-0b1-5",
+      "session_id": null,
+      "baseline": "06ae1c79b53b20678a3d672a88bfda3cbd1b0b38",
+      "realised_commit": "06ae1c79b53b20678a3d672a88bfda3cbd1b0b38",
+      "merged": {
+        "realised_commit": "06ae1c79b53b20678a3d672a88bfda3cbd1b0b38",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "c8b9b059b5d33770887ccbf28080d9d6bac7217c"
+      }
     },
     "guard-hardening": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_1f1cf209-0b1-4",
+      "session_id": null,
+      "baseline": "06ae1c79b53b20678a3d672a88bfda3cbd1b0b38",
+      "realised_commit": "06ae1c79b53b20678a3d672a88bfda3cbd1b0b38",
+      "merged": {
+        "realised_commit": "06ae1c79b53b20678a3d672a88bfda3cbd1b0b38",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "c8b9b059b5d33770887ccbf28080d9d6bac7217c"
+      }
     },
     "records": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_1f1cf209-0b1-6",
+      "session_id": null,
+      "baseline": "06ae1c79b53b20678a3d672a88bfda3cbd1b0b38",
+      "realised_commit": "06ae1c79b53b20678a3d672a88bfda3cbd1b0b38",
+      "merged": {
+        "realised_commit": "06ae1c79b53b20678a3d672a88bfda3cbd1b0b38",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "c8b9b059b5d33770887ccbf28080d9d6bac7217c"
+      }
     },
     "spec-review-9": {
-      "status": "pending",
+      "status": "done",
       "isolation": "direct",
-      "worktree": null,
-      "session_id": null
+      "worktree": "",
+      "session_id": null,
+      "baseline": "c8b9b059b5d33770887ccbf28080d9d6bac7217c",
+      "realised_commit": "c8b9b059b5d33770887ccbf28080d9d6bac7217c",
+      "merged": {
+        "realised_commit": "c8b9b059b5d33770887ccbf28080d9d6bac7217c",
+        "mode": "direct",
+        "integrated": true,
+        "commit": "ac386ceade8a34ce1b27aeafbe756a4f2cd452a9"
+      }
     }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "patch-artifact",
+        "guard-hardening",
+        "records"
+      ],
+      "merged": [
+        "patch-artifact",
+        "guard-hardening",
+        "records"
+      ],
+      "commit": "c8b9b059b5d33770887ccbf28080d9d6bac7217c",
+      "integrated": true
+    },
+    "2": {
+      "jobs": [
+        "spec-review-9"
+      ],
+      "merged": [
+        "spec-review-9"
+      ],
+      "commit": "ac386ceade8a34ce1b27aeafbe756a4f2cd452a9",
+      "integrated": true
+    }
+  },
+  "triage_actual": {
+    "merge_pending": true,
+    "pre_eval_id": "2026-09-02T170442Z-v3-4-native-first-replace-the-epic-goal-feature-a-of-hooks-e-5664",
+    "run_id": "2026-09-02-v3.4-native-first-r12"
   }
 }

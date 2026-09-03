@@ -1,0 +1,36 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "scripts/compound-v-emit-workflow.py",
+    "scripts/compound-v-integration-gate.py",
+    "skills/backend-launcher/SKILL.md",
+    "skills/compound-v/execution-manifest.md",
+    "skills/compound-v/state-machine.md",
+    "skills/compound-v/workflows-accelerator.md",
+    "tests/test-engine-c-contract.sh",
+    "tests/test-integration-gate.sh"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "06ae1c79b53b20678a3d672a88bfda3cbd1b0b38",
+    "diff_digest": "sha256:a778a75f8e81d26592eb7feed56850c5f6a82ce142d7940a7c3408eaf7652e92",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"06ae1c79b53b20678a3d672a88bfda3cbd1b0b38\",\n  \"changed\": [\n    \"scripts/compound-v-emit-workflow.py\",\n    \"scripts/compound-v-integration-gate.py\",\n    \"skills/backend-launcher/SKILL.md\",\n    \"skills/compound-v/execution-manifest.md\",\n    \"skills/compound-v/state-machine.md\",\n    \"skills/compound-v/workflows-accelerator.md\",\n    \"tests/test-engine-c-contract.sh\",\n    \"tests/test-integration-gate.sh\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-emit-workflow.py\",\n    \"scripts/compound-v-integration-gate.py\",\n    \"tests/test-integration-gate.sh\",\n    \"tests/test-engine-c-contract.sh\",\n    \"skills/compound-v/workflows-accelerator.md\",\n    \"skills/compound-v/state-machine.md\",\n    \"skills/compound-v/execution-manifest.md\",\n    \"skills/backend-launcher/SKILL.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "06ae1c79b53b20678a3d672a88bfda3cbd1b0b38",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "The merge applies a sealed per-job patch; the manifest is digest-bound; state is a cache; enforcement imports cannot be shadowed",
+  "tests": {
+    "command": "bash tests/test-epic-goal-stop.sh\nbash -c '[ -f scripts/compound-v-emit-workflow.py ] || exit 0; /usr/bin/python3 scripts/compound-v-emit-workflow.py --selftest'\nbash -c '[ -f scripts/compound-v-integration-gate.py ] || exit 0; /usr/bin/python3 scripts/compound-v-integration-gate.py --selftest'\nbash -c '[ -f tests/test-engine-c-contract.sh ] || exit 0; bash tests/test-engine-c-contract.sh'\nbash -c '[ -f tests/test-integration-gate.sh ] || exit 0; bash tests/test-integration-gate.sh'\nbash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 6
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_1f1cf209-0b1-5"
+}

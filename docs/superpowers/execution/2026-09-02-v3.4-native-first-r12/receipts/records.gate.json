@@ -1,0 +1,49 @@
+{
+  "baseline_commit": "06ae1c79b53b20678a3d672a88bfda3cbd1b0b38",
+  "diff_digest": "sha256:0b067cee02be989be091d14a3bc6425739703b80f1bc2e65db5f9409e0e5cbc7",
+  "exit_code": 0,
+  "job_id": "records",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"06ae1c79b53b20678a3d672a88bfda3cbd1b0b38\",\n  \"changed\": [\n    \"CHANGELOG.md\",\n    \"agents/implementer.md\",\n    \"commands/v-init.md\",\n    \"docs/superpowers/architecture/2026-09-02-viability-audit.md\",\n    \"docs/superpowers/architecture/native-mechanisms.md\",\n    \"docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md\"\n  ],\n  \"allowed\": [\n    \"commands/v-init.md\",\n    \"agents/implementer.md\",\n    \"CHANGELOG.md\",\n    \"docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md\",\n    \"docs/superpowers/architecture/native-mechanisms.md\",\n    \"docs/superpowers/architecture/2026-09-02-viability-audit.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "06ae1c79b53b20678a3d672a88bfda3cbd1b0b38",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "CHANGELOG.md",
+      "agents/implementer.md",
+      "commands/v-init.md",
+      "docs/superpowers/architecture/2026-09-02-viability-audit.md",
+      "docs/superpowers/architecture/native-mechanisms.md",
+      "docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md"
+    ],
+    "checks": [
+      {
+        "checker": "bash tests/test-epic-goal-stop.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (4 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 0 command(s) from 6 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)",
+      "unmapped: CHANGELOG.md, agents/implementer.md, commands/v-init.md, docs/superpowers/architecture/2026-09-02-viability-audit.md, docs/superpowers/architecture/native-mechanisms.md, docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md matched no `when` glob \u2014 unknown blast radius resolves to full_command, never to nothing"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_1f1cf209-0b1-6"
+}
