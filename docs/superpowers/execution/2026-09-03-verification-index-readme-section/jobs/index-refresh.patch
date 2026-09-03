@@ -1,0 +1,17 @@
+diff --git a/docs/superpowers/dogfood/README.md b/docs/superpowers/dogfood/README.md
+index 4e176d3..6cb6df2 100644
+--- a/docs/superpowers/dogfood/README.md
++++ b/docs/superpowers/dogfood/README.md
+@@ -29,10 +29,11 @@
+ | 2026-09-03 | v3.4.1-triage-size | 1 | ISSUES | 2026-09-03-v3.4.1-triage-size-review-1.md |
+ | 2026-09-03 | v3.4.2-transcript-watch | 1 | ISSUES | 2026-09-03-v3.4.2-transcript-watch-review-1.md |
+ | 2026-09-03 | v3.4.3-codex-sandbox-checkout | 1 | ISSUES | 2026-09-03-v3.4.3-codex-sandbox-checkout-review-1.md |
++| 2026-09-03 | epic-vi-review-index | 2 | APPROVED | 2026-09-03-epic-vi-review-index-review-2.md |
+ | 2026-09-03 | v3.4.1-triage-size | 2 | ISSUES | 2026-09-03-v3.4.1-triage-size-review-2.md |
+ | 2026-09-03 | v3.4.2-transcript-watch | 2 | ISSUES | 2026-09-03-v3.4.2-transcript-watch-review-2.md |
+ | 2026-09-03 | v3.4.3-codex-sandbox-checkout | 2 | APPROVED | 2026-09-03-v3.4.3-codex-sandbox-checkout-review-2.md |
+ | 2026-09-03 | v3.4.1-triage-size | 3 | ISSUES | 2026-09-03-v3.4.1-triage-size-review-3.md |
+ | 2026-09-03 | v3.4.2-transcript-watch | 3 | APPROVED | 2026-09-03-v3.4.2-transcript-watch-review-3.md |
+ 
+-Reviews: 32 · APPROVED: 2 · ISSUES: 25 · other: 5
++Reviews: 33 · APPROVED: 3 · ISSUES: 25 · other: 5
