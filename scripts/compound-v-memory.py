@@ -695,18 +695,23 @@ def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S")
 
 
-def refresh_fts5(conn, root):
+def refresh_fts5(conn, root, changed=None, removed=None):
     """The FTS5-only (re)index body, shared by `cmd_refresh`'s non-embedding path and
     `cmd_search`'s inline refresh: tracked files -> changed/removed -> `reindex_file` /
     purge -> `indexed_files` upkeep. NEVER touches an embedder — that is the one structural
     guarantee that a search-triggered refresh cannot silently start embedding. Stamps
     `chunker_version` itself, so a project whose only refreshes are search-triggered still
-    gets an identity match on a later `bootstrap`. Returns (n_indexed, n_removed)."""
-    files = tracked_files(root)
-    present = set(files)
-    known = {r[0]: r[1] for r in conn.execute("SELECT path,content_hash FROM indexed_files")}
-    changed = [f for f in files if file_sha(os.path.join(root, f)) != known.get(f)]
-    removed = [p for p in known if p not in present]
+    gets an identity match on a later `bootstrap`. `changed`/`removed` are optional precomputed
+    relpath lists — `cmd_search` hands in the lists it already derived from `index_staleness`
+    so tracked docs are hashed only ONCE per search (its staleness check IS the hash pass);
+    omitted (the plain `cmd_refresh` caller), they're derived here the same way. Returns
+    (n_indexed, n_removed)."""
+    if changed is None or removed is None:
+        files = tracked_files(root)
+        present = set(files)
+        known = {r[0]: r[1] for r in conn.execute("SELECT path,content_hash FROM indexed_files")}
+        changed = [f for f in files if file_sha(os.path.join(root, f)) != known.get(f)]
+        removed = [p for p in known if p not in present]
     n_idx = 0
     for f in changed:
         n_idx += 1
@@ -943,19 +948,22 @@ def context_pack(results, q, as_json):
 
 
 def index_staleness(conn, root):
-    """(new, changed, removed) doc counts: how many git-tracked docs are not yet indexed, how
-    many are indexed but have changed on disk, and how many indexed docs are gone. This is the
-    MULTI-DEV freshness signal (after a `git pull` brings teammates' new/changed docs, search
-    can say the index is behind before a refresh catches up) AND the trigger `cmd_search` uses
-    to decide whether its inline refresh has anything to do. Single source of truth for
-    `cmd_search`, the selftest and `doctor` — no duplicate inline computation."""
+    """(new, changed, removed) relpath LISTS (not counts — callers wanting a count take len()):
+    which git-tracked docs are not yet indexed, which are indexed but changed on disk, and which
+    indexed docs are gone. This is the MULTI-DEV freshness signal (after a `git pull` brings
+    teammates' new/changed docs, search can say the index is behind before a refresh catches up)
+    AND the trigger `cmd_search` uses to decide whether its inline refresh has anything to do.
+    Single source of truth for `cmd_search`, the selftest and `doctor` — no duplicate inline
+    computation. Returning the lists (not just counts) lets `cmd_search` hand `new + changed`
+    and `removed` straight to `refresh_fts5`, so a search's inline refresh hashes tracked docs
+    only ONCE (here) instead of once for staleness and again inside the refresh."""
     files = tracked_files(root)
     present = set(files)
     known = {r[0]: r[1] for r in conn.execute("SELECT path,content_hash FROM indexed_files")}
     new = [f for f in files if f not in known]
     changed = [f for f in files if f in known and file_sha(os.path.join(root, f)) != known[f]]
     removed = [p for p in known if p not in present]
-    return len(new), len(changed), len(removed)
+    return new, changed, removed
 
 
 def _staleness_warning(new, changed, removed):
@@ -976,22 +984,27 @@ def cmd_search(args) -> int:
     # Staleness FIRST — before any search — so the inline refresh below (or the warning) is
     # driven by the real decision, not a cosmetic afterthought.
     new, changed, removed = index_staleness(conn, root)
-    stale = new + changed + removed
+    stale = len(new) + len(changed) + len(removed)
     if stale and not args.no_refresh:
         lock = acquire_lock(paths["lock"])
         if lock is not None:
             # Inline refresh: FTS5 lane ONLY — never the --quick cap, never an embedder, never
-            # config_wants_embeddings(). A search must never silently start embedding.
-            n_idx, n_removed = refresh_fts5(conn, root)
-            release_lock(lock)
+            # config_wants_embeddings(). A search must never silently start embedding. Hand in
+            # the staleness lists already computed above so refresh_fts5 does not hash every
+            # tracked doc a second time — release the lock in a finally so an exception inside
+            # the refresh (a bad file, a DB error) can never leave it held.
+            try:
+                n_idx, n_removed = refresh_fts5(conn, root, changed=new + changed, removed=removed)
+            finally:
+                release_lock(lock)
             sys.stderr.write("V-memory: refreshed %d stale doc(s) before recall (FTS5 lane)\n"
                              % (n_idx + n_removed))
         else:
             # Another refresh already holds the lock — search the stale index, silently
             # (never refresh's own "already running — skipped" line).
-            _staleness_warning(new, changed, removed)
+            _staleness_warning(len(new), len(changed), len(removed))
     elif stale:
-        _staleness_warning(new, changed, removed)
+        _staleness_warning(len(new), len(changed), len(removed))
     pool = max(args.top * 4, 20)
     bm25_list = bm25_search(conn, args.query, pool)
     dense_list = []
@@ -1164,7 +1177,7 @@ def cmd_doctor(args) -> int:
         print("  embed_model : %s" % meta_get(conn, "embed_model", "(none)"))
         new, changed, removed = index_staleness(conn, root)
         print("  staleness   : %d new, %d changed, %d removed (run refresh to sync)"
-              % (new, changed, removed))
+              % (len(new), len(changed), len(removed)))
     print("  embeddings  : %s" % ("bootstrapped" if is_bootstrapped(paths) else "not bootstrapped (FTS5-only)"))
     print("  scale gate  : dense engages at >= %d vectors" % SCALE_GATE_MIN_CHUNKS)
     return 0
@@ -1334,7 +1347,7 @@ def _selftest() -> int:
         with open(os.path.join(docs, "specs", "teammate-pulled.md"), "w") as fh:
             fh.write("# Pulled\nA teammate's freshly pulled knowledge, not yet indexed locally.\n")
         s_new, s_changed, s_removed = index_staleness(conn, find_repo_root(tmp))
-        check("staleness flags an un-indexed pulled doc", s_new >= 1)
+        check("staleness flags an un-indexed pulled doc", len(s_new) >= 1)
 
         # --- v3.4.5: search refreshes the FTS5 lane inline when the index is behind ------
         import contextlib as _ctxlib
@@ -1373,6 +1386,23 @@ def _selftest() -> int:
             rc3 = cmd_search(SA(False))
         check("search: a second plain search prints no refresh line (nothing stale)",
               rc3 == 0 and err3.getvalue() == "")
+
+        # search under a lock another refresh already holds: warns, never refreshes, never
+        # blocks, and never touches the lock it does not own (still held after cmd_search returns)
+        with open(os.path.join(docs, "specs", "2026-09-03-locked.md"), "w") as fh:
+            fh.write("# Locked\nAdded while a refresh lock is held elsewhere (quokka-locked).\n")
+        held_fd = acquire_lock(paths["lock"])
+        check("lock held before the search-under-lock case", held_fd is not None)
+        out4, err4 = io.StringIO(), io.StringIO()
+        with _ctxlib.redirect_stdout(out4), _ctxlib.redirect_stderr(err4):
+            rc4 = cmd_search(SA(False))
+        check("search under a held lock: exit 0, results still come from the (stale) index",
+              rc4 == 0 and "later" in out4.getvalue() and "locked" not in out4.getvalue())
+        check("search under a held lock: staleness warning, no refresh line",
+              "behind the repo" in err4.getvalue() and "refreshed" not in err4.getvalue())
+        check("search under a held lock: the lock is still held afterward",
+              acquire_lock(paths["lock"]) is None)
+        release_lock(held_fd)
 
         # /v:init opt-in: .claude/compound-v.json drives the dense lane (no --with-embeddings flag)
         cfgdir = os.path.join(tmp, ".claude"); os.makedirs(cfgdir, exist_ok=True)
