@@ -1,6 +1,6 @@
 {
   "run_id": "2026-09-03-verification-index-readme-section",
-  "phase": "DISPATCHED",
+  "phase": "MERGED",
   "pre_eval_id": "2026-09-03T084302Z-epic-2026-09-03-verification-index-feature-f2-readme-section-ed69",
   "epic_id": "2026-09-03-verification-index",
   "updated_at": "2026-09-03T09:07:44Z",
@@ -34,10 +34,18 @@
       }
     },
     "spec-review": {
-      "status": "pending",
+      "status": "done",
       "isolation": "direct",
-      "worktree": null,
-      "session_id": null
+      "worktree": "",
+      "session_id": null,
+      "baseline": "bfe63c97bec903063279cbf85902e109f3b653b7",
+      "realised_commit": "bfe63c97bec903063279cbf85902e109f3b653b7",
+      "merged": {
+        "realised_commit": "bfe63c97bec903063279cbf85902e109f3b653b7",
+        "mode": "direct",
+        "integrated": true,
+        "commit": "20180671d28d6a45c46b8098e0be0776be65da51"
+      }
     }
   },
   "waves": {
@@ -60,6 +68,22 @@
       ],
       "commit": "2dbbbdf157d72248e695e1383cc25fa12ca142b3",
       "integrated": true
+    },
+    "3": {
+      "jobs": [
+        "spec-review"
+      ],
+      "merged": [
+        "spec-review"
+      ],
+      "commit": "20180671d28d6a45c46b8098e0be0776be65da51",
+      "integrated": true
     }
-  }
+  },
+  "triage_actual": {
+    "merge_pending": true,
+    "pre_eval_id": "2026-09-03T084302Z-epic-2026-09-03-verification-index-feature-f2-readme-section-ed69",
+    "run_id": "2026-09-03-verification-index-readme-section"
+  },
+  "merged_at": "2026-09-03T09:25:42Z"
 }

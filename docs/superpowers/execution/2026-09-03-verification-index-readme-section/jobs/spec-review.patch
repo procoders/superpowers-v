@@ -1,0 +1,331 @@
+diff --git a/docs/superpowers/dogfood/2026-09-03-epic-vi-readme-section-review.md b/docs/superpowers/dogfood/2026-09-03-epic-vi-readme-section-review.md
+new file mode 100644
+index 0000000..fd8380c
+--- /dev/null
++++ b/docs/superpowers/dogfood/2026-09-03-epic-vi-readme-section-review.md
+@@ -0,0 +1,325 @@
++# F2 `readme-section` — Review Gate (SPEC / QUALITY / INTEGRATION)
++
++**VERDICT: ISSUES** (1 finding, cosmetic, one line to fix — see `## Verdict`)
++
++| | |
++|---|---|
++| Run | `docs/superpowers/execution/2026-09-03-verification-index-readme-section` |
++| Epic | `2026-09-03-verification-index` — F2, depends on F1 `review-index` (merged, APPROVED) |
++| Reviewed commits | `dff558c` (job `index-refresh`) · `2dbbbdf` (job `readme-section`) |
++| Reviewer baseline | `bfe63c9` · isolation `direct` · tier `SCOPED` |
++| Spec | `docs/superpowers/execution/epics/2026-09-03-verification-index/specs/readme-section.md` |
++| Plan | `docs/superpowers/plans/2026-09-03-epic-vi-readme-section.md` |
++
++Pass status: **SPEC — ISSUES · QUALITY — OK · INTEGRATION — OK.**
++
++---
++
++## Recall
++
++Two calls, both at review intent, both on the merged tree.
++
++```
++/usr/bin/python3 -B scripts/compound-v-memory.py search \
++  "README verification program section dogfood index numbers" --intent review --top 8
++```
++
++Eight hits, none on point: `plans/2026-06-30-v-onboard.md` (Tier-2 verdict policy), four
++`specs/*-design.md` "Verification" sections about `--selftest` fixtures, and
++`dogfood/2026-09-02-df21-postgate-review.md`. Nothing in the corpus describes a README section whose
++numbers are copied from another generated file's footer — the same "nothing on point" conclusion F2's
++own archaeology reached independently (`docs/superpowers/archaeology/2026-09-03-epic-vi-readme-section.md`,
++Step 0). The engine reported the FTS5 index **115 new / 0 removed docs behind the repo**; the gap is
++same-day dogfood churn, so it does not change the conclusion, but it is stated rather than hidden.
++
++```
++/usr/bin/python3 -B scripts/compound-v-memory.py recall-check \
++  --files README.md docs/superpowers/dogfood/README.md
++→ recall-check: none (0/2 match on README.md, docs/superpowers/dogfood/README.md)
++```
++
++No `tighten` verdict. No control is escalated on recall grounds. Recall was used as evidence only —
++it is never a routing input, and it did not decide anything below.
++
++One recalled claim is worth citing because it bears on §QUALITY-N1: the library audit's Step 0
++surfaced `specs/2026-07-25-v2.17-cochange-and-evidence-packing-design.md` Feature C — *"Any published
++number about Compound V ships with a 'What this does not show' note in the same document."* Cited as
++an existing norm, not applied as a gate: it governs published *measurements*, and the README section
++publishes a count and a program shape, not a benchmark.
++
++---
++
++## SPEC
++
++### Scope lock
++
++Respected, and confirmed at the seam from the git-derived gate receipts (not from worker prose):
++
++| Job | `write_allowed` | `changed` (gate) | Verdict |
++|---|---|---|---|
++| `index-refresh` | `docs/superpowers/dogfood/README.md` | `["docs/superpowers/dogfood/README.md"]` | `pass`, `violations: []` (`receipts/index-refresh.gate.json:11-20`) |
++| `readme-section` | `README.md` | `["README.md"]` | `pass`, `violations: []` (`receipts/readme-section.gate.json:11-20`) |
++
++Both receipts carry `source: "gate-receipt"` and a `diff_digest` bound to the pinned baseline
++(`0d41987`, `0e44576`). No scope leak; the gate ran and is not being taken on trust.
++
++### Spec coverage
++
++| Spec requirement | Implemented in | Status |
++|---|---|---|
++| Regenerate `docs/superpowers/dogfood/README.md` with the script before the numbers are read | job `index-refresh`, commit `dff558c` — one row added, footer `32 → 33` / `2 → 3` | OK |
++| Regeneration runs the script, never a hand edit | diff is exactly the generator's output; re-run reproduces it byte-for-byte (see INTEGRATION) | OK |
++| `README.md` gains a `## Verification program` section | `README.md:136` | OK |
++| Placed before the last existing `##` section | `## Verification program` at 136, last `##` (`Under the hood (for the curious)`) at 140 | OK |
++| Three sentences | `README.md:138` — (1) what the program is, (2) the link + counts, (3) "Read that index…" | OK |
++| Sentence 1 says what the program is (stages 1–8, each a dogfood cycle against native Claude Code mechanisms) | "…eight stages, each a dogfood cycle run against native Claude Code mechanisms rather than trusted from prose" | OK (see QUALITY N1) |
++| A real markdown link to `docs/superpowers/dogfood/README.md` | `[docs/superpowers/dogfood/README.md](docs/superpowers/dogfood/README.md)` at `README.md:138` | OK |
++| Root-relative, **no** leading slash | `grep -n "](/docs/" README.md` → rc 1 (no match) | OK |
++| `N review files, A APPROVED` with the footer's numbers verbatim | `33 review files, 3 APPROVED` | OK |
++| No other `README.md` change | diff of `2dbbbdf` is a single 4-line insertion, nothing else | OK |
++
++No `SPEC_GAP`.
++
++### Audit constraints
++
++`docs/superpowers/archaeology/2026-09-03-epic-vi-readme-section.md` §7 and
++`docs/superpowers/library-audit/2026-09-03-epic-vi-readme-section.md` §7, walked item by item.
++
++| Audit | Constraint | Satisfied? | Evidence |
++|---|---|---|---|
++| Archaeology §7.1 | MUST NOT read the committed footer without regenerating first | OK | `index-refresh` ran first and moved the footer to `33`/`3`; the section quotes the regenerated values, not the stale `32`/`2` |
++| Archaeology §7.2 | The two-job / two-file shape must be preserved | OK | `manifest.yaml` jobs `index-refresh` → `readme-section` with `depends_on`; both merged in that order (waves 1, 2) |
++| Archaeology §7.3 | Regeneration runs the script, never a hand edit | OK | re-running the generator on the merged tree reproduces the committed file byte-for-byte |
++| Archaeology §7.4 | Copy `N`/`A` verbatim from `Reviews:`/`APPROVED:`, do not recompute | OK | `33`/`3` match the footer tokens exactly; `ISSUES`/`other` correctly not surfaced |
++| Archaeology §7.5 | Real markdown link, root-relative, no leading slash | OK | verified above; target exists, so the dead-link CI gate (`validate.yml:234-267`) resolves it from the repo root |
++| Archaeology §7.6 | Insert before the current last `##`, **and follow the file's `blank / --- / blank` section-boundary convention on both sides of the new section** | **FAIL** | satisfied above the new section (the pre-existing `---` at `README.md:134`), **not** below it — see ISSUE 1 |
++| Archaeology §7.7 | No automated check that the footer is itself accurate; the reviewer verifies by reading both files | OK (accepted) | done in INTEGRATION AC-2; recorded as an accepted spec decision, not a `TEST_GAP` |
++| Archaeology §7.8 | No effort owed defending `lint-frontmatter.py` / the anti-ruflo grep | OK | none spent; both verified structurally inapplicable |
++| Library §7 | MUST NOT introduce any new library/package/SDK/runtime dependency | OK | zero new dependencies; the change is prose |
++| Library §7 | MUST source the counts by reading the footer at write time, never hardcode independently | OK | numbers trace to the regenerated footer |
++| Library §7 | MUST NOT treat F1's footer format as a versioned contract independent of F1's script | OK | the manual equality check was kept as the acceptance mechanism, not replaced by a green CI run |
++| Library §7 | MUST pass `/usr/bin/python3 -B scripts/lint-frontmatter.py .` | OK | green (INTEGRATION AC-3); library-audit M1 (PyYAML hard-import) is inherited, not introduced, and did not fire here |
++| Library §7 | MUST NOT let a clean 1C bill excuse skipping the other gates | OK | all three passes were run |
++
++One `CONSTRAINT_VIOLATION` (archaeology §7.6).
++
++### Job acceptance
++
++`index-refresh`: "exactly the output of the script (a second run changes nothing)" — verified in
++INTEGRATION. `readme-section`: every clause verified in the coverage table, except the
++`blank / --- / blank` convention clause it inherits from §7.6 through the audit it was told to read
++first. Its own prompt (`jobs/readme-section.prompt.md`) named the archaeology §7 MUSTs explicitly.
++
++### Over-build
++
++None. `2dbbbdf` adds four lines and nothing else: no config flag, no helper, no new script, no
++generator for the section, no anchor, no badge. `dff558c` adds one table row and the footer delta the
++generator itself produced. This is the smallest diff that satisfies the spec.
++
++---
++
++## QUALITY
++
++**Code quality.** No code changed. The prose is clear, non-hedged, and correctly scoped: it states
++the program's shape, links the evidence, and hands the reader the index for the rest. The phrase
++"as of this writing" is the honest framing for a number that a later regeneration will move — it does
++not claim the count is live.
++
++**No regression.** The floor and the tier-owed tests were re-run by me on the merged tree, not taken
++on the workers' word (outputs in INTEGRATION AC-3). The generated index is unchanged by a fresh
++regeneration, so `index-refresh` did not desync the file from what the script produces — F1's own
++idempotence guarantee survives. `README.md` is not read by `lint-frontmatter.py`'s path classes
++(`agents/*.md`, `commands/*.md`, `skills/*/SKILL.md`) and is outside the anti-ruflo grep's
++`find scripts docs` walk, so neither gate was weakened or newly relied upon.
++
++**Test alignment.** The structural MUSTs are guarded: `test_contract.impacted_map` carries a rule for
++`README.md` asserting `grep -c "^## Verification program$" == 1` and that the link target exists, and
++a rule for `docs/superpowers/dogfood/README.md` asserting a non-empty file with a `Reviews: ` footer.
++`tests/test-dogfood-index.sh:159` pins the exact footer format the section parses, and `:161-169`
++pins byte-identical idempotence. The number-equality requirement itself is deliberately unguarded by
++a test — archaeology §7.7 and the spec both record that as an accepted docs-only decision with the
++reviewer as the compensating control. Recorded, not charged as a `TEST_GAP`.
++
++**No fabricated metrics.** The two published numbers are measured: they are read from a file the same
++run generated by script, and I re-derived them independently. No token-cost claim, no savings meter,
++no hardcoded baseline, no speedup percentage anywhere in either diff.
++
++**No reward-hacking.** No test, spec, scorer, grader or threshold file appears in either commit —
++`files_changed` across the run is exactly `docs/superpowers/dogfood/README.md` and `README.md`. No
++assertion removed, no file deleted or skipped, no threshold loosened, no exception swallowed. The
++`impacted_map` rules were written into the manifest before dispatch (commit `0d41987`, the pre-flight
++commit) and were not touched by either implementer.
++
++**§2.6 confirmed-blocker integrity.** Not applicable — this is a checkpoint-stance epic feature, not a
++marathon `blocked_external` verdict or a `done_with_blockers` terminal. No blocker ledger entry and no
++frozen arbiter audit exist for this run; nothing was waved through on a blocker claim.
++
++**N1 — note, not an issue: "eight stages" has no source in the repository.** The only occurrence of an
++eight-stage claim anywhere under `docs/superpowers/` is the new README sentence itself and the patch
++that produced it (`grep -rn -i "eight stages|stages 1-8|stage 8" docs/superpowers` → one hit, the
++patch file). The epic's own brief calls this work "stage 5: the first epic ever"
++(`docs/superpowers/execution/epics/2026-09-03-verification-index/brief.md:1`), and no committed
++document enumerates a stage 6, 7 or 8. This is **not** charged against the implementer: the plan
++(`plans/2026-09-03-epic-vi-readme-section.md:16`) and the spec both say "stages 1–8" verbatim, and the
++implementer copied them. It is recorded here so the maintainer knows the README now makes a
++public, user-facing claim whose only in-repo evidence is the README itself, and can either land the
++stage list somewhere citable or soften the sentence. Out of this run's write scope either way.
++
++---
++
++## INTEGRATION
++
++### Partition integrity
++
++The two jobs' write sets are disjoint (`docs/superpowers/dogfood/README.md` vs `README.md`), no third
++file was touched by either, and no barrel, registry or shared type exists in a docs-only change. Both
++gate receipts report `violations: []` against pinned baselines. No `PARTITION_LEAK`.
++
++### Cross-job seam
++
++The seam here is a data seam, not a type seam: `index-refresh` produces the footer that
++`readme-section` consumes. It holds, and the ordering is provable from git rather than asserted —
++`index-refresh` merged as `dff558c`, was finalized by `0e44576`, and `readme-section`'s pinned
++baseline is `0e44576` (`state.json`, `jobs/readme-section.baseline`). The `readme-section` worktree
++was therefore cut from a base that already contained the regenerated index, which is exactly why it
++read `33`/`3` and not the stale `32`/`2`. No `INTEGRATION_MISMATCH`.
++
++### Tests owed vs tests run
++
++Manifest `triage.tier: SCOPED`. What SCOPED owes: the unconditional floor, plus every `impacted_map`
++rule whose `when` matches a changed path. Neither job carries a changed path matching no rule, so no
++referencing-tests fallback was owed and `full_command` was **not** owed. Derived from `files_changed`
++against the map, not taken from the workers:
++
++| Job | `tests.command` | `tests.scope` | `tests.selected_count` | `tests.exit_code` |
++|---|---|---|---|---|
++| `index-refresh` | floor + the `docs/superpowers/dogfood/README.md` rule | `impacted` | 2 | **0** |
++| `readme-section` | floor + the `README.md` rule | `impacted` | 2 | **0** |
++
++Both `tests` objects are present and non-empty, so no `NO_TEST_EVIDENCE`. Both exit 0, so no red suite
++is arriving wearing `status: "success"`.
++
++### Feature acceptance criteria
++
++Each criterion re-run by me on the merged tree. Commands and outputs verbatim.
++
++**AC-1 — exactly one `## Verification program`, before the last `##`, real root-relative link with no
++leading slash, target exists.**
++
++```
++$ grep -c "^## Verification program$" README.md
++1
++
++$ grep -n "^## " README.md
++14:## Requirements
++31:## 🎮 New here? Learn it as a game → **[Compound V Academy](https://amiainative.dev/compound-v)**
++41:## Main features
++59:## How it routes the work
++71:## Install
++92:## How to use it — two commands
++119:## Good to know
++136:## Verification program
++140:## Under the hood (for the curious)
++
++$ grep -n "](docs/superpowers/dogfood/README.md)" README.md
++138:Compound V is dogfooded … [docs/superpowers/dogfood/README.md](docs/superpowers/dogfood/README.md) …
++
++$ grep -n "](/docs/" README.md ; echo "rc=$?"
++rc=1
++
++$ test -f docs/superpowers/dogfood/README.md ; echo "rc=$?"
++rc=0
++```
++
++One heading, at 136, immediately before the last `##` at 140. Link is a real markdown link with the
++root-relative target and no leading slash; the target exists, so the dead-link gate resolves it.
++**AC-1 met.**
++
++**AC-2 — the section's two numbers equal the footer of the index on the merged tree, where the index
++was regenerated by the script in the same run (a second run changes nothing).**
++
++```
++$ grep -n "^Reviews: " docs/superpowers/dogfood/README.md
++39:Reviews: 33 · APPROVED: 3 · ISSUES: 25 · other: 5
++
++$ grep -o "33 review files, 3 APPROVED" README.md
++33 review files, 3 APPROVED
++
++$ bash scripts/compound-v-dogfood-index.sh --dir docs/superpowers/dogfood --out <scratch>/regen1.md ; echo "rc=$?"
++rc=0
++$ diff <scratch>/regen1.md docs/superpowers/dogfood/README.md ; echo "rc=$?"
++rc=0
++
++$ bash scripts/compound-v-dogfood-index.sh --dir docs/superpowers/dogfood --out <scratch>/regen2.md ; echo "rc=$?"
++rc=0
++$ diff <scratch>/regen1.md <scratch>/regen2.md ; echo "rc=$?"
++rc=0
++```
++
++`Reviews: 33` → README's `33 review files`; `APPROVED: 3` → README's `3 APPROVED`. Equal.
++Regenerating on the merged tree reproduces the committed index byte-for-byte, and a second run is
++byte-identical to the first — so the committed index is genuinely the script's current output, and
++the footer the section quotes is not stale. Regeneration was directed to a scratch `--out` (the
++script's `mktemp` lands beside `--out`, so this also kept the reviewer's lane clean); the committed
++file was read, never rewritten. **AC-2 met.**
++
++**Note on this review file's own effect on the count.** This file is
++`docs/superpowers/dogfood/2026-09-03-epic-vi-readme-section-review.md`, which matches the generator's
++`<date>-<feature>-review.md` pattern. It lands **after** the `index-refresh` job ran, so it is not in
++the `33`, and a regeneration performed after this file exists will report `34` while `README.md`
++still says `33`. That is expected and is not a defect in either job: the index is regenerated
++per-run, the README states "as of this writing", and the same one-row lag is the exact condition F1's
++archaeology diagnosed and this run's `index-refresh` job exists to clear at the next run. The two
++numbers were compared against the footer **as it stands in HEAD**, before this file was written.
++
++**AC-3 — `lint-frontmatter.py` green and `tests/test-dogfood-index.sh` stays green.**
++
++```
++$ /usr/bin/python3 -B scripts/lint-frontmatter.py .
++✅ All frontmatter clean
++rc=0
++
++$ bash tests/test-dogfood-index.sh
++test-dogfood-index: all assertions passed
++rc=0
++```
++
++**AC-3 met.**
++
++| Acceptance criterion | Satisfied by | Status |
++|---|---|---|
++| One `## Verification program`, before the last `##`, real no-leading-slash link to an existing file | `readme-section` (`2dbbbdf`) | met |
++| The two numbers equal the regenerated index footer; a second script run changes nothing | `index-refresh` (`dff558c`) + `readme-section` (`2dbbbdf`) | met |
++| `lint-frontmatter.py` green; `tests/test-dogfood-index.sh` stays green | both jobs; re-run by the reviewer | met |
++| No write outside the partitioned file sets | scope gate: both jobs `pass`, `violations: []` | met |
++
++All three feature-level acceptance criteria are met. The build is green on evidence, not assertion.
++
++---
++
++## Verdict
++
++**VERDICT: ISSUES** — 1 finding. SPEC blocks; QUALITY and INTEGRATION are clean.
++
++1. **`CONSTRAINT_VIOLATION` (PASS 1) — archaeology §7.6: the new section does not carry the file's
++   `blank / --- / blank` boundary on its lower side, and in doing so it removed the horizontal rule
++   that `## Under the hood (for the curious)` had before this change.**
++   `README.md:134-140` — the section was spliced in *after* the pre-existing `---` at 134, so it
++   inherited that rule as its own top boundary and left `## Under the hood` at 140 with none. Before
++   `2dbbbdf`, seven of the file's eight `##` headings were preceded by `blank / --- / blank` (the sole
++   exception being `## 🎮 New here?` at 31); after it, two of nine are not, and the newly-exceptional
++   one is a section this task was told not to change ("No other README change",
++   `jobs/readme-section.prompt.md`). Verified: `grep -n "^---$" README.md` → `11 39 57 69 90 117 134`,
++   with no rule between 136 and 140.
++   The archaeology named this exact failure mode in advance — *"a new section spliced in without its
++   own `---`-bracketing would be the visible outlier, not the norm"* (§2) — and §7.6 raised it to a
++   design constraint the implementer's own prompt pointed it at. The reader-visible effect is that
++   "Verification program" and "Under the hood" now run together with no divider.
++   → Insert a `blank / --- / blank` between the new section's paragraph (138) and `## Under the hood`
++   (140). One line. Do not remove the rule at 134. Re-run AC-1 and AC-3 after the edit; the counts and
++   the link are unaffected.
++
++Nothing else blocks. For the record, and explicitly **not** part of the numbered list because it is
++not attributable to either implementer: **N1** (QUALITY) — the README's "eight stages" claim is
++copied verbatim from the spec and plan, and has no other source anywhere in the repository; the
++maintainer may want a citable stage list or a softer sentence. Out of this run's write scope.

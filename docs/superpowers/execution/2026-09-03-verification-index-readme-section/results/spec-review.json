@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-03-epic-vi-readme-section-review.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "bfe63c97bec903063279cbf85902e109f3b653b7",
+    "diff_digest": "sha256:00d61516492c22c2e5f6588e79384e208bd819ea920cf4ac81442b7acad9de75",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"bfe63c97bec903063279cbf85902e109f3b653b7\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-03-epic-vi-readme-section-review.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-03-epic-vi-readme-section-review.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "bfe63c97bec903063279cbf85902e109f3b653b7",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Review Gate \u2014 three passes against the spec and the feature acceptance criteria",
+  "tests": {
+    "command": "/usr/bin/python3 -B scripts/lint-frontmatter.py .\nbash tests/test-agent-recall.sh\nbash tests/test-engine-c-contract.sh\nbash tests/test-epic-goal-stop.sh\nbash tests/test-integration-gate.sh\nbash tests/test-lane-guard.sh",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted+referencing",
+    "selected_count": 6
+  },
+  "violations": [],
+  "worktree": ""
+}

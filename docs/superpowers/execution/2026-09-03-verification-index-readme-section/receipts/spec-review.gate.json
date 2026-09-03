@@ -1,0 +1,126 @@
+{
+  "baseline_commit": "bfe63c97bec903063279cbf85902e109f3b653b7",
+  "diff_digest": "sha256:00d61516492c22c2e5f6588e79384e208bd819ea920cf4ac81442b7acad9de75",
+  "exit_code": 0,
+  "job_id": "spec-review",
+  "patch_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-verification-index-readme-section/jobs/spec-review.patch",
+  "patch_paths": [
+    "docs/superpowers/dogfood/2026-09-03-epic-vi-readme-section-review.md"
+  ],
+  "patch_sha256": "sha256:00d61516492c22c2e5f6588e79384e208bd819ea920cf4ac81442b7acad9de75",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"bfe63c97bec903063279cbf85902e109f3b653b7\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-03-epic-vi-readme-section-review.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-03-epic-vi-readme-section-review.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "bfe63c97bec903063279cbf85902e109f3b653b7",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "docs/superpowers/dogfood/2026-09-03-epic-vi-readme-section-review.md",
+      "docs/superpowers/execution/2026-09-02-df1-test-scope/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df10-reviewer/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df11-reviewer-retry/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df12-reviewer-third/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df13-reviewer-fourth/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df14-floor-fails/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df15-reviewer-fifth/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df16-floor-fails-again/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df18-direct-digest/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df19-clean/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df2-frontier/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df20-final/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df21-postgate/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df22-closed/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df24-recall-review/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df25-recall-reachable/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df27-full-pass/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df2b-direct-bookkeeping/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df2c-direct-retry/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df3-scope-violation/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df6-no-work/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df7-narrowing/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df9-escalation/.run.lock",
+      "docs/superpowers/execution/2026-09-02-v3.0.5-model-routing/.run.lock",
+      "docs/superpowers/execution/2026-09-02-v3.0.6-implement-narrowing/.run.lock",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r13/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r2/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r3/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r4/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r5/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.1-triage-size/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.2-transcript-watch-r2/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.2-transcript-watch-r3/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.2-transcript-watch/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r2/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r2/logs/sandbox-helper.events.jsonl",
+      "docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r3/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r3/logs/sandbox-helper.events.jsonl",
+      "docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r4/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r4/logs/sandbox-helper-fix.events.jsonl",
+      "docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r5/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r5/logs/sandbox-helper-fix.events.jsonl",
+      "docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout/.run.lock",
+      "docs/superpowers/execution/2026-09-03-verification-index-readme-section/.run.lock",
+      "docs/superpowers/execution/2026-09-03-verification-index-readme-section/jobs/spec-review.baseline",
+      "docs/superpowers/execution/2026-09-03-verification-index-readme-section/jobs/spec-review.test-contract.json",
+      "docs/superpowers/execution/2026-09-03-verification-index-readme-section/lane-map.json",
+      "docs/superpowers/execution/2026-09-03-verification-index-readme-section/preexisting/spec-review.txt",
+      "docs/superpowers/execution/2026-09-03-verification-index-readme-section/preexisting/spec-review.verified.txt",
+      "docs/superpowers/execution/2026-09-03-verification-index-readme-section/state.json",
+      "docs/superpowers/execution/2026-09-03-verification-index-review-index-r2/.run.lock",
+      "docs/superpowers/execution/2026-09-03-verification-index-review-index-r3/.run.lock",
+      "docs/superpowers/execution/2026-09-03-verification-index-review-index/.run.lock"
+    ],
+    "checks": [
+      {
+        "checker": "/usr/bin/python3 -B scripts/lint-frontmatter.py .",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash tests/test-agent-recall.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash tests/test-engine-c-contract.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash tests/test-epic-goal-stop.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash tests/test-integration-gate.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash tests/test-lane-guard.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (2 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 0 command(s) from 54 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)",
+      "unmapped: docs/superpowers/dogfood/2026-09-03-epic-vi-readme-section-review.md, docs/superpowers/execution/2026-09-02-df1-test-scope/.run.lock, docs/superpowers/execution/2026-09-02-df10-reviewer/.run.lock, docs/superpowers/execution/2026-09-02-df11-reviewer-retry/.run.lock, docs/superpowers/execution/2026-09-02-df12-reviewer-third/.run.lock, docs/superpowers/execution/2026-09-02-df13-reviewer-fourth/.run.lock, docs/superpowers/execution/2026-09-02-df14-floor-fails/.run.lock, docs/superpowers/execution/2026-09-02-df15-reviewer-fifth/.run.lock, docs/superpowers/execution/2026-09-02-df16-floor-fails-again/.run.lock, docs/superpowers/execution/2026-09-02-df18-direct-digest/.run.lock, docs/superpowers/execution/2026-09-02-df19-clean/.run.lock, docs/superpowers/execution/2026-09-02-df2-frontier/.run.lock, docs/superpowers/execution/2026-09-02-df20-final/.run.lock, docs/superpowers/execution/2026-09-02-df21-postgate/.run.lock, docs/superpowers/execution/2026-09-02-df22-closed/.run.lock, docs/superpowers/execution/2026-09-02-df24-recall-review/.run.lock, docs/superpowers/execution/2026-09-02-df25-recall-reachable/.run.lock, docs/superpowers/execution/2026-09-02-df27-full-pass/.run.lock, docs/superpowers/execution/2026-09-02-df2b-direct-bookkeeping/.run.lock, docs/superpowers/execution/2026-09-02-df2c-direct-retry/.run.lock, docs/superpowers/execution/2026-09-02-df3-scope-violation/.run.lock, docs/superpowers/execution/2026-09-02-df6-no-work/.run.lock, docs/superpowers/execution/2026-09-02-df7-narrowing/.run.lock, docs/superpowers/execution/2026-09-02-df9-escalation/.run.lock, docs/superpowers/execution/2026-09-02-v3.0.5-model-routing/.run.lock, docs/superpowers/execution/2026-09-02-v3.0.6-implement-narrowing/.run.lock, docs/superpowers/execution/2026-09-02-v3.4-native-first-r13/.run.lock, docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r2/.run.lock, docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r3/.run.lock, docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r4/.run.lock, docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r5/.run.lock, docs/superpowers/execution/2026-09-03-v3.4.1-triage-size/.run.lock, docs/superpowers/execution/2026-09-03-v3.4.2-transcript-watch-r2/.run.lock, docs/superpowers/execution/2026-09-03-v3.4.2-transcript-watch-r3/.run.lock, docs/superpowers/execution/2026-09-03-v3.4.2-transcript-watch/.run.lock, docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r2/.run.lock, docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r2/logs/sandbox-helper.events.jsonl, docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r3/.run.lock, docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r3/logs/sandbox-helper.events.jsonl, docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r4/.run.lock, docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r4/logs/sandbox-helper-fix.events.jsonl, docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r5/.run.lock, docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r5/logs/sandbox-helper-fix.events.jsonl, docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout/.run.lock, docs/superpowers/execution/2026-09-03-verification-index-readme-section/.run.lock, docs/superpowers/execution/2026-09-03-verification-index-readme-section/jobs/spec-review.baseline, docs/superpowers/execution/2026-09-03-verification-index-readme-section/jobs/spec-review.test-contract.json, docs/superpowers/execution/2026-09-03-verification-index-readme-section/lane-map.json, docs/superpowers/execution/2026-09-03-verification-index-readme-section/preexisting/spec-review.txt, docs/superpowers/execution/2026-09-03-verification-index-readme-section/preexisting/spec-review.verified.txt, docs/superpowers/execution/2026-09-03-verification-index-readme-section/state.json, docs/superpowers/execution/2026-09-03-verification-index-review-index-r2/.run.lock, docs/superpowers/execution/2026-09-03-verification-index-review-index-r3/.run.lock, docs/superpowers/execution/2026-09-03-verification-index-review-index/.run.lock matched no `when` glob \u2014 at tier SCOPED that resolves to the 5 test(s) REFERENCING the changed module(s), not to full_command (v3.4.1 decision 4; capped at 5). This is a textual heuristic, not a call graph: CI stays the backstop"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": ""
+}
