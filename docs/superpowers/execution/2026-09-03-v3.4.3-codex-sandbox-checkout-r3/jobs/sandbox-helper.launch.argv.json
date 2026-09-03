@@ -1,0 +1,23 @@
+[
+  "/Users/oleg/Dev/superpowers-v/scripts/compound-v-run-codex-worker.sh",
+  "--run-id",
+  "2026-09-03-v3.4.3-codex-sandbox-checkout-r3",
+  "--job-id",
+  "sandbox-helper",
+  "--repo",
+  "/Users/oleg/Dev/superpowers-v",
+  "--prompt-file",
+  "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r3/jobs/sandbox-helper.prompt.md",
+  "--model",
+  "gpt-5.6-terra",
+  "--write-allowed",
+  "scripts/compound-v-sandbox-checkout.sh:tests/test-sandbox-checkout.sh",
+  "--timeout-sec",
+  "480",
+  "--effort",
+  "medium",
+  "--events-log",
+  "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r3/logs/sandbox-helper.events.jsonl",
+  "--test-contract-file",
+  "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r3/jobs/sandbox-helper.test-contract.json"
+]
