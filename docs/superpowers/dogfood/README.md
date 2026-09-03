@@ -31,12 +31,16 @@
 | 2026-09-03 | v3.4.1-triage-size | 1 | ISSUES | 2026-09-03-v3.4.1-triage-size-review-1.md |
 | 2026-09-03 | v3.4.2-transcript-watch | 1 | ISSUES | 2026-09-03-v3.4.2-transcript-watch-review-1.md |
 | 2026-09-03 | v3.4.3-codex-sandbox-checkout | 1 | ISSUES | 2026-09-03-v3.4.3-codex-sandbox-checkout-review-1.md |
+| 2026-09-03 | v3.4.5-recall-freshness | 1 | ISSUES | 2026-09-03-v3.4.5-recall-freshness-review.md |
+| 2026-09-03 | v3.4.6-triage-test-scoping-fixes | 1 | ISSUES | 2026-09-03-v3.4.6-triage-test-scoping-fixes-review.md |
 | 2026-09-03 | epic-vi-readme-section | 2 | APPROVED | 2026-09-03-epic-vi-readme-section-review-2.md |
 | 2026-09-03 | epic-vi-review-index | 2 | APPROVED | 2026-09-03-epic-vi-review-index-review-2.md |
 | 2026-09-03 | v3.4.1-triage-size | 2 | ISSUES | 2026-09-03-v3.4.1-triage-size-review-2.md |
 | 2026-09-03 | v3.4.2-transcript-watch | 2 | ISSUES | 2026-09-03-v3.4.2-transcript-watch-review-2.md |
 | 2026-09-03 | v3.4.3-codex-sandbox-checkout | 2 | APPROVED | 2026-09-03-v3.4.3-codex-sandbox-checkout-review-2.md |
+| 2026-09-03 | v3.4.5-recall-freshness | 2 | ISSUES | 2026-09-03-v3.4.5-recall-freshness-review-2.md |
+| 2026-09-03 | v3.4.6-triage-test-scoping-fixes | 2 | ISSUES | 2026-09-03-v3.4.6-triage-test-scoping-fixes-review-2.md |
 | 2026-09-03 | v3.4.1-triage-size | 3 | ISSUES | 2026-09-03-v3.4.1-triage-size-review-3.md |
 | 2026-09-03 | v3.4.2-transcript-watch | 3 | APPROVED | 2026-09-03-v3.4.2-transcript-watch-review-3.md |
 
-Reviews: 36 · APPROVED: 5 · ISSUES: 26 · other: 5
+Reviews: 40 · APPROVED: 5 · ISSUES: 30 · other: 5

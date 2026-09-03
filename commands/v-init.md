@@ -602,9 +602,9 @@ identically to `balanced`. Only `cost-aware.claude.standard` differs: `sonnet`, 
   edit. Both rules are **advisory and best-effort by construction**: each blocks at most once while its own temp-dir marker survives, and
   the runtime silently discards a `Stop` block when a turn ends via a tool result, an MCP end-turn or
   a loop tick. They raise the cost of skipping the pipeline; they cannot make skipping impossible, so
-  do not describe them to the user as enforcement that cannot be bypassed. The armed **epic goal**
-  rule in the same hook is *not* configured here — it is armed per-epic by
-  [`/v:epic`](v-epic.md) §0d and lives in `epic-state.json`.
+  do not describe them to the user as enforcement that cannot be bypassed. `hooks/epic-goal-stop.sh`
+  carries only these two gates as of 3.4.0 — the epic-goal continuation rule it used to arm was
+  removed, because `/v:epic` §0d now offers Claude Code's own native `/goal` instead.
 - **`brainstorm.deep_research`** (default `"ask"`) / **`brainstorm.batch_elicitation`**
   (default `true`) = the Step 3d choices: the pre-brainstorm recon mode (`ask|auto|off`;
   `off` is a hard kill-switch) and the independent-question batching toggle. These are
@@ -740,6 +740,36 @@ the output yourself."
 Record nothing about it in either config file: it lives in the user's settings, and a
 copy of it in `.claude/compound-v.json` would be the machine-local-data-in-a-committed-file
 mistake v2.6.2 already fixed.
+
+### 4d. One optional project setting — `worktree.baseRef`
+
+**Offer it; never write it without a yes.** `worktree.baseRef` is a **native Claude Code
+project setting**, not a Compound V key, and it lives in a different file from Step 4a's
+config: the project's own `.claude/settings.json`, not `.claude/compound-v.json`. It has
+exactly two legal values, `"fresh"` (the default) and `"head"`, and it is **project-wide**
+— it governs every worktree in the repo, including interactive `--worktree` sessions, not
+only Compound V's own dispatch.
+
+> A job that `depends_on` another needs its own worktree branched from the current `HEAD`,
+> not the default ref — otherwise that worktree cannot see the prerequisite job's commit,
+> and the dependent job's agent falls back to editing the shared main checkout directly
+> instead of an isolated tree (`TROUBLESHOOTING.md`, "A job with `depends_on` runs in the
+> shared checkout instead of its own worktree"). Set `worktree.baseRef` to `"head"` in
+> `.claude/settings.json` to fix that. Shall I show you the edit?
+
+```jsonc
+// .claude/settings.json — the PROJECT's file, not the plugin's, not ~/.claude/settings.json.
+// Merge only the "worktree" key in; every other key already in this file (permissions,
+// hooks, env, ...) is preserved untouched. Create the file if it does not exist yet.
+{
+  "worktree": {
+    "baseRef": "head"
+  }
+}
+```
+
+Read the file first if it exists, merge `worktree.baseRef` into the parsed object, and
+write the merged result back — never truncate the file to just this one key.
 
 ---
 

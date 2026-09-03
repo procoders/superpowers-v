@@ -169,6 +169,16 @@ At runtime the same fail-closed posture applies to individual commands: *"no cla
 
 **Related:** if a job reads `forged` with a duplicate-receipt reason, look for a stray `results/<id>.<something>.json`. D1 requires **exactly one** receipt per job, so any dotted sibling of the primary is read as a rival receipt. Superseded attempts belong in `results/attempts/`.
 
+## A job with `depends_on` runs in the shared checkout instead of its own worktree
+
+**Symptom:** a dependent job (one with `depends_on` and `isolation: worktree` in the manifest) shows `agent_isolation: null` in `state.json` and its agent edited the main checkout directly, alongside whatever else that wave is running — not an isolated worktree.
+
+**Cause:** `scripts/compound-v-emit-workflow.py`'s `_worktree_base_is_head` reads `worktree.baseRef` from the project's `.claude/settings.json`. Absent (the default), a dependent worktree job's `agent_isolation` resolves to `None` and the agent runs direct in the shared checkout — because a fresh worktree still branches from the default ref, which cannot see the prerequisite wave's commit yet (finding 60). Set to `"head"`, every worktree in the repo branches from the current `HEAD` instead, and the dependent job gets a real, isolated worktree that does contain the prerequisite's commit.
+
+**Fix:** add `{"worktree": {"baseRef": "head"}}` to the project's `.claude/settings.json` (merge — do not overwrite `permissions`/`hooks`/`env` or any other existing key). `/v:init` offers to make this edit for you; see [`v-init.md`](commands/v-init.md) Step 4d. This is a native, project-wide Claude Code setting (not a Compound V config key, and not the same file as `.claude/compound-v.json`) — the only two legal values are `"fresh"` (default) and `"head"`.
+
+**Related:** the finalizer now takes its record of where a job ran from the emitter's own gate receipt rather than trusting the manifest's `isolation` label (finding 89), so a direct-mode dependent job is not refused at integration on that account alone. What `baseRef: head` buys is isolation, not survival — without it, several dependent jobs in the same wave share one checkout and can collide with each other's edits.
+
 ## The lane guard never denies anything
 
 **Symptom:** `hooks/lane-guard.sh` is registered, but an obviously out-of-lane write goes through.
