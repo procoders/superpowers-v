@@ -22,10 +22,10 @@
         "one-matcher"
       ],
       "spec_path": "docs/superpowers/execution/epics/2026-09-03-glob-parity/specs/matcher-docs.md",
-      "status": "running",
+      "status": "failed",
       "run_id": "2026-09-03-glob-parity-matcher-docs",
       "attempts": 1,
-      "last_error": null,
+      "last_error": "attempt 1: reviewer ISSUES \u2014 2 SPEC_GAP (the six-rule glob sentence is in neither file; the worker wrote cross-reference sentences instead), 3 CONSTRAINT_VIOLATION (edited the write_allowed row instead of adding the paragraph after the section; edited the trigger bullet not the recall-check row; +4 lines in memory.md, not same-line-count)",
       "disposition": null
     }
   ],
@@ -44,7 +44,7 @@
   "blocker_ledger": [],
   "no_progress_cycles": 0,
   "total_attempts": 4,
-  "updated_at": "2026-09-03T20:18:45Z",
+  "updated_at": "2026-09-03T20:27:45Z",
   "last_done_count": 1,
   "processed_cycle_ids": [
     "c1",
