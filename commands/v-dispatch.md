@@ -168,6 +168,21 @@ delegating, the epic inherits Engine C along with everything else.
    - `docs/superpowers/memory/triage-outcomes.jsonl` — the precision-IGNORED `merge_pending`
      `actual`, appended once every job is terminal. Step 9 writes the terminal one.
 
+   **Watch the live transcripts in the background (v3.4.2).** While the workflow runs, use the
+   Monitor tool to run the read-only transcript watch every two minutes rather than waiting for the
+   gate to catch a problem after the fact:
+
+   ```bash
+   python3 scripts/compound-v-transcript-watch.py --run-dir docs/superpowers/execution/<run-id> --every 120
+   ```
+
+   It is advisory only — it never writes into the run directory or acts on a signal — but two of its
+   signals are worth acting on immediately rather than waiting for the run to finish: **`out-of-lane`**
+   (a write outside the job's `write_allowed`) and **`wrong-cwd`** (a `register-lane` whose isolation or
+   cwd disagrees with the manifest). Either one, seen live, is reason enough to `TaskStop` the workflow
+   and re-orchestrate early — the same move that would have caught 3.4.0's r1 defect and 3.4.1's r2
+   defect in their first minute instead of at the gate.
+
 7. **Gate integration on the authority — BEFORE any job commit is integrated.**
 
    ```

@@ -4,7 +4,27 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
-## [Unreleased]
+## [3.4.2] - 2026-09-03
+
+Stage 3 of the post-3.4.0 verification program: a FULL normal task, run through the pipeline with zero
+manual interventions. The feature is the mechanism the maintainer endorsed after using it by hand
+through five runs of 3.4.1 — reading a live worker's transcript surfaces a problem minutes before the
+gate records it.
+
+### Added — read the workers' transcripts before their results (`compound-v-transcript-watch.py`)
+
+A read-only, advisory script watches a run's live Workflow agent transcripts and reports five mechanical
+signals, one line each, with no model in the loop: **`out-of-lane`** (a Write/Edit or Bash redirect
+outside the job's `write_allowed`), **`wrong-cwd`** (a `register-lane` whose isolation or cwd disagrees
+with the manifest), **`error`** (a Bash result carrying a traceback, permission denial, or a non-zero
+exit), **`stall`** (no tool activity past a threshold on an agent that has not returned), and
+**`denied`** (a lane-guard `PreToolUse` denial). It never writes into the run directory, never acts on a
+signal, and exits 0 on every advisory path. Discovery needs no new state: it scans the session's
+Workflow transcripts for the run directory's own absolute path — every worker's `register-lane` call
+carries it — and the newest matching workflow wins, so `--wf`/`--transcripts` are overrides, not
+requirements. `/v:status --live` runs it once after the state table; `/v:dispatch` step 6 runs it every
+two minutes in the background and treats `out-of-lane`/`wrong-cwd` as reason enough to `TaskStop` and
+re-orchestrate early.
 
 ### Fixed — a finished run's lane map claimed the checkout forever (finding 68)
 

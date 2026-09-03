@@ -106,6 +106,23 @@ probe fails, render an em-dash or skip the section — never invent an epic stat
     with `—` in every column and a plain note that the epic state could not be read; never break the
     table and never guess.
 
+## Live watch (v3.4.2) — `--live`
+
+**`/v:status --live [run-id]`** runs a single, read-only advisory pass over the run's live agent
+transcripts — the same transcripts the harness's own `/workflows`/`/tasks` views draw from — and prints
+what it finds **after** the state table above, never in place of it:
+
+```bash
+python3 scripts/compound-v-transcript-watch.py --run-dir docs/superpowers/execution/<run-id> --once
+```
+
+The script discovers the run's workflow transcript directory itself (no `--wf` needed — it scans for the
+run directory's absolute path inside the agents' own `register-lane` calls, newest match wins) and emits
+one line per **new** signal since its last state: `out-of-lane`, `wrong-cwd`, `error`, `stall`, `denied`.
+It is advisory only — it never acts on a signal, never mutates the run, and exits 0 on every path. Print
+its lines verbatim under the per-job table; a clean pass with no new signals is worth stating explicitly
+("no new signals") rather than silently omitting the section.
+
 ## Dashboard (v2.15) — `--html`
 
 The same read-only state this command renders as text can be rendered as a **browser dashboard** via

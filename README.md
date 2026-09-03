@@ -137,7 +137,7 @@ That's it.
 
 The orchestration, scope enforcement, routing, and memory are plain bash + Python scripts and skill docs you can read. Start here:
 
-- [skills/compound-v/SKILL.md](skills/compound-v/SKILL.md) — the orchestrator
+- [skills/compound-v/SKILL.md](skills/compound-v/SKILL.md) — the orchestrator, which can play back a dispatch's live agent transcripts (`scripts/compound-v-transcript-watch.py`, `/v:status --live`) to catch an out-of-lane write or a stall minutes before the gate would
 - [skills/compound-v/epic-mode.md](skills/compound-v/epic-mode.md) — epic mode
 - [skills/compound-v/memory.md](skills/compound-v/memory.md) — V-memory
 - [skills/backend-launcher/SKILL.md](skills/backend-launcher/SKILL.md) — the backend workers
