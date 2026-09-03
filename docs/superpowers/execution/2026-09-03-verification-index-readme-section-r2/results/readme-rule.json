@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "README.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "a996e0ce4579417d0369adb96b2d41be18e3a7d1",
+    "diff_digest": "sha256:2b65b6d6898c33e9452bad19381df945a537bfa787ef3b0b26370f3e9cdb82fd",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"a996e0ce4579417d0369adb96b2d41be18e3a7d1\",\n  \"changed\": [\n    \"README.md\"\n  ],\n  \"allowed\": [\n    \"README.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "a996e0ce4579417d0369adb96b2d41be18e3a7d1",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task A' \u2014 the section's lower `blank / --- / blank` boundary (review-1 issue 1) and the numbers re-read from the refreshed footer",
+  "tests": {
+    "command": "/usr/bin/python3 -B scripts/lint-frontmatter.py .\nbash -c 'test $(grep -c \"^## Verification program$\" README.md) -eq 1 && test -f docs/superpowers/dogfood/README.md'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_c952fe0f-856-5"
+}
