@@ -2067,10 +2067,19 @@ async function gateStage(prev, job) {
     // bookkeeping files and BLOCKED a green job (stage-4 dogfood, finding 79).
     const externalBackend = job.backend && job.backend !== 'claude';
     let gateRoot;
+    let implNoResult = false;
     if (job.agent_isolation === 'worktree' || externalBackend) {
       gateRoot = (impl.worktree || '').trim();
       if (!gateRoot) {
-        return gateFailure(job.id, 'worktree job reported no worktree; there is no tree to gate — fails closed');
+        if (externalBackend) {
+          return gateFailure(job.id, 'external worker reported no worktree; there is no tree to gate — fails closed');
+        }
+        // A Claude worktree job whose implementer returned nothing (turn cap, crash)
+        // still has the tree the lane guard enforced: lane-map.json maps that cwd to
+        // this job. gate-receipt resolves it and tags the receipt `impl_no_result`,
+        // so Record refuses THIS job with a receipt instead of the authority voiding
+        // the whole wave for want of one (findings 107/108, two runs lost).
+        implNoResult = true;
       }
     } else {
       gateRoot = CFG.repo_root;
@@ -2081,6 +2090,7 @@ async function gateStage(prev, job) {
       ' --job-id ' + q(job.id) +
       ' --repo-root ' + q(CFG.repo_root) +
       ' --worktree ' + q(gateRoot) +
+      (implNoResult ? ' --impl-no-result' : '') +
       ' --manifest ' + q(CFG.manifest_path) +
       (CFG.manifest_digest ? ' --manifest-digest ' + q(CFG.manifest_digest) : '') +
       // The gate's mode must follow where the AGENT actually ran, not what the
@@ -2737,11 +2747,31 @@ def _resolve_test_contract(fastpath, manifest_path, job_id, worktree, baseline,
     return out_path if rc == 0 and os.path.exists(out_path) else None
 
 
+def _lane_map_worktree_for(run_dir, job_id, repo_root):
+    """The worktree lane-map.json registered for `job_id` (the cwd the lane guard
+    enforced for it), or None. Exactly one entry, an existing directory, and not the
+    checkout itself — anything else is not a locator this gate may trust."""
+    lm = _read_json(os.path.join(run_dir, "lane-map.json"), None)
+    if not isinstance(lm, dict):
+        return None
+    cands = [p for p, j in (lm.get("worktrees") or {}).items() if j == job_id]
+    if len(cands) != 1:
+        return None
+    cand = os.path.abspath(cands[0])
+    if not os.path.isdir(cand) or cand == os.path.abspath(repo_root):
+        return None
+    return cand
+
+
 def cmd_gate_receipt(argv):
     ap = argparse.ArgumentParser(prog="compound-v-emit-workflow.py gate-receipt")
     ap.add_argument("--run-dir", required=True)
     ap.add_argument("--job-id", required=True)
     ap.add_argument("--worktree", required=True)
+    ap.add_argument("--impl-no-result", dest="impl_no_result", action="store_true",
+                    help="the implementer returned no result; for a Claude worktree job "
+                         "resolve the tree from lane-map.json's registration and tag the "
+                         "receipt, so Record can refuse this job with evidence")
     ap.add_argument("--manifest")
     ap.add_argument("--mode", choices=["worktree", "direct"], default="worktree")
     ap.add_argument("--repo-root", required=True,
@@ -2756,6 +2786,17 @@ def cmd_gate_receipt(argv):
                          "map this gate measures against.")
     ap.add_argument("--now")
     args = ap.parse_args(argv)
+    if getattr(args, "impl_no_result", False) and not (args.worktree or "").strip():
+        _lm_wt = _lane_map_worktree_for(os.path.abspath(args.run_dir), args.job_id,
+                                        os.path.abspath(args.repo_root))
+        if args.mode != "worktree" or not _lm_wt:
+            out = {"job_id": args.job_id, "verdict": "error", "source": "gate-receipt",
+                   "impl_no_result": True,
+                   "reason": "implementer returned no result and lane-map.json holds no "
+                             "single registered worktree for this job — fails closed"}
+            print(json.dumps(out, indent=2, sort_keys=True))
+            return 2
+        args.worktree = _lm_wt
 
     run_dir = os.path.abspath(args.run_dir)
     manifest_path = os.path.abspath(
@@ -2967,6 +3008,10 @@ def cmd_gate_receipt(argv):
     # for a direct job — that is a value, not a missing one, and Record branches
     # on the manifest's isolation rather than on whether this string is blank.
     out["worktree"] = "" if args.mode == "direct" else root
+    if getattr(args, "impl_no_result", False):
+        # Carried into the receipt so Record refuses the JOB (status error, with the
+        # measured tree as evidence) rather than the authority voiding the wave.
+        out["impl_no_result"] = True
     if baseline:
         out["baseline_commit"] = baseline
     if realised:
@@ -3479,6 +3524,11 @@ def _job_result_from(verdict, job, state_job, tests=None, contract=None,
         status = "blocked"
     else:
         status = "error"
+    _impl_no_result = isinstance(verdict, dict) and bool(verdict.get("impl_no_result"))
+    if _impl_no_result:
+        # The gate measured the registered worktree, but the implementer never
+        # returned (turn cap or crash): whatever it wrote is unfinished by definition.
+        status = "error"
 
     # A RED TEST FLOOR BLOCKS, and until dogfood 14 nothing read it.
     #
@@ -3544,7 +3594,9 @@ def _job_result_from(verdict, job, state_job, tests=None, contract=None,
         "blocked": status == "blocked",
         "files_changed": changed,
         "violations": violations,
-        "summary": verdict.get("reason") or (job.get("title") or job.get("id") or ""),
+        "summary": (("implementer returned no result (turn cap or crash); the registered "
+                     "worktree was gated as evidence — " if _impl_no_result else "")
+                    + (verdict.get("reason") or (job.get("title") or job.get("id") or ""))),
         "session_id": state_job.get("session_id") or "",  # filled from the events log for an external job (finding 81)
         "worktree": worktree,
         "exit_code": exit_code,
@@ -3782,7 +3834,7 @@ def cmd_record(argv):
                     "this fails closed"
                     % (job_id,
                        " even though it reports changed files"
-                       if _saw_changes else " and it declares no write lanes")
+                       if _saw_changes else " and no changed files were observed")
                 )
                 print(json.dumps(ack, indent=2, sort_keys=True))
                 return 2
@@ -6134,6 +6186,37 @@ def selftest():
                "--repo-root" in gate_seg)
         _check("a direct job is gated in CFG.repo_root, never in a reported pwd",
                "gateRoot = CFG.repo_root" in script_2)
+
+        # --- findings 107/108: an implementer that returned nothing no longer voids the wave.
+        _check("gate JS falls back to the registered lane for a claude worktree job with no result",
+              "(implNoResult ? ' --impl-no-result' : '')" in script_2
+              and "external worker reported no worktree" in script_2)
+        import tempfile as _tf_nr
+        with _tf_nr.TemporaryDirectory() as _nr_tmp:
+            _nr_run = os.path.join(_nr_tmp, "run"); os.makedirs(_nr_run)
+            _nr_wt = os.path.join(_nr_tmp, "wt-1"); os.makedirs(_nr_wt)
+            _nr_repo = os.path.join(_nr_tmp, "repo"); os.makedirs(_nr_repo)
+            _atomic_write(os.path.join(_nr_run, "lane-map.json"),
+                          json.dumps({"worktrees": {_nr_wt: "j-nr", _nr_repo: "j-root"}}))
+            _check("lane-map worktree resolves for a registered claude job",
+                  _lane_map_worktree_for(_nr_run, "j-nr", _nr_repo) == os.path.abspath(_nr_wt))
+            _check("lane-map worktree refuses the checkout itself",
+                  _lane_map_worktree_for(_nr_run, "j-root", _nr_repo) is None)
+            _check("lane-map worktree refuses an unregistered job",
+                  _lane_map_worktree_for(_nr_run, "j-none", _nr_repo) is None)
+            _atomic_write(os.path.join(_nr_run, "lane-map.json"),
+                          json.dumps({"worktrees": {_nr_wt: "j-nr", os.path.join(_nr_tmp, "wt-2"): "j-nr"}}))
+            _check("lane-map worktree refuses two registrations for one job",
+                  _lane_map_worktree_for(_nr_run, "j-nr", _nr_repo) is None)
+        _nr_res = _job_result_from(
+            {"verdict": "pass", "impl_no_result": True, "worktree": "/tmp/x", "reason": "gate ok",
+             "raw_stdout": json.dumps({"verdict": "pass", "changed": ["a.py"], "violations": []})},
+            {"id": "j-nr", "title": "T", "write_allowed": ["a.py"], "isolation": "worktree"},
+            {"worktree": "/tmp/x"})
+        _check("impl_no_result ⇒ status error with a receipt, never success",
+              _nr_res.get("status") == "error" and _nr_res.get("blocked") is False
+              and _nr_res.get("failure_class") == "other"
+              and str(_nr_res.get("summary", "")).startswith("implementer returned no result"))
 
         # CRITICAL 2 — the authority runs BEFORE integration, and the wave commits.
         _check("the emitted script carries a serialized wave finalizer",
