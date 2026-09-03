@@ -20,6 +20,10 @@ Stage verification, cycle 1 (DIRECT attended), 2026-09-03 — the first real req
 
 The per-run mutex is gitignored and untracked; the finalizer's bookkeeping commit resets it explicitly.
 
+### Fixed — a partially merged wave now commits its own record
+
+Stage-2 r1 merged four jobs and refused one: HEAD moved, but the finalizer's bookkeeping commit was gated on `integrated`, so state, receipts and results stayed untracked — the audit-trail gate reds on push. The bookkeeping commit now follows every wave that produced a commit.
+
 ### Fixed — the validator said "valid" for a manifest PyYAML refuses
 
 Stage-2 dogfood: the run's own manifest carried an unquoted `title:` with an inner `": "`; PyYAML rejected it, the validator announced the rejection on stderr and then consulted the embedded subset parser, which accepted it, and reported the document valid. A document the reference parser refuses is not a valid manifest: when PyYAML is importable and rejects, `validate_text` now returns that as a violation (`ManifestParseError`), and the subset parser is used only on the machine without PyYAML. Selftest added.

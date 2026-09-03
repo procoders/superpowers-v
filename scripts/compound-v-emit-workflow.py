@@ -4169,7 +4169,12 @@ def cmd_finalize_wave(argv):
     # run directory (minus its lock) and the two memory streams Record and the
     # scorecard append to. Best-effort: a wave that integrated is not reported
     # failed because its bookkeeping could not be committed.
-    if out["integrated"] and not args.no_commit:
+    # WHENEVER THIS WAVE MOVED HEAD — not only when it integrated. Stage-2 r1
+    # merged four jobs and refused one: HEAD moved, and gating this on
+    # `integrated` left state/receipts/results untracked, which the audit-trail
+    # gate reds on push (finding 56). A refused job's evidence is exactly the
+    # record a human needs committed.
+    if (out["merged"] or out["refused"]) and out.get("commit") and not args.no_commit:
         _bk_rel = os.path.relpath(os.path.abspath(run_dir), os.path.abspath(repo_root))
         if not _bk_rel.startswith(".." + os.sep) and _bk_rel != "..":
             _run(["git", "-C", repo_root, "add", "-A", "--", _bk_rel])
@@ -5836,6 +5841,9 @@ def selftest():
             _check("a wave whose job produced no result is REFUSED", rc != 0)
             _check("a refused wave commits nothing",
                    _head_commit(fin_repo) == head_before)
+            # finding 56: with NO merge there is no wave commit, so no
+            # bookkeeping commit either — the record stays for the caller.
+            # (The merged-and-refused shape is asserted in the bk4 block.)
 
         # ---- FOURTH REVIEW PASS, item 4 -------------------------------------- #
         # NOTHING THE PIPELINE WRITES LANDS BETWEEN A DIRECT JOB'S GATE AND ITS
