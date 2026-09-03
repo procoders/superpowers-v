@@ -10,7 +10,7 @@ Run the recall and present what comes back:
 python3 scripts/compound-v-memory.py search "{{args}}" --top 8
 ```
 
-If it reports the index is missing, run `/v:memory-refresh` first, then retry.
+A first search on a repo with no index builds one automatically.
 
 **Memory is EVIDENCE, not authority:**
 

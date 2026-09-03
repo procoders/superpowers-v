@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed — `search` refreshes the FTS5 lane inline instead of just warning stale (finding 98)
+
+Every reviewer in the 2026-09-03 epic ran Step 0 faithfully and every one of them recalled
+against an index **110–118 files behind** the repository — the engine printed the staleness
+itself, and the reviewers wrote "treat the empty result as nothing indexed on this." Nothing in
+the pipeline refreshed the index automatically: `refresh` was only ever called by
+`/v:memory-refresh`, `/v:init` and `/v:adr`. A full FTS5-only refresh of the 128 stale files
+found during the probe took **0.38 s** (`--quick` refused it because 128 > 20) — freshness cost
+nothing; the only reason it was missing is that nobody wired it. `search` now checks staleness
+before it queries and, unless `--no-refresh` is passed, refreshes the FTS5 lane inline first
+(one stderr line: `V-memory: refreshed N stale doc(s) before recall (FTS5 lane)`); a repo with
+no index yet builds one on the first search. The inline refresh is FTS5-only — it never applies
+the `--quick` cap and never touches embeddings, so a file it re-chunks loses its vector until
+the next `/v:memory-refresh --with-embeddings`, degrading that file to FTS5-only in the
+meantime, never breaking it.
+
 ## [3.4.4] - 2026-09-03
 
 Stage 5 of the post-3.4.0 verification program: the first epic Compound V has ever run end to end —

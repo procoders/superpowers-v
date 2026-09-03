@@ -50,11 +50,18 @@ after the explicit `bootstrap` above; the flag never triggers an install.
 | Command | Effect |
 |---|---|
 | `refresh [--rebuild] [--quick] [--with-embeddings] [--repo P]` | incremental index by file hash (FTS5 always; dense only when bootstrapped) |
-| `search "<q>" [--top N] [--intent planning\|review] [--json] [--no-embed]` | recall: FTS5 (∪ dense) → rank-union → agent-ready context pack |
+| `search "<q>" [--top N] [--intent planning\|review] [--json] [--no-embed] [--no-refresh]` | recall: FTS5 (∪ dense) → rank-union → agent-ready context pack. The FTS5 lane is fresh **by construction** at every search — a stale or missing index is refreshed inline before the query runs (`--no-refresh` opts out and searches whatever is already indexed); the dense lane is unaffected and refreshes only on an explicit `/v:memory-refresh --with-embeddings`. |
 | `recall-check --files <glob>… [--k N] [--json]` | **deterministic** recurring-failure → `tighten`/`none` verdict |
 | `bootstrap [--model M]` | the ONLY network step: create the out-of-repo embedding venv |
 | `doctor` | index / venv / model / staleness health |
 | `--selftest` | stdlib-only self-tests (no network, no model) |
+
+A search-triggered refresh is FTS5-only: it never applies the `--quick` cap and never consults
+the embeddings config, so it always catches up fully regardless of how many files are stale.
+Documented side effect — with embeddings on and bootstrapped, a search-triggered refresh
+re-chunks a changed file **without** vectors; that file's dense lane degrades to FTS5-only
+until the next `/v:memory-refresh --with-embeddings` re-embeds it. It never breaks — the file
+stays fully searchable via FTS5 in the meantime.
 
 ---
 
@@ -130,10 +137,13 @@ truth is the git-tracked files, and the index is only a local, disposable cache 
   conflicts, model/OS mismatches, and stale blobs; instead each dev's cache rebuilds from the
   pulled files. After a pull, the index refreshes on the next SessionStart (the silent hook), on
   the next write under `docs/superpowers/`, or via an explicit `/v:memory-refresh`.
-- **Freshness signal:** because refresh is eventually-consistent, `search` checks (cheaply, one
-  `git ls-files`) whether the index is behind the working tree and prints a one-line
-  *"index is N new / M removed docs behind — run /v:memory-refresh"* hint to stderr. So a dev who
-  just pulled a teammate's docs is told their local recall hasn't caught up yet.
+- **Freshness by construction:** `search` checks (cheaply, one `git ls-files`) whether the FTS5
+  index is behind the working tree and, unless `--no-refresh` is passed, refreshes it inline
+  before the query runs — printing one stderr line, `V-memory: refreshed N stale doc(s) before
+  recall (FTS5 lane)`. So a dev who just pulled a teammate's docs gets current recall on the
+  very next search, with no separate `/v:memory-refresh` step. `--no-refresh` searches whatever
+  is already indexed and prints the staleness warning instead. A repo with no index yet builds
+  one on the first search.
 - **Trade-off (honest):** each dev pays the index-build (and, if enabled, the embedding) cost
   locally rather than sharing one index. That is the price of zero merge conflicts and
   reproducibility; a CI-generated shared index artifact is the escape hatch if the corpus ever
