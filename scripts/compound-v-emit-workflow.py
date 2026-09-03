@@ -3408,6 +3408,38 @@ def _maybe_append_run_actual(run_dir, manifest, state, repo_root):
             % run_id)
 
 
+_UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def external_session_id(run_dir, job_id):
+    """The external worker's thread id, read from the events log the WORKER wrote
+    (`logs/<job>.events.jsonl`, first `thread.started` line), UUID-validated.
+
+    The wrapper agent returns only status/worktree/summary, so nothing on
+    Engine C carried the worker's `job_result.session_id` into state — and
+    `codex exec resume <uuid>` is what /v:resume needs (stage-4 review-1,
+    finding 81). The events log is the worker's own artefact, not the model's
+    claim, which is why it is the source here. Empty when absent or not a UUID.
+    """
+    path = os.path.join(run_dir or "", "logs", "%s.events.jsonl" % job_id)
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(ev, dict) and ev.get("type") == "thread.started":
+                    tid = str(ev.get("thread_id") or "").strip()
+                    return tid if _UUID_RE.match(tid) else ""
+    except OSError:
+        return ""
+    return ""
+
+
 def _job_result_from(verdict, job, state_job, tests=None, contract=None,
                      isolation=None, tier=None):
     """The canonical job_result. Enforcement fields come from the GATE, not the
@@ -3501,7 +3533,7 @@ def _job_result_from(verdict, job, state_job, tests=None, contract=None,
         "files_changed": changed,
         "violations": violations,
         "summary": verdict.get("reason") or (job.get("title") or job.get("id") or ""),
-        "session_id": state_job.get("session_id") or "",
+        "session_id": state_job.get("session_id") or "",  # filled from the events log for an external job (finding 81)
         "worktree": worktree,
         "exit_code": exit_code,
         # `unknown` is not in the schema's failure_class enum — `other` is the
@@ -3747,6 +3779,14 @@ def cmd_record(argv):
     # this job's scope, so the label has to see it too (see `_tests_block_from_floor`).
     _triage = manifest.get("triage")
     tier = _triage.get("tier") if isinstance(_triage, dict) else None
+
+    if str((job or {}).get("backend") or "claude") != "claude" and not state_job.get("session_id"):
+
+        _ext_sid = external_session_id(run_dir, job_id)
+
+        if _ext_sid:
+
+            state_job["session_id"] = _ext_sid
 
     result = _job_result_from(verdict, job, state_job, tests=tests,
                               contract=contract, isolation=isolation, tier=tier)
@@ -4985,6 +5025,14 @@ def selftest():
         _check("finding 79: an external job's gate runs in worktree mode at the WORKER's returned tree",
                "const externalBackend = job.backend && job.backend !== 'claude';" in _ext_script
                and "(job.agent_isolation === 'worktree' || externalBackend) ? 'worktree' : 'direct'" in _ext_script)
+        _f81_dir = os.path.join(tmp, "f81-run"); os.makedirs(os.path.join(_f81_dir, "logs"), exist_ok=True)
+        with open(os.path.join(_f81_dir, "logs", "ext.events.jsonl"), "w") as _fh:
+            _fh.write('{"type":"thread.started","thread_id":"01a0660c-d369-7553-b57c-2c5276b35ae6"}\n{"type":"turn.started"}\n')
+        with open(os.path.join(_f81_dir, "logs", "bad.events.jsonl"), "w") as _fh:
+            _fh.write('{"type":"thread.started","thread_id":"not-a-uuid"}\n')
+        _check("finding 81: the external worker's thread id is read from its events log (UUID-validated)",
+               external_session_id(_f81_dir, "ext") == "01a0660c-d369-7553-b57c-2c5276b35ae6"
+               and external_session_id(_f81_dir, "bad") == "" and external_session_id(_f81_dir, "none") == "")
         _check("finding 77: an external job's wrapper agent_model is a Claude light model, "
                "and the backend model stays in the launch argv",
                str(_ext.get("agent_model") or "").lower() in ("sonnet", "claude-sonnet-4-6")

@@ -23,6 +23,10 @@ non-empty destination. Implemented by a `codex exec` worker (`gpt-5.6-terra`) in
 `$TMPDIR/compound-v/<run>/<job>`, gated by the git-derived scope check against that same tree — no
 timing or token figures are claimed here; none were measured for this job.
 
+### Fixed — an external worker's thread id reaches state and the result (finding 81)
+
+The wrapper agent returns only status, worktree and summary, so nothing on Engine C carried the Codex worker's `job_result.session_id` into `state.json` — the review of the first merged Codex job found `session_id: ""` beside an events log that held the UUID. Record now reads the `thread.started` line of the events log the worker wrote (UUID-validated) into the job's state and result; `/v:resume` can name it to `codex exec resume`.
+
 ### Fixed — an external job's gate measures the worker's worktree, and its wrapper never claims the checkout (findings 78, 79)
 
 The first Codex job that actually ran on Engine C (gpt-5.6-terra, its own worktree under `$TMPDIR/compound-v/<run>/<job>`, a UUID thread id, 22/22 tests) was still refused twice over: the emitted gate ran in direct mode against the checkout — the wrapper's cwd — and charged the job with the run's own bookkeeping files; and `register-lane` had recorded the checkout as the wrapper's "worktree", which the lane guard's first-match cwd fallback then used to attribute the sibling Claude worktree job to the wrapper and deny its writes. Now an external job's gate runs in worktree mode at the tree the wrapper returned; a wrapper is listed under `wrappers` and never claims a worktree; and `hooks/lane-guard.sh` resolves a cwd by the LONGEST matching worktree prefix (decision table: a root claim no longer shadows a nested worktree's job).
