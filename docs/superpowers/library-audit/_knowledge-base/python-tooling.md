@@ -26,3 +26,22 @@ Maintained by Compound V Phase 1C validator. Append at the bottom.
 - **Disposition:** not fixed here — this is pre-existing shared infrastructure (Phase 1A / code-archaeology territory), not something any single small feature introduces or owns. Recorded so the next Phase 1C pass that touches this script doesn't have to re-derive it, and so a reviewer who hits the `ModuleNotFoundError` failure mode on an unusual machine has a documented explanation.
 
 - No prior entry in this file to strike through — this is the first KB entry for this topic.
+
+---
+
+## Updated 2026-09-03 — v3.4.5-recall-freshness
+
+Audit: `docs/superpowers/library-audit/2026-09-03-v3-4-5-recall-freshness.md`.
+
+### Python 3.9 end-of-life (live-confirmed date, cross-references the F2 entry above)
+
+- **2026-09-03 (WebSearch):** Python 3.9 reached end-of-life on **2025-10-31**; **3.9.25** was the final release (no further bugfix or security patches will ever be issued). Current stable line as of this date is **3.14** (3.14.7, 2026-08-05), with 3.15.0rc2 cut 2026-09-01 and GA expected October 2026.
+  Sources: python.org 3.9.25 release notes; endoflife.date/python; Red Hat Developer (2025-12-04, "Python 3.9 reaches end of life").
+- This does not contradict the F2 entry above — it confirms the *reason* `python-version: '3.9'` in `.github/workflows/validate.yml:280-283,343-346` is now a **frozen** floor, not merely an old one: that pin will resolve to the same 3.9.25 build indefinitely, with no forward patch-level drift risk but also no future security fix, ever, for this interpreter line. Recorded so the next Phase 1C pass touching any `scripts/*.py` with a `--selftest` doesn't have to re-derive the EOL date.
+
+### `sqlite3` (stdlib) — `Connection.autocommit` / `LEGACY_TRANSACTION_CONTROL` default, live-verified
+
+- **2026-09-03 (WebFetch, `docs.python.org/3/library/sqlite3.html#sqlite3.Connection.autocommit`):** `Connection.autocommit` currently defaults to `sqlite3.LEGACY_TRANSACTION_CONTROL` in every shipping CPython through 3.14 (and 3.15 as of rc2). Under that default, `isolation_level` governs implicit-transaction behavior and explicit `BEGIN <mode>` / `COMMIT` / `ROLLBACK` statements executed via `Connection.execute()` behave exactly as pre-3.12 Python always did — this is the pattern `scripts/compound-v-memory.py`'s `_persist_chunks` (`BEGIN IMMEDIATE` ... `COMMIT`/`ROLLBACK`) already relies on, and it remains current with no signature drift.
+- **Forward-compat trap, not a current bug:** Python's own docs say *"the default will change to `False` in a future Python release"* and recommend migrating to `sqlite3.connect(path, autocommit=False)` (PEP-249-compliant mode) — but the `autocommit` keyword argument to `connect()` **does not exist before Python 3.12**. Any script pinned to the Python-3.9 floor (see above) that adds this kwarg breaks immediately with `TypeError`, not a subtle bug. No removal date is published for `LEGACY_TRANSACTION_CONTROL` itself.
+- **Practical implication for any future spec that touches this codebase's `sqlite3` usage:** do not "modernize" `sqlite3.connect()` calls to the newer `autocommit=` form while the project's floor stays at 3.9 — verify the floor first, per the entry above, before applying any upstream-recommended `sqlite3` migration.
+- Source: `docs.python.org/3/library/sqlite3.html` (fetched live 2026-09-03; no Context7 available this session — see the audit's §1 for why).
