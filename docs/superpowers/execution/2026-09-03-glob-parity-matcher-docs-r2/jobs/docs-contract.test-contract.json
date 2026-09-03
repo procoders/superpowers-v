@@ -1,0 +1,10 @@
+{
+  "scope": "impacted",
+  "resolved_commands": [
+    "bash -c '/usr/bin/python3 scripts/lint-frontmatter.py >/dev/null'",
+    "bash -c '[ -f skills/compound-v/execution-manifest.md ] || exit 0; /usr/bin/python3 scripts/lint-frontmatter.py >/dev/null'",
+    "bash -c '[ -f skills/compound-v/memory.md ] || exit 0; /usr/bin/python3 scripts/lint-frontmatter.py >/dev/null'"
+  ],
+  "floor_command": "bash -c '/usr/bin/python3 scripts/lint-frontmatter.py >/dev/null'",
+  "full_command": "bash -c '/usr/bin/python3 scripts/lint-frontmatter.py >/dev/null && for f in skills/compound-v/memory.md skills/compound-v/execution-manifest.md; do grep -q \"the same matcher\" \"$f\" || { echo \"missing phrase in $f\"; exit 1; }; grep -q \"matches within one path segment\" \"$f\" || { echo \"six-rule sentence missing in $f\"; exit 1; }; done'"
+}

@@ -1,0 +1,31 @@
+diff --git a/skills/compound-v/execution-manifest.md b/skills/compound-v/execution-manifest.md
+index 1ec88b0..d630104 100644
+--- a/skills/compound-v/execution-manifest.md
++++ b/skills/compound-v/execution-manifest.md
+@@ -50,7 +50,7 @@ Worked example: [`examples/manifest.example.yaml`](../../examples/manifest.examp
+ | `isolation` | enum | yes | `direct` \| `worktree`. **`run: parallel` ⇒ `worktree`** (per-job scope attribution); `direct` is only valid with `run: serial`. |
+ | `run` | enum | yes | `serial` \| `parallel`. A `parallel` job MUST be `isolation: worktree` (see the rule above). |
+ | `depends_on` | string[] | no | Job ids that must finish first (defaults to empty). |
+-| `write_allowed` | string[] | yes | Glob list this job MAY write. The scope gate **enforces** it (git-derived). V-memory's `recall-check` (see [`memory.md`](memory.md) § CLI) reads these same globs at emit time to look up prior failures on the lane, through the same matcher — `compound-v-memory.py` imports `compound-v-scope-check.py`'s `matches()` rather than reimplementing it — and `compound-v-memory.py --selftest` carries a glob-parity suite that fails if the two ever diverge. |
++| `write_allowed` | string[] | yes | Glob list this job MAY write. The scope gate **enforces** it (git-derived). V-memory's `recall-check` (see [`memory.md`](memory.md) § CLI) reads these same globs at emit time to look up prior failures on the lane, through the same matcher — `compound-v-memory.py` imports `compound-v-scope-check.py`'s `matches()` rather than reimplementing it — and `compound-v-memory.py --selftest` carries a glob-parity suite that fails if the two ever diverge. The six rules, identical on both sides: (1) `*` matches inside one path segment and never crosses `/`; (2) `**` crosses `/`; (3) `dir/**` also matches `dir` itself; (4) a leading or mid `**/` matches zero or more segments, so `**/x.py` matches `x.py`; (5) `?` matches exactly one non-`/` character; (6) `[` and `]` are literal, never character classes, so `app/[locale]/**` matches that real directory instead of one character out of `l o c a e`. Every pattern is fully anchored — a match must consume the whole path. One deliberate asymmetry, and the only one: `recall-check` additionally reads a wildcard-free bare path as `<path>/**`, sugar the gate itself does not accept. |
+ | `read_allowed` | string[] | yes | Glob list this job MAY read. **ADVISORY only — NOT enforced** (git cannot track reads). Documents intent + scopes the prompt. Auto-includes Task 0 outputs + the three audits. |
+ | `acceptance` | string[] | yes | This job's narrow acceptance, checked in its per-task review. |
+ | `body` | string | **yes** | The task itself — the instructions the worker reads. `description`, `prompt` and `spec` are accepted aliases. **A job with none of them is refused at emit**: a prompt carrying lanes and no instructions asks the worker to invent the task, and an invented task that stays inside its lane passes every gate here, because the scope gate checks WHICH files changed and never what they say. This field was undocumented until 3.3.4, and the emitter read only the three aliases while every manifest wrote `body` — so the task text was dropped from every worker prompt for twenty-five runs. |
+diff --git a/skills/compound-v/memory.md b/skills/compound-v/memory.md
+index ed36cdc..1a3fbdc 100644
+--- a/skills/compound-v/memory.md
++++ b/skills/compound-v/memory.md
+@@ -90,6 +90,13 @@ match, **not** embedding similarity:
+   Job fields) is the same matcher the scope gate enforces with — imported from
+   `compound-v-scope-check.py`, not reimplemented — and `--selftest` carries a glob-parity
+   suite that fails if the two ever diverge.
++  The six rules, identical on both sides: (1) `*` matches inside one path segment and never crosses `/`;
++  (2) `**` crosses `/`; (3) `dir/**` also matches `dir` itself; (4) a leading or mid `**/` matches zero or
++  more segments, so `**/x.py` matches `x.py`; (5) `?` matches exactly one non-`/` character; (6) `[` and `]`
++  are literal, never character classes, so `app/[locale]/**` matches that real directory instead of one
++  character out of `l o c a e`. Every pattern is fully anchored — a match must consume the whole path. One
++  deliberate asymmetry, and the only one: `recall-check` additionally reads a wildcard-free bare path as
++  `<path>/**`, sugar the gate itself does not accept.
+ - **The two real actions (tighten only):**
+   1. **Always, when `memory.auto_recall` is on (default true; the /v:init "Manual only" stance sets it false, and `emit --no-recall` forces it off for one emit):** the implementer prompt gains a
+      `## Prior failures on your lane` section — the count, the last three evidence lines
