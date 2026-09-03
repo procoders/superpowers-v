@@ -1,0 +1,42 @@
+{
+  "base_commit": "fb4ec4fdfb1156b83d2cd0bcffdfecc6bcbd036c",
+  "confidence": "localization:exact; tiers:localization,T1",
+  "decision": "FULL_PIPELINE",
+  "declared_paths": [
+    "scripts/compound-v-memory.py"
+  ],
+  "difficulty": {
+    "band": "high",
+    "display": 8
+  },
+  "digest": "sha256:22f1b91e3bb6e0e9b700bf9e7157d89b14d557f5a718da88d41f484c674f7185",
+  "impact": {
+    "band": "high",
+    "display": 8
+  },
+  "localization": {
+    "confidence": "exact",
+    "fan_out": 1,
+    "flags": [
+      "content_scan_incomplete"
+    ],
+    "resolved_paths": [
+      "scripts/compound-v-memory.py"
+    ]
+  },
+  "min_sample_status": "insufficient",
+  "override_fired": null,
+  "pre_eval_id": "2026-09-03T100838Z-make-v-memory-search-refresh-the-fts5-index-automatically-wh-5801",
+  "request_slug": "make-v-memory-search-refresh-the-fts5-index-automatically-wh",
+  "session_id": "s-5a",
+  "status": "PRE_EVAL_DONE",
+  "taxonomy_digest": "sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a",
+  "taxonomy_ref": "docs/superpowers/pre-eval/2026-09-03T100838Z-make-v-memory-search-refresh-the-fts5-index-automatically-wh-5801.taxonomy-snapshot.yaml",
+  "taxonomy_version": 1,
+  "tier": "FULL",
+  "tiers_signalled": [
+    "localization",
+    "T1"
+  ],
+  "ts": "2026-09-03T10:08:38Z"
+}

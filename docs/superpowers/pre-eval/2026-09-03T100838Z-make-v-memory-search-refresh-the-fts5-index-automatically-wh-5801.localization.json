@@ -1,0 +1,11 @@
+{
+  "confidence": "exact",
+  "digest": "sha256:3cb7bf7c209ad21fbaa0fe1b24f1704dbc5d784094ee74a16b6cb053693d8f77",
+  "fan_out": 1,
+  "flags": [
+    "content_scan_incomplete"
+  ],
+  "resolved_paths": [
+    "scripts/compound-v-memory.py"
+  ]
+}
