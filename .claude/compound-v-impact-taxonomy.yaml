@@ -133,6 +133,32 @@ sensitive_path_list:
   - "AGENTS.md"
   - "GEMINI.md"
   - "CONVENTIONS.md"
+  # 4. ---- added at the human GATE (v3.4.1 §A6, the SCOPED+ decision) ---------------------
+  #    THE ENFORCEMENT CHAIN. v3.4.1 lets a small edit under scripts/** demote to SCOPED,
+  #    which is right for a scorecard renderer and wrong for the scripts that ARE the
+  #    enforcement: the scope gate, the integration gate, the manifest validator, the two
+  #    emitters that write a run's lane map and pre-flight, and the scoring engine itself.
+  #    Listing them here does not forbid a small edit — it routes one through SCOPED+
+  #    (a mandatory deep review + a cross-model second opinion + the human accept) instead
+  #    of plain SCOPED. hooks/** is already covered above.
+  - "scripts/compound-v-scope-check.py"
+  - "scripts/compound-v-integration-gate.py"
+  - "scripts/compound-v-validate-manifest.py"
+  - "scripts/compound-v-emit-workflow.py"
+  - "scripts/compound-v-emit-preflight.py"
+  - "scripts/compound-v-preeval.py"
+
+# content_scan_exclude — v3.4.1 §A5. Paths whose CONTENT is never matched against
+# content_patterns; the path rows and sensitive_path_list above still apply in full.
+# WHY MARKDOWN: the compliance patterns above look for ordinary English — "consent",
+# "price", "timeout" — and this repository's prose is documentation ABOUT a consent gate
+# and a timeout budget, not a consent gate. Before this key, a one-word README typo scored
+# impact `high` off a paragraph that merely mentions the word, which is the noise the
+# 3.4 probe found. Suppressing one SIGNAL on prose is not suppressing a protection: a
+# markdown file that is genuinely enforcement (skills/agents/commands) is already in
+# sensitive_path_list, where a hard override — not a content pattern — catches it.
+content_scan_exclude:
+  - "**/*.md"
 
 # auto_route_allow — spec A4 predicate 4: the ONLY paths where a DIRECT change may be committed
 # by the classifier with no human offer/acceptance. Deliberately tiny. Every row is a file whose

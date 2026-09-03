@@ -29,6 +29,7 @@ python3 scripts/compound-v-preeval.py --cross-model-review "$TIER"
 |---|---|---|
 | `DIRECT` | **no** | No brainstorm, no plan, no manifest — nothing exists to review. |
 | `SCOPED` | **no** by default | A bounded, localized change; the Opus `partition-reviewer` and the deterministic validator already cover it. Ask explicitly if the slice turns out to be coupled. |
+| `SCOPED+` (`triage.flavor: scoped_plus`) | **yes, mandatory** | A small edit on a *sensitive* path — auth, payments, PII, migrations, or this repo's own enforcement chain. Small enough to skip the full pipeline, expensive enough that being wrong is not recoverable by "we'll catch it in review". This is the one row where the second opinion is not a judgment call. |
 | `FULL` | **yes** | The pipeline ran brainstorm and planning. That is the threshold a second family is worth paying for. |
 
 An unrecognised tier falls to **yes**: not knowing how big a change is, is itself a reason
@@ -81,6 +82,21 @@ scripts/compound-v-codex-review.sh \
 - The reviewer is prompted to **refute** the plan, default to skepticism, and prefer concrete evidence; an empty `findings` list is honest and valid.
 
 Or, for manual control: `/v:review-plan <plan-path>`.
+
+### The SCOPED+ variant — same driver, different input, and a receipt
+
+A SCOPED+ run has no plan document to hand over; it has a diff. [`/v:dispatch`](../../commands/v-dispatch.md)
+step 8 seals the reviewed bytes to `receipts/cross-model.patch`, passes *that* as `--plan-file`
+with the spec as `--context-file`, and wraps the driver's findings in a receipt
+([`schemas/cross-model-receipt.schema.json`](../../schemas/cross-model-receipt.schema.json)) that
+adds `run_id`, `pre_eval_id` and a `diff_digest` over the sealed patch, self-sealed with the shared
+digest primitive. `compound-v-validate-manifest.py --require-cross-model-receipt` then verifies it
+before the merge.
+
+The receipt exists because "mandatory" and "we ran it, trust us" are different claims. **The findings
+stay advisory — arbitration below is unchanged, and a `concerns` verdict is not a merge blocker.**
+What the receipt makes unfalsifiable is only that a reviewer of a different family actually read
+*these bytes* on *this run*.
 
 ---
 

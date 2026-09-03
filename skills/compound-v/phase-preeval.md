@@ -60,13 +60,23 @@ Two axes, computed **separately**, each → a band `{low, medium, high, unknown}
 | # | Condition | Why |
 |---|---|---|
 | 1 | localization `failed` ∨ `ambiguous` | paths unknown → cannot judge |
-| 2 | any resolved path on the **sensitive path-list** | auth/payments/PII/a11y/migrations/infra |
+| 2 | any resolved path on the **sensitive path-list** — *unless* the SCOPED+ carve-out below applies | auth/payments/PII/a11y/migrations/infra |
 | 3 | `shared_token` ∨ `is_generated` ∨ `is_a11y_state` | "button" = global token / contrast state |
 | 4 | semantic-vs-path disagreement (T1 `low` but T3 `user-facing-major`, or converse) | tier disagreement escalates |
 | 5 | `churn.hot` on any resolved path | churn ESCALATES only; low/insufficient never lowers |
 | 6 | any axis `unknown` | no signal → full pipeline |
 
-Overrides **1/2/3/5 need no model call** and are checked first, so a fired override never triggers a Tier-3 Task (AC-3 — **zero model calls on any Layer-A override**). Overrides **4/6** depend on the computed axes (Tier-3 only when Tier-1 left difficulty unclassified). Override #2 is belt-and-suspenders: the engine trusts A1's `sensitive_path` flag **and** independently re-matches the sensitive path-list.
+Overrides **1/3/5 need no model call** and are checked first, so a fired override never triggers a Tier-3 Task (AC-3 — **zero model calls on any Layer-A override**). Overrides **4/6** depend on the computed axes (Tier-3 only when Tier-1 left difficulty unclassified). Override #2 is belt-and-suspenders: the engine trusts A1's `sensitive_path` flag **and** independently re-matches the sensitive path-list. Since 3.4.1 it is the one override that may ask a question before it fires — see SCOPED+ below.
+
+### SCOPED+ and the T3 demotion (3.4.1): size reaches the tier
+
+The 3.4 scorer could not say *small* about code. Any path under a broad glob — `scripts/**` is the one this repository trips over — came back `high/high` and therefore FULL, whether the change was a one-line comment or a rewrite. A size decision that can only ever say "big" is not a size decision, so 3.4.1 lets one cheap question move the band, in exactly two places and never further.
+
+**The demotion.** When *every* Tier-1 row that produced the bands came from a **broad** glob (one containing `**` or ending `/*` — breadth is a property of the pattern, not a repo scan), *and* no resolved path is sensitive, *and* no content pattern raised impact, *and* `fan_out ≤ 2`, the engine asks for Tier-3 even though Tier-1 banded — returning `needs_t3` with `t3_reason: "demotion"` (the ordinary unbanded case says `"unbanded"`; the caller reads the reason for its log, and re-entry is identical). A reply of `plumbing` or `user-facing-minor` sets the bands to `(medium, medium)` and the matrix yields **SCOPED**; `user-facing-major` or `unknown` leaves them alone and the run stays FULL. Difficulty is raised to at least `medium` on purpose: **DIRECT for code stays unreachable**, and a demotion may never reach the tier that skips the human. Override #4 (semantic-vs-path disagreement) is *not* evaluated here — the whole point of this path is that Tier-1 said `high` from a glob that means "everything under here" and Tier-3 says `plumbing`. It keeps firing where Tier-1 came from a specific row. The record keeps the taxonomy's original bands beside the decision as `t3_demotion: {from: {difficulty, impact}, category, applied}`, so a demotion is always legible after the fact.
+
+**SCOPED+.** A sensitive path is the case where being wrong is expensive, and it is also the case where a one-line fix is most likely to be blocked by a full pipeline nobody wants to run. So override #2 becomes conditional: sensitive ∧ localization `exact` ∧ `fan_out ≤ 2` ∧ Tier-3 says `plumbing` or `user-facing-minor` ⇒ `SCOPED_PIPELINE` with **`flavor: "scoped_plus"`** and bands `(medium, medium)`, with `override_fired: null` and `t3_demotion` carrying `"sensitive": true`. On that path with no category yet, the engine returns `needs_t3` with `t3_reason: "sensitive"`. **Every other sensitive case fires override #2 and goes FULL exactly as before, and no sensitive path is ever DIRECT.** `.pem`/`.key`/`.env` files and `.github/**` are on a hard never-demote list in the engine: secrets and CI are not "small edits", whatever a classifier says about them.
+
+SCOPED+ is a *smaller pipeline, not a cheaper one*. It buys back both reviews the plain SCOPED band skips: [`/v:orchestrate`](../../commands/v-orchestrate.md) copies `flavor` into the manifest's `triage` block, which obliges the run to declare a `type: review` job with `tier: deep` and `backend: claude` (`compound-v-validate-manifest.py --require-triage` refuses the manifest without one), and [`/v:dispatch`](../../commands/v-dispatch.md) step 8 additionally runs a **mandatory** cross-model second opinion whose receipt is verified rather than asserted. The human offer and acceptance are unchanged — SCOPED+ is a SCOPED-sized change, and the tier is still a size decision, never permission.
 
 ### Layer B — positive fast-path gate (only if no override fired)
 
@@ -86,7 +96,9 @@ The engine is **T3-agnostic**: it accepts a pre-resolved `--t3-category` enum an
 { "needs_t3": true, "pre_eval_id": "…", "t3_prompt": "…" }
 ```
 
-The **parent harness** then runs **ONE `light`-tier Task** (Sonnet, **never Haiku**) with `t3_prompt` — built + parsed by `compound-v-classify-request.py` (`build_prompt` / `parse_category`) — turns the reply into an enum, and **re-invokes** the engine with `--t3-category <enum>`. Re-entry reuses the same `pre_eval_id` (discovered via the intent-record fingerprint, §4) and continues from the first missing artifact. On the Claude path the engine **never calls a model**; the optional headless-codex route (A2) is for non-Claude harnesses only. Any error / timeout / unparse / non-enum reply → `unknown` → `FULL_PIPELINE` (fail-closed).
+The **parent harness** then runs **ONE `light`-tier Task** (Sonnet, **never Haiku**) with `t3_prompt` — built + parsed by `compound-v-classify-request.py` (`build_prompt` / `parse_category`) — turns the reply into an enum, and **re-invokes** the engine with `--t3-category <enum>`. Re-entry reuses the same `pre_eval_id` (discovered via the intent-record fingerprint, §4) and continues from the first missing artifact. The engine itself **never calls a model** on any path. Any error / timeout / unparse / non-enum reply → `unknown` → `FULL_PIPELINE` (fail-closed).
+
+Since 3.4.1 the `UserPromptSubmit` hook can finish Tier-3 itself, without a Task and without handing the turn back: `compound-v-classify-request.py --classify-headless` answers the same prompt from a bounded nested `claude -p` (Sonnet — **never Haiku**), falling back to the read-only codex route and then to `unknown`. `/v:triage` documents that as the default route and the Task route as the fallback. Nothing about this section's contract changes — same prompt, same enum, same fail-closed direction — only who runs it.
 
 ---
 

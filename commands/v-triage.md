@@ -25,8 +25,13 @@ ls -t docs/superpowers/pre-eval/*.json 2>/dev/null | head -5
 
 If one carries this session's id, **do not mint a second**: commit it (step T3) and go. A record per
 prompt is how the outcome stream the circuit breaker reads stops meaning anything. Run Phase T when
-the hook did not fire — a slash-command invocation, a second request in the same session, a request
-that needed the T3 classify step, or any session the hook was not registered in.
+the hook did not fire — a slash-command invocation, a second request in the same session, or any
+session the hook was not registered in.
+
+As of **v3.4.1 a request needing T3 is no longer one of those cases**: the hook finishes the classify
+itself with the headless one-shot (see T2) and records a real tier. It falls back to its reminder
+only when no classifier could be RUN at all — no `claude`/`codex` CLI on the machine, or one that
+hung past the cap — and that reminder is the signal to run Phase T here.
 
 ## Two modes
 
@@ -187,11 +192,40 @@ after a `needs_t3` result. Add `--taxonomy PATH` only to point at a non-default 
 
 - `"disabled": true` — `pre_eval.enabled` is false. The stage is a no-op, **nothing was written**,
   and this change is FULL by the operator's own configuration. Say so; do not hand-write a record.
-- `"needs_t3": true` — the deterministic layers cannot band the request without the light classify
-  Task. Run **one** `light`-tier Task (Sonnet, never Haiku) with the returned `t3_prompt`, turn the
-  reply into one of the returned `t3_categories`, and re-invoke with `--t3-category <enum>`. The
-  re-invocation resumes the same `pre_eval_id` (discovered by request fingerprint) rather than
-  minting a second. Any error, timeout, or non-enum reply is `unknown`, which is FULL.
+- `"needs_t3": true` — the deterministic layers cannot band the request without a light classify.
+  Answer the returned `t3_prompt` with one of the returned `t3_categories` and re-invoke with
+  `--t3-category <enum>`. The re-invocation resumes the same `pre_eval_id` (discovered by request
+  fingerprint) rather than minting a second. Any error, timeout, or non-enum reply is `unknown`,
+  which is FULL.
+
+  **The headless one-shot is the default route** (v3.4.1, finding 50). Write the returned
+  `t3_prompt` to a file and run:
+
+  ```bash
+  python3 scripts/compound-v-classify-request.py --classify-headless \
+    --prompt-file "$PROMPT_FILE" --cwd . --timeout 15
+  ```
+
+  It prints `{"category", "backend", "timed_out", "exit_code", "model"}`: one nested
+  `claude -p --tools ""` on the resolved `claude`/`light` model (never Haiku), falling back to the
+  read-only `codex` route, both under `compound-v-run-with-timeout.py` with stdin closed. Pass the
+  `category` straight back as `--t3-category`. Prefer it because it is the same route
+  `hooks/triage-prompt-nudge.sh` takes, so an attended `/v:triage` and the hook that fires without
+  anyone asking reach the same answer by the same path.
+
+  **`backend: "none"` is not an answer.** It means no classifier CLI was available on this machine
+  — as does `timed_out: true`. Neither is a classification, and neither may be recorded as
+  `--t3-category unknown`: that would put a made-up band on a real record. Fall back to the Task
+  route below. A model that RAN and replied `unknown` is different and *is* an answer: re-invoke
+  with it and take the FULL that follows.
+
+  **The Task route is the fallback**, and the only route on a harness with no `claude`/`codex` CLI:
+  run **one** `light`-tier Task (Sonnet, never Haiku) with the `t3_prompt`, then
+  `--parse` its reply into the enum:
+
+  ```bash
+  python3 scripts/compound-v-classify-request.py --parse --reply '<the Task reply>'
+  ```
 
 **On the session id.** `CLAUDE_CODE_SESSION_ID` is the harness session id as a Bash call in this
 session sees it, and it is what the record binds. **If it is empty, say so and continue** — the
@@ -239,6 +273,11 @@ Print the tier, the predicate list exactly as T2 emitted it, and the next step:
 - **DIRECT, unattended and `"member": false`** → it cannot auto-route. Stop and get a human, or
   route it through `/v:orchestrate` as SCOPED.
 - **SCOPED** → offer it; on acceptance `/v:orchestrate` (manifest, run dir, scope gate, floor, one combined SPEC+QUALITY review; recon and the three pre-flights are skipped).
+- **SCOPED+** (`"tier": "SCOPED"` with `"flavor": "scoped_plus"`) → a small edit on a **sensitive**
+  path. Offer it; on acceptance `/v:orchestrate` with `triage.flavor: scoped_plus`, where a deep
+  review and a cross-model second opinion are **mandatory**, not offered. SCOPED+ is not a fourth
+  tier token — it is SCOPED plus a flavor, and the size being small is exactly why the review does
+  not shrink with it.
 - **FULL** → offer it; on acceptance the unchanged pipeline.
 
 ---

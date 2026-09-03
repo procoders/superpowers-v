@@ -35,6 +35,14 @@ The manifest schema and rules are defined in [`skills/compound-v/execution-manif
    fabricated-evidence pattern rather than a repair. Carry the resulting `pre_eval_id` into Step 6's
    `state.json`, Step 8b's `bind`, and the manifest's `triage` block.
 
+   **Copy the record's `flavor` into the manifest's `triage` block verbatim when it has one.** The
+   only value is `scoped_plus` — a SCOPED-sized change on a sensitive path — and it is a routing
+   *consequence*, not a routing input: it tells this command to give the run a `type: review` job
+   with `tier: deep` and `backend: claude` (`/v:dispatch` step 2 refuses the manifest without one)
+   and it tells step 8 to run the mandatory cross-model second opinion. A record with no `flavor`
+   gets no `flavor` key; never add one to buy a deeper review the scorer did not ask for, and
+   never drop one to skip a review it did.
+
    Triage may come back **DIRECT**. A DIRECT change has no manifest, no run directory and no
    worktree, so **this command is not its next step**. Implement it in place, run the test floor,
    and commit it as an ordinary commit together with its record; `/v:triage --land` is the

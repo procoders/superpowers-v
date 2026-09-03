@@ -175,6 +175,35 @@ sensitive_path_list:
   - "**/*.key"
 
 # ---------------------------------------------------------------------------
+# content_scan_exclude — OPTIONAL (v3.4.1 §A5). Paths whose CONTENT is never matched against
+# content_patterns above. The path_patterns rows and sensitive_path_list still apply in full;
+# this suppresses ONE signal, never a protection.
+#
+# Why it exists: content_patterns look for ordinary English — "consent", "price", "timeout",
+# "privacy policy". In prose those words are the SUBJECT, not the change: a documentation page
+# describing a consent flow is not a consent flow, yet a one-word typo fix in it scored impact
+# `high` and routed to the full pipeline. Exclude the file types whose content is narrative.
+#
+# Fail-closed by absence: leave the key out and nothing is excluded, which is the pre-3.4.1
+# behaviour. Do NOT exclude a path whose markdown is executable instruction (a skill, an agent
+# definition, a slash command) — put those in sensitive_path_list instead, where a hard
+# override catches them rather than a content pattern.
+#
+# content_scan_exclude:
+#   - "**/*.md"
+#   - "docs/**"
+
+# ---------------------------------------------------------------------------
+# auto_route_allow / auto_route_max_lines — OPTIONAL (v3.0 §A4, predicates 4 and 8). The ONLY
+# paths a DIRECT change may be committed on with no human offer, and the line budget for one.
+# Both are fail-closed by absence: omit them and nothing auto-routes. A path that is BOTH
+# allowed and sensitive is refused (predicate 5 — sensitive wins).
+#
+# auto_route_allow:
+#   - "CHANGELOG.md"
+# auto_route_max_lines: 20
+
+# ---------------------------------------------------------------------------
 # churn — single-sourced exclusions for the normalized churn cache (D1, CR4-10). Generated/vendor
 # paths + pure-format commits distort churn (Nagappan & Ball: raw churn is a poor predictor).
 # ---------------------------------------------------------------------------

@@ -55,10 +55,18 @@ Usage:
   compound-v-classify-request.py --parse [--reply "<text>" | --reply-file F | -]   # stdin default
   compound-v-classify-request.py --classify-codex --request "<text>" [--path P ...] \
                                  [--model M] [--timeout S] [--cwd DIR] [--config PATH]
+  compound-v-classify-request.py --classify-headless --request "<text>" [--path P ...] \
+                                 [--cwd DIR] [--timeout S] [--config PATH] \
+                                 [--prompt-file F]
   compound-v-classify-request.py --selftest
 
-`--parse` / `--classify-codex` print JSON `{"category": "<enum>", ...}` and exit 0 (the category
-IS the result). Usage errors exit 2.
+`--parse` / `--classify-codex` / `--classify-headless` print JSON `{"category": "<enum>", ...}`
+and exit 0 (the category IS the result). Usage errors exit 2.
+
+`--classify-headless` (v3.4.1) is the ONE mode that answers T3 without a parent Task — see
+section (d) below for why `hooks/triage-prompt-nudge.sh` needs it and what it does not change.
+`CV_CLASSIFY_CLAUDE_BIN` / `CV_CLASSIFY_CODEX_BIN` override which binary each route runs, which
+is how the tests plant fakes instead of spending a real model call.
 
 Python 3.9-safe, stdlib only. Soft dependencies (resolver + supervisor) are imported by path with
 inline fallbacks so this module never hard-fails.
@@ -91,6 +99,20 @@ CODEX_TIMEOUT_S = 30               # wall-clock cap for the one-shot classify
 CODEX_STDOUT_CAP = 1 << 16        # bounded output sink for codex's event stream (CR5-8)
 DEFAULT_CODEX_LIGHT_MODEL = "gpt-5.6-luna"   # fallback iff the resolver is unavailable
 TIMEOUT_EXIT_CODE = 124           # GNU-timeout / supervisor convention
+NOT_FOUND_EXIT_CODE = 127         # the supervisor's "command does not exist" convention
+
+# Headless (v3.4.1, finding 50) bounds. The whole headless budget is 15 s with a 3 s grace,
+# because the caller that needs it is `hooks/triage-prompt-nudge.sh` and a hook's budget is
+# the outer bound: `hooks/hooks.json` registers UserPromptSubmit with `timeout: 25`, which is
+# 15 + 3 plus room for the two engine invocations around it. A 30 s classify does not fit
+# inside a hook and never did — that is pre-flight amendment 1, not a preference.
+HEADLESS_TIMEOUT_S = 15
+HEADLESS_GRACE_S = 3
+CLAUDE_STDOUT_CAP = 1 << 16       # bounded output sink for the reply text
+DEFAULT_CLAUDE_LIGHT_MODEL = "sonnet"        # fallback iff the resolver is unavailable
+# Below this many seconds left, a second backend is not worth starting: it would either be
+# killed immediately or push the hook past its registration timeout.
+MIN_SECONDS_FOR_A_SECOND_BACKEND = 4
 
 # Human-readable category definitions embedded in the prompt (spec §2 semantics; AC-8:
 # impact is what a change IS, not only where it lives).
@@ -373,6 +395,243 @@ def classify_via_codex(request_text, resolved_paths=None, model=None,
 
 
 # =========================================================================== #
+# (d) HEADLESS ONE-SHOT CLASSIFY (v3.4.1, finding 50)
+#
+# WHY THIS EXISTS, AND WHAT IT DOES NOT CHANGE
+# --------------------------------------------
+# The module header above is still true of the PIPELINE: `/v:triage` and `/v:orchestrate`
+# run T3 as a parent-invoked light Task, and the engine is still T3-agnostic. What this
+# section adds is the one caller that CANNOT run a Task — `hooks/triage-prompt-nudge.sh`.
+# A hook is a subprocess; it has no Task tool. Until 3.4.1 that meant a `needs_t3` request
+# degraded to a printed reminder asking a human to run `/v:triage`, which is the exact
+# "prose enforcement wearing a hook's clothes" the native-mechanism pass exists to remove.
+# A nested `claude -p` answers the same bounded prompt in ~5 s, so the hook can finish T3
+# itself. Nothing else in the pipeline is obliged to use this route.
+#
+# THE ARGV ORDER IS LOAD-BEARING — live-probed, not reasoned about (2026-09-03).
+# `claude --help` declares `--tools <tools...>`: a VARIADIC option. The spec's draft argv put
+# the prompt last —
+#
+#     claude -p --model sonnet --output-format text --tools "" "<prompt>"
+#
+# — and the parser hands that prompt to `--tools` as a second tools value, leaving no prompt
+# at all. Run live, that argv fails with `Error: Input must be provided either through stdin
+# or as a prompt argument when using --print`. So the prompt goes IMMEDIATELY after `-p`, and
+# every variadic-shaped flag comes after it. `--tools ""` still ships: it is what keeps this
+# one-shot from reading or writing anything. The same probe with the corrected order returned
+# `plumbing`.
+#
+# NEVER `--bare`. It is the flag a reader reaches for on seeing "one-shot classify, skip the
+# plugins" — and it also skips the LOGIN, so a `--bare` classify fails on exactly the machines
+# where it would otherwise work. Its absence is pinned by a selftest.
+# =========================================================================== #
+def _looks_like_haiku(model):
+    """NEVER HAIKU is a project-wide rule. `scripts/lint-frontmatter.py` enforces it in
+    frontmatter; nothing enforced it for a model name resolved at RUNTIME until here, and a
+    machine-local `.claude/compound-v.json` can say anything. A haiku is not honoured."""
+    return "haiku" in str(model or "").lower()
+
+
+def resolve_claude_light_model(config_path=None):
+    """Resolve the Claude `light`-tier model through `compound-v-resolve-model.py` — never a
+    map recopied here, never Haiku. Fail-safe to DEFAULT_CLAUDE_LIGHT_MODEL when the resolver
+    is unavailable or when what it returns is a haiku. Picks a NAME; never calls a model."""
+    mod = _resolve_model_module()
+    if mod is not None:
+        try:
+            config_models = None
+            if config_path:
+                try:
+                    config_models = mod.load_config_models(config_path)
+                except Exception:  # noqa: BLE001
+                    config_models = None
+            res = mod.resolve("claude", "light", config_models=config_models)
+            model = res.get("model") if isinstance(res, dict) else None
+            if isinstance(model, str) and model and not _looks_like_haiku(model):
+                return model
+        except Exception:  # noqa: BLE001
+            pass
+    return DEFAULT_CLAUDE_LIGHT_MODEL
+
+
+def build_claude_command(prompt, model, cwd, supervisor_path, timeout_s, max_output_bytes,
+                         out_file, claude_bin="claude", grace_s=HEADLESS_GRACE_S):
+    """Assemble the exact argv: the timeout supervisor wrapping ONE headless `claude -p`.
+
+    `claude_bin` is a str or a list so tests can inject a fake CLI. The prompt is the first
+    positional after `-p` (see the header — `--tools` is variadic and swallows a trailing
+    prompt). Output is bounded; stdin is closed by the supervisor for the whole group."""
+    bin_argv = [claude_bin] if isinstance(claude_bin, str) else list(claude_bin)
+    claude_cmd = bin_argv + [
+        "-p", prompt,
+        "--model", model,
+        "--output-format", "text",
+        "--tools", "",
+    ]
+    cmd = [
+        sys.executable, supervisor_path,
+        "--timeout", str(int(timeout_s)),
+        "--grace", str(int(grace_s)),
+        "--stdout", out_file,
+        "--max-output-bytes", str(int(max_output_bytes)),
+    ]
+    if cwd:
+        cmd += ["--cwd", cwd]
+    return cmd + ["--"] + claude_cmd
+
+
+def _headless_result(category, backend, timed_out=False, exit_code=None, model=None,
+                     error=None):
+    """The ONE result shape `--classify-headless` prints. `backend` is what actually RAN, so
+    `none` means no CLI could be started at all — the caller's cue that the reminder, not a
+    fail-closed `unknown`, is the honest degrade. "No classifier ran" and "the classifier
+    said it cannot tell" are different claims and the hook routes them differently."""
+    out = {
+        "category": category if category in _CATEGORY_SET else FAIL_CLOSED_CATEGORY,
+        "backend": backend,
+        "timed_out": bool(timed_out),
+        "exit_code": exit_code,
+        "model": model,
+    }
+    if error:
+        out["error"] = error
+    return out
+
+
+def classify_via_claude(request_text, resolved_paths=None, model=None,
+                        timeout_s=HEADLESS_TIMEOUT_S, cwd=None, claude_bin="claude",
+                        supervisor_path=None, max_output_bytes=CLAUDE_STDOUT_CAP,
+                        config_path=None, taxonomy_categories=None, prompt=None):
+    """Run ONE headless `claude -p` classify through the timeout supervisor and parse the
+    enum. Same fail-closed contract as the codex route: spawn error / non-zero exit / timeout
+    / non-enum reply → `unknown`."""
+    import tempfile
+
+    if prompt is None:
+        prompt = build_prompt(request_text, resolved_paths, taxonomy_categories)
+    if model is None:
+        model = resolve_claude_light_model(config_path)
+    if _looks_like_haiku(model):
+        model = DEFAULT_CLAUDE_LIGHT_MODEL
+    if supervisor_path is None:
+        supervisor_path = _supervisor_path()
+    if cwd is None:
+        cwd = os.getcwd()
+
+    tmp = tempfile.mkdtemp(prefix="cv-a2-claude-")
+    try:
+        out_file = os.path.join(tmp, "reply.txt")
+        cmd = build_claude_command(prompt, model, cwd, supervisor_path, timeout_s,
+                                   max_output_bytes, out_file, claude_bin=claude_bin)
+        try:
+            # stdin=DEVNULL here too (defense in depth); the supervisor ALSO gives its child
+            # DEVNULL stdin in its own process group. Never a bare subprocess timeout.
+            proc = subprocess.run(
+                cmd, stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except (OSError, ValueError):
+            return _headless_result(FAIL_CLOSED_CATEGORY, "claude", error="spawn_failed",
+                                    model=model, timed_out=False, exit_code=None)
+
+        rc = proc.returncode
+        if rc == TIMEOUT_EXIT_CODE:
+            return _headless_result(FAIL_CLOSED_CATEGORY, "claude", timed_out=True,
+                                    exit_code=rc, model=model)
+        if rc != 0:
+            return _headless_result(FAIL_CLOSED_CATEGORY, "claude", timed_out=False,
+                                    exit_code=rc, model=model,
+                                    error=("not_found" if rc == NOT_FOUND_EXIT_CODE
+                                           else "nonzero_exit"))
+        try:
+            with open(out_file, "r", encoding="utf-8", errors="replace") as fh:
+                reply = fh.read()
+        except OSError:
+            return _headless_result(FAIL_CLOSED_CATEGORY, "claude", timed_out=False,
+                                    exit_code=rc, error="no_reply", model=model)
+        return _headless_result(parse_category(reply), "claude", timed_out=False,
+                                exit_code=rc, model=model)
+    finally:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _resolve_bin(env_name, default_name):
+    """The binary a route will run: an explicit env override (how tests plant a fake) or the
+    plain name looked up on PATH. `None` when neither resolves, and the route is then SKIPPED
+    rather than spawned-and-failed — which is what keeps `backend: none` meaningful.
+
+    An env override that is SET BUT EMPTY disables the route outright. That is not a
+    curiosity: it is the only way a test can assert the no-backend degrade on a developer
+    machine that really does have `claude` on PATH, and the alternative — falling through to
+    PATH on an empty override — is how this selftest spent a real model call the first time
+    it ran. An operator gets the same switch for free."""
+    import shutil
+
+    override = os.environ.get(env_name)
+    if override is not None:
+        override = override.strip()
+        if not override:
+            return None
+        if os.path.isabs(override) or os.sep in override:
+            return override if os.path.exists(override) else None
+        return shutil.which(override)
+    return shutil.which(default_name)
+
+
+def classify_headless(request_text, resolved_paths=None, timeout_s=HEADLESS_TIMEOUT_S,
+                      cwd=None, config_path=None, taxonomy_categories=None, prompt=None,
+                      claude_bin=None, codex_bin=None, supervisor_path=None):
+    """Answer the T3 prompt with NO Task tool: Claude light first, the read-only codex route
+    second, `unknown` last.
+
+    The fallback is deliberately narrow. A claude route that TIMED OUT has already spent the
+    whole budget, so starting codex behind it would push the caller past its own registration
+    timeout and still produce nothing — that case returns at once. A route that could not be
+    STARTED, or that failed fast, leaves budget on the clock and the second backend gets what
+    is left of it."""
+    import time
+
+    if prompt is None:
+        prompt = build_prompt(request_text, resolved_paths, taxonomy_categories)
+
+    budget = max(1, int(timeout_s))
+    deadline = time.monotonic() + budget
+    cbin = claude_bin if claude_bin is not None else _resolve_bin(
+        "CV_CLASSIFY_CLAUDE_BIN", "claude")
+    xbin = codex_bin if codex_bin is not None else _resolve_bin(
+        "CV_CLASSIFY_CODEX_BIN", "codex")
+
+    last = None
+    if cbin:
+        last = classify_via_claude(
+            request_text, resolved_paths, timeout_s=budget, cwd=cwd, claude_bin=cbin,
+            config_path=config_path, prompt=prompt, supervisor_path=supervisor_path,
+        )
+        # The classifier REPORTED — including a literal `unknown` it chose to give. Only a
+        # route that never reported at all falls through to the next backend.
+        if last.get("exit_code") == 0 and not last.get("timed_out"):
+            return last
+        if last.get("timed_out"):
+            return last
+
+    remaining = int(deadline - time.monotonic())
+    if xbin and remaining >= MIN_SECONDS_FOR_A_SECOND_BACKEND:
+        res = classify_via_codex(
+            request_text, resolved_paths, timeout_s=remaining, cwd=cwd, codex_bin=xbin,
+            config_path=config_path, prompt=prompt, supervisor_path=supervisor_path,
+        )
+        return _headless_result(res.get("category"), "codex",
+                                timed_out=bool(res.get("timed_out")),
+                                exit_code=res.get("exit_code"), model=res.get("model"),
+                                error=res.get("error"))
+    if last is not None:
+        return last
+    return _headless_result(FAIL_CLOSED_CATEGORY, "none", timed_out=False, exit_code=None,
+                            model=None, error="no_backend")
+
+
+# =========================================================================== #
 # CLI
 # =========================================================================== #
 def main(argv):
@@ -398,6 +657,11 @@ def main(argv):
                       help="parse a light-Task reply into a strict enum (stdin by default)")
     mode.add_argument("--classify-codex", action="store_true",
                       help="OPTIONAL: run the read-only codex route and parse the enum")
+    mode.add_argument("--classify-headless", action="store_true",
+                      help="answer the T3 prompt with no Task tool: Claude light first, the "
+                           "read-only codex route second, 'unknown' last. This is the route "
+                           "hooks/triage-prompt-nudge.sh takes, because a hook cannot run a "
+                           "Task.")
     mode.add_argument("--selftest", action="store_true")
 
     p.add_argument("--request", help="the change-request text")
@@ -409,9 +673,19 @@ def main(argv):
     p.add_argument("stdin_marker", nargs="?", choices=["-"], default=None,
                    help="a bare '-' means read the reply from stdin (also the default)")
     p.add_argument("--model", help="codex model override (else resolved light tier)")
-    p.add_argument("--timeout", type=int, default=CODEX_TIMEOUT_S, help="codex wall-clock cap (s)")
-    p.add_argument("--cwd", help="codex sandbox cwd (default: current dir)")
+    p.add_argument("--timeout", type=int, default=None,
+                   help="wall-clock cap (s). Default: %d for --classify-codex, %d for "
+                        "--classify-headless (a hook's budget, see HEADLESS_TIMEOUT_S)."
+                        % (CODEX_TIMEOUT_S, HEADLESS_TIMEOUT_S))
+    p.add_argument("--cwd", help="sandbox cwd for the spawned CLI (default: current dir)")
     p.add_argument("--config", help="compound-v config JSON for model resolution")
+    p.add_argument("--prompt-file",
+                   help="a file whose contents ARE the classify prompt, used verbatim "
+                        "instead of building one from --request/--path. This is how the "
+                        "hook passes the engine's own `t3_prompt` through: the engine "
+                        "already built it from the resolved paths and the taxonomy, and "
+                        "rebuilding it here from a re-parsed request would be a second, "
+                        "slightly different prompt for the same decision.")
     args = p.parse_args(argv)
 
     if args.build_prompt:
@@ -436,13 +710,40 @@ def main(argv):
         print(json.dumps({"category": parse_category(text)}))
         return 0
 
+    prompt_override = None
+    if args.prompt_file:
+        try:
+            with open(args.prompt_file, "r", encoding="utf-8", errors="replace") as fh:
+                prompt_override = fh.read()
+        except OSError as e:
+            print("classify-request: cannot read --prompt-file: %s" % e, file=sys.stderr)
+            return 2
+        if not prompt_override.strip():
+            print("classify-request: --prompt-file is empty", file=sys.stderr)
+            return 2
+
     if args.classify_codex:
-        if args.request is None:
-            p.error("--classify-codex requires --request")
+        if args.request is None and prompt_override is None:
+            p.error("--classify-codex requires --request or --prompt-file")
         res = classify_via_codex(
-            args.request, args.path, model=args.model, timeout_s=args.timeout,
+            args.request or "", args.path, model=args.model,
+            timeout_s=(CODEX_TIMEOUT_S if args.timeout is None else args.timeout),
             cwd=args.cwd, config_path=args.config,
             taxonomy_categories=args.taxonomy_category or None,
+            prompt=prompt_override,
+        )
+        print(json.dumps(res))
+        return 0
+
+    if args.classify_headless:
+        if args.request is None and prompt_override is None:
+            p.error("--classify-headless requires --request or --prompt-file")
+        res = classify_headless(
+            args.request or "", args.path,
+            timeout_s=(HEADLESS_TIMEOUT_S if args.timeout is None else args.timeout),
+            cwd=args.cwd, config_path=args.config,
+            taxonomy_categories=args.taxonomy_category or None,
+            prompt=prompt_override,
         )
         print(json.dumps(res))
         return 0
@@ -464,6 +765,20 @@ def _selftest():
         print(("  ok   - " if cond else "  FAIL - ") + name)
         if not cond:
             failures.append(name)
+
+    def _usage_error(argv_):
+        """True when `main(argv_)` refuses with argparse's usage exit (2)."""
+        try:
+            devnull = open(os.devnull, "w")
+            saved, sys.stderr = sys.stderr, devnull
+            try:
+                main(argv_)
+            finally:
+                sys.stderr = saved
+                devnull.close()
+        except SystemExit as exc:
+            return exc.code == 2
+        return False
 
     # --- (b) strict enum parser: accepts the four enums, rejects everything else --- #
     for enum in CATEGORIES:
@@ -617,6 +932,162 @@ sys.exit(0)
         for k in ("FAKE_ARGV_MARK", "FAKE_STDIN_MARK", "FAKE_CODEX_MODE"):
             os.environ.pop(k, None)
         shutil.rmtree(tmp, ignore_errors=True)
+
+    # --- (d) the headless route: argv, model policy, backend order, fail-closed --- #
+    #
+    # THE ARGV IS PINNED, not merely smoke-tested. Three of its properties are the whole
+    # reason this route works at all, and each of them was got wrong once:
+    #   * no `--bare` (it skips the login as well as the plugins);
+    #   * the prompt IMMEDIATELY after `-p`, because `--tools` is variadic and a trailing
+    #     prompt is swallowed as a second tools value (live-probed 2026-09-03);
+    #   * a `--model` that is never a haiku, whatever a machine-local config says.
+    tmp2 = tempfile.mkdtemp(prefix="cv-a2-headless-")
+    try:
+        argv = build_claude_command("PROMPT-TEXT", "sonnet", tmp2, _supervisor_path(),
+                                    HEADLESS_TIMEOUT_S, 1024,
+                                    os.path.join(tmp2, "reply.txt"))
+        expect("headless claude argv NEVER carries --bare", "--bare" not in argv)
+        expect("headless claude argv is a print run (-p)", "-p" in argv)
+        expect("headless claude argv puts the prompt immediately after -p",
+               argv[argv.index("-p") + 1] == "PROMPT-TEXT")
+        expect("headless claude argv sets --output-format text",
+               "--output-format" in argv
+               and argv[argv.index("--output-format") + 1] == "text")
+        expect("headless claude argv disables tools (--tools \"\")",
+               "--tools" in argv and argv[argv.index("--tools") + 1] == "")
+        expect("headless claude argv's --tools comes AFTER the prompt (variadic swallow)",
+               argv.index("--tools") > argv.index("-p") + 1)
+        expect("headless claude argv routes through the supervisor",
+               _supervisor_path() in argv)
+        expect("headless claude argv bounds output", "--max-output-bytes" in argv)
+        expect("headless claude argv carries a grace period",
+               "--grace" in argv and int(argv[argv.index("--grace") + 1]) == HEADLESS_GRACE_S)
+        expect("headless claude argv's cap is the hook-sized one",
+               "--timeout" in argv
+               and int(argv[argv.index("--timeout") + 1]) == HEADLESS_TIMEOUT_S)
+        expect("headless claude model is NEVER a haiku",
+               not _looks_like_haiku(argv[argv.index("--model") + 1]))
+        expect("the resolved claude light model is never a haiku",
+               not _looks_like_haiku(resolve_claude_light_model()))
+        expect("the haiku predicate actually recognises one",
+               _looks_like_haiku("claude-haiku-4-5") and not _looks_like_haiku("sonnet"))
+
+        # A haiku that reaches classify_via_claude is swapped before the spawn.
+        fake_claude = os.path.join(tmp2, "fakeclaude.py")
+        with open(fake_claude, "w") as fh:
+            fh.write(r'''#!/usr/bin/env python3
+import os, sys, time
+argv = sys.argv[1:]
+am = os.environ.get("FAKE_CLAUDE_ARGV")
+if am:
+    open(am, "w", encoding="utf-8").write("\x00".join(argv))
+sm = os.environ.get("FAKE_CLAUDE_STDIN")
+if sm:
+    open(sm, "w", encoding="utf-8").write(str(len(sys.stdin.buffer.read())))
+mode = os.environ.get("FAKE_CLAUDE_MODE", "enum")
+if mode == "slow":
+    time.sleep(30)
+if mode == "error":
+    sys.stderr.write("boom\n")
+    sys.exit(4)
+sys.stdout.write({"enum": "plumbing\n",
+                  "nonenum": "I would call this plumbing, probably.\n"}.get(mode, "plumbing\n"))
+sys.exit(0)
+''')
+        os.chmod(fake_claude, 0o755)
+        cbin = [sys.executable, fake_claude]
+        argv_mark2 = os.path.join(tmp2, "argv")
+        stdin_mark2 = os.path.join(tmp2, "stdin")
+        os.environ["FAKE_CLAUDE_ARGV"] = argv_mark2
+        os.environ["FAKE_CLAUDE_STDIN"] = stdin_mark2
+
+        os.environ["FAKE_CLAUDE_MODE"] = "enum"
+        r = classify_via_claude("do a thing", ["src/x.ts"], model="haiku", cwd=tmp2,
+                                claude_bin=cbin, timeout_s=10)
+        expect("headless claude happy path -> plumbing", r["category"] == "plumbing")
+        expect("headless claude reports its backend", r["backend"] == "claude")
+        expect("a haiku model is swapped before the spawn, never passed through",
+               not _looks_like_haiku(r.get("model")))
+        expect("headless claude proved closed stdin (0 bytes read)",
+               os.path.exists(stdin_mark2)
+               and open(stdin_mark2, encoding="utf-8").read() == "0")
+        spawned = open(argv_mark2, encoding="utf-8").read().split("\x00")
+        expect("the SPAWNED argv carried no --bare", "--bare" not in spawned)
+        expect("the SPAWNED argv carried --tools \"\"",
+               "--tools" in spawned and spawned[spawned.index("--tools") + 1] == "")
+
+        os.environ["FAKE_CLAUDE_MODE"] = "nonenum"
+        r2 = classify_via_claude("do a thing", ["src/x.ts"], model="sonnet", cwd=tmp2,
+                                 claude_bin=cbin, timeout_s=10)
+        expect("headless claude non-enum reply -> unknown", r2["category"] == "unknown")
+        expect("...and it still reports as a route that RAN (exit 0)",
+               r2["exit_code"] == 0 and r2["timed_out"] is False)
+
+        os.environ["FAKE_CLAUDE_MODE"] = "slow"
+        t1 = time.time()
+        r3 = classify_via_claude("do a thing", ["src/x.ts"], model="sonnet", cwd=tmp2,
+                                 claude_bin=cbin, timeout_s=1)
+        expect("headless claude timeout -> unknown, flagged",
+               r3["category"] == "unknown" and r3["timed_out"] is True)
+        expect("headless claude timeout returns promptly (<10s)", time.time() - t1 < 10)
+
+        # BACKEND ORDER. claude answers -> codex is never started (the missing codex_bin
+        # would fail if it were). A claude that cannot be STARTED falls through to codex.
+        os.environ["FAKE_CLAUDE_MODE"] = "enum"
+        h1 = classify_headless("do a thing", ["src/x.ts"], cwd=tmp2, timeout_s=10,
+                               claude_bin=cbin, codex_bin=None)
+        expect("headless prefers claude when it answers", h1["backend"] == "claude")
+
+        os.environ["FAKE_CODEX_MODE"] = "enum"
+        fake_codex = os.path.join(tmp2, "fakecodex.py")
+        with open(fake_codex, "w") as fh:
+            fh.write(fake_src)
+        os.chmod(fake_codex, 0o755)
+        h2 = classify_headless("do a thing", ["src/x.ts"], cwd=tmp2, timeout_s=10,
+                               claude_bin="",
+                               codex_bin=[sys.executable, fake_codex])
+        expect("headless falls back to codex when no claude binary resolves",
+               h2["backend"] == "codex" and h2["category"] == "plumbing")
+
+        # A claude that TIMED OUT does not then start codex: the budget is already spent.
+        os.environ["FAKE_CLAUDE_MODE"] = "slow"
+        t2 = time.time()
+        h3 = classify_headless("do a thing", ["src/x.ts"], cwd=tmp2, timeout_s=2,
+                               claude_bin=cbin, codex_bin=[sys.executable, fake_codex])
+        expect("a timed-out claude does not then spend the budget on codex",
+               h3["backend"] == "claude" and h3["timed_out"] is True)
+        expect("...and it still returns promptly (<12s)", time.time() - t2 < 12)
+
+        # Neither CLI available -> backend 'none'. That is NOT the same claim as a model
+        # answering `unknown`, and the hook routes the two differently.
+        h4 = classify_headless("do a thing", ["src/x.ts"], cwd=tmp2, timeout_s=5,
+                               claude_bin="", codex_bin="")
+        expect("no backend available -> backend 'none', category unknown",
+               h4["backend"] == "none" and h4["category"] == "unknown")
+        expect("...and it is not reported as a timeout", h4["timed_out"] is False)
+
+        # CLI smoke through --prompt-file (how the hook passes the engine's own t3_prompt).
+        pf = os.path.join(tmp2, "prompt.txt")
+        with open(pf, "w", encoding="utf-8") as fh:
+            fh.write("classify this\n")
+        # Both routes DISABLED by an empty override. Without this the CLI smoke would run
+        # whatever `claude` is on the developer's PATH and spend a real model call — which
+        # is exactly what it did the first time it ran.
+        os.environ["CV_CLASSIFY_CLAUDE_BIN"] = ""
+        os.environ["CV_CLASSIFY_CODEX_BIN"] = ""
+        expect("an empty env override disables a route rather than falling back to PATH",
+               _resolve_bin("CV_CLASSIFY_CLAUDE_BIN", "claude") is None)
+        expect("main --classify-headless --prompt-file exits 0",
+               main(["--classify-headless", "--prompt-file", pf, "--cwd", tmp2,
+                     "--timeout", "5"]) == 0)
+        expect("main --classify-headless with neither request nor prompt-file is a usage error",
+               _usage_error(["--classify-headless"]))
+    finally:
+        import shutil
+        for k in ("FAKE_CLAUDE_ARGV", "FAKE_CLAUDE_STDIN", "FAKE_CLAUDE_MODE",
+                  "FAKE_CODEX_MODE", "CV_CLASSIFY_CLAUDE_BIN", "CV_CLASSIFY_CODEX_BIN"):
+            os.environ.pop(k, None)
+        shutil.rmtree(tmp2, ignore_errors=True)
 
     # --- model resolution is best-effort + fail-safe (never raises) --- #
     m = resolve_codex_light_model()

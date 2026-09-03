@@ -27,6 +27,9 @@ Taxonomy shape (validated here):
         # shared_token & a11y are FIRST-CLASS kinds because F2's post-diff re-check
         # reads them, CR4-4) ; a regex `match` MUST pass the safe subset.
     sensitive_path_list: [glob]          # REQUIRED (missing → fail-closed violation)
+    content_scan_exclude: [glob]         # optional (v3.4.1 §A5) — paths whose CONTENT is
+                                         # never scanned for content_patterns (path rows
+                                         # still apply). Absent ⇒ empty ⇒ pre-3.4.1 behaviour.
     churn:                               # REQUIRED, single-sourced (CR4-10) so D1
       exclude_paths: [glob]              # never invents its own excludes
       format_commit_patterns: [regex]    # each a BOUNDED (safe-subset) regex
@@ -259,6 +262,16 @@ def validate(taxonomy):
         _check_glob_list(problems, "sensitive_path_list",
                          taxonomy.get("sensitive_path_list"), required=True)
 
+    # content_scan_exclude — OPTIONAL (v3.4.1 §A5), a list of globs. Absent is silent: a
+    # taxonomy authored before this release must keep validating unchanged. Present-but-
+    # malformed is a violation rather than a shrug, because the loader normalizes a bare
+    # string to an empty list — the fail-OPEN direction for a key whose only job is to
+    # suppress a scan, and an author who wrote `content_scan_exclude: "**/*.md"` would
+    # otherwise never learn that nothing was excluded.
+    if "content_scan_exclude" in taxonomy and taxonomy.get("content_scan_exclude") is not None:
+        _check_glob_list(problems, "content_scan_exclude",
+                         taxonomy.get("content_scan_exclude"), required=False)
+
     # churn — REQUIRED, single-sourced (CR4-10) so D1 reuses these excludes.
     churn = taxonomy.get("churn")
     if churn is None:
@@ -448,6 +461,49 @@ sensitive_path_list:
   - "src/auth/**"
 """
 
+# v3.4.1 §A5 — `content_scan_exclude` is an OPTIONAL list of globs. Valid shape.
+GOOD_CONTENT_SCAN_EXCLUDE = r"""
+version: 1
+sensitive_path_list:
+  - "src/auth/**"
+content_scan_exclude:
+  - "**/*.md"
+  - "docs/**"
+churn:
+  exclude_paths:
+    - "**/*.min.js"
+  format_commit_patterns:
+    - '^chore'
+"""
+
+# Not a list — MUST fail. A bare string would silently mean "exclude nothing" in the
+# loader, which is the fail-OPEN direction for a key whose job is to suppress a scan.
+BAD_CONTENT_SCAN_EXCLUDE_SCALAR = r"""
+version: 1
+sensitive_path_list:
+  - "src/auth/**"
+content_scan_exclude: "**/*.md"
+churn:
+  exclude_paths:
+    - "**/*.min.js"
+  format_commit_patterns:
+    - '^chore'
+"""
+
+# An empty-string entry is not a glob — MUST fail.
+BAD_CONTENT_SCAN_EXCLUDE_ENTRY = r"""
+version: 1
+sensitive_path_list:
+  - "src/auth/**"
+content_scan_exclude:
+  - ""
+churn:
+  exclude_paths:
+    - "**/*.min.js"
+  format_commit_patterns:
+    - '^chore'
+"""
+
 
 def _selftest():
     failures = []
@@ -497,6 +553,27 @@ def _selftest():
     expect("missing churn block fails",
            any("churn" in p for p in mc))
 
+    # --- v3.4.1 §A5 — content_scan_exclude (optional list of globs) ------------------- #
+    # This validator's whole surface in v3.4.1 is `content_scan_exclude`: it is the only
+    # new key the TAXONOMY carries. The release's other four behaviours are engine-side
+    # and their cells live where the code does — the T3 demotion, `scoped_plus` and
+    # NEVER_DEMOTE_GLOBS in compound-v-preeval.py's selftest, the `new_file` localization
+    # confidence in compound-v-localize.py's. Nothing about them is expressible in a
+    # taxonomy document, so nothing about them is validated here.
+    # The key is what makes the scorer stop reading legal/i18n content patterns out of
+    # prose. It is OPTIONAL: its absence must stay silent, so every taxonomy authored
+    # before this release keeps validating unchanged.
+    expect("content_scan_exclude absent -> no violation (GOOD fixture has no such key)",
+           not any("content_scan_exclude" in p for p in good))
+    gce = validate_text(GOOD_CONTENT_SCAN_EXCLUDE)
+    expect("content_scan_exclude: a list of globs validates (%r)" % gce, gce == [])
+    bce = validate_text(BAD_CONTENT_SCAN_EXCLUDE_SCALAR)
+    expect("content_scan_exclude: a bare string is rejected (never fail-open)",
+           any("content_scan_exclude" in p and "list of globs" in p for p in bce))
+    bce2 = validate_text(BAD_CONTENT_SCAN_EXCLUDE_ENTRY)
+    expect("content_scan_exclude: an empty-string entry is rejected",
+           any("content_scan_exclude[0]" in p for p in bce2))
+
     # The shipped example file (if present next to this script under .claude/) is valid.
     here = os.path.dirname(os.path.abspath(__file__))
     example = os.path.join(os.path.dirname(here), ".claude",
@@ -513,6 +590,17 @@ def _selftest():
             fb = validate(vm._mini_yaml(ex_text))
             expect("example valid under the stdlib _mini_yaml fallback (%r)" % fb,
                    fb == [])
+
+    # This repository's OWN taxonomy validates too — it is the file the engine actually
+    # scores against, and v3.4.1 added rows to it (`content_scan_exclude`, the enforcement
+    # chain in `sensitive_path_list`).
+    repo_tax = os.path.join(os.path.dirname(here), ".claude",
+                            "compound-v-impact-taxonomy.yaml")
+    if os.path.isfile(repo_tax):
+        with open(repo_tax, "r", encoding="utf-8") as fh:
+            rt_text = fh.read()
+        rt = validate_text(rt_text)
+        expect("this repository's taxonomy is valid (%r)" % rt, rt == [])
 
     # Non-mapping root → single clear violation (fail-closed, no crash).
     expect("non-mapping root rejected", validate("not a mapping") != [])

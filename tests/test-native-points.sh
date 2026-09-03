@@ -84,6 +84,17 @@ export PYTHONDONTWRITEBYTECODE=1
 # How the hooks actually run: the harness always sets this, and it is what
 # selects the Claude-shaped hookSpecificOutput branch.
 export CLAUDE_PLUGIN_ROOT="$REPO"
+
+# NO TEST IN THIS FILE MAY SPEND A REAL MODEL CALL. As of v3.4.1 the hook
+# finishes T3 with a headless `claude -p` (and a codex fallback), and both
+# routes resolve their binary from PATH unless these are set -- so on a
+# developer machine, which has a real `claude`, a needs_t3 request would
+# silently make a live call. An empty override DISABLES a route (see
+# `_resolve_bin` in compound-v-classify-request.py); the T3 section below
+# points them at fakes for the cases that need one, and every other case in
+# this file inherits "no backend at all".
+export CV_CLASSIFY_CLAUDE_BIN=""
+export CV_CLASSIFY_CODEX_BIN=""
 unset CURSOR_PLUGIN_ROOT 2>/dev/null || true
 unset COPILOT_CLI 2>/dev/null || true
 
@@ -415,6 +426,210 @@ check "a planted engine failure yields the REMINDER text" \
      && ctx "$o" | grep -q '/v:triage' && echo 1 || echo 0)"
 check "a planted engine failure mints no record" \
   "$([ "$(count_records)" = "$n_before" ] && echo 1 || echo 0)"
+
+# --------------------------------------------------------------------------- #
+# 3c. v3.4.1 — THE HOOK FINISHES T3 ITSELF (finding 50).
+#
+# Until 3.4.1 a `needs_t3` request was a DEGRADE: the hook printed the reminder
+# because finishing T3 needs a light-tier classify and a hook cannot run a Task.
+# The premise held and the conclusion did not — a hook cannot run a Task but it
+# can run a PROCESS, and `compound-v-classify-request.py --classify-headless` is
+# that one-shot. What is asserted here is the whole decision table of the new
+# branch, driven by a FAKE `claude` so no case spends a real model call:
+#
+#   enum reply      -> the engine is re-invoked with --t3-category and a record
+#                      with a real tier is written
+#   garbage reply   -> `unknown` is a genuine classification: FULL, WITH a record
+#   a hanging fake  -> nothing was classified: the reminder, inside the budget
+#   no CLI at all   -> nothing was classified: the reminder
+#
+# The two halves of that table are the point. A model that RAN and said it
+# cannot tell is not the same event as no model having run, and collapsing them
+# would either write a made-up band onto a real record or throw away a real
+# answer. The argv is asserted too: no `--bare` (it skips the login as well as
+# the plugins) and a `--model` that is never a haiku.
+# --------------------------------------------------------------------------- #
+T3PROJ="$WORK/projT3"
+T3PREEVAL="$T3PROJ/docs/superpowers/pre-eval"
+T3RUN="$T3PROJ/docs/superpowers/execution/2099-01-01-t3"
+mkdir -p "$T3PROJ/.git" "$T3PROJ/.claude" "$T3PROJ/src" "$T3PREEVAL" "$T3RUN"
+printf 'def upload(chunk):\n    return chunk\n' >"$T3PROJ/src/uploader.py"
+# A FINISHED run, for the same reason 3b needs one: "cannot tell" is treated as
+# ACTIVE, so a sandbox the resume query cannot answer for would silence the hook
+# for the wrong reason and every assertion below would pass without firing.
+printf 'feature: t3\njobs:\n  - id: task-1\n' >"$T3RUN/manifest.yaml"
+jq -n --arg ts "$(now_ts)" \
+  '{run_id:"2099-01-01-t3", phase:"MERGED", updated_at:$ts,
+    jobs:{"task-1":{status:"done"}}}' >"$T3RUN/state.json"
+
+# A taxonomy that has SAFETY COVERAGE (without it the scorer returns FULL before
+# it ever reaches T3) but bands nothing under src/ — which is exactly the shape
+# that makes the engine ask for T3.
+cat >"$T3PROJ/.claude/compound-v-impact-taxonomy.yaml" <<'YAML'
+version: 1
+
+path_patterns:
+  - glob: "docs/**"
+    difficulty_band: low
+    impact_band: low
+
+content_patterns:
+  - match: "terms of service"
+    pattern_type: literal
+    case: insensitive
+    scan: content
+    kind: legal_copy
+    impact_band: high
+
+sensitive_path_list:
+  - "**/*.env"
+  - "**/secrets/**"
+
+churn:
+  exclude_paths:
+    - "**/*.lock"
+  format_commit_patterns:
+    - "^chore: format"
+YAML
+check "T3 SANDBOX: the taxonomy the T3 cases rely on is valid" \
+  "$(python3 "$REPO/scripts/compound-v-validate-taxonomy.py" \
+       "$T3PROJ/.claude/compound-v-impact-taxonomy.yaml" >/dev/null 2>&1 && echo 1 || echo 0)"
+
+FAKE_CLAUDE="$WORK/fake-claude.sh"
+cat >"$FAKE_CLAUDE" <<'FAKE'
+#!/usr/bin/env bash
+# Stand-in for `claude -p`. Records the argv it was given (one arg per line) and
+# how many bytes of stdin it could read, then answers as the case asks.
+if [ -n "${FAKE_CLAUDE_ARGV:-}" ]; then printf '%s\n' "$@" >"$FAKE_CLAUDE_ARGV"; fi
+if [ -n "${FAKE_CLAUDE_STDIN:-}" ]; then wc -c >"$FAKE_CLAUDE_STDIN" 2>/dev/null; fi
+[ -n "${FAKE_CLAUDE_SLEEP:-}" ] && sleep "$FAKE_CLAUDE_SLEEP"
+printf '%s\n' "${FAKE_CLAUDE_REPLY:-plumbing}"
+FAKE
+chmod +x "$FAKE_CLAUDE"
+
+t3_records_for() {
+  find "$T3PREEVAL" -maxdepth 1 -type f -name '*.json' 2>/dev/null \
+    | while IFS= read -r f; do
+        jq -e --arg s "$1" '(type == "object") and (.session_id == $s)' "$f" \
+          >/dev/null 2>&1 && printf '%s\n' "$f"
+      done
+}
+
+ARGV_LOG="$WORK/fake-claude-argv"
+
+# --- case 1: the fake answers with an enum -> a real tier, no reminder ------- #
+export CV_CLASSIFY_CLAUDE_BIN="$FAKE_CLAUDE"
+export FAKE_CLAUDE_ARGV="$ARGV_LOG"
+export FAKE_CLAUDE_STDIN="$WORK/fake-claude-stdin"
+export FAKE_CLAUDE_REPLY="user-facing-minor"
+unset FAKE_CLAUDE_SLEEP 2>/dev/null || true
+
+o="$(run_nudge sess-T3A 'please add a retry loop to the uploader module at src/uploader.py' "$T3PROJ")"
+check "T3: a needs_t3 prompt still exits 0" "$([ "$NUDGE_RC" = 0 ] && echo 1 || echo 0)"
+check "T3: the hook no longer degrades to the reminder when a classifier answers" \
+  "$(ctx "$o" | grep -q 'could not size this prompt' && echo 0 || echo 1)"
+rec_T3A="$(t3_records_for sess-T3A | head -1)"
+check "T3: the re-invocation with --t3-category WROTE a record" \
+  "$([ -n "$rec_T3A" ] && echo 1 || echo 0)"
+check "T3: the record records the model-derived tier (T3 in tiers_signalled)" \
+  "$([ -n "$rec_T3A" ] && jq -e '(.tiers_signalled // []) | index("T3")' "$rec_T3A" \
+     >/dev/null 2>&1 && echo 1 || echo 0)"
+tier_T3A="$([ -n "$rec_T3A" ] && jq -r '.tier // ""' "$rec_T3A" 2>/dev/null || printf '')"
+check "T3: a user-facing-minor reply lands SCOPED (the enum reached the matrix)" \
+  "$([ "$tier_T3A" = "SCOPED" ] && echo 1 || echo 0)"
+check "T3: the emitted line names that tier (TIER: SCOPED)" \
+  "$(ctx "$o" | grep -q 'TIER: SCOPED' && echo 1 || echo 0)"
+
+# THE ARGV. Three properties, each of which was wrong in a draft of this route.
+check "T3 ARGV: the classify NEVER passes --bare (it skips the login too)" \
+  "$([ -f "$ARGV_LOG" ] && grep -qx -- '--bare' "$ARGV_LOG" && echo 0 || echo 1)"
+check "T3 ARGV: it is a print run with the prompt immediately after -p" \
+  "$([ -f "$ARGV_LOG" ] && [ "$(head -1 "$ARGV_LOG")" = "-p" ] \
+     && [ -n "$(sed -n '2p' "$ARGV_LOG")" ] && echo 1 || echo 0)"
+check "T3 ARGV: it asks for text output" \
+  "$([ -f "$ARGV_LOG" ] && grep -qx -- '--output-format' "$ARGV_LOG" && echo 1 || echo 0)"
+check "T3 ARGV: it disables tools" \
+  "$([ -f "$ARGV_LOG" ] && grep -qx -- '--tools' "$ARGV_LOG" && echo 1 || echo 0)"
+t3_model="$([ -f "$ARGV_LOG" ] && awk '$0=="--model"{getline; print; exit}' "$ARGV_LOG" || printf '')"
+check "T3 ARGV: the model is resolved and is NEVER a haiku (got '${t3_model}')" \
+  "$([ -n "$t3_model" ] && ! printf '%s' "$t3_model" | grep -qi haiku && echo 1 || echo 0)"
+check "T3: the classify ran with stdin closed (0 bytes readable)" \
+  "$([ -f "$WORK/fake-claude-stdin" ] \
+     && [ "$(tr -d ' \n' <"$WORK/fake-claude-stdin")" = "0" ] && echo 1 || echo 0)"
+
+# --- case 2: garbage reply -> `unknown` is a REAL answer -> FULL, with a record #
+export FAKE_CLAUDE_REPLY="Well, I would probably call this plumbing of some sort."
+o="$(run_nudge sess-T3B 'please add a retry loop to the downloader module at src/uploader.py' "$T3PROJ")"
+rec_T3B="$(t3_records_for sess-T3B | head -1)"
+check "T3: a non-enum reply is still a classification, so a record IS written" \
+  "$([ -n "$rec_T3B" ] && echo 1 || echo 0)"
+check "T3: ...and it fails closed to FULL" \
+  "$([ -n "$rec_T3B" ] && jq -e '.tier == "FULL"' "$rec_T3B" >/dev/null 2>&1 \
+     && echo 1 || echo 0)"
+check "T3: ...recorded as a T3 verdict, not as an unbanded one" \
+  "$([ -n "$rec_T3B" ] && jq -e '(.tiers_signalled // []) | index("T3")' "$rec_T3B" \
+     >/dev/null 2>&1 && echo 1 || echo 0)"
+check "T3: ...and the model was NOT asked to route it by hand" \
+  "$(ctx "$o" | grep -q 'TIER: FULL' && echo 1 || echo 0)"
+
+# --- case 3: a hanging fake -> nothing classified -> the reminder, in budget -- #
+# The cap is CV_CLASSIFY_TIMEOUT_S here so the suite does not sit for 18 s; the
+# constant that ships is asserted separately below.
+export FAKE_CLAUDE_REPLY="plumbing"
+export FAKE_CLAUDE_SLEEP=20
+export CV_CLASSIFY_TIMEOUT_S=3
+t0=$(date +%s)
+o="$(run_nudge sess-T3C 'please add a retry loop to the exporter module at src/uploader.py' "$T3PROJ")"
+t1=$(date +%s)
+check "T3: a hanging classifier still exits 0" "$([ "$NUDGE_RC" = 0 ] && echo 1 || echo 0)"
+check "T3: a hanging classifier yields the REMINDER (nothing was classified)" \
+  "$(ctx "$o" | grep -q 'could not size this prompt' \
+     && ctx "$o" | grep -q '/v:triage' && echo 1 || echo 0)"
+# A SESSION-BOUND record, not a file count: the engine writes its `.intent.json`
+# and `.localization.json` working artifacts on the way to `needs_t3` and those
+# are resumable-by-fingerprint scaffolding, not a verdict. What must not exist is
+# a RECORD bound to this session, because that is what the Stop gate reads and
+# what the outcome stream keys on.
+check "T3: a hanging classifier mints NO record (no invented band)" \
+  "$([ -z "$(t3_records_for sess-T3C)" ] && echo 1 || echo 0)"
+check "T3: and it returned inside the budget ($((t1 - t0))s for a 3s cap)" \
+  "$([ "$((t1 - t0))" -lt 20 ] && echo 1 || echo 0)"
+unset FAKE_CLAUDE_SLEEP CV_CLASSIFY_TIMEOUT_S
+
+# --- case 4: no classifier on the machine at all -> the reminder ------------- #
+# An override that is set but EMPTY disables a route outright, which is how this
+# asserts the no-backend degrade on a machine that really does have `claude`.
+export CV_CLASSIFY_CLAUDE_BIN=""
+export CV_CLASSIFY_CODEX_BIN=""
+o="$(run_nudge sess-T3D 'please add a retry loop to the importer module at src/uploader.py' "$T3PROJ")"
+check "T3: with no classify backend at all the hook exits 0" \
+  "$([ "$NUDGE_RC" = 0 ] && echo 1 || echo 0)"
+check "T3: with no classify backend at all it degrades to the reminder" \
+  "$(ctx "$o" | grep -q 'could not size this prompt' && echo 1 || echo 0)"
+check "T3: ...and mints no record" \
+  "$([ -z "$(t3_records_for sess-T3D)" ] && echo 1 || echo 0)"
+unset FAKE_CLAUDE_ARGV FAKE_CLAUDE_STDIN FAKE_CLAUDE_REPLY
+
+# --- the contract the hook and the registration have to agree on ------------- #
+check "T3: the hook calls --classify-headless (not the Task-contract modes)" \
+  "$(grep -q -- '--classify-headless' "$NUDGE" && echo 1 || echo 0)"
+check "T3: the hook re-enters the engine with --t3-category" \
+  "$(grep -q -- '--t3-category' "$NUDGE" && echo 1 || echo 0)"
+check "T3: the hook's needs_t3 branch no longer degrades unconditionally" \
+  "$(grep -q 'the request needs the T3 classify step . degrading' "$NUDGE" && echo 0 || echo 1)"
+check "T3: the shipped classify cap is 15 s" \
+  "$(grep -q '^_CLASSIFY_TIMEOUT_S=15$' "$NUDGE" && echo 1 || echo 0)"
+check "T3: hooks.json gives UserPromptSubmit the 25 s the cap plus grace needs" \
+  "$(jq -e '[.hooks.UserPromptSubmit[]?.hooks[]?.timeout] == [25]' "$HOOKS_JSON" \
+     >/dev/null 2>&1 && echo 1 || echo 0)"
+check "T3: and ONLY that event was raised (PostCompact still bounded at 10)" \
+  "$(jq -e '[.hooks.PostCompact[]?.hooks[]?.timeout] == [10]' "$HOOKS_JSON" \
+     >/dev/null 2>&1 && echo 1 || echo 0)"
+check "T3: the SCOPED+ tier line exists for a small edit on a sensitive path" \
+  "$(grep -q 'SCOPED+' "$NUDGE" && echo 1 || echo 0)"
+check "T3: the classify engine's own selftest is green" \
+  "$(python3 "$REPO/scripts/compound-v-classify-request.py" --selftest >/dev/null 2>&1 \
+     && echo 1 || echo 0)"
 
 # --------------------------------------------------------------------------- #
 # 4. PostCompact.

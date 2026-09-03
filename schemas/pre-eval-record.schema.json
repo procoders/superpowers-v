@@ -74,6 +74,14 @@
         "description": "Tier agreement - see the FASTPATH_ELIGIBLE case above. This is the case that matters most: a FULL record wearing `tier: DIRECT` would be exempted by the triage gate as if it were the auto-route class.",
         "properties": { "tier": { "const": "FULL" } }
       }
+    },
+    {
+      "if": { "required": ["flavor"] },
+      "then": {
+        "description": "SCOPED+ QUALIFIES SCOPED AND NOTHING ELSE (v3.4.1 §A3). `flavor: scoped_plus` obliges the run to carry a deep review job and a cross-model second opinion, which `--require-triage` then enforces on the manifest. On a FULL record that obligation is already exceeded and the flag is noise; on a FASTPATH_ELIGIBLE record it is a contradiction, since a DIRECT change has no manifest to put a review job in. Keyed on the PRESENCE of `flavor` rather than on its value, so a future flavor inherits the same pinning instead of quietly escaping it.",
+        "properties": { "decision": { "const": "SCOPED_PIPELINE" } },
+        "required": ["decision"]
+      }
     }
   ],
   "properties": {
@@ -134,6 +142,47 @@
       "enum": ["DIRECT", "SCOPED", "FULL"],
       "description": "OPTIONAL, and REDUNDANT BY CONSTRUCTION: the manifest-vocabulary token for `decision` (FASTPATH_ELIGIBLE=DIRECT, SCOPED_PIPELINE=SCOPED, FULL_PIPELINE=FULL - compound-v-preeval.py's DECISION_TO_TIER). The triage gate in `hooks/epic-goal-stop.sh` PREFERS this field over `decision` when it is present, so an unconstrained `tier` would be a second, higher-priority source of truth for a safety-relevant classification: a record could say `decision: FULL_PIPELINE` and `tier: DIRECT` and be exempted as DIRECT. The three tier-agreement conditionals in the top-level `allOf` therefore PIN it to `decision`, which makes the hook's preferred branch provably identical to its fallback rather than a way around it. Carry it for human readability; never as an independent claim. `decision` remains the authority.",
       "$comment": "Pinned to `decision` by the tier-agreement conditionals in the top-level allOf."
+    },
+    "flavor": {
+      "type": "string",
+      "enum": ["scoped_plus"],
+      "description": "OPTIONAL (v3.4.1 §A3). The SCOPED+ qualifier: a small, exactly-localized edit on a SENSITIVE path that a light classify called `plumbing` or `user-facing-minor`. It is deliberately NOT a fourth tier token — `decision` still carries one of three values and DECISION_TO_TIER still has three entries — because a fourth token would have to be taught to every consumer that branches on the tier. What it adds is an OBLIGATION on the run: a `type: review` job at `tier: deep` on `backend: claude`, plus a cross-model second opinion, plus the human accept. `compound-v-validate-manifest.py --require-triage` refuses a `scoped_plus` manifest that carries no such review job, which is what stops the flavor from being a label instead of a promise. Absent means ordinary SCOPED (or any other tier); the conditional in the top-level `allOf` pins its presence to decision=SCOPED_PIPELINE, so it can never qualify a FULL or DIRECT record."
+    },
+    "t3_demotion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "category", "applied"],
+      "description": "OPTIONAL (v3.4.1 §A2/§A3). What the TAXONOMY said, kept beside the decision a light classify was allowed to reach instead. The engine records it whenever T3 was consulted about the SIZE of a change (rather than about a path it could not band at all): `from` is the band pair T1 produced, `category` is the enum T3 answered, and `applied` says whether the demotion actually happened. IT IS EVIDENCE, NEVER A GATE: a reader that wants the tier reads `decision`. Its purpose is to make a demotion auditable after the fact — a record saying `from: {high, high}` beside `decision: SCOPED_PIPELINE` is the whole argument for that tier in one field, and a record saying `applied: false` is a change that asked to be small and was refused.",
+      "properties": {
+        "from": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["difficulty", "impact"],
+          "description": "The bands T1 produced BEFORE the demotion — on §A2's path the broad glob's own bands, on §A3's the sensitive path's.",
+          "properties": {
+            "difficulty": { "$ref": "#/$defs/band" },
+            "impact": { "$ref": "#/$defs/band" }
+          }
+        },
+        "category": {
+          "type": "string",
+          "enum": ["plumbing", "user-facing-minor", "user-facing-major", "unknown"],
+          "description": "The T3 enum that was answered. Only `plumbing` and `user-facing-minor` ever demote; the other two are recorded with `applied: false`."
+        },
+        "applied": {
+          "type": "boolean",
+          "description": "Whether the bands were actually changed. False means T3 was asked and refused — the record keeps the question as well as the answer."
+        },
+        "sensitive": {
+          "type": "boolean",
+          "description": "Present and true on the §A3 (SCOPED+) path only: the demoted path is on the taxonomy's sensitive list. Absent on the ordinary §A2 broad-glob demotion."
+        }
+      }
+    },
+    "t3_reason": {
+      "type": "string",
+      "enum": ["unbanded", "demotion", "sensitive"],
+      "description": "OPTIONAL (v3.4.1). WHY the light classify was consulted: `unbanded` (T1 could not band the path at all — the pre-3.4.1 case), `demotion` (T1 banded it, but only from a broad directory glob, §A2), or `sensitive` (a small edit on a sensitive path that may reach SCOPED+, §A3). The re-entry is identical in all three cases, so nothing branches on this — it exists so a log or an audit can tell a classify that RESCUED a change from a broad glob apart from one that merely filled a gap."
     },
     "session_id": {
       "type": ["string", "null"],
@@ -215,8 +264,8 @@
         },
         "confidence": {
           "type": "string",
-          "enum": ["exact", "ambiguous", "failed"],
-          "description": "Localization confidence. `ambiguous`/`failed` ⇒ Layer-A override #1 ⇒ FULL_PIPELINE (Iron-Invariant #2: no `low` without exact localization)."
+          "enum": ["exact", "ambiguous", "failed", "new_file"],
+          "description": "Localization confidence. `ambiguous`/`failed` ⇒ Layer-A override #1 ⇒ FULL_PIPELINE (Iron-Invariant #2: no `low` without exact localization). `new_file` (v3.4.1 §A4) is the fourth value: the request named ONE path that does not exist yet and whose parent directory does, so `resolved_paths` is that single path, `fan_out` is 1 and `flags` contains `new_file`. It is a LOCALIZED answer — override #1 does not fire and T1 still bands it from the directory's glob — but it is never DIRECT: the engine's Layer-B predicate tests `confidence == \"exact\"` by name, because a file nobody has read must not be committed with no manifest, no run dir and no review."
         }
       }
     }

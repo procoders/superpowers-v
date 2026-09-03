@@ -1,0 +1,55 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/procoders/superpowers-v/schemas/cross-model-receipt.schema.json",
+  "title": "Compound V cross-model review receipt (SCOPED+)",
+  "description": "The receipt `/v:dispatch` step 8 writes to `receipts/cross-model.json` after running the mandatory cross-model second opinion on a `triage.flavor: scoped_plus` run. It EXISTS because `schemas/plan-review.schema.json` cannot carry it: that document is `additionalProperties: false` and its only producer is `codex exec --output-schema`, which emits findings and nothing else — no run, no pre-eval, no diff. So the driver's structured output is NESTED here, under `review`, inside a flat envelope that adds the three binding fields the validator checks (`run_id`, `pre_eval_id`, `diff_digest`) plus the self-integrity `digest`.\n\nThe review itself stays ADVISORY — the orchestrator arbitrates, exactly as for `/v:review-plan`. What is NOT advisory is that it RAN, on THIS run, over THIS diff: `compound-v-validate-manifest.py --require-cross-model-receipt <path>` refuses a receipt whose `run_id`/`pre_eval_id` disagree with the manifest, whose `diff_digest` is malformed or disagrees with `--expected-diff-digest`, or whose `digest` does not re-derive from its own canonical bytes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "pre_eval_id",
+    "diff_digest",
+    "reviewer_backend",
+    "reviewer_model",
+    "produced_at",
+    "review",
+    "digest"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "description": "The run this receipt belongs to — MUST equal the manifest's `run_id`."
+    },
+    "pre_eval_id": {
+      "type": "string",
+      "description": "The write-once pre-eval id from the manifest's `triage.pre_eval_id` — the cross-artifact binding key that ties receipt, record and manifest to one decision."
+    },
+    "diff_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "'sha256:'+sha256 over the bytes of the sealed patch the reviewer was given (the `--plan-file` step 8 passes). Sealed under `digest`, so the reviewed diff cannot be swapped after the fact; `--expected-diff-digest` lets the caller re-assert it against the bytes it sealed."
+    },
+    "reviewer_backend": {
+      "type": "string",
+      "const": "codex",
+      "description": "MUST be codex. The point of the SCOPED+ receipt is a DIFFERENT model family from the one that wrote the code and the one that reviews it in-harness; a Claude-on-Claude second opinion is not a second opinion."
+    },
+    "reviewer_model": {
+      "type": "string",
+      "description": "The concrete model the driver resolved to (e.g. gpt-5.6-sol). Recorded, not constrained: the codex family map moves faster than this schema."
+    },
+    "produced_at": {
+      "type": "string",
+      "description": "ISO-8601 UTC timestamp the receipt was written."
+    },
+    "review": {
+      "type": "object",
+      "description": "The driver's structured output, verbatim — a document valid against `schemas/plan-review.schema.json` (`verdict`, `summary`, `findings`, `blind_spots_checked`). The validator checks it against that schema; it never re-interprets the findings, and a `concerns`/`reject` verdict is NOT itself a violation (the orchestrator arbitrates)."
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "REQUIRED self-integrity digest: 'sha256:'+sha256(canonical_json(receipt without `digest`)), sealed and verified with the SHARED primitive `compound-v-taxonomy.record_digest(receipt, exclude_field='digest')` — the same convention as the pre-eval record and the fast-path receipt, so producer and consumer can never drift."
+    }
+  }
+}

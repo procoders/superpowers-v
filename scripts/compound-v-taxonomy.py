@@ -16,6 +16,9 @@ Taxonomy shape (authored by `/v:onboard`, validated by compound-v-validate-taxon
       - {match: "aria-label", pattern_type: literal, case: sensitive,
          scan: content, kind: a11y, impact_band: high}
     sensitive_path_list: ["src/auth/**", "**/migrations/**"]
+    content_scan_exclude: ["**/*.md"]         # v3.4.1 A5 — optional, default empty: paths
+                                              # whose CONTENT is never scanned (path rows
+                                              # and sensitive_path_list still apply)
     auto_route_allow: ["CHANGELOG.md"]        # v3.0 A4 predicate 4 — optional, default empty
     auto_route_max_lines: 20                  # v3.0 A4 predicate 8 — optional, default 20
     churn: {exclude_paths: ["**/*.min.js"], format_commit_patterns: ["^chore\\(fmt\\)"]}
@@ -174,6 +177,23 @@ MANDATORY_SENSITIVE = (
     ".claude/compound-v-impact-taxonomy.yaml",
     ".claude/compound-v.json",
 )
+
+
+def glob_is_broad(pattern):
+    """v3.4.1 §A1 — is this glob a "everything under here" pattern?
+
+    TRUE when the pattern contains `**` or ends in `/*`. BREADTH IS A PROPERTY OF THE
+    GLOB, NEVER OF THE REPOSITORY: counting the files a pattern matches would cost a
+    repo scan on every prompt, and a pattern that says "everything under here" is broad
+    by construction whether the directory holds one file or ten thousand.
+
+    The scoring engine reads this per matched row to decide whether T1's bands are a
+    statement about THIS file or about a whole directory — the second is the only case
+    in which a light classify is allowed to demote the tier (spec §A2).
+    """
+    if not isinstance(pattern, str) or not pattern:
+        return False
+    return "**" in pattern or pattern.endswith("/*")
 
 
 def band_rank(band):
@@ -411,6 +431,11 @@ def load_taxonomy(path=None, text=None):
         "path_patterns": [],
         "content_patterns": [],
         "sensitive_path_list": [str(g) for g in _as_list(data.get("sensitive_path_list"))],
+        # v3.4.1 §A5 — paths whose CONTENT is never scanned for content_patterns. Optional
+        # and DEFAULT EMPTY, so a taxonomy that predates this release behaves exactly as it
+        # did. Path rows still apply to an excluded path; only the content scan is skipped.
+        "content_scan_exclude": [
+            str(g) for g in _as_list(data.get("content_scan_exclude"))],
         "auto_route_allow": [str(g) for g in _as_list(data.get("auto_route_allow"))],
         "auto_route_max_lines": _auto_route_max_lines(data.get("auto_route_max_lines")),
         "churn": {"exclude_paths": [], "format_commit_patterns": []},
@@ -449,12 +474,19 @@ def match_path(taxonomy, path):
 
     Returns:
       {"path": str,
-       "matched": [ {glob, difficulty_band, impact_band}, ... ],   # rows that matched
+       "matched": [ {glob, difficulty_band, impact_band, broad}, ... ],  # rows that matched
        "sensitive": bool,                                          # a sensitive_path_list hit
        "difficulty_band": band|None,   # conservative-max over matched rows
        "impact_band": band|None}
+
+    Each matched row is a COPY carrying `broad` (v3.4.1 §A1, `glob_is_broad`) — a copy so
+    that the loaded taxonomy's own rows are never mutated by a match, and per-row rather
+    than once for the path because the scorer's demotion signal is "EVERY row that produced
+    these bands was broad": one specifically-named row among them is enough to say the
+    taxonomy meant this file.
     """
-    matched = [row for row in taxonomy.get("path_patterns", [])
+    matched = [dict(row, broad=glob_is_broad(row["glob"]))
+               for row in taxonomy.get("path_patterns", [])
                if glob_match(path, row["glob"])]
     sensitive = any(glob_match(path, g) for g in taxonomy.get("sensitive_path_list", []))
     return {
@@ -464,6 +496,16 @@ def match_path(taxonomy, path):
         "difficulty_band": max_band(r.get("difficulty_band") for r in matched),
         "impact_band": max_band(r.get("impact_band") for r in matched),
     }
+
+
+def content_scan_excluded(taxonomy, path):
+    """v3.4.1 §A5 — True iff `path` matches one of the taxonomy's `content_scan_exclude`
+    globs, i.e. its CONTENT must not be matched against `content_patterns`. Path rows and
+    `sensitive_path_list` are unaffected: this suppresses one signal, never a protection."""
+    if not path:
+        return False
+    return any(glob_match(path, g)
+               for g in (taxonomy or {}).get("content_scan_exclude", []))
 
 
 def _auto_route_max_lines(raw):
@@ -623,6 +665,13 @@ def classify(taxonomy, path=None, content=None, regex_timeout_s=DEFAULT_REGEX_TI
             pflags.append("sensitive_path")
 
     content_hits = []
+    # v3.4.1 §A5 — content patterns do not apply to prose. A path listed in
+    # `content_scan_exclude` keeps its PATH rows (and its `sensitive_path` flag) but its
+    # text is never matched: the words a compliance pattern looks for ("consent", "price",
+    # "timeout") occur in ordinary documentation, and treating a README paragraph as a
+    # legal-copy hit is how a typo fix scored `high` impact.
+    if content is not None and path is not None and content_scan_excluded(taxonomy, path):
+        content = None
     if content is not None:
         content_hits = match_content(taxonomy, content, scan="content",
                                      regex_timeout_s=regex_timeout_s)
@@ -795,6 +844,41 @@ churn:
 """
 
 
+# v3.4.1 §A1/§A5 breadth + content-scan exclusion fixture. Four path rows chosen so that
+# "broad" is decided by the GLOB's shape and nothing else: `scripts/**` contains `**`,
+# `lib/*` ends in `/*`, while `scripts/one.py` and `docs/*.md` name a bounded set.
+_BREADTH_TAXONOMY = """
+version: 1
+path_patterns:
+  - glob: "scripts/**"
+    difficulty_band: high
+    impact_band: high
+  - glob: "scripts/one.py"
+    difficulty_band: medium
+    impact_band: low
+  - glob: "lib/*"
+    difficulty_band: low
+    impact_band: low
+  - glob: "docs/*.md"
+    difficulty_band: low
+    impact_band: low
+content_patterns:
+  - match: "privacy policy"
+    pattern_type: literal
+    case: insensitive
+    scan: content
+    kind: legal_copy
+    impact_band: high
+sensitive_path_list:
+  - "**/*.env"
+content_scan_exclude:
+  - "**/*.md"
+churn:
+  exclude_paths: []
+  format_commit_patterns: []
+"""
+
+
 def _selftest():
     import time
 
@@ -830,6 +914,50 @@ def _selftest():
     expect("migrations path is sensitive (glob **/migrations/**)", mp3["sensitive"] is True)
     mp4 = match_path(tax, "README.md")
     expect("unmatched path -> None bands", mp4["difficulty_band"] is None)
+
+    # --- v3.4.1 §A1 — BREADTH is a property of the glob, reported per matched row ----- #
+    # `broad` is what the scoring engine (compound-v-preeval.py) reads to decide whether
+    # T1's bands came from a "everything under here" pattern and may therefore be handed
+    # to the T3 demotion. The engine-side cells for that demotion, for `scoped_plus`,
+    # for `new_file` and for NEVER_DEMOTE_GLOBS live in compound-v-preeval.py's selftest;
+    # what is under test HERE is only the signal those cells consume.
+    btax = load_taxonomy(text=_BREADTH_TAXONOMY)
+    b_one = match_path(btax, "scripts/one.py")
+    expect("breadth: a path matching both a broad and a specific row keeps both rows",
+           len(b_one["matched"]) == 2)
+    expect("breadth: `scripts/**` is broad (contains **)",
+           [r["broad"] for r in b_one["matched"] if r["glob"] == "scripts/**"] == [True])
+    expect("breadth: `scripts/one.py` is NOT broad (a named file)",
+           [r["broad"] for r in b_one["matched"] if r["glob"] == "scripts/one.py"] == [False])
+    expect("breadth: not every row broad -> the engine's all() signal is False",
+           all(r["broad"] for r in b_one["matched"]) is False)
+    b_two = match_path(btax, "scripts/two.py")
+    expect("breadth: a path matched ONLY by a ** row is broad throughout",
+           len(b_two["matched"]) == 1 and b_two["matched"][0]["broad"] is True)
+    expect("breadth: a glob ending in `/*` is broad",
+           match_path(btax, "lib/a.txt")["matched"][0]["broad"] is True)
+    expect("breadth: `docs/*.md` is NOT broad (bounded segment + extension)",
+           match_path(btax, "docs/x.md")["matched"][0]["broad"] is False)
+    expect("breadth: match_path does NOT mutate the loaded taxonomy rows",
+           all("broad" not in r for r in btax["path_patterns"]))
+    expect("breadth: bands are unchanged by the new key",
+           b_one["difficulty_band"] == "high" and b_one["impact_band"] == "high")
+
+    # --- v3.4.1 §A5 — content_scan_exclude: content patterns do not apply to prose --- #
+    expect("content_scan_exclude loads", btax["content_scan_exclude"] == ["**/*.md"])
+    expect("content_scan_exclude absent -> empty (every other repo unchanged)",
+           tax["content_scan_exclude"] == [])
+    c_md = classify(btax, path="docs/x.md", content="see our privacy policy for details")
+    expect("content_scan_exclude: an excluded path runs NO content scan",
+           c_md["content_hits"] == [] and c_md["flags"] == [])
+    expect("content_scan_exclude: the excluded path keeps its PATH bands",
+           c_md["impact_band"] == "low" and c_md["difficulty_band"] == "low")
+    c_code = classify(btax, path="lib/a.txt", content="see our privacy policy for details")
+    expect("content_scan_exclude: a non-excluded path still scans content",
+           "content:legal_copy" in c_code["flags"] and c_code["impact_band"] == "high")
+    c_nopath = classify(btax, path=None, content="see our privacy policy for details")
+    expect("content_scan_exclude: no path -> nothing to exclude, the scan still runs",
+           "content:legal_copy" in c_nopath["flags"])
 
     # --- v3.0 §A4 auto-route class (predicates 4, 5 and the line budget) ---
     # A taxonomy with NO auto_route_* keys is the pre-3.0 shape: it must grant nothing and
@@ -893,6 +1021,25 @@ def _selftest():
                match_auto_route(rt, "scripts/compound-v-preeval.py")["eligible"] is False)
         expect("repo taxonomy: README.md scores a real (non-unknown) band",
                match_path(rt, "README.md")["impact_band"] == "low")
+        # v3.4.1 §A5: this repository excludes markdown from the content scan, which is what
+        # stops a README typo reading `high` off the word "consent" in a paragraph of prose.
+        expect("repo taxonomy: content_scan_exclude covers markdown",
+               rt["content_scan_exclude"] == ["**/*.md"])
+        expect("repo taxonomy: a README paragraph mentioning legal words scores NO "
+               "content flag (the exclusion suppressed the scan)",
+               classify(rt, path="README.md",
+                        content="you consent to the privacy policy")["flags"] == [])
+        expect("repo taxonomy: the same prose in a NON-excluded path still flags",
+               "content:legal_copy" in classify(
+                   rt, path="lib/notice.txt",
+                   content="you consent to the privacy policy")["flags"])
+        # v3.4.1 §A3: the engine's NEVER_DEMOTE_GLOBS (secrets + CI) are a hard code floor;
+        # this repository's taxonomy must also carry them as sensitive, or the two would
+        # disagree about the same path.
+        expect("repo taxonomy: every NEVER_DEMOTE glob (.pem/.key/.env/.github) is sensitive",
+               all(match_path(rt, p)["sensitive"] is True
+                   for p in ("deploy/server.pem", "deploy/id.key",
+                             "config/app.env", ".github/workflows/ci.yml")))
     else:
         expect("repo taxonomy dogfood (skipped — .claude taxonomy absent)", True)
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Compound V — UserPromptSubmit triage hook (v3.4)
+# Compound V — UserPromptSubmit triage hook (v3.4.1)
 #
 # WHAT THIS IS
 # ------------
@@ -142,14 +142,42 @@
 # wrong one is a hook that says nothing when the mechanism it replaced would at
 # least have spoken.
 #
+# WHAT CHANGED IN v3.4.1: `needs_t3` IS NO LONGER A DEGRADE (finding 50)
+# ---------------------------------------------------------------------
+# The engine is T3-agnostic and returns `needs_t3` with a ready prompt when the
+# deterministic layers cannot band a request. Until 3.4.1 this hook treated that
+# as a failure and printed the reminder, on the reasoning that finishing T3 needs
+# a light-tier Task and a hook cannot run one. The premise was true and the
+# conclusion was wrong: a hook cannot run a Task, but it CAN run a process, and a
+# nested `claude -p --tools ""` answers the same bounded prompt in ~5 s (probed
+# live 2026-09-03; the read-only codex route answers in ~8 s). So the hook now
+# finishes T3 itself — `compound-v-classify-request.py --classify-headless`,
+# Claude light first, codex second — and re-invokes the SAME triage subcommand
+# with `--t3-category <enum>`, continuing exactly as if T1 had banded.
+#
+# THE REMINDER SURVIVES FOR ONE CASE ONLY: the classifier never reported. No CLI
+# on the machine (`backend: none`) or one that hung past the cap (`timed_out`)
+# both mean nothing was classified, and claiming otherwise would put a made-up
+# band on a real record. A model that RAN and answered `unknown` is a different
+# thing entirely — that is a genuine classification, it re-enters the engine as
+# `--t3-category unknown`, and it lands FULL with a record, which is the
+# fail-closed direction with an audit trail instead of without one.
+#
+# THE COST, STATED. A `needs_t3` prompt now WAITS for a model call — visibly,
+# once per session, capped at _CLASSIFY_TIMEOUT_S (15 s) plus the supervisor's
+# 3 s grace. That does not fit inside a `timeout: 10` registration, which is why
+# `hooks/hooks.json` raises UserPromptSubmit — and ONLY that event — to 25.
+# An ordinary prompt never reaches this path and keeps its ~1 s cost.
+#
 # OUTPUT. `hookSpecificOutput.additionalContext` — verified against the runtime:
 # UserPromptSubmit is one of the three events whose additionalContext is
 # injected into the model's context (with SessionStart and UserPromptExpansion).
 #
 # COST. The early exits (slash command, short question, or marker set) are ~9 ms.
 # The eligibility path adds a records scan and a resume query (~89 ms), and the
-# engine adds a bounded read-only localization pass on top — the dominant term,
-# and the reason the registration carries `timeout: 10`. A run over that budget
+# engine adds a bounded read-only localization pass on top. A request the
+# deterministic layers cannot band adds the headless classify — up to 18 s, and
+# the reason the registration carries `timeout: 25`. A run over that budget
 # is killed by the harness and the prompt proceeds with no context line; the
 # write-once artifacts a killed run left behind are resumable by request
 # fingerprint, so the next `/v:triage` on the same text continues rather than
@@ -289,26 +317,104 @@ _has_active_run() {
 # Prints the engine's JSON on stdout, or returns non-zero having printed nothing.
 # `CV_TRIAGE_REQUEST` is how the prompt travels: `--request-env` exists precisely
 # so arbitrary user text never has to survive argv quoting or show up in `ps`.
+#
+# The optional 4th argument is the resolved T3 enum. Supplying it is the WHOLE
+# `needs_t3` re-entry: same subcommand, same request, same binding, one extra
+# flag — the engine then scores as if T1 had banded. Nothing else about the
+# second call differs from the first, which is why there is one function and not
+# two.
 _run_engine() {
-  local proj="$1" sid="$2" request="$3" engine py base out
+  local proj="$1" sid="$2" request="$3" t3cat="${4:-}" engine py base out
   engine="$(_locate_script compound-v-preeval.py)" || return 1
   py="$(_python)" || return 1
   # The engine never runs git, by design — so HEAD is an input, supplied here.
   # Absent (not a repo, no commits yet) binds null rather than an invented value.
   base="$(git -C "$proj" rev-parse HEAD 2>/dev/null)" || base=""
-  if [ -n "$base" ]; then
-    out="$(CV_TRIAGE_REQUEST="$request" PYTHONDONTWRITEBYTECODE=1 \
-           "$py" "$engine" triage --request-env CV_TRIAGE_REQUEST \
-           --repo "$proj" --session-id "$sid" --base-commit "$base" --json \
-           2>/dev/null)" || return 1
-  else
-    out="$(CV_TRIAGE_REQUEST="$request" PYTHONDONTWRITEBYTECODE=1 \
-           "$py" "$engine" triage --request-env CV_TRIAGE_REQUEST \
-           --repo "$proj" --session-id "$sid" --json 2>/dev/null)" || return 1
-  fi
+
+  # Built with `set --` rather than a bash array: an empty `"${arr[@]}"` is an
+  # unbound-variable error under `set -u` on bash 3.2, which is the bash macOS
+  # still ships as /bin/bash.
+  set -- triage --request-env CV_TRIAGE_REQUEST --repo "$proj" \
+         --session-id "$sid" --json
+  [ -n "$base" ] && set -- "$@" --base-commit "$base"
+  [ -n "$t3cat" ] && set -- "$@" --t3-category "$t3cat"
+
+  out="$(CV_TRIAGE_REQUEST="$request" PYTHONDONTWRITEBYTECODE=1 \
+         "$py" "$engine" "$@" 2>/dev/null)" || return 1
   [ -n "$out" ] || return 1
   printf '%s' "$out" | jq -e 'type == "object"' >/dev/null 2>&1 || return 1
   printf '%s' "$out"
+}
+
+# --- the headless T3 classify (v3.4.1) ---------------------------------------
+# The cap the hook gives the classifier. `hooks/hooks.json` registers this event
+# with `timeout: 25`; 15 + the supervisor's 3 s grace is what fits inside it with
+# room for the two engine invocations around it.
+_CLASSIFY_TIMEOUT_S=15
+
+# The override exists so the suite can drive the timeout path in ~3 s instead of
+# ~18 s. It is CLAMPED to 1..60 and can only move a bound — it cannot enable a
+# route, change a backend, or affect a verdict.
+_classify_timeout() {
+  local t="${CV_CLASSIFY_TIMEOUT_S:-}"
+  case "$t" in
+    '' | *[!0-9]*) printf '%s' "$_CLASSIFY_TIMEOUT_S"; return 0 ;;
+  esac
+  if [ "$t" -ge 1 ] && [ "$t" -le 60 ]; then
+    printf '%s' "$t"
+  else
+    printf '%s' "$_CLASSIFY_TIMEOUT_S"
+  fi
+}
+
+# Prints the resolved T3 enum on stdout, or returns non-zero having printed
+# nothing — which the caller reads as "nothing was classified" and degrades.
+#
+# The engine's OWN `t3_prompt` is what gets classified, passed through a temp
+# file rather than argv: it already carries the resolved paths and the taxonomy
+# hints, so rebuilding it here from the request text would be a second, slightly
+# different prompt for the same decision.
+_classify_headless() {
+  local proj="$1" prompt="$2" script py tmpf out rc backend timed cat
+  script="$(_locate_script compound-v-classify-request.py)" || return 1
+  py="$(_python)" || return 1
+  tmpf="$(mktemp "${TMPDIR:-/tmp}/cv-t3-prompt.XXXXXX" 2>/dev/null)" || return 1
+  printf '%s' "$prompt" >"$tmpf" 2>/dev/null || { rm -f "$tmpf"; return 1; }
+  out="$(PYTHONDONTWRITEBYTECODE=1 "$py" "$script" --classify-headless \
+         --prompt-file "$tmpf" --cwd "$proj" --timeout "$(_classify_timeout)" \
+         2>/dev/null)"
+  rc=$?
+  rm -f "$tmpf" 2>/dev/null || true
+  [ "$rc" = 0 ] || return 1
+  printf '%s' "$out" | jq -e 'type == "object"' >/dev/null 2>&1 || return 1
+
+  backend="$(printf '%s' "$out" | jq -r '.backend // "none"' 2>/dev/null)"
+  timed="$(printf '%s' "$out" | jq -r '.timed_out // false' 2>/dev/null)"
+  cat="$(printf '%s' "$out" | jq -r '.category // ""' 2>/dev/null)"
+
+  # A ROUTE THAT NEVER REPORTED IS NOT AN ANSWER. `none` means no CLI was
+  # available on this machine and `timed_out` means one was but never finished.
+  # Neither is a classification, and turning either into `unknown` would write a
+  # made-up band onto a real record. A model that RAN and said `unknown` is a
+  # genuine answer and falls through below.
+  case "$backend" in
+    claude | codex) : ;;
+    *) _log "no headless classify backend available (backend=${backend})"; return 1 ;;
+  esac
+  if [ "$timed" = "true" ]; then
+    _log "the headless classify (${backend}) ran out of its budget"
+    return 1
+  fi
+  case "$cat" in
+    plumbing | user-facing-minor | user-facing-major | unknown)
+      _log "headless T3 classify: ${cat} (backend=${backend})"
+      printf '%s' "$cat"
+      ;;
+    *)
+      _log "the headless classify returned no usable category"
+      return 1
+      ;;
+  esac
 }
 
 # The line this hook used to print unconditionally. It is now the DEGRADED path:
@@ -473,7 +579,7 @@ EOF
     return $?
   }
 
-  local disabled needs_t3 tier decision pid record_ref declared
+  local disabled needs_t3 tier decision pid record_ref declared flavor
   disabled="$(printf '%s' "$res" | jq -r '.disabled // false' 2>/dev/null)"
   needs_t3="$(printf '%s' "$res" | jq -r '.needs_t3 // false' 2>/dev/null)"
 
@@ -484,16 +590,55 @@ EOF
     return 1
   fi
 
-  # The deterministic layers could not band the request; finishing needs a light
-  # classify Task, and a hook cannot run one. Hand it to the command that can.
+  # THE T3 RE-ENTRY (v3.4.1). The deterministic layers could not band the
+  # request. A hook cannot run a light-tier Task — but it can run a process, and
+  # `--classify-headless` is exactly that one-shot. Answer the engine's own T3
+  # prompt, then re-invoke the SAME subcommand with the enum and carry on as if
+  # T1 had banded. Only a classifier that never reported degrades to the
+  # reminder; see the header.
   if [ "$needs_t3" = "true" ]; then
-    _log "the request needs the T3 classify step — degrading to the reminder"
-    _emit "$(_reminder_text)"
-    return $?
+    local t3_prompt t3_reason t3_cat
+    t3_prompt="$(printf '%s' "$res" | jq -r '.t3_prompt // ""' 2>/dev/null)"
+    # `t3_reason` (unbanded | demotion | sensitive) is for THIS LOG only. The
+    # re-entry is identical whichever way the engine got here, so the hook must
+    # not branch on it — reading it as routing would make a log line load-bearing.
+    t3_reason="$(printf '%s' "$res" | jq -r '.t3_reason // "unbanded"' 2>/dev/null)"
+
+    if [ -z "$t3_prompt" ]; then
+      _log "the engine asked for T3 but supplied no prompt — degrading to the reminder"
+      _emit "$(_reminder_text)"
+      return $?
+    fi
+
+    _log "the request needs T3 (reason=${t3_reason}) — running the headless classify"
+    t3_cat="$(_classify_headless "$proj" "$t3_prompt")" || {
+      _log "nothing classified this request — degrading to the reminder"
+      _emit "$(_reminder_text)"
+      return $?
+    }
+
+    res="$(_run_engine "$proj" "$sid" "$request" "$t3_cat")" || {
+      _log "the re-score with --t3-category ${t3_cat} did not run — degrading to the reminder"
+      _emit "$(_reminder_text)"
+      return $?
+    }
+
+    needs_t3="$(printf '%s' "$res" | jq -r '.needs_t3 // false' 2>/dev/null)"
+    if [ "$needs_t3" = "true" ]; then
+      # Should be unreachable: a supplied category is what ends the T3 branch in
+      # `score()`. If it ever happens, the honest report is that nothing sized it.
+      _log "the engine still asks for T3 after a category was supplied — degrading to the reminder"
+      _emit "$(_reminder_text)"
+      return $?
+    fi
   fi
 
   tier="$(printf '%s' "$res" | jq -r '.tier // "unknown"' 2>/dev/null)"
   decision="$(printf '%s' "$res" | jq -r '.decision // "unknown"' 2>/dev/null)"
+  # SCOPED+ is not a fourth tier token — it is SCOPED with a flavor (v3.4.1).
+  # An engine that does not emit `flavor` yields the empty string and the plain
+  # SCOPED line, which is the correct reading of "no flavor".
+  flavor="$(printf '%s' "$res" | jq -r '.flavor // ""' 2>/dev/null)"
   pid="$(printf '%s' "$res" | jq -r '.pre_eval_id // ""' 2>/dev/null)"
   record_ref="$(printf '%s' "$res" | jq -r '.record_ref // ""' 2>/dev/null)"
   declared="$(printf '%s' "$res" \
@@ -512,9 +657,16 @@ ORDINARY commit alongside the record. /v:triage --land is the UNATTENDED landing
 gate and is not what an attended change needs."
       ;;
     SCOPED)
-      next="SCOPED — offer it to the user; on acceptance run /v:orchestrate (manifest, \
+      if [ "$flavor" = "scoped_plus" ]; then
+        next="SCOPED+ — a small edit on a sensitive path: offer it; on acceptance \
+/v:orchestrate with \`triage.flavor: scoped_plus\` (a deep review and a cross-model \
+second opinion are MANDATORY, not optional), then /v:dispatch. The size is small; the \
+path is not, which is why the review does not shrink with it."
+      else
+        next="SCOPED — offer it to the user; on acceptance run /v:orchestrate (manifest, \
 run dir, scope gate, floor, one combined SPEC+QUALITY review; recon and the three \
 pre-flights are skipped), then /v:dispatch."
+      fi
       ;;
     FULL)
       next="FULL — offer it to the user; on acceptance run the unchanged pipeline \

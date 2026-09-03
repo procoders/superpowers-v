@@ -53,6 +53,11 @@ delegating, the epic inherits Engine C along with everything else.
    `triage` block, and **that is the mechanism that stops a future run repeating 3.0's own
    bootstrap exemption.** Do not drop the flag to "get a run started".
 
+   The flag also carries the SCOPED+ rule: a manifest with `triage.flavor: scoped_plus` is
+   rejected unless it declares a `type: review` job with `tier: deep` and `backend: claude`. That
+   half is checkable here because the reviewer is *declared*; the cross-model half is evidence
+   that does not exist yet, and step 8 checks it after the fact.
+
    Pick the mode by manifest kind (CR5-1): a `fast_path` block ⇒ `--mode pre-dispatch`; a legacy
    plan-based manifest carries no such block and is validated mode-lessly, as before — a mode-less
    `fast_path` manifest is fail-closed rejected. Non-zero exit ⇒ fix the manifest and re-run.
@@ -186,9 +191,49 @@ delegating, the epic inherits Engine C along with everything else.
    SPEC (each job's `acceptance`), QUALITY (no regressions, no fabricated metrics), INTEGRATION
    (cross-job seams, feature-level `acceptance_criteria`). DONE is gated on all three.
 
-9. **Advance to `MERGED`, append the terminal `actual`, commit the run substrate, then hand off**
-   to `superpowers:finishing-a-development-branch`. Write `phase: MERGED` into `state.json`
-   **first**; then, once the merge/commit boundary has actually succeeded, append the run's
+   **If — and only if — the manifest says `triage.flavor: scoped_plus`, a cross-model second
+   opinion runs first, and it is mandatory.** SCOPED+ means *a small edit on a sensitive path*:
+   the change is one file and twenty lines, so the SCOPED band is the honest size, but the path
+   is one where being wrong is expensive. Such a run buys back both reviews the plain SCOPED band
+   skips — the deep in-harness reviewer (declared in the manifest, and step 2's `--require-triage`
+   already refused to dispatch without it) and one independent look from a **different model
+   family**. A Claude review of Claude's code is not a second opinion.
+
+   Seal the reviewed bytes, run the driver, wrap its output, then verify:
+
+   ```
+   RUN=docs/superpowers/execution/<run-id>
+   git diff --no-color <baseline from state.json> > $RUN/receipts/cross-model.patch
+   scripts/compound-v-codex-review.sh --repo "$PWD" \
+     --plan-file "$PWD/$RUN/receipts/cross-model.patch" \
+     --context-file "$PWD/<manifest spec_path>" > $RUN/receipts/.review.json
+   # wrap: the driver emits plan-review findings and nothing else — the binding fields
+   # are added here, and the receipt is sealed with the SHARED digest primitive.
+   python3 -B - <<'EOF'   # writes $RUN/receipts/cross-model.json
+   ... {run_id, pre_eval_id, diff_digest, reviewer_backend: "codex", reviewer_model,
+        produced_at, review: <the driver's JSON>} then digest=record_digest(obj, "digest")
+   EOF
+   python3 scripts/compound-v-validate-manifest.py $RUN/manifest.yaml --require-triage \
+     --require-cross-model-receipt $RUN/receipts/cross-model.json \
+     --expected-diff-digest "$(python3 scripts/compound-v-taxonomy.py --digest $RUN/receipts/cross-model.patch)"
+   ```
+
+   The receipt's shape is [`schemas/cross-model-receipt.schema.json`](../schemas/cross-model-receipt.schema.json)
+   — a flat envelope around the driver's `plan-review` output, because that schema is
+   `additionalProperties: false` and cannot carry a run id. **The findings stay advisory: you
+   arbitrate, exactly as for [`/v:review-plan`](v-review-plan.md), and a `concerns` verdict is
+   not a merge blocker.** What is *not* advisory is that the review ran, on this run, over these
+   bytes — which is why the validator refuses a receipt whose ids do not bind, whose
+   `diff_digest` is not the patch you sealed, or whose self-digest does not re-derive. A run whose
+   receipt does not verify does not proceed to the merge; fix it or re-run the review. Commit the
+   receipt and the patch with the rest of the run substrate in step 9.
+
+9. **Append the terminal `actual`, commit the run substrate, then hand off**
+   to `superpowers:finishing-a-development-branch`. **Do not write `phase: MERGED` into
+   `state.json` by hand** — the workflow finalizer has advanced the phase itself since stage 1
+   (`fix(finalize)`, commit f0dfc30), so a hand-written phase here is at best a duplicate and at
+   worst a regression of what the finalizer recorded. Read the phase back if you want to confirm
+   it; do not author it. Once the merge/commit boundary has actually succeeded, append the run's
    terminal triage outcome:
 
    ```
@@ -214,7 +259,9 @@ delegating, the epic inherits Engine C along with everything else.
    bootstrap manifest is one): say so and skip the append — never mint an id to make the join
    close.
 
-   Then commit `state.json` together with `results/*.json`, `receipts/*.json`, `lane-map.json`,
+   Then commit `state.json` together with `results/*.json`, `receipts/*.json` (including a
+   SCOPED+ run's `receipts/cross-model.json` and the `cross-model.patch` its digest binds to),
+   `lane-map.json`,
    `jobs/*.test-contract.json`, `dispatch.workflow.js`,
    `docs/superpowers/memory/triage-outcomes.jsonl` and any refreshed memory/scorecard files — in
    that one commit, before any worktree cleanup. `finishing-a-development-branch` runs
