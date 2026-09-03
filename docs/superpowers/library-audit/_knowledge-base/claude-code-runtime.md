@@ -329,3 +329,52 @@ Sources: live `EnterWorktree` tool description (this session) ·
 [`code.claude.com/docs/en/settings.md`](https://code.claude.com/docs/en/settings.md)
 settings-precedence table · `scripts/compound-v-emit-workflow.py:1379-1398`
 (`_worktree_base_is_head`) · `.claude/settings.json` (this repo, current contents).
+
+---
+
+## Updated 2026-09-03 — v3.4.8 workflow retry (`agent()` null-vs-throw contract)
+
+Validated for
+[`docs/superpowers/library-audit/2026-09-03-v3-4-8-workflow-retry.md`](../2026-09-03-v3-4-8-workflow-retry.md).
+No Context7 attached to this subagent (`ToolSearch` → no match); no local Bash access beyond the V-memory
+script (`bashCommandClamp`) — same constraint pattern as the two 2026-09-03 entries above. Primary source is
+a **full** live `WebFetch` of `code.claude.com/docs/en/workflows.md`, cross-checked against this KB's own
+2026-09-01 `BINARY` entry and against this repo's currently-shipped `scripts/compound-v-emit-workflow.py`.
+
+**`agent()`'s error-resolution contract, now three-way corroborated.** Live doc, verbatim, 2026-09-03:
+
+> "An `agent()` call **resolves to `null`** if you stop it mid-run or **it hits an unrecoverable API
+> error**. `pipeline()` keeps that `null` in the results array…"
+
+This is the complete general statement on the current page — there is no documented "throws on a transient
+API error" path. It matches, word-for-word in substance, the 2026-09-01 `BINARY` entry above (*"Returns
+`null` if skipped or terminally errored"*), extracted from the installed executable two days earlier and one
+engine build apart. **Third independent confirmation:** this repo's own shipped, dogfooded JS template
+(`compound-v-emit-workflow.py`, `recordStage`/`gateStage`/`finalizeWave`) already handles `agent()` with
+*both* a `try/catch` (for the throw path — budget exceeded, unknown `agentType`, malformed options) *and* an
+explicit `=== null`/`=== undefined` check (for the unrecoverable-API-error path) at every call site — and the
+`null` branch's recorded "reason" is always a **static literal**, never `String(err)`, because no error
+object exists on that path. Treat "`agent()` throws on a transient API failure" as **false** for any future
+spec — the correct mental model is: throws on setup/programmer errors, resolves to `null` (with zero
+diagnostic detail) on an unrecoverable API-level error, including exactly the 529/rate-limit/network classes
+a retry design is likely to target.
+
+**Sandbox-wording drift, unresolved, flag rather than assert.** The 2026-09-01 `BINARY` extraction states a
+single combined clause: *"No filesystem or Node.js API access."* The 2026-09-03 live-fetched page instead
+gives two narrower, separate bullets: *"No direct filesystem or shell access from the workflow itself"* and
+*"No module loading: a script that contains `import()` fails before the run starts."* Neither the 2026-09-01
+nor the 2026-09-03 source explicitly confirms or denies whether JS runtime globals such as `setTimeout` are
+available inside the script. `Grep` over this repo's entire shipped JS template (2026-09-03) found **zero**
+uses of `setTimeout`/`await new Promise(...)`-style delays — no prior Compound V workflow script has ever
+exercised this. **`UNVERIFIED` — a live throwaway-script probe from a main session (not a subagent — the
+Workflow tool is not visible to a subagent per the 2026-09-02 entry above) is needed before any design
+depends on an in-script timed wait.**
+
+**`bashCommandClamp` / `disallowedTools` reconfirmed still-undocumented, 2026-09-03.** The full live fetch of
+`workflows.md` today contains neither string, anywhere — reconfirming the 2026-09-01 entry's 🟡-5 finding
+two days later on a fresh full-page fetch, not just carried forward.
+
+Sources: [`code.claude.com/docs/en/workflows.md`](https://code.claude.com/docs/en/workflows.md) (fetched in
+full, 2026-09-03) · this file's own 2026-09-01 entry (`BINARY`, installed Claude Code `2.1.238`) ·
+`scripts/compound-v-emit-workflow.py:2171-2179,2201-2249,2267-2311` (`Grep`+`Read`, this session, current
+HEAD).
