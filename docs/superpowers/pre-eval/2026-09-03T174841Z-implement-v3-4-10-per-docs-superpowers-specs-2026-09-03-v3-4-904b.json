@@ -1,0 +1,56 @@
+{
+  "base_commit": "c9c4f77f8e54485cd29cdcc663d89aabafc997a0",
+  "confidence": "localization:exact; tiers:localization,T1,T3",
+  "decision": "SCOPED_PIPELINE",
+  "declared_paths": [
+    "docs/superpowers/specs/2026-09-03-v3.4.10-recall-to-action-design.md",
+    "scripts/compound-v-emit-workflow.py"
+  ],
+  "difficulty": {
+    "band": "medium",
+    "display": 5
+  },
+  "digest": "sha256:4f18a4aed5a6644c29233ef5e096195880067f8a9b16111f6d9c6be87245831e",
+  "flavor": "scoped_plus",
+  "impact": {
+    "band": "medium",
+    "display": 5
+  },
+  "localization": {
+    "confidence": "exact",
+    "fan_out": 2,
+    "flags": [
+      "sensitive_path"
+    ],
+    "resolved_paths": [
+      "docs/superpowers/specs/2026-09-03-v3.4.10-recall-to-action-design.md",
+      "scripts/compound-v-emit-workflow.py"
+    ]
+  },
+  "min_sample_status": "insufficient",
+  "override_fired": null,
+  "pre_eval_id": "2026-09-03T174841Z-implement-v3-4-10-per-docs-superpowers-specs-2026-09-03-v3-4-904b",
+  "request_slug": "implement-v3-4-10-per-docs-superpowers-specs-2026-09-03-v3-4",
+  "session_id": "e619cb38-ebe3-4b45-a1f4-c3007616291d",
+  "status": "PRE_EVAL_DONE",
+  "t3_demotion": {
+    "applied": true,
+    "category": "plumbing",
+    "from": {
+      "difficulty": "high",
+      "impact": "high"
+    },
+    "sensitive": true
+  },
+  "t3_reason": "sensitive",
+  "taxonomy_digest": "sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a",
+  "taxonomy_ref": "docs/superpowers/pre-eval/2026-09-03T174841Z-implement-v3-4-10-per-docs-superpowers-specs-2026-09-03-v3-4-904b.taxonomy-snapshot.yaml",
+  "taxonomy_version": 1,
+  "tier": "SCOPED",
+  "tiers_signalled": [
+    "localization",
+    "T1",
+    "T3"
+  ],
+  "ts": "2026-09-03T17:53:04Z"
+}

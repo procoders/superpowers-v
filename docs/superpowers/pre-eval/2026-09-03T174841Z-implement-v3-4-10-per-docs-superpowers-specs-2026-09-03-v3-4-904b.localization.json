@@ -1,0 +1,12 @@
+{
+  "confidence": "exact",
+  "digest": "sha256:8238258c1e5dfb9c4efef9cf83046acf20e8fb978535f59a98b5473204099fb7",
+  "fan_out": 2,
+  "flags": [
+    "sensitive_path"
+  ],
+  "resolved_paths": [
+    "docs/superpowers/specs/2026-09-03-v3.4.10-recall-to-action-design.md",
+    "scripts/compound-v-emit-workflow.py"
+  ]
+}
