@@ -52,6 +52,7 @@ grep -c 'matches within one path segment' skills/compound-v/memory.md skills/com
 grep -c 'the same matcher' skills/compound-v/memory.md skills/compound-v/execution-manifest.md                  # 1 and 1
 grep -n -B2 'Glob semantics' skills/compound-v/execution-manifest.md | head -5   # preceded by a blank line, after the Per-job fields prose
 git diff --stat 16786b7 -- skills/compound-v/memory.md skills/compound-v/execution-manifest.md   # 2 files; memory.md 1 insertion 1 deletion
+awk 'NR==54{print length($0)}' skills/compound-v/memory.md                          # ≤ 800 (spec amendment 3)
 ```
 
 - [ ] **Step 4: Commit**

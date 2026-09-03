@@ -41,3 +41,11 @@ recall cross-reference and the parity-selftest pointer), and **replaces** the `r
    ≤ 120; the rewritten `memory.md` row stays ≤ the file's longest existing line.
 7. **`lint-frontmatter.py` and `grep fnmatch` are not proof of work** (both vacuous for these files); the content checks are the
    two `grep -c "the same matcher"` counts and a visual diff of exactly the two hunks.
+
+## Amendment 3 (2026-09-03, orchestrator, before attempt 3)
+
+Amendment 4 (the six-rule sentence character-identical in both files) outranks amendment 6's "row ≤ the file's longest
+existing line": a row that carries the identical sentence, the cross-reference, the recall-only bare-path reading and the
+proof pointer is about 750 characters. The `memory.md` row may therefore exceed 465 characters; the ceiling is 800. The
+`execution-manifest.md` paragraph still wraps at ≤ 120 per line. A job body that carries exact multi-line text must be a
+YAML double-quoted scalar (single-quoted scalars fold newlines into spaces — attempt 3's first launch was stopped for that).
