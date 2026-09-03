@@ -379,9 +379,11 @@ After every task is approved and every worktree job has merged back, dispatch ON
   - Cross-task integration works (Task 0's types are used correctly by parallel tasks) and the build is green
   - The composite change matches the spec + all three audits' constraints **and the manifest's feature-level `acceptance_criteria`** (the AC-gate for the run)
 
-On PASS, proceed to Step 6 (post-run memory), then Step 7 (commit + `MERGED` + hand off). Do
-**not** advance `state.json` to `MERGED` yet — per [`state-machine.md`](../skills/compound-v/state-machine.md),
-`MERGED` means the run's substrate is actually merged and handed off, not just reviewed.
+On PASS, proceed to Step 6 (post-run memory), then Step 7 (commit what Steps 5–6 appended + hand
+off). Nothing here writes `phase: MERGED` — per [`state-machine.md`](../skills/compound-v/state-machine.md)
+`MERGED` means the run's substrate is actually merged, and since 3.4.1 the workflow finalizer is
+what writes it (and commits the run directory) once the last wave integrated; a review PASS is not
+that boundary.
 
 ### Step 5b — Integration gate — the authority, BEFORE any job commit is integrated
 

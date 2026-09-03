@@ -310,6 +310,25 @@ if [ -f "$STREAM" ]; then
 else
   pass "record appends no actual: it writes nothing outside the run directory"
 fi
+
+# --- 3.4.1 (review-2 of the triage-size feature, finding 1): every external worker's
+# tc_validate must ACCEPT the resolver's new slice shape — scope `impacted+referencing`
+# plus an integer `selected_count` — and still REJECT a malformed one. Until this check
+# the resolver produced a slice that all five workers refused as malformed (exit 2)
+# before the model ran; invisible here because this repository dispatches Claude jobs.
+TCV="$T/tcv"; mkdir -p "$TCV"
+for w in codex antigravity cursor opencode devin; do
+  W="$REPO/scripts/compound-v-run-$w-worker.sh"
+  [ -f "$W" ] || { fail "worker script missing: $W"; continue; }
+  printf '%s\n' '{"scope":"impacted+referencing","resolved_commands":["true"],"selected_count":2,"floor_command":"true"}' > "$TCV/ok.json"
+  printf '%s\n' '{"scope":"impacted+referencing","resolved_commands":["true"],"selected_count":"two"}' > "$TCV/bad-count.json"
+  printf '%s\n' '{"scope":"impacted","resolved_commands":["true"],"surprise":1}' > "$TCV/bad-key.json"
+  # tc_validate leans on the sibling tc_command_at; extract both, verbatim, from the worker.
+  run_tcv() { bash -c 'die() { echo "$*" >&2; exit 2; }; eval "$(sed -n "/^tc_command_at()/,/^}/p" "$1")"; eval "$(sed -n "/^tc_validate()/,/^}/p" "$1")"; tc_validate "$2"' _ "$W" "$1" >/dev/null 2>&1; }
+  if run_tcv "$TCV/ok.json"; then pass "$w worker: tc_validate ACCEPTS the 3.4.1 slice (impacted+referencing, selected_count)"; else fail "$w worker: tc_validate REJECTS the 3.4.1 slice the resolver now produces"; fi
+  if run_tcv "$TCV/bad-count.json"; then fail "$w worker: tc_validate accepted a non-numeric selected_count"; else pass "$w worker: tc_validate rejects a non-numeric selected_count"; fi
+  if run_tcv "$TCV/bad-key.json"; then fail "$w worker: tc_validate accepted an unknown key"; else pass "$w worker: tc_validate still rejects an unknown key"; fi
+done
 "$PY" "$EMIT" finalize-wave --run-dir "$RD" --repo-root "$R" \
   --manifest "$RD/manifest.yaml" --jobs job-happy,job-floorfail,job-blocked \
   --wave 1 >"$T/orphan9.fin.json" 2>"$T/orphan9.fin.err" || true

@@ -289,7 +289,7 @@ After every task is approved and every worktree job has merged back (Step 2b), d
 - Cross-task integration works (the types from Task 0 are used correctly by parallel tasks)
 - The composite change matches the original spec + archaeology constraints **and the manifest's feature-level `acceptance_criteria`** (this is the AC-gate for the run)
 
-This is the final pass of the three-pass Review Gate (spec / quality / integration) — see [`agents/spec-reviewer.md`](../../agents/spec-reviewer.md). On PASS, advance `state.json` to `MERGED` and hand off to `superpowers:finishing-a-development-branch`.
+This is the final pass of the three-pass Review Gate (spec / quality / integration) — see [`agents/spec-reviewer.md`](../../agents/spec-reviewer.md). On PASS, read `state.json`'s phase back — the workflow finalizer wrote `MERGED` (or `BLOCKED`) and committed the run directory itself as of 3.4.1; never author it here — then hand off to `superpowers:finishing-a-development-branch`.
 
 ## Dispatch Template (implementer)
 

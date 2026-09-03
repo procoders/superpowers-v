@@ -866,6 +866,12 @@ def resolve_test_commands(contract, scope, changed_paths=None, new_paths=None,
             notes.append("previously-failing: UNCOMPUTABLE (the last run reported no "
                          "machine-readable tests.failures[]) — falling back to "
                          "full_command rather than silently dropping the set")
+            # Same label rule as the unmapped branch (review-2 of 3.4.1, finding 4):
+            # full_command is in the set, so the slice says so — never a
+            # `impacted+referencing` label beside a note that ran the whole suite.
+            scope = "full"
+            notes.append("scope: labelled `full` — full_command was added because the "
+                         "previously-failing set is uncomputable")
 
         # SET 3 — newly added: run through the SAME map; an added file nothing declares
         # is unknown blast radius exactly like a changed one.
@@ -925,6 +931,8 @@ def resolve_test_commands(contract, scope, changed_paths=None, new_paths=None,
     # unmapped paths were answered by the referencing heuristic says so, because a
     # reviewer reading `impacted` could not otherwise tell which rule selected the set.
     # `selected_count` rides with it: the number of commands, a count and never a saving.
+    if scope == "full":
+        scope_label = None  # a promotion to full outranks the referencing label
     slice_ = {"scope": scope_label or scope, "resolved_commands": ordered}
     if scope_label:
         slice_["selected_count"] = len(ordered)
@@ -2030,6 +2038,12 @@ def _selftest():
             return slice_, notes
 
         s_full, _ = sl(tier="FULL", referencing=REF)
+        s_unc, _ = resolve_test_commands(CONTRACT, "impacted", ["src/parser.py"], [], None, False,
+                                         tier="SCOPED", referencing=REF)
+        expect("review-2 finding 4: an uncomputable previously-failing set at SCOPED adds "
+               "full_command AND labels the slice `full` (never `impacted+referencing` beside it)",
+               "sh -c 'echo full'" in s_unc["resolved_commands"] and s_unc["scope"] == "full"
+               and "selected_count" not in s_unc)
         expect("C: at tier FULL an unmapped path still resolves to full_command, "
                "and the label says `full` (review-1 issue 4)",
                "sh -c 'echo full'" in s_full["resolved_commands"]

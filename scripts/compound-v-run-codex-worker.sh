@@ -126,14 +126,15 @@ tc_validate() {
   [ -f "$_tc_f" ] || die "--test-contract-file not found: $_tc_f"
   jq -e '
       (type == "object")
-      and (((keys) - ["scope","floor_command","full_command","resolved_commands"]) | length) == 0
+      and (((keys) - ["scope","floor_command","full_command","resolved_commands","selected_count"]) | length) == 0
       and has("scope")
-      and (.scope as $s | ["full","impacted","floor_only"] | index($s) != null)
+      and (.scope as $s | ["full","impacted","floor_only","impacted+referencing"] | index($s) != null)
+      and ((has("selected_count") | not) or ((.selected_count | type) == "number" and .selected_count >= 0))
       and ((.resolved_commands | type) == "array")
       and ((.resolved_commands | length) > 0)
       and (.resolved_commands | map(type == "string") | all)
     ' "$_tc_f" >/dev/null 2>&1 \
-    || die "--test-contract-file is malformed; want {\"scope\":\"full|impacted|floor_only\",\"resolved_commands\":[\"...\"]} with optional floor_command/full_command and no other keys: $_tc_f"
+    || die "--test-contract-file is malformed; want {\"scope\":\"full|impacted|floor_only|impacted+referencing\",\"resolved_commands\":[\"...\"]} with optional floor_command/full_command/selected_count (3.4.1) and no other keys: $_tc_f"
   # A scope must NEVER resolve to running nothing (execution-manifest.md invariant 12:
   # floor_only means ONLY the floor, never nothing). An all-whitespace command would
   # `bash -c` to a silent exit 0 — a fabricated pass wearing a green tick.

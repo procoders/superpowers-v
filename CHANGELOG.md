@@ -48,7 +48,7 @@ threads it.
 
 ### Fixed — prose no longer counts as impact, and a plain word is never searched (decision 2, the README/free-text finding)
 
-The taxonomy gains an optional `content_scan_exclude` glob list (this repo sets `["**/*.md"]`): a path
+The taxonomy gains an optional `content_scan_exclude` glob list (this repo sets `["**/*.md", "**/*.py", "**/*.sh"]` — source too, after review-1 showed `%s` and `timeout` in 42 of 44 scripts vetoing the demotion; config files stay scanned): a path
 matching it skips content-pattern matching entirely, so a README mentioning "consent" or "timeout" in
 the course of documenting a consent gate no longer scores `impact: high` from the word alone — the
 path rows and `sensitive_path_list` still apply in full. On the localizer side, `extract_query_tokens`
