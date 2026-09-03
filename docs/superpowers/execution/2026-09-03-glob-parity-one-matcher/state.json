@@ -1,0 +1,28 @@
+{
+  "run_id": "2026-09-03-glob-parity-one-matcher",
+  "phase": "PARTITION_VERIFIED",
+  "updated_at": "2026-09-03T19:11:04Z",
+  "pre_eval_id": "2026-09-03T190910Z-build-epic-feature-one-matcher-docs-superpowers-execution-ep-2a9b",
+  "escalated_to": null,
+  "total_retries": 0,
+  "max_total_retries": 12,
+  "cooldowns": {},
+  "circuit_open": {},
+  "attempts": {},
+  "jobs": {
+    "matcher-swap": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null,
+      "log": null
+    },
+    "spec-review-1": {
+      "status": "pending",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null,
+      "log": null
+    }
+  }
+}

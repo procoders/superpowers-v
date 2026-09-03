@@ -1,0 +1,58 @@
+run_id: 2026-09-03-glob-parity-one-matcher
+feature: 'epic 2026-09-03-glob-parity · F1 one-matcher: recall-check matches lane globs with the scope gate''s matcher (parity selftest)'
+routing_stance: balanced
+max_parallel: 2
+spec_path: docs/superpowers/execution/epics/2026-09-03-glob-parity/specs/one-matcher.md
+plan_path: docs/superpowers/plans/2026-09-03-epic-gp-one-matcher.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-09-03-epic-gp-one-matcher.md
+  domain: docs/superpowers/execution/epics/2026-09-03-glob-parity/specs/one-matcher.md
+  library: docs/superpowers/library-audit/2026-09-03-epic-gp-one-matcher.md
+triage:
+  tier: FULL
+  pre_eval_id: 2026-09-03T190910Z-build-epic-feature-one-matcher-docs-superpowers-execution-ep-2a9b
+  taxonomy_digest: sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a
+  decided_at: '2026-09-03T19:09:10Z'
+acceptance_criteria:
+- python3 scripts/compound-v-memory.py --selftest passes and prints an ok line for every parity row (at least ten rows incl. app/[locale]/** and src/*.py vs src/a/b.py); python3 scripts/compound-v-scope-check.py --selftest still passes and the file is unchanged.
+- grep -n fnmatch scripts/compound-v-memory.py prints nothing; _file_matches delegates to compound-v-scope-check.py matches() loaded by path, with the bare-path form meaning "this path or anything under it" via a /** fallback.
+- python3 -B scripts/compound-v-memory.py recall-check --files 'app/[locale]/**' --json exits 0 with verdict in none|tighten|unavailable; when the sibling script cannot be loaded the verdict is unavailable with a note starting "scope-check matcher unavailable", never none.
+test_contract:
+  floor_command: bash -c 'python3 -B scripts/compound-v-memory.py --selftest >/dev/null && python3 -B scripts/compound-v-scope-check.py --selftest >/dev/null'
+  full_command: bash -c 'for s in scripts/compound-v-*.py; do grep -q -- "--selftest" "$s" || continue; /usr/bin/python3 -B "$s" --selftest >/dev/null 2>&1 || { echo "FAIL $s"; exit 1; }; done'
+  impacted_map:
+  - when: scripts/compound-v-*.py
+    run: bash -c '[ -f {path} ] || exit 0; grep -q -- "--selftest" {path} || exit 0; /usr/bin/python3 -B {path} --selftest >/dev/null'
+jobs:
+- id: matcher-swap
+  title: Task A — _file_matches delegates to the scope gate's matcher; parity selftest; unavailable on loader failure
+  type: implement
+  backend: claude
+  tier: standard
+  effort: medium
+  isolation: worktree
+  run: parallel
+  write_allowed:
+  - scripts/compound-v-memory.py
+  read_allowed:
+  - '**'
+  acceptance:
+  - python3 scripts/compound-v-memory.py --selftest passes with the parity rows of the plan (Task A Step 1) all ok; grep -n fnmatch scripts/compound-v-memory.py prints nothing; recall_check returns verdict unavailable with a note starting "scope-check matcher unavailable" when the sibling cannot be loaded.
+  body: 'Implement Task A of docs/superpowers/plans/2026-09-03-epic-gp-one-matcher.md exactly (the code is in the plan): remove import fnmatch, add _SCOPE_CHECK_PATH/_SCOPE_MATCH/_scope_matches(), rewrite _file_matches to delegate to the scope gate matcher with the bare-path /** fallback, add the unavailable path at the top of recall_check, append the parity rows + the bare-dir and loader-failure checks to _selftest. Only scripts/compound-v-memory.py may change. Verify with python3 scripts/compound-v-memory.py --selftest and python3 scripts/compound-v-scope-check.py --selftest (both must pass) and grep -n fnmatch scripts/compound-v-memory.py (must print nothing). Commit in your worktree.'
+- id: spec-review-1
+  title: Review Gate — three passes against the spec and the feature acceptance criteria
+  type: review
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: direct
+  run: serial
+  depends_on:
+  - matcher-swap
+  write_allowed:
+  - docs/superpowers/dogfood/2026-09-03-epic-gp-one-matcher-review-1.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - The review-1 file exists with ## Recall, ## SPEC, ## QUALITY, ## INTEGRATION, ## Verdict and one line VERDICT APPROVED or VERDICT ISSUES; every acceptance criterion of the spec is named with a pass/fail and the command that proved it.
+  body: 'Your agent definition carries the three-pass Review Gate and a Step 0 (V-memory recall). Follow it. Feature F1 one-matcher of epic 2026-09-03-glob-parity: spec docs/superpowers/execution/epics/2026-09-03-glob-parity/specs/one-matcher.md, plan docs/superpowers/plans/2026-09-03-epic-gp-one-matcher.md. Review the merged diff of job matcher-swap (git diff against the run''s base). Run the selftests yourself under /usr/bin/python3 (3.9). Write docs/superpowers/dogfood/2026-09-03-epic-gp-one-matcher-review-1.md and nothing else.'
