@@ -1,0 +1,57 @@
+run_id: 2026-09-03-glob-parity-one-matcher-r3
+feature: 'epic 2026-09-03-glob-parity · F1 one-matcher attempt 3: a load-bearing fail-closed selftest row (spy on spec_from_file_location)'
+routing_stance: balanced
+max_parallel: 2
+spec_path: docs/superpowers/execution/epics/2026-09-03-glob-parity/specs/one-matcher.md
+plan_path: docs/superpowers/plans/2026-09-03-epic-gp-one-matcher-r3.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-09-03-epic-gp-one-matcher.md
+  domain: docs/superpowers/execution/epics/2026-09-03-glob-parity/specs/one-matcher.md
+  library: docs/superpowers/library-audit/2026-09-03-epic-gp-one-matcher.md
+triage:
+  tier: SCOPED
+  pre_eval_id: 2026-09-03T200450Z-epic-feature-one-matcher-attempt-3-replace-the-non-load-bear-0bd6
+  taxonomy_digest: sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a
+  decided_at: '2026-09-03T20:04:51Z'
+acceptance_criteria:
+- python3 scripts/compound-v-memory.py --selftest passes with the row "no private bytecode cache -> unavailable AND the sibling was never loaded"; the SAME row FAILS on a guardless copy built and run beside a copy of compound-v-scope-check.py exactly as the plan's Step 2 does (REAL ok / GUARDLESS FAIL, both lines quoted); python3 scripts/compound-v-scope-check.py --selftest still passes.
+- git diff --stat shows only scripts/compound-v-memory.py and only lines inside _selftest; the attempt-2 row is replaced, not duplicated (grep -c 'no private bytecode cache' prints 1); no production code changed; no existing check weakened or removed.
+test_contract:
+  floor_command: bash -c 'python3 -B scripts/compound-v-memory.py --selftest >/dev/null && python3 -B scripts/compound-v-scope-check.py --selftest >/dev/null'
+  full_command: bash -c 'for s in scripts/compound-v-*.py; do grep -q -- "--selftest" "$s" || continue; /usr/bin/python3 -B "$s" --selftest >/dev/null 2>&1 || { echo "FAIL $s"; exit 1; }; done'
+  impacted_map:
+  - when: scripts/compound-v-*.py
+    run: bash -c '[ -f {path} ] || exit 0; grep -q -- "--selftest" {path} || exit 0; /usr/bin/python3 -B {path} --selftest >/dev/null'
+jobs:
+- id: load-bearing-row
+  title: Task A — replace the attempt-2 row with a load-bearing one (spy on spec_from_file_location)
+  type: implement
+  backend: claude
+  tier: standard
+  effort: medium
+  isolation: worktree
+  run: parallel
+  write_allowed:
+  - scripts/compound-v-memory.py
+  read_allowed:
+  - '**'
+  acceptance:
+  - The plan's Step 2 proof reproduced with both files side by side, REAL ok / GUARDLESS FAIL lines quoted verbatim in your summary; both selftests pass; grep -c 'no private bytecode cache' scripts/compound-v-memory.py prints 1; the diff touches only _selftest.
+  body: 'Implement Task A of docs/superpowers/plans/2026-09-03-epic-gp-one-matcher-r3.md exactly: REPLACE the existing fail-closed block (from its leading comment through its check(...) call) with the plan''s Step 1 block — do not add a second row. Run the plan''s Step 2 proof (copy BOTH scripts/compound-v-memory.py and scripts/compound-v-scope-check.py into one scratch directory; the guardless copy must print FAIL for the row, the real copy ok) and Step 3 selftests. Only scripts/compound-v-memory.py may change, and only inside _selftest. Quote the REAL and GUARDLESS lines verbatim in your summary. Commit in your worktree.'
+- id: spec-review-1
+  title: Review Gate — three passes against the attempt-3 plan and the attempt-2 review's §3
+  type: review
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: direct
+  run: serial
+  depends_on:
+  - load-bearing-row
+  write_allowed:
+  - docs/superpowers/dogfood/2026-09-03-epic-gp-one-matcher-r3-review-1.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - The review file exists with ## Recall, ## SPEC, ## QUALITY, ## INTEGRATION, ## Verdict and one line VERDICT APPROVED or VERDICT ISSUES; it reproduces the side-by-side guardless proof itself (REAL ok / GUARDLESS FAIL) and states whether the attempt-2 review''s §3 finding is closed.
+  body: 'Your agent definition carries the three-pass Review Gate and a Step 0 (V-memory recall). Follow it. Feature F1 one-matcher attempt 3 of epic 2026-09-03-glob-parity: plan docs/superpowers/plans/2026-09-03-epic-gp-one-matcher-r3.md; the finding under review is docs/superpowers/dogfood/2026-09-03-epic-gp-one-matcher-r2-review-1.md §3 (the attempt-2 row was not load-bearing). Review the merged diff of job load-bearing-row; reproduce the plan''s Step 2 proof yourself with both files side by side. Write docs/superpowers/dogfood/2026-09-03-epic-gp-one-matcher-r3-review-1.md and nothing else.'
