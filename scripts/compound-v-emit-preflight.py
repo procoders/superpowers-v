@@ -45,8 +45,8 @@ WHAT IT DELIBERATELY DOES NOT DO
     stays, and the authority to mutate anything beyond the audit goes. `Task` and
     `Agent` go because an auditor that spawns is no longer an auditor; `Bash` goes
     because nothing in these three definitions needs a shell that `Grep`, `Glob`
-    and `Read` do not already give — with ONE exception, admitted through a clamp:
-    the recall query, which dogfood 24 proved is denied without one.
+    and `Read` do not already give — with a short allowlist, admitted through a
+    clamp: the recall query and read-only git history (log/blame/show).
   * NO isolation. An auditor writes ONE document into its own directory and reads
     everything else; a worktree would only hide the repository it exists to read.
   * NO routing decisions. These produce evidence. Backend, tier and isolation for
@@ -203,14 +203,19 @@ def build_plan(spec_path, topic, today, skip=(), recon=None, root=None):
         # Read, grep, search, write ONE document. Not: spawn, shell out, re-enter
         # the pipeline. WebSearch/WebFetch are deliberately ABSENT from this list.
         "disallowed": ["Task", "Agent", "SlashCommand", "NotebookEdit"],
-        # The one shell form an auditor needs, and the one its own Step 0 names.
+        # The shell forms an auditor needs: the recall query its own Step 0 names, and
+        # read-only git history.
         # `-B` is part of the admitted form: the scope gate forgives no path by
         # extension, so a `__pycache__` entry this read-only query left beside the
         # scripts would be an out-of-lane write (fourth review pass, 2026-09-02).
         # A clamp is a literal prefix match, so the rule and the command the agent
         # is told to run must carry it identically.
         "clamp": (["Bash(%s -B %s search:*)" % (sys.executable or "python3", memory),
-                   "Bash(%s -B %s recall-check:*)" % (sys.executable or "python3", memory)]
+                   "Bash(%s -B %s recall-check:*)" % (sys.executable or "python3", memory),
+                   # Read-only git history for the auditors (v3.4.13, finding 145): 1A's
+                   # "recent commits" evidence comes from git, not from dated prose. Only
+                   # these three forms — nothing that can touch the tree or the index.
+                   "Bash(git log:*)", "Bash(git blame:*)", "Bash(git show:*)"]
                   if os.path.exists(memory) else None),
     }
 
@@ -497,15 +502,22 @@ def _selftest():
           {"Task", "Agent", "SlashCommand"} <= set(plan["disallowed"]))
     check("Read/Grep/Glob/Write are never denied — the audit needs them",
           not ({"Read", "Grep", "Glob", "Write", "Edit"} & set(plan["disallowed"])))
-    check("Bash is clamped to the recall query, not denied outright",
+    _GIT_FORMS = {"Bash(git log:*)", "Bash(git blame:*)", "Bash(git show:*)"}
+    _py_rules = [r for r in (plan["clamp"] or []) if not r.startswith("Bash(git ")]
+    check("Bash is clamped to the recall query plus read-only git history, not denied outright",
           plan["clamp"] is None
-          or all("compound-v-memory.py" in r for r in plan["clamp"]))
+          or all("compound-v-memory.py" in r or r in _GIT_FORMS for r in plan["clamp"]))
     # Nobody writes bytecode: the scope gate forgives no path by extension since
     # the fourth review pass, so the admitted form carries -B (and rule and
     # command must agree literally, or the clamp denies the query).
     check("every clamped python command carries -B after the interpreter",
+          plan["clamp"] is None or all(" -B " in r for r in _py_rules), str(_py_rules))
+    # v3.4.13 (finding 145): exactly the three read-only git history forms, no other git form.
+    check("the clamp admits git log/blame/show for the auditors",
+          plan["clamp"] is None or _GIT_FORMS <= set(plan["clamp"]))
+    check("no git form beyond log/blame/show can slip into the clamp",
           plan["clamp"] is None
-          or all(" -B " in r for r in plan["clamp"]), str(plan["clamp"]))
+          or {r for r in plan["clamp"] if r.startswith("Bash(git ")} == _GIT_FORMS)
     check("the emitted script passes both narrowings",
           "disallowedTools: CFG.disallowed" in script
           and "bashCommandClamp: CFG.clamp" in script)
