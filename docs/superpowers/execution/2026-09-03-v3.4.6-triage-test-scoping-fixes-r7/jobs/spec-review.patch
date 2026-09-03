@@ -1,0 +1,253 @@
+diff --git a/docs/superpowers/dogfood/2026-09-03-v3.4.6-triage-test-scoping-fixes-review.md b/docs/superpowers/dogfood/2026-09-03-v3.4.6-triage-test-scoping-fixes-review.md
+new file mode 100644
+index 0000000..040f6cb
+--- /dev/null
++++ b/docs/superpowers/dogfood/2026-09-03-v3.4.6-triage-test-scoping-fixes-review.md
+@@ -0,0 +1,247 @@
++# v3.4.6 triage/test-scoping fixes — Review Gate (run r7)
++
++Run `2026-09-03-v3.4.6-triage-test-scoping-fixes-r7` · reviewer `superpowers-v:spec-reviewer` · diff range `eb581ce..HEAD` (`d76145b`) · isolation `direct`, baseline pinned `d76145b256ee95d16c62e4898648354a51ceb50b`.
++
++**VERDICT: ISSUES** — 7 findings, none of them in the code paths the five acceptance criteria gate, all of them in what the change *says about itself*.
++
++| Pass | Status |
++|---|---|
++| PASS 1 SPEC | ✅ — 5/5 acceptance criteria verified by live command, 3 Part-decisions implemented, audit MUSTs honoured, no scope leak, no over-build |
++| PASS 2 QUALITY | **ISSUES** — findings 1–7 below (three doc/code divergences on the timeout default, one misattributed probe, three low) |
++| PASS 3 INTEGRATION | ✅ — floor + full suite green with evidence, seams hold, `schemas/job_result.schema.json` unchanged as required |
++
++## Provenance — what the pipeline merged, what the orchestrator applied by hand
++
++| Commit | Content | How it landed |
++|---|---|---|
++| `35e8ed0` | r3 wave 1 — localizer (Part 1), fastpath (Parts 2/3) | **pipeline** |
++| `f36c1b2` | r5 wave 1 — validator, the five workers, contract docs | **pipeline** |
++| `207ebe2` | r5 wave 2 — CHANGELOG | **pipeline** |
++| `6335253` | r6 wave 1 — contract rows in `tests/test-engine-c-contract.sh` | **pipeline** |
++| `7481d78` | the emitter item, replayed from r5's sealed patch after that run's review hit its cap | **hand-applied by the orchestrator** |
++| `24dc534` | Engine C — an implementer returning nothing no longer voids its wave (findings 107/108/109) | **hand-applied by the orchestrator** |
++| `ebbbaf7` | Engine C — a NULL implementer result takes the same fallback (finding 113) | **hand-applied by the orchestrator** |
++
++Three of the seven commits in this range were never gated by the pipeline that is supposed to gate them. That is not itself a defect — r6's reviewer wrote nothing in 80 turns (finding 116), which is why this run exists — but it is the reason the two Engine C commits and the emitter patch were spot-checked directly below rather than taken on a receipt.
++
++## Recall
++
++`compound-v-memory.py search "triage test scoping timeout_s content scan demotion" --intent review --top 6` returned the plan, the design spec and the Phase-1A archaeology for this exact feature. Two constraints from that reading are load-bearing here and are cited in PASS 1:
++
++- Archaeology §7.4 / §7.9 (`docs/superpowers/archaeology/2026-09-03-v3-4-6-triage-test-scoping-fixes.md:174,401,434`) **overrules the design spec's own Decision text** for Part 2: the spec asked for `failure_class: "timeout"` on the job_result; 1A refused it, because the top-level `failure_class` feeds the retry/reroute policy, which cannot fix a slow suite. The manifest's AC 2 encodes the reversal ("the top-level `failure_class` is NOT set by a test timeout (pre-flight 1A)"). The implementation follows the audit, not the spec — correctly.
++- Archaeology line 88 records that the five workers' `TEST_TIMEOUT_SEC=900` was **"not implicated in the observed incident"**. Leaving it at 900 is therefore an audited decision, not an oversight — which makes finding 1 a documentation defect rather than a code one.
++
++`recall-check --files scripts/compound-v-{preeval,localize,fastpath-run,emit-workflow,validate-manifest}.py` returned the escalation verdict **`tighten`** (4 prior `blocked`/`error` records on these same files: r3's validator, r5's emitter, 3.4.1's test-scope job, df27's spec-review). The conservative recommendation `extra_review_pass` is satisfied by this run existing. Recall is evidence, never routing; nothing here reroutes anything.
++
++## SPEC
++
++### Coverage against the three Part-decisions in `docs/superpowers/specs/2026-09-03-v3.4.6-triage-test-scoping-fixes-design.md`
++
++| Spec requirement | Implemented in | Status |
++|---|---|---|
++| Part 1 — `content_scan_excluded(path)` gate before the `open()` in `_classify_paths`; path rows and `sensitive_path` still apply | `scripts/compound-v-localize.py:504-519` | ✅ |
++| Part 1 — new selftest fixture, never a rewrite of `_SHARED_TOKEN_TAXONOMY` | `compound-v-localize.py:839-859` (`_CONTENT_SCAN_EXCLUDE_TAXONOMY`), assertions at `:1301-1334` | ✅ |
++| Part 2 — `test_contract.timeout_s` validated as a positive integer | `compound-v-validate-manifest.py:845, 2258-2268` | ✅ (bounds 1..540, not the spec's ≤3600 — AC 2's tightening, see below) |
++| Part 2 — the resolver copies it into the slice | `compound-v-fastpath-run.py:1017-1024` | ✅ |
++| Part 2 — `run_test_floor` honours it; rc 124 labelled | `compound-v-fastpath-run.py:1188-1197`, `:1695-1696` | ✅ |
++| Part 2 — all five workers' `tc_validate` accept it, `tc_run` honours it | e.g. `compound-v-run-codex-worker.sh:129,134,176-177,187` and the four siblings | ✅ |
++| Part 2 — emitter pass-through | `compound-v-emit-workflow.py:1355-1363, 1437-1447, 1525-1530` | ✅ |
++| Part 2 — `failure_class: "timeout"` on the job_result | **deliberately NOT implemented** | ✅ — 1A §7.4 overruled it; AC 2 codifies the reversal; `schemas/job_result.schema.json` unchanged, confirmed by `git diff eb581ce..HEAD -- schemas/` returning empty |
++| Part 3 — bookkeeping + gitignored paths excluded from the unmapped⇒`full_command` promotion only | `compound-v-fastpath-run.py:318-347` (`_git_check_ignore`), `:353-405` (`_bookkeeping_for_unmapped`), `:945-969` | ✅ |
++| Part 3 — finalizer deletes `<run>/.run.lock` when it retires `lane-map.json` | `compound-v-emit-workflow.py:4063-4085`, call sites `:4240, 4431, 4574` | ✅ (with finding 6) |
++
++No `❌ MISSING`. Two intentional deviations from the spec's own prose (`failure_class`; the 480/540 numbers in place of 600/3600) are both traceable to pre-flight 1A and to the r7 manifest's acceptance criteria, which is the correct precedence — the audit and the AC beat the draft spec.
++
++### Scope lock
++
++`write_allowed` for this job is a single file. The diff range under review touches only files inside the merged jobs' own lanes (`scripts/`, `tests/`, two docs, `CHANGELOG.md`); the three hand-applied commits are the orchestrator's, outside the job-lane model by construction and named as such above. No `SCOPE_LOCK_VIOLATION`.
++
++### Over-build
++
++None found. The one candidate — the emitter passing `--test-timeout-sec` on the launch argv when the worker would re-derive `timeout_s` from the slice file anyway (`compound-v-emit-workflow.py:1355-1363`) — is named in the spec's own Files list ("`compound-v-emit-workflow.py` (pass-through)") and is documented as belt-and-braces in the code. Accepted.
++
++### Spot-check of the three hand-applied commits
++
++- **`24dc534` + `ebbbaf7` (the gate JS branch).** A null `implement` result for a Claude job is now coerced to `{}` and takes the same `--impl-no-result` path as an empty one; an external backend's null still fails closed (`external worker returned null`). The receipt carries `impl_no_result: true`, and `_job_result_from` forces `status: "error"` with a summary that says why (`compound-v-emit-workflow.py:3586-3590, 3656-3658`). The job is refused **with evidence** instead of the authority voiding the wave. Correct, and guarded by four new selftest assertions.
++- **`_lane_map_worktree_for`** (`compound-v-emit-workflow.py:2788-2801`). Trusts a lane-map entry only when there is **exactly one** candidate, it is an existing directory, and it is not the checkout root. Each of those three refusals has its own selftest assertion (`:6293-6306`). This is the right shape: a locator that can be forged by a second registration is no locator, and the code refuses rather than guesses.
++- **`7481d78` (the emitter patch), four hunks.** `build_plan` reads `test_contract.timeout_s` at plan time with an explicit `isinstance(int) and not isinstance(bool) and > 0` guard; `build_launch_argv` repeats the guard before emitting the flag; the entry is `None` for the `claude` backend, which is correct because a Claude job never reaches a worker script. No fourth surprise.
++
++## QUALITY
++
++Code quality of the change itself is good: `_git_check_ignore` is a genuine extraction of a shared primitive rather than a copy, both new resolver helpers document their fail-open/fail-closed direction and pick the conservative one (a git failure leaves paths REAL, so the wider suite runs), and every new behaviour has an assertion that would fail if it broke.
++
++**Reward-hacking check: clean.** Every test file in the range gains assertions and loses none — `tests/test-engine-c-contract.sh` is +4/−0, and no `expect(`/`_check(`/`pass`/`fail` line is deleted, skipped, commented out, or loosened anywhere in the diff. The one numeric threshold that moved, `TEST_TIMEOUT_S 300 → 480` (`compound-v-fastpath-run.py:122`), is the spec's entire Part 2 and is named verbatim in AC 2 — a spec-justified relaxation, not a gate weakened to go green.
++
++**Test alignment: clean.** Each MUST has a guard that fails if the requirement breaks — finding 99 has three localizer assertions (excluded/unexcluded/`.md`), finding 102 has four resolver assertions plus four `run_test_floor` assertions plus ten worker rows (2 × 5 backends), finding 105 has four resolver assertions plus two finalizer assertions. None is an "it compiles" test.
++
++**No regression:** `_drop_gitignored`'s refactor preserves its contract exactly — `None` on git failure, the `_is_test_noise` ∧ ignored conjunction, the `returncode not in (0,1)` rule — now delegated to `_git_check_ignore` instead of inlined. Whole suite green (PASS 3).
++
++### Findings
++
++**1. `execution-manifest.md` and `parallel-dispatcher.md` state a default the code does not have.** *(doc/code divergence — the highest-value finding here)*
++
++`skills/compound-v/execution-manifest.md:452` documents `test_contract.timeout_s` with "**Absent ⇒ 480.**", and `agents/parallel-dispatcher.md:173` was changed in this very diff from `[--test-timeout-sec 900]` to `[--test-timeout-sec <test_contract.timeout_s, default 480>]`. Neither is true for an external backend:
++
++```
++$ grep -n "TEST_TIMEOUT_SEC=" scripts/compound-v-run-*-worker.sh
++scripts/compound-v-run-antigravity-worker.sh:267:TEST_TIMEOUT_SEC=900
++scripts/compound-v-run-codex-worker.sh:262:TEST_TIMEOUT_SEC=900
++scripts/compound-v-run-cursor-worker.sh:271:TEST_TIMEOUT_SEC=900
++scripts/compound-v-run-devin-worker.sh:287:TEST_TIMEOUT_SEC=900
++scripts/compound-v-run-opencode-worker.sh:309:TEST_TIMEOUT_SEC=900
++```
++
++When the manifest declares no `timeout_s`, `build_plan` leaves `_contract_timeout_s = None` (`compound-v-emit-workflow.py:1443-1447`), `build_launch_argv` emits no flag (`:1359-1363`), the slice carries no `timeout_s`, and `tc_run`'s `[ -n "$_tc_timeout" ] || _tc_timeout="$TEST_TIMEOUT_SEC"` falls to **900**. The 480 default is real only on the Engine C / Claude path (`compound-v-fastpath-run.py:122`). Per 1A line 88 the 900 is a *deliberate* keep — so the fix is to the two documents, not to the workers.
++
++→ Say what is true: absent ⇒ 480 on Engine C, 900 on an external worker; or make the emitter pass 480 explicitly when the manifest is silent. Do not leave a document asserting a budget the runtime does not apply.
++
++**2. The CHANGELOG attributes a conclusion to a probe that did not test it.** *(anti-ruflo — evidence misattribution)*
++
++`CHANGELOG.md`, last sentence of the finding-102 entry: *"A four-request sandbox probe confirmed the 300 s constant was the only source of the observed 124s before this fix."*
++
++The four-request probe is **finding 99's**, not 102's: `docs/superpowers/specs/…-design.md:3-4` — one 66,677 B file plus "the same shape on three smaller scripts". It measured triage sizing. Nothing in the spec, the archaeology, or any run directory records a probe of the 300 s constant or of what caused the observed rc 124. The phrase reached this entry from the *earlier* runs' AC text (`…-fixes/manifest.yaml:104`, where it sat under the CHANGELOG job as a whole) and got anchored to the wrong claim; r5's own sealed patch (`…-fixes/jobs/changelog.patch:19`) had it correctly under the finding-99 paragraph as "Verified with a four-request sandbox…".
++
++→ Move it back under finding 99 where it is true, or delete it. An unmeasured claim wearing the word "confirmed" is exactly what the anti-ruflo charter exists to stop, and it is worse in a CHANGELOG than in a comment because it outlives the person who can check it.
++
++**3. The CHANGELOG says the 900 was replaced. It was not.** *(same paragraph as finding 1)*
++
++`CHANGELOG.md`, finding-102 entry: *"passed through to external workers as `--test-timeout-sec` in place of the previously hardcoded 900"* and *"Absent from the manifest, the budget still defaults to 480 s, not 600 s."* The 900 is still each worker's default (finding 1) and is still what runs whenever the manifest declares no `timeout_s`. What was replaced is the **example value in a reference template** (`parallel-dispatcher.md:173`), which is a different thing.
++
++→ Reword to "passed through as `--test-timeout-sec`, overriding the worker's own 900 default when declared".
++
++**4. The cited file size is stale.** *(low)*
++
++`CHANGELOG.md` and AC 1 both name `scripts/compound-v-memory.py` at **66,677 B**. Today it measures **76,230 B** (`wc -c` in the sandbox checkout, and the file is untouched by this diff, so it was already 76,230 at `eb581ce`). The fix's premise survives — 76,230 > 65,536, and the live probe below still demotes — but the number as printed is no longer true of the file it names. The r7 AC inherited it from the design spec written earlier the same day.
++
++→ Re-measure, or say "over the 65,536 B cap" without pinning a byte count that drifts.
++
++**5. Finding 105 ships with no CHANGELOG entry.** *(low)*
++
++AC 4 asks only for "both entries" (99 and 102), so this is not an acceptance gap. But Part 3 is a real change to which tests get selected — bookkeeping and gitignored paths no longer promote a slice to `full_command`, and finished runs stop leaving `.run.lock` behind — and `[Unreleased]` says nothing about it. The next person debugging why a slice stayed `impacted` has the code comment and this file, and no changelog line.
++
++**6. `.run.lock` retirement is gated on the wrong condition at two of its three call sites.** *(low)*
++
++`compound-v-emit-workflow.py:4430-4431` and `:4573-4574` call `_retire_run_lock(run_dir)` only `if out.get("lane_map_retired")` — that is, only if `_retire_lane_map`'s `os.remove` *returned True*. The step-1 refusal path at `:4240` calls it unconditionally. The three sites disagree, and the two gated ones inherit a failure mode from the thing they are gating on: if `lane-map.json` is already gone at the terminal transition (hand-cleaned, a `/v:resume` path, a second finalize), `_retire_lane_map` returns False and the `.run.lock` this fix exists to retire survives — which is the exact 46-stale-files state finding 105 describes. The terminal phase, not another `os.remove`'s return value, is the condition that matches the docstring ("at a TERMINAL phase transition").
++
++The lock-ordering reasoning at both sites is correct and worth keeping: each call is outside the `with _run_dir_lock(...)` that covered the same transition, as `_retire_run_lock`'s own docstring requires. Verified at `:4215-4240` and `:4249-4293`.
++
++**7. Three validators disagree on `timeout_s`'s domain.** *(low)*
++
++- manifest validator: `int`, not `bool`, `1..540` (`compound-v-validate-manifest.py:2258-2268`)
++- resolver: any non-bool `int|float` that is `> 0` — no upper bound, floats allowed (`compound-v-fastpath-run.py:1017-1024`)
++- worker `tc_validate`: any JSON `number >= 1` — no upper bound (`compound-v-run-*-worker.sh:134`)
++
++A manifest cannot produce a divergent value, so nothing ships broken. But a hand-built slice with `timeout_s: 0.5` passes the resolver and then hard-fails `tc_validate` as a usage fault (`exit 2`) at the worker, rather than being refused where it was produced. The resolver is the authority that writes the file; it should enforce the same integer domain the manifest does.
++
++## INTEGRATION
++
++### Partition and seams
++
++No partition leak: the Part-1 file (`compound-v-localize.py`), the Part-2 files (validator, workers, emitter) and the Part-3 files (fastpath resolver, emitter finalizer) were each written by one job, and the two files touched by more than one run (`compound-v-fastpath-run.py`, `compound-v-emit-workflow.py`) were serialized across waves, not shared within one. The r5 correction commit `7898817` records the orchestrator catching exactly this ("the partition forbids two jobs on one file even in series", finding 114).
++
++Seams hold, checked in both directions:
++
++| Producer | Consumer | Verified |
++|---|---|---|
++| `resolve_test_commands` writes `slice_["timeout_s"]` | the five workers' `tc_validate` key allowlist | ✅ key present in all five; the contract test asserts accept-480 / refuse-0 per backend (10 rows) |
++| `run_test_floor` writes `failures: ["timeout after N s: …"]` | `_tests_block_from_floor` → the gate receipt's `tests` block | ✅ verified live below |
++| manifest `test_contract.timeout_s` | `build_plan` → `build_launch_argv` → `--test-timeout-sec` | ✅ int-and-not-bool guarded at both ends; **but see finding 1 for the absent case** |
++| `register-lane`'s `lane-map.json` | `_lane_map_worktree_for` at gate time | ✅ single-entry / real-dir / not-the-checkout, three refusals each asserted |
++
++### Build and tests — evidence, tier FULL
++
++The manifest is `triage.tier: FULL` with a **declared, non-empty `impacted_map`**, so the derived-default rule applies: impacted ∪ previously-failing ∪ newly-added, plus `full_command` only for a changed path matching no rule. Deriving it myself against `files_changed`, **every** changed path matches a rule — the five workers via `scripts/compound-v-run-*-worker.sh`, plus one rule each for the localizer, fastpath, validator, emitter, the contract test, `execution-manifest.md`, `CHANGELOG.md` and `agents/parallel-dispatcher.md`. No unmapped path, so `full_command` was not owed. I ran it anyway.
++
++```
++$ bash tests/test-engine-c-contract.sh          # floor_command — unconditional
++✅ engine-c contract: every generated job_result conforms, the contract reaches
++   the worker, and the join has a producer                                  exit 0
++
++$ bash -c 'for s in scripts/compound-v-*.py; do … --selftest …; done;
++           for t in tests/*.sh; do bash "$t"; done; echo all-tests-ok'      # full_command
++all-tests-ok                                                                exit 0
++
++$ shellcheck scripts/compound-v-run-{codex,antigravity,cursor,opencode,devin}-worker.sh
++shellcheck rc=0
++
++$ /usr/bin/python3 -B scripts/lint-frontmatter.py .
++✅ All frontmatter clean
++```
++
++### Feature acceptance criteria — all five, run on the merged tree
++
++**AC 1 — the content-scan-excluded big file demotes.** Sandbox built with `scripts/compound-v-sandbox-checkout.sh <dest> --empty-pre-eval` (396 files); a second copy with `scripts/compound-v-localize.py` reverted to its `eb581ce` content, everything else identical.
++
++```
++$ compound-v-preeval.py triage --request "tweak the docstring in scripts/compound-v-memory.py" --json
++BEFORE (eb581ce localizer)  needs_t3=False  t3_reason=None      tier=FULL  decision=FULL_PIPELINE
++AFTER  (HEAD)               needs_t3=True   t3_reason=demotion  tier=None  decision=None
++```
++
++The BEFORE predicate trail shows the demotion vetoed with `bands=high/high`; localization directly:
++
++```
++BEFORE conf=exact paths=['scripts/compound-v-memory.py'] flags=['content_scan_incomplete']
++AFTER  conf=exact paths=['scripts/compound-v-memory.py'] flags=[]
++```
++
++Third clause, the non-excluded oversized file, against `_CONTENT_SCAN_EXCLUDE_TAXONOMY` (`**/*.py` excluded):
++
++```
++docs/big.md   (65,536+4,096 B, NOT excluded) -> ['content_scan_incomplete']   flag still fires
++scripts/big.py(65,536+4,096 B, excluded)     -> []                            flag suppressed
++```
++
++✅ — with the byte-count caveat in finding 4.
++
++**AC 2 — `timeout_s` end to end.** Validator: `timeout_s: 480` accepted; `0`, `-1`, `541`, `"480"`, `"true"` and bare `true` each refused with a problem naming the key (six selftest assertions, all green). Slice: carried verbatim when declared, absent when not. Workers: `tc_validate` accepts 480 and refuses 0 in all five (10 contract-test rows). The live timeout case, a sleeping checker under `timeout_s: 1`:
++
++```
++$ run_test_floor(repo, base, changed_paths=['a.py'],
++                 test_commands=["sh -c 'sleep 5'"], test_timeout_s=1)
++tier1 rc              : [124]
++failures              : ["timeout after 1 s: sh -c 'sleep 5'"]
++merge_blocked         : True   passed: False
++failure_class present : False          <- pre-flight 1A's reversal, honoured
++
++$ _tests_block_from_floor(that_floor, contract={... 'timeout_s': 1}, job={'id':'j'}, tier='FULL')
++{ "command": "sh -c 'sleep 5'", "exit_code": 124,
++  "failures": ["timeout after 1 s: sh -c 'sleep 5'"],
++  "scope": "full", "selected_count": 1 }
++```
++
++`git diff eb581ce..HEAD -- schemas/` → empty. ✅ — with finding 1 against the *documented* default, not against the mechanism.
++
++**AC 3 — suites green.** See the evidence block above. ✅
++
++**AC 4 — documentation.** `execution-manifest.md:452` documents `timeout_s`; `:179` carries the FULL-tier note ("An unmapped path runs `full_command` at this tier — map every lane path in `impacted_map`, or accept and budget the full suite; there is no third option"); `CHANGELOG.md` `[Unreleased]` carries both `### Fixed` entries with `66,677 vs 65,536 B` and `340 s vs 300 s`. Present as specified — ✅ literally, and **defective in substance**: findings 1, 2, 3 and 4 are all in the text this criterion asked for.
++
++**AC 5 — bookkeeping never promotes; the finalizer retires the lock.**
++
++```
++3 × docs/superpowers/execution/*/.run.lock + 1 mapped scripts/a.py
++  -> scope: impacted   cmds: ["sh -c 'exit 0'", "sh -c 'lint'"]
++     note: "ignored 3 bookkeeping path(s) for the unmapped rule"
++same + 1 REAL unmapped src/real.py
++  -> scope: full       cmds: [..., "sh -c 'echo FULL'"]        <- the rule still fires
++gitignored build/out.bin (live git repo, .gitignore = build/)
++  -> scope: impacted   note: "ignored 1 bookkeeping path(s) for the unmapped rule"
++tracked unmapped src/real.py (same repo)
++  -> scope: full                                               <- control
++```
++
++The lock retirement is asserted at both terminal transitions in the emitter selftest — "finding 105: a BLOCKED run's `.run.lock` is retired at the same terminal transition" and the MERGED twin — both green. ✅, with finding 6 as a residual on the gating condition.
++
++## Verdict
++
++**ISSUES.** Seven, ranked:
++
++1. `skills/compound-v/execution-manifest.md:452` and `agents/parallel-dispatcher.md:173` document "absent ⇒ 480" / "default 480"; the five workers default to 900 and the emitter passes no flag when the manifest is silent, so an external backend's real absent-case budget is 900 s.
++2. `CHANGELOG.md`, finding-102 entry: "A four-request sandbox probe confirmed the 300 s constant was the only source of the observed 124s" — that probe is finding 99's and measured triage sizing; no probe of the 300 s constant is recorded anywhere. Move it or delete it.
++3. `CHANGELOG.md`, same entry: "in place of the previously hardcoded 900" and "defaults to 480 s, not 600 s" — the 900 is still there and is still what runs when `timeout_s` is absent.
++4. `CHANGELOG.md` / AC 1 cite `scripts/compound-v-memory.py` at 66,677 B; it measures 76,230 B today. The premise holds, the number does not.
++5. Finding 105 (bookkeeping paths, `.run.lock` retirement) ships with no `[Unreleased]` entry. Not an AC failure; still a silent change to test selection.
++6. `compound-v-emit-workflow.py:4430-4431` and `:4573-4574` gate `_retire_run_lock` on `_retire_lane_map`'s return value; `:4240` does not. Gate all three on the terminal phase instead, or the stale-lock state this fix removes can reappear.
++7. `resolve_test_commands` (`compound-v-fastpath-run.py:1017-1024`) accepts floats and unbounded values for `timeout_s` while the manifest validator enforces `int` 1..540 — the authority that writes the slice should enforce the domain the manifest does.
++
++Findings 1–4 are all in the same two paragraphs of `CHANGELOG.md` plus two documentation lines; 5–7 are one changelog line and two small code conditions. None touches the mechanisms the five acceptance criteria gate, every one of which was verified by live command on the merged tree. Fix the seven, and this is APPROVED.

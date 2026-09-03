@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-03-v3.4.6-triage-test-scoping-fixes-review.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "d76145b256ee95d16c62e4898648354a51ceb50b",
+    "diff_digest": "sha256:ce904a3069ae0d7278b9deb2d3eaa849ba8d47d47abb71953393d9388298984d",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"d76145b256ee95d16c62e4898648354a51ceb50b\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.6-triage-test-scoping-fixes-review.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.6-triage-test-scoping-fixes-review.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "d76145b256ee95d16c62e4898648354a51ceb50b",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Review Gate \u2014 three passes against the spec and the feature acceptance criteria",
+  "tests": {
+    "command": "bash tests/test-engine-c-contract.sh\n/usr/bin/python3 -B scripts/lint-frontmatter.py .",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": ""
+}

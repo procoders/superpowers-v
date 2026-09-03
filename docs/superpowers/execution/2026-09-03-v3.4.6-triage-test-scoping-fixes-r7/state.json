@@ -1,14 +1,40 @@
 {
   "run_id": "2026-09-03-v3.4.6-triage-test-scoping-fixes-r7",
-  "phase": "PARTITION_VERIFIED",
+  "phase": "MERGED",
   "pre_eval_id": "2026-09-03T113149Z-implement-v3-4-6-per-docs-superpowers-specs-2026-09-03-v3-4-0cb5",
   "updated_at": "2026-09-03T13:01:08Z",
   "jobs": {
     "spec-review": {
-      "status": "pending",
+      "status": "done",
       "isolation": "direct",
-      "worktree": null,
-      "session_id": null
+      "worktree": "",
+      "session_id": null,
+      "baseline": "d76145b256ee95d16c62e4898648354a51ceb50b",
+      "realised_commit": "d76145b256ee95d16c62e4898648354a51ceb50b",
+      "merged": {
+        "realised_commit": "d76145b256ee95d16c62e4898648354a51ceb50b",
+        "mode": "direct",
+        "integrated": true,
+        "commit": "8181358d48ea78a9678706b6b15d10a90cd5b62c"
+      }
     }
-  }
+  },
+  "triage_actual": {
+    "merge_pending": true,
+    "pre_eval_id": "2026-09-03T113149Z-implement-v3-4-6-per-docs-superpowers-specs-2026-09-03-v3-4-0cb5",
+    "run_id": "2026-09-03-v3.4.6-triage-test-scoping-fixes-r7"
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "spec-review"
+      ],
+      "merged": [
+        "spec-review"
+      ],
+      "commit": "8181358d48ea78a9678706b6b15d10a90cd5b62c",
+      "integrated": true
+    }
+  },
+  "merged_at": "2026-09-03T13:14:52Z"
 }

@@ -1,0 +1,65 @@
+{
+  "baseline_commit": "d76145b256ee95d16c62e4898648354a51ceb50b",
+  "diff_digest": "sha256:ce904a3069ae0d7278b9deb2d3eaa849ba8d47d47abb71953393d9388298984d",
+  "exit_code": 0,
+  "job_id": "spec-review",
+  "patch_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r7/jobs/spec-review.patch",
+  "patch_paths": [
+    "docs/superpowers/dogfood/2026-09-03-v3.4.6-triage-test-scoping-fixes-review.md"
+  ],
+  "patch_sha256": "sha256:ce904a3069ae0d7278b9deb2d3eaa849ba8d47d47abb71953393d9388298984d",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"d76145b256ee95d16c62e4898648354a51ceb50b\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.6-triage-test-scoping-fixes-review.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.6-triage-test-scoping-fixes-review.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "d76145b256ee95d16c62e4898648354a51ceb50b",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "docs/superpowers/dogfood/2026-09-03-v3.4.6-triage-test-scoping-fixes-review.md",
+      "docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r2/logs/sandbox-helper.events.jsonl",
+      "docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r3/logs/sandbox-helper.events.jsonl",
+      "docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r4/logs/sandbox-helper-fix.events.jsonl",
+      "docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r5/logs/sandbox-helper-fix.events.jsonl",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r2/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r3/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r4/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r5/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r7/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r7/jobs/spec-review.baseline",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r7/jobs/spec-review.test-contract.json",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r7/lane-map.json",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r7/preexisting/spec-review.txt",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r7/preexisting/spec-review.verified.txt",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r7/state.json",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes/.run.lock"
+    ],
+    "checks": [
+      {
+        "checker": "bash tests/test-engine-c-contract.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "/usr/bin/python3 -B scripts/lint-frontmatter.py .",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (10 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 1 command(s) from 17 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)",
+      "ignored 16 bookkeeping path(s) for the unmapped rule"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": ""
+}
