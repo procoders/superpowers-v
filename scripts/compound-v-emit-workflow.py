@@ -3528,7 +3528,10 @@ def _job_result_from(verdict, job, state_job, tests=None, contract=None,
     # so emptiness could not distinguish the two — and that is precisely how a
     # direct job's patch ended up being applied into another repository.
     if (isolation or job.get("isolation")) == "worktree":
-        worktree = state_job.get("worktree") or ""
+        # The receipt names the tree the gate measured; state may not know it
+        # yet (finding 89).
+        worktree = (str(verdict.get("worktree") or "").strip() if isinstance(verdict, dict) else "") \
+            or state_job.get("worktree") or ""
     else:
         worktree = ""
 
@@ -3672,7 +3675,17 @@ def cmd_record(argv):
     # 3.0.2's fail-closed rule firing on a job never meant to have one. One field
     # name, two layers, opposite meanings.
     isolation = job.get("isolation")
-    if isolation == "worktree" and (job.get("depends_on") or []):
+    # WHERE THE AGENT RAN comes from the gate receipt (the emitter's own `--mode`,
+    # digest-bound), never from a rule re-derived here. The 3.0.5 rule "a
+    # dependent worktree job ran direct" was hard-coded in this stage and kept
+    # writing `direct` + an empty worktree into state after finding 60 gave
+    # dependent jobs real worktrees — so the authority, reading state, gated the
+    # checkout and called an honest receipt forged (stage-5 F1, finding 89).
+    _rec_mode = _gate_mode_from_receipt(verdict) if isinstance(verdict, dict) else None
+    if _rec_mode:
+        isolation = _rec_mode
+    elif isolation == "worktree" and (job.get("depends_on") or []) \
+            and not _worktree_base_is_head(repo_root):
         isolation = "direct"
     if isolation not in ("direct", "worktree"):
         ack["reason"] = (
@@ -4214,7 +4227,11 @@ def cmd_finalize_wave(argv):
                 continue
 
         if isolation == "worktree":
-            worktree = result.get("worktree") or state_job.get("worktree")
+            # The receipt names the tree the gate measured — first (finding 89:
+            # result and state both carried "" for a dependent job that ran in a
+            # real worktree, and this refused "resolves to no worktree").
+            worktree = ((gate_doc or {}).get("worktree") if isinstance(gate_doc, dict) else None) \
+                or result.get("worktree") or state_job.get("worktree")
             if not worktree:
                 out["refused"].append(job_id)
                 out["reason"] = (
@@ -6345,6 +6362,53 @@ def selftest():
                    and bk4_repo not in (_f78_map.get("worktrees") or {})
                    and (_f78_map.get("worktrees") or {}).get(os.path.join(bk4_repo, ".claude", "worktrees", "x")) == "cl",
                    json.dumps(_f78_map)[:300])
+            # finding 89: Record writes where the gate MEASURED (receipt mode + worktree),
+            # not a re-derived 3.0.5 rule, for a dependent worktree job.
+            _f89_run = os.path.join(bk4_repo, "docs", "superpowers", "execution", "f89")
+            os.makedirs(os.path.join(_f89_run, "results"), exist_ok=True)
+            _f89_man = os.path.join(_f89_run, "manifest.yaml")
+            with open(_f89_man, "w", encoding="utf-8") as fh:
+                _yaml_bk.safe_dump({"run_id": "f89", "jobs": [
+                    {"id": "d0", "isolation": "worktree", "write_allowed": ["src/**"]},
+                    {"id": "d1", "isolation": "worktree", "depends_on": ["d0"], "write_allowed": ["src/**"]}]}, fh)
+            _f89_wt = os.path.join(bk4_repo, ".claude", "worktrees", "f89-wt")
+            _run(["git", "-C", bk4_repo, "worktree", "add", "-q", "--detach", _f89_wt, "HEAD"])
+            with _quiet():
+                cmd_register_lane(["--run-dir", _f89_run, "--job-id", "d1", "--cwd", _f89_wt,
+                                   "--repo-root", bk4_repo, "--isolation", "worktree",
+                                   "--manifest", _f89_man, "--no-test-contract"])
+            with open(os.path.join(_f89_wt, "src", "dep.txt"), "w") as fh:
+                fh.write("dependent work in a real worktree\n")
+            with _quiet():
+                cmd_gate_receipt(["--run-dir", _f89_run, "--job-id", "d1", "--repo-root", bk4_repo,
+                                  "--worktree", _f89_wt, "--manifest", _f89_man, "--mode", "worktree"])
+                _f89_rcpt = _read_json(os.path.join(_f89_run, "receipts", "d1.gate.json"), {})
+                cmd_record(["--run-dir", _f89_run, "--job-id", "d1", "--manifest", _f89_man,
+                            "--verdict-json", json.dumps(_f89_rcpt), "--repo-root", bk4_repo,
+                            "--now", "2026-09-03T00:00:00Z"])
+            _f89_state = _load_state(_f89_run)["jobs"].get("d1", {})
+            _f89_res = _read_json(os.path.join(_f89_run, "results", "d1.json"), {}) or {}
+            _check("finding 89: Record keeps isolation=worktree and the receipt's worktree for a "
+                   "dependent job that ran in a real worktree",
+                   _f89_state.get("isolation") == "worktree" and _f89_state.get("worktree") == _f89_wt
+                   and _f89_res.get("worktree") == _f89_wt, str(_f89_state)[:200])
+            # ...and the FINALIZER merges from the receipt's worktree even when state and
+            # result were written blank (the pre-fix shape).
+            with _run_dir_lock(_f89_run):
+                _f89_blank = _load_state(_f89_run)
+                _f89_blank["jobs"]["d1"]["worktree"] = ""
+                _save_state(_f89_run, _f89_blank)
+            _f89_res_path = os.path.join(_f89_run, "results", "d1.json")
+            _f89_res2 = dict(_read_json(_f89_res_path, {}) or {}, worktree="")
+            with open(_f89_res_path, "w") as fh:
+                json.dump(_f89_res2, fh)
+            with _quiet():
+                rc_f89 = cmd_finalize_wave(["--run-dir", _f89_run, "--repo-root", bk4_repo,
+                                            "--manifest", _f89_man, "--jobs", "d1", "--wave", "2",
+                                            "--now", "2026-09-03T00:00:00Z"])
+            _rc_89, _files_89, _ = _git(bk4_repo, ["show", "--name-only", "--format=", "HEAD~1"])
+            _check("finding 89: the finalizer merges from the RECEIPT's worktree when state/result say none",
+                   rc_f89 == 0 and "src/dep.txt" in _files_89, "rc=%s files=%s" % (rc_f89, _files_89[:120]))
             _check("finding 68: a MERGED run's lane-map.json is retired by the finalizer",
                    not os.path.exists(os.path.join(bk4_run, "lane-map.json")))
 

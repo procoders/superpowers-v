@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed — a dependent job that ran in a real worktree was recorded, judged and merged as if it had run in the checkout (finding 89)
+
+Finding 60 gave a dependent job a real worktree under `worktree.baseRef: head`, but three other places still carried the 3.0.5 assumption: Record hard-coded "dependent ⇒ direct" and wrote an empty worktree into state; the authority chose its root from state and recomputed an empty diff over the checkout ("forged"); the finalizer looked for the worktree in result/state and refused "resolves to no worktree". All three now read the gate receipt first — the emitter's own `--mode` and `--worktree`, digest-bound — with the baseRef-aware rule as the fallback. Emitter selftest 419/419; authority 82/82.
+
 ### Fixed — a running epic was invisible to the banner and to the triage hook (finding 87)
 
 `epic-state.json` carried no timestamp, and the dashboard ages a record by its recorded time only (never an mtime), so the first epic ever run was "age unknown" and never listed as unfinished — and the hook kept sizing unrelated prompts as if nothing were running. Every epic-state write now stamps `updated_at`; the banner names the running epic, and the hook's `--open-jobs` question treats it as active. Selftest 367/367.

@@ -873,8 +873,17 @@ def evaluate_job(job, state_job, run_dir, repo_root, scope_check):
         receipt = result.get("gate_receipt")
 
     # ---- where do we gate? ------------------------------------------------- #
+    # THE RECEIPT NAMES THE TREE THE GATE MEASURED, and it is the emitter's own
+    # word, digest-bound — so it comes first. Result and state come after: a
+    # dependent job that ran in a real worktree had `worktree: ""` written into
+    # both by a stale Record rule, and this authority then gated the checkout,
+    # recomputed an empty diff and called an honest receipt forged (stage-5 F1,
+    # finding 89).
+    _rcpt_disk = load_json(os.path.join(run_dir, "receipts", "%s.gate.json" % job_id))[0]
     worktree = None
     for candidate in (
+        (receipt or {}).get("worktree") if isinstance(receipt, dict) else None,
+        (_rcpt_disk or {}).get("worktree") if isinstance(_rcpt_disk, dict) else None,
         (result or {}).get("worktree"),
         state_job.get("worktree"),
     ):
@@ -1900,6 +1909,28 @@ def _selftest():
                rep_e["results"][0]["verdict"] == "unverifiable"
                and any("empty" in r for r in rep_e["results"][0]["reasons"]))
         os.remove(patch_artifact_path(run_r, "job-a"))
+        # finding 89: the receipt's worktree outranks an empty result/state worktree —
+        # the authority must evaluate the tree the gate measured.
+        f89_run = os.path.join(tmp, "f89-run"); os.makedirs(os.path.join(f89_run, "receipts"))
+        os.makedirs(os.path.join(f89_run, "results"))
+        f89_wt = os.path.join(tmp, "f89-wt"); shutil.copytree(repo, f89_wt)
+        with open(os.path.join(f89_wt, "scripts", "dep.py"), "w") as fh:
+            fh.write("print('dependent work')\n")
+        _f89_base = subprocess.run(["git", "-C", f89_wt, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        f89_rcpt = _honest_receipt(scope_check, f89_wt, _f89_base, ["scripts/**"])
+        f89_rcpt["worktree"] = f89_wt
+        with open(os.path.join(f89_run, "receipts", "job-a.gate.json"), "w") as fh:
+            json.dump(f89_rcpt, fh)
+        with open(os.path.join(f89_run, "manifest.yaml"), "w") as fh:
+            fh.write("run_id: f89\njobs:\n  - id: job-a\n    isolation: worktree\n    write_allowed:\n      - 'scripts/**'\n")
+        _put_result(f89_run, "job-a", dict(_result("", receipt=f89_rcpt), worktree=""))
+        with open(os.path.join(f89_run, "state.json"), "w") as fh:
+            json.dump({"run_id": "f89", "jobs": {"job-a": {"worktree": "", "isolation": "direct",
+                                                          "baseline": _f89_base}}}, fh)
+        rep89 = evaluate_run(f89_run, repo, scope_check)
+        expect("finding 89: the receipt's worktree is evaluated even when result/state say none (%s :: %s)"
+               % (rep89["results"][0]["verdict"], rep89["results"][0].get("gate_root")),
+               rep89["results"][0]["verdict"] == "pass" and rep89["results"][0].get("gate_root") == f89_wt)
         # finding 83: a receipt STRICTER than its raw scope verdict is the gate
         # refusing an absent implementation (lanes declared, nothing changed) —
         # the authority must say `blocked`, never `forged` or `contradicted`.
