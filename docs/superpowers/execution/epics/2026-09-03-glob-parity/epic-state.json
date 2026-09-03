@@ -13,7 +13,7 @@
       "attempts": 3,
       "last_error": null,
       "disposition": null,
-      "sample_audit_due": true
+      "sample_audit_due": false
     },
     {
       "id": "matcher-docs",
@@ -44,7 +44,7 @@
   "blocker_ledger": [],
   "no_progress_cycles": 0,
   "total_attempts": 3,
-  "updated_at": "2026-09-03T20:16:45Z",
+  "updated_at": "2026-09-03T20:18:45Z",
   "last_done_count": 0,
   "processed_cycle_ids": [
     "c1",
