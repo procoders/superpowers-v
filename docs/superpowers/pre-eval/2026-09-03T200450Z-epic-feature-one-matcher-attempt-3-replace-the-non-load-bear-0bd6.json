@@ -1,0 +1,50 @@
+{
+  "base_commit": "241618a33924f0cf6c129c4781787806b8818b13",
+  "confidence": "localization:exact; tiers:localization,T1,T3",
+  "decision": "SCOPED_PIPELINE",
+  "declared_paths": [
+    "scripts/compound-v-memory.py"
+  ],
+  "difficulty": {
+    "band": "medium",
+    "display": 5
+  },
+  "digest": "sha256:1a75b495a58d2bd117b174f5e4f25305194702e0ab2488113adaeee278e442f0",
+  "impact": {
+    "band": "medium",
+    "display": 5
+  },
+  "localization": {
+    "confidence": "exact",
+    "fan_out": 1,
+    "flags": [],
+    "resolved_paths": [
+      "scripts/compound-v-memory.py"
+    ]
+  },
+  "min_sample_status": "insufficient",
+  "override_fired": null,
+  "pre_eval_id": "2026-09-03T200450Z-epic-feature-one-matcher-attempt-3-replace-the-non-load-bear-0bd6",
+  "request_slug": "epic-feature-one-matcher-attempt-3-replace-the-non-load-bear",
+  "session_id": "e619cb38-ebe3-4b45-a1f4-c3007616291d",
+  "status": "PRE_EVAL_DONE",
+  "t3_demotion": {
+    "applied": true,
+    "category": "plumbing",
+    "from": {
+      "difficulty": "high",
+      "impact": "high"
+    }
+  },
+  "t3_reason": "demotion",
+  "taxonomy_digest": "sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a",
+  "taxonomy_ref": "docs/superpowers/pre-eval/2026-09-03T200450Z-epic-feature-one-matcher-attempt-3-replace-the-non-load-bear-0bd6.taxonomy-snapshot.yaml",
+  "taxonomy_version": 1,
+  "tier": "SCOPED",
+  "tiers_signalled": [
+    "localization",
+    "T1",
+    "T3"
+  ],
+  "ts": "2026-09-03T20:04:51Z"
+}

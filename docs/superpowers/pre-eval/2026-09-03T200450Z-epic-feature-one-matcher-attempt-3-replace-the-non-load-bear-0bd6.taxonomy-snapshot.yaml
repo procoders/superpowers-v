@@ -1,0 +1,208 @@
+# Compound V — impact taxonomy (v2.9 Pre-Evaluation). DRAFTED by /v:onboard from this repo's
+# directory/module structure + detected stack; a FIRST CUT only. A human keeps/edits it at the
+# GATE and it is NEVER auto-applied. Schema authority: scripts/compound-v-taxonomy.py.
+# Bands: low | medium | high. Validate: python3 scripts/compound-v-validate-taxonomy.py <file>.
+# BLOCK-STYLE ONLY — never inline flow mappings: the no-PyYAML stdlib fallback drops them.
+#
+# The real project taxonomy lives at .claude/compound-v-impact-taxonomy.yaml (present-then-
+# confirm: /v:onboard proposes this text; WRITE writes it only after you approve at the GATE).
+
+# PROVENANCE: generated, not hand-authored —
+#   python3 scripts/compound-v-onboard.py draft-taxonomy --repo . --emit-yaml
+# (self-validating, writes nothing; --with-churn deliberately NOT used — it would write a
+#  churn cache inside the tree and the scope gate unions ignored files). The human GATE then
+#  extended sensitive_path_list and added the auto_route_* keys; every gate edit is marked
+#  inline below with its reasoning.
+
+version: 1
+
+path_patterns:
+  - glob: "**/*.md"
+    difficulty_band: low
+    impact_band: low
+  - glob: ".github/**"
+    difficulty_band: high
+    impact_band: high
+  # ---- added at the human GATE ------------------------------------------------------------
+  # The draft proposes bands only for surfaces its evidence table knows (markdown, .github).
+  # It left this repo's entire EXECUTABLE surface unbanded, and an unbanded path is not
+  # fail-closed: it escalates to a T3 model classifier (observed live — a --score-only probe
+  # on scripts/compound-v-preeval.py returned needs_t3). Banding them makes the most common
+  # change class in this repo a deterministic, zero-model-call FULL instead. Both are high on
+  # their own merits: scripts/ contains the scope gate that IS the security boundary, and
+  # hooks/ is the runtime enforcement backstop.
+  - glob: "scripts/**"
+    difficulty_band: high
+    impact_band: high
+  - glob: "hooks/**"
+    difficulty_band: high
+    impact_band: high
+
+content_patterns:
+  - match: "terms of service"
+    pattern_type: literal
+    case: insensitive
+    scan: content
+    kind: legal_copy
+    impact_band: high
+  - match: "privacy policy"
+    pattern_type: literal
+    case: insensitive
+    scan: content
+    kind: legal_copy
+    impact_band: high
+  - match: "consent"
+    pattern_type: literal
+    case: insensitive
+    scan: content
+    kind: legal_copy
+    impact_band: high
+  - match: '\{\{[a-zA-Z0-9_]+\}\}'
+    pattern_type: regex
+    case: sensitive
+    scan: content
+    kind: i18n_placeholder
+    impact_band: high
+  - match: '%[sd]'
+    pattern_type: regex
+    case: sensitive
+    scan: content
+    kind: i18n_placeholder
+    impact_band: high
+  - match: "feature_flag"
+    pattern_type: literal
+    case: insensitive
+    scan: content
+    kind: feature_flag
+    impact_band: high
+  - match: "isEnabled"
+    pattern_type: literal
+    case: insensitive
+    scan: content
+    kind: feature_flag
+    impact_band: medium
+  - match: "timeout"
+    pattern_type: literal
+    case: insensitive
+    scan: content
+    kind: config_literal
+    impact_band: medium
+  - match: "rate_limit"
+    pattern_type: literal
+    case: insensitive
+    scan: content
+    kind: config_literal
+    impact_band: high
+  - match: "price"
+    pattern_type: literal
+    case: insensitive
+    scan: content
+    kind: config_literal
+    impact_band: high
+
+# sensitive_path_list — THE sensitive set (spec A4 predicate 5). A hit here is hard override #2
+# (unconditional FULL_PIPELINE) AND disqualifies the path from the DIRECT auto-route class, both
+# pre-edit and in the post-diff re-validation against the immutable pre-edit snapshot.
+# Rows 1-4 are /v:onboard draft-taxonomy's own evidence-backed proposal; everything below the
+# GATE marker was added by a human at the approval gate.
+sensitive_path_list:
+  - "**/*.pem"
+  - "**/*.key"
+  - "**/*.env"
+  - ".github/**"
+  # ---- added at the human GATE (v3.0 Feature A, spec A4 predicate 5) ----------------------
+  # 1. The policy protects itself. Mandatory in EVERY project: without these two rows the
+  #    authorization can be rewritten by the very change it authorizes (spec A4.8, the
+  #    "widen auto_route_allow to scripts/**" attack).
+  - ".claude/compound-v-impact-taxonomy.yaml"
+  - ".claude/compound-v.json"
+  # ...and the rest of .claude/ with it — settings.json registers the hooks that ARE the
+  # runtime enforcement, so it is policy by another name.
+  - ".claude/**"
+  # 2. This repository's enforcement layer. Here prose IS the mechanism: skills, agents and
+  #    commands are the instructions the harness executes, hooks/ is the runtime backstop, and
+  #    .github/ is CI. "Docs-only" is therefore a self-modification hole in THIS repo, not a
+  #    safe class. A downstream project whose markdown is ordinary documentation omits these.
+  - "skills/**/*.md"
+  - "agents/*.md"
+  - "commands/*.md"
+  - "hooks/**"
+  # 3. Same reasoning, root scope: the agent-instruction files every harness reads on start.
+  #    Editing CLAUDE.md/AGENTS.md/GEMINI.md changes what every future agent is told to do.
+  - "CLAUDE.md"
+  - "AGENTS.md"
+  - "GEMINI.md"
+  - "CONVENTIONS.md"
+  # 4. ---- added at the human GATE (v3.4.1 §A6, the SCOPED+ decision) ---------------------
+  #    THE ENFORCEMENT CHAIN. v3.4.1 lets a small edit under scripts/** demote to SCOPED,
+  #    which is right for a scorecard renderer and wrong for the scripts that ARE the
+  #    enforcement: the scope gate, the integration gate, the manifest validator, the two
+  #    emitters that write a run's lane map and pre-flight, and the scoring engine itself.
+  #    Listing them here does not forbid a small edit — it routes one through SCOPED+
+  #    (a mandatory deep review + a cross-model second opinion + the human accept) instead
+  #    of plain SCOPED. hooks/** is already covered above.
+  - "scripts/compound-v-scope-check.py"
+  - "scripts/compound-v-integration-gate.py"
+  - "scripts/compound-v-validate-manifest.py"
+  - "scripts/compound-v-emit-workflow.py"
+  - "scripts/compound-v-emit-preflight.py"
+  - "scripts/compound-v-preeval.py"
+
+# content_scan_exclude — v3.4.1 §A5. Paths whose CONTENT is never matched against
+# content_patterns; the path rows and sensitive_path_list above still apply in full.
+# WHY MARKDOWN: the compliance patterns above look for ordinary English — "consent",
+# "price", "timeout" — and this repository's prose is documentation ABOUT a consent gate
+# and a timeout budget, not a consent gate. Before this key, a one-word README typo scored
+# impact `high` off a paragraph that merely mentions the word, which is the noise the
+# 3.4 probe found. Suppressing one SIGNAL on prose is not suppressing a protection: a
+# markdown file that is genuinely enforcement (skills/agents/commands) is already in
+# sensitive_path_list, where a hard override — not a content pattern — catches it.
+content_scan_exclude:
+  - "**/*.md"
+  # WHY SOURCE TOO (review-1 of 3.4.1, issue 1): `%[sd]` is ordinary Python formatting and
+  # `timeout` is a keyword argument — 42 of the 44 files under scripts/ and hooks/ matched a
+  # content pattern, which vetoed BOTH the T3 demotion and SCOPED+ for every small code edit,
+  # relocating the "any scripts/** change is FULL" defect from the path glob into the content
+  # scan. Config files (yaml/json/env) stay scanned: there a feature flag or a price IS the change.
+  - "**/*.py"
+  - "**/*.sh"
+
+# auto_route_allow — spec A4 predicate 4: the ONLY paths where a DIRECT change may be committed
+# by the classifier with no human offer/acceptance. Deliberately tiny. Every row is a file whose
+# worst realistic auto-committed defect is wrong prose on a branch: no agent reads it as an
+# instruction, no CI job executes it, nothing imports it. Predicate 5 still applies on top, so a
+# path that is BOTH allowed and sensitive is refused (sensitive wins).
+#   - README.md / CHANGELOG.md / TROUBLESHOOTING.md: human-facing narrative only. The spec's own
+#     worked example of this class is a release note.
+#   - assets/**/*.md: the comic/metaphor prose. Not loaded by any skill or script.
+# Deliberately NOT allowed, and why:
+#   - docs/superpowers/**  : specs, plans and the execution audit trail are the authority a
+#                            later run reads back as evidence; a silent edit there rewrites
+#                            history rather than describing it.
+#   - scripts/** , tests/**: executable.
+#   - skills|agents|commands|hooks|.github|.claude : sensitive (see above).
+auto_route_allow:
+  - "README.md"
+  - "CHANGELOG.md"
+  - "TROUBLESHOOTING.md"
+  - "assets/**/*.md"
+
+# auto_route_max_lines — spec A4 predicate 8's line budget, re-checked post-diff against
+# `git diff --numstat`. 20 is the spec default; kept lower than the postdiff reclassifier's
+# MAX_TOTAL_LINES=50 on purpose — the auto-route class is strictly narrower than "still DIRECT".
+auto_route_max_lines: 20
+
+churn:
+  exclude_paths:
+    - "**/*.min.js"
+    - "**/*.min.css"
+    - "**/dist/**"
+    - "**/build/**"
+    - "**/vendor/**"
+    - "**/node_modules/**"
+    - "**/*.lock"
+    - "**/package-lock.json"
+  format_commit_patterns:
+    - '^chore\(fmt\)'
+    - '^style:'
+    - '^format:'
