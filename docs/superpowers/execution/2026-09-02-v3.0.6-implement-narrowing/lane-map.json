@@ -1,9 +1,0 @@
-{
-  "agents": {},
-  "manifest": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-02-v3.0.6-implement-narrowing/manifest.yaml",
-  "run_id": "2026-09-02-v3.0.6-implement-narrowing",
-  "worktrees": {
-    "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_88d7caa0-6f1-1": "exec-lane",
-    "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_88d7caa0-6f1-2": "judge-lane"
-  }
-}

@@ -73,3 +73,6 @@ __pycache__/
 
 # per-run mutex, written by the emitter; never part of the record
 .run.lock
+
+# per-run lane map, written by register-lane while the run is live; retired at MERGED/BLOCKED (finding 68)
+lane-map.json

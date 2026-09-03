@@ -1,8 +1,0 @@
-{
-  "agents": {},
-  "manifest": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-02-df9-escalation/manifest.yaml",
-  "run_id": "2026-09-02-df9-escalation",
-  "worktrees": {
-    "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_b10e144b-06b-1": "retried"
-  }
-}

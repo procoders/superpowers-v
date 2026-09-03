@@ -1,9 +1,0 @@
-{
-  "agents": {},
-  "manifest": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-02-v3.4-native-first-r5/manifest.yaml",
-  "run_id": "2026-09-02-v3.4-native-first-r5",
-  "worktrees": {
-    "/Users/oleg/Dev/superpowers-v": "spec-review-2",
-    "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_57a519fd-c58-1": "review-fixes"
-  }
-}

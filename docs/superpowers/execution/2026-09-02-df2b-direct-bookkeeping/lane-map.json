@@ -1,8 +1,0 @@
-{
-  "agents": {},
-  "manifest": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-02-df2b-direct-bookkeeping/manifest.yaml",
-  "run_id": "2026-09-02-df2b-direct-bookkeeping",
-  "worktrees": {
-    "/Users/oleg/Dev/superpowers-v": "direct-writer"
-  }
-}

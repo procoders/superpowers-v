@@ -4,6 +4,12 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [Unreleased]
+
+### Fixed — a finished run's lane map claimed the checkout forever (finding 68)
+
+A direct job registers the repository root as its "worktree"; the lane guard's liveness test was "does a named worktree still exist" — always true for the root — so every historical run with a direct review job kept claiming the checkout, and on 2026-09-03 the live guard denied both pre-flight auditors of the next feature as `spec-review-3` of a run MERGED an hour earlier. The guard now skips runs whose `state.json` phase is MERGED or BLOCKED, the finalizer deletes `lane-map.json` at a terminal phase, and the file is gitignored (runtime state; the receipts hold the durable cwd). `tests/test-lane-guard.sh` pins both directions.
+
 ## [3.4.1] - 2026-09-03
 
 Stage verification, cycles 1 and 2 (DIRECT attended, then SCOPED as the feature below), 2026-09-03 — the first real request after 3.4.0 got no triage at all, and the fixes under "Fixed" further down came out of those two cycles.

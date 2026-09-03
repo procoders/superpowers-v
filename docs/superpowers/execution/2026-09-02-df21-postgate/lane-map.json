@@ -1,9 +1,0 @@
-{
-  "agents": {},
-  "manifest": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-02-df21-postgate/manifest.yaml",
-  "run_id": "2026-09-02-df21-postgate",
-  "worktrees": {
-    "/Users/oleg/Dev/superpowers-v": "spec-review",
-    "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_01ab46be-d26-1": "impl-slice"
-  }
-}

@@ -1,9 +1,0 @@
-{
-  "agents": {},
-  "manifest": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-02-df12-reviewer-third/manifest.yaml",
-  "run_id": "2026-09-02-df12-reviewer-third",
-  "worktrees": {
-    "/Users/oleg/Dev/superpowers-v": "spec-review",
-    "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_aea08c70-3f3-1": "impl-slice"
-  }
-}

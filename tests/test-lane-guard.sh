@@ -79,6 +79,33 @@ cat >"$RUN/lane-map.json" <<JEOF
  "worktrees": {"$WT": "job-under-test"}}
 JEOF
 
+# finding 68 (stage 3, 2026-09-03): a run that is OVER must claim nothing, even
+# though its direct job's "worktree" — the checkout itself — still exists. Two
+# run dirs newer than every other fixture: one MERGED, one DISPATCHED, both with
+# a lane map that claims the project root for a direct job whose lane is one file.
+RUN_T="$PROJ/docs/superpowers/execution/2099-09-09-terminal"; mkdir -p "$RUN_T"
+cat >"$RUN_T/manifest.yaml" <<'YEOF'
+run_id: 2099-09-09-terminal
+jobs:
+  - id: review-done
+    isolation: direct
+    write_allowed:
+      - "docs/only-this.md"
+YEOF
+cat >"$RUN_T/lane-map.json" <<JEOF
+{"run_id": "2099-09-09-terminal", "agents": {}, "worktrees": {"$PROJ": "review-done"}}
+JEOF
+printf '{"run_id": "2099-09-09-terminal", "phase": "MERGED", "jobs": {"review-done": {"status": "done"}}}\n' >"$RUN_T/state.json"
+RUN_L="$PROJ/docs/superpowers/execution/2099-09-08-live"; mkdir -p "$RUN_L"
+cp "$RUN_T/manifest.yaml" "$RUN_L/manifest.yaml"; sed -i '' 's/2099-09-09-terminal/2099-09-08-live/' "$RUN_L/manifest.yaml" 2>/dev/null || sed -i 's/2099-09-09-terminal/2099-09-08-live/' "$RUN_L/manifest.yaml"
+cat >"$RUN_L/lane-map.json" <<JEOF
+{"run_id": "2099-09-08-live", "agents": {}, "worktrees": {"$PROJ": "review-done"}}
+JEOF
+# Both start RETIRED (terminal + oldest mtime) so no earlier section sees them;
+# section 2b wakes the live one up, then retires it again.
+printf '{"run_id": "2099-09-08-live", "phase": "MERGED", "jobs": {"review-done": {"status": "done"}}}\n' >"$RUN_L/state.json"
+touch -t 200001010000 "$RUN_T" "$RUN_L"
+
 # A second run whose manifest is MISSING — the "resolved but degraded" path.
 RUN2="$PROJ/docs/superpowers/execution/2099-01-02-nomanifest"
 WT2="$PROJ/.claude/worktrees/wf_nomanifest-1"
@@ -319,6 +346,23 @@ check "the deny is logged" \
 
 file_case "out-of-lane Edit" deny Edit agent_abc123 "$WT" "$WT/docs/existing.md"
 file_case "out-of-lane MultiEdit" deny MultiEdit agent_abc123 "$WT" "$WT/docs/existing.md"
+
+echo "=== 2b. finding 68: a finished run's lane map claims nothing ============"
+# Make the two fixture runs the newest candidates, TERMINAL newest of all, so the
+# resolver meets the MERGED map first and must skip it to find the live one.
+printf '{"run_id": "2099-09-08-live", "phase": "DISPATCHED", "jobs": {"review-done": {"status": "running"}}}\n' >"$RUN_L/state.json"
+touch -t 209901010000 "$RUN_L"; touch "$RUN_T"
+file_case "a LIVE run's direct job claims the checkout: an unknown agent's out-of-lane Write at the root is denied" deny \
+  Write agent_zzz "$PROJ" "$PROJ/docs/somewhere-else.md"
+printf '{"run_id": "2099-09-08-live", "phase": "MERGED", "jobs": {"review-done": {"status": "done"}}}\n' >"$RUN_L/state.json"
+file_case "...and once that run is MERGED the same Write resolves to NO job (allowed, unresolved)" allow \
+  Write agent_zzz "$PROJ" "$PROJ/docs/somewhere-else.md"
+check "finding 68: the terminal run is skipped, not resolved — the log says unresolved" \
+  "$([ "$(logged 'job unresolved')" = yes ] && echo 1 || echo 0)"
+# Retire both fixtures for every later section: terminal (skipped by the resolver)
+# AND oldest by mtime, so neither can outrank the suite's other run dirs.
+printf '{"run_id": "2099-09-08-live", "phase": "MERGED", "jobs": {"review-done": {"status": "done"}}}\n' >"$RUN_L/state.json"
+touch -t 200001010000 "$RUN_T" "$RUN_L"
 file_case "a RELATIVE file_path is resolved against cwd" deny \
   Write agent_abc123 "$WT" "docs/existing.md"
 

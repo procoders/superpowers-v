@@ -1,9 +1,0 @@
-{
-  "agents": {},
-  "manifest": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-02-df22-closed/manifest.yaml",
-  "run_id": "2026-09-02-df22-closed",
-  "worktrees": {
-    "/Users/oleg/Dev/superpowers-v": "spec-review",
-    "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_e2a64b4b-a20-1": "impl-slice"
-  }
-}

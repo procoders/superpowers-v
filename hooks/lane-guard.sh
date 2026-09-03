@@ -719,9 +719,33 @@ def _mtime(p):
         return 0.0
 
 
+TERMINAL_PHASES = ("MERGED", "BLOCKED")
+
+
+def run_is_terminal(rundir):
+    """True when the run's state.json says the run is over (MERGED or BLOCKED).
+
+    A finished run's lane map must claim nothing. The guard used to rely on the
+    run's WORKTREES having been removed — true for worktree jobs, never for a
+    direct one, whose 'worktree' is the repository root and exists forever. So
+    every historical run with a direct review job kept claiming the checkout,
+    and on 2026-09-03 both pre-flight auditors of the NEXT feature were denied
+    their writes as 'job spec-review-3' of a run that had been MERGED for an
+    hour (stage-3, finding 68). The finalizer now also deletes lane-map.json at
+    a terminal phase; this check covers the maps committed before it did.
+    """
+    try:
+        with open(os.path.join(rundir, "state.json"), "r") as fh:
+            phase = (json.load(fh) or {}).get("phase")
+    except Exception:
+        return False
+    return str(phase or "").strip().upper() in TERMINAL_PHASES
+
+
 def map_files(cwd, limit=8):
-    """Lane-map candidates, newest run first. Bounded: PreToolUse hooks share a
-    tight time budget, so this never walks more than `limit` run dirs."""
+    """Lane-map candidates, newest run first, TERMINAL runs skipped. Bounded:
+    PreToolUse hooks share a tight time budget, so this never walks more than
+    `limit` run dirs."""
     explicit = os.environ.get("CV_LANE_MAP")
     if explicit:
         return [explicit]
@@ -736,6 +760,8 @@ def map_files(cwd, limit=8):
         dirs = [d for d in dirs if os.path.isdir(d)]
         dirs.sort(key=_mtime, reverse=True)
         for d in dirs[:limit]:
+            if run_is_terminal(d):
+                continue
             for cand in ("lane-map.json", "state.json"):
                 p = os.path.join(d, cand)
                 if os.path.isfile(p):
@@ -854,7 +880,11 @@ def agent_worktree_root(cwd):
 
 
 def live_lane_map(path):
-    """True when this run's lane map still names a worktree that exists."""
+    """True when this run's lane map still names a worktree that exists AND the
+    run is not over (a direct job's 'worktree' is the checkout, which always
+    exists — finding 68)."""
+    if run_is_terminal(os.path.dirname(path)):
+        return False
     parsed = read_map(path)
     if not parsed:
         return False

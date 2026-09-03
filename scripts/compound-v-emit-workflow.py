@@ -3789,6 +3789,23 @@ def _commit_paths(repo_root, paths, message):
     return _head_commit(repo_root), None
 
 
+def _retire_lane_map(run_dir):
+    """Delete the run's lane-map.json at a TERMINAL phase (finding 68).
+
+    The lane map is runtime state: it tells the lane guard which worktree —
+    or, for a direct job, which checkout — belongs to which job WHILE the run
+    is live. A direct job's 'worktree' is the repository root, which exists
+    forever, so a finished run's map kept claiming the checkout and the guard
+    denied the next feature's pre-flight auditors as that run's review job.
+    The guard now also skips terminal runs; this removes the claim at source.
+    Best-effort, never fatal."""
+    try:
+        os.remove(lane_map_path(run_dir))
+        return True
+    except OSError:
+        return False
+
+
 def _gate_mode_from_receipt(gate_doc):
     """The `mode` the gate ran in, read from the receipt's raw gate JSON — the
     emitter authored that `--mode`, so it is trusted where the manifest's label is
@@ -3923,6 +3940,8 @@ def cmd_finalize_wave(argv):
             _halted["blocked_reason"] = ("wave %s: %s" % (args.wave, out["reason"]))[:300]
             _halted["blocked_at"] = args.now or _utc_stamp()
             _save_state(run_dir, _halted, now=args.now)
+        if _retire_lane_map(run_dir):
+            out["lane_map_retired"] = True
         return emit(1)
 
     # ---- 2. merge the permitted slices ------------------------------------- #
@@ -3959,6 +3978,8 @@ def cmd_finalize_wave(argv):
                 fresh["phase"] = "MERGED" if _done else "DISPATCHED"
                 if _done:
                     fresh["merged_at"] = now or _utc_stamp()
+                    if _retire_lane_map(run_dir):
+                        out["lane_map_retired"] = True
             elif out["refused"]:
                 # A refused job halts the workflow (the script stops on a wave
                 # that did not integrate), so the RUN is halted: say BLOCKED,
@@ -3971,6 +3992,8 @@ def cmd_finalize_wave(argv):
                 fresh["blocked_reason"] = ("wave %s refused: %s" % (
                     args.wave, ", ".join(out["refused"])))[:300]
                 fresh["blocked_at"] = now or _utc_stamp()
+                if _retire_lane_map(run_dir):
+                    out["lane_map_retired"] = True
             _save_state(run_dir, fresh, now=now)
 
     merged_worktrees = {}
@@ -5955,6 +5978,8 @@ def selftest():
             _check("a wave whose job produced no result is REFUSED", rc != 0)
             _check("a refused wave commits nothing",
                    _head_commit(fin_repo) == head_before)
+            _check("finding 68: a BLOCKED run's lane-map.json is retired too",
+                   not os.path.exists(os.path.join(ref_dir, "lane-map.json")))
             _check("a refused wave marks the run BLOCKED with the reason (finding 47 residual)",
                    _load_state(ref_dir).get("phase") == "BLOCKED"
                    and "REFUSED" in str(_load_state(ref_dir).get("blocked_reason")),
@@ -6069,6 +6094,8 @@ def selftest():
                    and "src/work.txt" not in _head_files, _head_files)
             _rc_l, _tracked, _ = _git(bk4_repo, ["ls-files", "--", "docs/superpowers/execution"])
             _check("...and never the run lock", ".run.lock" not in _tracked, _tracked)
+            _check("finding 68: a MERGED run's lane-map.json is retired by the finalizer",
+                   not os.path.exists(os.path.join(bk4_run, "lane-map.json")))
 
             # ---- finding 60: a DEPENDENT job whose manifest says worktree but ---
             # whose agent ran direct (the 3.0.5 rule) must integrate on the gate

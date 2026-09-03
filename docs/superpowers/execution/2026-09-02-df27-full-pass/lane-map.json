@@ -1,9 +1,0 @@
-{
-  "agents": {},
-  "manifest": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-02-df27-full-pass/manifest.yaml",
-  "run_id": "2026-09-02-df27-full-pass",
-  "worktrees": {
-    "/Users/oleg/Dev/superpowers-v": "spec-review",
-    "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_1bccf880-f0c-1": "impl-slice"
-  }
-}
