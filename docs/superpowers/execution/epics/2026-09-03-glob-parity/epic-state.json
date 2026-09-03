@@ -52,13 +52,14 @@
     "status": "pending"
   },
   "blocker_ledger": [],
-  "no_progress_cycles": 1,
+  "no_progress_cycles": 2,
   "total_attempts": 2,
   "updated_at": "2026-09-03T20:02:00Z",
   "last_done_count": 0,
   "processed_cycle_ids": [
     "c1",
     "c2",
-    "c3"
+    "c3",
+    "c4"
   ]
 }
