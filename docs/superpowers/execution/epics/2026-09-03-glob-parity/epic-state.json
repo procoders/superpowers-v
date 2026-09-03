@@ -22,7 +22,7 @@
         "one-matcher"
       ],
       "spec_path": "docs/superpowers/execution/epics/2026-09-03-glob-parity/specs/matcher-docs.md",
-      "status": "running",
+      "status": "done",
       "run_id": "2026-09-03-glob-parity-matcher-docs-r3",
       "attempts": 3,
       "last_error": null,
@@ -53,9 +53,9 @@
     "status": "pending"
   },
   "blocker_ledger": [],
-  "no_progress_cycles": 2,
+  "no_progress_cycles": 0,
   "total_attempts": 6,
-  "updated_at": "2026-09-03T20:45:57Z",
+  "updated_at": "2026-09-03T20:59:40Z",
   "last_done_count": 1,
   "processed_cycle_ids": [
     "c1",
