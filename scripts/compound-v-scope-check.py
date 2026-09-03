@@ -34,10 +34,13 @@ that decides):
    and is therefore never exempt — fail closed.
 2. **Pre-existing DIRECTORIES, exempt by name** (``dir  <path>``), because git
    reports an untracked directory as a single entry with no bytes to digest.
-3. **Exactly three self-referential/shared pipeline files** in this run's own
-   directory: ``state.json`` (every job's Record rewrites it), and
-   ``preexisting/<job-id>.txt`` / ``preexisting/<job-id>.verified.txt`` (the
-   exemption list itself, and the list the gate writes after building it).
+3. **The pipeline's own files for this job, by name** — the closed list
+   ``RUN_DIR_EXEMPT_BY_NAME`` in ``compound-v-emit-workflow.py`` (``state.json``,
+   ``preexisting/<id>.txt``, ``preexisting/<id>.verified.txt``,
+   ``receipts/<id>.gate.json``, ``jobs/<id>.patch``, ``results/<id>.json``) plus
+   the ``results/attempts/<id>.<n>.json`` family: each is shared, self-referential,
+   or written by the pipeline after the gate built its list. Exempt from THIS
+   check only; the authority verifies every one of them by digest.
    ``manifest.yaml`` is deliberately NOT among them: it DEFINES ``write_allowed``,
    so a by-name exemption for it would let a job widen its own lane and have both
    the gate and the integration authority agree.

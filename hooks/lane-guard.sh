@@ -353,7 +353,11 @@ _cv_bounded() {
   # 0 = the command succeeded, 1..127 = it failed, 124 = it ran out of budget.
   "$@" >/dev/null 2>&1 </dev/null &
   local _pid=$!
-  ( sleep "$CV_PROBE_TIMEOUT"; kill -9 "$_pid" ) >/dev/null 2>&1 </dev/null &
+  # The probe's CHILDREN first (a wrapper's `sleep`, a stuck interpreter's
+  # helper), then the probe itself: killing only the wrapper left one orphan per
+  # timed-out tool call (ninth review pass, item 5). `pkill -P` is on stock macOS
+  # and Linux; if it is absent the wrapper is still killed as before.
+  ( sleep "$CV_PROBE_TIMEOUT"; pkill -9 -P "$_pid" >/dev/null 2>&1; kill -9 "$_pid" ) >/dev/null 2>&1 </dev/null &
   local _wd=$!
   wait "$_pid" 2>/dev/null
   local _rc=$?
@@ -380,8 +384,10 @@ _cv_bounded() {
 # every tool call — handing back an `is_allowed` that approves every out-of-lane
 # write. `PYTHONPYCACHEPREFIX` moves both the lookup and the write to a private
 # directory outside the tree, so the in-tree entry is never consulted. If that
-# directory cannot be created we fall through WITHOUT it: this guard fails open
-# by contract and must never refuse a session because a temp dir was missing.
+# directory cannot be created the loader is NOT run at all: the guard emits its
+# fail-open notice and stops (Codex round 4, H2) — it fails open by contract and
+# must never refuse a session because a temp dir was missing, but it must never
+# import from a tree it could not shield either.
 #
 # The directory is per-invocation and removed on exit; a fixed, predictable name
 # would merely move the plantable location out of the repo, where the scope gate

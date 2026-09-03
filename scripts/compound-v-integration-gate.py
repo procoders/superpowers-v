@@ -99,6 +99,10 @@ existing loader, which falls back to its own mini-parser).
 """
 
 import os
+import json
+import subprocess
+import tempfile
+import shutil
 import sys
 
 # Nobody writes bytecode. The scope gate forgives no path by extension (fourth
@@ -516,6 +520,77 @@ def gate_receipt_document(run_dir, job_id):
     return doc if isinstance(doc, dict) else None
 
 
+def _read_json_file(path):
+    """A JSON document or None — never an exception, the caller decides."""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            doc = json.load(fh)
+        return doc if isinstance(doc, dict) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def sealed_post_image(repo_root, baseline, patch_bytes):
+    """({path: blob-oid or None for a deletion}, error) — git's answer for the
+    sealed patch applied to its own baseline in a THROWAWAY index. Twin of the
+    emitter's function of the same name; the authority never imports the
+    emitter, so the proof it computes cannot be steered by the code it judges."""
+    if not patch_bytes:
+        return {}, None
+    tmpdir = tempfile.mkdtemp(prefix="cv-auth-postimg-")
+    try:
+        tmp_index = os.path.join(tmpdir, "index")
+        env = dict(os.environ)
+        env["GIT_INDEX_FILE"] = tmp_index
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        r = subprocess.run(["git", "-C", repo_root, "read-tree", baseline],
+                           capture_output=True, text=True, env=env)
+        if r.returncode != 0:
+            return None, "git read-tree %s failed: %s" % (baseline, r.stderr.strip())
+        proc = subprocess.Popen(["git", "-C", repo_root, "apply", "--cached", "--binary", "-"],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, env=env)
+        _o, aerr = proc.communicate(patch_bytes)
+        if proc.returncode != 0:
+            return None, ("the sealed patch does not apply to its own baseline: %s"
+                          % aerr.decode("utf-8", "replace").strip()[:300])
+        r = subprocess.run(["git", "-C", repo_root, "diff", "--cached", "--name-only", baseline],
+                           capture_output=True, text=True, env=env)
+        if r.returncode != 0:
+            return None, "git diff --cached --name-only failed: %s" % r.stderr.strip()
+        image = {}
+        for path in [n.strip() for n in r.stdout.splitlines() if n.strip()]:
+            r2 = subprocess.run(["git", "-C", repo_root, "ls-files", "--stage", "--", path],
+                                capture_output=True, text=True, env=env)
+            oid = None
+            if r2.returncode == 0 and r2.stdout.strip():
+                parts = r2.stdout.splitlines()[0].split("\t", 1)[0].split()
+                if len(parts) >= 2:
+                    oid = parts[1]
+            image[path] = oid
+        return image, None
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def head_matches_post_image(repo_root, image):
+    """(True, None) iff every path in `image` is in HEAD with exactly that blob."""
+    if image is None:
+        return False, "no post-image to prove against"
+    for path, oid in sorted(image.items()):
+        r = subprocess.run(["git", "-C", repo_root, "rev-parse", "--verify", "HEAD:%s" % path],
+                           capture_output=True, text=True)
+        actual = r.stdout.strip() if r.returncode == 0 else None
+        if oid is None:
+            if actual:
+                return False, "%s is still present in HEAD, but the sealed patch deletes it" % path
+            continue
+        if actual != oid:
+            return False, ("%s in HEAD is %s, but the sealed patch produces %s"
+                           % (path, actual or "absent", oid))
+    return True, None
+
+
 def sealed_patch_faults(run_dir, job_id, receipt, gate_doc):
     """(faults, sealed_digest). Empty faults + a digest ⇒ a validated artifact.
 
@@ -842,44 +917,60 @@ def evaluate_job(job, state_job, run_dir, repo_root, scope_check):
                     repo_root, ["show", "--name-only", "--pretty=format:", _commit])
                 if rc_s == 0:
                     touched = {p.strip() for p in out_s.splitlines() if p.strip()}
-            allow_globs = job.get("write_allowed") or []
-            # The SAME matcher the scope gate uses — never a second one. A
-            # verifier that matches differently from the gate is a verifier that
-            # can disagree with it for reasons neither of them is about.
-            #
-            # AND IT IS LOADED FROM SOURCE, never from a cache beside it. A
-            # forged `.pyc` at scripts/__pycache__/compound-v-scope-check.<tag>.pyc
-            # — an unchecked hash-based one, which CPython never validates against
-            # its source — would otherwise be executed HERE, in this process, and
-            # could hand back an `is_allowed` that returns True for every path.
-            # `sys.pycache_prefix` moves both the read and the write of that cache
-            # to a private directory outside the tree, so the in-tree entry is
-            # never consulted (fourth review pass, item 1, 2026-09-02).
-            _m_fn, _m_err = load_scope_matcher(scope_check)
-            if _m_fn is None:
-                in_lane = False
-                out["notes"].append(
-                    "could not load the scope matcher to check the merge's lanes: %s"
-                    % _m_err)
+            # PROOF, NOT OVERLAP (ninth review pass, item 1; Codex round 4 H4).
+            # A commit that exists, is an ancestor of HEAD and touches one of this
+            # job's lanes is still not proof that THIS job's patch is in HEAD — a
+            # decoy commit touching an in-lane file satisfied that test while the
+            # sealed patch sat unread. The only proof is the artifact the gate
+            # sealed: apply it to its own baseline, read back the blobs git
+            # produces, and require HEAD to carry exactly those blobs. No sealed
+            # patch (a pre-3.4.0 receipt) ⇒ unverifiable, never pass.
+            _gate_doc = _read_json_file(os.path.join(run_dir, "receipts",
+                                                     "%s.gate.json" % job.get("id", "")))
+            _result_doc = _read_json_file(os.path.join(run_dir, "results",
+                                                       "%s.json" % job.get("id", "")))
+            _receipt = ((_result_doc or {}).get("gate_receipt") or _gate_doc or {})
+            _faults, _sealed = sealed_patch_faults(run_dir, job.get("id", ""),
+                                                   _receipt, _gate_doc or {})
+            _proved, _why = False, None
+            if _faults:
+                _why = "; ".join(_faults)
+            elif not _sealed:
+                _why = ("no sealed patch was recorded for this job (a receipt from "
+                        "before sealing), so the commit cannot be proven to carry it — "
+                        "pathname overlap is not proof")
             else:
-                in_lane = bool(touched) and any(_m_fn(p, allow_globs)
-                                                for p in touched)
-            if rc_e == 0 and rc_a == 0 and in_lane:
+                _baseline = (state_job.get("baseline") or (_gate_doc or {}).get("baseline_commit")
+                             or _receipt.get("baseline_commit") or "")
+                try:
+                    with open(patch_artifact_path(run_dir, job.get("id", "")), "rb") as _fh:
+                        _patch_bytes = _fh.read()
+                except OSError as _exc:
+                    _patch_bytes, _why = None, "cannot read the sealed patch: %s" % _exc
+                if _patch_bytes is not None:
+                    _image, _ierr = sealed_post_image(repo_root, _baseline, _patch_bytes)
+                    if _ierr:
+                        _why = _ierr
+                    else:
+                        _proved, _why = head_matches_post_image(repo_root, _image)
+            if rc_e == 0 and rc_a == 0 and _proved:
                 out["verdict"] = "pass"
                 out["receipt"] = "merged"
                 out["notes"].append(
-                    "gate root is gone because this job was merged as %s, which "
-                    "EXISTS, is an ancestor of HEAD, and touches this job's declared "
-                    "lanes — verified from git, not from state.json" % _commit[:12]
+                    "gate root is gone because this job was merged as %s, which EXISTS, "
+                    "is an ancestor of HEAD, and HEAD carries exactly the blobs the "
+                    "sealed patch %s produces — proven from git and the artifact, not "
+                    "from state.json or a pathname" % (_commit[:12], _sealed[:19])
                 )
                 return out
             out["verdict"] = "unverifiable"
             out["reasons"].append(
-                "state.json claims this job merged as %s but git does not confirm "
-                "it (exists=%s ancestor-of-HEAD=%s touches-its-lanes=%s). A recorded "
-                "merge is a claim; state.json is writable by a direct worker, so it "
-                "cannot prove one." % (_commit[:12] or "?", rc_e == 0, rc_a == 0,
-                                       in_lane)
+                "state.json claims this job merged as %s but that is not proven "
+                "(exists=%s ancestor-of-HEAD=%s sealed-patch-in-HEAD=%s%s). A recorded "
+                "merge is a claim; state.json is writable by a direct worker, and a "
+                "commit touching a lane is overlap, not proof."
+                % (_commit[:12] or "?", rc_e == 0, rc_a == 0, _proved,
+                   (": " + _why) if _why else "")
             )
             return out
         out["verdict"] = "unverifiable"
@@ -1696,17 +1787,29 @@ def _selftest():
             rep["results"][0]["verdict"] == "blocked",
         )
 
-        # (3d) A RETIRED WORKTREE OF AN ALREADY-MERGED JOB IS NOT UNVERIFIABLE.
+        # (3d) A RETIRED WORKTREE OF AN ALREADY-MERGED JOB IS NOT UNVERIFIABLE —
+        # when, and only when, the SEALED PATCH proves the merge (ninth review pass,
+        # item 1 / Codex round 4 H4). Three cases, one fixture.
         wt_r, run_r = fresh_case("retired",
                                  lambda w: write(w, "scripts/allowed.py", "1\n"))
-        _put_result(run_r, "job-a",
-                    _result(wt_r, receipt=_honest_receipt(scope_check, wt_r, base,
-                                                          allow)))
+        rcpt_r = _honest_receipt(scope_check, wt_r, base, allow)
+        subprocess.run(["git", "-C", wt_r, "add", "-A"], capture_output=True)
+        patch_r = subprocess.run(["git", "-C", wt_r, "diff", "--cached", "--binary", base],
+                                 capture_output=True).stdout
+        os.makedirs(os.path.join(run_r, "jobs"), exist_ok=True)
+        os.makedirs(os.path.join(run_r, "receipts"), exist_ok=True)
+        with open(patch_artifact_path(run_r, "job-a"), "wb") as fh:
+            fh.write(patch_r)
+        sealed_r = sha256_file(patch_artifact_path(run_r, "job-a"))
+        rcpt_sealed = dict(rcpt_r, patch_sha256=sealed_r)
+        with open(os.path.join(run_r, "receipts", "job-a.gate.json"), "w") as fh:
+            json.dump(rcpt_sealed, fh)
+        _put_result(run_r, "job-a", _result(wt_r, receipt=rcpt_sealed))
         with open(os.path.join(run_r, "state.json")) as fh:
             st_r = json.load(fh)
-        # A REAL merge: the commit must exist, be an ancestor of HEAD, and touch
-        # this job's declared lanes. A fabricated sha is the thing being excluded.
-        write(repo, "scripts/allowed.py", "merged for real\n")
+        st_r["jobs"]["job-a"]["baseline"] = base
+        # CASE A — the commit carries EXACTLY the sealed patch's blobs ⇒ pass.
+        write(repo, "scripts/allowed.py", "1\n")
         _sh(repo, "git", "add", "-A")
         _sh(repo, "git", "commit", "-q", "-m", "wave merged")
         rc_h, real_sha, _ = _git_text(repo, ["rev-parse", "HEAD"])
@@ -1718,8 +1821,33 @@ def _selftest():
         rep_r = evaluate_run(run_r, repo, scope_check)
         expect("a REAL merge whose worktree was retired reads pass",
                rep_r["results"][0]["verdict"] == "pass")
-        expect("...and says git confirmed it, not state.json",
-               any("verified from git" in n for n in rep_r["results"][0]["notes"]))
+        expect("...and says the sealed patch proved it, not state.json or a pathname",
+               any("sealed patch" in n for n in rep_r["results"][0]["notes"]))
+        # CASE B — a DECOY commit that touches the lane with OTHER content ⇒ not proof.
+        write(repo, "scripts/allowed.py", "decoy content\n")
+        _sh(repo, "git", "add", "-A")
+        _sh(repo, "git", "commit", "-q", "-m", "decoy touching the lane")
+        rc_h, decoy_sha, _ = _git_text(repo, ["rev-parse", "HEAD"])
+        st_r["jobs"]["job-a"]["merged"] = {"integrated": True, "commit": decoy_sha.strip()}
+        with open(os.path.join(run_r, "state.json"), "w") as fh:
+            json.dump(st_r, fh)
+        rep_d = evaluate_run(run_r, repo, scope_check)
+        expect("a decoy commit touching the lane with other content is NOT proof",
+               rep_d["results"][0]["verdict"] == "unverifiable")
+        expect("...and the reason says overlap is not proof",
+               any("not proof" in r for r in rep_d["results"][0]["reasons"]))
+        # CASE C — no sealed patch at all (a pre-sealing receipt) ⇒ unverifiable.
+        os.remove(patch_artifact_path(run_r, "job-a"))
+        with open(os.path.join(run_r, "receipts", "job-a.gate.json"), "w") as fh:
+            json.dump(rcpt_r, fh)
+        _put_result(run_r, "job-a", _result(wt_r, receipt=rcpt_r))
+        st_r["jobs"]["job-a"]["merged"] = {"integrated": True, "commit": real_sha}
+        with open(os.path.join(run_r, "state.json"), "w") as fh:
+            json.dump(st_r, fh)
+        rep_n = evaluate_run(run_r, repo, scope_check)
+        expect("without a sealed patch, even the real commit is unverifiable — overlap is not proof",
+               rep_n["results"][0]["verdict"] == "unverifiable"
+               and any("pathname overlap is not proof" in r for r in rep_n["results"][0]["reasons"]))
         # HIGH from round 3: state.json is worker-writable, so a claimed merge with
         # a fabricated sha must NOT buy a pass before anything is verified.
         st_r["jobs"]["job-a"]["merged"] = {"integrated": True, "commit": "a" * 40}

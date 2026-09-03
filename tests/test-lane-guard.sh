@@ -1069,6 +1069,11 @@ check "the timed-out candidate is named in the log" \
   "$([ "$(logged "probe of $SLOW_PY exceeded")" = yes ] && echo 1 || echo 0)"
 check "the ladder STOPPED rather than paying the budget per candidate" \
   "$([ "$(logged 'ladder STOPPED')" = yes ] && echo 1 || echo 0)"
+# The timed-out wrapper's own child must not outlive it: killing only the wrapper
+# left one orphaned `sleep 30` per tool call (ninth review pass, item 5).
+sleep 1
+check "no orphaned probe child survives the timeout (pkill -P before kill)" \
+  "$(pgrep -f '^sleep 30$' >/dev/null 2>&1 && echo 0 || echo 1)"
 
 # The budget is honoured as configured, not hardcoded: a longer one is visibly
 # slower, which is also the cheapest proof that the bound is what returns.

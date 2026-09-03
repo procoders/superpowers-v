@@ -2483,69 +2483,59 @@ def read_preexisting_unchanged(snapshot_path, repo_root):
 # it was in scope. The baseline and the digest could stay perfectly honest, because
 # neither of them binds the document that says what "in scope" means.
 #
-# So the by-name pass is now a closed list of exactly three files, and every other
-# file in the run directory — manifest.yaml included — falls back to the
-# digest-bound listing taken at register time. Rewrite the manifest and its digest
-# stops matching, the exemption is lost, and the write is a violation.
+# So the by-name pass is a CLOSED LIST — RUN_DIR_EXEMPT_BY_NAME below, one entry
+# per file class with the reason it cannot be digest-bound — and every other file
+# in the run directory, manifest.yaml included, falls back to the digest-bound
+# listing taken at register time. Rewrite the manifest and its digest stops
+# matching, the exemption is lost, and the write is a violation.
 #
-# Why these three and no others:
-#   state.json                     shared; every job's Record rewrites it, so a
-#                                  digest taken at register time can never match
-#   preexisting/<id>.txt           the exemption list itself: it records digests
-#                                  INCLUDING ITS OWN and is appended to afterwards
-#   preexisting/<id>.verified.txt  written BY the gate, after the list that would
-#                                  have to contain it has already been built
+# Every entry is self-referential, shared, or written by the pipeline AFTER the
+# gate built its list — consequences, not choices. Exempting a file from the SCOPE
+# check does not make it trusted: the receipt, the result and the sealed patch are
+# each verified by `compound-v-integration-gate.py` (digest against the tree,
+# exactly one result per job, the artifact hashed against the receipt), and the
+# documented limit stands — in `direct` mode a worker can write anywhere, which is
+# why the authority is the backstop and the baseline pin stays digest-bound.
 #
-# All three are self-referential or shared — not choices, consequences. The honest
-# limit stands: in `direct` mode a worker can write anywhere, so no file-based list
-# is tamper-proof. What backstops it is `compound-v-integration-gate.py`, which
-# re-derives the diff from git, plus the baseline pin, which stays digest-bound.
+# The selftest is generated from THIS list: every entry must be exempt, and a
+# sibling name beside each must not be (ninth review pass, item 2).
+
+
+# (template, why) — `{id}` is the job id. Order is documentation, not precedence.
+RUN_DIR_EXEMPT_BY_NAME = (
+    ("state.json",
+     "shared: every job's Record rewrites it, so a register-time digest can never match"),
+    ("preexisting/{id}.txt",
+     "the exemption list itself: it records digests INCLUDING ITS OWN"),
+    ("preexisting/{id}.verified.txt",
+     "written BY the gate, after the list that would have to contain it was built"),
+    ("receipts/{id}.gate.json",
+     "written by the gate after its verdict; verified by the authority's digest binding"),
+    ("jobs/{id}.patch",
+     "the sealed patch, written by the gate after its verdict; hashed against the receipt"),
+    ("results/{id}.json",
+     "written by Record after the gate; the authority requires exactly one per job"),
+)
+# A re-attempt archives its predecessor as results/attempts/<id>.<n>.json, written
+# by the same Record call, for the same reason — an unbounded family, matched by
+# pattern below.
+RUN_DIR_EXEMPT_ATTEMPTS = r"^results/attempts/{id}\.\d+\.json$"
 
 
 def run_dir_owned_by_name(rel, run_dir_rel, job_id):
-    """True iff ``rel`` is one of the three self-referential/shared pipeline files
-    in THIS run's directory. Everything else — manifest, receipts, results, prompts,
-    and anything a worker invents — is NOT exempt here."""
+    """True iff ``rel`` is one of the pipeline's own files for THIS job in THIS
+    run's directory — exactly the classes in RUN_DIR_EXEMPT_BY_NAME plus the
+    results/attempts/ family. Everything else — manifest, prompts, and anything a
+    worker invents — is NOT exempt here."""
     if not run_dir_rel:
         return False
     prefix = run_dir_rel.rstrip("/") + "/"
     if not rel.startswith(prefix):
         return False
     tail = rel[len(prefix):]
-    if tail in ("state.json",
-                "preexisting/%s.txt" % job_id,
-                "preexisting/%s.verified.txt" % job_id,
-                # WRITTEN AFTER THE GATE, BY THE PIPELINE, FOR THIS JOB.
-                #
-                # The gate writes its own receipt after computing its verdict, and
-                # Record writes the result after that. Neither can appear in a list
-                # the gate produced — they do not exist yet — and both ALWAYS appear
-                # in the authority's later re-derivation. Dogfood 20, on a quiet
-                # tree, was refused as `contradicted` for exactly these two paths
-                # and nothing else. Without this, every `direct`-mode job is
-                # permanently blocked by the pipeline's own evidence.
-                #
-                # Exempting them from the SCOPE check does not make them trusted:
-                # the authority verifies the receipt's digest against the tree and
-                # refuses a receipt whose bindings disagree, and it requires exactly
-                # one result file per job. Trust in these two files comes from that
-                # verification, never from the scope gate, and the documented limit
-                # stands — in direct mode a worker can write anywhere, which is why
-                # the authority is the backstop.
-                "receipts/%s.gate.json" % job_id,
-                # THE SEALED PATCH, written by the gate right after its verdict —
-                # so, like the receipt beside it, it cannot appear in a list the
-                # gate produced and always appears in the authority's later
-                # re-derivation. Exempting it from the SCOPE check does not make it
-                # trusted: the authority hashes it against the digest the receipt
-                # records and refuses a mismatch.
-                "jobs/%s.patch" % job_id,
-                "results/%s.json" % job_id):
+    if tail in tuple(t.replace("{id}", job_id) for t, _why in RUN_DIR_EXEMPT_BY_NAME):
         return True
-    # A re-attempt archives its predecessor as results/attempts/<id>.<n>.json,
-    # written by the same Record call, for the same reason.
-    return bool(re.match(r"^results/attempts/%s\.\d+\.json$" % re.escape(job_id),
-                         tail))
+    return bool(re.match(RUN_DIR_EXEMPT_ATTEMPTS.replace("{id}", re.escape(job_id)), tail))
 
 
 def _preexisting_snapshot(root, python_bin):
@@ -6259,6 +6249,21 @@ def selftest():
                .split("async function finalizeWave", 1)[0])
         _check("a throwing Implement stage no longer skips Gate AND Record",
                "return { job: job, implement: null };" in rev_script)
+        # Table-driven from the canonical list (ninth review pass, item 2): every
+        # class is exempt for its own job, a sibling name beside each is not, and
+        # another job's files are never this job's.
+        for _tmpl, _why in RUN_DIR_EXEMPT_BY_NAME:
+            _own = "run/" + _tmpl.replace("{id}", "j1")
+            _check("exempt by name: %s (%s)" % (_tmpl, _why[:40]),
+                   run_dir_owned_by_name(_own, "run", "j1"))
+            _check("NOT exempt: a sibling of %s" % _tmpl,
+                   not run_dir_owned_by_name(_own + ".bak", "run", "j1"))
+            _check("NOT exempt: another job's %s" % _tmpl,
+                   run_dir_owned_by_name(_own, "run", "j2") == (_tmpl == "state.json"))
+        _check("exempt by pattern: results/attempts/j1.3.json",
+               run_dir_owned_by_name("run/results/attempts/j1.3.json", "run", "j1"))
+        _check("NOT exempt: manifest.yaml is digest-bound, never by name",
+               not run_dir_owned_by_name("run/manifest.yaml", "run", "j1"))
         # Dogfood r4: `git rm` in a worktree could never merge back.
         _del_repo = os.path.join(tmp, "delrepo"); os.makedirs(_del_repo)
         _run(["git", "-C", _del_repo, "init", "-q"])
