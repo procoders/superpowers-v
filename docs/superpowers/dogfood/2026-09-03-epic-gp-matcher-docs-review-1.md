@@ -139,7 +139,7 @@ spawn with none of this context, and a finding held back is a finding re-derived
 ### 2.1 Code quality
 
 **ISSUE: QUALITY** — `skills/compound-v/memory.md:88-89`. The new text points at
-"[`execution-manifest.md`](execution-manifest.md) § Job fields". There is no section by that name;
+"`[execution-manifest.md](execution-manifest.md)` § Job fields". There is no section by that name;
 the heading is `## Per-job fields (`jobs[]`)` at `execution-manifest.md:38`. The link resolves (it
 is a bare file link), but the section it names does not exist as written.
 

@@ -172,7 +172,7 @@ more than doubled it.
 
 **ISSUE: QUALITY** (**carried over from attempt 1, not closed**) —
 `skills/compound-v/memory.md:89-90` still points at
-"[`execution-manifest.md`](execution-manifest.md) § **Job fields**". No section by that name
+"`[execution-manifest.md](execution-manifest.md)` § **Job fields**". No section by that name
 exists; the heading is `## Per-job fields (jobs[])` at `execution-manifest.md:38`. The link
 resolves (it is a bare file link); the section name it advertises does not.
 
