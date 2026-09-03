@@ -65,3 +65,4 @@
 {"event": "bind", "ts": "2026-09-03T10:20:12Z", "pre_eval_id": "2026-09-03T100838Z-make-v-memory-search-refresh-the-fts5-index-automatically-wh-5801", "run_id": "2026-09-03-v3.4.5-recall-freshness"}
 {"event": "actual", "ts": "2026-09-03T10:45:09Z", "pre_eval_id": "2026-09-03T100838Z-make-v-memory-search-refresh-the-fts5-index-automatically-wh-5801", "run_id": "2026-09-03-v3.4.5-recall-freshness", "escalated": false, "review_result": null, "test_result": "pass", "demoted": false, "ci_failed": false, "reverted": false, "merge_pending": true}
 {"event": "bind", "ts": "2026-09-03T10:46:08Z", "pre_eval_id": "2026-09-03T100838Z-make-v-memory-search-refresh-the-fts5-index-automatically-wh-5801", "run_id": "2026-09-03-v3.4.5-recall-freshness-r2"}
+{"event": "bind", "ts": "2026-09-03T11:03:28Z", "pre_eval_id": "2026-09-03T100838Z-make-v-memory-search-refresh-the-fts5-index-automatically-wh-5801", "run_id": "2026-09-03-v3.4.5-recall-freshness-r3"}
