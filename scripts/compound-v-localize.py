@@ -572,6 +572,20 @@ def localize(request, repo, taxonomy, *, file_cap=FILE_CAP, timeout_s=SEARCH_TIM
         norm = _contained_regular_file(repo, cand)
         if norm and norm not in literal:
             literal.append(norm)
+    # NEW files named beside existing ones (stage-5 dogfood, finding 86): a request
+    # like "implement F1 per <spec.md>: scripts/new.sh with tests/new.sh" resolved to
+    # the spec alone — `exact`, one docs path, low/low — and was tiered DIRECT for a
+    # new script under scripts/**. New-file candidates are collected here too; when
+    # any is present the confidence is `new_file` (never DIRECT) and the new paths
+    # carry the taxonomy's bands for their directories.
+    literal_new = []
+    for word in str(request or "").split():
+        cand = _strip_edges(word)
+        if not cand or cand.startswith("-"):
+            continue
+        nf = _new_file_candidate(repo, cand)
+        if nf and nf not in literal_new and nf not in literal:
+            literal_new.append(nf)
     if literal:
         flags, classify_incomplete = _classify_paths(repo, literal, taxonomy)
         if classify_incomplete:
@@ -582,6 +596,15 @@ def localize(request, repo, taxonomy, *, file_cap=FILE_CAP, timeout_s=SEARCH_TIM
             # `ambiguous` here fail-closed EVERY request naming a large script to FULL,
             # which is fail-closed on the wrong axis: localization, not impact.
             flags = sorted(set(flags) | {"content_scan_incomplete"})
+        if literal_new:
+            tax = _taxonomy_module()
+            nflags = set(flags) | {"new_file"}
+            for nf in literal_new:
+                c = tax.classify(taxonomy or {}, path=nf, content="")
+                nflags |= _map_classify_flags(c.get("flags", []))
+            allp = sorted(set(literal) | set(literal_new))
+            return {"resolved_paths": allp, "fan_out": len(allp),
+                    "flags": sorted(nflags), "confidence": "new_file"}
         return {"resolved_paths": sorted(literal), "fan_out": len(literal),
                 "flags": flags, "confidence": "exact"}
 
@@ -601,14 +624,17 @@ def localize(request, repo, taxonomy, *, file_cap=FILE_CAP, timeout_s=SEARCH_TIM
         cand = _new_file_candidate(repo, tok)
         if cand and cand not in new_files:
             new_files.append(cand)
-    if len(new_files) == 1:
-        # Path-only classification: the file has no content to read, but its PATH can
-        # already be sensitive (a new hook, a new workflow), and that evidence must survive.
+    if new_files:
+        # One or several new paths (finding 86: "a.sh with tests/a.sh" is two). Path-only
+        # classification: the file has no content to read, but its PATH can already be
+        # sensitive (a new hook, a new workflow), and that evidence must survive.
         tax = _taxonomy_module()
-        c = tax.classify(taxonomy or {}, path=new_files[0], content="")
-        flags = sorted(_map_classify_flags(c.get("flags", [])) | {"new_file"})
-        return {"resolved_paths": list(new_files), "fan_out": 1, "flags": flags,
-                "confidence": "new_file"}
+        nflags = {"new_file"}
+        for nf in new_files:
+            c = tax.classify(taxonomy or {}, path=nf, content="")
+            nflags |= _map_classify_flags(c.get("flags", []))
+        return {"resolved_paths": sorted(new_files), "fan_out": len(new_files),
+                "flags": sorted(nflags), "confidence": "new_file"}
 
     files, _backend, ran, search_incomplete = _search_repo(
         tokens, repo, timeout_s, cap_bytes, env)
@@ -1055,6 +1081,22 @@ def _selftest():
     with tempfile.TemporaryDirectory() as repo:
         _write(os.path.join(repo, "src/ui/x.css"), "nothing relevant\n")
         res = localize("adjust zz_unfindable_qqq", repo, taxonomy)
+        # finding 86: new files named BESIDE an existing one are resolved too, and the
+        # confidence is new_file (never DIRECT); several new files are several paths.
+        with tempfile.TemporaryDirectory() as _f86_repo:
+            os.makedirs(os.path.join(_f86_repo, "scripts")); os.makedirs(os.path.join(_f86_repo, "tests"))
+            os.makedirs(os.path.join(_f86_repo, "docs"))
+            with open(os.path.join(_f86_repo, "docs", "spec.md"), "w") as fh:
+                fh.write("spec\n")
+            r86 = localize("Implement F1 per docs/spec.md: scripts/new-index.sh with tests/test-new-index.sh.",
+                           _f86_repo, taxonomy)
+            expect("finding 86: existing spec + two new paths -> new_file, all three resolved, fan_out 3",
+                   r86["confidence"] == "new_file" and r86["fan_out"] == 3
+                   and set(r86["resolved_paths"]) == {"docs/spec.md", "scripts/new-index.sh", "tests/test-new-index.sh"}
+                   and "new_file" in r86["flags"])
+            r86b = localize("add scripts/a.sh and tests/test-a.sh", _f86_repo, taxonomy)
+            expect("finding 86: two new files alone -> new_file with fan_out 2",
+                   r86b["confidence"] == "new_file" and r86b["fan_out"] == 2)
         expect("no match -> confidence failed", res["confidence"] == "failed"
                and res["resolved_paths"] == [])
         res_empty = localize("", repo, taxonomy)

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed — a request that names new files beside an existing one no longer sizes as the existing one alone (finding 86)
+
+"Implement F1 per <spec.md>: scripts/new.sh with tests/new.sh" resolved to the spec alone — one docs path, low/low — and was tiered DIRECT for a new script under `scripts/**`. The localizer now collects new-file candidates in the literal-path branch too; any new path makes the confidence `new_file` (never DIRECT) and carries its directory's bands, and several new files are several paths.
+
 ### Fixed — `/v:epic`'s documented `spec_path` form refused to init (finding 85)
 
 `compound-v-epic-state.py --init --require-specs` resolved `spec_path` relative to the epic directory only, while `commands/v-epic.md` writes it repo-relative (`docs/superpowers/execution/epics/<id>/specs/<f>.md`); the first epic ever initialised failed on its own documented example. Both forms are accepted now, and a path must still resolve inside the epic directory. Selftest 366/366.
