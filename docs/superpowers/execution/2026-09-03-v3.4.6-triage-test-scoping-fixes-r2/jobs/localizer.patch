@@ -1,0 +1,65 @@
+diff --git a/scripts/compound-v-localize.py b/scripts/compound-v-localize.py
+index 7c80a24..21d9915 100644
+--- a/scripts/compound-v-localize.py
++++ b/scripts/compound-v-localize.py
+@@ -501,6 +501,22 @@ def _classify_paths(repo, resolved, taxonomy):
+     flags = set()
+     incomplete = False
+     for rel in resolved:
++        # v3.4.1 §A5 (finding 99): a path the taxonomy's `content_scan_exclude` covers
++        # gets NO content scan at all — `tax.classify()` already ignores content for it,
++        # so reading the file just to throw the bytes away can only ever do one thing:
++        # trip the oversized-file branch below and mark the scan `content_scan_incomplete`
++        # for content that was never going to be examined. Skip the read entirely; PATH
++        # rows and `sensitive_path` still apply (`content=None` below), unaffected by the
++        # exclusion. Tradeoff, stated once: `_is_generated`'s content-marker scan (shebang
++        # etc., beyond its glob check) also never runs for an excluded path, since it needs
++        # the same bytes this branch declines to read — a generated file matched only by
++        # content marker (not by `_GENERATED_GLOBS`) goes undetected for excluded paths.
++        if tax.content_scan_excluded(taxonomy or {}, rel):
++            c = tax.classify(taxonomy or {}, path=rel, content=None)
++            flags |= _map_classify_flags(c.get("flags", []))
++            if _is_generated(rel, None):
++                flags.add("is_generated")
++            continue
+         try:
+             with open(os.path.join(repo, rel), "rb") as fh:
+                 raw = fh.read(MAX_FILE_READ_BYTES + 1)
+@@ -1248,6 +1264,37 @@ def _selftest():
+                and res["resolved_paths"] == ["scripts/huge-tool.py"]
+                and "content_scan_incomplete" in res["flags"])
+ 
++        # (11) finding 99 — content_scan_exclude suppresses content_scan_incomplete too.
++        #      An oversized file that the taxonomy excludes from content scanning was
++        #      never going to be read for content, so its size must not manufacture an
++        #      incompleteness flag. A taxonomy WITHOUT the exclusion still flags the same
++        #      oversized file (regression guard), and an oversized file the exclusion
++        #      does NOT cover (docs/big.md, glob is **/*.py) still flags too.
++        excl_taxonomy = tax_mod.load_taxonomy(text=(
++            _SHARED_TOKEN_TAXONOMY + '\ncontent_scan_exclude:\n  - "**/*.py"\n'))
++        big_py = "excludedtoken_zzz\n" + "C" * (MAX_FILE_READ_BYTES + 4096) + "\n"
++        _write(os.path.join(repo, "scripts/big.py"), big_py)
++        _write(os.path.join(repo, "docs/big.md"), big_py)
++
++        res = localize("tweak scripts/big.py", repo, excl_taxonomy)
++        expect("finding 99: excluded oversized .py -> exact, NO content_scan_incomplete",
++               res["confidence"] == "exact"
++               and res["resolved_paths"] == ["scripts/big.py"]
++               and "content_scan_incomplete" not in res["flags"])
++        _f3, _inc3 = _classify_paths(repo, ["scripts/big.py"], excl_taxonomy)
++        expect("finding 99: _classify_paths does not read an excluded path at all",
++               _inc3 is False)
++
++        res = localize("tweak scripts/big.py", repo, taxonomy)
++        expect("finding 99: same oversized .py, NO exclusion -> content_scan_incomplete",
++               res["confidence"] == "exact"
++               and "content_scan_incomplete" in res["flags"])
++
++        res = localize("tweak docs/big.md", repo, excl_taxonomy)
++        expect("finding 99: oversized .md not covered by the **/*.py exclusion -> flagged",
++               res["confidence"] == "exact"
++               and "content_scan_incomplete" in res["flags"])
++
+         # Regression guard for the containment fix the above depends on: a DOTFILE keeps
+         # its leading dot (the old `lstrip("./")` turned `.env` into `env`, so the one
+         # path the scorer must never demote could not localize at all).

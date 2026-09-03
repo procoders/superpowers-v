@@ -1,0 +1,9 @@
+{
+  "scope": "impacted",
+  "resolved_commands": [
+    "bash tests/test-engine-c-contract.sh",
+    "/usr/bin/python3 -B scripts/compound-v-fastpath-run.py --selftest"
+  ],
+  "floor_command": "bash tests/test-engine-c-contract.sh",
+  "full_command": "bash -c 'for s in scripts/compound-v-*.py; do grep -q -- \"--selftest\" \"$s\" || continue; /usr/bin/python3 -B \"$s\" --selftest >/dev/null 2>&1 || { echo \"FAIL $s\"; exit 1; }; done; for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'"
+}

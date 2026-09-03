@@ -1,0 +1,326 @@
+diff --git a/scripts/compound-v-fastpath-run.py b/scripts/compound-v-fastpath-run.py
+index 631e0b3..58fd666 100644
+--- a/scripts/compound-v-fastpath-run.py
++++ b/scripts/compound-v-fastpath-run.py
+@@ -119,7 +119,8 @@ import tempfile
+ # --------------------------------------------------------------------------- #
+ # Tunables (fast-path = tiny changes; conservative, bounded by design).
+ # --------------------------------------------------------------------------- #
+-TEST_TIMEOUT_S = 300        # tier-1 configured project test command
++TEST_TIMEOUT_S = 480        # tier-1 configured project test command (default budget;
++                            # a manifest's test_contract.timeout_s overrides this per run)
+ PARSE_TIMEOUT_S = 60        # tier-2 per-language parse-check
+ GIT_TIMEOUT_S = 30          # tier-3 diff-read / diff digest
+ MAX_OUTPUT_BYTES = 262144   # bounded sink for any supervised child (256 KiB)
+@@ -352,6 +353,67 @@ def _drop_gitignored(worktree, paths):
+     return [p for p in paths if p not in ignored]
+ 
+ 
++# --------------------------------------------------------------------------- #
++# Finding 105 — bookkeeping paths are not blast radius. A stale run leaves
++# `docs/superpowers/execution/*/.run.lock` (and similar) behind as changed or
++# untracked paths; the gate exempts them from the lane check, but until this fix
++# `resolve_test_commands` counted every one as an UNMAPPED changed path and
++# promoted an already-scoped slice straight to `full_command` — the same
++# full-suite run that hit `TEST_TIMEOUT_S` in finding 102's probe.
++#
++# This is deliberately narrower than `_is_test_noise` above: it applies to the
++# unmapped ⇒ `full_command` promotion ONLY (never to the impacted/newly-added
++# command sets, and never to the lane check, which stays unchanged), and it
++# drops exactly two shapes — this project's own run-directory bookkeeping, and
++# whatever git actually ignores (one `check-ignore --stdin` call, never a
++# heuristic standing in for it).
++# --------------------------------------------------------------------------- #
++_BOOKKEEPING_PREFIX = "docs/superpowers/execution/"
++
++
++def _is_bookkeeping_path(rel):
++    r = str(rel or "")
++    while r.startswith("./"):
++        r = r[2:]
++    return r.startswith(_BOOKKEEPING_PREFIX)
++
++
++def _drop_bookkeeping_unmapped(worktree, paths):
++    """``paths`` minus BOOKKEEPING NOISE, for the unmapped ⇒ ``full_command``
++    promotion ONLY (finding 105). Returns ``(kept, ignored_count)``, order preserved.
++
++    Two shapes are dropped: paths under ``docs/superpowers/execution/**`` (this
++    project's own run-directory bookkeeping — manifests, job results, `.run.lock`
++    files a stale run can leave as changed/untracked), and anything git actually
++    ignores, decided by ONE ``git check-ignore --stdin`` call over the rest.
++
++    When ``worktree`` is falsy, or the git call fails, the gitignore half is
++    skipped and those paths stay counted as unmapped — fail TOWARD still
++    promoting to `full_command`, the same safe direction every other
++    fail-closed rule in this file takes; only the two NAMED shapes are ever
++    dropped, never "whatever git ignores" read alone as "not blast radius"."""
++    paths = list(paths or [])
++    if not paths:
++        return paths, 0
++    bookkeeping = {p for p in paths if _is_bookkeeping_path(p)}
++    rest = [p for p in paths if p not in bookkeeping]
++    ignored_git = set()
++    if worktree and rest:
++        try:
++            proc = subprocess.Popen(
++                ["git", "-C", worktree, "check-ignore", "--stdin"],
++                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
++                universal_newlines=True)
++            out, _ = proc.communicate("\n".join(rest) + "\n", timeout=30)
++            if proc.returncode in (0, 1):
++                ignored_git = {ln.strip() for ln in (out or "").splitlines() if ln.strip()}
++        except Exception:  # noqa: BLE001 — fail toward NOT dropping (see docstring)
++            ignored_git = set()
++    ignored = bookkeeping | ignored_git
++    kept = [p for p in paths if p not in ignored]
++    return kept, len(ignored)
++
++
+ def _changed_from_scope(worktree, baseline):
+     """The changed set FOR TEST SELECTION — which is not the scope gate's set.
+ 
+@@ -767,15 +829,16 @@ def referencing_tests(repo, changed_paths, cap=REFERENCING_CAP):
+ 
+ def resolve_test_commands(contract, scope, changed_paths=None, new_paths=None,
+                           prev_failures=None, prev_failures_available=True,
+-                          tier=None, referencing=None):
++                          tier=None, referencing=None, worktree=None):
+     """Resolve a manifest ``test_contract`` + one job's ``test_scope`` into the ordered,
+     deduped command list a worker executes.
+ 
+     Returns ``(slice, notes)``. ``slice`` holds EXACTLY the keys the worker's
+-    ``--test-contract-file`` validator accepts (``scope``, ``resolved_commands``, and the
+-    informational ``floor_command`` / ``full_command`` when declared) — nothing else, so a
+-    typo cannot pass silently as "nothing to run". ``notes`` is the human-readable record of
+-    WHY each command is in the set; it is deliberately NOT part of the slice.
++    ``--test-contract-file`` validator accepts (``scope``, ``resolved_commands``, the
++    informational ``floor_command`` / ``full_command`` when declared, and ``timeout_s``
++    when the contract declares one) — nothing else, so a typo cannot pass silently as
++    "nothing to run". ``notes`` is the human-readable record of WHY each command is in
++    the set; it is deliberately NOT part of the slice.
+ 
+     The rules, in one place:
+ 
+@@ -786,16 +849,25 @@ def resolve_test_commands(contract, scope, changed_paths=None, new_paths=None,
+       impacted ∪ previously-failing ∪ newly-added — because running only the impacted set
+       is the mistake regression-test-selection practice already made and corrected;
+     * a changed path matching no ``when`` glob resolves to ``full_command`` — but only at
+-      tier FULL or when no tier was given (v3.4.1 decision 4). At SCOPED and DIRECT it
+-      resolves instead to ``referencing`` (the list ``referencing_tests()`` computed),
+-      and to the floor alone when that list is empty;
++      tier FULL or when no tier was given (v3.4.1 decision 4), and only after finding
++      105's bookkeeping filter (below) has had a chance to explain the path away. At
++      SCOPED and DIRECT it resolves instead to ``referencing`` (the list
++      ``referencing_tests()`` computed), and to the floor alone when that list is empty;
+     * an uncomputable previously-failing set also resolves to ``full_command``, at every
+       tier — that is a fail-closed rule about DATA THIS RUN COULD NOT READ, not about the
+-      size of the change, and the tier has nothing to say about it.
++      size of the change, and the tier has nothing to say about it;
++    * finding 105 — for the unmapped ⇒ ``full_command`` promotion ONLY, a path under
++      ``docs/superpowers/execution/**`` or one git actually ignores never counts as
++      unmapped: it is bookkeeping a stale run left behind, not blast radius. The
++      impacted/newly-added command sets are unaffected; this narrows only whether the
++      promotion fires. ``notes`` records how many were ignored and why.
+ 
+     ``tier`` is the manifest's ``triage.tier``; ``referencing`` is the caller's already-
+-    computed referencing list, so this function stays a pure resolver and the filesystem
+-    walk happens exactly once, in ``resolve_from_manifest``.
++    computed referencing list, so this function stays a pure resolver for everything
++    except finding 105's bookkeeping check, and the filesystem walk for ``referencing``
++    happens exactly once, in ``resolve_from_manifest``. ``worktree`` is used ONLY for
++    that one ``git check-ignore`` call, and only when an unmapped path needs it; it may
++    be omitted (the bookkeeping-prefix half of the filter still applies without it).
+ 
+     Raises ``TestContractError`` whenever the answer would be an empty command set."""
+     contract = contract if isinstance(contract, dict) else {}
+@@ -883,16 +955,33 @@ def resolve_test_commands(contract, scope, changed_paths=None, new_paths=None,
+         if unmapped or new_unmapped:
+             missing = ", ".join(sorted(set(unmapped + new_unmapped)))
+             if not scoped_tier:
+-                ordered.append(full)
+-                notes.append("unmapped: %s matched no `when` glob — unknown blast radius "
+-                             "resolves to full_command, never to nothing" % missing)
+-                # The label follows the obligation (review-1 of 3.4.1, issue 4): a
+-                # FULL-tier job whose unmapped path pulled in `full_command` ran the
+-                # whole suite, and `scope: impacted` beside it made a correct run
+-                # trip the reviewer's "must match what the tier owes" rule.
+-                scope = "full"
+-                notes.append("scope: labelled `full` — full_command was added for an "
+-                             "unmapped path at this tier, so the whole suite is what ran")
++                # Finding 105 — bookkeeping paths are not blast radius. Before an
++                # unmapped path is allowed to promote this slice to `full_command`,
++                # drop the ones that are this project's own run-directory bookkeeping
++                # or actually gitignored; only what is left is a real unmapped change.
++                combined_unmapped = sorted(set(unmapped + new_unmapped))
++                kept_unmapped, ignored_count = _drop_bookkeeping_unmapped(
++                    worktree, combined_unmapped)
++                if ignored_count:
++                    notes.append(
++                        "unmapped: ignored %d bookkeeping path(s) for the unmapped rule"
++                        % ignored_count)
++                if kept_unmapped:
++                    ordered.append(full)
++                    notes.append(
++                        "unmapped: %s matched no `when` glob — unknown blast radius "
++                        "resolves to full_command, never to nothing"
++                        % ", ".join(kept_unmapped))
++                    # The label follows the obligation (review-1 of 3.4.1, issue 4): a
++                    # FULL-tier job whose unmapped path pulled in `full_command` ran the
++                    # whole suite, and `scope: impacted` beside it made a correct run
++                    # trip the reviewer's "must match what the tier owes" rule.
++                    scope = "full"
++                    notes.append(
++                        "scope: labelled `full` — full_command was added for an "
++                        "unmapped path at this tier, so the whole suite is what ran")
++                # else: every unmapped path was bookkeeping noise (finding 105) — no
++                # promotion; `scope` stays `impacted`, and the note above says why.
+             else:
+                 # v3.4.1 decision 4. The triage engine has already said this change is
+                 # small; answering "then run everything" contradicts the tier that was
+@@ -940,6 +1029,13 @@ def resolve_test_commands(contract, scope, changed_paths=None, new_paths=None,
+         slice_["floor_command"] = floor
+     if full:
+         slice_["full_command"] = full
++    # Finding 102 — the checker's own budget rides with the resolved slice, verbatim,
++    # so `_cmd_test_floor` (and every external worker's `tc_run`) can honour it instead
++    # of falling back to `TEST_TIMEOUT_S` on every job regardless of what the manifest
++    # declared. Copied, not validated, here — `compound-v-validate-manifest.py` is the
++    # one place that refuses an out-of-range or non-integer `timeout_s`.
++    if "timeout_s" in contract:
++        slice_["timeout_s"] = contract["timeout_s"]
+     return slice_, notes
+ 
+ 
+@@ -1019,7 +1115,7 @@ def resolve_from_manifest(manifest, job_id=None, scope=None, worktree=None,
+         failures, available = previously_failing(last_result)
+     resolved, notes = resolve_test_commands(contract, scope, changed_paths, new_paths,
+                                            failures, available, tier=tier,
+-                                           referencing=referencing)
++                                           referencing=referencing, worktree=worktree)
+     if derived_note:
+         notes = ["scope: no test_scope declared, defaulted to %r — %s"
+                  % (scope, derived_note)] + list(notes)
+@@ -1094,16 +1190,25 @@ def run_test_floor(worktree, baseline="HEAD", changed_paths=None, test_cmd=None,
+             result["checks"].append({"tier": 1, "checker": spelling, "rc": rc,
+                                      "status": "pass" if rc == 0 else "fail"})
+             if rc != 0:
+-                failed_cmds.append((spelling, rc))
++                # Finding 102 — a checker the supervisor killed for running past its
++                # budget (rc 124, see `_run_supervised`'s docstring) is recorded with
++                # its OWN label, `timeout after N s: <checker>`, so the failure — and
++                # the failures[] entry `_tests_block_from_floor` copies verbatim into
++                # the schema's `tests` block — says WHY it failed, not just that it
++                # did. This is never `failure_class`: that field is the backend's own
++                # disposition, and the agent that ran this checker did not fail.
++                label = ("timeout after %s s: %s" % (int(test_timeout_s), spelling)
++                         if rc == 124 else spelling)
++                failed_cmds.append((label, rc))
+         if not failed_cmds:
+             result["passed"] = True
+             result["merge_blocked"] = False
+         else:
+-            for name, rc in failed_cmds:
++            for label, rc in failed_cmds:
+                 result["reasons"].append(
+                     "tier-1: configured tests failed (rc=%s%s): %s"
+-                    % (rc, "; timeout" if rc == 124 else "", name))
+-        result["failures"] = [name for name, _ in failed_cmds]
++                    % (rc, "; timeout" if rc == 124 else "", label))
++        result["failures"] = [label for label, _ in failed_cmds]
+         return result
+ 
+     # Tiers 2 and 3 cannot work without the diff (soft; fail-closed if underivable).
+@@ -1588,6 +1693,7 @@ def _cmd_test_floor(args):
+     # explicit command should not be silently overruled by a declaration.
+     test_commands = None
+     notes = []
++    slice_ = None
+     if args.manifest and not args.test_cmd:
+         try:
+             slice_, notes = _resolve_args(args)
+@@ -1599,8 +1705,13 @@ def _cmd_test_floor(args):
+             return 1
+         test_commands = slice_["resolved_commands"]
+ 
++    # Finding 102 — the checker's own budget, when the manifest declared one
++    # (`test_contract.timeout_s`, carried on the resolved slice); TEST_TIMEOUT_S
++    # otherwise. `--test-cmd`'s one-off path has no slice and always gets the default.
++    test_timeout_s = (slice_ or {}).get("timeout_s", TEST_TIMEOUT_S)
++
+     res = run_test_floor(args.worktree, args.baseline, changed, args.test_cmd,
+-                         test_commands=test_commands)
++                         test_commands=test_commands, test_timeout_s=test_timeout_s)
+     if notes:
+         res["contract_notes"] = notes
+     _emit(res, args.out)
+@@ -2230,6 +2341,69 @@ def _selftest():
+                res["passed"] is True and res["merge_blocked"] is False
+                and len([c for c in res["checks"] if c.get("tier") == 1]) == 2)
+ 
++        # ---- Finding 102 — the checker's own timeout budget --------------------
++        res = run_test_floor(r, base, changed_paths=["a.py"],
++                             test_commands=["sh -c 'sleep 2'"], test_timeout_s=1)
++        expect("102: a checker past its budget is killed (rc 124)",
++               res["merge_blocked"] is True
++               and res["checks"][-1]["rc"] == 124)
++        expect("102: the failures[] entry names WHY, not just that it failed",
++               res.get("failures") == ["timeout after 1 s: sh -c 'sleep 2'"])
++        expect("102: a normal (non-timeout) failure keeps the bare command spelling",
++               run_test_floor(r, base, changed_paths=["a.py"],
++                              test_commands=["sh -c 'exit 1'"]).get("failures")
++               == ["sh -c 'exit 1'"])
++
++        expect("102: TEST_TIMEOUT_S defaulted from 300 to 480", TEST_TIMEOUT_S == 480)
++        slice_notime, _ = resolve_test_commands(CONTRACT, "full")
++        expect("102: a contract with no timeout_s carries none on the slice "
++               "(the caller then falls back to TEST_TIMEOUT_S)",
++               "timeout_s" not in slice_notime)
++        contract_to = dict(CONTRACT); contract_to["timeout_s"] = 45
++        slice_to, _ = resolve_test_commands(contract_to, "full")
++        expect("102: a declared timeout_s is copied onto the slice verbatim",
++               slice_to.get("timeout_s") == 45)
++
++        # ---- Finding 105 — bookkeeping paths are not blast radius --------------
++        # A contract WITHOUT a `docs/**` catch-all: CONTRACT's own `docs/**` rule
++        # would map these run-dir paths before the bookkeeping filter ever saw them,
++        # which is a real declaration and would make this test pass for the wrong
++        # reason (already-mapped, not excused-as-bookkeeping).
++        NO_DOCS_CONTRACT = {k: v for k, v in CONTRACT.items() if k != "impacted_map"}
++        NO_DOCS_CONTRACT["impacted_map"] = [CONTRACT["impacted_map"][0],
++                                            CONTRACT["impacted_map"][1]]
++        bookkeeping = ["docs/superpowers/execution/x/.run.lock",
++                       "docs/superpowers/execution/y/.run.lock",
++                       "docs/superpowers/execution/z/.run.lock"]
++        s_bk, n_bk = resolve_test_commands(
++            NO_DOCS_CONTRACT, "impacted",
++            ["scripts/compound-v-preeval.py"] + bookkeeping, [], [], True)
++        expect("105: one mapped path + three run-dir bookkeeping paths stays "
++               "`impacted`, never promoted to `full`",
++               s_bk["scope"] == "impacted"
++               and "sh -c 'echo full'" not in s_bk["resolved_commands"])
++        expect("105: the contract note says how many bookkeeping paths were ignored",
++               any("ignored 3 bookkeeping path(s) for the unmapped rule" in n
++                   for n in n_bk))
++        expect("105: a genuinely unmapped path alongside bookkeeping noise still "
++               "promotes to full (only the bookkeeping paths are excused)",
++               "sh -c 'echo full'" in resolve_test_commands(
++                   NO_DOCS_CONTRACT, "impacted",
++                   ["src/parser.py"] + bookkeeping, [], [], True)[0]["resolved_commands"])
++
++        r_ign = new_repo("bookkeeping-gitignore")
++        write(r_ign, ".gitignore", "ignored.log\n")
++        write(r_ign, "scripts/compound-v-x.py", "x = 1\n")
++        git(r_ign, ["add", "-A"]); git(r_ign, ["commit", "-qm", "seed"])
++        s_gi, n_gi = resolve_test_commands(
++            CONTRACT, "impacted", ["scripts/compound-v-x.py", "ignored.log"], [], [], True,
++            worktree=r_ign)
++        expect("105: an actually-gitignored unmapped path is excused too "
++               "(one git check-ignore --stdin call)",
++               s_gi["scope"] == "impacted"
++               and any("ignored 1 bookkeeping path(s) for the unmapped rule" in n
++                       for n in n_gi))
++
+         # resolve_from_manifest: test_scope comes off the job; absent ⇒ full.
+         man = {"test_contract": CONTRACT,
+                "jobs": [{"id": "task-1", "test_scope": "floor_only"},
