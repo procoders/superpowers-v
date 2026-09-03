@@ -1,0 +1,84 @@
+run_id: 2026-09-03-v3.4.5-recall-freshness
+feature: 'v3.4.5 recall freshness (stage 5a): compound-v-memory.py search refreshes the FTS5 lane inline when the index is behind; --no-refresh opt-out; a first search builds the index'
+routing_stance: balanced
+max_parallel: 2
+spec_path: docs/superpowers/specs/2026-09-03-v3.4.5-recall-freshness-design.md
+plan_path: docs/superpowers/plans/2026-09-03-v3.4.5-recall-freshness.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-09-03-v3-4-5-recall-freshness.md
+  domain: docs/superpowers/specs/2026-09-03-v3.4.5-recall-freshness-design.md
+  library: docs/superpowers/library-audit/2026-09-03-v3-4-5-recall-freshness.md
+triage:
+  tier: FULL
+  pre_eval_id: 2026-09-03T100838Z-make-v-memory-search-refresh-the-fts5-index-automatically-wh-5801
+  taxonomy_digest: sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a
+  decided_at: '2026-09-03T10:08:38Z'
+acceptance_criteria:
+- 'On a repository whose index is behind, `python3 -B scripts/compound-v-memory.py search "<words from a newly added tracked doc>"` returns that doc with no other command having run and prints exactly one `V-memory: refreshed N stale doc(s) before recall (FTS5 lane)` line on stderr; `search --no-refresh` does not return it and prints the staleness warning; a search on a repo with no index builds one.'
+- '`/usr/bin/python3 -B scripts/compound-v-memory.py --selftest` is green with the new case; every other `scripts/compound-v-*.py --selftest` and every `tests/*.sh` stay green.'
+- 'A search never embeds: the inline refresh reports FTS5-only whether or not embeddings are bootstrapped, never applies the --quick cap, and vectors stay a /v:memory-refresh --with-embeddings job; `cmd_refresh --with-embeddings` after a search-triggered refresh still embeds the files that search re-chunked (the ordering hazard from pre-flight 1A). Routing and the conservative-only bridge are untouched.'
+- skills/compound-v/memory.md, commands/v-remember.md and CHANGELOG.md describe the behaviour; no doc still tells the user to refresh before a search (`grep -rn 'memory-refresh' commands/v-remember.md` shows no such instruction).
+test_contract:
+  floor_command: /usr/bin/python3 -B scripts/compound-v-memory.py --selftest
+  full_command: bash -c 'for s in scripts/compound-v-*.py; do grep -q -- "--selftest" "$s" || continue; /usr/bin/python3 -B "$s" --selftest >/dev/null 2>&1 || { echo "FAIL $s"; exit 1; }; done; for t in tests/*.sh; do bash "$t" >/dev/null 2>&1 || { echo "FAIL $t"; exit 1; }; done; echo all-tests-ok'
+  impacted_map:
+  - when: scripts/compound-v-memory.py
+    run: /usr/bin/python3 -B scripts/compound-v-memory.py --selftest
+  - when: skills/compound-v/memory.md
+    run: /usr/bin/python3 -B scripts/lint-frontmatter.py .
+  - when: commands/v-remember.md
+    run: /usr/bin/python3 -B scripts/lint-frontmatter.py .
+jobs:
+- id: engine
+  title: Task A — search refreshes the FTS5 lane inline (scripts/compound-v-memory.py + selftest)
+  type: implement
+  backend: claude
+  tier: standard
+  effort: high
+  isolation: worktree
+  run: parallel
+  depends_on: []
+  write_allowed:
+  - scripts/compound-v-memory.py
+  read_allowed:
+  - '**'
+  acceptance:
+  - 'refresh_fts5(conn, root) extracted from cmd_refresh (FTS5-only, no embedder) and used by both; index_staleness returns (new, changed, removed) and doctor reuses it; cmd_search: missing db ⇒ create + refresh; stale and not --no-refresh ⇒ lock, refresh_fts5, one stderr line `V-memory: refreshed N stale doc(s) before recall (FTS5 lane)`; lock held ⇒ today''s warning, stale search; `--no-refresh` flag; selftest case per the plan (added-later doc found without --no-refresh, not found with it, no refresh line on a second search); `/usr/bin/python3 -B scripts/compound-v-memory.py --selftest` green; stdlib only, Python 3.9 floor. Pre-flight 1A MUSTs: staleness computed BEFORE the search; inline refresh never applies QUICK_MAX_CHANGED and never consults config_wants_embeddings(); cmd_refresh''s embedding branch uses its pre-refresh `changed` list (or the `embedding IS NULL` union), never a post-refresh_fts5 hash diff; refresh_fts5 stamps `chunker_version`; lock held ⇒ silent stale search (no
+    ''already running'' line); missing db + --no-refresh ⇒ today''s exit 1 + message; index_staleness 3-tuple moved in cmd_search, selftest and doctor (doctor''s duplicate removed); stderr via sys.stderr.write.'
+  body: 'Implement Task A of docs/superpowers/plans/2026-09-03-v3.4.5-recall-freshness.md exactly; the spec is docs/superpowers/specs/2026-09-03-v3.4.5-recall-freshness-design.md. Read the pre-flight audits named in this manifest''s audits block first (their §7 MUSTs bind). Tests first: add the selftest case, watch it fail, then implement. Never call the embedder from search. Touch only scripts/compound-v-memory.py. Run python with -B; register your lane with a literal --cwd. You are unattended: decide and return. The archaeology''s §7 lists ten MUSTs — every one is in your acceptance; the ordering hazard (embedding branch re-hashing after refresh_fts5) is the one that silently breaks dense forever, so keep the pre-refresh `changed` list.'
+- id: docs
+  title: Task B — memory.md, v-remember.md, CHANGELOG
+  type: implement
+  backend: claude
+  tier: light
+  effort: low
+  isolation: worktree
+  run: parallel
+  depends_on: []
+  write_allowed:
+  - skills/compound-v/memory.md
+  - commands/v-remember.md
+  - CHANGELOG.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - 'memory.md CLI row for search carries --no-refresh and the sentence that the FTS5 lane is fresh by construction at every search while the dense lane refreshes only on /v:memory-refresh --with-embeddings; v-remember.md no longer says to run /v:memory-refresh before a search and says a first search builds the index; CHANGELOG [Unreleased] has the finding-98 entry with the 118-files-behind observation, the 0.38 s measurement and the opt-out; lint-frontmatter green. memory.md also states the documented side effect: with embeddings on and bootstrapped, a search-triggered refresh re-chunks a changed file WITHOUT vectors until the next /v:memory-refresh --with-embeddings (dense degrades to FTS5 for that file, never breaks).'
+  body: 'Implement Task B of docs/superpowers/plans/2026-09-03-v3.4.5-recall-freshness.md; the spec is docs/superpowers/specs/2026-09-03-v3.4.5-recall-freshness-design.md. Describe the engine behaviour as the spec defines it (Task A implements it in parallel — do not wait for it, do not read its worktree). Touch only the three files in your lane. Run python with -B; register your lane with a literal --cwd. You are unattended: decide and return.'
+- id: spec-review
+  title: Review Gate — three passes against the spec and the feature acceptance criteria
+  type: review
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: direct
+  run: serial
+  depends_on:
+  - engine
+  - docs
+  write_allowed:
+  - docs/superpowers/dogfood/2026-09-03-v3.4.5-recall-freshness-review.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - 'The review file exists with ## Recall, ## SPEC, ## QUALITY, ## INTEGRATION, ## Verdict; Step 0''s own `search` output is quoted, including whether it printed the refresh line (the live test of this feature); every acceptance criterion is run on the merged tree with the command and output; AC 1 is reproduced in a throwaway git repo; the verdict is APPROVED or ISSUES with a numbered list.'
+  body: 'Your agent definition carries the three-pass Review Gate and a Step 0 (V-memory recall). Follow it — and note that Step 0 is the live test of the feature under review: quote your `search` invocation''s stderr (the refresh line, or the absence of one). Review both jobs as new code against docs/superpowers/specs/2026-09-03-v3.4.5-recall-freshness-design.md and this manifest''s acceptance criteria; reproduce AC 1 in a throwaway git repository with a docs/superpowers/ doc added after the first search; confirm no embedder call reaches search (`grep -n embed scripts/compound-v-memory.py` around cmd_search). Write docs/superpowers/dogfood/2026-09-03-v3.4.5-recall-freshness-review.md. Run python with -B; register your lane with a literal --cwd.'

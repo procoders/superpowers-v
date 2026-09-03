@@ -1,0 +1,26 @@
+{
+  "run_id": "2026-09-03-v3.4.5-recall-freshness",
+  "phase": "PARTITION_VERIFIED",
+  "pre_eval_id": "2026-09-03T100838Z-make-v-memory-search-refresh-the-fts5-index-automatically-wh-5801",
+  "updated_at": "2026-09-03T10:20:11Z",
+  "jobs": {
+    "engine": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "docs": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "spec-review": {
+      "status": "pending",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null
+    }
+  }
+}
