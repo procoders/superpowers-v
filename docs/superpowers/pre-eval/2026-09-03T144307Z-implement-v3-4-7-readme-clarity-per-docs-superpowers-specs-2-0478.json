@@ -1,0 +1,51 @@
+{
+  "base_commit": "af3fca4e0bbbda51bac7d5322e134fc488a303f8",
+  "confidence": "localization:exact; tiers:localization,T1",
+  "decision": "FULL_PIPELINE",
+  "declared_paths": [
+    "README.md",
+    "TROUBLESHOOTING.md",
+    "commands/v-init.md",
+    "docs/routing.svg",
+    "docs/superpowers/specs/2026-09-03-v3.4.7-readme-clarity-design.md"
+  ],
+  "difficulty": {
+    "band": "high",
+    "display": 8
+  },
+  "digest": "sha256:cac6f1541c691e6afdd0fd3e385bfc1e4cc202f107a3822c1b751cfce8b9c107",
+  "impact": {
+    "band": "high",
+    "display": 8
+  },
+  "localization": {
+    "confidence": "exact",
+    "fan_out": 5,
+    "flags": [
+      "content:config_literal",
+      "sensitive_path"
+    ],
+    "resolved_paths": [
+      "README.md",
+      "TROUBLESHOOTING.md",
+      "commands/v-init.md",
+      "docs/routing.svg",
+      "docs/superpowers/specs/2026-09-03-v3.4.7-readme-clarity-design.md"
+    ]
+  },
+  "min_sample_status": "insufficient",
+  "override_fired": 2,
+  "pre_eval_id": "2026-09-03T144307Z-implement-v3-4-7-readme-clarity-per-docs-superpowers-specs-2-0478",
+  "request_slug": "implement-v3-4-7-readme-clarity-per-docs-superpowers-specs-2",
+  "session_id": "s-readme",
+  "status": "PRE_EVAL_DONE",
+  "taxonomy_digest": "sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a",
+  "taxonomy_ref": "docs/superpowers/pre-eval/2026-09-03T144307Z-implement-v3-4-7-readme-clarity-per-docs-superpowers-specs-2-0478.taxonomy-snapshot.yaml",
+  "taxonomy_version": 1,
+  "tier": "FULL",
+  "tiers_signalled": [
+    "localization",
+    "T1"
+  ],
+  "ts": "2026-09-03T14:43:07Z"
+}

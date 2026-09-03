@@ -1,0 +1,16 @@
+{
+  "confidence": "exact",
+  "digest": "sha256:d403faf0bf7d5ed9739e31ed7cc628c11aeae193849ef895c76105a850d73061",
+  "fan_out": 5,
+  "flags": [
+    "content:config_literal",
+    "sensitive_path"
+  ],
+  "resolved_paths": [
+    "README.md",
+    "TROUBLESHOOTING.md",
+    "commands/v-init.md",
+    "docs/routing.svg",
+    "docs/superpowers/specs/2026-09-03-v3.4.7-readme-clarity-design.md"
+  ]
+}
