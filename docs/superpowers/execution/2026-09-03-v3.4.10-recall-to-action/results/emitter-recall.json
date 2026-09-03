@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "scripts/compound-v-emit-workflow.py"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "4dcb3218348314fab40220e22cde67a307f3e833",
+    "diff_digest": "sha256:0c1901bcd4800be60ede1c7ba41dcc6d542ca4ec10c2c61b174e548c85a7afff",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"4dcb3218348314fab40220e22cde67a307f3e833\",\n  \"changed\": [\n    \"scripts/compound-v-emit-workflow.py\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-emit-workflow.py\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "4dcb3218348314fab40220e22cde67a307f3e833",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task A \u2014 recall-check at emit time; evidence in the prompt; tier rung under auto_tighten; --no-recall",
+  "tests": {
+    "command": "bash tests/test-engine-c-contract.sh\n/usr/bin/python3 -B scripts/compound-v-emit-workflow.py --selftest",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_c00bbc98-0b0-1"
+}

@@ -1,26 +1,56 @@
 {
   "run_id": "2026-09-03-v3.4.10-recall-to-action",
-  "phase": "PARTITION_VERIFIED",
+  "phase": "DISPATCHED",
   "pre_eval_id": "2026-09-03T174841Z-implement-v3-4-10-per-docs-superpowers-specs-2026-09-03-v3-4-904b",
   "updated_at": "2026-09-03T18:00:34Z",
   "jobs": {
     "emitter-recall": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_c00bbc98-0b0-1",
+      "session_id": null,
+      "baseline": "4dcb3218348314fab40220e22cde67a307f3e833",
+      "realised_commit": "4dcb3218348314fab40220e22cde67a307f3e833",
+      "merged": {
+        "realised_commit": "4dcb3218348314fab40220e22cde67a307f3e833",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "2ed44d13c4a0676b12c5016983ceb87db6006e76"
+      }
     },
     "docs": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_c00bbc98-0b0-2",
+      "session_id": null,
+      "baseline": "4dcb3218348314fab40220e22cde67a307f3e833",
+      "realised_commit": "4dcb3218348314fab40220e22cde67a307f3e833",
+      "merged": {
+        "realised_commit": "4dcb3218348314fab40220e22cde67a307f3e833",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "2ed44d13c4a0676b12c5016983ceb87db6006e76"
+      }
     },
     "spec-review": {
       "status": "pending",
       "isolation": "direct",
       "worktree": null,
       "session_id": null
+    }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "emitter-recall",
+        "docs"
+      ],
+      "merged": [
+        "emitter-recall",
+        "docs"
+      ],
+      "commit": "2ed44d13c4a0676b12c5016983ceb87db6006e76",
+      "integrated": true
     }
   }
 }

@@ -1,0 +1,48 @@
+{
+  "baseline_commit": "4dcb3218348314fab40220e22cde67a307f3e833",
+  "diff_digest": "sha256:0c1901bcd4800be60ede1c7ba41dcc6d542ca4ec10c2c61b174e548c85a7afff",
+  "exit_code": 0,
+  "job_id": "emitter-recall",
+  "patch_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-v3.4.10-recall-to-action/jobs/emitter-recall.patch",
+  "patch_paths": [
+    "scripts/compound-v-emit-workflow.py"
+  ],
+  "patch_sha256": "sha256:0c1901bcd4800be60ede1c7ba41dcc6d542ca4ec10c2c61b174e548c85a7afff",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"4dcb3218348314fab40220e22cde67a307f3e833\",\n  \"changed\": [\n    \"scripts/compound-v-emit-workflow.py\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-emit-workflow.py\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "4dcb3218348314fab40220e22cde67a307f3e833",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "scripts/compound-v-emit-workflow.py"
+    ],
+    "checks": [
+      {
+        "checker": "bash tests/test-engine-c-contract.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "/usr/bin/python3 -B scripts/compound-v-emit-workflow.py --selftest",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (5 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 1 command(s) from 1 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_c00bbc98-0b0-1"
+}
