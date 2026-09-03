@@ -1,0 +1,16 @@
+{
+  "baseline_commit": "47a7a73319670e03644c9d5c6568424b089da788",
+  "diff_digest": "sha256:dcac8b3eb94158dca115fb34e1ef56748bd236fbdd079187fd7052ea94a56b8b",
+  "exit_code": 1,
+  "job_id": "matcher-swap",
+  "patch_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-glob-parity-one-matcher/jobs/matcher-swap.patch",
+  "patch_paths": [
+    "scripts/compound-v-memory.py"
+  ],
+  "patch_sha256": "sha256:458355c1bf263552374d139297798a519b22ff7c99ea1beda6bf04cac6fbdb29",
+  "raw_stdout": "{\n  \"verdict\": \"blocked\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"47a7a73319670e03644c9d5c6568424b089da788\",\n  \"changed\": [\n    \"docs/superpowers/memory/triage-outcomes.jsonl\",\n    \"docs/superpowers/plans/2026-09-03-epic-gp-matcher-docs.md\",\n    \"docs/superpowers/pre-eval/2026-09-03T191941Z-build-epic-feature-matcher-docs-docs-superpowers-execution-e-1aef.intent.json\",\n    \"docs/superpowers/pre-eval/2026-09-03T191941Z-build-epic-feature-matcher-docs-docs-superpowers-execution-e-1aef.json\",\n    \"docs/superpowers/pre-eval/2026-09-03T191941Z-build-epic-feature-matcher-docs-docs-superpowers-execution-e-1aef.localization.json\",\n    \"docs/superpowers/pre-eval/2026-09-03T191941Z-build-epic-feature-matcher-docs-docs-superpowers-execution-e-1aef.taxonomy-snapshot.yaml\",\n    \"scripts/compound-v-memory.py\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-memory.py\"\n  ],\n  \"violations\": [\n    \"docs/superpowers/memory/triage-outcomes.jsonl\",\n    \"docs/superpowers/plans/2026-09-03-epic-gp-matcher-docs.md\",\n    \"docs/superpowers/pre-eval/2026-09-03T191941Z-build-epic-feature-matcher-docs-docs-superpowers-execution-e-1aef.intent.json\",\n    \"docs/superpowers/pre-eval/2026-09-03T191941Z-build-epic-feature-matcher-docs-docs-superpowers-execution-e-1aef.json\",\n    \"docs/superpowers/pre-eval/2026-09-03T191941Z-build-epic-feature-matcher-docs-docs-superpowers-execution-e-1aef.localization.json\",\n    \"docs/superpowers/pre-eval/2026-09-03T191941Z-build-epic-feature-matcher-docs-docs-superpowers-execution-e-1aef.taxonomy-snapshot.yaml\"\n  ]\n}\n",
+  "realised_commit": "3dad7dd78b21cc2cd467fe38691938339e49d690",
+  "source": "gate-receipt",
+  "verdict": "blocked",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_269e724c-3f4-1"
+}
