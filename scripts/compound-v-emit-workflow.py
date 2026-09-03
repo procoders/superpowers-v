@@ -1320,9 +1320,11 @@ TIER_RAISE = {
 
 RECALL_REVIEW_CLAUSE = (
     "Recall re-check (memory.auto_tighten): this run's emit-time recall found "
-    "prior recorded failures on the lanes of %s. Re-check those files against "
-    "the `recall_check` evidence in state.json, and say in your verdict whether "
-    "the recorded failure mode recurs — evidence, not a presumption of guilt."
+    "prior recorded failures on the lanes of %s. Re-run "
+    "`python3 -B scripts/compound-v-memory.py recall-check --files <every path of the "
+    "merged diff> --json` yourself, quote its verdict and match_count, compare with the "
+    "`recall_check` evidence in state.json, and say in your verdict whether the recorded "
+    "failure mode recurs — evidence, not a presumption of guilt."
 )
 
 
@@ -1389,21 +1391,33 @@ def run_recall_check(write_allowed, results_root, python_bin, engine=None,
     if not isinstance(doc, dict):
         return _recall_unavailable("recall engine returned %s, not an object"
                                    % type(doc).__name__, started)
+    # A verdict that drives a MECHANICAL action (one rung of tier) is accepted
+    # only in its exact shape (Codex cross-model receipt, 2026-09-03, finding 2):
+    # the enum, a non-negative integer count (never a bool), and `tighten` only
+    # when the count meets the engine's own threshold. Anything else is
+    # `unavailable` — evidence, not a routing input.
     verdict = doc.get("verdict")
-    if not (isinstance(verdict, str) and verdict.strip()):
-        return _recall_unavailable("recall engine returned no verdict", started)
+    if verdict not in ("none", "tighten", "unavailable"):
+        return _recall_unavailable(
+            "recall engine returned an unknown verdict %r" % (verdict,), started)
     evidence = doc.get("evidence")
     if not isinstance(evidence, list):
         evidence = []
-    try:
-        match_count = int(doc.get("match_count") or 0)
-    except (TypeError, ValueError):
-        match_count = 0
-    result = {"verdict": verdict.strip(), "match_count": match_count,
+    match_count = doc.get("match_count")
+    if isinstance(match_count, bool) or not isinstance(match_count, int) or match_count < 0:
+        return _recall_unavailable(
+            "recall engine returned a malformed match_count %r" % (match_count,), started)
+    k = doc.get("k")
+    if k is not None and (isinstance(k, bool) or not isinstance(k, int) or k < 1):
+        return _recall_unavailable("recall engine returned a malformed k %r" % (k,), started)
+    if verdict == "tighten" and k is not None and match_count < k:
+        return _recall_unavailable(
+            "recall engine said tighten with match_count %d below k %d" % (match_count, k),
+            started)
+    result = {"verdict": verdict, "match_count": match_count,
               "evidence": evidence[:RECALL_EVIDENCE_MAX],
               "recall_check_ms": _recall_ms(started)}
-    k = doc.get("k")
-    if isinstance(k, int) and not isinstance(k, bool):
+    if k is not None:
         result["k"] = k
     return result
 
@@ -1788,7 +1802,9 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
     _man_mem = manifest.get("memory")
     if isinstance(_man_mem, dict):
         memory_cfg.update(_man_mem)
-    auto_tighten = bool(memory_cfg.get("auto_tighten"))
+    # Exact JSON booleans only (Codex receipt finding 5): "false" the string must
+    # not enable tightening, and any other type reads as the default.
+    auto_tighten = memory_cfg.get("auto_tighten") is True
     # `memory.auto_recall` (default true) is the /v:init "Manual only" switch;
     # `emit --no-recall` forces it off for one emit. Review-2 of v3.4.10, item 1:
     # until now no script read it and /v:init offered a switch that reached nothing.
@@ -8184,6 +8200,29 @@ def selftest():
         _rk_p5, _rk_b5 = _rk_plan(False, manifest_memory=False, config_memory={"auto_recall": False})
         _check("memory.auto_recall: false in the project config disables recall for the emit",
                all((_rk_b5[k].get("recall_check") or {}).get("verdict") == "unavailable" for k in ("impl", "clean", "rev")))
+        # Codex receipt findings 2 and 5: strict verdict shape; exact booleans
+        _rk_p6, _rk_b6 = _rk_plan(False, manifest_memory=False, config_memory={"auto_tighten": "false"})
+        _check("auto_tighten: \"false\" (a string) does NOT enable tightening", _rk_b6["impl"].get("tier") == "light")
+        _rk_p7, _rk_b7 = _rk_plan(False, manifest_memory=False, config_memory={"auto_recall": "false"})
+        _check("auto_recall: \"false\" (a string) leaves recall ON (only the boolean false turns it off)",
+               (_rk_b7["impl"].get("recall_check") or {}).get("verdict") in ("tighten", "none"))
+        _fake_engine = os.path.join(tmp, "fake-recall.py")
+        _atomic_write(_fake_engine, "import os,sys; sys.stdout.write(os.environ.get('CV_FAKE_RECALL','{}'))\n")
+        def _fake(doc):
+            os.environ["CV_FAKE_RECALL"] = json.dumps(doc)
+            try:
+                return run_recall_check(["scripts/foo.py"], _rk_root, "/usr/bin/python3",
+                                        engine=_fake_engine, repo_root=tmp)
+            finally:
+                os.environ.pop("CV_FAKE_RECALL", None)
+        _check("an unknown verdict reads as unavailable",
+               _fake({"verdict": "tighten-ish", "match_count": 5})["verdict"] == "unavailable")
+        _check("a malformed match_count reads as unavailable",
+               _fake({"verdict": "tighten", "match_count": "5"})["verdict"] == "unavailable")
+        _check("tighten below the engine's own k reads as unavailable",
+               _fake({"verdict": "tighten", "match_count": 1, "k": 2})["verdict"] == "unavailable")
+        _check("a well-formed tighten is accepted as-is",
+               _fake({"verdict": "tighten", "match_count": 3, "k": 2, "evidence": []})["verdict"] == "tighten")
         _rk_plan(False)  # leave the fixture as the later checks expect it
 
         _rk_plan_off, _rk_off = _rk_plan(False)
@@ -8248,6 +8287,7 @@ def selftest():
         _check("...and every review job's acceptance gains the re-check clause",
                len(_rk_on["rev"]["acceptance"]) == 2
                and "Recall re-check" in _rk_on["rev"]["acceptance"][1]
+               and "recall-check --files" in _rk_on["rev"]["acceptance"][1]
                and "impl" in _rk_on["rev"]["acceptance"][1],
                json.dumps(_rk_on["rev"]["acceptance"])[:240])
         _check("TIER_RAISE is one rung up and stops at the top",

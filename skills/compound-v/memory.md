@@ -112,7 +112,7 @@ match, **not** embedding similarity:
   the verdict rides in the emitted job entry (`recall_check: {verdict, match_count,
   evidence[:3], recall_check_ms}`) and reaches `state.json` through `register-lane` — the
   runtime hook that already writes a job's state entry before its work starts — via a new
-  `--recall-check-json` argument on the emitted `register-lane` command.
+  `--recall-check-json` argument on the emitted `register-lane` command — for a `tighten` verdict. A `none` or `unavailable` verdict lives in the emitted job entry and the emit summary only (Codex receipt, finding 6: one contract, stated).
 - **Cost is measured per job, never assumed.** Each `recall-check` walk is timed at emit and
   recorded as `recall_check_ms` in the job entry and the emit summary; nothing about its cost is
   estimated or hardcoded.
