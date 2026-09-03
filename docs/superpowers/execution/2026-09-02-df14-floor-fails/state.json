@@ -1,6 +1,6 @@
 {
   "run_id": "2026-09-02-df14-floor-fails",
-  "phase": "DISPATCHED",
+  "phase": "MERGED",
   "jobs": {
     "floor-fails": {
       "baseline": "5e226de2244da35a282d479f30dd2f888b11d590",
@@ -27,5 +27,7 @@
       "commit": "9b5e2f01442fc56f22ba9006aebb53f34db4aa93",
       "integrated": true
     }
-  }
+  },
+  "merged_at": "2026-09-03T02:07:10Z",
+  "phase_note": "retro-marked 2026-09-03: finalize-wave did not advance the phase before 3.4.1 (stage-1 finding 45)"
 }

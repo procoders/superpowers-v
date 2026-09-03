@@ -1,6 +1,6 @@
 {
   "run_id": "2026-09-02-df24-recall-review",
-  "phase": "DISPATCHED",
+  "phase": "MERGED",
   "jobs": {
     "impl-slice": {
       "baseline": "d0a79bc803e80c0119ca88cfd96ea146fda8266e",
@@ -50,5 +50,7 @@
       "commit": "dae5739c7ddb88b36c3d4e7827d7e308f8da4e32",
       "integrated": true
     }
-  }
+  },
+  "merged_at": "2026-09-03T02:07:10Z",
+  "phase_note": "retro-marked 2026-09-03: finalize-wave did not advance the phase before 3.4.1 (stage-1 finding 45)"
 }

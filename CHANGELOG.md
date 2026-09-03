@@ -4,6 +4,26 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [Unreleased]
+
+Stage verification, cycle 1 (DIRECT attended), 2026-09-03 — the first real request after 3.4.0 got no triage at all.
+
+### Fixed — the phase advance to MERGED was a prose step; fourteen finished runs silenced the triage hook
+
+`finalize-wave` integrated, committed and pruned, but never touched `state.json.phase`; only `/v:dispatch` step 9 (a human step) wrote `MERGED`. Every run of the 3.4.0 night sat at `PARTITION_VERIFIED` after a successful merge, the dashboard's `resume` named fourteen "unfinished" runs for 72 hours, and `triage-prompt-nudge.sh` stayed silent for the whole repository. The finalizer now moves a run to `DISPATCHED` while waves remain and to `MERGED` once every manifest job is integrated (`merged_at` recorded), and commits the run's own record in a second, plain commit — never folded into the wave commit the authority proves. Sixteen historical runs whose every wave integrated are retro-marked `MERGED` with a note.
+
+### Changed — the triage hook asks a narrower question than the banner
+
+`compound-v-dashboard.py resume --open-jobs` lists only runs the pipeline may still move by itself — a pending/running job, not `BLOCKED`; the hook asks with it and a 6-hour window, the SessionStart banner keeps its 72-hour "anything unfinished" semantics. A superseded or halted run no longer blocks sizing of a new request.
+
+### Fixed — `.run.lock` had been committed in 26 run directories
+
+The per-run mutex is gitignored and untracked; the finalizer's bookkeeping commit resets it explicitly.
+
+### CI
+
+The fifth review record reproduced the anti-ruflo grep pattern literally and tripped the gate on 0d751b1 while the release workflow, sharing only a push event, published v3.4.0 anyway. The record is fixed and the release job now waits for "Validate Plugin" on the same commit and refuses to publish on red.
+
 ## [3.4.0] - 2026-09-02
 
 Native-first: the cut list from [`2026-09-02-viability-audit.md`](docs/superpowers/architecture/2026-09-02-viability-audit.md) §7, decided by the maintainer through four structured questions and shipped through [`docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md`](docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md). The constraint: the functionality stays, but leans as far as possible on Claude Code's own mechanisms.

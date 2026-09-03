@@ -1092,11 +1092,19 @@ def _selftest():
         _mkrun("2099-01-01-live", "DISPATCHED", 2.0)          # fresh + unfinished
         _mkrun("2099-01-02-merged", "MERGED", 1.0)            # fresh but finished
         _mkrun("2099-01-03-oldopen", "DISPATCHED", 500.0)     # unfinished but stale
+        _mkrun("2099-01-04-alldone", "PARTITION_VERIFIED", 2.0, done=3)  # fresh, jobs all done
+        _mkrun("2099-01-05-halted", "BLOCKED", 2.0)          # fresh, halted for a human
         _mkrun("2099-01-04-nostate", "", 0.0, with_state=False)  # no recorded ts
 
-        ids = [r["id"] for r in active_records(rroot, now=now)]
-        check(ids == ["2099-01-01-live"],
-              "resume: expected only the fresh unfinished run, got " + repr(ids))
+        ids = sorted(r["id"] for r in active_records(rroot, now=now))
+        check(ids == ["2099-01-01-live", "2099-01-04-alldone", "2099-01-05-halted"],
+              "resume: the banner names every fresh unfinished run, got " + repr(ids))
+        # The triage hook's question is narrower: a run whose jobs are all
+        # terminal waits for a person and a BLOCKED run was halted for one;
+        # neither is mid-pipeline for a NEW request (stage-1 finding 45/47).
+        ids_open = [r["id"] for r in active_records(rroot, now=now, open_jobs_only=True)]
+        check(ids_open == ["2099-01-01-live"],
+              "resume --open-jobs: only the run with a pending job, got " + repr(ids_open))
 
         # REGRESSION (found live): freshness must come from the RECORDED timestamp,
         # never a file mtime -- git rewrites mtimes on clone/branch-switch, which
@@ -1104,12 +1112,12 @@ def _selftest():
         for dirpath, _dn, fns in os.walk(rroot):
             for fn in fns:
                 os.utime(os.path.join(dirpath, fn), (now, now))
-        ids2 = [r["id"] for r in active_records(rroot, now=now)]
+        ids2 = [r["id"] for r in active_records(rroot, now=now, open_jobs_only=True)]
         check(ids2 == ["2099-01-01-live"],
               "resume: mtime touch must not resurrect stale/untimestamped runs, got "
               + repr(ids2))
 
-        line = format_resume_line(active_records(rroot, now=now))
+        line = format_resume_line(active_records(rroot, now=now, open_jobs_only=True))
         check("2099-01-01-live" in line, "resume: line must name the active run")
         check("DISPATCHED" in line and "1/2" in line,
               "resume: line must carry phase and job progress")
@@ -1202,12 +1210,46 @@ def _fmt_age(hours):
     return "updated {}d ago".format(int(hours // 24))
 
 
-def active_records(root, max_age_hours=DEFAULT_RESUME_MAX_AGE_HOURS, now=None):
-    """Unfinished runs/epics touched within `max_age_hours`, newest first."""
+OPEN_JOB_STATES = ("pending", "running", "dispatched", "queued")
+
+
+def _has_open_job(rec):
+    """True when a RUN still has a job the pipeline itself may move next.
+
+    The banner's notion of unfinished ("phase is not merged") is the right one
+    for a human resuming work. It is the wrong one for deciding whether a NEW
+    request may be sized: a run whose jobs are all terminal is waiting for a
+    person, a BLOCKED run has been halted for one, and neither is "mid-pipeline"
+    in the sense that a fresh triage record could contaminate it. On 2026-09-03
+    five superseded runs of one night kept the triage hook silent for the whole
+    repository (stage-1 finding 45/47). Epics are left to the caller's window.
+    """
+    if rec.get("kind") == "epic":
+        return True
+    if str(rec.get("status") or "").strip().lower() == "blocked":
+        return False
+    state_jobs = rec.get("state_jobs") or {}
+    if not state_jobs:
+        # materialized but never run: nothing is moving, nothing to contaminate
+        return False
+    return any(isinstance(jv, dict)
+               and str(jv.get("status") or "").strip().lower() in OPEN_JOB_STATES
+               for jv in state_jobs.values())
+
+
+def active_records(root, max_age_hours=DEFAULT_RESUME_MAX_AGE_HOURS, now=None,
+                   open_jobs_only=False):
+    """Unfinished runs/epics touched within `max_age_hours`, newest first.
+
+    `open_jobs_only` narrows to work the pipeline may still move by itself
+    (see `_has_open_job`); the triage hook asks with it, the banner without.
+    """
     now = time.time() if now is None else now
     out = []
     for rec in build_records(os.path.realpath(root)):
         if not _is_unfinished(rec):
+            continue
+        if open_jobs_only and not _has_open_job(rec):
             continue
         age = _age_hours(rec, now)
         if age is None or age > max_age_hours:
@@ -1241,7 +1283,8 @@ def format_resume_line(records):
 
 
 def cmd_resume(args):
-    records = active_records(args.execution_root, args.max_age_hours)
+    records = active_records(args.execution_root, args.max_age_hours,
+                             open_jobs_only=bool(getattr(args, "open_jobs", False)))
     if args.as_json:
         payload = [{k: r.get(k) for k in
                     ("kind", "id", "status", "done", "total", "age_hours", "display_ts")}
@@ -1283,6 +1326,9 @@ def main(argv=None):
                           help="ignore work older than this (default: %(default)s)")
     p_resume.add_argument("--json", dest="as_json", action="store_true",
                           help="machine-readable output")
+    p_resume.add_argument("--open-jobs", dest="open_jobs", action="store_true",
+                          help="only work the pipeline may still move by itself: a run with a "
+                               "pending/running job and not BLOCKED (the triage hook's question)")
 
     args = parser.parse_args(argv)
 

@@ -272,7 +272,14 @@ _has_active_run() {
   py="$(_python)" || return 0                                   # cannot tell ⇒ ACTIVE
   # Importing must not leave __pycache__/*.pyc next to the scripts: those are
   # untracked files a scope gate would union into a job's changed set.
-  line="$(PYTHONDONTWRITEBYTECODE=1 "$py" "$dash" resume \
+  # THE HOOK'S QUESTION IS NARROWER THAN THE BANNER'S. The banner asks "is
+  # there work a person should resume?" (any unfinished run, 72 h). This hook
+  # asks "would a fresh triage record contaminate a run the pipeline is still
+  # moving?" — a run with a pending/running job, not BLOCKED, touched within
+  # one working session. On 2026-09-03 five superseded runs of one night and a
+  # BLOCKED one kept the banner's answer "yes" for three days and this hook
+  # silent for every new request in the repository (stage-1 finding 45/47).
+  line="$(PYTHONDONTWRITEBYTECODE=1 "$py" "$dash" resume --open-jobs --max-age-hours 6 \
             --execution-root "${proj}/docs/superpowers/execution" 2>/dev/null)" \
     || return 0                                                 # cannot tell ⇒ ACTIVE
   [ -n "$line" ]

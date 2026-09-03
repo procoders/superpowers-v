@@ -1,6 +1,6 @@
 {
   "run_id": "2026-09-02-df22-closed",
-  "phase": "DISPATCHED",
+  "phase": "MERGED",
   "jobs": {
     "impl-slice": {
       "baseline": "5e226de2244da35a282d479f30dd2f888b11d590",
@@ -50,5 +50,7 @@
       "commit": "d299d1e839d8d212985a3cfba3b46bf8b78b6c06",
       "integrated": true
     }
-  }
+  },
+  "merged_at": "2026-09-03T02:07:10Z",
+  "phase_note": "retro-marked 2026-09-03: finalize-wave did not advance the phase before 3.4.1 (stage-1 finding 45)"
 }

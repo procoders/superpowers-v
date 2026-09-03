@@ -1,6 +1,6 @@
 {
   "run_id": "2026-09-02-df9-escalation",
-  "phase": "DISPATCHED",
+  "phase": "MERGED",
   "jobs": {
     "retried": {
       "baseline": "378176031ebba7287d85fbe15d018ba4c25b3e47",
@@ -27,5 +27,7 @@
       "commit": "02341caf3c4a3a40c28c302bc926be1366eb12b3",
       "integrated": true
     }
-  }
+  },
+  "merged_at": "2026-09-03T02:07:10Z",
+  "phase_note": "retro-marked 2026-09-03: finalize-wave did not advance the phase before 3.4.1 (stage-1 finding 45)"
 }

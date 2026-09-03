@@ -1,6 +1,6 @@
 {
   "run_id": "2026-09-02-v3.0.6-implement-narrowing",
-  "phase": "DISPATCHED",
+  "phase": "MERGED",
   "jobs": {
     "exec-lane": {
       "baseline": "4d91adc326c134d4a77af5a71d3669d846ea45bf",
@@ -42,5 +42,7 @@
       "commit": "5c89a374472171e4f04a1800d10a759a22e38036",
       "integrated": true
     }
-  }
+  },
+  "merged_at": "2026-09-03T02:07:10Z",
+  "phase_note": "retro-marked 2026-09-03: finalize-wave did not advance the phase before 3.4.1 (stage-1 finding 45)"
 }

@@ -70,3 +70,6 @@ docs/superpowers/execution/2026-07-11-v2.9-pre-evaluation/baselines/
 # for that half.
 __pycache__/
 *.pyc
+
+# per-run mutex, written by the emitter; never part of the record
+.run.lock

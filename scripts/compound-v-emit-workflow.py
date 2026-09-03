@@ -2333,6 +2333,12 @@ def _load_state(run_dir):
     return state
 
 
+def _utc_stamp():
+    """ISO-8601 UTC seconds, the shape every other stamp in the run dir uses."""
+    import time as _time
+    return _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
+
+
 def _save_state(run_dir, state, now=None):
     if now:
         state["updated_at"] = now
@@ -3873,6 +3879,23 @@ def cmd_finalize_wave(argv):
                 "jobs": job_ids, "merged": out["merged"],
                 "commit": out.get("commit"), "integrated": out.get("integrated"),
             }
+            # THE PHASE ADVANCE IS THIS FINALIZER'S, NOT A PROSE STEP. Until
+            # 3.4.1 only /v:dispatch step 9 — a human step — wrote MERGED, and
+            # fourteen finished runs of one night sat at PARTITION_VERIFIED: the
+            # dashboard called every one of them unfinished for 72 hours and the
+            # triage hook stayed silent for the whole repository (stage-1
+            # finding 45). A wave that integrated moves the run to DISPATCHED;
+            # the wave after which every manifest job is integrated moves it to
+            # MERGED. A refused wave leaves the phase alone.
+            if out.get("integrated"):
+                _all_ids = [str(j.get("id")) for j in (manifest.get("jobs") or [])
+                            if isinstance(j, dict) and j.get("id")]
+                _done = bool(_all_ids) and all(
+                    ((fresh["jobs"].get(_j) or {}).get("merged") or {}).get("integrated")
+                    for _j in _all_ids)
+                fresh["phase"] = "MERGED" if _done else "DISPATCHED"
+                if _done:
+                    fresh["merged_at"] = now or _utc_stamp()
             _save_state(run_dir, fresh, now=now)
 
     merged_worktrees = {}
@@ -4135,6 +4158,37 @@ def cmd_finalize_wave(argv):
                 out["scorecard_update_error"] = (err_sc or "").strip()[:200]
 
     _apply(now=args.now)
+
+    # ---- COMMIT THE RUN'S OWN RECORD, separately from the work -------------- #
+    # The audit-trail gate requires a committed state.json, and finishing a
+    # branch removes worktrees — an uncommitted run dir is exactly what the
+    # v2.6.4 incident lost. Until 3.4.1 this commit was the orchestrator's by
+    # hand after every wave. It is NEVER folded into the wave commit, which
+    # carries the sealed patch and nothing else (that is what the authority
+    # proves); it is a second, plain commit of pipeline-owned paths only: the
+    # run directory (minus its lock) and the two memory streams Record and the
+    # scorecard append to. Best-effort: a wave that integrated is not reported
+    # failed because its bookkeeping could not be committed.
+    if out["integrated"] and not args.no_commit:
+        _bk_rel = os.path.relpath(os.path.abspath(run_dir), os.path.abspath(repo_root))
+        if not _bk_rel.startswith(".." + os.sep) and _bk_rel != "..":
+            _run(["git", "-C", repo_root, "add", "-A", "--", _bk_rel])
+            _run(["git", "-C", repo_root, "reset", "-q", "--",
+                  os.path.join(_bk_rel, ".run.lock")])
+            for _stream in ("docs/superpowers/memory/triage-outcomes.jsonl",
+                            "docs/superpowers/memory/worker-performance.jsonl"):
+                if os.path.exists(os.path.join(repo_root, _stream)):
+                    _run(["git", "-C", repo_root, "add", "--", _stream])
+            _rc_q, _, _ = _run(["git", "-C", repo_root, "diff", "--cached", "--quiet"])
+            if _rc_q != 0:
+                _rc_bk, _, _err_bk = _run([
+                    "git", "-C", repo_root, "commit", "-q", "-m",
+                    "bookkeeping(%s): wave %s finalized" % (
+                        os.path.basename(os.path.normpath(run_dir)), args.wave)])
+                if _rc_bk == 0:
+                    out["bookkeeping_commit"] = _head_commit(repo_root) or ""
+                else:
+                    out["bookkeeping_error"] = (_err_bk or "").strip()[:200]
     return emit(0 if out["integrated"] else 1)
 
 
@@ -5867,11 +5921,28 @@ def selftest():
                    os.path.exists(bk4_stream)
                    and (_load_state(bk4_run).get("triage_actual") or {})
                    .get("merge_pending") is True)
+            _bk4_state = _load_state(bk4_run)
+            _wave_commit = str((_bk4_state.get("waves") or {}).get("1", {}).get("commit") or "")
             _rc_c, _committed, _ = _git(bk4_repo,
-                                        ["show", "--name-only", "--format=", "HEAD"])
+                                        ["show", "--name-only", "--format=", _wave_commit or "HEAD"])
             _check("the wave's commit carries the job's work and NOT the stream",
                    "src/work.txt" in _committed
                    and "triage-outcomes.jsonl" not in _committed, _committed)
+            # Stage-1 finding 45: the finalizer, not a prose step, moves the run
+            # to MERGED once every manifest job is integrated, and commits the
+            # run's own record in a second commit that carries the stream and
+            # state.json but none of the work.
+            _check("finalize-wave advances the phase to MERGED when every job is integrated",
+                   _bk4_state.get("phase") == "MERGED" and bool(_bk4_state.get("merged_at")),
+                   str(_bk4_state.get("phase")))
+            _rc_h, _head_files, _ = _git(bk4_repo, ["show", "--name-only", "--format=", "HEAD"])
+            _rc_p, _head_sha, _ = _git(bk4_repo, ["rev-parse", "HEAD"])
+            _check("...and commits the run's bookkeeping SEPARATELY from the wave commit",
+                   _head_sha.strip() != _wave_commit
+                   and "state.json" in _head_files and "triage-outcomes.jsonl" in _head_files
+                   and "src/work.txt" not in _head_files, _head_files)
+            _rc_l, _tracked, _ = _git(bk4_repo, ["ls-files", "--", "docs/superpowers/execution"])
+            _check("...and never the run lock", ".run.lock" not in _tracked, _tracked)
 
         # ---- THE SEALED PATCH, END TO END ------------------------------------ #
         # The merge used to take a fresh diff of the live worktree, so whatever

@@ -1,6 +1,6 @@
 {
   "run_id": "2026-09-02-v3.4-native-first-r13",
-  "phase": "PARTITION_VERIFIED",
+  "phase": "MERGED",
   "updated_at": "2026-09-03T02:55:00Z",
   "pre_eval_id": "2026-09-02T170442Z-v3-4-native-first-replace-the-epic-goal-feature-a-of-hooks-e-5664",
   "continues": "2026-09-02-v3.4-native-first-r12",
@@ -36,5 +36,7 @@
       "commit": "38a43317882cf0fb4ebabc04dc6b01c9fe741683",
       "integrated": true
     }
-  }
+  },
+  "merged_at": "2026-09-03T02:55:00Z",
+  "phase_note": "retro-marked 2026-09-03: finalize-wave did not advance the phase before 3.4.1 (stage-1 finding 45)"
 }
