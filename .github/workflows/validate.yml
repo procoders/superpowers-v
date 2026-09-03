@@ -242,7 +242,14 @@ jobs:
           deadfile="$(mktemp)"
           while IFS= read -r -d '' file; do
             dir=$(dirname "$file")
-            grep -oE '\]\([^)]+\.(md|py|sh|json|ya?ml)[^)]*\)' "$file" 2>/dev/null | sed 's/^](//;s/)$//' | while IFS= read -r link; do
+            # A link QUOTED inside a fenced block or an inline code span is text, not
+            # navigation: review files and audits quote `[x](path)` examples from nested
+            # directories, and every one of those read as dead from that directory (the
+            # 2026-09-03 epic's integration review found nine, and hit the trap itself while
+            # quoting one). Drop fenced blocks and strip inline code spans before extracting.
+            awk '/^[[:space:]]*(```|~~~)/ { fence = !fence; next } !fence { print }' "$file" \
+              | sed -E 's/`[^`]*`//g' \
+              | grep -oE '\]\([^)]+\.(md|py|sh|json|ya?ml)[^)]*\)' 2>/dev/null | sed 's/^](//;s/)$//' | while IFS= read -r link; do
               # Strip a #anchor and a :LINE / :LINE-LINE suffix (file:line refs are clickable
               # links, not filenames — the target is the bare file).
               path="${link%%#*}"
