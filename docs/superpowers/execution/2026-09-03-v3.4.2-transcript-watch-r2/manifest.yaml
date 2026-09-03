@@ -1,0 +1,89 @@
+run_id: 2026-09-03-v3.4.2-transcript-watch-r2
+feature: 'v3.4.2 transcript play-ahead r2: the ten issues of review-1 (detector precision, tick-safe registration, advisory paths, wiring, suite), then review-2'
+routing_stance: balanced
+max_parallel: 2
+spec_path: docs/superpowers/specs/2026-09-03-v3.4.2-transcript-watch-design.md
+plan_path: docs/superpowers/plans/2026-09-03-v3.4.2-transcript-watch.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-09-03-v3-4-2-transcript-watch.md
+  domain: docs/superpowers/specs/2026-09-03-v3.4.2-transcript-watch-design.md
+  library: docs/superpowers/library-audit/2026-09-03-v3-4-2-transcript-watch.md
+triage:
+  tier: FULL
+  pre_eval_id: 2026-09-03T042847Z-implement-v3-4-2-transcript-play-ahead-per-docs-superpowers-47e6
+  taxonomy_digest: sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a
+  decided_at: '2026-09-03T04:28:47Z'
+acceptance_criteria:
+- bash tests/test-transcript-watch.sh and /usr/bin/python3 -B scripts/compound-v-transcript-watch.py --selftest are green; every other tests/*.sh and scripts/compound-v-*.py --selftest stays green under /usr/bin/python3 -B.
+- 'Run --once against THIS run''s own transcripts (discovery by the run directory path, no --wf) on the merged tree: it names every agent of the run with its job, reports zero out-of-lane and zero wrong-cwd signals for the merged jobs, and exits 0; the output is quoted in the review.'
+- 'The script imports the path matcher from scripts/compound-v-scope-check.py by path (grep shows no second glob matcher), never writes into the run directory or the repository (strace-free proof: git status is clean after a --once), and exits 0 on every advisory path.'
+- 'commands/v-status.md documents --live and commands/v-dispatch.md step 6 documents the background watch and the two signals that justify TaskStop; CHANGELOG top heading is ## [3.4.2] - 2026-09-03; plugin.json and marketplace.json say 3.4.2; lint-frontmatter is green.'
+test_contract:
+  floor_command: /usr/bin/python3 -B scripts/compound-v-scope-check.py --selftest
+  full_command: bash -c 'for s in scripts/compound-v-*.py; do grep -q -- "--selftest" "$s" || continue; /usr/bin/python3 -B "$s" --selftest >/dev/null 2>&1 || { echo "FAIL $s"; exit 1; }; done; for t in tests/*.sh; do bash "$t" >/dev/null 2>&1 || { echo "FAIL $t"; exit 1; }; done; echo all-tests-ok'
+  impacted_map:
+  - when: scripts/compound-v-*.py
+    run: bash -c '[ -f {path} ] || exit 0; grep -q -- "--selftest" {path} || exit 0; /usr/bin/python3 -B {path} --selftest'
+  - when: tests/*.sh
+    run: bash -c '[ -f {path} ] || exit 0; bash {path}'
+  - when: tests/v2.9-e2e/*.py
+    run: bash -c '[ -f {path} ] || exit 0; /usr/bin/python3 -B -m unittest discover -s "$(dirname {path})" -p "$(basename {path})"'
+  - when: commands/*.md
+    run: /usr/bin/python3 -B scripts/lint-frontmatter.py .
+  - when: .claude-plugin/*.json
+    run: bash -c 'jq empty .claude-plugin/plugin.json && jq empty .claude-plugin/marketplace.json'
+jobs:
+- id: watch-script
+  title: Task A' — the watcher's detectors made precise and tick-safe (review-1 issues 1, 2, 2b, 3, 4, 6, 7, 10)
+  type: implement
+  backend: claude
+  tier: deep
+  effort: medium
+  isolation: worktree
+  run: parallel
+  write_allowed:
+  - scripts/compound-v-transcript-watch.py
+  - tests/test-transcript-watch.sh
+  read_allowed:
+  - '**'
+  acceptance:
+  - bash tests/test-transcript-watch.sh is green and now carries one fixture per false-positive class of review-1 (a Bash `2>/dev/null` redirect and a non-repo path produce NO out-of-lane; a tool_result that merely QUOTES the deny literal produces NO denied; a register-lane split across two ticks keeps the agent registered; a missing repo root does not raise) plus a discovery test that resolves the session root through CLAUDE_CONFIG_DIR; /usr/bin/python3 -B scripts/compound-v-transcript-watch.py --selftest is green.
+  - A path with no repo-relative form is never reported out-of-lane; `denied` and the error patterns anchor to the tool_result of a refused call (is_error / the literal at the start of a line), and the evidence rendered is the MATCHING line, not the first; the pending tool_use table (id → name, parsed register-lane) is persisted in the state file across ticks; no advisory path raises (a falsy repo root is guarded); the dead `except … pass` in save_state is gone.
+  - The per-tick summary carries a one-line-per-agent roster (`<agent8> <job|(unregistered)> <status>`), which is what acceptance criterion 2 of r1 meant by 'names every agent of the run with its job'.
+  body: 'Review pass 1 (docs/superpowers/dogfood/2026-09-03-v3.4.2-transcript-watch-review-1.md) found ISSUES (10) on the watcher; read it in full first — its section per issue names the exact lines. Fix issues 1, 2, 2b, 3, 4, 6, 7 and 10 inside your lane (the script and its test), TEST FIRST: one fixture per false-positive class before the detector changes. Do not weaken a detector to make a fixture pass — anchor it (issue 2''s rule). Issue 9 (the job ran `impacted` under tier FULL) is NOT yours and is not a defect: the derived default honours a declared impacted_map at every tier by the maintainer''s 2026-09-02 rule; the reviewer''s note is answered in the review-2 job. Run python with -B; register your lane with a literal --cwd.'
+- id: docs-wiring
+  title: Task B' — /v:status --live resolves and degrades (issue 5), /v:dispatch's watch advice as its own step (issue 8), CHANGELOG note
+  type: implement
+  backend: claude
+  tier: standard
+  effort: medium
+  isolation: worktree
+  run: parallel
+  write_allowed:
+  - commands/v-status.md
+  - commands/v-dispatch.md
+  - CHANGELOG.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - commands/v-status.md step 1 strips a leading `--live` from the argument and the --live section carries the file's standard degrade line (no watcher script ⇒ say so, never a traceback); commands/v-dispatch.md presents the background watch as its own numbered step (or records, in one sentence, why archaeology §7.7 was overruled).
+  - CHANGELOG.md's 3.4.2 section gains one short paragraph naming review-1's detector fixes (no fabricated metrics); /usr/bin/python3 -B scripts/lint-frontmatter.py . is green.
+  body: Read docs/superpowers/dogfood/2026-09-03-v3.4.2-transcript-watch-review-1.md issues 5 and 8 and the archaeology audit §7.7/§7.8 (docs/superpowers/archaeology/2026-09-03-v3-4-2-transcript-watch.md). Fix them inside your lane. Run python with -B; register your lane with a literal --cwd.
+- id: spec-review-2
+  title: Review Gate pass 2 — review-1's ten issues against the merged tree, plus the r1 acceptance criteria
+  type: review
+  backend: claude
+  tier: deep
+  effort: medium
+  isolation: direct
+  run: serial
+  depends_on:
+  - watch-script
+  - docs-wiring
+  write_allowed:
+  - docs/superpowers/dogfood/2026-09-03-v3.4.2-transcript-watch-review-2.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - 'The review-2 file exists with ## Recall, ## SPEC, ## QUALITY, ## INTEGRATION, ## Verdict; for each of review-1''s ten issues it states closed or open with the command and output that proves it — issue 9 is answered by the maintainer''s derived-default rule (skills/compound-v/execution-manifest.md, ''The derived default''), not by a code change; every feature-level acceptance criterion of the r1 manifest is re-run on the merged tree, including the watch run --once against THIS run''s own transcripts with its per-agent roster quoted; the verdict is APPROVED or ISSUES with a numbered list.'
+  body: 'Your agent definition carries the three-pass Review Gate and a Step 0 (V-memory recall). Follow it. This is the SECOND pass. Read review-1 (ISSUES 10) and the two fix jobs of this run as new code. For issue 9, read execution-manifest.md''s derived-default table before deciding: `impacted` under a declared impacted_map is the rule at every tier, by the maintainer''s decision of 2026-09-02; say whether the reviewer''s contract text in agents/spec-reviewer.md §3.3 agrees with it, and if not, name the sentence. Run every acceptance criterion of docs/superpowers/execution/2026-09-03-v3.4.2-transcript-watch/manifest.yaml on the merged tree with /usr/bin/python3 -B, including the watch --once against this run''s own transcripts (no --wf), and quote the roster. Write docs/superpowers/dogfood/2026-09-03-v3.4.2-transcript-watch-review-2.md. Run python with -B; register your lane with a literal --cwd.'
