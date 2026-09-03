@@ -212,9 +212,11 @@ def build_plan(spec_path, topic, today, skip=(), recon=None, root=None):
         # is told to run must carry it identically.
         "clamp": (["Bash(%s -B %s search:*)" % (sys.executable or "python3", memory),
                    "Bash(%s -B %s recall-check:*)" % (sys.executable or "python3", memory),
-                   # Read-only git history for the auditors (v3.4.13, finding 145): 1A's
-                   # "recent commits" evidence comes from git, not from dated prose. Only
-                   # these three forms — nothing that can touch the tree or the index.
+                   # Git history for the auditors (v3.4.13, finding 145): 1A's "recent
+                   # commits" evidence comes from git, not from dated prose. Only these
+                   # three forms. Read-only with respect to git's object database — `git
+                   # log`/`git show --output=<file>` can still write a file, an accepted
+                   # residual risk (design doc, amendment 4: the auditors hold Write anyway).
                    "Bash(git log:*)", "Bash(git blame:*)", "Bash(git show:*)"]
                   if os.path.exists(memory) else None),
     }
@@ -276,8 +278,9 @@ const results = await parallel(CFG.entries.map(function (e) {
         agentType: e.agent_type,
         // The network STAYS — this is the research phase. What goes is the
         // authority to change anything: an auditor reads, greps and searches, and
-        // writes exactly one document. Bash is admitted only for the recall query,
-        // through a clamp, because dogfood 24 proved it is denied without one.
+        // writes exactly one document. Bash is admitted through a clamp — the recall
+        // query (dogfood 24 proved it is denied without one) and read-only git
+        // history (log/blame/show, v3.4.13) — nothing else.
         disallowedTools: CFG.disallowed,
         bashCommandClamp: CFG.clamp,
       };
@@ -518,6 +521,9 @@ def _selftest():
     check("no git form beyond log/blame/show can slip into the clamp",
           plan["clamp"] is None
           or {r for r in plan["clamp"] if r.startswith("Bash(git ")} == _GIT_FORMS)
+    check("the emitted script no longer claims Bash is admitted only for the recall query",
+          "admitted only for the recall query" not in script
+          and "read-only git" in script)
     check("the emitted script passes both narrowings",
           "disallowedTools: CFG.disallowed" in script
           and "bashCommandClamp: CFG.clamp" in script)
