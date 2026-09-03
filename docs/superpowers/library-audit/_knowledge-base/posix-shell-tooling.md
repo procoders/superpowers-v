@@ -56,10 +56,43 @@ to upstream.**
   2026-09-03 — two minor versions behind the 0.11.0 upstream a contributor's Homebrew install
   would likely have. Non-blocking on its own; means CI and local lint results can diverge on any
   `SC` check added between 0.9 and 0.11.
-- **This repo's CI shellcheck step only covers `hooks/*.sh`** (`validate.yml:227-230`,
-  `shellcheck hooks/*.sh`) — `scripts/*.sh` is not linted by CI at all as of 2026-09-03. Any
-  feature whose acceptance criterion is "shellcheck-clean" for a new `scripts/*.sh` file gets that
-  checked once, by hand, at implementation time, with no CI regression guard afterward unless the
-  glob is widened.
+- ~~This repo's CI shellcheck step only covers `hooks/*.sh` (`validate.yml:227-230`, `shellcheck
+  hooks/*.sh`) — `scripts/*.sh` is not linted by CI at all as of 2026-09-03. Any feature whose
+  acceptance criterion is "shellcheck-clean" for a new `scripts/*.sh` file gets that checked once,
+  by hand, at implementation time, with no CI regression guard afterward unless the glob is
+  widened.~~ → **corrected 2026-09-03 (later same day, v3.4.6-triage-test-scoping-fixes audit):**
+  wrong even at the time it was written. Direct re-read of `validate.yml:227-230` gives
+  `shellcheck hooks/*.sh scripts/compound-v-*.sh` — the glob **does** cover `scripts/compound-v-*.sh`
+  and always did in this line; only `hooks/*.sh` was quoted above, and the rest of the line was
+  missed. `scripts/compound-v-*.sh` — including every `compound-v-run-*-worker.sh` — has a standing
+  CI shellcheck regression guard. What's still true and unaffected by this correction: shellcheck
+  itself is not bash-*version*-aware (previous bullet), and any `scripts/*.sh` file that does **not**
+  match the `compound-v-*.sh` glob (a hypothetical future non-`compound-v`-prefixed script) genuinely
+  would fall outside this CI step.
+
+---
+
+## Updated 2026-09-03 — v3.4.6-triage-test-scoping-fixes
+
+Audit: [`docs/superpowers/library-audit/2026-09-03-v3-4-6-triage-test-scoping-fixes.md`](../2026-09-03-v3-4-6-triage-test-scoping-fixes.md).
+
+**`jq`'s existing `tc_validate` predicates (all five `scripts/compound-v-run-*-worker.sh`) re-checked against the jq-1.8.0 binding-syntax breaking change — unaffected, by source read.**
+
+- Building on the `jq` entry already recorded in `2026-09-02-preflight-workflow-probe.md` (current
+  **1.8.2**, this machine **1.7.1**, unpinned/undeclared minimum, jq 1.8.0's breaking change to `as`
+  bindings: `[-1 as $x | 1,$x]` now yields `[1,-1]`): the `tc_validate` function repeated across all
+  five workers (canonical copy `compound-v-run-codex-worker.sh:122-137`) contains one `as` binding —
+  `.scope as $s | [...] | index($s) != null` — that binds a single scalar (`.scope`, one value) to a
+  body that itself produces exactly one output. That shape is not the multi-value-generator pattern
+  the 1.8.0 change affects, so this predicate's behavior is unchanged across 1.7.1 → 1.8.2.
+- **Caveat, stated plainly:** this conclusion is a *source-level read* against jq's documented
+  changelog, not a live `jq` execution — the auditing session had no shell access to run `jq --version`
+  or exercise the predicate directly. If a future edit to `tc_validate` introduces a *new* `as`
+  binding whose body is a multi-value generator (e.g., a list comprehension emitting more than one
+  value per bound input), re-verify live rather than extend this conclusion by analogy.
+- Practical note for the next feature that touches any of the five workers' `tc_validate`/`tc_run` jq
+  filters: keep new predicates in the same `has()` / `type ==` / plain-comparison idiom already used
+  throughout — that whole family is confirmed unaffected by the one known jq-1.8.0 breaking change,
+  and jq stays unpinned in this repo, so there is no version floor forcing a re-check on every run.
 
 ---

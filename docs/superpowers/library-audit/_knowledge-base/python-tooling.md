@@ -45,3 +45,27 @@ Audit: `docs/superpowers/library-audit/2026-09-03-v3-4-5-recall-freshness.md`.
 - **Forward-compat trap, not a current bug:** Python's own docs say *"the default will change to `False` in a future Python release"* and recommend migrating to `sqlite3.connect(path, autocommit=False)` (PEP-249-compliant mode) — but the `autocommit` keyword argument to `connect()` **does not exist before Python 3.12**. Any script pinned to the Python-3.9 floor (see above) that adds this kwarg breaks immediately with `TypeError`, not a subtle bug. No removal date is published for `LEGACY_TRANSACTION_CONTROL` itself.
 - **Practical implication for any future spec that touches this codebase's `sqlite3` usage:** do not "modernize" `sqlite3.connect()` calls to the newer `autocommit=` form while the project's floor stays at 3.9 — verify the floor first, per the entry above, before applying any upstream-recommended `sqlite3` migration.
 - Source: `docs.python.org/3/library/sqlite3.html` (fetched live 2026-09-03; no Context7 available this session — see the audit's §1 for why).
+
+---
+
+## Updated 2026-09-03 — v3.4.6-triage-test-scoping-fixes
+
+Audit: [`docs/superpowers/library-audit/2026-09-03-v3-4-6-triage-test-scoping-fixes.md`](../2026-09-03-v3-4-6-triage-test-scoping-fixes.md).
+
+### `isinstance(v, int) and not isinstance(v, bool)` — this repo's established guard for validating an integer manifest field, worth citing by name instead of re-deriving
+
+- Python's `bool` is a subclass of `int` (language semantics, not a version-specific fact — true in
+  every CPython release this repo has ever targeted). A bare `isinstance(v, int)` check therefore
+  silently accepts `True`/`False` as `1`/`0` for any manifest field documented as "a positive
+  integer" — a classic, easy-to-miss trap when validating hand-authored YAML/JSON where a boolean is
+  just as plausible a typo as a string.
+- **This repo already has an established, repeated defense**, found by direct read of
+  `scripts/compound-v-validate-manifest.py`: the `isinstance(v, int) and not isinstance(v, bool)`
+  guard (or its negation, `not isinstance(v, int) or isinstance(v, bool)`) appears at **six** sites —
+  lines 999, 1344, 1346, 1352, 2362, 2554 — each validating a different integer-typed manifest field.
+  This is house style, not a one-off.
+- **Practical implication for any future spec that adds a new integer-typed manifest or contract
+  field to this file** (the v3.4.6 spec's own `test_contract.timeout_s` is the worked example this
+  entry was written for): use the same guard. A plain `isinstance(v, int)` check would pass this
+  file's own pattern-matching review at a glance while being silently wrong for a boolean input — cite
+  this entry, or the six existing line numbers above, instead of re-deriving the trap from scratch.

@@ -1,0 +1,124 @@
+run_id: 2026-09-03-v3.4.6-triage-test-scoping-fixes
+feature: 'v3.4.6 (findings 99 + 102): a content-scan-excluded big file no longer vetoes the T3 demotion; test_contract.timeout_s budgets the tier-1 checker and rc 124 is failure_class timeout'
+routing_stance: balanced
+max_parallel: 3
+spec_path: docs/superpowers/specs/2026-09-03-v3.4.6-triage-test-scoping-fixes-design.md
+plan_path: docs/superpowers/plans/2026-09-03-v3.4.6-triage-test-scoping-fixes.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-09-03-v3-4-6-triage-test-scoping-fixes.md
+  domain: docs/superpowers/specs/2026-09-03-v3.4.6-triage-test-scoping-fixes-design.md
+  library: docs/superpowers/library-audit/2026-09-03-v3-4-6-triage-test-scoping-fixes.md
+triage:
+  tier: FULL
+  pre_eval_id: 2026-09-03T113149Z-implement-v3-4-6-per-docs-superpowers-specs-2026-09-03-v3-4-0cb5
+  taxonomy_digest: sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a
+  decided_at: '2026-09-03T11:31:49Z'
+acceptance_criteria:
+- In a sandbox checkout, `compound-v-preeval.py triage` on a small-edit request naming scripts/compound-v-memory.py (66,677 B, `.py` content-scan-excluded) returns `needs_t3` (t3_reason demotion) and its localization carries no `content_scan_incomplete`; the same request on the previous commit returned FULL with tiers [localization, T1]; an oversized non-excluded file (a `.md` over MAX_FILE_READ_BYTES) still carries the flag.
+- 'A manifest declaring `test_contract.timeout_s: N` validates iff N is an int (not a bool) in 1..540 (0 / 541 / true / "480" refused with a violation naming the key); the per-job resolved slice carries `timeout_s`; every `scripts/compound-v-run-*-worker.sh` tc_validate accepts it and refuses 0, and tc_run honours it; Engine C''s `run_test_floor` honours it (default 480) and a checker exiting 124 yields `tests.exit_code: 124` plus a `tests.failures[]` entry `timeout after N s: <checker>` that also appears in the gate receipt''s tests block; the top-level `failure_class` is NOT set by a test timeout (pre-flight 1A) and schemas/job_result.schema.json is unchanged.'
+- '`bash tests/test-engine-c-contract.sh` green with the new rows; `--selftest` green for compound-v-localize.py, compound-v-preeval.py, compound-v-fastpath-run.py, compound-v-validate-manifest.py, compound-v-emit-workflow.py; shellcheck clean on the five workers; lint-frontmatter green.'
+- skills/compound-v/execution-manifest.md documents `timeout_s` and the FULL-tier note (an unmapped lane path runs full_command — map every lane path or budget the suite); CHANGELOG [Unreleased] carries both entries with the measured numbers (66,677 vs 65,536 B; 340 s vs 300 s).
+- 'The test-contract resolver never promotes to full_command on account of a changed path under docs/superpowers/execution/** or a gitignored path (finding 105: 46 stale .run.lock files made every direct job''s slice `full`); the wave finalizer deletes the run''s .run.lock when it retires lane-map.json at MERGED/BLOCKED; selftests for both.'
+test_contract:
+  floor_command: bash tests/test-engine-c-contract.sh
+  full_command: bash -c 'for s in scripts/compound-v-*.py; do grep -q -- "--selftest" "$s" || continue; /usr/bin/python3 -B "$s" --selftest >/dev/null 2>&1 || { echo "FAIL $s"; exit 1; }; done; for t in tests/*.sh; do bash "$t" >/dev/null 2>&1 || { echo "FAIL $t"; exit 1; }; done; echo all-tests-ok'
+  impacted_map:
+  - when: scripts/compound-v-localize.py
+    run: bash -c '/usr/bin/python3 -B scripts/compound-v-localize.py --selftest && /usr/bin/python3 -B scripts/compound-v-preeval.py --selftest'
+  - when: scripts/compound-v-fastpath-run.py
+    run: /usr/bin/python3 -B scripts/compound-v-fastpath-run.py --selftest
+  - when: scripts/compound-v-validate-manifest.py
+    run: /usr/bin/python3 -B scripts/compound-v-validate-manifest.py --selftest
+  - when: scripts/compound-v-emit-workflow.py
+    run: /usr/bin/python3 -B scripts/compound-v-emit-workflow.py --selftest
+  - when: scripts/compound-v-run-*-worker.sh
+    run: bash -c '[ -f {path} ] || exit 0; shellcheck {path}'
+  - when: tests/test-engine-c-contract.sh
+    run: bash tests/test-engine-c-contract.sh
+  - when: skills/compound-v/execution-manifest.md
+    run: /usr/bin/python3 -B scripts/lint-frontmatter.py .
+  - when: CHANGELOG.md
+    run: /usr/bin/python3 -B scripts/lint-frontmatter.py .
+  - when: docs/superpowers/dogfood/*.md
+    run: /usr/bin/python3 -B scripts/lint-frontmatter.py .
+  - when: agents/parallel-dispatcher.md
+    run: /usr/bin/python3 -B scripts/lint-frontmatter.py .
+jobs:
+- id: localizer
+  title: Task A — no content_scan_incomplete for a content-scan-excluded file (finding 99)
+  type: implement
+  backend: claude
+  tier: standard
+  effort: medium
+  isolation: worktree
+  run: parallel
+  depends_on: []
+  write_allowed:
+  - scripts/compound-v-localize.py
+  read_allowed:
+  - '**'
+  acceptance:
+  - '_classify_paths calls tax.content_scan_excluded(taxonomy, path) before open(): an excluded path is neither read nor flagged (its taxonomy rows and sensitive flag still apply); the over-cap and unreadable branches stay for every other file; a NEW taxonomy fixture in the selftest covers: oversized scripts/big.py under content_scan_exclude **/*.py ⇒ exact, no content_scan_incomplete; the same file with no exclusion ⇒ the flag; oversized docs/big.md ⇒ the flag; no existing fixture rewritten (1A: _SHARED_TOKEN_TAXONOMY excludes nothing); the _is_generated content-marker tradeoff stated in a comment at the call site; localize + preeval selftests green; Python 3.9 syntax.'
+  body: 'Implement Task A of docs/superpowers/plans/2026-09-03-v3.4.6-triage-test-scoping-fixes.md; spec: docs/superpowers/specs/2026-09-03-v3.4.6-triage-test-scoping-fixes-design.md (Part 1). Read the pre-flight audits named in this manifest''s audits block first. Tests first. Touch only scripts/compound-v-localize.py. Run python with -B; register your lane with a literal --cwd. You are unattended: decide and return.'
+- id: checker-budget
+  title: Task B — test_contract.timeout_s; rc 124 ⇒ failure_class timeout (finding 102)
+  type: implement
+  backend: claude
+  tier: standard
+  effort: high
+  isolation: worktree
+  run: parallel
+  depends_on: []
+  write_allowed:
+  - scripts/compound-v-fastpath-run.py
+  - scripts/compound-v-validate-manifest.py
+  - scripts/compound-v-emit-workflow.py
+  - scripts/compound-v-run-codex-worker.sh
+  - scripts/compound-v-run-antigravity-worker.sh
+  - scripts/compound-v-run-cursor-worker.sh
+  - scripts/compound-v-run-opencode-worker.sh
+  - scripts/compound-v-run-devin-worker.sh
+  - skills/compound-v/execution-manifest.md
+  - tests/test-engine-c-contract.sh
+  - agents/parallel-dispatcher.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - 'Per the plan''s Task B as amended by pre-flight 1A/1C: validate-manifest accepts timeout_s as int-not-bool in 1..540 (selftest accept 480; refuse 0/-1/541/true/"480"); fastpath-run: TEST_TIMEOUT_S=480, resolve_test_commands copies timeout_s into the slice, _cmd_test_floor passes it to run_test_floor, a 124 records tests.exit_code 124 + failures entry `timeout after N s: <checker>` (selftest with sleep 2 under timeout_s 1), NO failure_class change; finding 105: unmapped⇒full promotion skips docs/superpowers/execution/** and gitignored paths with a contract note (selftest: 1 mapped + 3 .run.lock paths ⇒ impacted); emit-workflow: _tests_block_from_floor reads floor[''reasons''], the finalizer deletes .run.lock with the lane map at MERGED/BLOCKED (selftest), the slice carries timeout_s and external workers get --test-timeout-sec from it; all five workers'' tc_validate accept timeout_s (number ≥ 1, existing jq idiom) and tc_run read it, byte-identical, bash 3.2, shellcheck clean; agents/parallel-dispatcher.md''s
+    template follows the contract; tests/test-engine-c-contract.sh gains accept+refuse rows; execution-manifest.md documents the key, the 540 cap under the 600 s harness ceiling, and the bookkeeping-path rule; named selftests green; Python 3.9 syntax.'
+  body: 'Implement Task B of docs/superpowers/plans/2026-09-03-v3.4.6-triage-test-scoping-fixes.md as amended (spec Parts 2 and 3 plus the ''Decisions forced by pre-flight 1A/1C'' section). Read docs/superpowers/archaeology/2026-09-03-v3-4-6-triage-test-scoping-fixes.md §7 first: it names every hop (resolve_test_commands → _cmd_test_floor → run_test_floor; tc_run in the five workers; _tests_block_from_floor; parallel-dispatcher.md) and why a test timeout must never set the top-level failure_class. Tests first. Touch only your lane. Run python with -B; register your lane with a literal --cwd. You are unattended: decide and return.'
+- id: changelog
+  title: Task C — CHANGELOG [Unreleased] entries for findings 99 and 102
+  type: implement
+  backend: claude
+  tier: light
+  effort: low
+  isolation: worktree
+  run: parallel
+  depends_on: []
+  write_allowed:
+  - CHANGELOG.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - 'CHANGELOG [Unreleased] has two ### Fixed entries (findings 99, 102) with the measured numbers (66,677 vs 65,536 B; four-request sandbox probe; 340 s vs 300 s), what changes and what does not (non-excluded big files keep the flag; sensitive paths untouched; default budget 600 s); lint-frontmatter green.'
+  body: 'Implement Task C of docs/superpowers/plans/2026-09-03-v3.4.6-triage-test-scoping-fixes.md. Describe the behaviour as the spec defines it (Tasks A and B implement it in parallel — do not wait for them). Touch only CHANGELOG.md. Run python with -B; register your lane with a literal --cwd. You are unattended: decide and return.'
+- id: spec-review
+  title: Review Gate — three passes against the spec and the feature acceptance criteria
+  type: review
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: direct
+  run: serial
+  depends_on:
+  - localizer
+  - checker-budget
+  - changelog
+  write_allowed:
+  - docs/superpowers/dogfood/2026-09-03-v3.4.6-triage-test-scoping-fixes-review.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - 'The review file exists with ## Recall, ## SPEC, ## QUALITY, ## INTEGRATION, ## Verdict; every acceptance criterion is run on the merged tree with the command and output — AC 1 in a sandbox checkout (scripts/compound-v-sandbox-checkout.sh <dest> --empty-pre-eval) against the merged tree AND against `git archive` of the pre-run commit; AC 2''s timeout case reproduced with a sleeping checker; the verdict is APPROVED or ISSUES with a numbered list.'
+  body: Your agent definition carries the three-pass Review Gate and a Step 0 (V-memory recall). Follow it. Review the three jobs as new code against the spec and this manifest's acceptance criteria; reproduce AC 1 in a sandbox checkout before/after; reproduce the timeout classification with a sleeping checker under timeout_s 1; confirm the five workers refuse timeout_s 0. Write docs/superpowers/dogfood/2026-09-03-v3.4.6-triage-test-scoping-fixes-review.md. Run python with -B; register your lane with a literal --cwd.
