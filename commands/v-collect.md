@@ -111,7 +111,7 @@ For a `fast_path` manifest, `/v:collect` runs the **ONE authoritative order** th
    python3 scripts/compound-v-triage-outcomes.py actual \
      --pre-eval-id <pre_eval_id> --run-id <run-id> --review-result approved
    ```
-   A precision-**ignored** intermediate (`--merge-pending`) event MAY be recorded earlier, but a `review_passed` `actual` that never merged must **never** reach Tier 2 — the terminal `actual` is emitted strictly after the merge boundary. Commit `state.json` (phase `MERGED`) together with the run substrate before any worktree cleanup, exactly as the dispatcher's commit discipline requires.
+   A precision-**ignored** intermediate (`--merge-pending`) event MAY be recorded earlier, but a `review_passed` `actual` that never merged must **never** reach Tier 2 — the terminal `actual` is emitted strictly after the merge boundary. The phase itself is the workflow finalizer's (3.4.1): it writes `MERGED` (or `BLOCKED`) and commits the run directory; read it back and commit only the stream this step appended, exactly as the dispatcher's Step 7 now does.
 
 ## Safety
 

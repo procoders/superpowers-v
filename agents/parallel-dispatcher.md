@@ -346,7 +346,7 @@ Reconcile git **against the job's immutable pre-launch baseline SHA** (`state.js
    python3 scripts/compound-v-triage-outcomes.py actual \
      --pre-eval-id "$PRE_EVAL_ID" --run-id "$RUN_ID" --review-result approved
    ```
-   A precision-IGNORED `--merge-pending` intermediate MAY precede it, but a `review_passed` `actual` that never merged must NEVER reach Tier 2. Advance `phase` to `MERGED`, commit `state.json` + the run dir + `docs/superpowers/memory/triage-outcomes.jsonl` in one commit (Step 7 discipline) BEFORE any worktree cleanup, then hand off.
+   A precision-IGNORED `--merge-pending` intermediate MAY precede it, but a `review_passed` `actual` that never merged must NEVER reach Tier 2. Read `phase` back from `state.json` — the workflow finalizer advanced it to `MERGED` and committed the run directory itself (3.4.1; `fix(finalize)`) — never author it here; commit only what this step appended (`docs/superpowers/memory/triage-outcomes.jsonl`), then hand off.
 
 **Escalation — idempotent two-phase protocol (F2 escalated; AC-15/CR2-4/CR4-3).** The frozen fast-path `manifest.yaml` is **never** mutated or replayed against a full pipeline. Each boundary is a two-command commit (no `&&`, each exit code checked) and a resume checkpoint:
 
@@ -443,13 +443,15 @@ The scorecard is regenerated each run and never hand-edited (unlike the human-cu
 For a **live** view of a run in progress, use the native `/workflows` and `/tasks` surfaces
 rather than waiting for the post-hoc scorecard/dashboard artifacts.
 
-### Step 7 — Advance to `MERGED`, commit EVERYTHING in that one commit, THEN hand off
+### Step 7 — Confirm `MERGED` (the finalizer wrote it), commit what Steps 5–6 appended, THEN hand off
 
-Everything Steps 5–6 wrote — the run directory **and** the memory/scorecard files — is sitting
-on disk, not yet in git. **Write `state.json`'s phase as `MERGED` FIRST**, then stage and commit
-it together with the rest — one commit, so the committed record and the phase agree the moment
-this returns (committing the substrate *before* flipping the phase, or flipping the phase without
-re-committing it, both leave the git-recorded phase permanently one step behind reality):
+Since 3.4.1 the phase advance is the workflow finalizer's, not this step's: after the last wave
+integrates, `finalize-wave` writes `phase: MERGED` (with `merged_at`) and commits the run
+directory in its own bookkeeping commit — a halted run is written `BLOCKED` the same way. **Read
+the phase back; never author it here** — a by-hand `MERGED` is at best a duplicate and at worst
+a regression of what the finalizer recorded. What is still yours: the memory/scorecard files
+Steps 5–6 appended and the terminal `actual`, staged and committed together (one commit), so
+the committed stream and the committed phase agree the moment this returns:
 
 ```bash
 git add docs/superpowers/execution/<run-id>/ docs/superpowers/memory/worker-performance.jsonl

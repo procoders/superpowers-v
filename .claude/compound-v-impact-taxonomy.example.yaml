@@ -192,6 +192,8 @@ sensitive_path_list:
 # content_scan_exclude:
 #   - "**/*.md"
 #   - "docs/**"
+#   - "**/*.py"      # source: `%s` is string formatting, `timeout` is a kwarg — not a consent flow
+#   - "**/*.sh"      # (keep config files scanned: there a feature flag or a price IS the change)
 
 # ---------------------------------------------------------------------------
 # auto_route_allow / auto_route_max_lines — OPTIONAL (v3.0 §A4, predicates 4 and 8). The ONLY

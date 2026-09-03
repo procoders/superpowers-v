@@ -880,6 +880,13 @@ def resolve_test_commands(contract, scope, changed_paths=None, new_paths=None,
                 ordered.append(full)
                 notes.append("unmapped: %s matched no `when` glob — unknown blast radius "
                              "resolves to full_command, never to nothing" % missing)
+                # The label follows the obligation (review-1 of 3.4.1, issue 4): a
+                # FULL-tier job whose unmapped path pulled in `full_command` ran the
+                # whole suite, and `scope: impacted` beside it made a correct run
+                # trip the reviewer's "must match what the tier owes" rule.
+                scope = "full"
+                notes.append("scope: labelled `full` — full_command was added for an "
+                             "unmapped path at this tier, so the whole suite is what ran")
             else:
                 # v3.4.1 decision 4. The triage engine has already said this change is
                 # small; answering "then run everything" contradicts the tier that was
@@ -2023,9 +2030,10 @@ def _selftest():
             return slice_, notes
 
         s_full, _ = sl(tier="FULL", referencing=REF)
-        expect("C: at tier FULL an unmapped path still resolves to full_command",
+        expect("C: at tier FULL an unmapped path still resolves to full_command, "
+               "and the label says `full` (review-1 issue 4)",
                "sh -c 'echo full'" in s_full["resolved_commands"]
-               and s_full["scope"] == "impacted"
+               and s_full["scope"] == "full"
                and "selected_count" not in s_full)
         s_none, _ = sl(tier=None, referencing=REF)
         expect("C: with NO tier the unmapped rule is unchanged (full_command)",

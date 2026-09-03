@@ -732,7 +732,8 @@ class TestDecision4ScopedRunsReferencingTests(_RepoCase):
         })
         contract = self._resolve(repo, base)["contract"]
         self.assertIn("sh -c 'echo FULL'", contract["resolved_commands"])
-        self.assertEqual(contract["scope"], "impacted")
+        # review-1 of 3.4.1, issue 4: the label follows the obligation — full_command ran.
+        self.assertEqual(contract["scope"], "full")
         self.assertNotIn("selected_count", contract)
 
     def test_scoped_with_no_referencing_test_runs_the_floor_only(self):

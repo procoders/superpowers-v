@@ -159,6 +159,13 @@ sensitive_path_list:
 # sensitive_path_list, where a hard override — not a content pattern — catches it.
 content_scan_exclude:
   - "**/*.md"
+  # WHY SOURCE TOO (review-1 of 3.4.1, issue 1): `%[sd]` is ordinary Python formatting and
+  # `timeout` is a keyword argument — 42 of the 44 files under scripts/ and hooks/ matched a
+  # content pattern, which vetoed BOTH the T3 demotion and SCOPED+ for every small code edit,
+  # relocating the "any scripts/** change is FULL" defect from the path glob into the content
+  # scan. Config files (yaml/json/env) stay scanned: there a feature flag or a price IS the change.
+  - "**/*.py"
+  - "**/*.sh"
 
 # auto_route_allow — spec A4 predicate 4: the ONLY paths where a DIRECT change may be committed
 # by the classifier with no human offer/acceptance. Deliberately tiny. Every row is a file whose

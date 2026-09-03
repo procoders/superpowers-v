@@ -1024,7 +1024,20 @@ def _selftest():
         # v3.4.1 §A5: this repository excludes markdown from the content scan, which is what
         # stops a README typo reading `high` off the word "consent" in a paragraph of prose.
         expect("repo taxonomy: content_scan_exclude covers markdown",
-               rt["content_scan_exclude"] == ["**/*.md"])
+               "**/*.md" in rt["content_scan_exclude"])
+        # review-1 of 3.4.1, issue 1: source files too — `%s` is string formatting and
+        # `timeout` a kwarg; scanning code for prose-shaped patterns vetoed the T3
+        # demotion and SCOPED+ on 42 of 44 scripts/hooks. Config stays scanned.
+        expect("repo taxonomy: content_scan_exclude covers source (py, sh), not config",
+               {"**/*.py", "**/*.sh"} <= set(rt["content_scan_exclude"])
+               and not any(g.endswith((".yaml", ".json", ".env")) for g in rt["content_scan_exclude"]))
+        _src_cls = classify(rt, path="scripts/compound-v-scorecard.py",
+                            content="x = '%s' % y; run(timeout=30)")
+        expect("repo taxonomy: a script mentioning %s and timeout raises NO content flag",
+               not any(f.startswith("content:") for f in _src_cls["flags"]))
+        _cfg_cls = classify(rt, path="config/pricing.json", content='{"price": 9}')
+        expect("repo taxonomy: a config file mentioning price STILL raises impact",
+               any(f.startswith("content:") for f in _cfg_cls["flags"]))
         expect("repo taxonomy: a README paragraph mentioning legal words scores NO "
                "content flag (the exclusion suppressed the scan)",
                classify(rt, path="README.md",

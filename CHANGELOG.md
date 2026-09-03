@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [3.4.1] - 2026-09-03
 
+Stage verification, cycles 1 and 2 (DIRECT attended, then SCOPED as the feature below), 2026-09-03 — the first real request after 3.4.0 got no triage at all, and the fixes under "Fixed" further down came out of those two cycles.
+
 The size of a code change reaches the tier. An eight-request probe of the 3.4 scorer found that any
 change under `scripts/**` was FULL by taxonomy glob regardless of size, a README typo was FULL from
 content-pattern noise on ordinary prose, and free-text localization scanned hundreds of files for
