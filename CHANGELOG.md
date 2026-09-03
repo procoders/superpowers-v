@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed — an external job's wrapper agent is spawned as a Claude model, not as the backend's (finding 77)
+
+The first non-Claude job ever run on Engine C died before its first tool call: the emitter wired the job's resolved model into `agent()` for every job, so the Claude wrapper that runs the `codex` launch command was asked to be `gpt-5.6-terra`, which the harness refused. The wrapper is now spawned as the Claude light model (`agent_model`, never Haiku) and the backend's model reaches the launch argv only. Emitter selftest 413/413.
+
 ### Fixed — an external worker's cap fits inside the harness Bash ceiling, and the wrapper is told to wait (finding 75)
 
 The emitted prompt for a `codex`/`antigravity`/`cursor`/`opencode`/`devin` job now tells the wrapper agent to call Bash with `timeout: 600000` — the harness maximum — and `build_launch_argv` caps the worker's `--timeout-sec` at 480 so the worker plus its own test floor finish inside it. Before this a `timeout_sec: 900` job would have been killed from outside with nothing recorded, and the default 120 s would have detached the worker to the background. Found by reading the emitted stage-4 script before launch.

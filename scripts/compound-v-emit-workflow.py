@@ -1560,6 +1560,17 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
             entry["launch_command"] = _shell_join(argv)
             entry["model"] = entry["model"] or model
             entry["model_source"] = ("explicit" if job.get("model") else "tier")
+            # THE WRAPPER IS A CLAUDE AGENT. `entry["model"]` is the BACKEND's model
+            # and belongs in the launch argv only; the workflow agent that runs
+            # that argv is a transport and must be spawned as a Claude model. Wiring
+            # the backend model into agent() spawned a Claude agent named
+            # `gpt-5.6-terra`, which the harness refused before its first tool call
+            # (stage-4 dogfood, finding 77 — the first non-Claude job ever run on
+            # Engine C). Light tier, never Haiku: the wrapper only runs one command.
+            _wrap_model, _wrap_err = resolve_job_model(
+                {"backend": "claude", "tier": "light"}, python_bin, stance=stance,
+                config_path=config_path)
+            entry["agent_model"] = _wrap_model or "sonnet"
             artefacts[job_id]["launch_argv"] = argv
             artefacts[job_id]["launch_argv_file"] = entry["launch_argv_file"]
         return entry
@@ -1954,7 +1965,10 @@ async function implementStage(job) {
       phase: 'Implement',
       schema: IMPLEMENT_SCHEMA
     };
-    if (job.model) opts.model = job.model;
+    // An external job's wrapper is a Claude transport (job.agent_model); the
+    // backend's own model (job.model) lives in the launch argv, never here.
+    if (job.agent_model) opts.model = job.agent_model;
+    else if (job.model) opts.model = job.model;
     if (job.effort) opts.effort = job.effort;
     // Narrow at spawn, same as the transport stages — a different list, because an
     // implementer keeps the tools it needs to write code. See IMPLEMENT_DISALLOWED.
@@ -4924,6 +4938,14 @@ def selftest():
         _ext_script = emit_script(_ext_plan)
         _check("finding 75: the external wrapper prompt tells the agent the Bash timeout",
                "ten minutes, the harness" in _ext_script and "timeout: 600000" in _ext_script)
+        # finding 77: the wrapper agent is spawned as a CLAUDE model; the backend's
+        # model reaches the launch argv only.
+        _check("finding 77: an external job's wrapper agent_model is a Claude light model, "
+               "and the backend model stays in the launch argv",
+               str(_ext.get("agent_model") or "").lower() in ("sonnet", "claude-sonnet-4-6")
+               and "--model" in _ext_argv and "gpt" in _ext_argv[_ext_argv.index("--model") + 1]
+               and "if (job.agent_model) opts.model = job.agent_model;" in _ext_script,
+               "agent_model=%r argv=%s" % (_ext.get("agent_model"), _ext_argv[:12]))
         _check("finding 69: the emitted Record command passes the receipt by PATH, "
                "bound by --expect-verdict/--expect-diff-digest, and keeps the inline "
                "form only for a verdict without a receipt",
