@@ -2,7 +2,7 @@
   "run_id": "2026-09-03-v3.4.6-triage-test-scoping-fixes-r5",
   "phase": "PARTITION_VERIFIED",
   "pre_eval_id": "2026-09-03T113149Z-implement-v3-4-6-per-docs-superpowers-specs-2026-09-03-v3-4-0cb5",
-  "updated_at": "2026-09-03T12:33:42Z",
+  "updated_at": "2026-09-03T12:34:13Z",
   "jobs": {
     "validator": {
       "status": "pending",
@@ -28,13 +28,7 @@
       "worktree": null,
       "session_id": null
     },
-    "emitter-slice": {
-      "status": "pending",
-      "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
-    },
-    "emitter-lock": {
+    "emitter": {
       "status": "pending",
       "isolation": "worktree",
       "worktree": null,

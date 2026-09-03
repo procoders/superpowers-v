@@ -52,10 +52,10 @@ jobs:
   effort: medium
   isolation: worktree
   run: parallel
-  depends_on: &id001 []
+  depends_on: []
   write_allowed:
   - scripts/compound-v-validate-manifest.py
-  read_allowed: &id002
+  read_allowed: &id001
   - '**'
   acceptance:
   - 'validate-manifest: TEST_CONTRACT_ALLOWED_KEYS += (''timeout_s'',); _validate_test_contract accepts timeout_s iff isinstance(v,int) and not isinstance(v,bool) and 1 <= v <= 540, else a violation naming the key (selftest: accept 480; refuse 0, -1, 541, true, "480"); validate-manifest --selftest green; nothing else changes.'
@@ -115,38 +115,22 @@ jobs:
   acceptance:
   - 'CHANGELOG [Unreleased] has two ### Fixed entries (findings 99, 102) with the measured numbers (66,677 vs 65,536 B; four-request sandbox probe; 340 s vs 300 s), what changes and what does not (non-excluded big files keep the flag; sensitive paths untouched; default budget 600 s); lint-frontmatter green.'
   body: 'Implement Task C of docs/superpowers/plans/2026-09-03-v3.4.6-triage-test-scoping-fixes.md. Describe the behaviour as the spec defines it (Tasks A and B implement it in parallel — do not wait for them). Touch only CHANGELOG.md. Run python with -B; register your lane with a literal --cwd. You are unattended: decide and return. (r1''s changelog job was sealed but never merged — finding 107; redo it.)'
-- id: emitter-slice
-  title: 'Task B2b-i — emit-workflow.py: the resolved slice carries timeout_s; --test-timeout-sec pass-through; receipt reads floor reasons'
+- id: emitter
+  title: 'Task B2b — emit-workflow.py: slice carries timeout_s, --test-timeout-sec pass-through, receipt reads floor reasons, .run.lock retired at terminal (strict reading budget)'
   type: implement
   backend: claude
   tier: standard
   effort: high
   isolation: worktree
   run: parallel
-  depends_on: *id001
-  write_allowed: &id003
+  depends_on: []
+  write_allowed:
   - scripts/compound-v-emit-workflow.py
-  read_allowed: *id002
+  read_allowed: *id001
   acceptance:
-  - 'emit-workflow.py: the per-job resolved test-contract slice carries timeout_s when the manifest declares it; external workers are launched with --test-timeout-sec <timeout_s> (else the existing default); _tests_block_from_floor reads floor.get(''reasons'') so `timeout after N s: <checker>` reaches the gate receipt''s tests block; one selftest per item; `--selftest` green; nothing else in the file changes.'
-  body: 'SHARED CONTRACT for the four checker-budget jobs (they run in parallel and must agree): the manifest key is `test_contract.timeout_s` — an int (never a bool) in 1..540, default 480 when absent; the per-job resolved slice (the JSON the worker gets as --test-contract-file / the Engine C gate reads) carries the same key `timeout_s`; a checker that exits 124 is recorded as tests.exit_code 124 plus a tests.failures[] entry `timeout after N s: <checker>`; the top-level failure_class is NEVER set by a test timeout. Implement ONLY these three items in scripts/compound-v-emit-workflow.py (Task B of docs/superpowers/plans/2026-09-03-v3.4.6-triage-test-scoping-fixes.md): (1) the slice writer (grep `test_contract_file`) copies the manifest''s test_contract.timeout_s into the slice JSON; (2) the external-launch argv builder (grep `--test-timeout-sec`) passes it; (3) `_tests_block_from_floor` includes floor.get(''reasons''). The file is 6,000+ lines and three implementers ran out of turns reading
-    it: budget yourself — at most 20 tool calls of reading (grep -n first, then sed -n the ranges), then edit, then run `--selftest` once. Do NOT touch the finalizer or .run.lock (a sibling job owns that). Touch only scripts/compound-v-emit-workflow.py. Run python with -B; register your lane with a literal --cwd. You are unattended: decide and return; if you approach your turn budget, commit what is complete and return a summary that says what is not.'
-- id: emitter-lock
-  title: 'Task B2b-ii — emit-workflow.py: the finalizer deletes .run.lock at a terminal phase'
-  type: implement
-  backend: claude
-  tier: standard
-  effort: medium
-  isolation: worktree
-  run: serial
-  depends_on:
-  - emitter-slice
-  write_allowed: *id003
-  read_allowed: *id002
-  acceptance:
-  - 'emit-workflow.py: the wave finalizer deletes <run>/.run.lock in the same place _retire_lane_map runs at MERGED/BLOCKED; selftest asserts the lock is gone after a terminal finalize and present after a non-terminal one; `--selftest` green; nothing else changes.'
-  body: 'SHARED CONTRACT for the four checker-budget jobs (they run in parallel and must agree): the manifest key is `test_contract.timeout_s` — an int (never a bool) in 1..540, default 480 when absent; the per-job resolved slice (the JSON the worker gets as --test-contract-file / the Engine C gate reads) carries the same key `timeout_s`; a checker that exits 124 is recorded as tests.exit_code 124 plus a tests.failures[] entry `timeout after N s: <checker>`; the top-level failure_class is NEVER set by a test timeout. Implement ONLY the .run.lock retirement in scripts/compound-v-emit-workflow.py (Task B, finding 105): grep `_retire_lane_map` and read only that function and its call sites in the finalize path; delete <run>/.run.lock there at MERGED/BLOCKED; add the selftest next to the existing _retire_lane_map checks. Budget: at most 12 tool calls of reading. Touch only scripts/compound-v-emit-workflow.py. Run python with -B; register your lane with a literal --cwd. You are unattended: decide
-    and return.'
+  - 'emit-workflow.py: the per-job resolved test-contract slice carries timeout_s when the manifest declares it; external workers are launched with --test-timeout-sec <timeout_s> (else the existing default); _tests_block_from_floor reads floor.get(''reasons'') so `timeout after N s: <checker>` reaches the gate receipt''s tests block; one selftest per item; `--selftest` green;  AND the wave finalizer deletes <run>/.run.lock in the same place _retire_lane_map runs at MERGED/BLOCKED; selftest asserts the lock is gone after a terminal finalize and present after a non-terminal one; `--selftest` green; nothing else changes.'
+  body: 'SHARED CONTRACT for the four checker-budget jobs (they run in parallel and must agree): the manifest key is `test_contract.timeout_s` — an int (never a bool) in 1..540, default 480 when absent; the per-job resolved slice (the JSON the worker gets as --test-contract-file / the Engine C gate reads) carries the same key `timeout_s`; a checker that exits 124 is recorded as tests.exit_code 124 plus a tests.failures[] entry `timeout after N s: <checker>`; the top-level failure_class is NEVER set by a test timeout. Implement exactly four items in scripts/compound-v-emit-workflow.py (Task B of docs/superpowers/plans/2026-09-03-v3.4.6-triage-test-scoping-fixes.md): (1) the slice writer (grep `test_contract_file`) copies the manifest''s test_contract.timeout_s into the slice JSON; (2) the external-launch argv builder (grep `--test-timeout-sec`) passes it; (3) `_tests_block_from_floor` includes floor.get(''reasons''); (4) the finalizer deletes <run>/.run.lock where `_retire_lane_map` runs
+    at MERGED/BLOCKED (finding 105), with a selftest that the lock is gone after a terminal finalize and present after a non-terminal one. The file is 6,000+ lines and THREE implementers ran out of turns reading it. Hard budget: at most 20 tool calls of reading in total — `grep -n` for each named symbol first, then `sed -n` only the ranges you need; never Read the whole file; then make the edits; then run `--selftest` ONCE (it takes ~10 s). Touch only scripts/compound-v-emit-workflow.py. Run python with -B; register your lane with a literal --cwd. You are unattended: decide and return; if you approach your turn budget, commit what is complete and return a summary that says what is not.'
 - id: contract-rows
   title: Task B2c — tests/test-engine-c-contract.sh rows for timeout_s (after workers merged)
   type: implement
@@ -178,8 +162,7 @@ jobs:
   - workers
   - contract-docs
   - changelog
-  - emitter-slice
-  - emitter-lock
+  - emitter
   - contract-rows
   write_allowed:
   - docs/superpowers/dogfood/2026-09-03-v3.4.6-triage-test-scoping-fixes-review.md
@@ -187,5 +170,5 @@ jobs:
   - '**'
   acceptance:
   - 'The review file exists with ## Recall, ## SPEC, ## QUALITY, ## INTEGRATION, ## Verdict; every acceptance criterion is run on the merged tree with the command and output — AC 1 in a sandbox checkout (scripts/compound-v-sandbox-checkout.sh <dest> --empty-pre-eval) against the merged tree AND against `git archive` of the pre-run commit; AC 2''s timeout case reproduced with a sleeping checker; the verdict is APPROVED or ISSUES with a numbered list.'
-  body: 'Your agent definition carries the three-pass Review Gate and a Step 0 (V-memory recall). Follow it. Review these seven jobs plus r3''s merged localizer and fastpath (35e8ed0) as new code, and the orchestrator''s two hand-made engine commits (24dc534, and the null-result follow-up, finding 113), PLUS the orchestrator''s own hand-made engine fix in HEAD (commit ''engine-c: an implementer that returns nothing no longer voids its wave'', findings 107–110: --impl-no-result, _lane_map_worktree_for, impl_no_result receipt tag, error status) — review it with the same three passes (r1''s checker-budget was split into fastpath / validator-emitter / workers / contract-docs after its implementer hit the 80-turn cap, finding 108) against the spec and this manifest''s acceptance criteria; reproduce AC 1 in a sandbox checkout before/after; reproduce the timeout classification with a sleeping checker under timeout_s 1; confirm the five workers refuse timeout_s 0. Write docs/superpowers/dogfood/2026-09-03-v3.4.6-triage-test-scoping-fixes-review.md.
+  body: 'Your agent definition carries the three-pass Review Gate and a Step 0 (V-memory recall). Follow it. Review these six jobs plus r3''s merged localizer and fastpath (35e8ed0) as new code, and the orchestrator''s two hand-made engine commits (24dc534, and the null-result follow-up, finding 113), PLUS the orchestrator''s own hand-made engine fix in HEAD (commit ''engine-c: an implementer that returns nothing no longer voids its wave'', findings 107–110: --impl-no-result, _lane_map_worktree_for, impl_no_result receipt tag, error status) — review it with the same three passes (r1''s checker-budget was split into fastpath / validator-emitter / workers / contract-docs after its implementer hit the 80-turn cap, finding 108) against the spec and this manifest''s acceptance criteria; reproduce AC 1 in a sandbox checkout before/after; reproduce the timeout classification with a sleeping checker under timeout_s 1; confirm the five workers refuse timeout_s 0. Write docs/superpowers/dogfood/2026-09-03-v3.4.6-triage-test-scoping-fixes-review.md.
     Run python with -B; register your lane with a literal --cwd.'
