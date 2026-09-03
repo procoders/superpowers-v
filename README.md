@@ -133,6 +133,10 @@ That's it.
 
 ---
 
+## Verification program
+
+Compound V is dogfooded against its own claims through a staged verification program: eight stages, each a dogfood cycle run against native Claude Code mechanisms rather than trusted from prose. Every cycle's review is recorded in [docs/superpowers/dogfood/README.md](docs/superpowers/dogfood/README.md), which as of this writing logs 33 review files, 3 APPROVED. Read that index for the full history and current stage.
+
 ## Under the hood (for the curious)
 
 The orchestration, scope enforcement, routing, and memory are plain bash + Python scripts and skill docs you can read. Start here:
