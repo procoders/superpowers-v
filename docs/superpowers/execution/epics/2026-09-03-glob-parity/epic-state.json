@@ -12,7 +12,18 @@
       "run_id": "2026-09-03-glob-parity-one-matcher",
       "attempts": 1,
       "last_error": "sample-audit ISSUES: TEST_GAP \u2014 no selftest row for the fail-closed mkdtemp branch (pre-flight amendment 1); two LOW notes",
-      "disposition": null,
+      "disposition": {
+        "disposition": "retry_fix",
+        "attempt": 1,
+        "confirmed": false,
+        "reason": "retry_fix majority: Claude, GPT, Gemini \u2014 one missing selftest row (fail-closed mkdtemp), no production change",
+        "families_agreeing": [
+          "Claude",
+          "GPT",
+          "Gemini"
+        ],
+        "recorded_at": "2026-09-03T19:45:53.706222+00:00"
+      },
       "sample_audit_due": false
     },
     {
@@ -44,7 +55,7 @@
   "blocker_ledger": [],
   "no_progress_cycles": 0,
   "total_attempts": 1,
-  "updated_at": "2026-09-03T19:42:54Z",
+  "updated_at": "2026-09-03T19:45:53Z",
   "last_done_count": 0,
   "processed_cycle_ids": [
     "c1",

@@ -1,0 +1,11 @@
+{
+  "epic_id": "2026-09-03-glob-parity",
+  "feature": "one-matcher",
+  "attempt": 1,
+  "challenge_id": "ch-624c57cf476ccee9",
+  "issued_at": "2026-09-03T19:43:07.704228+00:00",
+  "status": "consumed",
+  "consumed_at": "2026-09-03T19:44:36.672221+00:00",
+  "claude_prompt": "You are a FRESH, ADVERSARIAL reviewer for Compound V's marathon arbiter panel.\nA feature attempt FAILED its quality gate and needs an independent disposition.\n\nepic_id: 2026-09-03-glob-parity\nfeature: one-matcher (F1 \u2014 recall-check uses the scope gate's glob matcher)\nattempt: 1\nchallenge_id: ch-624c57cf476ccee9\n\nInvestigate the failing feature's run directory and evidence yourself. Decide exactly ONE disposition:\n  retry_fix        - a fixable bug/flake; retrying is worth it\n  halt_feature      - abandon just this feature; the epic continues on independents\n  halt_epic         - a systemic problem; the whole epic should stop\n  blocked_external  - progress needs a human/external fact code cannot create\n\nWrite your ballot as JSON with EXACTLY these keys (single-line reason/evidence):\n  {\"epic_id\": \"2026-09-03-glob-parity\", \"feature\": \"one-matcher\", \"attempt\": 1, \"challenge_id\": \"ch-624c57cf476ccee9\",\n   \"disposition\": \"<one of the four>\", \"reason\": \"<one line>\",\n   \"blocker_category\": \"<if blocked_external, ONE of credential|external-account|infra|third-party-data|legal-approval|human-decision; else null>\",\n   \"evidence\": \"<missing external fact if blocked_external, else null>\"}\n\nBe conservative: on genuine doubt between retry_fix and a halt_*, prefer the halt.",
+  "in_progress_at": "2026-09-03T19:44:36.672221+00:00"
+}

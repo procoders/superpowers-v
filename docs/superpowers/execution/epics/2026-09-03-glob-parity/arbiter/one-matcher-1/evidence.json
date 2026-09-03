@@ -1,0 +1,54 @@
+{
+  "epic_id": "2026-09-03-glob-parity",
+  "feature": "one-matcher",
+  "attempt": 1,
+  "failure_kind": "sample_audit_issues",
+  "what_failed": "Marathon \u00a74 PASS-integrity sample-audit (fresh adversarial spec-reviewer, Pass 2 QUALITY + 2.5 reward-hack) returned ISSUES over the merged wave-1 commit 4bc979a after the feature's own 3-pass gate had APPROVED it.",
+  "issues": [
+    {
+      "severity": "blocking",
+      "kind": "TEST_GAP",
+      "where": "scripts/compound-v-memory.py:1647-1653",
+      "text": "The only loader-failure selftest row is the missing-path case. Pre-flight amendment 1's MUST \u2014 fail closed when the private bytecode cache (tempfile.mkdtemp) cannot be created \u2014 has no row; deleting the `if err is None:` guard at :1084 leaves the full selftest green. The behaviour itself was verified live as correct."
+    },
+    {
+      "severity": "low",
+      "kind": "tautology",
+      "where": "scripts/compound-v-memory.py:1643",
+      "text": "After delegation, the `_file_matches(...) is want` half of each parity row calls the same matcher as `_scope(...) is want`; only the bare-dir branch can still diverge."
+    },
+    {
+      "severity": "low",
+      "kind": "unguarded-raise",
+      "where": "scripts/compound-v-memory.py:1119",
+      "text": "_file_matches propagates RuntimeError; only recall_check guards it; no other caller exists today."
+    }
+  ],
+  "gate_verdicts": [
+    {
+      "run_id": "2026-09-03-glob-parity-one-matcher",
+      "job": "matcher-swap",
+      "attempt_note": "stage-7 death + resume",
+      "verdict": "blocked",
+      "cause": "infrastructure: stale baseline pin after the deliberate kill (finding 146, fixed by resume-prepare); superseded"
+    },
+    {
+      "run_id": "2026-09-03-glob-parity-one-matcher",
+      "job": "matcher-swap",
+      "verdict": "pass",
+      "baseline": "155239a",
+      "merged_commit": "4bc979a",
+      "tests": "floor exit 0; memory selftest 82 ok; scope-check 70 ok"
+    },
+    {
+      "run_id": "2026-09-03-glob-parity-one-matcher",
+      "job": "spec-review-1",
+      "verdict": "pass",
+      "review": "docs/superpowers/dogfood/2026-09-03-epic-gp-one-matcher-review-1.md VERDICT: APPROVED",
+      "merged_commit": "cfd6eee"
+    }
+  ],
+  "diff_summary": "scripts/compound-v-memory.py: +93/-5 \u2014 import fnmatch removed; _SCOPE_CHECK_PATH/_SCOPE_MATCH/_SCOPE_MATCH_ERR + _scope_matches() (hardened importlib loader, private pycache redirect, memoized success and failure); _file_matches delegates to compound-v-scope-check.py matches() with a bare-path /** fallback; recall_check returns verdict unavailable on loader failure; 10 parity rows + bare-dir + missing-path rows in _selftest.",
+  "fix_size_estimate": "one selftest row (patch tempfile.mkdtemp to raise, assert verdict unavailable and the note prefix) \u2014 same globals-patching idiom already used at :1648; no production code change required",
+  "audit_file": "docs/superpowers/execution/epics/2026-09-03-glob-parity/arbiter/one-matcher-1-sample-audit.md"
+}
