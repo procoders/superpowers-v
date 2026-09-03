@@ -1,0 +1,44 @@
+{
+  "base_commit": "f89b74c5a937eab52efc7e3b80553ffc2ceeceb0",
+  "confidence": "localization:exact; tiers:localization,T1",
+  "decision": "SCOPED_PIPELINE",
+  "declared_paths": [
+    "README.md",
+    "docs/superpowers/dogfood/README.md",
+    "docs/superpowers/execution/epics/2026-09-03-verification-index/specs/readme-section.md"
+  ],
+  "difficulty": {
+    "band": "low",
+    "display": 2
+  },
+  "digest": "sha256:93a291c6baa3c986215e31c2ffd0e22e698f1df840fd085e91967f4e1385663c",
+  "impact": {
+    "band": "low",
+    "display": 2
+  },
+  "localization": {
+    "confidence": "exact",
+    "fan_out": 3,
+    "flags": [],
+    "resolved_paths": [
+      "README.md",
+      "docs/superpowers/dogfood/README.md",
+      "docs/superpowers/execution/epics/2026-09-03-verification-index/specs/readme-section.md"
+    ]
+  },
+  "min_sample_status": "insufficient",
+  "override_fired": null,
+  "pre_eval_id": "2026-09-03T084302Z-epic-2026-09-03-verification-index-feature-f2-readme-section-ed69",
+  "request_slug": "epic-2026-09-03-verification-index-feature-f2-readme-section",
+  "session_id": "e619cb38-ebe3-4b45-a1f4-c3007616291d",
+  "status": "PRE_EVAL_DONE",
+  "taxonomy_digest": "sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a",
+  "taxonomy_ref": "docs/superpowers/pre-eval/2026-09-03T084302Z-epic-2026-09-03-verification-index-feature-f2-readme-section-ed69.taxonomy-snapshot.yaml",
+  "taxonomy_version": 1,
+  "tier": "SCOPED",
+  "tiers_signalled": [
+    "localization",
+    "T1"
+  ],
+  "ts": "2026-09-03T08:43:02Z"
+}

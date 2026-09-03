@@ -1,0 +1,27 @@
+{
+  "run_id": "2026-09-03-verification-index-readme-section",
+  "phase": "PARTITION_VERIFIED",
+  "pre_eval_id": "2026-09-03T084302Z-epic-2026-09-03-verification-index-feature-f2-readme-section-ed69",
+  "epic_id": "2026-09-03-verification-index",
+  "updated_at": "2026-09-03T09:07:44Z",
+  "jobs": {
+    "index-refresh": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "readme-section": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "spec-review": {
+      "status": "pending",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null
+    }
+  }
+}

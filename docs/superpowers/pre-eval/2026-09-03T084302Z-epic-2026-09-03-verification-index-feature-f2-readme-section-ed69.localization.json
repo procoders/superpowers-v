@@ -1,0 +1,11 @@
+{
+  "confidence": "exact",
+  "digest": "sha256:646c665f345ce199eec6b4590662c9a4ef02678c39cd782a1ba90d79c423ec9b",
+  "fan_out": 3,
+  "flags": [],
+  "resolved_paths": [
+    "README.md",
+    "docs/superpowers/dogfood/README.md",
+    "docs/superpowers/execution/epics/2026-09-03-verification-index/specs/readme-section.md"
+  ]
+}
