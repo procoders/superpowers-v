@@ -3,7 +3,7 @@
 {"backend": "claude", "type": "core_guidance", "total": 12, "success": 12, "blocked": 0, "error": 0, "timeout": 0, "avg_rework": 0.0, "block_rate": 0.0, "error_rate": 0.0, "success_rate": 1.0, "health": "healthy"}
 {"backend": "claude", "type": "core_slice", "total": 13, "success": 13, "blocked": 0, "error": 0, "timeout": 0, "avg_rework": 0.154, "block_rate": 0.0, "error_rate": 0.0, "success_rate": 1.0, "health": "healthy"}
 {"backend": "claude", "type": "docs", "total": 39, "success": 34, "blocked": 5, "error": 0, "timeout": 0, "avg_rework": 0.026, "block_rate": 0.128, "error_rate": 0.0, "success_rate": 0.872, "health": "watch"}
-{"backend": "claude", "type": "implement", "total": 19, "success": 18, "blocked": 1, "error": 0, "timeout": 0, "avg_rework": 0.0, "block_rate": 0.053, "error_rate": 0.0, "success_rate": 0.947, "health": "healthy"}
+{"backend": "claude", "type": "implement", "total": 20, "success": 19, "blocked": 1, "error": 0, "timeout": 0, "avg_rework": 0.0, "block_rate": 0.05, "error_rate": 0.0, "success_rate": 0.95, "health": "healthy"}
 {"backend": "claude", "type": "large_isolated", "total": 2, "success": 2, "blocked": 0, "error": 0, "timeout": 0, "avg_rework": 0.0, "block_rate": 0.0, "error_rate": 0.0, "success_rate": 1.0, "health": "insufficient_data"}
 {"backend": "claude", "type": "mechanical_refactor", "total": 4, "success": 3, "blocked": 1, "error": 0, "timeout": 0, "avg_rework": 0.0, "block_rate": 0.25, "error_rate": 0.0, "success_rate": 0.75, "health": "insufficient_data"}
 {"backend": "claude", "type": "review", "total": 38, "success": 31, "blocked": 7, "error": 0, "timeout": 0, "avg_rework": 0.0, "block_rate": 0.184, "error_rate": 0.0, "success_rate": 0.816, "health": "watch"}
