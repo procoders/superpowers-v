@@ -50,7 +50,7 @@ Worked example: [`examples/manifest.example.yaml`](../../examples/manifest.examp
 | `isolation` | enum | yes | `direct` \| `worktree`. **`run: parallel` ⇒ `worktree`** (per-job scope attribution); `direct` is only valid with `run: serial`. |
 | `run` | enum | yes | `serial` \| `parallel`. A `parallel` job MUST be `isolation: worktree` (see the rule above). |
 | `depends_on` | string[] | no | Job ids that must finish first (defaults to empty). |
-| `write_allowed` | string[] | yes | Glob list this job MAY write. The scope gate **enforces** it (git-derived). V-memory's `recall-check` (see [`memory.md`](memory.md) § CLI) reads these same globs at emit time to look up prior failures on the lane, through the same matcher — `compound-v-memory.py` imports `compound-v-scope-check.py`'s `matches()` rather than reimplementing it — and `compound-v-memory.py --selftest` carries a glob-parity suite that fails if the two ever diverge. The six rules, identical on both sides: (1) `*` matches inside one path segment and never crosses `/`; (2) `**` crosses `/`; (3) `dir/**` also matches `dir` itself; (4) a leading or mid `**/` matches zero or more segments, so `**/x.py` matches `x.py`; (5) `?` matches exactly one non-`/` character; (6) `[` and `]` are literal, never character classes, so `app/[locale]/**` matches that real directory instead of one character out of `l o c a e`. Every pattern is fully anchored — a match must consume the whole path. One deliberate asymmetry, and the only one: `recall-check` additionally reads a wildcard-free bare path as `<path>/**`, sugar the gate itself does not accept. |
+| `write_allowed` | string[] | yes | Glob list this job MAY write. The scope gate **enforces** it (git-derived). |
 | `read_allowed` | string[] | yes | Glob list this job MAY read. **ADVISORY only — NOT enforced** (git cannot track reads). Documents intent + scopes the prompt. Auto-includes Task 0 outputs + the three audits. |
 | `acceptance` | string[] | yes | This job's narrow acceptance, checked in its per-task review. |
 | `body` | string | **yes** | The task itself — the instructions the worker reads. `description`, `prompt` and `spec` are accepted aliases. **A job with none of them is refused at emit**: a prompt carrying lanes and no instructions asks the worker to invent the task, and an invented task that stays inside its lane passes every gate here, because the scope gate checks WHICH files changed and never what they say. This field was undocumented until 3.3.4, and the emitter read only the three aliases while every manifest wrote `body` — so the task text was dropped from every worker prompt for twenty-five runs. |
@@ -60,6 +60,13 @@ Worked example: [`examples/manifest.example.yaml`](../../examples/manifest.examp
 ¹ **Every job MUST have `model` OR `tier`** (at least one). Most jobs carry `tier` (+ optional `effort`) and let the dispatcher resolve the concrete model; a job MAY instead pin an explicit `model` override that skips resolution. A job with neither is a validation failure.
 
 `backend`, `tier`, `effort`, and `model` are execution-layer values. They drive dispatch; they MUST NOT leak into any agent/skill/command frontmatter (`lint-frontmatter.py` + `validate.yml` reject Haiku, and reviewers/agents always carry `model: opus`).
+
+**Glob semantics (`write_allowed`, `read_allowed`, `impacted_map.when`).** `*` matches within one path segment
+(never `/`); `**` matches across segments; `dir/**` also matches `dir` itself; `?` matches one non-`/` character;
+`[` and `]` are literal (no character classes — `app/[locale]/**` is a real directory); matching is anchored to the
+full repo-relative path. This is the scope gate's own matcher (`scripts/compound-v-scope-check.py` `matches`), and
+V-memory's `recall-check` uses the same matcher — see [`memory.md`](memory.md); the proof is the `parity …` rows of
+`python3 scripts/compound-v-memory.py --selftest`.
 
 ### Tier vocabulary (stable — never changes when models churn)
 

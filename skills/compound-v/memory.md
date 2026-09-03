@@ -51,7 +51,7 @@ after the explicit `bootstrap` above; the flag never triggers an install.
 |---|---|
 | `refresh [--rebuild] [--quick] [--with-embeddings] [--repo P]` | incremental index by file hash (FTS5 always; dense only when bootstrapped) |
 | `search "<q>" [--top N] [--intent planning\|review] [--json] [--no-embed] [--no-refresh]` | recall: FTS5 (∪ dense) → rank-union → agent-ready context pack. The FTS5 lane is fresh **by construction** at every search — a stale or missing index is refreshed inline before the query runs (`--no-refresh` opts out and searches whatever is already indexed); the dense lane is unaffected and refreshes only on an explicit `/v:memory-refresh --with-embeddings`. |
-| `recall-check --files <glob>… [--k N] [--json]` | **deterministic** recurring-failure → `tighten`/`none` verdict |
+| `recall-check --files <glob>… [--k N] [--json]` | **deterministic** recurring-failure → `tighten`/`none`/`unavailable` verdict. Files match lane globs with the same matcher as the scope gate: `*` matches within one path segment (never `/`); `**` matches across segments; `dir/**` also matches `dir` itself; `?` matches one non-`/` character; `[` and `]` are literal (no character classes — `app/[locale]/**` is a real directory); matching is anchored to the full repo-relative path (see [`execution-manifest.md`](execution-manifest.md)). recall-check only: a bare path with no wildcard means "this path or anything under it" (the enforced gate has no such reading). Proof: the `parity …` rows of `python3 scripts/compound-v-memory.py --selftest`. |
 | `bootstrap [--model M]` | the ONLY network step: create the out-of-repo embedding venv |
 | `doctor` | index / venv / model / staleness health |
 | `--selftest` | stdlib-only self-tests (no network, no model) |
@@ -85,18 +85,7 @@ match, **not** embedding similarity:
   counts prior `job_result` records (the authoritative git-derived `results/<id>.json`, per
   [`schemas/job_result.schema.json`](../../schemas/job_result.schema.json)) with
   `status ∈ {blocked, error, timeout}` (or a scope `violation`) on the same lane. `N ≥ k`
-  (default `k=2`, the "two is a pattern" rule) ⇒ verdict `tighten`. `recall-check`'s glob
-  matching against `write_allowed` (see [`execution-manifest.md`](execution-manifest.md) §
-  Job fields) is the same matcher the scope gate enforces with — imported from
-  `compound-v-scope-check.py`, not reimplemented — and `--selftest` carries a glob-parity
-  suite that fails if the two ever diverge.
-  The six rules, identical on both sides: (1) `*` matches inside one path segment and never crosses `/`;
-  (2) `**` crosses `/`; (3) `dir/**` also matches `dir` itself; (4) a leading or mid `**/` matches zero or
-  more segments, so `**/x.py` matches `x.py`; (5) `?` matches exactly one non-`/` character; (6) `[` and `]`
-  are literal, never character classes, so `app/[locale]/**` matches that real directory instead of one
-  character out of `l o c a e`. Every pattern is fully anchored — a match must consume the whole path. One
-  deliberate asymmetry, and the only one: `recall-check` additionally reads a wildcard-free bare path as
-  `<path>/**`, sugar the gate itself does not accept.
+  (default `k=2`, the "two is a pattern" rule) ⇒ verdict `tighten`.
 - **The two real actions (tighten only):**
   1. **Always, when `memory.auto_recall` is on (default true; the /v:init "Manual only" stance sets it false, and `emit --no-recall` forces it off for one emit):** the implementer prompt gains a
      `## Prior failures on your lane` section — the count, the last three evidence lines
