@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "README.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "0e44576ac09518eab34329406728cfd71a8b9751",
+    "diff_digest": "sha256:682644d1917a9fc998c17e3f0f59c472048af24d23ee0965ded9626bb7b34d51",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"0e44576ac09518eab34329406728cfd71a8b9751\",\n  \"changed\": [\n    \"README.md\"\n  ],\n  \"allowed\": [\n    \"README.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "0e44576ac09518eab34329406728cfd71a8b9751",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task A \u2014 the `## Verification program` section of README.md",
+  "tests": {
+    "command": "/usr/bin/python3 -B scripts/lint-frontmatter.py .\nbash -c 'test $(grep -c \"^## Verification program$\" README.md) -eq 1 && test -f docs/superpowers/dogfood/README.md'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_71c46cc0-208-5"
+}
