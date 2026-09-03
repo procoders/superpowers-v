@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added — the recall→action bridge acts at emit time (stage 5b, finding 130)
+
+`recall-check` said `tighten` for 7 of the 27 runs dispatched today, and nothing consumed the
+signal. It now runs at emit time for every implement job: prior-failure evidence and a reading
+budget always land in the implementer's prompt, and under `memory.auto_tighten` the job's tier
+is raised one rung and the review job gains a re-check clause — conservative-only, an explicit
+`model:` pin untouched. `emit --no-recall` and engine failures degrade to `unavailable`, never a
+refusal.
+
 ## [3.4.9] - 2026-09-03
 
 Two honesty fixes surfaced by the day's dogfooding: the pre-flight result now names every knowledge-base

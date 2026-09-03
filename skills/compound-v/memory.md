@@ -80,15 +80,46 @@ The one place memory **acts automatically** is the analogue of the scorecard's
 `unhealthy → escalate`, for the prose/structured half — and it is gated by a **structured**
 match, **not** embedding similarity:
 
-- **Trigger:** for a feature whose diff touches file pattern `F`, `recall-check --files F`
+- **Trigger:** at **emit time**, for every `type: implement` job, the emitter runs
+  `recall-check --files <the job's write_allowed> --json` as a subprocess (never an import) and
   counts prior `job_result` records (the authoritative git-derived `results/<id>.json`, per
   [`schemas/job_result.schema.json`](../../schemas/job_result.schema.json)) with
-  `status ∈ {blocked, error, timeout}` (or a scope `violation`) on the same `F`. `N ≥ k`
+  `status ∈ {blocked, error, timeout}` (or a scope `violation`) on the same lane. `N ≥ k`
   (default `k=2`, the "two is a pattern" rule) ⇒ verdict `tighten`.
-- **Action (tighten only):** force worktree isolation, OR add one extra review pass, OR fold
-  `F` into the serial Task 0 `shared_foundation`. It **never** reroutes to a lower-trust backend
-  and **never** loosens. Verifiable: a `--selftest` case asserts fixtures(repeated failure) →
-  tightening.
+- **The two real actions (tighten only):**
+  1. **Always, when `memory.auto_recall` is on (default true):** the implementer prompt gains a
+     `## Prior failures on your lane` section — the count, the last three evidence lines
+     (run · status · file), and a reading-budget instruction that follows from them (`grep -n`
+     then `sed -n` targeted ranges, ≤ 20 reading calls, never read a large file top to bottom,
+     commit what is complete if the turn budget nears).
+  2. **Applied only when `memory.auto_tighten` is true (default false):** the job's tier is
+     raised one rung (`light → standard`, `standard → deep`; `deep`/`frontier` unchanged, via a
+     new ascending `TIER_RAISE` table — never an index into the descending `TIERS` table), and
+     every `type: review` job's acceptance gains a re-check clause: re-run `recall-check` over
+     the merged diff and state whether the prior-failure pattern recurred. An explicit `model:`
+     pin is never touched either way — the same rule as `escalate_claude_model`. With
+     `auto_tighten` false, action 1 (the prompt section) still applies; only action 2 is gated.
+
+  It **never** reroutes to a lower-trust backend, **never** loosens a test slice, and **never**
+  picks a different backend. Verifiable: a `--selftest` case asserts fixtures(repeated failure)
+  → tightening.
+- **`--no-recall`:** `emit --no-recall` skips the lookup entirely. A missing
+  `compound-v-memory.py`, an engine error, or a 30 s subprocess timeout is treated the same way
+  — emit proceeds and records `recall_check: {verdict: unavailable, note}`; it is never a reason
+  to refuse to emit. The verdict (and `recall_check_ms`, see below) is also printed in `emit`'s
+  JSON summary.
+- **Where the verdict is recorded.** The emitter has no `state.json` write path of its own, so
+  the verdict rides in the emitted job entry (`recall_check: {verdict, match_count,
+  evidence[:3], recall_check_ms}`) and reaches `state.json` through `register-lane` — the
+  runtime hook that already writes a job's state entry before its work starts — via a new
+  `--recall-check-json` argument on the emitted `register-lane` command.
+- **Cost is measured per job, never assumed.** Each `recall-check` walk is timed at emit and
+  recorded as `recall_check_ms` in the job entry and the emit summary; nothing about its cost is
+  estimated or hardcoded.
+- **A hand-probing note:** an unquoted shell variable does not word-split the way you expect in
+  zsh — `recall-check --files $PATTERN` with an unquoted, space-containing `$PATTERN` lands as
+  one argument instead of several, which reads as `none` everywhere even when the pattern should
+  have matched. Quote deliberately, or pass the pattern pre-split, when probing by hand.
 
 This is why recall earns a place in autonomy: the bridge is *measurable and testable*, unlike a
 free-text "advisory" surface.

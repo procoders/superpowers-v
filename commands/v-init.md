@@ -344,9 +344,10 @@ bootstrapped**; it never installs on its own.
 - **"Auto-recall" (recommend)** — memory auto-surfaces related prior work during planning and
   before the review gate, as **advisory evidence**. (`auto_recall: true`, `auto_tighten: false`)
 - **"Auto-tighten"** — additionally, the deterministic `recall-check` bridge **auto-tightens**
-  the next run (force worktree / +review pass / fold into Task 0) when the same files have
-  repeatedly failed. Conservative-only — never reroutes to lower trust, never loosens.
-  (`auto_recall: true`, `auto_tighten: true`)
+  the next run when the same lane has repeatedly failed: at emit time the job's tier is raised
+  one rung (`light → standard`, `standard → deep`; an explicit `model:` pin is never touched),
+  and the review job's acceptance gains a re-check clause. Conservative-only — never reroutes to
+  lower trust, never loosens. (`auto_recall: true`, `auto_tighten: true`)
 
 ---
 
