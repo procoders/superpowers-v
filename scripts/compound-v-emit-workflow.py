@@ -1345,6 +1345,28 @@ def _shell_join(argv):
         return " ".join(argv)
 
 
+def _worktree_base_is_head(repo_root):
+    """True when the project's `.claude/settings.json` pins `worktree.baseRef: head`.
+
+    The 3.0.5 rule "a job with depends_on runs its agent in the MAIN checkout"
+    existed because the runtime branched a fresh worktree from the DEFAULT ref,
+    so a dependent could not see the wave that had just committed. 3.4.0 set
+    `worktree.baseRef: head` in this project's settings, which removes that
+    premise — and stage-2 r2 (finding 60) showed the rule's other half: the
+    manifest kept `isolation: worktree`, the finalizer read the manifest, and a
+    dependent job that ran direct could never integrate. With the setting the
+    dependent job gets a real worktree; without it, the old rule stays and the
+    finalizer trusts the gate receipt's mode instead (see cmd_finalize_wave).
+    """
+    try:
+        with open(os.path.join(repo_root, ".claude", "settings.json"), "r",
+                  encoding="utf-8") as fh:
+            cfg = json.load(fh)
+        return str(((cfg.get("worktree") or {}).get("baseRef") or "")).strip().lower() == "head"
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
                scope_check, fastpath, workers_dir):
     """Everything the emitted script needs, as plain data."""
@@ -1446,7 +1468,9 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
             # Only the agent runs in the main tree — and the direct-mode
             # preexisting snapshot is what keeps that honest.
             "agent_isolation": ("worktree"
-                                if isolation == "worktree" and not (job.get("depends_on") or [])
+                                if isolation == "worktree"
+                                and (not (job.get("depends_on") or [])
+                                     or _worktree_base_is_head(abs_repo_root))
                                 else None),
             "timeout_sec": job.get("timeout_sec"),
             "write_allowed": job.get("write_allowed") or [],
@@ -1738,9 +1762,17 @@ def _implement_prompt(job, plan):
         lines.append("is the tree the Gate will measure. Never return your own `pwd`; you")
         lines.append("did not change anything in it.")
         lines.append("")
-    elif job["isolation"] == "worktree":
+    elif job.get("agent_isolation") == "worktree":
         lines.append("You are running in your OWN git worktree. Return its absolute path")
         lines.append("(`pwd`) as `worktree` — that is the tree the Gate measures.")
+        lines.append("")
+    elif job["isolation"] == "worktree":
+        # A dependent job under the 3.0.5 rule: manifest says worktree, the agent
+        # runs in the main checkout. Say so — the three layers must agree
+        # (finding 60), and the worker must not report a worktree it never had.
+        lines.append("You are running in the MAIN checkout (a dependent job; the manifest's")
+        lines.append("`isolation: worktree` is for scope attribution). Return an empty")
+        lines.append("`worktree`; the Gate measures the main tree in direct mode.")
         lines.append("")
     else:
         lines.append("You are running at `direct` isolation, in the project checkout")
@@ -3753,6 +3785,24 @@ def _commit_paths(repo_root, paths, message):
     return _head_commit(repo_root), None
 
 
+def _gate_mode_from_receipt(gate_doc):
+    """The `mode` the gate ran in, read from the receipt's raw gate JSON — the
+    emitter authored that `--mode`, so it is trusted where the manifest's label is
+    not the whole truth. None when absent or unparseable."""
+    if not isinstance(gate_doc, dict):
+        return None
+    raw = gate_doc.get("raw_stdout")
+    if isinstance(raw, str) and raw.strip():
+        try:
+            mode = (json.loads(raw) or {}).get("mode")
+            if mode in ("direct", "worktree"):
+                return mode
+        except ValueError:
+            pass
+    mode = gate_doc.get("mode")
+    return mode if mode in ("direct", "worktree") else None
+
+
 def cmd_finalize_wave(argv):
     ap = argparse.ArgumentParser(prog="compound-v-emit-workflow.py finalize-wave")
     ap.add_argument("--run-dir", required=True)
@@ -3937,6 +3987,13 @@ def cmd_finalize_wave(argv):
         # ---- THE SEALED ARTIFACT, and what git says about it ---------------- #
         gate_doc = _read_json(
             os.path.join(run_dir, "receipts", "%s.gate.json" % job_id), None)
+        # WHERE THE AGENT ACTUALLY RAN decides how to merge — and the gate
+        # receipt says so in the emitter's own words (`--mode`, written into the
+        # script by this file, never by the agent). The manifest's `isolation` is
+        # a scope-attribution label that a dependent job keeps as `worktree`
+        # while its agent runs direct (3.0.5 rule); reading only the label
+        # refused every such job with "resolves to no worktree" (finding 60).
+        isolation = _gate_mode_from_receipt(gate_doc) or isolation
         sealed, seal_err = read_sealed_patch(run_dir, job_id, gate_doc)
         if seal_err:
             out["refused"].append(job_id)
@@ -4732,6 +4789,27 @@ def selftest():
                str(ids))
         _check("every job scheduled exactly once",
                sorted(sum(ids, [])) == ["t0", "t1", "t2", "t3", "t4"], str(ids))
+
+        # finding 60: the dependent-job isolation rule follows `worktree.baseRef`.
+        _br_repo = os.path.join(tmp, "br-repo"); os.makedirs(os.path.join(_br_repo, ".claude"))
+        _br_man = {"run_id": "br", "jobs": [
+            {"id": "a", "isolation": "worktree", "write_allowed": ["a/**"]},
+            {"id": "b", "isolation": "worktree", "depends_on": ["a"], "write_allowed": ["b/**"]}]}
+        _br_man["_manifest_path"] = os.path.join(_br_repo, "manifest.yaml")
+        _br_plan = build_plan(_with_body(_br_man), os.path.join(tmp, "br-run"), _br_repo,
+                              "/usr/bin/python3", os.path.abspath(__file__),
+                              SCOPE_CHECK_DEFAULT, FASTPATH_DEFAULT, tmp)
+        _br_b = [e for w in _br_plan["waves"] for e in w if e["id"] == "b"][0]
+        _check("no baseRef setting: a dependent worktree job's agent runs direct (3.0.5 rule)",
+               _br_b.get("agent_isolation") is None)
+        with open(os.path.join(_br_repo, ".claude", "settings.json"), "w") as fh:
+            fh.write('{"worktree": {"baseRef": "head"}}')
+        _br_plan2 = build_plan(_with_body(_br_man), os.path.join(tmp, "br-run"), _br_repo,
+                               "/usr/bin/python3", os.path.abspath(__file__),
+                               SCOPE_CHECK_DEFAULT, FASTPATH_DEFAULT, tmp)
+        _br_b2 = [e for w in _br_plan2["waves"] for e in w if e["id"] == "b"][0]
+        _check("worktree.baseRef: head — a dependent worktree job gets a REAL worktree",
+               _br_b2.get("agent_isolation") == "worktree")
 
         try:
             topo_waves([{"id": "a", "depends_on": ["b"]},
@@ -5976,6 +6054,55 @@ def selftest():
                    and "src/work.txt" not in _head_files, _head_files)
             _rc_l, _tracked, _ = _git(bk4_repo, ["ls-files", "--", "docs/superpowers/execution"])
             _check("...and never the run lock", ".run.lock" not in _tracked, _tracked)
+
+            # ---- finding 60: a DEPENDENT job whose manifest says worktree but ---
+            # whose agent ran direct (the 3.0.5 rule) must integrate on the gate
+            # receipt's mode, not be refused on the manifest's label.
+            bk5_run = os.path.join(bk4_repo, "docs", "superpowers", "execution", "bk5")
+            os.makedirs(bk5_run, exist_ok=True)
+            bk5_man = os.path.join(bk5_run, "manifest.yaml")
+            with open(bk5_man, "w", encoding="utf-8") as fh:
+                _yaml_bk.safe_dump({
+                    "run_id": "bk5", "triage": {"pre_eval_id": "pe-bk5"},
+                    "jobs": [{"id": "d0", "isolation": "worktree", "write_allowed": ["src/**"]},
+                             {"id": "d1", "isolation": "worktree", "depends_on": ["d0"],
+                              "write_allowed": ["src/**"]}],
+                }, fh)
+            with _quiet():
+                cmd_register_lane([
+                    "--run-dir", bk5_run, "--job-id", "d1", "--cwd", bk4_repo,
+                    "--repo-root", bk4_repo, "--isolation", "direct",
+                    "--manifest", bk5_man, "--no-test-contract",
+                ])
+            with open(os.path.join(bk4_repo, "src", "dependent.txt"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("the dependent job's work, done in the main checkout\n")
+            with _quiet():
+                rc_g5 = cmd_gate_receipt([
+                    "--run-dir", bk5_run, "--job-id", "d1", "--repo-root", bk4_repo,
+                    "--worktree", bk4_repo, "--manifest", bk5_man, "--mode", "direct",
+                ])
+            bk5_receipt = _read_json(os.path.join(bk5_run, "receipts", "d1.gate.json"), {})
+            with _quiet():
+                cmd_record([
+                    "--run-dir", bk5_run, "--job-id", "d1", "--manifest", bk5_man,
+                    "--verdict-json", json.dumps(bk5_receipt),
+                    "--repo-root", bk4_repo, "--now", "2026-09-03T00:00:00Z",
+                ])
+                rc_f5 = cmd_finalize_wave([
+                    "--run-dir", bk5_run, "--repo-root", bk4_repo,
+                    "--manifest", bk5_man, "--jobs", "d1", "--wave", "2",
+                    "--now", "2026-09-03T00:00:00Z",
+                ])
+            _rc_5, _committed5, _ = _git(bk4_repo, ["show", "--name-only", "--format=", "HEAD~1"])
+            _check("finding 60: a dependent job (manifest worktree, agent direct) INTEGRATES "
+                   "on the receipt's mode", rc_g5 == 0 and rc_f5 == 0
+                   and "src/dependent.txt" in _committed5,
+                   "gate=%s fin=%s head~1=%s" % (rc_g5, rc_f5, _committed5[:200]))
+            _check("finding 60: _gate_mode_from_receipt reads the emitter's --mode",
+                   _gate_mode_from_receipt(bk5_receipt) == "direct"
+                   and _gate_mode_from_receipt({"raw_stdout": "not json"}) is None
+                   and _gate_mode_from_receipt(None) is None)
 
         # ---- THE SEALED PATCH, END TO END ------------------------------------ #
         # The merge used to take a fresh diff of the live worktree, so whatever

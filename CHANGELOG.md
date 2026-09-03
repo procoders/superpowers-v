@@ -20,6 +20,10 @@ Stage verification, cycle 1 (DIRECT attended), 2026-09-03 — the first real req
 
 The per-run mutex is gitignored and untracked; the finalizer's bookkeeping commit resets it explicitly.
 
+### Fixed — a dependent worktree job could never integrate on Engine C
+
+A 3.0.5 rule ran any job with `depends_on` in the main checkout (worktrees then branched from the default ref) while the manifest kept `isolation: worktree`; the prompt said "you are in your own worktree", `register-lane` said `direct`, the gate ran direct, and the finalizer — reading the manifest's label — refused with "resolves to no worktree". Never seen before because every earlier dependent job was manifest-direct. Now: with `worktree.baseRef: head` (3.4.0) a dependent job gets a real worktree; without it the three layers say the same thing, and the finalizer takes the mode from the emitter-authored gate receipt. Stage-2 r2, finding 60.
+
 ### Fixed — a halted run is marked BLOCKED, not left PARTITION_VERIFIED with jobs pending
 
 When a wave is refused (by the authority, or because a job did not reach `success`) the workflow halts; the finalizer now writes `phase: BLOCKED` with the reason and time. The banner still lists the run as unfinished; the triage hook's `--open-jobs` question excludes it, so a halted run no longer silences the sizing of the follow-up that repairs it.
