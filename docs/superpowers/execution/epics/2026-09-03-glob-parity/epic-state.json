@@ -1,0 +1,47 @@
+{
+  "epic_id": "2026-09-03-glob-parity",
+  "title": "One glob matcher for recall and the scope gate (stage 7)",
+  "status": "running",
+  "features": [
+    {
+      "id": "one-matcher",
+      "title": "F1 \u2014 recall-check uses the scope gate's glob matcher",
+      "depends_on": [],
+      "spec_path": "docs/superpowers/execution/epics/2026-09-03-glob-parity/specs/one-matcher.md",
+      "status": "pending",
+      "run_id": null,
+      "attempts": 0,
+      "last_error": null,
+      "disposition": null
+    },
+    {
+      "id": "matcher-docs",
+      "title": "F2 \u2014 one glob contract, stated once",
+      "depends_on": [
+        "one-matcher"
+      ],
+      "spec_path": "docs/superpowers/execution/epics/2026-09-03-glob-parity/specs/matcher-docs.md",
+      "status": "pending",
+      "run_id": null,
+      "attempts": 0,
+      "last_error": null,
+      "disposition": null
+    }
+  ],
+  "autonomy": {
+    "stance": "marathon",
+    "max_attempts_per_feature": 2,
+    "max_no_progress_cycles": 3,
+    "max_total_attempts": 6,
+    "max_wall_clock_hours": 10,
+    "started_at": "2026-09-03T19:07:31.555660+00:00",
+    "start_sha": "c011d6edb4b408d818ec1f2ba64ad4a46d90c5f6"
+  },
+  "final_review": {
+    "status": "pending"
+  },
+  "blocker_ledger": [],
+  "no_progress_cycles": 0,
+  "total_attempts": 0,
+  "updated_at": "2026-09-03T19:07:31Z"
+}

@@ -1,0 +1,6 @@
+[
+  {"id": "one-matcher", "title": "F1 — recall-check uses the scope gate's glob matcher", "depends_on": [],
+   "spec_path": "docs/superpowers/execution/epics/2026-09-03-glob-parity/specs/one-matcher.md"},
+  {"id": "matcher-docs", "title": "F2 — one glob contract, stated once", "depends_on": ["one-matcher"],
+   "spec_path": "docs/superpowers/execution/epics/2026-09-03-glob-parity/specs/matcher-docs.md"}
+]
