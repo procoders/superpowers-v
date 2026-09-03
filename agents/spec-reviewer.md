@@ -173,11 +173,13 @@ The composite must build/compile. What must have been *tested* is tier-aware, an
 | Tier | Required beyond the unconditional floor |
 |---|---|
 | **FULL** | `full_command` — ran, exit 0 |
-| **SCOPED** | the declared impacted set: every `impacted_map` rule whose `when` matches a changed path, unioned — not the first match |
-| **DIRECT** | the declared impacted set — **plus `full_command` when the change lands unattended** (the auto-route class): the floor alone does not carry the guarantee an auto-committing change trades on |
-| **any tier** | `full_command` whenever the job carries a changed path matching **no** `impacted_map` rule — an unmapped file is unknown blast radius, never "nothing to run" |
+| **SCOPED** | the declared impacted set: every `impacted_map` rule whose `when` matches a changed path, unioned — not the first match — **plus, for each changed path matching no rule, the referencing tests (≤5) and never `full_command`** |
+| **DIRECT** | the same as SCOPED — **plus `full_command` when the change lands unattended** (the auto-route class): the floor alone does not carry the guarantee an auto-committing change trades on |
+| **no `triage.tier` in the manifest** | `full_command` whenever the job carries a changed path matching **no** `impacted_map` rule — with no tier there is no size decision to honour, and an unmapped file is unknown blast radius, never "nothing to run" |
 
-The last row overrides the three above it: one unmapped path in a SCOPED or DIRECT job promotes that job to `full_command`. Derive it yourself — match each entry of the job's `files_changed` against the map — rather than taking "impacted" on the worker's word. (DIRECT dispatches no reviewer by default; that row governs the reviews that do happen at DIRECT and the bar an unattended landing must clear before it commits.)
+**What a SCOPED job owes, since 3.4.1 (decision 4).** The floor, the impacted set, and — for any changed path no `impacted_map` rule matched — at most **five referencing suites**: the test files that name the changed module, selected by `referencing_tests()` in [`compound-v-fastpath-run.py`](../scripts/compound-v-fastpath-run.py). When none of them exists, the floor **alone** is the whole obligation. **`full_command` is not owed at SCOPED or DIRECT, and demanding it here is now a review error** — an unmapped path used to promote every tier to the full suite, which handed back the entire suite the triage engine had just decided against. FULL is unchanged, and the merge-blocking CI run remains the only thing that restores what a full suite guarantees; the referencing heuristic is early feedback, textual, and neither sound nor complete.
+
+Derive it yourself — match each entry of the job's `files_changed` against the map — rather than taking "impacted" on the worker's word. (DIRECT dispatches no reviewer by default; that row governs the reviews that do happen at DIRECT and the bar an unattended landing must clear before it commits.)
 
 Read the evidence from the job result ([`job_result.schema.json`](../schemas/job_result.schema.json)), never from the summary prose:
 
@@ -185,7 +187,7 @@ Read the evidence from the job result ([`job_result.schema.json`](../schemas/job
 |---|---|
 | `tests.command` | the command(s) actually executed, newline-separated. Non-empty. |
 | `tests.exit_code` | `0` iff every executed command exited 0; anything else is red |
-| `tests.scope` | the resolved `full` \| `impacted` \| `floor_only` — it must match what the tier owes above |
+| `tests.scope` | the resolved `full` \| `impacted` \| `floor_only` — it must match what the tier owes above. The resolved *slice* additionally carries the output-only label `impacted+referencing` when an unmapped path at SCOPED/DIRECT was answered by the referencing heuristic; read it as `impacted` plus the ≤5 suites, and check the resolver's notes for which files they were. No manifest may **declare** that label — `test_scope` stays the three-value enum. |
 | `tests.selected_count` | how many **commands** ran. Not test cases: no bundled worker parses a runner's output, so a case count would be fabricated. Never read this as a case count, and never ask for one. |
 
 **A job reporting no test command at all is a FAIL** → **ISSUE: NO_TEST_EVIDENCE**. That is a job claiming `status: "success"` with the `tests` object absent, or with `tests.command` empty or whitespace. Silence is not success — an absent record is exactly what a worker that skipped the step looks like, and it is indistinguishable from one that ran nothing on purpose. (`tests` is legitimately absent on a job that never reached the test step — `blocked`, `timeout`, `error` — and such a job fails this gate on its own terms.)

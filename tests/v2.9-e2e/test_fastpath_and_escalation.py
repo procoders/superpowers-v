@@ -653,5 +653,122 @@ class TestFeatureBTestFloorProducer(_RepoCase):
         self.assertEqual(shlex.split(res["failures"][0]), ["sh", "-c", "exit 3"])
 
 
+# =========================================================================== #
+# v3.4.1 decision 4 — the tests a SCOPED job owes.
+#
+# The size decision the triage engine already took has to reach the test set, or it
+# decided nothing: before 3.4.1 a change SCOPED by the engine still ran `full_command`
+# the moment one changed file matched no `when` glob, which is the whole suite arriving
+# through the back door. At SCOPED and DIRECT an unmapped path now resolves to the tests
+# that REFERENCE the changed module — capped, sorted, bounded — and to the floor alone
+# when there are none. FULL is untouched, and the merge-blocking CI run is still the only
+# thing that restores what a full suite guarantees. This drives the REAL CLI against real
+# git fixtures; nothing here is a unit-level stub.
+# =========================================================================== #
+def _scoped_manifest(tier):
+    """The B2 contract plus a `triage.tier`, which is the input decision 4 reads."""
+    return """run_id: r-scoped
+triage:
+  tier: %s
+test_contract:
+  floor_command: "sh -c 'exit 0'"
+  full_command: "sh -c 'echo FULL'"
+  impacted_map:
+    - when: "scripts/compound-v-*.py"
+      run: "sh -c 'echo selftest {path}'"
+jobs:
+  - id: task-1
+    test_scope: impacted
+""" % tier
+
+
+class TestDecision4ScopedRunsReferencingTests(_RepoCase):
+
+    def _seed(self, tier, changed_rel, extra_files=None):
+        """One UNMAPPED changed file, plus whatever test files the case needs."""
+        repo = self.new_repo("scoped")
+        write_file(repo, changed_rel, "def parse():\n    return 1\n")
+        for rel, body in (extra_files or {}).items():
+            write_file(repo, rel, body)
+        write_file(repo, "m.yaml", _scoped_manifest(tier))
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "seed")
+        base = git_head(repo)
+        write_file(repo, changed_rel, "def parse():\n    return 2\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "change")
+        return repo, base
+
+    def _resolve(self, repo, base):
+        rc, data, out, err = run_json(
+            "compound-v-fastpath-run.py", "resolve-tests", "--worktree", repo,
+            "--manifest", os.path.join(repo, "m.yaml"), "--job-id", "task-1",
+            "--baseline", base, "--no-prior-run")
+        self.assertEqual(rc, 0, "%s%s" % (out, err))
+        return data
+
+    def test_scoped_unmapped_path_runs_the_referencing_test_not_the_full_suite(self):
+        repo, base = self._seed("SCOPED", "src/parser.py", {
+            "tests/test_parser.py": "# exercises src/parser.py\n",
+            "tests/test_unrelated.py": "x = 1\n",
+        })
+        data = self._resolve(repo, base)
+        contract = data["contract"]
+        self.assertEqual(contract["resolved_commands"],
+                         ["sh -c 'exit 0'", "python3 tests/test_parser.py"])
+        self.assertEqual(contract["scope"], "impacted+referencing")
+        self.assertEqual(contract["selected_count"], 2)
+        self.assertNotIn("sh -c 'echo FULL'", contract["resolved_commands"],
+                         "a SCOPED job must never reach full_command through an "
+                         "unmapped path")
+        self.assertTrue(any("referencing" in n.lower() for n in data["notes"]),
+                        data["notes"])
+
+    def test_full_tier_keeps_todays_unmapped_rule(self):
+        """Decision 4 changes SCOPED and DIRECT only. At FULL an unmapped path is still
+        unknown blast radius and still resolves to `full_command`."""
+        repo, base = self._seed("FULL", "src/parser.py", {
+            "tests/test_parser.py": "# exercises src/parser.py\n",
+        })
+        contract = self._resolve(repo, base)["contract"]
+        self.assertIn("sh -c 'echo FULL'", contract["resolved_commands"])
+        self.assertEqual(contract["scope"], "impacted")
+        self.assertNotIn("selected_count", contract)
+
+    def test_scoped_with_no_referencing_test_runs_the_floor_only(self):
+        """Nothing names the changed module, so the honest scoped answer is the floor —
+        NOT the whole suite, and never nothing. CI remains the backstop, and the note
+        says which rule produced this set."""
+        repo, base = self._seed("SCOPED", "src/orphan.py", {
+            "tests/test_unrelated.py": "x = 1\n",
+        })
+        data = self._resolve(repo, base)
+        self.assertEqual(data["contract"]["resolved_commands"], ["sh -c 'exit 0'"])
+        self.assertTrue(
+            any("referencing tests found none — floor only at tier SCOPED" in n
+                for n in data["notes"]), data["notes"])
+
+    def test_the_referencing_set_is_capped(self):
+        """Seven candidate suites, five selected — 'the tests in the change's scope'
+        must stay bounded or it is the full suite wearing a scoped label."""
+        extra = dict(("tests/test_w%d.py" % i, "# widget.py\n") for i in range(7))
+        repo, base = self._seed("SCOPED", "src/widget.py", extra)
+        contract = self._resolve(repo, base)["contract"]
+        selected = [c for c in contract["resolved_commands"] if c != "sh -c 'exit 0'"]
+        self.assertEqual(len(selected), 5, selected)
+        self.assertEqual(contract["selected_count"], 6)   # the floor + the five
+        # Capped deterministically, by sorted path — not by filesystem order.
+        self.assertEqual(selected, sorted(selected))
+
+    def test_direct_tier_behaves_as_scoped(self):
+        repo, base = self._seed("DIRECT", "src/parser.py", {
+            "tests/test_parser.py": "# exercises src/parser.py\n",
+        })
+        contract = self._resolve(repo, base)["contract"]
+        self.assertEqual(contract["resolved_commands"],
+                         ["sh -c 'exit 0'", "python3 tests/test_parser.py"])
+        self.assertEqual(contract["scope"], "impacted+referencing")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

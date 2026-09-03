@@ -53,7 +53,7 @@ Worked example: [`examples/manifest.example.yaml`](../../examples/manifest.examp
 | `read_allowed` | string[] | yes | Glob list this job MAY read. **ADVISORY only — NOT enforced** (git cannot track reads). Documents intent + scopes the prompt. Auto-includes Task 0 outputs + the three audits. |
 | `acceptance` | string[] | yes | This job's narrow acceptance, checked in its per-task review. |
 | `body` | string | **yes** | The task itself — the instructions the worker reads. `description`, `prompt` and `spec` are accepted aliases. **A job with none of them is refused at emit**: a prompt carrying lanes and no instructions asks the worker to invent the task, and an invented task that stays inside its lane passes every gate here, because the scope gate checks WHICH files changed and never what they say. This field was undocumented until 3.3.4, and the emitter read only the three aliases while every manifest wrote `body` — so the task text was dropped from every worker prompt for twenty-five runs. |
-| `test_scope` | enum | no | v3.0 (Feature B2): `full` \| `impacted` \| `floor_only`. **Absent ⇒ DERIVED (3.1.0)** — see below; it is no longer a flat `full`. `floor_only` requires a non-empty `test_contract.floor_command`; `impacted` requires a non-empty `full_command` (an unmapped path resolves to it). |
+| `test_scope` | enum | no | v3.0 (Feature B2): `full` \| `impacted` \| `floor_only`. **Absent ⇒ DERIVED (3.1.0)** — see below; it is no longer a flat `full`. `floor_only` requires a non-empty `test_contract.floor_command`; `impacted` requires a non-empty `full_command` (an unmapped path resolves to it at tier FULL, and an uncomputable previously-failing set at every tier — 3.4.1). |
 | `timeout_sec` | integer | no | Wall-clock seconds this job's worker gets before the supervisor kills it. Domain **60 … 21600** inclusive (a bool is rejected — `true` is not `1`). **Absent ⇒ the worker script's own `DEFAULT_TIMEOUT_SEC=900`, unchanged**, which is what every manifest committed before v2.18 relies on. Applies to the **worker-script backends** (`codex`, `antigravity`, `cursor`, `devin`, `opencode`), where the dispatcher passes it through as `--timeout-sec`; for `claude` (in-harness `Task`) there is no equivalent knob and the field is advisory. Anything above **600** MUST be dispatched on the background path — see the outer-bound rule in [`parallel-dispatcher.md`](../../agents/parallel-dispatcher.md). |
 
 ¹ **Every job MUST have `model` OR `tier`** (at least one). Most jobs carry `tier` (+ optional `effort`) and let the dispatcher resolve the concrete model; a job MAY instead pin an explicit `model` override that skips resolution. A job with neither is a validation failure.
@@ -165,7 +165,43 @@ the fail-closed empty-set refusal, and the standing statement that the scoped fl
 strictly less information than a call graph, and call-graph selection is already measured at
 0.2%–10.6% unsafe per revision.
 
-12. **A scope never resolves to nothing (v3.0).** `test_scope: floor_only` requires a non-empty `test_contract.floor_command`; `test_scope: impacted` requires a non-empty `full_command`; every `impacted_map` entry carries both `when` and `run`.
+### What a SCOPED job owes (3.4.1, decision 4) — the tier reaches the test set
+
+Deriving the *scope* was only half the job. An unmapped path — a changed file matching no
+`when` glob — resolved to `full_command` at **every** tier, so a change the triage engine had
+already called SCOPED still ran the whole suite the moment one file fell outside the map. The
+size decision was taken and then discarded.
+
+Since 3.4.1 the unmapped rule is tier-aware:
+
+| `triage.tier` | An unmapped changed path resolves to |
+|---|---|
+| `FULL`, or no `triage` block at all | `full_command` — unchanged. With no size decision to honour, "all of them" is still the only truthful answer. |
+| `SCOPED` / `DIRECT` | the **referencing tests**: test files that name the changed path's basename or module name, at most **5**. |
+| `SCOPED` / `DIRECT`, none found | the **floor alone** — never `full_command`, and never nothing. |
+
+`referencing_tests(repo, changed_paths, cap=5)` in
+[`compound-v-fastpath-run.py`](../../scripts/compound-v-fastpath-run.py) selects them: any file
+under `tests/`, `test/`, `spec/` or `__tests__/` at any depth, or matching `*_test.*`,
+`test_*.*`, `*.spec.*` anywhere, whose first 200 KB mention the basename or the module name.
+Plain substring matching, so it is **language-agnostic**; the walk, the per-file read and the
+result are all **bounded**, and the result is **sorted** so the same worktree always yields the
+same set. A `.sh` file runs as `bash <file>`, a `.py` file as `python3 <file>`, and anything
+else is **reported and not run** rather than given a guessed runner.
+
+**Two things this is not.** It is not a call graph: a textual reference over-selects (a comment
+naming the file) and under-selects (three layers of indirection and the name never appears), so
+it is early feedback and nothing more — the merge-blocking CI run is still what restores the
+guarantee. And it is not a new `test_scope`: the resolved slice is *labelled*
+`impacted+referencing` and carries `selected_count` (a count of **commands**, never a saving)
+when the heuristic contributed, but `test_scope` remains the three-value enum
+`full | impacted | floor_only` and no manifest may declare the label.
+
+**The uncomputable previously-failing set is untouched by all of this.** It still falls back to
+`full_command` at every tier, SCOPED included: that is a fail-closed rule about data this run
+could not read, not a statement about the size of the change.
+
+12. **A scope never resolves to nothing (v3.0).** `test_scope: floor_only` requires a non-empty `test_contract.floor_command`; `test_scope: impacted` requires a non-empty `full_command`; every `impacted_map` entry carries both `when` and `run`. **3.4.1:** `full_command` stays mandatory for `impacted` even though a SCOPED job's unmapped paths no longer reach it — the uncomputable previously-failing set still does, at every tier. At SCOPED and DIRECT an unmapped path resolves to at most five *referencing* tests and, when there are none, to the floor alone — which is why `floor_only`'s floor requirement is what keeps that branch from resolving to nothing.
 
 A violation of rule 1, 3, 4, 5, 6, 7, 8, 11 or 12 is a hard validation failure (non-zero exit + specifics). Rules 2/9/10 are partition-design rules enforced jointly by `partition-reviewer` and the validator.
 
@@ -411,7 +447,7 @@ jobs:
 |---|---|---|---|
 | `test_contract` | map | no | Absent ⇒ no declared contract; every job runs `full`. |
 | `test_contract.floor_command` | string | no¹ | The merge-blocking floor. Runs at every tier. |
-| `test_contract.full_command` | string | no¹ | The full suite. Also the resolution of any changed path that matches no `when` glob. |
+| `test_contract.full_command` | string | no¹ | The full suite. Also the resolution of a changed path that matches no `when` glob **at tier FULL** (3.4.1 sends SCOPED/DIRECT to the referencing tests instead), and of an uncomputable previously-failing set at every tier. |
 | `test_contract.impacted_map` | list | no | Declarative `{when, run}` rules. **Both fields are mandatory per entry** — a half-declared rule selects nothing. Unknown keys are rejected. |
 | `test_scope` (per job) | enum | no | `full` \| `impacted` \| `floor_only`. **Absent ⇒ DERIVED** — see *The derived default* below. |
 
@@ -420,8 +456,9 @@ resolve to running **nothing**:
 
 - a job with `test_scope: floor_only` requires a **non-empty `floor_command`** — `floor_only` means
   *only the floor*, never nothing;
-- a job with `test_scope: impacted` requires a **non-empty `full_command`**, because a changed path
-  matching no `when` glob is unknown blast radius and resolves to the full suite.
+- a job with `test_scope: impacted` requires a **non-empty `full_command`**, because at tier FULL a
+  changed path matching no `when` glob is unknown blast radius and resolves to the full suite — and
+  because an uncomputable previously-failing set resolves to it at *every* tier, 3.4.1 included.
 
 Overlapping `when` globs **union** (every matching `run` is selected); first-match-wins would silently
 drop coverage the map explicitly declares.
