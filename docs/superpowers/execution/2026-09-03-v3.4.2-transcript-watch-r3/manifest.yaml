@@ -1,0 +1,86 @@
+run_id: 2026-09-03-v3.4.2-transcript-watch-r3
+feature: 'v3.4.2 transcript play-ahead r3: review-2''s three issues (>= is not a redirect, heredoc bodies are not commands, error anchors on the tool''s verdict; the reviewer contract''s FULL row), then review pass 3 — last within the cycle cap'
+routing_stance: balanced
+max_parallel: 2
+spec_path: docs/superpowers/specs/2026-09-03-v3.4.2-transcript-watch-design.md
+plan_path: docs/superpowers/plans/2026-09-03-v3.4.2-transcript-watch.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-09-03-v3-4-2-transcript-watch.md
+  domain: docs/superpowers/specs/2026-09-03-v3.4.2-transcript-watch-design.md
+  library: docs/superpowers/library-audit/2026-09-03-v3-4-2-transcript-watch.md
+triage:
+  tier: FULL
+  pre_eval_id: 2026-09-03T042847Z-implement-v3-4-2-transcript-play-ahead-per-docs-superpowers-47e6
+  taxonomy_digest: sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a
+  decided_at: '2026-09-03T04:28:47Z'
+acceptance_criteria:
+- bash tests/test-transcript-watch.sh and /usr/bin/python3 -B scripts/compound-v-transcript-watch.py --selftest are green; every other tests/*.sh and scripts/compound-v-*.py --selftest stays green under /usr/bin/python3 -B.
+- 'Run --once against THIS run''s own transcripts (discovery by the run directory path, no --wf) on the merged tree: it names every agent of the run with its job, reports zero out-of-lane and zero wrong-cwd signals for the merged jobs, and exits 0; the output is quoted in the review.'
+- 'The script imports the path matcher from scripts/compound-v-scope-check.py by path (grep shows no second glob matcher), never writes into the run directory or the repository (strace-free proof: git status is clean after a --once), and exits 0 on every advisory path.'
+- 'commands/v-status.md documents --live and commands/v-dispatch.md step 6 documents the background watch and the two signals that justify TaskStop; CHANGELOG top heading is ## [3.4.2] - 2026-09-03; plugin.json and marketplace.json say 3.4.2; lint-frontmatter is green.'
+test_contract:
+  floor_command: /usr/bin/python3 -B scripts/compound-v-scope-check.py --selftest
+  full_command: bash -c 'for s in scripts/compound-v-*.py; do grep -q -- "--selftest" "$s" || continue; /usr/bin/python3 -B "$s" --selftest >/dev/null 2>&1 || { echo "FAIL $s"; exit 1; }; done; for t in tests/*.sh; do bash "$t" >/dev/null 2>&1 || { echo "FAIL $t"; exit 1; }; done; echo all-tests-ok'
+  impacted_map:
+  - when: scripts/compound-v-*.py
+    run: bash -c '[ -f {path} ] || exit 0; grep -q -- "--selftest" {path} || exit 0; /usr/bin/python3 -B {path} --selftest'
+  - when: tests/*.sh
+    run: bash -c '[ -f {path} ] || exit 0; bash {path}'
+  - when: tests/v2.9-e2e/*.py
+    run: bash -c '[ -f {path} ] || exit 0; /usr/bin/python3 -B -m unittest discover -s "$(dirname {path})" -p "$(basename {path})"'
+  - when: commands/*.md
+    run: /usr/bin/python3 -B scripts/lint-frontmatter.py .
+  - when: .claude-plugin/*.json
+    run: bash -c 'jq empty .claude-plugin/plugin.json && jq empty .claude-plugin/marketplace.json'
+jobs:
+- id: watch-script
+  title: Task A'' — `>=` is not a redirect, a heredoc body is not command text, `error` anchors on the tool's own verdict (review-2 issues 1–2)
+  type: implement
+  backend: claude
+  tier: deep
+  effort: medium
+  isolation: worktree
+  run: parallel
+  write_allowed:
+  - scripts/compound-v-transcript-watch.py
+  - tests/test-transcript-watch.sh
+  read_allowed:
+  - '**'
+  acceptance:
+  - 'bash tests/test-transcript-watch.sh is green and carries fixtures for: a Bash command containing `>=` (no out-of-lane), a heredoc whose BODY contains `>` / `>=` / a path (only the heredoc''s own target is considered, and only when it is a repository path), and a `sed`/`cat`/`grep`/`head` result that pastes a traceback (no error signal); /usr/bin/python3 -B scripts/compound-v-transcript-watch.py --selftest is green.'
+  - bash_write_targets('true >= 1') == [] and bash_write_targets("cat > /tmp/x.py <<PYEOF\nassert s.count(old) >= 1\nPYEOF") == ['/tmp/x.py'] on the merged tree (quote the REPL output); `error` fires only on a tool_result the harness marked is_error or that carries a non-zero exit marker, or — if the text heuristic stays — never on the result of a read-only command.
+  - 'Run --once against run 2026-09-03-v3.4.2-transcript-watch-r2''s own transcripts on the merged tree: zero out-of-lane, zero wrong-cwd, and the per-agent roster names every agent with its job.'
+  body: 'Review pass 2 (docs/superpowers/dogfood/2026-09-03-v3.4.2-transcript-watch-review-2.md) found ISSUES (3); issues 1 and 2 are yours (the script and its test) — read them in full, their reproductions are exact. TEST FIRST: the three fixture classes before the code. Do not weaken the redirect detector to make a fixture pass — require a real target (non-empty, not `=`) and parse only the command line, never a heredoc body. Run python with -B; register your lane with a literal --cwd.'
+- id: reviewer-contract
+  title: 'Task B'''' — agents/spec-reviewer.md §3.3: the FULL row follows the derived-default rule (review-2 issue 3)'
+  type: implement
+  backend: claude
+  tier: standard
+  effort: medium
+  isolation: worktree
+  run: parallel
+  write_allowed:
+  - agents/spec-reviewer.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - 'agents/spec-reviewer.md §3.3''s FULL row says what skills/compound-v/execution-manifest.md''s derived-default table says: a declared impacted_map is honoured at every tier (impacted ∪ previously-failing ∪ newly-added, plus full_command for an unmapped path at FULL), and the reviewer checks the tier''s obligation against resolved_commands; /usr/bin/python3 -B scripts/lint-frontmatter.py . is green.'
+  body: 'Read review-2 issue 3 and skills/compound-v/execution-manifest.md ''The derived default'' (the maintainer''s 2026-09-02 rule: running the whole project is a decision, not a default). Rewrite the FULL row of §3.3 and its surrounding sentence so the reviewer contract agrees with the resolver; change nothing else. Run python with -B; register your lane with a literal --cwd.'
+- id: spec-review-3
+  title: Review Gate pass 3 — review-2's three issues against the merged tree (last within the cycle cap)
+  type: review
+  backend: claude
+  tier: deep
+  effort: medium
+  isolation: direct
+  run: serial
+  depends_on:
+  - watch-script
+  - reviewer-contract
+  write_allowed:
+  - docs/superpowers/dogfood/2026-09-03-v3.4.2-transcript-watch-review-3.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - 'The review-3 file exists with ## Recall, ## SPEC, ## QUALITY, ## INTEGRATION, ## Verdict; for each of review-2''s three issues it states closed or open with the command and output that proves it; every feature-level acceptance criterion of the r1 manifest is re-run on the merged tree including the watch --once against THIS run''s own transcripts (roster quoted); the verdict is APPROVED or ISSUES with a numbered list.'
+  body: Your agent definition carries the three-pass Review Gate and a Step 0 (V-memory recall). Follow it. This is the THIRD and last pass within the cycle cap. Read review-2 (ISSUES 3) and the two fix jobs of this run as new code; reproduce issue 1's REPL cases on the merged tree; run the r1 manifest's acceptance criteria (docs/superpowers/execution/2026-09-03-v3.4.2-transcript-watch/manifest.yaml) with /usr/bin/python3 -B, including the watch --once against this run's own transcripts (no --wf) with the roster quoted. Write docs/superpowers/dogfood/2026-09-03-v3.4.2-transcript-watch-review-3.md. Run python with -B; register your lane with a literal --cwd.

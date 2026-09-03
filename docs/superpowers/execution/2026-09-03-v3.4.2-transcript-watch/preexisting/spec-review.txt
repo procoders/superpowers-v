@@ -70,3 +70,7 @@ e4b1bd2564423082c75d855e2b3f1daddae3630903066826adf550e3195e7e62  docs/superpowe
 1dc15758ed82b36fd6e7423d70ff7766e3a638dddb95546be3df751d3cfc01f7  docs/superpowers/execution/2026-09-03-v3.4.2-transcript-watch/results/docs-release.json
 eea328879a5e70ede0c0e10e07e008ff36bfb1f4f94aa3c29fe2574d5b1e361c  docs/superpowers/execution/2026-09-03-v3.4.2-transcript-watch/results/watch-script.json
 50459462e10502941a679f93468ce0fb9b694c17b32cbf53d5c6f47fc3e5d658  docs/superpowers/execution/2026-09-03-v3.4.2-transcript-watch/state.json
+ac4229a64a9faf1a581fdbeb0711b6f35a773210157aafe77864054ba0272a11  docs/superpowers/execution/2026-09-03-v3.4.2-transcript-watch/jobs/spec-review.patch
+4ca700c5275e66dbab7fa08acf72efc64e7f42260f985968c2c3af1f76bdfff2  docs/superpowers/execution/2026-09-03-v3.4.2-transcript-watch/preexisting/spec-review.verified.txt
+1be94842eb1e2e259edb62b4b63052f2889ebced111a08866b88f3a36ea7a17b  docs/superpowers/execution/2026-09-03-v3.4.2-transcript-watch/receipts/spec-review.gate.json
+b5d8e2aade877067089528787ea237c842cde32e61efacf43709a2651bd24c78  docs/superpowers/execution/2026-09-03-v3.4.2-transcript-watch/results/spec-review.json
