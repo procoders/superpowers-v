@@ -135,7 +135,7 @@ That's it.
 
 ## Verification program
 
-Compound V is dogfooded against its own claims through a staged verification program: eight stages, each a dogfood cycle run against native Claude Code mechanisms rather than trusted from prose. Every cycle's review is recorded in [docs/superpowers/dogfood/README.md](docs/superpowers/dogfood/README.md), which as of this writing logs 34 review files, 3 APPROVED. Read that index for the full history and current stage.
+Compound V is dogfooded against its own claims through a staged verification program: eight stages, each a dogfood cycle run against native Claude Code mechanisms rather than trusted from prose. Every cycle's review is recorded in [docs/superpowers/dogfood/README.md](docs/superpowers/dogfood/README.md), which as of this writing logs 36 review files, 5 APPROVED. Read that index for the full history and current stage.
 
 ---
 

@@ -3,7 +3,7 @@
   "phase": "MERGED",
   "pre_eval_id": "2026-09-03T080658Z-build-epic-feature-review-index-docs-superpowers-execution-e-0e49",
   "epic_id": "2026-09-03-verification-index",
-  "updated_at": "2026-09-03T09:58:00Z",
+  "updated_at": "2026-09-03T08:25:36Z",
   "jobs": {
     "index-script": {
       "status": "done",
@@ -71,5 +71,6 @@
       "resolution": "wave 2's sealed patch applied by hand after finding 89 (be44570 fixed the finalizer); commits 29b534a and 7c4070f are hand finalizations; the review moved to run 2026-09-03-verification-index-review-index-r2"
     }
   ],
-  "superseded_by": "2026-09-03-verification-index-review-index-r2"
+  "superseded_by": "2026-09-03-verification-index-review-index-r2",
+  "merged_at": "2026-09-03T08:25:36Z"
 }

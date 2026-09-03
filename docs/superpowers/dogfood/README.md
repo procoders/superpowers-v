@@ -25,11 +25,13 @@
 | 2026-09-02 | v3.4-native-first | 8 | ISSUES | 2026-09-02-v3.4-native-first-review-8.md |
 | 2026-09-02 | v3.4-native-first | 9 | ISSUES | 2026-09-02-v3.4-native-first-review-9.md |
 | 2026-09-02 | v3.4-native-first | 10 | ISSUES | 2026-09-02-v3.4-native-first-review-10.md |
+| 2026-09-03 | epic-vi-integration | 1 | APPROVED | 2026-09-03-epic-vi-integration-review.md |
 | 2026-09-03 | epic-vi-readme-section | 1 | ISSUES | 2026-09-03-epic-vi-readme-section-review.md |
 | 2026-09-03 | epic-vi-review-index | 1 | ISSUES | 2026-09-03-epic-vi-review-index-review-1.md |
 | 2026-09-03 | v3.4.1-triage-size | 1 | ISSUES | 2026-09-03-v3.4.1-triage-size-review-1.md |
 | 2026-09-03 | v3.4.2-transcript-watch | 1 | ISSUES | 2026-09-03-v3.4.2-transcript-watch-review-1.md |
 | 2026-09-03 | v3.4.3-codex-sandbox-checkout | 1 | ISSUES | 2026-09-03-v3.4.3-codex-sandbox-checkout-review-1.md |
+| 2026-09-03 | epic-vi-readme-section | 2 | APPROVED | 2026-09-03-epic-vi-readme-section-review-2.md |
 | 2026-09-03 | epic-vi-review-index | 2 | APPROVED | 2026-09-03-epic-vi-review-index-review-2.md |
 | 2026-09-03 | v3.4.1-triage-size | 2 | ISSUES | 2026-09-03-v3.4.1-triage-size-review-2.md |
 | 2026-09-03 | v3.4.2-transcript-watch | 2 | ISSUES | 2026-09-03-v3.4.2-transcript-watch-review-2.md |
@@ -37,4 +39,4 @@
 | 2026-09-03 | v3.4.1-triage-size | 3 | ISSUES | 2026-09-03-v3.4.1-triage-size-review-3.md |
 | 2026-09-03 | v3.4.2-transcript-watch | 3 | APPROVED | 2026-09-03-v3.4.2-transcript-watch-review-3.md |
 
-Reviews: 34 · APPROVED: 3 · ISSUES: 26 · other: 5
+Reviews: 36 · APPROVED: 5 · ISSUES: 26 · other: 5

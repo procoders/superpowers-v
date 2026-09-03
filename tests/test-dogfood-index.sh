@@ -107,6 +107,35 @@ verdict: approved
 Looks fine.
 EOF
 
+# A pass-2 file that quotes pass 1's verdict at column 0 (inside a fence)
+# above its own final verdict -> the LAST anchored match wins (APPROVED).
+cat >"$fixture/2026-09-03-eta-review-2.md" <<'EOF'
+# Review
+
+```
+$ grep -n VERDICT pass-1.md
+VERDICT: ISSUES
+```
+
+## Pass 2
+
+**VERDICT: APPROVED**
+EOF
+
+# An integration review: pass 1 ISSUES quoted at column 0, pass 2 ends with
+# PASS (the word /v:epic emits) -> the last match wins and PASS reads APPROVED.
+cat >"$fixture/2026-09-03-theta-review.md" <<'EOF'
+# Integration review
+
+**VERDICT: ISSUES**
+
+1. something
+
+## Pass 2
+
+**VERDICT: PASS**
+EOF
+
 # --- run ------------------------------------------------------------------
 out="$tmp/README.md"
 /bin/bash "$script" --dir "$fixture" --out "$out"
@@ -114,10 +143,10 @@ out="$tmp/README.md"
 [ -s "$out" ] || fail "output file is empty or missing"
 
 # Review rows expected: alpha(1,2), beta(1), beta(10), gamma(1), delta(1),
-# epsilon(1), zeta(1) -> 8 rows total, plus the decoy and notes file must
+# epsilon(1), zeta(1), theta(1), eta(2) -> 10 rows total, plus the decoy and notes file must
 # not appear as rows.
 row_count=$(grep -c '^| 2026-' "$out")
-[ "$row_count" -eq 8 ] || fail "expected 8 rows, got $row_count"
+[ "$row_count" -eq 10 ] || fail "expected 10 rows, got $row_count"
 
 grep -q -- "-reviewer-x-impl.md" "$out" && fail "decoy -impl.md file leaked into the index"
 grep -q -- "beta-notes.md" "$out" && fail "non-review file leaked into the index"
@@ -131,7 +160,9 @@ expected_order="2026-09-01-alpha-review.md
 2026-09-03-delta-review.md
 2026-09-03-epsilon-review.md
 2026-09-03-gamma-review.md
-2026-09-03-zeta-review.md"
+2026-09-03-theta-review.md
+2026-09-03-zeta-review.md
+2026-09-03-eta-review-2.md"
 actual_order=$(printf '%s\n' "$rows" | awk -F'|' '{gsub(/^ +| +$/, "", $6); print $6}')
 [ "$actual_order" = "$expected_order" ] || fail "row order mismatch:
 expected:
@@ -156,7 +187,9 @@ assert_contains "$out" "| 2026-09-03 | epsilon | 1 | unknown | 2026-09-03-epsilo
 assert_contains "$out" "| 2026-09-03 | zeta | 1 | APPROVED | 2026-09-03-zeta-review.md |"
 
 # --- footer counts ---------------------------------------------------------
-assert_contains "$out" "Reviews: 8 · APPROVED: 3 · ISSUES: 3 · other: 2"
+assert_contains "$out" "| 2026-09-03 | eta | 2 | APPROVED | 2026-09-03-eta-review-2.md |"
+assert_contains "$out" "| 2026-09-03 | theta | 1 | APPROVED | 2026-09-03-theta-review.md |"
+assert_contains "$out" "Reviews: 10 · APPROVED: 5 · ISSUES: 3 · other: 2"
 
 # --- idempotence: byte-identical on a second run --------------------------
 out2="$tmp/README2.md"

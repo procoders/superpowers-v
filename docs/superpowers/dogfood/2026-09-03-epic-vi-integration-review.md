@@ -373,3 +373,192 @@ five runs did not go through the pipeline unassisted.
    85/86/87/89 and nothing about `scripts/compound-v-dogfood-index.sh`, `tests/test-dogfood-index.sh`
    or the README section. No job had `CHANGELOG.md` in its write lane, so this is a run-level omission
    to close before the next version bump.
+
+---
+
+## Pass 2 (HEAD cdb4355)
+
+Re-verification only, scoped to what `cdb4355` changed: the dead-link gate in
+`.github/workflows/validate.yml` (9 lines), F1 r1's `state.json` (18 lines), and the pass-1 report
+above, which that commit also committed. Nothing in the pass-1 text is edited. Pass-1 issues 2, 4 and
+5 were dispositions rather than code changes and are recorded below without re-litigation.
+
+### 1. Dead-link gate — pass-1 issue 1 — **CLOSED**
+
+The gate now drops fenced blocks and strips inline code spans before extracting links:
+
+```
+awk '/^[[:space:]]*(```|~~~)/ { fence = !fence; next } !fence { print }' "$file" \
+  | sed -E 's/`[^`]*`//g' \
+  | grep -oE '\]\([^)]+\.(md|py|sh|json|ya?ml)[^)]*\)' 2>/dev/null | sed 's/^](//;s/)$//' | ...
+```
+
+Replica updated to that extraction and run against a clean checkout of HEAD
+(`git archive cdb4355 | tar -x`), so the working tree cannot flatter it:
+
+```
+$ (cd $S/head && bash $S/deadlink2.sh)
+All intra-plugin links resolve
+clean_head_exit=0
+```
+
+Nine to zero. The old replica still exits 1 on the same tree, which is what makes the delta the gate's
+and not the corpus's:
+
+```
+$ bash $S/deadlink.sh   # pass-1 extraction, unchanged
+old_replica_exit=1
+```
+
+**The plant.** A throwaway `zz-deadlink-plant.md` at the repo root with three links — one real
+navigation outside any code context, one quoted in an inline code span, one quoted inside a fence,
+all three pointing at files that do not exist:
+
+```
+$ bash $S/deadlink2.sh
+DEAD: ./zz-deadlink-plant.md -> docs/superpowers/this-file-does-not-exist.md (resolved: ./docs/superpowers/this-file-does-not-exist.md)
+DEAD COUNT: 1
+exit_with_plant=1
+```
+
+Exactly the real one. The code-span copy and the fenced copy are both ignored; the gate did not go
+blind, it learned the difference between navigation and text. A second, adversarial plant — a real
+dead link on a line carrying an unmatched stray backtick earlier in the same line — is also still
+caught (`DEAD: ./zz-plant2.md -> docs/nope-really-missing.md`, count 1), so the code-span strip does
+not swallow links next to odd backticks. Both plants deleted; `git status --porcelain` clean after
+each.
+
+```
+$ rm -f zz-deadlink-plant.md && bash $S/deadlink2.sh
+exit_after_plant_removed=0
+```
+
+**Two durability notes, neither blocking.** The fence handling is a parity toggle: it flips on any
+line beginning with three backticks or three tildes, without requiring the closer to match the
+opener's character or run length — unlike the CommonMark-accurate fence walker the CHANGELOG-version
+step uses 180 lines earlier in the same file. An unbalanced fence would therefore swallow the rest of
+that file from link scanning. Measured across every `*.md` in the repo, **0 files** have odd fence
+parity, so there is no live hole; the property is worth knowing rather than fixing. Second, this is a
+gate that got *wider*, so the honest framing is that it now trades some recall for the precision it
+gained — the plant is the evidence that the recall it kept is the recall that matters.
+
+### 2. F1 r1's record — pass-1 issue 3 — **terminal and honest; three cosmetic residuals**
+
+The record now reads `phase: MERGED`, `superseded_by: 2026-09-03-verification-index-review-index-r2`,
+a `history` entry carrying the old `blocked_reason` / `blocked_at` plus the sentence "commits 29b534a
+and 7c4070f are hand finalizations", and a note on `spec-review`: "never dispatched in this run;
+performed by r2 (review-only) and r3 (APPROVED)".
+
+**Is it terminal to the dashboard and the hook? Yes — measured before and after, same command, same
+6-hour window:**
+
+```
+$ (cd $S/pre  && python3 scripts/compound-v-dashboard.py resume --open-jobs --max-age-hours 6)   # tree at d24fcbf
+⏸ UNFINISHED COMPOUND V WORK: run 2026-09-03-verification-index-review-index — DISPATCHED, 2/3 jobs done, updated 2h ago. …
+
+$ (cd $S/post && python3 scripts/compound-v-dashboard.py resume --open-jobs --max-age-hours 6)   # tree at cdb4355
+(no output)
+```
+
+The exclusion is on terminality, not on staleness: the run's `updated_at` is inside the window (age
+negative — see residual (c)), and the same command at HEAD with `--max-age-hours 100000` still prints
+a different, genuinely unfinished run (`2026-09-01-v3.0-triage-tests-orchestration`, COLLECTED, 41h),
+so the command is not simply mute. The dashboard's terminal set is literally
+`TERMINAL_RUN_PHASES = ("merged",)` at `scripts/compound-v-dashboard.py:70`. The hook consumes exactly
+this call — `hooks/triage-prompt-nudge.sh:310` runs `compound-v-dashboard.py resume --open-jobs
+--max-age-hours 6`, and its documented rule is "cannot tell ⇒ ACTIVE" (line 299) — so the hook now
+sizes prompts as if nothing were running. `/v:resume` agrees independently:
+`commands/v-resume.md:15` says "If `phase` is already `MERGED`, report nothing to do and stop", so the
+still-`pending` `spec-review` job can never be re-dispatched by a resume. Every consumer behaves
+correctly.
+
+**Is it internally consistent? Substantially, but not entirely — three residuals, all
+representational, none behavioural:**
+
+(a) **No `merged_at`.** All four sibling runs carry one (`…-r2` 08:39:01Z, `…-r3` 09:07:12Z, F2
+09:25:42Z, F2 r2 09:35:21Z); this record has none. The finalizer stamps `merged_at` in the *same
+branch* that sets `MERGED` (`scripts/compound-v-emit-workflow.py:4139-4140`), and its own selftest
+asserts the pair — "finalize-wave advances the phase to MERGED when every job is integrated",
+checking `phase == "MERGED" and bool(merged_at)` at `compound-v-emit-workflow.py:6331`.
+
+(b) **`MERGED` now carries a second meaning.** The finalizer writes `MERGED` only when every manifest
+job is integrated (`_done` over `manifest["jobs"]`, same function); with `spec-review` never
+dispatched, `_done` is false and the finalizer would have written `DISPATCHED`. So for four runs
+`MERGED` means "the pipeline finished all jobs" and for this one it means "abandoned and superseded,
+do not resume". `commands/v-resume.md:53` states the normal-path rule this repair steps outside of:
+"On reaching `MERGED`, do not write the phase by hand". That rule governs the pipeline, not a
+post-hoc audit correction, so this is a naming overload to be aware of, not a violation to reverse —
+and the `history` + `superseded_by` fields are what keep it honest.
+
+(c) **`updated_at` is stamped 2026-09-03T09:58:00Z, nine minutes after the commit that wrote it**
+(cdb4355 is dated 09:49:10Z) and ahead of the clock at review time (09:53:37Z). Harmless — a negative
+age is trivially inside any window — but a hand-written timestamp that postdates its own commit is
+the sort of thing this audit trail exists to not do.
+
+(d) Minor: `superseded_by` has no reader anywhere in `scripts/`, `hooks/`, `skills/`, `commands/` or
+`schemas/`. It is documentation for humans, which is a fine thing to be — noted so nobody later
+assumes a consumer enforces it.
+
+**AC 2 is unchanged by this repair, correctly.** Editing r1's phase does not make "every per-feature
+run reached MERGED through the pipeline with no manual step" true, and the fix does not pretend
+otherwise: the `history` entry names the two hand finalizations in the record itself. The pass-1
+partial-miss finding stands as history; what changed is that the record no longer *contradicts* it.
+
+### 3. README ↔ footer equality — pass-1 issue 2 — **decision recorded, accepted**
+
+The orchestrator's decision: the "as of this writing" hedge stays, no CI regenerate-and-diff step is
+added, because every review file lands after the index that counts it, so such a step would go red on
+every review landing by construction.
+
+**The reasoning is correct for the step pass 1 proposed**, and pass 1 under-thought it: a
+regenerate-then-`git diff --exit-code` gate would fail on the very commit that adds a review file,
+every time, which is a gate that trains people to ignore it. Accepted, not re-raised. Recorded for
+completeness: a narrower guard exists that does not have that failure mode — assert that
+`README.md`'s two numbers equal the **committed** footer rather than a regenerated one, which stays
+green when the index is merely stale and goes red only when someone edits one of the two without the
+other. That is a different guard than the one rejected, and offering it is not disagreement with the
+reasoning that rejected the first.
+
+### 4. `VERDICT: PASS` indexing as `other` — pass-1 issue 4 — **accepted as an honest row**
+
+Left as is, recorded for the CHANGELOG. One concrete consequence worth writing down while it is in
+front of us: this file now carries **two** verdict lines, and the generator takes the first
+(`grep -m1`). Its index row therefore reports pass 1's verdict for the life of the document, whatever
+pass 2 concludes. That is defensible — the row points at a file whose latest verdict a reader can see
+in ten seconds — but it means the index counts *documents*, never *outcomes*, and a multi-pass review
+file freezes at its first verdict. Same root as issue 4: the row is honest about the file and silent
+about the state.
+
+### 5. Surrounding build, re-verified at HEAD
+
+`.github/workflows/validate.yml` still parses as YAML. `lint-frontmatter.py .` exit 0;
+`tests/test-dogfood-index.sh` exit 0; `--selftest` exit 0 on `compound-v-epic-state`,
+`compound-v-localize`, `compound-v-emit-workflow`, `compound-v-integration-gate` and
+`compound-v-dashboard`; the committed-`state.json` audit gate passes for all five verification-index
+run dirs. Nothing regressed around the two edits.
+
+### Verdict — pass 2
+
+Pass 1's one blocking item is closed, and closed by the durable fix rather than by editing nine
+documents: the gate distinguishes a quoted link from a real one, proved by a plant that it still
+fails on exactly the real dead link. F1 r1's record is now terminal to every consumer that reads it —
+dashboard, hook and `/v:resume` — and the episode is preserved in `history` rather than erased, which
+is the honest shape. The two remaining dispositions are recorded, and pass 1's AC results stand
+unchanged: AC 1 met as written, AC 2 a partial miss (4 of 5 runs clean, F1 r1 hand-finalized), AC 3
+met.
+
+**VERDICT: PASS**
+
+Non-blocking, recorded for the CHANGELOG and for whoever touches these files next — none of these
+gates DONE:
+
+1. F1 r1's repaired record carries `phase: MERGED` without a `merged_at` and with one manifest job
+   never dispatched, a pair the finalizer never produces and its own selftest asserts against
+   (`scripts/compound-v-emit-workflow.py:4139-4140`, `:6331`). Behaviour is correct everywhere;
+   the shape is a hand-written special case.
+2. The same record's `updated_at` (09:58:00Z) postdates the commit that wrote it (09:49:10Z).
+3. The gate's fence handling is a parity toggle, not the CommonMark walker used elsewhere in the same
+   workflow file; 0 repo files currently have odd fence parity, so no live hole.
+4. `superseded_by` has no reader in the codebase — human documentation, not an enforced field.
+5. A multi-pass review file freezes at its first verdict in the index, because the generator matches
+   with `grep -m1`.

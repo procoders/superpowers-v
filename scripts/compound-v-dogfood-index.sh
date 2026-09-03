@@ -49,7 +49,8 @@ if [ ! -d "$dir" ]; then
   exit 1
 fi
 
-verdict_pattern='^(#+[[:space:]]*)?\**VERDICT:?\**[[:space:]]*\**(APPROVED|ISSUES)'
+# PASS is what /v:epic's final integration review emits; it reads as APPROVED.
+verdict_pattern='^(#+[[:space:]]*)?\**VERDICT:?\**[[:space:]]*\**(APPROVED|ISSUES|PASS)'
 
 outdir="${out%/*}"
 if [ "$outdir" = "$out" ]; then
@@ -95,11 +96,18 @@ for f in "$dir"/*.md; do
 
   # Extract only the substring the anchored alternation actually matched
   # (not the whole line) so the verdict reflects the matched token, not
-  # whichever word happens to appear anywhere else on the line.
-  match=$(grep -m1 -ioE -- "$verdict_pattern" "$f" || true)
+  # whichever word happens to appear anywhere else on the line. The LAST
+  # anchored match wins: a review file's final verdict is its last one, and
+  # a pass-2 section that quotes pass 1's verdict at column 0 must not freeze
+  # the row at the quoted value (the epic's integration review did exactly
+  # that on 2026-09-03).
+  match=$(grep -ioE -- "$verdict_pattern" "$f" | tail -n 1 || true)
   if [ -n "$match" ]; then
     case "$match" in
       *[Aa][Pp][Pp][Rr][Oo][Vv][Ee][Dd])
+        verdict="APPROVED"
+        ;;
+      *[Pp][Aa][Ss][Ss])
         verdict="APPROVED"
         ;;
       *[Ii][Ss][Ss][Uu][Ee][Ss])

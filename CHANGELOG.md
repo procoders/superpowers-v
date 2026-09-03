@@ -6,6 +6,65 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [3.4.4] - 2026-09-03
+
+Stage 5 of the post-3.4.0 verification program: the first epic Compound V has ever run end to end —
+two docs features on one branch, each through triage → pre-flight → manifest → Engine C → review,
+in dependency order, under the checkpoint stance. F1's review pass 1 found a real latent bug in a
+60-line script that its own tests had not (finding 90); F2's pre-flight measured the committed index
+one row stale before a false number could be published (finding 92).
+
+### Added — `scripts/compound-v-dogfood-index.sh` and the generated `docs/superpowers/dogfood/README.md` (epic F1)
+
+A bash-3.2 generator that indexes every `<date>-<feature>-review[-N].md` under `docs/superpowers/dogfood/`
+(never an `-impl.md`) into one table — date, feature, pass, verdict, file — with a footer
+`Reviews: N · APPROVED: A · ISSUES: I · other: O`, N == A+I+O, idempotent on re-run. The verdict is the
+token the anchored `(APPROVED|ISSUES)` alternation matched, not a substring of the line (review-1's
+issue 1: `VERDICT: ISSUES — the earlier pass was approved` used to index APPROVED). `tests/test-dogfood-index.sh`
+carries the fixtures the review asked for: `## VERDICT: **ISSUES** (4)`, a mid-sentence-only verdict (unknown),
+and a lowercase `verdict: approved`. Known, recorded, not fixed: a review file that quotes an earlier pass's
+verdict at column 0 above its own is indexed with the quoted value (`grep -m1` takes the first anchored match);
+no committed file does that today.
+
+### Added — README "Verification program" section (epic F2)
+
+Three sentences before "Under the hood": what the program is, a root-relative link to the generated index (a
+leading-slash link is exempt from the dead-link CI gate, so the form is pinned in the run's acceptance criteria),
+and the two counts read from the index footer at the time of writing. The numbers are "as of this writing" by
+construction: every review file lands in `docs/superpowers/dogfood/` *after* the index that counts it, so the
+committed footer is always one behind the last review — regenerate with the script rather than trust the number.
+
+The eight stages the section refers to, since this is their only citable list: (1) DIRECT attended — one file,
+ordinary commit, silent Stop gate; (2) SCOPED — the 3.4.1 triage-size feature run through the SCOPED path itself;
+(3) FULL with zero manual interventions — 3.4.2 transcript watch; (4) multi-model — a `backend: codex` job on
+Engine C, 3.4.3; (5) the first epic — this release; (5a/5b) V-memory recall real, recall→action; (6) a foreign
+repository from `/v:init`; (7) death and resurrection; (8) a perfect pass with a stopwatch.
+
+### Fixed — the index generator's row froze at the FIRST verdict in a file (finding 96)
+
+F1's review pass 2 called this a hazard "not live today": a pass-2 section that quotes pass 1's verdict at
+column 0 above its own would be indexed with the quoted value, because the generator took the first anchored
+match. The epic's own integration review made it live the same day — pass 1 `ISSUES`, pass 2 `PASS`, row `ISSUES`.
+The last anchored match now wins (a review file's final verdict is its last one), and `PASS` — the word
+`/v:epic`'s integration review emits — reads as `APPROVED`, since with only the two-token enum the last *matching*
+line of that file was still pass 1's `ISSUES`. Two fixtures cover both.
+
+### Fixed — the dead-link CI gate read quoted `[x](path)` examples as links (finding 95)
+
+The epic's final cross-feature integration review — the first ever run — found the composite red on the
+dead-link gate with nine "dead links", every one a quoted link example inside a code span or a fenced grep
+output in the pre-flight audits, a job prompt and both F2 review files; the reviewer hit the same trap while
+quoting the offender. Both features had passed their own three-pass reviews: a per-feature review cannot see
+a gate that only reds on the composite, which is what the final review is for. The gate now drops fenced
+blocks and strips inline code spans before extracting links. Proven with a replica: nine to zero at HEAD, and
+a planted real dead link outside a code span still fails while a quoted one does not.
+
+### Changed — CI shellcheck now covers `scripts/compound-v-*.sh`, not only `hooks/*.sh`
+
+F1's review pass 1 noticed the new generator's shellcheck clause was a one-time check: `validate.yml` linted the
+hooks only. All nine `scripts/compound-v-*.sh` are clean under shellcheck 0.11, so the step is widened rather than
+a per-test `shellcheck` line added.
+
 ### Fixed — a dependent job that ran in a real worktree was recorded, judged and merged as if it had run in the checkout (finding 89)
 
 Finding 60 gave a dependent job a real worktree under `worktree.baseRef: head`, but three other places still carried the 3.0.5 assumption: Record hard-coded "dependent ⇒ direct" and wrote an empty worktree into state; the authority chose its root from state and recomputed an empty diff over the checkout ("forged"); the finalizer looked for the worktree in result/state and refused "resolves to no worktree". All three now read the gate receipt first — the emitter's own `--mode` and `--worktree`, digest-bound — with the baseRef-aware rule as the fallback. Emitter selftest 419/419; authority 82/82.

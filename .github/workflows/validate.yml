@@ -227,7 +227,7 @@ jobs:
       - name: Lint hook scripts with shellcheck
         run: |
           sudo apt-get install -y shellcheck
-          shellcheck hooks/*.sh
+          shellcheck hooks/*.sh scripts/compound-v-*.sh
 
       # FINAL step — run the repo-wide dead-link scan only after every file exists,
       # so cross-refs to files authored by later batches resolve at integration time.
