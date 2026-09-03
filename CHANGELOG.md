@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [3.4.7] - 2026-09-03
+
+A documentation release, run through the pipeline like any feature: four jobs in three waves, zero
+interventions, one review pass with two one-line issues. The README is the front door again.
+### Changed — README rewritten for a five-minute read (Oleg: "документация должна быть понятной и простой")
+
+The front door now says, in order: what it does, how to install (including the `worktree.baseRef: head`
+project setting no document mentioned before — a native Claude Code setting, values `fresh` or `head`,
+that every dependent job needs and that changes every worktree session in the repository), how to use it,
+how a request is sized (DIRECT / SCOPED / SCOPED+ / FULL, with the models that judge and the ones that
+execute), the sixteen commands, the hooks that run in every session, and the eight verification stages.
+The 950-word lane-guard measurement essay lives in AGENTS.md alone, linked. Backends are named honestly:
+Codex dogfooded here; Antigravity and Cursor verified live but never dispatched here; opencode and Devin
+experimental. `docs/routing.svg` is redrawn to the same tier sentences the prose uses.
+
+### Added — `/v:init` offers the `worktree.baseRef` setting; a TROUBLESHOOTING entry for the job that never merges
+
+Offered with the exact JSON, merged into the project's `.claude/settings.json` (never
+`.claude/compound-v.json`, never silently, unrelated keys preserved), with the reason and the scope stated.
+The stale sentence about an "armed epic goal rule" (removed in 3.4.0) is gone from `/v:init`.
+
 ## [3.4.6] - 2026-09-03
 
 The stage-5a follow-up: two triage/test-scoping defects the previous release surfaced, and — because this
