@@ -1655,23 +1655,31 @@ def _selftest() -> int:
     check("matcher missing -> unavailable", v["verdict"] == "unavailable"
           and v["note"].startswith("scope-check matcher unavailable") and v2 == v)
 
-    # fail-closed: when the private bytecode cache cannot be created, NOTHING is loaded
-    # (pre-flight amendment 1; marathon sample-audit finding 1 — this row keeps the guard honest)
+    # fail-closed: when the private bytecode cache cannot be created, the sibling is NEVER executed.
+    # Load-bearing on purpose (attempt-2 review §3): a spy on spec_from_file_location proves the loader
+    # stopped BEFORE reaching the sibling — a verdict-only assertion passes with the guard removed.
+    import importlib.util as _ilu
     import tempfile as _tf
-    _real_mkdtemp = _tf.mkdtemp
+    _real_mkdtemp, _real_sfl = _tf.mkdtemp, _ilu.spec_from_file_location
+    _sfl_calls = []
 
     def _no_cache(*_a, **_k):
         raise OSError("no space left")
 
+    def _spy_sfl(*a, **k):
+        _sfl_calls.append(a)
+        return _real_sfl(*a, **k)
+
     globals()["_SCOPE_MATCH"] = None; globals()["_SCOPE_MATCH_ERR"] = None
-    _tf.mkdtemp = _no_cache
+    _tf.mkdtemp, _ilu.spec_from_file_location = _no_cache, _spy_sfl
     try:
         v3 = recall_check(["src/**"], "/nonexistent-results", 1)
     finally:
-        _tf.mkdtemp = _real_mkdtemp
+        _tf.mkdtemp, _ilu.spec_from_file_location = _real_mkdtemp, _real_sfl
         globals()["_SCOPE_MATCH"] = None; globals()["_SCOPE_MATCH_ERR"] = None
-    check("no private bytecode cache -> unavailable, nothing loaded",
-          v3["verdict"] == "unavailable" and "private bytecode cache" in v3["note"])
+    check("no private bytecode cache -> unavailable AND the sibling was never loaded",
+          v3["verdict"] == "unavailable" and "private bytecode cache" in v3["note"]
+          and _sfl_calls == [])
 
     print("\n%d failed" % len(fails))
     if fails:
