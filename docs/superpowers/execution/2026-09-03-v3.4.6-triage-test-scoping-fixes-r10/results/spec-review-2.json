@@ -1,0 +1,12 @@
+{
+  "blocked": false,
+  "exit_code": 2,
+  "failure_class": "other",
+  "files_changed": [],
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "error",
+  "summary": "no baseline pinned for job spec-review-2 (neither state.json nor jobs/spec-review-2.baseline). register-lane pins it before the worker launches; without it the gate would measure against a HEAD the worker can move, so this fails closed",
+  "violations": [],
+  "worktree": ""
+}
