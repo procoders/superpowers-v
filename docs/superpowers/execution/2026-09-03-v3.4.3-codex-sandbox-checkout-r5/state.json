@@ -1,26 +1,56 @@
 {
   "run_id": "2026-09-03-v3.4.3-codex-sandbox-checkout-r5",
-  "phase": "PARTITION_VERIFIED",
+  "phase": "DISPATCHED",
   "pre_eval_id": "2026-09-03T062154Z-implement-v3-4-3-per-docs-superpowers-specs-2026-09-03-v3-4-96ff",
   "updated_at": "2026-09-03T07:36:36Z",
   "jobs": {
     "sandbox-helper-fix": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/private/var/folders/gj/v1s49xyj4pz1n8_3dmf4zml80000gn/T/compound-v/2026-09-03-v3.4.3-codex-sandbox-checkout-r5/sandbox-helper-fix",
+      "session_id": "01a06632-ff4f-73b1-97cc-d945010825b2",
+      "baseline": "e0a20c701a847ea2374d37a99a3eb158951104ea",
+      "realised_commit": "e0a20c701a847ea2374d37a99a3eb158951104ea",
+      "merged": {
+        "realised_commit": "e0a20c701a847ea2374d37a99a3eb158951104ea",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "2f44b495b2c7c65028f7d68d85f760dbf55b48ec"
+      }
     },
     "docs-fix": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_33546946-3ed-2",
+      "session_id": null,
+      "baseline": "e0a20c701a847ea2374d37a99a3eb158951104ea",
+      "realised_commit": "e0a20c701a847ea2374d37a99a3eb158951104ea",
+      "merged": {
+        "realised_commit": "e0a20c701a847ea2374d37a99a3eb158951104ea",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "2f44b495b2c7c65028f7d68d85f760dbf55b48ec"
+      }
     },
     "spec-review-2": {
       "status": "pending",
       "isolation": "direct",
       "worktree": null,
       "session_id": null
+    }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "sandbox-helper-fix",
+        "docs-fix"
+      ],
+      "merged": [
+        "sandbox-helper-fix",
+        "docs-fix"
+      ],
+      "commit": "2f44b495b2c7c65028f7d68d85f760dbf55b48ec",
+      "integrated": true
     }
   }
 }

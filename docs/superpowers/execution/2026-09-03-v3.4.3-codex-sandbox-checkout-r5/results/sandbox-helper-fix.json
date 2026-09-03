@@ -1,0 +1,30 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "scripts/compound-v-sandbox-checkout.sh",
+    "tests/test-sandbox-checkout.sh"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "e0a20c701a847ea2374d37a99a3eb158951104ea",
+    "diff_digest": "sha256:2fca1e7fac4e6c399a762dbe601a2c92c92840fa6ada57e74ad843c669139bd3",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"e0a20c701a847ea2374d37a99a3eb158951104ea\",\n  \"changed\": [\n    \"scripts/compound-v-sandbox-checkout.sh\",\n    \"tests/test-sandbox-checkout.sh\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-sandbox-checkout.sh\",\n    \"tests/test-sandbox-checkout.sh\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "e0a20c701a847ea2374d37a99a3eb158951104ea",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "01a06632-ff4f-73b1-97cc-d945010825b2",
+  "status": "success",
+  "summary": "Task A' (codex) \u2014 `--taxonomy-from` gets its test, `files:` counts new paths only (review-1 issues 5, 6)",
+  "tests": {
+    "command": "bash tests/test-engine-c-contract.sh\nbash -c '[ -f scripts/compound-v-sandbox-checkout.sh ] || exit 0; shellcheck scripts/compound-v-sandbox-checkout.sh'\nbash -c '[ -f tests/test-sandbox-checkout.sh ] || exit 0; bash tests/test-sandbox-checkout.sh'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 3
+  },
+  "violations": [],
+  "worktree": "/private/var/folders/gj/v1s49xyj4pz1n8_3dmf4zml80000gn/T/compound-v/2026-09-03-v3.4.3-codex-sandbox-checkout-r5/sandbox-helper-fix"
+}

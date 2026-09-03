@@ -1,0 +1,18 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 99257dd..6e5e2ed 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -8,8 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+ 
+ Stage 4 of the post-3.4.0 verification program: the first feature dispatched across two backends on
+ Engine C in one run — a Codex worker builds the deliverable, Claude writes the docs and does the
+-review — proving the multi-model contract (worktree outside the repository, UUID session id, the
+-scope gate measuring the worker's own tree) end to end rather than in isolation.
++review. Run r3 proved the multi-model contract's isolation half: the Codex job's worktree sat
++outside the repository, the scope gate measured that worker's own tree, and exactly that lane
++merged. r3's `state.json` still recorded that job's `session_id` as empty, though — the UUID sat
++unread in its events log — so the session-id half is proven separately, by r5's read of the same
++job's `thread.started` line (finding 81), not by r3 itself.
+ 
+ ### Added — `scripts/compound-v-sandbox-checkout.sh`, built by a Codex worker on Engine C
+ 
