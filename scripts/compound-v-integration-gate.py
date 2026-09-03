@@ -99,10 +99,6 @@ existing loader, which falls back to its own mini-parser).
 """
 
 import os
-import json
-import subprocess
-import tempfile
-import shutil
 import sys
 
 # Nobody writes bytecode. The scope gate forgives no path by extension (fourth
@@ -575,8 +571,8 @@ def sealed_post_image(repo_root, baseline, patch_bytes):
 
 def head_matches_post_image(repo_root, image):
     """(True, None) iff every path in `image` is in HEAD with exactly that blob."""
-    if image is None:
-        return False, "no post-image to prove against"
+    if not image:
+        return False, "no post-image to prove against (empty is not proof)"
     for path, oid in sorted(image.items()):
         r = subprocess.run(["git", "-C", repo_root, "rev-parse", "--verify", "HEAD:%s" % path],
                            capture_output=True, text=True)
@@ -947,10 +943,17 @@ def evaluate_job(job, state_job, run_dir, repo_root, scope_check):
                         _patch_bytes = _fh.read()
                 except OSError as _exc:
                     _patch_bytes, _why = None, "cannot read the sealed patch: %s" % _exc
-                if _patch_bytes is not None:
+                if _patch_bytes is not None and not _patch_bytes.strip():
+                    # Tenth review pass, item 2: zero bytes plus the empty-string
+                    # sha256 in the receipt bought a vacuous pass. Nothing proves
+                    # nothing.
+                    _why = "the sealed patch is empty — an empty artifact proves no merge"
+                elif _patch_bytes is not None:
                     _image, _ierr = sealed_post_image(repo_root, _baseline, _patch_bytes)
                     if _ierr:
                         _why = _ierr
+                    elif not _image:
+                        _why = "the sealed patch changes nothing — an empty post-image proves no merge"
                     else:
                         _proved, _why = head_matches_post_image(repo_root, _image)
             if rc_e == 0 and rc_a == 0 and _proved:
@@ -1845,6 +1848,32 @@ def _selftest():
         with open(os.path.join(run_r, "state.json"), "w") as fh:
             json.dump(st_r, fh)
         rep_n = evaluate_run(run_r, repo, scope_check)
+        # Tenth review pass, items 1 and 3: the ONLY imports allowed above the
+        # hardening call are `os` and `sys` — anything else is shadowable by a
+        # module planted beside this script, and a selftest that read 78/78 while
+        # `json`, `subprocess` and `tempfile` sat above the call proved nothing.
+        with open(os.path.abspath(__file__), "r", encoding="utf-8") as _fh:
+            _src = _fh.read()
+        _above = _src.split("\n_harden_sys_path()\n", 1)[0]
+        _early = re.findall(r"^(?:import|from)\s+([A-Za-z_][\w.]*)", _above, re.M)
+        expect("nothing shadowable is imported before _harden_sys_path() (only os, sys)",
+               set(_early) <= {"os", "sys"} and "_harden_sys_path()" in _src)
+        # CASE D — an EMPTY sealed patch (zero bytes, sha256 of nothing) proves nothing.
+        with open(patch_artifact_path(run_r, "job-a"), "wb") as fh:
+            fh.write(b"")
+        _empty_sha = sha256_file(patch_artifact_path(run_r, "job-a"))
+        rcpt_empty = dict(rcpt_r, patch_sha256=_empty_sha)
+        with open(os.path.join(run_r, "receipts", "job-a.gate.json"), "w") as fh:
+            json.dump(rcpt_empty, fh)
+        _put_result(run_r, "job-a", _result(wt_r, receipt=rcpt_empty))
+        st_r["jobs"]["job-a"]["merged"] = {"integrated": True, "commit": real_sha}
+        with open(os.path.join(run_r, "state.json"), "w") as fh:
+            json.dump(st_r, fh)
+        rep_e = evaluate_run(run_r, repo, scope_check)
+        expect("an EMPTY sealed patch with a matching digest is NOT proof (unverifiable)",
+               rep_e["results"][0]["verdict"] == "unverifiable"
+               and any("empty" in r for r in rep_e["results"][0]["reasons"]))
+        os.remove(patch_artifact_path(run_r, "job-a"))
         expect("without a sealed patch, even the real commit is unverifiable — overlap is not proof",
                rep_n["results"][0]["verdict"] == "unverifiable"
                and any("pathname overlap is not proof" in r for r in rep_n["results"][0]["reasons"]))

@@ -1048,8 +1048,9 @@ echo "=== 7h. an interpreter probe is BOUNDED =================="
 SLOW_DIR="$WORK/slowpath"
 mkdir -p "$SLOW_DIR"
 SLOW_PY="$SLOW_DIR/python3"
+SLOW_SECS="30.$$"   # unique per run: the orphan check below greps for exactly this
 { printf '#!/bin/sh\n'
-  printf 'sleep 30\n'
+  printf 'sleep %s\n' "$SLOW_SECS"
   printf 'exec %s "$@"\n' "$(command -v python3)"
 } >"$SLOW_PY"
 chmod +x "$SLOW_PY"
@@ -1073,7 +1074,7 @@ check "the ladder STOPPED rather than paying the budget per candidate" \
 # left one orphaned `sleep 30` per tool call (ninth review pass, item 5).
 sleep 1
 check "no orphaned probe child survives the timeout (pkill -P before kill)" \
-  "$(pgrep -f '^sleep 30$' >/dev/null 2>&1 && echo 0 || echo 1)"
+  "$(pgrep -f "^sleep ${SLOW_SECS}\$" >/dev/null 2>&1 && echo 0 || echo 1)"
 
 # The budget is honoured as configured, not hardcoded: a longer one is visibly
 # slower, which is also the cheapest proof that the bound is what returns.

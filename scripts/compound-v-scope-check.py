@@ -300,8 +300,8 @@ def changed_files(cwd, baseline, preexisting=None):
     # NO carve-out ORIGINATES HERE. Every path the three probes produced reaches
     # the matcher, minus only the direct-mode `preexisting` snapshot the CALLER
     # passed in — whose three classes (digest-bound pre-existing files,
-    # pre-existing directories by name, and the three self-referential run-dir
-    # files `state.json` / `preexisting/<job>.txt` / `preexisting/<job>.verified.txt`)
+    # pre-existing directories by name, and the pipeline's own run-dir files for
+    # this job, the closed list RUN_DIR_EXEMPT_BY_NAME plus the attempts family)
     # are named in this module's docstring and defined in
     # compound-v-emit-workflow.py. Interpreter
     # bytecode is NOT forgiven here: a `.pyc` never merges, but it is executed in
