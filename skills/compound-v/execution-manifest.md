@@ -61,7 +61,7 @@ Worked example: [`examples/manifest.example.yaml`](../../examples/manifest.examp
 
 `backend`, `tier`, `effort`, and `model` are execution-layer values. They drive dispatch; they MUST NOT leak into any agent/skill/command frontmatter (`lint-frontmatter.py` + `validate.yml` reject Haiku, and reviewers/agents always carry `model: opus`).
 
-**Glob semantics (`write_allowed`, `read_allowed`, `impacted_map.when`).** `*` matches within one path segment
+**Glob semantics (`write_allowed`, `impacted_map.when`; `read_allowed` is advisory, never matched).** `*` matches within one path segment
 (never `/`); `**` matches across segments; `dir/**` also matches `dir` itself; `?` matches one non-`/` character;
 `[` and `]` are literal (no character classes — `app/[locale]/**` is a real directory); matching is anchored to the
 full repo-relative path. This is the scope gate's own matcher (`scripts/compound-v-scope-check.py` `matches`), and

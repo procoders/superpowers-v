@@ -1637,6 +1637,9 @@ def _selftest() -> int:
         ("app/[locale]/**", "app/[locale]/page.tsx", True), ("app/[locale]/**", "app/l/page.tsx", False),
         ("README.md", "README.md", True), ("README.md", "docs/README.md", False),
         ("**/x.py", "x.py", True), ("docs/**", "docs/a/b.md", True),
+        # `?` is one non-`/` character (final integration review of epic 2026-09-03-glob-parity:
+        # the rule was documented in both files and asserted nowhere)
+        ("src/?.py", "src/a.py", True), ("src/?.py", "src/ab.py", False), ("a?b", "a/b", False),
     ]
     for pat, path, want in parity:
         check("parity %s ~ %s" % (pat, path),
