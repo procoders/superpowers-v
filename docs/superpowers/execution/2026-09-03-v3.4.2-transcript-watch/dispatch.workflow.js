@@ -765,7 +765,15 @@ async function recordStage(verdict, job) {
       ' --repo-root ' + q(CFG.repo_root) +
       ' --manifest ' + q(CFG.manifest_path) +
       (CFG.manifest_digest ? ' --manifest-digest ' + q(CFG.manifest_digest) : '') +
-      ' --verdict-json ' + q(JSON.stringify(v)) +
+      // The receipt the gate wrote is the verdict; pass its PATH and the two
+      // fields that bind it, never the JSON inline (finding 69: the clamp
+      // refuses argv that quotes a checker with `; do … done`). A verdict
+      // without a receipt (gateFailure) is small and stays inline.
+      (v.receipt_path
+        ? ' --verdict-file ' + q(v.receipt_path) +
+          ' --expect-verdict ' + q(String(v.verdict || '')) +
+          (v.diff_digest ? ' --expect-diff-digest ' + q(String(v.diff_digest)) : '')
+        : ' --verdict-json ' + q(JSON.stringify(v))) +
       (NOW ? ' --now ' + q(NOW) : '');
 
     const prompt =

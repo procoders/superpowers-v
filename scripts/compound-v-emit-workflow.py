@@ -2112,7 +2112,15 @@ async function recordStage(verdict, job) {
       ' --repo-root ' + q(CFG.repo_root) +
       ' --manifest ' + q(CFG.manifest_path) +
       (CFG.manifest_digest ? ' --manifest-digest ' + q(CFG.manifest_digest) : '') +
-      ' --verdict-json ' + q(JSON.stringify(v)) +
+      // The receipt the gate wrote is the verdict; pass its PATH and the two
+      // fields that bind it, never the JSON inline (finding 69: the clamp
+      // refuses argv that quotes a checker with `; do … done`). A verdict
+      // without a receipt (gateFailure) is small and stays inline.
+      (v.receipt_path
+        ? ' --verdict-file ' + q(v.receipt_path) +
+          ' --expect-verdict ' + q(String(v.verdict || '')) +
+          (v.diff_digest ? ' --expect-diff-digest ' + q(String(v.diff_digest)) : '')
+        : ' --verdict-json ' + q(JSON.stringify(v))) +
       (NOW ? ' --now ' + q(NOW) : '');
 
     const prompt =
@@ -3475,7 +3483,17 @@ def cmd_record(argv):
     ap.add_argument("--run-dir", required=True)
     ap.add_argument("--job-id", required=True)
     ap.add_argument("--manifest")
-    ap.add_argument("--verdict-json", required=True)
+    # The verdict arrives EITHER inline (--verdict-json) OR from the receipt the
+    # gate already wrote (--verdict-file). Stage-3 dogfood (finding 69): the
+    # harness's bashCommandClamp refuses a Record command whose argv carries the
+    # receipt inline once the receipt quotes a test checker with `; do … done`
+    # or a backtick — data it cannot tell from structure. The file form keeps
+    # user data out of argv; the two --expect-* fields bind the file to what
+    # the workflow saw, so a rewritten receipt is refused, never recorded.
+    ap.add_argument("--verdict-json")
+    ap.add_argument("--verdict-file")
+    ap.add_argument("--expect-verdict")
+    ap.add_argument("--expect-diff-digest")
     ap.add_argument("--repo-root", required=True,
                     help="the PROJECT root. REQUIRED even though `record` no "
                          "longer writes to it: it is where the triage stream "
@@ -3496,7 +3514,26 @@ def cmd_record(argv):
     ack = {"job_id": job_id, "recorded": False, "merged": False}
 
     try:
-        verdict = json.loads(args.verdict_json)
+        if args.verdict_file:
+            with open(args.verdict_file, "r", encoding="utf-8") as _vf:
+                verdict = json.load(_vf)
+            _exp_v = (args.expect_verdict or "").strip()
+            _exp_d = (args.expect_diff_digest or "").strip()
+            if isinstance(verdict, dict):
+                if _exp_v and str(verdict.get("verdict")) != _exp_v:
+                    verdict = {"verdict": "error", "reason":
+                               "receipt file says verdict %r but the workflow saw %r — "
+                               "the receipt was rewritten between Gate and Record"
+                               % (verdict.get("verdict"), _exp_v)}
+                elif _exp_d and str(verdict.get("diff_digest")) != _exp_d:
+                    verdict = {"verdict": "error", "reason":
+                               "receipt file diff_digest %r != the workflow's %r — "
+                               "the receipt was rewritten between Gate and Record"
+                               % (verdict.get("diff_digest"), _exp_d)}
+        elif args.verdict_json:
+            verdict = json.loads(args.verdict_json)
+        else:
+            raise ValueError("record needs --verdict-json or --verdict-file")
     except Exception as exc:  # noqa: BLE001
         ack["reason"] = "verdict JSON unparseable: %s" % exc
         print(json.dumps(ack, indent=2, sort_keys=True))
@@ -4856,6 +4893,12 @@ def selftest():
         script = emit_script(plan)
         _check("no forbidden constructs in the emitted script",
                forbidden_hits(script) == [], str(forbidden_hits(script)))
+        _check("finding 69: the emitted Record command passes the receipt by PATH, "
+               "bound by --expect-verdict/--expect-diff-digest, and keeps the inline "
+               "form only for a verdict without a receipt",
+               "' --verdict-file ' + q(v.receipt_path)" in script
+               and "--expect-diff-digest" in script and "v.receipt_path" in script
+               and "' --verdict-json ' + q(JSON.stringify(v))" in script)
         _check("meta export is the FIRST statement",
                script.lstrip().startswith("export const meta = {"),
                script.lstrip()[:60])
@@ -6033,10 +6076,32 @@ def selftest():
             bk4_receipt = _read_json(
                 os.path.join(bk4_run, "receipts", "d1.gate.json"), {})
             _check("the gate wrote a receipt", bool(bk4_receipt.get("diff_digest")))
+            # finding 69: Record reads the receipt FROM THE FILE the gate wrote, bound
+            # by the verdict and diff digest the workflow saw; a mismatch is refused.
+            _bk4_rf = os.path.join(bk4_run, "receipts", "d1.gate.json")
+            # The mismatch case runs in a THROWAWAY copy of the run dir: a record
+            # is write-once, and an error result here must not shadow the real one.
+            _f69_run = bk4_run + "-f69"
+            shutil.copytree(bk4_run, _f69_run)
+            with _quiet():
+                cmd_record([
+                    "--run-dir", _f69_run, "--job-id", "d1", "--manifest", bk4_man,
+                    "--verdict-file", os.path.join(_f69_run, "receipts", "d1.gate.json"),
+                    "--expect-verdict", "pass",
+                    "--expect-diff-digest", "sha256:" + "0" * 64,
+                    "--repo-root", bk4_repo, "--now", "2026-09-02T00:00:00Z",
+                ])
+            _bad_res = _read_json(os.path.join(_f69_run, "results", "d1.json"), {}) or {}
+            _check("finding 69: a receipt whose diff_digest is not what the workflow saw is "
+                   "recorded as an ERROR, never as success",
+                   _bad_res.get("status") == "error"
+                   and "rewritten" in str(_bad_res.get("summary")), str(_bad_res)[:200])
+            shutil.rmtree(_f69_run, ignore_errors=True)
             with _quiet():
                 cmd_record([
                     "--run-dir", bk4_run, "--job-id", "d1", "--manifest", bk4_man,
-                    "--verdict-json", json.dumps(bk4_receipt),
+                    "--verdict-file", _bk4_rf, "--expect-verdict", "pass",
+                    "--expect-diff-digest", str(bk4_receipt.get("diff_digest")),
                     "--repo-root", bk4_repo, "--now", "2026-09-02T00:00:00Z",
                 ])
             bk4_stream = os.path.join(bk4_repo, "docs", "superpowers", "memory",

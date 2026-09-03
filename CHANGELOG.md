@@ -11,6 +11,10 @@ manual interventions. The feature is the mechanism the maintainer endorsed after
 through five runs of 3.4.1 — reading a live worker's transcript surfaces a problem minutes before the
 gate records it.
 
+### Fixed — the Record stage passed the gate receipt inline in argv, and the harness clamp refused it (finding 69)
+
+Stage-3 dogfood: the review job's Record command carried the receipt as `--verdict-json '<json>'`; once the receipt quoted a test checker with `; do … done` or a backtick, the per-spawn `bashCommandClamp` refused the command as "structure the clamp cannot verify", the transport agent reported honestly, and the wave halted with the review written but unrecorded. `record` now takes `--verdict-file <receipt path>` bound by `--expect-verdict` and `--expect-diff-digest` (a rewritten receipt is recorded as an error, never as success); the emitted script uses the file form whenever the gate wrote a receipt and keeps the inline form only for a receipt-less gate failure. Emitter selftest 410/410.
+
 ### Added — read the workers' transcripts before their results (`compound-v-transcript-watch.py`)
 
 A read-only, advisory script watches a run's live Workflow agent transcripts and reports five mechanical
