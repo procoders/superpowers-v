@@ -1,6 +1,6 @@
 {
   "run_id": "2026-09-03-verification-index-review-index-r3",
-  "phase": "DISPATCHED",
+  "phase": "MERGED",
   "pre_eval_id": "2026-09-03T080658Z-build-epic-feature-review-index-docs-superpowers-execution-e-0e49",
   "epic_id": "2026-09-03-verification-index",
   "updated_at": "2026-09-03T08:40:00Z",
@@ -34,10 +34,18 @@
       }
     },
     "spec-review-2": {
-      "status": "pending",
+      "status": "done",
       "isolation": "direct",
-      "worktree": null,
-      "session_id": null
+      "worktree": "",
+      "session_id": null,
+      "baseline": "363c8a7c4ac30b1efbd3462630e999fba47508ac",
+      "realised_commit": "363c8a7c4ac30b1efbd3462630e999fba47508ac",
+      "merged": {
+        "realised_commit": "363c8a7c4ac30b1efbd3462630e999fba47508ac",
+        "mode": "direct",
+        "integrated": true,
+        "commit": "b2a7dce53b4cc1619f13f173ca6e7b5eee268426"
+      }
     }
   },
   "waves": {
@@ -60,6 +68,22 @@
       ],
       "commit": "c20b48ae53180287ea214f661d4f75974da8ee76",
       "integrated": true
+    },
+    "3": {
+      "jobs": [
+        "spec-review-2"
+      ],
+      "merged": [
+        "spec-review-2"
+      ],
+      "commit": "b2a7dce53b4cc1619f13f173ca6e7b5eee268426",
+      "integrated": true
     }
-  }
+  },
+  "triage_actual": {
+    "merge_pending": true,
+    "pre_eval_id": "2026-09-03T080658Z-build-epic-feature-review-index-docs-superpowers-execution-e-0e49",
+    "run_id": "2026-09-03-verification-index-review-index-r3"
+  },
+  "merged_at": "2026-09-03T09:07:12Z"
 }
