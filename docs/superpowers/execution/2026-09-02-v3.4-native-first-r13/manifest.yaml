@@ -1,0 +1,78 @@
+run_id: 2026-09-02-v3.4-native-first-r13
+feature: v3.4 native-first r13 — the tenth review pass, on the orchestrator's fix for the ninth pass's items
+routing_stance: balanced
+max_parallel: 3
+spec_path: docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md
+plan_path: docs/superpowers/plans/2026-09-02-v3.4-native-first.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-09-02-v3-4-native-first.md
+  domain: docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md
+  library: docs/superpowers/library-audit/2026-09-02-v3-4-native-first.md
+triage:
+  tier: FULL
+  pre_eval_id: 2026-09-02T170442Z-v3-4-native-first-replace-the-epic-goal-feature-a-of-hooks-e-5664
+  taxonomy_digest: sha256:1f2a12f634422ca72a66cfa195b731a0e19743b5e7fe622fb799821cf5e88e85
+  decided_at: '2026-09-02T17:04:42Z'
+acceptance_criteria:
+- Every tests/*.sh and every script --selftest is green (CI's Python 3.9 floor).
+- grep for epic-watch|headless-shim|goal_arm|--goal-status|--arm-goal|autonomy.watch|record-watcher across commands skills agents hooks scripts tests .github CONVENTIONS.md returns nothing.
+- The UserPromptSubmit hook, driven with synthetic stdin, writes a pre-eval record bound to the stdin session and returns the tier in additionalContext; a question writes nothing.
+- No prose in commands/skills/agents instructs an agent to append task-outcomes.jsonl or to run compound-v-update-memory.py.
+- hooks/hooks.json registers no PostToolUseFailure hook; /v:dashboard has no serve mode.
+- Attended DIRECT is documented as an ordinary commit; Phase L is documented as unattended-only and tests/test-triage-landing.sh still passes.
+test_contract:
+  floor_command: bash tests/test-epic-goal-stop.sh
+  full_command: bash -c 'for t in tests/*.sh; do bash "$t" >/dev/null 2>&1 || { echo "FAIL $t"; exit 1; }; done; echo all-tests-ok'
+  impacted_map:
+  - when: hooks/**
+    run: bash -c 'bash tests/test-epic-goal-stop.sh && bash tests/test-native-points.sh'
+  - when: scripts/compound-v-*.py
+    run: bash -c '[ -f {path} ] || exit 0; /usr/bin/python3 {path} --selftest'
+  - when: commands/v-triage.md
+    run: bash tests/test-triage-landing.sh
+  - when: tests/*.sh
+    run: bash -c '[ -f {path} ] || exit 0; bash {path}'
+jobs:
+- id: spec-review-10
+  title: Review Gate — three passes against the spec and the feature-level acceptance criteria
+  type: review
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: direct
+  run: serial
+  write_allowed:
+  - docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-10.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - The review-10 file exists with the five sections; it states, for each of the ninth pass's six items, closed or open with evidence; the verdict is APPROVED or ISSUES with a numbered list.
+  body: 'Your agent definition carries the three-pass Review Gate and a Step 0 (V-memory recall).
+
+    Follow it. This is the TENTH pass. Read the nine earlier passes under docs/superpowers/dogfood/. The
+
+    ninth pass found Codex H4 and L1 still open, records claiming otherwise, a stale comment, an orphaned
+
+    probe child, and a documented residual. The ORCHESTRATOR closed items 1–5 directly in the commit
+
+    "fix(gate): a pruned job is proven by its sealed patch, never by pathname overlap; …" — review that
+
+    commit as new code: reproduce the ninth pass''s decoy-commit case against the merged tree (must be
+
+    unverifiable), confirm a real merge with a sealed patch passes, confirm no sealed patch ⇒
+
+    unverifiable; check RUN_DIR_EXEMPT_BY_NAME against the docstrings and the scope-check header; run the
+
+    lane-guard suite and confirm the orphan assertion discriminates (restore the old watchdog line in a
+
+    copy and show it reds). Report everything in one pass, ranked. Then run the acceptance commands on
+
+    the whole merged tree with /usr/bin/python3 -B. Write
+
+    docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-10.md with ## Recall, ## SPEC,
+
+    ## QUALITY, ## INTEGRATION, ## Verdict (APPROVED or ISSUES with a numbered list). Run python with
+
+    -B; register your lane with a literal --cwd.
+
+    '
