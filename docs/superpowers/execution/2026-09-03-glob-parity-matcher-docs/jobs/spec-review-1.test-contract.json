@@ -1,0 +1,9 @@
+{
+  "scope": "full",
+  "resolved_commands": [
+    "bash -c '/usr/bin/python3 scripts/lint-frontmatter.py >/dev/null'",
+    "bash -c '/usr/bin/python3 scripts/lint-frontmatter.py >/dev/null && for f in skills/compound-v/memory.md skills/compound-v/execution-manifest.md; do grep -q \"the same matcher\" \"$f\" || { echo \"missing phrase in $f\"; exit 1; }; done'"
+  ],
+  "floor_command": "bash -c '/usr/bin/python3 scripts/lint-frontmatter.py >/dev/null'",
+  "full_command": "bash -c '/usr/bin/python3 scripts/lint-frontmatter.py >/dev/null && for f in skills/compound-v/memory.md skills/compound-v/execution-manifest.md; do grep -q \"the same matcher\" \"$f\" || { echo \"missing phrase in $f\"; exit 1; }; done'"
+}

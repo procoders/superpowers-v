@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-03-epic-gp-matcher-docs-review-1.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "4dec64288dc618b63333b00f23ee8103bab00d28",
+    "diff_digest": "sha256:134dbf49de196dfd7eb1d4d17526d907552543213e29f20b54f2dd5b45af84ad",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"4dec64288dc618b63333b00f23ee8103bab00d28\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-03-epic-gp-matcher-docs-review-1.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-03-epic-gp-matcher-docs-review-1.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "4dec64288dc618b63333b00f23ee8103bab00d28",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Review Gate \u2014 three passes against the spec and the feature acceptance criteria",
+  "tests": {
+    "command": "bash -c '/usr/bin/python3 scripts/lint-frontmatter.py >/dev/null'\nbash -c '/usr/bin/python3 scripts/lint-frontmatter.py >/dev/null && for f in skills/compound-v/memory.md skills/compound-v/execution-manifest.md; do grep -q \"the same matcher\" \"$f\" || { echo \"missing phrase in $f\"; exit 1; }; done'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "full",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": ""
+}
