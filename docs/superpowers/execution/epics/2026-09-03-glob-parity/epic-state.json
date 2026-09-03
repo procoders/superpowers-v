@@ -1,7 +1,7 @@
 {
   "epic_id": "2026-09-03-glob-parity",
   "title": "One glob matcher for recall and the scope gate (stage 7)",
-  "status": "running",
+  "status": "blocked_needing_human",
   "features": [
     {
       "id": "one-matcher",
@@ -55,8 +55,8 @@
   "blocker_ledger": [],
   "no_progress_cycles": 0,
   "total_attempts": 6,
-  "updated_at": "2026-09-03T20:59:40Z",
-  "last_done_count": 1,
+  "updated_at": "2026-09-03T21:00:08Z",
+  "last_done_count": 2,
   "processed_cycle_ids": [
     "c1",
     "c2",
@@ -65,6 +65,19 @@
     "c5",
     "c6",
     "c7",
-    "c8"
-  ]
+    "c8",
+    "c9"
+  ],
+  "breaker_trip": {
+    "which": [
+      "max_total_attempts"
+    ],
+    "detail": {
+      "max_total_attempts": {
+        "value": 6,
+        "cap": 6
+      }
+    },
+    "tripped_at": "2026-09-03T21:00:08.057183+00:00"
+  }
 }
