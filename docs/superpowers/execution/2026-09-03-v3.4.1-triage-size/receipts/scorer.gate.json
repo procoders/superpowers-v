@@ -1,0 +1,82 @@
+{
+  "baseline_commit": "20ed7252e9f57ab59a1ebf06894973d89d93d9af",
+  "diff_digest": "sha256:dbd226c463dc2651b2d0cbf9149992e10e92cadba45fcd882fb85f658a89aa2d",
+  "exit_code": 0,
+  "job_id": "scorer",
+  "patch_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-v3.4.1-triage-size/jobs/scorer.patch",
+  "patch_paths": [
+    ".claude/compound-v-impact-taxonomy.example.yaml",
+    ".claude/compound-v-impact-taxonomy.yaml",
+    "schemas/pre-eval-record.schema.json",
+    "scripts/compound-v-preeval.py",
+    "scripts/compound-v-taxonomy.py",
+    "scripts/compound-v-validate-taxonomy.py"
+  ],
+  "patch_sha256": "sha256:dbd226c463dc2651b2d0cbf9149992e10e92cadba45fcd882fb85f658a89aa2d",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"20ed7252e9f57ab59a1ebf06894973d89d93d9af\",\n  \"changed\": [\n    \".claude/compound-v-impact-taxonomy.example.yaml\",\n    \".claude/compound-v-impact-taxonomy.yaml\",\n    \"schemas/pre-eval-record.schema.json\",\n    \"scripts/compound-v-preeval.py\",\n    \"scripts/compound-v-taxonomy.py\",\n    \"scripts/compound-v-validate-taxonomy.py\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-preeval.py\",\n    \"scripts/compound-v-taxonomy.py\",\n    \"scripts/compound-v-validate-taxonomy.py\",\n    \"schemas/pre-eval-record.schema.json\",\n    \".claude/compound-v-impact-taxonomy.yaml\",\n    \".claude/compound-v-impact-taxonomy.example.yaml\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "20ed7252e9f57ab59a1ebf06894973d89d93d9af",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      ".claude/compound-v-impact-taxonomy.example.yaml",
+      ".claude/compound-v-impact-taxonomy.yaml",
+      "schemas/pre-eval-record.schema.json",
+      "scripts/compound-v-preeval.py",
+      "scripts/compound-v-taxonomy.py",
+      "scripts/compound-v-validate-taxonomy.py"
+    ],
+    "checks": [
+      {
+        "checker": "/usr/bin/python3 -B scripts/compound-v-preeval.py --selftest",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '/usr/bin/python3 -B scripts/compound-v-validate-taxonomy.py .claude/compound-v-impact-taxonomy.yaml && /usr/bin/python3 -B scripts/compound-v-taxonomy.py --selftest'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'for r in docs/superpowers/pre-eval/*.json; do /usr/bin/python3 -B -c \"import json,sys; json.load(open(sys.argv[1]))\" \"$r\" || exit 1; done; /usr/bin/python3 -B scripts/compound-v-preeval.py --selftest'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f scripts/compound-v-preeval.py ] || exit 0; /usr/bin/python3 -B scripts/compound-v-preeval.py --selftest'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f scripts/compound-v-taxonomy.py ] || exit 0; /usr/bin/python3 -B scripts/compound-v-taxonomy.py --selftest'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f scripts/compound-v-validate-taxonomy.py ] || exit 0; /usr/bin/python3 -B scripts/compound-v-validate-taxonomy.py --selftest'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (7 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 6 command(s) from 6 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_ddd18fa6-e98-9"
+}

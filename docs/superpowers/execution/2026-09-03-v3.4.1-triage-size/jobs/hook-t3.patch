@@ -1,0 +1,1147 @@
+diff --git a/commands/v-triage.md b/commands/v-triage.md
+index b795da6..bda1fba 100644
+--- a/commands/v-triage.md
++++ b/commands/v-triage.md
+@@ -25,8 +25,13 @@ ls -t docs/superpowers/pre-eval/*.json 2>/dev/null | head -5
+ 
+ If one carries this session's id, **do not mint a second**: commit it (step T3) and go. A record per
+ prompt is how the outcome stream the circuit breaker reads stops meaning anything. Run Phase T when
+-the hook did not fire — a slash-command invocation, a second request in the same session, a request
+-that needed the T3 classify step, or any session the hook was not registered in.
++the hook did not fire — a slash-command invocation, a second request in the same session, or any
++session the hook was not registered in.
++
++As of **v3.4.1 a request needing T3 is no longer one of those cases**: the hook finishes the classify
++itself with the headless one-shot (see T2) and records a real tier. It falls back to its reminder
++only when no classifier could be RUN at all — no `claude`/`codex` CLI on the machine, or one that
++hung past the cap — and that reminder is the signal to run Phase T here.
+ 
+ ## Two modes
+ 
+@@ -187,11 +192,40 @@ after a `needs_t3` result. Add `--taxonomy PATH` only to point at a non-default
+ 
+ - `"disabled": true` — `pre_eval.enabled` is false. The stage is a no-op, **nothing was written**,
+   and this change is FULL by the operator's own configuration. Say so; do not hand-write a record.
+-- `"needs_t3": true` — the deterministic layers cannot band the request without the light classify
+-  Task. Run **one** `light`-tier Task (Sonnet, never Haiku) with the returned `t3_prompt`, turn the
+-  reply into one of the returned `t3_categories`, and re-invoke with `--t3-category <enum>`. The
+-  re-invocation resumes the same `pre_eval_id` (discovered by request fingerprint) rather than
+-  minting a second. Any error, timeout, or non-enum reply is `unknown`, which is FULL.
++- `"needs_t3": true` — the deterministic layers cannot band the request without a light classify.
++  Answer the returned `t3_prompt` with one of the returned `t3_categories` and re-invoke with
++  `--t3-category <enum>`. The re-invocation resumes the same `pre_eval_id` (discovered by request
++  fingerprint) rather than minting a second. Any error, timeout, or non-enum reply is `unknown`,
++  which is FULL.
++
++  **The headless one-shot is the default route** (v3.4.1, finding 50). Write the returned
++  `t3_prompt` to a file and run:
++
++  ```bash
++  python3 scripts/compound-v-classify-request.py --classify-headless \
++    --prompt-file "$PROMPT_FILE" --cwd . --timeout 15
++  ```
++
++  It prints `{"category", "backend", "timed_out", "exit_code", "model"}`: one nested
++  `claude -p --tools ""` on the resolved `claude`/`light` model (never Haiku), falling back to the
++  read-only `codex` route, both under `compound-v-run-with-timeout.py` with stdin closed. Pass the
++  `category` straight back as `--t3-category`. Prefer it because it is the same route
++  `hooks/triage-prompt-nudge.sh` takes, so an attended `/v:triage` and the hook that fires without
++  anyone asking reach the same answer by the same path.
++
++  **`backend: "none"` is not an answer.** It means no classifier CLI was available on this machine
++  — as does `timed_out: true`. Neither is a classification, and neither may be recorded as
++  `--t3-category unknown`: that would put a made-up band on a real record. Fall back to the Task
++  route below. A model that RAN and replied `unknown` is different and *is* an answer: re-invoke
++  with it and take the FULL that follows.
++
++  **The Task route is the fallback**, and the only route on a harness with no `claude`/`codex` CLI:
++  run **one** `light`-tier Task (Sonnet, never Haiku) with the `t3_prompt`, then
++  `--parse` its reply into the enum:
++
++  ```bash
++  python3 scripts/compound-v-classify-request.py --parse --reply '<the Task reply>'
++  ```
+ 
+ **On the session id.** `CLAUDE_CODE_SESSION_ID` is the harness session id as a Bash call in this
+ session sees it, and it is what the record binds. **If it is empty, say so and continue** — the
+@@ -239,6 +273,11 @@ Print the tier, the predicate list exactly as T2 emitted it, and the next step:
+ - **DIRECT, unattended and `"member": false`** → it cannot auto-route. Stop and get a human, or
+   route it through `/v:orchestrate` as SCOPED.
+ - **SCOPED** → offer it; on acceptance `/v:orchestrate` (manifest, run dir, scope gate, floor, one combined SPEC+QUALITY review; recon and the three pre-flights are skipped).
++- **SCOPED+** (`"tier": "SCOPED"` with `"flavor": "scoped_plus"`) → a small edit on a **sensitive**
++  path. Offer it; on acceptance `/v:orchestrate` with `triage.flavor: scoped_plus`, where a deep
++  review and a cross-model second opinion are **mandatory**, not offered. SCOPED+ is not a fourth
++  tier token — it is SCOPED plus a flavor, and the size being small is exactly why the review does
++  not shrink with it.
+ - **FULL** → offer it; on acceptance the unchanged pipeline.
+ 
+ ---
+diff --git a/hooks/hooks.json b/hooks/hooks.json
+index f3feabc..61f1086 100644
+--- a/hooks/hooks.json
++++ b/hooks/hooks.json
+@@ -2,7 +2,7 @@
+   "$comment": "Compound V hooks. SubagentStop was removed in v0.1.1 on the premise that it was undocumented. That premise was WRONG (verified 2026-07-25): Stop and SubagentStop are both documented, exit 2 / decision:block prevents the turn from ending, and Anthropic's own ralph-loop plugin ships a Stop hook. v2.18 RESTORES a blocking Stop hook (epic-goal-stop.sh). SessionStart matcher pattern copied from upstream obra/superpowers v5.1.0. memory-refresh.sh (v2.0) is APPENDED to both events — it is silent (emits no context) and self-backgrounds an FTS5-only `refresh --quick`, so it composes with the banner/nudge without blocking and never installs/downloads. brainstorm-trigger0-nudge.sh (v2.8) uses PreToolUse additionalContext — live-probed 2026-07-11 on Claude Code 2.1.197 (see the probe comment in that hook); reminder only, never blocks.",
+   "$comment_stop": "Stop takes NO matcher — it is not a tool event. The `|| true` suffix is MECHANISM (a) of the two-part fail-open contract: a non-zero exit from a Stop hook IS a block, and a syntax error in the script is fatal before any in-script trap can run, so the registration itself must neutralize it. MECHANISM (b) lives inside epic-goal-stop.sh (an unconditional-exit-0 EXIT trap plus output suppression on a failed run). Both are required; neither is sufficient. Do NOT remove the `|| true` — see tests/test-epic-goal-stop.sh, which asserts it is present and proves the raw script really does exit non-zero when broken.",
+   "$comment_lane_guard": "PreToolUse lane-guard (v3.0 Feature E) is registered WITHOUT a `|| true` suffix, and that is deliberate rather than an omission. A non-zero PreToolUse exit is NOT a deny -- it is a non-blocking error whose stderr is shown to the user -- so `|| true` buys nothing here, while lane-guard.sh's own wrapper already discards non-JSON output and exits 0 unconditionally. Copying the Stop idiom would be cargo-culting a mechanism that does not apply. The matcher is `Write|Edit|MultiEdit|NotebookEdit|Bash`: `Bash` is in the list because the 1D probe (0982ce0) showed a Write|Edit-only matcher is decorative in an environment that nudges agents toward sed/heredocs, and the hook's own header is explicit that shell-command inspection is a supplement -- the git-derived scope gate remains the authority. It carries `timeout: 10` as of v3.4: the hook spawns foreign executables (interpreter viability probes, and a delegated manifest parse) and bounds each of them itself — 0.9 s per probe, 5 s for the parse — but a bound the hook applies to itself is not a bound on the hook, and this one runs on EVERY Write/Edit/Bash call. 10 s is the outer envelope those inner budgets fit inside; a hook that overruns it is killed and the tool call proceeds, which is the same fail-open the script's own contract specifies.",
+-  "$comment_native_points": "UserPromptSubmit + PostCompact (v3.0, task-16) close two rows of docs/superpowers/architecture/native-mechanisms.md. UserPromptSubmit is the native \"a change request arrived\" event -- the activation surface the sizing engine never had, which is why it had run zero times. As of v3.4 triage-prompt-nudge.sh RUNS THE SCORER (`compound-v-preeval.py triage`, the same subcommand /v:triage step T2 calls) rather than printing a reminder to run it: a reminder is skippable by construction, which is the whole defect this event was registered to fix. It writes a session-bound pre-eval record and never commits -- the engine never runs git -- and it fires only when no active run and no covering triage record exist, once per session, and never on a slash command or a short question. It carries `|| true` for the same reason the Stop hook does, and a sharper one: UserPromptSubmit is blocking-capable and exit 2 REJECTS THE USER'S PROMPT, which is exactly what bash returns for a parse error above the in-script trap. PostCompact receives the compaction summary (SessionStart does not), so postcompact-resume.sh reuses `compound-v-dashboard.py resume` and reports whether the summary carried the active run ids; in Claude Code 2.1.238 its stdout becomes the compaction's display text, NOT model context, so it complements the v2.19 SessionStart banner rather than replacing it. `timeout: 10` bounds both: they run on every prompt / every compaction and must never be the reason a turn stalls -- a scorer that overruns it loses its context line and the prompt proceeds.",
++  "$comment_native_points": "UserPromptSubmit + PostCompact (v3.0, task-16) close two rows of docs/superpowers/architecture/native-mechanisms.md. UserPromptSubmit is the native \"a change request arrived\" event -- the activation surface the sizing engine never had, which is why it had run zero times. As of v3.4 triage-prompt-nudge.sh RUNS THE SCORER (`compound-v-preeval.py triage`, the same subcommand /v:triage step T2 calls) rather than printing a reminder to run it: a reminder is skippable by construction, which is the whole defect this event was registered to fix. It writes a session-bound pre-eval record and never commits -- the engine never runs git -- and it fires only when no active run and no covering triage record exist, once per session, and never on a slash command or a short question. It carries `|| true` for the same reason the Stop hook does, and a sharper one: UserPromptSubmit is blocking-capable and exit 2 REJECTS THE USER'S PROMPT, which is exactly what bash returns for a parse error above the in-script trap. PostCompact receives the compaction summary (SessionStart does not), so postcompact-resume.sh reuses `compound-v-dashboard.py resume` and reports whether the summary carried the active run ids; in Claude Code 2.1.238 its stdout becomes the compaction's display text, NOT model context, so it complements the v2.19 SessionStart banner rather than replacing it. Both are bounded because they run on every prompt / every compaction and must never be the reason a turn stalls -- a scorer that overruns its timeout loses its context line and the prompt proceeds. As of v3.4.1 UserPromptSubmit -- and ONLY that event -- carries `timeout: 25` instead of 10: a request the deterministic layers cannot band now finishes T3 inside the hook with one headless `claude -p` classify (capped at 15 s plus the supervisor's 3 s grace) rather than degrading to a printed reminder, and 15 + 3 does not fit inside 10. PostCompact keeps `timeout: 10`; it starts no external model call and raising it would buy nothing.",
+   "$comment_no_failure_ledger": "There is deliberately NO PostToolUseFailure registration. v3.3.0 shipped hooks/tool-failure-ledger.sh on this event; v3.4 removed both. The ledger appended a line to a file under TMPDIR that nothing in this plugin ever read -- no classifier, no scorecard, no command, no test other than the one asserting the file grew. `compound-v-classify-failure.py` and `compound-v-failure-policy.py` consume a worker's reported failure, not a temp-dir JSONL, so the ledger was evidence with no consumer, and it kept a store of raw tool-error text (which routinely echoes commands, arguments and tokens) alive on disk to produce it. Re-add it only together with the reader that makes it mean something.",
+   "hooks": {
+     "Stop": [
+@@ -46,7 +46,7 @@
+             "type": "command",
+             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/triage-prompt-nudge.sh\" || true",
+             "async": false,
+-            "timeout": 10
++            "timeout": 25
+           }
+         ]
+       }
+diff --git a/hooks/triage-prompt-nudge.sh b/hooks/triage-prompt-nudge.sh
+index acbe260..a955586 100755
+--- a/hooks/triage-prompt-nudge.sh
++++ b/hooks/triage-prompt-nudge.sh
+@@ -1,5 +1,5 @@
+ #!/usr/bin/env bash
+-# Compound V — UserPromptSubmit triage hook (v3.4)
++# Compound V — UserPromptSubmit triage hook (v3.4.1)
+ #
+ # WHAT THIS IS
+ # ------------
+@@ -142,14 +142,42 @@
+ # wrong one is a hook that says nothing when the mechanism it replaced would at
+ # least have spoken.
+ #
++# WHAT CHANGED IN v3.4.1: `needs_t3` IS NO LONGER A DEGRADE (finding 50)
++# ---------------------------------------------------------------------
++# The engine is T3-agnostic and returns `needs_t3` with a ready prompt when the
++# deterministic layers cannot band a request. Until 3.4.1 this hook treated that
++# as a failure and printed the reminder, on the reasoning that finishing T3 needs
++# a light-tier Task and a hook cannot run one. The premise was true and the
++# conclusion was wrong: a hook cannot run a Task, but it CAN run a process, and a
++# nested `claude -p --tools ""` answers the same bounded prompt in ~5 s (probed
++# live 2026-09-03; the read-only codex route answers in ~8 s). So the hook now
++# finishes T3 itself — `compound-v-classify-request.py --classify-headless`,
++# Claude light first, codex second — and re-invokes the SAME triage subcommand
++# with `--t3-category <enum>`, continuing exactly as if T1 had banded.
++#
++# THE REMINDER SURVIVES FOR ONE CASE ONLY: the classifier never reported. No CLI
++# on the machine (`backend: none`) or one that hung past the cap (`timed_out`)
++# both mean nothing was classified, and claiming otherwise would put a made-up
++# band on a real record. A model that RAN and answered `unknown` is a different
++# thing entirely — that is a genuine classification, it re-enters the engine as
++# `--t3-category unknown`, and it lands FULL with a record, which is the
++# fail-closed direction with an audit trail instead of without one.
++#
++# THE COST, STATED. A `needs_t3` prompt now WAITS for a model call — visibly,
++# once per session, capped at _CLASSIFY_TIMEOUT_S (15 s) plus the supervisor's
++# 3 s grace. That does not fit inside a `timeout: 10` registration, which is why
++# `hooks/hooks.json` raises UserPromptSubmit — and ONLY that event — to 25.
++# An ordinary prompt never reaches this path and keeps its ~1 s cost.
++#
+ # OUTPUT. `hookSpecificOutput.additionalContext` — verified against the runtime:
+ # UserPromptSubmit is one of the three events whose additionalContext is
+ # injected into the model's context (with SessionStart and UserPromptExpansion).
+ #
+ # COST. The early exits (slash command, short question, or marker set) are ~9 ms.
+ # The eligibility path adds a records scan and a resume query (~89 ms), and the
+-# engine adds a bounded read-only localization pass on top — the dominant term,
+-# and the reason the registration carries `timeout: 10`. A run over that budget
++# engine adds a bounded read-only localization pass on top. A request the
++# deterministic layers cannot band adds the headless classify — up to 18 s, and
++# the reason the registration carries `timeout: 25`. A run over that budget
+ # is killed by the harness and the prompt proceeds with no context line; the
+ # write-once artifacts a killed run left behind are resumable by request
+ # fingerprint, so the next `/v:triage` on the same text continues rather than
+@@ -289,28 +317,106 @@ _has_active_run() {
+ # Prints the engine's JSON on stdout, or returns non-zero having printed nothing.
+ # `CV_TRIAGE_REQUEST` is how the prompt travels: `--request-env` exists precisely
+ # so arbitrary user text never has to survive argv quoting or show up in `ps`.
++#
++# The optional 4th argument is the resolved T3 enum. Supplying it is the WHOLE
++# `needs_t3` re-entry: same subcommand, same request, same binding, one extra
++# flag — the engine then scores as if T1 had banded. Nothing else about the
++# second call differs from the first, which is why there is one function and not
++# two.
+ _run_engine() {
+-  local proj="$1" sid="$2" request="$3" engine py base out
++  local proj="$1" sid="$2" request="$3" t3cat="${4:-}" engine py base out
+   engine="$(_locate_script compound-v-preeval.py)" || return 1
+   py="$(_python)" || return 1
+   # The engine never runs git, by design — so HEAD is an input, supplied here.
+   # Absent (not a repo, no commits yet) binds null rather than an invented value.
+   base="$(git -C "$proj" rev-parse HEAD 2>/dev/null)" || base=""
+-  if [ -n "$base" ]; then
+-    out="$(CV_TRIAGE_REQUEST="$request" PYTHONDONTWRITEBYTECODE=1 \
+-           "$py" "$engine" triage --request-env CV_TRIAGE_REQUEST \
+-           --repo "$proj" --session-id "$sid" --base-commit "$base" --json \
+-           2>/dev/null)" || return 1
+-  else
+-    out="$(CV_TRIAGE_REQUEST="$request" PYTHONDONTWRITEBYTECODE=1 \
+-           "$py" "$engine" triage --request-env CV_TRIAGE_REQUEST \
+-           --repo "$proj" --session-id "$sid" --json 2>/dev/null)" || return 1
+-  fi
++
++  # Built with `set --` rather than a bash array: an empty `"${arr[@]}"` is an
++  # unbound-variable error under `set -u` on bash 3.2, which is the bash macOS
++  # still ships as /bin/bash.
++  set -- triage --request-env CV_TRIAGE_REQUEST --repo "$proj" \
++         --session-id "$sid" --json
++  [ -n "$base" ] && set -- "$@" --base-commit "$base"
++  [ -n "$t3cat" ] && set -- "$@" --t3-category "$t3cat"
++
++  out="$(CV_TRIAGE_REQUEST="$request" PYTHONDONTWRITEBYTECODE=1 \
++         "$py" "$engine" "$@" 2>/dev/null)" || return 1
+   [ -n "$out" ] || return 1
+   printf '%s' "$out" | jq -e 'type == "object"' >/dev/null 2>&1 || return 1
+   printf '%s' "$out"
+ }
+ 
++# --- the headless T3 classify (v3.4.1) ---------------------------------------
++# The cap the hook gives the classifier. `hooks/hooks.json` registers this event
++# with `timeout: 25`; 15 + the supervisor's 3 s grace is what fits inside it with
++# room for the two engine invocations around it.
++_CLASSIFY_TIMEOUT_S=15
++
++# The override exists so the suite can drive the timeout path in ~3 s instead of
++# ~18 s. It is CLAMPED to 1..60 and can only move a bound — it cannot enable a
++# route, change a backend, or affect a verdict.
++_classify_timeout() {
++  local t="${CV_CLASSIFY_TIMEOUT_S:-}"
++  case "$t" in
++    '' | *[!0-9]*) printf '%s' "$_CLASSIFY_TIMEOUT_S"; return 0 ;;
++  esac
++  if [ "$t" -ge 1 ] && [ "$t" -le 60 ]; then
++    printf '%s' "$t"
++  else
++    printf '%s' "$_CLASSIFY_TIMEOUT_S"
++  fi
++}
++
++# Prints the resolved T3 enum on stdout, or returns non-zero having printed
++# nothing — which the caller reads as "nothing was classified" and degrades.
++#
++# The engine's OWN `t3_prompt` is what gets classified, passed through a temp
++# file rather than argv: it already carries the resolved paths and the taxonomy
++# hints, so rebuilding it here from the request text would be a second, slightly
++# different prompt for the same decision.
++_classify_headless() {
++  local proj="$1" prompt="$2" script py tmpf out rc backend timed cat
++  script="$(_locate_script compound-v-classify-request.py)" || return 1
++  py="$(_python)" || return 1
++  tmpf="$(mktemp "${TMPDIR:-/tmp}/cv-t3-prompt.XXXXXX" 2>/dev/null)" || return 1
++  printf '%s' "$prompt" >"$tmpf" 2>/dev/null || { rm -f "$tmpf"; return 1; }
++  out="$(PYTHONDONTWRITEBYTECODE=1 "$py" "$script" --classify-headless \
++         --prompt-file "$tmpf" --cwd "$proj" --timeout "$(_classify_timeout)" \
++         2>/dev/null)"
++  rc=$?
++  rm -f "$tmpf" 2>/dev/null || true
++  [ "$rc" = 0 ] || return 1
++  printf '%s' "$out" | jq -e 'type == "object"' >/dev/null 2>&1 || return 1
++
++  backend="$(printf '%s' "$out" | jq -r '.backend // "none"' 2>/dev/null)"
++  timed="$(printf '%s' "$out" | jq -r '.timed_out // false' 2>/dev/null)"
++  cat="$(printf '%s' "$out" | jq -r '.category // ""' 2>/dev/null)"
++
++  # A ROUTE THAT NEVER REPORTED IS NOT AN ANSWER. `none` means no CLI was
++  # available on this machine and `timed_out` means one was but never finished.
++  # Neither is a classification, and turning either into `unknown` would write a
++  # made-up band onto a real record. A model that RAN and said `unknown` is a
++  # genuine answer and falls through below.
++  case "$backend" in
++    claude | codex) : ;;
++    *) _log "no headless classify backend available (backend=${backend})"; return 1 ;;
++  esac
++  if [ "$timed" = "true" ]; then
++    _log "the headless classify (${backend}) ran out of its budget"
++    return 1
++  fi
++  case "$cat" in
++    plumbing | user-facing-minor | user-facing-major | unknown)
++      _log "headless T3 classify: ${cat} (backend=${backend})"
++      printf '%s' "$cat"
++      ;;
++    *)
++      _log "the headless classify returned no usable category"
++      return 1
++      ;;
++  esac
++}
++
+ # The line this hook used to print unconditionally. It is now the DEGRADED path:
+ # the engine could not run, or could not band the request without a model call
+ # that a hook cannot make. It asks for exactly the thing that failed.
+@@ -473,7 +579,7 @@ EOF
+     return $?
+   }
+ 
+-  local disabled needs_t3 tier decision pid record_ref declared
++  local disabled needs_t3 tier decision pid record_ref declared flavor
+   disabled="$(printf '%s' "$res" | jq -r '.disabled // false' 2>/dev/null)"
+   needs_t3="$(printf '%s' "$res" | jq -r '.needs_t3 // false' 2>/dev/null)"
+ 
+@@ -484,16 +590,55 @@ EOF
+     return 1
+   fi
+ 
+-  # The deterministic layers could not band the request; finishing needs a light
+-  # classify Task, and a hook cannot run one. Hand it to the command that can.
++  # THE T3 RE-ENTRY (v3.4.1). The deterministic layers could not band the
++  # request. A hook cannot run a light-tier Task — but it can run a process, and
++  # `--classify-headless` is exactly that one-shot. Answer the engine's own T3
++  # prompt, then re-invoke the SAME subcommand with the enum and carry on as if
++  # T1 had banded. Only a classifier that never reported degrades to the
++  # reminder; see the header.
+   if [ "$needs_t3" = "true" ]; then
+-    _log "the request needs the T3 classify step — degrading to the reminder"
+-    _emit "$(_reminder_text)"
+-    return $?
++    local t3_prompt t3_reason t3_cat
++    t3_prompt="$(printf '%s' "$res" | jq -r '.t3_prompt // ""' 2>/dev/null)"
++    # `t3_reason` (unbanded | demotion | sensitive) is for THIS LOG only. The
++    # re-entry is identical whichever way the engine got here, so the hook must
++    # not branch on it — reading it as routing would make a log line load-bearing.
++    t3_reason="$(printf '%s' "$res" | jq -r '.t3_reason // "unbanded"' 2>/dev/null)"
++
++    if [ -z "$t3_prompt" ]; then
++      _log "the engine asked for T3 but supplied no prompt — degrading to the reminder"
++      _emit "$(_reminder_text)"
++      return $?
++    fi
++
++    _log "the request needs T3 (reason=${t3_reason}) — running the headless classify"
++    t3_cat="$(_classify_headless "$proj" "$t3_prompt")" || {
++      _log "nothing classified this request — degrading to the reminder"
++      _emit "$(_reminder_text)"
++      return $?
++    }
++
++    res="$(_run_engine "$proj" "$sid" "$request" "$t3_cat")" || {
++      _log "the re-score with --t3-category ${t3_cat} did not run — degrading to the reminder"
++      _emit "$(_reminder_text)"
++      return $?
++    }
++
++    needs_t3="$(printf '%s' "$res" | jq -r '.needs_t3 // false' 2>/dev/null)"
++    if [ "$needs_t3" = "true" ]; then
++      # Should be unreachable: a supplied category is what ends the T3 branch in
++      # `score()`. If it ever happens, the honest report is that nothing sized it.
++      _log "the engine still asks for T3 after a category was supplied — degrading to the reminder"
++      _emit "$(_reminder_text)"
++      return $?
++    fi
+   fi
+ 
+   tier="$(printf '%s' "$res" | jq -r '.tier // "unknown"' 2>/dev/null)"
+   decision="$(printf '%s' "$res" | jq -r '.decision // "unknown"' 2>/dev/null)"
++  # SCOPED+ is not a fourth tier token — it is SCOPED with a flavor (v3.4.1).
++  # An engine that does not emit `flavor` yields the empty string and the plain
++  # SCOPED line, which is the correct reading of "no flavor".
++  flavor="$(printf '%s' "$res" | jq -r '.flavor // ""' 2>/dev/null)"
+   pid="$(printf '%s' "$res" | jq -r '.pre_eval_id // ""' 2>/dev/null)"
+   record_ref="$(printf '%s' "$res" | jq -r '.record_ref // ""' 2>/dev/null)"
+   declared="$(printf '%s' "$res" \
+@@ -512,9 +657,16 @@ ORDINARY commit alongside the record. /v:triage --land is the UNATTENDED landing
+ gate and is not what an attended change needs."
+       ;;
+     SCOPED)
+-      next="SCOPED — offer it to the user; on acceptance run /v:orchestrate (manifest, \
++      if [ "$flavor" = "scoped_plus" ]; then
++        next="SCOPED+ — a small edit on a sensitive path: offer it; on acceptance \
++/v:orchestrate with \`triage.flavor: scoped_plus\` (a deep review and a cross-model \
++second opinion are MANDATORY, not optional), then /v:dispatch. The size is small; the \
++path is not, which is why the review does not shrink with it."
++      else
++        next="SCOPED — offer it to the user; on acceptance run /v:orchestrate (manifest, \
+ run dir, scope gate, floor, one combined SPEC+QUALITY review; recon and the three \
+ pre-flights are skipped), then /v:dispatch."
++      fi
+       ;;
+     FULL)
+       next="FULL — offer it to the user; on acceptance run the unchanged pipeline \
+diff --git a/scripts/compound-v-classify-request.py b/scripts/compound-v-classify-request.py
+index 8ab77bd..9d376f1 100755
+--- a/scripts/compound-v-classify-request.py
++++ b/scripts/compound-v-classify-request.py
+@@ -55,10 +55,18 @@ Usage:
+   compound-v-classify-request.py --parse [--reply "<text>" | --reply-file F | -]   # stdin default
+   compound-v-classify-request.py --classify-codex --request "<text>" [--path P ...] \
+                                  [--model M] [--timeout S] [--cwd DIR] [--config PATH]
++  compound-v-classify-request.py --classify-headless --request "<text>" [--path P ...] \
++                                 [--cwd DIR] [--timeout S] [--config PATH] \
++                                 [--prompt-file F]
+   compound-v-classify-request.py --selftest
+ 
+-`--parse` / `--classify-codex` print JSON `{"category": "<enum>", ...}` and exit 0 (the category
+-IS the result). Usage errors exit 2.
++`--parse` / `--classify-codex` / `--classify-headless` print JSON `{"category": "<enum>", ...}`
++and exit 0 (the category IS the result). Usage errors exit 2.
++
++`--classify-headless` (v3.4.1) is the ONE mode that answers T3 without a parent Task — see
++section (d) below for why `hooks/triage-prompt-nudge.sh` needs it and what it does not change.
++`CV_CLASSIFY_CLAUDE_BIN` / `CV_CLASSIFY_CODEX_BIN` override which binary each route runs, which
++is how the tests plant fakes instead of spending a real model call.
+ 
+ Python 3.9-safe, stdlib only. Soft dependencies (resolver + supervisor) are imported by path with
+ inline fallbacks so this module never hard-fails.
+@@ -91,6 +99,20 @@ CODEX_TIMEOUT_S = 30               # wall-clock cap for the one-shot classify
+ CODEX_STDOUT_CAP = 1 << 16        # bounded output sink for codex's event stream (CR5-8)
+ DEFAULT_CODEX_LIGHT_MODEL = "gpt-5.6-luna"   # fallback iff the resolver is unavailable
+ TIMEOUT_EXIT_CODE = 124           # GNU-timeout / supervisor convention
++NOT_FOUND_EXIT_CODE = 127         # the supervisor's "command does not exist" convention
++
++# Headless (v3.4.1, finding 50) bounds. The whole headless budget is 15 s with a 3 s grace,
++# because the caller that needs it is `hooks/triage-prompt-nudge.sh` and a hook's budget is
++# the outer bound: `hooks/hooks.json` registers UserPromptSubmit with `timeout: 25`, which is
++# 15 + 3 plus room for the two engine invocations around it. A 30 s classify does not fit
++# inside a hook and never did — that is pre-flight amendment 1, not a preference.
++HEADLESS_TIMEOUT_S = 15
++HEADLESS_GRACE_S = 3
++CLAUDE_STDOUT_CAP = 1 << 16       # bounded output sink for the reply text
++DEFAULT_CLAUDE_LIGHT_MODEL = "sonnet"        # fallback iff the resolver is unavailable
++# Below this many seconds left, a second backend is not worth starting: it would either be
++# killed immediately or push the hook past its registration timeout.
++MIN_SECONDS_FOR_A_SECOND_BACKEND = 4
+ 
+ # Human-readable category definitions embedded in the prompt (spec §2 semantics; AC-8:
+ # impact is what a change IS, not only where it lives).
+@@ -372,6 +394,243 @@ def classify_via_codex(request_text, resolved_paths=None, model=None,
+         shutil.rmtree(tmp, ignore_errors=True)
+ 
+ 
++# =========================================================================== #
++# (d) HEADLESS ONE-SHOT CLASSIFY (v3.4.1, finding 50)
++#
++# WHY THIS EXISTS, AND WHAT IT DOES NOT CHANGE
++# --------------------------------------------
++# The module header above is still true of the PIPELINE: `/v:triage` and `/v:orchestrate`
++# run T3 as a parent-invoked light Task, and the engine is still T3-agnostic. What this
++# section adds is the one caller that CANNOT run a Task — `hooks/triage-prompt-nudge.sh`.
++# A hook is a subprocess; it has no Task tool. Until 3.4.1 that meant a `needs_t3` request
++# degraded to a printed reminder asking a human to run `/v:triage`, which is the exact
++# "prose enforcement wearing a hook's clothes" the native-mechanism pass exists to remove.
++# A nested `claude -p` answers the same bounded prompt in ~5 s, so the hook can finish T3
++# itself. Nothing else in the pipeline is obliged to use this route.
++#
++# THE ARGV ORDER IS LOAD-BEARING — live-probed, not reasoned about (2026-09-03).
++# `claude --help` declares `--tools <tools...>`: a VARIADIC option. The spec's draft argv put
++# the prompt last —
++#
++#     claude -p --model sonnet --output-format text --tools "" "<prompt>"
++#
++# — and the parser hands that prompt to `--tools` as a second tools value, leaving no prompt
++# at all. Run live, that argv fails with `Error: Input must be provided either through stdin
++# or as a prompt argument when using --print`. So the prompt goes IMMEDIATELY after `-p`, and
++# every variadic-shaped flag comes after it. `--tools ""` still ships: it is what keeps this
++# one-shot from reading or writing anything. The same probe with the corrected order returned
++# `plumbing`.
++#
++# NEVER `--bare`. It is the flag a reader reaches for on seeing "one-shot classify, skip the
++# plugins" — and it also skips the LOGIN, so a `--bare` classify fails on exactly the machines
++# where it would otherwise work. Its absence is pinned by a selftest.
++# =========================================================================== #
++def _looks_like_haiku(model):
++    """NEVER HAIKU is a project-wide rule. `scripts/lint-frontmatter.py` enforces it in
++    frontmatter; nothing enforced it for a model name resolved at RUNTIME until here, and a
++    machine-local `.claude/compound-v.json` can say anything. A haiku is not honoured."""
++    return "haiku" in str(model or "").lower()
++
++
++def resolve_claude_light_model(config_path=None):
++    """Resolve the Claude `light`-tier model through `compound-v-resolve-model.py` — never a
++    map recopied here, never Haiku. Fail-safe to DEFAULT_CLAUDE_LIGHT_MODEL when the resolver
++    is unavailable or when what it returns is a haiku. Picks a NAME; never calls a model."""
++    mod = _resolve_model_module()
++    if mod is not None:
++        try:
++            config_models = None
++            if config_path:
++                try:
++                    config_models = mod.load_config_models(config_path)
++                except Exception:  # noqa: BLE001
++                    config_models = None
++            res = mod.resolve("claude", "light", config_models=config_models)
++            model = res.get("model") if isinstance(res, dict) else None
++            if isinstance(model, str) and model and not _looks_like_haiku(model):
++                return model
++        except Exception:  # noqa: BLE001
++            pass
++    return DEFAULT_CLAUDE_LIGHT_MODEL
++
++
++def build_claude_command(prompt, model, cwd, supervisor_path, timeout_s, max_output_bytes,
++                         out_file, claude_bin="claude", grace_s=HEADLESS_GRACE_S):
++    """Assemble the exact argv: the timeout supervisor wrapping ONE headless `claude -p`.
++
++    `claude_bin` is a str or a list so tests can inject a fake CLI. The prompt is the first
++    positional after `-p` (see the header — `--tools` is variadic and swallows a trailing
++    prompt). Output is bounded; stdin is closed by the supervisor for the whole group."""
++    bin_argv = [claude_bin] if isinstance(claude_bin, str) else list(claude_bin)
++    claude_cmd = bin_argv + [
++        "-p", prompt,
++        "--model", model,
++        "--output-format", "text",
++        "--tools", "",
++    ]
++    cmd = [
++        sys.executable, supervisor_path,
++        "--timeout", str(int(timeout_s)),
++        "--grace", str(int(grace_s)),
++        "--stdout", out_file,
++        "--max-output-bytes", str(int(max_output_bytes)),
++    ]
++    if cwd:
++        cmd += ["--cwd", cwd]
++    return cmd + ["--"] + claude_cmd
++
++
++def _headless_result(category, backend, timed_out=False, exit_code=None, model=None,
++                     error=None):
++    """The ONE result shape `--classify-headless` prints. `backend` is what actually RAN, so
++    `none` means no CLI could be started at all — the caller's cue that the reminder, not a
++    fail-closed `unknown`, is the honest degrade. "No classifier ran" and "the classifier
++    said it cannot tell" are different claims and the hook routes them differently."""
++    out = {
++        "category": category if category in _CATEGORY_SET else FAIL_CLOSED_CATEGORY,
++        "backend": backend,
++        "timed_out": bool(timed_out),
++        "exit_code": exit_code,
++        "model": model,
++    }
++    if error:
++        out["error"] = error
++    return out
++
++
++def classify_via_claude(request_text, resolved_paths=None, model=None,
++                        timeout_s=HEADLESS_TIMEOUT_S, cwd=None, claude_bin="claude",
++                        supervisor_path=None, max_output_bytes=CLAUDE_STDOUT_CAP,
++                        config_path=None, taxonomy_categories=None, prompt=None):
++    """Run ONE headless `claude -p` classify through the timeout supervisor and parse the
++    enum. Same fail-closed contract as the codex route: spawn error / non-zero exit / timeout
++    / non-enum reply → `unknown`."""
++    import tempfile
++
++    if prompt is None:
++        prompt = build_prompt(request_text, resolved_paths, taxonomy_categories)
++    if model is None:
++        model = resolve_claude_light_model(config_path)
++    if _looks_like_haiku(model):
++        model = DEFAULT_CLAUDE_LIGHT_MODEL
++    if supervisor_path is None:
++        supervisor_path = _supervisor_path()
++    if cwd is None:
++        cwd = os.getcwd()
++
++    tmp = tempfile.mkdtemp(prefix="cv-a2-claude-")
++    try:
++        out_file = os.path.join(tmp, "reply.txt")
++        cmd = build_claude_command(prompt, model, cwd, supervisor_path, timeout_s,
++                                   max_output_bytes, out_file, claude_bin=claude_bin)
++        try:
++            # stdin=DEVNULL here too (defense in depth); the supervisor ALSO gives its child
++            # DEVNULL stdin in its own process group. Never a bare subprocess timeout.
++            proc = subprocess.run(
++                cmd, stdin=subprocess.DEVNULL,
++                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
++            )
++        except (OSError, ValueError):
++            return _headless_result(FAIL_CLOSED_CATEGORY, "claude", error="spawn_failed",
++                                    model=model, timed_out=False, exit_code=None)
++
++        rc = proc.returncode
++        if rc == TIMEOUT_EXIT_CODE:
++            return _headless_result(FAIL_CLOSED_CATEGORY, "claude", timed_out=True,
++                                    exit_code=rc, model=model)
++        if rc != 0:
++            return _headless_result(FAIL_CLOSED_CATEGORY, "claude", timed_out=False,
++                                    exit_code=rc, model=model,
++                                    error=("not_found" if rc == NOT_FOUND_EXIT_CODE
++                                           else "nonzero_exit"))
++        try:
++            with open(out_file, "r", encoding="utf-8", errors="replace") as fh:
++                reply = fh.read()
++        except OSError:
++            return _headless_result(FAIL_CLOSED_CATEGORY, "claude", timed_out=False,
++                                    exit_code=rc, error="no_reply", model=model)
++        return _headless_result(parse_category(reply), "claude", timed_out=False,
++                                exit_code=rc, model=model)
++    finally:
++        import shutil
++        shutil.rmtree(tmp, ignore_errors=True)
++
++
++def _resolve_bin(env_name, default_name):
++    """The binary a route will run: an explicit env override (how tests plant a fake) or the
++    plain name looked up on PATH. `None` when neither resolves, and the route is then SKIPPED
++    rather than spawned-and-failed — which is what keeps `backend: none` meaningful.
++
++    An env override that is SET BUT EMPTY disables the route outright. That is not a
++    curiosity: it is the only way a test can assert the no-backend degrade on a developer
++    machine that really does have `claude` on PATH, and the alternative — falling through to
++    PATH on an empty override — is how this selftest spent a real model call the first time
++    it ran. An operator gets the same switch for free."""
++    import shutil
++
++    override = os.environ.get(env_name)
++    if override is not None:
++        override = override.strip()
++        if not override:
++            return None
++        if os.path.isabs(override) or os.sep in override:
++            return override if os.path.exists(override) else None
++        return shutil.which(override)
++    return shutil.which(default_name)
++
++
++def classify_headless(request_text, resolved_paths=None, timeout_s=HEADLESS_TIMEOUT_S,
++                      cwd=None, config_path=None, taxonomy_categories=None, prompt=None,
++                      claude_bin=None, codex_bin=None, supervisor_path=None):
++    """Answer the T3 prompt with NO Task tool: Claude light first, the read-only codex route
++    second, `unknown` last.
++
++    The fallback is deliberately narrow. A claude route that TIMED OUT has already spent the
++    whole budget, so starting codex behind it would push the caller past its own registration
++    timeout and still produce nothing — that case returns at once. A route that could not be
++    STARTED, or that failed fast, leaves budget on the clock and the second backend gets what
++    is left of it."""
++    import time
++
++    if prompt is None:
++        prompt = build_prompt(request_text, resolved_paths, taxonomy_categories)
++
++    budget = max(1, int(timeout_s))
++    deadline = time.monotonic() + budget
++    cbin = claude_bin if claude_bin is not None else _resolve_bin(
++        "CV_CLASSIFY_CLAUDE_BIN", "claude")
++    xbin = codex_bin if codex_bin is not None else _resolve_bin(
++        "CV_CLASSIFY_CODEX_BIN", "codex")
++
++    last = None
++    if cbin:
++        last = classify_via_claude(
++            request_text, resolved_paths, timeout_s=budget, cwd=cwd, claude_bin=cbin,
++            config_path=config_path, prompt=prompt, supervisor_path=supervisor_path,
++        )
++        # The classifier REPORTED — including a literal `unknown` it chose to give. Only a
++        # route that never reported at all falls through to the next backend.
++        if last.get("exit_code") == 0 and not last.get("timed_out"):
++            return last
++        if last.get("timed_out"):
++            return last
++
++    remaining = int(deadline - time.monotonic())
++    if xbin and remaining >= MIN_SECONDS_FOR_A_SECOND_BACKEND:
++        res = classify_via_codex(
++            request_text, resolved_paths, timeout_s=remaining, cwd=cwd, codex_bin=xbin,
++            config_path=config_path, prompt=prompt, supervisor_path=supervisor_path,
++        )
++        return _headless_result(res.get("category"), "codex",
++                                timed_out=bool(res.get("timed_out")),
++                                exit_code=res.get("exit_code"), model=res.get("model"),
++                                error=res.get("error"))
++    if last is not None:
++        return last
++    return _headless_result(FAIL_CLOSED_CATEGORY, "none", timed_out=False, exit_code=None,
++                            model=None, error="no_backend")
++
++
+ # =========================================================================== #
+ # CLI
+ # =========================================================================== #
+@@ -398,6 +657,11 @@ def main(argv):
+                       help="parse a light-Task reply into a strict enum (stdin by default)")
+     mode.add_argument("--classify-codex", action="store_true",
+                       help="OPTIONAL: run the read-only codex route and parse the enum")
++    mode.add_argument("--classify-headless", action="store_true",
++                      help="answer the T3 prompt with no Task tool: Claude light first, the "
++                           "read-only codex route second, 'unknown' last. This is the route "
++                           "hooks/triage-prompt-nudge.sh takes, because a hook cannot run a "
++                           "Task.")
+     mode.add_argument("--selftest", action="store_true")
+ 
+     p.add_argument("--request", help="the change-request text")
+@@ -409,9 +673,19 @@ def main(argv):
+     p.add_argument("stdin_marker", nargs="?", choices=["-"], default=None,
+                    help="a bare '-' means read the reply from stdin (also the default)")
+     p.add_argument("--model", help="codex model override (else resolved light tier)")
+-    p.add_argument("--timeout", type=int, default=CODEX_TIMEOUT_S, help="codex wall-clock cap (s)")
+-    p.add_argument("--cwd", help="codex sandbox cwd (default: current dir)")
++    p.add_argument("--timeout", type=int, default=None,
++                   help="wall-clock cap (s). Default: %d for --classify-codex, %d for "
++                        "--classify-headless (a hook's budget, see HEADLESS_TIMEOUT_S)."
++                        % (CODEX_TIMEOUT_S, HEADLESS_TIMEOUT_S))
++    p.add_argument("--cwd", help="sandbox cwd for the spawned CLI (default: current dir)")
+     p.add_argument("--config", help="compound-v config JSON for model resolution")
++    p.add_argument("--prompt-file",
++                   help="a file whose contents ARE the classify prompt, used verbatim "
++                        "instead of building one from --request/--path. This is how the "
++                        "hook passes the engine's own `t3_prompt` through: the engine "
++                        "already built it from the resolved paths and the taxonomy, and "
++                        "rebuilding it here from a re-parsed request would be a second, "
++                        "slightly different prompt for the same decision.")
+     args = p.parse_args(argv)
+ 
+     if args.build_prompt:
+@@ -436,13 +710,40 @@ def main(argv):
+         print(json.dumps({"category": parse_category(text)}))
+         return 0
+ 
++    prompt_override = None
++    if args.prompt_file:
++        try:
++            with open(args.prompt_file, "r", encoding="utf-8", errors="replace") as fh:
++                prompt_override = fh.read()
++        except OSError as e:
++            print("classify-request: cannot read --prompt-file: %s" % e, file=sys.stderr)
++            return 2
++        if not prompt_override.strip():
++            print("classify-request: --prompt-file is empty", file=sys.stderr)
++            return 2
++
+     if args.classify_codex:
+-        if args.request is None:
+-            p.error("--classify-codex requires --request")
++        if args.request is None and prompt_override is None:
++            p.error("--classify-codex requires --request or --prompt-file")
+         res = classify_via_codex(
+-            args.request, args.path, model=args.model, timeout_s=args.timeout,
++            args.request or "", args.path, model=args.model,
++            timeout_s=(CODEX_TIMEOUT_S if args.timeout is None else args.timeout),
+             cwd=args.cwd, config_path=args.config,
+             taxonomy_categories=args.taxonomy_category or None,
++            prompt=prompt_override,
++        )
++        print(json.dumps(res))
++        return 0
++
++    if args.classify_headless:
++        if args.request is None and prompt_override is None:
++            p.error("--classify-headless requires --request or --prompt-file")
++        res = classify_headless(
++            args.request or "", args.path,
++            timeout_s=(HEADLESS_TIMEOUT_S if args.timeout is None else args.timeout),
++            cwd=args.cwd, config_path=args.config,
++            taxonomy_categories=args.taxonomy_category or None,
++            prompt=prompt_override,
+         )
+         print(json.dumps(res))
+         return 0
+@@ -465,6 +766,20 @@ def _selftest():
+         if not cond:
+             failures.append(name)
+ 
++    def _usage_error(argv_):
++        """True when `main(argv_)` refuses with argparse's usage exit (2)."""
++        try:
++            devnull = open(os.devnull, "w")
++            saved, sys.stderr = sys.stderr, devnull
++            try:
++                main(argv_)
++            finally:
++                sys.stderr = saved
++                devnull.close()
++        except SystemExit as exc:
++            return exc.code == 2
++        return False
++
+     # --- (b) strict enum parser: accepts the four enums, rejects everything else --- #
+     for enum in CATEGORIES:
+         expect("parse exact enum: %s" % enum, parse_category(enum) == enum)
+@@ -618,6 +933,162 @@ sys.exit(0)
+             os.environ.pop(k, None)
+         shutil.rmtree(tmp, ignore_errors=True)
+ 
++    # --- (d) the headless route: argv, model policy, backend order, fail-closed --- #
++    #
++    # THE ARGV IS PINNED, not merely smoke-tested. Three of its properties are the whole
++    # reason this route works at all, and each of them was got wrong once:
++    #   * no `--bare` (it skips the login as well as the plugins);
++    #   * the prompt IMMEDIATELY after `-p`, because `--tools` is variadic and a trailing
++    #     prompt is swallowed as a second tools value (live-probed 2026-09-03);
++    #   * a `--model` that is never a haiku, whatever a machine-local config says.
++    tmp2 = tempfile.mkdtemp(prefix="cv-a2-headless-")
++    try:
++        argv = build_claude_command("PROMPT-TEXT", "sonnet", tmp2, _supervisor_path(),
++                                    HEADLESS_TIMEOUT_S, 1024,
++                                    os.path.join(tmp2, "reply.txt"))
++        expect("headless claude argv NEVER carries --bare", "--bare" not in argv)
++        expect("headless claude argv is a print run (-p)", "-p" in argv)
++        expect("headless claude argv puts the prompt immediately after -p",
++               argv[argv.index("-p") + 1] == "PROMPT-TEXT")
++        expect("headless claude argv sets --output-format text",
++               "--output-format" in argv
++               and argv[argv.index("--output-format") + 1] == "text")
++        expect("headless claude argv disables tools (--tools \"\")",
++               "--tools" in argv and argv[argv.index("--tools") + 1] == "")
++        expect("headless claude argv's --tools comes AFTER the prompt (variadic swallow)",
++               argv.index("--tools") > argv.index("-p") + 1)
++        expect("headless claude argv routes through the supervisor",
++               _supervisor_path() in argv)
++        expect("headless claude argv bounds output", "--max-output-bytes" in argv)
++        expect("headless claude argv carries a grace period",
++               "--grace" in argv and int(argv[argv.index("--grace") + 1]) == HEADLESS_GRACE_S)
++        expect("headless claude argv's cap is the hook-sized one",
++               "--timeout" in argv
++               and int(argv[argv.index("--timeout") + 1]) == HEADLESS_TIMEOUT_S)
++        expect("headless claude model is NEVER a haiku",
++               not _looks_like_haiku(argv[argv.index("--model") + 1]))
++        expect("the resolved claude light model is never a haiku",
++               not _looks_like_haiku(resolve_claude_light_model()))
++        expect("the haiku predicate actually recognises one",
++               _looks_like_haiku("claude-haiku-4-5") and not _looks_like_haiku("sonnet"))
++
++        # A haiku that reaches classify_via_claude is swapped before the spawn.
++        fake_claude = os.path.join(tmp2, "fakeclaude.py")
++        with open(fake_claude, "w") as fh:
++            fh.write(r'''#!/usr/bin/env python3
++import os, sys, time
++argv = sys.argv[1:]
++am = os.environ.get("FAKE_CLAUDE_ARGV")
++if am:
++    open(am, "w", encoding="utf-8").write("\x00".join(argv))
++sm = os.environ.get("FAKE_CLAUDE_STDIN")
++if sm:
++    open(sm, "w", encoding="utf-8").write(str(len(sys.stdin.buffer.read())))
++mode = os.environ.get("FAKE_CLAUDE_MODE", "enum")
++if mode == "slow":
++    time.sleep(30)
++if mode == "error":
++    sys.stderr.write("boom\n")
++    sys.exit(4)
++sys.stdout.write({"enum": "plumbing\n",
++                  "nonenum": "I would call this plumbing, probably.\n"}.get(mode, "plumbing\n"))
++sys.exit(0)
++''')
++        os.chmod(fake_claude, 0o755)
++        cbin = [sys.executable, fake_claude]
++        argv_mark2 = os.path.join(tmp2, "argv")
++        stdin_mark2 = os.path.join(tmp2, "stdin")
++        os.environ["FAKE_CLAUDE_ARGV"] = argv_mark2
++        os.environ["FAKE_CLAUDE_STDIN"] = stdin_mark2
++
++        os.environ["FAKE_CLAUDE_MODE"] = "enum"
++        r = classify_via_claude("do a thing", ["src/x.ts"], model="haiku", cwd=tmp2,
++                                claude_bin=cbin, timeout_s=10)
++        expect("headless claude happy path -> plumbing", r["category"] == "plumbing")
++        expect("headless claude reports its backend", r["backend"] == "claude")
++        expect("a haiku model is swapped before the spawn, never passed through",
++               not _looks_like_haiku(r.get("model")))
++        expect("headless claude proved closed stdin (0 bytes read)",
++               os.path.exists(stdin_mark2)
++               and open(stdin_mark2, encoding="utf-8").read() == "0")
++        spawned = open(argv_mark2, encoding="utf-8").read().split("\x00")
++        expect("the SPAWNED argv carried no --bare", "--bare" not in spawned)
++        expect("the SPAWNED argv carried --tools \"\"",
++               "--tools" in spawned and spawned[spawned.index("--tools") + 1] == "")
++
++        os.environ["FAKE_CLAUDE_MODE"] = "nonenum"
++        r2 = classify_via_claude("do a thing", ["src/x.ts"], model="sonnet", cwd=tmp2,
++                                 claude_bin=cbin, timeout_s=10)
++        expect("headless claude non-enum reply -> unknown", r2["category"] == "unknown")
++        expect("...and it still reports as a route that RAN (exit 0)",
++               r2["exit_code"] == 0 and r2["timed_out"] is False)
++
++        os.environ["FAKE_CLAUDE_MODE"] = "slow"
++        t1 = time.time()
++        r3 = classify_via_claude("do a thing", ["src/x.ts"], model="sonnet", cwd=tmp2,
++                                 claude_bin=cbin, timeout_s=1)
++        expect("headless claude timeout -> unknown, flagged",
++               r3["category"] == "unknown" and r3["timed_out"] is True)
++        expect("headless claude timeout returns promptly (<10s)", time.time() - t1 < 10)
++
++        # BACKEND ORDER. claude answers -> codex is never started (the missing codex_bin
++        # would fail if it were). A claude that cannot be STARTED falls through to codex.
++        os.environ["FAKE_CLAUDE_MODE"] = "enum"
++        h1 = classify_headless("do a thing", ["src/x.ts"], cwd=tmp2, timeout_s=10,
++                               claude_bin=cbin, codex_bin=None)
++        expect("headless prefers claude when it answers", h1["backend"] == "claude")
++
++        os.environ["FAKE_CODEX_MODE"] = "enum"
++        fake_codex = os.path.join(tmp2, "fakecodex.py")
++        with open(fake_codex, "w") as fh:
++            fh.write(fake_src)
++        os.chmod(fake_codex, 0o755)
++        h2 = classify_headless("do a thing", ["src/x.ts"], cwd=tmp2, timeout_s=10,
++                               claude_bin="",
++                               codex_bin=[sys.executable, fake_codex])
++        expect("headless falls back to codex when no claude binary resolves",
++               h2["backend"] == "codex" and h2["category"] == "plumbing")
++
++        # A claude that TIMED OUT does not then start codex: the budget is already spent.
++        os.environ["FAKE_CLAUDE_MODE"] = "slow"
++        t2 = time.time()
++        h3 = classify_headless("do a thing", ["src/x.ts"], cwd=tmp2, timeout_s=2,
++                               claude_bin=cbin, codex_bin=[sys.executable, fake_codex])
++        expect("a timed-out claude does not then spend the budget on codex",
++               h3["backend"] == "claude" and h3["timed_out"] is True)
++        expect("...and it still returns promptly (<12s)", time.time() - t2 < 12)
++
++        # Neither CLI available -> backend 'none'. That is NOT the same claim as a model
++        # answering `unknown`, and the hook routes the two differently.
++        h4 = classify_headless("do a thing", ["src/x.ts"], cwd=tmp2, timeout_s=5,
++                               claude_bin="", codex_bin="")
++        expect("no backend available -> backend 'none', category unknown",
++               h4["backend"] == "none" and h4["category"] == "unknown")
++        expect("...and it is not reported as a timeout", h4["timed_out"] is False)
++
++        # CLI smoke through --prompt-file (how the hook passes the engine's own t3_prompt).
++        pf = os.path.join(tmp2, "prompt.txt")
++        with open(pf, "w", encoding="utf-8") as fh:
++            fh.write("classify this\n")
++        # Both routes DISABLED by an empty override. Without this the CLI smoke would run
++        # whatever `claude` is on the developer's PATH and spend a real model call — which
++        # is exactly what it did the first time it ran.
++        os.environ["CV_CLASSIFY_CLAUDE_BIN"] = ""
++        os.environ["CV_CLASSIFY_CODEX_BIN"] = ""
++        expect("an empty env override disables a route rather than falling back to PATH",
++               _resolve_bin("CV_CLASSIFY_CLAUDE_BIN", "claude") is None)
++        expect("main --classify-headless --prompt-file exits 0",
++               main(["--classify-headless", "--prompt-file", pf, "--cwd", tmp2,
++                     "--timeout", "5"]) == 0)
++        expect("main --classify-headless with neither request nor prompt-file is a usage error",
++               _usage_error(["--classify-headless"]))
++    finally:
++        import shutil
++        for k in ("FAKE_CLAUDE_ARGV", "FAKE_CLAUDE_STDIN", "FAKE_CLAUDE_MODE",
++                  "FAKE_CODEX_MODE", "CV_CLASSIFY_CLAUDE_BIN", "CV_CLASSIFY_CODEX_BIN"):
++            os.environ.pop(k, None)
++        shutil.rmtree(tmp2, ignore_errors=True)
++
+     # --- model resolution is best-effort + fail-safe (never raises) --- #
+     m = resolve_codex_light_model()
+     expect("resolve_codex_light_model returns a non-empty str",
+diff --git a/tests/test-native-points.sh b/tests/test-native-points.sh
+index 8ea9cd5..a5897de 100755
+--- a/tests/test-native-points.sh
++++ b/tests/test-native-points.sh
+@@ -84,6 +84,17 @@ export PYTHONDONTWRITEBYTECODE=1
+ # How the hooks actually run: the harness always sets this, and it is what
+ # selects the Claude-shaped hookSpecificOutput branch.
+ export CLAUDE_PLUGIN_ROOT="$REPO"
++
++# NO TEST IN THIS FILE MAY SPEND A REAL MODEL CALL. As of v3.4.1 the hook
++# finishes T3 with a headless `claude -p` (and a codex fallback), and both
++# routes resolve their binary from PATH unless these are set -- so on a
++# developer machine, which has a real `claude`, a needs_t3 request would
++# silently make a live call. An empty override DISABLES a route (see
++# `_resolve_bin` in compound-v-classify-request.py); the T3 section below
++# points them at fakes for the cases that need one, and every other case in
++# this file inherits "no backend at all".
++export CV_CLASSIFY_CLAUDE_BIN=""
++export CV_CLASSIFY_CODEX_BIN=""
+ unset CURSOR_PLUGIN_ROOT 2>/dev/null || true
+ unset COPILOT_CLI 2>/dev/null || true
+ 
+@@ -416,6 +427,210 @@ check "a planted engine failure yields the REMINDER text" \
+ check "a planted engine failure mints no record" \
+   "$([ "$(count_records)" = "$n_before" ] && echo 1 || echo 0)"
+ 
++# --------------------------------------------------------------------------- #
++# 3c. v3.4.1 — THE HOOK FINISHES T3 ITSELF (finding 50).
++#
++# Until 3.4.1 a `needs_t3` request was a DEGRADE: the hook printed the reminder
++# because finishing T3 needs a light-tier classify and a hook cannot run a Task.
++# The premise held and the conclusion did not — a hook cannot run a Task but it
++# can run a PROCESS, and `compound-v-classify-request.py --classify-headless` is
++# that one-shot. What is asserted here is the whole decision table of the new
++# branch, driven by a FAKE `claude` so no case spends a real model call:
++#
++#   enum reply      -> the engine is re-invoked with --t3-category and a record
++#                      with a real tier is written
++#   garbage reply   -> `unknown` is a genuine classification: FULL, WITH a record
++#   a hanging fake  -> nothing was classified: the reminder, inside the budget
++#   no CLI at all   -> nothing was classified: the reminder
++#
++# The two halves of that table are the point. A model that RAN and said it
++# cannot tell is not the same event as no model having run, and collapsing them
++# would either write a made-up band onto a real record or throw away a real
++# answer. The argv is asserted too: no `--bare` (it skips the login as well as
++# the plugins) and a `--model` that is never a haiku.
++# --------------------------------------------------------------------------- #
++T3PROJ="$WORK/projT3"
++T3PREEVAL="$T3PROJ/docs/superpowers/pre-eval"
++T3RUN="$T3PROJ/docs/superpowers/execution/2099-01-01-t3"
++mkdir -p "$T3PROJ/.git" "$T3PROJ/.claude" "$T3PROJ/src" "$T3PREEVAL" "$T3RUN"
++printf 'def upload(chunk):\n    return chunk\n' >"$T3PROJ/src/uploader.py"
++# A FINISHED run, for the same reason 3b needs one: "cannot tell" is treated as
++# ACTIVE, so a sandbox the resume query cannot answer for would silence the hook
++# for the wrong reason and every assertion below would pass without firing.
++printf 'feature: t3\njobs:\n  - id: task-1\n' >"$T3RUN/manifest.yaml"
++jq -n --arg ts "$(now_ts)" \
++  '{run_id:"2099-01-01-t3", phase:"MERGED", updated_at:$ts,
++    jobs:{"task-1":{status:"done"}}}' >"$T3RUN/state.json"
++
++# A taxonomy that has SAFETY COVERAGE (without it the scorer returns FULL before
++# it ever reaches T3) but bands nothing under src/ — which is exactly the shape
++# that makes the engine ask for T3.
++cat >"$T3PROJ/.claude/compound-v-impact-taxonomy.yaml" <<'YAML'
++version: 1
++
++path_patterns:
++  - glob: "docs/**"
++    difficulty_band: low
++    impact_band: low
++
++content_patterns:
++  - match: "terms of service"
++    pattern_type: literal
++    case: insensitive
++    scan: content
++    kind: legal_copy
++    impact_band: high
++
++sensitive_path_list:
++  - "**/*.env"
++  - "**/secrets/**"
++
++churn:
++  exclude_paths:
++    - "**/*.lock"
++  format_commit_patterns:
++    - "^chore: format"
++YAML
++check "T3 SANDBOX: the taxonomy the T3 cases rely on is valid" \
++  "$(python3 "$REPO/scripts/compound-v-validate-taxonomy.py" \
++       "$T3PROJ/.claude/compound-v-impact-taxonomy.yaml" >/dev/null 2>&1 && echo 1 || echo 0)"
++
++FAKE_CLAUDE="$WORK/fake-claude.sh"
++cat >"$FAKE_CLAUDE" <<'FAKE'
++#!/usr/bin/env bash
++# Stand-in for `claude -p`. Records the argv it was given (one arg per line) and
++# how many bytes of stdin it could read, then answers as the case asks.
++if [ -n "${FAKE_CLAUDE_ARGV:-}" ]; then printf '%s\n' "$@" >"$FAKE_CLAUDE_ARGV"; fi
++if [ -n "${FAKE_CLAUDE_STDIN:-}" ]; then wc -c >"$FAKE_CLAUDE_STDIN" 2>/dev/null; fi
++[ -n "${FAKE_CLAUDE_SLEEP:-}" ] && sleep "$FAKE_CLAUDE_SLEEP"
++printf '%s\n' "${FAKE_CLAUDE_REPLY:-plumbing}"
++FAKE
++chmod +x "$FAKE_CLAUDE"
++
++t3_records_for() {
++  find "$T3PREEVAL" -maxdepth 1 -type f -name '*.json' 2>/dev/null \
++    | while IFS= read -r f; do
++        jq -e --arg s "$1" '(type == "object") and (.session_id == $s)' "$f" \
++          >/dev/null 2>&1 && printf '%s\n' "$f"
++      done
++}
++
++ARGV_LOG="$WORK/fake-claude-argv"
++
++# --- case 1: the fake answers with an enum -> a real tier, no reminder ------- #
++export CV_CLASSIFY_CLAUDE_BIN="$FAKE_CLAUDE"
++export FAKE_CLAUDE_ARGV="$ARGV_LOG"
++export FAKE_CLAUDE_STDIN="$WORK/fake-claude-stdin"
++export FAKE_CLAUDE_REPLY="user-facing-minor"
++unset FAKE_CLAUDE_SLEEP 2>/dev/null || true
++
++o="$(run_nudge sess-T3A 'please add a retry loop to the uploader module at src/uploader.py' "$T3PROJ")"
++check "T3: a needs_t3 prompt still exits 0" "$([ "$NUDGE_RC" = 0 ] && echo 1 || echo 0)"
++check "T3: the hook no longer degrades to the reminder when a classifier answers" \
++  "$(ctx "$o" | grep -q 'could not size this prompt' && echo 0 || echo 1)"
++rec_T3A="$(t3_records_for sess-T3A | head -1)"
++check "T3: the re-invocation with --t3-category WROTE a record" \
++  "$([ -n "$rec_T3A" ] && echo 1 || echo 0)"
++check "T3: the record records the model-derived tier (T3 in tiers_signalled)" \
++  "$([ -n "$rec_T3A" ] && jq -e '(.tiers_signalled // []) | index("T3")' "$rec_T3A" \
++     >/dev/null 2>&1 && echo 1 || echo 0)"
++tier_T3A="$([ -n "$rec_T3A" ] && jq -r '.tier // ""' "$rec_T3A" 2>/dev/null || printf '')"
++check "T3: a user-facing-minor reply lands SCOPED (the enum reached the matrix)" \
++  "$([ "$tier_T3A" = "SCOPED" ] && echo 1 || echo 0)"
++check "T3: the emitted line names that tier (TIER: SCOPED)" \
++  "$(ctx "$o" | grep -q 'TIER: SCOPED' && echo 1 || echo 0)"
++
++# THE ARGV. Three properties, each of which was wrong in a draft of this route.
++check "T3 ARGV: the classify NEVER passes --bare (it skips the login too)" \
++  "$([ -f "$ARGV_LOG" ] && grep -qx -- '--bare' "$ARGV_LOG" && echo 0 || echo 1)"
++check "T3 ARGV: it is a print run with the prompt immediately after -p" \
++  "$([ -f "$ARGV_LOG" ] && [ "$(head -1 "$ARGV_LOG")" = "-p" ] \
++     && [ -n "$(sed -n '2p' "$ARGV_LOG")" ] && echo 1 || echo 0)"
++check "T3 ARGV: it asks for text output" \
++  "$([ -f "$ARGV_LOG" ] && grep -qx -- '--output-format' "$ARGV_LOG" && echo 1 || echo 0)"
++check "T3 ARGV: it disables tools" \
++  "$([ -f "$ARGV_LOG" ] && grep -qx -- '--tools' "$ARGV_LOG" && echo 1 || echo 0)"
++t3_model="$([ -f "$ARGV_LOG" ] && awk '$0=="--model"{getline; print; exit}' "$ARGV_LOG" || printf '')"
++check "T3 ARGV: the model is resolved and is NEVER a haiku (got '${t3_model}')" \
++  "$([ -n "$t3_model" ] && ! printf '%s' "$t3_model" | grep -qi haiku && echo 1 || echo 0)"
++check "T3: the classify ran with stdin closed (0 bytes readable)" \
++  "$([ -f "$WORK/fake-claude-stdin" ] \
++     && [ "$(tr -d ' \n' <"$WORK/fake-claude-stdin")" = "0" ] && echo 1 || echo 0)"
++
++# --- case 2: garbage reply -> `unknown` is a REAL answer -> FULL, with a record #
++export FAKE_CLAUDE_REPLY="Well, I would probably call this plumbing of some sort."
++o="$(run_nudge sess-T3B 'please add a retry loop to the downloader module at src/uploader.py' "$T3PROJ")"
++rec_T3B="$(t3_records_for sess-T3B | head -1)"
++check "T3: a non-enum reply is still a classification, so a record IS written" \
++  "$([ -n "$rec_T3B" ] && echo 1 || echo 0)"
++check "T3: ...and it fails closed to FULL" \
++  "$([ -n "$rec_T3B" ] && jq -e '.tier == "FULL"' "$rec_T3B" >/dev/null 2>&1 \
++     && echo 1 || echo 0)"
++check "T3: ...recorded as a T3 verdict, not as an unbanded one" \
++  "$([ -n "$rec_T3B" ] && jq -e '(.tiers_signalled // []) | index("T3")' "$rec_T3B" \
++     >/dev/null 2>&1 && echo 1 || echo 0)"
++check "T3: ...and the model was NOT asked to route it by hand" \
++  "$(ctx "$o" | grep -q 'TIER: FULL' && echo 1 || echo 0)"
++
++# --- case 3: a hanging fake -> nothing classified -> the reminder, in budget -- #
++# The cap is CV_CLASSIFY_TIMEOUT_S here so the suite does not sit for 18 s; the
++# constant that ships is asserted separately below.
++export FAKE_CLAUDE_REPLY="plumbing"
++export FAKE_CLAUDE_SLEEP=20
++export CV_CLASSIFY_TIMEOUT_S=3
++t0=$(date +%s)
++o="$(run_nudge sess-T3C 'please add a retry loop to the exporter module at src/uploader.py' "$T3PROJ")"
++t1=$(date +%s)
++check "T3: a hanging classifier still exits 0" "$([ "$NUDGE_RC" = 0 ] && echo 1 || echo 0)"
++check "T3: a hanging classifier yields the REMINDER (nothing was classified)" \
++  "$(ctx "$o" | grep -q 'could not size this prompt' \
++     && ctx "$o" | grep -q '/v:triage' && echo 1 || echo 0)"
++# A SESSION-BOUND record, not a file count: the engine writes its `.intent.json`
++# and `.localization.json` working artifacts on the way to `needs_t3` and those
++# are resumable-by-fingerprint scaffolding, not a verdict. What must not exist is
++# a RECORD bound to this session, because that is what the Stop gate reads and
++# what the outcome stream keys on.
++check "T3: a hanging classifier mints NO record (no invented band)" \
++  "$([ -z "$(t3_records_for sess-T3C)" ] && echo 1 || echo 0)"
++check "T3: and it returned inside the budget ($((t1 - t0))s for a 3s cap)" \
++  "$([ "$((t1 - t0))" -lt 20 ] && echo 1 || echo 0)"
++unset FAKE_CLAUDE_SLEEP CV_CLASSIFY_TIMEOUT_S
++
++# --- case 4: no classifier on the machine at all -> the reminder ------------- #
++# An override that is set but EMPTY disables a route outright, which is how this
++# asserts the no-backend degrade on a machine that really does have `claude`.
++export CV_CLASSIFY_CLAUDE_BIN=""
++export CV_CLASSIFY_CODEX_BIN=""
++o="$(run_nudge sess-T3D 'please add a retry loop to the importer module at src/uploader.py' "$T3PROJ")"
++check "T3: with no classify backend at all the hook exits 0" \
++  "$([ "$NUDGE_RC" = 0 ] && echo 1 || echo 0)"
++check "T3: with no classify backend at all it degrades to the reminder" \
++  "$(ctx "$o" | grep -q 'could not size this prompt' && echo 1 || echo 0)"
++check "T3: ...and mints no record" \
++  "$([ -z "$(t3_records_for sess-T3D)" ] && echo 1 || echo 0)"
++unset FAKE_CLAUDE_ARGV FAKE_CLAUDE_STDIN FAKE_CLAUDE_REPLY
++
++# --- the contract the hook and the registration have to agree on ------------- #
++check "T3: the hook calls --classify-headless (not the Task-contract modes)" \
++  "$(grep -q -- '--classify-headless' "$NUDGE" && echo 1 || echo 0)"
++check "T3: the hook re-enters the engine with --t3-category" \
++  "$(grep -q -- '--t3-category' "$NUDGE" && echo 1 || echo 0)"
++check "T3: the hook's needs_t3 branch no longer degrades unconditionally" \
++  "$(grep -q 'the request needs the T3 classify step . degrading' "$NUDGE" && echo 0 || echo 1)"
++check "T3: the shipped classify cap is 15 s" \
++  "$(grep -q '^_CLASSIFY_TIMEOUT_S=15$' "$NUDGE" && echo 1 || echo 0)"
++check "T3: hooks.json gives UserPromptSubmit the 25 s the cap plus grace needs" \
++  "$(jq -e '[.hooks.UserPromptSubmit[]?.hooks[]?.timeout] == [25]' "$HOOKS_JSON" \
++     >/dev/null 2>&1 && echo 1 || echo 0)"
++check "T3: and ONLY that event was raised (PostCompact still bounded at 10)" \
++  "$(jq -e '[.hooks.PostCompact[]?.hooks[]?.timeout] == [10]' "$HOOKS_JSON" \
++     >/dev/null 2>&1 && echo 1 || echo 0)"
++check "T3: the SCOPED+ tier line exists for a small edit on a sensitive path" \
++  "$(grep -q 'SCOPED+' "$NUDGE" && echo 1 || echo 0)"
++check "T3: the classify engine's own selftest is green" \
++  "$(python3 "$REPO/scripts/compound-v-classify-request.py" --selftest >/dev/null 2>&1 \
++     && echo 1 || echo 0)"
++
+ # --------------------------------------------------------------------------- #
+ # 4. PostCompact.
+ # --------------------------------------------------------------------------- #

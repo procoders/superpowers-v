@@ -1,0 +1,35 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "commands/v-dispatch.md",
+    "commands/v-orchestrate.md",
+    "schemas/cross-model-receipt.schema.json",
+    "scripts/compound-v-validate-manifest.py",
+    "skills/compound-v/SKILL.md",
+    "skills/compound-v/cross-model-review.md",
+    "skills/compound-v/phase-preeval.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "20ed7252e9f57ab59a1ebf06894973d89d93d9af",
+    "diff_digest": "sha256:6b1d1bd42a5d5609ad03fa7b8ca99c6dc269006c0d10df2f113e042cc5fff0c8",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"20ed7252e9f57ab59a1ebf06894973d89d93d9af\",\n  \"changed\": [\n    \"commands/v-dispatch.md\",\n    \"commands/v-orchestrate.md\",\n    \"schemas/cross-model-receipt.schema.json\",\n    \"scripts/compound-v-validate-manifest.py\",\n    \"skills/compound-v/SKILL.md\",\n    \"skills/compound-v/cross-model-review.md\",\n    \"skills/compound-v/phase-preeval.md\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-validate-manifest.py\",\n    \"schemas/cross-model-receipt.schema.json\",\n    \"commands/v-dispatch.md\",\n    \"commands/v-orchestrate.md\",\n    \"skills/compound-v/phase-preeval.md\",\n    \"skills/compound-v/cross-model-review.md\",\n    \"skills/compound-v/SKILL.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "20ed7252e9f57ab59a1ebf06894973d89d93d9af",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task E \u2014 the validator and the dispatch tail: triage.flavor scoped_plus, the deep-review rule, the cross-model receipt, the docs",
+  "tests": {
+    "command": "/usr/bin/python3 -B scripts/compound-v-preeval.py --selftest\nbash -c 'for r in docs/superpowers/pre-eval/*.json; do /usr/bin/python3 -B -c \"import json,sys; json.load(open(sys.argv[1]))\" \"$r\" || exit 1; done; /usr/bin/python3 -B scripts/compound-v-preeval.py --selftest'\nbash -c '[ -f scripts/compound-v-validate-manifest.py ] || exit 0; /usr/bin/python3 -B scripts/compound-v-validate-manifest.py --selftest'\nbash -c 'for s in scripts/compound-v-preeval.py scripts/compound-v-localize.py scripts/compound-v-taxonomy.py scripts/compound-v-validate-taxonomy.py scripts/compound-v-fastpath-run.py scripts/compound-v-classify-request.py scripts/compound-v-validate-manifest.py; do /usr/bin/python3 -B \"$s\" --selftest >/dev/null 2>&1 || { echo \"FAIL $s\"; exit 1; }; done; for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; /usr/bin/python3 -B -m unittest discover -s tests/v2.9-e2e -p \"test_*.py\" >/dev/null 2>&1 || { echo \"FAIL e2e\"; exit 1; }; echo all-tests-ok'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 4
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_ddd18fa6-e98-10"
+}

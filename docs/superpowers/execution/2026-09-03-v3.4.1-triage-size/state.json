@@ -5,34 +5,68 @@
   "updated_at": "2026-09-03T02:26:38Z",
   "jobs": {
     "scorer": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_ddd18fa6-e98-9",
+      "session_id": null,
+      "baseline": "20ed7252e9f57ab59a1ebf06894973d89d93d9af",
+      "realised_commit": "20ed7252e9f57ab59a1ebf06894973d89d93d9af",
+      "merged": {
+        "realised_commit": "20ed7252e9f57ab59a1ebf06894973d89d93d9af",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "028b264668d069eb0566fedd45ccd304d7ec4573"
+      }
     },
     "localizer": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_ddd18fa6-e98-8",
+      "session_id": null,
+      "baseline": "20ed7252e9f57ab59a1ebf06894973d89d93d9af",
+      "realised_commit": "20ed7252e9f57ab59a1ebf06894973d89d93d9af",
+      "merged": {
+        "realised_commit": "20ed7252e9f57ab59a1ebf06894973d89d93d9af",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "028b264668d069eb0566fedd45ccd304d7ec4573"
+      }
     },
     "test-scope": {
-      "status": "pending",
+      "status": "blocked",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_ddd18fa6-e98-7",
+      "session_id": null,
+      "baseline": "20ed7252e9f57ab59a1ebf06894973d89d93d9af",
+      "realised_commit": "20ed7252e9f57ab59a1ebf06894973d89d93d9af"
     },
     "hook-t3": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_ddd18fa6-e98-6",
+      "session_id": null,
+      "baseline": "20ed7252e9f57ab59a1ebf06894973d89d93d9af",
+      "realised_commit": "20ed7252e9f57ab59a1ebf06894973d89d93d9af",
+      "merged": {
+        "realised_commit": "20ed7252e9f57ab59a1ebf06894973d89d93d9af",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "028b264668d069eb0566fedd45ccd304d7ec4573"
+      }
     },
     "validator-dispatch": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_ddd18fa6-e98-10",
+      "session_id": null,
+      "baseline": "20ed7252e9f57ab59a1ebf06894973d89d93d9af",
+      "realised_commit": "20ed7252e9f57ab59a1ebf06894973d89d93d9af",
+      "merged": {
+        "realised_commit": "20ed7252e9f57ab59a1ebf06894973d89d93d9af",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "028b264668d069eb0566fedd45ccd304d7ec4573"
+      }
     },
     "release": {
       "status": "pending",
@@ -45,6 +79,25 @@
       "isolation": "direct",
       "worktree": null,
       "session_id": null
+    }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "scorer",
+        "localizer",
+        "test-scope",
+        "hook-t3",
+        "validator-dispatch"
+      ],
+      "merged": [
+        "scorer",
+        "localizer",
+        "hook-t3",
+        "validator-dispatch"
+      ],
+      "commit": "028b264668d069eb0566fedd45ccd304d7ec4573",
+      "integrated": false
     }
   }
 }

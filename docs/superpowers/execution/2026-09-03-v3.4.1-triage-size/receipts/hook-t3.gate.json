@@ -1,0 +1,74 @@
+{
+  "baseline_commit": "20ed7252e9f57ab59a1ebf06894973d89d93d9af",
+  "diff_digest": "sha256:22cda8bcb3d75d2026bc19bd9c20a9873b906724d517e63c4b475c646311fb2f",
+  "exit_code": 0,
+  "job_id": "hook-t3",
+  "patch_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-v3.4.1-triage-size/jobs/hook-t3.patch",
+  "patch_paths": [
+    "commands/v-triage.md",
+    "hooks/hooks.json",
+    "hooks/triage-prompt-nudge.sh",
+    "scripts/compound-v-classify-request.py",
+    "tests/test-native-points.sh"
+  ],
+  "patch_sha256": "sha256:22cda8bcb3d75d2026bc19bd9c20a9873b906724d517e63c4b475c646311fb2f",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"20ed7252e9f57ab59a1ebf06894973d89d93d9af\",\n  \"changed\": [\n    \"commands/v-triage.md\",\n    \"hooks/hooks.json\",\n    \"hooks/triage-prompt-nudge.sh\",\n    \"scripts/compound-v-classify-request.py\",\n    \"tests/test-native-points.sh\"\n  ],\n  \"allowed\": [\n    \"hooks/triage-prompt-nudge.sh\",\n    \"hooks/hooks.json\",\n    \"scripts/compound-v-classify-request.py\",\n    \"tests/test-native-points.sh\",\n    \"commands/v-triage.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "20ed7252e9f57ab59a1ebf06894973d89d93d9af",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "commands/v-triage.md",
+      "hooks/hooks.json",
+      "hooks/triage-prompt-nudge.sh",
+      "scripts/compound-v-classify-request.py",
+      "tests/test-native-points.sh"
+    ],
+    "checks": [
+      {
+        "checker": "/usr/bin/python3 -B scripts/compound-v-preeval.py --selftest",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash tests/test-triage-landing.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'bash tests/test-native-points.sh && bash tests/test-epic-goal-stop.sh'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f scripts/compound-v-classify-request.py ] || exit 0; /usr/bin/python3 -B scripts/compound-v-classify-request.py --selftest'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f tests/test-native-points.sh ] || exit 0; bash tests/test-native-points.sh'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (7 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 5 command(s) from 5 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_ddd18fa6-e98-6"
+}

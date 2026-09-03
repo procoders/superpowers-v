@@ -1,0 +1,34 @@
+{
+  "blocked": true,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "agents/spec-reviewer.md",
+    "scripts/compound-v-fastpath-run.py",
+    "skills/compound-v/execution-manifest.md",
+    "tests/v2.9-e2e/test_fastpath_and_escalation.py"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "20ed7252e9f57ab59a1ebf06894973d89d93d9af",
+    "diff_digest": "sha256:f6bd7204fc33c51eab46cc5de1ccf6adb3a7b40f9a525e117447f07c7fcf670d",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"20ed7252e9f57ab59a1ebf06894973d89d93d9af\",\n  \"changed\": [\n    \"agents/spec-reviewer.md\",\n    \"scripts/compound-v-fastpath-run.py\",\n    \"skills/compound-v/execution-manifest.md\",\n    \"tests/v2.9-e2e/test_fastpath_and_escalation.py\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-fastpath-run.py\",\n    \"tests/v2.9-e2e/test_fastpath_and_escalation.py\",\n    \"skills/compound-v/execution-manifest.md\",\n    \"agents/spec-reviewer.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "20ed7252e9f57ab59a1ebf06894973d89d93d9af",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "blocked",
+  "summary": "Task C \u2014 the tests a SCOPED job owes: referencing tests, capped, never the whole suite at SCOPED/DIRECT",
+  "tests": {
+    "command": "/usr/bin/python3 -B scripts/compound-v-preeval.py --selftest\nbash -c '[ -f scripts/compound-v-fastpath-run.py ] || exit 0; /usr/bin/python3 -B scripts/compound-v-fastpath-run.py --selftest'\nbash -c '[ -f tests/v2.9-e2e/test_fastpath_and_escalation.py ] || exit 0; /usr/bin/python3 -B -m unittest tests/v2.9-e2e/test_fastpath_and_escalation.py'\nbash -c 'for s in scripts/compound-v-preeval.py scripts/compound-v-localize.py scripts/compound-v-taxonomy.py scripts/compound-v-validate-taxonomy.py scripts/compound-v-fastpath-run.py scripts/compound-v-classify-request.py scripts/compound-v-validate-manifest.py; do /usr/bin/python3 -B \"$s\" --selftest >/dev/null 2>&1 || { echo \"FAIL $s\"; exit 1; }; done; for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; /usr/bin/python3 -B -m unittest discover -s tests/v2.9-e2e -p \"test_*.py\" >/dev/null 2>&1 || { echo \"FAIL e2e\"; exit 1; }; echo all-tests-ok'",
+    "exit_code": 1,
+    "failures": [
+      "bash -c '[ -f tests/v2.9-e2e/test_fastpath_and_escalation.py ] || exit 0; /usr/bin/python3 -B -m unittest tests/v2.9-e2e/test_fastpath_and_escalation.py'"
+    ],
+    "scope": "impacted",
+    "selected_count": 4
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_ddd18fa6-e98-7"
+}

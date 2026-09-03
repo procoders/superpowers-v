@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "scripts/compound-v-localize.py"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "20ed7252e9f57ab59a1ebf06894973d89d93d9af",
+    "diff_digest": "sha256:28cc38e2fde642c36d8c5f1b753b7d4105dd35c7db196c26fd9a855339f4ce4b",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"20ed7252e9f57ab59a1ebf06894973d89d93d9af\",\n  \"changed\": [\n    \"scripts/compound-v-localize.py\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-localize.py\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "20ed7252e9f57ab59a1ebf06894973d89d93d9af",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task B \u2014 the localizer: identifiers only, trailing punctuation, new_file, exact-by-name with an incomplete content scan",
+  "tests": {
+    "command": "/usr/bin/python3 -B scripts/compound-v-preeval.py --selftest\nbash -c '[ -f scripts/compound-v-localize.py ] || exit 0; /usr/bin/python3 -B scripts/compound-v-localize.py --selftest'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_ddd18fa6-e98-8"
+}

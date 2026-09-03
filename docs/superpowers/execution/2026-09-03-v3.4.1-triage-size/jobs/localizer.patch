@@ -1,0 +1,543 @@
+diff --git a/scripts/compound-v-localize.py b/scripts/compound-v-localize.py
+index 007ce13..0b24511 100644
+--- a/scripts/compound-v-localize.py
++++ b/scripts/compound-v-localize.py
+@@ -15,7 +15,7 @@ load-bearing only for the fast path: it also decides the `low`/`medium` SCOPED c
+ returns or reads a decision; this module supplies the evidence and never the tier.
+ 
+     localize(request, repo, taxonomy) -> {resolved_paths[], fan_out, flags[], confidence}
+-        confidence in {exact, ambiguous, failed}
++        confidence in {exact, ambiguous, failed, new_file}
+ 
+ It ALSO writes a committed, WRITE-ONCE localization artifact at
+     docs/superpowers/pre-eval/<pre_eval_id>.localization.json
+@@ -121,6 +121,10 @@ _GENERATED_MARKERS = (
+ 
+ # Stopwords so token extraction stays bounded + deterministic. Colors/verbs common in
+ # UI-change requests are dropped so a real symbol/selector/identifier survives.
++#
++# They are no longer the ONLY filter (WS-B, decision 2): a word that is merely absent from
++# this list is still not a token unless it is IDENTIFIER-SHAPED. The stopword list is now a
++# cheap first cut, not the boundary.
+ _STOPWORDS = frozenset("""
+ the a an and or to in on of for with make making made change changing changed update
+ updating updated add adding remove removing fix fixing set setting please can you it its
+@@ -129,40 +133,125 @@ purple pink brown bold size larger smaller bigger left right top bottom center n
+ """.split())
+ 
+ 
++# Extensions that make a bare word path-like -- a filename, not prose. Bounded and
++# lowercase; the leading dot is not part of the entry.
++_SOURCE_EXTS = frozenset("""
++py js jsx mjs cjs ts tsx sh bash zsh rb go rs java kt kts swift c h cc cpp hpp cs
++php pl lua r scala dart ex exs erl clj sql css scss sass less html htm vue svelte
++yaml yml json jsonc toml ini cfg conf env lock md markdown rst txt xml csv tsv
++gradle bat ps1 tf tfvars proto graphql
++""".split())
++
++_CAMEL_RE = re.compile(r"[a-z0-9][A-Z]")
++_DOTTED_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*(\.[A-Za-z_][A-Za-z0-9_-]*)+$")
++_WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.\-/]*")
++_EDGE_CHARS = "`'\"(),;:[]{}<>"
++
++
++def _strip_edges(word):
++    """Strip wrapping punctuation and TRAILING sentence punctuation from one word.
++
++    A trailing `.` / `?` / `!` is sentence punctuation, never part of a name: the stage-2
++    request wrote `hooks/triage-prompt-nudge.sh.` and the localizer could not resolve it
++    because the strip set had no `.` at all (WS-B amendment 1). Only the TRAILING one goes.
++    An INNER dot is the extension separator and a LEADING dot is part of the name (`.env`,
++    `.github/workflows/ci.yml`), so this is never a two-sided `strip(".")`."""
++    w = (word or "").strip(_EDGE_CHARS)
++    while w and w[-1] in ".?!":
++        w = w[:-1]
++    return w.strip(_EDGE_CHARS)
++
++
++def _is_path_like(tok):
++    """True for a token shaped like a file path: it contains a slash, or it ends in a
++    known source/doc extension (bare dotfiles like `.env` included)."""
++    if not tok or tok.startswith("-"):
++        return False
++    if "/" in tok:
++        return True
++    name = tok.lstrip(".")
++    if "." in name:
++        ext = name.rsplit(".", 1)[-1].lower()
++    elif tok.startswith("."):
++        ext = name.lower()          # a bare dotfile: `.env`
++    else:
++        return False
++    return bool(ext) and ext in _SOURCE_EXTS
++
++
++def _is_identifier_shaped(tok):
++    """True for path-like, snake_case, CamelCase and dotted (`a.b`) tokens.
++
++    A PLAIN English word is NOT identifier-shaped, and that is decision 2: `button` and
++    `colour` are prose, and grepping prose returned hundreds of files, an `ambiguous`
++    localization, and a fail-closed FULL for every request that named no symbol."""
++    if _is_path_like(tok):
++        return True
++    if "_" in tok:
++        return True
++    if _CAMEL_RE.search(tok):
++        return True
++    if _DOTTED_RE.match(tok):
++        segs = tok.split(".")
++        return all(seg and seg.lower() not in _STOPWORDS for seg in segs)
++    return False
++
++
++
+ # ---------------------------------------------------------------------------- #
+ # Query-token extraction (bounded, deterministic — NOT NLP).
+ # ---------------------------------------------------------------------------- #
+ def extract_query_tokens(request):
+-    """Extract up to MAX_TOKENS candidate symbols/selectors/tokens from free-text.
++    """Extract up to MAX_TOKENS IDENTIFIER-SHAPED candidates from free-text.
+ 
+-    Priority: quoted / backticked spans and CSS-ish selectors (`.btn`, `#id`, `--token`,
+-    `{{var}}`) first, then identifier-ish words (>=3 chars, not a stopword). Deterministic
+-    order, de-duplicated, capped. Empty request -> [] -> caller returns `failed`."""
++    Four classes, in priority order: quoted / backticked spans (an author who quotes a
++    span means it, whatever its shape), path-like words, CSS-ish selectors and design
++    tokens (`.btn`, `#id`, `--token`, `{{var}}`), then snake_case / CamelCase / dotted
++    identifiers. Deterministic order, de-duplicated, capped.
++
++    A PLAIN word is not a class (WS-B, decision 2). "change the button colour to red"
++    yields NO tokens, and the caller returns `failed` WITHOUT running a search: the repo
++    is never scanned for an English word. Empty request -> [] -> `failed`."""
+     if not request or not isinstance(request, str):
+         return []
+     tokens = []
+     seen = set()
+ 
+     def _push(tok):
+-        tok = tok.strip()
++        tok = (tok or "").strip()
+         if not tok or tok in seen:
+             return
+         seen.add(tok)
+         tokens.append(tok)
+ 
+-    # 1) quoted / backticked spans (highest signal)
++    # 1) quoted / backticked spans (highest signal — kept whatever their shape)
+     for m in re.finditer(r"[\"'`]([^\"'`]{2,64})[\"'`]", request):
+         _push(m.group(1))
+-    # 2) CSS-ish / templating selectors and design tokens
+-    for m in re.finditer(r"(--[A-Za-z0-9_-]{2,}|[.#][A-Za-z_][\w-]{1,}|\{\{[^}]{1,40}\}\})",
+-                         request):
+-        _push(m.group(1))
+-    # 3) identifier-ish words (camelCase / snake_case / hyphenated / plain)
+-    for m in re.finditer(r"[A-Za-z_][A-Za-z0-9_-]{2,}", request):
+-        w = m.group(0)
+-        if w.lower() in _STOPWORDS:
++    # 2) path-like words: a slash, or a known file extension. Whitespace-split (not a
++    #    regex) so `scripts/new-thing.py` survives whole instead of being shredded into
++    #    `scripts`, `new-thing` and a bogus `.py` "selector".
++    for word in request.split():
++        cand = _strip_edges(word)
++        if cand and _is_path_like(cand):
++            _push(cand)
++    # 3) CSS-ish / templating selectors and design tokens. The lookbehind is load-bearing:
++    #    a selector STARTS a word, so `.md` in "README.md" and `.The` in "colour.The next"
++    #    are not selectors at all. Grepping the first of those is the 2026-09-01 bug that
++    #    returned 301 paths and made DIRECT unreachable through /v:triage.
++    for m in re.finditer(
++            r"(?<![\w.])(--[A-Za-z0-9_-]{2,}|[.#][A-Za-z_][\w-]{1,}|\{\{[^}]{1,40}\}\})",
++            request):
++        tok = m.group(1)
++        if tok.startswith(".") and tok[1:].lower() in _SOURCE_EXTS:
++            continue          # a bare extension is not a class name either
++        _push(tok)
++    # 4) identifier-shaped words: snake_case / CamelCase / dotted
++    for m in _WORD_RE.finditer(request):
++        w = _strip_edges(m.group(0))
++        if not w or len(w) < 3 or w.lower() in _STOPWORDS:
+             continue
+-        _push(w)
++        if _is_identifier_shaped(w):
++            _push(w)
+     return tokens[:MAX_TOKENS]
+ 
+ 
+@@ -173,11 +262,8 @@ def _contained_regular_file(repo, rel):
+     """Return the normalized repo-relative path iff it is a repo-relative, non-escaping
+     REGULAR file under `repo`; else None. Rejects absolute paths, `..` traversal, and
+     escaping symlinks (realpath must stay under the repo root)."""
+-    if not rel or os.path.isabs(rel):
+-        return None
+-    norm = os.path.normpath(rel).replace("\\", "/").lstrip("./")
+-    norm = os.path.normpath(norm)
+-    if norm in (".", "") or norm.startswith("..") or norm.split("/")[0] == "..":
++    norm = _normalize_rel(rel)
++    if norm is None:
+         return None
+     root_real = os.path.realpath(repo)
+     full_real = os.path.realpath(os.path.join(repo, norm))
+@@ -188,6 +274,58 @@ def _contained_regular_file(repo, rel):
+     return norm
+ 
+ 
++def _normalize_rel(rel):
++    """Normalize a repo-relative path, or None if it is absolute / empty / escaping.
++
++    `normpath` already drops a leading `./`; the earlier `lstrip("./")` here also ate the
++    leading dot of a DOTFILE, so `.env` normalized to `env` and a request naming `.env`
++    could not localize at all — on the one path the scorer must never demote."""
++    if not rel or os.path.isabs(rel):
++        return None
++    norm = os.path.normpath(rel).replace("\\", "/")
++    if norm in (".", "") or norm.startswith("..") or norm.split("/")[0] == "..":
++        return None
++    return norm
++
++
++def _contained_dir(repo, rel):
++    """Return the normalized repo-relative path iff it is a non-escaping DIRECTORY under
++    `repo` (the containment rules of `_contained_regular_file`, for a directory). `""` is
++    the repo root itself."""
++    root_real = os.path.realpath(repo)
++    if rel in ("", "."):
++        return "" if os.path.isdir(root_real) else None
++    norm = _normalize_rel(rel)
++    if norm is None:
++        return None
++    full_real = os.path.realpath(os.path.join(repo, norm))
++    if not full_real.startswith(root_real + os.sep):
++        return None
++    return norm if os.path.isdir(full_real) else None
++
++
++def _new_file_candidate(repo, tok):
++    """Return the normalized repo-relative path iff `tok` names a file that does NOT exist
++    yet inside the repo but whose PARENT directory does — "add scripts/new-thing.py".
++
++    A slash is required. A bare `helper.py` is far likelier to be an existing file
++    somewhere else in the tree (which the search will find) than a new file at the repo
++    root, and guessing wrong here hands a cheap tier to the wrong path. `lexists` (not
++    `exists`) so a DANGLING symlink still counts as taken."""
++    if not tok or "/" not in tok:
++        return None
++    norm = _normalize_rel(tok)
++    if norm is None:
++        return None
++    root_real = os.path.realpath(repo)
++    full_real = os.path.realpath(os.path.join(repo, norm))
++    if not full_real.startswith(root_real + os.sep):
++        return None
++    if os.path.lexists(full_real):
++        return None
++    return norm if _contained_dir(repo, os.path.dirname(norm)) is not None else None
++
++
+ # ---------------------------------------------------------------------------- #
+ # THE external-CLI boundary — every rg/git/grep goes THROUGH the supervisor.
+ # ---------------------------------------------------------------------------- #
+@@ -391,18 +529,24 @@ def localize(request, repo, taxonomy, *, file_cap=FILE_CAP, timeout_s=SEARCH_TIM
+     """Bounded read-only localization.
+ 
+     Returns {"resolved_paths": [...], "fan_out": int, "flags": [...], "confidence": str}
+-    with confidence in {exact, ambiguous, failed}:
+-      * failed    — no extractable token, a COMPLETE search with zero matches, or every
+-                    backend unavailable/timed out (-> Layer-A override #1 -> FULL_PIPELINE).
+-      * ambiguous — more than `file_cap` matching files (too broad to judge), OR the
+-                    evidence is INCOMPLETE — a search that hit its file/result byte cap, a
+-                    per-token timeout/error, or a file larger than MAX_FILE_READ_BYTES whose
+-                    tail went unscanned. Incomplete evidence must NEVER be labeled `exact`
+-                    (fail-closed -> override #1 -> FULL_PIPELINE).
+-      * exact     — 1..file_cap matching files resolved within the cap from COMPLETE evidence
+-                    (un-capped search, no per-token timeout, every file scanned in full).
+-                    `flags` may still carry shared_token / is_a11y_state / sensitive_path /
+-                    is_generated etc., which A3's Layer-A overrides act on.
++    with confidence in {exact, ambiguous, failed, new_file}:
++      * failed    — no identifier-shaped token (the repo is NOT scanned for a plain word),
++                    a COMPLETE search with zero matches, or every backend unavailable/timed
++                    out (-> Layer-A override #1 -> FULL_PIPELINE).
++      * ambiguous — more than `file_cap` matching SEARCHED files (too broad to judge), OR
++                    the search evidence is INCOMPLETE — a listing that hit its file/result
++                    byte cap, or a per-token timeout/error. Incomplete search evidence must
++                    NEVER be labeled `exact` (fail-closed -> override #1 -> FULL_PIPELINE).
++      * new_file  — the request names a path that does not exist yet whose parent directory
++                    does: `resolved_paths == [that path]`, `fan_out == 1`, `new_file` in
++                    `flags`. Localization is certain; there is simply nothing to read yet.
++      * exact     — a LITERAL path the request named, or 1..file_cap matching files resolved
++                    within the cap from COMPLETE search evidence. `flags` may still carry
++                    shared_token / is_a11y_state / sensitive_path / is_generated etc., which
++                    A3's Layer-A overrides act on, plus `content_scan_incomplete` when a
++                    named file could not be scanned in full (WS-B amendment 2): a literal
++                    path is `exact` BY NAME, and the doubt about its CONTENT is carried as
++                    an impact-raising flag rather than as a localization failure.
+     NEVER runs git; NEVER launches an external CLI outside the timeout supervisor.
+     """
+     repo = repo or "."
+@@ -422,21 +566,50 @@ def localize(request, repo, taxonomy, *, file_cap=FILE_CAP, timeout_s=SEARCH_TIM
+     # basename search -- a guess here would hand a cheap tier to the wrong file.
+     literal = []
+     for word in str(request or "").split():
+-        cand = word.strip("`'\"(),;:")
++        cand = _strip_edges(word)
+         if not cand or cand.startswith("-"):
+             continue
+-        if _contained_regular_file(repo, cand) and cand not in literal:
+-            literal.append(cand)
++        norm = _contained_regular_file(repo, cand)
++        if norm and norm not in literal:
++            literal.append(norm)
+     if literal:
+         flags, classify_incomplete = _classify_paths(repo, literal, taxonomy)
++        if classify_incomplete:
++            # WS-B amendment 2. A literal path is `exact` BY NAME: the request named the
++            # file, so WHICH file is not in doubt. What is in doubt is the CONTENT scan —
++            # the file is larger than MAX_FILE_READ_BYTES, or unreadable — so the doubt is
++            # carried as a flag the scorer treats as impact-raising. Degrading to
++            # `ambiguous` here fail-closed EVERY request naming a large script to FULL,
++            # which is fail-closed on the wrong axis: localization, not impact.
++            flags = sorted(set(flags) | {"content_scan_incomplete"})
+         return {"resolved_paths": sorted(literal), "fan_out": len(literal),
+-                "flags": flags,
+-                "confidence": "ambiguous" if classify_incomplete else "exact"}
++                "flags": flags, "confidence": "exact"}
+ 
+     tokens = extract_query_tokens(request)
+     if not tokens:
++        # No identifier in the request. Decision 2: return `failed` AT ONCE — do not scan
++        # the repository for an English word.
+         return {"resolved_paths": [], "fan_out": 0, "flags": [], "confidence": "failed"}
+ 
++    # NEW-FILE. The request names a path that does not exist yet whose parent directory
++    # does. Searching for it is pointless (nothing mentions a file nobody has written) and
++    # `failed` would send every "add scripts/x.py" request to FULL. Exactly ONE candidate:
++    # two would make the contract's `fan_out == 1` a lie, so a second one falls through to
++    # the search instead of being guessed at.
++    new_files = []
++    for tok in tokens:
++        cand = _new_file_candidate(repo, tok)
++        if cand and cand not in new_files:
++            new_files.append(cand)
++    if len(new_files) == 1:
++        # Path-only classification: the file has no content to read, but its PATH can
++        # already be sensitive (a new hook, a new workflow), and that evidence must survive.
++        tax = _taxonomy_module()
++        c = tax.classify(taxonomy or {}, path=new_files[0], content="")
++        flags = sorted(_map_classify_flags(c.get("flags", [])) | {"new_file"})
++        return {"resolved_paths": list(new_files), "fan_out": 1, "flags": flags,
++                "confidence": "new_file"}
++
+     files, _backend, ran, search_incomplete = _search_repo(
+         tokens, repo, timeout_s, cap_bytes, env)
+     if not ran:
+@@ -689,13 +862,25 @@ def _selftest():
+     tax_mod = _taxonomy_module()
+     taxonomy = tax_mod.load_taxonomy(text=_SHARED_TOKEN_TAXONOMY)
+ 
+-    # ----- token extraction -----
+-    toks = extract_query_tokens("make button X red")
+-    expect("token extraction drops stopwords/colors, keeps 'button'",
+-           "button" in toks and "red" not in toks and "make" not in toks)
++    # ----- token extraction (WS-B: identifier classes only) -----
++    toks = extract_query_tokens("make the button_state red")
++    expect("token extraction keeps snake_case, drops stopwords/colors",
++           "button_state" in toks and "red" not in toks and "make" not in toks)
+     expect("token extraction picks quoted spans",
+            "col-primary" in extract_query_tokens('change the "col-primary" token'))
+     expect("empty request -> no tokens", extract_query_tokens("") == [])
++    expect("token extraction keeps CamelCase",
++           extract_query_tokens("rename WidgetHelper") == ["WidgetHelper"])
++    expect("token extraction keeps a path-like word whole (no `.md` shrapnel)",
++           extract_query_tokens("edit docs/guide.md") == ["docs/guide.md"])
++    expect("token extraction keeps a dotted name",
++           "mod.attr" in extract_query_tokens("read mod.attr here"))
++    expect("token extraction drops a dotted span that is really two sentences",
++           extract_query_tokens("fix the colour.The next thing") == [])
++    expect("_strip_edges takes a TRAILING period, never an inner or leading one",
++           _strip_edges("hooks/x.sh.") == "hooks/x.sh"
++           and _strip_edges("(README.md).") == "README.md"
++           and _strip_edges(".env") == ".env")
+ 
+     # ----- containment -----
+     with tempfile.TemporaryDirectory() as repo:
+@@ -781,7 +966,7 @@ def _selftest():
+             fenv = dict(os.environ)
+             fenv["PATH"] = bindir
+             fenv["CV_FAKE_MARKER_DIR"] = mdir
+-            localize("make button red", repo, {}, timeout_s=5,
++            localize("update button_styles", repo, {}, timeout_s=5,
+                      cap_bytes=OUTPUT_CAP_BYTES, env=fenv)
+             return set(os.listdir(mdir))
+ 
+@@ -822,7 +1007,7 @@ def _selftest():
+                "/* card with a button */\n.card-btn { background: var(--color-primary); }\n")
+         _write(os.path.join(repo, "README.md"), "no button here at all-ish\n")
+ 
+-        res = localize("make button X red", repo, taxonomy)
++        res = localize("make the --color-primary token darker", repo, taxonomy)
+         expect("STEP-1: confidence == exact", res["confidence"] == "exact")
+         expect("STEP-1: fan_out > 1 (shared token across components)", res["fan_out"] > 1)
+         expect("STEP-1: flags include shared_token", "shared_token" in res["flags"])
+@@ -869,7 +1054,7 @@ def _selftest():
+     # ----- failed / ambiguous -----
+     with tempfile.TemporaryDirectory() as repo:
+         _write(os.path.join(repo, "src/ui/x.css"), "nothing relevant\n")
+-        res = localize("adjust zzunfindabletokenqqq", repo, taxonomy)
++        res = localize("adjust zz_unfindable_qqq", repo, taxonomy)
+         expect("no match -> confidence failed", res["confidence"] == "failed"
+                and res["resolved_paths"] == [])
+         res_empty = localize("", repo, taxonomy)
+@@ -901,7 +1086,7 @@ def _selftest():
+         fenv = dict(os.environ)
+         fenv["PATH"] = bindir
+         fenv["CV_FAKE_MARKER_DIR"] = mdir
+-        res = localize("touch button widget", repo, {}, timeout_s=5, cap_bytes=1000,
++        res = localize("touch button_widget", repo, {}, timeout_s=5, cap_bytes=1000,
+                        env=fenv)
+         expect("HIGH-8(a): capped search listing -> ambiguous (NOT exact)",
+                res["confidence"] == "ambiguous"
+@@ -914,16 +1099,16 @@ def _selftest():
+         mdir = os.path.join(td, "markers")
+         os.makedirs(mdir)
+         repo = os.path.join(td, "repo")
+-        _write(os.path.join(repo, "src/ui/alpha.css"), "alphatoken here\n")
++        _write(os.path.join(repo, "src/ui/alpha.css"), "alpha_token here\n")
+         # rg hangs whenever "betaslowtoken" is the query token (the 2nd token) -> 124.
+         _make_fake_cli(bindir, "rg", matches="src/ui/alpha.css\n", rc=0,
+-                       slow_token="betaslowtoken")
++                       slow_token="beta_slow_token")
+         fenv = dict(os.environ)
+         fenv["PATH"] = bindir
+         fenv["CV_FAKE_MARKER_DIR"] = mdir
+         import time as _t
+         t0 = _t.time()
+-        res = localize("alphatoken betaslowtoken", repo, {}, timeout_s=1,
++        res = localize("alpha_token beta_slow_token", repo, {}, timeout_s=1,
+                        cap_bytes=OUTPUT_CAP_BYTES, env=fenv)
+         elapsed = _t.time() - t0
+         expect("HIGH-8(b): later-token timeout (exit 124) -> ambiguous (NOT exact)",
+@@ -935,11 +1120,11 @@ def _selftest():
+     # (c) a file LARGER than MAX_FILE_READ_BYTES -> the content scan is incomplete (a match
+     #     past the read cap could be missed) -> ambiguous. Real toolchain (same as STEP-1).
+     with tempfile.TemporaryDirectory() as repo:
+-        oversized = ("oversizedtokenqqq at the top\n"
++        oversized = ("oversized_token_qqq at the top\n"
+                      + "A" * (MAX_FILE_READ_BYTES + 4096) + "\n")
+         _write(os.path.join(repo, "src/ui/huge.css"), oversized)
+-        res = localize("oversizedtokenqqq", repo, taxonomy)
+-        expect("HIGH-8(c): file > MAX_FILE_READ_BYTES -> scan incomplete -> ambiguous",
++        res = localize("oversized_token_qqq", repo, taxonomy)
++        expect("HIGH-8(c): a SEARCHED file > MAX_FILE_READ_BYTES -> incomplete -> ambiguous",
+                res["confidence"] == "ambiguous"
+                and "src/ui/huge.css" in res["resolved_paths"])
+         # Direct unit check on the classifier's incompleteness signal.
+@@ -952,6 +1137,110 @@ def _selftest():
+         expect("HIGH-8(c): a small in-cap file is NOT flagged incomplete",
+                _inc2 is False)
+ 
++    # ===================================================================== #
++    # WS-B — decision 2: identifier-only tokens, `new_file`, trailing punctuation.
++    # The ten probe fixtures of plan Task B steps 1 and 1b, in their numbering.
++    # ===================================================================== #
++    with tempfile.TemporaryDirectory() as repo:
++        _write(os.path.join(repo, "README.md"), "# readme\nA docs page.\n")
++        _write(os.path.join(repo, "scripts/compound-v-scorecard.py"),
++               "# compound-v-scorecard.py\nprint('score')\n")
++        _write(os.path.join(repo, "hooks/triage-prompt-nudge.sh"), "#!/bin/sh\nexit 0\n")
++        _write(os.path.join(repo, "src/helpers.py"), "def widget_helper_fn():\n    pass\n")
++        _write(os.path.join(repo, "src/models.py"), "class WidgetHelper:\n    pass\n")
++        _write(os.path.join(repo, "scripts/huge-tool.py"),
++               "# huge\n" + "B" * (MAX_FILE_READ_BYTES + 4096) + "\n")
++        _write(os.path.join(repo, ".env"), "TOKEN=x\n")
++
++        # (1) a docs typo naming an existing file -> exact, that file only.
++        res = localize("fix the typo in README.md", repo, taxonomy)
++        expect("WS-B(1): a request naming README.md -> exact [README.md]",
++               res["confidence"] == "exact" and res["resolved_paths"] == ["README.md"]
++               and res["fan_out"] == 1)
++
++        # (3) a BACKTICKED script name resolves through the quoted-span token class.
++        res = localize("review `compound-v-scorecard.py` for the header", repo, taxonomy)
++        expect("WS-B(3): a backticked script name -> exact [scripts/compound-v-scorecard.py]",
++               res["confidence"] == "exact"
++               and res["resolved_paths"] == ["scripts/compound-v-scorecard.py"])
++
++        # (4) a path that does not exist yet whose parent directory does -> new_file.
++        res = localize("add scripts/new-thing.py for the check", repo, taxonomy)
++        expect("WS-B(4): nonexistent path + existing parent -> new_file, fan_out 1",
++               res["confidence"] == "new_file" and res["fan_out"] == 1
++               and res["resolved_paths"] == ["scripts/new-thing.py"]
++               and "new_file" in res["flags"])
++
++        # (5) a path whose PARENT does not exist is not a new file — it is a miss.
++        res = localize("add nonexistent-dir/x.py somewhere", repo, taxonomy)
++        expect("WS-B(5): nonexistent parent -> failed (never new_file)",
++               res["confidence"] == "failed" and res["resolved_paths"] == [])
++
++        # (6) snake_case IS searched.
++        res = localize("rename widget_helper_fn", repo, taxonomy)
++        expect("WS-B(6): a snake_case identifier is searched -> exact [src/helpers.py]",
++               res["confidence"] == "exact" and res["resolved_paths"] == ["src/helpers.py"])
++
++        # (7) CamelCase IS searched.
++        res = localize("rename WidgetHelper", repo, taxonomy)
++        expect("WS-B(7): a CamelCase identifier is searched -> exact [src/models.py]",
++               res["confidence"] == "exact" and res["resolved_paths"] == ["src/models.py"])
++
++        # (8) a request of nothing but stopwords -> failed.
++        res = localize("please can you update the color", repo, taxonomy)
++        expect("WS-B(8): only stopwords -> failed",
++               res["confidence"] == "failed" and res["resolved_paths"] == [])
++
++        # (9) WS-B amendment 1 — a literal path followed by a sentence period.
++        res = localize("the guard lives in hooks/triage-prompt-nudge.sh.", repo, taxonomy)
++        expect("WS-B(9): a trailing period does not break a literal path -> exact",
++               res["confidence"] == "exact"
++               and res["resolved_paths"] == ["hooks/triage-prompt-nudge.sh"])
++
++        # (10) WS-B amendment 2 — a literal path bigger than the per-file read cap is
++        #      `exact` BY NAME; the unscanned tail becomes an impact-raising flag.
++        res = localize("tweak scripts/huge-tool.py", repo, taxonomy)
++        expect("WS-B(10): a literal path over MAX_FILE_READ_BYTES -> exact + "
++               "content_scan_incomplete (never ambiguous)",
++               res["confidence"] == "exact"
++               and res["resolved_paths"] == ["scripts/huge-tool.py"]
++               and "content_scan_incomplete" in res["flags"])
++
++        # Regression guard for the containment fix the above depends on: a DOTFILE keeps
++        # its leading dot (the old `lstrip("./")` turned `.env` into `env`, so the one
++        # path the scorer must never demote could not localize at all).
++        res = localize("rotate the secret in .env", repo, taxonomy)
++        expect("WS-B: a dotfile literal keeps its leading dot -> exact [.env]",
++               res["confidence"] == "exact" and res["resolved_paths"] == [".env"])
++        expect("WS-B: a new file under a sensitive directory is not searched for",
++               _new_file_candidate(repo, "hooks/brand-new.sh") == "hooks/brand-new.sh"
++               and _new_file_candidate(repo, "hooks/triage-prompt-nudge.sh") is None
++               and _new_file_candidate(repo, "../escape/x.py") is None
++               and _new_file_candidate(repo, "/etc/x.py") is None)
++
++    # (2) A request with NO identifier: `failed`, and the search backend is NEVER invoked.
++    #     Proven with the fake CLIs — the marker directory stays empty, which an
++    #     implementation that greps a plain word cannot do.
++    with tempfile.TemporaryDirectory() as td:
++        bindir = os.path.join(td, "bin")
++        mdir = os.path.join(td, "markers")
++        os.makedirs(mdir)
++        repo = os.path.join(td, "repo")
++        _write(os.path.join(repo, "src/ui/button.css"), ".btn { color: red }\n")
++        for tool in ("rg", "git", "grep"):
++            _make_fake_cli(bindir, tool, matches="src/ui/button.css\n", rc=0)
++        fenv = dict(os.environ)
++        fenv["PATH"] = bindir
++        fenv["CV_FAKE_MARKER_DIR"] = mdir
++        req = "change the button colour to red"
++        expect("WS-B(2): a plain word is not a token ('button'/'colour' dropped)",
++               extract_query_tokens(req) == [])
++        res = localize(req, repo, {}, timeout_s=5, cap_bytes=OUTPUT_CAP_BYTES, env=fenv)
++        expect("WS-B(2): no identifier -> failed", res["confidence"] == "failed"
++               and res["resolved_paths"] == [])
++        expect("WS-B(2): the search backend was NEVER invoked (no repo scan for a word)",
++               os.listdir(mdir) == [])
++
+     if failures:
+         print("\nSELFTEST FAILED: %d case(s)" % len(failures))
+         return 1

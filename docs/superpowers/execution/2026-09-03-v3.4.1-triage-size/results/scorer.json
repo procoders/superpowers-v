@@ -1,0 +1,34 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    ".claude/compound-v-impact-taxonomy.example.yaml",
+    ".claude/compound-v-impact-taxonomy.yaml",
+    "schemas/pre-eval-record.schema.json",
+    "scripts/compound-v-preeval.py",
+    "scripts/compound-v-taxonomy.py",
+    "scripts/compound-v-validate-taxonomy.py"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "20ed7252e9f57ab59a1ebf06894973d89d93d9af",
+    "diff_digest": "sha256:dbd226c463dc2651b2d0cbf9149992e10e92cadba45fcd882fb85f658a89aa2d",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"20ed7252e9f57ab59a1ebf06894973d89d93d9af\",\n  \"changed\": [\n    \".claude/compound-v-impact-taxonomy.example.yaml\",\n    \".claude/compound-v-impact-taxonomy.yaml\",\n    \"schemas/pre-eval-record.schema.json\",\n    \"scripts/compound-v-preeval.py\",\n    \"scripts/compound-v-taxonomy.py\",\n    \"scripts/compound-v-validate-taxonomy.py\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-preeval.py\",\n    \"scripts/compound-v-taxonomy.py\",\n    \"scripts/compound-v-validate-taxonomy.py\",\n    \"schemas/pre-eval-record.schema.json\",\n    \".claude/compound-v-impact-taxonomy.yaml\",\n    \".claude/compound-v-impact-taxonomy.example.yaml\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "20ed7252e9f57ab59a1ebf06894973d89d93d9af",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task A \u2014 the scorer: broad-glob breadth, T3 demotion, SCOPED+, new_file, content-scan exclusion, the record schema, this repo's taxonomy",
+  "tests": {
+    "command": "/usr/bin/python3 -B scripts/compound-v-preeval.py --selftest\nbash -c '/usr/bin/python3 -B scripts/compound-v-validate-taxonomy.py .claude/compound-v-impact-taxonomy.yaml && /usr/bin/python3 -B scripts/compound-v-taxonomy.py --selftest'\nbash -c 'for r in docs/superpowers/pre-eval/*.json; do /usr/bin/python3 -B -c \"import json,sys; json.load(open(sys.argv[1]))\" \"$r\" || exit 1; done; /usr/bin/python3 -B scripts/compound-v-preeval.py --selftest'\nbash -c '[ -f scripts/compound-v-preeval.py ] || exit 0; /usr/bin/python3 -B scripts/compound-v-preeval.py --selftest'\nbash -c '[ -f scripts/compound-v-taxonomy.py ] || exit 0; /usr/bin/python3 -B scripts/compound-v-taxonomy.py --selftest'\nbash -c '[ -f scripts/compound-v-validate-taxonomy.py ] || exit 0; /usr/bin/python3 -B scripts/compound-v-validate-taxonomy.py --selftest'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 6
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_ddd18fa6-e98-9"
+}

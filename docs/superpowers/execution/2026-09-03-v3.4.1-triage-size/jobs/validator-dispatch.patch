@@ -1,0 +1,776 @@
+diff --git a/commands/v-dispatch.md b/commands/v-dispatch.md
+index 0c4b546..0157985 100644
+--- a/commands/v-dispatch.md
++++ b/commands/v-dispatch.md
+@@ -53,6 +53,11 @@ delegating, the epic inherits Engine C along with everything else.
+    `triage` block, and **that is the mechanism that stops a future run repeating 3.0's own
+    bootstrap exemption.** Do not drop the flag to "get a run started".
+ 
++   The flag also carries the SCOPED+ rule: a manifest with `triage.flavor: scoped_plus` is
++   rejected unless it declares a `type: review` job with `tier: deep` and `backend: claude`. That
++   half is checkable here because the reviewer is *declared*; the cross-model half is evidence
++   that does not exist yet, and step 8 checks it after the fact.
++
+    Pick the mode by manifest kind (CR5-1): a `fast_path` block ⇒ `--mode pre-dispatch`; a legacy
+    plan-based manifest carries no such block and is validated mode-lessly, as before — a mode-less
+    `fast_path` manifest is fail-closed rejected. Non-zero exit ⇒ fix the manifest and re-run.
+@@ -186,9 +191,49 @@ delegating, the epic inherits Engine C along with everything else.
+    SPEC (each job's `acceptance`), QUALITY (no regressions, no fabricated metrics), INTEGRATION
+    (cross-job seams, feature-level `acceptance_criteria`). DONE is gated on all three.
+ 
+-9. **Advance to `MERGED`, append the terminal `actual`, commit the run substrate, then hand off**
+-   to `superpowers:finishing-a-development-branch`. Write `phase: MERGED` into `state.json`
+-   **first**; then, once the merge/commit boundary has actually succeeded, append the run's
++   **If — and only if — the manifest says `triage.flavor: scoped_plus`, a cross-model second
++   opinion runs first, and it is mandatory.** SCOPED+ means *a small edit on a sensitive path*:
++   the change is one file and twenty lines, so the SCOPED band is the honest size, but the path
++   is one where being wrong is expensive. Such a run buys back both reviews the plain SCOPED band
++   skips — the deep in-harness reviewer (declared in the manifest, and step 2's `--require-triage`
++   already refused to dispatch without it) and one independent look from a **different model
++   family**. A Claude review of Claude's code is not a second opinion.
++
++   Seal the reviewed bytes, run the driver, wrap its output, then verify:
++
++   ```
++   RUN=docs/superpowers/execution/<run-id>
++   git diff --no-color <baseline from state.json> > $RUN/receipts/cross-model.patch
++   scripts/compound-v-codex-review.sh --repo "$PWD" \
++     --plan-file "$PWD/$RUN/receipts/cross-model.patch" \
++     --context-file "$PWD/<manifest spec_path>" > $RUN/receipts/.review.json
++   # wrap: the driver emits plan-review findings and nothing else — the binding fields
++   # are added here, and the receipt is sealed with the SHARED digest primitive.
++   python3 -B - <<'EOF'   # writes $RUN/receipts/cross-model.json
++   ... {run_id, pre_eval_id, diff_digest, reviewer_backend: "codex", reviewer_model,
++        produced_at, review: <the driver's JSON>} then digest=record_digest(obj, "digest")
++   EOF
++   python3 scripts/compound-v-validate-manifest.py $RUN/manifest.yaml --require-triage \
++     --require-cross-model-receipt $RUN/receipts/cross-model.json \
++     --expected-diff-digest "$(python3 scripts/compound-v-taxonomy.py --digest $RUN/receipts/cross-model.patch)"
++   ```
++
++   The receipt's shape is [`schemas/cross-model-receipt.schema.json`](../schemas/cross-model-receipt.schema.json)
++   — a flat envelope around the driver's `plan-review` output, because that schema is
++   `additionalProperties: false` and cannot carry a run id. **The findings stay advisory: you
++   arbitrate, exactly as for [`/v:review-plan`](v-review-plan.md), and a `concerns` verdict is
++   not a merge blocker.** What is *not* advisory is that the review ran, on this run, over these
++   bytes — which is why the validator refuses a receipt whose ids do not bind, whose
++   `diff_digest` is not the patch you sealed, or whose self-digest does not re-derive. A run whose
++   receipt does not verify does not proceed to the merge; fix it or re-run the review. Commit the
++   receipt and the patch with the rest of the run substrate in step 9.
++
++9. **Append the terminal `actual`, commit the run substrate, then hand off**
++   to `superpowers:finishing-a-development-branch`. **Do not write `phase: MERGED` into
++   `state.json` by hand** — the workflow finalizer has advanced the phase itself since stage 1
++   (`fix(finalize)`, commit f0dfc30), so a hand-written phase here is at best a duplicate and at
++   worst a regression of what the finalizer recorded. Read the phase back if you want to confirm
++   it; do not author it. Once the merge/commit boundary has actually succeeded, append the run's
+    terminal triage outcome:
+ 
+    ```
+@@ -214,7 +259,9 @@ delegating, the epic inherits Engine C along with everything else.
+    bootstrap manifest is one): say so and skip the append — never mint an id to make the join
+    close.
+ 
+-   Then commit `state.json` together with `results/*.json`, `receipts/*.json`, `lane-map.json`,
++   Then commit `state.json` together with `results/*.json`, `receipts/*.json` (including a
++   SCOPED+ run's `receipts/cross-model.json` and the `cross-model.patch` its digest binds to),
++   `lane-map.json`,
+    `jobs/*.test-contract.json`, `dispatch.workflow.js`,
+    `docs/superpowers/memory/triage-outcomes.jsonl` and any refreshed memory/scorecard files — in
+    that one commit, before any worktree cleanup. `finishing-a-development-branch` runs
+diff --git a/commands/v-orchestrate.md b/commands/v-orchestrate.md
+index cab51a5..ee27e94 100644
+--- a/commands/v-orchestrate.md
++++ b/commands/v-orchestrate.md
+@@ -35,6 +35,14 @@ The manifest schema and rules are defined in [`skills/compound-v/execution-manif
+    fabricated-evidence pattern rather than a repair. Carry the resulting `pre_eval_id` into Step 6's
+    `state.json`, Step 8b's `bind`, and the manifest's `triage` block.
+ 
++   **Copy the record's `flavor` into the manifest's `triage` block verbatim when it has one.** The
++   only value is `scoped_plus` — a SCOPED-sized change on a sensitive path — and it is a routing
++   *consequence*, not a routing input: it tells this command to give the run a `type: review` job
++   with `tier: deep` and `backend: claude` (`/v:dispatch` step 2 refuses the manifest without one)
++   and it tells step 8 to run the mandatory cross-model second opinion. A record with no `flavor`
++   gets no `flavor` key; never add one to buy a deeper review the scorer did not ask for, and
++   never drop one to skip a review it did.
++
+    Triage may come back **DIRECT**. A DIRECT change has no manifest, no run directory and no
+    worktree, so **this command is not its next step**. Implement it in place, run the test floor,
+    and commit it as an ordinary commit together with its record; `/v:triage --land` is the
+diff --git a/schemas/cross-model-receipt.schema.json b/schemas/cross-model-receipt.schema.json
+new file mode 100644
+index 0000000..5044d44
+--- /dev/null
++++ b/schemas/cross-model-receipt.schema.json
+@@ -0,0 +1,55 @@
++{
++  "$schema": "http://json-schema.org/draft-07/schema#",
++  "$id": "https://github.com/procoders/superpowers-v/schemas/cross-model-receipt.schema.json",
++  "title": "Compound V cross-model review receipt (SCOPED+)",
++  "description": "The receipt `/v:dispatch` step 8 writes to `receipts/cross-model.json` after running the mandatory cross-model second opinion on a `triage.flavor: scoped_plus` run. It EXISTS because `schemas/plan-review.schema.json` cannot carry it: that document is `additionalProperties: false` and its only producer is `codex exec --output-schema`, which emits findings and nothing else — no run, no pre-eval, no diff. So the driver's structured output is NESTED here, under `review`, inside a flat envelope that adds the three binding fields the validator checks (`run_id`, `pre_eval_id`, `diff_digest`) plus the self-integrity `digest`.\n\nThe review itself stays ADVISORY — the orchestrator arbitrates, exactly as for `/v:review-plan`. What is NOT advisory is that it RAN, on THIS run, over THIS diff: `compound-v-validate-manifest.py --require-cross-model-receipt <path>` refuses a receipt whose `run_id`/`pre_eval_id` disagree with the manifest, whose `diff_digest` is malformed or disagrees with `--expected-diff-digest`, or whose `digest` does not re-derive from its own canonical bytes.",
++  "type": "object",
++  "additionalProperties": false,
++  "required": [
++    "run_id",
++    "pre_eval_id",
++    "diff_digest",
++    "reviewer_backend",
++    "reviewer_model",
++    "produced_at",
++    "review",
++    "digest"
++  ],
++  "properties": {
++    "run_id": {
++      "type": "string",
++      "description": "The run this receipt belongs to — MUST equal the manifest's `run_id`."
++    },
++    "pre_eval_id": {
++      "type": "string",
++      "description": "The write-once pre-eval id from the manifest's `triage.pre_eval_id` — the cross-artifact binding key that ties receipt, record and manifest to one decision."
++    },
++    "diff_digest": {
++      "type": "string",
++      "pattern": "^sha256:[0-9a-f]{64}$",
++      "description": "'sha256:'+sha256 over the bytes of the sealed patch the reviewer was given (the `--plan-file` step 8 passes). Sealed under `digest`, so the reviewed diff cannot be swapped after the fact; `--expected-diff-digest` lets the caller re-assert it against the bytes it sealed."
++    },
++    "reviewer_backend": {
++      "type": "string",
++      "const": "codex",
++      "description": "MUST be codex. The point of the SCOPED+ receipt is a DIFFERENT model family from the one that wrote the code and the one that reviews it in-harness; a Claude-on-Claude second opinion is not a second opinion."
++    },
++    "reviewer_model": {
++      "type": "string",
++      "description": "The concrete model the driver resolved to (e.g. gpt-5.6-sol). Recorded, not constrained: the codex family map moves faster than this schema."
++    },
++    "produced_at": {
++      "type": "string",
++      "description": "ISO-8601 UTC timestamp the receipt was written."
++    },
++    "review": {
++      "type": "object",
++      "description": "The driver's structured output, verbatim — a document valid against `schemas/plan-review.schema.json` (`verdict`, `summary`, `findings`, `blind_spots_checked`). The validator checks it against that schema; it never re-interprets the findings, and a `concerns`/`reject` verdict is NOT itself a violation (the orchestrator arbitrates)."
++    },
++    "digest": {
++      "type": "string",
++      "pattern": "^sha256:[0-9a-f]{64}$",
++      "description": "REQUIRED self-integrity digest: 'sha256:'+sha256(canonical_json(receipt without `digest`)), sealed and verified with the SHARED primitive `compound-v-taxonomy.record_digest(receipt, exclude_field='digest')` — the same convention as the pre-eval record and the fast-path receipt, so producer and consumer can never drift."
++    }
++  }
++}
+diff --git a/scripts/compound-v-validate-manifest.py b/scripts/compound-v-validate-manifest.py
+index f0635cc..7f26c73 100755
+--- a/scripts/compound-v-validate-manifest.py
++++ b/scripts/compound-v-validate-manifest.py
+@@ -105,6 +105,17 @@ missing block, a malformed one, a ``tier`` outside {DIRECT, SCOPED, FULL}, and a
+ default ``.claude/compound-v-impact-taxonomy.yaml``) are each a failure; an absent or
+ unreadable taxonomy fails CLOSED rather than skipping the comparison.
+ 
++v3.4.1 adds ONE optional key, ``triage.flavor``, whose ONLY value is ``scoped_plus``
++— a small edit on a sensitive path, banded SCOPED but reviewed like a FULL. Under
++``--require-triage`` a ``scoped_plus`` manifest must carry a ``type: review`` job with
++``tier: deep`` and ``backend: claude``; unknown triage keys stay rejected. The other
++half of the SCOPED+ promise — an independent cross-model second opinion — cannot be
++checked before dispatch, because its evidence does not exist yet, so it is checked
++after the fact by ``--require-cross-model-receipt FILE`` (schema, ``run_id``,
++``triage.pre_eval_id``, and a ``diff_digest`` that is well-formed, sealed under the
++receipt's self-digest and equal to ``--expected-diff-digest`` when the caller passes
++the bytes it sealed).
++
+ ``test_contract: {floor_command, full_command, impacted_map[{when, run}]}`` plus per-job
+ ``test_scope ∈ {full, impacted, floor_only}`` (absent ⇒ ``full``). Both halves of an
+ ``impacted_map`` entry are mandatory, and a scope may never resolve to running NOTHING:
+@@ -117,6 +128,8 @@ Usage
+     compound-v-validate-manifest.py --mode pre-dispatch|post-review \\
+         [--repo-root DIR] [--config FILE] [--receipt FILE] <manifest.yaml>
+     compound-v-validate-manifest.py [--require-triage] [--taxonomy FILE] <manifest.yaml>
++    compound-v-validate-manifest.py --require-cross-model-receipt FILE \\
++        [--expected-diff-digest sha256:...] <manifest.yaml>
+     compound-v-validate-manifest.py --selftest
+ 
+ Exit codes: 0 = all invariants hold, 1 = one or more violations (printed),
+@@ -804,6 +817,14 @@ TIMEOUT_SEC_MAX = 21600
+ # --------------------------------------------------------------------------- #
+ VALID_TRIAGE_TIERS = ("DIRECT", "SCOPED", "FULL")
+ TRIAGE_REQUIRED_KEYS = ("tier", "pre_eval_id", "taxonomy_digest", "decided_at")
++# v3.4.1 — `flavor` is the ONLY optional triage key, and `scoped_plus` its only
++# value: a small edit on a sensitive path, banded SCOPED but reviewed like a FULL.
++# Required stays required and unknown stays rejected — the unknown-key walk reads
++# TRIAGE_ALLOWED_KEYS, so a `taxonomy-digest` typo is still a violation, while a
++# `flavor` the orchestrator copied from the record is not.
++VALID_TRIAGE_FLAVORS = ("scoped_plus",)
++TRIAGE_OPTIONAL_KEYS = ("flavor",)
++TRIAGE_ALLOWED_KEYS = TRIAGE_REQUIRED_KEYS + TRIAGE_OPTIONAL_KEYS
+ # Repo-relative location of the live impact taxonomy the digest is checked against.
+ # `--taxonomy PATH` overrides it (the taxonomy is generated by
+ # `/v:onboard draft-taxonomy`, so a caller may legitimately point elsewhere).
+@@ -999,6 +1020,9 @@ FASTPATH_MODES = ("pre-dispatch", "post-review")
+ _EXEC_DIR = os.path.join("docs", "superpowers", "execution")
+ _RECEIPT_SUBPATH = os.path.join("review", "receipt.json")
+ _RECEIPT_SCHEMA = os.path.join("schemas", "fastpath-review-receipt.schema.json")
++# v3.4.1 — the SCOPED+ cross-model receipt and the advisory review nested inside it.
++_CROSS_MODEL_SCHEMA = os.path.join("schemas", "cross-model-receipt.schema.json")
++_PLAN_REVIEW_SCHEMA = os.path.join("schemas", "plan-review.schema.json")
+ # Bounded `git diff` capture for the anti-stale-replay diff-digest recompute —
+ # MUST match the producer's cap (compound-v-fastpath-run.py MAX_DIFF_BYTES) so a
+ # receipt written by the producer content-addresses to the same value here.
+@@ -1267,6 +1291,28 @@ def _review_resolution(review, stance, repo_root, config_path):
+     return (problems, resolved_model)
+ 
+ 
++def _load_bundled_schema(relpath, label):
++    """Load a JSON schema that SHIPS in this repo. Returns ``(schema, None)`` or
++    ``(None, err)``. Every failure mode — absent, unreadable, malformed, not an
++    object — is an ANOMALY rather than an expected "no schema" case, so the caller
++    must treat ``(None, err)`` as a verification PROBLEM and fail closed. This is
++    the generic form of the rule MED-3 pinned for the fast-path receipt; the
++    cross-model receipt reuses it verbatim rather than inventing a second policy."""
++    here = os.path.dirname(os.path.abspath(__file__))
++    path = os.path.join(os.path.dirname(here), relpath)
++    try:
++        with open(path, "r", encoding="utf-8") as fh:
++            schema = json.load(fh)
++    except Exception as e:  # noqa: BLE001 - missing/unreadable/malformed all fail closed
++        return None, ("%s schema '%s' could not be loaded (%s) — it ships in-repo, "
++                      "so this is an anomaly; fail-closed, shape validation cannot "
++                      "be skipped" % (label, relpath, e))
++    if not isinstance(schema, dict):
++        return None, ("%s schema '%s' is not a JSON object — fail-closed"
++                      % (label, relpath))
++    return schema, None
++
++
+ def _load_receipt_schema():
+     """Load the bundled fast-path receipt JSON-schema. Returns ``(schema, None)`` on
+     success, else ``(None, err)``. MED-3: the schema SHIPS in-repo at
+@@ -1983,12 +2029,14 @@ def _validate_triage(manifest, repo_root, taxonomy_path):
+         )
+ 
+     for key in tri:
+-        if key not in TRIAGE_REQUIRED_KEYS:
++        if key not in TRIAGE_ALLOWED_KEYS:
+             problems.append(
+                 "manifest triage has unknown key '%s' (allowed: %s)"
+-                % (key, ", ".join(TRIAGE_REQUIRED_KEYS))
++                % (key, ", ".join(TRIAGE_ALLOWED_KEYS))
+             )
+ 
++    problems.extend(_validate_triage_flavor(tri, manifest))
++
+     digest = tri.get("taxonomy_digest")
+     if digest not in (None, ""):
+         if not _is_digest_shaped(digest):
+@@ -2002,6 +2050,53 @@ def _validate_triage(manifest, repo_root, taxonomy_path):
+     return problems
+ 
+ 
++def _is_deep_claude_review_job(job):
++    """True iff ``job`` is the deep in-harness review a SCOPED+ run owes.
++
++    Read literally, and NOT through ``_is_reviewer``: that helper answers a laxer
++    question ("must this job resolve to deep/opus?") and falls back to scanning the
++    id and title of a job with no ``type`` at all. A SCOPED+ manifest has to carry a
++    reviewer it DECLARED, so all three fields are tested by name — a job merely
++    *titled* "review the seams" does not satisfy the rule."""
++    if not isinstance(job, dict):
++        return False
++    return (str(job.get("type", "")).strip().lower() == "review"
++            and str(job.get("tier", "")).strip().lower() == "deep"
++            and str(job.get("backend", "")).strip().lower() == "claude")
++
++
++def _validate_triage_flavor(tri, manifest):
++    """Return violations for the optional ``triage.flavor`` (v3.4.1).
++
++    Two checks, and only under ``--require-triage`` (this is reached from
++    ``_validate_triage``): the value is in the enum, and ``scoped_plus`` — the band
++    that says *small edit, sensitive path* — carries the deep Claude review job that
++    is the whole reason the flavor exists. The cross-model half of that promise is
++    NOT checked here: it cannot be, before dispatch, because the receipt does not
++    exist yet. ``--require-cross-model-receipt`` checks it afterwards."""
++    problems = []
++    flavor = tri.get("flavor")
++    if flavor in (None, ""):
++        return problems
++    if str(flavor) not in VALID_TRIAGE_FLAVORS:
++        problems.append(
++            "manifest triage.flavor '%s' invalid (expected one of %s) — flavor is "
++            "a band, not free text" % (flavor, ", ".join(VALID_TRIAGE_FLAVORS)))
++        return problems
++
++    jobs = manifest.get("jobs")
++    jobs = jobs if isinstance(jobs, list) else []
++    if not any(_is_deep_claude_review_job(j) for j in jobs):
++        problems.append(
++            "manifest triage.flavor 'scoped_plus' requires a review job with "
++            "type: review, tier: deep and backend: claude — a SCOPED+ band is a "
++            "small edit on a sensitive path, and it buys back the deep review the "
++            "SCOPED band would otherwise skip (the cross-model second opinion is "
++            "the other half, checked after the fact by "
++            "--require-cross-model-receipt)")
++    return problems
++
++
+ def _triage_digest_problems(digest, repo_root, taxonomy_path):
+     """Compare the record's ``taxonomy_digest`` against the taxonomy bytes on disk,
+     through the SHARED compound-v-taxonomy primitive so producer and consumer can
+@@ -2026,6 +2121,109 @@ def _triage_digest_problems(digest, repo_root, taxonomy_path):
+     return []
+ 
+ 
++# --------------------------------------------------------------------------- #
++# v3.4.1 — the SCOPED+ cross-model receipt, engaged only by
++# --require-cross-model-receipt PATH.
++#
++# A SCOPED+ run owes two reviews the plain SCOPED band skips: a deep in-harness
++# Claude review (checked BEFORE dispatch, by the flavor rule above, because the job
++# is declared in the manifest) and an independent cross-model second opinion
++# (checkable only AFTER it has run, because its evidence is a file that does not
++# exist yet). This is the second gate. It refuses the receipt rather than trusting
++# the dispatcher's word that the review happened.
++# --------------------------------------------------------------------------- #
++def _validate_cross_model_receipt(manifest, receipt_path, expected_diff_digest=None):
++    """Return violations for the SCOPED+ cross-model receipt at ``receipt_path``.
++
++    Verifies, in order: the file reads as JSON at all; the envelope is valid against
++    ``schemas/cross-model-receipt.schema.json``; the nested ``review`` is valid
++    against ``schemas/plan-review.schema.json``; ``run_id`` and ``pre_eval_id`` equal
++    the manifest's; ``diff_digest`` is well-formed and, when the caller supplies
++    ``expected_diff_digest``, equal to it; and the self-integrity ``digest``
++    re-derives from the receipt's own canonical bytes.
++
++    What it deliberately does NOT do is read the review's verdict. The cross-model
++    opinion is advisory — the orchestrator arbitrates, exactly as for `/v:review-plan`
++    — so `concerns` is not a violation. What is not advisory is that a real reviewer
++    of a DIFFERENT family ran, on THIS run, over THIS diff, and the bindings are what
++    make that unfalsifiable rather than asserted."""
++    problems = []
++    if receipt_path in (None, ""):
++        return problems
++    try:
++        with open(receipt_path, "r", encoding="utf-8") as fh:
++            receipt = json.load(fh)
++    except Exception as e:  # noqa: BLE001 - absent/unreadable/malformed fail closed
++        return ["cross-model receipt '%s' could not be read (%s) — a scoped_plus run "
++                "does not merge on the promise that the second opinion happened "
++                "(fail-closed)" % (receipt_path, e)]
++
++    schema, sch_err = _load_bundled_schema(_CROSS_MODEL_SCHEMA, "cross-model receipt")
++    if sch_err is not None:
++        problems.append(sch_err)
++    elif schema is not None:
++        problems.extend(_schema_lite(receipt, schema, "cross-model receipt"))
++    if not isinstance(receipt, dict):
++        return problems
++
++    review = receipt.get("review")
++    if isinstance(review, dict):
++        pr_schema, pr_err = _load_bundled_schema(_PLAN_REVIEW_SCHEMA, "plan-review")
++        if pr_err is not None:
++            problems.append(pr_err)
++        elif pr_schema is not None:
++            problems.extend(
++                _schema_lite(review, pr_schema, "cross-model receipt.review"))
++
++    # --- identity binding: the manifest's run_id and triage.pre_eval_id ---
++    run_id = manifest.get("run_id") if isinstance(manifest, dict) else None
++    tri = manifest.get("triage") if isinstance(manifest, dict) else None
++    pre_eval_id = tri.get("pre_eval_id") if isinstance(tri, dict) else None
++    if str(receipt.get("run_id")) != str(run_id):
++        problems.append("cross-model receipt run_id '%s' != manifest run_id '%s'"
++                        % (receipt.get("run_id"), run_id))
++    if pre_eval_id in (None, ""):
++        problems.append("cross-model receipt cannot be bound: the manifest has no "
++                        "triage.pre_eval_id to bind it to")
++    elif str(receipt.get("pre_eval_id")) != str(pre_eval_id):
++        problems.append("cross-model receipt pre_eval_id '%s' != manifest "
++                        "triage.pre_eval_id '%s'"
++                        % (receipt.get("pre_eval_id"), pre_eval_id))
++
++    # --- the reviewed diff ---
++    diff_digest = receipt.get("diff_digest")
++    if not _is_digest_shaped(diff_digest):
++        problems.append("cross-model receipt diff_digest '%s' is malformed "
++                        "(expected 'sha256:<64-hex>')" % (diff_digest,))
++    elif expected_diff_digest not in (None, ""):
++        if str(diff_digest) != str(expected_diff_digest):
++            problems.append(
++                "cross-model receipt diff_digest '%s' != the sealed patch the "
++                "caller reviewed ('%s') — the receipt is from a different diff "
++                "(stale-replay, fail-closed)" % (diff_digest, expected_diff_digest))
++
++    # --- self-digest, via the SHARED primitive the producer seals with ---
++    tax = _sibling("compound-v-taxonomy.py")
++    rdig = receipt.get("digest")
++    if not isinstance(rdig, str) or not rdig:
++        problems.append("cross-model receipt is missing its self-digest — cannot "
++                        "verify integrity (fail-closed)")
++    elif tax is None:
++        problems.append("cross-model receipt self-digest cannot be verified — the "
++                        "shared taxonomy digest primitive is unavailable "
++                        "(fail-closed)")
++    else:
++        try:
++            if tax.record_digest(receipt, exclude_field="digest") != rdig:
++                problems.append("cross-model receipt self-digest mismatch — the "
++                                "receipt was edited after it was sealed "
++                                "(fail-closed)")
++        except Exception as e:  # noqa: BLE001
++            problems.append("cross-model receipt self-digest cannot be recomputed "
++                            "(%s) — fail-closed" % e)
++    return problems
++
++
+ # --------------------------------------------------------------------------- #
+ # v3.0 (Feature B2) — `test_contract` + per-job `test_scope`.
+ # --------------------------------------------------------------------------- #
+@@ -2113,7 +2311,8 @@ def _validate_test_contract(manifest, job_scopes):
+ 
+ def validate(manifest, mode=None, repo_root=None, config_path=None,
+              receipt_path=None, manifest_bytes=None, diff_root=None,
+-             expected_attempt=None, require_triage=False, taxonomy_path=None):
++             expected_attempt=None, require_triage=False, taxonomy_path=None,
++             cross_model_receipt=None, expected_diff_digest=None):
+     """Return a list of violation strings; empty list means valid.
+ 
+     ``mode``/``repo_root``/``config_path``/``receipt_path``/``diff_root`` drive the
+@@ -2126,7 +2325,13 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
+     ``require_triage`` (v3.0, Feature A2) turns the top-level ``triage`` block from
+     optional into mandatory. It is DEFAULT OFF in every mode; ``/v:dispatch`` passes
+     it on every live dispatch and the CI historical sweep does not.
+-    ``taxonomy_path`` overrides where the ``taxonomy_digest`` is checked against."""
++    ``taxonomy_path`` overrides where the ``taxonomy_digest`` is checked against.
++
++    ``cross_model_receipt`` (v3.4.1) is the path to the SCOPED+ cross-model receipt;
++    when set, the receipt is verified against its schema and bound to this manifest's
++    ``run_id`` / ``triage.pre_eval_id``, with ``expected_diff_digest`` re-asserting
++    the bytes the caller sealed. It is independent of ``require_triage``: `/v:dispatch`
++    step 8 passes it only for a ``scoped_plus`` run, after the review has run."""
+     problems = []
+ 
+     if not isinstance(manifest, dict):
+@@ -2183,6 +2388,13 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
+     if require_triage:
+         problems.extend(_validate_triage(manifest, repo_root, taxonomy_path))
+ 
++    # v3.4.1: the SCOPED+ cross-model receipt. Checked here, before the jobs
++    # early-return, for the same reason the triage block is — a manifest broken in
++    # some other way must not hide a missing or stale second opinion.
++    if cross_model_receipt not in (None, ""):
++        problems.extend(_validate_cross_model_receipt(
++            manifest, cross_model_receipt, expected_diff_digest))
++
+     jobs = manifest.get("jobs")
+     if not isinstance(jobs, list) or not jobs:
+         problems.append("manifest has no non-empty 'jobs' list")
+@@ -2578,7 +2790,8 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
+ 
+ def validate_text(text, mode=None, repo_root=None, config_path=None,
+                   receipt_path=None, manifest_bytes=None, diff_root=None,
+-                  expected_attempt=None, require_triage=False, taxonomy_path=None):
++                  expected_attempt=None, require_triage=False, taxonomy_path=None,
++                  cross_model_receipt=None, expected_diff_digest=None):
+     try:
+         data = load_yaml(text)
+     except ManifestParseError as exc:
+@@ -2592,7 +2805,9 @@ def validate_text(text, mode=None, repo_root=None, config_path=None,
+                     config_path=config_path, receipt_path=receipt_path,
+                     manifest_bytes=manifest_bytes, diff_root=diff_root,
+                     expected_attempt=expected_attempt,
+-                    require_triage=require_triage, taxonomy_path=taxonomy_path)
++                    require_triage=require_triage, taxonomy_path=taxonomy_path,
++                    cross_model_receipt=cross_model_receipt,
++                    expected_diff_digest=expected_diff_digest)
+ 
+ 
+ def _find_repo_root(start):
+@@ -2636,6 +2851,12 @@ def main(argv):
+     # Where triage.taxonomy_digest is checked against; absent ⇒
+     # <repo-root>/.claude/compound-v-impact-taxonomy.yaml.
+     taxonomy_path = _get_opt(args, "--taxonomy")
++    # v3.4.1: the SCOPED+ cross-model receipt (/v:dispatch step 8 passes it for a
++    # `triage.flavor: scoped_plus` run, and only after the review has run).
++    # `--expected-diff-digest` is optional and re-asserts the sealed patch bytes the
++    # caller handed the reviewer against the digest the receipt claims.
++    cross_model_receipt = _get_opt(args, "--require-cross-model-receipt")
++    expected_diff_digest = _get_opt(args, "--expected-diff-digest")
+     # CRIT-1: the worker's linked worktree — the checkout the producer hashed the
+     # final diff in. The post-review recompute runs there; absent ⇒ repo_root.
+     diff_root = _get_opt(args, "--worktree")
+@@ -2655,7 +2876,8 @@ def main(argv):
+         print("usage: compound-v-validate-manifest.py [--mode pre-dispatch|"
+               "post-review] [--repo-root DIR] [--worktree DIR] [--config FILE] "
+               "[--receipt FILE] [--expected-attempt N] [--require-triage] "
+-              "[--taxonomy FILE] <manifest.yaml>",
++              "[--taxonomy FILE] [--require-cross-model-receipt FILE] "
++              "[--expected-diff-digest sha256:...] <manifest.yaml>",
+               file=sys.stderr)
+         return 2
+     if mode is not None and mode not in FASTPATH_MODES:
+@@ -2685,7 +2907,9 @@ def main(argv):
+                                  manifest_bytes=raw, diff_root=diff_root,
+                                  expected_attempt=expected_attempt,
+                                  require_triage=require_triage,
+-                                 taxonomy_path=taxonomy_path)
++                                 taxonomy_path=taxonomy_path,
++                                 cross_model_receipt=cross_model_receipt,
++                                 expected_diff_digest=expected_diff_digest)
+     except Exception as e:  # noqa: BLE001 - report parse failure cleanly
+         print(json.dumps({"verdict": "error", "error": str(e)}), file=sys.stderr)
+         return 2
+@@ -5121,6 +5345,167 @@ def _selftest():
+                    _triage_block("sha256:" + "c" * 64))),
+                    repo_root=_tri_root, require_triage=True)))
+ 
++    # --- v3.4.1: triage.flavor scoped_plus + the cross-model receipt ---
++    # SCOPED+ is the band that says "small edit, sensitive path". It buys back the
++    # two reviews plain SCOPED skips, and the validator refuses to take either on
++    # trust: the deep in-harness reviewer is DECLARED in the manifest, so it is
++    # checked before dispatch; the cross-model second opinion is EVIDENCE that does
++    # not exist yet at that point, so it is checked afterwards, from its receipt.
++    _DEEP_REVIEW_JOB = """  - id: review-v3
++    title: "Review Gate"
++    type: review
++    backend: claude
++    tier: deep
++    effort: high
++    isolation: direct
++    run: serial
++    depends_on: [task-1-v3]
++    write_allowed: [docs/superpowers/dogfood/**]
++    read_allowed: ["**"]
++    acceptance: ["verdict written"]
++"""
++    _SP = "  flavor: scoped_plus\n"
++
++    # 1. scoped_plus WITHOUT the deep Claude review job → violation naming the rule.
++    _f_bare = validate_text(_v3_manifest(_triage_block(_tri_digest, extra=_SP)),
++                            repo_root=_tri_root, require_triage=True)
++    expect("triage.flavor: scoped_plus without a deep Claude review job is refused",
++           any("scoped_plus' requires a review job" in p for p in _f_bare))
++
++    # 2. WITH it → valid. The job is type/tier/backend-declared, never guessed from
++    #    prose: a standard-tier one does not satisfy the rule.
++    _f_ok = validate_text(
++        _v3_manifest(_triage_block(_tri_digest, extra=_SP)) + _DEEP_REVIEW_JOB,
++        repo_root=_tri_root, require_triage=True)
++    expect("triage.flavor: scoped_plus with a deep Claude review job is valid (%r)"
++           % _f_ok, _f_ok == [])
++    _f_shallow = validate_text(
++        _v3_manifest(_triage_block(_tri_digest, extra=_SP))
++        + _DEEP_REVIEW_JOB.replace("tier: deep", "tier: standard"),
++        repo_root=_tri_root, require_triage=True)
++    expect("triage.flavor: a standard-tier review job does not satisfy the rule",
++           any("scoped_plus' requires a review job" in p for p in _f_shallow))
++
++    # 3. An out-of-enum flavor is a violation — flavor is a band, not free text.
++    _f_bad = validate_text(
++        _v3_manifest(_triage_block(_tri_digest, extra="  flavor: spicy\n")),
++        repo_root=_tri_root, require_triage=True)
++    expect("triage.flavor: unknown value caught",
++           any("triage.flavor 'spicy' invalid" in p for p in _f_bad))
++    # ...and `flavor` is ALLOWED rather than merely tolerated: an absent flavor stays
++    # valid, and a near-miss key still fails the unknown-key walk.
++    expect("triage: absent flavor stays valid (the key is optional)",
++           validate_text(_v3_manifest(_triage_block(_tri_digest)),
++                         repo_root=_tri_root, require_triage=True) == [])
++    expect("triage: 'flavour' is still an unknown key (the walk reads ALLOWED_KEYS)",
++           any("unknown key 'flavour'" in p for p in validate_text(
++               _v3_manifest(_triage_block(_tri_digest,
++                                          extra="  flavour: scoped_plus\n")),
++               repo_root=_tri_root, require_triage=True)))
++
++    # 4/5. --require-cross-model-receipt: the SCOPED+ second opinion, verified from
++    # the file rather than believed. The receipt is sealed with the SAME shared
++    # primitive the producer seals it with, so an edit after sealing is detectable.
++    _cm_manifest = (_v3_manifest(_triage_block(_tri_digest, extra=_SP))
++                    + _DEEP_REVIEW_JOB)
++    _cm_dir = _tf3.mkdtemp(prefix="cv-cross-model-")
++
++    def _cm_write(name, **over):
++        body = {
++            "run_id": "2026-09-01-v3",
++            "pre_eval_id": "2026-09-01T101500Z-v3-a1b2",
++            "diff_digest": "sha256:" + "a" * 64,
++            "reviewer_backend": "codex",
++            "reviewer_model": "gpt-5.6-sol",
++            "produced_at": "2026-09-03T04:00:00Z",
++            "review": {
++                "verdict": "concerns",
++                "summary": "One real objection, one blind spot checked.",
++                "findings": [],
++                "blind_spots_checked": ["partition disjointness"],
++            },
++        }
++        body.update(over)
++        if _tax_mod3 is not None:
++            body["digest"] = _tax_mod3.record_digest(body, exclude_field="digest")
++        full = os.path.join(_cm_dir, name)
++        with open(full, "w", encoding="utf-8") as _fh:
++            json.dump(body, _fh)
++        return full
++
++    _cm_good = _cm_write("good.json")
++    _r_good = validate_text(_cm_manifest, repo_root=_tri_root, require_triage=True,
++                            cross_model_receipt=_cm_good)
++    expect("cross-model-receipt: a sealed, bound receipt validates (%r)" % _r_good,
++           _r_good == [])
++    # An advisory 'concerns' verdict is NOT a violation — the orchestrator arbitrates.
++    expect("cross-model-receipt: a 'concerns' verdict is advisory, not a violation",
++           not any("verdict" in p for p in _r_good))
++
++    _r_absent = validate_text(_cm_manifest, repo_root=_tri_root, require_triage=True,
++                              cross_model_receipt=os.path.join(_cm_dir, "nope.json"))
++    expect("cross-model-receipt: a MISSING receipt fails closed",
++           any("could not be read" in p for p in _r_absent))
++
++    # Tampered after sealing: the bytes changed, the self-digest did not.
++    _cm_tampered = os.path.join(_cm_dir, "tampered.json")
++    with open(_cm_good, "r", encoding="utf-8") as _fh:
++        _t_obj = json.load(_fh)
++    _t_obj["diff_digest"] = "sha256:" + "b" * 64
++    with open(_cm_tampered, "w", encoding="utf-8") as _fh:
++        json.dump(_t_obj, _fh)
++    _r_tamper = validate_text(_cm_manifest, repo_root=_tri_root, require_triage=True,
++                              cross_model_receipt=_cm_tampered)
++    expect("cross-model-receipt: self-digest mismatch caught (edited after sealing)",
++           any("self-digest mismatch" in p for p in _r_tamper))
++
++    # A sealed receipt over a DIFFERENT diff than the one the caller handed the
++    # reviewer — the stale-replay case --expected-diff-digest exists for.
++    _r_stale = validate_text(_cm_manifest, repo_root=_tri_root, require_triage=True,
++                             cross_model_receipt=_cm_good,
++                             expected_diff_digest="sha256:" + "c" * 64)
++    expect("cross-model-receipt: diff_digest != the sealed patch caught (stale replay)",
++           any("stale-replay" in p for p in _r_stale))
++
++    # The three binding fields, each independently.
++    _r_run = validate_text(_cm_manifest, repo_root=_tri_root, require_triage=True,
++                           cross_model_receipt=_cm_write("wrongrun.json",
++                                                         run_id="2026-01-01-other"))
++    expect("cross-model-receipt: run_id binding enforced",
++           any("run_id '2026-01-01-other' != manifest run_id" in p for p in _r_run))
++    _r_pid = validate_text(_cm_manifest, repo_root=_tri_root, require_triage=True,
++                           cross_model_receipt=_cm_write("wrongpid.json",
++                                                         pre_eval_id="someone-elses"))
++    expect("cross-model-receipt: pre_eval_id binding enforced",
++           any("pre_eval_id 'someone-elses' !=" in p for p in _r_pid))
++    _r_dd = validate_text(_cm_manifest, repo_root=_tri_root, require_triage=True,
++                          cross_model_receipt=_cm_write("baddigest.json",
++                                                        diff_digest="deadbeef"))
++    expect("cross-model-receipt: malformed diff_digest caught",
++           any("diff_digest 'deadbeef' is malformed" in p for p in _r_dd))
++
++    # Schema shape: a same-family reviewer is not a second opinion, and an unknown
++    # envelope field is a violation (additionalProperties: false).
++    _r_fam = validate_text(_cm_manifest, repo_root=_tri_root, require_triage=True,
++                           cross_model_receipt=_cm_write("claudereview.json",
++                                                         reviewer_backend="claude"))
++    expect("cross-model-receipt: a claude reviewer is refused (same family is not a "
++           "second opinion)",
++           any("reviewer_backend must be 'codex'" in p for p in _r_fam))
++    _r_extra = validate_text(_cm_manifest, repo_root=_tri_root, require_triage=True,
++                             cross_model_receipt=_cm_write("extra.json", note="hi"))
++    expect("cross-model-receipt: unknown envelope field caught",
++           any("unknown field 'note'" in p for p in _r_extra))
++    # The NESTED review is checked against schemas/plan-review.schema.json.
++    _r_review = validate_text(
++        _cm_manifest, repo_root=_tri_root, require_triage=True,
++        cross_model_receipt=_cm_write("badreview.json",
++                                      review={"verdict": "lgtm", "summary": "s",
++                                              "findings": [],
++                                              "blind_spots_checked": []}))
++    expect("cross-model-receipt: the nested review is validated against plan-review",
++           any("receipt.review.verdict" in p for p in _r_review))
++
+     # --- v3.0 Feature B2: test_contract + per-job test_scope ---
+     # Both are OPTIONAL and unflagged: absent ⇒ `test_scope: full`, which is what every
+     # manifest committed before 3.0 relies on.
+diff --git a/skills/compound-v/SKILL.md b/skills/compound-v/SKILL.md
+index 6cbdf03..c2d928d 100644
+--- a/skills/compound-v/SKILL.md
++++ b/skills/compound-v/SKILL.md
+@@ -9,7 +9,7 @@ description: Use when superpowers:brainstorming is about to begin (pre-brainstor
+ 
+ Compound V is a **transparent interceptor** that sits between Superpowers phases AND, as of v1.0, a **lightweight execution orchestrator** — the orchestrated pipeline is now the default execution path. You don't invoke it directly — it fires automatically at four transitions:
+ 
+-**Stage −1 — Pre-Evaluation / triage (v2.9; three-tier as of v3.0).** *Before* Trigger 0 even offers recon, a fast, cheap **Pre-Evaluation** scores the change request on two separate axes (difficulty ⊥ impact) from deterministic tiered evidence and returns one of three tiers: **DIRECT** (implement in place, run the floor, commit on the current branch — no manifest, no run directory, no reviewer dispatch, but a triage record is still written and committed), **SCOPED** (manifest, run directory, scope gate, floor and one combined SPEC+QUALITY review; recon and the three pre-flights are skipped), or **FULL** (the pipeline below, unchanged). It uses no raw LLM magnitude and fails closed on any ambiguity, sensitive-path touch, or shared-token/a11y surface. Iron Invariant #4, amended: **the score OFFERS by default; it auto-routes only inside the DIRECT auto-route class, whose membership is decided by mechanically checkable predicates and never by model judgement, and every other tier still requires a human offer and acceptance.** A sibling **post-diff re-classifier** can still ESCALATE an accepted fast-path back to the full pipeline before merge (minting a new run-id, never mutating the frozen manifest). See [phase-preeval.md](phase-preeval.md); the offer/accept decision is captured as a thin ADR via `/v:adr`. **The record has two producers (v3.4): the `UserPromptSubmit` hook, which scores the first change request of a session and writes the record itself (uncommitted — `/v:orchestrate` commits it at bind, and a DIRECT commit includes it by hand), and [`/v:triage <request>`](../../commands/v-triage.md), for the T3 escalation path or any manual run.** The `Stop` gate only holds a turn whose code changes no record covers, and `/v:dispatch` refuses a manifest without a `triage` block. A record from either producer satisfies the gate.
++**Stage −1 — Pre-Evaluation / triage (v2.9; three-tier as of v3.0).** *Before* Trigger 0 even offers recon, a fast, cheap **Pre-Evaluation** scores the change request on two separate axes (difficulty ⊥ impact) from deterministic tiered evidence and returns one of three tiers: **DIRECT** (implement in place, run the floor, commit on the current branch — no manifest, no run directory, no reviewer dispatch, but a triage record is still written and committed), **SCOPED** (manifest, run directory, scope gate, floor and one combined SPEC+QUALITY review; recon and the three pre-flights are skipped), or **FULL** (the pipeline below, unchanged). It uses no raw LLM magnitude and fails closed on any ambiguity, sensitive-path touch, or shared-token/a11y surface. **Since v3.4.1 the size of the change can reach the tier.** Where every Tier-1 band came from a *broad* glob (`scripts/**` and its kind), the scorer spends one light-tier classify to ask whether the change is actually small, and a `plumbing` / `user-facing-minor` answer at `fan_out ≤ 2` **demotes** the run to SCOPED rather than leaving it FULL because of the pattern it matched — with difficulty floored at `medium`, so a demotion can never reach DIRECT. On a *sensitive* path the same question yields **SCOPED+** (`triage.flavor: scoped_plus`) instead: SCOPED-sized work that still owes a deep Claude review job and a mandatory cross-model second opinion, both enforced by the validator rather than remembered. Anything else on a sensitive path is FULL as before, and `.env`/`.pem`/`.key`/`.github/**` are never demoted at all. Iron Invariant #4, amended: **the score OFFERS by default; it auto-routes only inside the DIRECT auto-route class, whose membership is decided by mechanically checkable predicates and never by model judgement, and every other tier still requires a human offer and acceptance.** A sibling **post-diff re-classifier** can still ESCALATE an accepted fast-path back to the full pipeline before merge (minting a new run-id, never mutating the frozen manifest). See [phase-preeval.md](phase-preeval.md); the offer/accept decision is captured as a thin ADR via `/v:adr`. **The record has two producers (v3.4): the `UserPromptSubmit` hook, which scores the first change request of a session and writes the record itself (uncommitted — `/v:orchestrate` commits it at bind, and a DIRECT commit includes it by hand), and [`/v:triage <request>`](../../commands/v-triage.md), for the T3 escalation path or any manual run.** The `Stop` gate only holds a turn whose code changes no record covers, and `/v:dispatch` refuses a manifest without a `triage` block. A record from either producer satisfies the gate.
+ 
+ 0. **Before `brainstorming` begins** → offers a **gated pre-brainstorm recon** (Trigger 0): a bounded deep-research/WebSearch pass that writes an anti-anchoring recon doc to `docs/superpowers/recon/` — evidence to widen the brainstorm's questions, never a conclusion to converge on. See [phase-0-recon.md](phase-0-recon.md).
+ 1. **After `brainstorming`, before `writing-plans`** → injects THREE parallel pre-flights:
+diff --git a/skills/compound-v/cross-model-review.md b/skills/compound-v/cross-model-review.md
+index ba8fa82..5c461ab 100644
+--- a/skills/compound-v/cross-model-review.md
++++ b/skills/compound-v/cross-model-review.md
+@@ -29,6 +29,7 @@ python3 scripts/compound-v-preeval.py --cross-model-review "$TIER"
+ |---|---|---|
+ | `DIRECT` | **no** | No brainstorm, no plan, no manifest — nothing exists to review. |
+ | `SCOPED` | **no** by default | A bounded, localized change; the Opus `partition-reviewer` and the deterministic validator already cover it. Ask explicitly if the slice turns out to be coupled. |
++| `SCOPED+` (`triage.flavor: scoped_plus`) | **yes, mandatory** | A small edit on a *sensitive* path — auth, payments, PII, migrations, or this repo's own enforcement chain. Small enough to skip the full pipeline, expensive enough that being wrong is not recoverable by "we'll catch it in review". This is the one row where the second opinion is not a judgment call. |
+ | `FULL` | **yes** | The pipeline ran brainstorm and planning. That is the threshold a second family is worth paying for. |
+ 
+ An unrecognised tier falls to **yes**: not knowing how big a change is, is itself a reason
+@@ -82,6 +83,21 @@ scripts/compound-v-codex-review.sh \
+ 
+ Or, for manual control: `/v:review-plan <plan-path>`.
+ 
++### The SCOPED+ variant — same driver, different input, and a receipt
++
++A SCOPED+ run has no plan document to hand over; it has a diff. [`/v:dispatch`](../../commands/v-dispatch.md)
++step 8 seals the reviewed bytes to `receipts/cross-model.patch`, passes *that* as `--plan-file`
++with the spec as `--context-file`, and wraps the driver's findings in a receipt
++([`schemas/cross-model-receipt.schema.json`](../../schemas/cross-model-receipt.schema.json)) that
++adds `run_id`, `pre_eval_id` and a `diff_digest` over the sealed patch, self-sealed with the shared
++digest primitive. `compound-v-validate-manifest.py --require-cross-model-receipt` then verifies it
++before the merge.
++
++The receipt exists because "mandatory" and "we ran it, trust us" are different claims. **The findings
++stay advisory — arbitration below is unchanged, and a `concerns` verdict is not a merge blocker.**
++What the receipt makes unfalsifiable is only that a reviewer of a different family actually read
++*these bytes* on *this run*.
++
+ ---
+ 
+ ## Arbitration (the rule — the orchestrator owns the decision)
+diff --git a/skills/compound-v/phase-preeval.md b/skills/compound-v/phase-preeval.md
+index 7f26212..24bf9aa 100644
+--- a/skills/compound-v/phase-preeval.md
++++ b/skills/compound-v/phase-preeval.md
+@@ -60,13 +60,23 @@ Two axes, computed **separately**, each → a band `{low, medium, high, unknown}
+ | # | Condition | Why |
+ |---|---|---|
+ | 1 | localization `failed` ∨ `ambiguous` | paths unknown → cannot judge |
+-| 2 | any resolved path on the **sensitive path-list** | auth/payments/PII/a11y/migrations/infra |
++| 2 | any resolved path on the **sensitive path-list** — *unless* the SCOPED+ carve-out below applies | auth/payments/PII/a11y/migrations/infra |
+ | 3 | `shared_token` ∨ `is_generated` ∨ `is_a11y_state` | "button" = global token / contrast state |
+ | 4 | semantic-vs-path disagreement (T1 `low` but T3 `user-facing-major`, or converse) | tier disagreement escalates |
+ | 5 | `churn.hot` on any resolved path | churn ESCALATES only; low/insufficient never lowers |
+ | 6 | any axis `unknown` | no signal → full pipeline |
+ 
+-Overrides **1/2/3/5 need no model call** and are checked first, so a fired override never triggers a Tier-3 Task (AC-3 — **zero model calls on any Layer-A override**). Overrides **4/6** depend on the computed axes (Tier-3 only when Tier-1 left difficulty unclassified). Override #2 is belt-and-suspenders: the engine trusts A1's `sensitive_path` flag **and** independently re-matches the sensitive path-list.
++Overrides **1/3/5 need no model call** and are checked first, so a fired override never triggers a Tier-3 Task (AC-3 — **zero model calls on any Layer-A override**). Overrides **4/6** depend on the computed axes (Tier-3 only when Tier-1 left difficulty unclassified). Override #2 is belt-and-suspenders: the engine trusts A1's `sensitive_path` flag **and** independently re-matches the sensitive path-list. Since 3.4.1 it is the one override that may ask a question before it fires — see SCOPED+ below.
++
++### SCOPED+ and the T3 demotion (3.4.1): size reaches the tier
++
++The 3.4 scorer could not say *small* about code. Any path under a broad glob — `scripts/**` is the one this repository trips over — came back `high/high` and therefore FULL, whether the change was a one-line comment or a rewrite. A size decision that can only ever say "big" is not a size decision, so 3.4.1 lets one cheap question move the band, in exactly two places and never further.
++
++**The demotion.** When *every* Tier-1 row that produced the bands came from a **broad** glob (one containing `**` or ending `/*` — breadth is a property of the pattern, not a repo scan), *and* no resolved path is sensitive, *and* no content pattern raised impact, *and* `fan_out ≤ 2`, the engine asks for Tier-3 even though Tier-1 banded — returning `needs_t3` with `t3_reason: "demotion"` (the ordinary unbanded case says `"unbanded"`; the caller reads the reason for its log, and re-entry is identical). A reply of `plumbing` or `user-facing-minor` sets the bands to `(medium, medium)` and the matrix yields **SCOPED**; `user-facing-major` or `unknown` leaves them alone and the run stays FULL. Difficulty is raised to at least `medium` on purpose: **DIRECT for code stays unreachable**, and a demotion may never reach the tier that skips the human. Override #4 (semantic-vs-path disagreement) is *not* evaluated here — the whole point of this path is that Tier-1 said `high` from a glob that means "everything under here" and Tier-3 says `plumbing`. It keeps firing where Tier-1 came from a specific row. The record keeps the taxonomy's original bands beside the decision as `t3_demotion: {from: {difficulty, impact}, category, applied}`, so a demotion is always legible after the fact.
++
++**SCOPED+.** A sensitive path is the case where being wrong is expensive, and it is also the case where a one-line fix is most likely to be blocked by a full pipeline nobody wants to run. So override #2 becomes conditional: sensitive ∧ localization `exact` ∧ `fan_out ≤ 2` ∧ Tier-3 says `plumbing` or `user-facing-minor` ⇒ `SCOPED_PIPELINE` with **`flavor: "scoped_plus"`** and bands `(medium, medium)`, with `override_fired: null` and `t3_demotion` carrying `"sensitive": true`. On that path with no category yet, the engine returns `needs_t3` with `t3_reason: "sensitive"`. **Every other sensitive case fires override #2 and goes FULL exactly as before, and no sensitive path is ever DIRECT.** `.pem`/`.key`/`.env` files and `.github/**` are on a hard never-demote list in the engine: secrets and CI are not "small edits", whatever a classifier says about them.
++
++SCOPED+ is a *smaller pipeline, not a cheaper one*. It buys back both reviews the plain SCOPED band skips: [`/v:orchestrate`](../../commands/v-orchestrate.md) copies `flavor` into the manifest's `triage` block, which obliges the run to declare a `type: review` job with `tier: deep` and `backend: claude` (`compound-v-validate-manifest.py --require-triage` refuses the manifest without one), and [`/v:dispatch`](../../commands/v-dispatch.md) step 8 additionally runs a **mandatory** cross-model second opinion whose receipt is verified rather than asserted. The human offer and acceptance are unchanged — SCOPED+ is a SCOPED-sized change, and the tier is still a size decision, never permission.
+ 
+ ### Layer B — positive fast-path gate (only if no override fired)
+ 
+@@ -86,7 +96,9 @@ The engine is **T3-agnostic**: it accepts a pre-resolved `--t3-category` enum an
+ { "needs_t3": true, "pre_eval_id": "…", "t3_prompt": "…" }
+ ```
+ 
+-The **parent harness** then runs **ONE `light`-tier Task** (Sonnet, **never Haiku**) with `t3_prompt` — built + parsed by `compound-v-classify-request.py` (`build_prompt` / `parse_category`) — turns the reply into an enum, and **re-invokes** the engine with `--t3-category <enum>`. Re-entry reuses the same `pre_eval_id` (discovered via the intent-record fingerprint, §4) and continues from the first missing artifact. On the Claude path the engine **never calls a model**; the optional headless-codex route (A2) is for non-Claude harnesses only. Any error / timeout / unparse / non-enum reply → `unknown` → `FULL_PIPELINE` (fail-closed).
++The **parent harness** then runs **ONE `light`-tier Task** (Sonnet, **never Haiku**) with `t3_prompt` — built + parsed by `compound-v-classify-request.py` (`build_prompt` / `parse_category`) — turns the reply into an enum, and **re-invokes** the engine with `--t3-category <enum>`. Re-entry reuses the same `pre_eval_id` (discovered via the intent-record fingerprint, §4) and continues from the first missing artifact. The engine itself **never calls a model** on any path. Any error / timeout / unparse / non-enum reply → `unknown` → `FULL_PIPELINE` (fail-closed).
++
++Since 3.4.1 the `UserPromptSubmit` hook can finish Tier-3 itself, without a Task and without handing the turn back: `compound-v-classify-request.py --classify-headless` answers the same prompt from a bounded nested `claude -p` (Sonnet — **never Haiku**), falling back to the read-only codex route and then to `unknown`. `/v:triage` documents that as the default route and the Task route as the fallback. Nothing about this section's contract changes — same prompt, same enum, same fail-closed direction — only who runs it.
+ 
+ ---
+ 

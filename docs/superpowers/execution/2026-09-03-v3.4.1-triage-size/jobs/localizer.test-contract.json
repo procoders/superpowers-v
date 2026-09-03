@@ -1,0 +1,9 @@
+{
+  "scope": "impacted",
+  "resolved_commands": [
+    "/usr/bin/python3 -B scripts/compound-v-preeval.py --selftest",
+    "bash -c '[ -f scripts/compound-v-localize.py ] || exit 0; /usr/bin/python3 -B scripts/compound-v-localize.py --selftest'"
+  ],
+  "floor_command": "/usr/bin/python3 -B scripts/compound-v-preeval.py --selftest",
+  "full_command": "bash -c 'for s in scripts/compound-v-preeval.py scripts/compound-v-localize.py scripts/compound-v-taxonomy.py scripts/compound-v-validate-taxonomy.py scripts/compound-v-fastpath-run.py scripts/compound-v-classify-request.py scripts/compound-v-validate-manifest.py; do /usr/bin/python3 -B \"$s\" --selftest >/dev/null 2>&1 || { echo \"FAIL $s\"; exit 1; }; done; for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; /usr/bin/python3 -B -m unittest discover -s tests/v2.9-e2e -p \"test_*.py\" >/dev/null 2>&1 || { echo \"FAIL e2e\"; exit 1; }; echo all-tests-ok'"
+}

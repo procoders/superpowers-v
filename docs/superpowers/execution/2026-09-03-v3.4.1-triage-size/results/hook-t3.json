@@ -1,0 +1,33 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "commands/v-triage.md",
+    "hooks/hooks.json",
+    "hooks/triage-prompt-nudge.sh",
+    "scripts/compound-v-classify-request.py",
+    "tests/test-native-points.sh"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "20ed7252e9f57ab59a1ebf06894973d89d93d9af",
+    "diff_digest": "sha256:22cda8bcb3d75d2026bc19bd9c20a9873b906724d517e63c4b475c646311fb2f",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"20ed7252e9f57ab59a1ebf06894973d89d93d9af\",\n  \"changed\": [\n    \"commands/v-triage.md\",\n    \"hooks/hooks.json\",\n    \"hooks/triage-prompt-nudge.sh\",\n    \"scripts/compound-v-classify-request.py\",\n    \"tests/test-native-points.sh\"\n  ],\n  \"allowed\": [\n    \"hooks/triage-prompt-nudge.sh\",\n    \"hooks/hooks.json\",\n    \"scripts/compound-v-classify-request.py\",\n    \"tests/test-native-points.sh\",\n    \"commands/v-triage.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "20ed7252e9f57ab59a1ebf06894973d89d93d9af",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task D \u2014 the hook finishes T3: a headless one-shot classify (Claude light, then Codex), never a reminder on needs_t3",
+  "tests": {
+    "command": "/usr/bin/python3 -B scripts/compound-v-preeval.py --selftest\nbash tests/test-triage-landing.sh\nbash -c 'bash tests/test-native-points.sh && bash tests/test-epic-goal-stop.sh'\nbash -c '[ -f scripts/compound-v-classify-request.py ] || exit 0; /usr/bin/python3 -B scripts/compound-v-classify-request.py --selftest'\nbash -c '[ -f tests/test-native-points.sh ] || exit 0; bash tests/test-native-points.sh'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 5
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_ddd18fa6-e98-6"
+}
