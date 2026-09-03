@@ -1,6 +1,6 @@
 {
   "run_id": "2026-09-02-v3.4-native-first-r6",
-  "phase": "PARTITION_VERIFIED",
+  "phase": "BLOCKED",
   "updated_at": "2026-09-02T21:00:00Z",
   "pre_eval_id": "2026-09-02T170442Z-v3-4-native-first-replace-the-epic-goal-feature-a-of-hooks-e-5664",
   "continues": "2026-09-02-v3.4-native-first-r5",
@@ -18,5 +18,7 @@
     "merge_pending": true,
     "pre_eval_id": "2026-09-02T170442Z-v3-4-native-first-replace-the-epic-goal-feature-a-of-hooks-e-5664",
     "run_id": "2026-09-02-v3.4-native-first-r6"
-  }
+  },
+  "blocked_reason": "abandoned run (no wave finished it); retro-marked 2026-09-03 during the stage-4 cleanup so its lane map claims nothing",
+  "blocked_at": "2026-09-03T06:37:10Z"
 }

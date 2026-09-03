@@ -1,6 +1,6 @@
 {
   "run_id": "2026-09-02-df11-reviewer-retry",
-  "phase": "DISPATCHED",
+  "phase": "BLOCKED",
   "jobs": {
     "impl-slice": {
       "baseline": "366262f001b765e6309c6323fe17237ec3ac9488",
@@ -34,5 +34,7 @@
       "commit": "b221488c5120d24e9e10857be97b3b6d6526d028",
       "integrated": true
     }
-  }
+  },
+  "blocked_reason": "abandoned run (no wave finished it); retro-marked 2026-09-03 during the stage-4 cleanup so its lane map claims nothing",
+  "blocked_at": "2026-09-03T06:37:10Z"
 }

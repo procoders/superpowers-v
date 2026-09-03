@@ -1,6 +1,6 @@
 {
   "run_id": "2026-09-02-df18-direct-digest",
-  "phase": "DISPATCHED",
+  "phase": "BLOCKED",
   "jobs": {
     "impl-slice": {
       "baseline": "5e226de2244da35a282d479f30dd2f888b11d590",
@@ -34,5 +34,7 @@
       "commit": "b16f5571222c3be81ae8f55f03ca07208d84a6c3",
       "integrated": true
     }
-  }
+  },
+  "blocked_reason": "abandoned run (no wave finished it); retro-marked 2026-09-03 during the stage-4 cleanup so its lane map claims nothing",
+  "blocked_at": "2026-09-03T06:37:10Z"
 }

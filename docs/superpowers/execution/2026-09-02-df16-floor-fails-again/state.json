@@ -1,6 +1,6 @@
 {
   "run_id": "2026-09-02-df16-floor-fails-again",
-  "phase": "DISPATCHED",
+  "phase": "BLOCKED",
   "jobs": {
     "floor-fails": {
       "baseline": "5e226de2244da35a282d479f30dd2f888b11d590",
@@ -19,5 +19,7 @@
       "commit": "e4035e40aad8369e8a794e919a1f590b84e69ba5",
       "integrated": false
     }
-  }
+  },
+  "blocked_reason": "abandoned run (no wave finished it); retro-marked 2026-09-03 during the stage-4 cleanup so its lane map claims nothing",
+  "blocked_at": "2026-09-03T06:37:10Z"
 }

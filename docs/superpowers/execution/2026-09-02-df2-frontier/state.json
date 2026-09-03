@@ -1,6 +1,6 @@
 {
   "run_id": "2026-09-02-df2-frontier",
-  "phase": "DISPATCHED",
+  "phase": "BLOCKED",
   "jobs": {
     "tier-standard": {
       "baseline": "09195341ea96461fd9b62e008f0e4855031cd3ea",
@@ -64,5 +64,7 @@
       "commit": "20bb88c50d672463faa8aae75f20b658afb9de0f",
       "integrated": true
     }
-  }
+  },
+  "blocked_reason": "abandoned run (no wave finished it); retro-marked 2026-09-03 during the stage-4 cleanup so its lane map claims nothing",
+  "blocked_at": "2026-09-03T06:37:10Z"
 }

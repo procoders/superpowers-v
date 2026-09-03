@@ -1,6 +1,6 @@
 {
   "run_id": "2026-09-02-df2b-direct-bookkeeping",
-  "phase": "DISPATCHED",
+  "phase": "BLOCKED",
   "jobs": {
     "direct-writer": {
       "baseline": "90478b1e1eb3af6066a50a627f01199cfa8cf58c",
@@ -9,5 +9,7 @@
       "realised_commit": "90478b1e1eb3af6066a50a627f01199cfa8cf58c",
       "status": "blocked"
     }
-  }
+  },
+  "blocked_reason": "abandoned run (no wave finished it); retro-marked 2026-09-03 during the stage-4 cleanup so its lane map claims nothing",
+  "blocked_at": "2026-09-03T06:37:10Z"
 }
