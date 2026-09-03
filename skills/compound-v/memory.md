@@ -90,6 +90,13 @@ match, **not** embedding similarity:
   Job fields) is the same matcher the scope gate enforces with — imported from
   `compound-v-scope-check.py`, not reimplemented — and `--selftest` carries a glob-parity
   suite that fails if the two ever diverge.
+  The six rules, identical on both sides: (1) `*` matches inside one path segment and never crosses `/`;
+  (2) `**` crosses `/`; (3) `dir/**` also matches `dir` itself; (4) a leading or mid `**/` matches zero or
+  more segments, so `**/x.py` matches `x.py`; (5) `?` matches exactly one non-`/` character; (6) `[` and `]`
+  are literal, never character classes, so `app/[locale]/**` matches that real directory instead of one
+  character out of `l o c a e`. Every pattern is fully anchored — a match must consume the whole path. One
+  deliberate asymmetry, and the only one: `recall-check` additionally reads a wildcard-free bare path as
+  `<path>/**`, sugar the gate itself does not accept.
 - **The two real actions (tighten only):**
   1. **Always, when `memory.auto_recall` is on (default true; the /v:init "Manual only" stance sets it false, and `emit --no-recall` forces it off for one emit):** the implementer prompt gains a
      `## Prior failures on your lane` section — the count, the last three evidence lines
