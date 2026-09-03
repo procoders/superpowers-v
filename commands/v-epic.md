@@ -231,7 +231,7 @@ python3 scripts/compound-v-epic-state.py --update --feature <id> --status runnin
   python3 scripts/compound-v-epic-state.py --update --feature <id> --status done \
     --run-id <run-id> --state docs/superpowers/execution/epics/<epic-id>/epic-state.json
   ```
-  Commit (§9) — **both** writes in one commit, so `done` is never persisted without its pending `sample_audit_due`. While any feature has `sample_audit_due`, `--next --autonomous` reports `"sample_audit_due: ..."` (surfaced before `final_review`) and `--record-final-review passed` is **rejected** — the obligation is enforced by the state script, not by the driver remembering it.
+  Commit (§9) — **both** writes in one commit, so `done` is never persisted without its pending `sample_audit_due`. A due sample-audit is a durable obligation: it survives a crash/resume, `--next --autonomous` surfaces it as `"sample_audit_due: ..."` once no pending feature remains, and the terminal (`--record-final-review passed`) is rejected while any is outstanding — the driver runs the audit right here, before the next pass, rather than relying on that gate (finding 148).
 - **Not sampled** — just the `done` mark, then commit (§9):
   ```
   python3 scripts/compound-v-epic-state.py --update --feature <id> --status done \
