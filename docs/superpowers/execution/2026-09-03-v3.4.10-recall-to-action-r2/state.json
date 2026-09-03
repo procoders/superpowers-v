@@ -1,0 +1,14 @@
+{
+  "run_id": "2026-09-03-v3.4.10-recall-to-action-r2",
+  "phase": "PARTITION_VERIFIED",
+  "pre_eval_id": "2026-09-03T174841Z-implement-v3-4-10-per-docs-superpowers-specs-2026-09-03-v3-4-904b",
+  "updated_at": "2026-09-03T18:22:47Z",
+  "jobs": {
+    "spec-review-2": {
+      "status": "pending",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null
+    }
+  }
+}

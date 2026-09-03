@@ -1,0 +1,53 @@
+run_id: 2026-09-03-v3.4.10-recall-to-action-r2
+feature: 'v3.4.10 (stage 5b): the recall→action bridge acts at emit time — recall-check per implement job, the verdict recorded, prior-failure evidence + a reading budget in the prompt always, a tier rung + review re-check under memory.auto_tighten, --no-recall — r2: review pass 2 over review-1''s five closures'
+routing_stance: balanced
+max_parallel: 2
+spec_path: docs/superpowers/specs/2026-09-03-v3.4.10-recall-to-action-design.md
+plan_path: docs/superpowers/plans/2026-09-03-v3.4.10-recall-to-action.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-09-03-v3-4-10-recall-to-action.md
+  domain: docs/superpowers/specs/2026-09-03-v3.4.10-recall-to-action-design.md
+  library: docs/superpowers/library-audit/2026-09-03-v3-4-10-recall-to-action.md
+triage:
+  tier: SCOPED
+  flavor: scoped_plus
+  pre_eval_id: 2026-09-03T174841Z-implement-v3-4-10-per-docs-superpowers-specs-2026-09-03-v3-4-904b
+  taxonomy_digest: sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a
+  decided_at: '2026-09-03T17:53:04Z'
+acceptance_criteria:
+- '`emit` on a manifest whose implement lane has ≥ k prior failure records under the results root records `recall_check` {verdict, match_count, evidence[:3], recall_check_ms} in the emitted job entry AND (via register-lane''s new --recall-check-json) in state.json, and the implementer prompt carries the `## Prior failures on your lane` section with the evidence and the reading-budget instruction; with fewer records neither appears — proven by the emitter selftest with a temp results root.'
+- 'With `memory.auto_tighten: true` the job''s tier is raised one rung via TIER_RAISE (light→standard, standard→deep; deep/frontier unchanged) inside job_entry BEFORE resolve_job_model, an explicit `model:` wins unchanged (asserted), and every `type: review` job''s acceptance gains the re-check clause; with the default false, the prompt section alone.'
+- '`emit --no-recall`, a missing engine, an engine error, or a 30 s TimeoutExpired ⇒ emit proceeds and records `recall_check: {verdict: unavailable, note}`; never a refusal; the emit JSON summary lists recall_check (with recall_check_ms) per job.'
+- skills/compound-v/memory.md and commands/v-init.md describe exactly these actions (the three phantom actions are gone; the zsh word-split note is present); CHANGELOG [Unreleased] has the entry with the 7-of-27 measurement and no other number; `compound-v-emit-workflow.py --selftest` and tests/test-engine-c-contract.sh green; lint green.
+test_contract:
+  floor_command: bash tests/test-engine-c-contract.sh
+  full_command: bash -c 'for s in scripts/compound-v-*.py; do grep -q -- "--selftest" "$s" || continue; /usr/bin/python3 -B "$s" --selftest >/dev/null 2>&1 || { echo "FAIL $s"; exit 1; }; done; for t in tests/*.sh; do bash "$t" >/dev/null 2>&1 || { echo "FAIL $t"; exit 1; }; done; echo all-tests-ok'
+  impacted_map:
+  - when: scripts/compound-v-emit-workflow.py
+    run: /usr/bin/python3 -B scripts/compound-v-emit-workflow.py --selftest
+  - when: skills/compound-v/memory.md
+    run: /usr/bin/python3 -B scripts/lint-frontmatter.py .
+  - when: commands/v-init.md
+    run: /usr/bin/python3 -B scripts/lint-frontmatter.py .
+  - when: CHANGELOG.md
+    run: /usr/bin/python3 -B scripts/lint-frontmatter.py .
+  - when: docs/superpowers/dogfood/*.md
+    run: /usr/bin/python3 -B scripts/lint-frontmatter.py .
+jobs:
+- id: spec-review-2
+  title: Review Gate — three passes against the spec and the feature acceptance criteria
+  type: review
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: direct
+  run: serial
+  depends_on: []
+  write_allowed:
+  - docs/superpowers/dogfood/2026-09-03-v3.4.10-recall-to-action-review-2.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - The review-2 file exists with the five sections; each of review-1's items 1–5 is shown closed or open with its command and output; the two suites re-run; the verdict is APPROVED or ISSUES with a numbered list.
+  body: 'Your agent definition carries the three-pass Review Gate and a Step 0 (V-memory recall). Follow it within a HARD BUDGET of 40 tool calls; FIRST action after Step 0: create docs/superpowers/dogfood/2026-09-03-v3.4.10-recall-to-action-review-2.md with the section skeleton and fill it as you verify. SECOND pass (SCOPED+ run: you are the mandatory deep review; the Codex receipt follows at dispatch step 8 — say so): read review-1 (docs/superpowers/dogfood/2026-09-03-v3.4.10-recall-to-action-review.md, ISSUES 3+2) and the closure commit (`git log -1 --format=%H --grep=''v3.4.10 review-1 closure''`, `git show <sha>`); confirm each item closed or open with one command: (1) the emitted prompt section carries the four reading-budget clauses (run `--selftest` and grep the emitter for ''at most 20 reading calls''); (2) auto_tighten is read from .claude/compound-v.json with the manifest key as override (grep `_cfg_doc`); (3) memory.md''s gate sentence names --no-recall; (4) the spec no longer
+    claims the receipt carries recall_check; (5) review jobs are skipped in the recall loop. Re-run the emitter selftest and tests/test-engine-c-contract.sh. Verdict APPROVED or ISSUES with a numbered list. Run python with -B; register your lane with a literal --cwd.'
