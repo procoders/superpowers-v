@@ -1,0 +1,30 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "agents/parallel-dispatcher.md",
+    "skills/compound-v/execution-manifest.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "78988170778016c3694803de0dcbb4de493c0384",
+    "diff_digest": "sha256:05ff5439b29170bb51bfbe73d10e806da48d4d2878cd7096f5ef7e5e685c7584",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"78988170778016c3694803de0dcbb4de493c0384\",\n  \"changed\": [\n    \"agents/parallel-dispatcher.md\",\n    \"skills/compound-v/execution-manifest.md\"\n  ],\n  \"allowed\": [\n    \"skills/compound-v/execution-manifest.md\",\n    \"agents/parallel-dispatcher.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "78988170778016c3694803de0dcbb4de493c0384",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task B4 \u2014 execution-manifest.md + parallel-dispatcher.md",
+  "tests": {
+    "command": "bash tests/test-engine-c-contract.sh\n/usr/bin/python3 -B scripts/lint-frontmatter.py .",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_17779ee6-289-3"
+}

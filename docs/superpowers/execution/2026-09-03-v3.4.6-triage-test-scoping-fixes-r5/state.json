@@ -1,26 +1,50 @@
 {
   "run_id": "2026-09-03-v3.4.6-triage-test-scoping-fixes-r5",
-  "phase": "PARTITION_VERIFIED",
+  "phase": "DISPATCHED",
   "pre_eval_id": "2026-09-03T113149Z-implement-v3-4-6-per-docs-superpowers-specs-2026-09-03-v3-4-0cb5",
   "updated_at": "2026-09-03T12:34:13Z",
   "jobs": {
     "validator": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_17779ee6-289-1",
+      "session_id": null,
+      "baseline": "78988170778016c3694803de0dcbb4de493c0384",
+      "realised_commit": "78988170778016c3694803de0dcbb4de493c0384",
+      "merged": {
+        "realised_commit": "78988170778016c3694803de0dcbb4de493c0384",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "f36c1b2122647d827ee468c24388bc25d524406e"
+      }
     },
     "workers": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_17779ee6-289-2",
+      "session_id": null,
+      "baseline": "78988170778016c3694803de0dcbb4de493c0384",
+      "realised_commit": "78988170778016c3694803de0dcbb4de493c0384",
+      "merged": {
+        "realised_commit": "78988170778016c3694803de0dcbb4de493c0384",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "f36c1b2122647d827ee468c24388bc25d524406e"
+      }
     },
     "contract-docs": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_17779ee6-289-3",
+      "session_id": null,
+      "baseline": "78988170778016c3694803de0dcbb4de493c0384",
+      "realised_commit": "78988170778016c3694803de0dcbb4de493c0384",
+      "merged": {
+        "realised_commit": "78988170778016c3694803de0dcbb4de493c0384",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "f36c1b2122647d827ee468c24388bc25d524406e"
+      }
     },
     "changelog": {
       "status": "pending",
@@ -45,6 +69,22 @@
       "isolation": "direct",
       "worktree": null,
       "session_id": null
+    }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "validator",
+        "workers",
+        "contract-docs"
+      ],
+      "merged": [
+        "validator",
+        "workers",
+        "contract-docs"
+      ],
+      "commit": "f36c1b2122647d827ee468c24388bc25d524406e",
+      "integrated": true
     }
   }
 }

@@ -1,0 +1,61 @@
+diff --git a/scripts/compound-v-validate-manifest.py b/scripts/compound-v-validate-manifest.py
+index 7f26c73..0fe5229 100755
+--- a/scripts/compound-v-validate-manifest.py
++++ b/scripts/compound-v-validate-manifest.py
+@@ -842,7 +842,7 @@ DEFAULT_TAXONOMY_REL = os.path.join(".claude", "compound-v-impact-taxonomy.yaml"
+ # --------------------------------------------------------------------------- #
+ VALID_TEST_SCOPES = ("full", "impacted", "floor_only")
+ DEFAULT_TEST_SCOPE = "full"
+-TEST_CONTRACT_ALLOWED_KEYS = ("floor_command", "full_command", "impacted_map")
++TEST_CONTRACT_ALLOWED_KEYS = ("floor_command", "full_command", "impacted_map", "timeout_s")
+ IMPACTED_MAP_REQUIRED_KEYS = ("when", "run")
+ 
+ # Top-level required fields (per execution-manifest.md "Top-level fields").
+@@ -2255,6 +2255,17 @@ def _validate_test_contract(manifest, job_scopes):
+             if val is not None and not isinstance(val, str):
+                 problems.append("manifest test_contract.%s must be a string "
+                                 "(got %r)" % (key, val))
++        if "timeout_s" in contract:
++            tval = contract.get("timeout_s")
++            if (
++                isinstance(tval, bool)
++                or not isinstance(tval, int)
++                or not (1 <= tval <= 540)
++            ):
++                problems.append(
++                    "manifest test_contract.timeout_s must be an integer "
++                    "between 1 and 540 (got %r)" % (tval,)
++                )
+         imap = contract.get("impacted_map")
+         if imap is not None:
+             if not isinstance(imap, list):
+@@ -5564,6 +5575,29 @@ def _selftest():
+     expect("test_contract: unknown test_contract key caught",
+            any("test_contract has unknown key 'floor_cmd'" in p for p in _c_unknown))
+ 
++    # timeout_s: an optional bound on how long test_contract commands may run.
++    _c_timeout_ok = validate_text(_v3_manifest(contract_block=(
++        'test_contract:\n  floor_command: "f"\n  full_command: "F"\n'
++        '  timeout_s: 480\n')))
++    expect("test_contract: timeout_s 480 accepted (%r)" % _c_timeout_ok,
++           _c_timeout_ok == [])
++    for _bad_timeout in (0, -1, 541, "true", "480"):
++        _tval_yaml = ('"%s"' % _bad_timeout if isinstance(_bad_timeout, str)
++                      else str(_bad_timeout))
++        _c_timeout_bad = validate_text(_v3_manifest(contract_block=(
++            'test_contract:\n  floor_command: "f"\n  full_command: "F"\n'
++            '  timeout_s: %s\n' % _tval_yaml)))
++        expect("test_contract: timeout_s %r refused (%r)"
++               % (_bad_timeout, _c_timeout_bad),
++               any("test_contract.timeout_s must be an integer" in p
++                   for p in _c_timeout_bad))
++    _c_timeout_true = validate_text(_v3_manifest(contract_block=(
++        'test_contract:\n  floor_command: "f"\n  full_command: "F"\n'
++        '  timeout_s: true\n')))
++    expect("test_contract: timeout_s true (bool) refused (%r)" % _c_timeout_true,
++           any("test_contract.timeout_s must be an integer" in p
++               for p in _c_timeout_true))
++
+     # floor_only must never resolve to running NOTHING — the whole point of a floor.
+     _c_floor_empty = validate_text(_v3_manifest(
+         contract_block='test_contract:\n  floor_command: ""\n  full_command: "F"\n',
