@@ -1,6 +1,6 @@
 {
   "run_id": "2026-09-03-v3.4.3-codex-sandbox-checkout-r5",
-  "phase": "DISPATCHED",
+  "phase": "MERGED",
   "pre_eval_id": "2026-09-03T062154Z-implement-v3-4-3-per-docs-superpowers-specs-2026-09-03-v3-4-96ff",
   "updated_at": "2026-09-03T07:36:36Z",
   "jobs": {
@@ -33,10 +33,18 @@
       }
     },
     "spec-review-2": {
-      "status": "pending",
+      "status": "done",
       "isolation": "direct",
-      "worktree": null,
-      "session_id": null
+      "worktree": "",
+      "session_id": null,
+      "baseline": "714e08d58d8c50ea9b6eb8fe03010130a172dff4",
+      "realised_commit": "714e08d58d8c50ea9b6eb8fe03010130a172dff4",
+      "merged": {
+        "realised_commit": "714e08d58d8c50ea9b6eb8fe03010130a172dff4",
+        "mode": "direct",
+        "integrated": true,
+        "commit": "621d2c0d2f90433f9eb7d2df34c30368428dd0e4"
+      }
     }
   },
   "waves": {
@@ -51,6 +59,22 @@
       ],
       "commit": "2f44b495b2c7c65028f7d68d85f760dbf55b48ec",
       "integrated": true
+    },
+    "2": {
+      "jobs": [
+        "spec-review-2"
+      ],
+      "merged": [
+        "spec-review-2"
+      ],
+      "commit": "621d2c0d2f90433f9eb7d2df34c30368428dd0e4",
+      "integrated": true
     }
-  }
+  },
+  "triage_actual": {
+    "merge_pending": true,
+    "pre_eval_id": "2026-09-03T062154Z-implement-v3-4-3-per-docs-superpowers-specs-2026-09-03-v3-4-96ff",
+    "run_id": "2026-09-03-v3.4.3-codex-sandbox-checkout-r5"
+  },
+  "merged_at": "2026-09-03T07:57:20Z"
 }
