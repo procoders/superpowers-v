@@ -1,0 +1,30 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "skills/compound-v/execution-manifest.md",
+    "skills/compound-v/memory.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "986ff8f5d8ec76c571b147ed4adf752dae43d560",
+    "diff_digest": "sha256:9590319dd1e5421e0c7de03b368641662ee0fe99633dcb24ea774a0aa793bc0c",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"986ff8f5d8ec76c571b147ed4adf752dae43d560\",\n  \"changed\": [\n    \"skills/compound-v/execution-manifest.md\",\n    \"skills/compound-v/memory.md\"\n  ],\n  \"allowed\": [\n    \"skills/compound-v/memory.md\",\n    \"skills/compound-v/execution-manifest.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "986ff8f5d8ec76c571b147ed4adf752dae43d560",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task A \u2014 the same six glob rules in memory.md and execution-manifest.md, each naming the other and the parity selftest",
+  "tests": {
+    "command": "bash -c '/usr/bin/python3 scripts/lint-frontmatter.py >/dev/null'\nbash -c '[ -f skills/compound-v/execution-manifest.md ] || exit 0; /usr/bin/python3 scripts/lint-frontmatter.py >/dev/null'\nbash -c '[ -f skills/compound-v/memory.md ] || exit 0; /usr/bin/python3 scripts/lint-frontmatter.py >/dev/null'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 3
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_9a45c50e-09a-1"
+}

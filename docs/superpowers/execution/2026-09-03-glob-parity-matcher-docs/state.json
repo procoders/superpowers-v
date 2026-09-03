@@ -1,7 +1,7 @@
 {
   "run_id": "2026-09-03-glob-parity-matcher-docs",
-  "phase": "PARTITION_VERIFIED",
-  "updated_at": "2026-09-03T19:41:52Z",
+  "phase": "DISPATCHED",
+  "updated_at": "2026-09-03T20:20:00Z",
   "pre_eval_id": "2026-09-03T191941Z-build-epic-feature-matcher-docs-docs-superpowers-execution-e-1aef",
   "escalated_to": null,
   "total_retries": 0,
@@ -11,11 +11,37 @@
   "attempts": {},
   "jobs": {
     "docs-contract": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_9a45c50e-09a-1",
       "session_id": null,
-      "log": null
+      "log": null,
+      "baseline": "986ff8f5d8ec76c571b147ed4adf752dae43d560",
+      "recall_check": {
+        "evidence": [
+          {
+            "file": "skills/compound-v/execution-manifest.md",
+            "run": "2026-09-03-v3.4.1-triage-size/results/test-scope.json",
+            "status": "blocked"
+          },
+          {
+            "file": "skills/compound-v/memory.md",
+            "run": "2026-09-03-v3.4.5-recall-freshness-r2/results/docs-2.json",
+            "status": "blocked"
+          }
+        ],
+        "k": 2,
+        "match_count": 2,
+        "recall_check_ms": 124,
+        "verdict": "tighten"
+      },
+      "realised_commit": "986ff8f5d8ec76c571b147ed4adf752dae43d560",
+      "merged": {
+        "realised_commit": "986ff8f5d8ec76c571b147ed4adf752dae43d560",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "d7dc25d8cfd84ce5a45fdb3fd0afac838eb362dc"
+      }
     },
     "spec-review-1": {
       "status": "pending",
@@ -23,6 +49,18 @@
       "worktree": null,
       "session_id": null,
       "log": null
+    }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "docs-contract"
+      ],
+      "merged": [
+        "docs-contract"
+      ],
+      "commit": "d7dc25d8cfd84ce5a45fdb3fd0afac838eb362dc",
+      "integrated": true
     }
   }
 }
