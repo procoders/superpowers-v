@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "scripts/compound-v-memory.py"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "4e89e92167eba7f31285927ddf1060306a0eab29",
+    "diff_digest": "sha256:e6feacfcd318062722df964248ee84876f4315653c7149e0ccfa359178db9dd2",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"4e89e92167eba7f31285927ddf1060306a0eab29\",\n  \"changed\": [\n    \"scripts/compound-v-memory.py\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-memory.py\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "4e89e92167eba7f31285927ddf1060306a0eab29",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task A \u2014 the fail-closed selftest row (no private bytecode cache \u21d2 unavailable, nothing loaded)",
+  "tests": {
+    "command": "bash -c 'python3 -B scripts/compound-v-memory.py --selftest >/dev/null && python3 -B scripts/compound-v-scope-check.py --selftest >/dev/null'\nbash -c '[ -f scripts/compound-v-memory.py ] || exit 0; grep -q -- \"--selftest\" scripts/compound-v-memory.py || exit 0; /usr/bin/python3 -B scripts/compound-v-memory.py --selftest >/dev/null'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_7f9ffa97-bcc-1"
+}

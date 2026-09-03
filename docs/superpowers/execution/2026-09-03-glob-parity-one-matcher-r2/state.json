@@ -1,7 +1,7 @@
 {
   "run_id": "2026-09-03-glob-parity-one-matcher-r2",
-  "phase": "PARTITION_VERIFIED",
-  "updated_at": "2026-09-03T19:47:41Z",
+  "phase": "DISPATCHED",
+  "updated_at": "2026-09-03T19:50:00Z",
   "pre_eval_id": "2026-09-03T194637Z-retry-epic-feature-one-matcher-attempt-2-retry-fix-after-the-f79a",
   "escalated_to": null,
   "total_retries": 0,
@@ -11,11 +11,19 @@
   "attempts": {},
   "jobs": {
     "selftest-row": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_7f9ffa97-bcc-1",
       "session_id": null,
-      "log": null
+      "log": null,
+      "baseline": "4e89e92167eba7f31285927ddf1060306a0eab29",
+      "realised_commit": "4e89e92167eba7f31285927ddf1060306a0eab29",
+      "merged": {
+        "realised_commit": "4e89e92167eba7f31285927ddf1060306a0eab29",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "42cac0197f746eec11f3156a4d629538e5767c32"
+      }
     },
     "spec-review-1": {
       "status": "pending",
@@ -23,6 +31,18 @@
       "worktree": null,
       "session_id": null,
       "log": null
+    }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "selftest-row"
+      ],
+      "merged": [
+        "selftest-row"
+      ],
+      "commit": "42cac0197f746eec11f3156a4d629538e5767c32",
+      "integrated": true
     }
   }
 }

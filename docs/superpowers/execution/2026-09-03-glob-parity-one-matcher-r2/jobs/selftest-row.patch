@@ -1,0 +1,29 @@
+diff --git a/scripts/compound-v-memory.py b/scripts/compound-v-memory.py
+index b886c14..8ca4dd4 100755
+--- a/scripts/compound-v-memory.py
++++ b/scripts/compound-v-memory.py
+@@ -1655,6 +1655,24 @@ def _selftest() -> int:
+     check("matcher missing -> unavailable", v["verdict"] == "unavailable"
+           and v["note"].startswith("scope-check matcher unavailable") and v2 == v)
+ 
++    # fail-closed: when the private bytecode cache cannot be created, NOTHING is loaded
++    # (pre-flight amendment 1; marathon sample-audit finding 1 — this row keeps the guard honest)
++    import tempfile as _tf
++    _real_mkdtemp = _tf.mkdtemp
++
++    def _no_cache(*_a, **_k):
++        raise OSError("no space left")
++
++    globals()["_SCOPE_MATCH"] = None; globals()["_SCOPE_MATCH_ERR"] = None
++    _tf.mkdtemp = _no_cache
++    try:
++        v3 = recall_check(["src/**"], "/nonexistent-results", 1)
++    finally:
++        _tf.mkdtemp = _real_mkdtemp
++        globals()["_SCOPE_MATCH"] = None; globals()["_SCOPE_MATCH_ERR"] = None
++    check("no private bytecode cache -> unavailable, nothing loaded",
++          v3["verdict"] == "unavailable" and "private bytecode cache" in v3["note"])
++
+     print("\n%d failed" % len(fails))
+     if fails:
+         print("FAILED: " + ", ".join(fails))
