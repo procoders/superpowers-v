@@ -69,3 +69,58 @@ Audit: [`docs/superpowers/library-audit/2026-09-03-v3-4-6-triage-test-scoping-fi
   entry was written for): use the same guard. A plain `isinstance(v, int)` check would pass this
   file's own pattern-matching review at a glance while being silently wrong for a boolean input — cite
   this entry, or the six existing line numbers above, instead of re-deriving the trap from scratch.
+
+---
+
+## Updated 2026-09-03 — v3.4.10-recall-to-action
+
+Audit: [`docs/superpowers/library-audit/2026-09-03-v3-4-10-recall-to-action.md`](../2026-09-03-v3-4-10-recall-to-action.md).
+
+### Python 3.9 EOL — independently re-confirmed same day, cross-checks the v3.4.5 entry above
+
+- **2026-09-03 (WebSearch, separate query/session from the v3.4.5 entry above):** Python 3.9 reached
+  end-of-life **2025-10-31**; **3.9.25** is the final release, no further patches of any kind will
+  ever ship. Current stable line 3.14 (3.14.7, 2026-08-05); 3.15.0rc2 cut 2026-09-01. Numbers match
+  the v3.4.5 entry exactly — recorded as an independent cross-check, not a re-derivation, so a future
+  reader has two same-day, differently-sourced confirmations rather than one entry copy-pasted twice.
+- Source: python.org 3.9.25 release notes; endoflife-tracker aggregation; Red Hat Developer
+  (2025-12-04, "Python 3.9 reaches end of life").
+
+### `match`/`case` (PEP 634) and runtime `X | Y` in `isinstance()`/`issubclass()` (PEP 604) — both 3.10+, and NOT covered by an existing `from __future__ import annotations` import
+
+- **The gap this entry closes:** a file carrying `from __future__ import annotations` (confirmed
+  present at `scripts/compound-v-emit-workflow.py:52`) is safe for `X | Y` union syntax **only in
+  annotation position** (parameter/return/variable type hints) — that import defers annotation
+  evaluation to strings. It does **not** protect a `match`/`case` statement, nor a runtime expression
+  like `isinstance(x, str | None)` — both are evaluated immediately as language constructs, and both
+  require CPython **3.10+** regardless of that future-import. A file floored at Python 3.9 (this
+  repo's CI-pinned floor per the F2 entry above) breaks immediately, at parse or call time, if either
+  appears — not a subtle runtime bug, a hard `SyntaxError` (`match`/`case`) or `TypeError`
+  (`isinstance` with `|`).
+- **Why this is a live risk, not a theoretical one:** `Grep` for `sys.version_info` across
+  `scripts/` found zero matches — 3.9-compatibility is enforced **only** by CI's pinned
+  `python-version: '3.9'` job (see the F2 entry above for that pin's exact location), never at
+  runtime. Since 3.9 has been EOL for ~11 months as of this entry's date, a contributor's or
+  dispatched worker's local interpreter is very likely newer, so 3.10+-only syntax written and
+  locally tested would pass every check its author personally runs and fail only in CI (or, worse,
+  only on a real end user's stock-3.9.6 macOS `python3`, which never runs this repo's CI at all).
+- **Practical implication for any future spec that adds branching logic on a small fixed set of
+  string/enum values to a `from __future__ import annotations`-carrying, 3.9-floored file in this
+  repo:** use plain `if`/`elif`/`else` and the pre-3.10 tuple form `isinstance(x, (TypeA, TypeB))` —
+  not `match`/`case`, not `isinstance(x, TypeA | TypeB)`. Cite this entry instead of re-deriving the
+  distinction between "protected by `from __future__ import annotations`" (annotations only) and "not
+  protected" (runtime expressions) from scratch.
+- Source: direct `Grep` of `scripts/compound-v-emit-workflow.py` (import block, and a
+  `match \w+:`/`case ["']`/`:=` sweep finding zero existing uses — no in-file precedent either way)
+  + CPython language reference for PEP 604 and PEP 634 (both 3.10+, stable long-established facts,
+  not re-fetched live this session since the version floor itself was never in question).
+
+### DENSE-lane third-party packages (`numpy`, `onnxruntime`, `tokenizers`, `huggingface_hub`) — confirmed still isolated, still out of reach of `recall-check`
+
+- No new information beyond `_knowledge-base/agent-instruction-tooling.md`'s existing 2026-06-30
+  entry (same packages, same isolated-venv architecture) — recorded here only as a cross-reference
+  because this audit re-found the same imports (`compound-v-memory.py:453-454`, inside the
+  string-embedded `EMBEDDER_SRC`) while scanning for anything Task A of v3.4.10 might touch, and
+  confirmed by source read that `recall-check` (the FTS5-only, "NOT embedding similarity" path this
+  spec's Decision section names explicitly) never reaches that code. See the audit above, §2, for the
+  full reasoning; not re-litigated here to avoid duplicating the other KB file.
