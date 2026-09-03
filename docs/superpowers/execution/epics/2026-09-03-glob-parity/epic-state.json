@@ -53,7 +53,7 @@
     "status": "pending"
   },
   "blocker_ledger": [],
-  "no_progress_cycles": 0,
+  "no_progress_cycles": 1,
   "total_attempts": 6,
   "updated_at": "2026-09-03T21:00:08Z",
   "last_done_count": 2,
@@ -66,6 +66,7 @@
     "c6",
     "c7",
     "c8",
-    "c9"
+    "c9",
+    "c10"
   ]
 }
