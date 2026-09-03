@@ -126,10 +126,60 @@ Python 3.9-safe, stdlib only. PyYAML used if importable; otherwise a tiny
 embedded YAML-subset parser handles the manifest shape we emit.
 """
 
-import json
-import os
-import re
 import sys
+
+
+# --------------------------------------------------------------------------- #
+# sys.path hardening — BEFORE the first import that can be shadowed
+# (eighth review pass, item C2, 2026-09-03).
+#
+# THE ATTACK: this file runs with its OWN DIRECTORY first on `sys.path`, and it
+# imports `yaml` to read the document that DEFINES every job's `write_allowed`.
+# A `yaml.py` planted beside it — or in the CWD, which is on `sys.path` whenever
+# this module is loaded by `python3 -c`, exactly how `hooks/lane-guard.sh` loads
+# it from inside a worker's own worktree — is imported instead of PyYAML, and its
+# `safe_load` then returns whatever lane it likes to the guard that is about to
+# enforce it. Same shape for `json` and `re`.
+#
+# `python3 -P` / `PYTHONSAFEPATH` does this properly, and arrived in 3.11; this
+# file targets stock-macOS 3.9.6, so it is done by hand. Two passes, because the
+# first cannot use `os` — importing `os` is one of the things being made safe:
+# strings first, then an exact realpath comparison once `os` is in hand.
+def _harden_sys_path():
+    here = __file__
+    cut = here.rfind("/")
+    unsafe = {"", ".", (here[:cut] if cut > 0 else ".")}
+    sys.path[:] = [p for p in sys.path if p not in unsafe]
+
+    import os  # noqa: E402 - after the string pass above, on purpose
+
+    drop = set()
+    try:
+        drop.add(os.path.realpath(os.path.dirname(os.path.abspath(__file__))))
+    except (OSError, ValueError):
+        pass
+    try:
+        drop.add(os.path.realpath(os.getcwd()))
+    except (OSError, ValueError):
+        pass
+    keep = []
+    for p in sys.path:
+        try:
+            resolved = os.path.realpath(p)
+        except (OSError, ValueError):
+            keep.append(p)
+            continue
+        if resolved in drop:
+            continue
+        keep.append(p)
+    sys.path[:] = keep
+
+
+_harden_sys_path()
+
+import json  # noqa: E402 - deliberately after _harden_sys_path()
+import os  # noqa: E402
+import re  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
@@ -5148,6 +5198,59 @@ def _selftest():
 
     # v2.9 conditional fast-path suite (on-disk fixtures).
     _selftest_fastpath(expect)
+
+    # --- C2: a `yaml.py` planted beside this script is NOT the parser ---------
+    # (eighth review pass, 2026-09-03.) See `_harden_sys_path` at the top of this
+    # file. This module reads the document that DEFINES every job's
+    # `write_allowed`, and `hooks/lane-guard.sh` loads it by path from a process
+    # whose CWD is the worker's own worktree — so both shadowing routes (the
+    # script's directory and the CWD) are exercised here at once, with the plant
+    # sitting in the directory that is both.
+    import shutil as _shutil_c2
+    import subprocess as _sp_c2
+    import tempfile as _tempfile_c2
+
+    _c2_tmp = _tempfile_c2.mkdtemp(prefix="cv-vm-shadow-")
+    try:
+        _c2_copy = os.path.join(_c2_tmp, "compound-v-validate-manifest.py")
+        _shutil_c2.copy(os.path.abspath(__file__), _c2_copy)
+        _c2_mark = os.path.join(_c2_tmp, "hostile-yaml-imported")
+        with open(os.path.join(_c2_tmp, "yaml.py"), "w") as _fh_c2:
+            _fh_c2.write(
+                "open(%r, 'w').write('imported')\n"
+                "def safe_load(text):\n"
+                "    return {'jobs': [{'id': 'pwned', 'write_allowed': ['**']}]}\n"
+                % _c2_mark)
+
+        # The plant is POTENT: an unhardened process in that directory imports it.
+        _sp_c2.run([sys.executable, "-B", "-c", "import yaml"], cwd=_c2_tmp,
+                   stdout=_sp_c2.DEVNULL, stderr=_sp_c2.DEVNULL)
+        expect("shadow: the planted yaml.py IS imported by an unhardened process "
+               "(the plant is real)", os.path.exists(_c2_mark))
+        if os.path.exists(_c2_mark):
+            os.remove(_c2_mark)
+
+        _c2_probe = (
+            "import importlib.util, json, sys\n"
+            "spec = importlib.util.spec_from_file_location('_cv_vm', sys.argv[1])\n"
+            "mod = importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(mod)\n"
+            "print(json.dumps(mod.load_yaml('jobs:\\n- id: real\\n')))\n"
+        )
+        _c2_proc = _sp_c2.run(
+            [sys.executable, "-B", "-c", _c2_probe, _c2_copy], cwd=_c2_tmp,
+            stdout=_sp_c2.PIPE, stderr=_sp_c2.PIPE, universal_newlines=True)
+        try:
+            _c2_parsed = json.loads(_c2_proc.stdout or "{}")
+        except ValueError:
+            _c2_parsed = {}
+        _c2_jobs = (_c2_parsed or {}).get("jobs") or []
+        expect("shadow: the parse is unaffected — the real document is read",
+               len(_c2_jobs) == 1 and _c2_jobs[0].get("id") == "real")
+        expect("shadow: the planted yaml.py was never imported",
+               not os.path.exists(_c2_mark))
+    finally:
+        _shutil_c2.rmtree(_c2_tmp, ignore_errors=True)
 
     if failures:
         print("\nSELFTEST FAILED: %d case(s)" % len(failures))

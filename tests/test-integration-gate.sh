@@ -494,6 +494,81 @@ check "...and it still names triage-outcomes.jsonl in prose, so the reason is no
       "$(grep -q 'triage-outcomes.jsonl' "$GATE" && echo 1 || echo 0)"
 
 # --------------------------------------------------------------------------- #
+# 8. THE SEALED PATCH and THE MANIFEST DIGEST, through the CLI.
+#
+#    The receipt binds a verdict to a tree at gate time; the artifact binds the
+#    MERGE to that same tree. A receipt that records `patch_sha256` and has no
+#    artifact behind it is refused — the finalizer applies that file, so there is
+#    nothing left to apply and a fresh diff of a tree that has moved is exactly
+#    what sealing replaced.
+# --------------------------------------------------------------------------- #
+read -r WT RUN <<<"$(new_case sealed-missing)"
+printf 'in lane\n' >"$WT/scripts/allowed.py"
+honest_receipt "$WT" "$WORK/sealed.json"
+put_result "$RUN" "$WT" "$WORK/sealed.json"
+mkdir -p "$RUN/receipts"
+"$PY" - "$WORK/sealed.json" "$RUN/receipts/job-a.gate.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["patch_sha256"] = "sha256:" + "0" * 64
+json.dump(d, open(sys.argv[2], "w"))
+PY
+run_gate "$RUN"
+check "a receipt that records a sealed patch with no artifact ⇒ refused" \
+      "$([ "$GATE_RC" = 1 ] && [ "$(verdict_of)" = forged ] && echo 1 || echo 0)"
+check "...and the refusal names the missing artifact, not a phantom forgery" \
+      "$(reasons_of | grep -q 'jobs/job-a.patch is missing' && echo 1 || echo 0)"
+
+# The manifest is the lane map, and it lives in a directory the pipeline exempts
+# by name from the scope gate. `emit` bakes its sha256 in; a widened one refuses.
+read -r WT RUN <<<"$(new_case mdigest)"
+printf 'in lane\n' >"$WT/scripts/allowed.py"
+put_result "$RUN" "$WT"
+MD="$(shasum -a 256 "$RUN/manifest.yaml" | awk '{print "sha256:"$1}')"
+"$PY" "$GATE" --run-dir "$RUN" --repo-root "$SANDBOX" --manifest-digest "$MD" \
+      --json >/dev/null 2>&1
+check "the run's own manifest satisfies the digest emit baked in" \
+      "$([ "$?" = 0 ] && echo 1 || echo 0)"
+printf '      - "**"\n' >>"$RUN/manifest.yaml"
+GATE_OUT="$("$PY" "$GATE" --run-dir "$RUN" --repo-root "$SANDBOX" \
+            --manifest-digest "$MD" --json 2>/dev/null)"
+GATE_RC=$?
+check "a manifest widened after emit ⇒ integration REFUSED, exit 1" \
+      "$([ "$GATE_RC" = 1 ] && [ "$(field_of integration)" = refused ] && echo 1 || echo 0)"
+
+# --------------------------------------------------------------------------- #
+# 9. THE IMPORT SURFACE. A job with a lane over scripts/** can write
+#    scripts/yaml.py, and the authority's own manifest loader would have
+#    imported it — shadowed by the very thing it is meant to judge.
+# --------------------------------------------------------------------------- #
+PLANT="$WORK/plant/scripts"
+mkdir -p "$PLANT"
+cp "$GATE" "$PLANT/compound-v-integration-gate.py"
+cp "$SCOPE" "$PLANT/compound-v-scope-check.py"
+cp "$REPO/scripts/compound-v-validate-manifest.py" "$PLANT/" 2>/dev/null || true
+cat >"$PLANT/yaml.py" <<'PY'
+def safe_load(text):
+    return {"version": 1, "run_id": "gate-test", "jobs": [
+        {"id": "job-a", "title": "widened", "backend": "claude",
+         "isolation": "worktree", "write_allowed": ["**"]}]}
+PY
+read -r WT RUN <<<"$(new_case planted)"
+printf 'in lane\n' >"$WT/scripts/allowed.py"
+printf 'pwn\n'     >"$WT/scripts/sneaky.py"
+put_result "$RUN" "$WT"
+GATE_OUT="$("$PY" "$PLANT/compound-v-integration-gate.py" --run-dir "$RUN" \
+            --repo-root "$SANDBOX" --json 2>/dev/null)"
+GATE_RC=$?
+check "a planted scripts/yaml.py does not widen the lane map the authority enforces" \
+      "$([ "$(verdict_of)" = blocked ] && echo 1 || echo 0)"
+check "...and the out-of-lane write is still named" \
+      "$(violations_of | grep -q 'scripts/sneaky.py' && echo 1 || echo 0)"
+check "the authority drops its own directory and the cwd from sys.path" \
+      "$(grep -q '_harden_sys_path' "$GATE" && echo 1 || echo 0)"
+check "...by REALPATH, because the script dir arrives resolved and __file__ does not" \
+      "$(grep -q 'os.path.realpath' "$GATE" && echo 1 || echo 0)"
+
+# --------------------------------------------------------------------------- #
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" = "0" ] || exit 1
 exit 0

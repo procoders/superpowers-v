@@ -14,7 +14,7 @@
 
 | Группа | Строк | Что в ней | Реальных прогонов |
 |---|---|---|---|
-| **Ядро (spine)** | **21 236** | `emit-workflow`, `emit-preflight`, `integration-gate`, `scope-check`, `validate-manifest`, `fastpath-run` (пол тестов), `resolve-model`, `project-config`, codex-воркер, `run-with-timeout`, `codex-review`, `memory`, `lane-guard`, баннеры/снапшоты компакции | 37 прогонов, 27 dogfood, 3 раунда кросс-модельного ревью за 02.09; закалено |
+| **Ядро (spine)** | **21 236** | `emit-workflow`, `emit-preflight`, `integration-gate`, `scope-check`, `validate-manifest`, `fastpath-run` (пол тестов), `resolve-model`, `project-config`, codex-воркер, `run-with-timeout`, `codex-review`, `memory`, `lane-guard`, баннеры/снапшоты компакции | 37 прогонов, 27 dogfood, 4 раунда кросс-модельного ревью (3 за 02.09, round 4 — 03.09, `docs/superpowers/reviews/2026-09-03-codex-round-4-gate-changes.json`, закрыт прогоном r12: запечатанный per-job патч, digest-bound манифест); закалено |
 | **Эпик** | **12 996** | `epic-state` (6 312), `epic-arbiter` (3 465), `epic-watch`, `headless-shim`, `epic-goal-stop.sh` (911), `liveness` | **0 эпиков за всю историю; 0 файлов `epic-state.json` в репозитории** |
 | **Триаж** | **11 843** | `preeval` (2 167), `triage-outcomes` (2 564), `postdiff-reclassify`, `localize`, `taxonomy`, `validate-taxonomy`, `churn`, `classify-request`, `fastpath-materialize`, `triage-prompt-nudge` | **1 запись pre-eval (FULL), 0 событий `bind`, 37 из 37 манифестов без `triage`-блока** |
 | **Остальное** | **12 320** | `dashboard` (1 570), `preferences` (1 452), `onboard`, `cochange`, `usage-*`, `scorecard`, `update-memory`, `collect-results`, `classify-failure`, `failure-policy`, `discover-models`, `advisor-consult`, 4 внешних воркера, 4 хука | см. §3 |
@@ -93,7 +93,7 @@
 
 ## 6. Оранжерейная жизнеспособность
 
-**Выживет вне оранжереи:** ядро. Манифест → `emit-workflow` → `Workflow({scriptPath})` → git-производный гейт → `integration-gate` → `spec-reviewer` по роли → коммит волны. Это то, что 27 dogfood-прогонов и три раунда Codex действительно ломали и чинили; там были найдены и закрыты реальные дыры (расширение полосы, доверие `state.json`, схема результата). Плюс V-memory (FTS5 без сервисов) и Phase 1 как воркфлоу.
+**Выживет вне оранжереи:** ядро. Манифест → `emit-workflow` → `Workflow({scriptPath})` → git-производный гейт → `integration-gate` → `spec-reviewer` по роли → коммит волны. Это то, что 27 dogfood-прогонов и четыре раунда Codex действительно ломали и чинили; там были найдены и закрыты реальные дыры (расширение полосы, доверие `state.json`, схема результата, а в round 4 — незапечатанный манифест и повторная проверка живого дерева после authority вместо запечатанного артефакта). Плюс V-memory (FTS5 без сервисов) и Phase 1 как воркфлоу.
 
 **Не выживет — потому что не жило и здесь:**
 - **эпик и всё вокруг него** (13 K строк): арбитр, блокер-леджер, три планировщика, цель в Stop-хуке. Первый реальный эпик найдёт дефекты, которых селфтесты не видят — ровно как первый реальный Engine C нашёл три CRITICAL в 3.0.1;

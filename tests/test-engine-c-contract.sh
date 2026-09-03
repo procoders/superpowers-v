@@ -770,6 +770,100 @@ sys.exit(0 if ok else 1)
 PY
 [ "$?" = "0" ] || fails=$((fails + 1))
 
+# ---------------------------------------------------------------------------
+# THE SEALED PATCH and THE MANIFEST DIGEST — the two bindings the merge needs.
+#
+# `gate-receipt` seals the slice it approved as jobs/<id>.patch and records that
+# file's sha256, because the merge used to take a FRESH diff of the live tree:
+# whatever the tree said at merge time is what landed, gate or no gate. And the
+# manifest — the document declaring every job's write_allowed — is pinned by a
+# digest `emit` bakes in, so a lane map widened mid-run is refused, not enforced.
+# ---------------------------------------------------------------------------
+if [ -f "$RD/receipts/job-happy.gate.json" ]; then
+  "$PY" - "$RD" <<'PY'
+import hashlib, json, os, sys
+rd = sys.argv[1]
+doc = json.load(open(os.path.join(rd, "receipts", "job-happy.gate.json")))
+rc = 0
+
+def check(ok, label):
+    global rc
+    print(("PASS " if ok else "FAIL ") + label)
+    if not ok:
+        rc = 1
+
+patch = os.path.join(rd, "jobs", "job-happy.patch")
+check(os.path.isfile(patch),
+      "gate-receipt SEALS the approved slice as jobs/<id>.patch")
+if os.path.isfile(patch):
+    blob = open(patch, "rb").read()
+    check(doc.get("patch_sha256")
+          == "sha256:" + hashlib.sha256(blob).hexdigest(),
+          "...and the receipt records that artifact's own sha256")
+    check(sorted(doc.get("patch_paths") or []) == ["src/a.py", "src/b.py"],
+          "...over the approved paths and nothing else")
+    check(b"src/a.py" in blob,
+          "...and the artifact really carries the job's diff")
+sys.exit(rc)
+PY
+  [ "$?" = "0" ] || fails=$((fails + 1))
+else
+  fail "no gate receipt for job-happy — nothing to check the seal against"
+fi
+
+MD="$(shasum -a 256 "$RD/manifest.yaml" | awk '{print "sha256:"$1}')"
+"$PY" "$EMIT" gate-receipt --run-dir "$RD" --job-id job-happy --worktree "$R" \
+  --mode direct --repo-root "$R" --manifest-digest "$MD" >/dev/null 2>&1
+if [ "$?" = "0" ]; then
+  pass "the run's own manifest satisfies the digest emit baked in"
+else
+  fail "an unmodified manifest was rejected by its own digest"
+fi
+cp "$RD/manifest.yaml" "$T/manifest.widened.yaml"
+printf '      - "**"\n' >>"$T/manifest.widened.yaml"
+"$PY" "$EMIT" gate-receipt --run-dir "$RD" --job-id job-happy --worktree "$R" \
+  --mode direct --repo-root "$R" --manifest "$T/manifest.widened.yaml" \
+  --manifest-digest "$MD" >/dev/null 2>&1
+if [ "$?" = "2" ]; then
+  pass "a manifest widened after emit ⇒ the gate REFUSES rather than enforcing it"
+else
+  fail "a widened manifest was enforced as if it were the reviewed one"
+fi
+"$PY" "$EMIT" record --run-dir "$RD" --job-id job-happy \
+  --manifest "$T/manifest.widened.yaml" --manifest-digest "$MD" \
+  --verdict-json '{"verdict":"pass"}' --repo-root "$R" >/dev/null 2>&1
+if [ "$?" = "2" ]; then
+  pass "...and RECORD refuses it too"
+else
+  fail "record accepted a manifest that no longer hashes to the emitted digest"
+fi
+
+# The emitted script must carry the digest to every stage that enforces it.
+if [ -f "$D2/dispatch.workflow.js" ]; then
+  "$PY" - "$D2/dispatch.workflow.js" <<'PY'
+import re, sys
+s = open(sys.argv[1], encoding="utf-8").read()
+rc = 0
+
+def check(ok, label):
+    global rc
+    print(("PASS " if ok else "FAIL ") + label)
+    if not ok:
+        rc = 1
+
+check(re.search(r'"manifest_digest":\s*"sha256:[0-9a-f]{64}"', s) is not None,
+      "emit bakes sha256(manifest.yaml) into CFG.manifest_digest")
+for marker, stage in ((" gate-receipt' +", "Gate"), (" record' +", "Record"),
+                      (" finalize-wave' +", "Finalize")):
+    i = s.find(marker)
+    seg = s[i:i + 900] if i >= 0 else ""
+    check("--manifest-digest" in seg,
+          "the emitted %s command carries --manifest-digest" % stage)
+sys.exit(rc)
+PY
+  [ "$?" = "0" ] || fails=$((fails + 1))
+fi
+
 if [ "$fails" = "0" ]; then
   echo "✅ engine-c contract: every generated job_result conforms, the contract "\
 "reaches the worker, and the join has a producer"

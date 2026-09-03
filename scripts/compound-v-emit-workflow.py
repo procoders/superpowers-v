@@ -51,23 +51,69 @@ The receipt is defence in depth and an early exit.
 
 from __future__ import annotations
 
-import argparse
-import hashlib
-import json
 import os
-import re
-import shutil
-import subprocess
 import sys
-import tempfile
 
 # Nobody writes bytecode. The scope gate forgives no path by extension (fourth
 # review pass, 2026-09-02), so a `__pycache__` entry this process leaves beside a
 # script is an out-of-lane write that BLOCKS the job it is plumbing. Set before
-# any sibling module is imported — `_import_integration_gate` and
-# `_import_triage_outcomes` below both load repo scripts by path, and an import
-# is exactly when a cache entry would be written.
+# ANY other import — `_import_integration_gate` and `_import_triage_outcomes`
+# below both load repo scripts by path, and an import is exactly when a cache
+# entry would be written.
 sys.dont_write_bytecode = True
+
+
+def _harden_sys_path():
+    """Drop this script's own directory and the cwd from ``sys.path``.
+
+    CPython puts the script's directory at ``sys.path[0]``. This script LIVES in
+    ``scripts/``, which is a directory a Compound V job may be given a write lane
+    over — so a job that writes ``scripts/yaml.py`` gets that file imported, in
+    this process, by the very `import yaml` the manifest loader runs. The
+    manifest is the document that declares every job's `write_allowed`, so a
+    shadowed loader can hand the pipeline a WIDENED lane map and every later
+    check agrees with it. Same for the cwd (``''``/``'.'``), which is on the path
+    for ``-c`` and ``-m`` invocations.
+
+    Run BEFORE the first non-trivial import, so nothing — stdlib or third-party —
+    can be resolved out of the tree this pipeline is gating. The sibling repo
+    scripts this file genuinely needs are loaded by explicit path
+    (`_load_module_from_path`), never by name, so removing these entries costs
+    nothing.
+    """
+    # REALPATH, not abspath. CPython puts the RESOLVED script directory on the
+    # path while `__file__` keeps the symlinked spelling, so on macOS — where
+    # /var is a symlink to /private/var — the two disagree for every run under a
+    # temp directory and the entry survived. Caught by this file's own planted-
+    # `scripts/yaml.py` selftest, which imported the plant and reported the run
+    # compliant against a lane list of `**`.
+    def _resolve(path):
+        return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+
+    doomed = {_resolve(os.path.dirname(os.path.abspath(__file__))),
+              _resolve(os.getcwd())}
+    kept = []
+    for entry in sys.path:
+        try:
+            resolved = _resolve(entry) if entry else _resolve(os.getcwd())
+        except Exception:  # noqa: BLE001
+            kept.append(entry)
+            continue
+        if resolved in doomed:
+            continue
+        kept.append(entry)
+    sys.path[:] = kept
+
+
+_harden_sys_path()
+
+import argparse  # noqa: E402
+import hashlib  # noqa: E402
+import json  # noqa: E402
+import re  # noqa: E402
+import shutil  # noqa: E402
+import subprocess  # noqa: E402
+import tempfile  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -244,6 +290,27 @@ def _atomic_write(path, data):
             os.unlink(tmp)
 
 
+def _atomic_write_bytes(path, data):
+    """`_atomic_write` for a binary artefact — the sealed patch is raw bytes.
+
+    A `--binary` diff is not text: it carries literal-byte hunks and paths in
+    whatever encoding the tree uses, and re-encoding it would change the very
+    bytes whose sha256 the receipt pins.
+    """
+    directory = os.path.dirname(os.path.abspath(path))
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory or ".", prefix=".cv-tmp-")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, path)
+        tmp = None
+    finally:
+        if tmp is not None and os.path.exists(tmp):
+            os.unlink(tmp)
+
+
 class _run_dir_lock(object):
     """Hold an exclusive lock across a whole READ-MODIFY-WRITE of a shared file.
 
@@ -369,6 +436,14 @@ def _load_module_from_path(name, target):
     `scripts/__pycache__/<mod>.<tag>.pyc` — an unchecked hash-based one, which
     CPython never validates against its source — cannot be executed in this
     process (fourth review pass, item 3, 2026-09-02). Returns None on any failure.
+
+    IF THE PRIVATE PREFIX CANNOT BE CREATED, NOTHING IS LOADED. The first version
+    caught the mkdtemp failure and carried on with the DEFAULT cache location —
+    which is the in-tree `__pycache__` the redirect exists to avoid, so the one
+    condition an attacker can arrange (a full or unwritable temp dir) turned the
+    protection off and executed the planted `.pyc` anyway. A protection with a
+    fallback to the unprotected path is not a protection; this refuses instead,
+    and the caller degrades to its own local implementation.
     """
     prev_prefix = getattr(sys, "pycache_prefix", None)
     tmp_pycache = None
@@ -378,7 +453,7 @@ def _load_module_from_path(name, target):
             tmp_pycache = tempfile.mkdtemp(prefix="cv-pycache-")
             sys.pycache_prefix = tmp_pycache
         except Exception:  # noqa: BLE001
-            tmp_pycache = None
+            return None
         spec = importlib.util.spec_from_file_location(name, target)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
@@ -392,6 +467,199 @@ def _load_module_from_path(name, target):
             pass
         if tmp_pycache:
             shutil.rmtree(tmp_pycache, ignore_errors=True)
+
+
+# --------------------------------------------------------------------------- #
+# the MANIFEST DIGEST
+#
+# The manifest declares every job's `write_allowed`. It also lives in the run
+# directory, which the pipeline exempts BY NAME from the scope gate so a job's own
+# bookkeeping does not read as an out-of-lane write. Put those two facts together
+# and a job could widen its own lane map mid-run: every later check would run,
+# pass, and prove nothing, because it would be checking against the widened list.
+#
+# `emit` therefore hashes the manifest at generation time and bakes the digest
+# into the workflow script. Gate, Record, Finalize and the integration authority
+# all carry it forward and refuse a manifest that no longer hashes to it. The lane
+# map that is ENFORCED is provably the lane map that was reviewed.
+# --------------------------------------------------------------------------- #
+def sha256_file(path):
+    """`sha256:<64hex>` of a file's raw bytes, or None when it cannot be read."""
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(65536), b""):
+                h.update(chunk)
+        return "sha256:" + h.hexdigest()
+    except (IOError, OSError):
+        return None
+
+
+def manifest_digest_fault(manifest_path, expected):
+    """A refusal string when `manifest_path` does not hash to `expected`, else None.
+
+    An absent `expected` is the documented backward-compatible path — a run
+    emitted before 3.4.0, or a by-hand invocation. Every emitted command carries
+    the digest, so the pipeline itself never takes that path.
+    """
+    if not expected:
+        return None
+    actual = sha256_file(manifest_path)
+    if actual == expected:
+        return None
+    return (
+        "manifest %s hashes to %s, not the %s this run was emitted against. The "
+        "manifest declares every job's write_allowed, so a lane map that changed "
+        "after emit is refused rather than enforced."
+        % (manifest_path, actual, expected)
+    )
+
+
+# --------------------------------------------------------------------------- #
+# the SEALED PATCH artifact
+#
+# The digest binds a receipt to a tree AT GATE TIME. Nothing used to bind the
+# MERGE to that same tree: `merge_back` took a fresh `git diff` of the live
+# worktree whenever the finalizer got round to it. Three real consequences, all
+# reported by a cross-model review of 3.4.0:
+#
+#   * a worktree reverted to its baseline after the gate merged as "nothing to
+#     do", was recorded as integrated, and was pruned — the work destroyed;
+#   * `.pytest_cache/` and friends, written by the test floor that runs AFTER the
+#     scope check, turned an honest pass into a `contradicted` refusal;
+#   * any post-gate write to an in-lane file rode into the commit unmeasured.
+#
+# So the gate SEALS what it approved: `jobs/<id>.patch`, and its sha256 in the
+# gate's receipt document. The finalizer applies THAT FILE. Nothing else.
+# --------------------------------------------------------------------------- #
+def patch_artifact_path(run_dir, job_id):
+    return os.path.join(run_dir, "jobs", "%s.patch" % job_id)
+
+
+def build_sealed_patch(root, baseline, paths):
+    """(patch bytes, error) — `git diff --cached --binary <baseline> -- <paths>`.
+
+    The `git add` runs against a COPY of the index under GIT_INDEX_FILE, exactly
+    as the digest recipe does, so sealing a patch does not stage anything in the
+    tree it is sealing. Only the paths the gate APPROVED are added, so a file the
+    scope gate flagged — or a byproduct a later test writes — cannot be in the
+    artifact, and therefore cannot be merged.
+    """
+    if not baseline:
+        return None, "no baseline to seal against"
+    rc, gitpath, err = _git(root, ["rev-parse", "--git-path", "index"])
+    if rc != 0:
+        return None, "cannot locate git index: %s" % (err.strip() or "rc=%d" % rc)
+    index_path = gitpath.strip()
+    if not os.path.isabs(index_path):
+        index_path = os.path.join(root, index_path)
+    tmpdir = tempfile.mkdtemp(prefix="cv-seal-idx-")
+    try:
+        tmp_index = os.path.join(tmpdir, "index")
+        if os.path.exists(index_path):
+            shutil.copyfile(index_path, tmp_index)
+        env = {"GIT_INDEX_FILE": tmp_index}
+        for path in paths:
+            if not path:
+                continue
+            rc, _o, err = _git(root, ["add", "-A", "--", path], env=env)
+            if rc != 0:
+                # A deletion the worker already staged leaves nothing for the
+                # pathspec to match; it is already in the copied index, so this is
+                # not a failure. Same reasoning as `_stage_paths`.
+                rc2, staged, _e = _git(
+                    root, ["diff", "--cached", "--name-only", "--diff-filter=D",
+                           "--", path], env=env)
+                if not (rc2 == 0 and path in
+                        [l.strip() for l in (staged or "").splitlines()]):
+                    return None, "git add failed for %r while sealing: %s" % (
+                        path, err.strip())
+        args = ["diff", "--cached", "--binary", baseline, "--"]
+        args += [p for p in paths if p]
+        rc, blob, err = _git(root, args, env=env, text=False)
+        if rc != 0:
+            return None, "git diff --cached failed while sealing: %s" % err.strip()
+        return blob, None
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def sealed_post_image(repo_root, baseline, patch_bytes):
+    """({path: blob-oid or None for a deletion}, error) — GIT'S answer, not ours.
+
+    The patch is applied to a THROWAWAY index seeded from `baseline` (`git apply
+    --cached` touches the index only, and GIT_INDEX_FILE keeps it off the real
+    one), and the resulting blob ids are read back out. That is the exact content
+    the artifact produces, derived by git from the artifact itself — so the
+    post-merge proof needs nothing recorded by any party the pipeline constrains.
+    """
+    if not patch_bytes:
+        return {}, None
+    tmpdir = tempfile.mkdtemp(prefix="cv-postimg-")
+    try:
+        tmp_index = os.path.join(tmpdir, "index")
+        env = {"GIT_INDEX_FILE": tmp_index}
+        rc, _o, err = _git(repo_root, ["read-tree", baseline], env=env)
+        if rc != 0:
+            return None, "git read-tree %s failed: %s" % (baseline, err.strip())
+        try:
+            full_env = dict(os.environ)
+            full_env["GIT_INDEX_FILE"] = tmp_index
+            full_env["PYTHONDONTWRITEBYTECODE"] = "1"
+            proc = subprocess.Popen(
+                ["git", "-C", repo_root, "apply", "--cached", "--binary", "-"],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, env=full_env,
+            )
+            _o, aerr = proc.communicate(patch_bytes)
+            if proc.returncode != 0:
+                return None, (
+                    "the sealed patch does not apply to its own baseline: %s"
+                    % aerr.decode("utf-8", "replace").strip()[:300])
+        except Exception as exc:  # noqa: BLE001
+            return None, "git apply --cached raised: %s" % exc
+        rc, names, err = _git(
+            repo_root, ["diff", "--cached", "--name-only", baseline], env=env)
+        if rc != 0:
+            return None, "git diff --cached --name-only failed: %s" % err.strip()
+        image = {}
+        for path in [n.strip() for n in (names or "").splitlines() if n.strip()]:
+            rc2, staged, _e = _git(
+                repo_root, ["ls-files", "--stage", "--", path], env=env)
+            oid = None
+            if rc2 == 0 and staged.strip():
+                parts = staged.splitlines()[0].split("\t", 1)[0].split()
+                if len(parts) >= 2:
+                    oid = parts[1]
+            image[path] = oid
+        return image, None
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def head_matches_post_image(repo_root, image):
+    """(True, None) iff every path in `image` is in HEAD with that exact blob.
+
+    This is the proof that the commit carries the artifact, and it is asked of
+    git. `state.json` is a cache: it is written by the pipeline, it is exempt by
+    name from the scope gate, and a worker can therefore set
+    `merged.integrated: true` on a job that never landed. A cache may say a job is
+    done; only git may be believed about it.
+    """
+    if image is None:
+        return False, "no post-image to prove against"
+    for path, oid in sorted(image.items()):
+        rc, out, _err = _git(repo_root, ["rev-parse", "--verify", "HEAD:%s" % path])
+        actual = out.strip() if rc == 0 else None
+        if oid is None:
+            if actual:
+                return False, ("%s is still present in HEAD, but the sealed patch "
+                               "deletes it" % path)
+            continue
+        if actual != oid:
+            return False, ("%s in HEAD is %s, but the sealed patch produces %s"
+                           % (path, actual or "absent", oid))
+    return True, None
 
 
 def _import_integration_gate(path=None):
@@ -571,29 +839,51 @@ AGENT_TYPE_BY_JOB_TYPE = {"review": "spec-reviewer"}
 DEFAULT_AGENT_ROLE = "implementer"
 
 
-def agent_role_for(job_type):
-    """The registered role a job's declared `type` maps to, or None.
+# The job types that are REVIEWERS and therefore stay anonymous. Matched
+# EXACTLY, never by substring.
+#
+# The substring form (`any(tok in t for tok in REVIEWER_TOKENS)`) declined every
+# type that merely CONTAINED one of those words, so `review_fix` — a job that
+# fixes what a review found, and is an implementer in every respect — arrived
+# with no role, no turn cap and none of `agents/implementer.md`. This repository
+# already fixed exactly that shape once, in `_is_reviewer_job`, where a job
+# titled "Writes the thing the reviewer reviews" was classified as a reviewer.
+# The lesson did not travel the six hundred lines to here.
+#
+# `_is_reviewer_job` keeps its looser, word-boundary scan on purpose: it decides
+# whether to ESCALATE a model, where over-matching is conservative. This decides
+# which ROLE an agent is spawned as, where over-matching silently removes one.
+REVIEWER_JOB_TYPES = ("review", "spec_review", "quality_review",
+                      "integration_review")
 
-    `review` maps to the Review Gate. Every other type maps to the implementer —
-    EXCEPT the other reviewer-ish types (`integration_review` and friends, by
-    REVIEWER_TOKENS), which stay anonymous exactly as they did before 3.4.0. They
-    are not implementers, and handing one the implementer's role would tell a
-    reviewer to write code inside a lane.
+
+def agent_role_for(job_type):
+    """(role or None, reason or None) — the registered role a job's `type` maps to.
+
+    `review` maps to the Review Gate. The other reviewer types decline, WITH a
+    reason: a decline used to be an indistinguishable `None`, so "this type is a
+    reviewer and must stay anonymous" and "this lookup found nothing" reached the
+    emit output as the same silence. Everything else — `review_fix` included — is
+    an implementer.
     """
     t = (job_type or "").strip().lower()
     role = AGENT_TYPE_BY_JOB_TYPE.get(t)
     if role:
-        return role
-    if any(tok in t for tok in REVIEWER_TOKENS):
-        return None
-    return DEFAULT_AGENT_ROLE
+        return role, None
+    if t in REVIEWER_JOB_TYPES:
+        return None, (
+            "job type %r is a reviewer, so it stays anonymous: it is not an "
+            "implementer, and handing it the implementer role would tell a "
+            "reviewer to write code inside a lane" % t
+        )
+    return DEFAULT_AGENT_ROLE, None
 
 
 def resolve_agent_type(job_type, plugin_dir=None):
     """(agent_type or None, reason). Never guesses a name."""
-    role = agent_role_for(job_type)
+    role, decline = agent_role_for(job_type)
     if not role:
-        return None, None
+        return None, decline
     root = plugin_dir or os.path.dirname(HERE)
     if not os.path.exists(os.path.join(root, "agents", "%s.md" % role)):
         return None, "no agents/%s.md under %s" % (role, root)
@@ -894,14 +1184,29 @@ TURN_CAP_DEFAULT = 50
 
 
 def job_turn_cap(job):
-    """(cap, source) — the manifest's `max_turns`, else the tier's default."""
+    """(cap, source) — the manifest's `max_turns`, else the tier's default.
+
+    A MALFORMED `max_turns` SAYS SO. `"80"`, `0`, `-1`, `true` and `null` all fail
+    the type check and silently fell through to the tier default, so a manifest
+    that meant to raise a job's cap and quoted the number got the default with no
+    hint that its value had been discarded. The degradation is right — a cap this
+    code cannot read is not a cap — but it has to be visible, and `source` is the
+    string the rendered prompt and the emit output both already print.
+    """
     declared = job.get("max_turns")
     if isinstance(declared, int) and not isinstance(declared, bool) and declared > 0:
         return declared, "manifest max_turns"
     tier = str(job.get("tier") or "").strip().lower()
     if tier in TURN_CAP_BY_TIER:
-        return TURN_CAP_BY_TIER[tier], "default for tier %s" % tier
-    return TURN_CAP_DEFAULT, "default"
+        source = "default for tier %s" % tier
+        cap = TURN_CAP_BY_TIER[tier]
+    else:
+        source = "default"
+        cap = TURN_CAP_DEFAULT
+    if declared is not None:
+        source = ("manifest max_turns %r is not a positive integer — ignored, "
+                  "using the %s" % (declared, source))
+    return cap, source
 
 
 def render_worker_prompt(job, run_id):
@@ -1106,7 +1411,7 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
             agent_type, agent_type_note = resolve_agent_type(job.get("type"))
         agent_def = None
         if agent_type:
-            agent_def = agent_definition(agent_role_for(job.get("type")))
+            agent_def = agent_definition(agent_role_for(job.get("type"))[0])
         entry = {
             "id": job_id,
             "job_type": job.get("type"),
@@ -1234,6 +1539,9 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
         "manifest_path": os.path.abspath(
             manifest.get("_manifest_path") or os.path.join(run_dir, "manifest.yaml")
         ),
+        "manifest_digest": sha256_file(os.path.abspath(
+            manifest.get("_manifest_path") or os.path.join(run_dir, "manifest.yaml")
+        )),
         "python": python_bin,
         "emitter": self_path,
         "scope_check": scope_check,
@@ -1462,10 +1770,12 @@ def _implement_prompt(job, plan):
 def _gate_command(job, plan):
     return (
         "%s -B %s gate-receipt --run-dir %s --job-id %s --repo-root %s "
-        "--mode %s --worktree <ABSOLUTE_GATE_ROOT>"
+        "--mode %s --worktree <ABSOLUTE_GATE_ROOT>%s"
         % (plan["python"], plan["emitter"], plan["run_dir"], job["id"],
            plan["repo_root"],
-           "worktree" if job["isolation"] == "worktree" else "direct")
+           "worktree" if job["isolation"] == "worktree" else "direct",
+           (" --manifest-digest %s" % plan["manifest_digest"])
+           if plan.get("manifest_digest") else "")
     )
 
 
@@ -1496,6 +1806,10 @@ def emit_script(plan):
         "run_dir": plan["run_dir"],
         "repo_root": plan["repo_root"],
         "manifest_path": plan["manifest_path"],
+        # BAKED IN AT GENERATION TIME. Every stage below carries it back to the
+        # Python that enforces it, so the lane map the run is measured against is
+        # provably the one this script was generated from.
+        "manifest_digest": plan["manifest_digest"],
         "python": plan["python"],
         "emitter": plan["emitter"],
         "budget_reserve_per_agent": plan["budget_reserve_per_agent"],
@@ -1693,6 +2007,7 @@ async function gateStage(prev, job) {
       ' --repo-root ' + q(CFG.repo_root) +
       ' --worktree ' + q(gateRoot) +
       ' --manifest ' + q(CFG.manifest_path) +
+      (CFG.manifest_digest ? ' --manifest-digest ' + q(CFG.manifest_digest) : '') +
       // The gate's mode must follow where the AGENT actually ran, not what the
       // manifest declares. A job with depends_on keeps `isolation: worktree` in the
       // manifest (the validator requires it, and scope attribution uses it) while its
@@ -1764,6 +2079,7 @@ async function recordStage(verdict, job) {
       ' --job-id ' + q(job.id) +
       ' --repo-root ' + q(CFG.repo_root) +
       ' --manifest ' + q(CFG.manifest_path) +
+      (CFG.manifest_digest ? ' --manifest-digest ' + q(CFG.manifest_digest) : '') +
       ' --verdict-json ' + q(JSON.stringify(v)) +
       (NOW ? ' --now ' + q(NOW) : '');
 
@@ -1821,6 +2137,7 @@ async function finalizeWave(waveIndex, wave) {
       ' --run-dir ' + q(CFG.run_dir) +
       ' --repo-root ' + q(CFG.repo_root) +
       ' --manifest ' + q(CFG.manifest_path) +
+      (CFG.manifest_digest ? ' --manifest-digest ' + q(CFG.manifest_digest) : '') +
       ' --wave ' + q(String(waveIndex + 1)) +
       ' --jobs ' + q(ids) +
       (NOW ? ' --now ' + q(NOW) : '');
@@ -2216,6 +2533,13 @@ def run_dir_owned_by_name(rel, run_dir_rel, job_id):
                 # stands — in direct mode a worker can write anywhere, which is why
                 # the authority is the backstop.
                 "receipts/%s.gate.json" % job_id,
+                # THE SEALED PATCH, written by the gate right after its verdict —
+                # so, like the receipt beside it, it cannot appear in a list the
+                # gate produced and always appears in the authority's later
+                # re-derivation. Exempting it from the SCOPE check does not make it
+                # trusted: the authority hashes it against the digest the receipt
+                # records and refuses a mismatch.
+                "jobs/%s.patch" % job_id,
                 "results/%s.json" % job_id):
         return True
     # A re-attempt archives its predecessor as results/attempts/<id>.<n>.json,
@@ -2337,6 +2661,10 @@ def cmd_gate_receipt(argv):
     ap.add_argument("--scope-check", default=SCOPE_CHECK_DEFAULT)
     ap.add_argument("--fastpath", default=FASTPATH_DEFAULT)
     ap.add_argument("--python", default=(sys.executable or "python3"))
+    ap.add_argument("--manifest-digest",
+                    help="sha256:<hex> the manifest MUST hash to, baked in by "
+                         "`emit`. A mismatch refuses: the manifest is the lane "
+                         "map this gate measures against.")
     ap.add_argument("--now")
     args = ap.parse_args(argv)
 
@@ -2346,6 +2674,12 @@ def cmd_gate_receipt(argv):
     )
     job_id = args.job_id
     out = {"job_id": job_id, "verdict": "error", "source": "gate-receipt"}
+
+    fault = manifest_digest_fault(manifest_path, args.manifest_digest)
+    if fault:
+        out["reason"] = fault
+        print(json.dumps(out, indent=2, sort_keys=True))
+        return 2
 
     try:
         manifest = _load_yaml(manifest_path) or {}
@@ -2466,6 +2800,7 @@ def cmd_gate_receipt(argv):
             for _later in (verified,
                            os.path.join(args.run_dir, "receipts",
                                         "%s.gate.json" % args.job_id),
+                           patch_artifact_path(args.run_dir, args.job_id),
                            os.path.join(args.run_dir, "results",
                                         "%s.json" % args.job_id)):
                 _rel = os.path.relpath(os.path.abspath(_later),
@@ -2603,6 +2938,36 @@ def cmd_gate_receipt(argv):
         elif test_err:
             reasons.append("test floor: %s" % test_err)
 
+    # ---- SEAL WHAT THIS GATE APPROVED -------------------------------------- #
+    # The merge used to take a FRESH diff of the live tree whenever the finalizer
+    # got round to it, so whatever the tree said THEN is what landed — gate or no
+    # gate. Everything between the two moments rode along: a revert, a post-gate
+    # edit to an in-lane file, the test floor's own byproducts. The artifact is
+    # written here, from the paths this gate approved and nothing else, and its
+    # sha256 goes into the receipt. `finalize-wave` applies this file.
+    #
+    # Sealed on a BLOCKED verdict too, deliberately: nothing will apply it, and a
+    # human reading a refused run gets the exact diff that was refused.
+    approved = [pth for pth in gate_changed
+                if pth not in ((parsed or {}).get("violations") or [])]
+    if baseline and approved:
+        patch_bytes, patch_err = build_sealed_patch(root, baseline, approved)
+        if patch_err:
+            reasons.append("sealed patch not written: %s" % patch_err)
+        else:
+            patch_path = patch_artifact_path(run_dir, job_id)
+            os.makedirs(os.path.dirname(patch_path), exist_ok=True)
+            _atomic_write_bytes(patch_path, patch_bytes)
+            out["patch_path"] = patch_path
+            out["patch_sha256"] = ("sha256:"
+                                   + hashlib.sha256(patch_bytes).hexdigest())
+            out["patch_paths"] = approved
+    elif baseline and verdict == "pass" and not approved:
+        # A pass with nothing approved is already refused above (`no_work`) for any
+        # job that declared lanes; a reviewer legitimately approves nothing, and
+        # there is nothing to seal.
+        out["patch_paths"] = []
+
     if reasons:
         out["reason"] = " | ".join(reasons)
 
@@ -2665,8 +3030,62 @@ def _stage_paths(worktree, paths):
     return True, None
 
 
+def read_sealed_patch(run_dir, job_id, gate_doc):
+    """(patch bytes, error) — the artifact the GATE sealed, verified by digest.
+
+    The finalizer applies this and only this. A run whose gate recorded no
+    `patch_sha256` (a receipt from before 3.4.0) returns `(None, None)`: nothing
+    to apply and nothing to verify, and the caller falls back to the old
+    fresh-diff merge for it rather than refusing a run it cannot re-gate.
+    """
+    declared = (gate_doc or {}).get("patch_sha256")
+    if not (isinstance(declared, str) and declared.strip()):
+        return None, None
+    path = patch_artifact_path(run_dir, job_id)
+    if not os.path.isfile(path):
+        return None, ("the gate sealed a patch (%s) but %s is missing; the merge "
+                      "applies that artifact, so an absent one is refused rather "
+                      "than replaced by a fresh diff of a tree that has moved"
+                      % (declared, path))
+    try:
+        with open(path, "rb") as fh:
+            blob = fh.read()
+    except (IOError, OSError) as exc:
+        return None, "cannot read %s: %s" % (path, exc)
+    actual = "sha256:" + hashlib.sha256(blob).hexdigest()
+    if actual != declared:
+        return None, ("%s hashes to %s, not the %s the gate's receipt records — "
+                      "the artifact was replaced after it was sealed"
+                      % (path, actual, declared))
+    return blob, None
+
+
+def apply_patch(repo_root, patch_bytes):
+    """`git apply --index` the sealed artifact into the project checkout."""
+    if not (patch_bytes or b"").strip():
+        return True, None
+    try:
+        proc = subprocess.Popen(
+            ["git", "-C", repo_root, "apply", "--index", "-"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        _o, apply_err = proc.communicate(patch_bytes)
+        if proc.returncode != 0:
+            return False, "git apply --index failed: %s" % apply_err.decode(
+                "utf-8", "replace").strip()
+    except Exception as exc:  # noqa: BLE001
+        return False, "git apply raised: %s" % exc
+    return True, None
+
+
 def merge_back(worktree, repo_root, baseline, files_changed):
-    """Apply the gate-approved slice of a worktree into the main tree."""
+    """Apply the gate-approved slice of a worktree into the main tree.
+
+    FALLBACK ONLY. Since 3.4.0 the finalizer applies the patch the GATE sealed;
+    this fresh diff of the live worktree is what remains for a run whose receipts
+    predate sealing, and it is exactly the behaviour sealing replaced — whatever
+    the tree says NOW is what lands.
+    """
     if not baseline:
         return False, "no pinned baseline; refusing to merge against a moving HEAD"
     if not files_changed:
@@ -3030,6 +3449,10 @@ def cmd_record(argv):
                          "longer writes to it: it is where the triage stream "
                          "lives, and a defaulted root wrote into the plugin's "
                          "own repository.")
+    ap.add_argument("--manifest-digest",
+                    help="sha256:<hex> the manifest MUST hash to, baked in by "
+                         "`emit`. A mismatch refuses rather than recording a "
+                         "result against a lane map that changed after review.")
     ap.add_argument("--now")
     ap.add_argument("--no-merge", action="store_true",
                     help="accepted and ignored. `record` never merges any more — "
@@ -3052,6 +3475,11 @@ def cmd_record(argv):
     manifest_path = os.path.abspath(
         args.manifest or os.path.join(run_dir, "manifest.yaml")
     )
+    fault = manifest_digest_fault(manifest_path, args.manifest_digest)
+    if fault:
+        ack["reason"] = fault
+        print(json.dumps(ack, indent=2, sort_keys=True))
+        return 2
     manifest = {}
     if os.path.exists(manifest_path):
         try:
@@ -3341,6 +3769,11 @@ def cmd_finalize_wave(argv):
     ap.add_argument("--wave", type=int, default=0)
     ap.add_argument("--integration-gate", default=INTEGRATION_GATE_DEFAULT)
     ap.add_argument("--python", default=(sys.executable or "python3"))
+    ap.add_argument("--manifest-digest",
+                    help="sha256:<hex> the manifest MUST hash to, baked in by "
+                         "`emit`. Verified here AND forwarded to the integration "
+                         "authority: nothing merges against a lane map that "
+                         "changed after review.")
     ap.add_argument("--now")
     ap.add_argument("--no-commit", action="store_true",
                     help="merge but do not commit; for tests only")
@@ -3367,13 +3800,21 @@ def cmd_finalize_wave(argv):
             "an absent authority is a refusal, never a waiver" % args.integration_gate
         )
         return emit(2)
+    fault = manifest_digest_fault(manifest_path, args.manifest_digest)
+    if fault:
+        out["reason"] = fault
+        out["refused"] = job_ids
+        return emit(1)
 
     # ---- 1. THE AUTHORITY, first ------------------------------------------- #
-    rc, gate_out, gate_err = _run([
+    _gate_argv = [
         args.python, "-B", args.integration_gate,
         "--run-dir", run_dir, "--repo-root", repo_root,
         "--manifest", manifest_path, "--jobs", ",".join(job_ids), "--json",
-    ])
+    ]
+    if args.manifest_digest:
+        _gate_argv += ["--manifest-digest", args.manifest_digest]
+    rc, gate_out, gate_err = _run(_gate_argv)
     try:
         report = json.loads(gate_out) if gate_out.strip() else None
     except Exception:  # noqa: BLE001
@@ -3445,6 +3886,7 @@ def cmd_finalize_wave(argv):
             _save_state(run_dir, fresh, now=now)
 
     merged_worktrees = {}
+    post_images = {}
     approved = []
     for job_id in job_ids:
         job = _manifest_job(manifest, job_id) or {"id": job_id}
@@ -3456,13 +3898,55 @@ def cmd_finalize_wave(argv):
         files = [p for p in (result.get("files_changed") or []) if p]
         isolation = job.get("isolation") or state_job.get("isolation") or "direct"
         realised = state_job.get("realised_commit")
-        merged_record = state_job.get("merged") or {}
+        pinned = read_pinned_baseline(run_dir, job_id, state_job)
 
-        if realised and merged_record.get("realised_commit") == realised \
-                and merged_record.get("integrated"):
-            approved.extend(files)
-            out["merged"].append(job_id)
-            continue  # at-most-once: a relaunch re-runs completed agents
+        # ---- THE SEALED ARTIFACT, and what git says about it ---------------- #
+        gate_doc = _read_json(
+            os.path.join(run_dir, "receipts", "%s.gate.json" % job_id), None)
+        sealed, seal_err = read_sealed_patch(run_dir, job_id, gate_doc)
+        if seal_err:
+            out["refused"].append(job_id)
+            out["reason"] = "sealed patch unusable for %s: %s" % (job_id, seal_err)
+            break
+        image = None
+        if sealed is not None and pinned:
+            image, img_err = sealed_post_image(repo_root, pinned, sealed)
+            if img_err:
+                out["refused"].append(job_id)
+                out["reason"] = ("cannot derive the post-image of %s's sealed "
+                                 "patch: %s" % (job_id, img_err))
+                break
+            post_images[job_id] = image
+            if image:
+                files = sorted(image)
+
+        # ---- ALREADY MERGED? ASK GIT, NOT state.json ------------------------ #
+        # `state.json` is exempt by name from the scope gate and writable by a
+        # direct worker, so `merged.integrated: true` is a CACHE line, not a
+        # proof. Reading it as one let a forged entry skip a job's merge entirely
+        # — the finalizer would report it merged, and the work would never land.
+        # Git is asked instead: is this artifact's post-image already in HEAD?
+        # The cache is still consulted, but only as a hint about which jobs to
+        # ask about, never as the answer.
+        if image:
+            proven, _why = head_matches_post_image(repo_root, image)
+            if proven:
+                approved.extend(files)
+                out["merged"].append(job_id)
+                job_updates[job_id] = {
+                    "merged": {"realised_commit": realised, "mode": isolation,
+                               "integrated": True, "proof": "head-matches-artifact"}}
+                continue  # at-most-once, proven from git
+        elif sealed is None:
+            merged_record = state_job.get("merged") or {}
+            if realised and merged_record.get("realised_commit") == realised \
+                    and merged_record.get("integrated"):
+                # No artifact to prove anything against (a pre-3.4.0 receipt), so
+                # the old cache-only test is all there is. Recorded as such.
+                approved.extend(files)
+                out["merged"].append(job_id)
+                out.setdefault("unproven_skips", []).append(job_id)
+                continue
 
         if isolation == "worktree":
             worktree = result.get("worktree") or state_job.get("worktree")
@@ -3473,14 +3957,19 @@ def cmd_finalize_wave(argv):
                     "there is nothing to merge FROM, so it fails closed" % job_id
                 )
                 break
-            ok, err = merge_back(worktree, repo_root,
-                                 read_pinned_baseline(run_dir, job_id, state_job),
-                                 files)
+            if sealed is not None:
+                # APPLY THE ARTIFACT, never a fresh diff of the live tree. The
+                # worktree is not read at all here — it may have been reverted,
+                # rebuilt or filled with test byproducts since the gate ran, and
+                # none of that may change what lands.
+                ok, err = apply_patch(repo_root, sealed)
+            else:
+                ok, err = merge_back(worktree, repo_root, pinned, files)
             if not ok:
                 out["refused"].append(job_id)
                 out["reason"] = "merge-back failed for %s: %s" % (job_id, err)
                 break
-            # Remembered HERE, from the value merge_back actually used. The
+            # Remembered HERE, from the value this pass actually merged. The
             # cleanup below must never re-read this from state.json — see the
             # comment there. An idempotent re-finalize (`continue` above) never
             # reaches this line, so a job whose work was already merged in an
@@ -3549,7 +4038,35 @@ def cmd_finalize_wave(argv):
                 out["reason"] = ("nothing left to commit — this wave's work is "
                                  "already in HEAD (idempotent re-finalize)")
 
-    out["integrated"] = not out["refused"]
+    # ---- PROVE THE COMMIT CARRIES THE ARTIFACT ----------------------------- #
+    # Asked of git, after the commit and before anything is deleted: for every job
+    # whose patch was sealed, is that patch's post-image what HEAD now holds?
+    #
+    # This is the check whose absence destroyed work. A worktree reverted to its
+    # baseline after the gate produced an empty fresh diff, the finalizer read
+    # that as "already landed", marked the job integrated and pruned the tree —
+    # the only copy. Nothing in that chain ever asked git whether the content was
+    # actually there. A job that cannot be proven is NOT pruned and the wave does
+    # not report itself integrated; the worktree stays for a human to look at.
+    unproven = []
+    if not args.no_commit:
+        for job_id in list(out["merged"]):
+            image = post_images.get(job_id)
+            if not image:
+                continue
+            proven, why = head_matches_post_image(repo_root, image)
+            if not proven:
+                unproven.append("%s: %s" % (job_id, why))
+    if unproven:
+        out["unproven"] = unproven
+        generic = ("the commit does not carry the sealed patch for %d job(s): %s. "
+                   "Nothing is pruned — a worktree is retired only after git "
+                   "confirms its diff is in HEAD." % (len(unproven),
+                                                      "; ".join(unproven)[:400]))
+        out["reason"] = ("%s — %s" % (out["reason"], generic)
+                         if out.get("reason") else generic)
+
+    out["integrated"] = not out["refused"] and not unproven
     if out["refused"]:
         out.setdefault("reason", "some jobs did not reach `success`")
 
@@ -3576,6 +4093,7 @@ def cmd_finalize_wave(argv):
     # retired only after the commit that carries its diff exists.
     pruned, prune_errors = [], []
     if out["merged"] and not args.no_commit and out.get("commit") and merged_worktrees \
+            and not unproven \
             and not str(out.get("reason") or "").startswith("nothing left to commit"):
         for job_id in out["merged"]:
             # THE PATH THAT WAS ACTUALLY MERGED, recorded locally at merge time —
@@ -5365,6 +5883,231 @@ def selftest():
                    "src/work.txt" in _committed
                    and "triage-outcomes.jsonl" not in _committed, _committed)
 
+        # ---- THE SEALED PATCH, END TO END ------------------------------------ #
+        # The merge used to take a fresh diff of the live worktree, so whatever
+        # the tree said at merge time is what landed. Three shapes are driven
+        # here against the real gate, the real authority and the real finalizer.
+        if have_yaml and os.path.exists(INTEGRATION_GATE_DEFAULT):
+            import yaml as _yaml_sp
+
+            def _seal_case(name, mutate_after_gate=None, forge_state=None):
+                """(repo, run_dir, worktree, gate_rc, receipt) for one worktree job."""
+                sp_repo = os.path.join(tmp, "sp-%s-repo" % name)
+                _init_repo(sp_repo)
+                sp_run = os.path.join(tmp, "sp-%s-run" % name)
+                os.makedirs(sp_run, exist_ok=True)
+                sp_man = os.path.join(sp_run, "manifest.yaml")
+                with open(sp_man, "w", encoding="utf-8") as fh:
+                    _yaml_sp.safe_dump({
+                        "run_id": "sp-%s" % name,
+                        "jobs": [{"id": "w1", "isolation": "worktree",
+                                  "title": "the sealed-patch fixture",
+                                  "body": "Write src/work.txt.",
+                                  "write_allowed": ["src/**"]}]}, fh)
+                # INSIDE the repo, as the real pipeline places them: the
+                # finalizer refuses to `worktree remove` anything outside the
+                # project, so a fixture that put the tree in /tmp would never
+                # exercise the prune it is testing.
+                sp_wt = os.path.join(sp_repo, ".cv-worktrees", name)
+                _run(["git", "-C", sp_repo, "worktree", "add", "-q", "--detach",
+                      sp_wt, "HEAD"])
+                with _quiet():
+                    cmd_register_lane([
+                        "--run-dir", sp_run, "--job-id", "w1", "--cwd", sp_wt,
+                        "--repo-root", sp_repo, "--isolation", "worktree",
+                        "--manifest", sp_man, "--no-test-contract"])
+                os.makedirs(os.path.join(sp_wt, "src"), exist_ok=True)
+                with open(os.path.join(sp_wt, "src", "work.txt"), "w",
+                          encoding="utf-8") as fh:
+                    fh.write("the worktree job's work\n")
+                with _quiet():
+                    rc_g = cmd_gate_receipt([
+                        "--run-dir", sp_run, "--job-id", "w1",
+                        "--repo-root", sp_repo, "--worktree", sp_wt,
+                        "--manifest", sp_man, "--mode", "worktree"])
+                rcpt = _read_json(os.path.join(sp_run, "receipts", "w1.gate.json"),
+                                  {})
+                with _quiet():
+                    cmd_record([
+                        "--run-dir", sp_run, "--job-id", "w1", "--manifest", sp_man,
+                        "--verdict-json", json.dumps(rcpt), "--repo-root", sp_repo,
+                        "--now", "2026-09-02T00:00:00Z"])
+                if mutate_after_gate:
+                    mutate_after_gate(sp_wt)
+                if forge_state:
+                    with _run_dir_lock(sp_run):
+                        st = _load_state(sp_run)
+                        st["jobs"]["w1"].update(forge_state)
+                        _save_state(sp_run, st, now="2026-09-02T00:00:00Z")
+                return sp_repo, sp_run, sp_wt, sp_man, rc_g, rcpt
+
+            # (1) the happy path: the artifact is sealed, applied and PROVEN.
+            sp_repo, sp_run, sp_wt, sp_man, rc_g, rcpt = _seal_case("ok")
+            _check("the gate passes the worktree job", rc_g == 0)
+            _check("the gate SEALS what it approved as jobs/<id>.patch",
+                   os.path.isfile(patch_artifact_path(sp_run, "w1")))
+            _seal_bytes = open(patch_artifact_path(sp_run, "w1"), "rb").read()
+            _check("...and records that artifact's sha256 in its receipt",
+                   rcpt.get("patch_sha256")
+                   == "sha256:" + hashlib.sha256(_seal_bytes).hexdigest())
+            _check("...over the approved paths and nothing else",
+                   rcpt.get("patch_paths") == ["src/work.txt"])
+            with _quiet():
+                rc_fin = cmd_finalize_wave([
+                    "--run-dir", sp_run, "--repo-root", sp_repo,
+                    "--manifest", sp_man, "--jobs", "w1", "--wave", "1",
+                    "--now", "2026-09-02T00:00:00Z"])
+            _dbg_fin = json.dumps(_read_json(os.path.join(sp_run, "state.json"),
+                                             {}).get("waves"))
+            _check("the wave integrates from the sealed artifact", rc_fin == 0)
+            _rc_s, _show, _e = _git(sp_repo,
+                                    ["show", "--name-only", "--format=", "HEAD"])
+            _check("...and HEAD carries the job's work",
+                   "src/work.txt" in _show, _show)
+            _check("a PROVEN merge retires its worktree",
+                   not os.path.isdir(sp_wt), _dbg_fin)
+
+            # (2) THE TREE WENT BACKWARDS AFTER THE GATE. A fresh diff of it is
+            # empty, which the old finalizer read as "already landed": the job was
+            # marked integrated and its worktree — the only copy — was pruned.
+            def _revert(wt):
+                _run(["git", "-C", wt, "checkout", "--", "."])
+                p = os.path.join(wt, "src", "work.txt")
+                if os.path.exists(p):
+                    os.remove(p)
+
+            sp_repo, sp_run, sp_wt, sp_man, rc_g, rcpt = _seal_case(
+                "revert", mutate_after_gate=_revert)
+            _head_before = _head_commit(sp_repo)
+            with _quiet():
+                rc_fin = cmd_finalize_wave([
+                    "--run-dir", sp_run, "--repo-root", sp_repo,
+                    "--manifest", sp_man, "--jobs", "w1", "--wave", "1",
+                    "--now", "2026-09-02T00:00:00Z"])
+            _check("a worktree reverted to its baseline after the gate is REFUSED",
+                   rc_fin != 0)
+            _check("...nothing is committed", _head_commit(sp_repo) == _head_before)
+            _check("...and the worktree is NOT pruned — refusing exists to keep "
+                   "the one copy of the work",
+                   os.path.isdir(sp_wt))
+
+            # (3) state.json is a CACHE. Forging `merged.integrated` must not let a
+            # job skip its merge: git has to say the content is in HEAD.
+            sp_repo, sp_run, sp_wt, sp_man, rc_g, rcpt = _seal_case(
+                "forged-state")
+            with _run_dir_lock(sp_run):
+                _st = _load_state(sp_run)
+                _st["jobs"]["w1"]["merged"] = {
+                    "integrated": True,
+                    "realised_commit": _st["jobs"]["w1"].get("realised_commit"),
+                    "commit": "a" * 40}
+                _save_state(sp_run, _st, now="2026-09-02T00:00:00Z")
+            with _quiet():
+                rc_fin = cmd_finalize_wave([
+                    "--run-dir", sp_run, "--repo-root", sp_repo,
+                    "--manifest", sp_man, "--jobs", "w1", "--wave", "1",
+                    "--now", "2026-09-02T00:00:00Z"])
+            _rc_s, _show, _e = _git(sp_repo,
+                                    ["show", "--name-only", "--format=", "HEAD"])
+            _check("a state.json forged to integrated:true does NOT skip the merge "
+                   "— the finalizer asks git, and git had never seen the work",
+                   rc_fin == 0 and "src/work.txt" in _show, "%s / %s" % (rc_fin,
+                                                                         _show))
+
+            # (4) THE MANIFEST DIGEST. Widen the lane map after emit and every
+            # stage refuses, because each carries the digest emit baked in.
+            sp_repo, sp_run, sp_wt, sp_man, rc_g, rcpt = _seal_case("digest")
+            _plan = build_plan(_load_yaml(sp_man), sp_run, sp_repo,
+                               "/usr/bin/python3", os.path.abspath(__file__),
+                               SCOPE_CHECK_DEFAULT, FASTPATH_DEFAULT, HERE)
+            _digest = _plan["manifest_digest"]
+            _check("emit computes the manifest digest",
+                   bool(_digest) and _digest.startswith("sha256:"))
+            _js = emit_script(_plan)
+            _check("...bakes it into CFG.manifest_digest",
+                   ('"manifest_digest": "%s"' % _digest) in _js)
+            for _stage in ("gate-receipt", "record", "finalize-wave"):
+                _check("the emitted %s command carries --manifest-digest" % _stage,
+                       "--manifest-digest" in _js)
+            with open(sp_man, "a", encoding="utf-8") as fh:
+                fh.write('  - id: widened\n    isolation: direct\n'
+                         '    write_allowed:\n      - "**"\n')
+            with _quiet():
+                _rc_md = cmd_gate_receipt([
+                    "--run-dir", sp_run, "--job-id", "w1",
+                    "--repo-root", sp_repo, "--worktree", sp_wt,
+                    "--manifest", sp_man, "--mode", "worktree",
+                    "--manifest-digest", _digest])
+            _check("a manifest widened after emit ⇒ the GATE refuses", _rc_md == 2)
+            with _quiet():
+                _rc_mr = cmd_record([
+                    "--run-dir", sp_run, "--job-id", "w1", "--manifest", sp_man,
+                    "--verdict-json", json.dumps(rcpt), "--repo-root", sp_repo,
+                    "--manifest-digest", _digest])
+            _check("...RECORD refuses", _rc_mr == 2)
+            with _quiet():
+                _rc_mf = cmd_finalize_wave([
+                    "--run-dir", sp_run, "--repo-root", sp_repo,
+                    "--manifest", sp_man, "--jobs", "w1", "--wave", "1",
+                    "--manifest-digest", _digest,
+                    "--now", "2026-09-02T00:00:00Z"])
+            _check("...and the FINALIZER refuses, so nothing merges", _rc_mf != 0)
+            _rc_a, _a_out, _a_err = _run([
+                sys.executable or "python3", "-B", INTEGRATION_GATE_DEFAULT,
+                "--run-dir", sp_run, "--repo-root", sp_repo, "--manifest", sp_man,
+                "--jobs", "w1", "--json", "--manifest-digest", _digest])
+            _check("...and so does the AUTHORITY", _rc_a != 0)
+
+        # ---- THE IMPORT SURFACE ---------------------------------------------- #
+        # A job with a lane over `scripts/**` can write `scripts/yaml.py`, and this
+        # file's own `_load_yaml` would have imported it — the manifest loader
+        # shadowed by the manifest's own subject.
+        _plant_dir = os.path.join(tmp, "plant", "scripts")
+        os.makedirs(_plant_dir, exist_ok=True)
+        shutil.copyfile(os.path.abspath(__file__),
+                        os.path.join(_plant_dir, "compound-v-emit-workflow.py"))
+        with open(os.path.join(_plant_dir, "yaml.py"), "w", encoding="utf-8") as fh:
+            fh.write("def safe_load(text):\n"
+                     "    raise RuntimeError('PLANTED YAML WAS IMPORTED')\n")
+        _plant_man = os.path.join(tmp, "plant-manifest.yaml")
+        with open(_plant_man, "w", encoding="utf-8") as fh:
+            fh.write('run_id: plant\njobs:\n  - id: p\n    isolation: direct\n'
+                     '    body: "t"\n    write_allowed:\n      - "src/**"\n')
+        _rc_p, _o_p, _e_p = _run([
+            sys.executable or "python3", "-B",
+            os.path.join(_plant_dir, "compound-v-emit-workflow.py"),
+            "gate-receipt", "--run-dir", tmp, "--job-id", "p",
+            "--repo-root", tmp, "--worktree", tmp, "--manifest", _plant_man,
+            "--mode", "direct"])
+        _check("a planted scripts/yaml.py is NOT imported by the manifest loader",
+               "PLANTED YAML WAS IMPORTED" not in (_o_p + _e_p),
+               (_o_p + _e_p)[:200])
+
+        # ---- THE BYTECODE CACHE ---------------------------------------------- #
+        # The loader redirects the cache outside the tree before exec_module. When
+        # that private directory cannot be made it loads NOTHING: falling back to
+        # the default location would execute the in-tree `.pyc` the redirect
+        # exists to avoid, which is the one condition an attacker can arrange.
+        _cache_dir = os.path.join(_plant_dir, "__pycache__")
+        os.makedirs(_cache_dir, exist_ok=True)
+        with open(os.path.join(_cache_dir, "compound-v-scope-check.pyc"),
+                  "wb") as fh:
+            fh.write(b"not real bytecode")
+        _real_mkdtemp = tempfile.mkdtemp
+
+        def _no_tmp(*a, **k):
+            raise OSError("no space left on device")
+
+        tempfile.mkdtemp = _no_tmp
+        try:
+            _mod = _load_module_from_path("cv_probe", SCOPE_CHECK_DEFAULT)
+        finally:
+            tempfile.mkdtemp = _real_mkdtemp
+        _check("no private bytecode cache ⇒ the module is NOT executed",
+               _mod is None)
+        _check("...and the planted cache directory is untouched",
+               sorted(os.listdir(_cache_dir)) == ["compound-v-scope-check.pyc"])
+
         # HIGH 3 — the handoff keeps its invocation, its worktree and its pin.
         ext2 = build_plan(
             _with_body({"run_id": "r3",
@@ -5391,6 +6134,34 @@ def selftest():
         _check("an external job's implementer is told to return the WORKER's "
                "worktree, never its own pwd",
                "Never return your own `pwd`" in _implement_prompt(e1, ext2))
+
+        # --- a malformed max_turns degrades, and SAYS it degraded -------------
+        _cap, _src = job_turn_cap({"id": "mt", "tier": "deep", "max_turns": "80"})
+        _check("a quoted max_turns falls back to the tier default",
+               _cap == TURN_CAP_BY_TIER["deep"])
+        _check("...and the fallback is NOTED, not silent — a manifest that meant "
+               "to raise a cap and quoted the number got the default with no hint "
+               "its value had been discarded",
+               "not a positive integer" in _src and "'80'" in _src)
+        for _bad in (0, -1, True, 3.5):
+            _c, _s2 = job_turn_cap({"id": "mt", "tier": "light",
+                                    "max_turns": _bad})
+            _check("max_turns %r degrades to the tier default with a note"
+                   % (_bad,),
+                   _c == TURN_CAP_BY_TIER["light"]
+                   and "not a positive integer" in _s2)
+        _check("an ABSENT max_turns is not a malformed one — no note",
+               job_turn_cap({"id": "mt", "tier": "deep"})[1]
+               == "default for tier deep")
+        _check("the note reaches the rendered worker prompt's Turn cap line",
+               "not a positive integer" in render_worker_prompt(
+                   {"id": "mt", "title": "t", "tier": "deep", "max_turns": "80",
+                    "body": "b", "write_allowed": ["src/**"]}, "r"))
+        _check("the rendered Turn cap states the tier defaults execution-manifest.md "
+               "documents (deep %d)" % TURN_CAP_BY_TIER["deep"],
+               "deep %d" % TURN_CAP_BY_TIER["deep"] in render_worker_prompt(
+                   {"id": "mt", "title": "t", "tier": "deep", "body": "b",
+                    "write_allowed": ["src/**"]}, "r"))
 
         pin_dir = os.path.join(tmp, "pin-run")
         os.makedirs(pin_dir, exist_ok=True)
@@ -5438,14 +6209,31 @@ def selftest():
                "(3.4.0) — that is the only native way it carries a turn cap",
                rev_entries["impl"]["agent_type"] == impl_expected
                and impl_expected.endswith(":implementer"))
+        _impl_cap = (rev_entries["impl"].get("agent_definition") or {}).get(
+            "max_turns")
         _check("...and it carries agents/implementer.md's own maxTurns, so the "
                "cap is a definition property and not a number we invented",
-               (rev_entries["impl"].get("agent_definition") or {})
-               .get("max_turns") == 60)
+               isinstance(_impl_cap, int) and _impl_cap > 0)
         _check("a reviewer type with no registered role stays ANONYMOUS — it is "
                "not an implementer, and must never be told to write in a lane",
-               agent_role_for("integration_review") is None
+               agent_role_for("integration_review")[0] is None
                and resolve_agent_type("integration_review")[0] is None)
+        _check("...and it SAYS SO: a decline carries a reason, so 'this is a "
+               "reviewer' and 'the lookup found nothing' are not the same silence",
+               "reviewer" in (agent_role_for("integration_review")[1] or "")
+               and "reviewer" in (resolve_agent_type("integration_review")[1] or ""))
+        for _rt in ("review", "spec_review", "quality_review", "integration_review"):
+            _check("%r is matched EXACTLY as a reviewer type" % _rt,
+                   agent_role_for(_rt)[0] != DEFAULT_AGENT_ROLE)
+        _check("`review_fix` is an IMPLEMENTER, not a reviewer — the substring "
+               "match declined it, so a job that fixes what a review found "
+               "arrived with no role, no cap and none of agents/implementer.md",
+               agent_role_for("review_fix")[0] == DEFAULT_AGENT_ROLE
+               and agent_role_for("review_fix")[1] is None)
+        _check("...and neither does a type that merely contains a reviewer word",
+               agent_role_for("integration_review_followup")[0]
+               == DEFAULT_AGENT_ROLE
+               and agent_role_for("quality_review_fix")[0] == DEFAULT_AGENT_ROLE)
         ext_rev = _plan_for(_tiny_manifest(
             [{"id": "xr", "type": "review", "backend": "codex",
               "model": "gpt-5.6-sol", "isolation": "worktree",

@@ -93,15 +93,61 @@ real cost control the runtime offers, and taking it is free.
 `agent()` returns `null` when it is skipped or dies on a terminal API error. A gate that reads
 `null` as "no violations found" is unreachable exactly when the worker died.
 
-### Record is idempotent, and every commit merges at most once
+### Record is idempotent, and the merge applies a sealed patch
 
 The runtime's resume is **same-session-only** and, past a failure point, **re-runs completed
 agents** — so a finished job can implement, gate and record a second time. Idempotence on Record
 alone would still leave double commits, double worktree integration and duplicate outcome events.
 
-So the merge is keyed to an **immutable commit hash**: `state.json jobs[<id>].merged.realised_commit`.
-A second Record for the same realised commit rewrites the same result bytes and **refuses to merge
-again**.
+**The Gate seals what it approved.** `gate-receipt` writes `jobs/<id>.patch` — `git diff --cached
+--binary <baseline>` restricted to the paths the scope gate approved — and records that file's
+sha256 in its receipt. The wave finalizer applies **that artifact**, never a fresh diff of the
+live worktree.
+
+Sealing exists because the fresh diff bound nothing. The digest bound a receipt to a tree at *gate
+time*; the merge read the tree at *merge time*, and everything in between rode along:
+
+- a worktree reverted to its baseline after the gate produced an **empty** fresh diff, which the
+  finalizer read as "already landed" — the job was marked integrated and its worktree, the only
+  copy of the work, was pruned;
+- `.pytest_cache/` and friends, written by the test floor that runs *after* the scope check, made
+  the authority's re-derivation disagree with an honest receipt and refused it as `contradicted`;
+- any post-gate write to an in-lane file landed unmeasured.
+
+**And the finalizer proves the merge from git, before anything is deleted.** After the commit it
+applies the artifact to a throwaway index seeded from the baseline, reads the blob ids that
+produces, and compares them with `HEAD:<path>`. A job it cannot prove is not pruned and the wave
+does not report itself integrated. The same proof replaces the old at-most-once test: a run whose
+`state.json` says `merged.integrated: true` is skipped **only** when git agrees the content is in
+`HEAD`. `state.json` is exempt by name from the scope gate and writable by a direct worker, so it
+is a **cache**, never the authority.
+
+### The manifest is digest-bound
+
+The manifest declares every job's `write_allowed`, and it lives in the run directory the pipeline
+exempts by name from the scope gate. A job could therefore widen its own lane map mid-run, and
+every later check would run, pass, and prove nothing — it would be checking against the widened
+list.
+
+`emit` hashes `manifest.yaml` at generation time and bakes the digest into `CFG.manifest_digest`.
+Gate, Record and Finalize each carry it back as `--manifest-digest`, the finalizer forwards it to
+[`compound-v-integration-gate.py`](../../scripts/compound-v-integration-gate.py), and all four
+refuse on a mismatch. The lane map that is enforced is provably the one that was reviewed.
+
+### Enforcement imports cannot be shadowed
+
+`scripts/` is a directory a job may hold a write lane over, and CPython puts a script's own
+directory at `sys.path[0]`. A job that wrote `scripts/yaml.py` had it imported by the very
+`import yaml` that loads the manifest declaring that job's lanes. Both
+`compound-v-emit-workflow.py` and `compound-v-integration-gate.py` now drop their own directory
+and the cwd from `sys.path` **before any other import**, comparing by `realpath` (the script
+directory arrives resolved while `__file__` keeps the symlinked spelling — on macOS those differ
+for every run under a temp dir, and an `abspath` comparison silently kept the entry).
+
+They also refuse to `importlib`-load a sibling script when the private bytecode-cache directory
+cannot be created. Falling back to the default cache location would execute the in-tree
+`__pycache__` entry the redirect exists to avoid — and a full or unwritable temp dir is a
+condition an attacker can arrange, so the protection had an off switch.
 
 ---
 
@@ -148,6 +194,13 @@ verifies or re-derives every receipt before any job commit is integrated:
   refused as **contradicted** — an honest digest beside a lying `verdict: pass` is exactly the
   "schema-valid PASS having done nothing" a workflow Gate agent can produce;
 - no gateable tree, or more than one receipt for a job → fails closed.
+
+The authority also validates the **sealed patch**: where the gate's receipt document records a
+`patch_sha256`, `jobs/<id>.patch` must exist and hash to it, or the receipt is refused. That
+validation is what lets one honest disagreement stand down: when a worktree job's re-derivation
+objects only to paths the sealed artifact does not contain — post-gate test byproducts — the
+objection is noted rather than refused, because the finalizer applies the artifact and none of
+those paths can reach the project. A violation that *is* in the artifact is still a refusal.
 
 The Gate stage's job is to **produce** that receipt: `baseline_commit`, `realised_commit`,
 `diff_digest`, `verdict`, `raw_stdout`, `exit_code`. The `diff_digest` recipe is **pinned** in

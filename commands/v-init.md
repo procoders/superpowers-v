@@ -710,10 +710,12 @@ The user-level cache of what this machine can do, reused across repos:
 **Offer it; never write it.** Ask once, in plain terms, and only edit the file if the
 user says yes:
 
-> Compound V's agents are told to be concise, and the harness ships a shorter
-> system prompt that some users report reinforces that. If you want it, add
-> `"CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT": "0"` to the `env` block of your own
-> `~/.claude/settings.json`. Shall I show you the edit?
+> The harness picks between two built-in system prompts by this variable: `"1"`
+> selects the SIMPLE (short) one, `"0"` turns it off and selects the long preset —
+> the one that carries the anti-verbosity rules. Some users report that the long
+> preset reinforces the concision Compound V's agents are already told to keep. If
+> you want it, add `"CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT": "0"` to the `env` block of
+> your own `~/.claude/settings.json`. Shall I show you the edit?
 
 ```jsonc
 // ~/.claude/settings.json — the USER's file, not the project's, not the plugin's
@@ -724,14 +726,16 @@ user says yes:
 }
 ```
 
-**Where this comes from, honestly.** This is a **community claim** about a harness
-environment variable, not a documented Compound V requirement and not something this
-project has measured. We have run **no** before/after comparison of output length,
-latency or cost with it set, and we publish no number for it. It is offered because
-it is cheap to try and trivial to revert (delete the key), and it is offered rather
-than written because it changes the user's own global harness behaviour in every
-project, not just this one. If the user asks whether it helps, the honest answer is
-"we do not know; try it and judge the output yourself."
+**Where this comes from, honestly.** The variable's name and its "0"/"1" semantics
+are binary-verified — confirmed against the installed harness binary, not assumed
+from the name. What is still a **community claim**, not something this project has
+measured, is whether the long preset actually improves output: we have run **no**
+before/after comparison of length, latency or cost with it set, and we publish no
+number for it. It is offered because it is cheap to try and trivial to revert
+(delete the key), and it is offered rather than written because it changes the
+user's own global harness behaviour in every project, not just this one. If the
+user asks whether it helps, the honest answer is "we do not know; try it and judge
+the output yourself."
 
 Record nothing about it in either config file: it lives in the user's settings, and a
 copy of it in `.claude/compound-v.json` would be the machine-local-data-in-a-committed-file

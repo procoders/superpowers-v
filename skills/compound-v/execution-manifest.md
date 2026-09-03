@@ -44,7 +44,7 @@ Worked example: [`examples/manifest.example.yaml`](../../examples/manifest.examp
 | `backend` | enum | yes | `claude` \| `codex` \| `antigravity` \| `cursor` \| `devin` \| `opencode`. **Execution-layer data — NEVER appears in any frontmatter.** (`antigravity`/`cursor`/`opencode` are opt-in, lower-trust, no kernel sandbox ⇒ always `worktree`; `devin` has a Research-Preview kernel sandbox treated as unverified/no-confinement for v1 ⇒ also always `worktree`. `devin`/`opencode` are **worker-only** — never a routable arbiter/review-panel seat, since both are multi-provider brokers whose resolved model family is data-dependent.) |
 | `tier` | enum | yes¹ | `frontier` \| `deep` \| `standard` \| `light`. The **intent** the routing policy assigns; the dispatcher resolves it to a concrete model and passes it as `agent()`'s `opts.model`. Stable vocabulary that survives model churn. |
 | `effort` | enum | no | `low` \| `medium` \| `high` \| `xhigh`. Orthogonal reasoning-effort hint. Default pairing `frontier→high`, `deep→high`, `standard→medium`, `light→low`, but independently tunable per task-type. For `codex` it maps to `-c model_reasoning_effort=<effort>`; for `claude` it is advisory (the `Task` path has no separate effort flag). `xhigh` is valid **iff** `backend: codex`; every other backend rejects it with a clear error naming the rule (use `high` instead). **Effort buys thinking, not output length** — prompt for length explicitly instead. By job kind: new code and design decisions `deep`·**high**; a **fix job minted from a review finding** **medium** (the thinking is already written down in the finding); a reviewer **high** on its first pass and **medium** on a re-pass over the same diff; the pipeline's own transports **low**. See [`routing-policy.md`](routing-policy.md) § Effort by job kind. |
-| `max_turns` | integer | no | v3.4.0. Positive turn cap for this job. **Absent ⇒ the tier default: `light` 30, `standard` 50, `deep`/`frontier` 80.** For `backend: claude` the cap is carried natively by the agent DEFINITION the job is spawned as (`agents/implementer.md` declares `maxTurns: 60`; the workflow `agent()` options have no equivalent field, so an inline-definition fallback spawn loses it and logs that it did). For an external worker the value is **stated in the prompt, not enforced by any runtime** — it is a budget the worker is told. The validator accepts the key (it rejects no unknown per-job key by design). |
+| `max_turns` | integer | no | v3.4.0. Positive turn cap for this job. **Absent ⇒ the tier default: `light` 30, `standard` 50, `deep`/`frontier` 80.** A value this loader cannot read — `"80"`, `0`, `-1`, `true` — degrades to the tier default **and says so**, in the rendered prompt's `Turn cap` line and in the emit output; a manifest that meant to raise a cap and quoted the number used to get the default with no hint its value had been discarded. For `backend: claude` the cap is carried natively by the agent DEFINITION the job is spawned as (`agents/implementer.md` declares `maxTurns: 80`, matching the `deep` default above; the workflow `agent()` options have no equivalent field, so an inline-definition fallback spawn loses it and logs that it did). For an external worker the value is **stated in the prompt, not enforced by any runtime** — it is a budget the worker is told. The validator accepts the key (it rejects no unknown per-job key by design). |
 | `model` | string | no¹ | Explicit override, e.g. `opus`, `sonnet`, `gpt-5.6-sol`. When present it **skips resolution** (the manifest pins the model directly). Execution-layer data — never in frontmatter. Backward-compatible: pre-tier manifests carrying only `model` remain valid. |
 | `isolation` | enum | yes | `direct` \| `worktree`. **`run: parallel` ⇒ `worktree`** (per-job scope attribution); `direct` is only valid with `run: serial`. |
 | `run` | enum | yes | `serial` \| `parallel`. A `parallel` job MUST be `isolation: worktree` (see the rule above). |
@@ -431,6 +431,32 @@ restore what the full suite guaranteed — CI does. The union of impacted, previ
 newly-added structurally omits every existing, previously-passing test the declared map fails to
 select, so an indirect break can pass the floor and be caught only by the merge-blocking CI run. Do not
 write, anywhere, that the floor preserves pre-merge safety.
+
+---
+
+## v3.4.0 — this file is digest-bound, and the merge applies a sealed patch
+
+**The manifest is the lane map, so it is pinned.** Every `write_allowed` the pipeline enforces
+comes from this document, and this document lives in the run directory the scope gate exempts by
+name — so without a pin a job could widen its own lanes mid-run and every later check would run,
+pass, and prove nothing, because it would be checking against the widened list.
+
+`compound-v-emit-workflow.py emit` hashes `manifest.yaml` at generation time and bakes
+`sha256:<hex>` into the emitted workflow script as `CFG.manifest_digest`. `gate-receipt`, `record`
+and `finalize-wave` each receive it back as `--manifest-digest`, the finalizer forwards it to
+[`compound-v-integration-gate.py`](../../scripts/compound-v-integration-gate.py), and all four
+**refuse** when the file on disk no longer hashes to it. Editing this file mid-run is therefore not
+a silent widening; it is a halted run. Re-emit instead.
+
+**The gate seals what it approved.** `gate-receipt` writes `jobs/<id>.patch` — the binary diff of
+the approved paths against the pinned baseline — and records its sha256 in
+`receipts/<id>.gate.json`. The integration authority refuses a receipt whose artifact is missing or
+no longer hashes to that value, and the wave finalizer applies **that file**, never a fresh diff of
+the live worktree. After the commit it proves from git that `HEAD:<path>` equals the artifact's
+post-image for every path, and only then retires the worktree; `state.json`'s `merged.integrated`
+is a cache consulted after that proof, never in place of it. What this buys, concretely: a worktree
+reverted after the gate is refused rather than merged-as-nothing and deleted, and a byproduct a
+test wrote after the gate cannot ride into the commit.
 
 ---
 

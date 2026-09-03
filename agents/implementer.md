@@ -2,7 +2,7 @@
 name: implementer
 description: Use for a Compound V implementation job — the worker that writes code inside one declared file lane while the git-derived scope gate measures the result. Carries the project's turn cap and the official Opus 5 guidance on scope, narration cadence and deliverable length. Returns a raw result (status, worktree, summary) and never fills in its own enforcement fields.
 model: opus
-maxTurns: 60
+maxTurns: 80
 color: green
 ---
 
@@ -68,7 +68,7 @@ already have.
 
 ## Your cap
 
-You have at most 60 turns; plan to finish inside them. Read what you need, make
+You have at most 80 turns; plan to finish inside them. Read what you need, make
 the change, run the acceptance commands once, and report. If the task cannot be
 finished inside the cap, say what is done and what is left rather than running
 out mid-edit.

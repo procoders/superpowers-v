@@ -98,22 +98,64 @@ Python 3.9-safe, stdlib only (PyYAML is used when present, via the repo's
 existing loader, which falls back to its own mini-parser).
 """
 
-import argparse
-import hashlib
-import json
 import os
-import re
-import shutil
-import subprocess
 import sys
-import tempfile
 
 # Nobody writes bytecode. The scope gate forgives no path by extension (fourth
 # review pass, 2026-09-02), so a `__pycache__` entry this authority leaves beside
 # a script is an out-of-lane write that BLOCKS the job it just judged. Set before
-# the importlib load of the scope-gate matcher below, which is exactly when a
-# cache entry would otherwise be written.
+# ANY other import, and long before the importlib load of the scope-gate matcher
+# below, which is exactly when a cache entry would otherwise be written.
 sys.dont_write_bytecode = True
+
+
+def _harden_sys_path():
+    """Drop this script's own directory and the cwd from ``sys.path``.
+
+    CPython puts the script's directory at ``sys.path[0]``, and this authority
+    lives in ``scripts/`` — a directory a gated job may hold a write lane over. A
+    job that writes ``scripts/yaml.py`` would otherwise have it imported HERE, by
+    the `import yaml` in ``load_manifest``, and the manifest is the document that
+    declares every job's ``write_allowed``. A shadowed loader could therefore
+    hand this authority a WIDENED lane list and be judged compliant against it.
+    The cwd (``''``) is removed for the same reason on ``-c``/``-m`` invocations.
+
+    The scope matcher this file genuinely needs is loaded by explicit path, never
+    by name, so removing these entries costs nothing.
+    """
+    # REALPATH, not abspath. CPython puts the RESOLVED script directory on the
+    # path while `__file__` keeps the symlinked spelling, so on macOS — where
+    # /var is a symlink to /private/var — the two disagree for every run under a
+    # temp directory and the entry survived. Caught by this file's own planted-
+    # `scripts/yaml.py` selftest, which imported the plant and reported the run
+    # compliant against a lane list of `**`.
+    def _resolve(path):
+        return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+
+    doomed = {_resolve(os.path.dirname(os.path.abspath(__file__))),
+              _resolve(os.getcwd())}
+    kept = []
+    for entry in sys.path:
+        try:
+            resolved = _resolve(entry) if entry else _resolve(os.getcwd())
+        except Exception:  # noqa: BLE001
+            kept.append(entry)
+            continue
+        if resolved in doomed:
+            continue
+        kept.append(entry)
+    sys.path[:] = kept
+
+
+_harden_sys_path()
+
+import argparse  # noqa: E402
+import hashlib  # noqa: E402
+import json  # noqa: E402
+import re  # noqa: E402
+import shutil  # noqa: E402
+import subprocess  # noqa: E402
+import tempfile  # noqa: E402
 
 HEX_COMMIT = re.compile(r"^[0-9a-f]{40}([0-9a-f]{24})?$")
 DIGEST = re.compile(r"^[a-z0-9]+:[0-9a-f]+$")
@@ -370,6 +412,169 @@ def receipt_is_missing(receipt):
     if receipt["verdict"] not in VERDICTS:
         return True
     return False
+
+
+def load_scope_matcher(scope_check):
+    """(``is_allowed`` callable, error) — the scope gate's OWN matcher, from source.
+
+    A verifier that matches differently from the gate is a verifier that can
+    disagree with it for reasons neither of them is about, so the matcher is
+    never reimplemented here; it is loaded out of
+    ``scripts/compound-v-scope-check.py`` itself.
+
+    It is loaded FROM SOURCE, never from a cache beside it. A forged
+    ``scripts/__pycache__/compound-v-scope-check.<tag>.pyc`` — an unchecked
+    hash-based one, which CPython never validates against its source — would
+    otherwise execute HERE, in this process, and could hand back an
+    ``is_allowed`` that returns True for every path. ``sys.pycache_prefix`` moves
+    both the read and the write of that cache to a private directory outside the
+    tree.
+
+    AND IF THAT PRIVATE DIRECTORY CANNOT BE CREATED, NOTHING IS LOADED. The first
+    version swallowed the mkdtemp failure and executed the module under the
+    DEFAULT cache location — the in-tree ``__pycache__`` the redirect exists to
+    avoid. A full or unwritable temp dir is a condition an attacker can arrange,
+    so the protection had an off switch. This fails closed with a reason instead.
+    """
+    prev_prefix = getattr(sys, "pycache_prefix", None)
+    tmp_pycache = None
+    module = None
+    try:
+        import importlib.util as _ilu
+        try:
+            tmp_pycache = tempfile.mkdtemp(prefix="cv-pycache-")
+            sys.pycache_prefix = tmp_pycache
+        except Exception as exc:  # noqa: BLE001
+            return None, (
+                "refusing to import the scope matcher without a private bytecode "
+                "cache (%s): the default cache is the in-tree __pycache__ a forged "
+                ".pyc would be planted in" % exc
+            )
+        spec = _ilu.spec_from_file_location("cv_scope_check", scope_check)
+        if not (spec and spec.loader):
+            return None, "no import spec for %s" % scope_check
+        module = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except Exception as exc:  # noqa: BLE001
+        return None, "loading %s raised: %s" % (scope_check, exc)
+    finally:
+        try:
+            sys.pycache_prefix = prev_prefix
+        except Exception:  # noqa: BLE001
+            pass
+        if tmp_pycache:
+            shutil.rmtree(tmp_pycache, ignore_errors=True)
+    fn = getattr(module, "is_allowed", None)
+    if not callable(fn):
+        return None, "%s defines no is_allowed()" % scope_check
+    return fn, None
+
+
+# --------------------------------------------------------------------------- #
+# the SEALED PATCH artifact
+#
+# A digest binds a receipt to a tree at gate time. It does not stop that tree
+# from moving afterwards, and the merge used to take a FRESH diff of the live
+# worktree — so whatever the tree said at merge time is what landed, gate or no
+# gate. Three real shapes came out of that: a worktree reverted to baseline
+# merged as "nothing to do" and was pruned; test byproducts written after the
+# gate turned an honest pass into a `contradicted`; and any post-gate write to an
+# in-lane file rode into the commit unmeasured.
+#
+# So the gate SEALS what it approved: `jobs/<id>.patch`, the binary diff of the
+# approved paths against the pinned baseline, with its sha256 recorded in the
+# gate's receipt document. The authority validates the artifact against that
+# digest, and the finalizer applies THAT ARTIFACT — never a fresh diff.
+# --------------------------------------------------------------------------- #
+def patch_artifact_path(run_dir, job_id):
+    return os.path.join(run_dir, "jobs", "%s.patch" % job_id)
+
+
+def sha256_file(path):
+    """``sha256:<64hex>`` of a file's raw bytes, or None when it cannot be read."""
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(65536), b""):
+                h.update(chunk)
+        return "sha256:" + h.hexdigest()
+    except (IOError, OSError):
+        return None
+
+
+def gate_receipt_document(run_dir, job_id):
+    """``receipts/<id>.gate.json`` — the gate's own document, or None.
+
+    The six-field ``gate_receipt`` inside ``results/<id>.json`` is pinned by
+    ``schemas/job_result.schema.json`` with ``additionalProperties: false``, so
+    the sealed-patch digest cannot live there. It lives in the gate's receipt
+    document, and the two are BOUND: the authority refuses a pair that disagrees
+    about the diff digest or the baseline, which is what stops a rewritten
+    receipt document from sealing content the result never claimed.
+    """
+    doc, _err = load_json(os.path.join(run_dir, "receipts", "%s.gate.json" % job_id))
+    return doc if isinstance(doc, dict) else None
+
+
+def sealed_patch_faults(run_dir, job_id, receipt, gate_doc):
+    """(faults, sealed_digest). Empty faults + a digest ⇒ a validated artifact.
+
+    A gate document that records no ``patch_sha256`` is an OLDER receipt, from
+    before sealing existed: no artifact is required and none is trusted. A gate
+    document that DOES record one must be backed by a file that hashes to it.
+    """
+    if not isinstance(gate_doc, dict):
+        return [], None
+    declared = gate_doc.get("patch_sha256")
+    if not (isinstance(declared, str) and DIGEST.match(declared or "")):
+        return [], None
+    faults = []
+    for field in ("diff_digest", "baseline_commit"):
+        theirs, ours = gate_doc.get(field), receipt.get(field)
+        if theirs and ours and theirs != ours:
+            faults.append(
+                "sealed patch: receipts/%s.gate.json reports %s %s but the result's "
+                "receipt claims %s — the two halves of one receipt disagree"
+                % (job_id, field, theirs, ours)
+            )
+    path = patch_artifact_path(run_dir, job_id)
+    if not os.path.isfile(path):
+        faults.append(
+            "sealed patch: the receipt records patch_sha256 %s but jobs/%s.patch is "
+            "missing — the merge applies that artifact, so an absent one is refused "
+            "rather than replaced by a fresh diff of a tree that has moved"
+            % (declared, job_id)
+        )
+        return faults, None
+    actual = sha256_file(path)
+    if actual != declared:
+        faults.append(
+            "sealed patch: jobs/%s.patch hashes to %s, not the %s the receipt "
+            "records — the artifact was replaced after the gate sealed it"
+            % (job_id, actual, declared)
+        )
+        return faults, None
+    return faults, declared
+
+
+def patch_paths(patch_bytes):
+    """Repo-relative paths a `git diff --binary` patch touches, best effort."""
+    paths = []
+    for line in (patch_bytes or b"").splitlines():
+        if not line.startswith(b"+++ ") and not line.startswith(b"--- "):
+            continue
+        raw = line[4:].strip()
+        if raw == b"/dev/null":
+            continue
+        try:
+            text = raw.decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001
+            continue
+        if text.startswith(("a/", "b/")):
+            text = text[2:]
+        if text and text not in paths:
+            paths.append(text)
+    return paths
 
 
 def head_moved_under_job(receipt, observed_head, root=None):
@@ -650,34 +855,12 @@ def evaluate_job(job, state_job, run_dir, repo_root, scope_check):
             # `sys.pycache_prefix` moves both the read and the write of that cache
             # to a private directory outside the tree, so the in-tree entry is
             # never consulted (fourth review pass, item 1, 2026-09-02).
-            _sc = None
-            _prev_prefix = getattr(sys, "pycache_prefix", None)
-            _tmp_pycache = None
-            try:
-                import importlib.util as _ilu
-                try:
-                    _tmp_pycache = tempfile.mkdtemp(prefix="cv-pycache-")
-                    sys.pycache_prefix = _tmp_pycache
-                except Exception:  # noqa: BLE001
-                    _tmp_pycache = None
-                _spec = _ilu.spec_from_file_location("cv_scope_check", scope_check)
-                if _spec and _spec.loader:
-                    _sc = _ilu.module_from_spec(_spec)
-                    _spec.loader.exec_module(_sc)
-            except Exception:  # noqa: BLE001
-                _sc = None
-            finally:
-                try:
-                    sys.pycache_prefix = _prev_prefix
-                except Exception:  # noqa: BLE001
-                    pass
-                if _tmp_pycache:
-                    shutil.rmtree(_tmp_pycache, ignore_errors=True)
-            _m_fn = getattr(_sc, "is_allowed", None) if _sc else None
+            _m_fn, _m_err = load_scope_matcher(scope_check)
             if _m_fn is None:
                 in_lane = False
                 out["notes"].append(
-                    "could not load the scope matcher to check the merge's lanes")
+                    "could not load the scope matcher to check the merge's lanes: %s"
+                    % _m_err)
             else:
                 in_lane = bool(touched) and any(_m_fn(p, allow_globs)
                                                 for p in touched)
@@ -824,6 +1007,16 @@ def evaluate_job(job, state_job, run_dir, repo_root, scope_check):
         return out
 
     faults = receipt_binding_faults(receipt, pinned, observed_head, observed_digest)
+    # THE SEALED ARTIFACT IS PART OF THE RECEIPT, and it is checked here so a
+    # missing or replaced one refuses on the same path a wrong digest does. It is
+    # appended AFTER the binding faults deliberately: a sealed-patch fault does
+    # not start with `realised_commit ` or `diff_digest `, so it can never be
+    # excused by the stale/race branch below.
+    _gate_doc = gate_receipt_document(run_dir, job_id)
+    _seal_faults, _sealed = sealed_patch_faults(run_dir, job_id, receipt, _gate_doc)
+    faults = faults + _seal_faults
+    if _sealed:
+        out["sealed_patch"] = _sealed
     if faults:
         # Refused OUTRIGHT. No re-derivation: a present-but-wrong receipt is a
         # forged claim, and re-deriving would hand it a second chance at clean.
@@ -876,6 +1069,41 @@ def evaluate_job(job, state_job, run_dir, repo_root, scope_check):
     out["violations"] = _violations_of(raw)
 
     if verdict != receipt["verdict"]:
+        # THE ARTIFACT, NOT THE LIVE TREE, IS WHAT LANDS — and that settles one
+        # disagreement honestly rather than by forgiving a path.
+        #
+        # `gate-receipt` runs the test floor AFTER the scope check, on purpose, so
+        # a coverage dir or `.pytest_cache/` written by those tests exists by the
+        # time this authority re-derives. `git add -A` honours .gitignore, so the
+        # digest never saw them and the receipt still binds; the scope gate
+        # deliberately DOES see ignored paths, so the re-derivation reports them
+        # and an honest pass read as `contradicted`. Dogfooded, twice.
+        #
+        # A path that is not in the sealed patch cannot reach the project: the
+        # finalizer applies the artifact and nothing else. So when the artifact
+        # validates, the job ran in its own worktree, and EVERY newly objected-to
+        # path is outside that artifact, the disagreement is about a tree nobody
+        # will merge. Note it, do not refuse it. If even one violation IS in the
+        # artifact, this does not apply and the contradiction stands.
+        if (_sealed and mode == "worktree" and receipt["verdict"] == "pass"
+                and verdict == "blocked"):
+            try:
+                with open(patch_artifact_path(run_dir, job_id), "rb") as _fh:
+                    _sealed_paths = set(patch_paths(_fh.read()))
+            except (IOError, OSError):
+                _sealed_paths = None
+            if _sealed_paths is not None and out["violations"] and all(
+                    v not in _sealed_paths for v in out["violations"]):
+                out["verdict"] = "pass"
+                out["notes"].append(
+                    "the re-derivation objects to %d path(s) that appeared after the "
+                    "gate sealed its patch (%s) and that the sealed artifact does not "
+                    "contain. The finalizer applies the artifact, never a fresh diff, "
+                    "so none of them can reach the project — this is not a "
+                    "contradiction about anything that will be merged."
+                    % (len(out["violations"]), ", ".join(out["violations"][:5]))
+                )
+                return out
         out["verdict"] = "contradicted"
         out["reasons"].append(
             "receipt claims verdict %r but the same tree derives %r — the digest "
@@ -912,11 +1140,39 @@ def _violations_of(raw):
 # --------------------------------------------------------------------------- #
 # run-level evaluation
 # --------------------------------------------------------------------------- #
-def evaluate_run(run_dir, repo_root, scope_check, manifest_path=None, only=None):
+def evaluate_run(run_dir, repo_root, scope_check, manifest_path=None, only=None,
+                 manifest_digest=None):
     """Evaluate every job (or ``only``) and return the report dict."""
     manifest_path = manifest_path or os.path.join(run_dir, "manifest.yaml")
     if not os.path.isfile(manifest_path):
         raise RuntimeError("manifest not found: %s" % manifest_path)
+    # THE MANIFEST IS THE LANE MAP, so it is verified before it is believed.
+    #
+    # Every `write_allowed` this authority judges a job against comes from this
+    # file, and the file sits in a run directory the pipeline exempts by name from
+    # the scope gate. A job that widens its own lanes here would be judged
+    # compliant against the widened list — the check would run, pass, and prove
+    # nothing. `emit` bakes sha256(manifest.yaml) into the workflow script at
+    # generation time and every later stage carries it forward, so the manifest
+    # that is enforced is provably the manifest that was reviewed.
+    if manifest_digest:
+        actual = sha256_file(manifest_path)
+        if actual != manifest_digest:
+            return {
+                "integration": "refused",
+                "run_dir": os.path.abspath(run_dir),
+                "manifest": os.path.abspath(manifest_path),
+                "jobs_evaluated": 0,
+                "tally": {"manifest_digest_mismatch": 1},
+                "refused": sorted(only) if only else ["<all jobs>"],
+                "results": [],
+                "reason": (
+                    "manifest %s hashes to %s, not the %s this run was emitted "
+                    "against. The manifest declares every job's write_allowed, so a "
+                    "lane map that changed after emit is refused rather than "
+                    "enforced." % (manifest_path, actual, manifest_digest)
+                ),
+            }
     manifest = load_manifest(manifest_path)
     if not isinstance(manifest, dict) or not isinstance(manifest.get("jobs"), list):
         raise RuntimeError("manifest %s has no jobs list" % manifest_path)
@@ -971,6 +1227,9 @@ def evaluate_run(run_dir, repo_root, scope_check, manifest_path=None, only=None)
 def render_human(report, stream):
     stream.write("\nIntegration authority — spec D1 (git-derived postcondition)\n")
     stream.write("run: %s\n\n" % report["run_dir"])
+    if not report["results"] and report.get("reason"):
+        stream.write("INTEGRATION REFUSED — %s\n" % report["reason"])
+        return
     width = max([len(e["job"]) for e in report["results"]] + [3])
     for e in report["results"]:
         stream.write(
@@ -1013,6 +1272,11 @@ def build_parser():
     p.add_argument("--manifest", help="manifest path (default: <run-dir>/manifest.yaml)")
     p.add_argument("--scope-check", help="path to compound-v-scope-check.py")
     p.add_argument("--jobs", help="comma-separated job ids to evaluate (default: all)")
+    p.add_argument("--manifest-digest",
+                   help="sha256:<hex> the manifest MUST hash to. Baked into the "
+                        "emitted workflow script at generation time; a mismatch "
+                        "refuses integration rather than enforcing a lane map that "
+                        "changed after review.")
     p.add_argument("--json", action="store_true", help="emit only the JSON report")
     p.add_argument("--selftest", action="store_true", help="run built-in tests")
     return p
@@ -1051,7 +1315,8 @@ def main(argv):
 
     try:
         report = evaluate_run(
-            args.run_dir, repo_root, scope_check, args.manifest, only
+            args.run_dir, repo_root, scope_check, args.manifest, only,
+            manifest_digest=args.manifest_digest,
         )
     except (RuntimeError, IOError, OSError, ValueError) as exc:
         print(
@@ -1649,6 +1914,252 @@ def _selftest():
             rep["results"][0]["verdict"] == "blocked"
             and "scripts/laundered.py" in rep["results"][0]["violations"],
         )
+        # ---------- THE SEALED PATCH ARTIFACT ------------------------------ #
+        # The digest binds a receipt to a tree at gate time; the artifact binds
+        # the MERGE to that same tree. An artifact that is missing, or that no
+        # longer hashes to what the receipt recorded, is refused — the finalizer
+        # applies that file, so there is nothing left to apply.
+        def seal(wt, run_dir, receipt, paths, corrupt=None, drop=False):
+            """Write receipts/job-a.gate.json + jobs/job-a.patch for a case."""
+            os.makedirs(os.path.join(run_dir, "receipts"), exist_ok=True)
+            os.makedirs(os.path.join(run_dir, "jobs"), exist_ok=True)
+            idx = os.path.join(tmp, "seal-index")
+            if os.path.exists(idx):
+                os.remove(idx)
+            env = {"GIT_INDEX_FILE": idx}
+            _git_bytes(wt, ["read-tree", base], env=env)
+            _git_bytes(wt, ["add", "-A"], env=env)
+            args = ["diff", "--cached", "--binary", base, "--"] + list(paths)
+            _rc, blob, _e = _git_bytes(wt, args, env=env)
+            if corrupt:
+                blob = blob + corrupt
+            digest = "sha256:" + hashlib.sha256(blob).hexdigest()
+            if not drop:
+                with open(patch_artifact_path(run_dir, "job-a"), "wb") as fh:
+                    fh.write(blob)
+            doc = dict(receipt)
+            doc["patch_sha256"] = digest
+            with open(os.path.join(run_dir, "receipts", "job-a.gate.json"),
+                      "w") as fh:
+                json.dump(doc, fh)
+            return digest
+
+        wt, run_dir = fresh_case(
+            "sealed-ok", lambda w: write(w, "scripts/allowed.py", "1\n"))
+        r_ok = _honest_receipt(scope_check, wt, base, allow)
+        _put_result(run_dir, "job-a", _result(wt, receipt=r_ok))
+        seal(wt, run_dir, r_ok, ["scripts/allowed.py"])
+        rep = evaluate_run(run_dir, repo, scope_check)
+        expect("a receipt whose sealed patch is present and intact ⇒ pass",
+               rep["results"][0]["verdict"] == "pass")
+
+        wt, run_dir = fresh_case(
+            "sealed-gone", lambda w: write(w, "scripts/allowed.py", "1\n"))
+        r_g = _honest_receipt(scope_check, wt, base, allow)
+        _put_result(run_dir, "job-a", _result(wt, receipt=r_g))
+        seal(wt, run_dir, r_g, ["scripts/allowed.py"], drop=True)
+        rep = evaluate_run(run_dir, repo, scope_check)
+        expect("a receipt that records a sealed patch but has none ⇒ refused",
+               rep["results"][0]["verdict"] == "forged")
+        expect("...and the refusal names the missing artifact",
+               any("jobs/job-a.patch is missing" in r
+                   for r in rep["results"][0]["reasons"]))
+
+        wt, run_dir = fresh_case(
+            "sealed-swapped", lambda w: write(w, "scripts/allowed.py", "1\n"))
+        r_s = _honest_receipt(scope_check, wt, base, allow)
+        _put_result(run_dir, "job-a", _result(wt, receipt=r_s))
+        seal(wt, run_dir, r_s, ["scripts/allowed.py"])
+        with open(patch_artifact_path(run_dir, "job-a"), "ab") as fh:
+            fh.write(b"\n# swapped after sealing\n")
+        rep = evaluate_run(run_dir, repo, scope_check)
+        expect("an artifact replaced after sealing ⇒ refused, never re-derived",
+               rep["results"][0]["verdict"] == "forged")
+        expect("...and it is not excused as a race: only realised_commit and "
+               "diff_digest faults may be, and this is neither",
+               any("was replaced after the gate sealed it" in r
+                   for r in rep["results"][0]["reasons"]))
+
+        # A gate document that disagrees with the result's own receipt is not a
+        # second opinion; it is one receipt whose halves contradict each other.
+        wt, run_dir = fresh_case(
+            "sealed-split", lambda w: write(w, "scripts/allowed.py", "1\n"))
+        r_sp = _honest_receipt(scope_check, wt, base, allow)
+        _put_result(run_dir, "job-a", _result(wt, receipt=r_sp))
+        seal(wt, run_dir, dict(r_sp, diff_digest="sha256:" + "9" * 64),
+             ["scripts/allowed.py"])
+        rep = evaluate_run(run_dir, repo, scope_check)
+        expect("a gate document that disagrees with the result's receipt ⇒ refused",
+               rep["results"][0]["verdict"] == "forged")
+
+        # ---------- (b) POST-GATE TEST BYPRODUCTS -------------------------- #
+        # `gate-receipt` runs the test floor AFTER the scope check, so a
+        # `.pytest_cache/` written by those tests exists by the time this
+        # authority looks. `git add -A` honours .gitignore so the digest never
+        # saw it and the receipt still binds; the scope gate deliberately DOES
+        # see ignored paths, so the re-derivation objects and an honest pass
+        # read as `contradicted`. The artifact settles it: that path is not in
+        # the sealed patch, so nothing will merge it.
+        write(repo, ".gitignore", ".pytest_cache/\n")
+        _sh(repo, "git", "add", "-A")
+        _sh(repo, "git", "commit", "-q", "-m", "ignore pytest cache")
+        ign_base = _sh(repo, "git", "rev-parse", "HEAD").strip()
+
+        def ign_case(name):
+            wt = os.path.join(tmp, "wt-" + name)
+            _sh(repo, "git", "worktree", "add", "-q", "--detach", wt, ign_base)
+            write(wt, "scripts/allowed.py", "1\n")
+            run_dir = os.path.join(tmp, "run-" + name)
+            _write_run(run_dir, wt, ign_base)
+            rcpt = _honest_receipt(scope_check, wt, ign_base, allow)
+            _put_result(run_dir, "job-a", _result(wt, receipt=rcpt))
+            return wt, run_dir, rcpt
+
+        wt, run_dir, rcpt = ign_case("byproducts")
+        idx = os.path.join(tmp, "seal-index-b")
+        if os.path.exists(idx):
+            os.remove(idx)
+        _git_bytes(wt, ["read-tree", ign_base], env={"GIT_INDEX_FILE": idx})
+        _git_bytes(wt, ["add", "-A"], env={"GIT_INDEX_FILE": idx})
+        _rc, blob, _e = _git_bytes(
+            wt, ["diff", "--cached", "--binary", ign_base, "--",
+                 "scripts/allowed.py"], env={"GIT_INDEX_FILE": idx})
+        os.makedirs(os.path.join(run_dir, "receipts"), exist_ok=True)
+        os.makedirs(os.path.join(run_dir, "jobs"), exist_ok=True)
+        with open(patch_artifact_path(run_dir, "job-a"), "wb") as fh:
+            fh.write(blob)
+        with open(os.path.join(run_dir, "receipts", "job-a.gate.json"), "w") as fh:
+            json.dump(dict(rcpt, patch_sha256="sha256:"
+                           + hashlib.sha256(blob).hexdigest()), fh)
+        # Only NOW, after the gate sealed its patch, do the tests run.
+        write(wt, ".pytest_cache/CACHEDIR.TAG", "Signature: 8a477f597d28d172\n")
+        write(wt, ".pytest_cache/v/cache/lastfailed", "{}\n")
+        rep = evaluate_run(run_dir, repo, scope_check)
+        expect("ignored byproducts written after the gate do NOT contradict the "
+               "receipt — the authority validates the artifact, and they are not "
+               "in it",
+               rep["results"][0]["verdict"] == "pass")
+        expect("...and the reason is recorded rather than the paths forgiven",
+               any("sealed artifact does not contain" in n
+                   for n in rep["results"][0]["notes"]))
+
+        # The leniency is exactly that narrow: a violation INSIDE the artifact is
+        # still a contradiction.
+        wt, run_dir, rcpt = ign_case("byproducts-inlane")
+        write(wt, "scripts/sneaky.py", "pwn\n")
+        idx = os.path.join(tmp, "seal-index-c")
+        if os.path.exists(idx):
+            os.remove(idx)
+        _git_bytes(wt, ["read-tree", ign_base], env={"GIT_INDEX_FILE": idx})
+        _git_bytes(wt, ["add", "-A"], env={"GIT_INDEX_FILE": idx})
+        _rc, blob, _e = _git_bytes(
+            wt, ["diff", "--cached", "--binary", ign_base, "--",
+                 "scripts/allowed.py", "scripts/sneaky.py"],
+            env={"GIT_INDEX_FILE": idx})
+        os.makedirs(os.path.join(run_dir, "receipts"), exist_ok=True)
+        os.makedirs(os.path.join(run_dir, "jobs"), exist_ok=True)
+        with open(patch_artifact_path(run_dir, "job-a"), "wb") as fh:
+            fh.write(blob)
+        with open(os.path.join(run_dir, "receipts", "job-a.gate.json"), "w") as fh:
+            json.dump(dict(rcpt, patch_sha256="sha256:"
+                           + hashlib.sha256(blob).hexdigest()), fh)
+        rep = evaluate_run(run_dir, repo, scope_check)
+        expect("a violation that IS in the sealed patch is still a refusal",
+               rep["results"][0]["verdict"] in ("forged", "contradicted"))
+
+        # ---------- THE MANIFEST DIGEST ------------------------------------ #
+        # The manifest is the lane map. It lives in a run directory the pipeline
+        # exempts by name from the scope gate, so a job could widen its own lanes
+        # and every later check would agree with the widened list.
+        wt, run_dir = fresh_case(
+            "mdigest", lambda w: write(w, "scripts/allowed.py", "1\n"))
+        _put_result(run_dir, "job-a", _result(wt, omit_receipt=True))
+        man = os.path.join(run_dir, "manifest.yaml")
+        good_digest = sha256_file(man)
+        rep = evaluate_run(run_dir, repo, scope_check, manifest_digest=good_digest)
+        expect("the run's own manifest satisfies its digest",
+               rep["integration"] == "permitted")
+        with open(man, "a") as fh:
+            fh.write('      - "**"\n')
+        rep = evaluate_run(run_dir, repo, scope_check, manifest_digest=good_digest)
+        expect("a manifest widened after emit is REFUSED, not enforced",
+               rep["integration"] == "refused")
+        expect("...and the refusal says the lane map changed",
+               "write_allowed" in (rep.get("reason") or ""))
+
+        # ---------- THE IMPORT SURFACE ------------------------------------- #
+        # A job with a lane over `scripts/**` can write `scripts/yaml.py`. Until
+        # sys.path[0] was removed, THIS process imported it — from the very
+        # `import yaml` that loads the manifest declaring that job's lanes.
+        plug = os.path.join(tmp, "planted", "scripts")
+        os.makedirs(plug)
+        for name in ("compound-v-integration-gate.py", "compound-v-scope-check.py",
+                     "compound-v-validate-manifest.py"):
+            src = os.path.join(here, name)
+            if os.path.exists(src):
+                shutil.copyfile(src, os.path.join(plug, name))
+        with open(os.path.join(plug, "yaml.py"), "w") as fh:
+            fh.write(
+                "def safe_load(text):\n"
+                "    return {'version': 1, 'run_id': 'gate-test', 'jobs': [\n"
+                "        {'id': 'job-a', 'title': 'widened', 'backend': 'claude',\n"
+                "         'isolation': 'worktree', 'write_allowed': ['**']}]}\n"
+                "def safe_dump(*a, **k):\n"
+                "    raise RuntimeError('planted')\n"
+            )
+        wt, run_dir = fresh_case(
+            "planted",
+            lambda w: (write(w, "scripts/allowed.py", "1\n"),
+                       write(w, "scripts/sneaky.py", "pwn\n")))
+        _put_result(run_dir, "job-a", _result(wt, omit_receipt=True))
+        proc = subprocess.run(
+            [sys.executable, "-B", os.path.join(plug, "compound-v-integration-gate.py"),
+             "--run-dir", run_dir, "--repo-root", repo, "--json"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            universal_newlines=True)
+        try:
+            planted_rep = json.loads(proc.stdout)
+        except ValueError:
+            planted_rep = {}
+        if (planted_rep.get("results") or [{}])[0].get("verdict") != "blocked":
+            print("      planted stdout: %s" % proc.stdout[:400])
+            print("      planted stderr: %s" % proc.stderr[:400])
+        expect("a planted scripts/yaml.py does NOT widen the lane map the "
+               "authority enforces",
+               (planted_rep.get("results") or [{}])[0].get("verdict") == "blocked",
+               )
+        expect("...and the out-of-lane write is still named",
+               "scripts/sneaky.py" in
+               ((planted_rep.get("results") or [{}])[0].get("violations") or []))
+
+        # ---------- THE BYTECODE CACHE ------------------------------------- #
+        # The matcher is loaded from source with the cache redirected outside the
+        # tree. When that private directory cannot be made, NOTHING is loaded:
+        # falling back to the default cache location would execute exactly the
+        # in-tree `.pyc` the redirect exists to avoid.
+        planted_cache = os.path.join(plug, "__pycache__")
+        os.makedirs(planted_cache, exist_ok=True)
+        with open(os.path.join(planted_cache, "compound-v-scope-check.pyc"),
+                  "wb") as fh:
+            fh.write(b"not real bytecode")
+        real_mkdtemp = tempfile.mkdtemp
+
+        def _no_tmp(*a, **k):
+            raise OSError("no space left on device")
+
+        tempfile.mkdtemp = _no_tmp
+        try:
+            fn, why = load_scope_matcher(os.path.join(plug,
+                                                      "compound-v-scope-check.py"))
+        finally:
+            tempfile.mkdtemp = real_mkdtemp
+        expect("no private bytecode cache ⇒ the matcher is NOT executed",
+               fn is None)
+        expect("...and it fails closed WITH a reason, not silently",
+               "private bytecode cache" in (why or ""))
+        expect("...and nothing was written into the planted cache directory",
+               sorted(os.listdir(planted_cache)) == ["compound-v-scope-check.pyc"])
+
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

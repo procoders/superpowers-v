@@ -49,6 +49,12 @@
 #   * a path this hook cannot resolve   -> allow, log
 #   * the interpreter itself crashing   -> allow (the wrapper below discards any
 #                                         non-JSON output and exits 0)
+#   * an interpreter PROBE that runs
+#     out of its budget                 -> allow, log, say so once, and STOP
+#                                         probing (eighth pass, H3)
+#   * the private bytecode-cache dir
+#     cannot be created                 -> allow, log, say so, and load NOTHING
+#                                         (eighth pass, H2)
 # Only a POSITIVELY IDENTIFIED, fully resolved, out-of-lane path denies.
 #
 # COST
@@ -56,6 +62,25 @@
 # PreToolUse hooks share a tight time budget, so every path here is bounded: at
 # most 8 run directories are inspected, resolution stops at the first match, and
 # the manifest is only parsed AFTER a job has been resolved.
+#
+# EVERY EXTERNAL PROCESS IS BOUNDED TOO, as of the eighth pass (H3): an
+# interpreter probe gets CV_PROBE_TIMEOUT (0.9 s, sub-second on purpose against a
+# ~25 ms ordinary probe), a delegated manifest parse gets _PARSE_BUDGET_S (5 s),
+# and the registration in hooks/hooks.json carries `timeout: 10` so the harness
+# has a bound of its own even if this file grows a path that forgets one. A probe
+# that runs out of budget stops the ladder, says so once, and allows.
+#
+# THE LOG IS BOUNDED IN THE OTHER SENSE TOO (eighth pass, item 6). The
+# interpreter line names the chosen interpreter on every path, which is the only
+# way the viability ladder is observable — but it is written ONCE PER SESSION,
+# not once per call, keyed by a marker beside the log. MEASURED, 50 invocations
+# in one session on this machine (2026-09-03):
+#   unresolved path (an ordinary session)   100 lines before -> 51 after
+#                                           (50 interpreter lines -> 1; the 50
+#                                           `ALLOW (job unresolved)` lines stay)
+#   resolved, in-lane allow                  50 lines before ->  1 after
+# The transition is still logged: a different interpreter, or a candidate newly
+# passed over, is a different message and reappears.
 #
 # RE-MEASURED 2026-09-03 (seventh review pass) on macOS 26.5.2 / arm64 with
 # /usr/bin/python3 3.9.6, 50 invocations per cell, TWO qualifying rounds, against
@@ -210,7 +235,12 @@
 #   CV_PROJECT_DIR     project root override (else CLAUDE_PROJECT_DIR, else
 #                      derived from the payload cwd)
 #   CV_SCOPE_CHECK     path to compound-v-scope-check.py
-#   CV_LANE_GUARD_LOG  log file (default $TMPDIR/compound-v-lane-guard.log).
+#   CV_PROBE_TIMEOUT   seconds one interpreter probe may take (default 0.9).
+#                      Sub-second by design: an ordinary probe answers in ~25 ms,
+#                      and this bound exists for the interpreter that HANGS.
+#   CV_LANE_GUARD_LOG  log file (default $TMPDIR/compound-v-lane-guard.log). Its
+#                      DIRECTORY is also the hook's store: the once-per-session
+#                      interpreter marker is written beside it.
 #                      Defaults OUTSIDE the repo on purpose: a guard that logs
 #                      into the worktree would create the very untracked file
 #                      the scope gate then blocks the job for.
@@ -234,6 +264,106 @@ HOOK_DIR="$(cd "$(dirname "$0")" && pwd -P 2>/dev/null || echo .)"
 : "${CV_SCOPE_CHECK:=${CLAUDE_PLUGIN_ROOT:-$HOOK_DIR/..}/scripts/compound-v-scope-check.py}"
 : "${CV_VALIDATE_MANIFEST:=${CLAUDE_PLUGIN_ROOT:-$HOOK_DIR/..}/scripts/compound-v-validate-manifest.py}"
 export CV_SCOPE_CHECK CV_VALIDATE_MANIFEST
+
+# --------------------------------------------------------------------------- #
+# Logging, the fail-open notice, and the session marker store — all defined
+# BEFORE the first thing that can fail, because every failure below has to be
+# able to say so.
+# --------------------------------------------------------------------------- #
+_CV_LOG_FILE="${CV_LANE_GUARD_LOG:-${TMPDIR:-/tmp}/compound-v-lane-guard.log}"
+# The hook's store: the directory the log lives in. In a session that is where
+# TMPDIR points; a test that redirects the log gets the markers redirected with
+# it, so a suite cleans up after itself instead of littering TMPDIR.
+_CV_LOG_DIR="${_CV_LOG_FILE%/*}"
+[ "$_CV_LOG_DIR" = "$_CV_LOG_FILE" ] && _CV_LOG_DIR="."
+
+_cv_log() {
+  # The payload's log file, resolved the same way it resolves it. Best effort:
+  # a logging failure must never influence a decision.
+  printf '%s\n' "$1" >>"$_CV_LOG_FILE" 2>/dev/null || true
+}
+
+# The fail-open notice, emitted from BASH, for the failures that happen before
+# any interpreter runs. Same wording as the payload's `open_notice`, and it must
+# stay JSON-safe: every caller below passes a literal message with no quote, no
+# backslash and no newline in it, because nothing here escapes one.
+_cv_notice() {
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"Compound V lane-guard FAILED OPEN: %s This write was NOT checked against the lane. The git-derived scope gate (scripts/compound-v-scope-check.py) is unaffected and remains the authority."}}\n' "$1"
+}
+
+# THE PAYLOAD IS READ HERE, not by the python payload, and the reason is the
+# session id: the interpreter line below is logged ONCE PER SESSION rather than
+# once per tool call, and only stdin carries the session. The bytes are handed
+# to the payload verbatim on its own stdin further down.
+CV_STDIN="$(cat 2>/dev/null)"
+
+# Pure parameter expansion, no forks: this runs on every Write/Edit/Bash call and
+# a `sed` here would cost more than the line it dedupes saves. It takes the FIRST
+# "session_id" in the payload, which is the harness's own field; a tool argument
+# that happens to contain that text would only key the marker differently, which
+# costs one extra logged line and nothing else.
+_cv_sid=""
+case "$CV_STDIN" in
+  *'"session_id"'*)
+    _cv_sid="${CV_STDIN#*\"session_id\"}"
+    _cv_sid="${_cv_sid#*:}"
+    _cv_sid="${_cv_sid#*\"}"
+    _cv_sid="${_cv_sid%%\"*}"
+    ;;
+esac
+_cv_sid="${_cv_sid//[!A-Za-z0-9_.-]/_}"
+[ -n "$_cv_sid" ] || _cv_sid="nosession"
+[ "${#_cv_sid}" -le 128 ] || _cv_sid="${_cv_sid:0:128}"
+
+# ONE INTERPRETER LINE PER SESSION, NOT PER TOOL CALL (eighth review pass,
+# 2026-09-03). Naming the chosen interpreter on every path is what makes the
+# ladder observable — see the log line below — but "every path" was implemented
+# as "every call", and a busy session writes that identical line thousands of
+# times, which buries the lines that mean something (a DENY, an unresolved
+# identity) in it. The marker holds the last message logged for this session, so
+# a repeat is skipped and a CHANGE (a different interpreter, a candidate newly
+# passed over) is logged again — the transition is the part worth seeing.
+_cv_log_once() {
+  local _mk _prev
+  _mk="$_CV_LOG_DIR/cv-lane-guard-interp.$_cv_sid"
+  _prev=""
+  if [ -f "$_mk" ]; then read -r _prev <"$_mk" 2>/dev/null || _prev=""; fi
+  [ "$_prev" = "$1" ] && return 0
+  _cv_log "$1"
+  printf '%s\n' "$1" >"$_mk" 2>/dev/null || true
+  return 0
+}
+
+# BOUNDED CAPTURE (eighth review pass, item H3, 2026-09-03). Every probe below
+# runs a foreign executable — a wrapper script, a shim, a virtualenv launcher —
+# and an executable that HANGS is not a hypothetical: a login-shell wrapper
+# waiting on a lock, an interpreter on a stalled network mount. Unbounded, the
+# probe holds a PreToolUse hook open for as long as it likes and the session
+# stalls on a component whose entire contract is to never be the reason anything
+# stalls.
+#
+# `timeout(1)` is NOT used: it is coreutils, absent from a stock macOS, and the
+# fallback would have to be this anyway. A watchdog subshell costs one fork and,
+# unlike a poll loop, adds NO latency to the ordinary probe that answers in
+# ~25 ms — there is nothing to poll, `wait` returns the moment the probe exits.
+# Both jobs are fully redirected: a background process still holding the hook's
+# stdout would keep the harness waiting for EOF long after this script exited.
+: "${CV_PROBE_TIMEOUT:=0.9}"
+_cv_bounded() {
+  # 0 = the command succeeded, 1..127 = it failed, 124 = it ran out of budget.
+  "$@" >/dev/null 2>&1 </dev/null &
+  local _pid=$!
+  ( sleep "$CV_PROBE_TIMEOUT"; kill -9 "$_pid" ) >/dev/null 2>&1 </dev/null &
+  local _wd=$!
+  wait "$_pid" 2>/dev/null
+  local _rc=$?
+  kill "$_wd" >/dev/null 2>&1
+  wait "$_wd" 2>/dev/null
+  # A killed child reports 128+SIGNAL. Nothing here exits by signal for any
+  # other reason, so that is the timeout.
+  [ "$_rc" -ge 128 ] && return 124
+  return "$_rc"
+}
 
 # WHY BOTH, and the second one is the load-bearing half (fourth review pass,
 # item 3, 2026-09-02).
@@ -265,6 +395,15 @@ export CV_SCOPE_CHECK CV_VALIDATE_MANIFEST
 # of the hook's ambient cost, and it is why the 47 ms this file used to publish
 # stopped being true the day this landed. Worth paying; see COST above before
 # changing it, and re-measure if you do.
+#
+# AND IF THE PREFIX CANNOT BE SET, NOTHING RUNS (eighth review pass, item H2,
+# 2026-09-03). This used to fall through WITHOUT the redirection and carry on,
+# which inverted the defence exactly when it was needed: the one machine where
+# the private directory cannot be created is the one whose temp dir is full,
+# unwritable or hostile, and the loaders below then execute whatever `.pyc` sits
+# beside the matcher — in this process, on every tool call. Fail-open is still
+# the contract, so this ALLOWS; it just refuses to allow while running the
+# loader. The notice says which happened.
 export PYTHONDONTWRITEBYTECODE=1
 CV_PYCACHE_DIR="${TMPDIR:-/tmp}/cv-lane-guard-pycache.$$.${RANDOM:-0}"
 if mkdir -p "$CV_PYCACHE_DIR" 2>/dev/null; then
@@ -272,6 +411,16 @@ if mkdir -p "$CV_PYCACHE_DIR" 2>/dev/null; then
   # Single-quoted on purpose: the variable is never reassigned, so expanding it
   # at trap time is correct AND cannot be broken by a quote inside $TMPDIR.
   trap 'rm -rf -- "$CV_PYCACHE_DIR"' EXIT
+else
+  _cv_log "lane-guard: the private bytecode-cache directory $CV_PYCACHE_DIR \
+could not be created, so an in-tree .pyc could be executed by the loaders this \
+hook uses. NOTHING was loaded and this write was NOT checked against any lane. \
+The git-derived scope gate (scripts/compound-v-scope-check.py) is unaffected \
+and remains the authority."
+  _cv_notice "its private bytecode-cache directory could not be created, so the \
+matcher and the YAML loader were NOT imported (an in-tree .pyc beside either \
+one would have been executed in this process)."
+  exit 0
 fi
 
 # WHICH PYTHON IS A CORRECTNESS QUESTION, NOT A TASTE ONE (fifth review pass,
@@ -338,19 +487,12 @@ fi
 # be obeyed, and a hook that silently substituted another interpreter could not
 # be pointed at a chosen one by a test. It is still put through the same ladder:
 # obeying an override is not the same as pretending a dead interpreter works.
-_cv_log() {
-  # The payload's log file, resolved the same way it resolves it. Best effort:
-  # a logging failure must never influence a decision.
-  printf '%s\n' "$1" \
-    >>"${CV_LANE_GUARD_LOG:-${TMPDIR:-/tmp}/compound-v-lane-guard.log}" \
-    2>/dev/null || true
-}
-
 # Kept as one-line functions on purpose: tests/test-lane-guard.sh plants a
 # violation by rewriting these two lines, and a mutation that cannot be applied
-# proves nothing.
-_cv_can_yaml() { env -u PYTHONPYCACHEPREFIX "$1" -B -c 'import yaml' >/dev/null 2>&1; }
-_cv_can_run() { env -u PYTHONPYCACHEPREFIX "$1" -B -c pass >/dev/null 2>&1; }
+# proves nothing. Both go through `_cv_bounded`, so a candidate that hangs costs
+# CV_PROBE_TIMEOUT and not the session; both return 124 when that happens.
+_cv_can_yaml() { _cv_bounded env -u PYTHONPYCACHEPREFIX "$1" -B -c 'import yaml'; }
+_cv_can_run() { _cv_bounded env -u PYTHONPYCACHEPREFIX "$1" -B -c pass; }
 
 _cv_cands=()
 if [ -n "${CV_PYTHON:-}" ]; then
@@ -387,16 +529,42 @@ export CV_PY_CANDIDATES
 PY=""
 _cv_runnable=""
 _cv_passed_over=""
+_cv_timedout=""
 for _cv_cand in ${_cv_cands+"${_cv_cands[@]}"}; do
-  if _cv_can_yaml "$_cv_cand"; then PY="$_cv_cand"; break; fi
+  _cv_can_yaml "$_cv_cand"
+  _cv_rc=$?
+  if [ "$_cv_rc" = "0" ]; then PY="$_cv_cand"; break; fi
+  # A candidate that ran out of budget STOPS THE LADDER. Stepping over it would
+  # mean paying the same budget again for every remaining candidate, and the
+  # thing that just happened — an interpreter on this machine hangs — is not a
+  # property of that one path that the next one is likely to fix.
+  if [ "$_cv_rc" = "124" ]; then _cv_timedout="$_cv_cand"; break; fi
   _cv_passed_over="${_cv_passed_over:+$_cv_passed_over, }$_cv_cand"
 done
 
 # RUNG 2, reached only when nothing on the list can import yaml.
-if [ -z "$PY" ]; then
+if [ -z "$PY" ] && [ -z "$_cv_timedout" ]; then
   for _cv_cand in ${_cv_cands+"${_cv_cands[@]}"}; do
-    if _cv_can_run "$_cv_cand"; then _cv_runnable="$_cv_cand"; break; fi
+    _cv_can_run "$_cv_cand"
+    _cv_rc=$?
+    if [ "$_cv_rc" = "0" ]; then _cv_runnable="$_cv_cand"; break; fi
+    if [ "$_cv_rc" = "124" ]; then _cv_timedout="$_cv_cand"; break; fi
   done
+fi
+
+# A TIMED-OUT PROBE IS ANNOUNCED, ONCE, AND THE HOOK STOPS. Fail open — the
+# contract does not bend for a slow machine — but never silently: the guard was
+# supposed to be active on this call and was not.
+if [ -n "$_cv_timedout" ]; then
+  _cv_log "lane-guard: interpreter probe of $_cv_timedout exceeded its \
+${CV_PROBE_TIMEOUT}s budget; the ladder STOPPED there and the guard is INERT \
+for this tool call. This write was NOT checked against any lane. The \
+git-derived scope gate (scripts/compound-v-scope-check.py) is unaffected and \
+remains the authority."
+  _cv_notice "an interpreter probe exceeded its ${CV_PROBE_TIMEOUT}s budget and \
+the ladder stopped rather than hold this tool call open; no interpreter was \
+chosen."
+  exit 0
 fi
 
 if [ -n "$PY" ]; then
@@ -407,14 +575,18 @@ if [ -n "$PY" ]; then
   # between the ladder and the ordering it replaced, and nothing said which one
   # ran. One line per call is the price of that being checkable — the same log
   # already carries a line on the unresolved path, which is the common one.
-  _cv_log "lane-guard: interpreter $PY (imports yaml)${_cv_passed_over:+; passed over: $_cv_passed_over}"
+  # ONCE PER SESSION as of the eighth pass: see `_cv_log_once`.
+  _cv_log_once "lane-guard: interpreter $PY (imports yaml)${_cv_passed_over:+; passed over: $_cv_passed_over}"
 elif [ -n "$_cv_runnable" ]; then
   PY="$_cv_runnable"
-  _cv_log "lane-guard: interpreter $PY CANNOT import PyYAML and no candidate on \
+  _cv_log_once "lane-guard: interpreter $PY CANNOT import PyYAML and no candidate on \
 this list could (tried: $CV_PY_CANDIDATES); the manifest read falls back to a \
 yaml-capable candidate if the payload finds one, else to the embedded parser, \
 which reads a SUBSET of YAML"
 else
+  # NOT deduplicated per session, unlike the two rungs above: this one is not a
+  # standing fact about the machine but a call on which the guard reached no
+  # decision at all, and every one of those is its own incident.
   _cv_log "lane-guard: NO candidate interpreter could be run (tried: \
 ${CV_PY_CANDIDATES:-<none>}); the guard is INERT for this tool call and this \
 write was NOT checked against any lane. The git-derived scope gate \
@@ -805,6 +977,14 @@ _YAML_TO_JSON = (
 )
 
 
+# The delegated parse's hard budget, in seconds. Larger than a probe's (0.9 s):
+# this one is READING A FILE and only ever runs after a job has resolved, so it
+# is off the ordinary session's path entirely — but it is still bounded, and the
+# bound plus one probe budget has to stay inside the `timeout` that
+# hooks/hooks.json puts on this hook's registration.
+_PARSE_BUDGET_S = 5
+
+
 def _yaml_via(interpreter, manifest_path):
     """Parse with another interpreter's PyYAML, or None if that cannot be done."""
     import subprocess
@@ -813,7 +993,7 @@ def _yaml_via(interpreter, manifest_path):
         proc = subprocess.Popen(
             [interpreter, "-B", "-c", _YAML_TO_JSON, manifest_path],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        out, _err = proc.communicate(timeout=5)
+        out, _err = proc.communicate(timeout=_PARSE_BUDGET_S)
     except Exception as exc:  # noqa: BLE001 - a guard path never raises
         # Including a timeout: PreToolUse has a budget, and a candidate that
         # hangs must not take the session with it.
@@ -1426,7 +1606,9 @@ PYEOF
 # The wrapper is the second half of the fail-open contract: if the interpreter
 # is missing, crashes, or emits anything that is not a JSON object, the hook
 # produces NO decision and exits 0. Only well-formed JSON is ever passed on.
-out="$("$PY" -c "$LANE_GUARD_PY" 2>/dev/null)" || out=""
+# stdin was consumed above (the session id keys the once-per-session marker), so
+# the payload is handed the same bytes on its own stdin.
+out="$(printf '%s' "$CV_STDIN" | "$PY" -c "$LANE_GUARD_PY" 2>/dev/null)" || out=""
 case "$out" in
   '{'*) printf '%s\n' "$out" ;;
   *) : ;;

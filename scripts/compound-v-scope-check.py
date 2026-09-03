@@ -14,11 +14,37 @@ Computes the set of files a job actually changed, purely from git:
               ∪ (git ls-files --others --ignored --exclude-standard -z -- .)
               − (preexisting untracked/ignored snapshot, direct mode only)
 
-Three union terms and ONE subtraction. The gate keeps NO carve-outs: there is no
-extension the changed set forgives and no path it forgives by name. Two such
-carve-outs existed briefly in 3.4.0 development (interpreter bytecode by
-extension; the pipeline's own two outcome streams) and were WITHDRAWN by the
-fourth review pass — a forged ``.pyc`` is executed in place by
+Three union terms and ONE subtraction. THIS SCRIPT ORIGINATES NO EXEMPTION OF ITS
+OWN: it forgives nothing by extension and nothing by name. Everything it forgives
+arrives in ``--preexisting``, and that list is not empty — so naming its contents
+is part of describing the gate honestly (eighth review pass, 2026-09-03; the
+previous wording said "NO carve-outs" full stop, which read as "the gate exempts
+nothing" and is not what a direct-mode run actually does).
+
+WHAT THE ``--preexisting`` LIST CONTAINS TODAY, as written by
+``compound-v-emit-workflow.py`` at ``register-lane`` time and verified by it
+again at gate time (see ``run_dir_owned_by_name`` and the exemption-snapshot
+docstring there — if these two descriptions ever disagree, that file is the one
+that decides):
+
+1. **Pre-existing untracked/ignored FILES, bound to a digest.** A path recorded
+   as ``<sha256>  <relpath>`` is dropped only while its bytes still hash to that
+   digest. Rewrite the file and the exemption is gone and the write is a
+   violation. A file that could not be read at register time gets NO line at all
+   and is therefore never exempt — fail closed.
+2. **Pre-existing DIRECTORIES, exempt by name** (``dir  <path>``), because git
+   reports an untracked directory as a single entry with no bytes to digest.
+3. **Exactly three self-referential/shared pipeline files** in this run's own
+   directory: ``state.json`` (every job's Record rewrites it), and
+   ``preexisting/<job-id>.txt`` / ``preexisting/<job-id>.verified.txt`` (the
+   exemption list itself, and the list the gate writes after building it).
+   ``manifest.yaml`` is deliberately NOT among them: it DEFINES ``write_allowed``,
+   so a by-name exemption for it would let a job widen its own lane and have both
+   the gate and the integration authority agree.
+
+Two exemptions of a different kind — interpreter bytecode by extension, and the
+pipeline's two outcome streams by name — existed briefly in 3.4.0 development and
+were WITHDRAWN by the fourth review pass — a forged ``.pyc`` is executed in place by
 ``hooks/lane-guard.sh`` and by this file's own importer in
 ``compound-v-integration-gate.py``, so hiding one from the gate removed the last
 signal for it; and the pipeline commits ``triage-outcomes.jsonl`` by name, so a
@@ -112,13 +138,69 @@ Exit codes: 0 = pass, 1 = blocked (violations present), 2 = usage/git error.
 Python 3.9-safe, stdlib only. Targets stock-macOS python3 3.9.6.
 """
 
-import argparse
-import errno
-import json
-import os
-import stat
-import subprocess
 import sys
+
+
+# --------------------------------------------------------------------------- #
+# sys.path hardening — BEFORE the first import that can be shadowed
+# (eighth review pass, item C2, 2026-09-03).
+#
+# THE ATTACK, IN ONE SENTENCE: this file runs with its OWN DIRECTORY first on
+# `sys.path`, so a `.py` planted beside it under a stdlib name — `subprocess.py`,
+# `json.py`, `stat.py` — is imported INSTEAD of the stdlib module, inside the
+# process that decides whether a job is BLOCKED. A hostile `scripts/subprocess.py`
+# whose `run()` returns an empty `git diff` makes every violation vanish and every
+# verdict `pass`, while the gate looks like it ran.
+#
+# It is not exotic. `scripts/` is a directory inside the repository that jobs
+# write to, and the only thing that stops a job dropping a file there is this
+# gate — i.e. the defence would be the thing being defended. The same applies to
+# the CWD, which IS on `sys.path` whenever this module is loaded by
+# `python3 -c` (that is exactly how `hooks/lane-guard.sh` imports the matcher, in
+# a process whose cwd is the worker's own worktree).
+#
+# `python3 -P` / `PYTHONSAFEPATH` does this properly, and arrived in 3.11; this
+# file targets stock-macOS 3.9.6, so it is done by hand. Two passes, because the
+# first cannot use `os` — importing `os` is one of the things being made safe:
+# strings first, then an exact realpath comparison once `os` is in hand.
+def _harden_sys_path():
+    here = __file__
+    cut = here.rfind("/")
+    unsafe = {"", ".", (here[:cut] if cut > 0 else ".")}
+    sys.path[:] = [p for p in sys.path if p not in unsafe]
+
+    import os  # noqa: E402 - after the string pass above, on purpose
+
+    drop = set()
+    try:
+        drop.add(os.path.realpath(os.path.dirname(os.path.abspath(__file__))))
+    except (OSError, ValueError):
+        pass
+    try:
+        drop.add(os.path.realpath(os.getcwd()))
+    except (OSError, ValueError):
+        pass
+    keep = []
+    for p in sys.path:
+        try:
+            resolved = os.path.realpath(p)
+        except (OSError, ValueError):
+            keep.append(p)
+            continue
+        if resolved in drop:
+            continue
+        keep.append(p)
+    sys.path[:] = keep
+
+
+_harden_sys_path()
+
+import argparse  # noqa: E402 - deliberately after _harden_sys_path()
+import errno  # noqa: E402
+import json  # noqa: E402
+import os  # noqa: E402
+import stat  # noqa: E402
+import subprocess  # noqa: E402
 
 # Nobody writes bytecode. The gate forgives no path by extension (fourth review
 # pass, 2026-09-02), so a `.pyc` this process left beside a script would BLOCK the
@@ -212,8 +294,13 @@ def changed_files(cwd, baseline, preexisting=None):
     )
     if preexisting:
         files -= set(preexisting)
-    # NO carve-outs. Every path the three probes produced, minus only the
-    # direct-mode `preexisting` snapshot, reaches the matcher. Interpreter
+    # NO carve-out ORIGINATES HERE. Every path the three probes produced reaches
+    # the matcher, minus only the direct-mode `preexisting` snapshot the CALLER
+    # passed in — whose three classes (digest-bound pre-existing files,
+    # pre-existing directories by name, and the three self-referential run-dir
+    # files `state.json` / `preexisting/<job>.txt` / `preexisting/<job>.verified.txt`)
+    # are named in this module's docstring and defined in
+    # compound-v-emit-workflow.py. Interpreter
     # bytecode is NOT forgiven here: a `.pyc` never merges, but it is executed in
     # place by hooks/lane-guard.sh's loader and by compound-v-integration-gate.py's
     # importer of THIS module, so dropping it traded the last detection signal for
@@ -1019,6 +1106,79 @@ def _selftest():
             )
         finally:
             os.chmod(nx, 0o700)
+
+        # ── C2: A MODULE PLANTED BESIDE THIS SCRIPT IS NOT IMPORTED ──────────
+        # (eighth review pass, 2026-09-03.) See `_harden_sys_path` at the top of
+        # this file. The plant is `subprocess.py`, because that is the import
+        # that DECIDES the verdict: a `run()` returning an empty `git diff` makes
+        # every violation disappear while the gate still prints a verdict.
+        shadow = os.path.join(tmp, "shadow")
+        os.makedirs(shadow)
+        script_copy = os.path.join(shadow, "compound-v-scope-check.py")
+        shutil.copy(os.path.abspath(__file__), script_copy)
+        marker = os.path.join(tmp, "hostile-subprocess-imported")
+        with open(os.path.join(shadow, "subprocess.py"), "w") as f:
+            f.write(
+                "open(%r, 'w').write('imported')\n"
+                "PIPE = -1\n"
+                "DEVNULL = -3\n"
+                "class CompletedProcess(object):\n"
+                "    def __init__(self):\n"
+                "        self.returncode = 0\n"
+                "        self.stdout = ''\n"
+                "        self.stderr = ''\n"
+                "def run(*a, **k):\n"
+                "    return CompletedProcess()\n" % marker
+            )
+        # A repo with one unambiguous violation to find.
+        srepo = os.path.join(tmp, "shadowrepo")
+        os.makedirs(os.path.join(srepo, "src"))
+        os.makedirs(os.path.join(srepo, "docs"))
+        run(["git", "init", "-q"], cwd=srepo)
+        run(["git", "config", "user.email", "t@t.t"], cwd=srepo)
+        run(["git", "config", "user.name", "t"], cwd=srepo)
+        with open(os.path.join(srepo, "src", "a.ts"), "w") as f:
+            f.write("a\n")
+        run(["git", "add", "-A"], cwd=srepo)
+        run(["git", "commit", "-q", "-m", "base"], cwd=srepo)
+        with open(os.path.join(srepo, "docs", "leak.md"), "w") as f:
+            f.write("leak\n")
+
+        # THE PLANT IS POTENT: an unhardened process in that directory imports it.
+        # Asserted rather than assumed — a plant nothing would have picked up
+        # makes the real case below pass for the wrong reason.
+        subprocess.run(
+            [sys.executable, "-B", "-c", "import subprocess"],
+            cwd=shadow, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        expect("shadow: the planted subprocess.py IS imported by an unhardened "
+               "process (the plant is real)", os.path.exists(marker))
+        if os.path.exists(marker):
+            os.remove(marker)
+
+        # ...and now the gate itself, loaded the way hooks/lane-guard.sh loads it
+        # (importlib, from a process whose CWD is the planted directory).
+        probe = (
+            "import importlib.util, json, sys\n"
+            "spec = importlib.util.spec_from_file_location('_cv_probe', sys.argv[1])\n"
+            "mod = importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(mod)\n"
+            "changed, viol = mod.check(sys.argv[2], 'HEAD', ['src/**'])\n"
+            "print(json.dumps({'changed': changed, 'violations': viol}))\n"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-B", "-c", probe, script_copy, srepo],
+            cwd=shadow, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            universal_newlines=True,
+        )
+        try:
+            verdict = json.loads(proc.stdout or "{}")
+        except ValueError:
+            verdict = {}
+        expect("shadow: the verdict is unaffected — docs/leak.md still BLOCKS",
+               "docs/leak.md" in (verdict.get("violations") or []))
+        expect("shadow: the planted subprocess.py was never imported",
+               not os.path.exists(marker))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

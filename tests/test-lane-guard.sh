@@ -207,14 +207,24 @@ n=0
 OUT=""; RC=0; LOG=""
 HOOK_UNDER_TEST=""   # set to run a MUTATED copy of the hook
 
+# EVERY PAYLOAD CARRIES ITS OWN SESSION ID unless a case pins one. The hook logs
+# the chosen interpreter ONCE PER SESSION (eighth review pass, item 6), keyed by
+# a marker beside the log — so a suite that reused one session id would silently
+# suppress the interpreter line in every case after the first, and the
+# assertions that read it would be testing the marker rather than the ladder.
+# Section 7g pins SID on purpose, which is how the dedupe itself is tested.
+sid_n=0
+SID=""
 encode() {  # encode <tool> <agent_id> <cwd> <key> <value>
-  CV_T="$1" CV_A="$2" CV_C="$3" CV_K="$4" CV_V="$5" python3 -c '
+  sid_n=$((sid_n + 1))
+  CV_T="$1" CV_A="$2" CV_C="$3" CV_K="$4" CV_V="$5" \
+  CV_SID="${SID:-s-auto-$sid_n}" python3 -c '
 import json, os
 print(json.dumps({
     "hook_event_name": "PreToolUse",
     "tool_name": os.environ["CV_T"],
     "agent_id": os.environ["CV_A"],
-    "session_id": "s1",
+    "session_id": os.environ["CV_SID"],
     "cwd": os.environ["CV_C"],
     "tool_input": {os.environ["CV_K"]: os.environ["CV_V"]},
 }))'
@@ -242,6 +252,21 @@ o = d.get("hookSpecificOutput") or {}
 print("yes" if o.get("permissionDecision") == "deny"
       and o.get("hookEventName") == "PreToolUse"
       and (o.get("permissionDecisionReason") or "").strip() else "no")'; }
+
+# A fail-open notice, PARSED rather than grepped. The two notices the eighth pass
+# added are printed by BASH, not by the python payload — hand-built JSON that a
+# stray quote would turn into output the harness silently discards, which is
+# indistinguishable from the hook having said nothing at all.
+is_notice() { printf '%s' "$OUT" | python3 -c '
+import json, sys
+try:
+    d = json.loads(sys.stdin.read())
+except Exception:
+    print("no"); raise SystemExit
+o = (d.get("hookSpecificOutput") or {})
+print("yes" if o.get("hookEventName") == "PreToolUse"
+      and "FAILED OPEN" in (o.get("additionalContext") or "")
+      and "permissionDecision" not in o else "no")'; }
 
 silent() { [ -z "$OUT" ] && echo yes || echo no; }
 logged() { grep -q "$1" "$LOG" 2>/dev/null && echo yes || echo no; }
@@ -833,6 +858,227 @@ check "a dead CV_PYTHON is NOT silently replaced -> no deny, exit 0" \
 check "a dead CV_PYTHON is reported in the log" \
   "$([ "$(logged 'INERT for this tool call')" = yes ] && echo 1 || echo 0)"
 
+echo "=== 7e. the interpreter is named on the HEALTHY path ======"
+# EIGHTH REVIEW PASS, item 3 (2026-09-03). Every assertion on the interpreter
+# line up to here fires on a DEGRADED path — a candidate was passed over, or the
+# pick fell to rung 2 — so all of them stayed green under the conditional the
+# seventh pass replaced (`log only when something was passed over`). The line
+# exists to make the ORDINARY pick observable, and nothing tested the ordinary
+# pick. This does, and the planted restoration below shows it can go red.
+if [ -n "$YAML_PY" ]; then
+  run "$(encode Write agent_folded "$WT4" file_path "$WT4/README.md")" \
+      CV_PY_CANDIDATES="$YAML_PY"
+  verdict "healthy path (one viable candidate) still denies" deny
+  check "the healthy path NAMES the interpreter it chose" \
+    "$([ "$(logged "interpreter $YAML_PY (imports yaml)")" = yes ] \
+       && echo 1 || echo 0)"
+  check "...and reports nothing passed over, because nothing was" \
+    "$([ "$(logged 'passed over')" = no ] && echo 1 || echo 0)"
+
+  # PLANTED VIOLATION 7: put the pre-seventh-pass conditional back — the line is
+  # logged only when a candidate was passed over. Every OTHER interpreter
+  # assertion in this file stays green under it; this one must red.
+  MUTANT_QUIET="$MUTROOT/hooks/lane-guard-quiet-interpreter.sh"
+  sed 's|^  _cv_log_once "lane-guard: interpreter \$PY (imports yaml)|  [ -n "$_cv_passed_over" ] \&\& _cv_log_once "lane-guard: interpreter $PY (imports yaml)|' \
+    "$HOOK" >"$MUTANT_QUIET"
+  chmod +x "$MUTANT_QUIET"
+  grep -q '\[ -n "$_cv_passed_over" \] && _cv_log_once "lane-guard: interpreter' \
+    "$MUTANT_QUIET" \
+    || { echo "FATAL: the quiet-interpreter mutation did not apply"; exit 1; }
+  HOOK_UNDER_TEST="$MUTANT_QUIET"
+  run "$(encode Write agent_folded "$WT4" file_path "$WT4/README.md")" \
+      CV_PY_CANDIDATES="$YAML_PY"
+  verdict "PLANTED: the conditional does not change the verdict" deny
+  check "PLANTED: ...but the healthy pick becomes unobservable" \
+    "$([ "$(logged 'lane-guard: interpreter ')" = no ] && echo 1 || echo 0)"
+  HOOK_UNDER_TEST=""
+else
+  printf 'SKIP the healthy-path interpreter line — no python3 on this machine '
+  printf 'can import yaml (CI installs it; this half did NOT run)\n'
+fi
+
+echo "=== 7f. no private pycache prefix -> NOTHING is imported =="
+# EIGHTH REVIEW PASS, item H2 (2026-09-03). PYTHONPYCACHEPREFIX is what stops a
+# forged in-tree `.pyc` being executed by the two loaders this hook uses. When
+# the private directory could not be created the hook used to carry on WITHOUT
+# it — i.e. it dropped the defence on precisely the machine whose temp dir is
+# full, unwritable or hostile. It must fail open by loading nothing at all, and
+# say which of the two happened.
+#
+# The plant here differs from 8b's in one way that matters: its module-level code
+# WRITES A MARKER, so "no import happened" is an observation and not an inference
+# from an allow (a fail-open allow and a hijacked-matcher allow look identical
+# from the outside).
+#
+# The plant is made BY THE INTERPRETER THE HOOK WILL USE, and the hook is pinned
+# to it. WHERE the cache lands is interpreter-dependent — a stock python3 writes
+# `<dir>/__pycache__/`, Apple's /usr/bin/python3 3.9.6 redirects it under
+# ~/Library/Caches — so a plant made by the suite's python3 and read by the
+# hook's is simply not found, and the planted-violation half would pass for the
+# wrong reason.
+PYCDIR2="$WORK/pyc-h2"
+mkdir -p "$PYCDIR2"
+cp "$REPO/scripts/compound-v-scope-check.py" "$PYCDIR2/compound-v-scope-check.py"
+H2_MARK="$WORK/h2-import-happened"
+H2_PY="${YAML_PY:-$(command -v python3)}"
+PLANTED2="$(CV_PYCDIR="$PYCDIR2" CV_MARK="$H2_MARK" "$H2_PY" - <<'PYEOF'
+import importlib.util, marshal, os
+src = os.path.join(os.environ["CV_PYCDIR"], "compound-v-scope-check.py")
+target = importlib.util.cache_from_source(src)
+os.makedirs(os.path.dirname(target), exist_ok=True)
+code = compile("open(%r, 'w').write('imported')\n"
+               "def is_allowed(path, globs):\n    return True\n"
+               % os.environ["CV_MARK"], "<forged>", "exec")
+with open(target, "wb") as fh:
+    fh.write(importlib.util.MAGIC_NUMBER)
+    fh.write((0b01).to_bytes(4, "little"))   # hash-based, check_source=0
+    fh.write(b"\x00" * 8)                    # the hash nobody checks
+    fh.write(marshal.dumps(code))
+print(target)
+PYEOF
+)"
+CV_PYCDIR="$PYCDIR2" "$H2_PY" -B - <<'PYEOF' >/dev/null 2>&1
+import importlib.util, os
+src = os.path.join(os.environ["CV_PYCDIR"], "compound-v-scope-check.py")
+spec = importlib.util.spec_from_file_location("_probe_h2", src)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+PYEOF
+check "the marker plant IS potent (loaded with no redirection, it runs)" \
+  "$([ -f "$H2_MARK" ] && echo 1 || echo 0)"
+rm -f "$H2_MARK"
+
+# TMPDIR under a non-directory: mkdir -p cannot create the private prefix there.
+run "$(encode Write agent_abc123 "$WT" file_path "$WT/README.md")" \
+    CV_SCOPE_CHECK="$PYCDIR2/compound-v-scope-check.py" CV_PYTHON="$H2_PY" \
+    TMPDIR=/dev/null/nope
+verdict "an uncreatable pycache prefix fails OPEN" allow
+check "the fail-open is ANNOUNCED as well-formed JSON, not just text" \
+  "$([ "$(is_notice)" = yes ] && echo 1 || echo 0)"
+check "...and it names the bytecode cache" \
+  "$(printf '%s' "$OUT" | grep -q 'bytecode-cache' && echo 1 || echo 0)"
+check "NO import happened — the forged matcher never ran" \
+  "$([ ! -f "$H2_MARK" ] && echo 1 || echo 0)"
+check "...and it is logged, not only announced" \
+  "$([ "$(logged 'private bytecode-cache directory')" = yes ] && echo 1 || echo 0)"
+
+# PLANTED VIOLATION 8: restore the fall-through — carry on without the prefix.
+# The loader then runs, the forged matcher executes in this process, and the
+# marker appears. That is the hole H2 closed.
+MUTANT_NOPREFIX="$MUTROOT/hooks/lane-guard-prefix-optional.sh"
+python3 - "$HOOK" "$MUTANT_NOPREFIX" <<'PYX'
+import sys
+src = open(sys.argv[1]).read()
+old = 'if mkdir -p "$CV_PYCACHE_DIR" 2>/dev/null; then'
+if src.count(old) != 1:
+    raise SystemExit("FATAL: the pycache anchor is not unique")
+# Make the guarded block unconditional-ish: the prefix is skipped, and the hook
+# falls through to the loaders exactly as it did before H2.
+src = src.replace(old, 'if false; then')
+open(sys.argv[2], "w").write(src)
+PYX
+chmod +x "$MUTANT_NOPREFIX"
+grep -q 'if false; then' "$MUTANT_NOPREFIX" \
+  || { echo "FATAL: the prefix mutation did not apply"; exit 1; }
+# The `else` arm now runs on every call, so the mutant must lose it as well —
+# otherwise it exits for the same reason and proves nothing about the loader.
+python3 - "$MUTANT_NOPREFIX" <<'PYX'
+import re, sys
+p = sys.argv[1]
+src = open(p).read()
+start = src.index('if false; then')
+end = src.index('\nfi\n', start) + len('\nfi\n')
+src = src[:start] + src[end:]
+open(p, "w").write(src)
+PYX
+grep -q 'PYTHONPYCACHEPREFIX="\$CV_PYCACHE_DIR"' "$MUTANT_NOPREFIX" \
+  && { echo "FATAL: the prefix block was not removed"; exit 1; }
+HOOK_UNDER_TEST="$MUTANT_NOPREFIX"
+rm -f "$H2_MARK"
+run "$(encode Write agent_abc123 "$WT" file_path "$WT/README.md")" \
+    CV_SCOPE_CHECK="$PYCDIR2/compound-v-scope-check.py" CV_PYTHON="$H2_PY"
+check "PLANTED: without the prefix the forged matcher DOES run" \
+  "$([ -f "$H2_MARK" ] && echo 1 || echo 0)"
+HOOK_UNDER_TEST=""
+rm -f "$H2_MARK"
+[ -n "$PLANTED2" ] && rm -f "$PLANTED2"
+
+echo "=== 7g. one interpreter line per SESSION, not per call ===="
+# EIGHTH REVIEW PASS, item 6 (2026-09-03). Naming the interpreter on every path
+# is what makes 7e possible; naming it on every CALL buries the lines that carry
+# information (a DENY, an unresolved identity) under thousands of identical ones.
+# The marker lives beside the log, which is why a suite that redirects the log
+# also redirects the markers.
+SHARED_LOG="$WORK/log.session"
+: >"$SHARED_LOG"
+rm -f "$WORK"/cv-lane-guard-interp.* 2>/dev/null
+SID="s-pinned"
+SESSION_PAYLOAD="$(encode Write agent_abc123 "$WT" file_path "$WT/hooks/lane-guard.sh")"
+SID=""
+for _i in 1 2 3; do
+  printf '%s' "$SESSION_PAYLOAD" \
+    | env -u CLAUDE_PROJECT_DIR -u CLAUDE_PLUGIN_ROOT \
+          CV_PROJECT_DIR="$PROJ" CV_LANE_GUARD_LOG="$SHARED_LOG" \
+          "$HOOK_BASH" "$HOOK" >/dev/null 2>&1
+done
+check "3 calls in ONE session write exactly ONE interpreter line" \
+  "$([ "$(grep -c 'lane-guard: interpreter ' "$SHARED_LOG")" = "1" ] \
+     && echo 1 || echo 0)"
+check "the marker lives beside the log (the hook's store)" \
+  "$([ -f "$WORK/cv-lane-guard-interp.s-pinned" ] && echo 1 || echo 0)"
+
+SID="s-other"
+OTHER_PAYLOAD="$(encode Write agent_abc123 "$WT" file_path "$WT/hooks/lane-guard.sh")"
+SID=""
+printf '%s' "$OTHER_PAYLOAD" \
+  | env -u CLAUDE_PROJECT_DIR -u CLAUDE_PLUGIN_ROOT \
+        CV_PROJECT_DIR="$PROJ" CV_LANE_GUARD_LOG="$SHARED_LOG" \
+        "$HOOK_BASH" "$HOOK" >/dev/null 2>&1
+check "a DIFFERENT session names its interpreter again" \
+  "$([ "$(grep -c 'lane-guard: interpreter ' "$SHARED_LOG")" = "2" ] \
+     && echo 1 || echo 0)"
+
+echo "=== 7h. an interpreter probe is BOUNDED =================="
+# EIGHTH REVIEW PASS, item H3 (2026-09-03). A probe runs a FOREIGN EXECUTABLE —
+# a wrapper script, a shim, a launcher on a stalled mount. Unbounded, one that
+# hangs holds a PreToolUse hook open for as long as it likes, in the component
+# whose contract is to never be the reason anything stalls. The candidate below
+# sleeps 30 s before it would exec a real python3; the hook must come back inside
+# its own budget, with the fail-open said out loud.
+SLOW_DIR="$WORK/slowpath"
+mkdir -p "$SLOW_DIR"
+SLOW_PY="$SLOW_DIR/python3"
+{ printf '#!/bin/sh\n'
+  printf 'sleep 30\n'
+  printf 'exec %s "$@"\n' "$(command -v python3)"
+} >"$SLOW_PY"
+chmod +x "$SLOW_PY"
+
+_t0=$SECONDS
+run "$(encode Write agent_folded "$WT4" file_path "$WT4/README.md")" \
+    PATH="$SLOW_DIR:$PATH" CV_PY_CANDIDATES="$SLOW_PY:${YAML_PY:-$(command -v python3)}"
+_elapsed=$((SECONDS - _t0))
+verdict "a candidate that hangs does not hang the hook" allow
+check "the hook returned inside its budget (${_elapsed}s, must be <= 5)" \
+  "$([ "$_elapsed" -le 5 ] && echo 1 || echo 0)"
+check "the timeout is ANNOUNCED as well-formed JSON, not just text" \
+  "$([ "$(is_notice)" = yes ] && echo 1 || echo 0)"
+check "...and the notice names the budget" \
+  "$(printf '%s' "$OUT" | grep -q 'budget' && echo 1 || echo 0)"
+check "the timed-out candidate is named in the log" \
+  "$([ "$(logged "probe of $SLOW_PY exceeded")" = yes ] && echo 1 || echo 0)"
+check "the ladder STOPPED rather than paying the budget per candidate" \
+  "$([ "$(logged 'ladder STOPPED')" = yes ] && echo 1 || echo 0)"
+
+# The budget is honoured as configured, not hardcoded: a longer one is visibly
+# slower, which is also the cheapest proof that the bound is what returns.
+_t0=$SECONDS
+run "$(encode Write agent_folded "$WT4" file_path "$WT4/README.md")" \
+    CV_PROBE_TIMEOUT=3 CV_PY_CANDIDATES="$SLOW_PY:${YAML_PY:-$(command -v python3)}"
+_elapsed2=$((SECONDS - _t0))
+check "CV_PROBE_TIMEOUT is honoured (3s budget took ${_elapsed2}s, >= 3)" \
+  "$([ "$_elapsed2" -ge 3 ] && echo 1 || echo 0)"
+
 echo "=== 8. documented blind spots (asserted, not assumed) ====="
 # These are ALLOWED, and that is the honest limit of command inspection. They
 # are pinned here so the limit is a tested fact rather than a claim in a
@@ -953,6 +1199,20 @@ check "the incident record's read-then-append takes an exclusive lock" \
   "$(grep -q 'LOCK_EX' "$HOOK" && echo 1 || echo 0)"
 check "the hook is honest that it cannot enforce lane registration" \
   "$(grep -q 'CANNOT ENFORCE IT' "$HOOK" && echo 1 || echo 0)"
+# The hook bounds its own subprocesses; the REGISTRATION bounds the hook. A
+# budget a component applies to itself is not a budget on that component, and
+# this one runs on every Write/Edit/Bash call.
+check "hooks.json bounds the lane-guard registration with a timeout" \
+  "$(CV_HOOKS="$REPO/hooks/hooks.json" python3 -c '
+import json, os, sys
+d = json.load(open(os.environ["CV_HOOKS"]))
+for entry in d["hooks"]["PreToolUse"]:
+    for h in entry["hooks"]:
+        if "lane-guard.sh" in h.get("command", ""):
+            sys.stdout.write("1" if isinstance(h.get("timeout"), int)
+                             and h["timeout"] > 0 else "0")
+            raise SystemExit
+sys.stdout.write("0")')"
 
 echo "-------------------------------------------"
 printf '%d passed, %d failed\n' "$pass" "$fail"

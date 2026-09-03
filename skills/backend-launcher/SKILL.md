@@ -185,6 +185,20 @@ tree**, the verification layer runs [`compound-v-scope-check.py`](../../scripts/
 itself and that verdict stands. Emit the object only when all six fields are genuinely known — a
 partial receipt is a missing receipt, and a missing one is re-derived rather than trusted.
 
+**The receipt also seals a patch (v3.4.0).** Engine C's `gate-receipt` writes `jobs/<id>.patch` —
+`git diff --cached --binary <baseline>` over the approved paths only — and records that file's
+sha256 in `receipts/<id>.gate.json`. The integration authority refuses a receipt whose artifact is
+missing or no longer hashes to the recorded value, and the wave finalizer applies **that file**
+rather than a fresh diff of the worktree. The six-field `gate_receipt` inside `job_result` is
+unchanged: `schemas/job_result.schema.json` pins it with `additionalProperties: false`, so the
+seal lives in the gate's own document and the two are bound — a pair that disagrees about
+`diff_digest` or `baseline_commit` is refused.
+
+**And the manifest is digest-bound.** `emit` bakes `sha256(manifest.yaml)` into the workflow
+script; every stage carries it back as `--manifest-digest` and refuses a mismatch. The manifest
+declares every job's `write_allowed`, so a lane map that changed after review is refused rather
+than enforced.
+
 ---
 
 ## External-CLI launch — supervisor + closed stdin (non-negotiable)
@@ -275,6 +289,16 @@ Pinned facts (do not re-derive):
 ---
 
 ## Merge-back
+
+> **Engine C does not do this any more, and the reason is worth carrying into any adapter.** Since
+> v3.4.0 the gate *seals* the slice it approved as `jobs/<id>.patch` and the wave finalizer applies
+> that artifact. The recipe below re-reads the worktree at merge time, so everything that happened
+> to it between the gate and the merge rides along: a revert (whose empty diff read as "already
+> landed", and whose worktree was then pruned — the only copy of the work), a post-gate edit to an
+> in-lane file, a byproduct the pathspec happens not to exclude. It remains correct for a backend
+> that has no sealed artifact, and it is what Engine C falls back to for receipts written before
+> sealing existed. Prefer the sealed artifact wherever there is one, and prove the result from git
+> — `HEAD:<path>` must equal the artifact's post-image — before removing any worktree.
 
 On **PASS**: apply the worktree's changes — **including new (untracked) files** — into the main tree, then `git worktree remove -f`. A plain `git diff HEAD | git apply` would silently DROP added files (an allowed new file passes the gate but never lands), so use an index-based patch:
 
