@@ -1,0 +1,9 @@
+{
+  "confidence": "exact",
+  "digest": "sha256:49a0f3785c7c8bc25e023c373370485f8b9972205934f92f1038babb21e092c9",
+  "fan_out": 1,
+  "flags": [],
+  "resolved_paths": [
+    "scripts/compound-v-memory.py"
+  ]
+}
