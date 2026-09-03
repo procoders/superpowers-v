@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [3.4.8] - 2026-09-03
+
+Three consecutive `API Error: 529 Overloaded` on the Opus reviewer cost three runs and three human
+relaunches in one afternoon (findings 118, 119). The failure policy Compound V already owned applied
+everywhere except inside the native workflow. Now it applies there too — and the pre-flight rewrote
+the design first: the runtime resolves a dead `agent()` call to `null` rather than throwing, refuses
+`Date.now()` and `Math.random()`, and does allow `setTimeout` (proven with a live probe), so the retry
+triggers on a null resolution, waits the policy's table without jitter, and records the class it
+cannot see honestly as `other`.
+
 ### Added — a transient API failure is retried inside the workflow, and a stuck reviewer is lifted, not lost (findings 118, 119)
 
 Three consecutive `529 Overloaded` on the Opus reviewer during a live run each cost a run, a
