@@ -1,0 +1,56 @@
+diff --git a/.claude-plugin/marketplace.json b/.claude-plugin/marketplace.json
+index c01a15b..b99f19e 100644
+--- a/.claude-plugin/marketplace.json
++++ b/.claude-plugin/marketplace.json
+@@ -9,7 +9,7 @@
+     {
+       "name": "superpowers-v",
+       "description": "Compound V for Superpowers: triple parallel pre-flight (code archaeology + domain-expert + Context7 library validator), disjoint partitioning, manifest-driven multi-backend dispatch (Claude + Codex + Antigravity + Cursor), git-diff scope enforcement, crash-resumable runs, adaptive tier-based routing, epic mode, research-grounded brainstorming (gated pre-brainstorm recon + batched elicitation), V-memory local-first semantic+lexical recall over docs/superpowers (opt-in pure-python embeddings + a deterministic recall→action bridge), and batched parallel dispatch (Opus default, narrow Sonnet exception)",
+-      "version": "3.4.2",
++      "version": "3.4.3",
+       "source": "./",
+       "author": {
+         "name": "Oleg",
+diff --git a/.claude-plugin/plugin.json b/.claude-plugin/plugin.json
+index e124a96..37344cb 100644
+--- a/.claude-plugin/plugin.json
++++ b/.claude-plugin/plugin.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "superpowers-v",
+   "description": "Compound V for Superpowers: triple parallel pre-flight (code archaeology + domain-expert advisor + library/doc validator via Context7), disjoint file partitioning, manifest-driven multi-backend dispatch (Claude + headless Codex + Antigravity + Cursor workers), git-diff scope enforcement, crash-resumable runs, adaptive tier-based routing, epic mode for multi-feature builds, V-memory local-first semantic+lexical recall over docs/superpowers (opt-in pure-python embeddings + a deterministic recall\u2192action bridge), and batched parallel dispatch (Opus default, Sonnet for narrow junior-task carve-out), plus /v:onboard — a project-onboarding command that builds a citation-verified knowledge base + AGENTS.md/CLAUDE.md bridge behind a human gate. Auto-intercepts four transitions: pre-brainstorm recon \u2192 brainstorming \u2192 writing-plans \u2192 execution.",
+-  "version": "3.4.2",
++  "version": "3.4.3",
+   "author": {
+     "name": "Oleg",
+     "email": "copeus@gmail.com"
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 24c9fd4..4795abc 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -4,7 +4,11 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
+ 
+ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
+ 
+-## [Unreleased]
++## [3.4.3] - 2026-09-03
++
++### Added — a sandbox-checkout helper for probing the UserPromptSubmit hook against a live run
++
++`scripts/compound-v-sandbox-checkout.sh` builds a fresh checkout for exercising `hooks/triage-prompt-nudge.sh` — the UserPromptSubmit hook — against a checkout that carries a live run, without touching the Stop hook path (which needs `.claude/compound-v.json`, absent from any sandbox). Built by a Codex worker on Engine C; no timing or performance metrics are claimed for it.
+ 
+ ### Fixed — an external worker's cap fits inside the harness Bash ceiling, and the wrapper is told to wait (finding 75)
+ 
+diff --git a/agents/spec-reviewer.md b/agents/spec-reviewer.md
+index 5c98071..7de1675 100644
+--- a/agents/spec-reviewer.md
++++ b/agents/spec-reviewer.md
+@@ -196,6 +196,8 @@ Read the evidence from the job result ([`job_result.schema.json`](../schemas/job
+ 
+ Run the build + the required commands (or confirm they were run and observe the output — never assert green without evidence). A red build, a non-zero `tests.exit_code`, or a required command that never ran → **ISSUE: BUILD_RED** (the failing or missing command + output excerpt). Do not claim DONE on an unverified build.
+ 
++When a job's evidence needs corroborating against a fresh checkout rather than the worktree in front of you, `scripts/compound-v-sandbox-checkout.sh <dest> --empty-pre-eval` builds one for probing `hooks/triage-prompt-nudge.sh` (the UserPromptSubmit hook — the Stop hook needs `.claude/compound-v.json`, which a sandbox never has) on a checkout that carries a live run.
++
+ ### 3.4 — Feature acceptance criteria
+ 
+ The composite must satisfy the manifest's **feature-level `acceptance_criteria`** (PRD §5.7). Build a table:

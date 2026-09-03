@@ -1,0 +1,32 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    ".claude-plugin/marketplace.json",
+    ".claude-plugin/plugin.json",
+    "CHANGELOG.md",
+    "agents/spec-reviewer.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "11bd5f78999269169ce32ec3ccc62bc582534a20",
+    "diff_digest": "sha256:e2b97f52902703f38ccc6a89d2c8e6e5743011c66e6cb10dd119a69b4dbfb764",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"11bd5f78999269169ce32ec3ccc62bc582534a20\",\n  \"changed\": [\n    \".claude-plugin/marketplace.json\",\n    \".claude-plugin/plugin.json\",\n    \"CHANGELOG.md\",\n    \"agents/spec-reviewer.md\"\n  ],\n  \"allowed\": [\n    \"agents/spec-reviewer.md\",\n    \"CHANGELOG.md\",\n    \".claude-plugin/plugin.json\",\n    \".claude-plugin/marketplace.json\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "11bd5f78999269169ce32ec3ccc62bc582534a20",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task B (claude) \u2014 the reviewer note, CHANGELOG 3.4.3, versions",
+  "tests": {
+    "command": "bash tests/test-engine-c-contract.sh\nbash -c 'jq empty .claude-plugin/plugin.json && jq empty .claude-plugin/marketplace.json'\n/bin/echo changelog-only\n/usr/bin/python3 -B scripts/lint-frontmatter.py .",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 4
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_9c5158df-3a4-2"
+}
