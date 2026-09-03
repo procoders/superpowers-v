@@ -1,0 +1,270 @@
+diff --git a/scripts/compound-v-sandbox-checkout.sh b/scripts/compound-v-sandbox-checkout.sh
+new file mode 100755
+index 0000000..a233f12
+--- /dev/null
++++ b/scripts/compound-v-sandbox-checkout.sh
+@@ -0,0 +1,132 @@
++#!/usr/bin/env bash
++# Build a minimal, committed checkout containing only tracked repository files.
++
++set -eu
++
++usage() {
++  cat <<'EOF'
++Usage: compound-v-sandbox-checkout.sh <dest> [--keep-execution] [--empty-pre-eval] [--taxonomy-from <path>]
++
++Copy tracked files from the current Git repository into <dest>, then create one
++commit there. By default, docs/superpowers/execution is omitted. --keep-execution
++keeps its tracked files. --empty-pre-eval creates an empty
++docs/superpowers/pre-eval directory. --taxonomy-from replaces
++.claude/compound-v-impact-taxonomy.yaml with the supplied file.
++
++Gitignored files are never carried, including lane-map.json and logs/*.jsonl,
++whether or not --keep-execution is used.
++EOF
++}
++
++fail() {
++  status=$1
++  shift
++  printf '%s\n' "$*" >&2
++  exit "$status"
++}
++
++[ "$#" -gt 0 ] || {
++  usage >&2
++  exit 1
++}
++
++case $1 in
++  --help|-h)
++    usage
++    exit 0
++    ;;
++esac
++
++dest=$1
++shift
++keep_execution=false
++empty_pre_eval=false
++taxonomy_from=
++
++while [ "$#" -gt 0 ]; do
++  case $1 in
++    --keep-execution)
++      keep_execution=true
++      ;;
++    --empty-pre-eval)
++      empty_pre_eval=true
++      ;;
++    --taxonomy-from)
++      [ "$#" -ge 2 ] || fail 1 'sandbox checkout: --taxonomy-from requires a path'
++      shift
++      taxonomy_from=$1
++      ;;
++    --help|-h)
++      usage
++      exit 0
++      ;;
++    *)
++      fail 1 "sandbox checkout: unknown option: $1"
++      ;;
++  esac
++  shift
++done
++
++case $dest in
++  /*) ;;
++  *) dest=$PWD/$dest ;;
++esac
++
++git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
++  || fail 2 'sandbox checkout: current directory is not a Git repository'
++repo=$(git rev-parse --show-toplevel)
++
++if [ -e "$dest" ] || [ -L "$dest" ]; then
++  [ -d "$dest" ] || fail 3 "sandbox checkout: destination is not an empty directory: $dest"
++  [ -z "$(find "$dest" -mindepth 1 -maxdepth 1 -print -quit)" ] \
++    || fail 3 "sandbox checkout: destination is not empty: $dest"
++else
++  mkdir -p "$dest"
++fi
++
++if [ -n "$taxonomy_from" ]; then
++  case $taxonomy_from in
++    /*) ;;
++    *) taxonomy_from=$PWD/$taxonomy_from ;;
++  esac
++  [ -f "$taxonomy_from" ] || [ -L "$taxonomy_from" ] \
++    || fail 1 "sandbox checkout: taxonomy file not found: $taxonomy_from"
++fi
++
++cd "$repo"
++files=0
++while IFS= read -r -d '' file; do
++  case $file in
++    docs/superpowers/execution/*)
++      [ "$keep_execution" = true ] || continue
++      ;;
++    docs/superpowers/pre-eval/*)
++      [ "$empty_pre_eval" = true ] && continue
++      ;;
++  esac
++
++  target=$dest/$file
++  mkdir -p "$(dirname "$target")"
++  cp -pR "./$file" "$target"
++  files=$((files + 1))
++done < <(git ls-files -z)
++
++if [ -n "$taxonomy_from" ]; then
++  taxonomy_target=$dest/.claude/compound-v-impact-taxonomy.yaml
++  mkdir -p "$(dirname "$taxonomy_target")"
++  cp -pR "$taxonomy_from" "$taxonomy_target"
++  files=$((files + 1))
++fi
++
++if [ "$empty_pre_eval" = true ]; then
++  mkdir -p "$dest/docs/superpowers/pre-eval"
++fi
++
++git init -q "$dest"
++git -C "$dest" add -A
++git -C "$dest" -c user.email=sandbox@example.invalid -c user.name='Compound V sandbox' \
++  commit -q -m sandbox
++commit=$(git -C "$dest" rev-parse HEAD)
++
++printf 'sandbox: %s\n' "$dest"
++printf 'files: %s commit: %s\n' "$files" "$commit"
+diff --git a/tests/test-sandbox-checkout.sh b/tests/test-sandbox-checkout.sh
+new file mode 100755
+index 0000000..f3b2910
+--- /dev/null
++++ b/tests/test-sandbox-checkout.sh
+@@ -0,0 +1,126 @@
++#!/usr/bin/env bash
++# Verifies that the checkout helper copies only tracked content into an
++# independently usable, single-commit sandbox.
++
++set -eu
++
++REPO=$(cd "$(dirname "$0")/.." && pwd -P)
++HELPER=${SANDBOX_CHECKOUT_SRC:-"$REPO/scripts/compound-v-sandbox-checkout.sh"}
++
++pass=0
++fail=0
++
++ok() {
++  pass=$((pass + 1))
++  printf 'PASS %s\n' "$1"
++}
++
++bad() {
++  fail=$((fail + 1))
++  printf 'FAIL %s\n' "$1"
++}
++
++check() {
++  label=$1
++  shift
++  if "$@"; then
++    ok "$label"
++  else
++    bad "$label"
++  fi
++}
++
++WORK=$(mktemp -d)
++trap 'rm -rf "$WORK"' EXIT
++
++SOURCE="$WORK/source"
++mkdir -p "$SOURCE/docs/superpowers/execution/x" \
++  "$SOURCE/docs/superpowers/pre-eval" "$SOURCE/logs"
++printf 'tracked bytes: \001\002\377\n' >"$SOURCE/a.txt"
++printf '#!/bin/sh\nprintf run\n' >"$SOURCE/run.sh"
++chmod 755 "$SOURCE/run.sh"
++printf 'execution state\n' >"$SOURCE/docs/superpowers/execution/x/state.json"
++printf 'pre-evaluation\n' >"$SOURCE/docs/superpowers/pre-eval/r.json"
++ln -s ../a.txt "$SOURCE/link-to-a"
++printf 'untracked\n' >"$SOURCE/junk.txt"
++printf 'ignored lane map\n' >"$SOURCE/docs/superpowers/execution/x/lane-map.json"
++printf 'ignored log\n' >"$SOURCE/logs/probe.jsonl"
++printf 'docs/superpowers/execution/**/lane-map.json\nlogs/*.jsonl\n' >"$SOURCE/.gitignore"
++
++git -C "$SOURCE" init -q
++git -C "$SOURCE" add a.txt run.sh link-to-a .gitignore \
++  docs/superpowers/execution/x/state.json docs/superpowers/pre-eval/r.json
++git -C "$SOURCE" -c user.email=test@example.invalid -c user.name=test \
++  commit -q -m fixture
++
++DEST="$WORK/sandbox"
++if (cd "$SOURCE" && bash "$HELPER" "$DEST") >"$WORK/output" 2>"$WORK/error"; then
++  ok 'creates a sandbox from tracked files'
++else
++  bad 'creates a sandbox from tracked files'
++fi
++
++check 'copies regular tracked files byte-for-byte' cmp "$SOURCE/a.txt" "$DEST/a.txt"
++check 'keeps executable modes' test -x "$DEST/run.sh"
++check 'copies a tracked symlink without following it' test -L "$DEST/link-to-a"
++check 'keeps the tracked symlink target text' test "$(readlink "$DEST/link-to-a")" = '../a.txt'
++check 'does not carry untracked files' test ! -e "$DEST/junk.txt"
++check 'drops the execution directory by default' test ! -d "$DEST/docs/superpowers/execution"
++check 'keeps pre-eval files by default' test -f "$DEST/docs/superpowers/pre-eval/r.json"
++check 'creates exactly one sandbox commit' test "$(git -C "$DEST" log --oneline | wc -l | tr -d ' ')" = 1
++check 'prints the sandbox destination' grep -Fqx "sandbox: $DEST" "$WORK/output"
++check 'prints copied file count and commit' grep -E '^files: [0-9]+ commit: [0-9a-f]+$' "$WORK/output"
++
++if (cd "$SOURCE" && bash "$HELPER" "$DEST") >"$WORK/nonempty-output" 2>"$WORK/nonempty-error"; then
++  bad 'refuses a non-empty destination'
++else
++  case $? in
++    3) ok 'refuses a non-empty destination' ;;
++    *) bad 'refuses a non-empty destination' ;;
++  esac
++fi
++check 'explains the non-empty destination refusal' grep -q . "$WORK/nonempty-error"
++
++KEEP_DEST="$WORK/keep-sandbox"
++if (cd "$SOURCE" && bash "$HELPER" "$KEEP_DEST" --keep-execution) >/dev/null 2>"$WORK/keep-error"; then
++  ok 'creates a sandbox that keeps tracked execution files'
++else
++  bad 'creates a sandbox that keeps tracked execution files'
++fi
++check 'keeps tracked execution files when requested' test -f "$KEEP_DEST/docs/superpowers/execution/x/state.json"
++check 'never carries ignored lane maps' test ! -e "$KEEP_DEST/docs/superpowers/execution/x/lane-map.json"
++check 'never carries ignored logs' test ! -e "$KEEP_DEST/logs/probe.jsonl"
++
++EMPTY_DEST="$WORK/empty-pre-eval-sandbox"
++if (cd "$SOURCE" && bash "$HELPER" "$EMPTY_DEST" --empty-pre-eval) >/dev/null 2>"$WORK/empty-error"; then
++  ok 'creates a sandbox with an empty pre-eval directory'
++else
++  bad 'creates a sandbox with an empty pre-eval directory'
++fi
++check 'empties the pre-eval directory when requested' test ! -e "$EMPTY_DEST/docs/superpowers/pre-eval/r.json"
++check 'creates the empty pre-eval directory' test -d "$EMPTY_DEST/docs/superpowers/pre-eval"
++
++OUTSIDE="$WORK/outside"
++mkdir -p "$OUTSIDE"
++if (cd "$OUTSIDE" && bash "$HELPER" "$WORK/outside-dest") >"$WORK/outside-output" 2>"$WORK/outside-error"; then
++  bad 'refuses to run outside a git repository'
++else
++  case $? in
++    2) ok 'refuses to run outside a git repository' ;;
++    *) bad 'refuses to run outside a git repository' ;;
++  esac
++fi
++check 'explains the non-repository refusal' grep -q . "$WORK/outside-error"
++
++if bash "$HELPER" --help >"$WORK/help-output" 2>"$WORK/help-error"; then
++  ok 'shows helper usage'
++else
++  bad 'shows helper usage'
++fi
++check 'help says ignored files are never carried' \
++  grep -Fq 'Gitignored files are never carried' "$WORK/help-output"
++check 'help names ignored execution artifacts' \
++  grep -Fq 'lane-map.json and logs/*.jsonl' "$WORK/help-output"
++
++printf '%s passed, %s failed\n' "$pass" "$fail"
++[ "$fail" -eq 0 ]

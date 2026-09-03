@@ -1,0 +1,66 @@
+{
+  "baseline_commit": "031a00c04da222c9253556749014f75e685a59dc",
+  "diff_digest": "sha256:56713206aa8df476648d77fd976bc346f8471c39ae1179a07b396208465a517c",
+  "exit_code": 0,
+  "job_id": "docs-note",
+  "patch_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r3/jobs/docs-note.patch",
+  "patch_paths": [
+    ".claude-plugin/marketplace.json",
+    ".claude-plugin/plugin.json",
+    "CHANGELOG.md",
+    "agents/spec-reviewer.md"
+  ],
+  "patch_sha256": "sha256:56713206aa8df476648d77fd976bc346f8471c39ae1179a07b396208465a517c",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"031a00c04da222c9253556749014f75e685a59dc\",\n  \"changed\": [\n    \".claude-plugin/marketplace.json\",\n    \".claude-plugin/plugin.json\",\n    \"CHANGELOG.md\",\n    \"agents/spec-reviewer.md\"\n  ],\n  \"allowed\": [\n    \"agents/spec-reviewer.md\",\n    \"CHANGELOG.md\",\n    \".claude-plugin/plugin.json\",\n    \".claude-plugin/marketplace.json\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "031a00c04da222c9253556749014f75e685a59dc",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      ".claude-plugin/marketplace.json",
+      ".claude-plugin/plugin.json",
+      "CHANGELOG.md",
+      "agents/spec-reviewer.md"
+    ],
+    "checks": [
+      {
+        "checker": "bash tests/test-engine-c-contract.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'jq empty .claude-plugin/plugin.json && jq empty .claude-plugin/marketplace.json'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "/bin/echo changelog-only",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "/usr/bin/python3 -B scripts/lint-frontmatter.py .",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (6 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 4 command(s) from 4 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_ae8d9fbb-4ee-2"
+}

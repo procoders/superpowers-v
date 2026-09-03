@@ -1,0 +1,69 @@
+diff --git a/.claude-plugin/marketplace.json b/.claude-plugin/marketplace.json
+index c01a15b..b99f19e 100644
+--- a/.claude-plugin/marketplace.json
++++ b/.claude-plugin/marketplace.json
+@@ -9,7 +9,7 @@
+     {
+       "name": "superpowers-v",
+       "description": "Compound V for Superpowers: triple parallel pre-flight (code archaeology + domain-expert + Context7 library validator), disjoint partitioning, manifest-driven multi-backend dispatch (Claude + Codex + Antigravity + Cursor), git-diff scope enforcement, crash-resumable runs, adaptive tier-based routing, epic mode, research-grounded brainstorming (gated pre-brainstorm recon + batched elicitation), V-memory local-first semantic+lexical recall over docs/superpowers (opt-in pure-python embeddings + a deterministic recall→action bridge), and batched parallel dispatch (Opus default, narrow Sonnet exception)",
+-      "version": "3.4.2",
++      "version": "3.4.3",
+       "source": "./",
+       "author": {
+         "name": "Oleg",
+diff --git a/.claude-plugin/plugin.json b/.claude-plugin/plugin.json
+index e124a96..37344cb 100644
+--- a/.claude-plugin/plugin.json
++++ b/.claude-plugin/plugin.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "superpowers-v",
+   "description": "Compound V for Superpowers: triple parallel pre-flight (code archaeology + domain-expert advisor + library/doc validator via Context7), disjoint file partitioning, manifest-driven multi-backend dispatch (Claude + headless Codex + Antigravity + Cursor workers), git-diff scope enforcement, crash-resumable runs, adaptive tier-based routing, epic mode for multi-feature builds, V-memory local-first semantic+lexical recall over docs/superpowers (opt-in pure-python embeddings + a deterministic recall\u2192action bridge), and batched parallel dispatch (Opus default, Sonnet for narrow junior-task carve-out), plus /v:onboard — a project-onboarding command that builds a citation-verified knowledge base + AGENTS.md/CLAUDE.md bridge behind a human gate. Auto-intercepts four transitions: pre-brainstorm recon \u2192 brainstorming \u2192 writing-plans \u2192 execution.",
+-  "version": "3.4.2",
++  "version": "3.4.3",
+   "author": {
+     "name": "Oleg",
+     "email": "copeus@gmail.com"
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 4c6cde9..6317415 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -4,7 +4,24 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
+ 
+ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
+ 
+-## [Unreleased]
++## [3.4.3] - 2026-09-03
++
++Stage 4 of the post-3.4.0 verification program: the first feature dispatched across two backends on
++Engine C in one run — a Codex worker builds the deliverable, Claude writes the docs and does the
++review — proving the multi-model contract (worktree outside the repository, UUID session id, the
++scope gate measuring the worker's own tree) end to end rather than in isolation.
++
++### Added — `scripts/compound-v-sandbox-checkout.sh`, built by a Codex worker on Engine C
++
++A byte-identical, git-only checkout helper (`<dest> [--keep-execution] [--empty-pre-eval] [--taxonomy-from <path>]`)
++that copies every `git ls-files` path of the current repository into `<dest>`, drops
++`docs/superpowers/execution/**` unless asked to keep it, and can empty `docs/superpowers/pre-eval/` —
++so a reviewer can drive `hooks/triage-prompt-nudge.sh` (the UserPromptSubmit hook) against a clean sandbox
++without touching a run's own working tree, instead of hand-building one. `tests/test-sandbox-checkout.sh`
++covers byte identity, dropped/kept execution history, the emptied pre-eval dir, and the refusal on a
++non-empty destination. Implemented by a `codex exec` worker (`gpt-5.6-terra`) in its own worktree under
++`$TMPDIR/compound-v/<run>/<job>`, gated by the git-derived scope check against that same tree — no
++timing or token figures are claimed here; none were measured for this job.
+ 
+ ### Fixed — an external job's gate measures the worker's worktree, and its wrapper never claims the checkout (findings 78, 79)
+ 
+diff --git a/agents/spec-reviewer.md b/agents/spec-reviewer.md
+index 5c98071..35b8f75 100644
+--- a/agents/spec-reviewer.md
++++ b/agents/spec-reviewer.md
+@@ -190,6 +190,8 @@ Read the evidence from the job result ([`job_result.schema.json`](../schemas/job
+ | `tests.scope` | the resolved `full` \| `impacted` \| `floor_only` — it must match what the tier owes above. The resolved *slice* additionally carries the output-only label `impacted+referencing` when an unmapped path at SCOPED/DIRECT was answered by the referencing heuristic; read it as `impacted` plus the ≤5 suites, and check the resolver's notes for which files they were. No manifest may **declare** that label — `test_scope` stays the three-value enum. |
+ | `tests.selected_count` | how many **commands** ran. Not test cases: no bundled worker parses a runner's output, so a case count would be fabricated. Never read this as a case count, and never ask for one. |
+ 
++To probe `hooks/triage-prompt-nudge.sh` (the UserPromptSubmit hook — the Stop hook needs `.claude/compound-v.json`, which a sandbox never has) on a checkout with a live run, without touching that run's own working tree, build one with `scripts/compound-v-sandbox-checkout.sh <dest> --empty-pre-eval`.
++
+ **A job reporting no test command at all is a FAIL** → **ISSUE: NO_TEST_EVIDENCE**. That is a job claiming `status: "success"` with the `tests` object absent, or with `tests.command` empty or whitespace. Silence is not success — an absent record is exactly what a worker that skipped the step looks like, and it is indistinguishable from one that ran nothing on purpose. (`tests` is legitimately absent on a job that never reached the test step — `blocked`, `timeout`, `error` — and such a job fails this gate on its own terms.)
+ 
+ **A red suite does not flip the job's `status`, deliberately.** The worker leaves `status` untouched on a non-zero `tests.exit_code` ([`backend-launcher/SKILL.md`](../skills/backend-launcher/SKILL.md)), because re-labelling a failing test as a backend `error` would feed it to the retry/reroute policy, which cannot fix a failing test. A red suite therefore arrives here wearing `status: "success"`. **You are the enforcement**: the worker reports, you refuse. Never infer green from `status`.

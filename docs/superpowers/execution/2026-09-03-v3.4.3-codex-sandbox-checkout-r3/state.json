@@ -1,26 +1,56 @@
 {
   "run_id": "2026-09-03-v3.4.3-codex-sandbox-checkout-r3",
-  "phase": "PARTITION_VERIFIED",
+  "phase": "DISPATCHED",
   "pre_eval_id": "2026-09-03T062154Z-implement-v3-4-3-per-docs-superpowers-specs-2026-09-03-v3-4-96ff",
   "updated_at": "2026-09-03T06:54:38Z",
   "jobs": {
     "sandbox-helper": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/private/var/folders/gj/v1s49xyj4pz1n8_3dmf4zml80000gn/T/compound-v/2026-09-03-v3.4.3-codex-sandbox-checkout-r3/sandbox-helper",
+      "session_id": null,
+      "baseline": "031a00c04da222c9253556749014f75e685a59dc",
+      "realised_commit": "031a00c04da222c9253556749014f75e685a59dc",
+      "merged": {
+        "realised_commit": "031a00c04da222c9253556749014f75e685a59dc",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "d210e92e1c7b34fa3e4eaeba230efde5f3e54dff"
+      }
     },
     "docs-note": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_ae8d9fbb-4ee-2",
+      "session_id": null,
+      "baseline": "031a00c04da222c9253556749014f75e685a59dc",
+      "realised_commit": "031a00c04da222c9253556749014f75e685a59dc",
+      "merged": {
+        "realised_commit": "031a00c04da222c9253556749014f75e685a59dc",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "d210e92e1c7b34fa3e4eaeba230efde5f3e54dff"
+      }
     },
     "spec-review": {
       "status": "pending",
       "isolation": "direct",
       "worktree": null,
       "session_id": null
+    }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "sandbox-helper",
+        "docs-note"
+      ],
+      "merged": [
+        "sandbox-helper",
+        "docs-note"
+      ],
+      "commit": "d210e92e1c7b34fa3e4eaeba230efde5f3e54dff",
+      "integrated": true
     }
   }
 }
