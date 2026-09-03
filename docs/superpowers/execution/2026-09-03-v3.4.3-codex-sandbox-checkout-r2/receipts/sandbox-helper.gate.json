@@ -1,0 +1,11 @@
+{
+  "baseline_commit": "a7810f8073b446ff369f7d9bd39e4a585e8c2dee",
+  "diff_digest": "sha256:bb3ce8dd367023a3b7b790200e08fa66938b22d8d3d55a4ce712e50e428770e4",
+  "exit_code": 1,
+  "job_id": "sandbox-helper",
+  "raw_stdout": "{\n  \"verdict\": \"blocked\",\n  \"mode\": \"direct\",\n  \"baseline\": \"a7810f8073b446ff369f7d9bd39e4a585e8c2dee\",\n  \"changed\": [\n    \"docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r2/jobs/docs-note.baseline\",\n    \"docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r2/jobs/docs-note.test-contract.json\",\n    \"docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r2/lane-map.json\",\n    \"docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r2/logs/sandbox-helper.events.jsonl\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-sandbox-checkout.sh\",\n    \"tests/test-sandbox-checkout.sh\"\n  ],\n  \"violations\": [\n    \"docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r2/jobs/docs-note.baseline\",\n    \"docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r2/jobs/docs-note.test-contract.json\",\n    \"docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r2/lane-map.json\",\n    \"docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r2/logs/sandbox-helper.events.jsonl\"\n  ]\n}\n",
+  "realised_commit": "a7810f8073b446ff369f7d9bd39e4a585e8c2dee",
+  "source": "gate-receipt",
+  "verdict": "blocked",
+  "worktree": ""
+}

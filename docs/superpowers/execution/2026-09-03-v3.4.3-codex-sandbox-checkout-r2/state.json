@@ -1,20 +1,22 @@
 {
   "run_id": "2026-09-03-v3.4.3-codex-sandbox-checkout-r2",
-  "phase": "PARTITION_VERIFIED",
+  "phase": "BLOCKED",
   "pre_eval_id": "2026-09-03T062154Z-implement-v3-4-3-per-docs-superpowers-specs-2026-09-03-v3-4-96ff",
   "updated_at": "2026-09-03T06:41:37Z",
   "jobs": {
     "sandbox-helper": {
       "status": "pending",
-      "isolation": "worktree",
+      "isolation": "direct",
       "worktree": null,
-      "session_id": null
+      "session_id": null,
+      "baseline": "a7810f8073b446ff369f7d9bd39e4a585e8c2dee"
     },
     "docs-note": {
       "status": "pending",
       "isolation": "worktree",
       "worktree": null,
-      "session_id": null
+      "session_id": null,
+      "baseline": "a7810f8073b446ff369f7d9bd39e4a585e8c2dee"
     },
     "spec-review": {
       "status": "pending",
@@ -22,5 +24,7 @@
       "worktree": null,
       "session_id": null
     }
-  }
+  },
+  "blocked_reason": "wave 1: integration REFUSED by scripts/compound-v-integration-gate.py: {\"blocked\": 2}. Nothing was merged and nothing was committed.",
+  "blocked_at": "2026-09-03T06:49:46Z"
 }
