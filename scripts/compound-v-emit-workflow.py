@@ -27,6 +27,13 @@ SUBCOMMANDS
   finalize-wave  the serialized end of every wave: run the integration AUTHORITY
                  over that wave's jobs, then merge and COMMIT the permitted ones.
                  The only writer into the project checkout.
+  resume-prepare what /v:resume runs BEFORE relaunching a crashed run: clear the
+                 crashed attempt's baseline pin for every job that has not
+                 integrated, reset those jobs to pending, drop their stale
+                 lane-map entries and archive their superseded receipts. A
+                 relaunch branches a fresh worktree from the CURRENT HEAD, and a
+                 pin from the crashed attempt charges the job with every commit
+                 landed since (proven BLOCKED on 2026-09-03, finding 146).
   register-lane  the Implement agent's FIRST command: bind its real worktree to
                  its job id in lane-map.json (which is what makes
                  hooks/lane-guard.sh able to resolve an acting job at all), and
@@ -110,6 +117,7 @@ _harden_sys_path()
 import argparse  # noqa: E402
 import hashlib  # noqa: E402
 import io  # noqa: E402
+import datetime  # noqa: E402
 import json  # noqa: E402
 import re  # noqa: E402
 import shutil  # noqa: E402
@@ -7716,6 +7724,50 @@ def selftest():
         _check("an unpinned job reads back as unpinned, not as some HEAD",
                read_pinned_baseline(pin_dir, "absent", {}) is None)
 
+        # --- resume-prepare: a crashed attempt's pin must not gate the relaunch (146)
+        _rp_state = _load_state(pin_dir)
+        _rp_state["jobs"]["p1"]["status"] = "blocked"
+        _rp_state["jobs"]["p1"]["worktree"] = "/dead/wt"
+        _rp_state["jobs"]["p2"] = {"status": "done", "baseline": "f" * 40,
+                                   "merged": {"integrated": True, "realised_commit": "e" * 40}}
+        _rp_state["phase"] = "BLOCKED"
+        _save_state(pin_dir, _rp_state)
+        _atomic_write(baseline_pin_path(pin_dir, "p2"), "f" * 40 + "\n")
+        _atomic_write(lane_map_path(pin_dir),
+                      json.dumps({"worktrees": {"/dead/wt": "p1", "/live/wt": "p2"}}))
+        os.makedirs(os.path.join(pin_dir, "receipts"), exist_ok=True)
+        _atomic_write(os.path.join(pin_dir, "receipts", "p1.gate.json"),
+                      json.dumps({"verdict": "blocked", "realised_commit": "d" * 40}))
+        with _quiet():
+            _rp_rc = cmd_resume_prepare(["--run-dir", pin_dir])
+        _rp_after = _load_state(pin_dir)
+        _check("resume-prepare exits 0", _rp_rc == 0)
+        _check("resume-prepare CLEARS the crashed job's pin (file + state), resets it to "
+               "pending and forgets its dead worktree",
+               not os.path.exists(baseline_pin_path(pin_dir, "p1"))
+               and "baseline" not in _rp_after["jobs"]["p1"]
+               and _rp_after["jobs"]["p1"]["status"] == "pending"
+               and _rp_after["jobs"]["p1"].get("worktree") is None)
+        _check("resume-prepare KEEPS an integrated job's pin, status and lane entry",
+               os.path.exists(baseline_pin_path(pin_dir, "p2"))
+               and _rp_after["jobs"]["p2"]["baseline"] == "f" * 40
+               and _rp_after["jobs"]["p2"]["status"] == "done"
+               and _read_json(lane_map_path(pin_dir))["worktrees"] == {"/live/wt": "p2"})
+        _check("resume-prepare archives the superseded receipt out of the authority's path",
+               not os.path.exists(os.path.join(pin_dir, "receipts", "p1.gate.json"))
+               and any(n.startswith("p1.gate.superseded-")
+                       for n in os.listdir(os.path.join(pin_dir, "receipts"))))
+        _check("resume-prepare leaves the run pre-dispatch, not BLOCKED",
+               _rp_after.get("phase") == "PARTITION_VERIFIED")
+        with _quiet():
+            _rp_rc2 = cmd_register_lane([
+                "--run-dir", pin_dir, "--job-id", "p1", "--cwd", fin_repo,
+                "--repo-root", fin_repo, "--isolation", "direct", "--no-test-contract",
+            ])
+        _check("after resume-prepare, register-lane pins the relaunch's OWN HEAD afresh",
+               _rp_rc2 == 0 and read_pinned_baseline(
+                   pin_dir, "p1", _load_state(pin_dir)["jobs"]["p1"]) == _head_commit(fin_repo))
+
         # --- agentType: the last unused native mechanism ----------------------
         rev_plan = _plan_for(_tiny_manifest(
             [{"id": "rev", "type": "review", "backend": "claude",
@@ -8409,6 +8461,72 @@ def selftest():
     return 1 if _FAILURES else 0
 
 
+def cmd_resume_prepare(argv):
+    """`resume-prepare --run-dir R`: make a crashed run relaunchable without a stale pin.
+
+    The first-pin-wins rule in register-lane is right against a WORKER that
+    re-registers after committing. A resume is the ORCHESTRATOR re-dispatching a
+    job that never integrated, in a fresh worktree branched from the current HEAD
+    — so the crashed attempt's pin must go, or the gate's `git diff <pin>` charges
+    the job with every commit that landed in between (finding 146: one docs commit
+    after the death BLOCKED a clean implementation). Only the orchestrator calls
+    this; nothing in the emitted script does, so a worker gains nothing from it.
+
+    For every job whose state carries no `merged.integrated`: delete the pin file
+    and the state `baseline`, set `status: pending`, clear `worktree`, drop its
+    lane-map worktree entries, and move `receipts/<id>.gate.json` aside as
+    `receipts/<id>.gate.superseded-<realised-or-ts>.json` so the integration
+    authority never reads the crashed attempt's verdict as this attempt's.
+    Integrated jobs are untouched. The phase returns to PARTITION_VERIFIED.
+    """
+    ap = argparse.ArgumentParser(prog="compound-v-emit-workflow.py resume-prepare")
+    ap.add_argument("--run-dir", required=True)
+    args = ap.parse_args(argv)
+    run_dir = os.path.abspath(args.run_dir)
+    out = {"run_dir": run_dir, "unpinned": [], "kept": [], "lane_entries_dropped": 0,
+           "receipts_archived": []}
+    with _run_dir_lock(run_dir):
+        state = _load_state(run_dir)
+        lm = _read_json(lane_map_path(run_dir), None)
+        wts = lm.get("worktrees") if isinstance(lm, dict) and isinstance(lm.get("worktrees"), dict) else None
+        for job_id, entry in sorted((state.get("jobs") or {}).items()):
+            if not isinstance(entry, dict):
+                continue
+            merged = entry.get("merged") or {}
+            if isinstance(merged, dict) and merged.get("integrated"):
+                out["kept"].append(job_id)
+                continue
+            was = read_pinned_baseline(run_dir, job_id, entry)
+            pin_path = baseline_pin_path(run_dir, job_id)
+            if os.path.exists(pin_path):
+                os.remove(pin_path)
+            entry.pop("baseline", None)
+            entry["status"] = "pending"
+            entry["worktree"] = None
+            if wts is not None:
+                dropped = [cwd for cwd, jid in wts.items() if jid == job_id]
+                for cwd in dropped:
+                    wts.pop(cwd, None)
+                out["lane_entries_dropped"] += len(dropped)
+            receipt = os.path.join(run_dir, "receipts", "%s.gate.json" % job_id)
+            if os.path.exists(receipt):
+                doc = _read_json(receipt, None) or {}
+                tag = (str(doc.get("realised_commit") or "")[:12]
+                       or datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
+                dest = os.path.join(run_dir, "receipts", "%s.gate.superseded-%s.json" % (job_id, tag))
+                os.replace(receipt, dest)
+                out["receipts_archived"].append(os.path.relpath(dest, run_dir))
+            out["unpinned"].append({"job": job_id, "was": was})
+        if wts is not None:
+            lm["worktrees"] = wts
+            _atomic_write(lane_map_path(run_dir), json.dumps(lm, indent=2, sort_keys=True) + "\n")
+        if out["unpinned"]:
+            state["phase"] = "PARTITION_VERIFIED"
+        _save_state(run_dir, state)
+    print(json.dumps(out, indent=2, sort_keys=True))
+    return 0
+
+
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
@@ -8418,6 +8536,7 @@ SUBCOMMANDS = {
     "record": cmd_record,
     "finalize-wave": cmd_finalize_wave,
     "register-lane": cmd_register_lane,
+    "resume-prepare": cmd_resume_prepare,
 }
 
 
@@ -8426,7 +8545,7 @@ def main(argv=None):
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__)
         print("usage: compound-v-emit-workflow.py "
-              "{emit,gate-receipt,record,finalize-wave,register-lane} ... "
+              "{emit,gate-receipt,record,finalize-wave,register-lane,resume-prepare} ... "
               "| --selftest")
         return 0
     if argv[0] == "--selftest":
