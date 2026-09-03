@@ -1,0 +1,36 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 3186870..a2f4174 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+ 
+ ## [Unreleased]
+ 
++### Fixed — a large content-scan-excluded script could never demote to SCOPED (finding 99)
++
++Triage sized a request naming `scripts/compound-v-memory.py` (66,677 bytes) as FULL with no T3 handoff, while
++the same request against three smaller scripts demoted to `needs_t3` as expected. Cause: `_classify_paths`
++reads at most `MAX_FILE_READ_BYTES` (65,536 bytes) and flags any longer file `content_scan_incomplete`; the
++scorer treats that flag as impact-raising, which vetoes `t1_from_broad_glob` — but `**/*.py` and `**/*.sh`
++are already in the taxonomy's `content_scan_exclude`, so the content scan the flag was doubting never ran
++in the first place. `_classify_paths` now checks `taxonomy.content_scan_excluded(path)` before reading the
++file: an excluded path is neither read for content nor flagged incomplete, though its PATH rows and
++`sensitive_path` handling are unchanged. A non-excluded oversized file (e.g. a large `.md`) still gets the
++flag exactly as before, and sensitive paths are untouched either way. Verified with a four-request sandbox
++probe (`hooks/triage-prompt-nudge.sh` against a throwaway checkout) driving the affected script plus three
++smaller ones: the big excluded script now demotes to `needs_t3` instead of sizing FULL.
++
++### Fixed — the tier-1 test checker's fixed 300 s cap refused a passing but slow suite (finding 102)
++
++A FULL-tier job whose lane path matched no `impacted_map` rule ran the repository's full test suite, which
++took 340 s under load; `compound-v-fastpath-run.py`'s tier-1 checker capped every such run at a constant
++300 s, so the worker was killed at rc 124 and the job came back `blocked` with `failure_class` unset — the
++review never ran. The checker's budget is now `test_contract.timeout_s`, an optional positive-integer field
++(default 600 s when the contract omits it) read from the contract handed to the worker; every external
++worker's `tc_validate` accepts the new key. A checker that still exits 124 is now recorded with
++`failure_class: timeout` in the job_result instead of an unlabeled failure. Non-excluded big files keep the
++`content_scan_incomplete` flag from finding 99 above; sensitive paths are untouched by either fix.
++
+ ## [3.4.5] - 2026-09-03
+ 
+ Stage 5a of the verification program — is V-memory recall real? It was real and stale: every reviewer of the

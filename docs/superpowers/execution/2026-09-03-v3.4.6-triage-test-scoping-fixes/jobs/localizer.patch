@@ -1,0 +1,118 @@
+diff --git a/scripts/compound-v-localize.py b/scripts/compound-v-localize.py
+index 7c80a24..83ee397 100644
+--- a/scripts/compound-v-localize.py
++++ b/scripts/compound-v-localize.py
+@@ -492,15 +492,41 @@ def _classify_paths(repo, resolved, taxonomy):
+     """Read each resolved file (bounded) and classify it via the SHARED loader. Returns
+     (sorted A1 flag list, incomplete). Matching semantics are NOT reimplemented here.
+ 
+-    `incomplete` is True iff any file exceeded MAX_FILE_READ_BYTES: the content-based
+-    classification then only saw the first cap bytes, so a sensitive/shared-token match
+-    living past the cap could be missed. We read `MAX_FILE_READ_BYTES + 1` and treat an
+-    over-cap read as a truncated (uncertain) scan — the caller degrades to `ambiguous`
+-    rather than silently trusting a partial classification. Fail-closed."""
++    `incomplete` is True iff any SCANNED file exceeded MAX_FILE_READ_BYTES: the
++    content-based classification then only saw the first cap bytes, so a
++    sensitive/shared-token match living past the cap could be missed. We read
++    `MAX_FILE_READ_BYTES + 1` and treat an over-cap read as a truncated
++    (uncertain) scan — the caller degrades to `ambiguous` rather than silently
++    trusting a partial classification. Fail-closed.
++
++    A path matching the taxonomy's `content_scan_exclude` is never opened at all
++    (finding 99): its content is never scanned either way, so an oversized
++    excluded file cannot be `incomplete` and never sets content_scan_incomplete
++    -- only its PATH rows (and sensitive_path) still apply."""
+     tax = _taxonomy_module()
+     flags = set()
+     incomplete = False
+     for rel in resolved:
++        if tax.content_scan_excluded(taxonomy or {}, rel):
++            # finding 99 (v3.4.6 Task A) — the shared classify() already ignores
++            # this file's CONTENT for a content_scan_exclude path (its taxonomy
++            # PATH rows and sensitive_path flag still apply, per compound-v-taxonomy.py
++            # §A5), so reading an oversized excluded file just to compute
++            # content_scan_incomplete bought nothing but a wasted read and a
++            # spurious flag on a file the scan never actually looked inside.
++            # Skip the read entirely; classify with content=None.
++            # Tradeoff accepted here: _is_generated's content-marker scan (an
++            # "@generated"-style marker in the first 4KB) also goes unread for an
++            # excluded path -- only its path-glob check still runs. A generated
++            # file that is ALSO content-scan-excluded and relies solely on a body
++            # marker (no matching glob) will not be flagged `is_generated`. This
++            # matches content_scan_exclude's own contract (content is not scanned)
++            # and is judged an acceptable, documented tradeoff rather than a bug.
++            c = tax.classify(taxonomy or {}, path=rel, content=None)
++            flags |= _map_classify_flags(c.get("flags", []))
++            if _is_generated(rel, None):
++                flags.add("is_generated")
++            continue
+         try:
+             with open(os.path.join(repo, rel), "rb") as fh:
+                 raw = fh.read(MAX_FILE_READ_BYTES + 1)
+@@ -1179,6 +1205,66 @@ def _selftest():
+         expect("HIGH-8(c): a small in-cap file is NOT flagged incomplete",
+                _inc2 is False)
+ 
++    # ===================================================================== #
++    # finding 99 (v3.4.6 Task A) — content_scan_exclude must suppress
++    # content_scan_incomplete for an oversized EXCLUDED file: classify() never
++    # looks at its content either way, so flagging it "incomplete" was noise.
++    # ===================================================================== #
++    _EXCLUDE_PY_TAXONOMY = """
++version: 1
++path_patterns:
++  - glob: "scripts/**"
++    difficulty_band: low
++    impact_band: low
++  - glob: "docs/**"
++    difficulty_band: low
++    impact_band: low
++content_scan_exclude:
++  - "**/*.py"
++"""
++    excl_tax = tax_mod.load_taxonomy(text=_EXCLUDE_PY_TAXONOMY)
++    _NO_EXCLUDE_TAXONOMY = """
++version: 1
++path_patterns:
++  - glob: "scripts/**"
++    difficulty_band: low
++    impact_band: low
++  - glob: "docs/**"
++    difficulty_band: low
++    impact_band: low
++"""
++    no_excl_tax = tax_mod.load_taxonomy(text=_NO_EXCLUDE_TAXONOMY)
++    with tempfile.TemporaryDirectory() as repo:
++        big_py = "def f():\n    pass\n" + "A" * (MAX_FILE_READ_BYTES + 4096) + "\n"
++        big_md = "# doc\n" + "A" * (MAX_FILE_READ_BYTES + 4096) + "\n"
++        _write(os.path.join(repo, "scripts/big.py"), big_py)
++        _write(os.path.join(repo, "docs/big.md"), big_md)
++
++        # oversized scripts/big.py, content_scan_exclude covers **/*.py -> exact,
++        # NOT content_scan_incomplete (the file is never opened at all).
++        res = localize("scripts/big.py", repo, excl_tax)
++        expect("finding-99: excluded oversized .py -> exact, no content_scan_incomplete",
++               res["confidence"] == "exact"
++               and res["resolved_paths"] == ["scripts/big.py"]
++               and "content_scan_incomplete" not in res["flags"])
++        _f3, _inc3 = _classify_paths(repo, ["scripts/big.py"], excl_tax)
++        expect("finding-99: _classify_paths does not flag an excluded oversized file",
++               _inc3 is False)
++
++        # SAME oversized file, taxonomy with NO content_scan_exclude -> flag still
++        # fires (this is the pre-existing behavior; unchanged for a non-excluded file).
++        res2 = localize("scripts/big.py", repo, no_excl_tax)
++        expect("finding-99: no exclusion -> oversized .py still content_scan_incomplete",
++               res2["confidence"] == "exact"
++               and "content_scan_incomplete" in res2["flags"])
++
++        # oversized docs/big.md is NOT covered by content_scan_exclude (**/*.py only)
++        # -> the flag still fires for it under the SAME (excluding) taxonomy.
++        res3 = localize("docs/big.md", repo, excl_tax)
++        expect("finding-99: oversized .md (not excluded) still content_scan_incomplete",
++               res3["confidence"] == "exact"
++               and "content_scan_incomplete" in res3["flags"])
++
+     # ===================================================================== #
+     # WS-B — decision 2: identifier-only tokens, `new_file`, trailing punctuation.
+     # The ten probe fixtures of plan Task B steps 1 and 1b, in their numbering.

@@ -1,26 +1,31 @@
 {
   "run_id": "2026-09-03-v3.4.6-triage-test-scoping-fixes",
-  "phase": "PARTITION_VERIFIED",
+  "phase": "BLOCKED",
   "pre_eval_id": "2026-09-03T113149Z-implement-v3-4-6-per-docs-superpowers-specs-2026-09-03-v3-4-0cb5",
   "updated_at": "2026-09-03T11:44:45Z",
   "jobs": {
     "localizer": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_94bd0df1-6f9-1",
+      "session_id": null,
+      "baseline": "eb581ceb6a26653e0e7862f171a169e60864ba91",
+      "realised_commit": "eb581ceb6a26653e0e7862f171a169e60864ba91"
     },
     "checker-budget": {
       "status": "pending",
       "isolation": "worktree",
       "worktree": null,
-      "session_id": null
+      "session_id": null,
+      "baseline": "eb581ceb6a26653e0e7862f171a169e60864ba91"
     },
     "changelog": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_94bd0df1-6f9-3",
+      "session_id": null,
+      "baseline": "eb581ceb6a26653e0e7862f171a169e60864ba91",
+      "realised_commit": "eb581ceb6a26653e0e7862f171a169e60864ba91"
     },
     "spec-review": {
       "status": "pending",
@@ -28,5 +33,7 @@
       "worktree": null,
       "session_id": null
     }
-  }
+  },
+  "blocked_reason": "wave 1: integration REFUSED by scripts/compound-v-integration-gate.py: {\"pass\": 2, \"blocked\": 1}. Nothing was merged and nothing was committed.",
+  "blocked_at": "2026-09-03T11:54:54Z"
 }
