@@ -61,12 +61,12 @@ Worked example: [`examples/manifest.example.yaml`](../../examples/manifest.examp
 
 `backend`, `tier`, `effort`, and `model` are execution-layer values. They drive dispatch; they MUST NOT leak into any agent/skill/command frontmatter (`lint-frontmatter.py` + `validate.yml` reject Haiku, and reviewers/agents always carry `model: opus`).
 
-**Glob semantics (`write_allowed`, `impacted_map.when`; `read_allowed` is advisory, never matched).** `*` matches within one path segment
-(never `/`); `**` matches across segments; `dir/**` also matches `dir` itself; `?` matches one non-`/` character;
-`[` and `]` are literal (no character classes — `app/[locale]/**` is a real directory); matching is anchored to the
-full repo-relative path. This is the scope gate's own matcher (`scripts/compound-v-scope-check.py` `matches`), and
-V-memory's `recall-check` uses the same matcher — see [`memory.md`](memory.md); the proof is the `parity …` rows of
-`python3 scripts/compound-v-memory.py --selftest`.
+**Glob semantics (`write_allowed`, `impacted_map.when`; `read_allowed` is advisory, never matched).**
+`*` matches within one path segment (never `/`); `**` matches across segments; `dir/**` also matches `dir` itself;
+`?` matches one non-`/` character; `[` and `]` are literal (no character classes — `app/[locale]/**` is a real
+directory); matching is anchored to the full repo-relative path. This is the scope gate's own matcher
+(`scripts/compound-v-scope-check.py` `matches`), and V-memory's `recall-check` uses the same matcher — see
+[`memory.md`](memory.md); the proof is the `parity …` rows of `python3 scripts/compound-v-memory.py --selftest`.
 
 ### Tier vocabulary (stable — never changes when models churn)
 
