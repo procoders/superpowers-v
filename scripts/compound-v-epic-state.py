@@ -498,6 +498,15 @@ def check_specs(features, base_dir=""):
                         "(no absolute paths): %s" % (fid, sp))
             continue
         resolved = os.path.realpath(os.path.join(base_real, sp))
+        if not os.path.isfile(resolved):
+            # The command doc writes spec_path REPO-relative
+            # (docs/superpowers/execution/epics/<id>/specs/<f>.md) while this check
+            # resolved it epic-relative only, so the documented form refused to
+            # init (stage-5 dogfood, finding 85). Accept the repo-relative form too:
+            # it must still resolve INSIDE the epic dir.
+            alt = os.path.realpath(os.path.join(os.getcwd(), sp))
+            if os.path.isfile(alt) and (alt == base_real or alt.startswith(base_real + os.sep)):
+                resolved = alt
         if resolved != base_real and not resolved.startswith(base_real + os.sep):
             errs.append("feature %r spec_path escapes the epic dir (must live under it, no "
                         "absolute/`..` paths): %s" % (fid, sp))
@@ -2075,6 +2084,18 @@ def _selftest():
         with open(os.path.join(d, "specs", "a.md"), "w") as fh:
             fh.write("spec")
         check("contained spec ok", check_specs([{"id": "a", "spec_path": "specs/a.md"}], base_dir=d) == [])
+        # finding 85: the REPO-relative form the command doc writes is accepted when it
+        # resolves inside the epic dir (and an escaping one is still refused).
+        _cwd0 = os.getcwd()
+        try:
+            os.chdir(os.path.dirname(os.path.dirname(d)))
+            _rel = os.path.relpath(os.path.join(d, "specs", "a.md"), os.getcwd())
+            check("repo-relative spec_path that lands inside the epic dir -> ok",
+                  check_specs([{"id": "a", "spec_path": _rel}], base_dir=d) == [])
+            check("repo-relative spec_path OUTSIDE the epic dir -> refused",
+                  check_specs([{"id": "a", "spec_path": os.path.basename(d) + "/../elsewhere.md"}], base_dir=d) != [])
+        finally:
+            os.chdir(_cwd0)
         check("`..` traversal rejected", any("escapes" in e for e in check_specs(
             [{"id": "a", "spec_path": "../../../etc/hosts"}], base_dir=d)))
         check("absolute spec rejected (outside)", check_specs(

@@ -4,6 +4,12 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
+## [Unreleased]
+
+### Fixed — `/v:epic`'s documented `spec_path` form refused to init (finding 85)
+
+`compound-v-epic-state.py --init --require-specs` resolved `spec_path` relative to the epic directory only, while `commands/v-epic.md` writes it repo-relative (`docs/superpowers/execution/epics/<id>/specs/<f>.md`); the first epic ever initialised failed on its own documented example. Both forms are accepted now, and a path must still resolve inside the epic directory. Selftest 366/366.
+
 ## [3.4.3] - 2026-09-03
 
 Stage 4 of the post-3.4.0 verification program: the first feature dispatched across two backends on
