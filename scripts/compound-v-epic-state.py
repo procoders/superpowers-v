@@ -1962,6 +1962,15 @@ def validate_marathon_state(state):
 
 
 def _atomic_write_json(path, obj):
+    # THE EPIC STATE CARRIES ITS OWN CLOCK. The dashboard's `resume` (the
+    # SessionStart banner and the triage hook's active-run question) ages a
+    # record by its RECORDED timestamp — never an mtime, which git rewrites —
+    # and an epic-state.json without one was "age unknown" and never listed:
+    # the first epic ever run was invisible to both while it ran (stage-5
+    # dogfood, finding 87). Every write stamps `updated_at`.
+    if isinstance(obj, dict) and "epic_id" in obj and "features" in obj:
+        import datetime as _dt
+        obj["updated_at"] = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     """Atomic state write: tmp file in the SAME directory + os.replace (mirrors the idiom
     at compound-v-fastpath-run.py:704) — a reader can never observe a truncated write. No
     cross-process lock HERE — the marathon is single-writer-at-a-time by construction for
@@ -2084,6 +2093,13 @@ def _selftest():
         with open(os.path.join(d, "specs", "a.md"), "w") as fh:
             fh.write("spec")
         check("contained spec ok", check_specs([{"id": "a", "spec_path": "specs/a.md"}], base_dir=d) == [])
+        # finding 87: every persisted epic state carries updated_at (the banner's clock).
+        _f87 = os.path.join(d, "f87-state.json")
+        _atomic_write_json(_f87, {"epic_id": "e87", "features": [], "status": "running"})
+        with open(_f87) as _fh:
+            _f87_obj = json.load(_fh)
+        check("epic state write stamps updated_at (ISO-8601 Z)",
+              str(_f87_obj.get("updated_at", "")).endswith("Z") and "T" in str(_f87_obj.get("updated_at")))
         # finding 85: the REPO-relative form the command doc writes is accepted when it
         # resolves inside the epic dir (and an escaping one is still refused).
         _cwd0 = os.getcwd()

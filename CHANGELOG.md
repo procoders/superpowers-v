@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed — a running epic was invisible to the banner and to the triage hook (finding 87)
+
+`epic-state.json` carried no timestamp, and the dashboard ages a record by its recorded time only (never an mtime), so the first epic ever run was "age unknown" and never listed as unfinished — and the hook kept sizing unrelated prompts as if nothing were running. Every epic-state write now stamps `updated_at`; the banner names the running epic, and the hook's `--open-jobs` question treats it as active. Selftest 367/367.
+
 ### Fixed — a request that names new files beside an existing one no longer sizes as the existing one alone (finding 86)
 
 "Implement F1 per <spec.md>: scripts/new.sh with tests/new.sh" resolved to the spec alone — one docs path, low/low — and was tiered DIRECT for a new script under `scripts/**`. The localizer now collects new-file candidates in the literal-path branch too; any new path makes the confidence `new_file` (never DIRECT) and carries its directory's bands, and several new files are several paths.
