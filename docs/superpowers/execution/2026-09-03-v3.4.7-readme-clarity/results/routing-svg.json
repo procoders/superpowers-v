@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/routing.svg"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "b2ddbc847498736a2a0e7e4ebd66eb3acc8e90fa",
+    "diff_digest": "sha256:32be978d753e2e4c4c8a291c088db08f2edcee03a51c7b0dcd7e3b9a7cea65c2",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"b2ddbc847498736a2a0e7e4ebd66eb3acc8e90fa\",\n  \"changed\": [\n    \"docs/routing.svg\"\n  ],\n  \"allowed\": [\n    \"docs/routing.svg\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "b2ddbc847498736a2a0e7e4ebd66eb3acc8e90fa",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task B \u2014 docs/routing.svg redrawn for the three tiers",
+  "tests": {
+    "command": "/usr/bin/python3 -B scripts/lint-frontmatter.py .\n/usr/bin/python3 -B -c 'import xml.etree.ElementTree as E; E.parse(\"docs/routing.svg\")'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_423b5480-cc1-2"
+}

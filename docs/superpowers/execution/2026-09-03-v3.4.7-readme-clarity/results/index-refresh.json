@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/README.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "b2ddbc847498736a2a0e7e4ebd66eb3acc8e90fa",
+    "diff_digest": "sha256:511c5813d64d5490dd3de1c88565fdde1c5e7d239d68ca5c838f8820ebafda46",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"b2ddbc847498736a2a0e7e4ebd66eb3acc8e90fa\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/README.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/README.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "b2ddbc847498736a2a0e7e4ebd66eb3acc8e90fa",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task 0 \u2014 regenerate the dogfood index so README reads current numbers",
+  "tests": {
+    "command": "/usr/bin/python3 -B scripts/lint-frontmatter.py .\nbash -c 'test -s docs/superpowers/dogfood/README.md && grep -q \"^Reviews: \" docs/superpowers/dogfood/README.md'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_423b5480-cc1-1"
+}

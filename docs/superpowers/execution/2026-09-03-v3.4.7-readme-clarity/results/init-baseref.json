@@ -1,0 +1,30 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "TROUBLESHOOTING.md",
+    "commands/v-init.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "b2ddbc847498736a2a0e7e4ebd66eb3acc8e90fa",
+    "diff_digest": "sha256:f635a3c861fef043937d5a7deb492018eccfa63167379740de68039db3f34264",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"b2ddbc847498736a2a0e7e4ebd66eb3acc8e90fa\",\n  \"changed\": [\n    \"TROUBLESHOOTING.md\",\n    \"commands/v-init.md\"\n  ],\n  \"allowed\": [\n    \"commands/v-init.md\",\n    \"TROUBLESHOOTING.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "b2ddbc847498736a2a0e7e4ebd66eb3acc8e90fa",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task C \u2014 /v:init offers the baseRef setting; TROUBLESHOOTING entry",
+  "tests": {
+    "command": "/usr/bin/python3 -B scripts/lint-frontmatter.py .",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 1
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_423b5480-cc1-3"
+}

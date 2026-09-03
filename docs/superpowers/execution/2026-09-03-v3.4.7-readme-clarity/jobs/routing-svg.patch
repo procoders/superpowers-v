@@ -1,0 +1,205 @@
+diff --git a/docs/routing.svg b/docs/routing.svg
+index bab17fe..45586d4 100644
+--- a/docs/routing.svg
++++ b/docs/routing.svg
+@@ -1,6 +1,6 @@
+-<svg viewBox="0 0 1060 892" xmlns="http://www.w3.org/2000/svg" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
+-  <title>How Compound V decides who does the work</title>
+-  <desc>A request goes through Pre-Evaluation: simple work takes the cheap fast path, complex work enters the full pipeline where an orchestrator splits it and a deterministic router picks one of three worker modes per job: full Opus, cheap Sonnet, or Sonnet with an on-demand advisor.</desc>
++<svg viewBox="0 0 1060 1000" xmlns="http://www.w3.org/2000/svg" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
++  <title>How Compound V routes a request across three tiers</title>
++  <desc>A triage hook scores every change request and sorts it into one of three tiers. DIRECT implements in place on the current session with no manifest and no model of its own. SCOPED opens a manifest and run directory for the touched slice, and SCOPED+ adds a mandatory deep review plus a cross-model second opinion on sensitive paths. FULL runs the whole pipeline: recon and pre-flights, then an orchestrator and router that assign each job to Opus for judgment and review, Sonnet for junior slices and scans, or an opt-in Codex worker for large isolated builds or a second opinion. SCOPED and FULL both close through a git-diff scope gate and an Opus review before the work merges.</desc>
+ 
+   <defs>
+     <linearGradient id="brandbar" x1="0" y1="0" x2="1" y2="0">
+@@ -13,83 +13,113 @@
+     <filter id="gVio" x="-40%" y="-40%" width="180%" height="180%"><feDropShadow dx="0" dy="0" stdDeviation="4" flood-color="#6565f2" flood-opacity="0.55"/></filter>
+   </defs>
+ 
+-  <rect x="0" y="0" width="1060" height="892" fill="#0b0b22"/>
++  <rect x="0" y="0" width="1060" height="1000" fill="#0b0b22"/>
+   <rect x="0" y="0" width="1060" height="6" fill="url(#brandbar)"/>
+ 
+-  <text x="40" y="58" font-size="28" font-weight="800" letter-spacing="-0.4" fill="#ebebee">How Compound&#160;V decides who does the work</text>
+-  <text x="40" y="84" font-size="13" font-family="ui-monospace, 'SF Mono', Menlo, monospace" letter-spacing="2.5" fill="#7f86a8">TWO FORKS  ·  THREE WORKER MODES  ·  THE CODE DECIDES, NOT THE WORKER</text>
+-
+-  <rect x="440" y="108" width="180" height="48" rx="10" fill="#111133" stroke="#575868" stroke-width="1.3"/>
+-  <text x="530" y="138" font-size="16.5" font-weight="700" text-anchor="middle" fill="#ebebee">Your request</text>
+-  <line x1="530" y1="156" x2="530" y2="184" stroke="#6a6d90" stroke-width="1.6" marker-end="url(#aN)"/>
+-
+-  <rect x="415" y="186" width="230" height="66" rx="10" fill="#111133" stroke="#575868" stroke-width="1.6"/>
+-  <text x="530" y="213" font-size="17" font-weight="700" text-anchor="middle" fill="#ebebee">Pre-Evaluation</text>
+-  <text x="530" y="235" font-size="13.5" text-anchor="middle" fill="#aeb0c2">simple or complex?</text>
+-
+-  <path d="M415 219 L250 219 L250 248" fill="none" stroke="#6a6d90" stroke-width="1.6" marker-end="url(#aN)"/>
+-  <text x="332" y="211" font-size="11.5" font-family="ui-monospace, monospace" letter-spacing="1" fill="#7f86a8">SIMPLE →</text>
+-  <rect x="60" y="250" width="270" height="66" rx="10" fill="#111133" stroke="#575868" stroke-width="1.3"/>
+-  <text x="195" y="277" font-size="16" font-weight="700" text-anchor="middle" fill="#ebebee">Fast path</text>
+-  <text x="195" y="298" font-size="13" text-anchor="middle" fill="#aeb0c2">one cheap worker</text>
+-  <text x="195" y="338" font-size="12" text-anchor="middle" fill="#7f86a8">can call an advisor</text>
+-  <text x="195" y="354" font-size="12" text-anchor="middle" fill="#7f86a8">if it hits something hard</text>
+-
+-  <line x1="530" y1="252" x2="530" y2="292" stroke="#6a6d90" stroke-width="1.6" marker-end="url(#aN)"/>
+-  <text x="546" y="276" font-size="11.5" font-family="ui-monospace, monospace" letter-spacing="1" fill="#7f86a8">COMPLEX ↓</text>
+-
+-  <rect x="405" y="294" width="250" height="66" rx="10" fill="#111133" stroke="#dc02df" stroke-width="1.6" filter="url(#gMag)"/>
+-  <text x="530" y="321" font-size="16.5" font-weight="800" text-anchor="middle" fill="#f06bf2">Orchestrator</text>
+-  <text x="530" y="343" font-size="13" text-anchor="middle" fill="#aeb0c2">Opus/Fable  ·  splits the work</text>
+-  <line x1="530" y1="360" x2="530" y2="396" stroke="#6a6d90" stroke-width="1.6" marker-end="url(#aN)"/>
+-
+-  <rect x="400" y="398" width="260" height="66" rx="10" fill="#111133" stroke="#1195f2" stroke-width="1.8" filter="url(#gBlue)"/>
+-  <text x="530" y="425" font-size="16.5" font-weight="800" text-anchor="middle" fill="#4db3f7">Router</text>
+-  <text x="530" y="446" font-size="13" text-anchor="middle" fill="#aeb0c2">code inspects each job, one by one</text>
+-
+-  <path d="M470 464 L200 520" fill="none" stroke="#6a6d90" stroke-width="1.5" marker-end="url(#aN)"/>
+-  <path d="M530 464 L530 520" fill="none" stroke="#6a6d90" stroke-width="1.5" marker-end="url(#aN)"/>
+-  <path d="M590 464 L858 520" fill="none" stroke="#6a6d90" stroke-width="1.5" marker-end="url(#aN)"/>
+-
+-  <text x="195" y="511" font-size="11" font-family="ui-monospace, monospace" letter-spacing="0.6" text-anchor="middle" fill="#7f86a8">RISKY · REVIEW · SECURITY</text>
+-  <text x="530" y="511" font-size="11" font-family="ui-monospace, monospace" letter-spacing="0.6" text-anchor="middle" fill="#7f86a8">ROUTINE · MECHANICAL · TINY</text>
+-  <text x="862" y="511" font-size="11" font-family="ui-monospace, monospace" letter-spacing="0.6" text-anchor="middle" fill="#7f86a8">MEDIUM · SELF-CONTAINED</text>
+-
+-  <rect x="60" y="522" width="270" height="72" rx="10" fill="#111133" stroke="#dc02df" stroke-width="1.6" filter="url(#gMag)"/>
+-  <text x="195" y="551" font-size="16" font-weight="800" text-anchor="middle" fill="#f06bf2">Full Opus</text>
+-  <text x="195" y="573" font-size="13" text-anchor="middle" fill="#aeb0c2">strong model on everything</text>
+-
+-  <rect x="395" y="522" width="270" height="72" rx="10" fill="#111133" stroke="#575868" stroke-width="1.4"/>
+-  <text x="530" y="551" font-size="16" font-weight="700" text-anchor="middle" fill="#ebebee">Sonnet solo</text>
+-  <text x="530" y="573" font-size="13" text-anchor="middle" fill="#aeb0c2">cheap, nothing to advise</text>
+-
+-  <rect x="728" y="522" width="270" height="72" rx="10" fill="#111133" stroke="#575868" stroke-width="1.4"/>
+-  <text x="863" y="551" font-size="16" font-weight="700" text-anchor="middle" fill="#ebebee">Sonnet + advisor</text>
+-  <text x="863" y="573" font-size="12.5" text-anchor="middle" fill="#aeb0c2">the cheap one calls the pricey one</text>
+-  <rect x="820" y="452" width="178" height="42" rx="8" fill="#14143a" stroke="#6565f2" stroke-width="1.4" stroke-dasharray="5 4" filter="url(#gVio)"/>
+-  <text x="909" y="472" font-size="13.5" font-weight="800" text-anchor="middle" fill="#9b9bf7">Codex / Opus</text>
+-  <text x="909" y="487" font-size="11" text-anchor="middle" fill="#aeb0c2">read-only · opt-in</text>
+-  <path d="M878 522 L878 496" fill="none" stroke="#6565f2" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#aV)"/>
+-  <path d="M905 496 L905 522" fill="none" stroke="#6565f2" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#aV)"/>
+-
+-  <path d="M195 594 L195 644 L530 644" fill="none" stroke="#6a6d90" stroke-width="1.5"/>
+-  <path d="M530 594 L530 644" fill="none" stroke="#6a6d90" stroke-width="1.5"/>
+-  <path d="M863 594 L863 644 L530 644" fill="none" stroke="#6a6d90" stroke-width="1.5"/>
+-  <line x1="530" y1="644" x2="530" y2="672" stroke="#6a6d90" stroke-width="1.6" marker-end="url(#aN)"/>
+-
+-  <rect x="230" y="674" width="600" height="52" rx="10" fill="#181842" stroke="#575868" stroke-width="1.3"/>
+-  <text x="530" y="699" font-size="14.5" font-weight="700" text-anchor="middle" fill="#ebebee">In parallel → git scope check → Opus review → done</text>
+-  <text x="530" y="717" font-size="12" text-anchor="middle" fill="#8890a8">workers run at once, each in its own mode</text>
+-
+-  <rect x="230" y="750" width="600" height="94" rx="10" fill="#111133" stroke="#2a2a52" stroke-width="1.2"/>
+-  <rect x="252" y="768" width="20" height="14" rx="3" fill="#111133" stroke="#dc02df" stroke-width="1.6"/>
+-  <text x="282" y="780" font-size="12.5" fill="#cdcfdd">expensive model working (Opus/Fable)</text>
+-  <rect x="252" y="792" width="20" height="14" rx="3" fill="#111133" stroke="#575868" stroke-width="1.4"/>
+-  <text x="282" y="804" font-size="12.5" fill="#cdcfdd">cheap model (Sonnet)</text>
+-  <rect x="252" y="816" width="20" height="14" rx="3" fill="#14143a" stroke="#6565f2" stroke-width="1.4" stroke-dasharray="4 3"/>
+-  <text x="282" y="828" font-size="12.5" fill="#cdcfdd">called only on demand (advisor)</text>
+-  <text x="566" y="776" font-size="11.5" font-family="ui-monospace, monospace" letter-spacing="1.5" fill="#4db3f7">THE KEY RULE</text>
+-  <text x="566" y="796" font-size="12" fill="#cdcfdd">the ROUTER picks the mode by job type</text>
+-  <text x="566" y="813" font-size="12" fill="#cdcfdd">(which files, risk, is it a review):</text>
+-  <text x="566" y="830" font-size="12" fill="#cdcfdd">deterministic. The worker never chooses.</text>
++  <text x="40" y="58" font-size="27" font-weight="800" letter-spacing="-0.4" fill="#ebebee">How Compound&#160;V routes a request across three tiers</text>
++  <text x="40" y="83" font-size="13" font-family="ui-monospace, 'SF Mono', Menlo, monospace" letter-spacing="2.2" fill="#7f86a8">THE TRIAGE HOOK DECIDES THE TIER · THE ROUTER DECIDES THE MODEL</text>
++
++  <!-- request + triage -->
++  <rect x="435" y="106" width="190" height="46" rx="10" fill="#111133" stroke="#575868" stroke-width="1.3"/>
++  <text x="530" y="134" font-size="16" font-weight="700" text-anchor="middle" fill="#ebebee">Your request</text>
++  <line x1="530" y1="152" x2="530" y2="176" stroke="#6a6d90" stroke-width="1.6" marker-end="url(#aN)"/>
++
++  <rect x="365" y="178" width="330" height="58" rx="10" fill="#111133" stroke="#575868" stroke-width="1.6"/>
++  <text x="530" y="203" font-size="16" font-weight="700" text-anchor="middle" fill="#ebebee">Triage hook scores the request</text>
++  <text x="530" y="223" font-size="12" text-anchor="middle" fill="#aeb0c2">UserPromptSubmit / /v:triage — no model call on a clear signal</text>
++
++  <path d="M400 236 L145 236 L145 268" fill="none" stroke="#6a6d90" stroke-width="1.6" marker-end="url(#aN)"/>
++  <line x1="530" y1="236" x2="530" y2="268" stroke="#6a6d90" stroke-width="1.6" marker-end="url(#aN)"/>
++  <path d="M660 236 L915 236 L915 268" fill="none" stroke="#6a6d90" stroke-width="1.6" marker-end="url(#aN)"/>
++
++  <text x="145" y="260" font-size="12" font-family="ui-monospace, monospace" letter-spacing="1" text-anchor="middle" fill="#7f86a8">TRIVIAL</text>
++  <text x="530" y="260" font-size="12" font-family="ui-monospace, monospace" letter-spacing="1" text-anchor="middle" fill="#7f86a8">SMALL / SENSITIVE-SMALL</text>
++  <text x="915" y="260" font-size="12" font-family="ui-monospace, monospace" letter-spacing="1" text-anchor="middle" fill="#7f86a8">EVERYTHING ELSE</text>
++
++  <!-- DIRECT column -->
++  <rect x="20" y="270" width="250" height="112" rx="10" fill="#111133" stroke="#575868" stroke-width="1.4"/>
++  <text x="145" y="296" font-size="16.5" font-weight="800" text-anchor="middle" fill="#ebebee">DIRECT</text>
++  <text x="145" y="316" font-size="12.5" text-anchor="middle" fill="#aeb0c2">implement in place,</text>
++  <text x="145" y="332" font-size="12.5" text-anchor="middle" fill="#aeb0c2">run the floor, commit</text>
++  <text x="145" y="356" font-size="12" text-anchor="middle" fill="#7f86a8">no manifest · no run directory</text>
++  <text x="145" y="372" font-size="12.5" font-weight="700" text-anchor="middle" fill="#6a6d90">carries no model of its own</text>
++
++  <!-- SCOPED column -->
++  <rect x="393" y="270" width="274" height="112" rx="10" fill="#111133" stroke="#1195f2" stroke-width="1.7" filter="url(#gBlue)"/>
++  <text x="530" y="296" font-size="16.5" font-weight="800" text-anchor="middle" fill="#4db3f7">SCOPED</text>
++  <text x="530" y="316" font-size="12.5" text-anchor="middle" fill="#aeb0c2">manifest + run directory</text>
++  <text x="530" y="332" font-size="12.5" text-anchor="middle" fill="#aeb0c2">for the touched slice only</text>
++  <text x="530" y="352" font-size="12" text-anchor="middle" fill="#7f86a8">recon and the pre-flights are skipped</text>
++  <text x="530" y="372" font-size="12" font-weight="700" text-anchor="middle" fill="#4db3f7">SCOPED+ on a sensitive path: adds a</text>
++
++  <rect x="393" y="386" width="274" height="40" rx="9" fill="#14143a" stroke="#6565f2" stroke-width="1.4" stroke-dasharray="5 4"/>
++  <text x="530" y="404" font-size="12" text-anchor="middle" fill="#cdcfdd">mandatory deep Claude review +</text>
++  <text x="530" y="418" font-size="12" text-anchor="middle" fill="#cdcfdd">a Codex cross-model second opinion</text>
++
++  <!-- FULL column -->
++  <rect x="790" y="270" width="250" height="112" rx="10" fill="#111133" stroke="#dc02df" stroke-width="1.7" filter="url(#gMag)"/>
++  <text x="915" y="296" font-size="16.5" font-weight="800" text-anchor="middle" fill="#f06bf2">FULL</text>
++  <text x="915" y="316" font-size="12.5" text-anchor="middle" fill="#aeb0c2">recon + three parallel</text>
++  <text x="915" y="332" font-size="12.5" text-anchor="middle" fill="#aeb0c2">pre-flights, then the full</text>
++  <text x="915" y="348" font-size="12.5" text-anchor="middle" fill="#aeb0c2">orchestrated pipeline</text>
++  <text x="915" y="370" font-size="12" text-anchor="middle" fill="#7f86a8">unbounded scope, unclear risk,</text>
++  <text x="915" y="386" font-size="12" text-anchor="middle" fill="#7f86a8">or a sensitive path at size</text>
++
++  <!-- SCOPED and FULL feed the orchestrator/router -->
++  <line x1="530" y1="426" x2="530" y2="452" stroke="#6a6d90" stroke-width="1.6" marker-end="url(#aN)"/>
++  <path d="M915 382 L915 438 L680 438" fill="none" stroke="#6a6d90" stroke-width="1.6" marker-end="url(#aN)"/>
++
++  <rect x="405" y="454" width="250" height="60" rx="10" fill="#111133" stroke="#575868" stroke-width="1.4"/>
++  <text x="530" y="479" font-size="15.5" font-weight="700" text-anchor="middle" fill="#ebebee">Orchestrator + router</text>
++  <text x="530" y="500" font-size="12" text-anchor="middle" fill="#aeb0c2">code assigns each job a seat</text>
++  <line x1="530" y1="514" x2="530" y2="540" stroke="#6a6d90" stroke-width="1.6" marker-end="url(#aN)"/>
++
++  <path d="M470 540 L200 566" fill="none" stroke="#6a6d90" stroke-width="1.5" marker-end="url(#aN)"/>
++  <path d="M530 540 L530 566" fill="none" stroke="#6a6d90" stroke-width="1.5" marker-end="url(#aN)"/>
++  <path d="M590 540 L858 566" fill="none" stroke="#6a6d90" stroke-width="1.5" marker-end="url(#aN)"/>
++
++  <!-- three worker seats -->
++  <rect x="60" y="568" width="270" height="80" rx="10" fill="#111133" stroke="#dc02df" stroke-width="1.6" filter="url(#gMag)"/>
++  <text x="195" y="596" font-size="16" font-weight="800" text-anchor="middle" fill="#f06bf2">Opus</text>
++  <text x="195" y="617" font-size="12.5" text-anchor="middle" fill="#aeb0c2">judgment work, review,</text>
++  <text x="195" y="634" font-size="12.5" text-anchor="middle" fill="#aeb0c2">and everything sensitive</text>
++
++  <rect x="395" y="568" width="270" height="80" rx="10" fill="#111133" stroke="#575868" stroke-width="1.4"/>
++  <text x="530" y="596" font-size="16" font-weight="700" text-anchor="middle" fill="#ebebee">Sonnet</text>
++  <text x="530" y="617" font-size="12.5" text-anchor="middle" fill="#aeb0c2">junior mechanical slices</text>
++  <text x="530" y="634" font-size="12.5" text-anchor="middle" fill="#aeb0c2">and scanning agents</text>
++
++  <rect x="728" y="568" width="270" height="80" rx="10" fill="#14143a" stroke="#6565f2" stroke-width="1.5" stroke-dasharray="5 4" filter="url(#gVio)"/>
++  <text x="863" y="596" font-size="16" font-weight="800" text-anchor="middle" fill="#9b9bf7">Codex</text>
++  <text x="863" y="617" font-size="12.5" text-anchor="middle" fill="#cdcfdd">opt-in worker for a large</text>
++  <text x="863" y="634" font-size="12.5" text-anchor="middle" fill="#cdcfdd">isolated build, or a second opinion</text>
++
++  <!-- converge to gate -->
++  <path d="M195 648 L195 696 L530 696" fill="none" stroke="#6a6d90" stroke-width="1.5"/>
++  <path d="M530 648 L530 696" fill="none" stroke="#6a6d90" stroke-width="1.5"/>
++  <path d="M863 648 L863 696 L530 696" fill="none" stroke="#6a6d90" stroke-width="1.5"/>
++  <line x1="530" y1="696" x2="530" y2="722" stroke="#6a6d90" stroke-width="1.6" marker-end="url(#aN)"/>
++
++  <path d="M145 382 L145 720 L405 720" fill="none" stroke="#6a6d90" stroke-width="1.3" stroke-dasharray="3 4"/>
++  <text x="180" y="712" font-size="12" font-family="ui-monospace, monospace" fill="#7f86a8">DIRECT commits straight from the floor</text>
++
++  <rect x="230" y="724" width="600" height="66" rx="10" fill="#181842" stroke="#575868" stroke-width="1.3"/>
++  <text x="530" y="752" font-size="14.5" font-weight="700" text-anchor="middle" fill="#ebebee">Scope gate (git diff) → Opus review → merge</text>
++  <text x="530" y="771" font-size="12" text-anchor="middle" fill="#8890a8">a worker that writes outside its lane is blocked before it merges</text>
++
++  <!-- legend -->
++  <rect x="230" y="806" width="600" height="150" rx="10" fill="#111133" stroke="#2a2a52" stroke-width="1.2"/>
++  <rect x="252" y="826" width="20" height="14" rx="3" fill="#111133" stroke="#dc02df" stroke-width="1.6"/>
++  <text x="282" y="838" font-size="12.5" fill="#cdcfdd">Opus — judgment, sensitive work, review</text>
++  <rect x="252" y="850" width="20" height="14" rx="3" fill="#111133" stroke="#575868" stroke-width="1.4"/>
++  <text x="282" y="862" font-size="12.5" fill="#cdcfdd">Sonnet — junior slices and scans, never judgment</text>
++  <rect x="252" y="874" width="20" height="14" rx="3" fill="#14143a" stroke="#6565f2" stroke-width="1.4" stroke-dasharray="4 3"/>
++  <text x="282" y="886" font-size="12.5" fill="#cdcfdd">Codex — opt-in worker or cross-model second opinion</text>
++  <rect x="252" y="898" width="20" height="14" rx="3" fill="#111133" stroke="#575868" stroke-width="1.4"/>
++  <text x="282" y="910" font-size="12.5" fill="#cdcfdd">DIRECT — the current session, no dispatched model at all</text>
++  <text x="566" y="838" font-size="12" font-family="ui-monospace, monospace" letter-spacing="1.5" fill="#4db3f7">THE KEY RULE</text>
++  <text x="566" y="858" font-size="12" fill="#cdcfdd">the triage hook picks the tier by</text>
++  <text x="566" y="875" font-size="12" fill="#cdcfdd">mechanically checkable predicates;</text>
++  <text x="566" y="892" font-size="12" fill="#cdcfdd">the router then picks the model by job</text>
++  <text x="566" y="909" font-size="12" fill="#cdcfdd">type. Neither is the worker's own call.</text>
+ </svg>

@@ -1,0 +1,44 @@
+{
+  "baseline_commit": "b2ddbc847498736a2a0e7e4ebd66eb3acc8e90fa",
+  "diff_digest": "sha256:f635a3c861fef043937d5a7deb492018eccfa63167379740de68039db3f34264",
+  "exit_code": 0,
+  "job_id": "init-baseref",
+  "patch_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-v3.4.7-readme-clarity/jobs/init-baseref.patch",
+  "patch_paths": [
+    "TROUBLESHOOTING.md",
+    "commands/v-init.md"
+  ],
+  "patch_sha256": "sha256:f635a3c861fef043937d5a7deb492018eccfa63167379740de68039db3f34264",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"b2ddbc847498736a2a0e7e4ebd66eb3acc8e90fa\",\n  \"changed\": [\n    \"TROUBLESHOOTING.md\",\n    \"commands/v-init.md\"\n  ],\n  \"allowed\": [\n    \"commands/v-init.md\",\n    \"TROUBLESHOOTING.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "b2ddbc847498736a2a0e7e4ebd66eb3acc8e90fa",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "TROUBLESHOOTING.md",
+      "commands/v-init.md"
+    ],
+    "checks": [
+      {
+        "checker": "/usr/bin/python3 -B scripts/lint-frontmatter.py .",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (6 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 2 command(s) from 2 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_423b5480-cc1-3"
+}
