@@ -1,0 +1,56 @@
+{
+  "baseline_commit": "c1afe89fb9c0a4a508bacb4e40c8327068fcc09d",
+  "diff_digest": "sha256:b8777a99f40ff87a4c7803a07d1b80d30b0c8e992254d2039bef1a43b201be00",
+  "exit_code": 0,
+  "job_id": "spec-review-8",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"c1afe89fb9c0a4a508bacb4e40c8327068fcc09d\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-8.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-8.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "c1afe89fb9c0a4a508bacb4e40c8327068fcc09d",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-8.md",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/.run.lock",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/jobs/spec-review-8.baseline",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/jobs/spec-review-8.test-contract.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/jobs/worker-concise.baseline",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/jobs/worker-concise.test-contract.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/lane-map.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/preexisting/spec-review-8.txt",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/preexisting/spec-review-8.verified.txt",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/receipts/worker-concise.gate.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/results/worker-concise.json",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/state.json",
+      "docs/superpowers/memory/worker-performance.jsonl"
+    ],
+    "checks": [
+      {
+        "checker": "bash tests/test-epic-goal-stop.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (4 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 0 command(s) from 13 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)",
+      "unmapped: docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-8.md, docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/.run.lock, docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/jobs/spec-review-8.baseline, docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/jobs/spec-review-8.test-contract.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/jobs/worker-concise.baseline, docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/jobs/worker-concise.test-contract.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/lane-map.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/preexisting/spec-review-8.txt, docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/preexisting/spec-review-8.verified.txt, docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/receipts/worker-concise.gate.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/results/worker-concise.json, docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/state.json, docs/superpowers/memory/worker-performance.jsonl matched no `when` glob \u2014 unknown blast radius resolves to full_command, never to nothing"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": ""
+}

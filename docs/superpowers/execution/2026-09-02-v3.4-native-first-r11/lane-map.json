@@ -1,0 +1,9 @@
+{
+  "agents": {},
+  "manifest": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/manifest.yaml",
+  "run_id": "2026-09-02-v3.4-native-first-r11",
+  "worktrees": {
+    "/Users/oleg/Dev/superpowers-v": "spec-review-8",
+    "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_e8153cee-130-1": "worker-concise"
+  }
+}

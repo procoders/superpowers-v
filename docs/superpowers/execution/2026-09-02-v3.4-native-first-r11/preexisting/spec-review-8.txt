@@ -1,0 +1,15 @@
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/.run.lock
+26b90e159358fa8b644e5be9593e7ce0346fe53a9121153ff60e3594b05d06be  docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/jobs/worker-concise.baseline
+60770be0c941985170853cd6c1142c06ded9ce4d1c3a4acff392ca1fcc5b5921  docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/jobs/worker-concise.test-contract.json
+41ecc328e2b886f51e6891a28bd521790557d2f0a881a2acfd3f782506291e48  docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/lane-map.json
+c4ee03185f65e9004893e4d95a43cf2dfab2ecd2eed47d79a9db77856e063250  docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/receipts/worker-concise.gate.json
+eb0b41d076b12ebbf4b08deb1c5c99b1ba4f7fa7c2e83e2762981a0422eb4aff  docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/results/worker-concise.json
+935640eb16a5efd6eae161fdab129c801ed27379fe64a2e4db4379597d481480  docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/state.json
+61d207d27b725b3e142e12dbe8f1fc4fb29134a78bbe052a1240e01e6db5b1a6  docs/superpowers/memory/worker-performance.jsonl
+7ba17204b961ab18db82c8182082572c0a7cfc7a4e3f45790e0c0986519e6156  docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/dispatch.workflow.js
+31474f668b4514e94ccbd3ff2ae0da7eb38dd219459aa7de82144970fc2268f8  docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/jobs/spec-review-8.baseline
+42f358b2d797f22497c6c946e6425658ecca22145560a32821f6b80af0feacf1  docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/jobs/spec-review-8.prompt.md
+dfda0eec48b33851f62704799c7477abaa8aed55a26e254bbc1980dd02d427ea  docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/jobs/spec-review-8.test-contract.json
+2e0272ef31ec22d0d175305908ca64cc979a91681b2b6570901cd5a1751363bb  docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/jobs/worker-concise.prompt.md
+c11dcb2595667c43dc9988e7bbb5ae988de5bd4650a00f0b86607766c7f00086  docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/manifest.yaml
+015cdd043fd44a3d8ce45519446afc423e58657d677d0b857487e4b18bd91bb7  docs/superpowers/execution/2026-09-02-v3.4-native-first-r11/preexisting/spec-review-8.txt

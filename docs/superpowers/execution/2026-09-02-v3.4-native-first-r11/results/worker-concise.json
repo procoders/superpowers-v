@@ -1,0 +1,43 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "AGENTS.md",
+    "CHANGELOG.md",
+    "README.md",
+    "agents/implementer.md",
+    "agents/spec-reviewer.md",
+    "commands/v-init.md",
+    "commands/v-orchestrate.md",
+    "docs/superpowers/architecture/native-mechanisms.md",
+    "docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md",
+    "hooks/lane-guard.sh",
+    "scripts/compound-v-emit-workflow.py",
+    "scripts/lint-frontmatter.py",
+    "skills/compound-v/execution-manifest.md",
+    "skills/compound-v/routing-policy.md",
+    "tests/test-lane-guard.sh"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "ca76d0217440984272c147017d35083cbdc8c744",
+    "diff_digest": "sha256:0f2c141fd45d5e559e9181f5136c161a7f6c76db9da159f5c6c83ed31609f8f3",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"ca76d0217440984272c147017d35083cbdc8c744\",\n  \"changed\": [\n    \"AGENTS.md\",\n    \"CHANGELOG.md\",\n    \"README.md\",\n    \"agents/implementer.md\",\n    \"agents/spec-reviewer.md\",\n    \"commands/v-init.md\",\n    \"commands/v-orchestrate.md\",\n    \"docs/superpowers/architecture/native-mechanisms.md\",\n    \"docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md\",\n    \"hooks/lane-guard.sh\",\n    \"scripts/compound-v-emit-workflow.py\",\n    \"scripts/lint-frontmatter.py\",\n    \"skills/compound-v/execution-manifest.md\",\n    \"skills/compound-v/routing-policy.md\",\n    \"tests/test-lane-guard.sh\"\n  ],\n  \"allowed\": [\n    \"agents/implementer.md\",\n    \"agents/spec-reviewer.md\",\n    \"scripts/compound-v-emit-workflow.py\",\n    \"scripts/lint-frontmatter.py\",\n    \"skills/compound-v/routing-policy.md\",\n    \"skills/compound-v/execution-manifest.md\",\n    \"commands/v-orchestrate.md\",\n    \"commands/v-init.md\",\n    \"hooks/lane-guard.sh\",\n    \"tests/test-lane-guard.sh\",\n    \"README.md\",\n    \"AGENTS.md\",\n    \"CHANGELOG.md\",\n    \"docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md\",\n    \"docs/superpowers/architecture/native-mechanisms.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "ca76d0217440984272c147017d35083cbdc8c744",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Implementer as a role (maxTurns + Opus 5 conciseness snippets), effort policy, /v:init env offer; close the seventh pass's two items",
+  "tests": {
+    "command": "bash tests/test-epic-goal-stop.sh\nbash -c 'bash tests/test-epic-goal-stop.sh && bash tests/test-native-points.sh'\nbash -c '[ -f scripts/compound-v-emit-workflow.py ] || exit 0; /usr/bin/python3 scripts/compound-v-emit-workflow.py --selftest'\nbash -c '[ -f tests/test-lane-guard.sh ] || exit 0; bash tests/test-lane-guard.sh'\nbash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 5
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_e8153cee-130-1"
+}

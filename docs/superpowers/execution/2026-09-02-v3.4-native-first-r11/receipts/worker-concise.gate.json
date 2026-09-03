@@ -1,0 +1,76 @@
+{
+  "baseline_commit": "ca76d0217440984272c147017d35083cbdc8c744",
+  "diff_digest": "sha256:0f2c141fd45d5e559e9181f5136c161a7f6c76db9da159f5c6c83ed31609f8f3",
+  "exit_code": 0,
+  "job_id": "worker-concise",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"ca76d0217440984272c147017d35083cbdc8c744\",\n  \"changed\": [\n    \"AGENTS.md\",\n    \"CHANGELOG.md\",\n    \"README.md\",\n    \"agents/implementer.md\",\n    \"agents/spec-reviewer.md\",\n    \"commands/v-init.md\",\n    \"commands/v-orchestrate.md\",\n    \"docs/superpowers/architecture/native-mechanisms.md\",\n    \"docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md\",\n    \"hooks/lane-guard.sh\",\n    \"scripts/compound-v-emit-workflow.py\",\n    \"scripts/lint-frontmatter.py\",\n    \"skills/compound-v/execution-manifest.md\",\n    \"skills/compound-v/routing-policy.md\",\n    \"tests/test-lane-guard.sh\"\n  ],\n  \"allowed\": [\n    \"agents/implementer.md\",\n    \"agents/spec-reviewer.md\",\n    \"scripts/compound-v-emit-workflow.py\",\n    \"scripts/lint-frontmatter.py\",\n    \"skills/compound-v/routing-policy.md\",\n    \"skills/compound-v/execution-manifest.md\",\n    \"commands/v-orchestrate.md\",\n    \"commands/v-init.md\",\n    \"hooks/lane-guard.sh\",\n    \"tests/test-lane-guard.sh\",\n    \"README.md\",\n    \"AGENTS.md\",\n    \"CHANGELOG.md\",\n    \"docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md\",\n    \"docs/superpowers/architecture/native-mechanisms.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "ca76d0217440984272c147017d35083cbdc8c744",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "AGENTS.md",
+      "CHANGELOG.md",
+      "README.md",
+      "agents/implementer.md",
+      "agents/spec-reviewer.md",
+      "commands/v-init.md",
+      "commands/v-orchestrate.md",
+      "docs/superpowers/architecture/native-mechanisms.md",
+      "docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md",
+      "hooks/lane-guard.sh",
+      "scripts/compound-v-emit-workflow.py",
+      "scripts/lint-frontmatter.py",
+      "skills/compound-v/execution-manifest.md",
+      "skills/compound-v/routing-policy.md",
+      "tests/test-lane-guard.sh"
+    ],
+    "checks": [
+      {
+        "checker": "bash tests/test-epic-goal-stop.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'bash tests/test-epic-goal-stop.sh && bash tests/test-native-points.sh'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f scripts/compound-v-emit-workflow.py ] || exit 0; /usr/bin/python3 scripts/compound-v-emit-workflow.py --selftest'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f tests/test-lane-guard.sh ] || exit 0; bash tests/test-lane-guard.sh'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (4 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 3 command(s) from 15 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)",
+      "unmapped: AGENTS.md, CHANGELOG.md, README.md, agents/implementer.md, agents/spec-reviewer.md, commands/v-init.md, commands/v-orchestrate.md, docs/superpowers/architecture/native-mechanisms.md, docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md, scripts/lint-frontmatter.py, skills/compound-v/execution-manifest.md, skills/compound-v/routing-policy.md matched no `when` glob \u2014 unknown blast radius resolves to full_command, never to nothing"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_e8153cee-130-1"
+}
