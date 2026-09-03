@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-03-v3.4.10-recall-to-action-review.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "6ce26f29aef79383b963790d20bda355d9bae85a",
+    "diff_digest": "sha256:47d6bb5358a876b0d2fb4a8f64d9d47993c20fd0a074be3b98ec4a0d596707a5",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"6ce26f29aef79383b963790d20bda355d9bae85a\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.10-recall-to-action-review.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.10-recall-to-action-review.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "6ce26f29aef79383b963790d20bda355d9bae85a",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Review Gate \u2014 three passes against the spec and the feature acceptance criteria",
+  "tests": {
+    "command": "bash tests/test-engine-c-contract.sh\n/usr/bin/python3 -B scripts/lint-frontmatter.py .\nbash tests/test-agent-recall.sh\nbash tests/test-epic-goal-stop.sh\nbash tests/test-hook-recursion-guard.sh\nbash tests/test-integration-gate.sh",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted+referencing",
+    "selected_count": 6
+  },
+  "violations": [],
+  "worktree": ""
+}

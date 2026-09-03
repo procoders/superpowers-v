@@ -1,6 +1,6 @@
 {
   "run_id": "2026-09-03-v3.4.10-recall-to-action",
-  "phase": "DISPATCHED",
+  "phase": "MERGED",
   "pre_eval_id": "2026-09-03T174841Z-implement-v3-4-10-per-docs-superpowers-specs-2026-09-03-v3-4-904b",
   "updated_at": "2026-09-03T18:00:34Z",
   "jobs": {
@@ -33,10 +33,18 @@
       }
     },
     "spec-review": {
-      "status": "pending",
+      "status": "done",
       "isolation": "direct",
-      "worktree": null,
-      "session_id": null
+      "worktree": "",
+      "session_id": null,
+      "baseline": "6ce26f29aef79383b963790d20bda355d9bae85a",
+      "realised_commit": "6ce26f29aef79383b963790d20bda355d9bae85a",
+      "merged": {
+        "realised_commit": "6ce26f29aef79383b963790d20bda355d9bae85a",
+        "mode": "direct",
+        "integrated": true,
+        "commit": "ef310561f8bbbf67040d8256ade94f73ac0d7711"
+      }
     }
   },
   "waves": {
@@ -51,6 +59,22 @@
       ],
       "commit": "2ed44d13c4a0676b12c5016983ceb87db6006e76",
       "integrated": true
+    },
+    "2": {
+      "jobs": [
+        "spec-review"
+      ],
+      "merged": [
+        "spec-review"
+      ],
+      "commit": "ef310561f8bbbf67040d8256ade94f73ac0d7711",
+      "integrated": true
     }
-  }
+  },
+  "triage_actual": {
+    "merge_pending": true,
+    "pre_eval_id": "2026-09-03T174841Z-implement-v3-4-10-per-docs-superpowers-specs-2026-09-03-v3-4-904b",
+    "run_id": "2026-09-03-v3.4.10-recall-to-action"
+  },
+  "merged_at": "2026-09-03T18:19:16Z"
 }
