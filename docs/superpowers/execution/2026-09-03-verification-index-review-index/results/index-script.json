@@ -1,0 +1,30 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "scripts/compound-v-dogfood-index.sh",
+    "tests/test-dogfood-index.sh"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "307e89faae0183b17868ee57cb5cee081f7ef286",
+    "diff_digest": "sha256:af909b83b34e89468157c7aa80962ee3158400105fe59fa3e46d150b8603a92b",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"307e89faae0183b17868ee57cb5cee081f7ef286\",\n  \"changed\": [\n    \"scripts/compound-v-dogfood-index.sh\",\n    \"tests/test-dogfood-index.sh\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-dogfood-index.sh\",\n    \"tests/test-dogfood-index.sh\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "307e89faae0183b17868ee57cb5cee081f7ef286",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task A \u2014 scripts/compound-v-dogfood-index.sh and tests/test-dogfood-index.sh",
+  "tests": {
+    "command": "bash tests/test-engine-c-contract.sh\nbash -c '[ -f scripts/compound-v-dogfood-index.sh ] || exit 0; shellcheck scripts/compound-v-dogfood-index.sh'\nbash -c '[ -f tests/test-dogfood-index.sh ] || exit 0; bash tests/test-dogfood-index.sh'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 3
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_890ec531-458-1"
+}
