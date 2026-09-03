@@ -1,0 +1,57 @@
+{
+  "base_commit": "b8ff035de6c3fc6828f36ece587c6512ba1cc648",
+  "confidence": "localization:exact; tiers:localization,T1",
+  "decision": "FULL_PIPELINE",
+  "declared_paths": [
+    ".claude-plugin/plugin.json",
+    "CHANGELOG.md",
+    "README.md",
+    "agents/spec-reviewer.md",
+    "scripts/compound-v-fastpath-run.py",
+    "skills/compound-v/execution-manifest.md",
+    "tests/v2.9-e2e/test_fastpath_and_escalation.py"
+  ],
+  "difficulty": {
+    "band": "high",
+    "display": 8
+  },
+  "digest": "sha256:31bd39c35851450508632679ffebf2914325e77c0c44b19847e6e39cce9db68a",
+  "impact": {
+    "band": "high",
+    "display": 8
+  },
+  "localization": {
+    "confidence": "exact",
+    "fan_out": 7,
+    "flags": [
+      "content:config_literal",
+      "content:i18n_placeholder",
+      "content_scan_incomplete",
+      "sensitive_path"
+    ],
+    "resolved_paths": [
+      ".claude-plugin/plugin.json",
+      "CHANGELOG.md",
+      "README.md",
+      "agents/spec-reviewer.md",
+      "scripts/compound-v-fastpath-run.py",
+      "skills/compound-v/execution-manifest.md",
+      "tests/v2.9-e2e/test_fastpath_and_escalation.py"
+    ]
+  },
+  "min_sample_status": "insufficient",
+  "override_fired": 2,
+  "pre_eval_id": "2026-09-03T025952Z-land-task-c-of-the-v3-4-1-triage-size-feature-from-the-seale-b142",
+  "request_slug": "land-task-c-of-the-v3-4-1-triage-size-feature-from-the-seale",
+  "session_id": "stage2r2-1788404392",
+  "status": "PRE_EVAL_DONE",
+  "taxonomy_digest": "sha256:c561bb5a7d0a050d4ff6bdc39659aac002ff27a107ac08ca0373be4f3e9ca295",
+  "taxonomy_ref": "docs/superpowers/pre-eval/2026-09-03T025952Z-land-task-c-of-the-v3-4-1-triage-size-feature-from-the-seale-b142.taxonomy-snapshot.yaml",
+  "taxonomy_version": 1,
+  "tier": "FULL",
+  "tiers_signalled": [
+    "localization",
+    "T1"
+  ],
+  "ts": "2026-09-03T02:59:52Z"
+}

@@ -1,0 +1,103 @@
+run_id: 2026-09-03-v3.4.1-triage-size-r2
+feature: 'v3.4.1 triage-size r2: land Task C from r1''s sealed patch under a corrected test contract, then release and review'
+routing_stance: balanced
+max_parallel: 1
+spec_path: docs/superpowers/specs/2026-09-03-v3.4.1-triage-size-design.md
+plan_path: docs/superpowers/plans/2026-09-03-v3.4.1-triage-size.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-09-03-v3-4-1-triage-size.md
+  domain: docs/superpowers/specs/2026-09-03-v3.4.1-triage-size-design.md
+  library: docs/superpowers/library-audit/2026-09-03-v3-4-1-triage-size.md
+triage:
+  tier: FULL
+  pre_eval_id: 2026-09-03T025952Z-land-task-c-of-the-v3-4-1-triage-size-feature-from-the-seale-b142
+  taxonomy_digest: sha256:c561bb5a7d0a050d4ff6bdc39659aac002ff27a107ac08ca0373be4f3e9ca295
+  decided_at: '2026-09-03T02:59:52Z'
+acceptance_criteria:
+- Every scripts/compound-v-*.py --selftest and every tests/*.sh is green under /usr/bin/python3 -B (CI's Python 3.9 floor); tests/v2.9-e2e passes under python3 -m unittest.
+- Driven with synthetic UserPromptSubmit stdin against the merged tree, the hook returns TIER SCOPED for a small edit to scripts/compound-v-scorecard.py, TIER SCOPED with flavor scoped_plus for a small edit to scripts/compound-v-scope-check.py, TIER FULL for an edit naming a .env file, and TIER DIRECT for a README.md typo — each with a committed-shape record that validates against schemas/pre-eval-record.schema.json.
+- compound-v-localize.py never searches a plain word (a request with no identifier returns failed without invoking the search backend), resolves a trailing-period path, and returns new_file for a named non-existent file whose parent exists.
+- compound-v-fastpath-run.py at tier SCOPED resolves an unmapped changed path to at most five referencing tests plus the floor and never to full_command; at tier FULL an unmapped path still resolves to full_command.
+- compound-v-validate-manifest.py --require-triage rejects a scoped_plus manifest without a deep Claude review job and accepts one with it; --require-cross-model-receipt rejects a missing or digest-mismatched receipt.
+- No prose in commands/skills/agents still says the hook degrades to a reminder on needs_t3, or that /v:dispatch step 9 writes phase MERGED by hand.
+test_contract:
+  floor_command: /usr/bin/python3 -B scripts/compound-v-preeval.py --selftest
+  full_command: bash -c 'for s in scripts/compound-v-preeval.py scripts/compound-v-localize.py scripts/compound-v-taxonomy.py scripts/compound-v-validate-taxonomy.py scripts/compound-v-fastpath-run.py scripts/compound-v-classify-request.py scripts/compound-v-validate-manifest.py; do /usr/bin/python3 -B "$s" --selftest >/dev/null 2>&1 || { echo "FAIL $s"; exit 1; }; done; for t in tests/*.sh; do bash "$t" >/dev/null 2>&1 || { echo "FAIL $t"; exit 1; }; done; /usr/bin/python3 -B -m unittest discover -s tests/v2.9-e2e -p "test_*.py" >/dev/null 2>&1 || { echo "FAIL e2e"; exit 1; }; echo all-tests-ok'
+  impacted_map:
+  - when: hooks/**
+    run: bash -c 'bash tests/test-native-points.sh && bash tests/test-epic-goal-stop.sh'
+  - when: scripts/compound-v-*.py
+    run: bash -c '[ -f {path} ] || exit 0; /usr/bin/python3 -B {path} --selftest'
+  - when: tests/*.sh
+    run: bash -c '[ -f {path} ] || exit 0; bash {path}'
+  - when: tests/v2.9-e2e/*.py
+    run: bash -c '[ -f {path} ] || exit 0; /usr/bin/python3 -B -m unittest discover -s "$(dirname {path})" -p "$(basename {path})"'
+  - when: schemas/*.json
+    run: bash -c 'for r in docs/superpowers/pre-eval/*.json; do /usr/bin/python3 -B -c "import json,sys; json.load(open(sys.argv[1]))" "$r" || exit 1; done; /usr/bin/python3 -B scripts/compound-v-preeval.py --selftest'
+  - when: .claude/compound-v-impact-taxonomy*.yaml
+    run: bash -c '/usr/bin/python3 -B scripts/compound-v-validate-taxonomy.py .claude/compound-v-impact-taxonomy.yaml && /usr/bin/python3 -B scripts/compound-v-taxonomy.py --selftest'
+  - when: commands/v-triage.md
+    run: bash tests/test-triage-landing.sh
+jobs:
+- id: test-scope
+  title: 'Task C (r2) — land the tests-a-SCOPED-job-owes patch: apply r1''s sealed patch, verify, fix anything red'
+  type: implement
+  backend: claude
+  tier: deep
+  effort: medium
+  isolation: worktree
+  run: parallel
+  write_allowed:
+  - scripts/compound-v-fastpath-run.py
+  - tests/v2.9-e2e/test_fastpath_and_escalation.py
+  - skills/compound-v/execution-manifest.md
+  - agents/spec-reviewer.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - scripts/compound-v-fastpath-run.py carries referencing_tests(repo, changed_paths, cap=5) and resolve_test_commands(..., tier=None, referencing=None); /usr/bin/python3 -B scripts/compound-v-fastpath-run.py --selftest is green.
+  - /usr/bin/python3 -B -m unittest discover -s tests/v2.9-e2e -p test_fastpath_and_escalation.py passes and the file carries the five referencing cases (grep -c referencing tests/v2.9-e2e/test_fastpath_and_escalation.py >= 5).
+  - skills/compound-v/execution-manifest.md and agents/spec-reviewer.md §3.3 state what a SCOPED job owes (floor + impacted + ≤5 referencing, never full_command).
+  body: 'Task C was implemented in run 2026-09-03-v3.4.1-triage-size (job test-scope): its scope gate passed and its own selftests were green, but a test-contract row of the orchestrator''s (the path form of `python -m unittest`) blocked the record, so the wave refused it and the sealed patch was kept. Your job: apply that patch exactly — `git apply --index docs/superpowers/execution/2026-09-03-v3.4.1-triage-size/jobs/test-scope.patch` from your worktree root (baseline differs by four merged sibling jobs and two orchestrator fixes; if a hunk fails, resolve it by hand within your lane and say so) — then read plan Task C and spec §WS-C and verify every acceptance item on the applied tree: /usr/bin/python3 -B scripts/compound-v-fastpath-run.py --selftest; /usr/bin/python3 -B -m unittest discover -s tests/v2.9-e2e -p test_fastpath_and_escalation.py (24 tests expected). Fix anything red inside your lane only. Do NOT re-implement from scratch; the patch is the work. Run python with -B; register
+    your lane with a literal --cwd.'
+- id: release
+  title: 'Task F — release 3.4.1: CHANGELOG, versions, README triage paragraph, native-mechanisms row'
+  type: implement
+  backend: claude
+  tier: standard
+  effort: medium
+  isolation: worktree
+  run: serial
+  depends_on:
+  - test-scope
+  write_allowed:
+  - CHANGELOG.md
+  - README.md
+  - .claude-plugin/plugin.json
+  - .claude-plugin/marketplace.json
+  - docs/superpowers/architecture/native-mechanisms.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - CHANGELOG.md's top heading is "## [3.4.1] - 2026-09-03" (the [Unreleased] section renamed, the stage-2 sections appended), plugin.json and marketplace.json both say 3.4.1, and /usr/bin/python3 -B scripts/lint-frontmatter.py . is green.
+  - README.md's triage paragraph names the three tiers and SCOPED+ in one sentence; native-mechanisms.md has a row for the headless one-shot classify.
+  body: "Implement plan Task F. Read the merged tree (Tasks A, B, D and E landed in commit 028b264 of the first run and Task C lands in this run's first wave — all are in HEAD by the time you run). Write the CHANGELOG from what actually landed — read the diffs of the five jobs' files against the run's baseline — never from the plan's promises. No fabricated metrics; the probe timings (5.5 s / 8.0 s) are measured and may be quoted as such. Run python with -B; register your lane with a literal --cwd.\n The CHANGELOG's [Unreleased] section already holds the stage-1 and stage-2 orchestrator fixes (phase advance, open-jobs hook window, run locks, PyYAML validator, partial-wave bookkeeping); keep them under the 3.4.1 heading and add the feature sections from the merged diffs: git diff 20ed725..HEAD -- <the five jobs' files>."
+- id: spec-review
+  title: Review Gate — three passes against the spec and the feature-level acceptance criteria
+  type: review
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: direct
+  run: serial
+  depends_on:
+  - release
+  write_allowed:
+  - docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-1.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - The review file exists with
+  body: 'Your agent definition carries the three-pass Review Gate and a Step 0 (V-memory recall). Follow it. Run every feature-level acceptance criterion of this manifest on the merged tree with /usr/bin/python3 -B, including driving hooks/triage-prompt-nudge.sh with synthetic UserPromptSubmit stdin for the four requests named in criterion 2 (use a throwaway session id; the records it writes are evidence — leave them uncommitted and list them). Write docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-1.md. Run python with -B; register your lane with a literal --cwd.
+
+    '

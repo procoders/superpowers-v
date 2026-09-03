@@ -1,0 +1,26 @@
+{
+  "run_id": "2026-09-03-v3.4.1-triage-size-r2",
+  "phase": "PARTITION_VERIFIED",
+  "pre_eval_id": "2026-09-03T025952Z-land-task-c-of-the-v3-4-1-triage-size-feature-from-the-seale-b142",
+  "updated_at": "2026-09-03T03:00:07Z",
+  "jobs": {
+    "test-scope": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "release": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "spec-review": {
+      "status": "pending",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null
+    }
+  }
+}

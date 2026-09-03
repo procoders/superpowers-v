@@ -1,0 +1,20 @@
+{
+  "confidence": "exact",
+  "digest": "sha256:3a35138ac0b041c84dd77253e2ee252e69b60604aa38b442860f56fb76a02b51",
+  "fan_out": 7,
+  "flags": [
+    "content:config_literal",
+    "content:i18n_placeholder",
+    "content_scan_incomplete",
+    "sensitive_path"
+  ],
+  "resolved_paths": [
+    ".claude-plugin/plugin.json",
+    "CHANGELOG.md",
+    "README.md",
+    "agents/spec-reviewer.md",
+    "scripts/compound-v-fastpath-run.py",
+    "skills/compound-v/execution-manifest.md",
+    "tests/v2.9-e2e/test_fastpath_and_escalation.py"
+  ]
+}
