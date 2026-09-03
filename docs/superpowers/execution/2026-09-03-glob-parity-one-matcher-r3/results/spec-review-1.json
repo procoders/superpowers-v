@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-03-epic-gp-one-matcher-r3-review-1.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "d6906667de7cae4b047e0777afba04329a242ae8",
+    "diff_digest": "sha256:eef06bb4289c8eecdf016ab63479d954b255fec30ed3dca93001e180c29bec36",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"d6906667de7cae4b047e0777afba04329a242ae8\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-03-epic-gp-one-matcher-r3-review-1.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-03-epic-gp-one-matcher-r3-review-1.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "d6906667de7cae4b047e0777afba04329a242ae8",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Review Gate \u2014 three passes against the attempt-3 plan and the attempt-2 review's \u00a73",
+  "tests": {
+    "command": "bash -c 'python3 -B scripts/compound-v-memory.py --selftest >/dev/null && python3 -B scripts/compound-v-scope-check.py --selftest >/dev/null'\nbash tests/test-engine-c-contract.sh\nbash tests/test-epic-goal-stop.sh\nbash tests/test-hook-recursion-guard.sh\nbash tests/test-integration-gate.sh\nbash tests/test-lane-guard.sh",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted+referencing",
+    "selected_count": 6
+  },
+  "violations": [],
+  "worktree": ""
+}
