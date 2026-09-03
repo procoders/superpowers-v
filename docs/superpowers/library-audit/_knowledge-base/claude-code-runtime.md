@@ -430,3 +430,63 @@ wherever the schema is defined.
 Sources: [`code.claude.com/docs/en/workflows.md`](https://code.claude.com/docs/en/workflows.md) (fetched
 2026-09-03, this session) · `scripts/compound-v-emit-preflight.py:91-105,209-267,302-324` (`Read`, this
 session, current HEAD) · `schemas/job_result.schema.json:219-257` (`Read`, this session).
+
+---
+
+## Updated 2026-09-03 — v3.4.13 preflight git-history (Bash permission-rule mechanics, live)
+
+Validated for
+[`docs/superpowers/library-audit/2026-09-03-v3-4-13-preflight-git-history.md`](../2026-09-03-v3-4-13-preflight-git-history.md).
+No Context7 attached to this subagent (sixth same-repo 1C run recording this). Source: a full live
+`WebFetch` of `code.claude.com/docs/en/permissions.md`, fetched in full 2026-09-03, prompted for Bash
+rule-matching mechanics specifically (this KB's `bashCommandClamp` entries above had never fetched this
+particular page before — only `workflows.md`).
+
+**Compound-command matching is real and documented, for ordinary `Bash(...)` permission rules.** Verbatim:
+*"Claude Code is aware of shell operators, so a rule like `Bash(safe-cmd *)` won't give it permission to run
+the command `safe-cmd && other-cmd`. The recognized command separators are `&&`, `\|\|`, `;`, `\|`, `\|&`,
+`&`, and newlines. A rule must match each subcommand independently."* This directly refutes a still-open
+GitHub issue's framing (`anthropics/claude-code#4956`, "Bash Permission Bypass via Command Chaining") as a
+description of *current* behavior — WebSearch surfaced that issue title, but the live doc's own current text
+states the fix's now-shipped behavior in the present tense. **Caveat, load-bearing:** this text describes
+ordinary permission-rule (`allow`/`deny`/`ask`) matching. `bashCommandClamp` — the field Compound V's own
+workflow scripts actually use — remains completely undocumented on `workflows.md` (see the existing entries
+above, now reconfirmed a fifth time on a fresh fetch the same day as this one). Whether the clamp shares this
+exact splitter is inferred from identical `Bash(<prefix>:*)` string syntax and this repo's own
+already-shipping reliance on it, not confirmed by any fetched text.
+
+**Wildcard placement rule, verbatim:** *"Put the `*` after the subcommand... Claude Code matches everything
+before the first `*` as written... `Bash(git log *)` allows only `git log` commands, and `Bash(git *)` allows
+every git command."* `Bash(git * main)` is called out explicitly as matching `git -c
+core.fsmonitor=<script> diff main` — i.e. a `*` in the **subcommand position** (not after it) lets a global
+`-c key=value` git option slip through, because git's `-c` flag must precede the subcommand to take effect. A
+clamp of the shape `Bash(git log:*)` (wildcard strictly after the subcommand, as this repo's clamps and
+`compound-v-emit-workflow.py:228`'s existing precedent both use) is **not** exposed to this specific `-c`
+vector — `git log -c foo=bar` does not apply `foo=bar` as a git config override, since `-c` only works before
+the subcommand name.
+
+**The "Redirections" check is narrower than it sounds — it does not cover a program's own write flags.**
+Verbatim: *"Claude Code checks the target of an output redirection, such as `>`, `>>`, or `2>`, as a file
+write... A rule such as `Bash(git commit *)` allows the command, not the target."* This check is scoped to
+shell redirection operators. A command's own argument that names an output path — e.g. `git log
+--output=<file>` / `git show --output=<file>` (see the new `git-cli.md` KB file) — is not a redirection
+operator and is not covered by this check at all. `permissions.md` names this general fragility class itself,
+for a different example (curl URL filtering), and recommends the same fix pattern: *"Use PreToolUse hooks:
+implement a hook that validates URLs in Bash commands and blocks disallowed domains."*
+
+**Read-only-`git` is already a Claude-Code built-in, separate from any clamp.** Verbatim, §"Read-only
+commands": *"Claude Code recognizes a built-in set of Bash commands as read-only and runs them without a
+permission prompt in every mode. These include `ls`, `cat`, `echo`, `pwd`, `head`, `tail`, `grep`, `find`,
+`wc`, `which`, `diff`, `stat`, `du`, `cd`, and read-only forms of `git`."* This is a **permission-prompt**
+concept (whether a human/mode is asked), orthogonal to `bashCommandClamp`, which is a positive allowlist
+governing what an agent may attempt at all inside a workflow-spawned invocation. A future spec must not
+conflate the two — being built-in-read-only doesn't imply admission through, or exemption from, a clamp.
+
+**`bashCommandClamp`/`disallowedTools` reconfirmed absent from `workflows.md`, a fifth same-week
+occurrence.** Not re-fetched in this entry (see the 2026-09-03 workflow-retry entry above for that day's own
+fetch); recorded here only to keep this specific spec's audit self-contained without re-fetching an
+unchanged page twice in one day.
+
+Sources: [`code.claude.com/docs/en/permissions.md`](https://code.claude.com/docs/en/permissions.md) (fetched
+in full, 2026-09-03) · `scripts/compound-v-emit-workflow.py:224-237` (`Read`, this session, current HEAD) ·
+`scripts/compound-v-emit-preflight.py:203-215` (`Read`, this session, current HEAD).

@@ -1,0 +1,57 @@
+run_id: 2026-09-03-v3.4.13-preflight-git-history
+feature: 'v3.4.13 — the pre-flight auditors may read git history: log/blame/show admitted to the emitted Bash clamp (finding 145)'
+routing_stance: balanced
+max_parallel: 2
+spec_path: docs/superpowers/specs/2026-09-03-v3.4.13-preflight-git-history-design.md
+plan_path: docs/superpowers/plans/2026-09-03-v3.4.13-preflight-git-history.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-09-03-v3-4-13-preflight-git-history.md
+  domain: docs/superpowers/specs/2026-09-03-v3.4.13-preflight-git-history-design.md
+  library: docs/superpowers/library-audit/2026-09-03-v3-4-13-preflight-git-history.md
+triage:
+  tier: SCOPED
+  pre_eval_id: 2026-09-03T211541Z-let-the-pre-flight-auditors-read-git-history-scripts-compoun-af46
+  taxonomy_digest: sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a
+  decided_at: '2026-09-03T21:15:42Z'
+acceptance_criteria:
+- python3 scripts/compound-v-emit-preflight.py --selftest passes with the two new checks (git log/blame/show admitted; no other Bash(git form); every previous check still passes.
+- An emitted pre-flight script (--spec any spec --out tmp) contains exactly three Bash(git forms — log, blame, show — and the two compound-v-memory.py forms unchanged.
+test_contract:
+  floor_command: bash -c 'python3 -B scripts/compound-v-emit-preflight.py --selftest >/dev/null'
+  full_command: bash -c 'for s in scripts/compound-v-*.py; do grep -q -- "--selftest" "$s" || continue; /usr/bin/python3 -B "$s" --selftest >/dev/null 2>&1 || { echo "FAIL $s"; exit 1; }; done'
+  impacted_map:
+  - when: scripts/compound-v-*.py
+    run: bash -c '[ -f {path} ] || exit 0; grep -q -- "--selftest" {path} || exit 0; /usr/bin/python3 -B {path} --selftest >/dev/null'
+jobs:
+- id: git-history-clamp
+  title: Task A — three read-only git forms in the pre-flight clamp; two checks narrowed, two added
+  type: implement
+  backend: claude
+  tier: standard
+  effort: medium
+  isolation: worktree
+  run: parallel
+  write_allowed:
+  - scripts/compound-v-emit-preflight.py
+  read_allowed:
+  - '**'
+  acceptance:
+  - python3 scripts/compound-v-emit-preflight.py --selftest prints no FAIL line; an emitted script lists exactly Bash(git blame:*), Bash(git log:*), Bash(git show:*) as its git forms; only scripts/compound-v-emit-preflight.py changed.
+  body: 'Implement Task A of docs/superpowers/plans/2026-09-03-v3.4.13-preflight-git-history.md exactly — the code blocks are in the plan (Step 1 replaces the clamp expression near line 212; Step 1b rewrites the docstring phrase and the clamp comment; Step 2 replaces the two named checks near line 500 and adds two). Run the plan''s Step 3 commands and quote their output in your summary. Only scripts/compound-v-emit-preflight.py may change. Commit in your worktree.'
+- id: spec-review-1
+  title: Review Gate — three passes against the spec and the feature acceptance criteria
+  type: review
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: direct
+  run: serial
+  depends_on:
+  - git-history-clamp
+  write_allowed:
+  - docs/superpowers/dogfood/2026-09-03-v3.4.13-preflight-git-history-review-1.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - The review file exists with ## Recall, ## SPEC, ## QUALITY, ## INTEGRATION, ## Verdict and one line VERDICT APPROVED or VERDICT ISSUES; it emits a pre-flight script itself and lists the clamp it found.
+  body: 'Your agent definition carries the three-pass Review Gate and a Step 0 (V-memory recall). Follow it. Feature v3.4.13: spec docs/superpowers/specs/2026-09-03-v3.4.13-preflight-git-history-design.md, plan docs/superpowers/plans/2026-09-03-v3.4.13-preflight-git-history.md. Review the merged diff of job git-history-clamp. Run the selftest yourself and emit a pre-flight script to confirm the clamp. Write docs/superpowers/dogfood/2026-09-03-v3.4.13-preflight-git-history-review-1.md and nothing else.'
