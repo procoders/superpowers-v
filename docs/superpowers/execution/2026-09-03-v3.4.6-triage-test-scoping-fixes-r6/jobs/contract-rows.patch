@@ -1,0 +1,20 @@
+diff --git a/tests/test-engine-c-contract.sh b/tests/test-engine-c-contract.sh
+index 3c19d16..f6ba47f 100755
+--- a/tests/test-engine-c-contract.sh
++++ b/tests/test-engine-c-contract.sh
+@@ -323,11 +323,15 @@ for w in codex antigravity cursor opencode devin; do
+   printf '%s\n' '{"scope":"impacted+referencing","resolved_commands":["true"],"selected_count":2,"floor_command":"true"}' > "$TCV/ok.json"
+   printf '%s\n' '{"scope":"impacted+referencing","resolved_commands":["true"],"selected_count":"two"}' > "$TCV/bad-count.json"
+   printf '%s\n' '{"scope":"impacted","resolved_commands":["true"],"surprise":1}' > "$TCV/bad-key.json"
++  printf '%s\n' '{"scope":"impacted","resolved_commands":["true"],"timeout_s":480}' > "$TCV/ok-timeout.json"
++  printf '%s\n' '{"scope":"impacted","resolved_commands":["true"],"timeout_s":0}' > "$TCV/bad-timeout.json"
+   # tc_validate leans on the sibling tc_command_at; extract both, verbatim, from the worker.
+   run_tcv() { bash -c 'die() { echo "$*" >&2; exit 2; }; eval "$(sed -n "/^tc_command_at()/,/^}/p" "$1")"; eval "$(sed -n "/^tc_validate()/,/^}/p" "$1")"; tc_validate "$2"' _ "$W" "$1" >/dev/null 2>&1; }
+   if run_tcv "$TCV/ok.json"; then pass "$w worker: tc_validate ACCEPTS the 3.4.1 slice (impacted+referencing, selected_count)"; else fail "$w worker: tc_validate REJECTS the 3.4.1 slice the resolver now produces"; fi
+   if run_tcv "$TCV/bad-count.json"; then fail "$w worker: tc_validate accepted a non-numeric selected_count"; else pass "$w worker: tc_validate rejects a non-numeric selected_count"; fi
+   if run_tcv "$TCV/bad-key.json"; then fail "$w worker: tc_validate accepted an unknown key"; else pass "$w worker: tc_validate still rejects an unknown key"; fi
++  if run_tcv "$TCV/ok-timeout.json"; then pass "$w worker: tc_validate ACCEPTS timeout_s 480"; else fail "$w worker: tc_validate REJECTS a valid timeout_s 480"; fi
++  if run_tcv "$TCV/bad-timeout.json"; then fail "$w worker: tc_validate accepted timeout_s 0"; else pass "$w worker: tc_validate rejects timeout_s 0"; fi
+ done
+ "$PY" "$EMIT" finalize-wave --run-dir "$RD" --repo-root "$R" \
+   --manifest "$RD/manifest.yaml" --jobs job-happy,job-floorfail,job-blocked \

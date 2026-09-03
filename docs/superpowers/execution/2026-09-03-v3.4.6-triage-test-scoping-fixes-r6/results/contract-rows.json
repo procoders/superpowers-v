@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "tests/test-engine-c-contract.sh"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "d4afab508808be010a40700908fbc5ae6b2c9684",
+    "diff_digest": "sha256:cf9bf9eec54cccf6d3f3ef515dbaa35505291e5a9774e165ac58314dcf6ecf2b",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"d4afab508808be010a40700908fbc5ae6b2c9684\",\n  \"changed\": [\n    \"tests/test-engine-c-contract.sh\"\n  ],\n  \"allowed\": [\n    \"tests/test-engine-c-contract.sh\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "d4afab508808be010a40700908fbc5ae6b2c9684",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task B2c \u2014 tests/test-engine-c-contract.sh rows for timeout_s (after workers merged)",
+  "tests": {
+    "command": "bash tests/test-engine-c-contract.sh",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 1
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_205a6d8d-423-1"
+}

@@ -1,0 +1,42 @@
+{
+  "baseline_commit": "d4afab508808be010a40700908fbc5ae6b2c9684",
+  "diff_digest": "sha256:cf9bf9eec54cccf6d3f3ef515dbaa35505291e5a9774e165ac58314dcf6ecf2b",
+  "exit_code": 0,
+  "job_id": "contract-rows",
+  "patch_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r6/jobs/contract-rows.patch",
+  "patch_paths": [
+    "tests/test-engine-c-contract.sh"
+  ],
+  "patch_sha256": "sha256:cf9bf9eec54cccf6d3f3ef515dbaa35505291e5a9774e165ac58314dcf6ecf2b",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"d4afab508808be010a40700908fbc5ae6b2c9684\",\n  \"changed\": [\n    \"tests/test-engine-c-contract.sh\"\n  ],\n  \"allowed\": [\n    \"tests/test-engine-c-contract.sh\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "d4afab508808be010a40700908fbc5ae6b2c9684",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "tests/test-engine-c-contract.sh"
+    ],
+    "checks": [
+      {
+        "checker": "bash tests/test-engine-c-contract.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (10 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 1 command(s) from 1 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_205a6d8d-423-1"
+}
