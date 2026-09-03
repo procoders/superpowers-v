@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-03-v3.4.7-readme-clarity-review.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "0729cd1dac5183988202a647c2a3ccf6be61fd8a",
+    "diff_digest": "sha256:50e9dc505f0d497e24375eb399e8388c996bd42c21342edb933b0a481ef7bd0e",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"0729cd1dac5183988202a647c2a3ccf6be61fd8a\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.7-readme-clarity-review.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.7-readme-clarity-review.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "0729cd1dac5183988202a647c2a3ccf6be61fd8a",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Review Gate \u2014 three passes against the spec and the feature acceptance criteria",
+  "tests": {
+    "command": "/usr/bin/python3 -B scripts/lint-frontmatter.py .",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 1
+  },
+  "violations": [],
+  "worktree": ""
+}

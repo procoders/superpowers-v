@@ -1,6 +1,6 @@
 {
   "run_id": "2026-09-03-v3.4.7-readme-clarity",
-  "phase": "DISPATCHED",
+  "phase": "MERGED",
   "pre_eval_id": "2026-09-03T144307Z-implement-v3-4-7-readme-clarity-per-docs-superpowers-specs-2-0478",
   "updated_at": "2026-09-03T14:56:07Z",
   "jobs": {
@@ -61,10 +61,18 @@
       }
     },
     "spec-review": {
-      "status": "pending",
+      "status": "done",
       "isolation": "direct",
-      "worktree": null,
-      "session_id": null
+      "worktree": "",
+      "session_id": null,
+      "baseline": "0729cd1dac5183988202a647c2a3ccf6be61fd8a",
+      "realised_commit": "0729cd1dac5183988202a647c2a3ccf6be61fd8a",
+      "merged": {
+        "realised_commit": "0729cd1dac5183988202a647c2a3ccf6be61fd8a",
+        "mode": "direct",
+        "integrated": true,
+        "commit": "7b40e61e5e9676a1ae62ca243e05e6a040075114"
+      }
     }
   },
   "waves": {
@@ -91,6 +99,22 @@
       ],
       "commit": "0e62a339497c62d8be4542904ae641c5b67153d0",
       "integrated": true
+    },
+    "3": {
+      "jobs": [
+        "spec-review"
+      ],
+      "merged": [
+        "spec-review"
+      ],
+      "commit": "7b40e61e5e9676a1ae62ca243e05e6a040075114",
+      "integrated": true
     }
-  }
+  },
+  "triage_actual": {
+    "merge_pending": true,
+    "pre_eval_id": "2026-09-03T144307Z-implement-v3-4-7-readme-clarity-per-docs-superpowers-specs-2-0478",
+    "run_id": "2026-09-03-v3.4.7-readme-clarity"
+  },
+  "merged_at": "2026-09-03T15:20:23Z"
 }

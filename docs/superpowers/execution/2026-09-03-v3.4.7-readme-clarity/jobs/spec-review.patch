@@ -1,0 +1,145 @@
+diff --git a/docs/superpowers/dogfood/2026-09-03-v3.4.7-readme-clarity-review.md b/docs/superpowers/dogfood/2026-09-03-v3.4.7-readme-clarity-review.md
+new file mode 100644
+index 0000000..dcdb4c3
+--- /dev/null
++++ b/docs/superpowers/dogfood/2026-09-03-v3.4.7-readme-clarity-review.md
+@@ -0,0 +1,139 @@
++# v3.4.7 README clarity — Review Gate (run 2026-09-03-v3.4.7-readme-clarity)
++
++**Reviewer:** `compound-v:spec-reviewer`, pass 1 · **Date:** 2026-09-03 · **Tree reviewed:** merged `HEAD`
++(waves `f63f215` + `0e62a33`, baseline `b2ddbc8`) · **Jobs:** index-refresh, readme, routing-svg, init-baseref.
++
++**VERDICT: ISSUES** — SPEC ✅ with one gap · QUALITY ✅ · INTEGRATION ISSUES (one acceptance criterion fails).
++
++## Recall
++
++`compound-v-memory.py search "README clarity rewrite newcomer five minute read" --intent review --top 8` returned
++this feature's own spec, plan and three pre-flights, plus the library audit's §6 constraint list. Nothing older
++bears on it. The one recalled constraint that decided a check: library audit §6, *"MUST state the Codex install
++floor as ≥ 0.144.6 … not ≥ 0.143"* — the spec's own item 6 still said `0.143`, so the audit overrides the spec
++here, and README is right to say `0.144.6`.
++
++`compound-v-memory.py recall-check --files README.md docs/routing.svg commands/v-init.md TROUBLESHOOTING.md
++docs/superpowers/dogfood/README.md` → `recall-check: none (0/2 match)`. No `tighten`. No control escalated.
++
++## SPEC
++
++Every job wrote only inside its lane. Four gate receipts, all `verdict: pass`, zero violations. The whole-run
++diff (`git diff b2ddbc8 HEAD --stat`) touches five source files — README.md, TROUBLESHOOTING.md,
++commands/v-init.md, docs/routing.svg, docs/superpowers/dogfood/README.md — plus run bookkeeping the caller
++writes. No partition leak.
++
++### Audit MUSTs
++
++| Audit | Constraint | Status | Evidence |
++|---|---|---|---|
++| Archaeology §7 | DIRECT gets no model entry | ✅ | README:52 "No model routing happens"; SVG "carries no model of its own", legend "DIRECT — the current session, no dispatched model at all" |
++| Archaeology §7 | Do not claim "fast path"/"advisor" were removed | ✅ | Neither term appears in README or SVG; neither claims a removal |
++| Archaeology §7 | Verify the current no-`baseRef` failure mode before writing the symptom | ❌ | See ISSUE 1 |
++| Archaeology §7 | README reads the index footer after Task 0 committed | ✅ | README:112 "40 review files, 5 APPROVED" = footer `Reviews: 40 · APPROVED: 5` |
++| Archaeology §7 | The offer targets `.claude/settings.json`, merges, preserves unrelated keys | ✅ | v-init.md Step 4d, jsonc block and the "read, merge, write back — never truncate" sentence |
++| Archaeology §7 | SVG `<title>`/`<desc>` rewritten | ✅ | Both parse and describe the three tiers |
++| Archaeology §7 | Fix the stale "armed epic goal rule" sentence | ✅ | v-init.md now says the hook carries only the two gates; `epic-goal-stop.sh`'s own decision table has exactly `triage_gate` (4) and `pipeline_bypass` (5) |
++| Archaeology §7 | One shared tier sentence for prose and diagram | ✅ | README:52-55 and the SVG boxes agree, including SCOPED+ review being *mandatory* |
++| Archaeology §7 | Hard-wrap, not just shorten | ✅ | Longest non-code, non-table line is under 200 chars |
++| Library §6 | Codex floor `≥ 0.144.6` | ✅ | README:23 |
++| Library §6 | Disclose the setting's real scope | ✅ | README:27-28, v-init 4d, TROUBLESHOOTING "Fix" — all say project-wide, `--worktree` sessions included |
++| Library §6 | Only `fresh` and `head` | ✅ | All three places name exactly those two |
++| Library §6 | No backend-CLI version pins in README | ✅ | The only version in README is the Codex floor |
++| Library §6 | Context7 line unchanged | ✅ | README:34 `/plugin install context7@claude-plugins-official` |
++
++### Spec coverage
++
++Spec §9 items 1-3 and 5-9 are all present and in order. Item 4 is half-implemented — see ISSUE 2.
++
++No over-build. Nothing appears in the diff that the spec did not ask for; the one extra edit
++(v-init's stale epic-goal sentence) was named by archaeology §7 and by the job body.
++
++## QUALITY
++
++No fabricated metrics. The one number-bearing sentence, README:12, gives a range and links AGENTS.md for the
++method — it does not restate the essay. `grep -c "Re-measured 2026-09-03"` → README `0`, AGENTS.md `1`.
++
++No reward hacking. The diff touches no test, no scorer, no threshold. The four jobs' `tests.command` fields are
++non-empty and their `tests.exit_code` is `0` in every case; no assertion was loosened or skipped anywhere.
++
++No regression. `commands/v-init.md`'s new Step 4d follows Step 4c's offer-never-write shape, and the sentence it
++replaced was stale rather than load-bearing. The TROUBLESHOOTING entry is new; no existing entry was edited.
++
++Two claims I checked because they are the kind that rot, both true of HEAD: `/v:status --live` exists
++(`commands/v-status.md:11`), and `/v:epic` §0d does offer the native `/goal` (`commands/v-epic.md:111`).
++
++## INTEGRATION
++
++### Build and tests
++
++```
++$ /usr/bin/python3 -B scripts/lint-frontmatter.py .          # the floor, unconditional
++✅ All frontmatter clean
++
++$ bash -c 'for s in scripts/compound-v-*.py; do ... --selftest ...; done; for t in tests/*.sh; do bash "$t"; done'
++all-tests-ok
++```
++
++Tier is FULL. Every changed path matches an `impacted_map` rule, so the tier owed the floor plus the impacted
++set and no more; each job ran it and exited 0. I ran `full_command` as well, as integration evidence. Green.
++
++### Acceptance criteria
++
++| # | Criterion | Command / evidence | Status |
++|---|---|---|---|
++| 1 | ≤130 lines, no line >200 chars outside code/tables, no `##` section >30 lines, essay only in AGENTS.md | `wc -l` → `130`; long-line scan → `[]`; largest section = Install, 20 lines; `grep -c` → README `0`, AGENTS `1` | ✅ |
++| 2 | True of the code | 16/16 commands exist under `commands/`; 5/5 named backends have adapters; hook table matches all eight registrations in `hooks/hooks.json`; tiers match `DECISION_TO_TIER` (`compound-v-preeval.py:151`, with SCOPED+ a flavor, not a fourth token); `40`/`5` equal the footer, and re-deriving the footer from the index script's own filename rule gives 40; dead-link replica: 10 relative links, 0 broken, exit 0 | ✅ |
++| 3 | `docs/routing.svg` valid, names the tiers and models, nothing about a fast path or an advisor | `xml.etree` parses it, `viewBox="0 0 1060 1000"`; text nodes carry DIRECT, SCOPED, SCOPED+, FULL, Opus, Sonnet, Codex; `grep -ci "fast[ -]?path\|advisor"` → `0`; no external refs; smallest `font-size` is 12 | ✅ |
++| 4 | `/v:init` offers the baseRef merge; TROUBLESHOOTING entry with the symptom the emitter's code actually produces; stale sentence gone; lint green | Step 4d and the stale-sentence fix are correct; lint green. The TROUBLESHOOTING symptom is not the one the code produces | ❌ ISSUE 1 |
++| 5 | Reader test | Performed below | ✅ |
++
++### The reader test
++
++Reading README.md alone, start to finish, once. What I wrote down as the commands a newcomer types:
++
++> 1. `/plugin marketplace add https://github.com/procoders/superpowers-v`
++> 2. `/plugin install superpowers-v@procoders`
++> 3. Put `{ "worktree": { "baseRef": "head" } }` in the project's `.claude/settings.json`
++> 4. `/v:init` — once, to detect the CLIs and save the config
++> 5. Then nothing. Describe the feature in plain words; a hook sizes it and the pipeline starts itself.
++
++All five are what the repository says. The marketplace name `procoders` and the plugin name `superpowers-v`
++match `.claude-plugin/marketplace.json`. Step 5 matches `skills/compound-v/SKILL.md:44` — "in default operation
++the agent flows through orchestrate → dispatch → collect itself".
++
++The one place the reader has to hold two ideas at once: README:44 says "There is no command to launch the
++orchestration", and eleven lines later the command table lists `/v:dispatch` as "Run the pipeline". Both are
++true — Claude runs `/v:dispatch`, the user does not have to — but a newcomer reads them in the wrong order.
++Not an issue; noted below.
++
++## Verdict
++
++**ISSUES.** Two, ranked. Neither is large; the first fails an acceptance criterion, so the run is not DONE.
++
++1. **`TROUBLESHOOTING.md:174` — the symptom names a field that never appears in the file it names.**
++   The entry tells the reader to look for `agent_isolation: null` in `state.json`. That field is never written
++   to `state.json`: the emitter puts it in the job specs inside `dispatch.workflow.js`
++   (`compound-v-emit-workflow.py:1513`), and `state.json` carries only `isolation`, which stays `"worktree"`
++   from the manifest. Confirmed on this very run — `grep agent_isolation` finds five hits in
++   `dispatch.workflow.js` and none in `state.json`. A reader following the entry greps the named file, finds
++   nothing, and concludes the entry does not describe their problem. Archaeology §7 asked for a symptom the
++   writer could prove, and the *Cause* paragraph below it is correct — only the observable is misplaced.
++   → Point the symptom at `dispatch.workflow.js` (or at the plain observable: the dependent job's agent edits
++   the main checkout while `state.json` still says `isolation: worktree`). Do not weaken the *Cause* text.
++
++2. **`README.md:66` — spec item 4 lost half its sentence.** The spec asks V-memory to say two things: that it is
++   fresh by construction, *and* that the reviewers read it before every verdict. The line says the first and
++   drops the second. The line is 154 characters, so the clause fits inside the 200-char budget without costing
++   a line against the 130-line ceiling.
++   → Add the clause, or record the cut as deliberate.
++
++### Observations, not issues
++
++- README's `40 review files, 5 APPROVED` is right at HEAD and goes stale the moment this file lands. It is
++  hedged with "as of this writing" and the number is one `scripts/compound-v-dogfood-index.sh` away. Expected.
++- `docs/routing.svg` has `viewBox="0 0 1060 1000"` and no `width`. Rendered in a 900 px column its 12 px text
++  lands near 10 px. Legible, but it is the floor of legible; a smaller viewBox would buy margin.
++- The hook table says `PreToolUse (Write/Edit/Bash)` where the real matcher also covers `MultiEdit` and
++  `NotebookEdit`. The spec's own item 8 specifies that abbreviation, so the README is conformant.
++- README:44 vs the `/v:dispatch` row — see the reader test. One clause ("Claude runs it for you") would close it.
