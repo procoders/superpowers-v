@@ -1,0 +1,49 @@
+{
+  "base_commit": "32ee66603ca33374ab98f65b5136c889312a6f6f",
+  "confidence": "localization:ambiguous; tiers:none",
+  "decision": "FULL_PIPELINE",
+  "declared_paths": [
+    "docs/superpowers/plans/2026-09-03-v3.4.1-triage-size.md",
+    "docs/superpowers/specs/2026-09-03-v3.4.1-triage-size-design.md",
+    "scripts/compound-v-fastpath-run.py",
+    "scripts/compound-v-localize.py",
+    "scripts/compound-v-preeval.py"
+  ],
+  "difficulty": {
+    "band": "unknown",
+    "display": null
+  },
+  "digest": "sha256:1c1579ff08152e4d0b58a63e8addb5a517957e3a0634f4b7a0790bf3a2621a05",
+  "impact": {
+    "band": "unknown",
+    "display": null
+  },
+  "localization": {
+    "confidence": "ambiguous",
+    "fan_out": 5,
+    "flags": [
+      "content:config_literal",
+      "content:feature_flag",
+      "content:i18n_placeholder"
+    ],
+    "resolved_paths": [
+      "docs/superpowers/plans/2026-09-03-v3.4.1-triage-size.md",
+      "docs/superpowers/specs/2026-09-03-v3.4.1-triage-size-design.md",
+      "scripts/compound-v-fastpath-run.py",
+      "scripts/compound-v-localize.py",
+      "scripts/compound-v-preeval.py"
+    ]
+  },
+  "min_sample_status": "insufficient",
+  "override_fired": 1,
+  "pre_eval_id": "2026-09-03T022331Z-implement-the-v3-4-1-triage-size-feature-per-docs-superpower-538f",
+  "request_slug": "implement-the-v3-4-1-triage-size-feature-per-docs-superpower",
+  "session_id": "stage2-1788402210",
+  "status": "PRE_EVAL_DONE",
+  "taxonomy_digest": "sha256:1f2a12f634422ca72a66cfa195b731a0e19743b5e7fe622fb799821cf5e88e85",
+  "taxonomy_ref": "docs/superpowers/pre-eval/2026-09-03T022331Z-implement-the-v3-4-1-triage-size-feature-per-docs-superpower-538f.taxonomy-snapshot.yaml",
+  "taxonomy_version": 1,
+  "tier": "FULL",
+  "tiers_signalled": [],
+  "ts": "2026-09-03T02:23:31Z"
+}

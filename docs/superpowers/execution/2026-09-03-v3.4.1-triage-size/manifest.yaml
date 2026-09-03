@@ -1,0 +1,194 @@
+run_id: 2026-09-03-v3.4.1-triage-size
+feature: "v3.4.1 triage-size: the size of a code change reaches the tier (T3 demotion, identifier-only localization, SCOPED+, scoped tests, headless T3)"
+routing_stance: balanced
+max_parallel: 5
+spec_path: docs/superpowers/specs/2026-09-03-v3.4.1-triage-size-design.md
+plan_path: docs/superpowers/plans/2026-09-03-v3.4.1-triage-size.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-09-03-v3-4-1-triage-size.md
+  domain: docs/superpowers/specs/2026-09-03-v3.4.1-triage-size-design.md
+  library: docs/superpowers/library-audit/2026-09-03-v3-4-1-triage-size.md
+triage:
+  tier: FULL
+  pre_eval_id: 2026-09-03T022331Z-implement-the-v3-4-1-triage-size-feature-per-docs-superpower-538f
+  taxonomy_digest: sha256:1f2a12f634422ca72a66cfa195b731a0e19743b5e7fe622fb799821cf5e88e85
+  decided_at: '2026-09-03T02:23:31Z'
+acceptance_criteria:
+- Every scripts/compound-v-*.py --selftest and every tests/*.sh is green under /usr/bin/python3 -B (CI's Python 3.9 floor); tests/v2.9-e2e passes under python3 -m unittest.
+- Driven with synthetic UserPromptSubmit stdin against the merged tree, the hook returns TIER SCOPED for a small edit to scripts/compound-v-scorecard.py, TIER SCOPED with flavor scoped_plus for a small edit to scripts/compound-v-scope-check.py, TIER FULL for an edit naming a .env file, and TIER DIRECT for a README.md typo — each with a committed-shape record that validates against schemas/pre-eval-record.schema.json.
+- compound-v-localize.py never searches a plain word (a request with no identifier returns failed without invoking the search backend), resolves a trailing-period path, and returns new_file for a named non-existent file whose parent exists.
+- compound-v-fastpath-run.py at tier SCOPED resolves an unmapped changed path to at most five referencing tests plus the floor and never to full_command; at tier FULL an unmapped path still resolves to full_command.
+- compound-v-validate-manifest.py --require-triage rejects a scoped_plus manifest without a deep Claude review job and accepts one with it; --require-cross-model-receipt rejects a missing or digest-mismatched receipt.
+- No prose in commands/skills/agents still says the hook degrades to a reminder on needs_t3, or that /v:dispatch step 9 writes phase MERGED by hand.
+test_contract:
+  floor_command: /usr/bin/python3 -B scripts/compound-v-preeval.py --selftest
+  full_command: bash -c 'for s in scripts/compound-v-preeval.py scripts/compound-v-localize.py scripts/compound-v-taxonomy.py scripts/compound-v-validate-taxonomy.py scripts/compound-v-fastpath-run.py scripts/compound-v-classify-request.py scripts/compound-v-validate-manifest.py; do /usr/bin/python3 -B "$s" --selftest >/dev/null 2>&1 || { echo "FAIL $s"; exit 1; }; done; for t in tests/*.sh; do bash "$t" >/dev/null 2>&1 || { echo "FAIL $t"; exit 1; }; done; /usr/bin/python3 -B -m unittest discover -s tests/v2.9-e2e -p "test_*.py" >/dev/null 2>&1 || { echo "FAIL e2e"; exit 1; }; echo all-tests-ok'
+  impacted_map:
+  - when: hooks/**
+    run: bash -c 'bash tests/test-native-points.sh && bash tests/test-epic-goal-stop.sh'
+  - when: scripts/compound-v-*.py
+    run: bash -c '[ -f {path} ] || exit 0; /usr/bin/python3 -B {path} --selftest'
+  - when: tests/*.sh
+    run: bash -c '[ -f {path} ] || exit 0; bash {path}'
+  - when: tests/v2.9-e2e/*.py
+    run: bash -c '[ -f {path} ] || exit 0; /usr/bin/python3 -B -m unittest {path}'
+  - when: schemas/*.json
+    run: bash -c 'for r in docs/superpowers/pre-eval/*.json; do /usr/bin/python3 -B -c "import json,sys; json.load(open(sys.argv[1]))" "$r" || exit 1; done; /usr/bin/python3 -B scripts/compound-v-preeval.py --selftest'
+  - when: .claude/compound-v-impact-taxonomy*.yaml
+    run: bash -c '/usr/bin/python3 -B scripts/compound-v-validate-taxonomy.py .claude/compound-v-impact-taxonomy.yaml && /usr/bin/python3 -B scripts/compound-v-taxonomy.py --selftest'
+  - when: commands/v-triage.md
+    run: bash tests/test-triage-landing.sh
+jobs:
+- id: scorer
+  title: "Task A — the scorer: broad-glob breadth, T3 demotion, SCOPED+, new_file, content-scan exclusion, the record schema, this repo's taxonomy"
+  type: implement
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: worktree
+  run: parallel
+  write_allowed:
+  - scripts/compound-v-preeval.py
+  - scripts/compound-v-taxonomy.py
+  - scripts/compound-v-validate-taxonomy.py
+  - schemas/pre-eval-record.schema.json
+  - .claude/compound-v-impact-taxonomy.yaml
+  - .claude/compound-v-impact-taxonomy.example.yaml
+  read_allowed:
+  - '**'
+  acceptance:
+  - /usr/bin/python3 -B scripts/compound-v-preeval.py --selftest, scripts/compound-v-taxonomy.py --selftest and scripts/compound-v-validate-taxonomy.py --selftest are green and each carries the new cells named in plan Task A Step 1 (grep the selftest source for "scoped_plus", "demotion", "new_file", "content_scan_exclude", "NEVER_DEMOTE").
+  - The three committed records under docs/superpowers/pre-eval/*.json still validate against the amended schema (jsonschema if installed, else the engine's own validator).
+  - match_path returns broad per matched row; classify honours content_scan_exclude; score() returns t3_reason on needs_t3 and flavor/t3_demotion on verdicts; _verdict remains the single construction point.
+  body: |
+    Implement plan Task A (docs/superpowers/plans/2026-09-03-v3.4.1-triage-size.md) against spec §WS-A, §WS-B amendments and pre-flight amendments 2, 4 and 6 (retain per-path match rows; the demotion branch before override #4's elif; the DIRECT predicate tests confidence == exact by name; no lane-guard entry in the taxonomy) (docs/superpowers/specs/2026-09-03-v3.4.1-triage-size-design.md). Read both first, then the archaeology audit named in the manifest. Write the failing selftest cells first, then the code. Keep the engine T3-agnostic: it never calls a model. Keep `_verdict` the only place a verdict is built (add a `flavor` kwarg). Add `content_scan_incomplete` to `_IMPACT_RAISING_FLAGS`. Do not touch scripts/compound-v-localize.py (Task B owns it) — feed `new_file` localizations by hand in your selftest. Run python with -B; register your lane with a literal --cwd.
+- id: localizer
+  title: "Task B — the localizer: identifiers only, trailing punctuation, new_file, exact-by-name with an incomplete content scan"
+  type: implement
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: worktree
+  run: parallel
+  write_allowed:
+  - scripts/compound-v-localize.py
+  read_allowed:
+  - '**'
+  acceptance:
+  - /usr/bin/python3 -B scripts/compound-v-localize.py --selftest is green and carries the ten fixtures of plan Task B Steps 1 and 1b (grep the selftest source for "new_file", "trailing", "content_scan_incomplete", "plain word").
+  - extract_query_tokens returns no plain word for "change the button colour to red" and the fake search backend is not invoked for it (confidence failed).
+  - localize() returns confidence new_file with fan_out 1 for scripts/new-thing.py when scripts/ exists and the file does not; failed for nonexistent-dir/x.py.
+  body: |
+    Implement plan Task B against spec §WS-B and its amendments. Fixtures first, then the code. A literal path is exact by name even when its content scan is incomplete: add the flag `content_scan_incomplete` instead of degrading confidence (the scorer, Task A, treats that flag as impact-raising). Strip a trailing period/`?`/`!` from a candidate path, never an inner one. Keep every containment rule (`_contained_regular_file`) for the new_file branch's parent directory. Run python with -B; register your lane with a literal --cwd.
+- id: test-scope
+  title: "Task C — the tests a SCOPED job owes: referencing tests, capped, never the whole suite at SCOPED/DIRECT"
+  type: implement
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: worktree
+  run: parallel
+  write_allowed:
+  - scripts/compound-v-fastpath-run.py
+  - tests/v2.9-e2e/test_fastpath_and_escalation.py
+  - skills/compound-v/execution-manifest.md
+  - agents/spec-reviewer.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - /usr/bin/python3 -B scripts/compound-v-fastpath-run.py --selftest and /usr/bin/python3 -B -m unittest tests/v2.9-e2e/test_fastpath_and_escalation.py are green and the unittest file carries the five cases of plan Task C Step 1 (grep for "referencing").
+  - referencing_tests(repo, changed_paths, cap=5) exists, is language-agnostic, bounded, sorted and capped; resolve_test_commands accepts tier= and referencing=; slice carries selected_count and the label impacted+referencing when the heuristic contributed.
+  - execution-manifest.md and agents/spec-reviewer.md §3.3 state what a SCOPED job owes (floor + impacted + ≤5 referencing, never full_command).
+  body: |
+    Implement plan Task C against spec §WS-C. Tests first. FULL keeps today's rule (unmapped ⇒ full_command). For SCOPED and DIRECT an unmapped path resolves to the referencing tests (cap 5 beyond impacted) else the floor only — never to full_command and never to nothing. `resolve_from_manifest` passes the manifest's triage.tier and computes `referencing` from the worktree; the worker-side contract validator must accept the new label and `selected_count`. Run python with -B; register your lane with a literal --cwd.
+- id: hook-t3
+  title: "Task D — the hook finishes T3: a headless one-shot classify (Claude light, then Codex), never a reminder on needs_t3"
+  type: implement
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: worktree
+  run: parallel
+  write_allowed:
+  - hooks/triage-prompt-nudge.sh
+  - hooks/hooks.json
+  - scripts/compound-v-classify-request.py
+  - tests/test-native-points.sh
+  - commands/v-triage.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - bash tests/test-native-points.sh is green and carries the four cases of plan Task D Step 1 (grep for "classify-headless" and "--bare"); shellcheck hooks/triage-prompt-nudge.sh is clean; /usr/bin/python3 -B scripts/compound-v-classify-request.py --selftest is green.
+  - compound-v-classify-request.py --classify-headless exists, never passes --bare, resolves the Claude light model through compound-v-resolve-model.py (never Haiku), runs under compound-v-run-with-timeout.py with stdin closed, and falls back to the codex route then to unknown.
+  - The hook's needs_t3 branch re-invokes the triage subcommand with --t3-category and no longer emits the reminder except on engine failure; the SCOPED+ tier line exists; commands/v-triage.md documents the headless route as the default.
+  body: |
+    Implement plan Task D against spec §WS-D and pre-flight amendments 1 and 7 (classify cap 15 s + 3 s grace; hooks/hooks.json UserPromptSubmit timeout 25; the selftest pins the argv). Tests first: the hook test plants a fake `claude` (and a fake `codex`) on PATH via CV_CLASSIFY_CLAUDE_BIN / CV_CLASSIFY_CODEX_BIN and drives the hook with synthetic UserPromptSubmit stdin. GNU timeout does not exist on macOS: every external process runs under scripts/compound-v-run-with-timeout.py. `claude -p --bare` loses the login — never use --bare. Never Haiku. The hook must stay fail-open and within its budget: a hanging classify ends in the reminder, exit 0. Run python with -B; register your lane with a literal --cwd.
+- id: validator-dispatch
+  title: "Task E — the validator and the dispatch tail: triage.flavor scoped_plus, the deep-review rule, the cross-model receipt, the docs"
+  type: implement
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: worktree
+  run: parallel
+  write_allowed:
+  - scripts/compound-v-validate-manifest.py
+  - schemas/cross-model-receipt.schema.json
+  - commands/v-dispatch.md
+  - commands/v-orchestrate.md
+  - skills/compound-v/phase-preeval.md
+  - skills/compound-v/cross-model-review.md
+  - skills/compound-v/SKILL.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - /usr/bin/python3 -B scripts/compound-v-validate-manifest.py --selftest is green and carries the five cases of plan Task E Step 1 (grep for "scoped_plus" and "cross-model-receipt"); every committed docs/superpowers/execution/*/manifest.yaml still validates mode-lessly.
+  - Under --require-triage a scoped_plus manifest without a type review job with tier deep and backend claude is rejected with a message naming the rule; --require-cross-model-receipt PATH verifies schema + run_id + pre_eval_id + diff_digest.
+  - commands/v-dispatch.md step 8 describes the scoped_plus receipt and step 9 no longer instructs writing phase MERGED by hand; phase-preeval.md, cross-model-review.md (SCOPED+ row yes, mandatory) and SKILL.md Stage −1 describe SCOPED+ and the T3 demotion.
+  body: |
+    Implement plan Task E against spec §WS-E and pre-flight amendments 3 and 5 (a NEW flat schemas/cross-model-receipt.schema.json validated by the existing _schema_lite(); TRIAGE_ALLOWED_KEYS for the unknown-key walk). Selftests first. `triage.flavor` is the only new key and `scoped_plus` its only value; unknown keys stay rejected. Reuse the receipt-schema loading pattern for schemas/plan-review.schema.json. The finalizer advances the phase since stage 1 (fix(finalize) commit f0dfc30) — say so in step 9 instead of the by-hand write. Run python with -B; register your lane with a literal --cwd.
+- id: release
+  title: "Task F — release 3.4.1: CHANGELOG, versions, README triage paragraph, native-mechanisms row"
+  type: implement
+  backend: claude
+  tier: standard
+  effort: medium
+  isolation: worktree
+  run: serial
+  depends_on:
+  - scorer
+  - localizer
+  - test-scope
+  - hook-t3
+  - validator-dispatch
+  write_allowed:
+  - CHANGELOG.md
+  - README.md
+  - .claude-plugin/plugin.json
+  - .claude-plugin/marketplace.json
+  - docs/superpowers/architecture/native-mechanisms.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - CHANGELOG.md's top heading is "## [3.4.1] - 2026-09-03" (the [Unreleased] section renamed, the stage-2 sections appended), plugin.json and marketplace.json both say 3.4.1, and /usr/bin/python3 -B scripts/lint-frontmatter.py . is green.
+  - README.md's triage paragraph names the three tiers and SCOPED+ in one sentence; native-mechanisms.md has a row for the headless one-shot classify.
+  body: |
+    Implement plan Task F. Read the merged tree (Tasks A–E are in HEAD by the time you run). Write the CHANGELOG from what actually landed — read the diffs of the five jobs' files against the run's baseline — never from the plan's promises. No fabricated metrics; the probe timings (5.5 s / 8.0 s) are measured and may be quoted as such. Run python with -B; register your lane with a literal --cwd.
+- id: spec-review
+  title: "Review Gate — three passes against the spec and the feature-level acceptance criteria"
+  type: review
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: direct
+  run: serial
+  depends_on:
+  - release
+  write_allowed:
+  - docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-1.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - The review file exists with ## Recall, ## SPEC, ## QUALITY, ## INTEGRATION, ## Verdict; the verdict is APPROVED or ISSUES with a numbered list; every feature-level acceptance criterion is checked by running its command on the merged tree and the output is quoted.
+  body: |
+    Your agent definition carries the three-pass Review Gate and a Step 0 (V-memory recall). Follow it. Run every feature-level acceptance criterion of this manifest on the merged tree with /usr/bin/python3 -B, including driving hooks/triage-prompt-nudge.sh with synthetic UserPromptSubmit stdin for the four requests named in criterion 2 (use a throwaway session id; the records it writes are evidence — leave them uncommitted and list them). Write docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-1.md. Run python with -B; register your lane with a literal --cwd.

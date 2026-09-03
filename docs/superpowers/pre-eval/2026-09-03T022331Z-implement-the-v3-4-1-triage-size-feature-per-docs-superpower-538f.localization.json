@@ -1,0 +1,17 @@
+{
+  "confidence": "ambiguous",
+  "digest": "sha256:1e6f8ffe559d1b36baed52a8f8f248361a11b2aa0542d3dfa66ef3b59b2986bf",
+  "fan_out": 5,
+  "flags": [
+    "content:config_literal",
+    "content:feature_flag",
+    "content:i18n_placeholder"
+  ],
+  "resolved_paths": [
+    "docs/superpowers/plans/2026-09-03-v3.4.1-triage-size.md",
+    "docs/superpowers/specs/2026-09-03-v3.4.1-triage-size-design.md",
+    "scripts/compound-v-fastpath-run.py",
+    "scripts/compound-v-localize.py",
+    "scripts/compound-v-preeval.py"
+  ]
+}

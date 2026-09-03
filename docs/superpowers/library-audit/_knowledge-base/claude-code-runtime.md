@@ -231,3 +231,42 @@ interval to let the model self-pace."* — confirms the interval-mode/dynamic-mo
 `/schedule`: *"Create, update, list, or run scheduled cloud agents (routines) that execute on a cron
 schedule... Also use when the user wants a one-time scheduled run."* — confirms both the recurring-cloud
 case and the one-time case; no session-lifetime coupling documented (unlike `/loop`/`CronCreate`).
+
+---
+
+## Updated 2026-09-03 — v3.4.1 triage-size (the `--tools` flag)
+
+Validated for [`docs/superpowers/library-audit/2026-09-03-v3-4-1-triage-size.md`](../2026-09-03-v3-4-1-triage-size.md).
+No Context7 attached to this subagent; no local Bash access to invoke `claude` directly either
+(`bashCommandClamp` on this spawn allowed only the V-memory search script) — every claim below is
+WebSearch/WebFetch-sourced and explicitly triangulated across independent origins because this KB
+already has one recorded WebFetch-confabulation incident (the Stop-hook `decision` enum, above).
+
+### `claude -p --tools ""` — a real, distinct flag from `--allowedTools`/`--disallowedTools`
+
+Four independent sources, fetched/searched this session, converge:
+
+1. `code.claude.com/docs/en/cli-reference.md` (raw .md, fetched twice with different prompts): both
+   fetches independently reproduce the identical cross-reference sentence inside the `--allowedTools`
+   entry — *"To restrict which tools are available, use `--tools` instead."* An identical specific
+   sentence recurring across separately-prompted fetches of the same URL is the pattern this file's own
+   Stop-hook incident treats as evidence a page really contains the text (that incident was a
+   **second fetch contradicting the first**, not two fetches agreeing).
+2. `backgroundclaude.com/cli-reference` (independent third-party origin, different rendering pipeline):
+   full, un-hedged entry — **"`--tools` — Restrict which built-in tools Claude can use. Pass `""` to
+   disable all, `"default"` for all, or a comma list."** Example: `claude --tools "Bash,Edit,Read"`.
+3. `WebSearch` aggregate (separate retrieval path again): *"`--tools` is the flag you need [to actually
+   restrict access] ... differs from `--allowedTools`, which only skips the confirmation prompt but does
+   not limit what Claude can reach."*
+4. The rendered (non-raw) `cli-reference` page independently, in a still-truncated excerpt, names the
+   same flag under "Tool Configuration Flags" without giving its full body — consistent with, not
+   contradicting, the other three.
+
+**Verdict: real flag, `--tools ""` is the documented "disable every tool" value.** `--output-format text`
+is separately confirmed as the plain documented default (`headless` page, fetched in full this session).
+
+**Residual gap, recorded rather than hidden:** no session in this audit chain has independently *run*
+`claude -p --tools "" ...` and observed the exit code / stdout / tool-use-attempt-count — the evidence
+above is converged documentation, not a live invocation. Before a design leans on `--tools ""` as a
+safety property (e.g. "the classify prompt has zero tool access, so it cannot do anything but answer"),
+run the one real invocation first. See the source audit's §6/§7 for the specific constraint this produced.

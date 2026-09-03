@@ -1,0 +1,50 @@
+{
+  "run_id": "2026-09-03-v3.4.1-triage-size",
+  "phase": "PARTITION_VERIFIED",
+  "pre_eval_id": "2026-09-03T022331Z-implement-the-v3-4-1-triage-size-feature-per-docs-superpower-538f",
+  "updated_at": "2026-09-03T02:26:38Z",
+  "jobs": {
+    "scorer": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "localizer": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "test-scope": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "hook-t3": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "validator-dispatch": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "release": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "spec-review": {
+      "status": "pending",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null
+    }
+  }
+}
