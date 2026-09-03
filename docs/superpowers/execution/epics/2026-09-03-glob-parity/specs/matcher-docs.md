@@ -15,3 +15,12 @@ CI dead-link gate).
 **Acceptance criteria.** `grep -n fnmatch skills/compound-v/memory.md skills/compound-v/execution-manifest.md`
 finds nothing; both files contain the phrase "the same matcher" and a reference to the parity selftest;
 `/usr/bin/python3 scripts/lint-frontmatter.py` clean; the dead-link check passes.
+
+## Amendment (2026-09-03, orchestrator, before F2's pre-flights)
+
+`grep -n -i 'fnmatch\|glob' skills/compound-v/execution-manifest.md` shows the manifest contract never states the glob
+semantics at all — `write_allowed` is described as "Glob list this job MAY write" (line 53) and the semantics live only in
+`scripts/compound-v-scope-check.py`'s docstring. So F2 **adds** a short "Glob semantics" note directly under the
+`write_allowed`/`read_allowed` rows of the field table in `execution-manifest.md` (one paragraph, the six rules above, the
+recall cross-reference and the parity-selftest pointer), and **replaces** the `recall-check` row's wording in
+`memory.md` (line 54) with the same rules plus the bare-path reading. No other section of either file changes.
