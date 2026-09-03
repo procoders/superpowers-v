@@ -8,10 +8,10 @@
       "title": "F1 \u2014 recall-check uses the scope gate's glob matcher",
       "depends_on": [],
       "spec_path": "docs/superpowers/execution/epics/2026-09-03-glob-parity/specs/one-matcher.md",
-      "status": "running",
+      "status": "failed",
       "run_id": "2026-09-03-glob-parity-one-matcher-r2",
       "attempts": 2,
-      "last_error": null,
+      "last_error": "attempt 2: reviewer ISSUES \u2014 the new selftest row passes on the guardless copy too (not load-bearing: err from mkdtemp still raises at the end); review job also refused at the gate (orchestrator commit during a direct job)",
       "disposition": {
         "disposition": "retry_fix",
         "attempt": 1,
@@ -55,7 +55,7 @@
   "blocker_ledger": [],
   "no_progress_cycles": 1,
   "total_attempts": 2,
-  "updated_at": "2026-09-03T19:45:53Z",
+  "updated_at": "2026-09-03T19:59:28Z",
   "last_done_count": 0,
   "processed_cycle_ids": [
     "c1",
