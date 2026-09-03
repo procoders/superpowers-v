@@ -1,0 +1,32 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "CHANGELOG.md",
+    "agents/parallel-dispatcher.md",
+    "skills/compound-v/execution-manifest.md",
+    "skills/compound-v/failure-policy.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "0c620786cf32bcf7e975b4c4b13a3fd49a2ea37f",
+    "diff_digest": "sha256:e90fe99a50d0ce817e4db2ec2328e3732a049fc13fd6a77ab4aa400ccec74acf",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"0c620786cf32bcf7e975b4c4b13a3fd49a2ea37f\",\n  \"changed\": [\n    \"CHANGELOG.md\",\n    \"agents/parallel-dispatcher.md\",\n    \"skills/compound-v/execution-manifest.md\",\n    \"skills/compound-v/failure-policy.md\"\n  ],\n  \"allowed\": [\n    \"skills/compound-v/execution-manifest.md\",\n    \"skills/compound-v/failure-policy.md\",\n    \"CHANGELOG.md\",\n    \"agents/parallel-dispatcher.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "0c620786cf32bcf7e975b4c4b13a3fd49a2ea37f",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task C \u2014 execution-manifest.md, failure-policy.md, CHANGELOG",
+  "tests": {
+    "command": "bash tests/test-engine-c-contract.sh\n/usr/bin/python3 -B scripts/lint-frontmatter.py .",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_ef843c76-f14-3"
+}

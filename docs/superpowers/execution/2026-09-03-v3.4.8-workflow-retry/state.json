@@ -1,32 +1,72 @@
 {
   "run_id": "2026-09-03-v3.4.8-workflow-retry",
-  "phase": "PARTITION_VERIFIED",
+  "phase": "DISPATCHED",
   "pre_eval_id": "2026-09-03T152726Z-implement-v3-4-8-per-docs-superpowers-specs-2026-09-03-v3-4-3862",
   "updated_at": "2026-09-03T15:42:52Z",
   "jobs": {
     "emitter-retry": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_ef843c76-f14-1",
+      "session_id": null,
+      "baseline": "0c620786cf32bcf7e975b4c4b13a3fd49a2ea37f",
+      "realised_commit": "0c620786cf32bcf7e975b4c4b13a3fd49a2ea37f",
+      "merged": {
+        "realised_commit": "0c620786cf32bcf7e975b4c4b13a3fd49a2ea37f",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "a1be1473f108aaae1c835824b11928e4a0290ead"
+      }
     },
     "validator-retry": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_ef843c76-f14-2",
+      "session_id": null,
+      "baseline": "0c620786cf32bcf7e975b4c4b13a3fd49a2ea37f",
+      "realised_commit": "0c620786cf32bcf7e975b4c4b13a3fd49a2ea37f",
+      "merged": {
+        "realised_commit": "0c620786cf32bcf7e975b4c4b13a3fd49a2ea37f",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "a1be1473f108aaae1c835824b11928e4a0290ead"
+      }
     },
     "docs": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_ef843c76-f14-3",
+      "session_id": null,
+      "baseline": "0c620786cf32bcf7e975b4c4b13a3fd49a2ea37f",
+      "realised_commit": "0c620786cf32bcf7e975b4c4b13a3fd49a2ea37f",
+      "merged": {
+        "realised_commit": "0c620786cf32bcf7e975b4c4b13a3fd49a2ea37f",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "a1be1473f108aaae1c835824b11928e4a0290ead"
+      }
     },
     "spec-review": {
       "status": "pending",
       "isolation": "direct",
       "worktree": null,
       "session_id": null
+    }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "emitter-retry",
+        "validator-retry",
+        "docs"
+      ],
+      "merged": [
+        "emitter-retry",
+        "validator-retry",
+        "docs"
+      ],
+      "commit": "a1be1473f108aaae1c835824b11928e4a0290ead",
+      "integrated": true
     }
   }
 }

@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "scripts/compound-v-validate-manifest.py"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "0c620786cf32bcf7e975b4c4b13a3fd49a2ea37f",
+    "diff_digest": "sha256:6264e213c69fac4fd5f461d7c6e2c18cf5354781ba461f2332e3edb2eb76f946",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"0c620786cf32bcf7e975b4c4b13a3fd49a2ea37f\",\n  \"changed\": [\n    \"scripts/compound-v-validate-manifest.py\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-validate-manifest.py\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "0c620786cf32bcf7e975b4c4b13a3fd49a2ea37f",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task B \u2014 the manifest `retry` block",
+  "tests": {
+    "command": "bash tests/test-engine-c-contract.sh\n/usr/bin/python3 -B scripts/compound-v-validate-manifest.py --selftest",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_ef843c76-f14-2"
+}

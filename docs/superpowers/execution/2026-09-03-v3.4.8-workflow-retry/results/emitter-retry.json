@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "scripts/compound-v-emit-workflow.py"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "0c620786cf32bcf7e975b4c4b13a3fd49a2ea37f",
+    "diff_digest": "sha256:afd25acd6b5279f8038b384f1e10bb850d40b4f8dfd56a9eb8aff5cafe2d9644",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"0c620786cf32bcf7e975b4c4b13a3fd49a2ea37f\",\n  \"changed\": [\n    \"scripts/compound-v-emit-workflow.py\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-emit-workflow.py\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "0c620786cf32bcf7e975b4c4b13a3fd49a2ea37f",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task A \u2014 withRetry around every agent() call; reviewer lift; honest failure_class; CFG.retry",
+  "tests": {
+    "command": "bash tests/test-engine-c-contract.sh\n/usr/bin/python3 -B scripts/compound-v-emit-workflow.py --selftest",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_ef843c76-f14-1"
+}

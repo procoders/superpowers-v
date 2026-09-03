@@ -1,0 +1,181 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 8afc671..9d2b1ec 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+ 
+ ## [Unreleased]
+ 
++### Added — a transient API failure is retried inside the workflow, and a stuck reviewer is lifted, not lost (findings 118, 119)
++
++Three consecutive `529 Overloaded` on the Opus reviewer during a live run each cost a run, a
++bookkeeping commit and a human relaunch: the emitted Workflow JS never looped `agent()`, so a
++transient failure (or, on the path the runtime actually takes, `agent()` resolving to `null`
++with no error text) became `status: error` on the first hit, even though
++[`failure-policy.md`](skills/compound-v/failure-policy.md) already owned the right
++classify-then-decide table for the residual subagent dispatcher and the external workers. Every
++`agent()` call the emitted script makes (implement, gate, record, finalize, review) is now
++wrapped in `withRetry`, which retries on the policy's transient classes up to a new manifest
++knob, `retry.max_attempts` (int 1–3, default 3; `1` disables retries) — backoff is the policy's
++table **without jitter** (2 s → 4 s → 8 s, capped at 60 s; `Date.now()`/`Math.random()` are
++refused inside a workflow script) and each retry is logged in that stage's result as
++`retries: [{stage, attempt, wait_ms}]`. On the `null`-resolution path the failing class can't be
++named, so exhaustion records `failure_class: other` with a reason that says so, never a guessed
++`overloaded`. A review job that exhausts its budget on `tier: deep` is re-spawned once on
++`frontier` (Fable) when `retry.escalate_reviewer` (default true) — the same
++`sonnet → opus → fable` ladder used elsewhere, requested and stated as such, never below `deep`;
++implementers are never escalated this way, and fast-path reviewers (schema-pinned to `deep`) are
++out of scope. `execution-manifest.md`'s reviewer-invariant paragraph is corrected to say what it
++should always have said: a reviewer's floor is `deep`, not a ceiling — `frontier`/Fable also
++satisfies it. `failure-policy.md` and `agents/parallel-dispatcher.md` Step 2c document the same
++mechanism for parity with the dispatcher's own retry loop.
++
+ ## [3.4.7] - 2026-09-03
+ 
+ A documentation release, run through the pipeline like any feature: four jobs in three waves, zero
+diff --git a/agents/parallel-dispatcher.md b/agents/parallel-dispatcher.md
+index 9095473..b2e4add 100644
+--- a/agents/parallel-dispatcher.md
++++ b/agents/parallel-dispatcher.md
+@@ -279,6 +279,20 @@ A `job_result.status` that is **not** `success` and **not** `blocked` is a backe
+      - **context_length already at the deepest tier** (`--current-tier deep`) — no bigger model exists, so **split the job → back to planning/partition**; do not loop on escalation.
+      - **auth** — the policy returns `halt` + `circuit_break: true`. As with **any** `circuit_break: true` result (out_of_credits OR auth), **open the breaker object** `circuit_open[<backend>] = {"open": true, "reason": "<failure_class>", "opened_at": "<iso-ts>", "cleared_by": null}` — for auth, cleared only by re-auth (`/v:init`) on `/v:resume`. Opening the breaker is keyed on `circuit_break: true`, not on the action being `reroute`.
+ 
++   - **Transient exhaustion on a reviewer ⇒ one lift, never a loss (v3.4.8, findings 118/119).**
++     This applies to Engine C's in-workflow retry, not this dispatcher's own loop — stated here
++     for parity, since the invariant is the same one this doc's job partition already assumes
++     ([`execution-manifest.md`](../skills/compound-v/execution-manifest.md) invariant 4). When a
++     **review** stage's `withRetry` exhausts `retry.max_attempts` on `tier: deep`, it is
++     re-spawned **once** on `frontier` (Fable) — via the existing `sonnet → opus → fable` ladder,
++     never below `deep` — rather than being recorded `halt`ed. The receipt/result carry
++     `escalated_from: deep` as the REQUESTED escalation (an org allowlist can substitute silently;
++     the field states what was asked for). This is gated by `retry.escalate_reviewer` (default
++     `true`) and never applies to implementers (their cap is turns, not model capacity) or to a
++     fast-path reviewer (schema-pinned to `deep`, out of scope). See
++     [`execution-manifest.md`](../skills/compound-v/execution-manifest.md#retry--transient-failure-retry-inside-the-workflow-v348)
++     and [`failure-policy.md`](../skills/compound-v/failure-policy.md) for the full mechanism.
++
+ **Circuit-break is check-before-launch.** Before dispatching each job in a batch, check `circuit_open[<job.backend>]`; if it is open, do NOT launch the job — defer it to reroute/halt. A break discovered mid-batch cannot un-launch jobs already in flight on that backend (there is no daemon) — those complete and **fail fast** (an `out_of_credits` returns immediately). So "re-route the remaining jobs" means the remaining **unlaunched** jobs; in-flight ones are not force-killed.
+ 
+ Write `state.json` after every transition. "Deprioritize, don't remove": a transient failure gets a short `cooldowns[<backend>]` timestamp (probed half-open next batch), only a confirmed `out_of_credits`/`auth` opens the breaker **object** for the run (which [`/v:resume`](../commands/v-resume.md) reconciles by `reason` — top-up/probe for credits, re-auth for auth — never a silent re-dispatch). **Never** retry `out_of_credits`/`auth`; cap retries by **count AND wall-clock** (per-(job,class) ceiling *and* `max_total_retries`); classify by error **TYPE**, not HTTP status.
+diff --git a/skills/compound-v/execution-manifest.md b/skills/compound-v/execution-manifest.md
+index 28a230b..484544e 100644
+--- a/skills/compound-v/execution-manifest.md
++++ b/skills/compound-v/execution-manifest.md
+@@ -25,6 +25,7 @@ Worked example: [`examples/manifest.example.yaml`](../../examples/manifest.examp
+ | `jobs` | list | yes | One entry per file-scoped job (schema below). |
+ | `triage` | map | no† | v3.0 (Feature A2): `{tier, pre_eval_id, taxonomy_digest, decided_at}`. **Required under `--require-triage`**, which `/v:dispatch` passes on every live dispatch. See the v3.0 section below. |
+ | `test_contract` | map | no | v3.0 (Feature B2): `{floor_command, full_command, impacted_map}`. Absent ⇒ every job runs `full`. See the v3.0 section below. |
++| `retry` | map | no | v3.4.8 (findings 118/119): `{max_attempts, escalate_reviewer}`. Absent ⇒ defaults (`max_attempts: 3`, `escalate_reviewer: true`). See [§ `retry` — transient-failure retry inside the workflow](#retry--transient-failure-retry-inside-the-workflow-v348) below. |
+ 
+ **`{path}` substitution is the contract, not an illustration.** Inside a rule's `run`, the literal token `{path}` is replaced by the changed path that matched the rule's `when` glob, once per matching path. It appeared only inside examples until now, so an implementer had to infer it; a rule whose `run` omits `{path}` is still valid and simply runs once per match.
+ 
+@@ -75,9 +76,14 @@ however mechanical each individual edit looks.
+ | `standard` | Execution against a spec that is already settled: bounded core/feature build, incl. large isolated codex work. | claude `sonnet` (`opus` under the `conservative` stance), codex `gpt-5.6-terra`, antigravity mid model, cursor `auto`, devin `claude-sonnet-4`, opencode `openai/gpt-5.6-terra`. |
+ | `light` | Mechanical single-file / docs / i18n / scanning. Also where the pipeline's own **transport** stages run (Gate, Record, Finalize — each one clamped command, verbatim JSON back). | claude `sonnet`, codex `gpt-5.6-luna`, antigravity flash model, cursor `auto`, devin `gpt-5.5`, opencode `opencode/mimo-v2.5-free` (a real credential-free model). |
+ 
+-**Reviewers are not satisfied by `frontier`.** Invariant 3 still demands `tier: deep` or
+-`model: opus`, because a sealed review receipt must carry a Claude Opus `reviewer_model`.
+-For the same reason a reviewer is **never** escalated on a re-attempt.
++**A reviewer's floor is `deep`, not a ceiling.** Invariant 4 demands `tier: deep` **or
++stronger** (`frontier`/Fable) — or an explicit `model: opus`/`fable` — because a sealed review
++receipt must carry a Claude Opus-**or-Fable** `reviewer_model`. Until 3.4.6 a reviewer never
++left `deep`; since 3.4.8 (findings 118/119) a review job whose transient-failure retry budget
++is exhausted on `deep` is re-spawned **once** on `frontier` (Fable) — see
++[`retry` — transient-failure retry inside the workflow](#retry--transient-failure-retry-inside-the-workflow-v348)
++below. A reviewer is still **never** escalated for a routing reason (job type, cost, a plain
++re-attempt) — the retry-exhaustion lift is the one path that moves it, and only ever upward.
+ 
+ **Escalation.** A job with a recorded non-success result in this run is re-dispatched one
+ rung up the claude ladder — `sonnet → opus → fable` — and stops there. The signal is the
+@@ -125,6 +131,61 @@ The map is **documented, not committed** in this repo (it is project-local confi
+ 
+ ---
+ 
++### `retry` — transient-failure retry inside the workflow (v3.4.8)
++
++Findings 118/119: three consecutive `529 Overloaded` on an Opus reviewer each cost a run, a
++bookkeeping commit and a human relaunch, because the emitted Workflow JS never looped
++`agent()` — a thrown/`null` transient failure became `status: error` and the wave was refused,
++even though [`failure-policy.md`](failure-policy.md) already owned the right table. `retry`
++wires that table into Engine C itself, not just the residual subagent dispatcher and the
++external workers.
++
++| Field | Type | Required | Meaning |
++|---|---|---|---|
++| `max_attempts` | integer | no | **Total** attempts per wrapped call, `1..3`. Absent ⇒ `3`. `1` disables retries for the run. The validator rejects `0`, values `> 3`, and non-int types (`"3"`, `true`). |
++| `escalate_reviewer` | boolean | no | Absent ⇒ `true`. When a **review** stage exhausts `max_attempts` on `tier: deep`, it is re-spawned **once** on `frontier` (Fable) rather than recorded as a failure. `false` disables the lift — exhaustion on `deep` fails the review stage as it did before 3.4.8. |
++
++**The trigger is a `null` resolution, not only a throw.** `agent()` resolves to `null` on a
++terminal API error — the installed runtime, its docs, and this repo's own null-path handling
++all agree — and the 529s that motivated this feature arrived that way. The emitted JS's
++`withRetry(label, fn)` wraps every `agent()` call (implement, gate, record, finalize, review)
++and retries on **either** a thrown error matching the transient classes (`529`, `Overloaded`,
++`rate limit`, `429`, `ECONNRESET`/`ETIMEDOUT`/`network`, `overloaded_error`) **or** a `null`
++return. Every other thrown error, and the last transient failure once attempts are exhausted,
++propagate exactly as before this feature.
++
++**No error text reaches the script on the `null` path**, so the class cannot be named there:
++Record writes `failure_class: other` with a reason string that says so explicitly — never a
++guessed `overloaded`. A thrown error the classifier CAN read still gets its real class.
++
++**The backoff is deterministic, not the policy's jittered one.** A live probe
++(`wf_8884a773-73f`) confirmed `setTimeout` works inside a workflow script, but
++`Date.now()`/`Math.random()`/`new Date()` are refused by the runtime (it needs a deterministic
++replay on resume) — so the in-workflow backoff is the policy's table **without jitter**: 2 s →
++4 s → 8 s, capped at 60 s. Each retry is appended to that stage's result as
++`retries: [{stage, attempt, wait_ms}]` (Record stamps the time it writes the result — never a
++timestamp taken inside the script) — **measured**, never estimated, and no timing claim beyond
++that log is made anywhere in this feature.
++
++**The reviewer lift is a REQUESTED escalation, not a guarantee.** It reuses the existing
++`escalate_claude_model()` ladder (`sonnet → opus → fable`; a model the manifest pinned
++explicitly is never escalated) and passes `--escalated-from <model>` to gate-receipt on the
++re-spawn; the receipt and the job result carry `escalated_from` as the model that was **asked
++for** — an org allowlist can silently substitute a different one, so the field states the
++request, not a confirmed outcome. **Implementers are never escalated** by this mechanism
++(their cap is turns, not model capacity); external workers keep their own worker-script retry
++policy, unaffected by this knob.
++
++**Fast-path reviewers are out of scope.** A fast-path run's reviewer is schema-pinned to
++`tier: deep` ([`state-machine.md`](state-machine.md)) and is not wrapped by this retry/lift
++path.
++
++**Resume.** A retry loop adds `agent()` calls at one call site per stage; the runtime's
++cached-prefix resume replays completed calls in order and re-enters `withRetry` for one still
++in flight — no new resume mechanism, just more calls at the site that already existed.
++
++---
++
+ ## Invariant rules (deterministic — enforced by `compound-v-validate-manifest.py`)
+ 
+ 1. **Disjoint writes.** Every file path belongs to exactly one job's `write_allowed`. No glob in two jobs may overlap. Overlap ⇒ validation fails with the colliding pair.
+diff --git a/skills/compound-v/failure-policy.md b/skills/compound-v/failure-policy.md
+index fe40b7d..56587da 100644
+--- a/skills/compound-v/failure-policy.md
++++ b/skills/compound-v/failure-policy.md
+@@ -9,6 +9,24 @@ The two scripts below **are** the tables. This doc explains how the dispatcher w
+ - **Classifier** — [`scripts/compound-v-classify-failure.py`](../../scripts/compound-v-classify-failure.py)
+ - **Decision table** — [`scripts/compound-v-failure-policy.py`](../../scripts/compound-v-failure-policy.py)
+ 
++**This table also applies inside Engine C's workflow (v3.4.8, findings 118/119) — same table, no
++jitter.** The residual subagent dispatcher and the external workers ran this classify → decide →
++act loop already; the emitted Workflow JS did not — it never looped `agent()`, so a transient
++`529`/`429`/network failure (or, on the path the runtime actually uses, `agent()` resolving to
++`null` with no error text at all) became `status: error` on the first hit. Since 3.4.8 the
++emitted script wraps every `agent()` call (implement, gate, record, finalize, review) in a
++`withRetry` that retries on the **same** classes this doc defines, up to the manifest's
++[`retry.max_attempts`](execution-manifest.md#retry--transient-failure-retry-inside-the-workflow-v348)
++(default 3). Two differences from the dispatcher path, both forced by the runtime: the workflow
++backoff is the **same table, without jitter** (`Date.now()`/`Math.random()` are refused inside a
++workflow script, so it can't de-sync siblings) — 2 s → 4 s → 8 s, capped at 60 s — and on the
++`null`-resolution path (no error text reaches the script) the class **cannot** be named, so
++exhaustion writes `failure_class: other` with a reason that says so, never a guessed
++`overloaded`. A review job that exhausts its budget on `tier: deep` is re-spawned once on
++`frontier` (Fable) when `retry.escalate_reviewer` (default true) — the REQUESTED escalation
++documented in `execution-manifest.md`, never a confirmed one. Fast-path reviewers (schema-pinned
++to `deep`) are out of scope for the lift.
++
+ The re-route is the **same** env-aware codex→claude rewrite as [`routing-policy.md`](routing-policy.md) — invoked here at **runtime** on an out-of-credits event, not only at `/v:init`.
+ 
+ ---

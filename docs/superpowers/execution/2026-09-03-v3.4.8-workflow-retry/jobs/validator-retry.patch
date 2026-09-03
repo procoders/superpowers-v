@@ -1,0 +1,174 @@
+diff --git a/scripts/compound-v-validate-manifest.py b/scripts/compound-v-validate-manifest.py
+index e022878..efa7be4 100755
+--- a/scripts/compound-v-validate-manifest.py
++++ b/scripts/compound-v-validate-manifest.py
+@@ -845,6 +845,14 @@ DEFAULT_TEST_SCOPE = "full"
+ TEST_CONTRACT_ALLOWED_KEYS = ("floor_command", "full_command", "impacted_map", "timeout_s")
+ IMPACTED_MAP_REQUIRED_KEYS = ("when", "run")
+ 
++# --------------------------------------------------------------------------- #
++# v3.4.8 (Task B) — the optional top-level `retry` block:
++#   retry: {max_attempts: int 1..3, escalate_reviewer: bool}
++# ABSENT is valid — every manifest committed before 3.4.8 has no `retry` key at
++# all, and that must stay green.
++# --------------------------------------------------------------------------- #
++RETRY_ALLOWED_KEYS = ("max_attempts", "escalate_reviewer")
++
+ # Top-level required fields (per execution-manifest.md "Top-level fields").
+ TOPLEVEL_REQUIRED = (
+     "run_id",
+@@ -2320,6 +2328,47 @@ def _validate_test_contract(manifest, job_scopes):
+     return problems
+ 
+ 
++def _validate_retry(manifest):
++    """Return violations for the optional top-level ``retry`` block
++    (v3.4.8, Task B): ``{max_attempts: int 1..3, escalate_reviewer: bool}``.
++    ABSENT is valid — every manifest committed before 3.4.8 has no ``retry``
++    key at all."""
++    problems = []
++    retry = manifest.get("retry")
++    present = "retry" in manifest and retry is not None
++
++    if present and not isinstance(retry, dict):
++        problems.append("manifest 'retry' must be a mapping (got %r)" % (retry,))
++        return problems
++    if not present:
++        return problems
++
++    for key in retry:
++        if key not in RETRY_ALLOWED_KEYS:
++            problems.append(
++                "manifest retry has unknown key '%s' (allowed: %s)"
++                % (key, ", ".join(RETRY_ALLOWED_KEYS))
++            )
++
++    if "max_attempts" in retry:
++        ma = retry.get("max_attempts")
++        if isinstance(ma, bool) or not isinstance(ma, int) or not (1 <= ma <= 3):
++            problems.append(
++                "manifest retry.max_attempts must be an integer between 1 "
++                "and 3 (got %r)" % (ma,)
++            )
++
++    if "escalate_reviewer" in retry:
++        er = retry.get("escalate_reviewer")
++        if not isinstance(er, bool):
++            problems.append(
++                "manifest retry.escalate_reviewer must be a boolean (got %r)"
++                % (er,)
++            )
++
++    return problems
++
++
+ def validate(manifest, mode=None, repo_root=None, config_path=None,
+              receipt_path=None, manifest_bytes=None, diff_root=None,
+              expected_attempt=None, require_triage=False, taxonomy_path=None,
+@@ -2406,6 +2455,11 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
+         problems.extend(_validate_cross_model_receipt(
+             manifest, cross_model_receipt, expected_diff_digest))
+ 
++    # v3.4.8 (Task B): the optional top-level `retry` block. Checked here, before
++    # the jobs early-return, for the same reason triage/cross_model_receipt are —
++    # a manifest broken in some other way must not hide a malformed retry block.
++    problems.extend(_validate_retry(manifest))
++
+     jobs = manifest.get("jobs")
+     if not isinstance(jobs, list) or not jobs:
+         problems.append("manifest has no non-empty 'jobs' list")
+@@ -3354,10 +3408,11 @@ jobs:
+ """ % (("    timeout_sec: %s\n" % timeout_line) if timeout_line != "" else "")
+ 
+ 
+-def _v3_manifest(triage_block="", contract_block="", job_line=""):
++def _v3_manifest(triage_block="", contract_block="", job_line="", retry_block=""):
+     """A complete, otherwise-valid single-job manifest whose ONLY variables are the
+     v3.0 additions: the top-level ``triage`` block (Feature A2), the top-level
+-    ``test_contract`` block (Feature B2), and one extra per-job line (``test_scope``).
++    ``test_contract`` block (Feature B2), one extra per-job line (``test_scope``),
++    and the v3.4.8 top-level ``retry`` block (Task B).
+ 
+     Pass "" to omit a block entirely — the ABSENT case, which is what every manifest
+     committed before 3.0 looks like and which MUST stay valid when ``--require-triage``
+@@ -3376,7 +3431,7 @@ routing_stance: balanced
+ max_parallel: 2
+ acceptance_criteria:
+   - "ships"
+-%s%sjobs:
++%s%s%sjobs:
+   - id: task-1-v3
+     title: "v3 slice"
+     type: bounded_crud
+@@ -3388,7 +3443,7 @@ acceptance_criteria:
+ %s    write_allowed: [src/features/**]
+     read_allowed: [src/**]
+     acceptance: ["builds"]
+-""" % (triage_block, contract_block, job_line)
++""" % (triage_block, contract_block, retry_block, job_line)
+ 
+ 
+ # A well-formed `triage` block (Feature A2). `digest` is substituted so a test can
+@@ -5648,6 +5703,62 @@ def _selftest():
+            any("floor_only" in p for p in validate(_mini_yaml(_v3_manifest(
+                job_line="    test_scope: floor_only\n")))))
+ 
++    # --- v3.4.8 Task B: top-level `retry` block ---
++    _r_absent = validate_text(_v3_manifest())
++    expect("retry: absent block stays valid (%r)" % _r_absent, _r_absent == [])
++
++    _r_ok = validate_text(_v3_manifest(
++        retry_block="retry:\n  max_attempts: 2\n  escalate_reviewer: true\n"))
++    expect("retry: well-formed block valid (%r)" % _r_ok, _r_ok == [])
++
++    for _ma in (1, 2, 3):
++        _r_ma_ok = validate_text(_v3_manifest(
++            retry_block="retry:\n  max_attempts: %d\n" % _ma))
++        expect("retry: max_attempts %d accepted (%r)" % (_ma, _r_ma_ok),
++               _r_ma_ok == [])
++
++    for _bad_ma in (0, 4, "3", -1):
++        _ma_yaml = '"%s"' % _bad_ma if isinstance(_bad_ma, str) else str(_bad_ma)
++        _r_ma_bad = validate_text(_v3_manifest(
++            retry_block="retry:\n  max_attempts: %s\n" % _ma_yaml))
++        expect("retry: max_attempts %r refused (%r)" % (_bad_ma, _r_ma_bad),
++               any("retry.max_attempts must be an integer between 1 and 3" in p
++                   for p in _r_ma_bad))
++
++    _r_ma_bool = validate_text(_v3_manifest(
++        retry_block="retry:\n  max_attempts: true\n"))
++    expect("retry: max_attempts true (bool) refused (%r)" % _r_ma_bool,
++           any("retry.max_attempts must be an integer between 1 and 3" in p
++               for p in _r_ma_bool))
++
++    for _er_bad in (1, "true", "yes"):
++        _er_yaml = '"%s"' % _er_bad if isinstance(_er_bad, str) else str(_er_bad)
++        _r_er_bad = validate_text(_v3_manifest(
++            retry_block="retry:\n  escalate_reviewer: %s\n" % _er_yaml))
++        expect("retry: escalate_reviewer %r refused (%r)" % (_er_bad, _r_er_bad),
++               any("retry.escalate_reviewer must be a boolean" in p
++                   for p in _r_er_bad))
++
++    _r_er_ok = validate_text(_v3_manifest(
++        retry_block="retry:\n  escalate_reviewer: false\n"))
++    expect("retry: escalate_reviewer false accepted (%r)" % _r_er_ok, _r_er_ok == [])
++
++    _r_unknown = validate_text(_v3_manifest(
++        retry_block="retry:\n  max_attempts: 1\n  giveup: true\n"))
++    expect("retry: unknown key caught (%r)" % _r_unknown,
++           any("retry has unknown key 'giveup'" in p for p in _r_unknown))
++
++    _r_notmap = validate_text(_v3_manifest(retry_block='retry: "twice"\n'))
++    expect("retry: non-mapping retry caught (%r)" % _r_notmap,
++           any("'retry' must be a mapping" in p for p in _r_notmap))
++
++    # Fallback-parser parity for retry.
++    _r_fallback = validate(_mini_yaml(_v3_manifest(
++        retry_block="retry:\n  max_attempts: 5\n")))
++    expect("retry: fallback parser flags an out-of-range max_attempts",
++           any("retry.max_attempts must be an integer between 1 and 3" in p
++               for p in _r_fallback))
++
+     # The committed audit trail: every run manifest + the shipped example must still
+     # validate WITHOUT the flag. This is the bootstrap exemption, and it is only honest
+     # because /v:dispatch passes --require-triage on every live dispatch.
