@@ -25,6 +25,7 @@
 | 2026-09-02 | v3.4-native-first | 8 | ISSUES | 2026-09-02-v3.4-native-first-review-8.md |
 | 2026-09-02 | v3.4-native-first | 9 | ISSUES | 2026-09-02-v3.4-native-first-review-9.md |
 | 2026-09-02 | v3.4-native-first | 10 | ISSUES | 2026-09-02-v3.4-native-first-review-10.md |
+| 2026-09-03 | epic-vi-review-index | 1 | ISSUES | 2026-09-03-epic-vi-review-index-review-1.md |
 | 2026-09-03 | v3.4.1-triage-size | 1 | ISSUES | 2026-09-03-v3.4.1-triage-size-review-1.md |
 | 2026-09-03 | v3.4.2-transcript-watch | 1 | ISSUES | 2026-09-03-v3.4.2-transcript-watch-review-1.md |
 | 2026-09-03 | v3.4.3-codex-sandbox-checkout | 1 | ISSUES | 2026-09-03-v3.4.3-codex-sandbox-checkout-review-1.md |
@@ -34,4 +35,4 @@
 | 2026-09-03 | v3.4.1-triage-size | 3 | ISSUES | 2026-09-03-v3.4.1-triage-size-review-3.md |
 | 2026-09-03 | v3.4.2-transcript-watch | 3 | APPROVED | 2026-09-03-v3.4.2-transcript-watch-review-3.md |
 
-Reviews: 31 · APPROVED: 2 · ISSUES: 24 · other: 5
+Reviews: 32 · APPROVED: 2 · ISSUES: 25 · other: 5
