@@ -33,8 +33,9 @@ grep -c 'Glob semantics' skills/compound-v/execution-manifest.md   # expect 0
 **Glob semantics (`write_allowed`, `read_allowed`, `impacted_map.when`).** `*` matches within one path segment (never `/`);
 `**` matches across segments; `dir/**` also matches `dir` itself; `?` matches one non-`/` character; `[` and `]` are literal
 (no character classes — `app/[locale]/**` is a real directory); matching is anchored to the full repo-relative path. This is
-the scope gate's own matcher (`scripts/compound-v-scope-check.py` `matches`), and V-memory's `recall-check` uses the same
-matcher — see [`memory.md`](memory.md); the proof is the `parity …` rows of `python3 scripts/compound-v-memory.py --selftest`.
+the scope gate's own matcher (`scripts/compound-v-scope-check.py` `matches`), and V-memory's `recall-check` uses
+the same matcher — see [`memory.md`](memory.md); the proof is the `parity …` rows of
+`python3 scripts/compound-v-memory.py --selftest`.
 ```
 
 - [ ] **Step 2: Replace the `recall-check` row in `memory.md`** — the ONE physical line that starts with `` | `recall-check --files <glob>… `` — with exactly this one line:
