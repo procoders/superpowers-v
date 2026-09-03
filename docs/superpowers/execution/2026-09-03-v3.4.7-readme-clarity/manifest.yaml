@@ -1,0 +1,132 @@
+run_id: 2026-09-03-v3.4.7-readme-clarity
+feature: 'v3.4.7 README clarity: a README a newcomer reads in five minutes (≤130 lines, three tiers, honest backends, baseRef install step, complete commands and hooks tables, the eight stages), docs/routing.svg redrawn, /v:init offers the baseRef setting, a TROUBLESHOOTING entry'
+routing_stance: balanced
+max_parallel: 3
+spec_path: docs/superpowers/specs/2026-09-03-v3.4.7-readme-clarity-design.md
+plan_path: docs/superpowers/plans/2026-09-03-v3.4.7-readme-clarity.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-09-03-v3-4-7-readme-clarity.md
+  domain: docs/superpowers/specs/2026-09-03-v3.4.7-readme-clarity-design.md
+  library: docs/superpowers/library-audit/2026-09-03-v3-4-7-readme-clarity.md
+triage:
+  tier: FULL
+  pre_eval_id: 2026-09-03T144307Z-implement-v3-4-7-readme-clarity-per-docs-superpowers-specs-2-0478
+  taxonomy_digest: sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a
+  decided_at: '2026-09-03T14:43:07Z'
+acceptance_criteria:
+- 'Clear and simple, checked mechanically: `wc -l README.md` ≤ 130; no line over 200 characters outside code blocks and tables; no `##` section over 30 lines; the measurement essay (`Re-measured 2026-09-03`) appears in AGENTS.md and not in README.md.'
+- 'True of the code: every command in README''s table exists under commands/; every backend named has an adapter under skills/backend-launcher/; the hook table matches hooks/hooks.json; the three tiers match scripts/compound-v-preeval.py; the two index numbers equal the footer of docs/superpowers/dogfood/README.md in HEAD; every relative link resolves (the dead-link gate replica exits 0).'
+- docs/routing.svg is valid XML (python xml.etree parses it) and its text nodes name DIRECT, SCOPED, SCOPED+, FULL, Opus, Sonnet, Codex — and nothing about a 'fast path' or an 'advisor' that no longer exists.
+- 'commands/v-init.md OFFERS to merge {"worktree": {"baseRef": "head"}} into the project''s .claude/settings.json (never .claude/compound-v.json; unrelated keys preserved; never written without a yes), says why (dependent jobs, finding 60) and discloses that the setting is a native project-wide Claude Code setting with values fresh|head; the stale ''armed epic goal rule'' sentence is gone; TROUBLESHOOTING.md has the entry with the symptom the emitter''s code actually produces; lint-frontmatter green.'
+- 'Reader test (the reviewer performs it): reading README.md alone, write down the commands a newcomer types to install and run one feature; they are the ones the docs say.'
+test_contract:
+  floor_command: /usr/bin/python3 -B scripts/lint-frontmatter.py .
+  full_command: bash -c 'for s in scripts/compound-v-*.py; do grep -q -- "--selftest" "$s" || continue; /usr/bin/python3 -B "$s" --selftest >/dev/null 2>&1 || { echo "FAIL $s"; exit 1; }; done; for t in tests/*.sh; do bash "$t" >/dev/null 2>&1 || { echo "FAIL $t"; exit 1; }; done; echo all-tests-ok'
+  impacted_map:
+  - when: README.md
+    run: bash -c 'test $(wc -l < README.md) -le 130 && /usr/bin/python3 -B scripts/lint-frontmatter.py .'
+  - when: docs/routing.svg
+    run: /usr/bin/python3 -B -c 'import xml.etree.ElementTree as E; E.parse("docs/routing.svg")'
+  - when: commands/v-init.md
+    run: /usr/bin/python3 -B scripts/lint-frontmatter.py .
+  - when: TROUBLESHOOTING.md
+    run: /usr/bin/python3 -B scripts/lint-frontmatter.py .
+  - when: docs/superpowers/dogfood/README.md
+    run: 'bash -c ''test -s docs/superpowers/dogfood/README.md && grep -q "^Reviews: " docs/superpowers/dogfood/README.md'''
+  - when: docs/superpowers/dogfood/*.md
+    run: /usr/bin/python3 -B scripts/lint-frontmatter.py .
+jobs:
+- id: index-refresh
+  title: Task 0 — regenerate the dogfood index so README reads current numbers
+  type: implement
+  backend: claude
+  tier: light
+  effort: low
+  isolation: worktree
+  run: parallel
+  depends_on: []
+  write_allowed:
+  - docs/superpowers/dogfood/README.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - docs/superpowers/dogfood/README.md is exactly the output of `bash scripts/compound-v-dogfood-index.sh` (a second run changes nothing).
+  body: 'THE ONE RULE (Oleg, 2026-09-03): documentation must be clear and simple. Plain words, short sentences, one idea per paragraph, every claim true of the code in HEAD; anything measured, historical or defensive is linked (AGENTS.md, CHANGELOG.md, TROUBLESHOOTING.md), never repeated. Run `bash scripts/compound-v-dogfood-index.sh` from your worktree root; the produced docs/superpowers/dogfood/README.md is the deliverable; run it twice and confirm `git diff --exit-code docs/superpowers/dogfood/README.md` on the second run. If nothing changed, say so and return success with no changes. Read the pre-flight audits named in this manifest''s audits block first (their §7 MUSTs bind). Run python with -B; register your lane with a literal --cwd. You are unattended: decide and return; if you approach your turn budget, commit what is complete and return a summary that says what is not.'
+- id: readme
+  title: Task A — README.md rewritten for a five-minute read
+  type: implement
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: worktree
+  run: serial
+  depends_on:
+  - index-refresh
+  write_allowed:
+  - README.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - 'README.md follows the plan''s outline in order; ≤130 lines; no line >200 chars outside code/tables; no ## section >30 lines; the measurement essay is gone from README (it stays in AGENTS.md, linked); Requirements = floor + one-line lane-guard cost + the baseRef setting; Install has the exact baseRef JSON and Codex ≥ 0.143; the three tiers with the models; backends incl. opencode/Devin marked experimental; V-memory fresh by construction; co-change ''when the partition reviewer runs''; the 16-command table; the hook table matching hooks/hooks.json; the eight stages in one sentence each; the two numbers equal the footer in HEAD (index-refresh ran first); every claim verified against HEAD before writing; the dead-link replica in the spec exits 0; lint green. DIRECT is never assigned a model; the backend section uses the pre-flight''s honesty wording; Codex ≥ 0.144.6; the baseRef line discloses it is a native project-wide setting (fresh|head); no CLI version pins.'
+  body: 'SHARED TIER SENTENCES (use these words in prose and in the diagram, so they cannot disagree): DIRECT — a trivial, unambiguous edit: one worker edits, tests the floor, commits; no model routing happens (it is an ordinary commit by whichever model is already in the session). SCOPED — a bounded change: only the tests that reference what changed run, not the whole suite; the Opus reviewer still gates done. SCOPED+ — a small edit on a sensitive path: SCOPED plus a mandatory deep review and a cross-model (Codex) second opinion, with the human accepting. FULL — anything real: recon, three pre-flights (code archaeology, domain expert, library check), plan, manifest, parallel dispatch in isolated worktrees, a three-pass review. MODELS — Opus plans, judges and reviews; Sonnet executes junior slices and the two scanning agents; Codex is an opt-in worker (kernel-sandboxed) and the second opinion; Antigravity and Cursor are opt-in lower-trust workers. BACKEND HONESTY (pre-flight 1A): Codex —
+    dogfooded in this repository; Antigravity and Cursor — CLI invocation verified live, never dispatched here; opencode and Devin — experimental, adapters exist, execution unverified. Say exactly that. BASEREF FACTS (pre-flight 1C): `worktree.baseRef` is a NATIVE Claude Code project setting in .claude/settings.json (values: `fresh` or `head`, nothing else); `head` makes every worktree in the repo — interactive --worktree sessions and every isolation:worktree subagent — branch from the current HEAD instead of the default ''fresh'' (which auto-refreshes from origin/HEAD daily). Compound V needs `head` so a job that depends on another gets a worktree that contains the previous wave (finding 60). Disclose that scope in one sentence wherever the setting is offered. Codex floor: ≥ 0.144.6 (not 0.143). Never copy CLI version pins (cursor-agent, agy) into README — they live in the adapter docs. Keep the Context7 install line exactly `/plugin install context7@claude-plugins-official`. THE ONE RULE
+    (Oleg, 2026-09-03): documentation must be clear and simple. Plain words, short sentences, one idea per paragraph, every claim true of the code in HEAD; anything measured, historical or defensive is linked (AGENTS.md, CHANGELOG.md, TROUBLESHOOTING.md), never repeated. Rewrite README.md per Task A of docs/superpowers/plans/2026-09-03-v3.4.7-readme-clarity.md and the spec docs/superpowers/specs/2026-09-03-v3.4.7-readme-clarity-design.md. Verify each claim against HEAD (commands/, hooks/hooks.json, skills/backend-launcher/adapter-*.md, scripts/compound-v-preeval.py, .claude/settings.json) before you write it; delete what you cannot verify. Self-check with the acceptance criteria''s commands before returning. Touch only README.md. Read the pre-flight audits named in this manifest''s audits block first (their §7 MUSTs bind). Run python with -B; register your lane with a literal --cwd. You are unattended: decide and return; if you approach your turn budget, commit what is complete and return
+    a summary that says what is not. Hard-wrap: no physical line over 200 characters outside code blocks and tables. The 130-line budget is tight (153 today): the measurement essay leaves (one link to AGENTS.md), the Academy block shrinks to two lines, ''Good to know'' is four bullets. Read the dogfood index footer from HEAD after index-refresh merged, never from memory.'
+- id: routing-svg
+  title: Task B — docs/routing.svg redrawn for the three tiers
+  type: implement
+  backend: claude
+  tier: standard
+  effort: medium
+  isolation: worktree
+  run: parallel
+  depends_on: []
+  write_allowed:
+  - docs/routing.svg
+  read_allowed:
+  - '**'
+  acceptance:
+  - docs/routing.svg is valid XML with a viewBox and no external references; its text nodes name the triage hook, DIRECT, SCOPED (with SCOPED+), FULL, what runs in each, and the models (Opus judge/review, Sonnet junior slices and scans, Codex opt-in worker or second opinion), plus one line on the scope gate and the Opus review; nothing about a 'fast path' or an 'advisor'; renders legibly at 900 px wide (system font, ≥12 px text). <title>/<desc> rewritten; DIRECT carries no model.
+  body: 'SHARED TIER SENTENCES (use these words in prose and in the diagram, so they cannot disagree): DIRECT — a trivial, unambiguous edit: one worker edits, tests the floor, commits; no model routing happens (it is an ordinary commit by whichever model is already in the session). SCOPED — a bounded change: only the tests that reference what changed run, not the whole suite; the Opus reviewer still gates done. SCOPED+ — a small edit on a sensitive path: SCOPED plus a mandatory deep review and a cross-model (Codex) second opinion, with the human accepting. FULL — anything real: recon, three pre-flights (code archaeology, domain expert, library check), plan, manifest, parallel dispatch in isolated worktrees, a three-pass review. MODELS — Opus plans, judges and reviews; Sonnet executes junior slices and the two scanning agents; Codex is an opt-in worker (kernel-sandboxed) and the second opinion; Antigravity and Cursor are opt-in lower-trust workers. THE ONE RULE (Oleg, 2026-09-03): documentation
+    must be clear and simple. Plain words, short sentences, one idea per paragraph, every claim true of the code in HEAD; anything measured, historical or defensive is linked (AGENTS.md, CHANGELOG.md, TROUBLESHOOTING.md), never repeated. Redraw docs/routing.svg per Task B of docs/superpowers/plans/2026-09-03-v3.4.7-readme-clarity.md. Read the current SVG once for size and style, then write a new one: a request enters the triage hook → three boxes DIRECT / SCOPED (+SCOPED+) / FULL → one line ''every write checked by the git-derived scope gate; an Opus review gates done''; legend for the models. Validate with python xml.etree before returning. Touch only docs/routing.svg. Read the pre-flight audits named in this manifest''s audits block first (their §7 MUSTs bind). Run python with -B; register your lane with a literal --cwd. You are unattended: decide and return; if you approach your turn budget, commit what is complete and return a summary that says what is not. DIRECT gets NO model box (pre-flight
+    1A: a DIRECT decision never reaches the routing table). Rewrite the SVG''s <title> and <desc> too — the XML text-node check reads them.'
+- id: init-baseref
+  title: Task C — /v:init offers the baseRef setting; TROUBLESHOOTING entry
+  type: implement
+  backend: claude
+  tier: standard
+  effort: medium
+  isolation: worktree
+  run: parallel
+  depends_on: []
+  write_allowed:
+  - commands/v-init.md
+  - TROUBLESHOOTING.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - 'commands/v-init.md has a new step, in the command''s existing offer-never-write style (see its Step 4c for the shape), that OFFERS to merge {"worktree": {"baseRef": "head"}} into the project''s .claude/settings.json (create the file if absent, merge if present, never overwrite other keys, never without a yes) with one sentence why (a job that depends on another needs its worktree branched from HEAD, not the default ref, or its patch never integrates — finding 60); TROUBLESHOOTING.md has an entry ''A job with depends_on never merges / its worktree lacks the previous wave'' pointing at the setting and the offer; lint-frontmatter green. The offer names .claude/settings.json, preserves unrelated keys, discloses the project-wide scope and the two legal values; the stale ''armed epic goal rule'' sentence is gone; the TROUBLESHOOTING symptom is the one the emitter''s code produces.'
+  body: 'BASEREF FACTS (pre-flight 1C): `worktree.baseRef` is a NATIVE Claude Code project setting in .claude/settings.json (values: `fresh` or `head`, nothing else); `head` makes every worktree in the repo — interactive --worktree sessions and every isolation:worktree subagent — branch from the current HEAD instead of the default ''fresh'' (which auto-refreshes from origin/HEAD daily). Compound V needs `head` so a job that depends on another gets a worktree that contains the previous wave (finding 60). Disclose that scope in one sentence wherever the setting is offered. Codex floor: ≥ 0.144.6 (not 0.143). Never copy CLI version pins (cursor-agent, agy) into README — they live in the adapter docs. Keep the Context7 install line exactly `/plugin install context7@claude-plugins-official`. THE ONE RULE (Oleg, 2026-09-03): documentation must be clear and simple. Plain words, short sentences, one idea per paragraph, every claim true of the code in HEAD; anything measured, historical or defensive
+    is linked (AGENTS.md, CHANGELOG.md, TROUBLESHOOTING.md), never repeated. Implement Task C of docs/superpowers/plans/2026-09-03-v3.4.7-readme-clarity.md. Match the surrounding style of commands/v-init.md (its Step 4c is the model: offer, exact JSONC, why, never write silently). Touch only commands/v-init.md and TROUBLESHOOTING.md. Read the pre-flight audits named in this manifest''s audits block first (their §7 MUSTs bind). Run python with -B; register your lane with a literal --cwd. You are unattended: decide and return; if you approach your turn budget, commit what is complete and return a summary that says what is not. The offer must say the file is .claude/settings.json (NOT .claude/compound-v.json), merge-preserve every unrelated key a real project''s settings.json carries (permissions, hooks, env), and disclose the project-wide scope. While in commands/v-init.md, fix the stale sentence at ~lines 605-607 about an ''armed epic goal rule'' in hooks/epic-goal-stop.sh — that rule was
+    removed in 3.4.0; the hook has two gates (triage_gate, pipeline_bypass) per its own header. For TROUBLESHOOTING.md, verify the CURRENT no-baseRef failure mode in scripts/compound-v-emit-workflow.py (`_worktree_base_is_head` and the agent_isolation decision, finding 60/89) and write the symptom you can prove (e.g. the dependent job''s worktree lacks the previous wave and its patch is refused at integration), not a guess.'
+- id: spec-review
+  title: Review Gate — three passes against the spec and the feature acceptance criteria
+  type: review
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: direct
+  run: serial
+  depends_on:
+  - index-refresh
+  - readme
+  - routing-svg
+  - init-baseref
+  write_allowed:
+  - docs/superpowers/dogfood/2026-09-03-v3.4.7-readme-clarity-review.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - 'The review file exists with ## Recall, ## SPEC, ## QUALITY, ## INTEGRATION, ## Verdict; every acceptance criterion is run on the merged tree with the command and output; the reader test is performed and quoted; the verdict is APPROVED or ISSUES with a numbered list.'
+  body: 'Your agent definition carries the three-pass Review Gate and a Step 0 (V-memory recall). Follow it within a HARD BUDGET of 50 tool calls; FIRST action after Step 0: create docs/superpowers/dogfood/2026-09-03-v3.4.7-readme-clarity-review.md with the section skeleton and fill it as you verify. THE ONE RULE (Oleg, 2026-09-03): documentation must be clear and simple. Plain words, short sentences, one idea per paragraph, every claim true of the code in HEAD; anything measured, historical or defensive is linked (AGENTS.md, CHANGELOG.md, TROUBLESHOOTING.md), never repeated. Review the four jobs against docs/superpowers/specs/2026-09-03-v3.4.7-readme-clarity-design.md and this manifest''s five acceptance criteria — run each AC''s commands (the dead-link replica: for every markdown link in README.md, after dropping fenced blocks and inline code spans, the target must exist relative to the file''s directory). Perform the reader test yourself and quote what you wrote down. Judge clarity as
+    a newcomer would: if a sentence needs the CHANGELOG to be understood, it is an ISSUE. Run python with -B; register your lane with a literal --cwd. Pre-flight 1A/1C MUSTs to verify explicitly: DIRECT has no model in prose or SVG; backend honesty wording; Codex ≥ 0.144.6; baseRef disclosed as native/project-wide with values fresh|head; no CLI pins in README; the essay exists once (AGENTS.md); the SVG title/desc rewritten; v-init.md''s stale ''armed epic goal rule'' sentence gone.'

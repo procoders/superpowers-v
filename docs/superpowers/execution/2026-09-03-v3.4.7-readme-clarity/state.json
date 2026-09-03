@@ -1,0 +1,38 @@
+{
+  "run_id": "2026-09-03-v3.4.7-readme-clarity",
+  "phase": "PARTITION_VERIFIED",
+  "pre_eval_id": "2026-09-03T144307Z-implement-v3-4-7-readme-clarity-per-docs-superpowers-specs-2-0478",
+  "updated_at": "2026-09-03T14:56:07Z",
+  "jobs": {
+    "index-refresh": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "readme": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "routing-svg": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "init-baseref": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "spec-review": {
+      "status": "pending",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null
+    }
+  }
+}

@@ -270,3 +270,62 @@ is separately confirmed as the plain documented default (`headless` page, fetche
 above is converged documentation, not a live invocation. Before a design leans on `--tools ""` as a
 safety property (e.g. "the classify prompt has zero tool access, so it cannot do anything but answer"),
 run the one real invocation first. See the source audit's §6/§7 for the specific constraint this produced.
+
+---
+
+## Updated 2026-09-03 — `worktree.baseRef` is a live, project-scoped native setting (v3.4.7 readme-clarity)
+
+Validated for
+[`docs/superpowers/library-audit/2026-09-03-v3-4-7-readme-clarity.md`](../2026-09-03-v3-4-7-readme-clarity.md).
+No Context7 attached to this subagent (`bashCommandClamp` again allowed only the V-memory
+script — same constraint as the 2026-09-03 triage-size entry above); sources are the live
+`EnterWorktree` tool schema (first-party, this session) plus two `WebFetch`es of
+`code.claude.com/docs/en/worktrees.md` and `.../settings.md`.
+
+**This repo's own `.claude/settings.json` already sets `{"worktree":{"baseRef":"head"}}`.**
+`scripts/compound-v-emit-workflow.py`'s `_worktree_base_is_head()` reads that exact key
+from that exact file — **not** a coincidental name reuse. `worktree.baseRef` is a real,
+currently-documented Claude Code project setting, confirmed two independent ways:
+
+1. **`EnterWorktree`'s own live tool description**, verbatim: *"the base ref is governed
+   by the `worktree.baseRef` setting: `fresh` (default) branches from
+   `origin/<default-branch>`; `head` branches from your current local HEAD."*
+2. **`code.claude.com/docs/en/worktrees.md`** §"Choose the base branch": same two values,
+   plus the exact JSON example `{"worktree":{"baseRef":"head"}}` — byte-identical to what
+   this repo's `.claude/settings.json` already contains and to what `commands/v-init.md`
+   (per the v3.4.7 spec) will offer to write.
+
+**Only two legal values — `"fresh"` and `"head"`.** No branch-name form; *"You can't set
+`worktree.baseRef` to a branch name."*
+
+**Scope is project-wide, not caller-scoped — the load-bearing nuance.** `.claude/settings.json`
+is the **"Shared project"** tier (*"Everyone in the project"*, per the settings-precedence
+table on `settings.md`). Setting `baseRef: head` therefore governs:
+
+- Every interactive `claude --worktree <name>` session anyone runs in this repo.
+- Every `isolation: worktree` custom subagent — confirmed verbatim: *"Subagent worktrees
+  use the same base branch as `--worktree`, so they branch from your repository's default
+  branch unless `worktree.baseRef` is set to `"head"`."* This is very likely the actual
+  mechanism Compound V's own job dispatch rides on (`agent(... opts.isolation: 'worktree')`
+  per this file's 2026-09-01 entry above) — the same setting key governs both the native
+  tool's own worktrees and Compound V's job worktrees, deliberately or not.
+- The `"fresh"` default's own auto-refresh safety property is what a `"head"` project
+  gives up: *"For a 'fresh' base, Claude Code keeps `origin/HEAD` current: when the
+  repository hasn't been fetched in the last 24 hours, it fetches the default branch,
+  capped at five seconds... Before v2.1.208, a fresh worktree used whatever `origin/HEAD`
+  was already cached locally."* A `"head"` worktree never does this — it always branches
+  from the *local* checkout's current `HEAD`, unpushed commits and all.
+
+**No explicit "introduced in vX.Y.Z" line found for the setting itself** on either fetched
+page — several nearby "Before v2.1.2xx" notes (worktree-reuse behavior, `origin/HEAD`
+caching, both citing 2.1.208) imply `worktree.baseRef` predates that range, which comfortably
+supports this repo's `Claude Code ≥ 2.1.219` floor, but this is an inference from adjacent
+version notes, not a directly-quoted floor for the key. Flag rather than assert if a future
+spec needs an exact introduction version.
+
+Sources: live `EnterWorktree` tool description (this session) ·
+[`code.claude.com/docs/en/worktrees.md`](https://code.claude.com/docs/en/worktrees.md)
+§"Choose the base branch", §"Isolate subagents with worktrees" ·
+[`code.claude.com/docs/en/settings.md`](https://code.claude.com/docs/en/settings.md)
+settings-precedence table · `scripts/compound-v-emit-workflow.py:1379-1398`
+(`_worktree_base_is_head`) · `.claude/settings.json` (this repo, current contents).
