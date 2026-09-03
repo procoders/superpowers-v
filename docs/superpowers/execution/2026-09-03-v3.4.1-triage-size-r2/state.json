@@ -1,6 +1,6 @@
 {
   "run_id": "2026-09-03-v3.4.1-triage-size-r2",
-  "phase": "DISPATCHED",
+  "phase": "BLOCKED",
   "pre_eval_id": "2026-09-03T025952Z-land-task-c-of-the-v3-4-1-triage-size-feature-from-the-seale-b142",
   "updated_at": "2026-09-03T03:00:07Z",
   "jobs": {
@@ -19,10 +19,12 @@
       }
     },
     "release": {
-      "status": "pending",
-      "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "status": "done",
+      "isolation": "direct",
+      "worktree": "",
+      "session_id": null,
+      "baseline": "964cb6676c057c198926e2cd45a8fe345b8c4353",
+      "realised_commit": "964cb6676c057c198926e2cd45a8fe345b8c4353"
     },
     "spec-review": {
       "status": "pending",
@@ -41,6 +43,16 @@
       ],
       "commit": "ed788bcbdedc7f8dbff3db229359cb3a03dfd496",
       "integrated": true
+    },
+    "2": {
+      "jobs": [
+        "release"
+      ],
+      "merged": [],
+      "commit": "964cb6676c057c198926e2cd45a8fe345b8c4353",
+      "integrated": false
     }
-  }
+  },
+  "blocked_reason": "wave 2 refused: release",
+  "blocked_at": "2026-09-03T03:10:49Z"
 }

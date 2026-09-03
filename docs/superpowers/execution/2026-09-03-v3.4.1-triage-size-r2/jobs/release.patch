@@ -1,0 +1,158 @@
+diff --git a/.claude-plugin/marketplace.json b/.claude-plugin/marketplace.json
+index 2c415ae..4f8feef 100644
+--- a/.claude-plugin/marketplace.json
++++ b/.claude-plugin/marketplace.json
+@@ -9,7 +9,7 @@
+     {
+       "name": "superpowers-v",
+       "description": "Compound V for Superpowers: triple parallel pre-flight (code archaeology + domain-expert + Context7 library validator), disjoint partitioning, manifest-driven multi-backend dispatch (Claude + Codex + Antigravity + Cursor), git-diff scope enforcement, crash-resumable runs, adaptive tier-based routing, epic mode, research-grounded brainstorming (gated pre-brainstorm recon + batched elicitation), V-memory local-first semantic+lexical recall over docs/superpowers (opt-in pure-python embeddings + a deterministic recall→action bridge), and batched parallel dispatch (Opus default, narrow Sonnet exception)",
+-      "version": "3.4.0",
++      "version": "3.4.1",
+       "source": "./",
+       "author": {
+         "name": "Oleg",
+diff --git a/.claude-plugin/plugin.json b/.claude-plugin/plugin.json
+index 8b00839..6399577 100644
+--- a/.claude-plugin/plugin.json
++++ b/.claude-plugin/plugin.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "superpowers-v",
+   "description": "Compound V for Superpowers: triple parallel pre-flight (code archaeology + domain-expert advisor + library/doc validator via Context7), disjoint file partitioning, manifest-driven multi-backend dispatch (Claude + headless Codex + Antigravity + Cursor workers), git-diff scope enforcement, crash-resumable runs, adaptive tier-based routing, epic mode for multi-feature builds, V-memory local-first semantic+lexical recall over docs/superpowers (opt-in pure-python embeddings + a deterministic recall\u2192action bridge), and batched parallel dispatch (Opus default, Sonnet for narrow junior-task carve-out), plus /v:onboard — a project-onboarding command that builds a citation-verified knowledge base + AGENTS.md/CLAUDE.md bridge behind a human gate. Auto-intercepts four transitions: pre-brainstorm recon \u2192 brainstorming \u2192 writing-plans \u2192 execution.",
+-  "version": "3.4.0",
++  "version": "3.4.1",
+   "author": {
+     "name": "Oleg",
+     "email": "copeus@gmail.com"
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 62ff514..8e70b5d 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -4,9 +4,85 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
+ 
+ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
+ 
+-## [Unreleased]
+-
+-Stage verification, cycle 1 (DIRECT attended), 2026-09-03 — the first real request after 3.4.0 got no triage at all.
++## [3.4.1] - 2026-09-03
++
++The size of a code change reaches the tier. An eight-request probe of the 3.4 scorer found that any
++change under `scripts/**` was FULL by taxonomy glob regardless of size, a README typo was FULL from
++content-pattern noise on ordinary prose, and free-text localization scanned hundreds of files for
++common words. This release answers with four maintainer decisions plus one finding from stage-2 prep,
++landed as five parallel jobs (A/B/C/D/E) and reviewed against the spec's feature-level acceptance
++criteria.
++
++### Added — T3 may demote a broad-glob FULL to SCOPED (`compound-v-preeval.py`, decision 1)
++
++`match_path` now returns `broad: bool` per row (true for a glob containing `**` or ending in `/*`, no
++file-counting). When every T1 row that produced the bands is broad, no resolved path is sensitive, and
++no content override fired, the scorer runs one light T3 classify even though T1 already banded:
++`plumbing`/`user-facing-minor` with `fan_out ≤ 2` demotes the bands to `(medium, medium)` → SCOPED;
++`user-facing-major`/`unknown` leaves FULL unchanged. DIRECT for code stays unreachable. The record
++carries `t3_demotion: {from, category, applied}` beside the decision either way, so the demotion is
++auditable evidence, not a silent reclassification.
++
++### Added — SCOPED+ for small edits on sensitive paths (decision 3)
++
++A sensitive path with an `exact` localization, `fan_out ≤ 2`, and a `plumbing`/`user-facing-minor` T3
++category now resolves to `SCOPED_PIPELINE` with `flavor: "scoped_plus"` instead of a flat FULL — bands
++`(medium, medium)`, `override_fired: null`. Any other sensitive case is still FULL, and `.pem`/`.key`/
++`.env` and `.github/**` are on a hard `NEVER_DEMOTE_GLOBS` list that is never demoted. This
++repository's own taxonomy now marks the enforcement chain itself sensitive — `compound-v-scope-check.py`,
++`compound-v-integration-gate.py`, `compound-v-validate-manifest.py`, `compound-v-emit-workflow.py`,
++`compound-v-emit-preflight.py`, `compound-v-preeval.py`, and `hooks/**` — so a small edit there is
++SCOPED+ (mandatory deep review + a cross-model second opinion + the human accept), while a small edit
++to any other script (the scorecard renderer, say) is plain SCOPED. `compound-v-validate-manifest.py
++--require-triage` now rejects a `scoped_plus` manifest without a `type: review`/`tier: deep`/
++`backend: claude` job, and a new `--require-cross-model-receipt <path>` validates the receipt against
++the new `schemas/cross-model-receipt.schema.json` (`run_id`, `pre_eval_id`, and a `diff_digest` that
++must equal the sealed patch's own sha256) — `/v:dispatch` step 8 runs the Codex review and writes it for
++`scoped_plus` waves before the review gate.
++
++### Fixed — prose no longer counts as impact, and a plain word is never searched (decision 2, the README/free-text finding)
++
++The taxonomy gains an optional `content_scan_exclude` glob list (this repo sets `["**/*.md"]`): a path
++matching it skips content-pattern matching entirely, so a README mentioning "consent" or "timeout" in
++the course of documenting a consent gate no longer scores `impact: high` from the word alone — the
++path rows and `sensitive_path_list` still apply in full. On the localizer side, `extract_query_tokens`
++now keeps only identifier-shaped candidates (path-like, backticked/quoted, `snake_case`, `CamelCase`,
++dotted, CSS-ish); a request with no such token is `failed` immediately, with no repository scan. A
++named file that does not exist but whose parent directory does now resolves `confidence: "new_file"`
++(T1 runs on the directory's glob; Layer B's DIRECT predicate still requires `exact`, so a new file is
++never DIRECT). Two more defects the stage-2 request itself exposed while writing this: a literal path
++followed by sentence punctuation (`hooks/triage-prompt-nudge.sh.`) wasn't resolved — the strip set now
++drops a trailing `.`/`?`/`!` (never an inner one) — and a literal path whose file exceeds
++`MAX_FILE_READ_BYTES` used to turn the whole localization `ambiguous` (FULL by override #1 regardless
++of size); it now stays `exact` by name and adds a `content_scan_incomplete` flag that the scorer treats
++as impact-raising instead — fail-closed on impact, not on localization.
++
++### Added — a SCOPED job runs the tests that reference what changed, never the whole suite (`compound-v-fastpath-run.py`, decision 4)
++
++`resolve_test_commands` gains `tier` and `referencing` parameters: for `scope == "impacted"`, an
++unmapped path now resolves to `full_command` only when `tier` is FULL or absent; at SCOPED or DIRECT it
++resolves to `referencing_tests(repo, changed_paths, cap=5)` — test files under `tests/`, `test/`,
++`spec/`, `__tests__/`, `*_test.*`/`test_*.*`/`*.spec.*` whose first bytes mention the changed path's
++basename or module name, language-agnostic, bounded read, sorted, capped at 5 beyond the impacted set.
++None found → the floor only, with an explicit `unmapped: referencing tests found none — floor only at
++tier SCOPED` note rather than a silent full run. `resolve_from_manifest` now threads the manifest's
++`triage.tier` and computes `referencing` from the worktree; FULL is unaffected. `execution-manifest.md`
++and `agents/spec-reviewer.md` §3.3 now say what a SCOPED job owes in tests.
++
++### Added — T3 finishes headlessly, inside the hook (`compound-v-classify-request.py`, `triage-prompt-nudge.sh`, finding 50)
++
++`compound-v-classify-request.py --classify-headless` runs one nested `claude -p --model <resolved
++light> --tools ""` (Never Haiku — the model is resolved through `compound-v-resolve-model.py --backend
++claude --tier light`) under the timeout supervisor, stdin closed, capped at 15 s + 3 s grace; on any
++failure it falls back to the existing read-only Codex classify route, else `unknown`. The `hooks.json`
++registration for `UserPromptSubmit` — and only that event — rises from `timeout: 10` to `timeout: 25`
++to fit the classify's own budget; the hook only pays it on `needs_t3`, so the ordinary prompt keeps its
++~1 s path. On `needs_t3` the hook now runs the classify and re-invokes triage with `--t3-category
++<enum>` (or `unknown`, recorded as FULL) instead of degrading to a printed reminder; the reminder
++remains only for an engine failure. `/v:triage` documents the headless route as the default and the
++Task route as the fallback. (Implementation note: `--tools` is a variadic CLI flag that swallows a
++trailing positional, so the prompt must come immediately after `-p`, before `--tools ""` — the argv
++builder and its selftest pin the order.)
+ 
+ ### Fixed — the phase advance to MERGED was a prose step; fourteen finished runs silenced the triage hook
+ 
+diff --git a/README.md b/README.md
+index 81f6680..8278e61 100644
+--- a/README.md
++++ b/README.md
+@@ -122,7 +122,7 @@ That's it.
+ - **Cursor on a Free plan** can only use its `auto` model (named models are paid).
+ - **Epic mode is bounded by default** — it stops after each feature for a human checkpoint. It is *not* a fire-and-forget overnight build unless you raise the budget.
+ - **Marathon mode (opt-in) is still not fire-and-forget-overnight.** It removes the per-feature checkpoint and adds an arbiter panel + blocker ledger + global breakers so it can run further unattended in one sitting — but on its own it does not self-revive after a hard death. If the session dies, you re-run `/v:epic <epic-id>` yourself; it resumes from the last committed state.
+-- **The triage gate is ON by default (3.2.0), and here is how to turn it off.** The `UserPromptSubmit` hook now scores the first change request of a session itself — it runs the same scorer `/v:triage` does and writes the record (uncommitted; `/v:orchestrate` commits it at bind, and a DIRECT commit includes it by hand) — so a manual `/v:triage` is only needed for the T3 escalation path. Once per session, in a repo that has a `.claude/compound-v.json`, if the working tree carries code changes that no triage record covers, the `Stop` hook holds the turn open and asks for `/v:triage`. It is exempt on `docs/superpowers/**`, it fires at most once per session, it is bounded at ~800 ms and fails open on any timeout or error, and a project that never ran `/v:init` never sees it. To opt out:
++- **The triage gate is ON by default (3.2.0), and here is how to turn it off.** The `UserPromptSubmit` hook now scores the first change request of a session itself — it runs the same scorer `/v:triage` does and writes the record (uncommitted; `/v:orchestrate` commits it at bind, and a DIRECT commit includes it by hand) — so a manual `/v:triage` is only needed for the T3 escalation path. Once per session, in a repo that has a `.claude/compound-v.json`, if the working tree carries code changes that no triage record covers, the `Stop` hook holds the turn open and asks for `/v:triage`. It is exempt on `docs/superpowers/**`, it fires at most once per session, it is bounded at ~800 ms and fails open on any timeout or error, and a project that never ran `/v:init` never sees it. The scorer resolves the request to one of three tiers — DIRECT (a trivial, unambiguous edit), SCOPED (the tests that reference what changed, not the whole suite; a small edit on a sensitive path is the SCOPED+ flavor — mandatory deep review plus a cross-model second opinion), and FULL (the full test contract) — sized to the change itself, not just the glob its path happens to match (3.4.1). To opt out:
+ 
+   ```json
+   { "enforcement": { "triage_gate": false } }
+diff --git a/docs/superpowers/architecture/native-mechanisms.md b/docs/superpowers/architecture/native-mechanisms.md
+index 4666104..55f22f3 100644
+--- a/docs/superpowers/architecture/native-mechanisms.md
++++ b/docs/superpowers/architecture/native-mechanisms.md
+@@ -45,6 +45,7 @@
+ | Потолок бюджета | `budget` + телеметрия исчерпания | ✅ | ❌ | ✅ | Не смотрели. Отдаём исполнение рантайму, у которого потолок есть — значит берём и потолок |
+ | Модель под задачу | `opts.model` / `opts.effort` у `agent()` | ✅ | ❌ | ✅ | **3.0.5: используется.** Словарь тиров (`deep`/`standard`/`light`, теперь ещё и `frontier`) существовал с 1.1, валидировался, документировался — и до 3.0.5 **не доходил до `agent()`**: `resolve_job_model` вызывался только для внешних бэкендов, где `--model` — обязательный аргумент CLI, а на `backend: claude` (то есть в каждом реальном прогоне) `opts.model` не выставлялся ни разу и каждый агент наследовал модель сессии. Тринадцатый механизм, выпущенный без вызывающего. Теперь тир резолвится и для claude, стойка (`routing_stance`) и карта из `.claude/compound-v.json` наконец читаются на диспатче, а Gate/Record/Finalize маршрутизируются как транспорт (`light`), а не как рассуждение. `opts.model: 'fable'` проверен живой пробой на 2.1.238 — принимается наравне с `sonnet` и `opus` |
+ | Видимость прогресса | `phase()` / `log()`, дерево прогресса | ✅ | ❌ | ✅ | Рисовали `/v:status` из своего состояния постфактум |
++| T3 завершается без деградации к напоминанию | — (нет нативного «классифицируй текст одним лёгким вызовом внутри хука») | ❌ | ❌ | ✅ | **Закрыто в 3.4.1.** `needs_t3` раньше означал напоминание — хук не мог сам довести триаж до тира. Теперь `compound-v-classify-request.py --classify-headless` запускает ОДИН вложенный `claude -p --model <light> --tools ""` под супервизором таймаута (15 с + 3 с грейс), парсит перечисление и передаёт его обратно триажу как `--t3-category`; при отказе — тот же read-only Codex-путь, что уже был, иначе `unknown` (записывается как FULL). Ради этого регистрация `UserPromptSubmit` в `hooks.json` — и только она — поднята с `timeout: 10` до `timeout: 25`; обычный промпт по-прежнему укладывается в ~1 с, платит бюджет только `needs_t3`. Мы сознательно не используем нативные типы хуков `prompt`/`agent` для этого (модельный вызов на каждый инструмент — избыточно), поэтому механизм остаётся своим |
+ 
+ ## Итог по третьей колонке
+ 
+@@ -53,9 +54,10 @@
+ там, где строк было 7 / 3 / 11, и относила `agentType` к «есть, но не покрывает»,
+ хотя в его строке стоит ✅.
+ 
+-**Нативного нет (7).** Решение о размере, полосы, доказательство изменения, политика
+-повторов, кросс-вендорное второе мнение, соразмерные тесты, пол тестов. Своё оправдано —
+-**это и есть продукт**.
++**Нативного нет (8 — на одну больше после 3.4.1).** Решение о размере, полосы, доказательство
++изменения, политика повторов, кросс-вендорное второе мнение, соразмерные тесты, пол тестов, и —
++новое в 3.4.1 — T3 без деградации к напоминанию (одноразовый headless-классификатор внутри хука).
++Своё оправдано — **это и есть продукт**.
+ 
+ **Нативное есть, но не покрывает (4).** Resume не переживает потерю сессии; журнал
+ живёт под id сессии; `PostCompact` отдаёт саммари, но его вывод в 2.1.238 только отображается;
