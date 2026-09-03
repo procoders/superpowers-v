@@ -4,16 +4,17 @@
 
 **Goal:** README.md gains a "Verification program" section whose two numbers are read from the generated index footer.
 
-**Architecture:** one docs job (worktree, light tier) + the review job (direct). No script changes.
+**Architecture:** the index regenerated (job 0, worktree, light) → one docs job (worktree, light) → the review job (direct). No script changes.
 
 ## Partition Map
 | Task | Writes |
 |---|---|
-| A `readme-section` | `README.md` |
+| 0 `index-refresh` | `docs/superpowers/dogfood/README.md` (regenerated first; pre-flight 1A found HEAD's footer one row stale) |
+| A `readme-section` | `README.md` (depends on 0) |
 
 ### Task A
 - [ ] Read `docs/superpowers/dogfood/README.md`'s footer (`Reviews: N · APPROVED: A · …`), then insert `## Verification program` before the last `##` section of README.md: what the program is (stages 1–8, each a dogfood cycle against native Claude Code mechanisms), a link to the index, and the sentence "N review files, A APPROVED" with the footer's numbers.
-- [ ] `/usr/bin/python3 -B scripts/lint-frontmatter.py .` green; the section appears exactly once; the link target exists.
+- [ ] `/usr/bin/python3 -B scripts/lint-frontmatter.py .` green; the section appears exactly once; the link is a real markdown link, root-relative with no leading slash, and its target exists.
 
 ### Review
 - [ ] Both numbers equal the footer; the index is regenerated first (`bash scripts/compound-v-dogfood-index.sh`) so F1's review file is counted, and if the footer changed, the README numbers are re-checked against the regenerated footer (the review says which).
