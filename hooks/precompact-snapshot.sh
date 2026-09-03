@@ -49,6 +49,7 @@
 
 trap 'exit 0' EXIT
 set -uo pipefail
+if [ "${CV_HEADLESS_CLASSIFY:-}" = "1" ]; then exit 0; fi  # finding 131: never fire inside the headless classifier
 
 _HOOK_TAG="compound-v/precompact-snapshot"
 _log() { printf '%s: %s\n' "$_HOOK_TAG" "$*" >&2; }

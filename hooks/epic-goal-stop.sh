@@ -116,6 +116,7 @@
 trap 'exit 0' EXIT
 
 set -o pipefail
+if [ "${CV_HEADLESS_CLASSIFY:-}" = "1" ]; then exit 0; fi  # finding 131: never fire inside the headless classifier
 
 _HOOK_TAG="compound-v/epic-goal-stop"
 

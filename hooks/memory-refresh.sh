@@ -15,6 +15,7 @@
 # racing a Write) are safe: the engine's flock makes every loser an instant no-op.
 
 set -euo pipefail
+if [ "${CV_HEADLESS_CLASSIFY:-}" = "1" ]; then exit 0; fi  # finding 131: never fire inside the headless classifier
 
 input="$(cat 2>/dev/null || true)"
 file_path=$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty' 2>/dev/null || echo "")

@@ -78,6 +78,20 @@ import os
 import subprocess
 import sys
 
+HEADLESS_ENV_MARKER = "CV_HEADLESS_CLASSIFY"
+
+
+def _headless_env():
+    """The child's environment, marked. The nested `claude -p` loads the SAME
+    project hooks as the session that spawned it, so without a marker our own
+    UserPromptSubmit hook triaged the classifier's prompt as a change request,
+    wrote junk pre-eval records and starved the outer classify of its budget
+    (finding 131, 2026-09-03). Every hook exits 0 first thing when it sees this."""
+    env = dict(os.environ)
+    env[HEADLESS_ENV_MARKER] = "1"
+    return env
+
+
 # --------------------------------------------------------------------------- #
 # The T3 output enum — THE single shared contract (Global Constraints: define once).
 # spec §2 T3 total truth table maps these to (difficulty, impact) bands; that scoring
@@ -372,6 +386,7 @@ def classify_via_codex(request_text, resolved_paths=None, model=None,
             proc = subprocess.run(
                 cmd, stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                env=_headless_env(),
             )
         except (OSError, ValueError):
             return _result(FAIL_CLOSED_CATEGORY, error="spawn_failed", model=model)
@@ -529,6 +544,7 @@ def classify_via_claude(request_text, resolved_paths=None, model=None,
             proc = subprocess.run(
                 cmd, stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                env=_headless_env(),
             )
         except (OSError, ValueError):
             return _headless_result(FAIL_CLOSED_CATEGORY, "claude", error="spawn_failed",

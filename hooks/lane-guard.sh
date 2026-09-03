@@ -259,6 +259,7 @@
 
 # No `set -e`: this hook must never fail closed.
 set -uo pipefail
+if [ "${CV_HEADLESS_CLASSIFY:-}" = "1" ]; then exit 0; fi  # finding 131: never fire inside the headless classifier
 
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd -P 2>/dev/null || echo .)"
 : "${CV_SCOPE_CHECK:=${CLAUDE_PLUGIN_ROOT:-$HOOK_DIR/..}/scripts/compound-v-scope-check.py}"

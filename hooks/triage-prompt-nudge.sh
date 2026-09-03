@@ -191,6 +191,7 @@ trap 'exit 0' EXIT
 
 # No `set -e`: this hook must never fail closed.
 set -uo pipefail
+if [ "${CV_HEADLESS_CLASSIFY:-}" = "1" ]; then exit 0; fi  # finding 131: never fire inside the headless classifier
 
 _HOOK_TAG="compound-v/triage-prompt-nudge"
 

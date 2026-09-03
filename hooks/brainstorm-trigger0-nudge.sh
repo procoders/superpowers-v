@@ -27,6 +27,7 @@
 # Output format: JSON on stdout with hookSpecificOutput.additionalContext.
 
 set -euo pipefail
+if [ "${CV_HEADLESS_CLASSIFY:-}" = "1" ]; then exit 0; fi  # finding 131: never fire inside the headless classifier
 
 # No jq → we cannot parse or emit safely; stay silent rather than ever block.
 command -v jq >/dev/null 2>&1 || exit 0

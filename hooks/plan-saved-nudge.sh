@@ -14,6 +14,7 @@
 # Output format: JSON on stdout with hookSpecificOutput.additionalContext.
 
 set -euo pipefail
+if [ "${CV_HEADLESS_CLASSIFY:-}" = "1" ]; then exit 0; fi  # finding 131: never fire inside the headless classifier
 
 # Read full hook event from stdin
 input="$(cat)"
