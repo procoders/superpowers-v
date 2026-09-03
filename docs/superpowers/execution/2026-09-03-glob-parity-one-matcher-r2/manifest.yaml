@@ -1,0 +1,57 @@
+run_id: 2026-09-03-glob-parity-one-matcher-r2
+feature: 'epic 2026-09-03-glob-parity · F1 one-matcher attempt 2 (retry_fix): the fail-closed selftest row the sample-audit found missing'
+routing_stance: balanced
+max_parallel: 2
+spec_path: docs/superpowers/execution/epics/2026-09-03-glob-parity/specs/one-matcher.md
+plan_path: docs/superpowers/plans/2026-09-03-epic-gp-one-matcher-r2.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-09-03-epic-gp-one-matcher.md
+  domain: docs/superpowers/execution/epics/2026-09-03-glob-parity/specs/one-matcher.md
+  library: docs/superpowers/library-audit/2026-09-03-epic-gp-one-matcher.md
+triage:
+  tier: SCOPED
+  pre_eval_id: 2026-09-03T194637Z-retry-epic-feature-one-matcher-attempt-2-retry-fix-after-the-f79a
+  taxonomy_digest: sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a
+  decided_at: '2026-09-03T19:46:37Z'
+acceptance_criteria:
+- python3 scripts/compound-v-memory.py --selftest passes with a new row "no private bytecode cache -> unavailable, nothing loaded"; the row FAILS on a copy of the file whose `if err is None:` guard in _scope_matches is removed (the plan's Step 2); python3 scripts/compound-v-scope-check.py --selftest still passes.
+- git diff --stat shows only scripts/compound-v-memory.py and only lines inside _selftest; no production code changed; no existing check weakened or removed.
+test_contract:
+  floor_command: bash -c 'python3 -B scripts/compound-v-memory.py --selftest >/dev/null && python3 -B scripts/compound-v-scope-check.py --selftest >/dev/null'
+  full_command: bash -c 'for s in scripts/compound-v-*.py; do grep -q -- "--selftest" "$s" || continue; /usr/bin/python3 -B "$s" --selftest >/dev/null 2>&1 || { echo "FAIL $s"; exit 1; }; done'
+  impacted_map:
+  - when: scripts/compound-v-*.py
+    run: bash -c '[ -f {path} ] || exit 0; grep -q -- "--selftest" {path} || exit 0; /usr/bin/python3 -B {path} --selftest >/dev/null'
+jobs:
+- id: selftest-row
+  title: Task A — the fail-closed selftest row (no private bytecode cache ⇒ unavailable, nothing loaded)
+  type: implement
+  backend: claude
+  tier: standard
+  effort: medium
+  isolation: worktree
+  run: parallel
+  write_allowed:
+  - scripts/compound-v-memory.py
+  read_allowed:
+  - '**'
+  acceptance:
+  - The new row passes on the real file and FAILS on the guardless copy (plan Step 2, reproduced and reported in your summary); both selftests pass; the diff touches only _selftest.
+  body: 'Implement Task A of docs/superpowers/plans/2026-09-03-epic-gp-one-matcher-r2.md exactly (the row is in the plan, Step 1) and run its Step 2 proof and Step 3 selftests. Only scripts/compound-v-memory.py may change, and only inside _selftest. Report in your summary the exact output line of the guardless-copy run. Commit in your worktree.'
+- id: spec-review-1
+  title: Review Gate — three passes against the retry plan and the sample-audit finding
+  type: review
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: direct
+  run: serial
+  depends_on:
+  - selftest-row
+  write_allowed:
+  - docs/superpowers/dogfood/2026-09-03-epic-gp-one-matcher-r2-review-1.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - The review file exists with ## Recall, ## SPEC, ## QUALITY, ## INTEGRATION, ## Verdict and one line VERDICT APPROVED or VERDICT ISSUES; it reproduces the guardless-copy proof itself and names the sample-audit finding it closes.
+  body: 'Your agent definition carries the three-pass Review Gate and a Step 0 (V-memory recall). Follow it. Feature F1 one-matcher attempt 2 of epic 2026-09-03-glob-parity: plan docs/superpowers/plans/2026-09-03-epic-gp-one-matcher-r2.md, the finding under review docs/superpowers/execution/epics/2026-09-03-glob-parity/arbiter/one-matcher-1-sample-audit.md item 1. Review the merged diff of job selftest-row; reproduce the plan''s Step 2 proof yourself. Write docs/superpowers/dogfood/2026-09-03-epic-gp-one-matcher-r2-review-1.md and nothing else.'
