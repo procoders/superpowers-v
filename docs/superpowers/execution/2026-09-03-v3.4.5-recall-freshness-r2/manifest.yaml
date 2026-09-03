@@ -1,0 +1,82 @@
+run_id: 2026-09-03-v3.4.5-recall-freshness-r2
+feature: 'v3.4.5 recall freshness r2: review-1''s two doc gaps (phase-0-recon.md still says refresh-before-search; memory.md''s stale staleness-cost sentence) + the lock release in a finally, the doubled hash pass, a lock-held selftest; review pass 2'
+routing_stance: balanced
+max_parallel: 2
+spec_path: docs/superpowers/specs/2026-09-03-v3.4.5-recall-freshness-design.md
+plan_path: docs/superpowers/plans/2026-09-03-v3.4.5-recall-freshness.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-09-03-v3-4-5-recall-freshness.md
+  domain: docs/superpowers/specs/2026-09-03-v3.4.5-recall-freshness-design.md
+  library: docs/superpowers/library-audit/2026-09-03-v3-4-5-recall-freshness.md
+triage:
+  tier: FULL
+  pre_eval_id: 2026-09-03T100838Z-make-v-memory-search-refresh-the-fts5-index-automatically-wh-5801
+  taxonomy_digest: sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a
+  decided_at: '2026-09-03T10:08:38Z'
+acceptance_criteria:
+- 'On a repository whose index is behind, `python3 -B scripts/compound-v-memory.py search "<words from a newly added tracked doc>"` returns that doc with no other command having run and prints exactly one `V-memory: refreshed N stale doc(s) before recall (FTS5 lane)` line on stderr; `search --no-refresh` does not return it and prints the staleness warning; a search on a repo with no index builds one.'
+- '`/usr/bin/python3 -B scripts/compound-v-memory.py --selftest` is green with the new case; every other `scripts/compound-v-*.py --selftest` and every `tests/*.sh` stay green.'
+- 'A search never embeds: the inline refresh reports FTS5-only whether or not embeddings are bootstrapped, never applies the --quick cap, and vectors stay a /v:memory-refresh --with-embeddings job; `cmd_refresh --with-embeddings` after a search-triggered refresh still embeds the files that search re-chunked (the ordering hazard from pre-flight 1A). Routing and the conservative-only bridge are untouched.'
+- 'skills/compound-v/memory.md, skills/compound-v/phase-0-recon.md, commands/v-remember.md and CHANGELOG.md describe the behaviour; no doc tells the user to refresh before a search and no doc quotes the retired warning string: `grep -rn ''memory-refresh'' commands/v-remember.md skills/compound-v/phase-0-recon.md` shows no such instruction, and memory.md''s staleness sentence states the real cost (git ls-files plus a content hash of every tracked doc).'
+test_contract:
+  floor_command: /usr/bin/python3 -B scripts/compound-v-memory.py --selftest
+  full_command: bash -c 'for s in scripts/compound-v-*.py; do grep -q -- "--selftest" "$s" || continue; /usr/bin/python3 -B "$s" --selftest >/dev/null 2>&1 || { echo "FAIL $s"; exit 1; }; done; for t in tests/*.sh; do bash "$t" >/dev/null 2>&1 || { echo "FAIL $t"; exit 1; }; done; echo all-tests-ok'
+  impacted_map:
+  - when: scripts/compound-v-memory.py
+    run: /usr/bin/python3 -B scripts/compound-v-memory.py --selftest
+  - when: skills/compound-v/memory.md
+    run: /usr/bin/python3 -B scripts/lint-frontmatter.py .
+  - when: commands/v-remember.md
+    run: /usr/bin/python3 -B scripts/lint-frontmatter.py .
+jobs:
+- id: engine-2
+  title: Task A' — lock release in a finally, one hash pass on the inline path, a lock-held selftest (review-1 items 3–5)
+  type: implement
+  backend: claude
+  tier: standard
+  effort: medium
+  isolation: worktree
+  run: parallel
+  depends_on: []
+  write_allowed:
+  - scripts/compound-v-memory.py
+  read_allowed:
+  - '**'
+  acceptance:
+  - 'cmd_search releases the refresh lock in a `finally` (an exception inside refresh_fts5 can no longer leave the lock held); the inline path hashes tracked docs ONCE (the staleness computation''s changed list is handed to refresh_fts5 or the helper accepts a precomputed list — no second full hash pass; show the call graph in your summary); a selftest case holds the lock (acquire_lock on the same paths[''lock'']) and calls cmd_search on a stale index: the staleness warning is printed, NO refresh line, results come from the stale index, and the lock is still held afterwards by the test; `/usr/bin/python3 -B scripts/compound-v-memory.py --selftest` green; nothing else in the engine changes.'
+  body: 'Review pass 1 (docs/superpowers/dogfood/2026-09-03-v3.4.5-recall-freshness-review.md) approved the engine and recorded three non-blocking items: (3) the lock release in cmd_search is not in a finally; (4) the inline path hashes every tracked doc twice (index_staleness, then refresh_fts5); (5) the lock-held branch has no automated guard. Close all three, minimally: finally; reuse the changed list; one selftest that holds the lock. Do not change behaviour otherwise; do not touch the embedding branch. Touch only scripts/compound-v-memory.py. Run python with -B; register your lane with a literal --cwd. You are unattended: decide and return.'
+- id: docs-2
+  title: Task B' — the two doc gaps review-1 blocked on (phase-0-recon.md, memory.md)
+  type: implement
+  backend: claude
+  tier: light
+  effort: low
+  isolation: worktree
+  run: parallel
+  depends_on: []
+  write_allowed:
+  - skills/compound-v/phase-0-recon.md
+  - skills/compound-v/memory.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - 'skills/compound-v/phase-0-recon.md no longer tells the agent to refresh before a search and no longer quotes the retired `index is N new / M removed docs behind the repo` string — it says a search refreshes the FTS5 lane itself and what the new stderr line looks like; skills/compound-v/memory.md''s staleness sentence (review-1 item 2, around line 141) states the real cost: `git ls-files` plus a content hash of every tracked doc (~0.09 s over ~275 docs, measured by the review) and that this is still cheap enough to run before every search; lint-frontmatter green; no other change.'
+  body: 'Review pass 1 (docs/superpowers/dogfood/2026-09-03-v3.4.5-recall-freshness-review.md) blocked on two docs: (1) skills/compound-v/phase-0-recon.md:45 still instructs a refresh before a search and quotes a warning the engine no longer emits — pre-flight 1A''s ''exactly one prose file'' claim missed it; (2) skills/compound-v/memory.md:141 says the staleness check is ''cheaply, one git ls-files'' — it is now that plus a full content hash of every tracked doc (0.091 s vs 0.059 s over 275 docs, measured). Fix both exactly; quote the before/after lines in your summary. Touch only these two files. Run python with -B; register your lane with a literal --cwd. You are unattended: decide and return.'
+- id: spec-review-2
+  title: Review Gate — three passes against the spec and the feature acceptance criteria
+  type: review
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: direct
+  run: serial
+  depends_on:
+  - engine-2
+  - docs-2
+  write_allowed:
+  - docs/superpowers/dogfood/2026-09-03-v3.4.5-recall-freshness-review-2.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - 'The review-2 file exists with ## Recall, ## SPEC, ## QUALITY, ## INTEGRATION, ## Verdict; Step 0''s own search stderr is quoted; review-1''s items 1–5 are each shown closed (or open) with the command and output; every acceptance criterion of this manifest is re-run on the merged tree; the verdict is APPROVED or ISSUES with a numbered list.'
+  body: 'Your agent definition carries the three-pass Review Gate and a Step 0 (V-memory recall). Follow it and quote Step 0''s stderr (the refresh line, or its absence — nothing should be stale after this run''s own bookkeeping commit... unless it is: say which). This is the SECOND pass over v3.4.5: read review-1 (ISSUES 2 + 3 recorded items) and this run''s two jobs as new code; confirm items 1–5 closed with evidence (`grep` for the retired warning string across skills/ commands/ agents/; the finally; the single hash pass — count calls to file_sha per search with a quick instrumented run; the lock-held selftest present and green); re-run the four ACs as corrected in this manifest. Write docs/superpowers/dogfood/2026-09-03-v3.4.5-recall-freshness-review-2.md. Run python with -B; register your lane with a literal --cwd.'
