@@ -1,0 +1,23 @@
+{
+  "epic_id": "2026-09-03-glob-parity",
+  "feature": "matcher-docs",
+  "attempt": 1,
+  "failure_kind": "reviewer_issues",
+  "what_failed": "The implementer (claude standard \u2192 sonnet under balanced) did not apply the plan's text: it added one cross-reference sentence to execution-manifest.md's write_allowed table row and four lines to memory.md's recall-check TRIGGER bullet, naming the other file and the parity selftest \u2014 but the six-rule glob sentence (the contract itself) appears in neither file, the paragraph was not placed after the Per-job fields section, the recall-check ROW was not rewritten, and memory.md grew by four lines (the same-line-count constraint from pre-flight 1A).",
+  "review_verdict": "VERDICT: ISSUES \u2014 2 SPEC_GAP (one critical), 3 CONSTRAINT_VIOLATION; QUALITY/INTEGRATION clean (no regression, links resolve).",
+  "gate_verdicts": [
+    {
+      "job": "docs-contract",
+      "verdict": "pass",
+      "merged_commit": "d7dc25d"
+    },
+    {
+      "job": "spec-review-1",
+      "verdict": "pass",
+      "merged_commit": "0a815b1"
+    }
+  ],
+  "diff_summary": "execution-manifest.md +1/-1 (write_allowed row extended); memory.md +5/-1 (trigger bullet extended).",
+  "fix_size_estimate": "revert the two attempt-1 hunks and apply the plan's Step 2 paragraph + Step 3 row verbatim; docs only; ~20 lines. The plan text is exact; the worker paraphrased \u2014 attempt 2 should run on the deep tier (Opus) with a body that forbids paraphrase and tells the worker to stop and report on any perceived constraint conflict.",
+  "review_file": "docs/superpowers/dogfood/2026-09-03-epic-gp-matcher-docs-review-1.md"
+}

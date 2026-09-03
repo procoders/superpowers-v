@@ -1,0 +1,57 @@
+{
+  "disposition": "retry_fix",
+  "confirmed": false,
+  "reason": "retry_fix majority",
+  "evidence": null,
+  "ballots": [
+    {
+      "source": "codex",
+      "family": "GPT",
+      "model": "gpt-5.6-sol",
+      "valid": true,
+      "disposition": "retry_fix",
+      "reason": "The failure is a bounded, well-specified implementation miss with exact replacement text available; retry on the deep tier with verbatim-only instructions and stop-on-conflict handling.",
+      "evidence": null,
+      "blocker_category": null,
+      "counted": true
+    },
+    {
+      "source": "agy",
+      "family": "Gemini",
+      "model": "Gemini 3.1 Pro (High)",
+      "valid": true,
+      "disposition": "retry_fix",
+      "reason": "The implementer failed to apply the exact plan text (paraphrased instead), causing spec gaps and constraint violations, but the fix is small (~20 lines of docs) and actionable for a retry on a deeper tier.",
+      "evidence": null,
+      "blocker_category": null,
+      "counted": true
+    },
+    {
+      "source": "claude",
+      "family": "Claude",
+      "model": "claude",
+      "valid": true,
+      "disposition": "retry_fix",
+      "reason": "Docs-only paraphrase failure by a standard-tier worker: the plan already contains the exact six-rule sentence and the verbatim replacement row, the scope gate and review pipeline both worked, and the fix is ~20 lines with 2 attempts left \u2014 rerun on deep tier with a no-paraphrase body and a full_command that greps the six-rule sentence in both files.",
+      "evidence": null,
+      "blocker_category": null,
+      "counted": true
+    }
+  ],
+  "families_present": [
+    "Claude",
+    "GPT",
+    "Gemini"
+  ],
+  "families_agreeing": [
+    "Claude",
+    "GPT",
+    "Gemini"
+  ],
+  "challenge_id": "ch-e9d873398dd6c07b",
+  "epic_id": "2026-09-03-glob-parity",
+  "feature": "matcher-docs",
+  "attempt": 1,
+  "audit_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/epics/2026-09-03-glob-parity/arbiter/matcher-docs-1.json",
+  "recorded_at": "2026-09-03T20:29:34.437628+00:00"
+}
