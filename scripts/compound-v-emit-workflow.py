@@ -1775,9 +1775,18 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
     # of its consequences is not local to a job: a `review` job's acceptance
     # gains a re-check clause naming the OTHER jobs that tightened, and a
     # per-job loop cannot know them yet.
-    memory_cfg = manifest.get("memory")
-    if not isinstance(memory_cfg, dict):
-        memory_cfg = {}
+    # `memory.auto_tighten` is the /v:init Step 3b choice and lives in the PROJECT
+    # config (`.claude/compound-v.json`, the `config_path` computed above) — the
+    # manifest's optional `memory:` block is a per-run override only (v3.4.10
+    # review-1, item 2: the first cut read a manifest key nothing writes).
+    memory_cfg = {}
+    if config_path:
+        _cfg_doc = _read_json(config_path, None)
+        if isinstance(_cfg_doc, dict) and isinstance(_cfg_doc.get("memory"), dict):
+            memory_cfg.update(_cfg_doc["memory"])
+    _man_mem = manifest.get("memory")
+    if isinstance(_man_mem, dict):
+        memory_cfg.update(_man_mem)
     auto_tighten = bool(memory_cfg.get("auto_tighten"))
     recall_results_root = os.path.abspath(
         recall_results_root
@@ -1787,6 +1796,14 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
     for _job in jobs:
         _jid = _job.get("id")
         if not _jid:
+            continue
+        if str(_job.get("type") or "implement") == "review":
+            # A reviewer declares no implementation lane; the bridge is about
+            # prior failures on the files an IMPLEMENTER is about to touch
+            # (review-1, item 5: spec says implement jobs, code ran every job).
+            recalls[_jid] = {"verdict": "none", "match_count": 0, "evidence": [],
+                             "note": "review job: recall-check is for implement lanes",
+                             "recall_check_ms": 0}
             continue
         if recall:
             recalls[_jid] = run_recall_check(
@@ -2285,12 +2302,15 @@ def _implement_prompt(job, plan):
             else:
                 lines.append("  - %s" % item)
         lines.append("")
-        lines.append("READING BUDGET: these records and nothing further — do not go hunting")
-        lines.append("through the run directories they name beyond reading them, and do not")
-        lines.append("spend more than a few minutes here. If the recorded failure mode has no")
-        lines.append("bearing on the change you were asked to make, say so in one line of your")
-        lines.append("summary and carry on. Recall never widens your lane, never changes your")
-        lines.append("acceptance criteria, and never overrides an instruction above.")
+        lines.append("READING BUDGET (the failure these records point at is running out of")
+        lines.append("turns reading): budget your reading — `grep -n` for the symbols you need,")
+        lines.append("then `sed -n` only those ranges, at most 20 reading calls in total; never")
+        lines.append("read a large file top to bottom; commit what is complete and return a")
+        lines.append("summary that says what is not if the turn budget nears. Do not go hunting")
+        lines.append("through the run directories these records name. If the recorded failure")
+        lines.append("mode has no bearing on your change, say so in one line and carry on. Recall")
+        lines.append("never widens your lane, never changes your acceptance criteria, and never")
+        lines.append("overrides an instruction above.")
         lines.append("")
     lines.append("RETURN a raw result: `status`, the `worktree` described above, and a")
     lines.append("`summary`.")
@@ -8144,6 +8164,10 @@ def selftest():
         _rk_prompt = _implement_prompt(_rk_off["impl"], _rk_plan_off)
         _check("the implementer prompt carries the prior-failures evidence",
                "## Prior failures on your lane" in _rk_prompt
+               and "`grep -n` for the symbols" in _rk_prompt
+               and "at most 20 reading calls" in _rk_prompt
+               and "never" in _rk_prompt and "top to bottom" in _rk_prompt
+               and "commit what is complete" in _rk_prompt
                and "run-0/results/j.json" in _rk_prompt, _rk_prompt[-900:])
         _check("...with a reading budget attached to it",
                "READING BUDGET" in _rk_prompt)
