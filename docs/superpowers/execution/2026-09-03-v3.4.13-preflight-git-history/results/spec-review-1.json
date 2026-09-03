@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-03-v3.4.13-preflight-git-history-review-1.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "84b57a3ee220cfd29dc530b0242508608f6b1c92",
+    "diff_digest": "sha256:81552f45d3a9848720696939bd8931130b3d46e34810d4bff843ec9c31bb56ba",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"84b57a3ee220cfd29dc530b0242508608f6b1c92\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.13-preflight-git-history-review-1.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.13-preflight-git-history-review-1.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "84b57a3ee220cfd29dc530b0242508608f6b1c92",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Review Gate \u2014 three passes against the spec and the feature acceptance criteria",
+  "tests": {
+    "command": "bash -c 'python3 -B scripts/compound-v-emit-preflight.py --selftest >/dev/null'\nbash tests/test-engine-c-contract.sh\nbash tests/test-epic-goal-stop.sh\nbash tests/test-hook-recursion-guard.sh\nbash tests/test-integration-gate.sh\nbash tests/test-lane-guard.sh",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted+referencing",
+    "selected_count": 6
+  },
+  "violations": [],
+  "worktree": ""
+}
