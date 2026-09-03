@@ -171,7 +171,7 @@ At runtime the same fail-closed posture applies to individual commands: *"no cla
 
 ## A job with `depends_on` runs in the shared checkout instead of its own worktree
 
-**Symptom:** a dependent job (one with `depends_on` and `isolation: worktree` in the manifest) shows `agent_isolation: null` in `state.json` and its agent edited the main checkout directly, alongside whatever else that wave is running — not an isolated worktree.
+**Symptom:** a dependent job (one with `depends_on` and `isolation: worktree` in the manifest) shows `agent_isolation: null` in its job spec inside `docs/superpowers/execution/<run>/dispatch.workflow.js` (never in `state.json`, which keeps the manifest's `isolation: worktree`) and its agent edited the main checkout directly, alongside whatever else that wave is running — not an isolated worktree.
 
 **Cause:** `scripts/compound-v-emit-workflow.py`'s `_worktree_base_is_head` reads `worktree.baseRef` from the project's `.claude/settings.json`. Absent (the default), a dependent worktree job's `agent_isolation` resolves to `None` and the agent runs direct in the shared checkout — because a fresh worktree still branches from the default ref, which cannot see the prerequisite wave's commit yet (finding 60). Set to `"head"`, every worktree in the repo branches from the current `HEAD` instead, and the dependent job gets a real, isolated worktree that does contain the prerequisite's commit.
 

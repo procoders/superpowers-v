@@ -41,7 +41,7 @@ Run this once — it detects which model CLIs you have, saves the config, and of
 ```
 
 **Then just work.** Describe the feature, or start brainstorming as usual. A `UserPromptSubmit` hook scores the first change request of each session
-and sizes it as DIRECT, SCOPED or FULL. There is no command to launch the orchestration; it is automatic.
+and sizes it as DIRECT, SCOPED or FULL. There is no command to launch the orchestration; Claude runs it for you.
 
 ## 🎮 New here? Learn it as a game → **[Compound V Academy](https://amiainative.dev/compound-v)**
 Three gamified episodes walk you through the whole pipeline, and the **[cheatsheet](https://amiainative.dev/compound-v/cheatsheet)** puts commands, triggers, memory and routing on one page.
@@ -63,7 +63,7 @@ and Cursor are opt-in, lower-trust workers. Every write is checked against a git
 - **Cross-model review.** A second opinion from another model family, on the plan and on the code. Different models have different blind spots. Advisory — the orchestrator decides.
 - **Epic mode.** Feed it a whole PRD and it builds feature by feature, in dependency order, on one branch. It checkpoints after each feature unless you raise the budget.
 - **Epic autonomy.** On the `marathon` stance, `/v:epic` offers — never arms silently — a native way to keep going: `/loop` to keep resuming in this session, or `/schedule` in the cloud.
-- **V-memory.** Project memory over `docs/superpowers/**` — decisions, bugs, dead ends. Local, offline, and fresh by construction: a search refreshes its own index before it queries.
+- **V-memory.** Project memory over `docs/superpowers/**` — decisions, bugs, dead ends. Local, offline, fresh by construction (a search refreshes its own index first), and read by the reviewers before every verdict.
 - **Co-change advisory.** When the partition reviewer runs, it asks git history which files almost always move together, and warns when a plan forgot one. It never changes a verdict.
 - **Research-grounded brainstorming** 🧪 — on an unfamiliar topic, a gated recon pass writes an evidence doc the brainstorm reads first, and independent questions batch into one screen.
 
