@@ -1,0 +1,89 @@
+{
+  "baseline_commit": "5ac9b8124a28a1fc4decb1323fca4c6a4229c78b",
+  "diff_digest": "sha256:61c4936e8d9a7ea9a86d0231a18008a7730d5bf51af34a05f0f4f2b2c0c38415",
+  "exit_code": 0,
+  "job_id": "spec-review-1",
+  "patch_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-glob-parity-matcher-docs-r3/jobs/spec-review-1.patch",
+  "patch_paths": [
+    "docs/superpowers/dogfood/2026-09-03-epic-gp-matcher-docs-r3-review-1.md"
+  ],
+  "patch_sha256": "sha256:61c4936e8d9a7ea9a86d0231a18008a7730d5bf51af34a05f0f4f2b2c0c38415",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"5ac9b8124a28a1fc4decb1323fca4c6a4229c78b\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-03-epic-gp-matcher-docs-r3-review-1.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-03-epic-gp-matcher-docs-r3-review-1.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "5ac9b8124a28a1fc4decb1323fca4c6a4229c78b",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "docs/superpowers/dogfood/2026-09-03-epic-gp-matcher-docs-r3-review-1.md",
+      "docs/superpowers/execution/2026-09-03-glob-parity-matcher-docs-r3/.run.lock",
+      "docs/superpowers/execution/2026-09-03-glob-parity-matcher-docs-r3/jobs/spec-review-1.baseline",
+      "docs/superpowers/execution/2026-09-03-glob-parity-matcher-docs-r3/jobs/spec-review-1.test-contract.json",
+      "docs/superpowers/execution/2026-09-03-glob-parity-matcher-docs-r3/lane-map.json",
+      "docs/superpowers/execution/2026-09-03-glob-parity-matcher-docs-r3/preexisting/spec-review-1.txt",
+      "docs/superpowers/execution/2026-09-03-glob-parity-matcher-docs-r3/preexisting/spec-review-1.verified.txt",
+      "docs/superpowers/execution/2026-09-03-glob-parity-matcher-docs-r3/state.json",
+      "docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r2/logs/sandbox-helper.events.jsonl",
+      "docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r3/logs/sandbox-helper.events.jsonl",
+      "docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r4/logs/sandbox-helper-fix.events.jsonl",
+      "docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r5/logs/sandbox-helper-fix.events.jsonl",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r2/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r3/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r4/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r5/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes/.run.lock"
+    ],
+    "checks": [
+      {
+        "checker": "bash -c 'for f in skills/compound-v/memory.md skills/compound-v/execution-manifest.md; do [ \"$(grep -c \"matches within one path segment\" \"$f\")\" = \"1\" ] || { echo \"six-rule sentence count != 1 in $f\"; exit 1; }; grep -q \"the same matcher\" \"$f\" || { echo \"missing phrase in $f\"; exit 1; }; done; [ \"$(wc -l < skills/compound-v/memory.md | tr -d \" \")\" = \"202\" ] || { echo \"memory.md line count changed\"; exit 1; }; grep -q \"^\\*\\*Glob semantics\" skills/compound-v/execution-manifest.md || { echo \"paragraph not at line start (inside a table?)\"; exit 1; }'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash tests/test-engine-c-contract.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash tests/test-epic-goal-stop.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash tests/test-hook-recursion-guard.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash tests/test-integration-gate.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash tests/test-lane-guard.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (1 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 0 command(s) from 17 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)",
+      "unmapped: docs/superpowers/dogfood/2026-09-03-epic-gp-matcher-docs-r3-review-1.md, docs/superpowers/execution/2026-09-03-glob-parity-matcher-docs-r3/.run.lock, docs/superpowers/execution/2026-09-03-glob-parity-matcher-docs-r3/jobs/spec-review-1.baseline, docs/superpowers/execution/2026-09-03-glob-parity-matcher-docs-r3/jobs/spec-review-1.test-contract.json, docs/superpowers/execution/2026-09-03-glob-parity-matcher-docs-r3/lane-map.json, docs/superpowers/execution/2026-09-03-glob-parity-matcher-docs-r3/preexisting/spec-review-1.txt, docs/superpowers/execution/2026-09-03-glob-parity-matcher-docs-r3/preexisting/spec-review-1.verified.txt, docs/superpowers/execution/2026-09-03-glob-parity-matcher-docs-r3/state.json, docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r2/logs/sandbox-helper.events.jsonl, docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r3/logs/sandbox-helper.events.jsonl, docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r4/logs/sandbox-helper-fix.events.jsonl, docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r5/logs/sandbox-helper-fix.events.jsonl, docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r2/.run.lock, docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r3/.run.lock, docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r4/.run.lock, docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r5/.run.lock, docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes/.run.lock matched no `when` glob \u2014 at tier SCOPED that resolves to the 5 test(s) REFERENCING the changed module(s), not to full_command (v3.4.1 decision 4; capped at 5). This is a textual heuristic, not a call graph: CI stays the backstop"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": ""
+}

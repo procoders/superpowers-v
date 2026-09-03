@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-03-epic-gp-matcher-docs-r3-review-1.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "5ac9b8124a28a1fc4decb1323fca4c6a4229c78b",
+    "diff_digest": "sha256:61c4936e8d9a7ea9a86d0231a18008a7730d5bf51af34a05f0f4f2b2c0c38415",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"5ac9b8124a28a1fc4decb1323fca4c6a4229c78b\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-03-epic-gp-matcher-docs-r3-review-1.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-03-epic-gp-matcher-docs-r3-review-1.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "5ac9b8124a28a1fc4decb1323fca4c6a4229c78b",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Review Gate \u2014 three passes; every row of the r2 review's constraint table re-checked",
+  "tests": {
+    "command": "bash -c 'for f in skills/compound-v/memory.md skills/compound-v/execution-manifest.md; do [ \"$(grep -c \"matches within one path segment\" \"$f\")\" = \"1\" ] || { echo \"six-rule sentence count != 1 in $f\"; exit 1; }; grep -q \"the same matcher\" \"$f\" || { echo \"missing phrase in $f\"; exit 1; }; done; [ \"$(wc -l < skills/compound-v/memory.md | tr -d \" \")\" = \"202\" ] || { echo \"memory.md line count changed\"; exit 1; }; grep -q \"^\\*\\*Glob semantics\" skills/compound-v/execution-manifest.md || { echo \"paragraph not at line start (inside a table?)\"; exit 1; }'\nbash tests/test-engine-c-contract.sh\nbash tests/test-epic-goal-stop.sh\nbash tests/test-hook-recursion-guard.sh\nbash tests/test-integration-gate.sh\nbash tests/test-lane-guard.sh",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted+referencing",
+    "selected_count": 6
+  },
+  "violations": [],
+  "worktree": ""
+}

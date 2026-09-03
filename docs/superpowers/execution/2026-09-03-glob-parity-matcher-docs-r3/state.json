@@ -1,6 +1,6 @@
 {
   "run_id": "2026-09-03-glob-parity-matcher-docs-r3",
-  "phase": "DISPATCHED",
+  "phase": "MERGED",
   "updated_at": "2026-09-03T20:58:00Z",
   "pre_eval_id": "2026-09-03T204415Z-epic-feature-matcher-docs-attempt-3-reset-skills-compound-v-5461",
   "escalated_to": null,
@@ -44,11 +44,19 @@
       }
     },
     "spec-review-1": {
-      "status": "pending",
+      "status": "done",
       "isolation": "direct",
-      "worktree": null,
+      "worktree": "",
       "session_id": null,
-      "log": null
+      "log": null,
+      "baseline": "5ac9b8124a28a1fc4decb1323fca4c6a4229c78b",
+      "realised_commit": "5ac9b8124a28a1fc4decb1323fca4c6a4229c78b",
+      "merged": {
+        "realised_commit": "5ac9b8124a28a1fc4decb1323fca4c6a4229c78b",
+        "mode": "direct",
+        "integrated": true,
+        "commit": "953f0d30b0a78021777ddea7eca0cc58397f9617"
+      }
     }
   },
   "waves": {
@@ -61,6 +69,22 @@
       ],
       "commit": "9cbf3dd28fda5ff3ee948747bfb691be1a6d0c78",
       "integrated": true
+    },
+    "2": {
+      "jobs": [
+        "spec-review-1"
+      ],
+      "merged": [
+        "spec-review-1"
+      ],
+      "commit": "953f0d30b0a78021777ddea7eca0cc58397f9617",
+      "integrated": true
     }
-  }
+  },
+  "triage_actual": {
+    "merge_pending": true,
+    "pre_eval_id": "2026-09-03T204415Z-epic-feature-matcher-docs-attempt-3-reset-skills-compound-v-5461",
+    "run_id": "2026-09-03-glob-parity-matcher-docs-r3"
+  },
+  "merged_at": "2026-09-03T20:58:00Z"
 }

@@ -1,0 +1,14 @@
+{
+  "scope": "impacted+referencing",
+  "resolved_commands": [
+    "bash -c 'for f in skills/compound-v/memory.md skills/compound-v/execution-manifest.md; do [ \"$(grep -c \"matches within one path segment\" \"$f\")\" = \"1\" ] || { echo \"six-rule sentence count != 1 in $f\"; exit 1; }; grep -q \"the same matcher\" \"$f\" || { echo \"missing phrase in $f\"; exit 1; }; done; [ \"$(wc -l < skills/compound-v/memory.md | tr -d \" \")\" = \"202\" ] || { echo \"memory.md line count changed\"; exit 1; }; grep -q \"^\\*\\*Glob semantics\" skills/compound-v/execution-manifest.md || { echo \"paragraph not at line start (inside a table?)\"; exit 1; }'",
+    "bash tests/test-engine-c-contract.sh",
+    "bash tests/test-epic-goal-stop.sh",
+    "bash tests/test-hook-recursion-guard.sh",
+    "bash tests/test-integration-gate.sh",
+    "bash tests/test-lane-guard.sh"
+  ],
+  "selected_count": 6,
+  "floor_command": "bash -c 'for f in skills/compound-v/memory.md skills/compound-v/execution-manifest.md; do [ \"$(grep -c \"matches within one path segment\" \"$f\")\" = \"1\" ] || { echo \"six-rule sentence count != 1 in $f\"; exit 1; }; grep -q \"the same matcher\" \"$f\" || { echo \"missing phrase in $f\"; exit 1; }; done; [ \"$(wc -l < skills/compound-v/memory.md | tr -d \" \")\" = \"202\" ] || { echo \"memory.md line count changed\"; exit 1; }; grep -q \"^\\*\\*Glob semantics\" skills/compound-v/execution-manifest.md || { echo \"paragraph not at line start (inside a table?)\"; exit 1; }'",
+  "full_command": "bash -c '/usr/bin/python3 scripts/lint-frontmatter.py >/dev/null && for f in skills/compound-v/memory.md skills/compound-v/execution-manifest.md; do [ \"$(grep -c \"matches within one path segment\" \"$f\")\" = \"1\" ] || exit 1; done'"
+}
