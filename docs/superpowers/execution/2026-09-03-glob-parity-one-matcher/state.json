@@ -1,7 +1,7 @@
 {
   "run_id": "2026-09-03-glob-parity-one-matcher",
-  "phase": "PARTITION_VERIFIED",
-  "updated_at": "2026-09-03T19:23:00Z",
+  "phase": "DISPATCHED",
+  "updated_at": "2026-09-03T19:41:00Z",
   "pre_eval_id": "2026-09-03T190910Z-build-epic-feature-one-matcher-docs-superpowers-execution-ep-2a9b",
   "escalated_to": null,
   "total_retries": 0,
@@ -11,12 +11,19 @@
   "attempts": {},
   "jobs": {
     "matcher-swap": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_e77d98a8-18a-1",
       "session_id": null,
       "log": null,
-      "realised_commit": "3dad7dd78b21cc2cd467fe38691938339e49d690"
+      "realised_commit": "155239a8916da3f380a7f00ba847385de1e2cbdb",
+      "baseline": "155239a8916da3f380a7f00ba847385de1e2cbdb",
+      "merged": {
+        "realised_commit": "155239a8916da3f380a7f00ba847385de1e2cbdb",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "4bc979a39759deafbfd8471405c18a433cd4a5e3"
+      }
     },
     "spec-review-1": {
       "status": "pending",
@@ -27,5 +34,17 @@
     }
   },
   "blocked_reason": "wave 1: integration REFUSED by scripts/compound-v-integration-gate.py: {\"blocked\": 1}. Nothing was merged and nothing was committed.",
-  "blocked_at": "2026-09-03T19:23:00Z"
+  "blocked_at": "2026-09-03T19:23:00Z",
+  "waves": {
+    "1": {
+      "jobs": [
+        "matcher-swap"
+      ],
+      "merged": [
+        "matcher-swap"
+      ],
+      "commit": "4bc979a39759deafbfd8471405c18a433cd4a5e3",
+      "integrated": true
+    }
+  }
 }

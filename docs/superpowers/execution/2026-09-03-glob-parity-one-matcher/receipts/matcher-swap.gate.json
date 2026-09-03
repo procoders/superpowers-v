@@ -1,0 +1,48 @@
+{
+  "baseline_commit": "155239a8916da3f380a7f00ba847385de1e2cbdb",
+  "diff_digest": "sha256:458355c1bf263552374d139297798a519b22ff7c99ea1beda6bf04cac6fbdb29",
+  "exit_code": 0,
+  "job_id": "matcher-swap",
+  "patch_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-glob-parity-one-matcher/jobs/matcher-swap.patch",
+  "patch_paths": [
+    "scripts/compound-v-memory.py"
+  ],
+  "patch_sha256": "sha256:458355c1bf263552374d139297798a519b22ff7c99ea1beda6bf04cac6fbdb29",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"155239a8916da3f380a7f00ba847385de1e2cbdb\",\n  \"changed\": [\n    \"scripts/compound-v-memory.py\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-memory.py\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "155239a8916da3f380a7f00ba847385de1e2cbdb",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "scripts/compound-v-memory.py"
+    ],
+    "checks": [
+      {
+        "checker": "bash -c 'python3 -B scripts/compound-v-memory.py --selftest >/dev/null && python3 -B scripts/compound-v-scope-check.py --selftest >/dev/null'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f scripts/compound-v-memory.py ] || exit 0; grep -q -- \"--selftest\" scripts/compound-v-memory.py || exit 0; /usr/bin/python3 -B scripts/compound-v-memory.py --selftest >/dev/null'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (1 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 1 command(s) from 1 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_e77d98a8-18a-1"
+}
