@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [3.4.6] - 2026-09-03
+
+The stage-5a follow-up: two triage/test-scoping defects the previous release surfaced, and — because this
+release's own runs kept dying to it — the engine gap that made a turn-capped implementer void its wave.
+Six runs, one review; the emitter item was applied by hand from the fifth run's sealed patch.
+
 ### Fixed — a small edit to a large content-scan-excluded script could never demote to SCOPED (finding 99)
 
 A request naming `scripts/compound-v-memory.py` (76,230 B) sized FULL instead of demoting to
@@ -42,6 +48,42 @@ worker scripts' own 900 s fallback no longer decides anything. A checker that ti
 plus a `timeout after N s: <checker>` entry in `tests.failures[]`; the top-level `failure_class`
 is never set by a timeout. Absent from the manifest, the budget is 480 s on every path (Engine C and external). The evidence was the run itself: the refused job's receipt carries `rc 124` from a suite that
 measures 340 s on this machine under load against the 300 s constant.
+
+### Fixed — an implementer that returned nothing no longer voids its whole wave (findings 107, 108, 109, 113, 115)
+
+Three runs of this very release merged nothing because one job's implementer hit its 80-turn cap and the
+runtime handed back an empty (or null) result: the gate had no worktree, Record refused to reconstruct one,
+the authority saw an unreceipted job and the finalizer refused the passing siblings with it. For a Claude
+worktree job the lane guard already knows the tree — `lane-map.json` maps the registered cwd to the job —
+so the gate now resolves it (`--impl-no-result`), tags the receipt, and Record refuses *that* job as
+`status: error` with the measured tree and its sealed patch as evidence. External workers keep failing
+closed (their tree is outside the checkout). The fifth attempt at the emitter item proved it: the job ran out
+of turns after finishing the work, its sibling merged, and its sealed patch applied cleanly by hand.
+
+### Known — a refused batch still halts the run before the next batch (finding 112)
+
+With `max_parallel` smaller than the wave, a job refused in batch 1 stops batch 2 from ever starting, even
+when the refusal is a red test rather than a scope violation. Whether a plain `blocked` should halt the wave
+or only itself is a policy decision recorded for the maintainer; until then, order the riskiest jobs last.
+
+### Known — the spec path named in a request counts toward fan-out (finding 104)
+
+"Implement X per docs/superpowers/specs/Y.md in a.py and b.py" localizes to three paths, one over the
+demotion limit of two, so a well-referenced two-file request is sized FULL. The spec is read, never written;
+a later cycle decides whether reference paths under `docs/superpowers/` should count.
+
+### Changed — a reviewer on the frontier tier (Fable) satisfies the deep-reasoning invariant (finding 119)
+
+Three consecutive `API Error: 529 Overloaded` on the Opus reviewer, and the manifest was the only way to
+lift it; the v3.0.5 rule read "deep or opus" literally and refused the stronger seat. Stronger passes,
+a light reviewer still fails. Escalating a reviewer stays a dispatch-time decision, never a default.
+
+### Known — no in-run retry on Engine C for a transient API failure (finding 118)
+
+The deterministic retry policy (`compound-v-failure-policy.py`: overloaded / rate-limited / network / timeout
+retry the same backend with backoff) is wired into the residual dispatcher and the external workers, not into
+the native Workflow: an `agent()` that dies on a 529 is recorded as an error and its wave is refused. Today's
+remedy is `/v:resume <run-id>` or a fresh run; the in-workflow retry with the same policy is the next cycle.
 
 ## [3.4.5] - 2026-09-03
 
