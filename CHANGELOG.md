@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed — a small edit to a large content-scan-excluded script could never demote to SCOPED (finding 99)
 
-A request naming `scripts/compound-v-memory.py` (66,677 B) sized FULL instead of demoting to
+A request naming `scripts/compound-v-memory.py` (76,230 B) sized FULL instead of demoting to
 SCOPED: the file is over `MAX_FILE_READ_BYTES` (65,536 B), and `_classify_paths` set
 `content_scan_incomplete` for it even though its path is content-scan-excluded — the scorer
 treats that flag as impact-raising, and the raised impact vetoed the demotion. The flag now
@@ -20,6 +20,14 @@ are untouched either way. In a sandbox checkout, `triage` on the memory-engine r
 returns `needs_t3` (demotion) where the previous commit returned FULL with tiers
 `[localization, T1]`.
 
+### Fixed — run-dir bookkeeping and gitignored paths no longer promote a test slice to the full suite; `.run.lock` retires at a terminal phase (finding 105)
+
+A direct-mode job reported 46 stale `docs/superpowers/execution/*/.run.lock` files as changed paths; the
+test-contract resolver counted each as an unmapped path and ran `full_command` — the same 300 s stopwatch
+that refused r2's docs job. `resolve_test_commands` now ignores paths under `docs/superpowers/execution/**`
+and gitignored paths for that promotion (a contract note says how many), and the wave finalizer deletes
+the run's `.run.lock` when the run is MERGED or BLOCKED, alongside the lane map.
+
 ### Fixed — the tier-1 test checker's 300 s cap was a constant, and a timeout was refused as a plain failure (finding 102)
 
 An epic's docs job was refused by its own test suite, not by its diff: Engine C direct-mode
@@ -29,12 +37,11 @@ ran 340 s hit the wall and came back as an undifferentiated failure. `test_contr
 is now a real, plumbed budget: an integer (never a bool) in 1..540 — the 540 cap stays under the
 harness's 600 s foreground ceiling for one Bash call, so an over-budget suite still returns rc
 124 with a job_result instead of an outer kill with none — applied to `full_command`, impacted,
-and floor checks alike, and passed through to external workers as `--test-timeout-sec` in place
-of the previously hardcoded 900. A checker that times out now records `tests.exit_code: 124`
+and floor checks alike, and passed through to external workers as `--test-timeout-sec` — always, so the
+worker scripts' own 900 s fallback no longer decides anything. A checker that times out now records `tests.exit_code: 124`
 plus a `timeout after N s: <checker>` entry in `tests.failures[]`; the top-level `failure_class`
-is never set by a timeout. Absent from the manifest, the budget still defaults to 480 s, not
-600 s. A four-request sandbox probe confirmed the 300 s constant was the only source of the
-observed 124s before this fix.
+is never set by a timeout. Absent from the manifest, the budget is 480 s on every path (Engine C and external). The evidence was the run itself: the refused job's receipt carries `rc 124` from a suite that
+measures 340 s on this machine under load against the 300 s constant.
 
 ## [3.4.5] - 2026-09-03
 

@@ -1356,11 +1356,15 @@ def build_launch_argv(job, entry, run_id, repo_root, run_dir, model):
         # slice file itself, so this flag is belt-and-braces rather than the
         # only path — but it is the EXPLICIT declaration the manifest made,
         # passed as a real argument rather than left to be re-parsed. Absent
-        # ⇒ the worker's own `--test-timeout-sec` default applies unchanged.
+        # ⇒ the DOCUMENTED default (480 s, execution-manifest.md), passed
+        # explicitly: the worker scripts' own fallback is 900, and leaving the
+        # flag off made the external path default to a number no document
+        # names (v3.4.6 review-1, item 1).
         _tc_timeout_s = entry.get("test_contract_timeout_s")
-        if isinstance(_tc_timeout_s, int) and not isinstance(_tc_timeout_s, bool) \
-                and _tc_timeout_s > 0:
-            argv += ["--test-timeout-sec", str(_tc_timeout_s)]
+        if not (isinstance(_tc_timeout_s, int) and not isinstance(_tc_timeout_s, bool)
+                and 1 <= _tc_timeout_s <= 540):
+            _tc_timeout_s = 480
+        argv += ["--test-timeout-sec", str(_tc_timeout_s)]
     return argv
 
 
@@ -4077,6 +4081,13 @@ def _retire_run_lock(run_dir):
     leave a concurrent `_run_dir_lock` free to flock a freshly-created inode
     at the same path while this one's descriptor (and its lock) is still
     live."""
+    # The rule, stated once: the lock goes when the RUN is terminal (MERGED or
+    # BLOCKED), read from state.json — not when some other retirement happened
+    # to return True (v3.4.6 review-1, item 6: two of three call sites were
+    # gated on `_retire_lane_map`'s return value, the third was not).
+    _st = _read_json(os.path.join(run_dir, "state.json"), None) or {}
+    if str(_st.get("phase") or "").upper() not in ("MERGED", "BLOCKED"):
+        return False
     try:
         os.remove(os.path.join(run_dir, ".run.lock"))
         return True
@@ -4427,8 +4438,7 @@ def cmd_finalize_wave(argv):
             # `_apply`'s own `with _run_dir_lock(...)` has released by the time
             # it returns, so retiring the lock file here (never inside that
             # `with`) cannot race the lock this same process still holds.
-            if out.get("lane_map_retired"):
-                _retire_run_lock(run_dir)
+            _retire_run_lock(run_dir)
             return emit(1)
         if sha:
             out["commit"] = sha
@@ -4570,8 +4580,7 @@ def cmd_finalize_wave(argv):
     _apply(now=args.now)
     # Same rule as the refusal path above: `_apply`'s own run-dir lock has
     # already been released, so the retirement runs here, never inside it.
-    if out.get("lane_map_retired"):
-        _retire_run_lock(run_dir)
+    _retire_run_lock(run_dir)
 
     # ---- COMMIT THE RUN'S OWN RECORD, separately from the work -------------- #
     # The audit-trail gate requires a committed state.json, and finishing a

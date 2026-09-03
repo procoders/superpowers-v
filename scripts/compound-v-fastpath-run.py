@@ -1016,10 +1016,13 @@ def resolve_test_commands(contract, scope, changed_paths=None, new_paths=None,
         slice_["full_command"] = full
     timeout_s = contract.get("timeout_s")
     if timeout_s is not None:
-        if isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float)) \
-                or timeout_s <= 0:
+        if isinstance(timeout_s, bool) or not isinstance(timeout_s, int) \
+                or not 1 <= timeout_s <= 540:
+            # The same rule the manifest validator enforces (int, never a bool,
+            # 1..540 under the harness's 600 s ceiling) — the slice is the
+            # authority the worker reads, so it must not be looser (review-1, item 7).
             raise TestContractError(
-                "test_contract.timeout_s must be a positive number when declared "
+                "test_contract.timeout_s must be an integer in 1..540 when declared "
                 "(got %r)" % (timeout_s,))
         slice_["timeout_s"] = timeout_s
     return slice_, notes
