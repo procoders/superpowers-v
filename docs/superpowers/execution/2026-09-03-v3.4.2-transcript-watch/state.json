@@ -33,11 +33,12 @@
       }
     },
     "spec-review": {
-      "status": "pending",
+      "status": "done",
       "isolation": "direct",
-      "worktree": null,
+      "worktree": "",
       "session_id": null,
-      "baseline": "87db94ee190a4d831fab95daabca3a5db5542d45"
+      "baseline": "87db94ee190a4d831fab95daabca3a5db5542d45",
+      "realised_commit": "87db94ee190a4d831fab95daabca3a5db5542d45"
     }
   },
   "waves": {
@@ -62,6 +63,11 @@
       "integrated": false
     }
   },
-  "blocked_reason": "wave 2 refused: spec-review",
-  "blocked_at": "2026-09-03T05:29:47Z"
+  "blocked_reason": "wave 2: integration REFUSED by scripts/compound-v-integration-gate.py: {\"stale\": 1}. Nothing was merged and nothing was committed.",
+  "blocked_at": "2026-09-03T05:34:05Z",
+  "triage_actual": {
+    "merge_pending": true,
+    "pre_eval_id": "2026-09-03T042847Z-implement-v3-4-2-transcript-play-ahead-per-docs-superpowers-47e6",
+    "run_id": "2026-09-03-v3.4.2-transcript-watch"
+  }
 }
