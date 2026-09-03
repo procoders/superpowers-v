@@ -1,0 +1,66 @@
+{
+  "run_id": "2026-09-03-v3.4.10-recall-to-action",
+  "pre_eval_id": "2026-09-03T174841Z-implement-v3-4-10-per-docs-superpowers-specs-2026-09-03-v3-4-904b",
+  "diff_digest": "sha256:987c52ced34344bddd9dd72fd3d3420790a9e289a7137b09904f4ea3d62b3cc4",
+  "reviewer_backend": "codex",
+  "reviewer_model": "gpt-5.6-sol",
+  "produced_at": "2026-09-03T18:39:18Z",
+  "review": {
+    "verdict": "concerns",
+    "summary": "The bridge is substantially implemented, and the listed implementation lanes, isolation, and model tiers are reasonable. However, several cross-component contracts remain unsound: recall uses different glob semantics from the authoritative scope gate, routing can be influenced by structurally invalid records or configuration values, the partition omits a changed shared specification and a contradictory primary skill document, and the review/state acceptance contracts do not match the emitted behavior. These should be adjudicated before treating the feature as complete.",
+    "findings": [
+      {
+        "severity": "high",
+        "category": "coupling",
+        "claim": "Recall does not use the authoritative lane glob semantics, so it can tighten a job based on files outside that job's actual write lane or miss files inside it.",
+        "evidence": "`scripts/compound-v-memory.py:1061-1068` uses `fnmatch.fnmatch`, where `*` crosses `/` and brackets form character classes. `scripts/compound-v-scope-check.py:317-381` deliberately implements the opposite contract: `*` is segment-local and brackets are literal. A direct probe shows `_file_matches('src/deep/x.py', ['src/*.py']) == True` while the scope matcher returns False; for `app/[locale]/**`, recall matches `app/l/x` and misses the literal `app/[locale]/x`, while the scope gate does the reverse. With `auto_tighten`, these false matches affect model routing.",
+        "recommendation": "Extract or reuse one canonical lane matcher for both components. Add parity tests covering single-star recursion, `**`, literal bracket segments, and bare-directory patterns before enabling mechanical tightening."
+      },
+      {
+        "severity": "high",
+        "category": "risk",
+        "claim": "The new mechanical routing action trusts unvalidated mutable JSON and accepts semantically invalid engine responses.",
+        "evidence": "`scripts/compound-v-memory.py:1035-1058` walks every JSON file under any `results` directory and treats truthy `blocked` or selected status strings as authoritative without validating `job_result.schema.json`, a gate receipt, commit provenance, or even required field types. Separately, `scripts/compound-v-emit-workflow.py:1384-1407` accepts any non-empty verdict and coerces malformed `match_count`; `{ \"verdict\": \"tighten\", \"match_count\": 0, \"evidence\": [] }` still enters `tightened`, raises the tier, and emits no prior-failure prompt. Two planted partial result files can therefore influence routing despite not being authoritative job results.",
+        "recommendation": "Before acting mechanically, validate source records' enforcement fields and provenance, and accept only `verdict in {none,tighten}` with non-negative counts and `tighten` satisfying the declared threshold/evidence invariants. Treat every other response as `unavailable` and add malformed-but-valid-JSON tests."
+      },
+      {
+        "severity": "high",
+        "category": "partition",
+        "claim": "The Partition Map does not cover the final shared-contract surface, so the claimed independent jobs are based on a specification that was later changed outside any declared lane.",
+        "evidence": "`docs/superpowers/plans/2026-09-03-v3.4.10-recall-to-action.md:5-9` assigns only the emitter and three documentation files. The reviewed patch also changes `docs/superpowers/specs/2026-09-03-v3.4.10-recall-to-action-design.md`, which both tasks read as their contract. In addition, `skills/compound-v/SKILL.md:189` remains outside Task B's scope and still describes the removed actions `force worktree / add a review pass / fold into Task 0`, contradicting the emitter and `memory.md`.",
+        "recommendation": "Add a serial contract/docs task owning the design specification and `skills/compound-v/SKILL.md`, then make the emitter and downstream documentation tasks depend on it. Explicitly distinguish orchestrator-generated receipts/telemetry from task-owned product files."
+      },
+      {
+        "severity": "medium",
+        "category": "acceptance",
+        "claim": "The emitted review clause does not require the promised recall-check rerun over the merged diff, and the selftest cannot detect that omission.",
+        "evidence": "The design at `docs/superpowers/specs/2026-09-03-v3.4.10-recall-to-action-design.md:29-33` and `skills/compound-v/memory.md:95-100` require the reviewer to re-run `recall-check` over the merged diff. `RECALL_REVIEW_CLAUSE` at `scripts/compound-v-emit-workflow.py:1321-1326` merely says to inspect files against existing `state.json` evidence. The selftest only looks for `Recall re-check` and the implement-job id, so this weaker clause passes.",
+        "recommendation": "Make the clause explicitly require the CLI rerun over git-derived merged-diff paths and reporting its result. Assert the command/action in the selftest, not just a heading and job id."
+      },
+      {
+        "severity": "high",
+        "category": "model-routing",
+        "claim": "`memory.auto_tighten` is not a strict opt-in because configuration values are coerced by truthiness.",
+        "evidence": "`scripts/compound-v-emit-workflow.py:1791` uses `bool(memory_cfg.get('auto_tighten'))`; a common malformed JSON edit such as `\"auto_tighten\": \"false\"` silently enables tier escalation. Lines 1795-1796 use an exact comparison only for `auto_recall`, so `\"auto_recall\": \"false\"` silently leaves recall enabled. Tests at lines 8178-8186 cover only correctly typed booleans.",
+        "recommendation": "Require exact JSON booleans: enable tightening only when the value `is True`, honor recall-off only when it `is False`, and surface a warning for every other type. Add string, integer, null, and manifest-override cases."
+      },
+      {
+        "severity": "medium",
+        "category": "acceptance",
+        "claim": "The plan is internally inconsistent about which recall verdicts reach `state.json` and whether a clean-lane job has a `recall_check` field.",
+        "evidence": "The design at line 21 and `skills/compound-v/memory.md:111-115` say the verdict reaches `state.json`. The emitter creates `recall_check_file` only for `tighten` (`scripts/compound-v-emit-workflow.py:1945-1949`) and includes `--recall-check-json` only when that file exists (`:2212-2222`), so `none` and `unavailable` never reach state. Meanwhile the feature AC says that with fewer matches \u201cneither appears,\u201d although every emitted job entry still contains a `none` verdict, and AC 3 requires an `unavailable` verdict under `--no-recall`.",
+        "recommendation": "Choose one contract explicitly: either persist every implement-job verdict through `register-lane`, or state that only `tighten` is persisted and identify where `none`/`unavailable` live. Rewrite the contradictory AC and test state plus emitted-entry behavior for all three verdicts."
+      }
+    ],
+    "blind_spots_checked": [
+      "Expanded the original Task A and Task B write scopes; their four declared implementation files do not overlap directly.",
+      "Checked sequencing: the original review job depends on both implementation jobs, so no early review-reader dependency was found.",
+      "Checked model routing and isolation: the emitter task is deep/high in a worktree, the mechanical docs task is light/low in a worktree, and the review is deep; no unsafe external-worker isolation was found.",
+      "Checked that tier raising occurs before model resolution and that explicit model pins are preserved.",
+      "Checked degraded paths for missing engines, non-JSON output, non-zero exits, timeout, and `--no-recall`; the ordinary direct-child cases continue rather than refusing emit.",
+      "Checked the new config and review-short-circuit selftests for revert sensitivity.",
+      "Checked state handoff and resume-related artifacts, including the conditional recall-check file and `register-lane` path."
+    ]
+  },
+  "digest": "sha256:87a18bfc9ae458c1eda1a7d9b492db54ca6e330b6689c26aacad7f55ab19d53f"
+}

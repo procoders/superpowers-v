@@ -1,0 +1,1490 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 10f81fd..2a6db43 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+ 
+ ## [Unreleased]
+ 
++### Added — the recall→action bridge acts at emit time (stage 5b, finding 130)
++
++`recall-check` said `tighten` for 7 of the 27 runs dispatched today, and nothing consumed the
++signal. It now runs at emit time for every implement job: prior-failure evidence and a reading
++budget always land in the implementer's prompt, and under `memory.auto_tighten` the job's tier
++is raised one rung and the review job gains a re-check clause — conservative-only, an explicit
++`model:` pin untouched. `emit --no-recall` and engine failures degrade to `unavailable`, never a
++refusal.
++
+ ## [3.4.9] - 2026-09-03
+ 
+ Two honesty fixes surfaced by the day's dogfooding: the pre-flight result now names every knowledge-base
+diff --git a/commands/v-init.md b/commands/v-init.md
+index 31d2c70..d5fc7b8 100644
+--- a/commands/v-init.md
++++ b/commands/v-init.md
+@@ -344,9 +344,10 @@ bootstrapped**; it never installs on its own.
+ - **"Auto-recall" (recommend)** — memory auto-surfaces related prior work during planning and
+   before the review gate, as **advisory evidence**. (`auto_recall: true`, `auto_tighten: false`)
+ - **"Auto-tighten"** — additionally, the deterministic `recall-check` bridge **auto-tightens**
+-  the next run (force worktree / +review pass / fold into Task 0) when the same files have
+-  repeatedly failed. Conservative-only — never reroutes to lower trust, never loosens.
+-  (`auto_recall: true`, `auto_tighten: true`)
++  the next run when the same lane has repeatedly failed: at emit time the job's tier is raised
++  one rung (`light → standard`, `standard → deep`; an explicit `model:` pin is never touched),
++  and the review job's acceptance gains a re-check clause. Conservative-only — never reroutes to
++  lower trust, never loosens. (`auto_recall: true`, `auto_tighten: true`)
+ 
+ ---
+ 
+diff --git a/docs/superpowers/dogfood/2026-09-03-v3.4.10-recall-to-action-review-2.md b/docs/superpowers/dogfood/2026-09-03-v3.4.10-recall-to-action-review-2.md
+new file mode 100644
+index 0000000..6a2be55
+--- /dev/null
++++ b/docs/superpowers/dogfood/2026-09-03-v3.4.10-recall-to-action-review-2.md
+@@ -0,0 +1,266 @@
++# Review Gate — pass 2 — run `2026-09-03-v3.4.10-recall-to-action-r2`
++
++**VERDICT: ISSUES** (1 blocking, 4 advisory — numbered in §5).
++**Review-1's five items are all closed in code.** Everything below is new, found in
++the closure itself.
++
++| Pass | Status |
++|---|---|
++| PASS 1 SPEC | **ISSUES** — the five closures land, but AC 4's "`commands/v-init.md` describes exactly these actions" still fails on a second phantom switch (`memory.auto_recall`), the twin of the defect review-1 closed in `memory.md` |
++| PASS 2 QUALITY | **ISSUES** — two of the five closures shipped with **no guard at all** (selftest count unchanged, 491 → 491); one stale in-code comment |
++| PASS 3 INTEGRATION | ✅ build green, five suites re-run at exit 0, no partition leak, live emit confirms item 5 — but AC 4 fails on §5 item 1 |
++
++Reviewed at `HEAD = 94350e1`, closure commit `90639cf`
++(*"v3.4.10 review-1 closure (items 1–5)…"*, 3 files, +35 −12).
++
++**SCOPED+ note.** `triage.tier: SCOPED`, `flavor: scoped_plus`. This is the run's
++**mandatory deep review**. The **cross-model (Codex) receipt at dispatch step 8 is
++still owed** — it has not been taken, and this pass does not substitute for it.
++
++---
++
++## 1. Step 0 — V-memory recall
++
++```
++$ /usr/bin/python3 -B scripts/compound-v-memory.py search \
++    "recall to action bridge review gate" --intent review --top 8
++V-memory: refreshed 4 stale doc(s) before recall (FTS5 lane)
++```
++
++Returned this run's own plan, spec, 1C audit and review-1, plus
++`docs/superpowers/specs/2026-06-27-v-memory-prd.md` §4 (the bridge's original
++"deterministic, conservative-only" contract) and `2026-09-02-df27-full-pass-review.md`.
++No prior incident of *this* shape. Evidence, not authority.
++
++**The conservative bridge, over the closure diff's own files:**
++
++```
++$ /usr/bin/python3 -B scripts/compound-v-memory.py recall-check --files \
++    scripts/compound-v-emit-workflow.py skills/compound-v/memory.md \
++    docs/superpowers/specs/2026-09-03-v3.4.10-recall-to-action-design.md
++recall-check: tighten (3/2 match on ...)
++  recommend (conservative-only): force_worktree, extra_review_pass, fold_into_task0
++  - 2026-09-03-v3.4.6-triage-test-scoping-fixes-r5/results/emitter.json: error on scripts/compound-v-emit-workflow.py
++  - 2026-09-03-v3.4.5-recall-freshness-r2/results/docs-2.json: blocked on skills/compound-v/memory.md
++  - 2026-09-02-df27-full-pass/results/spec-review.json: blocked on scripts/compound-v-emit-workflow.py
++```
++
++`tighten`, and the run already satisfies it: this r2 pass **is** the extra review
++pass the verdict recommends. Escalation-only — nothing here was loosened on the
++strength of a recall verdict.
++
++---
++
++## 2. PASS 1 — SPEC — review-1's items 1–5
++
++### 2.1 Scope lock
++
++`git status --porcelain` at the end of this pass:
++
++```
++ M docs/superpowers/execution/.../state.json          (register-lane's own bookkeeping)
++?? docs/superpowers/dogfood/2026-09-03-v3.4.10-recall-to-action-review-2.md   (my lane)
++?? .../jobs/spec-review-2.baseline, .../spec-review-2.test-contract.json, .../preexisting/
++```
++
++One file written, and it is the one file in `write_allowed`. No scope violation.
++
++### 2.2 The five closures
++
++| # | Review-1 item | Command | Result | Status |
++|---|---|---|---|---|
++| 1 | SPEC_GAP — the emitted reading budget is not the spec's | `grep -n "at most 20 reading calls" scripts/compound-v-emit-workflow.py` → `2307:` (emitted prompt) and `8168:` (selftest assertion) | `:2302-2311` now emits all four clauses: <code>`grep -n` for the symbols you need</code> · <code>then `sed -n` only those ranges, at most 20 reading calls in total</code> · `never read a large file top to bottom` · `commit what is complete … if the turn budget nears`. The old evidence-only budget is gone; the "recall never widens your lane" guard-rail is retained. Asserted in the selftest at `:8167-8171`. | **CLOSED** |
++| 2 | CONSTRAINT_VIOLATION — `auto_tighten` read from a manifest key nothing writes | `grep -n "_cfg_doc\|auto_tighten\|config_path =" scripts/compound-v-emit-workflow.py` | `:1783-1789` — `memory_cfg` starts empty, is filled from `_read_json(config_path)["memory"]` (`config_path` = `<repo>/.claude/compound-v.json`, computed at `:1732`), and the manifest's optional `memory:` block is merged **after**, so it is a per-run override exactly as review-1 asked. `_read_json(path, default=None)` exists at `:359`. | **CLOSED** (but unguarded — §3.3, issue 2) |
++| 3 | QUALITY — memory.md documents behaviour the code lacks | `sed -n '78,126p' skills/compound-v/memory.md` | `:90` now reads **"Always (unless `emit --no-recall`; no script reads `memory.auto_recall`)"** — the real gate, named, with the phantom switch explicitly disowned. Its other two claims are now *true* rather than re-worded: `:83` "for every `type: implement` job" matches the code after item 5, and the reading-budget sentence at `:92-95` matches what `:2302-2311` emits after item 1. | **CLOSED** |
++| 4 | advisory — the design's "and in the gate receipt" is unimplemented | `grep -n "receipt" docs/superpowers/specs/2026-09-03-v3.4.10-recall-to-action-design.md` | `:21` — the clause is struck, and the strike is *attributed* rather than silently vanished: "(Review-1 item 4: the gate receipt does not carry it; the clause was struck rather than the receipt widened.)" Spec now claims only the job entry + `state.json`, which is what ships. | **CLOSED** |
++| 5 | advisory — recall runs for every job, not every implement job | `grep -c recall_check .../dispatch.workflow.js` → `3`; `grep -n "Prior failures" .../dispatch.workflow.js` → *no match* | `:1800-1807` short-circuits `type: review` before the lookup, recording `{verdict: none, match_count: 0, note: "review job: recall-check is for implement lanes", recall_check_ms: 0}`. **Live proof, not just the selftest:** this very run emitted one review job and its prompt (`jobs/spec-review-2.prompt.md`) carries no `## Prior failures` section and its `register-lane` carries no `--recall-check-json` — the 76 ms review-1 measured is no longer spent. | **CLOSED** (but unguarded — §3.3, issue 3) |
++
++### 2.3 Over-build
++
++None. The closure is 42 changed lines across three files, every one of them
++traceable to a numbered item. No new flag, no new import, no new helper.
++
++---
++
++## 3. PASS 2 — QUALITY
++
++### 3.1 Code quality
++
++The item-2 fix is the right shape: config first, manifest merged over it, so a
++per-run override remains possible without the config becoming ceremonial. The
++item-5 short-circuit returns the same dict shape as every other branch, so
++`recalls[jid]` is still total and downstream `.get("verdict")` reads cannot
++`KeyError`.
++
++One stale comment (issue 4): `:1296` still says the mechanical consequence is
++*"opt-in **per manifest** (`memory.auto_tighten`)"* — which is precisely the
++sentence item 2 falsified 480 lines below it.
++
++### 3.2 No regression
++
++Nothing removed, nothing renamed. With `auto_tighten` false and no
++`.claude/compound-v.json` present (the state of this repo — `cat` reports **No such
++file or directory**, so `config_path` is `None` and the new branch is a no-op),
++routing is bit-for-bit what it was. Suites below, all green.
++
++### 3.3 Test alignment — **the closure's weak point**
++
++`--selftest` reports **491/491**, the same count review-1 reported *before* the
++closure. That is arithmetically consistent with the diff: item 1 added four
++assertions **inside an existing `_check`**, and items 2 and 5 added **no `_check`
++at all**.
++
++| Closure | Guard | Would a revert be caught? |
++|---|---|---|
++| 1 — the spec's reading budget | `:8167-8171`, four substring assertions folded into an existing check | **Yes** |
++| 2 — `auto_tighten` from `.claude/compound-v.json` | none. `grep -n "compound-v.json"` over the emitter returns `:1454` (an unrelated comment), `:1732` (the code) and `:1779` (the new comment) — **no selftest line**. `_rk_plan` (`:8142-8150`) passes `repo_root=tmp`, where no `.claude/compound-v.json` exists, so `config_path` is `None` and the new branch is **never executed by any test** | **No** — reverting to `manifest.get("memory")` keeps 491/491 green |
++| 3 — memory.md wording | prose; lint only | n/a |
++| 4 — spec wording | prose; lint only | n/a |
++| 5 — review jobs skipped | none. The selftest's only review job (`rev`, `:8137-8139`) declares `write_allowed: ["docs/untouched/**"]` — a **clean** lane, whose verdict is `none` with or without the short-circuit. `grep '_rk_off\["rev"\]'` finds assertions on `acceptance` only (`:8187`, `:8212-8215`), never on `rev`'s `recall_check` or its `note` | **No** |
++
++Two of the five fixes are therefore load-bearing behaviour with nothing standing
++under them, and review-1's own remediation for item 2 said, verbatim, *"assert the
++config path in a selftest."* That instruction was not followed.
++
++### 3.4 No fabricated metrics
++
++None. No number was added by the closure at all; `recall_check_ms` is still the
++real `time.monotonic()` delta, and the CHANGELOG's single "7 of the 27 runs"
++figure is untouched.
++
++### 3.5 No reward-hacking
++
++Clean, and checked against the pre-change file. No `_check` removed, renamed,
++skipped or commented; no threshold moved; no test file deleted or emptied. The
++item-1 change to `:8167-8171` **tightens** an existing assertion (six substrings
++where there was one). The count staying at 491 is the *absence* of new tests
++(§3.3), not the removal of old ones. §2.6 does not apply — not a marathon run, no
++`blocked_external` verdict anywhere in it.
++
++---
++
++## 4. PASS 3 — INTEGRATION
++
++### 4.1 Partition integrity
++
++Single-commit closure over three files with no shared registry, barrel or type.
++No leak.
++
++### 4.2 Cross-job seams
++
++The seam is prose→code, and the closure closed two of the three gaps review-1
++found in it: `memory.md` and the design spec now describe what
++`compound-v-emit-workflow.py` does. `commands/v-init.md` was **not** revisited,
++and it is where the remaining divergence lives (issue 1).
++
++### 4.3 Build green, and the tests the tier owes
++
++`triage.tier: SCOPED`. Owed: the unconditional floor, plus every `impacted_map`
++rule matching a changed path, plus (for a changed path matching no rule) at most
++five referencing suites. `full_command` is **not** owed at SCOPED. Derived from
++the closure's own changed paths: `scripts/compound-v-emit-workflow.py` → rule 1;
++`skills/compound-v/memory.md` → rule 2; the design spec matches no rule → the
++referencing fallback, which is exactly the five commands this job's resolved
++`test-contract.json` carries (`scope: "impacted+referencing"`, `selected_count: 5`).
++
++Every one re-run on this tree, output observed:
++
++```
++$ /usr/bin/python3 -B scripts/compound-v-emit-workflow.py --selftest
++491/491 checks passed
++$ bash tests/test-engine-c-contract.sh
++✅ engine-c contract: every generated job_result conforms, the contract reaches the worker, and the join has a producer
++$ /usr/bin/python3 -B scripts/lint-frontmatter.py .
++✅ All frontmatter clean
++$ bash tests/test-lane-guard.sh          → 288 passed, 0 failed
++$ bash tests/test-integration-gate.sh    →  49 passed, 0 failed
++$ bash tests/test-hook-recursion-guard.sh→  20 passed, 0 failed
++$ bash tests/test-epic-goal-stop.sh      →  67 passed, 0 failed
++```
++
++Build green, exit 0 throughout, with evidence. No `NO_TEST_EVIDENCE`.
++
++### 4.4 Feature acceptance criteria
++
++| # | Criterion | Evidence | Status |
++|---|---|---|---|
++| 1 | recall_check on the job entry + state.json, prompt carries the section **with the reading-budget instruction**; fewer records ⇒ neither | Item 1 closed: `:2302-2311` emits all four clauses, asserted at `:8167-8171`. Absence on a clean lane still asserted (`:8180-8184`) | ✅ |
++| 2 | `auto_tighten: true` ⇒ one rung via `TIER_RAISE` inside `job_entry` before `resolve_job_model`, explicit `model:` wins, review acceptance gains the clause; default false ⇒ prompt only | Item 2 closed: the switch is now read from the file `/v:init` writes. Reachable at last — though **no test executes that read** (§3.3) | ✅ |
++| 3 | `--no-recall` / missing / erroring / 30 s timeout ⇒ `unavailable` + note, never a refusal; emit summary lists recall_check + ms | Five selftest checks, unchanged and green. One narrow deviation introduced by item 5 — issue 3 below | ✅ (with issue 3) |
++| 4 | `memory.md` **and `commands/v-init.md`** describe **exactly** these actions | `memory.md` ✅ (item 3). `commands/v-init.md:343,345` still sells `memory.auto_recall` as a working control, which `grep -rn auto_recall scripts/ hooks/` proves **nothing reads** | ❌ **issue 1** |
++
++---
++
++## 5. Issues
++
++**1. ACCEPTANCE_GAP (blocking, AC 4) — `commands/v-init.md` still offers a switch
++that reaches nothing, and it is the same defect review-1 closed in `memory.md`.**
++`commands/v-init.md:343` — *"**"Manual only"** — recall fires only when you run
++`/v:remember`. (`memory.auto_recall: false`)"* — and `:345`, `:556-558`, present
++`auto_recall` as a live control. It is not one:
++
++```
++$ grep -rn "auto_recall" scripts/ hooks/
++(no output)
++```
++
++The emitter runs `recall-check` for every implement job on **every** emit; the only
++gate is `emit --no-recall`. `skills/compound-v/memory.md:90` was amended by this very
++closure to say so out loud (*"no script reads `memory.auto_recall`"*) — so the two
++documents AC 4 names now **contradict each other**, and the one that is wrong is the
++one a user actually answers a question in. The design spec repeats the error at
++`:25` (*"Always (advisory, `memory.auto_recall` default true)"*), as does
++`skills/compound-v/SKILL.md:189` and `:261`. This is review-1's ISSUE 3 with a
++different filename: the closure fixed the sentence it was pointed at instead of the
++class of defect, and AC 4 explicitly names `commands/v-init.md`.
++→ Either delete the "Manual only" option and the `auto_recall` key from
++`/v:init` Step 3b + `:496` + `:556-558` (and re-word the spec/SKILL.md lines), or
++wire `auto_recall` to the emitter's `recall` flag. Not both halves half-done.
++
++**2. TEST_GAP (advisory) — item 2's fix is executed by no test.**
++`:1783-1786` reads `.claude/compound-v.json`; `grep -n "compound-v.json"` over the
++emitter finds no selftest line, `_rk_plan` (`:8142`) runs against a `tmp` repo root
++with no such file, and this repository has no `.claude/compound-v.json` either
++(`cat` → *No such file or directory*). Reverting the fix to
++`manifest.get("memory")` leaves the suite at 491/491. Review-1's remediation asked
++for this guard in so many words.
++→ Add a check: write `{"memory": {"auto_tighten": true}}` into
++`<tmp>/.claude/compound-v.json`, build a plan with **no** manifest `memory:` block,
++assert the tier was raised; then assert a manifest `memory:` block overrides it.
++
++**3. TEST_GAP + a narrow AC-3 deviation (advisory) — item 5's fix is
++unguarded, and it wins over `--no-recall`.**
++No assertion covers the review short-circuit: the selftest's only `type: review`
++job (`:8137`) has a clean lane, so `none` is what it reported before the fix too.
++Separately, the short-circuit at `:1800` is placed **before** the `if recall:`
++branch, so under `emit --no-recall` a review job records `verdict: "none"` where AC
++3 says every `--no-recall` job records `{verdict: "unavailable", note}`. The note
++makes it honest rather than misleading, and "we did not check" reading as `none`
++matters only for a job that has no lane to check — but it is a literal deviation
++from the criterion.
++→ Give `rev` a **dirty** lane in the fixture and assert its verdict is `none` with
++the review note (which proves the lookup was skipped, not merely clean), and decide
++whether `--no-recall` should win the ordering.
++
++**4. QUALITY (advisory) — a stale comment contradicts the code it introduces.**
++`scripts/compound-v-emit-workflow.py:1296`: *"The single mechanical consequence —
++one rung of tier — is opt-in **per manifest** (`memory.auto_tighten`)"*. After item
++2 it is opt-in per **project config**, with the manifest as an override. The
++authoritative comment block for the whole feature now describes the bug that was
++fixed.
++→ One-line re-word.
++
++**5. (carried, not re-litigated) The cross-model receipt is still owed.**
++Review-1 §6 recorded it; nothing in this round took it. `flavor: scoped_plus` — the
++Codex second opinion at dispatch step 8 has still not been taken, and this pass does
++not substitute for it.
++
++---
++
++## 6. What is still owed
++
++- Issue 1 (blocking), then a third pass — or a one-line orchestrator ruling that
++  `auto_recall` is being deleted rather than wired.
++- Issues 2 and 3: two guards, so the next revert of these two fixes is caught by
++  the suite instead of by a reviewer reading 42 lines of diff.
++- The **cross-model (Codex) receipt at dispatch step 8**, still not taken.
+diff --git a/docs/superpowers/dogfood/2026-09-03-v3.4.10-recall-to-action-review.md b/docs/superpowers/dogfood/2026-09-03-v3.4.10-recall-to-action-review.md
+new file mode 100644
+index 0000000..7b09012
+--- /dev/null
++++ b/docs/superpowers/dogfood/2026-09-03-v3.4.10-recall-to-action-review.md
+@@ -0,0 +1,294 @@
++# Review Gate — run `2026-09-03-v3.4.10-recall-to-action`
++
++**VERDICT: ISSUES** (3 blocking, 2 advisory — numbered in §5)
++
++| Pass | Status |
++|---|---|
++| PASS 1 SPEC | **ISSUES** — the prompt's reading-budget instruction is not the one the spec and plan fixed; `auto_tighten` is read from a manifest key nothing writes |
++| PASS 2 QUALITY | ✅ — no regression, no fabricated metric, no reward-hack; 26 new selftest checks, every degraded path asserted |
++| PASS 3 INTEGRATION | ✅ — no partition leak, seams hold, build green, floor + impacted ran at exit 0, but AC 4 fails on the §5 items |
++
++Reviewed at `HEAD = 6ce26f2` (wave-1 merge `2ed44d1`, baseline `4dcb321`).
++Jobs: `emitter-recall` (Task A, worktree), `docs` (Task B, worktree).
++
++**SCOPED+ note.** `triage.tier: SCOPED`, `flavor: scoped_plus`. This is the run's
++**mandatory deep review**. A **cross-model (Codex) receipt is still owed at dispatch
++step 8** — it has not been taken and this pass does not substitute for it.
++
++---
++
++## 1. Step 0 — V-memory recall
++
++```
++$ /usr/bin/python3 -B scripts/compound-v-memory.py search \
++    "recall to action bridge emit time recall-check" --intent review --top 8
++```
++Returned this run's own spec, plan, and the 1A/1C audits (the pre-flight corpus),
++plus `docs/superpowers/dogfood/2026-09-03-v3.4.8-workflow-retry-review-2.md`. No
++prior incident of this shape. Evidence, not authority.
++
++**The conservative bridge, over this diff's own files:**
++
++```
++$ /usr/bin/python3 -B scripts/compound-v-memory.py recall-check --files \
++    scripts/compound-v-emit-workflow.py skills/compound-v/memory.md \
++    commands/v-init.md CHANGELOG.md
++recall-check: tighten (3/2 match on ...)
++  recommend (conservative-only): force_worktree, extra_review_pass, fold_into_task0
++  - 2026-09-03-v3.4.6-triage-test-scoping-fixes-r5/results/emitter.json: error on scripts/compound-v-emit-workflow.py
++  - 2026-09-03-v3.4.5-recall-freshness-r2/results/docs-2.json: blocked on skills/compound-v/memory.md
++  - 2026-09-02-df27-full-pass/results/spec-review.json: blocked on scripts/compound-v-emit-workflow.py
++```
++
++`tighten`. Escalation-only, and the run already satisfies it: both implement jobs
++ran at `isolation: worktree`, and this deep review is the extra pass. Nothing was
++loosened on the strength of a recall verdict, here or in the code under review.
++
++---
++
++## 2. PASS 1 — SPEC
++
++### 2.1 Scope lock
++
++| Job | write_allowed | changed (git-derived) | Gate |
++|---|---|---|---|
++| `emitter-recall` | `scripts/compound-v-emit-workflow.py` | same, 1 file | `receipts/emitter-recall.gate.json` → `pass`, `violations: []` |
++| `docs` | `skills/compound-v/memory.md`, `commands/v-init.md`, `CHANGELOG.md` | same, 3 files | `receipts/docs.gate.json` → `pass`, `violations: []` |
++
++No scope-lock violation. Confirmed at the seam against `git diff --stat 4dcb321..HEAD`.
++
++### 2.2 Spec coverage — Task A
++
++| Spec requirement (design §Decision, plan Task A) | Implemented at | Status |
++|---|---|---|
++| `recall-check --files <write_allowed> --json` as a **subprocess**, never an import | `scripts/compound-v-emit-workflow.py:1337` `run_recall_check` (Popen + `communicate(timeout=…)`) | ✅ |
++| Verdict `{verdict, match_count, evidence[:3], recall_check_ms}` on the emitted job entry | `:1920` `entry["recall_check"]` | ✅ |
++| Verdict reaches `state.json` via `register-lane --recall-check-json` | `:5291` argparse, `:5380` `entry["recall_check"] = recall_doc`; the emitted prompt line at `:2187` | ✅ |
++| `## Prior failures on your lane` with count + ≤3 evidence lines | `:2272-2295` `_implement_prompt` | ✅ |
++| **The fixed reading-budget instruction from the spec** (`grep -n` → `sed -n` ranges, ≤ 20 reading calls, never read a large file top to bottom, commit what is complete) | not present — a *different* budget is emitted | ❌ **ISSUE 1** |
++| Tier raised one rung via a **new** `TIER_RAISE`, never an index into `TIERS` | `:1313` `TIER_RAISE = {...}` — a new literal dict, `TIERS` untouched | ✅ |
++| The raise happens **inside `job_entry`, before `resolve_job_model`** | `:1838-1855` builds `routed_job`; `:1936` / `:1984` call `resolve_job_model(routed_job, …)` | ✅ |
++| An explicit `model:` wins unchanged | `:1841` `not explicit_model` guard; records `tier_raised: "none (explicit \`model:\` wins)"` | ✅ |
++| Every `type: review` job's acceptance gains the re-check clause | `:1858-1860` | ✅ |
++| **`memory.auto_tighten` read from `.claude/compound-v.json`** (plan Task A, verbatim) | read from `manifest["memory"]["auto_tighten"]` at `:1781` — a key nothing writes | ❌ **ISSUE 2** |
++| `--no-recall`, missing engine, engine error, non-JSON, 30 s timeout ⇒ `verdict: unavailable` + note, never a refusal | `:1332` `_recall_unavailable`, `:1352-1391`, `:5623` `--no-recall` | ✅ |
++| 30 s budget | `RECALL_TIMEOUT_SEC = 30` (`:1307`), asserted in the selftest | ✅ (implemented as `Popen.communicate(timeout=…)` + `kill()` rather than `subprocess.run`; the pre-flight MUST is on the 30 s bound, which holds, and the kill is strictly better than leaking the child) |
++| `cmd_emit`'s JSON summary lists `recall_check` + `recall_check_ms` per job | `:5714-5724` | ✅ |
++| Python 3.9 only — no `match/case`, no `isinstance(x, A \| B)` | `grep -nE "match [a-z_]+:\|case \|isinstance\(.*, [A-Za-z]+ \|"` over the diff → **no output** | ✅ |
++| The manifest's own job dict is never mutated (digest integrity) | `:1836` `routed_job = job`; `:1844` `routed_job = dict(job)` on the raise path | ✅ |
++| Verdict also recorded **in the gate receipt** (design §Decision) | `receipts/*.gate.json` carry no `recall_check` | ⚠️ **ISSUE 4** (advisory — the feature AC requires only job entry + state.json) |
++| "for every **implement** job" (design §Decision, memory.md as shipped) | `:1784` loops over **every** job, review jobs included | ⚠️ **ISSUE 5** (advisory) |
++
++### 2.3 Spec coverage — Task B
++
++| Requirement | Implemented at | Status |
++|---|---|---|
++| memory.md: the three phantom actions replaced by the two real ones | `skills/compound-v/memory.md:83-105` | ✅ |
++| memory.md: `--no-recall` + degraded paths | `:106-110` | ✅ |
++| memory.md: where the verdict is recorded (job entry + state.json via `register-lane`) | `:111-115` | ✅ |
++| memory.md: cost measured per job (`recall_check_ms`), never assumed | `:116-119` | ✅ |
++| memory.md: the zsh word-split note | `:120-123` | ✅ |
++| memory.md describes **exactly** what the code does | describes a reading budget the code does not emit (ISSUE 1) and gates action 1 on `memory.auto_recall`, which no script reads | ❌ **ISSUE 3** |
++| v-init.md Step 3b names the real action | `commands/v-init.md:346-350` (tier rung + review re-check) | ✅ — but see ISSUE 2: that switch still reaches nothing |
++| CHANGELOG `[Unreleased]` entry, 7-of-27 measurement, no other number | `CHANGELOG.md:9-16` — "7 of the 27 runs dispatched today"; no other figure | ✅ |
++
++### 2.4 Over-build
++
++None found. `io` and `time` are the only new imports, both used. No new CLI flag
++beyond the three the spec names (`--no-recall`, `--recall-results-root`,
++`--recall-engine`); the latter two exist solely so the selftest can point at a
++temp results root and at fake engines, which is what makes the degraded paths
++testable at all.
++
++---
++
++## 3. PASS 2 — QUALITY
++
++### 3.1 Code quality
++
++Clean. The two structures that could have gone wrong did not: `routed_job` is a
++copy so the manifest dict the digest pins is never mutated, and `TIER_RAISE` is an
++independent ascending table rather than arithmetic on the descending `TIERS`
++list — the exact defect pre-flight 1A warned about. `run_recall_check` has a
++single exit shape and cannot raise: every branch returns a dict. Failure notes
++carry the engine's own `rc` and stderr (truncated at 200 chars), so an unavailable
++verdict is diagnosable instead of merely sad.
++
++One note, not a defect: `recall_check_file` is set only for a `tighten` verdict,
++so a `none` job writes no artefact and its `register-lane` line stays as it was —
++the run directory does not fill with empty verdicts.
++
++### 3.2 No regression
++
++With `auto_tighten` false (the default, and the state of every existing manifest)
++`routed_job is job` and `entry_tier == job.get("tier")`, so routing is bit-for-bit
++what it was. The three `resolve_job_model` / `build_launch_argv` call sites all
++moved to `routed_job` together — no caller left on the old variable.
++
++```
++$ /usr/bin/python3 -B scripts/compound-v-emit-workflow.py --selftest
++491/491 checks passed
++$ bash tests/test-engine-c-contract.sh
++✅ engine-c contract: every generated job_result conforms, the contract reaches the worker, and the join has a producer
++$ /usr/bin/python3 -B scripts/lint-frontmatter.py .
++✅ All frontmatter clean
++```
++
++### 3.3 Test alignment
++
++Every MUST has a guard. The new block (`selftest`, `scripts/compound-v-emit-workflow.py:8095-8305`) asserts: the verdict and its exact
++match count from a temp results root; the ≤3 evidence cap; `none` on a clean lane;
++the prompt section and the `--recall-check-json` hand-back; their **absence** on a
++clean lane; the tier untouched without `auto_tighten`; the one-rung raise; that the
++**resolver** receives the raised tier (pinned against `resolve_job_model(tier=standard)`
++rather than against "different from unraised", which would false-fail on a routing
++table where two tiers share a model); the explicit-`model:` carve-out; the review
++clause; the `TIER_RAISE` shape; `--no-recall`; missing engine; rc≠0 engine;
++non-JSON engine; timeout-and-kill; `register-lane` writing state.json; junk input
++not stopping registration; and an end-to-end `cmd_emit` that checks the artefact
++and the emitted script.
++
++The one requirement with **no** guard is the spec's reading-budget wording — because
++it was not implemented (ISSUE 1).
++
++### 3.4 No fabricated metrics
++
++None. `recall_check_ms` is a real `time.monotonic()` delta (`:1307`). The CHANGELOG's
++only number, "7 of the 27 runs dispatched today", is the spec's own probe result.
++No hardcoded baseline, no savings meter, no invented percentage anywhere in the diff.
++
++### 3.5 No reward-hacking
++
++The selftest block is **additive**: no `_check` was removed, renamed, skipped or
++loosened; no threshold moved; no test file deleted. Count rose to 491/491. The one
++place a gate could have been weakened — asserting the raise by comparing resolved
++models — was deliberately made *stronger* by pinning the resolver's expected output
++instead (comment at `:8172-8176`). §2.6 does not apply: this is not a marathon run
++and there is no `blocked_external` verdict in it.
++
++---
++
++## 4. PASS 3 — INTEGRATION
++
++### 4.1 Partition integrity
++
++Disjoint. `emitter-recall` owns one script; `docs` owns three prose files; no
++shared registry, barrel or type. No leak.
++
++### 4.2 Cross-job seams
++
++The seam here is prose→code: Task B documents what Task A built, in parallel. Two
++of the three seam claims hold; the third does not (ISSUE 1/3 — memory.md describes
++a reading budget the emitter does not emit, and gates action 1 on `memory.auto_recall`,
++which the emitter never reads). v-init.md's Step 3b description is accurate about
++*what* auto-tighten does and inaccurate about *whether it is wired* (ISSUE 2).
++
++### 4.3 Build green, and the tests the tier owes
++
++`triage.tier: SCOPED`. Owed: `test_contract.floor_command` (unconditional) + the
++union of every `impacted_map` rule matching a changed path. Derived independently
++from each job's `files_changed`:
++
++| Job | Changed paths | Rules matched | `tests.command` | `tests.exit_code` | `tests.scope` |
++|---|---|---|---|---|---|
++| `emitter-recall` | `scripts/compound-v-emit-workflow.py` | rule 1 | `bash tests/test-engine-c-contract.sh` + `… emit-workflow.py --selftest` | `0` | `impacted` |
++| `docs` | `skills/compound-v/memory.md`, `commands/v-init.md`, `CHANGELOG.md` | rules 2, 3, 4 (union → one command) | `bash tests/test-engine-c-contract.sh` + `… lint-frontmatter.py .` | `0` | `impacted` |
++
++Every changed path matched a rule, so no referencing-tests fallback was needed and
++`full_command` is **not** owed at SCOPED. Both jobs record a non-empty
++`tests.command` — no `NO_TEST_EVIDENCE`. Re-run on the merged tree above: all three
++commands exit 0. Build green, with evidence.
++
++### 4.4 Feature acceptance criteria
++
++| # | Criterion | Evidence | Status |
++|---|---|---|---|
++| 1 | ≥k prior failures ⇒ `recall_check` on the job entry **and** in state.json via `--recall-check-json`, prompt carries the section with evidence **and the reading-budget instruction**; fewer ⇒ neither | Live re-emit of this run's own manifest (below): `emitter-recall` → `tighten`, artefact written, `--recall-check-json` on its `register-lane`, section present with 2 evidence lines; `docs`/`spec-review` → `none`, neither. State.json path proven by the selftest. **But the reading-budget instruction is not the specified one.** | ❌ (ISSUE 1) |
++| 2 | `auto_tighten: true` ⇒ one rung via `TIER_RAISE` inside `job_entry` before `resolve_job_model`, explicit `model:` wins, review acceptance gains the clause; default false ⇒ prompt only | Asserted in the selftest, all four checks pass. **Reachable only from a hand-edited manifest** — the documented `/v:init` switch is not read. | ❌ (ISSUE 2) |
++| 3 | `--no-recall` / missing / erroring / 30 s timeout ⇒ `unavailable` + note, never a refusal; emit summary lists `recall_check` + `recall_check_ms` per job | Five selftest checks + the live summary below | ✅ |
++| 4 | memory.md and v-init.md describe **exactly** these actions; CHANGELOG entry with 7-of-27 and no other number; selftest, engine-c contract, lint green | CHANGELOG ✅, three commands green ✅; the two docs describe behaviour the code does not have | ❌ (ISSUES 2, 3) |
++
++**Live measurement — this run's own manifest, re-emitted on the merged tree.**
++The run's committed `emit` predates the feature, so the cost was measured by
++re-emitting the same `manifest.yaml` into a scratch run dir at `HEAD`:
++
++```
++"recall_check": {
++  "emitter-recall": { "verdict": "tighten", "match_count": 2, "recall_check_ms": 102 },
++  "docs":           { "verdict": "none",    "match_count": 1, "recall_check_ms": 76  },
++  "spec-review":    { "verdict": "none",    "match_count": 0, "recall_check_ms": 76  }
++}
++emit_total_ms 497
++```
++
++Three walks = **254 ms of a 497 ms emit — 51 %**. Per job (102 ms) it is an order of
++magnitude under the spec's own "past a second per job" trigger, so no follow-up is
++due; but half of emit is now recall, and 76 ms of it is spent on a review job that
++declares no implement lane (ISSUE 5). Recorded as measured, not estimated.
++
++---
++
++## 5. Issues
++
++**1. SPEC_GAP — the emitted reading budget is not the one the spec and plan fixed.**
++`scripts/compound-v-emit-workflow.py:2288-2293` emits: *"READING BUDGET: these records
++and nothing further — do not go hunting through the run directories they name…"* — a
++budget on reading the **recall evidence**. The spec (design §Decision, item 1) and the
++plan (Task A, "the fixed reading-budget instruction from the spec") require a budget on
++reading the **lane**: *"budget your reading (`grep -n` then `sed -n` ranges, ≤ 20 reading
++calls), never read a large file top to bottom, commit what is complete if the turn budget
++nears."* None of those four clauses appears. This is the substantive half of finding 130 —
++six implementers died reading a 6,000-line file, and the section that exists to prevent
++that recurrence does not say the thing that prevents it. (This run's own manifest had to
++carry the budget by hand, in `emitter-recall`'s `body:`.)
++→ Emit the spec's instruction. Add a selftest check for its presence.
++
++**2. CONSTRAINT_VIOLATION — `auto_tighten` is read from a manifest key nothing writes.**
++`:1781` reads `manifest["memory"]["auto_tighten"]`. The plan's Task A says verbatim:
++*"Read `memory.auto_tighten` from `.claude/compound-v.json`"*, and both `commands/v-init.md:496`
++(`"memory": { … "auto_tighten": false }`) and `skills/compound-v/SKILL.md:189`
++(*"the `/v:init` choice read from `.claude/compound-v.json`"*) place the switch there.
++Nothing writes a top-level `memory:` block into a manifest: `/v:orchestrate` does not,
++`examples/manifest.example.yaml` has none, `execution-manifest.md` does not document one.
++`build_plan` already computes `config_path = <repo>/.claude/compound-v.json` at `:1732`
++and passes it to `resolve_job_model` — the file was in hand. So the feature's mechanical
++half is unreachable from the supported path, and the defect the spec opens by naming
++(*"`memory.auto_tighten` / `memory.auto_recall` are read by no script"*) is relocated, not
++closed: `/v:init`'s Auto-tighten stance still drives nothing.
++→ Read it from `.claude/compound-v.json`, with the manifest key as an optional per-run
++override if that is wanted; assert the config path in a selftest.
++
++**3. QUALITY (docs) — memory.md documents behaviour the code does not have.**
++`skills/compound-v/memory.md:93-95` promises the prompt carries "`grep -n` then `sed -n`
++targeted ranges, ≤ 20 reading calls, never read a large file top to bottom, commit what is
++complete" — the emitter emits none of it (ISSUE 1). `:90` gates action 1 on
++*"when `memory.auto_recall` is on (default true)"*; no script reads `auto_recall`, and the
++code's real gate is `--no-recall`. `:83` says "for every `type: implement` job"; the code
++runs it for every job (ISSUE 5). Prose and code disagree, and per the review contract the
++code wins — so this is a documentation defect in the same diff, against AC 4's
++"describe **exactly** these actions".
++→ Fix ISSUE 1 and re-align these three sentences to what ships.
++
++**4. (advisory) The design's "and in the gate receipt" is unimplemented.**
++Design §Decision: *"The verdict is recorded on the job in `state.json` … **and in the gate
++receipt**, so the reviewer's Step 0 reads a fact instead of re-deriving one."*
++`receipts/emitter-recall.gate.json` and `receipts/docs.gate.json` carry no `recall_check`.
++The feature-level AC requires only the job entry and state.json, so this does not fail an
++AC — but this reviewer did have to re-derive the verdict by re-emitting.
++→ Either carry it into the receipt or strike the clause from the spec.
++
++**5. (advisory) Recall runs for every job, not every implement job.**
++`:1784` loops over all jobs. The spec and memory.md both say implement jobs. Measured cost
++of the deviation on this run: 76 ms on `spec-review`, whose verdict is `none` by
++construction (a reviewer declares no write lane — the code's own comment at `:1855` says
++so). Harmless today; it is a spec deviation and a 15 % share of this emit's recall time.
++→ Skip non-implement jobs, or amend the spec to say "every job".
++
++---
++
++## 6. What is still owed
++
++- The three blocking issues above, re-reviewed on the next round.
++- **A cross-model (Codex) receipt at dispatch step 8.** This run is `scoped_plus`;
++  this pass is the mandatory deep review and does not stand in for the cross-model
++  second opinion, which has not been taken.
+diff --git a/docs/superpowers/memory/triage-outcomes.jsonl b/docs/superpowers/memory/triage-outcomes.jsonl
+index fa563ed..d2e6641 100644
+--- a/docs/superpowers/memory/triage-outcomes.jsonl
++++ b/docs/superpowers/memory/triage-outcomes.jsonl
+@@ -98,3 +98,6 @@
+ {"event": "actual", "ts": "2026-09-03T17:32:38Z", "pre_eval_id": "2026-09-03T170419Z-implement-v3-4-9-per-docs-superpowers-specs-2026-09-03-v3-4-a42f", "run_id": "2026-09-03-v3.4.9-preflight-kb-paths-and-retries-schema", "escalated": false, "review_result": null, "test_result": "pass", "demoted": false, "ci_failed": false, "reverted": false, "merge_pending": true}
+ {"event": "predicted", "ts": "2026-09-03T17:53:04Z", "pre_eval_id": "2026-09-03T174841Z-implement-v3-4-10-per-docs-superpowers-specs-2026-09-03-v3-4-904b", "decision": "SCOPED_PIPELINE", "difficulty_band": "medium", "impact_band": "medium", "taxonomy_sha": "sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a", "localization": {"resolved_paths": ["docs/superpowers/specs/2026-09-03-v3.4.10-recall-to-action-design.md", "scripts/compound-v-emit-workflow.py"], "fan_out": 2, "flags": ["sensitive_path"]}, "tier": "SCOPED"}
+ {"event": "bind", "ts": "2026-09-03T18:00:35Z", "pre_eval_id": "2026-09-03T174841Z-implement-v3-4-10-per-docs-superpowers-specs-2026-09-03-v3-4-904b", "run_id": "2026-09-03-v3.4.10-recall-to-action"}
++{"event": "actual", "ts": "2026-09-03T18:19:16Z", "pre_eval_id": "2026-09-03T174841Z-implement-v3-4-10-per-docs-superpowers-specs-2026-09-03-v3-4-904b", "run_id": "2026-09-03-v3.4.10-recall-to-action", "escalated": false, "review_result": null, "test_result": "pass", "demoted": false, "ci_failed": false, "reverted": false, "merge_pending": true}
++{"event": "bind", "ts": "2026-09-03T18:22:48Z", "pre_eval_id": "2026-09-03T174841Z-implement-v3-4-10-per-docs-superpowers-specs-2026-09-03-v3-4-904b", "run_id": "2026-09-03-v3.4.10-recall-to-action-r2"}
++{"event": "actual", "ts": "2026-09-03T18:30:23Z", "pre_eval_id": "2026-09-03T174841Z-implement-v3-4-10-per-docs-superpowers-specs-2026-09-03-v3-4-904b", "run_id": "2026-09-03-v3.4.10-recall-to-action-r2", "escalated": false, "review_result": null, "test_result": "pass", "demoted": false, "ci_failed": false, "reverted": false, "merge_pending": true}
+diff --git a/docs/superpowers/memory/worker-performance.jsonl b/docs/superpowers/memory/worker-performance.jsonl
+index e5b0ef8..230e358 100644
+--- a/docs/superpowers/memory/worker-performance.jsonl
++++ b/docs/superpowers/memory/worker-performance.jsonl
+@@ -3,10 +3,10 @@
+ {"backend": "claude", "type": "core_guidance", "total": 12, "success": 12, "blocked": 0, "error": 0, "timeout": 0, "avg_rework": 0.0, "block_rate": 0.0, "error_rate": 0.0, "success_rate": 1.0, "health": "healthy"}
+ {"backend": "claude", "type": "core_slice", "total": 13, "success": 13, "blocked": 0, "error": 0, "timeout": 0, "avg_rework": 0.154, "block_rate": 0.0, "error_rate": 0.0, "success_rate": 1.0, "health": "healthy"}
+ {"backend": "claude", "type": "docs", "total": 39, "success": 34, "blocked": 5, "error": 0, "timeout": 0, "avg_rework": 0.026, "block_rate": 0.128, "error_rate": 0.0, "success_rate": 0.872, "health": "watch"}
+-{"backend": "claude", "type": "implement", "total": 56, "success": 52, "blocked": 3, "error": 1, "timeout": 0, "avg_rework": 0.0, "block_rate": 0.054, "error_rate": 0.018, "success_rate": 0.929, "health": "healthy"}
++{"backend": "claude", "type": "implement", "total": 58, "success": 54, "blocked": 3, "error": 1, "timeout": 0, "avg_rework": 0.0, "block_rate": 0.052, "error_rate": 0.017, "success_rate": 0.931, "health": "healthy"}
+ {"backend": "claude", "type": "large_isolated", "total": 2, "success": 2, "blocked": 0, "error": 0, "timeout": 0, "avg_rework": 0.0, "block_rate": 0.0, "error_rate": 0.0, "success_rate": 1.0, "health": "insufficient_data"}
+ {"backend": "claude", "type": "mechanical_refactor", "total": 4, "success": 3, "blocked": 1, "error": 0, "timeout": 0, "avg_rework": 0.0, "block_rate": 0.25, "error_rate": 0.0, "success_rate": 0.75, "health": "insufficient_data"}
+-{"backend": "claude", "type": "review", "total": 54, "success": 43, "blocked": 7, "error": 4, "timeout": 0, "avg_rework": 0.0, "block_rate": 0.13, "error_rate": 0.074, "success_rate": 0.796, "health": "watch"}
++{"backend": "claude", "type": "review", "total": 56, "success": 45, "blocked": 7, "error": 4, "timeout": 0, "avg_rework": 0.0, "block_rate": 0.125, "error_rate": 0.071, "success_rate": 0.804, "health": "watch"}
+ {"backend": "claude", "type": "shared_foundation", "total": 8, "success": 8, "blocked": 0, "error": 0, "timeout": 0, "avg_rework": 0.0, "block_rate": 0.0, "error_rate": 0.0, "success_rate": 1.0, "health": "healthy"}
+ {"backend": "claude", "type": "validation", "total": 2, "success": 2, "blocked": 0, "error": 0, "timeout": 0, "avg_rework": 0.0, "block_rate": 0.0, "error_rate": 0.0, "success_rate": 1.0, "health": "insufficient_data"}
+ {"backend": "codex", "type": "large_isolated", "total": 3, "success": 2, "blocked": 1, "error": 0, "timeout": 0, "avg_rework": 0.0, "block_rate": 0.333, "error_rate": 0.0, "success_rate": 0.667, "health": "insufficient_data"}
+diff --git a/docs/superpowers/specs/2026-09-03-v3.4.10-recall-to-action-design.md b/docs/superpowers/specs/2026-09-03-v3.4.10-recall-to-action-design.md
+index b23aceb..241b604 100644
+--- a/docs/superpowers/specs/2026-09-03-v3.4.10-recall-to-action-design.md
++++ b/docs/superpowers/specs/2026-09-03-v3.4.10-recall-to-action-design.md
+@@ -18,12 +18,11 @@
+ ## Decision
+ 
+ At emit time, for every implement job, the emitter runs `recall-check --files <write_allowed> --json` (subprocess, the same stdlib CLI;
+-never an import). The verdict is recorded on the job in `state.json` (`recall_check: {verdict, match_count, evidence[:3]}`) and in the
+-gate receipt, so the reviewer's Step 0 reads a fact instead of re-deriving one.
++never an import). The verdict is recorded in the emitted job entry and on the job in `state.json` (`recall_check: {verdict, match_count, evidence[:3], recall_check_ms}`), where the reviewer's Step 0 reads a fact instead of re-deriving one. (Review-1 item 4: the gate receipt does not carry it; the clause was struck rather than the receipt widened.)
+ 
+ When the verdict is `tighten`:
+ 
+-1. **Always (advisory, `memory.auto_recall` default true):** the implementer prompt gains a `## Prior failures on your lane` section —
++1. **Always, when `memory.auto_recall` is on (default true; `emit --no-recall` forces it off for one emit):** the implementer prompt gains a `## Prior failures on your lane` section —
+    the count, the last three evidence lines (run · status · file), and the instruction that follows from them: budget your reading
+    (`grep -n` then `sed -n` ranges, ≤ 20 reading calls), never read a large file top to bottom, commit what is complete if the turn budget
+    nears. Measured facts, no adjectives.
+diff --git a/scripts/compound-v-emit-workflow.py b/scripts/compound-v-emit-workflow.py
+index f3a108d..e5a4022 100644
+--- a/scripts/compound-v-emit-workflow.py
++++ b/scripts/compound-v-emit-workflow.py
+@@ -109,11 +109,13 @@ _harden_sys_path()
+ 
+ import argparse  # noqa: E402
+ import hashlib  # noqa: E402
++import io  # noqa: E402
+ import json  # noqa: E402
+ import re  # noqa: E402
+ import shutil  # noqa: E402
+ import subprocess  # noqa: E402
+ import tempfile  # noqa: E402
++import time  # noqa: E402
+ 
+ HERE = os.path.dirname(os.path.abspath(__file__))
+ 
+@@ -1276,6 +1278,167 @@ def escalate_claude_model(model):
+     return CLAUDE_ESCALATION[i + 1], None
+ 
+ 
++# --------------------------------------------------------------------------- #
++# RECALL AT EMIT TIME — the recall→action bridge, wired to the one moment that
++# can still act on it.
++#
++# `scripts/compound-v-memory.py recall-check` has existed since 2.0 and returns a
++# deterministic, conservative-only verdict: N>=k structurally-recorded FAILURES on
++# files matching a lane ⇒ `tighten`. Until now nothing in the pipeline ever called
++# it. The clamp admits it, the agent definitions ask five roles to consult it, and
++# an implementer asked to run it mid-job is being asked to research its own lane
++# with a turn budget it needs for the work. Emit is the right caller: it already
++# knows every job's `write_allowed`, it runs once, before anything is dispatched,
++# and its output is the prompt the implementer actually reads.
++#
++# THE VERDICT IS EVIDENCE, NEVER AN AUTHORITY. By default the only consequence is
++# a prompt section the implementer can read and dismiss. The single mechanical
++# consequence — one rung of tier — is opt-in per project config (`memory.auto_tighten`
++# in .claude/compound-v.json; a manifest `memory:` block overrides per run),
++# conservative-only (it never lowers a tier and never reroutes to another
++# backend), and it yields to an explicit `model:`, because a routing decision a
++# human wrote down is not ours to override from a heuristic.
++#
++# AND IT NEVER BLOCKS AN EMIT. A missing engine, a broken engine, a non-JSON
++# answer or a slow one all record `verdict: unavailable` with the reason and the
++# run proceeds. A recall layer that can stop a dispatch is a new single point of
++# failure bolted onto the side of the pipeline for no gain.
++# --------------------------------------------------------------------------- #
++RECALL_ENGINE_DEFAULT = os.path.join(HERE, "compound-v-memory.py")
++RECALL_TIMEOUT_SEC = 30
++RECALL_EVIDENCE_MAX = 3
++
++# One rung, and only upward. `deep` and `frontier` are unchanged: there is no
++# rung above them that this project's routing policy recognises, and inventing
++# one would be a fabricated routing decision.
++TIER_RAISE = {
++    "light": "standard",
++    "standard": "deep",
++    "deep": "deep",
++    "frontier": "frontier",
++}
++
++RECALL_REVIEW_CLAUSE = (
++    "Recall re-check (memory.auto_tighten): this run's emit-time recall found "
++    "prior recorded failures on the lanes of %s. Re-check those files against "
++    "the `recall_check` evidence in state.json, and say in your verdict whether "
++    "the recorded failure mode recurs — evidence, not a presumption of guilt."
++)
++
++
++def _recall_ms(started):
++    return int(round((time.monotonic() - started) * 1000))
++
++
++def _recall_unavailable(note, started):
++    return {"verdict": "unavailable", "match_count": 0, "evidence": [],
++            "note": note, "recall_check_ms": _recall_ms(started)}
++
++
++def run_recall_check(write_allowed, results_root, python_bin, engine=None,
++                     repo_root=None, timeout=RECALL_TIMEOUT_SEC):
++    """One job's emit-time recall verdict. NEVER raises, never refuses.
++
++    The engine is a SUBPROCESS, not an import: it owns a SQLite index, a scan of
++    the results root and its own `k`, and importing it here would fork that
++    ownership into two copies of the same rule (the "one matcher, not two"
++    argument the lane guard makes about globs).
++    """
++    started = time.monotonic()
++    engine = engine or RECALL_ENGINE_DEFAULT
++    globs = [g.strip() for g in (write_allowed or [])
++             if isinstance(g, str) and g.strip()]
++    if not globs:
++        return {"verdict": "none", "match_count": 0, "evidence": [],
++                "note": "job declares no write_allowed lane to query",
++                "recall_check_ms": _recall_ms(started)}
++    if not os.path.exists(engine):
++        return _recall_unavailable(
++            "recall engine not found at %s" % engine, started)
++    cmd = [python_bin, "-B", engine, "recall-check", "--json",
++           "--results-root", results_root]
++    if repo_root:
++        cmd += ["--repo", repo_root]
++    cmd += ["--files"] + globs
++    env = dict(os.environ)
++    env["PYTHONDONTWRITEBYTECODE"] = "1"
++    try:
++        proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE,
++                                stderr=subprocess.PIPE)
++        try:
++            out, err = proc.communicate(timeout=timeout)
++        except subprocess.TimeoutExpired:
++            proc.kill()
++            proc.communicate()
++            return _recall_unavailable(
++                "recall engine exceeded its %ds budget" % timeout, started)
++    except (OSError, ValueError) as exc:
++        return _recall_unavailable("recall engine could not be run: %s" % exc,
++                                   started)
++    out = (out or b"").decode("utf-8", "replace")
++    err = (err or b"").decode("utf-8", "replace")
++    if proc.returncode != 0:
++        return _recall_unavailable(
++            "recall engine failed (rc=%d): %s"
++            % (proc.returncode, (err or out).strip()[:200]), started)
++    try:
++        doc = json.loads(out)
++    except ValueError as exc:
++        return _recall_unavailable(
++            "recall engine produced no JSON: %s" % exc, started)
++    if not isinstance(doc, dict):
++        return _recall_unavailable("recall engine returned %s, not an object"
++                                   % type(doc).__name__, started)
++    verdict = doc.get("verdict")
++    if not (isinstance(verdict, str) and verdict.strip()):
++        return _recall_unavailable("recall engine returned no verdict", started)
++    evidence = doc.get("evidence")
++    if not isinstance(evidence, list):
++        evidence = []
++    try:
++        match_count = int(doc.get("match_count") or 0)
++    except (TypeError, ValueError):
++        match_count = 0
++    result = {"verdict": verdict.strip(), "match_count": match_count,
++              "evidence": evidence[:RECALL_EVIDENCE_MAX],
++              "recall_check_ms": _recall_ms(started)}
++    k = doc.get("k")
++    if isinstance(k, int) and not isinstance(k, bool):
++        result["k"] = k
++    return result
++
++
++def recall_check_path(run_dir, job_id):
++    """`jobs/<job-id>.recall-check.json` — the verdict `emit` writes and the
++    implementer's `register-lane` hands back for state.json. Written only for a
++    job that actually tightened; a `none` verdict is not an artefact."""
++    return os.path.join(run_dir, "jobs", "%s.recall-check.json" % job_id)
++
++
++def load_recall_argument(value):
++    """(doc, error) for `register-lane --recall-check-json`.
++
++    Accepts a PATH to the JSON `emit` wrote, or the JSON document itself, so the
++    caller is not forced to quote a document through a clamped shell command.
++    """
++    if not (isinstance(value, str) and value.strip()):
++        return None, None
++    raw = value
++    if os.path.exists(value):
++        try:
++            with open(value, "r", encoding="utf-8") as fh:
++                raw = fh.read()
++        except (IOError, OSError) as exc:
++            return None, "cannot read %s: %s" % (value, exc)
++    try:
++        doc = json.loads(raw)
++    except ValueError as exc:
++        return None, "not JSON: %s" % exc
++    if not isinstance(doc, dict):
++        return None, "not a JSON object"
++    return doc, None
++
++
+ def resolve_job_model(job, python_bin, resolve_model=None, stance=None,
+                       config_path=None):
+     """(model, error). An explicit `model` wins; otherwise `tier` is resolved.
+@@ -1551,7 +1714,8 @@ def _worktree_base_is_head(repo_root):
+ 
+ 
+ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
+-               scope_check, fastpath, workers_dir):
++               scope_check, fastpath, workers_dir, recall=True,
++               recall_results_root=None, recall_engine=None):
+     """Everything the emitted script needs, as plain data."""
+     run_id = manifest.get("run_id") or os.path.basename(os.path.normpath(run_dir))
+     abs_run_dir = os.path.abspath(run_dir)
+@@ -1607,6 +1771,62 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
+         path = os.path.join(workers_dir, "compound-v-run-%s-worker.sh" % backend)
+         return path if os.path.exists(path) else None
+ 
++    # ---- recall, once, before any job entry is built ---------------------- #
++    # Computed for EVERY job up front rather than inside `job_entry`, because one
++    # of its consequences is not local to a job: a `review` job's acceptance
++    # gains a re-check clause naming the OTHER jobs that tightened, and a
++    # per-job loop cannot know them yet.
++    # `memory.auto_tighten` is the /v:init Step 3b choice and lives in the PROJECT
++    # config (`.claude/compound-v.json`, the `config_path` computed above) — the
++    # manifest's optional `memory:` block is a per-run override only (v3.4.10
++    # review-1, item 2: the first cut read a manifest key nothing writes).
++    memory_cfg = {}
++    if config_path:
++        _cfg_doc = _read_json(config_path, None)
++        if isinstance(_cfg_doc, dict) and isinstance(_cfg_doc.get("memory"), dict):
++            memory_cfg.update(_cfg_doc["memory"])
++    _man_mem = manifest.get("memory")
++    if isinstance(_man_mem, dict):
++        memory_cfg.update(_man_mem)
++    auto_tighten = bool(memory_cfg.get("auto_tighten"))
++    # `memory.auto_recall` (default true) is the /v:init "Manual only" switch;
++    # `emit --no-recall` forces it off for one emit. Review-2 of v3.4.10, item 1:
++    # until now no script read it and /v:init offered a switch that reached nothing.
++    _auto_recall = memory_cfg.get("auto_recall", True)
++    recall = bool(recall) and (_auto_recall is not False)
++    recall_results_root = os.path.abspath(
++        recall_results_root
++        or os.path.join(abs_repo_root, "docs", "superpowers", "execution")
++    )
++    recalls = {}
++    for _job in jobs:
++        _jid = _job.get("id")
++        if not _jid:
++            continue
++        if recall and str(_job.get("type") or "implement") == "review":
++            # A reviewer declares no implementation lane; the bridge is about
++            # prior failures on the files an IMPLEMENTER is about to touch
++            # (review-1, item 5: spec says implement jobs, code ran every job).
++            # Ordered AFTER the recall switch so `--no-recall` / auto_recall off
++            # records `unavailable` for every job alike (review-2, item 3).
++            recalls[_jid] = {"verdict": "none", "match_count": 0, "evidence": [],
++                             "note": "review job: recall-check is for implement lanes",
++                             "recall_check_ms": 0}
++            continue
++        if recall:
++            recalls[_jid] = run_recall_check(
++                _job.get("write_allowed") or [], recall_results_root, python_bin,
++                engine=recall_engine, repo_root=abs_repo_root,
++            )
++        else:
++            recalls[_jid] = {
++                "verdict": "unavailable", "match_count": 0, "evidence": [],
++                "note": "recall not run for this emit (`--no-recall`, or memory.auto_recall is false)",
++                "recall_check_ms": 0,
++            }
++    tightened = sorted(jid for jid, doc in recalls.items()
++                       if doc.get("verdict") == "tighten")
++
+     def job_entry(job):
+         job_id = job["id"]
+         backend = job.get("backend") or "claude"
+@@ -1629,6 +1849,40 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
+         agent_def = None
+         if agent_type:
+             agent_def = agent_definition(agent_role_for(job.get("type"))[0])
++        # ---- the recall verdict, and its one mechanical consequence -------- #
++        recall_doc = dict(recalls.get(job_id) or {
++            "verdict": "none", "match_count": 0, "evidence": [],
++            "recall_check_ms": 0,
++        })
++        # `routed_job` is what the RESOLVER sees. The manifest's own job dict is
++        # never mutated — the digest that pins it is taken from the file, and a
++        # plan that quietly disagreed with the manifest it hashes is the whole
++        # class of defect the digest exists to catch.
++        routed_job = job
++        entry_tier = job.get("tier")
++        explicit_model = isinstance(job.get("model"), str) and job["model"].strip()
++        if (auto_tighten and recall_doc.get("verdict") == "tighten"
++                and not explicit_model):
++            _cur = str(job.get("tier") or "").strip()
++            _next = TIER_RAISE.get(_cur)
++            if _next and _next != _cur:
++                routed_job = dict(job)
++                routed_job["tier"] = _next
++                entry_tier = _next
++                recall_doc["tier_raised"] = "%s → %s" % (_cur, _next)
++            elif _cur:
++                recall_doc["tier_raised"] = "none (%s is the top rung)" % _cur
++        elif auto_tighten and recall_doc.get("verdict") == "tighten":
++            # An explicit `model:` is a decision someone wrote down. Recall
++            # records that it declined to override it rather than doing so
++            # silently.
++            recall_doc["tier_raised"] = "none (explicit `model:` wins)"
++        # A reviewer is told what tightened in this RUN, not in its own lane —
++        # reviewers usually declare no write lane at all, so their own verdict is
++        # `none` by construction and would say nothing useful.
++        acceptance = list(job.get("acceptance") or [])
++        if auto_tighten and tightened and str(job.get("type") or "") == "review":
++            acceptance.append(RECALL_REVIEW_CLAUSE % ", ".join(tightened))
+         entry = {
+             "id": job_id,
+             "job_type": job.get("type"),
+@@ -1637,7 +1891,7 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
+             "agent_definition": agent_def,
+             "title": job.get("title") or job_id,
+             "backend": backend,
+-            "tier": job.get("tier"),
++            "tier": entry_tier,
+             "effort": job.get("effort"),
+             "model": job.get("model"),
+             "model_source": None,
+@@ -1670,7 +1924,7 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
+             "timeout_sec": job.get("timeout_sec"),
+             "write_allowed": job.get("write_allowed") or [],
+             "read_allowed": job.get("read_allowed") or [],
+-            "acceptance": job.get("acceptance") or [],
++            "acceptance": acceptance,
+             "depends_on": job.get("depends_on") or [],
+             "test_scope": job.get("test_scope"),
+             "worker_script": worker_script_for(backend) if backend != "claude" else None,
+@@ -1685,6 +1939,14 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
+                 _contract_timeout_s if backend != "claude" else None
+             ),
+             "implement_clamp": clamp,
++            # The emit-time recall verdict, carried in the job entry the emitted
++            # script serializes — so the run's own artefact records what recall
++            # said, whether or not anything acted on it.
++            "recall_check": recall_doc,
++            "recall_check_file": (
++                recall_check_path(abs_run_dir, job_id)
++                if recall_doc.get("verdict") == "tighten" else None
++            ),
+             "prompt_file": worker_prompt_path(abs_run_dir, job_id),
+             "launch_argv_file": None,
+             "launch_argv": None,
+@@ -1696,7 +1958,7 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
+             # manifests route by `tier`), `opts.model` was never set, and every
+             # agent inherited the session model. The tier existed, was validated,
+             # was documented — and never reached agent().
+-            resolved, merr = resolve_job_model(job, python_bin, stance=stance,
++            resolved, merr = resolve_job_model(routed_job, python_bin, stance=stance,
+                                                config_path=config_path)
+             if resolved:
+                 entry["model"] = resolved
+@@ -1728,6 +1990,13 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
+             "prompt_text": render_worker_prompt(job, run_id),
+             "launch_argv_file": None,
+             "launch_argv": None,
++            # Written only for a job that tightened, because that is the only
++            # job whose prompt hands the path back to `register-lane`.
++            "recall_file": entry["recall_check_file"],
++            "recall_text": (
++                json.dumps(recall_doc, indent=2, sort_keys=True) + "\n"
++                if entry["recall_check_file"] else None
++            ),
+         }
+         if backend != "claude":
+             if not entry["worker_script"]:
+@@ -1737,7 +2006,7 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
+                     "unmaterialized handoff is what 3.0.1 shipped"
+                     % (job_id, backend, backend)
+                 )
+-            model, err = resolve_job_model(job, python_bin, stance=stance,
++            model, err = resolve_job_model(routed_job, python_bin, stance=stance,
+                                            config_path=config_path)
+             if not model:
+                 raise ValueError(
+@@ -1745,7 +2014,7 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
+                     "worker script, so this fails closed rather than guessing"
+                     % (job_id, err)
+                 )
+-            argv = build_launch_argv(job, entry, run_id, abs_repo_root,
++            argv = build_launch_argv(routed_job, entry, run_id, abs_repo_root,
+                                      abs_run_dir, model)
+             entry["launch_argv"] = argv
+             entry["launch_argv_file"] = launch_argv_path(abs_run_dir, job_id)
+@@ -1940,11 +2209,17 @@ def _implement_prompt(job, plan):
+     lines.append("```")
+     lines.append("")
+     lines.append("```bash")
++    # `--recall-check-json` rides along ONLY where recall actually found a
++    # pattern. It is the same file `emit` wrote, so state.json records the
++    # verdict the prompt was built from — not a second, later reading of a
++    # results root that has moved on since.
+     lines.append('%s -B %s register-lane --run-dir %s --job-id %s '
+-                 '--cwd <ABSOLUTE_CWD> --repo-root %s --isolation %s'
++                 '--cwd <ABSOLUTE_CWD> --repo-root %s --isolation %s%s'
+                  % (plan["python"], plan["emitter"], plan["run_dir"], job["id"],
+                     plan["repo_root"],
+-                    "worktree" if job.get("agent_isolation") == "worktree" else "direct"))
++                    "worktree" if job.get("agent_isolation") == "worktree" else "direct",
++                    (" --recall-check-json %s" % job["recall_check_file"])
++                    if job.get("recall_check_file") else ""))
+     lines.append("```")
+     lines.append("")
+     lines.append("That command also PINS this job's baseline commit before anything")
+@@ -2011,6 +2286,40 @@ def _implement_prompt(job, plan):
+         for item in job["acceptance"]:
+             lines.append("  - %s" % item)
+         lines.append("")
++    # ---- PRIOR FAILURES ON THIS LANE ------------------------------------- #
++    # Evidence, delivered where an implementer will actually see it, with a
++    # budget attached. Recall that arrives as an open-ended "go research your
++    # lane" instruction spends the turns the job needs for the work — and this
++    # repository has already shipped one recall instruction that was unreachable
++    # and one that was unbudgeted.
++    _recall = job.get("recall_check") or {}
++    if _recall.get("verdict") == "tighten" and _recall.get("evidence"):
++        lines.append("## Prior failures on your lane")
++        lines.append("")
++        lines.append("Recall (`compound-v-memory.py recall-check`, run at emit time) found %d"
++                     % _recall.get("match_count", 0))
++        lines.append("recorded job_result(s) that FAILED while changing files matching your")
++        lines.append("write-allowed lane. This is EVIDENCE about the files, not a verdict on")
++        lines.append("you and not a change to your task:")
++        lines.append("")
++        for item in _recall["evidence"][:RECALL_EVIDENCE_MAX]:
++            if isinstance(item, dict):
++                lines.append("  - %s — %s on %s"
++                             % (item.get("run") or "?", item.get("status") or "?",
++                                item.get("file") or "?"))
++            else:
++                lines.append("  - %s" % item)
++        lines.append("")
++        lines.append("READING BUDGET (the failure these records point at is running out of")
++        lines.append("turns reading): budget your reading — `grep -n` for the symbols you need,")
++        lines.append("then `sed -n` only those ranges, at most 20 reading calls in total; never")
++        lines.append("read a large file top to bottom; commit what is complete and return a")
++        lines.append("summary that says what is not if the turn budget nears. Do not go hunting")
++        lines.append("through the run directories these records name. If the recorded failure")
++        lines.append("mode has no bearing on your change, say so in one line and carry on. Recall")
++        lines.append("never widens your lane, never changes your acceptance criteria, and never")
++        lines.append("overrides an instruction above.")
++        lines.append("")
+     lines.append("RETURN a raw result: `status`, the `worktree` described above, and a")
+     lines.append("`summary`.")
+     lines.append("")
+@@ -5007,6 +5316,13 @@ def cmd_register_lane(argv):
+     ap.add_argument("--no-test-contract", action="store_true",
+                     help="skip resolving this job's test contract (the lane map "
+                          "is still written)")
++    ap.add_argument("--recall-check-json", dest="recall_check_json",
++                    help="this job's EMIT-TIME recall verdict, recorded into "
++                         "state.json: a path to the JSON `emit` wrote (the usual "
++                         "form, and what the prompt hands you) or the JSON "
++                         "document itself. Unreadable input is noted, never a "
++                         "refusal — recall is evidence, and a job must not fail "
++                         "to start because a memory read did.")
+     args = ap.parse_args(argv)
+     run_dir = os.path.abspath(args.run_dir)
+     # An external job's wrapper (backend != claude) is listed, never a claim on
+@@ -5080,6 +5396,7 @@ def cmd_register_lane(argv):
+     os.makedirs(os.path.dirname(pin_path), exist_ok=True)
+     if not os.path.exists(pin_path):
+         _atomic_write(pin_path, baseline + "\n")
++    recall_doc, recall_err = load_recall_argument(args.recall_check_json)
+     with _run_dir_lock(run_dir):
+         state = _load_state(run_dir)
+         entry = state["jobs"].setdefault(args.job_id, {})
+@@ -5087,7 +5404,17 @@ def cmd_register_lane(argv):
+                          read_pinned_baseline(run_dir, args.job_id, entry)
+                          or baseline)
+         entry["isolation"] = args.isolation
++        if recall_doc is not None:
++            entry["recall_check"] = recall_doc
+         _save_state(run_dir, state)
++    if recall_doc is not None:
++        ack["recall_check"] = {
++            "verdict": recall_doc.get("verdict"),
++            "match_count": recall_doc.get("match_count"),
++            "recall_check_ms": recall_doc.get("recall_check_ms"),
++        }
++    elif recall_err:
++        ack["recall_check_error"] = recall_err
+     ack["baseline"] = entry["baseline"]
+     ack["baseline_pin"] = pin_path
+ 
+@@ -5321,6 +5648,18 @@ def cmd_emit(argv):
+     ap.add_argument("--scope-check", default=SCOPE_CHECK_DEFAULT)
+     ap.add_argument("--fastpath", default=FASTPATH_DEFAULT)
+     ap.add_argument("--workers-dir", default=HERE)
++    ap.add_argument("--no-recall", dest="recall", action="store_false",
++                    default=True,
++                    help="skip the emit-time recall read entirely. Every job then "
++                         "records `recall_check: {verdict: unavailable, ...}` and "
++                         "no prompt carries a prior-failures section.")
++    ap.add_argument("--recall-results-root", dest="recall_results_root",
++                    help="where recall scans for recorded job_results. Default: "
++                         "<repo-root>/docs/superpowers/execution")
++    ap.add_argument("--recall-engine", dest="recall_engine",
++                    default=RECALL_ENGINE_DEFAULT,
++                    help="the recall engine, run as a SUBPROCESS. A missing or "
++                         "failing one is recorded, never fatal.")
+     ap.add_argument("--print", dest="to_stdout", action="store_true",
+                     help="write nothing; print the script")
+     ap.add_argument("--probe-report", action="store_true",
+@@ -5354,7 +5693,9 @@ def cmd_emit(argv):
+         plan = build_plan(
+             manifest, run_dir, repo_root, args.python,
+             os.path.abspath(__file__), args.scope_check, args.fastpath,
+-            args.workers_dir,
++            args.workers_dir, recall=args.recall,
++            recall_results_root=args.recall_results_root,
++            recall_engine=args.recall_engine,
+         )
+     except ValueError as exc:
+         sys.stderr.write("REFUSING TO EMIT: %s\n" % exc)
+@@ -5391,8 +5732,24 @@ def cmd_emit(argv):
+                 json.dumps(doc["launch_argv"], indent=2) + "\n",
+             )
+             artefacts.append(doc["launch_argv_file"])
++        if doc.get("recall_file") and doc.get("recall_text"):
++            _atomic_write(doc["recall_file"], doc["recall_text"])
++            artefacts.append(doc["recall_file"])
++
++    recall_report = {}
++    for wave in plan["waves"]:
++        for job in wave:
++            doc = job.get("recall_check") or {}
++            row = {"verdict": doc.get("verdict"),
++                   "match_count": doc.get("match_count"),
++                   "recall_check_ms": doc.get("recall_check_ms")}
++            for key in ("note", "tier_raised"):
++                if doc.get(key):
++                    row[key] = doc[key]
++            recall_report[job["id"]] = row
+ 
+     report = {
++        "recall_check": recall_report,
+         "script": out_path,
+         "repo_root": plan["repo_root"],
+         "job_artefacts": artefacts,
+@@ -7763,6 +8120,245 @@ def selftest():
+                _rt_result.get("escalated_from") == "opus"
+                and (_rt_result.get("retries") or [{}])[0].get("wait_ms") == 2000,
+                json.dumps(sorted(_rt_result))[:240])
++        # --- recall at emit time (3.4.10) ---------------------------------- #
++        # A TEMP results root, never this repository's own: the assertions below
++        # pin exact match counts, and a fixture reading the live execution tree
++        # would change its answer every time the pipeline runs.
++        _rk_nl = chr(10)
++        _rk_root = os.path.join(tmp, "recall-results")
++        for _i in range(4):
++            _atomic_write(
++                os.path.join(_rk_root, "run-%d" % _i, "results", "j.json"),
++                json.dumps({"job_id": "j", "status": "blocked", "blocked": True,
++                            "violations": ["scripts/foo.py"]}))
++        _atomic_write(
++            os.path.join(_rk_root, "run-ok", "results", "j.json"),
++            json.dumps({"job_id": "j", "status": "success",
++                        "files_changed": ["scripts/foo.py"]}))
++        _rk_jobs = [
++            {"id": "impl", "type": "implement", "tier": "light",
++             "write_allowed": ["scripts/foo.py"]},
++            {"id": "clean", "type": "implement", "tier": "light",
++             "write_allowed": ["docs/untouched/**"]},
++            {"id": "pinned", "type": "implement", "tier": "light",
++             "model": "opus", "write_allowed": ["scripts/foo.py"]},
++            {"id": "rev", "type": "review", "tier": "standard",
++             "acceptance": ["the diff matches the spec"],
++             # a DIRTY lane on purpose: the review short-circuit must skip the
++             # lookup, not merely find a clean lane (review-2, item 3)
++             "write_allowed": ["scripts/foo.py"]},
++        ]
++
++        def _rk_plan(auto_tighten, recall=True, manifest_memory=True, config_memory=None):
++            man = _tiny_manifest(json.loads(json.dumps(_rk_jobs)), max_parallel=4)
++            if manifest_memory:
++                man["memory"] = {"auto_tighten": auto_tighten}
++            _cfg_dir = os.path.join(tmp, ".claude"); os.makedirs(_cfg_dir, exist_ok=True)
++            _cfg_p = os.path.join(_cfg_dir, "compound-v.json")
++            if config_memory is None:
++                if os.path.exists(_cfg_p):
++                    os.remove(_cfg_p)
++            else:
++                _atomic_write(_cfg_p, json.dumps({"memory": config_memory}))
++            man["_manifest_path"] = os.path.join(tmp, "manifest.yaml")
++            plan = build_plan(man, tmp, tmp, "/usr/bin/python3",
++                              os.path.abspath(__file__), SCOPE_CHECK_DEFAULT,
++                              FASTPATH_DEFAULT, tmp, recall=recall,
++                              recall_results_root=_rk_root)
++            return plan, dict((j["id"], j) for w in plan["waves"] for j in w)
++
++        # review-2 (v3.4.10) guards: the review short-circuit, the config switch, auto_recall
++        _rk_p1, _rk_b1 = _rk_plan(False)
++        _check("a review job with a DIRTY lane is skipped by the bridge (note says so), never looked up",
++               (_rk_b1["rev"].get("recall_check") or {}).get("verdict") == "none"
++               and "review job" in str((_rk_b1["rev"].get("recall_check") or {}).get("note")))
++        _rk_p2, _rk_b2 = _rk_plan(False, recall=False)
++        _check("--no-recall wins over the review short-circuit: every job records unavailable",
++               all((_rk_b2[k].get("recall_check") or {}).get("verdict") == "unavailable" for k in ("impl", "rev")))
++        _rk_p3, _rk_b3 = _rk_plan(False, manifest_memory=False, config_memory={"auto_tighten": True})
++        _check("auto_tighten read from .claude/compound-v.json with no manifest block raises the tier",
++               _rk_b3["impl"].get("tier") == "standard")
++        _rk_p4, _rk_b4 = _rk_plan(False, manifest_memory=True, config_memory={"auto_tighten": True})
++        _check("a manifest memory: block overrides the project config (false wins here)",
++               _rk_b4["impl"].get("tier") == "light")
++        _rk_p5, _rk_b5 = _rk_plan(False, manifest_memory=False, config_memory={"auto_recall": False})
++        _check("memory.auto_recall: false in the project config disables recall for the emit",
++               all((_rk_b5[k].get("recall_check") or {}).get("verdict") == "unavailable" for k in ("impl", "clean", "rev")))
++        _rk_plan(False)  # leave the fixture as the later checks expect it
++
++        _rk_plan_off, _rk_off = _rk_plan(False)
++        _rk_impl = _rk_off["impl"]["recall_check"]
++        _check("recall-check runs at emit time and records the verdict on the job",
++               _rk_impl.get("verdict") == "tighten"
++               and _rk_impl.get("match_count") == 4,
++               json.dumps(_rk_impl)[:200])
++        _check("...capped at three pieces of evidence, with a measured duration",
++               len(_rk_impl.get("evidence") or []) == RECALL_EVIDENCE_MAX
++               and isinstance(_rk_impl.get("recall_check_ms"), int))
++        _check("a lane with no recorded failures gets `none`, not a warning",
++               _rk_off["clean"]["recall_check"].get("verdict") == "none"
++               and _rk_off["clean"]["recall_check"].get("match_count") == 0)
++        _rk_prompt = _implement_prompt(_rk_off["impl"], _rk_plan_off)
++        _check("the implementer prompt carries the prior-failures evidence",
++               "## Prior failures on your lane" in _rk_prompt
++               and "`grep -n` for the symbols" in _rk_prompt
++               and "at most 20 reading calls" in _rk_prompt
++               and "never" in _rk_prompt and "top to bottom" in _rk_prompt
++               and "commit what is complete" in _rk_prompt
++               and "run-0/results/j.json" in _rk_prompt, _rk_prompt[-900:])
++        _check("...with a reading budget attached to it",
++               "READING BUDGET" in _rk_prompt)
++        _check("...and hands the verdict back through register-lane",
++               ("--recall-check-json %s" % _rk_off["impl"]["recall_check_file"])
++               in _rk_prompt)
++        _rk_clean_prompt = _implement_prompt(_rk_off["clean"], _rk_plan_off)
++        _check("a clean lane's prompt carries neither the section nor the flag",
++               "Prior failures" not in _rk_clean_prompt
++               and "--recall-check-json" not in _rk_clean_prompt
++               and _rk_off["clean"]["recall_check_file"] is None)
++        _check("without auto_tighten the tier is untouched — the prompt is the "
++               "whole consequence",
++               _rk_off["impl"]["tier"] == "light"
++               and "tier_raised" not in _rk_impl)
++        _check("...and no review job's acceptance is rewritten",
++               _rk_off["rev"]["acceptance"] == ["the diff matches the spec"])
++
++        _rk_plan_on, _rk_on = _rk_plan(True)
++        _check("auto_tighten raises a tightened job's tier exactly one rung",
++               _rk_on["impl"]["tier"] == "standard"
++               and _rk_on["impl"]["recall_check"].get("tier_raised")
++               == "light → standard",
++               json.dumps(_rk_on["impl"]["recall_check"])[:200])
++        # The RESOLVER's input is what the raise has to change, and the check
++        # pins that rather than a difference in its output: under the balanced
++        # default map `light` and `standard` can resolve to the same model, so
++        # `raised != unraised` would fail on a routing table that is behaving
++        # correctly.
++        _rk_std, _ = resolve_job_model({"id": "impl", "backend": "claude",
++                                        "tier": "standard"}, "/usr/bin/python3")
++        _check("...and the RESOLVER is handed the raised tier, not the manifest's",
++               _rk_on["impl"]["model"] == _rk_std
++               and _rk_on["impl"]["model_source"] == "tier",
++               "%s vs standard=%s" % (_rk_on["impl"]["model"], _rk_std))
++        _check("...while an explicit `model:` wins unchanged",
++               _rk_on["pinned"]["model"] == "opus"
++               and _rk_on["pinned"]["tier"] == "light"
++               and "explicit" in (_rk_on["pinned"]["recall_check"]
++                                  .get("tier_raised") or ""))
++        _check("...and every review job's acceptance gains the re-check clause",
++               len(_rk_on["rev"]["acceptance"]) == 2
++               and "Recall re-check" in _rk_on["rev"]["acceptance"][1]
++               and "impl" in _rk_on["rev"]["acceptance"][1],
++               json.dumps(_rk_on["rev"]["acceptance"])[:240])
++        _check("TIER_RAISE is one rung up and stops at the top",
++               TIER_RAISE["light"] == "standard" and TIER_RAISE["standard"] == "deep"
++               and TIER_RAISE["deep"] == "deep"
++               and TIER_RAISE["frontier"] == "frontier")
++
++        _rk_plan_no, _rk_no = _rk_plan(True, recall=False)
++        _check("--no-recall records `unavailable` with a reason and emits anyway",
++               _rk_no["impl"]["recall_check"].get("verdict") == "unavailable"
++               and "no-recall" in (_rk_no["impl"]["recall_check"].get("note") or "")
++               and _rk_no["impl"]["tier"] == "light")
++        _check("...and no prompt then carries a prior-failures section",
++               "Prior failures" not in _implement_prompt(_rk_no["impl"], _rk_plan_no))
++
++        # Every degraded path is `unavailable` + a note, never an exception.
++        _rk_missing = run_recall_check(["scripts/foo.py"], _rk_root,
++                                       "/usr/bin/python3",
++                                       engine=os.path.join(tmp, "no-such.py"))
++        _check("a missing recall engine is recorded, not raised",
++               _rk_missing["verdict"] == "unavailable"
++               and "not found" in _rk_missing["note"])
++        _rk_bad = os.path.join(tmp, "recall-boom.py")
++        _atomic_write(_rk_bad, _rk_nl.join(
++            ["import sys", "sys.stderr.write('boom')", "sys.exit(3)", ""]))
++        _rk_err = run_recall_check(["scripts/foo.py"], _rk_root,
++                                   "/usr/bin/python3", engine=_rk_bad)
++        _check("an engine that fails is recorded with its rc and its stderr",
++               _rk_err["verdict"] == "unavailable" and "rc=3" in _rk_err["note"]
++               and "boom" in _rk_err["note"], json.dumps(_rk_err)[:200])
++        _rk_noise = os.path.join(tmp, "recall-noise.py")
++        _atomic_write(_rk_noise, _rk_nl.join(["print('not json at all')", ""]))
++        _check("an engine that prints non-JSON is recorded, not parsed",
++               run_recall_check(["scripts/foo.py"], _rk_root, "/usr/bin/python3",
++                                engine=_rk_noise)["verdict"] == "unavailable")
++        _rk_slow = os.path.join(tmp, "recall-slow.py")
++        _atomic_write(_rk_slow, _rk_nl.join(["import time", "time.sleep(30)", ""]))
++        _rk_to = run_recall_check(["scripts/foo.py"], _rk_root, "/usr/bin/python3",
++                                  engine=_rk_slow, timeout=1)
++        _check("a slow engine is killed at its budget and recorded as unavailable",
++               _rk_to["verdict"] == "unavailable" and "budget" in _rk_to["note"])
++        _check("the recall budget is the documented 30s",
++               RECALL_TIMEOUT_SEC == 30)
++
++        # register-lane carries the verdict into state.json — and survives junk.
++        _rk_repo = os.path.join(tmp, "recallrepo")
++        _init_repo(_rk_repo)
++        _rk_run = os.path.join(tmp, "recallrun")
++        _rk_man = os.path.join(_rk_run, "manifest.yaml")
++        _atomic_write(_rk_man, json.dumps(
++            {"run_id": "recall-run",
++             "jobs": [{"id": "impl", "isolation": "worktree",
++                       "write_allowed": ["scripts/foo.py"]}]}))
++        _rk_verdict = recall_check_path(_rk_run, "impl")
++        _atomic_write(_rk_verdict, json.dumps(_rk_impl))
++        _rk_wt = os.path.join(_rk_repo, ".claude", "worktrees", "rk-wt")
++        _run(["git", "-C", _rk_repo, "worktree", "add", "-q", "--detach",
++              _rk_wt, "HEAD"])
++        with _quiet():
++            cmd_register_lane(["--run-dir", _rk_run, "--job-id", "impl",
++                               "--cwd", _rk_wt, "--repo-root", _rk_repo,
++                               "--isolation", "worktree", "--manifest", _rk_man,
++                               "--no-test-contract",
++                               "--recall-check-json", _rk_verdict])
++        _rk_state = _load_state(_rk_run)["jobs"].get("impl", {})
++        _check("register-lane records the emit-time verdict into state.json",
++               (_rk_state.get("recall_check") or {}).get("verdict") == "tighten"
++               and (_rk_state.get("recall_check") or {}).get("match_count") == 4,
++               json.dumps(_rk_state)[:240])
++        with _quiet():
++            _rk_rc = cmd_register_lane(
++                ["--run-dir", _rk_run, "--job-id", "junk", "--cwd", _rk_wt,
++                 "--repo-root", _rk_repo, "--isolation", "worktree",
++                 "--manifest", _rk_man, "--no-test-contract",
++                 "--recall-check-json", "{not json"])
++        _check("an unreadable verdict never stops a job from registering",
++               _rk_rc == 0
++               and "recall_check" not in (_load_state(_rk_run)["jobs"]
++                                          .get("junk") or {}))
++
++        # End to end: `emit` writes the artefact and reports per job.
++        _rk_erun = os.path.join(tmp, "recall-emit")
++        _rk_eman = os.path.join(_rk_erun, "manifest.yaml")
++        _atomic_write(_rk_eman, json.dumps(
++            _tiny_manifest(json.loads(json.dumps(_rk_jobs)), max_parallel=4)))
++        _rk_buf, _rk_saved = io.StringIO(), sys.stdout
++        sys.stdout = _rk_buf
++        try:
++            _rk_emit_rc = cmd_emit([_rk_eman, "--run-dir", _rk_erun,
++                                    "--repo-root", _rk_repo,
++                                    "--recall-results-root", _rk_root])
++        finally:
++            sys.stdout = _rk_saved
++        _rk_report = json.loads(_rk_buf.getvalue())
++        _check("emit succeeds and reports recall per job, with its duration",
++               _rk_emit_rc == 0
++               and _rk_report["recall_check"]["impl"]["verdict"] == "tighten"
++               and _rk_report["recall_check"]["clean"]["verdict"] == "none"
++               and isinstance(_rk_report["recall_check"]["impl"]
++                              ["recall_check_ms"], int),
++               json.dumps(_rk_report.get("recall_check"))[:240])
++        _check("...writes the tightened job's verdict as a run artefact, and "
++               "only that job's",
++               os.path.exists(recall_check_path(_rk_erun, "impl"))
++               and not os.path.exists(recall_check_path(_rk_erun, "clean")))
++        with open(os.path.join(_rk_erun, "dispatch.workflow.js"),
++                  encoding="utf-8") as _rk_fh:
++            _rk_script = _rk_fh.read()
++        _check("...and the emitted script carries the evidence into the prompt",
++               "Prior failures on your lane" in _rk_script
++               and "READING BUDGET" in _rk_script)
+     finally:
+         shutil.rmtree(tmp, ignore_errors=True)
+ 
+diff --git a/skills/compound-v/memory.md b/skills/compound-v/memory.md
+index b86b3f4..a2a497b 100644
+--- a/skills/compound-v/memory.md
++++ b/skills/compound-v/memory.md
+@@ -80,15 +80,46 @@ The one place memory **acts automatically** is the analogue of the scorecard's
+ `unhealthy → escalate`, for the prose/structured half — and it is gated by a **structured**
+ match, **not** embedding similarity:
+ 
+-- **Trigger:** for a feature whose diff touches file pattern `F`, `recall-check --files F`
++- **Trigger:** at **emit time**, for every `type: implement` job, the emitter runs
++  `recall-check --files <the job's write_allowed> --json` as a subprocess (never an import) and
+   counts prior `job_result` records (the authoritative git-derived `results/<id>.json`, per
+   [`schemas/job_result.schema.json`](../../schemas/job_result.schema.json)) with
+-  `status ∈ {blocked, error, timeout}` (or a scope `violation`) on the same `F`. `N ≥ k`
++  `status ∈ {blocked, error, timeout}` (or a scope `violation`) on the same lane. `N ≥ k`
+   (default `k=2`, the "two is a pattern" rule) ⇒ verdict `tighten`.
+-- **Action (tighten only):** force worktree isolation, OR add one extra review pass, OR fold
+-  `F` into the serial Task 0 `shared_foundation`. It **never** reroutes to a lower-trust backend
+-  and **never** loosens. Verifiable: a `--selftest` case asserts fixtures(repeated failure) →
+-  tightening.
++- **The two real actions (tighten only):**
++  1. **Always, when `memory.auto_recall` is on (default true; the /v:init "Manual only" stance sets it false, and `emit --no-recall` forces it off for one emit):** the implementer prompt gains a
++     `## Prior failures on your lane` section — the count, the last three evidence lines
++     (run · status · file), and a reading-budget instruction that follows from them (`grep -n`
++     then `sed -n` targeted ranges, ≤ 20 reading calls, never read a large file top to bottom,
++     commit what is complete if the turn budget nears).
++  2. **Applied only when `memory.auto_tighten` is true (default false):** the job's tier is
++     raised one rung (`light → standard`, `standard → deep`; `deep`/`frontier` unchanged, via a
++     new ascending `TIER_RAISE` table — never an index into the descending `TIERS` table), and
++     every `type: review` job's acceptance gains a re-check clause: re-run `recall-check` over
++     the merged diff and state whether the prior-failure pattern recurred. An explicit `model:`
++     pin is never touched either way — the same rule as `escalate_claude_model`. With
++     `auto_tighten` false, action 1 (the prompt section) still applies; only action 2 is gated.
++
++  It **never** reroutes to a lower-trust backend, **never** loosens a test slice, and **never**
++  picks a different backend. Verifiable: a `--selftest` case asserts fixtures(repeated failure)
++  → tightening.
++- **`--no-recall`:** `emit --no-recall` skips the lookup entirely. A missing
++  `compound-v-memory.py`, an engine error, or a 30 s subprocess timeout is treated the same way
++  — emit proceeds and records `recall_check: {verdict: unavailable, note}`; it is never a reason
++  to refuse to emit. The verdict (and `recall_check_ms`, see below) is also printed in `emit`'s
++  JSON summary.
++- **Where the verdict is recorded.** The emitter has no `state.json` write path of its own, so
++  the verdict rides in the emitted job entry (`recall_check: {verdict, match_count,
++  evidence[:3], recall_check_ms}`) and reaches `state.json` through `register-lane` — the
++  runtime hook that already writes a job's state entry before its work starts — via a new
++  `--recall-check-json` argument on the emitted `register-lane` command.
++- **Cost is measured per job, never assumed.** Each `recall-check` walk is timed at emit and
++  recorded as `recall_check_ms` in the job entry and the emit summary; nothing about its cost is
++  estimated or hardcoded.
++- **A hand-probing note:** an unquoted shell variable does not word-split the way you expect in
++  zsh — `recall-check --files $PATTERN` with an unquoted, space-containing `$PATTERN` lands as
++  one argument instead of several, which reads as `none` everywhere even when the pattern should
++  have matched. Quote deliberately, or pass the pattern pre-split, when probing by hand.
+ 
+ This is why recall earns a place in autonomy: the bridge is *measurable and testable*, unlike a
+ free-text "advisory" surface.
