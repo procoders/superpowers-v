@@ -185,6 +185,10 @@ import re  # noqa: E402
 # --------------------------------------------------------------------------- #
 # YAML loading: prefer PyYAML, fall back to an embedded subset parser.
 # --------------------------------------------------------------------------- #
+class ManifestParseError(ValueError):
+    """PyYAML is present and refused the document (finding 53): a hard violation."""
+
+
 def load_yaml(text):
     """Parse ``text``: PyYAML when importable, the embedded subset parser else.
 
@@ -203,10 +207,17 @@ def load_yaml(text):
     try:
         return yaml.safe_load(text)
     except Exception as exc:  # noqa: BLE001 - PyYAML READ it and refused
-        sys.stderr.write(
-            "compound-v: PyYAML rejected this document (%s); falling back to the "
-            "embedded subset parser, which models LESS YAML, not more\n" % exc)
-        return _mini_yaml(text)
+        # FAIL CLOSED (stage-2 dogfood, 2026-09-03, finding 53). Announcing the
+        # degradation was not enough: this validator said "valid" for a manifest
+        # whose `title:` carried an inner ": " — the subset parser read it, CI's
+        # PyYAML would not have, and the orchestrator was told the document was
+        # fine. A document the reference parser refuses is not a valid manifest;
+        # the subset parser is for the machine WITHOUT PyYAML, never a second
+        # opinion on one that has it.
+        raise ManifestParseError(
+            "PyYAML rejected this document (%s) — the reference parser must read a "
+            "manifest; quote scalars that contain ': ' or '#', and do not rely on the "
+            "embedded subset parser to accept what PyYAML refuses" % str(exc).replace("\n", " "))
 
 
 def _strip_comment(line):
@@ -2568,7 +2579,10 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
 def validate_text(text, mode=None, repo_root=None, config_path=None,
                   receipt_path=None, manifest_bytes=None, diff_root=None,
                   expected_attempt=None, require_triage=False, taxonomy_path=None):
-    data = load_yaml(text)
+    try:
+        data = load_yaml(text)
+    except ManifestParseError as exc:
+        return [str(exc)]
     # The manifest_digest binding (CR5-6) is computed over the manifest's raw
     # bytes. When a caller supplies the exact on-disk bytes (main() does), use
     # them verbatim; otherwise fall back to the UTF-8 encoding of the text.
@@ -4850,6 +4864,18 @@ def _selftest():
     # Empty / malformed.
     expect("no jobs -> violation", validate_text("run_id: x") != [])
     expect("not a mapping -> violation", validate({}) != [])
+    try:
+        import yaml as _yaml_probe  # noqa: F401
+        _have_pyyaml = True
+    except ImportError:
+        _have_pyyaml = False
+    if _have_pyyaml:
+        # finding 53: an inner ": " in an unquoted scalar is refused by PyYAML;
+        # the validator must report it, never consult the subset parser instead.
+        _fifty_three = validate_text("run_id: x\njobs:\n- id: a\n  title: Task A: the scorer\n"
+                                     "  write_allowed: [a.py]\n")
+        expect("PyYAML-rejected manifest is a VIOLATION, not a subset-parser pass (%r)"
+               % _fifty_three, len(_fifty_three) == 1 and "PyYAML rejected" in _fifty_three[0])
 
     # Fallback parser parity: force the embedded parser on the good manifest.
     parsed = _mini_yaml(GOOD_MANIFEST)
