@@ -829,7 +829,11 @@ def resolve_job(agent_id, cwd, maps=None):
                     root = wt
                     break
             return job, manifest, root or cwd, proj, "agent_id"
-        for wt, job in worktrees.items():
+        # LONGEST prefix wins. A direct job's "worktree" is the checkout, which is
+        # a prefix of every sibling worktree; iterating the map in file order let
+        # the checkout claim a worktree job's writes and deny them as the wrong
+        # job (stage-4 dogfood, finding 78: `sort_keys` put the root first).
+        for wt, job in sorted(worktrees.items(), key=lambda kv: -len(kv[0])):
             if cwd and _rel_under(cwd, wt) is not None:
                 return job, manifest, wt, proj, "cwd->worktree"
     return None

@@ -2052,8 +2052,13 @@ async function gateStage(prev, job) {
     // Reading the manifest value here made Record refuse a perfectly good direct
     // run for "carrying no observed worktree" — the fail-closed rule from 3.0.2
     // firing on a job that was never supposed to have one.
+    // An EXTERNAL backend's wrapper agent runs direct (D5.3: no nested worktrees),
+    // but the WORK lives in the worker's own worktree, returned as `worktree`.
+    // Gating the checkout instead charged the codex job with the run's own
+    // bookkeeping files and BLOCKED a green job (stage-4 dogfood, finding 79).
+    const externalBackend = job.backend && job.backend !== 'claude';
     let gateRoot;
-    if (job.agent_isolation === 'worktree') {
+    if (job.agent_isolation === 'worktree' || externalBackend) {
       gateRoot = (impl.worktree || '').trim();
       if (!gateRoot) {
         return gateFailure(job.id, 'worktree job reported no worktree; there is no tree to gate — fails closed');
@@ -2077,7 +2082,7 @@ async function gateStage(prev, job) {
       // manifest's value here made the gate run in worktree mode over a direct run,
       // so it skipped the pre-existing snapshot and charged the job with every dirty
       // path in the tree. Two layers, one field name, opposite meanings.
-      ' --mode ' + q(job.agent_isolation === 'worktree' ? 'worktree' : 'direct') +
+      ' --mode ' + q((job.agent_isolation === 'worktree' || externalBackend) ? 'worktree' : 'direct') +
       (NOW ? ' --now ' + q(NOW) : '');
 
     const prompt =
@@ -2350,7 +2355,7 @@ def test_contract_path(run_dir, job_id):
     return os.path.join(run_dir, "jobs", "%s.test-contract.json" % job_id)
 
 
-def register_lane(run_dir, job_id, cwd, manifest_path=None, agent_id=None):
+def register_lane(run_dir, job_id, cwd, manifest_path=None, agent_id=None, wrapper=False):
     """Bind one job to its real worktree (and agent id, if ever available).
 
     MERGES; never overwrites — and the merge is SERIALIZED, which is what makes
@@ -2375,7 +2380,17 @@ def register_lane(run_dir, job_id, cwd, manifest_path=None, agent_id=None):
             or os.path.join(run_dir, "manifest.yaml")
         )
         if cwd:
-            existing["worktrees"][os.path.abspath(cwd)] = job_id
+            if wrapper:
+                # An external job's WRAPPER runs at the checkout and writes nothing
+                # itself; recording the checkout as its "worktree" made the lane
+                # guard's cwd fallback attribute every sibling worktree job (the
+                # root is a prefix of all of them) to the wrapper's job and deny its
+                # writes (stage-4 dogfood, finding 78). A wrapper is listed, never
+                # claimed.
+                existing.setdefault("wrappers", {})[os.path.abspath(cwd)] = job_id
+                existing["worktrees"].pop(os.path.abspath(cwd), None)
+            else:
+                existing["worktrees"][os.path.abspath(cwd)] = job_id
         if agent_id:
             existing["agents"][agent_id] = job_id
         _atomic_write(path, json.dumps(existing, indent=2, sort_keys=True) + "\n")
@@ -3872,6 +3887,23 @@ def _retire_lane_map(run_dir):
         return False
 
 
+def _load_manifest_dict(path):
+    """The manifest as a dict, through the validator's loader (one parser)."""
+    with open(path, "r", encoding="utf-8") as fh:
+        text = fh.read()
+    try:
+        import yaml  # noqa: WPS433
+        return yaml.safe_load(text)
+    except ImportError:
+        pass
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_cv_validate_manifest_for_lane", os.path.join(HERE, "compound-v-validate-manifest.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.load_yaml(text)
+
+
 def _gate_mode_from_receipt(gate_doc):
     """The `mode` the gate ran in, read from the receipt's raw gate JSON — the
     emitter authored that `--mode`, so it is trusted where the manifest's label is
@@ -4394,9 +4426,19 @@ def cmd_register_lane(argv):
                          "is still written)")
     args = ap.parse_args(argv)
     run_dir = os.path.abspath(args.run_dir)
+    # An external job's wrapper (backend != claude) is listed, never a claim on
+    # the checkout (finding 78). Read the backend off the manifest when given.
+    _is_external_wrapper = False
+    if args.manifest and os.path.exists(args.manifest):
+        try:
+            _reg_manifest = _load_manifest_dict(args.manifest)
+            _reg_job = _manifest_job(_reg_manifest, args.job_id) if isinstance(_reg_manifest, dict) else None
+            _is_external_wrapper = bool(_reg_job) and str(_reg_job.get("backend") or "claude") != "claude"
+        except Exception:  # noqa: BLE001 — an unreadable manifest is the validator's problem, not this flag's
+            _is_external_wrapper = False
     lane = register_lane(
         run_dir, args.job_id, args.cwd,
-        manifest_path=args.manifest, agent_id=args.agent_id,
+        manifest_path=args.manifest, agent_id=args.agent_id, wrapper=_is_external_wrapper,
     )
     ack = {"registered": args.job_id,
            "worktrees": len(lane.get("worktrees") or {}),
@@ -4940,6 +4982,9 @@ def selftest():
                "ten minutes, the harness" in _ext_script and "timeout: 600000" in _ext_script)
         # finding 77: the wrapper agent is spawned as a CLAUDE model; the backend's
         # model reaches the launch argv only.
+        _check("finding 79: an external job's gate runs in worktree mode at the WORKER's returned tree",
+               "const externalBackend = job.backend && job.backend !== 'claude';" in _ext_script
+               and "(job.agent_isolation === 'worktree' || externalBackend) ? 'worktree' : 'direct'" in _ext_script)
         _check("finding 77: an external job's wrapper agent_model is a Claude light model, "
                "and the backend model stays in the launch argv",
                str(_ext.get("agent_model") or "").lower() in ("sonnet", "claude-sonnet-4-6")
@@ -6212,6 +6257,30 @@ def selftest():
                    and "src/work.txt" not in _head_files, _head_files)
             _rc_l, _tracked, _ = _git(bk4_repo, ["ls-files", "--", "docs/superpowers/execution"])
             _check("...and never the run lock", ".run.lock" not in _tracked, _tracked)
+            # finding 78: an external job's wrapper is LISTED in the lane map, never
+            # recorded as a worktree claim on the checkout.
+            _f78_run = os.path.join(bk4_repo, "docs", "superpowers", "execution", "f78")
+            os.makedirs(_f78_run, exist_ok=True)
+            _f78_man = os.path.join(_f78_run, "manifest.yaml")
+            with open(_f78_man, "w", encoding="utf-8") as fh:
+                _yaml_bk.safe_dump({"run_id": "f78", "jobs": [
+                    {"id": "ext", "backend": "codex", "isolation": "worktree", "write_allowed": ["src/**"]},
+                    {"id": "cl", "backend": "claude", "isolation": "worktree", "write_allowed": ["docs/**"]}]}, fh)
+            with _quiet():
+                cmd_register_lane(["--run-dir", _f78_run, "--job-id", "ext", "--cwd", bk4_repo,
+                                   "--repo-root", bk4_repo, "--isolation", "direct",
+                                   "--manifest", _f78_man, "--no-test-contract"])
+                cmd_register_lane(["--run-dir", _f78_run, "--job-id", "cl",
+                                   "--cwd", os.path.join(bk4_repo, ".claude", "worktrees", "x"),
+                                   "--repo-root", bk4_repo, "--isolation", "worktree",
+                                   "--manifest", _f78_man, "--no-test-contract"])
+            _f78_map = _read_json(os.path.join(_f78_run, "lane-map.json"), {}) or {}
+            _check("finding 78: the external wrapper is listed under `wrappers`, and the checkout is "
+                   "NOT a worktree claim",
+                   (_f78_map.get("wrappers") or {}).get(bk4_repo) == "ext"
+                   and bk4_repo not in (_f78_map.get("worktrees") or {})
+                   and (_f78_map.get("worktrees") or {}).get(os.path.join(bk4_repo, ".claude", "worktrees", "x")) == "cl",
+                   json.dumps(_f78_map)[:300])
             _check("finding 68: a MERGED run's lane-map.json is retired by the finalizer",
                    not os.path.exists(os.path.join(bk4_run, "lane-map.json")))
 

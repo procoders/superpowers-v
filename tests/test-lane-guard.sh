@@ -347,6 +347,24 @@ check "the deny is logged" \
 file_case "out-of-lane Edit" deny Edit agent_abc123 "$WT" "$WT/docs/existing.md"
 file_case "out-of-lane MultiEdit" deny MultiEdit agent_abc123 "$WT" "$WT/docs/existing.md"
 
+echo "=== 2a. finding 78: the LONGEST worktree prefix wins ===================="
+# The sandbox run's lane map claims $WT for job-under-test. Add a claim on the
+# PROJECT ROOT by another job (a direct job's "worktree" is the checkout): a
+# Write at $WT must still resolve to job-under-test, not to the root's job.
+cp "$RUN/lane-map.json" "$RUN/lane-map.json.f78bak"
+cat >"$RUN/lane-map.json" <<JEOF
+{"run_id": "2099-01-01-sandbox",
+ "agents": {},
+ "worktrees": {"$PROJ": "root-job", "$WT": "job-under-test"}}
+JEOF
+file_case "finding 78: an in-lane Write at the nested worktree resolves to ITS job (allowed), not the root's" allow \
+  Write agent_unknown78 "$WT" "$WT/tests/test-lane-guard.sh"
+file_case "finding 78: an out-of-lane Write at the nested worktree is denied AS that job" deny \
+  Write agent_unknown78 "$WT" "$WT/README.md"
+check "finding 78: the deny names job-under-test, not root-job" \
+  "$(printf '%s' "$OUT" | grep -q 'job-under-test' && ! printf '%s' "$OUT" | grep -q 'root-job' && echo 1 || echo 0)"
+mv "$RUN/lane-map.json.f78bak" "$RUN/lane-map.json"
+
 echo "=== 2b. finding 68: a finished run's lane map claims nothing ============"
 # Make the two fixture runs the newest candidates, TERMINAL newest of all, so the
 # resolver meets the MERGED map first and must skip it to find the live one.

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed — an external job's gate measures the worker's worktree, and its wrapper never claims the checkout (findings 78, 79)
+
+The first Codex job that actually ran on Engine C (gpt-5.6-terra, its own worktree under `$TMPDIR/compound-v/<run>/<job>`, a UUID thread id, 22/22 tests) was still refused twice over: the emitted gate ran in direct mode against the checkout — the wrapper's cwd — and charged the job with the run's own bookkeeping files; and `register-lane` had recorded the checkout as the wrapper's "worktree", which the lane guard's first-match cwd fallback then used to attribute the sibling Claude worktree job to the wrapper and deny its writes. Now an external job's gate runs in worktree mode at the tree the wrapper returned; a wrapper is listed under `wrappers` and never claims a worktree; and `hooks/lane-guard.sh` resolves a cwd by the LONGEST matching worktree prefix (decision table: a root claim no longer shadows a nested worktree's job).
+
 ### Fixed — an external job's wrapper agent is spawned as a Claude model, not as the backend's (finding 77)
 
 The first non-Claude job ever run on Engine C died before its first tool call: the emitter wired the job's resolved model into `agent()` for every job, so the Claude wrapper that runs the `codex` launch command was asked to be `gpt-5.6-terra`, which the harness refused. The wrapper is now spawned as the Claude light model (`agent_model`, never Haiku) and the backend's model reaches the launch argv only. Emitter selftest 413/413.
