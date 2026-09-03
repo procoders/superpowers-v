@@ -1,0 +1,87 @@
+run_id: 2026-09-03-v3.4.3-codex-sandbox-checkout-r4
+feature: 'v3.4.3 multi-model r4: review-1''s seven issues — the helper''s --taxonomy-from test and count (codex again), the CHANGELOG claim, the session id proven — then review pass 2'
+routing_stance: balanced
+max_parallel: 2
+spec_path: docs/superpowers/specs/2026-09-03-v3.4.3-codex-sandbox-checkout-design.md
+plan_path: docs/superpowers/plans/2026-09-03-v3.4.3-codex-sandbox-checkout.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-09-03-v3-4-3-codex-sandbox-checkout.md
+  domain: docs/superpowers/specs/2026-09-03-v3.4.3-codex-sandbox-checkout-design.md
+  library: docs/superpowers/library-audit/2026-09-03-v3-4-3-codex-sandbox-checkout.md
+triage:
+  tier: FULL
+  pre_eval_id: 2026-09-03T062154Z-implement-v3-4-3-per-docs-superpowers-specs-2026-09-03-v3-4-96ff
+  taxonomy_digest: sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a
+  decided_at: '2026-09-03T06:21:54Z'
+acceptance_criteria:
+- bash tests/test-sandbox-checkout.sh is green and shellcheck scripts/compound-v-sandbox-checkout.sh is clean; every other tests/*.sh and scripts/compound-v-*.py --selftest stays green under /usr/bin/python3 -B.
+- 'The multi-model contract, read from this run''s directory: results/sandbox-helper.json carries a UUID session_id, a worktree under $TMPDIR/compound-v/2026-09-03-v3.4.3-codex-sandbox-checkout/sandbox-helper (OUTSIDE the repository — never .cv-worktrees/), and files_changed equal to the job''s write_allowed; receipts/sandbox-helper.gate.json measured that worktree; logs/sandbox-helper.events.jsonl exists and its first line is a thread.started event; the wave commit touches exactly the lane; the review quotes `codex --version`.'
+- The helper, run from the merged tree into a temp dir with --empty-pre-eval, yields a sandbox whose tracked files are byte-identical (diff -r against git ls-files content), with no docs/superpowers/execution/ and an empty pre-eval dir — and hooks/triage-prompt-nudge.sh (the UserPromptSubmit hook; the Stop hook needs .claude/compound-v.json, which a sandbox never has) driven inside that sandbox with synthetic stdin returns a TIER line.
+- 'agents/spec-reviewer.md names the helper for probing on a checkout with a live run; CHANGELOG top heading is ## [3.4.3] - 2026-09-03 and says the helper was built by a Codex worker on Engine C; plugin.json and marketplace.json say 3.4.3; lint-frontmatter is green.'
+test_contract:
+  floor_command: bash tests/test-engine-c-contract.sh
+  full_command: bash -c 'for s in scripts/compound-v-*.py; do grep -q -- "--selftest" "$s" || continue; /usr/bin/python3 -B "$s" --selftest >/dev/null 2>&1 || { echo "FAIL $s"; exit 1; }; done; for t in tests/*.sh; do bash "$t" >/dev/null 2>&1 || { echo "FAIL $t"; exit 1; }; done; echo all-tests-ok'
+  impacted_map:
+  - when: scripts/compound-v-*.sh
+    run: bash -c '[ -f {path} ] || exit 0; shellcheck {path}'
+  - when: scripts/compound-v-*.py
+    run: bash -c '[ -f {path} ] || exit 0; grep -q -- "--selftest" {path} || exit 0; /usr/bin/python3 -B {path} --selftest'
+  - when: tests/*.sh
+    run: bash -c '[ -f {path} ] || exit 0; bash {path}'
+  - when: agents/*.md
+    run: /usr/bin/python3 -B scripts/lint-frontmatter.py .
+  - when: .claude-plugin/*.json
+    run: bash -c 'jq empty .claude-plugin/plugin.json && jq empty .claude-plugin/marketplace.json'
+  - when: CHANGELOG.md
+    run: /bin/echo changelog-only
+jobs:
+- id: sandbox-helper-fix
+  title: Task A' (codex) — `--taxonomy-from` gets its test, `files:` counts new paths only (review-1 issues 5, 6)
+  type: large_isolated
+  backend: codex
+  tier: standard
+  effort: medium
+  isolation: worktree
+  run: parallel
+  timeout_sec: 900
+  write_allowed:
+  - scripts/compound-v-sandbox-checkout.sh
+  - tests/test-sandbox-checkout.sh
+  read_allowed:
+  - '**'
+  acceptance:
+  - bash tests/test-sandbox-checkout.sh is green and now carries a `--taxonomy-from <file>` case asserting the sandbox's .claude/compound-v-impact-taxonomy.yaml is byte-identical to the given file and that `files:` reports the number of paths CREATED (a replaced tracked path is not counted twice); shellcheck scripts/compound-v-sandbox-checkout.sh is clean; every earlier case still passes.
+  body: 'Review pass 1 of this feature (docs/superpowers/dogfood/2026-09-03-v3.4.3-codex-sandbox-checkout-review-1.md) found two issues in your lane: (5) `--taxonomy-from` has no test; (6) the `files:` count is off by one when `--taxonomy-from` replaces a tracked path (count only paths the copy created). Add the test case first, then fix the count. Touch only scripts/compound-v-sandbox-checkout.sh and tests/test-sandbox-checkout.sh. Bash 3.2, set -eu, shellcheck-clean.'
+- id: docs-fix
+  title: Task B' (claude) — the CHANGELOG's multi-model claim says what this run proves (review-1 issue 2)
+  type: implement
+  backend: claude
+  tier: standard
+  effort: medium
+  isolation: worktree
+  run: parallel
+  write_allowed:
+  - CHANGELOG.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - CHANGELOG.md's 3.4.3 section states the multi-model contract as PROVEN BY RUN r3 (worktree outside the repository; the scope gate measuring the worker's tree; exactly the lane merged) and names the session id as proven in r4 by the events-log read (finding 81) — no claim beyond what a run directory shows; /usr/bin/python3 -B scripts/lint-frontmatter.py . is green.
+  body: 'Review pass 1 issue 2: CHANGELOG.md:11 claims ''UUID session id … end to end'' which run r3 did not demonstrate (session_id was empty; finding 81 fixed it in Record afterwards). Rewrite that sentence so it claims exactly what r3 proved and says the session id is proven by r4 (this run). Touch only CHANGELOG.md. Run python with -B; register your lane with a literal --cwd.'
+- id: spec-review-2
+  title: Review Gate pass 2 — review-1's seven issues, and the session id read from this run's own directory
+  type: review
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: direct
+  run: serial
+  depends_on:
+  - sandbox-helper-fix
+  - docs-fix
+  write_allowed:
+  - docs/superpowers/dogfood/2026-09-03-v3.4.3-codex-sandbox-checkout-review-2.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - 'The review-2 file exists with ## Recall, ## SPEC, ## QUALITY, ## INTEGRATION, ## Verdict; for each of review-1''s seven issues it states closed or open with the command and output that proves it (issue 7 is closed by dropping the `codex --version` requirement — the events log''s first line is the evidence instead; issue 4 is recorded as cache drift, out of every lane); results/sandbox-helper-fix.json of THIS run carries a session_id that is a UUID equal to the thread_id in logs/sandbox-helper-fix.events.jsonl''s first line, quoted verbatim; the verdict is APPROVED or ISSUES with a numbered list.'
+  body: 'Your agent definition carries the three-pass Review Gate and a Step 0 (V-memory recall). Follow it. This is the SECOND pass. Read review-1 (ISSUES 7) and this run''s two fix jobs as new code; the orchestrator closed issues 1 and 3 in the emitter and the lane guard (commits after 87ed50b) — verify them from THIS run''s artefacts: results/sandbox-helper-fix.json session_id must equal the UUID in logs/sandbox-helper-fix.events.jsonl line 1. Do not run `codex`; the events log is the evidence. Write docs/superpowers/dogfood/2026-09-03-v3.4.3-codex-sandbox-checkout-review-2.md. Run python with -B; register your lane with a literal --cwd.'
