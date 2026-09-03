@@ -119,7 +119,7 @@ import tempfile
 # --------------------------------------------------------------------------- #
 # Tunables (fast-path = tiny changes; conservative, bounded by design).
 # --------------------------------------------------------------------------- #
-TEST_TIMEOUT_S = 300        # tier-1 configured project test command
+TEST_TIMEOUT_S = 480        # tier-1 configured project test command
 PARSE_TIMEOUT_S = 60        # tier-2 per-language parse-check
 GIT_TIMEOUT_S = 30          # tier-3 diff-read / diff digest
 MAX_OUTPUT_BYTES = 262144   # bounded sink for any supervised child (256 KiB)
@@ -315,23 +315,16 @@ def _is_test_noise(rel):
     return any(r.endswith(suf) for suf in _TEST_NOISE_SUFFIXES)
 
 
-def _drop_gitignored(worktree, paths):
-    """``paths`` minus IGNORED BOOKKEEPING NOISE. None when it cannot be decided.
-
-    Two conditions, both required: the path must look like harness noise
-    (`_is_test_noise`) AND git must actually ignore it. The second stops a real
-    source file that merely lives under a similarly-named directory from vanishing;
-    the first stops the ignore list from being read as "irrelevant to tests".
-
-    ONE call, `git check-ignore --stdin`, whose exit status is 0 when at least one
-    path was ignored, 1 when none were, and >1 on a real error — so 1 is success
-    with an empty answer, not a failure.
-    """
-    if not paths:
-        return list(paths or [])
-    candidates = [p for p in paths if _is_test_noise(p)]
+def _git_check_ignore(worktree, candidates):
+    """Ask git which of ``candidates`` it ignores, in ONE ``git check-ignore --stdin``
+    call. Returns the ignored subset, or ``None`` when the answer cannot be trusted
+    (any git/launch failure). Exit status is 0 when at least one path was ignored,
+    1 when none were, and >1 on a real error — so 1 is success with an empty answer,
+    not a failure. Shared by ``_drop_gitignored`` and the unmapped-promotion
+    bookkeeping filter — both need the SAME "does git ignore this" primitive, just
+    over different candidate sets."""
     if not candidates:
-        return list(paths)
+        return set()
     try:
         # `universal_newlines=True` (not `text=`) — Python 3.6-compatible, and this
         # file is 3.9-safe by policy. WITHOUT it, communicate() is handed a str on a
@@ -348,8 +341,70 @@ def _drop_gitignored(worktree, paths):
         return None
     if proc.returncode not in (0, 1):
         return None
-    ignored = {ln.strip() for ln in (out or "").splitlines() if ln.strip()}
+    return {ln.strip() for ln in (out or "").splitlines() if ln.strip()}
+
+
+def _drop_gitignored(worktree, paths):
+    """``paths`` minus IGNORED BOOKKEEPING NOISE. None when it cannot be decided.
+
+    Two conditions, both required: the path must look like harness noise
+    (`_is_test_noise`) AND git must actually ignore it. The second stops a real
+    source file that merely lives under a similarly-named directory from vanishing;
+    the first stops the ignore list from being read as "irrelevant to tests".
+    """
+    if not paths:
+        return list(paths or [])
+    candidates = [p for p in paths if _is_test_noise(p)]
+    if not candidates:
+        return list(paths)
+    ignored = _git_check_ignore(worktree, candidates)
+    if ignored is None:
+        return None
     return [p for p in paths if p not in ignored]
+
+
+# Bookkeeping paths that can NEVER change what a test does — this project's own
+# audit trail under a run directory (lockfiles, state.json, lane maps). Named,
+# not inferred: a repo could plausibly keep real fixtures under a directory that
+# merely SOUNDS like bookkeeping, so this is one literal prefix, not a heuristic.
+_UNMAPPED_BOOKKEEPING_PREFIX = "docs/superpowers/execution/"
+
+
+def _bookkeeping_for_unmapped(worktree, paths):
+    """Split ``paths`` for the unmapped⇒full_command PROMOTION decision ONLY — never
+    for the executed test set, never for ``_changed_from_scope``'s general changed-path
+    derivation. Two exclusions, unioned:
+
+      * this project's own run-directory bookkeeping (``_UNMAPPED_BOOKKEEPING_PREFIX``) —
+        a lockfile or a state.json under a run's own audit trail is not a build input;
+      * anything git itself ignores (ONE ``git check-ignore --stdin`` call over what the
+        prefix rule left).
+
+    A path excluded here still matched no ``when`` glob — it is simply not treated as
+    "unknown blast radius" for the purpose of dragging in the whole suite. Everything
+    else about the unmapped path is unaffected: it still contributes no command to
+    ``ordered``, and a single REAL unmapped path anywhere in the union still promotes.
+
+    Returns ``(real, ignored_count)``. On any git failure the git-ignore half of the
+    exclusion is simply skipped (paths stay REAL) — the safe direction here is running
+    the wider suite, not narrowing it on an unreadable git call."""
+    if not paths:
+        return list(paths or []), 0
+
+    def _rel(p):
+        r = str(p or "")
+        while r.startswith("./"):
+            r = r[2:]
+        return r
+
+    prefixed = {p for p in paths if _rel(p).startswith(_UNMAPPED_BOOKKEEPING_PREFIX)}
+    rest = [p for p in paths if p not in prefixed]
+    ignored = _git_check_ignore(worktree, rest) if worktree and rest else set()
+    if ignored is None:
+        ignored = set()
+    bookkeeping = prefixed | (ignored & set(rest))
+    real = [p for p in paths if p not in bookkeeping]
+    return real, len(bookkeeping)
 
 
 def _changed_from_scope(worktree, baseline):
@@ -767,15 +822,16 @@ def referencing_tests(repo, changed_paths, cap=REFERENCING_CAP):
 
 def resolve_test_commands(contract, scope, changed_paths=None, new_paths=None,
                           prev_failures=None, prev_failures_available=True,
-                          tier=None, referencing=None):
+                          tier=None, referencing=None, worktree=None):
     """Resolve a manifest ``test_contract`` + one job's ``test_scope`` into the ordered,
     deduped command list a worker executes.
 
     Returns ``(slice, notes)``. ``slice`` holds EXACTLY the keys the worker's
-    ``--test-contract-file`` validator accepts (``scope``, ``resolved_commands``, and the
-    informational ``floor_command`` / ``full_command`` when declared) — nothing else, so a
-    typo cannot pass silently as "nothing to run". ``notes`` is the human-readable record of
-    WHY each command is in the set; it is deliberately NOT part of the slice.
+    ``--test-contract-file`` validator accepts (``scope``, ``resolved_commands``, the
+    informational ``floor_command`` / ``full_command`` when declared, and ``timeout_s``
+    when the contract declares one) — nothing else, so a typo cannot pass silently as
+    "nothing to run". ``notes`` is the human-readable record of WHY each command is in
+    the set; it is deliberately NOT part of the slice.
 
     The rules, in one place:
 
@@ -788,14 +844,20 @@ def resolve_test_commands(contract, scope, changed_paths=None, new_paths=None,
     * a changed path matching no ``when`` glob resolves to ``full_command`` — but only at
       tier FULL or when no tier was given (v3.4.1 decision 4). At SCOPED and DIRECT it
       resolves instead to ``referencing`` (the list ``referencing_tests()`` computed),
-      and to the floor alone when that list is empty;
+      and to the floor alone when that list is empty. Before that promotion decision,
+      bookkeeping noise — this project's own ``docs/superpowers/execution/**`` audit
+      trail, and anything git itself ignores — is dropped from the unmapped set FOR THE
+      PROMOTION ONLY (finding 102/105): it still selected no command, it just does not
+      drag in the whole suite by itself;
     * an uncomputable previously-failing set also resolves to ``full_command``, at every
       tier — that is a fail-closed rule about DATA THIS RUN COULD NOT READ, not about the
       size of the change, and the tier has nothing to say about it.
 
     ``tier`` is the manifest's ``triage.tier``; ``referencing`` is the caller's already-
     computed referencing list, so this function stays a pure resolver and the filesystem
-    walk happens exactly once, in ``resolve_from_manifest``.
+    walk happens exactly once, in ``resolve_from_manifest``. ``worktree`` is used ONLY for
+    the bookkeeping git-ignore check above; every other input here is data the caller
+    already derived.
 
     Raises ``TestContractError`` whenever the answer would be an empty command set."""
     contract = contract if isinstance(contract, dict) else {}
@@ -883,16 +945,28 @@ def resolve_test_commands(contract, scope, changed_paths=None, new_paths=None,
         if unmapped or new_unmapped:
             missing = ", ".join(sorted(set(unmapped + new_unmapped)))
             if not scoped_tier:
-                ordered.append(full)
-                notes.append("unmapped: %s matched no `when` glob — unknown blast radius "
-                             "resolves to full_command, never to nothing" % missing)
-                # The label follows the obligation (review-1 of 3.4.1, issue 4): a
-                # FULL-tier job whose unmapped path pulled in `full_command` ran the
-                # whole suite, and `scope: impacted` beside it made a correct run
-                # trip the reviewer's "must match what the tier owes" rule.
-                scope = "full"
-                notes.append("scope: labelled `full` — full_command was added for an "
-                             "unmapped path at this tier, so the whole suite is what ran")
+                # finding 102/105: bookkeeping noise never TRIGGERS the promotion —
+                # it still ran no command, and a real unmapped path anywhere else in
+                # the union still promotes exactly as before.
+                promoting, ignored_n = _bookkeeping_for_unmapped(
+                    worktree, sorted(set(unmapped + new_unmapped)))
+                if ignored_n:
+                    notes.append("ignored %d bookkeeping path(s) for the unmapped rule"
+                                 % ignored_n)
+                if promoting:
+                    ordered.append(full)
+                    notes.append(
+                        "unmapped: %s matched no `when` glob — unknown blast radius "
+                        "resolves to full_command, never to nothing"
+                        % ", ".join(sorted(promoting)))
+                    # The label follows the obligation (review-1 of 3.4.1, issue 4): a
+                    # FULL-tier job whose unmapped path pulled in `full_command` ran the
+                    # whole suite, and `scope: impacted` beside it made a correct run
+                    # trip the reviewer's "must match what the tier owes" rule.
+                    scope = "full"
+                    notes.append(
+                        "scope: labelled `full` — full_command was added for an "
+                        "unmapped path at this tier, so the whole suite is what ran")
             else:
                 # v3.4.1 decision 4. The triage engine has already said this change is
                 # small; answering "then run everything" contradicts the tier that was
@@ -940,6 +1014,14 @@ def resolve_test_commands(contract, scope, changed_paths=None, new_paths=None,
         slice_["floor_command"] = floor
     if full:
         slice_["full_command"] = full
+    timeout_s = contract.get("timeout_s")
+    if timeout_s is not None:
+        if isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float)) \
+                or timeout_s <= 0:
+            raise TestContractError(
+                "test_contract.timeout_s must be a positive number when declared "
+                "(got %r)" % (timeout_s,))
+        slice_["timeout_s"] = timeout_s
     return slice_, notes
 
 
@@ -1019,7 +1101,7 @@ def resolve_from_manifest(manifest, job_id=None, scope=None, worktree=None,
         failures, available = previously_failing(last_result)
     resolved, notes = resolve_test_commands(contract, scope, changed_paths, new_paths,
                                            failures, available, tier=tier,
-                                           referencing=referencing)
+                                           referencing=referencing, worktree=worktree)
     if derived_note:
         notes = ["scope: no test_scope declared, defaulted to %r — %s"
                  % (scope, derived_note)] + list(notes)
@@ -1103,7 +1185,16 @@ def run_test_floor(worktree, baseline="HEAD", changed_paths=None, test_cmd=None,
                 result["reasons"].append(
                     "tier-1: configured tests failed (rc=%s%s): %s"
                     % (rc, "; timeout" if rc == 124 else "", name))
-        result["failures"] = [name for name, _ in failed_cmds]
+        # rc==124 is the supervisor's own timeout signal (never a checker's own exit
+        # code — see `_run_supervised`). The identifier gets a distinct label because
+        # "sh -c 'sleep 2'" alone does not say WHY it failed, and this is the only
+        # field the review gate / the next run's previously-failing set ever reads.
+        # `failure_class` is a different, backend-level classification (job-level,
+        # produced by compound-v-classify-failure.py) and is untouched here.
+        result["failures"] = [
+            ("timeout after %s s: %s" % (int(test_timeout_s), name)) if rc == 124
+            else name
+            for name, rc in failed_cmds]
         return result
 
     # Tiers 2 and 3 cannot work without the diff (soft; fail-closed if underivable).
@@ -1588,6 +1679,7 @@ def _cmd_test_floor(args):
     # explicit command should not be silently overruled by a declaration.
     test_commands = None
     notes = []
+    slice_ = {}
     if args.manifest and not args.test_cmd:
         try:
             slice_, notes = _resolve_args(args)
@@ -1600,7 +1692,8 @@ def _cmd_test_floor(args):
         test_commands = slice_["resolved_commands"]
 
     res = run_test_floor(args.worktree, args.baseline, changed, args.test_cmd,
-                         test_commands=test_commands)
+                         test_commands=test_commands,
+                         test_timeout_s=slice_.get("timeout_s", TEST_TIMEOUT_S))
     if notes:
         res["contract_notes"] = notes
     _emit(res, args.out)
@@ -2027,6 +2120,57 @@ def _selftest():
         expect("B2: an unmapped changed path resolves to full_command",
                "sh -c 'echo full'" in un)
 
+        # findings 102/105: docs/superpowers/execution/** bookkeeping paths never
+        # trigger the unmapped⇒full_command promotion on their own — 1 REAL mapped
+        # path + 3 bookkeeping paths stays `impacted`, never `full`.
+        BK_CONTRACT = {"floor_command": "sh -c 'exit 0'",
+                       "full_command": "sh -c 'echo full'",
+                       "impacted_map": [{"when": "scripts/**",
+                                        "run": "sh -c 'lint scripts'"}]}
+        bk_changed = ["scripts/a.py",
+                      "docs/superpowers/execution/x/jobs/a/.run.lock",
+                      "docs/superpowers/execution/x/jobs/b/.run.lock",
+                      "docs/superpowers/execution/x/jobs/c/.run.lock"]
+        s_bk, n_bk = resolve_test_commands(BK_CONTRACT, "impacted", bk_changed,
+                                           [], [], True)
+        expect("105: docs/superpowers/execution/** bookkeeping paths never promote "
+               "to full",
+               s_bk["scope"] == "impacted"
+               and "sh -c 'echo full'" not in s_bk["resolved_commands"])
+        expect("105: the mapped path's own command still ran",
+               "sh -c 'lint scripts'" in s_bk["resolved_commands"])
+        expect("105: the contract note records how many bookkeeping paths were "
+               "ignored, in the pinned words",
+               any("ignored 3 bookkeeping path(s) for the unmapped rule" in n
+                   for n in n_bk))
+
+        # A REAL unmapped path beside bookkeeping noise still promotes — the
+        # exclusion only removes the bookkeeping paths from the decision, it does
+        # not blanket-suppress the rule.
+        s_bk2, _ = resolve_test_commands(
+            BK_CONTRACT, "impacted",
+            bk_changed + ["src/real_unmapped.py"], [], [], True)
+        expect("105: a genuine unmapped path alongside bookkeeping noise still "
+               "promotes to full",
+               s_bk2["scope"] == "full"
+               and "sh -c 'echo full'" in s_bk2["resolved_commands"])
+
+        # B1/102: timeout_s on the contract is copied into the slice verbatim;
+        # absent ⇒ absent (the worker default, TEST_TIMEOUT_S, applies downstream).
+        s_notimeout, _ = resolve_test_commands(CONTRACT, "floor_only")
+        expect("102: no test_contract.timeout_s ⇒ no timeout_s in the slice",
+               "timeout_s" not in s_notimeout)
+        TIMED_CONTRACT = dict(CONTRACT, timeout_s=45)
+        s_timed, _ = resolve_test_commands(TIMED_CONTRACT, "floor_only")
+        expect("102: test_contract.timeout_s is copied into the slice verbatim",
+               s_timed.get("timeout_s") == 45)
+        expect("102: a bool timeout_s is REFUSED (true is not 1)",
+               _raises(lambda: resolve_test_commands(
+                   dict(CONTRACT, timeout_s=True), "floor_only")))
+        expect("102: a non-positive timeout_s is REFUSED",
+               _raises(lambda: resolve_test_commands(
+                   dict(CONTRACT, timeout_s=0), "floor_only")))
+
         # ---- v3.4.1 decision 4: what a SCOPED job owes ----
         REF = [{"file": "tests/test_parser.py", "run": "python3 tests/test_parser.py"},
                {"file": "tests/parser_notes.md", "run": None}]
@@ -2229,6 +2373,22 @@ def _selftest():
         expect("B1: an all-green resolved set passes the floor",
                res["passed"] is True and res["merge_blocked"] is False
                and len([c for c in res["checks"] if c.get("tier") == 1]) == 2)
+
+        # findings 102/105: a checker that outlives its budget is the SUPERVISOR's
+        # own 124, distinct from the checker's own exit code, and is recorded with a
+        # `timeout after N s:` prefix — the only field the next run's
+        # previously-failing set or a reviewer ever reads for "why did this fail".
+        res = run_test_floor(r, base, changed_paths=["a.py"],
+                             test_commands=["sh -c 'sleep 2'"], test_timeout_s=1)
+        expect("102: a checker exceeding test_timeout_s exits 124",
+               any(c.get("rc") == 124 for c in res["checks"] if c.get("tier") == 1))
+        expect("102: rc==124 blocks the merge like any other tier-1 failure",
+               res["merge_blocked"] is True and res["passed"] is False)
+        expect("102: the failures[] entry is `timeout after N s: <checker>`, in the "
+               "pinned words",
+               res.get("failures") == ["timeout after 1 s: sh -c 'sleep 2'"])
+        expect("102: a timeout never invents a failure_class key on this dict",
+               "failure_class" not in res)
 
         # resolve_from_manifest: test_scope comes off the job; absent ⇒ full.
         man = {"test_contract": CONTRACT,
