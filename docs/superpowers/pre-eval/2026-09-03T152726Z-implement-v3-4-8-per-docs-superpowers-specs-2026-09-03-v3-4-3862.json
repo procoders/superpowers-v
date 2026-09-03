@@ -1,0 +1,46 @@
+{
+  "base_commit": "44cb0fbf9a9fd19103c7da4ea7e65630c0992fc9",
+  "confidence": "localization:exact; tiers:localization,T1",
+  "decision": "FULL_PIPELINE",
+  "declared_paths": [
+    "docs/superpowers/specs/2026-09-03-v3.4.8-workflow-retry-design.md",
+    "scripts/compound-v-emit-workflow.py",
+    "scripts/compound-v-validate-manifest.py"
+  ],
+  "difficulty": {
+    "band": "high",
+    "display": 8
+  },
+  "digest": "sha256:056c6276b47bd5074ccee6ea038816f4b733f5c42cedbf6fe79e05e2db0f81c1",
+  "impact": {
+    "band": "high",
+    "display": 8
+  },
+  "localization": {
+    "confidence": "exact",
+    "fan_out": 3,
+    "flags": [
+      "sensitive_path"
+    ],
+    "resolved_paths": [
+      "docs/superpowers/specs/2026-09-03-v3.4.8-workflow-retry-design.md",
+      "scripts/compound-v-emit-workflow.py",
+      "scripts/compound-v-validate-manifest.py"
+    ]
+  },
+  "min_sample_status": "insufficient",
+  "override_fired": 2,
+  "pre_eval_id": "2026-09-03T152726Z-implement-v3-4-8-per-docs-superpowers-specs-2026-09-03-v3-4-3862",
+  "request_slug": "implement-v3-4-8-per-docs-superpowers-specs-2026-09-03-v3-4",
+  "session_id": "s-retry",
+  "status": "PRE_EVAL_DONE",
+  "taxonomy_digest": "sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a",
+  "taxonomy_ref": "docs/superpowers/pre-eval/2026-09-03T152726Z-implement-v3-4-8-per-docs-superpowers-specs-2026-09-03-v3-4-3862.taxonomy-snapshot.yaml",
+  "taxonomy_version": 1,
+  "tier": "FULL",
+  "tiers_signalled": [
+    "localization",
+    "T1"
+  ],
+  "ts": "2026-09-03T15:27:26Z"
+}

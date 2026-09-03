@@ -1,0 +1,13 @@
+{
+  "confidence": "exact",
+  "digest": "sha256:72c2d26c24ef9912702b10bac2401db3eb87f1853b4acb807984232d749ef524",
+  "fan_out": 3,
+  "flags": [
+    "sensitive_path"
+  ],
+  "resolved_paths": [
+    "docs/superpowers/specs/2026-09-03-v3.4.8-workflow-retry-design.md",
+    "scripts/compound-v-emit-workflow.py",
+    "scripts/compound-v-validate-manifest.py"
+  ]
+}
