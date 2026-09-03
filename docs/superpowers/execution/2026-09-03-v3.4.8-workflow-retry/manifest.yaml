@@ -1,0 +1,111 @@
+run_id: 2026-09-03-v3.4.8-workflow-retry
+feature: 'v3.4.8 workflow retry: transient API failures inside the workflow are retried with the failure policy''s backoff; a deep reviewer exhausted on a transient class is lifted to the frontier tier once; the class is recorded honestly; a manifest `retry` block with defaults on'
+routing_stance: balanced
+max_parallel: 3
+spec_path: docs/superpowers/specs/2026-09-03-v3.4.8-workflow-retry-design.md
+plan_path: docs/superpowers/plans/2026-09-03-v3.4.8-workflow-retry.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-09-03-v3-4-8-workflow-retry.md
+  domain: docs/superpowers/specs/2026-09-03-v3.4.8-workflow-retry-design.md
+  library: docs/superpowers/library-audit/2026-09-03-v3-4-8-workflow-retry.md
+triage:
+  tier: FULL
+  pre_eval_id: 2026-09-03T152726Z-implement-v3-4-8-per-docs-superpowers-specs-2026-09-03-v3-4-3862
+  taxonomy_digest: sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a
+  decided_at: '2026-09-03T15:27:26Z'
+acceptance_criteria:
+- The emitted workflow wraps every stage's agent() call in withRetry, which retries on a NULL resolution or a thrown error with the deterministic table 2 s / 4 s (cap 60 s) up to retry.max_attempts (default 3) using setTimeout only (no Date.now, Math.random or new Date anywhere in the emitted script); the emitter selftest proves it with string checks and a Python mirror of the table.
+- 'On exhaustion each stage falls into exactly today''s null path; Record writes `retries[]` and, for the exhausted job, `failure_class: other` with the reason `agent returned null N times (transient API failure suspected; the runtime''s failure text is not visible to the script)` — never a guessed class.'
+- A review job exhausted transiently is re-spawned once with the next rung of CLAUDE_ESCALATION (opus → fable; an explicit manifest model off the ladder is never escalated) when retry.escalate_reviewer (default true); gate-receipt accepts --escalated-from and the receipt/result carry `escalated_from` as the requested escalation; implementers are never escalated; fast-path reviewers are stated out of scope.
+- '`retry: {max_attempts, escalate_reviewer}` validates (int 1..3 not bool; bool; absent ⇒ 3/true; 1 ⇒ no retry); 0, 4, "3", a bool for the int, a non-bool for the flag and unknown keys are refused with a violation naming the key.'
+- execution-manifest.md documents the block and corrects the reviewer invariant to deep-or-stronger; failure-policy.md and parallel-dispatcher.md Step 2c carry the parity paragraph; CHANGELOG [Unreleased] has the entry with no timing claim; every named selftest, tests/test-engine-c-contract.sh and lint-frontmatter green.
+test_contract:
+  floor_command: bash tests/test-engine-c-contract.sh
+  full_command: bash -c 'for s in scripts/compound-v-*.py; do grep -q -- "--selftest" "$s" || continue; /usr/bin/python3 -B "$s" --selftest >/dev/null 2>&1 || { echo "FAIL $s"; exit 1; }; done; for t in tests/*.sh; do bash "$t" >/dev/null 2>&1 || { echo "FAIL $t"; exit 1; }; done; echo all-tests-ok'
+  impacted_map:
+  - when: scripts/compound-v-emit-workflow.py
+    run: /usr/bin/python3 -B scripts/compound-v-emit-workflow.py --selftest
+  - when: scripts/compound-v-validate-manifest.py
+    run: /usr/bin/python3 -B scripts/compound-v-validate-manifest.py --selftest
+  - when: skills/compound-v/execution-manifest.md
+    run: /usr/bin/python3 -B scripts/lint-frontmatter.py .
+  - when: skills/compound-v/failure-policy.md
+    run: /usr/bin/python3 -B scripts/lint-frontmatter.py .
+  - when: CHANGELOG.md
+    run: /usr/bin/python3 -B scripts/lint-frontmatter.py .
+  - when: docs/superpowers/dogfood/*.md
+    run: /usr/bin/python3 -B scripts/lint-frontmatter.py .
+  - when: agents/parallel-dispatcher.md
+    run: /usr/bin/python3 -B scripts/lint-frontmatter.py .
+jobs:
+- id: emitter-retry
+  title: Task A — withRetry around every agent() call; reviewer lift; honest failure_class; CFG.retry
+  type: implement
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: worktree
+  run: parallel
+  depends_on: []
+  write_allowed:
+  - scripts/compound-v-emit-workflow.py
+  read_allowed:
+  - '**'
+  acceptance:
+  - 'Per the plan''s Task A as amended: withRetry triggers on null OR throw, deterministic backoff via setTimeout only, every stage''s agent( wrapped, isAgentTypeMissing fallback composed inside, retries[] carried into the result, exhaustion ⇒ today''s null path + failure_class other + the stated reason, reviewer lift via the emitted CLAUDE_ESCALATION map once with --escalated-from on gate-receipt and escalated_from on the result, CFG.retry from the manifest with defaults 3/true, selftests as listed, `--selftest` green, no forbidden pattern in the emitted script, Python 3.9.'
+  body: 'BUDGET: scripts/compound-v-emit-workflow.py is 6,000+ lines and five implementers ran out of turns reading it. At most 20 tool calls of reading in total: `grep -n` for each named symbol first, then `sed -n` only the ranges you need; never Read the whole file; then edit; then run `--selftest` ONCE. Implement Task A of docs/superpowers/plans/2026-09-03-v3.4.8-workflow-retry.md (spec docs/superpowers/specs/2026-09-03-v3.4.8-workflow-retry-design.md). The spec''s ''Decisions forced by pre-flight'' section overrides the earlier text: the trigger is a NULL resolution; no Date/Math.random; setTimeout is confirmed to work (live probe). Symbols to grep: `async function gateStage`, the implement/record/finalize stage functions, `opts.model`, `CFG.` (how the JS config object is emitted), `def cmd_record`, `failure_class`. Touch only scripts/compound-v-emit-workflow.py. Read the pre-flight audits named in this manifest''s audits block first (their §7 MUSTs bind). Tests first. Python 3.9 syntax.
+    Run python with -B; register your lane with a literal --cwd. You are unattended: decide and return; if you approach your turn budget, commit what is complete and return a summary that says what is not. Also grep `FORBIDDEN_PATTERNS`, `CLAUDE_ESCALATION`, `escalate_claude_model`, `isAgentTypeMissing`, `def cmd_gate_receipt`.'
+- id: validator-retry
+  title: Task B — the manifest `retry` block
+  type: implement
+  backend: claude
+  tier: standard
+  effort: medium
+  isolation: worktree
+  run: parallel
+  depends_on: []
+  write_allowed:
+  - scripts/compound-v-validate-manifest.py
+  read_allowed:
+  - '**'
+  acceptance:
+  - 'Optional top-level `retry: {max_attempts: int 1..3 (isinstance int, not bool), escalate_reviewer: bool}`; 0, 4, "3", a bool for the int, a non-bool for the flag and unknown keys refused with a violation naming the key; selftest cases; `--selftest` green; Python 3.9.'
+  body: 'Implement Task B of docs/superpowers/plans/2026-09-03-v3.4.8-workflow-retry.md. Mirror the existing `test_contract` block validation (grep `TEST_CONTRACT_ALLOWED_KEYS` and `_validate_test_contract`); read only those ranges. Touch only scripts/compound-v-validate-manifest.py. Read the pre-flight audits named in this manifest''s audits block first (their §7 MUSTs bind). Tests first. Python 3.9 syntax. Run python with -B; register your lane with a literal --cwd. You are unattended: decide and return; if you approach your turn budget, commit what is complete and return a summary that says what is not.'
+- id: docs
+  title: Task C — execution-manifest.md, failure-policy.md, CHANGELOG
+  type: implement
+  backend: claude
+  tier: light
+  effort: low
+  isolation: worktree
+  run: parallel
+  depends_on: []
+  write_allowed:
+  - skills/compound-v/execution-manifest.md
+  - skills/compound-v/failure-policy.md
+  - CHANGELOG.md
+  - agents/parallel-dispatcher.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - execution-manifest.md documents `retry` per the spec's Decisions (null trigger, deterministic table, retries[] in the result, requested escalation, fast-path out of scope, resume note) and corrects its reviewer-invariant paragraph (~lines 78-80) to deep-or-stronger (frontier/fable, 3.4.6); failure-policy.md says the policy applies inside Engine C (same table, no jitter, class unknown on the null path); parallel-dispatcher.md Step 2c gains the transient-exhaustion ⇒ reviewer-lift decision; CHANGELOG [Unreleased] has the entry (findings 118, 119) with no timing claim; lint green.
+  body: 'Implement Task C of docs/superpowers/plans/2026-09-03-v3.4.8-workflow-retry.md; describe the behaviour as the spec defines it (Tasks A and B run in parallel). Touch only your four files (agents/parallel-dispatcher.md added). Read the pre-flight audits named in this manifest''s audits block first (their §7 MUSTs bind). Tests first. Python 3.9 syntax. Run python with -B; register your lane with a literal --cwd. You are unattended: decide and return; if you approach your turn budget, commit what is complete and return a summary that says what is not.'
+- id: spec-review
+  title: Review Gate — three passes against the spec and the feature acceptance criteria
+  type: review
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: direct
+  run: serial
+  depends_on:
+  - emitter-retry
+  - validator-retry
+  - docs
+  write_allowed:
+  - docs/superpowers/dogfood/2026-09-03-v3.4.8-workflow-retry-review.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - 'The review file exists with ## Recall, ## SPEC, ## QUALITY, ## INTEGRATION, ## Verdict; each acceptance criterion is run on the merged tree with the command and output (the stub-agent simulation via the emitter selftest; the validator cases); the verdict is APPROVED or ISSUES with a numbered list.'
+  body: 'Your agent definition carries the three-pass Review Gate and a Step 0 (V-memory recall). Follow it within a HARD BUDGET of 50 tool calls; FIRST action after Step 0: create docs/superpowers/dogfood/2026-09-03-v3.4.8-workflow-retry-review.md with the section skeleton and fill it as you verify. Review the three jobs against docs/superpowers/specs/2026-09-03-v3.4.8-workflow-retry-design.md and this manifest''s five acceptance criteria; confirm no timing claim is published; confirm implementers are never escalated. Run python with -B; register your lane with a literal --cwd. Verify explicitly: the emitted script has no Date.now/Math.random/new Date; withRetry handles a null resolution (not only a throw); the exhaustion reason text; the escalation uses the ladder map, never a literal ''fable''; implementers never escalated.'

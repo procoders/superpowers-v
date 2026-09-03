@@ -1,0 +1,32 @@
+{
+  "run_id": "2026-09-03-v3.4.8-workflow-retry",
+  "phase": "PARTITION_VERIFIED",
+  "pre_eval_id": "2026-09-03T152726Z-implement-v3-4-8-per-docs-superpowers-specs-2026-09-03-v3-4-3862",
+  "updated_at": "2026-09-03T15:42:52Z",
+  "jobs": {
+    "emitter-retry": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "validator-retry": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "docs": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "spec-review": {
+      "status": "pending",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null
+    }
+  }
+}
