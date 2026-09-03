@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "scripts/compound-v-emit-preflight.py"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "40d1d6c1856d38acb6e7c679356421869fce3e00",
+    "diff_digest": "sha256:c91a68e4de496313a12e0de6f2b4f7b0eb356af16af7ade715d1287014427d9c",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"40d1d6c1856d38acb6e7c679356421869fce3e00\",\n  \"changed\": [\n    \"scripts/compound-v-emit-preflight.py\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-emit-preflight.py\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "40d1d6c1856d38acb6e7c679356421869fce3e00",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task A \u2014 three read-only git forms in the pre-flight clamp; two checks narrowed, two added",
+  "tests": {
+    "command": "bash -c 'python3 -B scripts/compound-v-emit-preflight.py --selftest >/dev/null'\nbash -c '[ -f scripts/compound-v-emit-preflight.py ] || exit 0; grep -q -- \"--selftest\" scripts/compound-v-emit-preflight.py || exit 0; /usr/bin/python3 -B scripts/compound-v-emit-preflight.py --selftest >/dev/null'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_835fca0a-4af-1"
+}
