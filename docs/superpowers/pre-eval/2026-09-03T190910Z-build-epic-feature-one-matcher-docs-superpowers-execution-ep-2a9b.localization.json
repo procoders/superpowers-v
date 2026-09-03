@@ -1,0 +1,13 @@
+{
+  "confidence": "exact",
+  "digest": "sha256:d087541d4e8f1dd23c8ea98c239b119ec8d36221ed940f788fa457189a23124e",
+  "fan_out": 3,
+  "flags": [
+    "sensitive_path"
+  ],
+  "resolved_paths": [
+    "docs/superpowers/execution/epics/2026-09-03-glob-parity/specs/one-matcher.md",
+    "scripts/compound-v-memory.py",
+    "scripts/compound-v-scope-check.py"
+  ]
+}

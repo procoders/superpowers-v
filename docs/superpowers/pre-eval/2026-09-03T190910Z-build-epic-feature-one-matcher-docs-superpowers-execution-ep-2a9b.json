@@ -1,0 +1,46 @@
+{
+  "base_commit": "57ffbc8d37e3a164d76babecd16518e4a60e28b6",
+  "confidence": "localization:exact; tiers:localization,T1",
+  "decision": "FULL_PIPELINE",
+  "declared_paths": [
+    "docs/superpowers/execution/epics/2026-09-03-glob-parity/specs/one-matcher.md",
+    "scripts/compound-v-memory.py",
+    "scripts/compound-v-scope-check.py"
+  ],
+  "difficulty": {
+    "band": "high",
+    "display": 8
+  },
+  "digest": "sha256:2d3b56f98eb627a81679b762733587fa9e8b7498e50accc5984427c1aafc4a33",
+  "impact": {
+    "band": "high",
+    "display": 8
+  },
+  "localization": {
+    "confidence": "exact",
+    "fan_out": 3,
+    "flags": [
+      "sensitive_path"
+    ],
+    "resolved_paths": [
+      "docs/superpowers/execution/epics/2026-09-03-glob-parity/specs/one-matcher.md",
+      "scripts/compound-v-memory.py",
+      "scripts/compound-v-scope-check.py"
+    ]
+  },
+  "min_sample_status": "insufficient",
+  "override_fired": 2,
+  "pre_eval_id": "2026-09-03T190910Z-build-epic-feature-one-matcher-docs-superpowers-execution-ep-2a9b",
+  "request_slug": "build-epic-feature-one-matcher-docs-superpowers-execution-ep",
+  "session_id": "e619cb38-ebe3-4b45-a1f4-c3007616291d",
+  "status": "PRE_EVAL_DONE",
+  "taxonomy_digest": "sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a",
+  "taxonomy_ref": "docs/superpowers/pre-eval/2026-09-03T190910Z-build-epic-feature-one-matcher-docs-superpowers-execution-ep-2a9b.taxonomy-snapshot.yaml",
+  "taxonomy_version": 1,
+  "tier": "FULL",
+  "tiers_signalled": [
+    "localization",
+    "T1"
+  ],
+  "ts": "2026-09-03T19:09:10Z"
+}
