@@ -1,0 +1,6 @@
+[
+  {"id": "review-index", "title": "F1 — the dogfood review index generator", "depends_on": [],
+   "spec_path": "docs/superpowers/execution/epics/2026-09-03-verification-index/specs/review-index.md"},
+  {"id": "readme-section", "title": "F2 — README 'Verification program' section from the index", "depends_on": ["review-index"],
+   "spec_path": "docs/superpowers/execution/epics/2026-09-03-verification-index/specs/readme-section.md"}
+]
