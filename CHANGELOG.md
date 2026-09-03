@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [3.4.9] - 2026-09-03
+
+Two honesty fixes surfaced by the day's dogfooding: the pre-flight result now names every knowledge-base
+file its auditors appended (a modified tracked KB file was being charged to the next direct-mode job's
+scope gate — the orchestrator had to stash one mid-run), and the conformance checker validates `retries[]`
+items the way it already validates `usage`. The pre-flight corrected the spec before a line was written:
+the audit-commit step lives in `/v:orchestrate`, not `/v:dispatch`, and 1B's `expert/` knowledge base
+needed naming too.
+
 ### Fixed — the pre-flight result names the knowledge-base files it appended (finding 100)
 
 The library validator (1C, at its Step 7) and the domain expert (1B) append to their
