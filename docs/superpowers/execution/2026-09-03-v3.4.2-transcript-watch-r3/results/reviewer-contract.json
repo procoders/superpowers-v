@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "agents/spec-reviewer.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "af48f8f9b354a214d6d711e193dac06d28ca42c6",
+    "diff_digest": "sha256:06486470c4d14059b4f98ff21dc19b76ee41165221cc8c6013862d799a2306a4",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"af48f8f9b354a214d6d711e193dac06d28ca42c6\",\n  \"changed\": [\n    \"agents/spec-reviewer.md\"\n  ],\n  \"allowed\": [\n    \"agents/spec-reviewer.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "af48f8f9b354a214d6d711e193dac06d28ca42c6",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task B'' \u2014 agents/spec-reviewer.md \u00a73.3: the FULL row follows the derived-default rule (review-2 issue 3)",
+  "tests": {
+    "command": "/usr/bin/python3 -B scripts/compound-v-scope-check.py --selftest\nbash -c 'for s in scripts/compound-v-*.py; do grep -q -- \"--selftest\" \"$s\" || continue; /usr/bin/python3 -B \"$s\" --selftest >/dev/null 2>&1 || { echo \"FAIL $s\"; exit 1; }; done; for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "full",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_52f41e36-efe-2"
+}

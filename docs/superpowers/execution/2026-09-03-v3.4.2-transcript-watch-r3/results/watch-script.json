@@ -1,0 +1,30 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "scripts/compound-v-transcript-watch.py",
+    "tests/test-transcript-watch.sh"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "af48f8f9b354a214d6d711e193dac06d28ca42c6",
+    "diff_digest": "sha256:b4622c7bba270e9b61bd55787bc25d8ba3c9edb60f4b201a627dc94e0a8261f6",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"af48f8f9b354a214d6d711e193dac06d28ca42c6\",\n  \"changed\": [\n    \"scripts/compound-v-transcript-watch.py\",\n    \"tests/test-transcript-watch.sh\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-transcript-watch.py\",\n    \"tests/test-transcript-watch.sh\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "af48f8f9b354a214d6d711e193dac06d28ca42c6",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task A'' \u2014 `>=` is not a redirect, a heredoc body is not command text, `error` anchors on the tool's own verdict (review-2 issues 1\u20132)",
+  "tests": {
+    "command": "/usr/bin/python3 -B scripts/compound-v-scope-check.py --selftest\nbash -c '[ -f scripts/compound-v-transcript-watch.py ] || exit 0; grep -q -- \"--selftest\" scripts/compound-v-transcript-watch.py || exit 0; /usr/bin/python3 -B scripts/compound-v-transcript-watch.py --selftest'\nbash -c '[ -f tests/test-transcript-watch.sh ] || exit 0; bash tests/test-transcript-watch.sh'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 3
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_52f41e36-efe-1"
+}

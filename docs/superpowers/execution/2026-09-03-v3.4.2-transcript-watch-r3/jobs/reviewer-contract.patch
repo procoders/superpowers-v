@@ -1,0 +1,19 @@
+diff --git a/agents/spec-reviewer.md b/agents/spec-reviewer.md
+index f500cbd..5c98071 100644
+--- a/agents/spec-reviewer.md
++++ b/agents/spec-reviewer.md
+@@ -172,12 +172,12 @@ The composite must build/compile. What must have been *tested* is tier-aware, an
+ 
+ | Tier | Required beyond the unconditional floor |
+ |---|---|
+-| **FULL** | `full_command` — ran, exit 0 |
++| **FULL** | follows the derived-default rule, same as every other tier: a declared, non-empty `impacted_map` is honoured — impacted ∪ previously-failing ∪ newly-added — **plus `full_command`** for each changed path matching no rule (never the referencing-tests heuristic, which is SCOPED/DIRECT only); with no declared `impacted_map`, `full_command` alone, ran, exit 0 |
+ | **SCOPED** | the declared impacted set: every `impacted_map` rule whose `when` matches a changed path, unioned — not the first match — **plus, for each changed path matching no rule, the referencing tests (≤5) and never `full_command`** |
+ | **DIRECT** | the same as SCOPED — **plus `full_command` when the change lands unattended** (the auto-route class): the floor alone does not carry the guarantee an auto-committing change trades on |
+ | **no `triage.tier` in the manifest** | `full_command` whenever the job carries a changed path matching **no** `impacted_map` rule — with no tier there is no size decision to honour, and an unmapped file is unknown blast radius, never "nothing to run" |
+ 
+-**What a SCOPED job owes, since 3.4.1 (decision 4).** The floor, the impacted set, and — for any changed path no `impacted_map` rule matched — at most **five referencing suites**: the test files that name the changed module, selected by `referencing_tests()` in [`compound-v-fastpath-run.py`](../scripts/compound-v-fastpath-run.py). When none of them exists, the floor **alone** is the whole obligation. **`full_command` is not owed at SCOPED or DIRECT, and demanding it here is now a review error** — an unmapped path used to promote every tier to the full suite, which handed back the entire suite the triage engine had just decided against. FULL is unchanged, and the merge-blocking CI run remains the only thing that restores what a full suite guarantees; the referencing heuristic is early feedback, textual, and neither sound nor complete.
++**What a SCOPED job owes, since 3.4.1 (decision 4).** The floor, the impacted set, and — for any changed path no `impacted_map` rule matched — at most **five referencing suites**: the test files that name the changed module, selected by `referencing_tests()` in [`compound-v-fastpath-run.py`](../scripts/compound-v-fastpath-run.py). When none of them exists, the floor **alone** is the whole obligation. **`full_command` is not owed at SCOPED or DIRECT, and demanding it here is now a review error** — an unmapped path used to promote every tier to the full suite, which handed back the entire suite the triage engine had just decided against. FULL differs only in the unmapped-path fallback — `full_command`, not the referencing heuristic — never in whether a declared `impacted_map` is honoured first; the derived-default rule (`execution-manifest.md`, "The derived default") applies to every tier alike, and demanding `full_command` of a FULL job that has a declared `impacted_map` and no changed path outside it is a review error too. The merge-blocking CI run remains the only thing that restores what a full suite guarantees; the referencing heuristic is early feedback, textual, and neither sound nor complete.
+ 
+ Derive it yourself — match each entry of the job's `files_changed` against the map — rather than taking "impacted" on the worker's word. (DIRECT dispatches no reviewer by default; that row governs the reviews that do happen at DIRECT and the bar an unattended landing must clear before it commits.)
+ 

@@ -1,0 +1,50 @@
+{
+  "baseline_commit": "af48f8f9b354a214d6d711e193dac06d28ca42c6",
+  "diff_digest": "sha256:06486470c4d14059b4f98ff21dc19b76ee41165221cc8c6013862d799a2306a4",
+  "exit_code": 0,
+  "job_id": "reviewer-contract",
+  "patch_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-v3.4.2-transcript-watch-r3/jobs/reviewer-contract.patch",
+  "patch_paths": [
+    "agents/spec-reviewer.md"
+  ],
+  "patch_sha256": "sha256:06486470c4d14059b4f98ff21dc19b76ee41165221cc8c6013862d799a2306a4",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"af48f8f9b354a214d6d711e193dac06d28ca42c6\",\n  \"changed\": [\n    \"agents/spec-reviewer.md\"\n  ],\n  \"allowed\": [\n    \"agents/spec-reviewer.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "af48f8f9b354a214d6d711e193dac06d28ca42c6",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "agents/spec-reviewer.md"
+    ],
+    "checks": [
+      {
+        "checker": "/usr/bin/python3 -B scripts/compound-v-scope-check.py --selftest",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'for s in scripts/compound-v-*.py; do grep -q -- \"--selftest\" \"$s\" || continue; /usr/bin/python3 -B \"$s\" --selftest >/dev/null 2>&1 || { echo \"FAIL $s\"; exit 1; }; done; for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (5 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 0 command(s) from 1 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)",
+      "unmapped: agents/spec-reviewer.md matched no `when` glob \u2014 unknown blast radius resolves to full_command, never to nothing",
+      "scope: labelled `full` \u2014 full_command was added for an unmapped path at this tier, so the whole suite is what ran"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_52f41e36-efe-2"
+}

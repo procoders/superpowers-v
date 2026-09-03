@@ -1,0 +1,354 @@
+diff --git a/scripts/compound-v-transcript-watch.py b/scripts/compound-v-transcript-watch.py
+index 7b954aa..fe659b2 100755
+--- a/scripts/compound-v-transcript-watch.py
++++ b/scripts/compound-v-transcript-watch.py
+@@ -113,6 +113,11 @@ DENY_LITERAL = "Compound V lane guard: job '"
+ # run directory?" — discovery must stay cheap on a session with many workflows.
+ DISCOVERY_HEAD_BYTES = 1024 * 1024
+ 
++# The one signal that is the TOOL'S OWN VERDICT rather than a line of output:
++# a non-zero exit. It survives on a read-only command's result; nothing else in
++# ERROR_PATTERNS does.
++EXIT_CODE_PATTERN = re.compile(r"exit code [1-9]")
++
+ ERROR_PATTERNS = [
+     re.compile(r"Traceback \(most recent"),
+     re.compile(r"Permission denied"),
+@@ -120,7 +125,7 @@ ERROR_PATTERNS = [
+     re.compile(r"No such file or directory"),
+     re.compile(r"SELFTEST FAILED"),
+     re.compile(r"\bBLOCKED\b"),
+-    re.compile(r"exit code [1-9]"),
++    EXIT_CODE_PATTERN,
+ ]
+ 
+ # Tools whose input names a file this agent is about to write.
+@@ -139,6 +144,20 @@ TOOL_NAME_CAP = 400
+ _SEPARATORS = {";", "&&", "||", "|", "&", "\n"}
+ _REDIRECT = re.compile(r"^(\d*)(>>?)(.*)$")
+ 
++# A heredoc opener: `<<WORD`, `<<-WORD`, `<<'WORD'`, `<<"WORD"`. `<<<` (a here
++# string) deliberately does NOT match -- what follows `<<` there is `<`, which
++# is none of the three alternatives.
++_HEREDOC = re.compile(r"<<-?[ \t]*(?:'([^']*)'|\"([^\"]*)\"|([A-Za-z_][A-Za-z0-9_]*))")
++
++# Commands that only READ. A traceback pasted by one of these is a quotation --
++# the file it printed -- not this agent's own failure. See error_evidence.
++READ_ONLY_COMMANDS = frozenset((
++    "cat", "sed", "grep", "rg", "egrep", "fgrep", "head", "tail", "awk", "wc",
++    "ls", "find", "diff", "file", "stat", "cut", "sort", "uniq", "tr", "nl",
++    "column", "jq", "echo", "printf", "pwd", "which", "basename", "dirname",
++    "realpath", "true", "false", "date", "env",
++))
++
+ 
+ # --------------------------------------------------------------------------- #
+ # The two by-path imports. Never a second matcher, never a third YAML parser.
+@@ -272,6 +291,46 @@ def _text_of(content):
+ # guessing, because a false out-of-lane line costs the reader more than a missed
+ # one: this is a play-ahead, and the gate is still the authority.
+ # --------------------------------------------------------------------------- #
++def strip_heredocs(command):
++    """`command` with every heredoc BODY removed, openers left in place.
++
++    A heredoc body is DATA, not command text: an agent writing a Python file
++    with `cat > f.py <<PYEOF ... PYEOF` was reported as redirecting into `=`,
++    because `assert s.count(old) >= 1` inside the body tokenized as a `>`
++    followed by a word. Only the heredoc's own redirect target is a write.
++    """
++    if not isinstance(command, str) or "<<" not in command:
++        return command
++    lines = command.split("\n")
++    kept = []
++    i = 0
++    while i < len(lines):
++        line = lines[i]
++        kept.append(line)
++        i += 1
++        delims = [(m.group(1) or m.group(2) or m.group(3))
++                  for m in _HEREDOC.finditer(line)]
++        for delim in [d for d in delims if d]:
++            while i < len(lines) and lines[i].strip() != delim:
++                i += 1
++            if i < len(lines):  # the terminator line itself
++                i += 1
++    return "\n".join(kept)
++
++
++def _is_write_target(token):
++    """Whether a token after a redirect operator names a file.
++
++    `true >= 1` tokenizes as `true`, `>`, `=`, `1`: shlex splits the comparison
++    because `=` is not one of its punctuation characters. A `>=` is arithmetic,
++    not a redirect into a file called `=`, so a target that opens with `=` -- or
++    that is itself another operator -- is refused.
++    """
++    if not token or token in _SEPARATORS:
++        return False
++    return not token.startswith(("=", "<", ">", "&", "|", ";"))
++
++
+ def _tokenize(command):
+     try:
+         lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+@@ -297,11 +356,38 @@ def _args_until_separator(tokens):
+     return out
+ 
+ 
++def is_read_only_command(command):
++    """Whether every stage of `command` only reads.
++
++    A `sed`/`cat`/`grep`/`head` that pastes a traceback has quoted a file; it
++    has not failed. The check is deliberately strict -- one unrecognised
++    command, one redirect, one unresolvable token and the answer is False --
++    because suppressing a real failure costs more than reporting a quoted one.
++    """
++    if not isinstance(command, str) or not command.strip():
++        return False
++    tokens = _tokenize(strip_heredocs(command))
++    if not tokens:
++        return False
++    expect_command = True
++    for tok in tokens:
++        if tok in _SEPARATORS:
++            expect_command = True
++            continue
++        if tok.startswith(">") or (tok[:1].isdigit() and _REDIRECT.match(tok)):
++            return False  # a redirect is a write, whatever runs in front of it
++        if expect_command:
++            if _unresolvable(tok) or os.path.basename(tok) not in READ_ONLY_COMMANDS:
++                return False
++            expect_command = False
++    return not expect_command
++
++
+ def bash_write_targets(command):
+     """Paths a shell command would WRITE, as far as this can honestly tell."""
+     if not isinstance(command, str) or not command.strip():
+         return []
+-    tokens = _tokenize(command)
++    tokens = _tokenize(strip_heredocs(command))
+     targets = []
+     i = 0
+     while i < len(tokens):
+@@ -313,12 +399,16 @@ def bash_write_targets(command):
+                 i += 1
+                 continue
+             if rest:
+-                targets.append(rest)
++                if _is_write_target(rest):
++                    targets.append(rest)
+                 i += 1
+                 continue
+             if i + 1 < len(tokens):
+-                targets.append(tokens[i + 1])
+-                i += 2
++                if _is_write_target(tokens[i + 1]):
++                    targets.append(tokens[i + 1])
++                    i += 2
++                    continue
++                i += 1
+                 continue
+             i += 1
+             continue
+@@ -725,7 +815,7 @@ def _at_line_start(text, index):
+     return index == 0 or text[index - 1] == "\n"
+ 
+ 
+-def error_evidence(text, is_error=False):
++def error_evidence(text, is_error=False, read_only=False):
+     """The failing line of a Bash result, or None.
+ 
+     ANCHORED, because this repository's prose is largely ABOUT blocked jobs and
+@@ -735,10 +825,19 @@ def error_evidence(text, is_error=False):
+     `Permission denied` all appear, and where a sentence mentioning one does
+     not. Without this the watcher reported its own selftest output (`PASS exit
+     code 0 is not an error, exit code 1 is`) as an error.
++
++    ANCHORED ONCE MORE on the command behind the result. When that command only
++    reads -- `sed`, `cat`, `grep`, `head` -- its output is a QUOTATION of some
++    file, so only the tool's own verdict counts: the harness's `is_error`, or a
++    non-zero exit marker. A traceback such a command merely printed is not a
++    failure of the agent that ran it, and this watcher reported several of them
++    as one.
+     """
+     if not text:
+         return None
+     for pattern in ERROR_PATTERNS:
++        if read_only and not is_error and pattern is not EXIT_CODE_PATTERN:
++            continue
+         for match in pattern.finditer(text):
+             if not is_error and not _at_line_start(text, match.start()):
+                 continue
+@@ -776,6 +875,19 @@ def denial_evidence(text, is_error=False, tool_name=None):
+ # --------------------------------------------------------------------------- #
+ # Per-agent analysis
+ # --------------------------------------------------------------------------- #
++def _tool_name(entry):
++    """The tool name from a tools-table entry. An entry is a bare name, or a
++    [name, read_only] pair for a Bash call whose command only reads -- and a
++    state file written by an older version carries only bare names."""
++    if isinstance(entry, (list, tuple)):
++        return entry[0] if entry else ""
++    return entry
++
++
++def _tool_read_only(entry):
++    return bool(isinstance(entry, (list, tuple)) and len(entry) > 1 and entry[1])
++
++
+ def _cap_tools(table, cap=TOOL_NAME_CAP):
+     """The most recent `cap` entries of an insertion-ordered id -> name table."""
+     if len(table) <= cap:
+@@ -817,8 +929,13 @@ def analyze_agent(path, agent_id, ctx, repo_root, is_allowed, start_line=0,
+         kind = event["kind"]
+ 
+         if kind == "tool_use":
+-            tool_names[event.get("id")] = event.get("name") or ""
+-            parsed = parse_register_lane((event.get("input") or {}).get("command"))
++            name = event.get("name") or ""
++            command = (event.get("input") or {}).get("command")
++            if name == "Bash" and is_read_only_command(command):
++                tool_names[event.get("id")] = [name, 1]
++            else:
++                tool_names[event.get("id")] = name
++            parsed = parse_register_lane(command)
+             if parsed is not None:
+                 pending_register[event.get("id")] = {
+                     "parsed": parsed, "line": event["line"], "ts": event.get("ts"),
+@@ -856,7 +973,8 @@ def analyze_agent(path, agent_id, ctx, repo_root, is_allowed, start_line=0,
+             continue
+ 
+         text = event.get("text") or ""
+-        tool = tool_names.get(use_id)
++        entry = tool_names.get(use_id)
++        tool = _tool_name(entry)
+         evidence = denial_evidence(text, event.get("is_error"), tool)
+         if evidence:
+             signals.append({
+@@ -866,7 +984,8 @@ def analyze_agent(path, agent_id, ctx, repo_root, is_allowed, start_line=0,
+             })
+             continue
+         if tool == "Bash":
+-            evidence = error_evidence(text, event.get("is_error"))
++            evidence = error_evidence(text, event.get("is_error"),
++                                      _tool_read_only(entry))
+             if evidence:
+                 signals.append({
+                     "signal": "error", "job": job or UNREGISTERED, "agent": agent_id,
+@@ -1159,6 +1278,31 @@ def _selftest():  # noqa: C901 - a linear list of cases reads better than five h
+            and bash_write_targets("echo x > /r/*.txt") == [])
+     expect("a '>' inside a quoted argument is not a redirect",
+            bash_write_targets('echo "a > b"') == [])
++    expect(">= is a comparison, not a redirect into a file called '='",
++           bash_write_targets("true >= 1") == []
++           and bash_write_targets("[ $n >= 2 ] && echo ok") == [])
++    expect("a heredoc BODY is data: only the heredoc's own target is a write",
++           bash_write_targets("cat > /tmp/x.py <<PYEOF\n"
++                              "assert s.count(old) >= 1\n"
++                              "print('a > b', '/etc/passwd')\n"
++                              "PYEOF") == ["/tmp/x.py"])
++    expect("...and a quoted heredoc delimiter closes the body just the same",
++           bash_write_targets("python3 - <<'EOF'\nx = 1 >= 0\nEOF") == []
++           and bash_write_targets("cat <<-EOF > out.txt\na > b\nEOF")
++           == ["out.txt"])
++    expect("a here STRING is not a heredoc",
++           bash_write_targets("cat <<<hello > /r/o.txt") == ["/r/o.txt"])
++
++    # --- read-only commands --------------------------------------------------
++    expect("sed/cat/grep/head only read",
++           is_read_only_command("sed -n 1,20p f.py")
++           and is_read_only_command("grep -n foo f.py | head -5")
++           and is_read_only_command("cat a.txt"))
++    expect("...but not once a redirect appears, nor for an unknown command",
++           not is_read_only_command("cat a.txt > b.txt")
++           and not is_read_only_command("grep -n foo f | tee log")
++           and not is_read_only_command("python3 x.py")
++           and not is_read_only_command("cat f && rm f"))
+ 
+     # --- register-lane parsing ----------------------------------------------
+     parsed = parse_register_lane(
+@@ -1208,6 +1352,14 @@ def _selftest():  # noqa: C901 - a linear list of cases reads better than five h
+            and error_evidence("show the phase, one of SPEC_READY to BLOCKED to DONE") is None)
+     expect("...but on a result the harness marked is_error it counts anywhere",
+            error_evidence("job a is BLOCKED by the gate", True) is not None)
++    expect("a read-only command that PASTES a traceback is not an error",
++           error_evidence("Traceback (most recent call last):\n  File x",
++                          False, True) is None
++           and error_evidence("BLOCKED\ncommand not found", False, True) is None)
++    expect("...but its own verdict still counts: is_error, or a non-zero exit",
++           error_evidence("exit code 2", False, True) is not None
++           and error_evidence("Traceback (most recent call last):", True, True)
++           is not None)
+     expect("the evidence is the MATCHING line, never the first",
+            error_evidence("total 184\nTraceback (most recent call last):\n  File x")
+            == "Traceback (most recent call last):")
+diff --git a/tests/test-transcript-watch.sh b/tests/test-transcript-watch.sh
+index ebe5d6b..a56bf41 100755
+--- a/tests/test-transcript-watch.sh
++++ b/tests/test-transcript-watch.sh
+@@ -481,6 +481,64 @@ check "discovery resolves the session root through CLAUDE_CONFIG_DIR" \
+ check "...and reports the same roster it does under --transcripts" \
+       "$(grep -qE '^a1111111 +a +returned' "$OUT9" && echo 1 || echo 0)"
+ 
++# --------------------------------------------------------------------------- #
++# 13. THE FALSE-POSITIVE CLASSES OF REVIEW 2 — a `>=` comparison read as a
++#     redirect, a heredoc BODY read as command text, and a read-only command's
++#     pasted traceback read as this agent's own failure.
++#
++#     Against run r2's own transcripts the shipped detectors reported writes to
++#     a file called `=`, writes to paths that were only QUOTED inside heredoc
++#     bodies, and an error for every `sed`/`cat` that happened to print a
++#     traceback out of a file it was reading. Exactly one signal is expected
++#     from this whole fixture: the last heredoc's OWN target, which really is a
++#     repository path outside job `a`'s lane.
++# --------------------------------------------------------------------------- #
++WF6="$SESSION/subagents/workflows/wf_review2"
++mkdir -p "$WF6"
++A8=a888888888888888
++REG8="$PY -B $EMIT register-lane --run-dir $RUN --job-id a --cwd $WTA --repo-root $SANDBOX --isolation worktree"
++
++cat >"$WF6/agent-$A8.jsonl" <<JSONL
++{"type":"user","agentId":"$A8","timestamp":"$NOW","message":{"role":"user","content":"Implementer for job a of $RUN."}}
++{"type":"assistant","agentId":"$A8","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"s1","name":"Bash","input":{"command":"$REG8"}}]}}
++{"type":"user","agentId":"$A8","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"s1","is_error":false,"content":"{\"registered\": \"a\"}"}]}}
++{"type":"assistant","agentId":"$A8","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"s2","name":"Bash","input":{"command":"true >= 1 && echo ok"}}]}}
++{"type":"user","agentId":"$A8","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"s2","content":"ok"}]}}
++{"type":"assistant","agentId":"$A8","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"s3","name":"Bash","input":{"command":"cat > $T/scratch/gen.py <<PYEOF\nassert s.count(old) >= 1\nprint('a > b', '$SANDBOX/README.md')\nopen('$SANDBOX/docs/nope.md', 'w')\nPYEOF"}}]}}
++{"type":"user","agentId":"$A8","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"s3","content":""}]}}
++{"type":"assistant","agentId":"$A8","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"s4","name":"Bash","input":{"command":"cat > $WTA/src/gen2.py <<'PYEOF'\nx = 1 >= 0\nPYEOF"}}]}}
++{"type":"user","agentId":"$A8","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"s4","content":""}]}}
++{"type":"assistant","agentId":"$A8","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"s5","name":"Bash","input":{"command":"sed -n 1,40p $SANDBOX/src/broken.py"}}]}}
++{"type":"user","agentId":"$A8","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"s5","content":"Traceback (most recent call last):\n  File \"broken.py\", line 1\nValueError: quoted, not raised here"}]}}
++{"type":"assistant","agentId":"$A8","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"s6","name":"Bash","input":{"command":"grep -n BLOCKED $SANDBOX/docs/gate.md | head -5"}}]}}
++{"type":"user","agentId":"$A8","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"s6","content":"BLOCKED means the gate refused the job\ncommand not found is one of its reasons"}]}}
++{"type":"assistant","agentId":"$A8","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"s7","name":"Bash","input":{"command":"cat > $SANDBOX/README.md <<PYEOF\nassert x >= 1\nPYEOF"}}]}}
++{"type":"user","agentId":"$A8","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"s7","content":""}]}}
++JSONL
++
++cat >"$WF6/journal.jsonl" <<JSONL
++{"type":"started","key":"k8","agentId":"$A8"}
++{"type":"result","key":"k8","agentId":"$A8"}
++JSONL
++
++OUT10="$T/out10.txt"
++"$PY" -B "$WATCH" --run-dir "$RUN" --transcripts "$SESSION" --wf wf_review2 --once \
++      --state "$T/state10.json" >"$OUT10" 2>&1
++check "a >= comparison is not a redirect into a file called '='" \
++      "$(grep -qE 'out-of-lane +=? *$' "$OUT10" && echo 0 || echo 1)"
++check "a heredoc BODY names no write target — not the paths it quotes" \
++      "$(grep -qE 'nope\.md|gen\.py' "$OUT10" && echo 0 || echo 1)"
++check "...and the heredoc's own target is silent when it is IN lane (src/gen2.py)" \
++      "$(grep -q 'src/gen2.py' "$OUT10" && echo 0 || echo 1)"
++check "...and fires exactly once when it is a repository path OUT of lane" \
++      "$([ "$(grep -cE 'out-of-lane.*README\.md' "$OUT10")" = 1 ] && echo 1 || echo 0)"
++check "a sed that PASTES a traceback is not this agent's error" \
++      "$(grep -qE ' error .*Traceback' "$OUT10" && echo 0 || echo 1)"
++check "...nor is a grep|head that prints BLOCKED and 'command not found'" \
++      "$(grep -qE ' error ' "$OUT10" && echo 0 || echo 1)"
++check "so review 2's fixture emits EXACTLY the one real out-of-lane signal" \
++      "$([ "$(grep -cE ' (out-of-lane|wrong-cwd|error|denied|stall) ' "$OUT10")" = 1 ] && echo 1 || echo 0)"
++
+ # --------------------------------------------------------------------------- #
+ # 12. The script's own --selftest, run through this suite so CI cannot lose it.
+ # --------------------------------------------------------------------------- #
