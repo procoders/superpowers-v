@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-03-v3.4.8-workflow-retry-review.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "c2e5314c56e5f23a6054854fb47601384c8aae3e",
+    "diff_digest": "sha256:3f99fa4bc3a879963043a4a3a0f5da2e5b29bf14c26f412ee08d6b51b360ea89",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"c2e5314c56e5f23a6054854fb47601384c8aae3e\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.8-workflow-retry-review.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.8-workflow-retry-review.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "c2e5314c56e5f23a6054854fb47601384c8aae3e",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Review Gate \u2014 three passes against the spec and the feature acceptance criteria",
+  "tests": {
+    "command": "bash tests/test-engine-c-contract.sh\n/usr/bin/python3 -B scripts/lint-frontmatter.py .",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": ""
+}

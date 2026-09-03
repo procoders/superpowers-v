@@ -1,0 +1,289 @@
+diff --git a/docs/superpowers/dogfood/2026-09-03-v3.4.8-workflow-retry-review.md b/docs/superpowers/dogfood/2026-09-03-v3.4.8-workflow-retry-review.md
+new file mode 100644
+index 0000000..37d8896
+--- /dev/null
++++ b/docs/superpowers/dogfood/2026-09-03-v3.4.8-workflow-retry-review.md
+@@ -0,0 +1,283 @@
++# v3.4.8 workflow retry — Review Gate (run 2026-09-03-v3.4.8-workflow-retry)
++
++**Reviewer:** `compound-v:spec-reviewer`, pass 1 · **Date:** 2026-09-03 · **Tree reviewed:** merged `HEAD`
++(`c2e5314`, wave 1 = `a1be147`, baseline `0c62078`) · **Jobs:** emitter-retry, validator-retry, docs.
++
++**VERDICT: ISSUES** — SPEC ISSUES (2) · QUALITY ✅ with 2 low notes · INTEGRATION ISSUES (3).
++
++The **code is sound** and, on one point, better reasoned than the spec it was given. Every issue below
++is a **documentation or acceptance-wording** defect: the three docs shipped in Task C describe a
++class-filtering retry and a result-carried retry log that Task A deliberately and correctly did not
++build. Docs and code disagree; the code wins, and the disagreement is the finding.
++
++---
++
++## Recall
++
++`compound-v-memory.py search "workflow retry transient API failure reviewer escalation" --intent review --top 8`
++returned the run's own spec, plan, archaeology (§7) and library audit — the pre-flight corpus, no prior
++incident of this shape. Cited below where it binds.
++
++`compound-v-memory.py recall-check --files scripts/compound-v-emit-workflow.py
++scripts/compound-v-validate-manifest.py skills/compound-v/execution-manifest.md` →
++
++```
++recall-check: tighten (4/2 match)
++  recommend (conservative-only): force_worktree, extra_review_pass, fold_into_task0
++  - 2026-09-03-v3.4.6-.../results/validator.json: blocked on compound-v-validate-manifest.py
++  - 2026-09-03-v3.4.6-.../results/emitter.json:   error   on compound-v-emit-workflow.py
++  - 2026-09-03-v3.4.1-.../results/test-scope.json: blocked on execution-manifest.md
++  - 2026-09-02-df27-.../results/spec-review.json:  blocked on compound-v-emit-workflow.py
++```
++
++**`tighten` honoured, escalation-only:** the two code jobs already ran `isolation: worktree`, and this
++review is the extra pass. Recall is evidence, never routing — it changed no dispatch decision.
++
++---
++
++## SPEC
++
++### Scope lock
++
++All three gate receipts are git-derived `verdict: pass`, `violations: []`, and every changed path is
++inside its job's `write_allowed`. No `SCOPE_LOCK_VIOLATION`.
++
++| Job | Changed | Allowed | Verdict |
++|---|---|---|---|
++| emitter-retry | `scripts/compound-v-emit-workflow.py` | same | pass |
++| validator-retry | `scripts/compound-v-validate-manifest.py` | same | pass |
++| docs | `CHANGELOG.md`, `agents/parallel-dispatcher.md`, `skills/compound-v/execution-manifest.md`, `skills/compound-v/failure-policy.md` | same 4 | pass |
++
++### Coverage — spec "Decisions forced by pre-flight" (the binding text)
++
++| Spec decision | Implemented in | Status |
++|---|---|---|
++| Trigger is a NULL resolution, throws too | `compound-v-emit-workflow.py:2210-2237` (`r !== null && r !== undefined`; `catch → r = null`) | ✅ |
++| Exhaustion ⇒ `failure_class: other` + the exact reason, never a guessed class | `:1095-1099` (`RETRY_EXHAUSTED_REASON`), `:1206-1229` (`apply_retry_meta`) | ✅ |
++| `setTimeout` only; no `Date.now`/`Math.random`/`new Date` | `:2233` `setTimeout(res, wait)`; `forbidden_hits(_rt_script) == []` in selftest | ✅ |
++| Backoff 2/4/8 … cap 60 s, no jitter, from CFG (single source) | `:2228-2229` reads `CFG.retry.base_ms/cap_ms`; Python mirror `retry_backoff_ms` `:1102-1108` | ✅ |
++| Every stage wrapped; exhaustion falls into today's null path | implement `:2262`, gate `:2464`, record `:2547`, finalize `:2603`; each returns `{value:null}` on exhaustion | ✅ |
++| Reviewer lift once, via the ladder, never a literal `'fable'` | `:2294-2318`; `escalation_map()` `:1111-1119` from `CLAUDE_ESCALATION` | ✅ |
++| Implementers never escalated | `:2294` `first.exhausted && isReviewJob(job) && CFG.retry.escalate_reviewer`; `isReviewJob` keys on `job.job_type` (emitted at `:1638`) | ✅ |
++| `--escalated-from` on gate-receipt; receipt carries it | `:3138-3142`, `:3383-3389` | ✅ |
++| **`escalated_from` on the RESULT** | not implemented — state.json + Record's ack only | ❌ **ISSUE 2** |
++| Fast-path reviewers stated out of scope | execution-manifest.md, failure-policy.md, parallel-dispatcher.md, CHANGELOG | ✅ |
++| Resume note | execution-manifest.md § Resume | ✅ |
++| `retry` block validated (int 1..3 not bool; bool; unknown keys) | `compound-v-validate-manifest.py:2331-2371`, wired at `:2458` | ✅ |
++
++### Audit constraint check — archaeology §7 (non-negotiable)
++
++| # | Constraint | Status |
++|---|---|---|
++| 1 | Verify live whether `agent()` throws or resolves null; redesign around null | ✅ live probe `wf_8884a773-73f`; null is the primary trigger |
++| 2 | No timer/`Date.now`/`Math.random`; resolve architecturally | ✅ `setTimeout` probed, clock reads absent, no timestamp claimed |
++| 3 | Do **not** treat all four stages as equivalent retry targets; decide per-stage how exhaustion differs from today's catch-and-convert | ✅ each stage falls into its existing null path; `recordStage` logs its own retries and explicitly refuses to claim them in a file it never wrote (`:2540-2554`) |
++| 4 | Reuse `CLAUDE_ESCALATION`, not a hardcoded `'fable'` | ✅ selftest asserts `'fable'` does not appear in `implementStage` |
++| 5 | Resolve the reviewer-invariant contradiction **in the same edit** | ❌ **ISSUE 4** — prose fixed, invariant 4 itself left stale |
++| 6 | State whether fast-path reviewers are in scope | ✅ stated out of scope in all four docs |
++| 7 | A naive regex classifier misclassifies `out_of_credits` as retryable | ✅ in code (no classifier at all) — ❌ in docs, which claim one exists (**ISSUE 1**) |
++| 8 | Relate `max_attempts` to `PER_CLASS_MAX` explicitly | ✅ `:1086-1089` ties 3 to `PER_CLASS_MAX['overloaded']` |
++| 9 | Jitter shape if achievable | ✅ n/a — not achievable, said so |
++| 10 | Resume semantics for a variable-length retry loop | ✅ execution-manifest.md § Resume |
++
++### Over-build
++
++Clean. Every added symbol traces to an acceptance criterion: `retry_backoff_ms` (AC 1 asks for the
++Python mirror), `escalation_map` (AC 3), `retry_config` (AC 1), `_sanitize_retry_meta` / `apply_retry_meta`
++(AC 2), `implementFailure` (a two-line extraction of a literal the selftest pins). No speculative flags,
++no "for future use" exports, no logging beyond the retry lines the spec asks for.
++
++**PASS 1 SPEC: ISSUES** — 2 and 4 below.
++
++---
++
++## QUALITY
++
++### Code quality — clean
++
++`withRetry` is 26 lines and does one thing. The two defensive choices are the right ones and are
++commented as such: the by-role `isAgentTypeMissing` fallback is composed **inside** the retried
++function (`:2255-2276`) so a transient death retries the whole attempt while a missing agentType is
++still fixed on the first try; and `gateStage`'s `meta` is declared **outside** the `try` (`:2356-2358`)
++so the catch path still carries the retry log instead of swallowing its own evidence.
++
++`__retry` travelling on the verdict object and being `delete`d before argv (`:2502-2508`) keeps the
++verdict that reaches a receipt comparison byte-identical to the one the Gate produced. Verified by
++selftest (`"delete v.__retry;"`).
++
++`_sanitize_retry_meta` validates a machine-generated field anyway, drops unknown keys, and refuses a
++shell-shaped `escalated_from` — with a live selftest planting `"opus; rm -rf /"` and `"$(rm -rf /)"`.
++
++### No regression
++
++Floor + full suite green on the merged tree (evidence in INTEGRATION). `retry` absent stays valid —
++`validate_text(_v3_manifest()) == []` — so every pre-3.4.8 manifest still passes, and the committed
++audit-trail test that validates all 48 run manifests is in the green full run.
++
++### Test alignment
++
++Every MUST has a guard that fails if the requirement breaks:
++
++| MUST | Guard |
++|---|---|
++| null trigger, not only throw | `"if (r !== null && r !== undefined)"` + `"} catch (e) {\n      r = null;"` |
++| every stage through `withRetry` | per-stage body extraction asserts `await agent(` **absent** from `gateStage`/`recordStage`/`finalizeWave` |
++| implementStage's two `agent()` calls inside the retried fn | `count("await agent(") == 2` + ordering assert |
++| backoff table | `[retry_backoff_ms(a) …] == [2000,4000,8000,16000,32000,60000,60000]` |
++| CFG is the single source | CFG parsed out of the emitted script, compared to the Python constants |
++| ladder, never a literal | `"'fable'" not in implementStage body` |
++| lift exactly once | `count("attemptImplement(lifted)") == 1` |
++| exhaustion reason verbatim | `summary.startswith(<exact 111-char reason>)` and `"overloaded" not in summary` |
++| `--escalated-from` round-trip | real `cmd_gate_receipt` + `cmd_record` against a real git worktree |
++| validator refusals | 0, 4, -1, `"3"`, `true`, non-bool flag, unknown key, non-mapping, fallback-parser parity |
++
++Thin spot, not an issue: "implementers are never escalated" is guarded by a **string** check on the
++emitted JS, never by executing the script with an `implement` job. The emitted script cannot be run
++outside the Workflow runtime, so the string check is the practical ceiling — noted, not counted.
++
++### No fabricated metrics
++
++No token counts, no baselines, no speedups, no durations. `wait_ms` values are configuration read back
++out of `CFG`, not measurements. The code refuses to claim a duration in three separate comments
++("Nothing is timed and nothing is stamped — a duration this script claimed would be a fabricated
++measurement"; "Record's OWN retries cannot reach the result it is trying to write … claiming them in a
++file this stage never wrote would be the fabrication"). CHANGELOG carries no timing claim.
++
++One wording defect: **ISSUE 5**.
++
++### No reward-hacking
++
++Diffed every test surface against its pre-change version. The one modified assertion
++(`compound-v-emit-workflow.py:7422-7426`) went from **one** condition to **three** — a strengthening
++tracking a legitimate extraction, not a loosening. No deleted or renamed test, no `.skip`, no widened
++threshold, no scorer edit, no swallowed exception. 465/465 emitter checks, and the validator's suite
++grew by 17 cases. Clean.
++
++**PASS 2 QUALITY: ✅** (2 low notes: ISSUE 5, ISSUE 6.)
++
++---
++
++## INTEGRATION
++
++### Partition integrity
++
++No file leak — the three write sets are disjoint and every receipt is `pass`. The seam that **did**
++leak is semantic: Task A and Task C both describe the same mechanism, ran in parallel, and diverged.
++That is ISSUES 1–3.
++
++### Build + tests owed
++
++Tier is `FULL` with a declared, non-empty `impacted_map`, so the derived default honours the impacted
++set; the composite additionally carries changed paths matching **no** rule
++(`docs/superpowers/execution/**` bookkeeping, `docs/superpowers/memory/worker-performance.jsonl`), so
++`full_command` is owed at run level and was run.
++
++| Command | Result |
++|---|---|
++| `bash tests/test-engine-c-contract.sh` (floor, unconditional) | `✅ engine-c contract: every generated job_result conforms…` exit 0 |
++| `/usr/bin/python3 -B scripts/compound-v-emit-workflow.py --selftest` | `465/465 checks passed` exit 0 |
++| `/usr/bin/python3 -B scripts/compound-v-validate-manifest.py --selftest` | `SELFTEST PASSED` exit 0 |
++| `/usr/bin/python3 -B scripts/lint-frontmatter.py .` | `✅ All frontmatter clean` exit 0 |
++| `full_command` (every `--selftest` + every `tests/*.sh`) | `all-tests-ok` exit 0 |
++
++Per-job evidence read from `results/*.json`, not prose: all three carry a non-empty `tests.command`
++(2 commands each), `tests.exit_code: 0`, `tests.scope: "impacted"`, `selected_count: 2`. No
++`NO_TEST_EVIDENCE`, no red suite wearing `status: success`.
++
++Independent forbidden-construct check: `grep -n "Date.now\|Math\.random\|new Date"
++scripts/compound-v-emit-workflow.py` hits only Python comments (`:138`, `:1080`, `:379`) and the
++selftest's own **planted-violation** cases (`:6163-6178`) — nothing in the emitted JS. The selftest
++additionally asserts `forbidden_hits(_rt_script) == []` on a script emitted **with** the retry loop,
++and `node --check` parses it.
++
++### Feature acceptance criteria
++
++| # | Criterion | Evidence | Status |
++|---|---|---|---|
++| 1 | `withRetry` wraps every stage's `agent()`; null-or-throw; 2/4 cap 60 up to `max_attempts` (default 3); `setTimeout` only; no `Date.now`/`Math.random`/`new Date`; selftest proves it with string checks + a Python mirror | emitter selftest 465/465, incl. per-stage body extraction, the mirror table, and `forbidden_hits == []` | ✅ |
++| 2 | Exhaustion ⇒ today's null path; Record writes `retries[]` and `failure_class: other` with the verbatim reason | null path ✅; `failure_class: other` + verbatim reason ✅; `retries[]` lands in **state.json + ack**, *not* on the result | ⚠️ **partial — ISSUE 2** |
++| 3 | Reviewer lifted once via `CLAUDE_ESCALATION`; off-ladder pin never escalated; gate-receipt takes `--escalated-from`; **receipt/result carry `escalated_from`**; implementers never escalated; fast-path out of scope | all ✅ except the **result** half | ⚠️ **partial — ISSUE 2** |
++| 4 | `retry: {max_attempts, escalate_reviewer}` validates; 0, 4, `"3"`, bool-for-int, non-bool flag, unknown keys refused naming the key | validator selftest, 17 new cases incl. fallback-parser parity | ✅ |
++| 5 | execution-manifest.md documents the block and corrects the reviewer invariant to deep-or-stronger; failure-policy.md + parallel-dispatcher.md Step 2c carry parity; CHANGELOG `[Unreleased]` with no timing claim; every named selftest + `test-engine-c-contract.sh` + lint green | block documented ✅, parity present ✅, CHANGELOG clean of timing ✅, all suites green ✅ — but the prose **misdescribes the mechanism** (ISSUE 1), the invariant is only half-corrected (ISSUE 4), and `escalated_from: deep` is the wrong value shape (ISSUE 3) | ❌ **ISSUE 1, 3, 4** |
++
++**PASS 3 INTEGRATION: ISSUES.**
++
++---
++
++## Verdict
++
++**ISSUES** — the run is **not DONE**. No code change is required for issues 1–3; they are corrections
++to `skills/compound-v/execution-manifest.md`, `skills/compound-v/failure-policy.md`,
++`agents/parallel-dispatcher.md` and `CHANGELOG.md`, plus one decision on where `retries[]` lives.
++
++1. **INTEGRATION_MISMATCH (high) — the docs describe a class-filtering retry that does not exist.**
++   `skills/compound-v/execution-manifest.md` (§ `retry`, "The trigger is a `null` resolution"):
++   "retries on **either** a thrown error matching the transient classes (`529`, `Overloaded`,
++   `rate limit`, `429`, `ECONNRESET`/`ETIMEDOUT`/`network`, `overloaded_error`) **or** a `null`
++   return. Every other thrown error, and the last transient failure once attempts are exhausted,
++   propagate exactly as before this feature." The emitted `withRetry`
++   (`scripts/compound-v-emit-workflow.py:2214-2219`) has **no classifier**: it catches *every* throw
++   and retries it, and on exhaustion returns `{value: null}` — **nothing propagates**, by design (the
++   spec's "each stage falls into exactly the null path it has today"). The same file's next paragraph,
++   "A thrown error the classifier CAN read still gets its real class", describes a classifier that was
++   never written — `apply_retry_meta` (`:1206-1229`) writes `other` unconditionally. Repeated in
++   `skills/compound-v/failure-policy.md` ("retries on the **same** classes this doc defines") and
++   `CHANGELOG.md` ("retries on the policy's transient classes"). Also wrong: the doc's signature
++   `withRetry(label, fn)`; the code is `withRetry(stage, jobId, fn)`.
++   → Rewrite the three passages to what was built: **any** null or throw is retried, unclassified,
++   because the runtime hands the script no error text; on exhaustion the stage takes its existing null
++   path and Record writes `other` with the reason that says why the class is unnameable.
++
++2. **ACCEPTANCE_GAP (high) — `retries[]` and `escalated_from` are not on the job_result, and the docs
++   say they are.** AC 2 requires "Record writes `retries[]`" and AC 3 "the receipt/**result** carry
++   `escalated_from`". Task A put both in `state.json` and Record's ack instead
++   (`scripts/compound-v-emit-workflow.py:4273-4292`), because `schemas/job_result.schema.json` is
++   `additionalProperties: false` (line 7) and that file was outside its `write_allowed` — a
++   **correct and well-documented** cut, verified by a selftest that asserts the result stays free of
++   both keys. But `execution-manifest.md` ("Each retry is appended to that stage's result as
++   `retries: [{stage, attempt, wait_ms}]`"; "the receipt and the job result carry `escalated_from`"),
++   `agents/parallel-dispatcher.md` ("The receipt/result carry `escalated_from`") and `CHANGELOG.md`
++   ("each retry is logged in that stage's result as `retries: [...]`") all assert the result carries
++   them. Two of the run's five acceptance criteria are literally unmet, and the shipped docs claim
++   otherwise.
++   → Either extend `schemas/job_result.schema.json` with `retries` + `escalated_from` in a follow-up
++   job that owns that file (the implementer's own suggestion) **or** amend AC 2/3 and correct all four
++   doc passages to say `state.json`. Do not ship the current combination.
++
++3. **INTEGRATION_MISMATCH (medium) — `escalated_from` is a model name, documented as a tier.**
++   `agents/parallel-dispatcher.md`: "The receipt/result carry `escalated_from: deep`". The value is
++   `opts.model` lowercased (`scripts/compound-v-emit-workflow.py:2296`, `:2303`), i.e. `opus` — a
++   rung of `CLAUDE_ESCALATION`, never a tier. `execution-manifest.md` gets this right
++   ("`--escalated-from <model>`"), so the two docs disagree with each other as well as with the code.
++   → `escalated_from: opus`.
++
++4. **CONSTRAINT_VIOLATION (medium) — archaeology §7 constraint 5 half-satisfied; the file now
++   contradicts itself.** The constraint required the reviewer-invariant contradiction to be resolved
++   "in the same edit … or the doc will contradict itself in two adjacent paragraphs". The prose at
++   `skills/compound-v/execution-manifest.md:79-86` was corrected and now reads "**Invariant 4** demands
++   `tier: deep` **or stronger** (`frontier`/Fable)" — but **invariant 4 itself**, at
++   `skills/compound-v/execution-manifest.md:194`, was left untouched: "Any review/reviewer job MUST
++   resolve to the strongest tier — `tier: deep` OR an explicit `model: opus`", with no mention of
++   `frontier`/`fable`. The validator it claims to mirror accepts both
++   (`scripts/compound-v-validate-manifest.py:2721`: `in ("opus", "fable")`, and `tier: deep|frontier`).
++   The corrected paragraph now cites a rule that says the opposite of it.
++   → Update invariant 4's own text to `tier: deep|frontier` OR `model: opus|fable`, matching
++   `compound-v-validate-manifest.py:2714-2726`.
++
++5. **QUALITY / honesty (low) — "measured" is the wrong word.**
++   `skills/compound-v/execution-manifest.md`, § `retry`: "Each retry is appended … as
++   `retries: [{stage, attempt, wait_ms}]` … — **measured**, never estimated". `wait_ms` is the
++   configured wait read out of `CFG`; **nothing measures it**, as the same paragraph says two lines
++   earlier (the script cannot read a clock). The number is not fabricated — it is real configuration —
++   but calling it measured is precisely the wording the anti-ruflo charter exists to police.
++   → "the wait that was requested", or drop the clause.
++
++6. **QUALITY (low, observation) — permanent throws are retried too.** `withRetry` retries every thrown
++   error, including an `auth` or `out_of_credits` shape that archaeology §7 constraint 7 warned about.
++   Deliberate for the null path (no text to classify), but a *thrown* error does carry text. The cost
++   is bounded — 2 wasted spawns and 6 s before the dispatcher's own breaker sees it — so this is not a
++   blocker. It is, however, the second reason issue 1's class-filtering claim must not stand: the docs
++   currently promise the protection the code does not have.
++
++**Re-review scope for the next round:** issues 1–5 only. The emitter and validator code is approved as
++written; re-running the suites is enough to confirm nothing regressed.

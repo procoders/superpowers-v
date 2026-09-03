@@ -1,0 +1,65 @@
+{
+  "baseline_commit": "c2e5314c56e5f23a6054854fb47601384c8aae3e",
+  "diff_digest": "sha256:3f99fa4bc3a879963043a4a3a0f5da2e5b29bf14c26f412ee08d6b51b360ea89",
+  "exit_code": 0,
+  "job_id": "spec-review",
+  "patch_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-v3.4.8-workflow-retry/jobs/spec-review.patch",
+  "patch_paths": [
+    "docs/superpowers/dogfood/2026-09-03-v3.4.8-workflow-retry-review.md"
+  ],
+  "patch_sha256": "sha256:3f99fa4bc3a879963043a4a3a0f5da2e5b29bf14c26f412ee08d6b51b360ea89",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"c2e5314c56e5f23a6054854fb47601384c8aae3e\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.8-workflow-retry-review.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.8-workflow-retry-review.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "c2e5314c56e5f23a6054854fb47601384c8aae3e",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "docs/superpowers/dogfood/2026-09-03-v3.4.8-workflow-retry-review.md",
+      "docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r2/logs/sandbox-helper.events.jsonl",
+      "docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r3/logs/sandbox-helper.events.jsonl",
+      "docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r4/logs/sandbox-helper-fix.events.jsonl",
+      "docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r5/logs/sandbox-helper-fix.events.jsonl",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r2/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r3/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r4/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r5/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.8-workflow-retry/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.8-workflow-retry/jobs/spec-review.baseline",
+      "docs/superpowers/execution/2026-09-03-v3.4.8-workflow-retry/jobs/spec-review.test-contract.json",
+      "docs/superpowers/execution/2026-09-03-v3.4.8-workflow-retry/lane-map.json",
+      "docs/superpowers/execution/2026-09-03-v3.4.8-workflow-retry/preexisting/spec-review.txt",
+      "docs/superpowers/execution/2026-09-03-v3.4.8-workflow-retry/preexisting/spec-review.verified.txt",
+      "docs/superpowers/execution/2026-09-03-v3.4.8-workflow-retry/state.json"
+    ],
+    "checks": [
+      {
+        "checker": "bash tests/test-engine-c-contract.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "/usr/bin/python3 -B scripts/lint-frontmatter.py .",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (7 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 1 command(s) from 17 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)",
+      "ignored 16 bookkeeping path(s) for the unmapped rule"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": ""
+}
