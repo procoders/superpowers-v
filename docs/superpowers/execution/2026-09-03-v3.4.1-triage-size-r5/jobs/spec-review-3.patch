@@ -1,0 +1,502 @@
+diff --git a/docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-3.md b/docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-3.md
+new file mode 100644
+index 0000000..2f34aa6
+--- /dev/null
++++ b/docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-3.md
+@@ -0,0 +1,496 @@
++# Review Gate pass 3 — run `2026-09-03-v3.4.1-triage-size-r5`
++
++**Review-2's four findings, against the merged tree**
++**Reviewer:** `compound-v:spec-reviewer` (job `spec-review-3`, `direct` isolation)
++**Merged tree reviewed:** `2df0b5f` · **new code under review:** `2aef342`
++**Predecessor:** `docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-2.md`
++**Date:** 2026-09-03 · third and last pass within the cycle cap
++
++```plaintext
++VERDICT: ISSUES
++  PASS 1 SPEC        (commit 2aef342):  ✅ — all four of review-2's findings closed, reproduced
++  PASS 2 QUALITY     (commit 2aef342):  ✅ — no over-build, no fabricated metric, no reward-hack
++  PASS 3 INTEGRATION (run-level AC):    ISSUES — the same seam one layer downstream, plus doc drift
++```
++
++**All four of review-2's findings are closed, and I reproduced each one.** The blocking one —
++five external workers refusing the resolver's own slice — is fixed in all five, still rejects
++every malformed shape I could plant, and is now pinned by a test that goes red against the
++pre-fix validator.
++
++Three findings remain, and **#1 is the one that matters**: the fix opened the gate the slice was
++stuck behind, and the value that now flows through it lands in `job_result.tests.scope`, where
++`schemas/job_result.schema.json` allows exactly three values and this is a fourth. Same defect
++class as review-2's #1, one layer further down the same pipe, and made reachable *by* the fix.
++
++---
++
++## Recall
++
++Step 0 ran at review intent, on the merged tree:
++
++```bash
++/usr/bin/python3 -B scripts/compound-v-memory.py search \
++  "test contract slice worker validation MERGED phase label" --intent review --top 8
++/usr/bin/python3 -B scripts/compound-v-memory.py recall-check \
++  --files scripts/compound-v-fastpath-run.py scripts/compound-v-run-codex-worker.sh \
++          CHANGELOG.md skills/compound-v/phase-3-parallel-opus-dispatch.md
++```
++
++`search` returned the v3.0 triage/tests plan and design, and its top two hits are exactly on
++point — the **B3 transport** sections, *"`schemas/job_result.schema.json:7` is
++`additionalProperties: false` and has no field for a test command"*. That is the origin of the
++`tests` block and of the enum this pass finds violated. The engine reports the index is 84 docs
++behind the repo; the hits it returned are the shipped v3.0 spec and plan, so the lag cost this
++review nothing, but `/v:memory-refresh` is owed.
++
++`recall-check` returned **`none`** (1/2 match). No prior `blocked` / `error` / scope-violation
++history on these paths, so no `tighten`. Nothing recalled was used as a routing input.
++
++---
++
++## SPEC
++
++### Scope
++
++`git status --porcelain` on this checkout: `state.json` modified, plus this run's own `jobs/`,
++`lane-map.json` and `preexisting/`. `git diff --name-only 2df0b5f9` → `state.json` only. No stray
++files, no `.pyc`, nothing written outside `docs/superpowers/dogfood/` (this file). Scope lock
++respected.
++
++`git show --stat 2aef342` — ten files, 60 insertions / 20 deletions: the five worker scripts,
++`scripts/compound-v-fastpath-run.py`, two documents, `CHANGELOG.md`, and
++`tests/test-engine-c-contract.sh`. Every one maps to a review-2 finding.
++
++### Coverage — one row per finding review-2 raised
++
++| # | Review-2 finding | Fixed in | Verified by | Status |
++|---|---|---|---|---|
++| 1 | Five workers' `tc_validate` reject the 3.4.1 slice | the five `compound-v-run-*-worker.sh` | drove all five validators against a real resolver slice | ✅ CLOSED |
++| 2 | A fifth doc still authors `phase: MERGED`; dispatcher Step 5 contradicts Step 7 | `phase-3-parallel-opus-dispatch.md:292`, `parallel-dispatcher.md:382-384` | repo-wide grep | ✅ CLOSED |
++| 3 | `CHANGELOG.md:51` states a `content_scan_exclude` value the taxonomy no longer sets | `CHANGELOG.md:50` | read both files | ✅ CLOSED |
++| 4 | The uncomputable-failing-set branch does not relabel; two notes contradict | `compound-v-fastpath-run.py:869-874, 934-935` | live `resolve-tests` | ✅ CLOSED |
++
++### Finding #1 — CLOSED, all five workers, on a real slice
++
++I built a sandbox git repo with an unmapped changed path (`src/widget.py`), two referencing test
++files, and a `triage.tier: SCOPED` manifest, then asked the real resolver for a slice:
++
++```bash
++/usr/bin/python3 -B scripts/compound-v-fastpath-run.py resolve-tests \
++  --worktree "$SB" --baseline HEAD --manifest "$SB/manifest.yaml" \
++  --job-id j1 --no-prior-run --out "$SB/slice-scoped.json"
++```
++```json
++{"scope": "impacted+referencing",
++ "resolved_commands": ["sh -c \"echo floor\"", "python3 tests/test_ref1.py", "python3 tests/test_ref2.py"],
++ "selected_count": 3, "floor_command": "…", "full_command": "…"}
++```
++
++Then I extracted `tc_command_at` + `tc_validate` **verbatim** from each worker (`sed -n
++'/^tc_command_at()/,/^}/p'`, the same technique the new test uses) and drove them against that
++file:
++
++```
++codex:       tc_validate exit=0
++antigravity: tc_validate exit=0
++cursor:      tc_validate exit=0
++opencode:    tc_validate exit=0
++devin:       tc_validate exit=0
++```
++
++The pre-fix validator, extracted from `git show
++10c2068:scripts/compound-v-run-codex-worker.sh`, on the **same** file:
++
++```
++OLD: --test-contract-file is malformed; want {"scope":"full|impacted|floor_only", …}
++  -> exit=2
++```
++
++The defect was real, and it is gone. The FULL-tier slice (`scope: "full"`, no `selected_count`)
++validates on all five as it always did.
++
++**The guard was widened, not deleted** — the distinction review-2 asked for by name. Planted
++violations against the *new* codex validator:
++
++| Planted | Result |
++|---|---|
++| extra key `bogus` | rejected — "malformed … no other keys" (exit 2) |
++| `selected_count: "3"` (string) | rejected (exit 2) |
++| `selected_count: -1` | rejected (exit 2) |
++| `scope: "referencing"` (near-miss) | rejected (exit 2) |
++| `resolved_commands: ["  "]` | rejected — "resolved_commands[0] is blank" (exit 2) |
++
++The blank-command check — the one that stops a fabricated pass — is untouched.
++
++### Finding #2 — CLOSED, repo-wide
++
++```bash
++grep -rn "MERGED" commands/ skills/ agents/ README.md | grep -iE "write|advance|set phase|author"
++```
++
++Seven hits, every one now an instruction **not** to author it: `v-resume.md:53` ("do not write the
++phase by hand"), `v-collect.md:114`, `v-dispatch.md:232`, `parallel-dispatcher.md:349`,
++`parallel-dispatcher.md:383` ("Nothing here writes `phase: MERGED`" — the *yet* is gone),
++`parallel-dispatcher.md:451-453`, and the file review-2 named:
++
++```
++skills/compound-v/phase-3-parallel-opus-dispatch.md:292
++  On PASS, read `state.json`'s phase back — the workflow finalizer wrote `MERGED` (or `BLOCKED`)
++  and committed the run directory itself as of 3.4.1; never author it here — …
++```
++
++The inverse grep (`grep -viE "read .*back|never author|do not write|finalizer|…"`) returns only
++descriptive mentions: the phase enum in `state-machine.md`, the "already `MERGED` ⇒ no-op"
++idempotency notes in `v-resume.md`, the `/v:status` render list, and the report template at
++`parallel-dispatcher.md:496` (`state.json phase: MERGED | BLOCKED` — a line the dispatcher
++*prints*, not writes). No instruction to author the phase survives anywhere.
++
++### Finding #3 — CLOSED
++
++```
++CHANGELOG.md:50
++  … (this repo sets `["**/*.md", "**/*.py", "**/*.sh"]` — source too, after review-1 showed
++  `%s` and `timeout` in 42 of 44 scripts vetoing the demotion; config files stay scanned) …
++```
++```
++.claude/compound-v-impact-taxonomy.yaml:160-167
++  content_scan_exclude:
++    - "**/*.md"
++    - "**/*.py"
++    - "**/*.sh"
++```
++
++The prose now states the shipped value, and the parenthetical carries the *why* from the taxonomy's
++own comment, including the boundary (config files stay scanned) that stops a reader generalising it
++into "source is never scanned".
++
++### Finding #4 — CLOSED, reproduced
++
++Sandbox, tier SCOPED, a `--last-result` carrying a `tests` object with no `failures[]`:
++
++```bash
++/usr/bin/python3 -B scripts/compound-v-fastpath-run.py resolve-tests --worktree "$SB" \
++  --baseline HEAD --manifest "$SB/manifest.yaml" --job-id j1 --last-result "$SB/last.json"
++```
++```json
++{"scope": "full",
++ "resolved_commands": ["sh -c \"echo floor\"", "sh -c \"echo FULLSUITE\"",
++                       "python3 tests/test_ref1.py", "python3 tests/test_ref2.py"]}
++```
++```
++note: "previously-failing: UNCOMPUTABLE … falling back to full_command …"
++note: "scope: labelled `full` — full_command was added because the previously-failing set is uncomputable"
++```
++
++The label is `full`, and `selected_count` is correctly **absent** — the promotion at `:934-935`
++clears `scope_label`, so a slice that ran the whole suite never advertises a selected count. The
++two branches of `resolve_test_commands` now apply one rule.
++
++One thing I checked and am **not** raising: the unmapped note still says the referencing heuristic
++resolved "not to `full_command`" while `full_command` is in the set. That note is accurate about
++what *its own rule* selected, it cites the decision that governs it, and the slice's label now
++tells the reviewer the truth about the whole set. Review-2's actual complaint was "the label says
++neither", and that is answered.
++
++### Over-build
++
++None. The `fastpath-run.py` change is eight lines of behaviour plus one selftest case; each worker
++diff is three lines inside one `jq` filter plus its error string. No new flag, no new export, no
++speculative abstraction.
++
++---
++
++## QUALITY
++
++### Code quality
++
++The label rule now lives in **one** place (`:934-935`, after both branches have run) rather than
++being duplicated into each. That is the right shape: the two `scope = "full"` assignments state a
++fact about the command set, and the single `if scope == "full": scope_label = None` resolves the
++precedence once. The comment at `:933` says why.
++
++The five worker diffs are identical in structure, which is what
++`compound-v-run-codex-worker.sh:110` demands ("Fix them in all five, or in none"). Verified by
++reading each `tc_validate`: the accepted-key list, the four-value enum and the `selected_count`
++type guard are the same three lines in all five.
++
++### No regression
++
++The r5 manifest's `full_command`, on this tree:
++
++```
++bash -c 'for s in scripts/compound-v-{preeval,localize,taxonomy,validate-taxonomy,fastpath-run,classify-request,validate-manifest}.py; …'
++→ all-tests-ok            (exit 0)
++```
++
++That is all seven selftests, every `tests/*.sh`, and `tests/v2.9-e2e` unittest discovery. The floor
++alone (`compound-v-preeval.py --selftest`) also ran clean — `SELFTEST PASSED`, exit 0.
++
++`tests/test-engine-c-contract.sh` on its own: exit 0, ending
++`✅ engine-c contract: every generated job_result conforms, the contract reaches the worker, and
++the join has a producer`.
++
++### Test alignment
++
++Every MUST of the fix has a guard, and the guard is not vacuous:
++
++```
++PASS codex worker: tc_validate ACCEPTS the 3.4.1 slice (impacted+referencing, selected_count)
++PASS codex worker: tc_validate rejects a non-numeric selected_count
++PASS codex worker: tc_validate still rejects an unknown key
++   … the same three for antigravity, cursor, opencode, devin — 15 assertions
++```
++
++**Red against the pre-fix code.** The test's own `run_tcv` recipe, pointed at
++`git show 10c2068:scripts/compound-v-run-codex-worker.sh` versus the shipped one:
++
++```
++old-codex.sh                             -> exit=2   (the ACCEPTS assertion would FAIL)
++scripts/compound-v-run-codex-worker.sh   -> exit=0
++```
++
++A guard that goes red on the bug it was written for. `fastpath-run.py`'s new selftest case
++(`:2041-2046`) asserts the label *and* the absence of `selected_count`, so finding #4 cannot
++silently return.
++
++### No fabricated metrics
++
++None. The diff prints no token count, no saving, no speedup. `selected_count` remains a count of
++**commands** — the workers' new type guard checks `>= 0` and nothing more, and the schema's own
++description still forbids reading it as a case count.
++
++### No reward-hacking
++
++The one change that *could* be a reward hack is the widened `tc_validate` enum — making a check
++pass by relaxing the check. It is not one, on three grounds, each checked rather than asserted:
++
++- Review-2 **named this as an acceptable remedy** ("Either the workers' guard accepts
++  `impacted+referencing` and an optional `selected_count`, or the emitted slice carries the
++  three-value label"), and named the unacceptable one ("Do not fix it by deleting the guard").
++- The guard was not deleted: the five planted violations above all still die at exit 2, and the
++  widening added a *new* constraint (`selected_count` must be a non-negative number).
++- No test was removed, skipped, renamed or loosened. `git show --stat 2aef342` touches exactly one
++  test file, and only by addition (+19 lines).
++
++### Confirmed-blocker integrity (§2.6)
++
++Not applicable — no marathon feature, no `blocked_external` verdict, no `done_with_blockers`
++terminal in this run.
++
++---
++
++## INTEGRATION
++
++### Partition integrity
++
++One job (`spec-review-3`), one declared write path, `direct` isolation. Nothing to leak against.
++Baseline pinned at `2df0b5f96d6fdfdbc8972713d2bac12ec9c29f1e` at lane registration.
++
++### Cross-job seams — where the open findings are
++
++`git diff --name-only cd3ad93..HEAD` is a narrow blast radius: `CHANGELOG.md`, two docs, the five
++workers, `fastpath-run.py`, `test-engine-c-contract.sh`, plus run bookkeeping. **Nothing** under
++`scripts/compound-v-{preeval,localize,taxonomy}.py` or `.claude/` changed, which is why AC2/AC3/AC5
++below rest on review-2's live evidence rather than a re-run — the job body authorises exactly that
++test, and I ran it (`git diff --stat cd3ad93..HEAD -- …` → empty, and the same for
++`compound-v-validate-manifest.py`, `commands/v-triage.md` and `hooks/`).
++
++The seam that *did* move is the one the fix opened, and it does not hold two joints further along.
++
++### Build green, and the tests this tier owes
++
++`triage.tier: DIRECT`. Per the reviewer contract a DIRECT job owes the floor, the impacted set,
++and — because this change lands unattended — `full_command`. All ran on this tree, all exit 0
++(quoted under **No regression**). The r4 job result for the predecessor pass records
++`tests.command: "/usr/bin/python3 -B scripts/compound-v-preeval.py --selftest"`, `exit_code: 0`,
++`scope: "floor_only"`, `selected_count: 1` — test evidence present, not silence.
++
++### Feature acceptance criteria (r5 manifest)
++
++| # | Criterion | Evidence | Status |
++|---|---|---|---|
++| 1 | every selftest + `tests/*.sh` + e2e green under `/usr/bin/python3 -B` | `all-tests-ok`, exit 0, this tree | ✅ |
++| 2 | hook returns SCOPED / SCOPED+ / FULL / DIRECT with schema-valid records | review-2 verified live on six cases; `git diff cd3ad93..HEAD -- scripts/compound-v-preeval.py .claude/` is **empty** | ✅ (carried) |
++| 3 | localizer never searches a plain word; trailing period; `new_file` | review-2 verified live; `compound-v-localize.py` unchanged since | ✅ (carried) |
++| 4 | SCOPED unmapped ⇒ ≤5 referencing + floor, never `full_command`; FULL unmapped ⇒ `full_command` | reproduced this pass, both directions (slices quoted above) | ✅ |
++| 5 | `--require-triage` / `--require-cross-model-receipt` behaviour | review-2 verified four for four; `compound-v-validate-manifest.py` unchanged since | ✅ (carried) |
++| 6 | no prose says the hook degrades on `needs_t3`, or that `/v:dispatch` step 9 writes `MERGED` | `commands/v-triage.md` and `hooks/` unchanged since review-2; the `MERGED` half re-swept this pass (finding #2 above) | ✅ |
++
++All six pass. **The AC gate is green; the findings below sit outside it** — which is exactly what
++review-2 said about its own #1, and it was right.
++
++---
++
++## Findings, ranked
++
++### FINDING #1 — INTEGRATION_MISMATCH · the same seam one layer downstream · made reachable by `2aef342`
++
++**Every external worker copies `scope` verbatim out of the slice into
++`job_result.tests.scope`, where `schemas/job_result.schema.json` declares a three-value enum and
++the value is now a fourth.**
++
++The copy is direct and unconditional:
++
++```
++scripts/compound-v-run-codex-worker.sh:174   _tc_scope=$(jq -r '.scope' "$_tc_f")
++scripts/compound-v-run-codex-worker.sh:207   --arg scope "$_tc_scope" \
++scripts/compound-v-run-codex-worker.sh:216        scope: $scope,
++```
++
++against
++
++```
++schemas/job_result.schema.json:107-113
++  "scope": { "type": "string", "enum": ["full", "impacted", "floor_only"] }
++```
++
++Reproduced on the real slice from the sandbox above:
++
++```bash
++jq -r .scope "$SB/slice-scoped.json"
++# impacted+referencing
++jq -c '.properties.tests.properties.scope.enum' schemas/job_result.schema.json
++# ["full","impacted","floor_only"]
++# membership → 'impacted+referencing' in enum? False
++```
++
++The same three lines exist in all five workers (`grep -n "_tc_scope"
++scripts/compound-v-run-*-worker.sh`).
++
++**Why this is `2aef342`'s to own, even though the schema is older.** Before the fix the worker died
++at `tc_validate` (exit 2) and never reached the reporting block, so the out-of-enum value could not
++be produced. The fix removed the thing that was stopping it. That is precisely the shape of
++review-2's #1 — a producer and a consumer wired together with nobody having run one into the other
++— advanced by one joint.
++
++**Honest severity.** No runtime path rejects it *today*:
++`compound-v-collect-results.py:381-440`'s conformance checker is top-level-only (required keys,
++`additionalProperties`, top-level types, plus a targeted `usage` sub-check); it never walks into
++`tests`, and no other script enforces the enum. So it does not crash a run now. It is a published
++contract the producer violates, in a repository that dispatches Claude jobs and so would never
++notice — the exact blind spot that let review-2's #1 live through two passes.
++
++**And the label is currently emittable nowhere legally.** The native path filters it out:
++
++```
++scripts/compound-v-emit-workflow.py:3195   TESTS_SCOPES = ("full", "impacted", "floor_only")
++scripts/compound-v-emit-workflow.py:3231   for candidate in ((contract or {}).get("scope"), (job or {}).get("test_scope")):
++                                             if isinstance(candidate, str) and candidate in TESTS_SCOPES:
++```
++
++so a native job silently falls back to the job's declared `test_scope`. Meanwhile
++`agents/spec-reviewer.md:190` instructs the reviewer that `tests.scope` "additionally carries the
++output-only label `impacted+referencing`". Three components, three answers: the schema forbids it,
++the native emitter drops it, the reviewer contract says to read it.
++
++→ Pick one and make all three obey it. Adding `"impacted+referencing"` to the schema enum and to
++`TESTS_SCOPES` is one line each and matches the reviewer contract already shipped; the alternative
++is to have the workers normalise the label back to `impacted` on the way into `tests.scope` and
++delete the sentence at `spec-reviewer.md:190`. Do not leave it as it is — a schema is worth only
++what its producers honour.
++
++### FINDING #2 — INTEGRATION_MISMATCH · six documents describe the validator the fix just changed
++
++`2aef342` changed the accepted shape in five scripts and updated **none** of the six documents that
++specify it:
++
++| File:line | Still says |
++|---|---|
++| `skills/backend-launcher/adapter-codex.md:203` | "a scope outside `full\|impacted\|floor_only` … is a **usage fault (exit 2)**" |
++| `skills/backend-launcher/adapter-antigravity.md:197` | the same sentence |
++| `skills/backend-launcher/adapter-cursor.md:188` | the same sentence |
++| `skills/backend-launcher/adapter-opencode.md:202` | the same sentence |
++| `skills/backend-launcher/adapter-devin.md:180` | the same sentence |
++| `skills/backend-launcher/SKILL.md:35, 106` | `// full \| impacted \| floor_only` — annotating the **contract slice**, not the manifest enum |
++
++`SKILL.md:113` additionally states "unknown keys are rejected", now true of every key except
++`selected_count` — the one a reader of that line would most want to know about.
++
++This is the defect class the 3.4.1 CHANGELOG names by name — "the mechanism moved, and only some of
++the documents that describe it moved with it". Review-2 raised its second instance; this is the
++third, in the commit that closed the second.
++
++→ The five adapter bullets and `SKILL.md:35/106/113` take the four-value enum and the optional
++`selected_count`, in the same words the workers' own error string now uses.
++
++### FINDING #3 — QUALITY, low · four documents still state the unmapped rule that decision 4 superseded (pre-existing)
++
++```bash
++grep -rn "no \`when\` glob resolves to" skills/ agents/ commands/ schemas/
++```
++
++| File:line | Still says |
++|---|---|
++| `skills/backend-launcher/SKILL.md:120` | "a changed path matching no `when` glob resolves to `full_command`" |
++| `agents/parallel-dispatcher.md:325` | the same, unqualified |
++| `commands/v-collect.md:78` | the same, unqualified |
++| `schemas/job_result.schema.json:114` | "a changed path matching no `when` glob resolves to `full_command`, so an unmapped file is never silently untested" |
++
++Since 3.4.1 decision 4 that holds only at FULL. At SCOPED and DIRECT an unmapped path resolves to
++at most five referencing tests, and to the floor alone when there are none — which
++`execution-manifest.md:204` states correctly and these four contradict. The schema description is
++the worst of the four, because it is the sentence a worker author reads while implementing the
++field.
++
++This predates `2aef342`. I raise it because it is the same seam, one grep from the two findings
++above, and a fourth review pass is not available to find it.
++
++---
++
++## Verification log
++
++Every command ran from the checkout root on `2df0b5f` under `/usr/bin/python3 -B`, macOS,
++Python 3.9.6. The resolver probes ran against a throwaway sandbox git repo in the scratchpad, never
++this checkout.
++
++- **Slices.** `resolve-tests` at SCOPED with an unmapped path + 2 referencing tests →
++  `scope: "impacted+referencing"`, `selected_count: 3`, no `full_command` in the set. At FULL →
++  `scope: "full"`, floor + `full_command`, no `selected_count`. With an uncomputable
++  previously-failing set at SCOPED → `scope: "full"`, `full_command` present, no `selected_count`.
++- **Validators.** Five workers × the real slice → exit 0 each. Pre-fix codex validator × the same
++  file → exit 2. New codex validator × five planted violations → exit 2 each.
++- **Suites.** floor `SELFTEST PASSED` (exit 0); `full_command` → `all-tests-ok` (exit 0);
++  `tests/test-engine-c-contract.sh` → exit 0 with all 15 new `tc_validate` assertions PASS.
++- **Greps.** `MERGED` sweep (7 hits, all prohibitive); `no \`when\` glob resolves to` (4 hits);
++  `full|impacted|floor_only` across `skills/backend-launcher/` (5 adapter hits + SKILL.md).
++- **Blast radius.** `git diff --stat cd3ad93..HEAD -- scripts/compound-v-preeval.py
++  scripts/compound-v-localize.py scripts/compound-v-taxonomy.py .claude/` → empty; same for
++  `scripts/compound-v-validate-manifest.py commands/v-triage.md hooks/`.
++- **Housekeeping.** `git status --porcelain` → four entries, all this run's own bookkeeping. No
++  stray files, no `.pyc`.
++
++---
++
++## Verdict
++
++```plaintext
++REVIEW GATE pass 3 — run 2026-09-03-v3.4.1-triage-size-r5
++
++VERDICT: ISSUES
++  PASS 1 SPEC:        ✅  — all four of review-2's findings closed and reproduced; no over-build;
++                            no scope leak
++  PASS 2 QUALITY:     ✅  — one rule in one place; guard widened not deleted; the new test reds
++                            against the pre-fix validator; no fabricated metric
++  PASS 3 INTEGRATION: ISSUES — findings 1–3; all six feature AC pass
++```
++
++Review-2's blocking finding is closed in all five workers and pinned by a test that fails on the
++old code. What remains:
++
++1. **FINDING #1 · the one that matters** — the workers copy `scope` verbatim into
++   `job_result.tests.scope` (`compound-v-run-*-worker.sh:174,207,216`), where
++   `schemas/job_result.schema.json:107-113` allows only three values. The fix made that value
++   reachable for the first time. Nothing rejects it at runtime today, and the schema, the native
++   emitter (`compound-v-emit-workflow.py:3195`) and the reviewer contract
++   (`agents/spec-reviewer.md:190`) give three different answers about whether the label exists.
++2. **FINDING #2** — the five adapter docs and `skills/backend-launcher/SKILL.md:35/106/113` still
++   specify the three-value validator and "unknown keys are rejected"; the code they describe
++   changed in this commit.
++3. **FINDING #3 · low, pre-existing** — `SKILL.md:120`, `parallel-dispatcher.md:325`,
++   `v-collect.md:78` and `job_result.schema.json:114` still state that an unmapped path resolves to
++   `full_command`, which decision 4 made false at SCOPED and DIRECT.
++
++Finding #1 is a one-line change in two files and closes the seam for good; #2 and #3 are the prose
++that should move with it. This was the last pass within the cycle cap, so these go to the release
++decision rather than to a fourth review.

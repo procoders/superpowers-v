@@ -1,0 +1,8 @@
+{
+  "agents": {},
+  "manifest": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r5/manifest.yaml",
+  "run_id": "2026-09-03-v3.4.1-triage-size-r5",
+  "worktrees": {
+    "/Users/oleg/Dev/superpowers-v": "spec-review-3"
+  }
+}

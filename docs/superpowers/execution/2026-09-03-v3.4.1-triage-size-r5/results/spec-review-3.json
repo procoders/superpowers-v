@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-3.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "2df0b5f96d6fdfdbc8972713d2bac12ec9c29f1e",
+    "diff_digest": "sha256:dbcbac16e6c2c10d81cfc0c7ef16fe6a0341c2223270986fd00cf0a72ac7b87f",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"2df0b5f96d6fdfdbc8972713d2bac12ec9c29f1e\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-3.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-3.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "2df0b5f96d6fdfdbc8972713d2bac12ec9c29f1e",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Review Gate pass 3 \u2014 review-2's four findings against the merged tree",
+  "tests": {
+    "command": "/usr/bin/python3 -B scripts/compound-v-preeval.py --selftest",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "floor_only",
+    "selected_count": 1
+  },
+  "violations": [],
+  "worktree": ""
+}
