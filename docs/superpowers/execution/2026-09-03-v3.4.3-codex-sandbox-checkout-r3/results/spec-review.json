@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-03-v3.4.3-codex-sandbox-checkout-review-1.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "d2c5b0bd8937910d7c668af24931aea99d1cebf2",
+    "diff_digest": "sha256:3ef3fc5105b74d1f670d922095438e9bd4574d266d6481ca98a92c260a3ecf46",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"d2c5b0bd8937910d7c668af24931aea99d1cebf2\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.3-codex-sandbox-checkout-review-1.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.3-codex-sandbox-checkout-review-1.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "d2c5b0bd8937910d7c668af24931aea99d1cebf2",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Review Gate \u2014 three passes, plus the multi-model contract read from the run directory",
+  "tests": {
+    "command": "bash tests/test-engine-c-contract.sh\nbash -c 'for s in scripts/compound-v-*.py; do grep -q -- \"--selftest\" \"$s\" || continue; /usr/bin/python3 -B \"$s\" --selftest >/dev/null 2>&1 || { echo \"FAIL $s\"; exit 1; }; done; for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "full",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": ""
+}
