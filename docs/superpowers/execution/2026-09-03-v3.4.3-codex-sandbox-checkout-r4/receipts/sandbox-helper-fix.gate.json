@@ -1,0 +1,13 @@
+{
+  "baseline_commit": "766901833fdb2549359dfafcf448733edde4e306",
+  "diff_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "exit_code": 1,
+  "job_id": "sandbox-helper-fix",
+  "no_work": true,
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"766901833fdb2549359dfafcf448733edde4e306\",\n  \"changed\": [],\n  \"allowed\": [\n    \"scripts/compound-v-sandbox-checkout.sh\",\n    \"tests/test-sandbox-checkout.sh\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "766901833fdb2549359dfafcf448733edde4e306",
+  "reason": "job 'sandbox-helper-fix' declares write_allowed but changed no files. That is not a clean tree, it is an absent implementation \u2014 failing closed rather than recording a success nobody can point at.",
+  "source": "gate-receipt",
+  "verdict": "blocked",
+  "worktree": "/private/var/folders/gj/v1s49xyj4pz1n8_3dmf4zml80000gn/T/compound-v/2026-09-03-v3.4.3-codex-sandbox-checkout-r4/sandbox-helper-fix"
+}

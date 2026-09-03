@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "CHANGELOG.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "766901833fdb2549359dfafcf448733edde4e306",
+    "diff_digest": "sha256:4543b9c45dc7b7a333350e61ce54f58dd96adb90c82a4f3e7e539d86ab2e130b",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"766901833fdb2549359dfafcf448733edde4e306\",\n  \"changed\": [\n    \"CHANGELOG.md\"\n  ],\n  \"allowed\": [\n    \"CHANGELOG.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "766901833fdb2549359dfafcf448733edde4e306",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task B' (claude) \u2014 the CHANGELOG's multi-model claim says what this run proves (review-1 issue 2)",
+  "tests": {
+    "command": "bash tests/test-engine-c-contract.sh\n/bin/echo changelog-only",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_314fe201-a89-2"
+}

@@ -1,20 +1,24 @@
 {
   "run_id": "2026-09-03-v3.4.3-codex-sandbox-checkout-r4",
-  "phase": "PARTITION_VERIFIED",
+  "phase": "BLOCKED",
   "pre_eval_id": "2026-09-03T062154Z-implement-v3-4-3-per-docs-superpowers-specs-2026-09-03-v3-4-96ff",
   "updated_at": "2026-09-03T07:23:49Z",
   "jobs": {
     "sandbox-helper-fix": {
-      "status": "pending",
+      "status": "blocked",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/private/var/folders/gj/v1s49xyj4pz1n8_3dmf4zml80000gn/T/compound-v/2026-09-03-v3.4.3-codex-sandbox-checkout-r4/sandbox-helper-fix",
+      "session_id": "01a06627-a1e8-70d1-bb4c-d300383e4205",
+      "baseline": "766901833fdb2549359dfafcf448733edde4e306",
+      "realised_commit": "766901833fdb2549359dfafcf448733edde4e306"
     },
     "docs-fix": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_314fe201-a89-2",
+      "session_id": null,
+      "baseline": "766901833fdb2549359dfafcf448733edde4e306",
+      "realised_commit": "766901833fdb2549359dfafcf448733edde4e306"
     },
     "spec-review-2": {
       "status": "pending",
@@ -22,5 +26,7 @@
       "worktree": null,
       "session_id": null
     }
-  }
+  },
+  "blocked_reason": "wave 1: integration REFUSED by scripts/compound-v-integration-gate.py: {\"forged\": 1, \"pass\": 1}. Nothing was merged and nothing was committed.",
+  "blocked_at": "2026-09-03T07:29:29Z"
 }
