@@ -69,16 +69,55 @@ cat >"$fixture/2026-09-02-beta-notes.md" <<'EOF'
 Just some notes.
 EOF
 
+# Verdict line where the matched token is ISSUES but the rest of the line
+# also contains the word "approved" elsewhere -- the verdict must come from
+# the anchored token the regex actually matched (ISSUES), not from any
+# other occurrence of either word on the line.
+cat >"$fixture/2026-09-03-gamma-review.md" <<'EOF'
+# Review
+
+VERDICT: ISSUES — the earlier pass was approved
+
+Still needs work.
+EOF
+
+# Bold-heading verdict with a trailing annotation.
+cat >"$fixture/2026-09-03-delta-review.md" <<'EOF'
+# Review
+
+## VERDICT: **ISSUES** (4)
+
+Four issues found.
+EOF
+
+# The only verdict-shaped text in the file is mid-sentence, not anchored at
+# the start of a line (after an optional heading marker) -> unknown.
+cat >"$fixture/2026-09-03-epsilon-review.md" <<'EOF'
+# Review
+
+We noted that the verdict: approved wording showed up mid-sentence here.
+EOF
+
+# Lowercase verdict line.
+cat >"$fixture/2026-09-03-zeta-review.md" <<'EOF'
+# Review
+
+verdict: approved
+
+Looks fine.
+EOF
+
 # --- run ------------------------------------------------------------------
 out="$tmp/README.md"
 /bin/bash "$script" --dir "$fixture" --out "$out"
 
 [ -s "$out" ] || fail "output file is empty or missing"
 
-# Five review rows expected: alpha(1,2), beta(1), beta(10) -> 4 rows total,
-# plus the decoy and notes file must not appear as rows.
+# Review rows expected: alpha(1,2), beta(1), beta(10), gamma(1), delta(1),
+# epsilon(1), zeta(1) -> 8 rows total, plus the decoy and notes file must
+# not appear as rows.
 row_count=$(grep -c '^| 2026-' "$out")
-[ "$row_count" -eq 4 ] || fail "expected 4 rows, got $row_count"
+[ "$row_count" -eq 8 ] || fail "expected 8 rows, got $row_count"
 
 grep -q -- "-reviewer-x-impl.md" "$out" && fail "decoy -impl.md file leaked into the index"
 grep -q -- "beta-notes.md" "$out" && fail "non-review file leaked into the index"
@@ -88,7 +127,11 @@ rows=$(grep '^| 2026-' "$out")
 expected_order="2026-09-01-alpha-review.md
 2026-09-01-alpha-review-2.md
 2026-09-02-beta-review.md
-2026-09-02-beta-review-10.md"
+2026-09-02-beta-review-10.md
+2026-09-03-delta-review.md
+2026-09-03-epsilon-review.md
+2026-09-03-gamma-review.md
+2026-09-03-zeta-review.md"
 actual_order=$(printf '%s\n' "$rows" | awk -F'|' '{gsub(/^ +| +$/, "", $6); print $6}')
 [ "$actual_order" = "$expected_order" ] || fail "row order mismatch:
 expected:
@@ -101,9 +144,19 @@ assert_contains "$out" "| 2026-09-01 | alpha | 1 | APPROVED | 2026-09-01-alpha-r
 assert_contains "$out" "| 2026-09-01 | alpha | 2 | ISSUES | 2026-09-01-alpha-review-2.md |"
 assert_contains "$out" "| 2026-09-02 | beta | 1 | unknown | 2026-09-02-beta-review.md |"
 assert_contains "$out" "| 2026-09-02 | beta | 10 | APPROVED | 2026-09-02-beta-review-10.md |"
+# Anchored token wins over an unrelated occurrence of the other word later
+# on the same line.
+assert_contains "$out" "| 2026-09-03 | gamma | 1 | ISSUES | 2026-09-03-gamma-review.md |"
+# Bold heading with a trailing annotation after the matched token.
+assert_contains "$out" "| 2026-09-03 | delta | 1 | ISSUES | 2026-09-03-delta-review.md |"
+# Verdict-shaped text that only appears mid-sentence (not anchored at the
+# start of a line) does not count as a verdict.
+assert_contains "$out" "| 2026-09-03 | epsilon | 1 | unknown | 2026-09-03-epsilon-review.md |"
+# Lowercase verdict line.
+assert_contains "$out" "| 2026-09-03 | zeta | 1 | APPROVED | 2026-09-03-zeta-review.md |"
 
 # --- footer counts ---------------------------------------------------------
-assert_contains "$out" "Reviews: 4 · APPROVED: 2 · ISSUES: 1 · other: 1"
+assert_contains "$out" "Reviews: 8 · APPROVED: 3 · ISSUES: 3 · other: 2"
 
 # --- idempotence: byte-identical on a second run --------------------------
 out2="$tmp/README2.md"

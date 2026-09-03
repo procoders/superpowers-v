@@ -93,13 +93,16 @@ for f in "$dir"/*.md; do
       ;;
   esac
 
-  line=$(grep -m1 -iE -- "$verdict_pattern" "$f" || true)
-  if [ -n "$line" ]; then
-    case "$line" in
-      *[Aa][Pp][Pp][Rr][Oo][Vv][Ee][Dd]*)
+  # Extract only the substring the anchored alternation actually matched
+  # (not the whole line) so the verdict reflects the matched token, not
+  # whichever word happens to appear anywhere else on the line.
+  match=$(grep -m1 -ioE -- "$verdict_pattern" "$f" || true)
+  if [ -n "$match" ]; then
+    case "$match" in
+      *[Aa][Pp][Pp][Rr][Oo][Vv][Ee][Dd])
         verdict="APPROVED"
         ;;
-      *[Ii][Ss][Ss][Uu][Ee][Ss]*)
+      *[Ii][Ss][Ss][Uu][Ee][Ss])
         verdict="ISSUES"
         ;;
       *)
