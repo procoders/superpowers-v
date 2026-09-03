@@ -1,0 +1,272 @@
+diff --git a/docs/superpowers/dogfood/2026-09-03-v3.4.10-recall-to-action-review-2.md b/docs/superpowers/dogfood/2026-09-03-v3.4.10-recall-to-action-review-2.md
+new file mode 100644
+index 0000000..6a2be55
+--- /dev/null
++++ b/docs/superpowers/dogfood/2026-09-03-v3.4.10-recall-to-action-review-2.md
+@@ -0,0 +1,266 @@
++# Review Gate — pass 2 — run `2026-09-03-v3.4.10-recall-to-action-r2`
++
++**VERDICT: ISSUES** (1 blocking, 4 advisory — numbered in §5).
++**Review-1's five items are all closed in code.** Everything below is new, found in
++the closure itself.
++
++| Pass | Status |
++|---|---|
++| PASS 1 SPEC | **ISSUES** — the five closures land, but AC 4's "`commands/v-init.md` describes exactly these actions" still fails on a second phantom switch (`memory.auto_recall`), the twin of the defect review-1 closed in `memory.md` |
++| PASS 2 QUALITY | **ISSUES** — two of the five closures shipped with **no guard at all** (selftest count unchanged, 491 → 491); one stale in-code comment |
++| PASS 3 INTEGRATION | ✅ build green, five suites re-run at exit 0, no partition leak, live emit confirms item 5 — but AC 4 fails on §5 item 1 |
++
++Reviewed at `HEAD = 94350e1`, closure commit `90639cf`
++(*"v3.4.10 review-1 closure (items 1–5)…"*, 3 files, +35 −12).
++
++**SCOPED+ note.** `triage.tier: SCOPED`, `flavor: scoped_plus`. This is the run's
++**mandatory deep review**. The **cross-model (Codex) receipt at dispatch step 8 is
++still owed** — it has not been taken, and this pass does not substitute for it.
++
++---
++
++## 1. Step 0 — V-memory recall
++
++```
++$ /usr/bin/python3 -B scripts/compound-v-memory.py search \
++    "recall to action bridge review gate" --intent review --top 8
++V-memory: refreshed 4 stale doc(s) before recall (FTS5 lane)
++```
++
++Returned this run's own plan, spec, 1C audit and review-1, plus
++`docs/superpowers/specs/2026-06-27-v-memory-prd.md` §4 (the bridge's original
++"deterministic, conservative-only" contract) and `2026-09-02-df27-full-pass-review.md`.
++No prior incident of *this* shape. Evidence, not authority.
++
++**The conservative bridge, over the closure diff's own files:**
++
++```
++$ /usr/bin/python3 -B scripts/compound-v-memory.py recall-check --files \
++    scripts/compound-v-emit-workflow.py skills/compound-v/memory.md \
++    docs/superpowers/specs/2026-09-03-v3.4.10-recall-to-action-design.md
++recall-check: tighten (3/2 match on ...)
++  recommend (conservative-only): force_worktree, extra_review_pass, fold_into_task0
++  - 2026-09-03-v3.4.6-triage-test-scoping-fixes-r5/results/emitter.json: error on scripts/compound-v-emit-workflow.py
++  - 2026-09-03-v3.4.5-recall-freshness-r2/results/docs-2.json: blocked on skills/compound-v/memory.md
++  - 2026-09-02-df27-full-pass/results/spec-review.json: blocked on scripts/compound-v-emit-workflow.py
++```
++
++`tighten`, and the run already satisfies it: this r2 pass **is** the extra review
++pass the verdict recommends. Escalation-only — nothing here was loosened on the
++strength of a recall verdict.
++
++---
++
++## 2. PASS 1 — SPEC — review-1's items 1–5
++
++### 2.1 Scope lock
++
++`git status --porcelain` at the end of this pass:
++
++```
++ M docs/superpowers/execution/.../state.json          (register-lane's own bookkeeping)
++?? docs/superpowers/dogfood/2026-09-03-v3.4.10-recall-to-action-review-2.md   (my lane)
++?? .../jobs/spec-review-2.baseline, .../spec-review-2.test-contract.json, .../preexisting/
++```
++
++One file written, and it is the one file in `write_allowed`. No scope violation.
++
++### 2.2 The five closures
++
++| # | Review-1 item | Command | Result | Status |
++|---|---|---|---|---|
++| 1 | SPEC_GAP — the emitted reading budget is not the spec's | `grep -n "at most 20 reading calls" scripts/compound-v-emit-workflow.py` → `2307:` (emitted prompt) and `8168:` (selftest assertion) | `:2302-2311` now emits all four clauses: <code>`grep -n` for the symbols you need</code> · <code>then `sed -n` only those ranges, at most 20 reading calls in total</code> · `never read a large file top to bottom` · `commit what is complete … if the turn budget nears`. The old evidence-only budget is gone; the "recall never widens your lane" guard-rail is retained. Asserted in the selftest at `:8167-8171`. | **CLOSED** |
++| 2 | CONSTRAINT_VIOLATION — `auto_tighten` read from a manifest key nothing writes | `grep -n "_cfg_doc\|auto_tighten\|config_path =" scripts/compound-v-emit-workflow.py` | `:1783-1789` — `memory_cfg` starts empty, is filled from `_read_json(config_path)["memory"]` (`config_path` = `<repo>/.claude/compound-v.json`, computed at `:1732`), and the manifest's optional `memory:` block is merged **after**, so it is a per-run override exactly as review-1 asked. `_read_json(path, default=None)` exists at `:359`. | **CLOSED** (but unguarded — §3.3, issue 2) |
++| 3 | QUALITY — memory.md documents behaviour the code lacks | `sed -n '78,126p' skills/compound-v/memory.md` | `:90` now reads **"Always (unless `emit --no-recall`; no script reads `memory.auto_recall`)"** — the real gate, named, with the phantom switch explicitly disowned. Its other two claims are now *true* rather than re-worded: `:83` "for every `type: implement` job" matches the code after item 5, and the reading-budget sentence at `:92-95` matches what `:2302-2311` emits after item 1. | **CLOSED** |
++| 4 | advisory — the design's "and in the gate receipt" is unimplemented | `grep -n "receipt" docs/superpowers/specs/2026-09-03-v3.4.10-recall-to-action-design.md` | `:21` — the clause is struck, and the strike is *attributed* rather than silently vanished: "(Review-1 item 4: the gate receipt does not carry it; the clause was struck rather than the receipt widened.)" Spec now claims only the job entry + `state.json`, which is what ships. | **CLOSED** |
++| 5 | advisory — recall runs for every job, not every implement job | `grep -c recall_check .../dispatch.workflow.js` → `3`; `grep -n "Prior failures" .../dispatch.workflow.js` → *no match* | `:1800-1807` short-circuits `type: review` before the lookup, recording `{verdict: none, match_count: 0, note: "review job: recall-check is for implement lanes", recall_check_ms: 0}`. **Live proof, not just the selftest:** this very run emitted one review job and its prompt (`jobs/spec-review-2.prompt.md`) carries no `## Prior failures` section and its `register-lane` carries no `--recall-check-json` — the 76 ms review-1 measured is no longer spent. | **CLOSED** (but unguarded — §3.3, issue 3) |
++
++### 2.3 Over-build
++
++None. The closure is 42 changed lines across three files, every one of them
++traceable to a numbered item. No new flag, no new import, no new helper.
++
++---
++
++## 3. PASS 2 — QUALITY
++
++### 3.1 Code quality
++
++The item-2 fix is the right shape: config first, manifest merged over it, so a
++per-run override remains possible without the config becoming ceremonial. The
++item-5 short-circuit returns the same dict shape as every other branch, so
++`recalls[jid]` is still total and downstream `.get("verdict")` reads cannot
++`KeyError`.
++
++One stale comment (issue 4): `:1296` still says the mechanical consequence is
++*"opt-in **per manifest** (`memory.auto_tighten`)"* — which is precisely the
++sentence item 2 falsified 480 lines below it.
++
++### 3.2 No regression
++
++Nothing removed, nothing renamed. With `auto_tighten` false and no
++`.claude/compound-v.json` present (the state of this repo — `cat` reports **No such
++file or directory**, so `config_path` is `None` and the new branch is a no-op),
++routing is bit-for-bit what it was. Suites below, all green.
++
++### 3.3 Test alignment — **the closure's weak point**
++
++`--selftest` reports **491/491**, the same count review-1 reported *before* the
++closure. That is arithmetically consistent with the diff: item 1 added four
++assertions **inside an existing `_check`**, and items 2 and 5 added **no `_check`
++at all**.
++
++| Closure | Guard | Would a revert be caught? |
++|---|---|---|
++| 1 — the spec's reading budget | `:8167-8171`, four substring assertions folded into an existing check | **Yes** |
++| 2 — `auto_tighten` from `.claude/compound-v.json` | none. `grep -n "compound-v.json"` over the emitter returns `:1454` (an unrelated comment), `:1732` (the code) and `:1779` (the new comment) — **no selftest line**. `_rk_plan` (`:8142-8150`) passes `repo_root=tmp`, where no `.claude/compound-v.json` exists, so `config_path` is `None` and the new branch is **never executed by any test** | **No** — reverting to `manifest.get("memory")` keeps 491/491 green |
++| 3 — memory.md wording | prose; lint only | n/a |
++| 4 — spec wording | prose; lint only | n/a |
++| 5 — review jobs skipped | none. The selftest's only review job (`rev`, `:8137-8139`) declares `write_allowed: ["docs/untouched/**"]` — a **clean** lane, whose verdict is `none` with or without the short-circuit. `grep '_rk_off\["rev"\]'` finds assertions on `acceptance` only (`:8187`, `:8212-8215`), never on `rev`'s `recall_check` or its `note` | **No** |
++
++Two of the five fixes are therefore load-bearing behaviour with nothing standing
++under them, and review-1's own remediation for item 2 said, verbatim, *"assert the
++config path in a selftest."* That instruction was not followed.
++
++### 3.4 No fabricated metrics
++
++None. No number was added by the closure at all; `recall_check_ms` is still the
++real `time.monotonic()` delta, and the CHANGELOG's single "7 of the 27 runs"
++figure is untouched.
++
++### 3.5 No reward-hacking
++
++Clean, and checked against the pre-change file. No `_check` removed, renamed,
++skipped or commented; no threshold moved; no test file deleted or emptied. The
++item-1 change to `:8167-8171` **tightens** an existing assertion (six substrings
++where there was one). The count staying at 491 is the *absence* of new tests
++(§3.3), not the removal of old ones. §2.6 does not apply — not a marathon run, no
++`blocked_external` verdict anywhere in it.
++
++---
++
++## 4. PASS 3 — INTEGRATION
++
++### 4.1 Partition integrity
++
++Single-commit closure over three files with no shared registry, barrel or type.
++No leak.
++
++### 4.2 Cross-job seams
++
++The seam is prose→code, and the closure closed two of the three gaps review-1
++found in it: `memory.md` and the design spec now describe what
++`compound-v-emit-workflow.py` does. `commands/v-init.md` was **not** revisited,
++and it is where the remaining divergence lives (issue 1).
++
++### 4.3 Build green, and the tests the tier owes
++
++`triage.tier: SCOPED`. Owed: the unconditional floor, plus every `impacted_map`
++rule matching a changed path, plus (for a changed path matching no rule) at most
++five referencing suites. `full_command` is **not** owed at SCOPED. Derived from
++the closure's own changed paths: `scripts/compound-v-emit-workflow.py` → rule 1;
++`skills/compound-v/memory.md` → rule 2; the design spec matches no rule → the
++referencing fallback, which is exactly the five commands this job's resolved
++`test-contract.json` carries (`scope: "impacted+referencing"`, `selected_count: 5`).
++
++Every one re-run on this tree, output observed:
++
++```
++$ /usr/bin/python3 -B scripts/compound-v-emit-workflow.py --selftest
++491/491 checks passed
++$ bash tests/test-engine-c-contract.sh
++✅ engine-c contract: every generated job_result conforms, the contract reaches the worker, and the join has a producer
++$ /usr/bin/python3 -B scripts/lint-frontmatter.py .
++✅ All frontmatter clean
++$ bash tests/test-lane-guard.sh          → 288 passed, 0 failed
++$ bash tests/test-integration-gate.sh    →  49 passed, 0 failed
++$ bash tests/test-hook-recursion-guard.sh→  20 passed, 0 failed
++$ bash tests/test-epic-goal-stop.sh      →  67 passed, 0 failed
++```
++
++Build green, exit 0 throughout, with evidence. No `NO_TEST_EVIDENCE`.
++
++### 4.4 Feature acceptance criteria
++
++| # | Criterion | Evidence | Status |
++|---|---|---|---|
++| 1 | recall_check on the job entry + state.json, prompt carries the section **with the reading-budget instruction**; fewer records ⇒ neither | Item 1 closed: `:2302-2311` emits all four clauses, asserted at `:8167-8171`. Absence on a clean lane still asserted (`:8180-8184`) | ✅ |
++| 2 | `auto_tighten: true` ⇒ one rung via `TIER_RAISE` inside `job_entry` before `resolve_job_model`, explicit `model:` wins, review acceptance gains the clause; default false ⇒ prompt only | Item 2 closed: the switch is now read from the file `/v:init` writes. Reachable at last — though **no test executes that read** (§3.3) | ✅ |
++| 3 | `--no-recall` / missing / erroring / 30 s timeout ⇒ `unavailable` + note, never a refusal; emit summary lists recall_check + ms | Five selftest checks, unchanged and green. One narrow deviation introduced by item 5 — issue 3 below | ✅ (with issue 3) |
++| 4 | `memory.md` **and `commands/v-init.md`** describe **exactly** these actions | `memory.md` ✅ (item 3). `commands/v-init.md:343,345` still sells `memory.auto_recall` as a working control, which `grep -rn auto_recall scripts/ hooks/` proves **nothing reads** | ❌ **issue 1** |
++
++---
++
++## 5. Issues
++
++**1. ACCEPTANCE_GAP (blocking, AC 4) — `commands/v-init.md` still offers a switch
++that reaches nothing, and it is the same defect review-1 closed in `memory.md`.**
++`commands/v-init.md:343` — *"**"Manual only"** — recall fires only when you run
++`/v:remember`. (`memory.auto_recall: false`)"* — and `:345`, `:556-558`, present
++`auto_recall` as a live control. It is not one:
++
++```
++$ grep -rn "auto_recall" scripts/ hooks/
++(no output)
++```
++
++The emitter runs `recall-check` for every implement job on **every** emit; the only
++gate is `emit --no-recall`. `skills/compound-v/memory.md:90` was amended by this very
++closure to say so out loud (*"no script reads `memory.auto_recall`"*) — so the two
++documents AC 4 names now **contradict each other**, and the one that is wrong is the
++one a user actually answers a question in. The design spec repeats the error at
++`:25` (*"Always (advisory, `memory.auto_recall` default true)"*), as does
++`skills/compound-v/SKILL.md:189` and `:261`. This is review-1's ISSUE 3 with a
++different filename: the closure fixed the sentence it was pointed at instead of the
++class of defect, and AC 4 explicitly names `commands/v-init.md`.
++→ Either delete the "Manual only" option and the `auto_recall` key from
++`/v:init` Step 3b + `:496` + `:556-558` (and re-word the spec/SKILL.md lines), or
++wire `auto_recall` to the emitter's `recall` flag. Not both halves half-done.
++
++**2. TEST_GAP (advisory) — item 2's fix is executed by no test.**
++`:1783-1786` reads `.claude/compound-v.json`; `grep -n "compound-v.json"` over the
++emitter finds no selftest line, `_rk_plan` (`:8142`) runs against a `tmp` repo root
++with no such file, and this repository has no `.claude/compound-v.json` either
++(`cat` → *No such file or directory*). Reverting the fix to
++`manifest.get("memory")` leaves the suite at 491/491. Review-1's remediation asked
++for this guard in so many words.
++→ Add a check: write `{"memory": {"auto_tighten": true}}` into
++`<tmp>/.claude/compound-v.json`, build a plan with **no** manifest `memory:` block,
++assert the tier was raised; then assert a manifest `memory:` block overrides it.
++
++**3. TEST_GAP + a narrow AC-3 deviation (advisory) — item 5's fix is
++unguarded, and it wins over `--no-recall`.**
++No assertion covers the review short-circuit: the selftest's only `type: review`
++job (`:8137`) has a clean lane, so `none` is what it reported before the fix too.
++Separately, the short-circuit at `:1800` is placed **before** the `if recall:`
++branch, so under `emit --no-recall` a review job records `verdict: "none"` where AC
++3 says every `--no-recall` job records `{verdict: "unavailable", note}`. The note
++makes it honest rather than misleading, and "we did not check" reading as `none`
++matters only for a job that has no lane to check — but it is a literal deviation
++from the criterion.
++→ Give `rev` a **dirty** lane in the fixture and assert its verdict is `none` with
++the review note (which proves the lookup was skipped, not merely clean), and decide
++whether `--no-recall` should win the ordering.
++
++**4. QUALITY (advisory) — a stale comment contradicts the code it introduces.**
++`scripts/compound-v-emit-workflow.py:1296`: *"The single mechanical consequence —
++one rung of tier — is opt-in **per manifest** (`memory.auto_tighten`)"*. After item
++2 it is opt-in per **project config**, with the manifest as an override. The
++authoritative comment block for the whole feature now describes the bug that was
++fixed.
++→ One-line re-word.
++
++**5. (carried, not re-litigated) The cross-model receipt is still owed.**
++Review-1 §6 recorded it; nothing in this round took it. `flavor: scoped_plus` — the
++Codex second opinion at dispatch step 8 has still not been taken, and this pass does
++not substitute for it.
++
++---
++
++## 6. What is still owed
++
++- Issue 1 (blocking), then a third pass — or a one-line orchestrator ruling that
++  `auto_recall` is being deleted rather than wired.
++- Issues 2 and 3: two guards, so the next revert of these two fixes is caught by
++  the suite instead of by a reviewer reading 42 lines of diff.
++- The **cross-model (Codex) receipt at dispatch step 8**, still not taken.
