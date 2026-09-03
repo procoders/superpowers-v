@@ -1,0 +1,13 @@
+{
+  "confidence": "exact",
+  "digest": "sha256:833dc30b5c4e5cb1422bb90a2b0ad03bf0b8664cca2b32b2ebd49be0485d16eb",
+  "fan_out": 3,
+  "flags": [
+    "sensitive_path"
+  ],
+  "resolved_paths": [
+    "agents/spec-reviewer.md",
+    "docs/superpowers/plans/2026-09-03-v3.4.3-codex-sandbox-checkout.md",
+    "docs/superpowers/specs/2026-09-03-v3.4.3-codex-sandbox-checkout-design.md"
+  ]
+}

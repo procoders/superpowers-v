@@ -1,0 +1,46 @@
+{
+  "base_commit": "2404581f4f78cba975f9b5e55ac28553a1730432",
+  "confidence": "localization:exact; tiers:localization,T1",
+  "decision": "FULL_PIPELINE",
+  "declared_paths": [
+    "agents/spec-reviewer.md",
+    "docs/superpowers/plans/2026-09-03-v3.4.3-codex-sandbox-checkout.md",
+    "docs/superpowers/specs/2026-09-03-v3.4.3-codex-sandbox-checkout-design.md"
+  ],
+  "difficulty": {
+    "band": "high",
+    "display": 8
+  },
+  "digest": "sha256:8334d420d85be28d5b1f2f5a28bdfe0540f91c7f07c4d8bda63e708ceb7284c5",
+  "impact": {
+    "band": "high",
+    "display": 8
+  },
+  "localization": {
+    "confidence": "exact",
+    "fan_out": 3,
+    "flags": [
+      "sensitive_path"
+    ],
+    "resolved_paths": [
+      "agents/spec-reviewer.md",
+      "docs/superpowers/plans/2026-09-03-v3.4.3-codex-sandbox-checkout.md",
+      "docs/superpowers/specs/2026-09-03-v3.4.3-codex-sandbox-checkout-design.md"
+    ]
+  },
+  "min_sample_status": "insufficient",
+  "override_fired": 2,
+  "pre_eval_id": "2026-09-03T062154Z-implement-v3-4-3-per-docs-superpowers-specs-2026-09-03-v3-4-96ff",
+  "request_slug": "implement-v3-4-3-per-docs-superpowers-specs-2026-09-03-v3-4",
+  "session_id": "stage4-1788416513",
+  "status": "PRE_EVAL_DONE",
+  "taxonomy_digest": "sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a",
+  "taxonomy_ref": "docs/superpowers/pre-eval/2026-09-03T062154Z-implement-v3-4-3-per-docs-superpowers-specs-2026-09-03-v3-4-96ff.taxonomy-snapshot.yaml",
+  "taxonomy_version": 1,
+  "tier": "FULL",
+  "tiers_signalled": [
+    "localization",
+    "T1"
+  ],
+  "ts": "2026-09-03T06:21:54Z"
+}
