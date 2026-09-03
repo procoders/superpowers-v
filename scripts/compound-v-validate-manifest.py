@@ -2656,15 +2656,19 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
                     % (jid, m_val)
                 )
 
-        # Invariant 3: reviewers => deep/opus (strongest reasoning). Satisfied
-        # by either tier: deep or model: opus.
+        # Invariant 3: reviewers => deep reasoning OR STRONGER. Satisfied by
+        # tier: deep / frontier, or model: opus / fable. The rule was written
+        # in v3.0.5 before the frontier tier existed and read "deep or opus"
+        # literally, which refused a reviewer lifted to Fable when Opus was
+        # overloaded (three API 529s in a row, 2026-09-03, finding 119) — a
+        # stronger seat failing a "strong enough" check. Never weaker.
         if _is_reviewer(job):
-            is_deep = str(job.get("tier", "")).lower() == "deep"
-            is_opus = str(job.get("model", "")).lower() == "opus"
+            is_deep = str(job.get("tier", "")).lower() in ("deep", "frontier")
+            is_opus = str(job.get("model", "")).lower() in ("opus", "fable")
             if not is_deep and not is_opus:
                 problems.append(
-                    "reviewer job '%s' must resolve to deep reasoning "
-                    "(tier: deep or model: opus), got tier='%s' model='%s'"
+                    "reviewer job '%s' must resolve to deep reasoning or stronger "
+                    "(tier: deep|frontier or model: opus|fable), got tier='%s' model='%s'"
                     % (jid, job.get("tier"), job.get("model"))
                 )
 
@@ -5095,6 +5099,22 @@ def _selftest():
         "reviewer via tier:deep accepted (no model)",
         not any("reviewer job 'task-3-spec-review'" in p for p in good),
     )
+    # Finding 119: a reviewer lifted to the frontier tier (Fable) is STRONGER than
+    # deep and must pass; a light-tier reviewer must still fail.
+    _fr = copy.deepcopy(GOOD) if "GOOD" in globals() else None
+    if _fr is not None:
+        for _j in _fr.get("jobs", []):
+            if _j.get("id") == "task-3-spec-review":
+                _j["tier"] = "frontier"; _j.pop("model", None)
+        _fr_probs = validate(_fr) if "validate" in globals() else []
+        expect("reviewer via tier:frontier accepted — stronger passes (finding 119)",
+               not any("reviewer job 'task-3-spec-review'" in p for p in _fr_probs))
+        for _j in _fr.get("jobs", []):
+            if _j.get("id") == "task-3-spec-review":
+                _j["tier"] = "light"
+        _fr_probs2 = validate(_fr) if "validate" in globals() else ["reviewer job 'task-3-spec-review'"]
+        expect("reviewer via tier:light still refused (finding 119 never weakens)",
+               any("reviewer job 'task-3-spec-review'" in p for p in _fr_probs2))
 
     # Empty / malformed.
     expect("no jobs -> violation", validate_text("run_id: x") != [])
