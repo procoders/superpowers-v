@@ -101,6 +101,15 @@ RESULT_SCHEMA = {
         # Constraints the plan MUST honour. The brainstorm reads these first.
         "blocking": {"type": "array", "items": {"type": "string"}},
         "notes": {"type": "string"},
+        # KB paths the auditor created or appended (1C's Step 7; 1A has no
+        # documented KB-write step today, so its list is empty in practice — not
+        # implied as parity). An orchestrator that commits only `wrote` leaves a
+        # KB append uncommitted, and the scope gate charges that modified,
+        # already-tracked file to whatever direct-mode job runs next (finding 100:
+        # it had to be stashed mid-run on 2026-09-03). Asked for BY NAME in the
+        # wrapper prompt text below — an optional schema field is never populated
+        # on its own.
+        "kb_files": {"type": "array", "items": {"type": "string"}},
     },
 }
 
@@ -237,7 +246,7 @@ const results = await parallel(CFG.entries.map(function (e) {
   return async function () {
     if (e.skipped) {
       log('SKIPPED ' + e.phase + ' (' + e.role + '): ' + e.skipped);
-      return { phase: e.phase, wrote: '', findings: 0, blocking: [], notes: e.skipped };
+      return { phase: e.phase, wrote: '', findings: 0, blocking: [], kb_files: [], notes: e.skipped };
     }
     const prompt =
       'You are Phase ' + e.phase + ' of a Compound V pre-flight: ' + e.purpose + '.\\n\\n' +
@@ -247,8 +256,10 @@ const results = await parallel(CFG.entries.map(function (e) {
       'Follow your own agent definition exactly, including its Step 0.\\n' +
       'Write your audit to: ' + e.out + '\\n\\n' +
       'Return the structured result: the path you actually wrote (empty string if ' +
-      'you wrote nothing), how many findings it contains, and the constraints the ' +
-      'plan MUST honour. Report what you found, not what would be reassuring.';
+      'you wrote nothing), how many findings it contains, the constraints the ' +
+      'plan MUST honour, and kb_files: the knowledge-base paths you created or ' +
+      'appended (e.g. a _knowledge-base/<topic>.md entry) — [] if you appended ' +
+      'none. Report what you found, not what would be reassuring.';
 
     try {
       const opts = {
@@ -284,7 +295,7 @@ const results = await parallel(CFG.entries.map(function (e) {
       }
       if (r === null || r === undefined) {
         log('Phase ' + e.phase + ' returned nothing');
-        return { phase: e.phase, wrote: '', findings: 0, blocking: [],
+        return { phase: e.phase, wrote: '', findings: 0, blocking: [], kb_files: [],
                  notes: 'the agent returned null — treat as NOT RUN, never as clean' };
       }
       log('Phase ' + e.phase + ' wrote ' + (r.wrote || '(nothing)') +
@@ -293,7 +304,7 @@ const results = await parallel(CFG.entries.map(function (e) {
     } catch (err) {
       // A throw here must not take the other two audits with it.
       log('Phase ' + e.phase + ' threw: ' + String(err && err.message ? err.message : err));
-      return { phase: e.phase, wrote: '', findings: 0, blocking: [],
+      return { phase: e.phase, wrote: '', findings: 0, blocking: [], kb_files: [],
                notes: 'threw: ' + String(err && err.message ? err.message : err) };
     }
   };
@@ -303,9 +314,15 @@ const done = results.filter(Boolean);
 const blocking = [];
 for (const r of done) { for (const b of (r.blocking || [])) blocking.push(r.phase + ': ' + b); }
 const ran = done.filter(function (r) { return r.wrote; });
+// De-duplicated so a KB file two audits both touched is committed once, not
+// listed twice (finding 100 — see RESULT_SCHEMA's kb_files comment).
+const kbFiles = Array.from(new Set(done.reduce(function (acc, r) {
+  return acc.concat(r.kb_files || []);
+}, [])));
 
 log('Pre-flight complete: ' + ran.length + '/' + done.length +
-    ' audit(s) produced a document, ' + blocking.length + ' blocking constraint(s)');
+    ' audit(s) produced a document, ' + blocking.length + ' blocking constraint(s), ' +
+    kbFiles.length + ' KB file(s)');
 
 return {
   spec_path: CFG.spec_path,
@@ -314,6 +331,10 @@ return {
   // The brainstorm reads this first. An audit that did not run is NOT a clean one.
   blocking_constraints: blocking,
   incomplete: done.filter(function (r) { return !r.wrote; }).map(function (r) { return r.phase; }),
+  // Named so the caller can commit what the audits appended, not just what
+  // they wrote — an already-tracked KB file the scope gate would otherwise
+  // charge to the next direct-mode job (finding 100).
+  kb_files: kbFiles,
 };
 """
 
@@ -490,6 +511,18 @@ def _selftest():
           and "bashCommandClamp: CFG.clamp" in script)
     check("a null return is NOT reported as a clean audit",
           "never as clean" in script)
+    # finding 100: the auditor is asked BY NAME, the schema carries the field, the
+    # result carries it per-audit and de-duplicated at the top level, and all
+    # three bypass branches (skipped / null / catch) default it to [].
+    check("the wrapper prompt asks for kb_files BY NAME",
+          "kb_files:" in script and "you created or " in script)
+    check("RESULT_SCHEMA carries kb_files as an array of strings",
+          RESULT_SCHEMA["properties"]["kb_files"]
+          == {"type": "array", "items": {"type": "string"}})
+    check("the top-level result carries a de-duplicated kb_files",
+          "kb_files: kbFiles" in script and "Array.from(new Set(" in script)
+    check("all three bypass branches (skipped / null / catch) default kb_files to []",
+          script.count("kb_files: []") == 3)
     check("one audit throwing cannot take the others with it",
           "catch (err)" in script)
     check("the caller is told which audits did not produce a document",

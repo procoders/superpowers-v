@@ -81,12 +81,16 @@ The manifest schema and rules are defined in [`skills/compound-v/execution-manif
    ```
    It enforces the invariants (disjoint `write_allowed`, `codex ⇒ worktree`, `reviewers ⇒ opus`, shared-in-Task-0). If it exits non-zero, **fix the manifest** and re-run — do not hand a manifest the validator rejects to dispatch. A plan-based manifest carries **no** `fast_path` block, so it is validated mode-lessly (legacy). The **only** `fast_path` manifest this command produces comes from the Step 0 materializer, which validates it with `--mode pre-dispatch` itself — never hand-materialize a `fast_path` manifest here without that mode (a mode-less `fast_path` manifest is fail-closed rejected; CR5-1).
 
-8. **Commit the run directory.** `docs/superpowers/execution/<run-id>/{manifest.yaml,state.json}` are new files on disk, not yet in git — a plain **write** is not durable. Stage and commit them now:
+8. **Commit the run directory.** `docs/superpowers/execution/<run-id>/{manifest.yaml,state.json}` are new files on disk, not yet in git — a plain **write** is not durable. Stage and commit them now, along with what the pre-flight audits appended:
    ```bash
    git add docs/superpowers/execution/<run-id>/manifest.yaml docs/superpowers/execution/<run-id>/state.json
+   git add docs/superpowers/archaeology/_knowledge-base docs/superpowers/expert/_knowledge-base docs/superpowers/library-audit/_knowledge-base
+   git add <each path in the pre-flight result's kb_files, if any>
    git commit -m "chore(v-orchestrate): materialize run <run-id>"
    ```
    This is not optional. If this run is happening inside a git worktree, an *uncommitted* run directory is silently deleted by `git worktree remove` — the cleanup step in `superpowers:finishing-a-development-branch` — the very moment the branch is merged or discarded, taking Compound V's own audit trail with it. See [`state-machine.md`](../skills/compound-v/state-machine.md)'s note on this.
+
+   **Stage the three knowledge-base directories too, and name the exact files from `kb_files`.** 1C appends to `docs/superpowers/library-audit/_knowledge-base/<topic>.md` (its Step 7); 1A may do the same under `docs/superpowers/archaeology/_knowledge-base/<topic>.md`, and 1B under `docs/superpowers/expert/_knowledge-base/<topic>.md`. Those are already-tracked files after their first run, so the scope gate's untracked-file protection does not cover a later modification — it gets charged to whatever direct-mode job runs next (finding 100: it had to be stashed mid-run on 2026-09-03). Read the pre-flight result's `kb_files` (Step 2's audits came from that same pre-flight run) and `git add` each path it names, in addition to the three directory globs above — the globs catch a KB write this run-id has not seen before; `kb_files` catches the modification to one it has.
 
 8b. **Bind every pre-eval-backed run (CR3-2).** If Step 6 set a `pre_eval_id`, append **and commit** the `bind` triage event **now** (after the run dir is committed, so the run it points at is durable), via the two-command discipline (no `&&`, each exit code checked):
    ```bash
