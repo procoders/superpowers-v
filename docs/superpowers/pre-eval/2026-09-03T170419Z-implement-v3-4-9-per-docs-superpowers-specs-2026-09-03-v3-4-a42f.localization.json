@@ -1,0 +1,13 @@
+{
+  "confidence": "exact",
+  "digest": "sha256:5b400eba269fd72653b25265081299b7cf60aa503f48a8965c9cff1dc8c7d323",
+  "fan_out": 3,
+  "flags": [
+    "sensitive_path"
+  ],
+  "resolved_paths": [
+    "docs/superpowers/specs/2026-09-03-v3.4.9-preflight-kb-paths-and-retries-schema-design.md",
+    "scripts/compound-v-collect-results.py",
+    "scripts/compound-v-emit-preflight.py"
+  ]
+}
