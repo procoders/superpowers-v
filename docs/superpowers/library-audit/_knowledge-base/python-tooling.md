@@ -39,6 +39,46 @@ Audit: `docs/superpowers/library-audit/2026-09-03-v3-4-5-recall-freshness.md`.
   Sources: python.org 3.9.25 release notes; endoflife.date/python; Red Hat Developer (2025-12-04, "Python 3.9 reaches end of life").
 - This does not contradict the F2 entry above — it confirms the *reason* `python-version: '3.9'` in `.github/workflows/validate.yml:280-283,343-346` is now a **frozen** floor, not merely an old one: that pin will resolve to the same 3.9.25 build indefinitely, with no forward patch-level drift risk but also no future security fix, ever, for this interpreter line. Recorded so the next Phase 1C pass touching any `scripts/*.py` with a `--selftest` doesn't have to re-derive the EOL date.
 
+---
+
+## Updated 2026-09-03 — epic-gp-matcher-docs (F2)
+
+Audit: `docs/superpowers/library-audit/2026-09-03-epic-gp-matcher-docs.md`. Sibling of the
+`epic-gp-one-matcher` (F1) entry that would otherwise sit above this one chronologically —
+F1 shipped the code (`compound-v-memory.py` delegates to the scope gate's matcher instead
+of `fnmatch`, merged per `docs/superpowers/dogfood/2026-09-03-epic-gp-one-matcher-review-1.md`);
+F2 is a pure two-file doc-sync (`skills/compound-v/memory.md`,
+`skills/compound-v/execution-manifest.md`) with **zero third-party dependencies** —
+confirmed via the standard manifest `Glob` sweep, zero matches, same as every other
+Compound V audit to date.
+
+**Live source-of-truth citations for the "one glob contract," so the next 1C pass on this
+topic doesn't have to re-derive them:**
+- The six-rule semantics (`*` single-segment / `**` cross-segment incl. `dir/**`⇒`dir` /
+  `?` one non-`/` char / `[`,`]` literal / fully anchored) live in
+  `scripts/compound-v-scope-check.py:317-382` (`glob_to_regex`/`matches`/`is_allowed`).
+- The **bare-path-recursive** reading ("`dir` also means everything under `dir`") exists
+  **only** in `scripts/compound-v-memory.py:1115-1125` (`_file_matches`) — `scope-check.py`'s
+  own `matches`/`is_allowed` have no such special-casing. A doc (or a future spec) that
+  states `write_allowed`/`read_allowed` get this bonus would be documenting an **enforced**
+  scope boundary incorrectly; it is `recall-check`-only.
+- The cross-check both docs are meant to point readers at is the `parity` fixture list in
+  `scripts/compound-v-memory.py:1632-1642` (tag: `# glob parity with the scope gate (epic
+  2026-09-03-glob-parity F1): one matcher, two callers.`), run via `--selftest`. Confirmed
+  passing post-F1-merge (all rows `ok`, including `bare dir == dir/**`) per
+  `docs/superpowers/dogfood/2026-09-03-epic-gp-one-matcher-review-1.md`.
+
+**Forward-pointer to the F2 entry above (PyYAML hard-import, no fallback,
+`scripts/lint-frontmatter.py:31`):** F2's own acceptance criteria run
+`/usr/bin/python3 scripts/lint-frontmatter.py` as AC #3. That command inherits the gap
+recorded above — a `ModuleNotFoundError` on a machine without PyYAML importable under that
+interpreter is an environment failure, not a defect in F2's doc edits, and could be
+misdiagnosed as one. Not re-derived, not re-fixed here — cited so this spec's reviewer has
+the context. This is the first spec whose *own acceptance criteria* directly exercise that
+gap; prior entries only noted it as inherited shared infrastructure.
+
+No prior entry needed strikethrough — additive only.
+
 ### `sqlite3` (stdlib) — `Connection.autocommit` / `LEGACY_TRANSACTION_CONTROL` default, live-verified
 
 - **2026-09-03 (WebFetch, `docs.python.org/3/library/sqlite3.html#sqlite3.Connection.autocommit`):** `Connection.autocommit` currently defaults to `sqlite3.LEGACY_TRANSACTION_CONTROL` in every shipping CPython through 3.14 (and 3.15 as of rc2). Under that default, `isolation_level` governs implicit-transaction behavior and explicit `BEGIN <mode>` / `COMMIT` / `ROLLBACK` statements executed via `Connection.execute()` behave exactly as pre-3.12 Python always did — this is the pattern `scripts/compound-v-memory.py`'s `_persist_chunks` (`BEGIN IMMEDIATE` ... `COMMIT`/`ROLLBACK`) already relies on, and it remains current with no signature drift.

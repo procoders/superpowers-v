@@ -4,7 +4,7 @@
 
 **Goal:** `skills/compound-v/memory.md` and `skills/compound-v/execution-manifest.md` state the one glob contract (the scope gate's matcher, which recall-check now shares after F1) in the same words, each naming the other and the parity selftest as the proof.
 
-**Architecture:** Two doc edits, no code. `execution-manifest.md` gains a short "Glob semantics" paragraph under the `write_allowed`/`read_allowed` rows of its field table (it never stated the semantics). `memory.md`'s `recall-check` row is rewritten with the same rules plus the bare-path reading.
+**Architecture:** Two doc edits, no code. `execution-manifest.md` gains a short "Glob semantics" paragraph after the end of its "Per-job fields" section (after the footnote and the trailing paragraph, before `### Tier vocabulary` — the field table is contiguous and cannot take a paragraph between rows). `memory.md`'s `recall-check` row is rewritten in place as a same-line-count replacement with the identical six-rule sentence plus the bare-path reading (recall-check only).
 
 **Tech Stack:** Markdown. Lines ≤ 200 characters. Relative links must resolve (CI dead-link gate).
 
@@ -37,25 +37,25 @@ Shared resources: none. Task 0: none.
 Run: `grep -n 'read_allowed' skills/compound-v/execution-manifest.md | head -3` and `grep -n 'recall-check --files' skills/compound-v/memory.md`
 Expected: the `read_allowed` table row (~line 54) and the `recall-check` row (line 54).
 
-- [ ] **Step 2: Add the paragraph to `execution-manifest.md`** directly after the field table that contains the `write_allowed` and `read_allowed` rows (leave one blank line before and after):
+- [ ] **Step 2: Add the paragraph to `execution-manifest.md`** after the end of the "Per-job fields" section — after its footnote and its one trailing paragraph — and immediately before the `### Tier vocabulary` heading (find it with `grep -n '^### Tier vocabulary' skills/compound-v/execution-manifest.md`; leave one blank line before and after; never inside the table):
 
 ```markdown
 **Glob semantics (`write_allowed`, `read_allowed`, `impacted_map.when`).** `*` matches within one path segment (never `/`);
 `**` matches across segments; `dir/**` also matches `dir` itself; `?` matches one non-`/` character; `[` and `]` are literal
 (no character classes — `app/[locale]/**` is a real directory); matching is anchored to the full repo-relative path. This is
 the scope gate's own matcher (`scripts/compound-v-scope-check.py` `matches`), and V-memory's `recall-check` uses the same
-matcher — see [`memory.md`](memory.md); the proof is the parity rows in `python3 scripts/compound-v-memory.py --selftest`.
+matcher — see [`memory.md`](memory.md); the proof is the `parity …` rows of `python3 scripts/compound-v-memory.py --selftest`.
 ```
 
-- [ ] **Step 3: Rewrite the `recall-check` row in `memory.md`** — replace the row whose first cell starts with `` `recall-check --files <glob>… `` with:
+- [ ] **Step 3: Rewrite the `recall-check` row in `memory.md`** — replace the ONE physical line whose first cell starts with `` `recall-check --files <glob>… `` with the ONE line below (same line count: no blank lines added or removed — `docs/superpowers/architecture/architecture.md` anchors line numbers into this file):
 
 ```markdown
-| `recall-check --files <glob>… [--k N] [--json]` | **deterministic** recurring-failure → `tighten`/`none`/`unavailable` verdict. Files match lane globs with the same matcher as the scope gate (`*` one segment, `**` across, `dir/**` includes `dir`, `?` one non-`/` char, `[`/`]` literal, anchored — see [`execution-manifest.md`](execution-manifest.md)); a bare path with no wildcard means "this path or anything under it". Proof: the parity rows in `python3 scripts/compound-v-memory.py --selftest`. |
+| `recall-check --files <glob>… [--k N] [--json]` | **deterministic** recurring-failure → `tighten`/`none`/`unavailable` verdict. Files match lane globs with the same matcher as the scope gate: `*` matches within one path segment (never `/`); `**` matches across segments; `dir/**` also matches `dir` itself; `?` matches one non-`/` character; `[` and `]` are literal (no character classes — `app/[locale]/**` is a real directory); matching is anchored to the full repo-relative path (see [`execution-manifest.md`](execution-manifest.md)). recall-check only: a bare path with no wildcard means "this path or anything under it" (the enforced gate has no such reading). Proof: the `parity …` rows of `python3 scripts/compound-v-memory.py --selftest`. |
 ```
 
 - [ ] **Step 4: Verify**
 
-Run: `grep -c 'the same matcher' skills/compound-v/memory.md skills/compound-v/execution-manifest.md` and `grep -n fnmatch skills/compound-v/memory.md skills/compound-v/execution-manifest.md` and `awk 'length > 200 {print FILENAME": "FNR}' skills/compound-v/memory.md skills/compound-v/execution-manifest.md`
+Run: `grep -c 'the same matcher' skills/compound-v/memory.md skills/compound-v/execution-manifest.md`, `git diff --stat` (exactly two files), `git diff -U0 skills/compound-v/memory.md | grep -c '^[-+][^-+]'` (exactly 2: one line removed, one added), and `wc -l skills/compound-v/memory.md` before and after (identical)
 Expected: each file counts 1; the fnmatch grep prints nothing. Line length, decided up front (partition review 2026-09-03): `memory.md` already carries table rows longer than 200 characters, so the rewritten `recall-check` row may exceed 200 characters but must stay at or below the longest line already in the file (measure it with `awk 'length>max{max=length} END{print max}' skills/compound-v/memory.md` before editing); the `execution-manifest.md` paragraph is wrapped at ≤ 120 characters per line. No other fallback: the rule list, the link, "the same matcher" and the proof pointer are all mandatory in both files.
 
 - [ ] **Step 5: Commit**

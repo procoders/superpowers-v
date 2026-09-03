@@ -24,3 +24,20 @@ semantics at all — `write_allowed` is described as "Glob list this job MAY wri
 `write_allowed`/`read_allowed` rows of the field table in `execution-manifest.md` (one paragraph, the six rules above, the
 recall cross-reference and the parity-selftest pointer), and **replaces** the `recall-check` row's wording in
 `memory.md` (line 54) with the same rules plus the bare-path reading. No other section of either file changes.
+
+## Pre-flight amendments (2026-09-03, after 1A archaeology and 1C library audit; 1B skipped — docs-only)
+
+1. **Placement in `execution-manifest.md`:** the paragraph cannot sit between the `read_allowed` row and the next row (the table
+   is contiguous through the `acceptance` rows). It goes after the end of the "Per-job fields" section — after its footnote and
+   its one trailing paragraph — and before the `### Tier vocabulary` heading.
+2. **`memory.md` edit is a same-line-count replacement:** one physical line in, one out, no blank lines added or removed —
+   `docs/superpowers/architecture/architecture.md` anchors line numbers into `memory.md`.
+3. **The bare-path reading is recall-check only.** The enforced gate (`matches`/`is_allowed`) has no such sugar; the
+   `execution-manifest.md` paragraph must not imply it applies to `write_allowed`/`read_allowed`.
+4. **Wording identity, decided:** the six-rule sentence is character-identical in both files; each file then adds its own one
+   sentence (the manifest names the gate and links `memory.md`; memory.md adds the bare-path reading and links back).
+5. **Proof pointer by name, not line number:** "the `parity …` rows of `python3 scripts/compound-v-memory.py --selftest`".
+6. **Line length:** no script enforces 200; both files already carry longer lines. New prose in `execution-manifest.md` wraps at
+   ≤ 120; the rewritten `memory.md` row stays ≤ the file's longest existing line.
+7. **`lint-frontmatter.py` and `grep fnmatch` are not proof of work** (both vacuous for these files); the content checks are the
+   two `grep -c "the same matcher"` counts and a visual diff of exactly the two hunks.
