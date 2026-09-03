@@ -1,0 +1,14 @@
+{
+  "run_id": "2026-09-03-v3.4.6-triage-test-scoping-fixes-r11",
+  "phase": "PARTITION_VERIFIED",
+  "pre_eval_id": "2026-09-03T113149Z-implement-v3-4-6-per-docs-superpowers-specs-2026-09-03-v3-4-0cb5",
+  "updated_at": "2026-09-03T14:20:53Z",
+  "jobs": {
+    "spec-review-2": {
+      "status": "pending",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null
+    }
+  }
+}
