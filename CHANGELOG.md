@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [3.4.13] - 2026-09-03
+
+Stage 8 of the verification program, the last: an ordinary small feature through the whole pipeline
+with a stopwatch on every phase. The feature is finding 145 — the pre-flight auditors' Bash clamp
+admits read-only git history — chosen because the 1A archaeologist had reported twice that day that
+`git log`/`git blame` were unreachable.
+
+### Added — the pre-flight clamp admits `git log`, `git blame`, `git show` (finding 145)
+
+`compound-v-emit-preflight.py` emits five clamp rules instead of two: the recall query (as before)
+and the three git history forms. Two selftest checks pin exactly those three and refuse any other
+`Bash(git ` form; the two older checks that assumed every rule was a python form are narrowed to
+the python rules. The docstring, the clamp comment and the emitted template stop claiming a single
+shell form. Recorded and accepted, not hidden: `git log`/`git show --output=<file>` can write a
+file, and the pre-flight stage has no scope gate — but the auditors already hold `Write` by design,
+so the clamp is a spend limiter for Bash, not their write boundary (design doc, amendment 4).
+
+### Verified — the stopwatch
+
+| Phase | Wall clock |
+|---|---|
+| Request → triage record committed | 2 s |
+| Pre-flights (1A ∥ 1C, Sonnet) | 9.0 min (1A 418 s, 1C 522 s) |
+| Plan + manifest, written during the pre-flights | 68 s |
+| Amend, validate, commit, bind, emit | 1 s |
+| Partition review (Opus) | 62 s |
+| Dispatch wave 1: implement 75 s · gate 19 s · record 11 s · finalize 7 s | 1.9 min |
+| Dispatch wave 2: Opus review 483 s · gate 82 s · record 12 s · finalize 7 s | 9.7 min |
+| Request → MERGED | 22.6 min |
+
+Not a perfect pass, and that is the finding: the pipeline's own Review Gate returned ISSUES on two
+comment-text defects the orchestrator had mandated in the plan (the JS-template comment still said
+"only for the recall query"; the clamp comment called `git log`/`git show` unconditionally
+read-only). Both were closed directly with a selftest check, within the review-cycle rule; a fresh second
+review pass returned APPROVED (41/41 selftest checks; exactly five clamp rules in a live emit).
+
 ## [3.4.12] - 2026-09-03
 
 Stage 7 of the verification program: death and resurrection of a marathon epic. A two-feature epic
