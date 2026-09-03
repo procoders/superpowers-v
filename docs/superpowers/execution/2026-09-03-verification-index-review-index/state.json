@@ -1,6 +1,6 @@
 {
   "run_id": "2026-09-03-verification-index-review-index",
-  "phase": "DISPATCHED",
+  "phase": "BLOCKED",
   "pre_eval_id": "2026-09-03T080658Z-build-epic-feature-review-index-docs-superpowers-execution-e-0e49",
   "epic_id": "2026-09-03-verification-index",
   "updated_at": "2026-09-03T08:15:52Z",
@@ -20,10 +20,12 @@
       }
     },
     "index-output": {
-      "status": "pending",
-      "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "status": "done",
+      "isolation": "direct",
+      "worktree": "",
+      "session_id": null,
+      "baseline": "dbf57497505edce611da04d8eb11430d4f7f94fe",
+      "realised_commit": "dbf57497505edce611da04d8eb11430d4f7f94fe"
     },
     "spec-review": {
       "status": "pending",
@@ -42,6 +44,16 @@
       ],
       "commit": "29b534a58af48ef0a5fde557406b0fa6cc83092c",
       "integrated": true
+    },
+    "2": {
+      "jobs": [
+        "index-output"
+      ],
+      "merged": [],
+      "commit": "dbf57497505edce611da04d8eb11430d4f7f94fe",
+      "integrated": false
     }
-  }
+  },
+  "blocked_reason": "wave 2 refused: index-output",
+  "blocked_at": "2026-09-03T08:24:49Z"
 }
