@@ -85,7 +85,11 @@ match, **not** embedding similarity:
   counts prior `job_result` records (the authoritative git-derived `results/<id>.json`, per
   [`schemas/job_result.schema.json`](../../schemas/job_result.schema.json)) with
   `status ∈ {blocked, error, timeout}` (or a scope `violation`) on the same lane. `N ≥ k`
-  (default `k=2`, the "two is a pattern" rule) ⇒ verdict `tighten`.
+  (default `k=2`, the "two is a pattern" rule) ⇒ verdict `tighten`. `recall-check`'s glob
+  matching against `write_allowed` (see [`execution-manifest.md`](execution-manifest.md) §
+  Job fields) is the same matcher the scope gate enforces with — imported from
+  `compound-v-scope-check.py`, not reimplemented — and `--selftest` carries a glob-parity
+  suite that fails if the two ever diverge.
 - **The two real actions (tighten only):**
   1. **Always, when `memory.auto_recall` is on (default true; the /v:init "Manual only" stance sets it false, and `emit --no-recall` forces it off for one emit):** the implementer prompt gains a
      `## Prior failures on your lane` section — the count, the last three evidence lines
