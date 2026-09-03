@@ -114,8 +114,10 @@ done < <(git ls-files -z)
 if [ -n "$taxonomy_from" ]; then
   taxonomy_target=$dest/.claude/compound-v-impact-taxonomy.yaml
   mkdir -p "$(dirname "$taxonomy_target")"
+  if [ ! -e "$taxonomy_target" ] && [ ! -L "$taxonomy_target" ]; then
+    files=$((files + 1))
+  fi
   cp -pR "$taxonomy_from" "$taxonomy_target"
-  files=$((files + 1))
 fi
 
 if [ "$empty_pre_eval" = true ]; then

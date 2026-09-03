@@ -34,13 +34,14 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
 SOURCE="$WORK/source"
-mkdir -p "$SOURCE/docs/superpowers/execution/x" \
+mkdir -p "$SOURCE/.claude" "$SOURCE/docs/superpowers/execution/x" \
   "$SOURCE/docs/superpowers/pre-eval" "$SOURCE/logs"
 printf 'tracked bytes: \001\002\377\n' >"$SOURCE/a.txt"
 printf '#!/bin/sh\nprintf run\n' >"$SOURCE/run.sh"
 chmod 755 "$SOURCE/run.sh"
 printf 'execution state\n' >"$SOURCE/docs/superpowers/execution/x/state.json"
 printf 'pre-evaluation\n' >"$SOURCE/docs/superpowers/pre-eval/r.json"
+printf 'tracked taxonomy\n' >"$SOURCE/.claude/compound-v-impact-taxonomy.yaml"
 ln -s ../a.txt "$SOURCE/link-to-a"
 printf 'untracked\n' >"$SOURCE/junk.txt"
 printf 'ignored lane map\n' >"$SOURCE/docs/superpowers/execution/x/lane-map.json"
@@ -49,6 +50,7 @@ printf 'docs/superpowers/execution/**/lane-map.json\nlogs/*.jsonl\n' >"$SOURCE/.
 
 git -C "$SOURCE" init -q
 git -C "$SOURCE" add a.txt run.sh link-to-a .gitignore \
+  .claude/compound-v-impact-taxonomy.yaml \
   docs/superpowers/execution/x/state.json docs/superpowers/pre-eval/r.json
 git -C "$SOURCE" -c user.email=test@example.invalid -c user.name=test \
   commit -q -m fixture
@@ -70,6 +72,19 @@ check 'keeps pre-eval files by default' test -f "$DEST/docs/superpowers/pre-eval
 check 'creates exactly one sandbox commit' test "$(git -C "$DEST" log --oneline | wc -l | tr -d ' ')" = 1
 check 'prints the sandbox destination' grep -Fqx "sandbox: $DEST" "$WORK/output"
 check 'prints copied file count and commit' grep -E '^files: [0-9]+ commit: [0-9a-f]+$' "$WORK/output"
+
+TAXONOMY_FROM="$WORK/taxonomy-from.yaml"
+printf 'replacement taxonomy\n' >"$TAXONOMY_FROM"
+TAXONOMY_DEST="$WORK/taxonomy-sandbox"
+if (cd "$SOURCE" && bash "$HELPER" "$TAXONOMY_DEST" --taxonomy-from "$TAXONOMY_FROM") >"$WORK/taxonomy-output" 2>"$WORK/taxonomy-error"; then
+  ok 'creates a sandbox with a replacement taxonomy file'
+else
+  bad 'creates a sandbox with a replacement taxonomy file'
+fi
+check 'copies the supplied taxonomy file byte-for-byte' \
+  cmp "$TAXONOMY_FROM" "$TAXONOMY_DEST/.claude/compound-v-impact-taxonomy.yaml"
+check 'counts only paths created when replacing a tracked taxonomy file' \
+  grep -E '^files: 6 commit: [0-9a-f]+$' "$WORK/taxonomy-output"
 
 if (cd "$SOURCE" && bash "$HELPER" "$DEST") >"$WORK/nonempty-output" 2>"$WORK/nonempty-error"; then
   bad 'refuses a non-empty destination'
