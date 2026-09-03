@@ -4,9 +4,89 @@ All notable changes to **superpowers-v (Compound V)** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
-## [Unreleased]
+## [3.4.1] - 2026-09-03
 
-Stage verification, cycle 1 (DIRECT attended), 2026-09-03 — the first real request after 3.4.0 got no triage at all.
+The size of a code change reaches the tier. An eight-request probe of the 3.4 scorer found that any
+change under `scripts/**` was FULL by taxonomy glob regardless of size, a README typo was FULL from
+content-pattern noise on ordinary prose, and free-text localization scanned hundreds of files for
+common words. This release answers with four maintainer decisions plus one finding from stage-2 prep,
+landed as five parallel jobs (A/B/C/D/E) and reviewed against the spec's feature-level acceptance
+criteria.
+
+### Added — T3 may demote a broad-glob FULL to SCOPED (`compound-v-preeval.py`, decision 1)
+
+`match_path` now returns `broad: bool` per row (true for a glob containing `**` or ending in `/*`, no
+file-counting). When every T1 row that produced the bands is broad, no resolved path is sensitive, and
+no content override fired, the scorer runs one light T3 classify even though T1 already banded:
+`plumbing`/`user-facing-minor` with `fan_out ≤ 2` demotes the bands to `(medium, medium)` → SCOPED;
+`user-facing-major`/`unknown` leaves FULL unchanged. DIRECT for code stays unreachable. The record
+carries `t3_demotion: {from, category, applied}` beside the decision either way, so the demotion is
+auditable evidence, not a silent reclassification.
+
+### Added — SCOPED+ for small edits on sensitive paths (decision 3)
+
+A sensitive path with an `exact` localization, `fan_out ≤ 2`, and a `plumbing`/`user-facing-minor` T3
+category now resolves to `SCOPED_PIPELINE` with `flavor: "scoped_plus"` instead of a flat FULL — bands
+`(medium, medium)`, `override_fired: null`. Any other sensitive case is still FULL, and `.pem`/`.key`/
+`.env` and `.github/**` are on a hard `NEVER_DEMOTE_GLOBS` list that is never demoted. This
+repository's own taxonomy now marks the enforcement chain itself sensitive — `compound-v-scope-check.py`,
+`compound-v-integration-gate.py`, `compound-v-validate-manifest.py`, `compound-v-emit-workflow.py`,
+`compound-v-emit-preflight.py`, `compound-v-preeval.py`, and `hooks/**` — so a small edit there is
+SCOPED+ (mandatory deep review + a cross-model second opinion + the human accept), while a small edit
+to any other script (the scorecard renderer, say) is plain SCOPED. `compound-v-validate-manifest.py
+--require-triage` now rejects a `scoped_plus` manifest without a `type: review`/`tier: deep`/
+`backend: claude` job, and a new `--require-cross-model-receipt <path>` validates the receipt against
+the new `schemas/cross-model-receipt.schema.json` (`run_id`, `pre_eval_id`, and a `diff_digest` that
+must equal the sealed patch's own sha256) — `/v:dispatch` step 8 runs the Codex review and writes it for
+`scoped_plus` waves before the review gate. `cross_model_review_for` gains a `flavor` parameter
+(archaeology constraint 11): a `scoped_plus` record or manifest gets a mandatory second opinion
+regardless of the tier it maps to, so `/v:dispatch` never reads "no by default" for the one SCOPED
+shape the flavor exists to review harder; `skills/compound-v/cross-model-review.md`'s CLI example
+threads it.
+
+### Fixed — prose no longer counts as impact, and a plain word is never searched (decision 2, the README/free-text finding)
+
+The taxonomy gains an optional `content_scan_exclude` glob list (this repo sets `["**/*.md"]`): a path
+matching it skips content-pattern matching entirely, so a README mentioning "consent" or "timeout" in
+the course of documenting a consent gate no longer scores `impact: high` from the word alone — the
+path rows and `sensitive_path_list` still apply in full. On the localizer side, `extract_query_tokens`
+now keeps only identifier-shaped candidates (path-like, backticked/quoted, `snake_case`, `CamelCase`,
+dotted, CSS-ish); a request with no such token is `failed` immediately, with no repository scan. A
+named file that does not exist but whose parent directory does now resolves `confidence: "new_file"`
+(T1 runs on the directory's glob; Layer B's DIRECT predicate still requires `exact`, so a new file is
+never DIRECT). Two more defects the stage-2 request itself exposed while writing this: a literal path
+followed by sentence punctuation (`hooks/triage-prompt-nudge.sh.`) wasn't resolved — the strip set now
+drops a trailing `.`/`?`/`!` (never an inner one) — and a literal path whose file exceeds
+`MAX_FILE_READ_BYTES` used to turn the whole localization `ambiguous` (FULL by override #1 regardless
+of size); it now stays `exact` by name and adds a `content_scan_incomplete` flag that the scorer treats
+as impact-raising instead — fail-closed on impact, not on localization.
+
+### Added — a SCOPED job runs the tests that reference what changed, never the whole suite (`compound-v-fastpath-run.py`, decision 4)
+
+`resolve_test_commands` gains `tier` and `referencing` parameters: for `scope == "impacted"`, an
+unmapped path now resolves to `full_command` only when `tier` is FULL or absent; at SCOPED or DIRECT it
+resolves to `referencing_tests(repo, changed_paths, cap=5)` — test files under `tests/`, `test/`,
+`spec/`, `__tests__/`, `*_test.*`/`test_*.*`/`*.spec.*` whose first bytes mention the changed path's
+basename or module name, language-agnostic, bounded read, sorted, capped at 5 beyond the impacted set.
+None found → the floor only, with an explicit `unmapped: referencing tests found none — floor only at
+tier SCOPED` note rather than a silent full run. `resolve_from_manifest` now threads the manifest's
+`triage.tier` and computes `referencing` from the worktree; FULL is unaffected. `execution-manifest.md`
+and `agents/spec-reviewer.md` §3.3 now say what a SCOPED job owes in tests.
+
+### Added — T3 finishes headlessly, inside the hook (`compound-v-classify-request.py`, `triage-prompt-nudge.sh`, finding 50)
+
+`compound-v-classify-request.py --classify-headless` runs one nested `claude -p --model <resolved
+light> --tools ""` (Never Haiku — the model is resolved through `compound-v-resolve-model.py --backend
+claude --tier light`) under the timeout supervisor, stdin closed, capped at 15 s + 3 s grace; on any
+failure it falls back to the existing read-only Codex classify route, else `unknown`. The `hooks.json`
+registration for `UserPromptSubmit` — and only that event — rises from `timeout: 10` to `timeout: 25`
+to fit the classify's own budget; the hook only pays it on `needs_t3`, so the ordinary prompt keeps its
+~1 s path. On `needs_t3` the hook now runs the classify and re-invokes triage with `--t3-category
+<enum>` (or `unknown`, recorded as FULL) instead of degrading to a printed reminder; the reminder
+remains only for an engine failure. `/v:triage` documents the headless route as the default and the
+Task route as the fallback. (Implementation note: `--tools` is a variadic CLI flag that swallows a
+trailing positional, so the prompt must come immediately after `-p`, before `--tools ""` — the argv
+builder and its selftest pin the order.)
 
 ### Fixed — the phase advance to MERGED was a prose step; fourteen finished runs silenced the triage hook
 
