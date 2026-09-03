@@ -1,0 +1,33 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    ".claude-plugin/marketplace.json",
+    ".claude-plugin/plugin.json",
+    "CHANGELOG.md",
+    "README.md",
+    "docs/superpowers/architecture/native-mechanisms.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "e9aa8f05bd51853407ccc20197d0da715b898bbb",
+    "diff_digest": "sha256:25cccbff64179af554b15bdb30ed269da17340e67bbd21295705d8e5a66e7f33",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"e9aa8f05bd51853407ccc20197d0da715b898bbb\",\n  \"changed\": [\n    \".claude-plugin/marketplace.json\",\n    \".claude-plugin/plugin.json\",\n    \"CHANGELOG.md\",\n    \"README.md\",\n    \"docs/superpowers/architecture/native-mechanisms.md\"\n  ],\n  \"allowed\": [\n    \"CHANGELOG.md\",\n    \"README.md\",\n    \".claude-plugin/plugin.json\",\n    \".claude-plugin/marketplace.json\",\n    \"docs/superpowers/architecture/native-mechanisms.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "e9aa8f05bd51853407ccc20197d0da715b898bbb",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task F \u2014 release 3.4.1: CHANGELOG, versions, README triage paragraph, native-mechanisms row",
+  "tests": {
+    "command": "/usr/bin/python3 -B scripts/compound-v-preeval.py --selftest\nbash -c 'for s in scripts/compound-v-preeval.py scripts/compound-v-localize.py scripts/compound-v-taxonomy.py scripts/compound-v-validate-taxonomy.py scripts/compound-v-fastpath-run.py scripts/compound-v-classify-request.py scripts/compound-v-validate-manifest.py; do /usr/bin/python3 -B \"$s\" --selftest >/dev/null 2>&1 || { echo \"FAIL $s\"; exit 1; }; done; for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; /usr/bin/python3 -B -m unittest discover -s tests/v2.9-e2e -p \"test_*.py\" >/dev/null 2>&1 || { echo \"FAIL e2e\"; exit 1; }; echo all-tests-ok'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_49a1ed1e-8be-2"
+}

@@ -1,0 +1,57 @@
+{
+  "baseline_commit": "e9aa8f05bd51853407ccc20197d0da715b898bbb",
+  "diff_digest": "sha256:25cccbff64179af554b15bdb30ed269da17340e67bbd21295705d8e5a66e7f33",
+  "exit_code": 0,
+  "job_id": "release",
+  "patch_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r3/jobs/release.patch",
+  "patch_paths": [
+    ".claude-plugin/marketplace.json",
+    ".claude-plugin/plugin.json",
+    "CHANGELOG.md",
+    "README.md",
+    "docs/superpowers/architecture/native-mechanisms.md"
+  ],
+  "patch_sha256": "sha256:25cccbff64179af554b15bdb30ed269da17340e67bbd21295705d8e5a66e7f33",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"e9aa8f05bd51853407ccc20197d0da715b898bbb\",\n  \"changed\": [\n    \".claude-plugin/marketplace.json\",\n    \".claude-plugin/plugin.json\",\n    \"CHANGELOG.md\",\n    \"README.md\",\n    \"docs/superpowers/architecture/native-mechanisms.md\"\n  ],\n  \"allowed\": [\n    \"CHANGELOG.md\",\n    \"README.md\",\n    \".claude-plugin/plugin.json\",\n    \".claude-plugin/marketplace.json\",\n    \"docs/superpowers/architecture/native-mechanisms.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "e9aa8f05bd51853407ccc20197d0da715b898bbb",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      ".claude-plugin/marketplace.json",
+      ".claude-plugin/plugin.json",
+      "CHANGELOG.md",
+      "README.md",
+      "docs/superpowers/architecture/native-mechanisms.md"
+    ],
+    "checks": [
+      {
+        "checker": "/usr/bin/python3 -B scripts/compound-v-preeval.py --selftest",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'for s in scripts/compound-v-preeval.py scripts/compound-v-localize.py scripts/compound-v-taxonomy.py scripts/compound-v-validate-taxonomy.py scripts/compound-v-fastpath-run.py scripts/compound-v-classify-request.py scripts/compound-v-validate-manifest.py; do /usr/bin/python3 -B \"$s\" --selftest >/dev/null 2>&1 || { echo \"FAIL $s\"; exit 1; }; done; for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; /usr/bin/python3 -B -m unittest discover -s tests/v2.9-e2e -p \"test_*.py\" >/dev/null 2>&1 || { echo \"FAIL e2e\"; exit 1; }; echo all-tests-ok'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (7 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 0 command(s) from 5 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)",
+      "unmapped: .claude-plugin/marketplace.json, .claude-plugin/plugin.json, CHANGELOG.md, README.md, docs/superpowers/architecture/native-mechanisms.md matched no `when` glob \u2014 unknown blast radius resolves to full_command, never to nothing"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_49a1ed1e-8be-2"
+}

@@ -1,20 +1,40 @@
 {
   "run_id": "2026-09-03-v3.4.1-triage-size-r3",
-  "phase": "PARTITION_VERIFIED",
+  "phase": "DISPATCHED",
   "pre_eval_id": "2026-09-03T025952Z-land-task-c-of-the-v3-4-1-triage-size-feature-from-the-seale-b142",
   "updated_at": "2026-09-03T03:18:30Z",
   "jobs": {
     "release": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_49a1ed1e-8be-2",
+      "session_id": null,
+      "baseline": "e9aa8f05bd51853407ccc20197d0da715b898bbb",
+      "realised_commit": "e9aa8f05bd51853407ccc20197d0da715b898bbb",
+      "merged": {
+        "realised_commit": "e9aa8f05bd51853407ccc20197d0da715b898bbb",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "561dbe9c3e33a4d299334efac23dc82efdc72b00"
+      }
     },
     "spec-review": {
       "status": "pending",
       "isolation": "direct",
       "worktree": null,
       "session_id": null
+    }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "release"
+      ],
+      "merged": [
+        "release"
+      ],
+      "commit": "561dbe9c3e33a4d299334efac23dc82efdc72b00",
+      "integrated": true
     }
   }
 }
