@@ -1,6 +1,6 @@
 {
   "run_id": "2026-09-03-v3.4.5-recall-freshness-r3",
-  "phase": "DISPATCHED",
+  "phase": "MERGED",
   "pre_eval_id": "2026-09-03T100838Z-make-v-memory-search-refresh-the-fts5-index-automatically-wh-5801",
   "updated_at": "2026-09-03T11:03:28Z",
   "jobs": {
@@ -19,10 +19,18 @@
       }
     },
     "spec-review-2": {
-      "status": "pending",
+      "status": "done",
       "isolation": "direct",
-      "worktree": null,
-      "session_id": null
+      "worktree": "",
+      "session_id": null,
+      "baseline": "dfe8987e4ae20c83185565df201350cc011edcde",
+      "realised_commit": "dfe8987e4ae20c83185565df201350cc011edcde",
+      "merged": {
+        "realised_commit": "dfe8987e4ae20c83185565df201350cc011edcde",
+        "mode": "direct",
+        "integrated": true,
+        "commit": "9bd8eda86b4cded963d41fc2bc63591c1ef2fb76"
+      }
     }
   },
   "waves": {
@@ -35,6 +43,22 @@
       ],
       "commit": "27894d2557ed58d9f2111beff62309689e4a858e",
       "integrated": true
+    },
+    "2": {
+      "jobs": [
+        "spec-review-2"
+      ],
+      "merged": [
+        "spec-review-2"
+      ],
+      "commit": "9bd8eda86b4cded963d41fc2bc63591c1ef2fb76",
+      "integrated": true
     }
-  }
+  },
+  "triage_actual": {
+    "merge_pending": true,
+    "pre_eval_id": "2026-09-03T100838Z-make-v-memory-search-refresh-the-fts5-index-automatically-wh-5801",
+    "run_id": "2026-09-03-v3.4.5-recall-freshness-r3"
+  },
+  "merged_at": "2026-09-03T11:21:35Z"
 }

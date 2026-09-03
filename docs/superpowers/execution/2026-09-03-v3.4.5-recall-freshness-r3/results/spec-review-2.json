@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-03-v3.4.5-recall-freshness-review-2.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "dfe8987e4ae20c83185565df201350cc011edcde",
+    "diff_digest": "sha256:a4f895e11ba88a8e700ea3e1c432738d7a081b239e9bcd637c66d860b7a55524",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"dfe8987e4ae20c83185565df201350cc011edcde\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.5-recall-freshness-review-2.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.5-recall-freshness-review-2.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "dfe8987e4ae20c83185565df201350cc011edcde",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Review Gate \u2014 three passes against the spec and the feature acceptance criteria",
+  "tests": {
+    "command": "/usr/bin/python3 -B scripts/compound-v-memory.py --selftest\nbash -c 'for s in scripts/compound-v-*.py; do grep -q -- \"--selftest\" \"$s\" || continue; /usr/bin/python3 -B \"$s\" --selftest >/dev/null 2>&1 || { echo \"FAIL $s\"; exit 1; }; done; for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "full",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": ""
+}
