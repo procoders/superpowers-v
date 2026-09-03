@@ -79,10 +79,12 @@ nonzero, no write); a negative/non-numeric cap is rejected at --init:
     sets epic status to "blocked_needing_human")
   --record-progress-cycle --cycle-id C [--now ISO] -> {"cycle_id","no_progress_cycles",
     "replayed"} (atomic write unless replayed; idempotent by cycle_id)
-  --clear-breaker [--now ISO] [--reset-wall-clock] [--set-max-total-attempts N] -> a JSON
+  --clear-breaker [--now ISO] [--reset-wall-clock] [--set-max-total-attempts N]
+                  [--set-max-attempts-per-feature N] -> a JSON
     summary of what was cleared/re-armed (atomic write). The human's re-arm after a
     breaker trip / halt: clears the `blocked_needing_human` latch (removes any
     `breaker_trip` record, resets `no_progress_cycles` to 0, recomputes top status).
+    --set-max-attempts-per-feature N raises the per-feature retry cap (finding 151);
     --reset-wall-clock restarts `autonomy.started_at`; --set-max-total-attempts re-arms
     that cap (N or an explicit null for unbounded). Still clears the latch even if the
     (possibly re-armed) state would immediately re-trip — prints a loud stderr warning
@@ -1593,7 +1595,8 @@ _BREAKER_AXIS_HINTS = {
 }
 
 
-def clear_breaker(state, now_dt, reset_wall_clock=False, set_max_total_attempts=_UNSET):
+def clear_breaker(state, now_dt, reset_wall_clock=False, set_max_total_attempts=_UNSET,
+                  set_max_attempts_per_feature=_UNSET):
     """The human's re-arm after a breaker trip / halt (v2.10 resume support). Marathon-only.
 
     Clears the `blocked_needing_human` latch: removes any `breaker_trip` record, resets
@@ -1619,6 +1622,13 @@ def clear_breaker(state, now_dt, reset_wall_clock=False, set_max_total_attempts=
         err = _validate_cap_value("max_total_attempts", set_max_total_attempts)
         if err:
             return False, err, None
+    if set_max_attempts_per_feature is not _UNSET:
+        # The per-feature retry cap (finding 151): a feature that exhausted `attempts` is not
+        # retryable by any disposition, and until 3.4.12 no lever raised this cap short of
+        # editing the state file by hand. Same validation as --init.
+        err = _validate_cap_value("max_attempts_per_feature", set_max_attempts_per_feature)
+        if err:
+            return False, err, None
     had_trip = state.pop("breaker_trip", None) is not None
     prior_no_progress = state.get("no_progress_cycles", 0)
     state["no_progress_cycles"] = 0
@@ -1628,6 +1638,8 @@ def clear_breaker(state, now_dt, reset_wall_clock=False, set_max_total_attempts=
         autonomy["started_at"] = _now_iso(now_dt)
     if set_max_total_attempts is not _UNSET:
         autonomy["max_total_attempts"] = set_max_total_attempts
+    if set_max_attempts_per_feature is not _UNSET:
+        autonomy["max_attempts_per_feature"] = set_max_attempts_per_feature
 
     # Force off the sticky latch so _recompute_top_status can re-derive the real status
     # instead of its no-op early-return for 'blocked_needing_human'.
@@ -1641,6 +1653,8 @@ def clear_breaker(state, now_dt, reset_wall_clock=False, set_max_total_attempts=
         "wall_clock_reset": bool(reset_wall_clock),
         "max_total_attempts_set": (set_max_total_attempts
                                     if set_max_total_attempts is not _UNSET else None),
+        "max_attempts_per_feature_set": (set_max_attempts_per_feature
+                                          if set_max_attempts_per_feature is not _UNSET else None),
     }
     summary["epic_status"] = state["status"]
 
@@ -3167,6 +3181,25 @@ def _selftest():
     check("clear-breaker --set-max-total-attempts: a negative cap is rejected (same rules as --init)",
           ok3c is False and sum3c is None and err3c)
 
+    # --- --clear-breaker --set-max-attempts-per-feature: the per-feature retry cap lever (151) --
+    cb5 = build_state(cb_feats, "e", "E", stance="marathon", caps={"max_attempts_per_feature": 2})
+    cb5["features"][0]["attempts"] = 2
+    ok5, err5, sum5 = clear_breaker(cb5, T0, set_max_attempts_per_feature=3)
+    check("clear-breaker --set-max-attempts-per-feature: ok", ok5 and err5 is None)
+    check("clear-breaker --set-max-attempts-per-feature: cap updated in autonomy",
+          cb5["autonomy"]["max_attempts_per_feature"] == 3)
+    check("clear-breaker --set-max-attempts-per-feature: summary reflects the new cap",
+          sum5["max_attempts_per_feature_set"] == 3)
+    _cr5 = can_retry_info(cb5, cb5["features"][0]["id"])
+    check("clear-breaker --set-max-attempts-per-feature: an exhausted feature is retryable again",
+          _cr5["can_retry"] is True and _cr5["attempts"] == 2 and _cr5["cap"] == 3)
+    ok5b, err5b, _ = clear_breaker(cb5, T0, set_max_attempts_per_feature=-1)
+    check("clear-breaker --set-max-attempts-per-feature: a negative cap is rejected",
+          not ok5b and err5b)
+    ok5c, _, sum5c = clear_breaker(cb5, T0)
+    check("clear-breaker without the flag leaves the per-feature cap alone",
+          ok5c and cb5["autonomy"]["max_attempts_per_feature"] == 3 and sum5c["max_attempts_per_feature_set"] is None)
+
     # --- --clear-breaker: clearing WITHOUT re-arming a still-over total_attempts axis warns -
     cb4 = build_state(cb_feats, "e", "E", stance="marathon", caps={"max_total_attempts": 1})
     apply_update(cb4, "a", "running", now_dt=T0)  # attempts=1 == cap
@@ -3867,6 +3900,9 @@ def main(argv):
                         "blocked_needing_human latch")
     p.add_argument("--reset-wall-clock", action="store_true",
                    help="(with --clear-breaker) reset autonomy.started_at to now")
+    p.add_argument("--set-max-attempts-per-feature", type=_cap_arg(int), default=_UNSET,
+                   help="--clear-breaker: raise (or lower) autonomy.max_attempts_per_feature — the "
+                        "per-feature retry cap a failed feature is measured against (finding 151)")
     p.add_argument("--set-max-total-attempts", type=_cap_arg(int), default=_UNSET,
                    help="(with --clear-breaker) re-arm autonomy.max_total_attempts; N or "
                         "'null'/'none' for an explicit unbounded axis")
@@ -4057,7 +4093,8 @@ def main(argv):
         now_dt = _resolve_now(args.now)
         ok, err, summary = clear_breaker(state, now_dt,
                                          reset_wall_clock=args.reset_wall_clock,
-                                         set_max_total_attempts=args.set_max_total_attempts)
+                                         set_max_total_attempts=args.set_max_total_attempts,
+                                         set_max_attempts_per_feature=args.set_max_attempts_per_feature)
         if not ok:
             print("epic-clear-breaker error: %s" % err, file=sys.stderr)
             return 1
