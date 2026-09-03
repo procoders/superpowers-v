@@ -1,15 +1,40 @@
 {
   "run_id": "2026-09-02-v3.4-native-first-r13",
   "phase": "PARTITION_VERIFIED",
-  "updated_at": "2026-09-03T01:35:04Z",
+  "updated_at": "2026-09-03T02:55:00Z",
   "pre_eval_id": "2026-09-02T170442Z-v3-4-native-first-replace-the-epic-goal-feature-a-of-hooks-e-5664",
   "continues": "2026-09-02-v3.4-native-first-r12",
   "jobs": {
     "spec-review-10": {
-      "status": "pending",
+      "status": "done",
       "isolation": "direct",
-      "worktree": null,
-      "session_id": null
+      "worktree": "",
+      "session_id": null,
+      "baseline": "abaeb0fcde84f7819f6a3de7807403cd54713661",
+      "realised_commit": "abaeb0fcde84f7819f6a3de7807403cd54713661",
+      "merged": {
+        "realised_commit": "abaeb0fcde84f7819f6a3de7807403cd54713661",
+        "mode": "direct",
+        "integrated": true,
+        "commit": "38a43317882cf0fb4ebabc04dc6b01c9fe741683"
+      }
+    }
+  },
+  "triage_actual": {
+    "merge_pending": true,
+    "pre_eval_id": "2026-09-02T170442Z-v3-4-native-first-replace-the-epic-goal-feature-a-of-hooks-e-5664",
+    "run_id": "2026-09-02-v3.4-native-first-r13"
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "spec-review-10"
+      ],
+      "merged": [
+        "spec-review-10"
+      ],
+      "commit": "38a43317882cf0fb4ebabc04dc6b01c9fe741683",
+      "integrated": true
     }
   }
 }

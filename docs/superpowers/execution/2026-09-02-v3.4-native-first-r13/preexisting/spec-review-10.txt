@@ -1,0 +1,9 @@
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  docs/superpowers/execution/2026-09-02-v3.4-native-first-r13/.run.lock
+f0d1bc1a7020d578f402f22f29541fb072b21b000ad78d88a1c995245b8e58e6  docs/superpowers/execution/2026-09-02-v3.4-native-first-r13/lane-map.json
+a2de20b22d4d70a73789503b10f6fd1de5f14ad98fa9bce487c6979bed56b78f  docs/superpowers/execution/2026-09-02-v3.4-native-first-r13/dispatch.workflow.js
+4ffa4760567a2343e8435deb8e23fff6dc7cecc7b5d71cb8fbcffb5d4e288aaf  docs/superpowers/execution/2026-09-02-v3.4-native-first-r13/jobs/spec-review-10.baseline
+5b3eb6fd3dfa423b6ca4de96da2f2b819d697fc2b2a04a775a68af90b7a4b8e6  docs/superpowers/execution/2026-09-02-v3.4-native-first-r13/jobs/spec-review-10.prompt.md
+dfda0eec48b33851f62704799c7477abaa8aed55a26e254bbc1980dd02d427ea  docs/superpowers/execution/2026-09-02-v3.4-native-first-r13/jobs/spec-review-10.test-contract.json
+87ec5ab75618e8b3700c98167f5a96aec4af862049a5ac235fe207660ff9bf9d  docs/superpowers/execution/2026-09-02-v3.4-native-first-r13/manifest.yaml
+5a350d49ce5d440f537ef27ee94bcac6d8d6df99c2c761e66874316df16f08fd  docs/superpowers/execution/2026-09-02-v3.4-native-first-r13/preexisting/spec-review-10.txt
+fd81ee3a4b08a24b05e81ab56d77a8c7dfcdb2422bbb5c90d09faacaf553fb32  docs/superpowers/execution/2026-09-02-v3.4-native-first-r13/state.json

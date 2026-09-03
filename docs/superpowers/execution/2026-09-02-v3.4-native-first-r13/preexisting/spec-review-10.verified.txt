@@ -1,0 +1,13 @@
+docs/superpowers/execution/2026-09-02-v3.4-native-first-r13/.run.lock
+docs/superpowers/execution/2026-09-02-v3.4-native-first-r13/lane-map.json
+docs/superpowers/execution/2026-09-02-v3.4-native-first-r13/dispatch.workflow.js
+docs/superpowers/execution/2026-09-02-v3.4-native-first-r13/jobs/spec-review-10.baseline
+docs/superpowers/execution/2026-09-02-v3.4-native-first-r13/jobs/spec-review-10.prompt.md
+docs/superpowers/execution/2026-09-02-v3.4-native-first-r13/jobs/spec-review-10.test-contract.json
+docs/superpowers/execution/2026-09-02-v3.4-native-first-r13/manifest.yaml
+docs/superpowers/execution/2026-09-02-v3.4-native-first-r13/state.json
+docs/superpowers/execution/2026-09-02-v3.4-native-first-r13/preexisting/spec-review-10.txt
+docs/superpowers/execution/2026-09-02-v3.4-native-first-r13/preexisting/spec-review-10.verified.txt
+docs/superpowers/execution/2026-09-02-v3.4-native-first-r13/receipts/spec-review-10.gate.json
+docs/superpowers/execution/2026-09-02-v3.4-native-first-r13/jobs/spec-review-10.patch
+docs/superpowers/execution/2026-09-02-v3.4-native-first-r13/results/spec-review-10.json

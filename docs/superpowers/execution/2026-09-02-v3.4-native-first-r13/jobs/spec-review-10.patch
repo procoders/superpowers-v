@@ -1,0 +1,484 @@
+diff --git a/docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-10.md b/docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-10.md
+new file mode 100644
+index 0000000..e58a868
+--- /dev/null
++++ b/docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-10.md
+@@ -0,0 +1,478 @@
++# Review Gate — v3.4 native-first, TENTH pass (the orchestrator's fix for the ninth pass's six items)
++
++**Job:** `spec-review-10`, run `2026-09-02-v3.4-native-first-r13`, isolation `direct`, baseline
++`abaeb0fcde84f7819f6a3de7807403cd54713661` (pinned at lane registration, before anything moved).
++**Under review as new code:** `72e34c4` *fix(gate): a pruned job is proven by its sealed patch, never
++by pathname overlap; the by-name exemptions are one list with a table-driven test* — 7 files,
+++248 −101, written by the ORCHESTRATOR directly rather than by a dispatched wave.
++**Against:** the [ninth pass](2026-09-02-v3.4-native-first-review-9.md)'s six items and the r13
++manifest's feature-level acceptance criteria.
++**Earlier passes:** [1](2026-09-02-v3.4-native-first-review.md) (7) ·
++[2](2026-09-02-v3.4-native-first-review-2.md) (3) · [3](2026-09-02-v3.4-native-first-review-3.md) (3) ·
++[4](2026-09-02-v3.4-native-first-review-4.md) (4) · [5](2026-09-02-v3.4-native-first-review-5.md) (3) ·
++[6](2026-09-02-v3.4-native-first-review-6.md) (4) · [7](2026-09-02-v3.4-native-first-review-7.md) (2) ·
++[8](2026-09-02-v3.4-native-first-review-8.md) (6) · [9](2026-09-02-v3.4-native-first-review-9.md) (6).
++
++## VERDICT: **ISSUES** (7)
++
++| Pass | Status |
++|---|---|
++| PASS 1 SPEC | **ISSUES** — item 1 (Codex H4) is *narrowed, not closed*: pathname overlap no longer buys a pass, but an **empty** sealed patch still does. Reproduced: a forged zero-byte `jobs/<id>.patch` with a matching receipt digest returns `PASS` / `INTEGRATION PERMITTED` on a HEAD that carries none of the job's work |
++| PASS 2 QUALITY | **ISSUES** — a **CRITICAL regression of Codex C2** in the same file: `json`, `subprocess` and `tempfile` are now imported ABOVE `_harden_sys_path()`, and I imported all three from planted modules beside the script while the selftest still read 78/78. Plus a test gap, one record still wrong, and three LOW items |
++| PASS 3 INTEGRATION | **✅** — one job, no seam; build green, floor + `full_command` green on the 3.9 floor, feature AC 6/6 |
++
++The three things the fix set out to prove, it proves. I reproduced the ninth pass's decoy case and it
++now reads `unverifiable`; a real merge with its artifact reads `pass`; no artifact reads
++`unverifiable` with *"pathname overlap is not proof"*. The exemption list is one constant with a
++generated test, and I watched that test go red under a drift back to three classes. The orphan fix
++is real and its assertion discriminates — 52 failures with the mutant, 51 with the control, one
++delta, and the delta is the new check.
++
++What did not survive the review is the blast radius. The fix reached for `subprocess`, `tempfile`,
++`json` and `shutil` and put them at the top of the file, above the line that takes the script's own
++directory off `sys.path` — the exact defence Codex C1/C2 bought and the ninth pass reproduced as
++closed. That is a bigger hole than the one being patched, and it is in the enforcement authority.
++
++---
++
++## Recall
++
++`compound-v-memory.py search "native-first hooks gate sealed patch pruned job" --intent review
++--top 8` returned eight documents; the index reports itself **77 docs behind** the repo (one worse
++than the ninth pass recorded), which is worth a `/v:memory-refresh` but blocked nothing here. Two
++were load-bearing, and both are quoted rather than paraphrased:
++
++- [`specs/2026-09-01-v3.0-triage-tests-orchestration-design.md` § Goals](../specs/2026-09-01-v3.0-triage-tests-orchestration-design.md)
++  — dispatch is executed by the native runtime and the git-derived gate stays the authority. The
++  constraint that matters to finding 1 below: the authority is the backstop *because* everything
++  inside the run is writable by a constrained party.
++- The project's own recorded lesson from v3.3.6 (`git log e0709e0..66c20e0`): **never keep a compat
++  path that widens an authorization**, and **comments are not guarantees**. Finding 2 is the second
++  lesson recurring in a file that has now been corrected three passes running.
++
++`recall-check --files 'scripts/compound-v-*.py' 'hooks/*.sh' 'tests/*.sh'` → **`tighten`** (2/2
++match), citing `2026-09-02-v3.4-native-first-r3/results/deletions-fixup.json` (blocked on
++`hooks/tool-failure-ledger.sh`) and `2026-09-02-df27-full-pass/results/spec-review.json` (blocked on
++`scripts/compound-v-emit-workflow.py`). Escalation-only, and I took it: this pass adds an adversarial
++probe on every new proof path rather than reading the selftest and agreeing with it. It cannot loosen
++anything and did not.
++
++Where prose and code disagreed below, the code won and the disagreement is itself reported.
++
++---
++
++## SPEC
++
++### Scope lock
++
++One job, `direct` isolation, one write-allowed path — this file. `git status --porcelain` at the end
++of the review shows only this job's own registration bookkeeping (`state.json`, `.run.lock`,
++`jobs/spec-review-10.*`, `lane-map.json`, `preexisting/`) and nothing else. Every probe below ran in
++`/private/tmp/.../scratchpad/h4`, in throwaway git repos, never against this checkout. No mutation
++test edited a file in the repo: the two that needed a mutated source ran against a **copy** driven by
++`LANE_GUARD_SRC`, or against a monkey-patched in-memory import.
++
++### The ninth pass's six items, one row each
++
++| # | Ninth-pass item | Verdict | Evidence |
++|---|---|---|---|
++| **1** | Codex **H4** — resume-after-prune accepts a commit on pathname overlap alone | **PARTLY CLOSED — finding 1** | The decoy case is genuinely fixed; an empty artifact still buys a pass. Three reproductions below |
++| **2** | Codex **L1** — the exemption docs are internally false | **CLOSED, with one straggler (finding 5)** | `RUN_DIR_EXEMPT_BY_NAME` (`compound-v-emit-workflow.py:2505-2518`) is one constant of six classes plus the attempts family; `run_dir_owned_by_name:2525-2538` reads it; the selftest is generated from it and I watched it red. `compound-v-scope-check.py:37-43` now lists all six. **But `compound-v-scope-check.py:300-305` still says "the three self-referential run-dir files"** |
++| **3** | three shipped documents record H4/L1 as **Closed** | **PARTLY CLOSED — finding 4** | `CHANGELOG.md:143-144` and the spec at `:194-195` now say *"Closed after the ninth review pass (orchestrator fix, r13)"* — honest, and it names when. `docs/superpowers/architecture/native-mechanisms.md:24` was not touched and still says the r12 finalize mechanism *"закрывает C3/C4/H1/**H4**"* |
++| **4** | `hooks/lane-guard.sh:382-384` states the pre-H2 behaviour as current | **CLOSED** | `hooks/lane-guard.sh:386-390` now reads *"If that directory cannot be created the loader is NOT run at all… it must never import from a tree it could not shield either"*. The superseded sentence is gone, and the appended paragraph at `:405-412` no longer contradicts anything above it |
++| **5** | `_cv_bounded` kills the probe wrapper, not its process group | **CLOSED, and the assertion discriminates** | `hooks/lane-guard.sh:356-360` kills the children first (`pkill -9 -P "$_pid"`) and then the wrapper; `tests/test-lane-guard.sh:1072-1076` asserts no orphan survives. Mutation-tested below: control 51 failures, mutant 51 + the orphan check, one delta |
++| **6** | the pre-3.4.0 no-`patch_sha256` compat path is switched by a scope-exempt file | **OPEN — deliberately deferred (finding 7)** | Unchanged: `compound-v-emit-workflow.py:3930-3938` still falls back to the cache-only test and the fresh-diff merge. The *resume* half is now fail-closed (case C below), which narrows it; the *finalize* half is not |
++
++### Item 1 — the three cases the job asked for, reproduced
++
++Built with the pipeline's own entry points (`register-lane` → `gate-receipt` → `record`), never by
++hand-writing a receipt, in a throwaway repo with one job `w1` whose lane is `src/**`. The gate sealed
++`jobs/w1.patch` at `sha256:1c693645fd6b…`. Then the worktree was pruned.
++
++| Case | What I built | Authority | Exit |
++|---|---|---|---|
++| **A — the ninth pass's decoy** | a commit touching **only** `src/unrelated.txt`; `state.json` claims the job merged as it | **UNVERIFIABLE**, `integration: refused` | 1 |
++| **B — a real merge** | the sealed patch applied and committed; `state.json` names that commit | **PASS**, `integration: permitted` | 0 |
++| **C — no sealed patch** | the artifact deleted and `patch_sha256` stripped from receipt and result | **UNVERIFIABLE**, `integration: refused` | 1 |
++
++Case A's refusal, verbatim, is the inversion of what the ninth pass got:
++
++```text
++state.json claims this job merged as 07c2d1ef77fe but that is not proven
++(exists=True ancestor-of-HEAD=True sealed-patch-in-HEAD=False: src/work.txt in HEAD is
++ df967b96a579…, but the sealed patch produces c5ec2ddebdc7…). A recorded merge is a claim;
++state.json is writable by a direct worker, and a commit touching a lane is overlap, not proof.
++```
++
++Case C names the rule the fix is for: *"no sealed patch was recorded for this job (a receipt from
++before sealing), so the commit cannot be proven to carry it — **pathname overlap is not proof**"*.
++
++Case B's note is the one the selftest asserts: *"…HEAD carries exactly the blobs the sealed patch
++`sha256:1c693645fd6b` produces — proven from git and the artifact, not from state.json or a
++pathname"*.
++
++**All three hold. Then I asked the next question, and it does not.** See finding 1.
++
++### Item 2 — `RUN_DIR_EXEMPT_BY_NAME` against the docstrings and the scope-check header
++
++| Class | In the constant (`:2505-2518`) | In `run_dir_owned_by_name`'s docstring | In `compound-v-scope-check.py:37-43` |
++|---|---|---|---|
++| `state.json` | ✅ | ✅ (by reference to the constant) | ✅ |
++| `preexisting/{id}.txt` | ✅ | ✅ | ✅ |
++| `preexisting/{id}.verified.txt` | ✅ | ✅ | ✅ |
++| `receipts/{id}.gate.json` | ✅ | ✅ | ✅ |
++| `jobs/{id}.patch` | ✅ | ✅ | ✅ |
++| `results/{id}.json` | ✅ | ✅ | ✅ |
++| `results/attempts/{id}.<n>.json` | pattern, `:2519-2522` | ✅ named | ✅ named |
++
++Six classes plus the family — the seven the ninth pass counted, now stated as seven everywhere the
++fix touched. No count survives in the emitter: the docstring says *"exactly the classes in
++`RUN_DIR_EXEMPT_BY_NAME`"*, which cannot go stale because the function reads the same tuple. The
++`re.escape` on the attempts pattern survived the refactor (`:2538`), so a job id with regex
++metacharacters is still handled.
++
++**The test is generated and it discriminates.** I imported the real emitter, replaced
++`run_dir_owned_by_name` with the pre-fix three-class behaviour, and ran the generated block:
++
++```text
++CONTROL (the shipped function): 0 failures
++MUTANT (drift back to three classes):
++  FAIL: exempt by name: receipts/{id}.gate.json
++  FAIL: exempt by name: jobs/{id}.patch
++  FAIL: exempt by name: results/{id}.json
++```
++
++One straggler, in the same file the r12 wave already had to correct — finding 5.
++
++### Acceptance and over-build
++
++The job's `acceptance` is this document. The r13 feature `acceptance_criteria` are checked in PASS 3
++and are 6/6.
++
++**Over-build: nothing charged.** Every function the commit adds maps to a named item —
++`_read_json_file`, `sealed_post_image`, `head_matches_post_image` (item 1); `RUN_DIR_EXEMPT_BY_NAME`,
++`RUN_DIR_EXEMPT_ATTEMPTS` (item 2). No new flag, no new export, no speculative abstraction. The
++duplication of `sealed_post_image` between emitter and authority is justified in the docstring
++(*"the authority never imports the emitter, so the proof it computes cannot be steered by the code it
++judges"*) and I agree with it — though the two copies have now drifted, which is finding 1.
++
++---
++
++## QUALITY
++
++### Reward-hacking — checked mechanically, and the shape is right
++
++Diffed every test and selftest surface the commit touched. `tests/test-lane-guard.sh`: **+5 lines,
++−0** — one added assertion, nothing removed, nothing skipped. In `scripts/**` the selftest deltas
++are replacements, not deletions: `expect("...and says git confirmed it, not state.json")` becomes
++`expect("...and says the sealed patch proved it, not state.json or a pathname")`, which is a
++*stronger* assertion over the same fixture, and two new cases (B and C) are added beside it. No
++`.skip`, no `xit`, no commented-out `expect`, no loosened threshold, no edited scorer. Counts moved
++the right way: integration-gate `75 → 78`, emit-workflow `376 → 396`, lane-guard `271 → 272`.
++
++§2.6 confirmed-blocker integrity does not apply: this is not a marathon feature and no
++`done_with_blockers` terminal is in play.
++
++### Fabricated metrics — none
++
++The commit publishes no number. The COST paragraph, re-measured in the ninth pass, is untouched by
++this commit and I did not re-measure it; the one line that changed inside `_cv_bounded` adds a
++`pkill` inside the watchdog subshell that already existed, on the timeout path only, so the measured
++steady-state cost cannot have moved. No hardcoded baseline, no self-reported saving.
++
++### Findings
++
++Ranked. Nothing withheld for a later round.
++
++#### 1 — **HIGH · PASS 1** · item 1 is narrowed, not closed: an EMPTY sealed patch proves anything
++
++`sealed_post_image` returns an empty image for empty bytes, by design
++(`compound-v-integration-gate.py:538-539`):
++
++```python
++    if not patch_bytes:
++        return {}, None
++```
++
++and `head_matches_post_image` iterates that image (`:576-591`), so an empty dict returns
++`(True, None)` — vacuously. The authority's call site does not guard against it
++(`:951-955`):
++
++```python
++                    _image, _ierr = sealed_post_image(repo_root, _baseline, _patch_bytes)
++                    if _ierr:
++                        _why = _ierr
++                    else:
++                        _proved, _why = head_matches_post_image(repo_root, _image)
++```
++
++**The emitter's own copy of the same proof does guard against it.** `compound-v-emit-workflow.py:3921`
++is `if image:` before it will call `head_matches_post_image` at all — an empty post-image is not
++allowed to prove a merge there. The authority is the twin that dropped the guard.
++
++The three inputs the branch trusts — `receipts/<id>.gate.json`, `jobs/<id>.patch` and `state.json` —
++are **all three exempt by name** from the scope gate (item 2's own table) and writable by a
++`direct`-mode worker; that is the documented reason the authority exists. So the forgery is three
++writes. Reproduced against the merged tree, same fixture as case A:
++
++```text
++HEAD:src/work.txt is ->  base          # the job's work is NOT in HEAD
++forged: empty jobs/w1.patch, receipt digest sha256:e3b0c44298fc… , state.json merged -> a19075353712
++
++  w1   PASS   receipt=merged   gate root is gone because this job was merged as a19075353712,
++       which EXISTS, is an ancestor of HEAD, and HEAD carries exactly the blobs the sealed patch
++       sha256:e3b0c44298fc produces — proven from git and the artifact, not from state.json or a pathname
++INTEGRATION PERMITTED — 1 job(s), every one resolved to a verdict this gate derived or verified itself.
++authority rc=0
++```
++
++`e3b0c442…b855` is the SHA-256 of the empty string, so the forgery needs no computation: truncate the
++artifact, write that constant into the receipt, name any ancestor commit. The verdict line then
++asserts *"HEAD carries exactly the blobs the sealed patch produces"* about a patch that produces no
++blobs.
++
++This is the same class of defect as H4 — a proof that is satisfiable without the thing it claims to
++prove — one level in. → An image with no paths is not a proof; refuse it the way the emitter does,
++and consider requiring the image's paths to be a non-empty subset of the job's `write_allowed`.
++
++#### 2 — **CRITICAL · PASS 2** · Codex **C2** is regressed by this commit: three stdlib modules are now shadowable
++
++The commit added four imports at the top of the authority, above the hardening call
++(`compound-v-integration-gate.py:100-105`):
++
++```python
++import os
++import json        # <- added
++import subprocess  # <- added
++import tempfile    # <- added
++import shutil      # <- added
++import sys
++```
++
++`_harden_sys_path()` — the function that removes the script's own directory and the cwd from
++`sys.path` so a job with a lane over `scripts/**` cannot shadow a stdlib module — is called at
++`:152`, **forty-seven lines later**. The post-hardening block at `:155-161` still imports all four,
++but they are already in `sys.modules` by then, so those lines are now no-ops. The other two
++enforcement CLIs keep the discipline and say so: `compound-v-scope-check.py:201` carries the comment
++*"deliberately after `_harden_sys_path()`"*, and `compound-v-emit-workflow.py:54-55` imports only
++`os` and `sys` before it. Only the file this commit edited most broke the rule.
++
++Proven live, and attributed to this commit by a control against its parent. Same probe both times: a
++copy of the authority in a scratch directory with a plant beside it for each of `json`, `subprocess`,
++`tempfile`, `shutil`, `hashlib`, `argparse`, `re`, `yaml`; each plant appends a line to a marker file
++and then delegates to the real module, so the run continues:
++
++| Version | Plants imported | Selftest |
++|---|---|---|
++| `ab3cbbe` (parent) | **none** | 75/75 passed |
++| `72e34c4` (this commit) | **`json.py`, `subprocess.py`, `tempfile.py`** | **78/78 passed** |
++
++`shutil` did not announce only because the real one is already in `sys.modules` by the time line 104
++runs; the exposure is the same.
++
++What this buys an attacker is the whole authority. `subprocess` is how every `git` call in this file
++is made — `rev-parse`, `merge-base`, `read-tree`, `apply`, `ls-files`, `diff` — so a planted
++`scripts/subprocess.py` returns whatever the attacker wants git to have said, including the blob
++comparison finding 1 is about. `json` is how every receipt, result and `state.json` is read. The
++threat model is not hypothetical for this repo: a job with a lane over `scripts/**` is ordinary, and
++the CHANGELOG's own C2 entry is that a planted module beside these entry points must never be
++imported.
++
++And the run reports green while it happens. → Move the four imports back below `_harden_sys_path()`
++and keep only `os` and `sys` above it.
++
++#### 3 — **MEDIUM · PASS 2** · nothing asserts the invariant finding 2 broke
++
++The authority's shadow-module selftest (`:2219-2261`) plants exactly one module — `scripts/yaml.py` —
++which is imported *lazily, inside `load_manifest`*, long after hardening. It therefore tests that
++`_harden_sys_path()` works, and never that the import block above it stayed empty. That is why a
++four-line diff walked past a suite that grew to 78 checks in the same commit.
++
++The invariant is cheap to assert from the file's own source (no import may precede the
++`_harden_sys_path()` call except `os` and `sys`), and it is the kind of assertion this repo has
++already learned to want: v2.14.1's lesson was that a green CI can be false-green, and this is a green
++selftest that is false-green about the exact property it was written to protect. → Guard the ordering
++itself, in all three enforcement CLIs, not just the behaviour of the function.
++
++#### 4 — **MEDIUM · PASS 2** · item 3's third record was not corrected
++
++`CHANGELOG.md:143-144` and `docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md:194-195`
++are now honest, and they do the thing a record should do — they say *when* the item closed
++("Closed after the ninth review pass (orchestrator fix, r13)") rather than quietly rewriting
++history. The third document the ninth pass named was not touched.
++
++`docs/superpowers/architecture/native-mechanisms.md:24` still reads *"**С r12 (Codex round 4):** …
++finalize после коммита доказывает из git … — закрывает C3/C4/H1/**H4**"*. The ninth pass reproduced
++r12's mechanism as **not** closing H4, and r13 closed it somewhere else entirely — in the authority's
++retired-worktree branch, not in finalize. So the row now credits the wrong release *and* the wrong
++mechanism. → Correct the row to `C3/C4/H1` for r12 and add H4 against r13's authority change (and,
++if finding 1 stands, do not add it yet).
++
++#### 5 — **LOW · PASS 2** · item 2's straggler: "three" survives in `compound-v-scope-check.py`
++
++`scripts/compound-v-scope-check.py:300-305`, inside `changed_paths`:
++
++```text
++    # passed in — whose three classes (digest-bound pre-existing files,
++    # pre-existing directories by name, and the three self-referential run-dir
++    # files `state.json` / `preexisting/<job>.txt` / `preexisting/<job>.verified.txt`)
++    # are named in this module's docstring and defined in
++    # compound-v-emit-workflow.py.
++```
++
++That is the L1 sentence, in the same file whose *module docstring* the commit corrected sixty lines
++earlier, and it now disagrees with its own header. It is a comment, not a control, so nothing is
++enforced wrongly — but L1 exists because a reader of this codebase trusts these paragraphs, and
++"comments are not guarantees" is this project's own recorded lesson. The generated test cannot see
++it: a test generated from the list checks the list against the code, never against prose in another
++file. → Point the sentence at `RUN_DIR_EXEMPT_BY_NAME` instead of restating a count.
++
++#### 6 — **LOW · PASS 2** · the new orphan assertion is machine-global
++
++`tests/test-lane-guard.sh:1072-1076` asserts `pgrep -f '^sleep 30$'` finds nothing. The pattern is
++anchored but not scoped to this test's own process tree, so any unrelated `sleep 30` on the machine
++reds the suite, and two concurrent runs of this suite collide with each other. I hit exactly that
++while mutation-testing it and had to `pkill` between runs. The `sleep 1` before it is also a fixed
++delay standing in for "the watchdog has fired", which will get flaky under load rather than wrong.
++→ Scope the assertion to a descendant of the test's own shell, or give the probe's sleep a unique
++duration.
++
++#### 7 — **LOW · PASS 2** · carried forward, unchanged: the pre-3.4.0 compat path (ninth pass item 6)
++
++`compound-v-emit-workflow.py:3930-3938` still treats a receipt with no `patch_sha256` as pre-sealing
++and falls back to the cache-only merged test plus the fresh-diff merge, switched by one JSON key in a
++scope-exempt file. The orchestrator deliberately deferred this and the ninth pass reported it as a
++residual it could not exploit. **It is narrower now:** case C above shows the *resume* half is
++fail-closed on the same key, so only the finalize half retains the old behaviour. Recorded so the
++next pass does not re-derive it. → Drop the branch, or gate it on something a worker cannot write.
++
++#### Also observed, not a finding
++
++`compound-v-integration-gate.py:91` advertises `[--quiet]` in its USAGE block; `argparse` has no
++such flag (it has `--json`). Pre-existing — the commit did not touch the docstring — and it cost me
++one run to discover. Mentioned because it is one line and this file's header is otherwise the most
++carefully maintained prose in the repo.
++
++`load_scope_matcher` (`:421-473`) now has **no production caller**: this commit removed the only one
++(the `in_lane` computation the pruned branch used to do), and the sole remaining call is inside the
++selftest at `:2280`. Removing an in-process import of the matcher from the authority is a *security
++improvement* and I am not asking for it back — the subprocess re-derivation via `run_scope_check` is
++untouched and is the real check. But the CHANGELOG's H2 entry still describes "a fail-closed refusal
++(authority)" as a live guarantee, and it now describes a path production never takes. Worth a line in
++the record when finding 4 is fixed.
++
++---
++
++## INTEGRATION
++
++### Partition integrity and cross-job seams
++
++r13 dispatches one job — this review — at `direct` isolation, so there is no partition to leak and no
++seam between jobs. The composite under review is a single orchestrator commit. The seams that did
++have to agree are *within* that commit, and I checked them one by one:
++
++| Seam | Result |
++|---|---|
++| `RUN_DIR_EXEMPT_BY_NAME` (emitter) ⊥ the exemption paragraph in `compound-v-scope-check.py:37-43` | ✅ six classes plus the family, identical |
++| `RUN_DIR_EXEMPT_BY_NAME` ⊥ `compound-v-scope-check.py:300-305` | ❌ finding 5 |
++| `sealed_post_image` / `head_matches_post_image` — emitter copy ⊥ authority copy | ❌ finding 1: the authority's call site dropped the emitter's `if image:` guard |
++| the H4 narrative — code ⊥ `CHANGELOG.md` / spec ⊥ `native-mechanisms.md` | ❌ finding 4 (two of three corrected) |
++| `_harden_sys_path()` ordering — authority ⊥ emitter ⊥ scope-check | ❌ finding 2: the authority alone now imports four shadowable modules first |
++| `hooks/lane-guard.sh` H2 paragraphs — the corrected sentence ⊥ the appended one | ✅ they now say the same thing |
++
++### Build and tests — run here, on the 3.9 floor
++
++`triage.tier` is **FULL**, so `full_command` is owed unconditionally and I ran it rather than reading
++a recorded exit code. There is no worker `job_result` in this run to read: the change under review is
++the orchestrator's own commit, which carries no `tests` object, and this review job is the only entry
++in `state.json`. §3.3's evidence therefore comes from commands I executed:
++
++| Command | Result |
++|---|---|
++| `bash tests/test-epic-goal-stop.sh` (the manifest's `floor_command`) | **67 passed, 0 failed**, exit 0 |
++| `bash -c 'for t in tests/*.sh; …'` (the manifest's `full_command`) | **`all-tests-ok`**, exit 0 |
++| `/usr/bin/python3 -B scripts/compound-v-integration-gate.py --selftest` | **78/78 checks passed** |
++| `/usr/bin/python3 -B scripts/compound-v-emit-workflow.py --selftest` | **396/396 checks passed** |
++| `/usr/bin/python3 -B scripts/compound-v-scope-check.py --selftest` | **SELFTEST PASSED** |
++| `/usr/bin/python3 -B scripts/compound-v-validate-manifest.py --selftest` | **SELFTEST PASSED** |
++| `bash tests/test-lane-guard.sh` | **272 passed, 0 failed** (the new orphan check ran, not skipped) |
++| `bash tests/test-native-points.sh` | **96 passed, 0 failed** |
++| `bash tests/test-triage-landing.sh` | **150 passed, 0 failed** |
++| `shellcheck -S warning hooks/lane-guard.sh` | clean |
++| `/usr/bin/python3 -B -m json.tool hooks/hooks.json` | exit 0 |
++| `/usr/bin/python3 -B scripts/lint-frontmatter.py .` | ✅ All frontmatter clean |
++
++Read this table against finding 2: **every one of these was green while three planted stdlib modules
++were being imported by the authority in my probe.** Green here means the suite found nothing, not
++that there is nothing.
++
++### Mutation tests — do the two new assertions discriminate?
++
++Neither was taken on trust, and neither touched the repo.
++
++| Assertion | Control | Mutant | Delta |
++|---|---|---|---|
++| `tests/test-lane-guard.sh:1075` orphan check — mutant restores `( sleep …; kill -9 "$_pid" )` in a **copy** driven by `LANE_GUARD_SRC` | 221 passed, **51 failed** (all path-dependent, from running a copied hook) | 220 passed, **52 failed** | exactly one: `FAIL no orphaned probe child survives the timeout (pkill -P before kill)` |
++| the generated exemption block — mutant reverts `run_dir_owned_by_name` to the first three classes, via an in-memory monkey-patch | 0 failures | 3 failures | `receipts/{id}.gate.json`, `jobs/{id}.patch`, `results/{id}.json` |
++
++Both discriminate. The mutation was asserted to have applied before the run in each case, so a
++mutation that silently failed to apply could not pass as green.
++
++### Feature acceptance criteria (r13 manifest) — 6/6
++
++| Acceptance criterion | Satisfied by | Status |
++|---|---|---|
++| Every `tests/*.sh` and every `--selftest` green on the 3.9 floor | run here: `all-tests-ok`; 78/78, 396/396, two `SELFTEST PASSED`, 272/0, 67/0 | ✅ |
++| `grep` for `epic-watch\|headless-shim\|goal_arm\|--goal-status\|--arm-goal\|autonomy.watch\|record-watcher` across `commands skills agents hooks scripts tests .github CONVENTIONS.md` returns nothing | run here: no matches | ✅ |
++| The `UserPromptSubmit` hook writes a session-bound pre-eval record and returns the tier; a question writes nothing | `tests/test-native-points.sh` 96/0, run here | ✅ |
++| No prose instructs an agent to append `task-outcomes.jsonl` or run `compound-v-update-memory.py` | grepped `commands skills agents`: every hit is descriptive (the scorecard *reads and unions* the legacy file); no `compound-v-update-memory.py` reference at all | ✅ |
++| `hooks/hooks.json` registers no `PostToolUseFailure`; `/v:dashboard` has no serve mode | `$comment_no_failure_ledger` present and no such registration; `commands/v-dashboard.md:19` — "emits a **static snapshot** only" | ✅ |
++| Attended DIRECT documented as an ordinary commit; Phase L unattended-only; `test-triage-landing.sh` passes | 150/0, run here | ✅ |
++
++The feature-level AC are met, and they were met before this commit too — they do not reach the
++authority's proof path, which is why they cannot substitute for the findings above. **DONE is
++blocked** on findings 1 and 2.
++
++---
++
++## Verdict
++
++**ISSUES (7).** Ranked by what it costs to be wrong, not by pass order.
++
++1. **CRITICAL · REGRESSION** — this commit imports `json`, `subprocess`, `tempfile` and `shutil` at
++   `compound-v-integration-gate.py:100-105`, above `_harden_sys_path()` at `:152`, regressing Codex
++   **C2** in the enforcement authority itself. Proven: zero plants imported at the parent `ab3cbbe`,
++   three (`json`, `subprocess`, `tempfile`) imported at `72e34c4` — while the selftest read 78/78.
++   `subprocess` is every `git` call this file makes.
++2. **HIGH · SPEC_GAP** — item 1 (Codex **H4**) is narrowed, not closed. `sealed_post_image` returns
++   `({}, None)` for empty bytes (`:538-539`) and `head_matches_post_image` is vacuously true over an
++   empty image (`:576-591`), and the authority's call site (`:951-955`) omits the `if image:` guard
++   its twin in `compound-v-emit-workflow.py:3921` has. Reproduced: a zero-byte `jobs/<id>.patch`
++   plus the empty-string SHA-256 in the receipt buys `PASS` / `INTEGRATION PERMITTED` on a HEAD
++   carrying none of the job's work.
++3. **MEDIUM · TEST_GAP** — no assertion anywhere guards "nothing shadowable is imported before
++   `_harden_sys_path()`". The shadow-module selftest plants only `yaml.py`, a post-hardening lazy
++   import, which is why finding 1's four-line regression passed a suite that grew in the same commit.
++4. **MEDIUM · QUALITY** — item 3 is two-thirds closed. `CHANGELOG.md:143-144` and the spec at
++   `:194-195` now say when H4/L1 closed; `docs/superpowers/architecture/native-mechanisms.md:24`
++   still credits r12's finalize mechanism with closing **H4**, which the ninth pass reproduced as
++   false and r13 fixed elsewhere.
++5. **LOW · QUALITY** — item 2's straggler: `scripts/compound-v-scope-check.py:300-305` still says
++   "the three self-referential run-dir files", disagreeing with its own corrected module docstring
++   sixty lines above and with the six-class constant it points at.
++6. **LOW · QUALITY** — `tests/test-lane-guard.sh:1072-1076` asserts on a machine-global
++   `pgrep -f '^sleep 30$'` after a fixed `sleep 1`: any unrelated `sleep 30` reds the suite, and two
++   concurrent runs collide. Observed while mutation-testing it.
++7. **LOW · QUALITY** — carried forward unchanged: the pre-3.4.0 no-`patch_sha256` compat branch at
++   `compound-v-emit-workflow.py:3930-3938`, switched by a key in a scope-exempt file. Narrower than
++   the ninth pass found it — the resume half is now fail-closed — and still open in finalize.
++
++Five of the ninth pass's six items are closed or effectively closed, and I reproduced every closure
++first-hand rather than reading its test. The decoy case, the artifact-bound proof, the single
++exemption constant with a test that reds under drift, the corrected H2 paragraph, the orphan kill and
++its discriminating assertion — all real. Two findings block: one is the next layer of the same
++question H4 asked, and one is a defence this project already paid for, given back by an import
++statement.
++
++*Scope lock: respected — one write-allowed path, and `git status --porcelain` shows only this job's
++own registration bookkeeping. Every probe ran in throwaway repositories outside the checkout.*
