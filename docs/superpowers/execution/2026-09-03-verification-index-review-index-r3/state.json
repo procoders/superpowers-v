@@ -1,15 +1,23 @@
 {
   "run_id": "2026-09-03-verification-index-review-index-r3",
-  "phase": "PARTITION_VERIFIED",
+  "phase": "DISPATCHED",
   "pre_eval_id": "2026-09-03T080658Z-build-epic-feature-review-index-docs-superpowers-execution-e-0e49",
   "epic_id": "2026-09-03-verification-index",
   "updated_at": "2026-09-03T08:40:00Z",
   "jobs": {
     "index-fix": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_2c2ae049-51e-1",
+      "session_id": null,
+      "baseline": "f89b74c5a937eab52efc7e3b80553ffc2ceeceb0",
+      "realised_commit": "f89b74c5a937eab52efc7e3b80553ffc2ceeceb0",
+      "merged": {
+        "realised_commit": "f89b74c5a937eab52efc7e3b80553ffc2ceeceb0",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "505b936bcc948f3c405390f23a401c4e9fbd1a35"
+      }
     },
     "index-output": {
       "status": "pending",
@@ -22,6 +30,18 @@
       "isolation": "direct",
       "worktree": null,
       "session_id": null
+    }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "index-fix"
+      ],
+      "merged": [
+        "index-fix"
+      ],
+      "commit": "505b936bcc948f3c405390f23a401c4e9fbd1a35",
+      "integrated": true
     }
   }
 }

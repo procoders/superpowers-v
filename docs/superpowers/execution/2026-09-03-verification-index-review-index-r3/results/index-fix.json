@@ -1,0 +1,30 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "scripts/compound-v-dogfood-index.sh",
+    "tests/test-dogfood-index.sh"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "f89b74c5a937eab52efc7e3b80553ffc2ceeceb0",
+    "diff_digest": "sha256:68cde1331b107c40d53719b855f9f201b69e75942f32ba1344b07e0e3f0678f2",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"f89b74c5a937eab52efc7e3b80553ffc2ceeceb0\",\n  \"changed\": [\n    \"scripts/compound-v-dogfood-index.sh\",\n    \"tests/test-dogfood-index.sh\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-dogfood-index.sh\",\n    \"tests/test-dogfood-index.sh\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "f89b74c5a937eab52efc7e3b80553ffc2ceeceb0",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task A' \u2014 verdict from the matched token, and three fixture gaps (review-1 issues 1, 3, 4, 5)",
+  "tests": {
+    "command": "bash tests/test-engine-c-contract.sh\nbash -c '[ -f scripts/compound-v-dogfood-index.sh ] || exit 0; shellcheck scripts/compound-v-dogfood-index.sh'\nbash -c '[ -f tests/test-dogfood-index.sh ] || exit 0; bash tests/test-dogfood-index.sh'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 3
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_2c2ae049-51e-1"
+}
