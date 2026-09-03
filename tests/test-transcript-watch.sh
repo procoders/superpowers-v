@@ -482,6 +482,64 @@ check "...and reports the same roster it does under --transcripts" \
       "$(grep -qE '^a1111111 +a +returned' "$OUT9" && echo 1 || echo 0)"
 
 # --------------------------------------------------------------------------- #
+# 13. THE FALSE-POSITIVE CLASSES OF REVIEW 2 — a `>=` comparison read as a
+#     redirect, a heredoc BODY read as command text, and a read-only command's
+#     pasted traceback read as this agent's own failure.
+#
+#     Against run r2's own transcripts the shipped detectors reported writes to
+#     a file called `=`, writes to paths that were only QUOTED inside heredoc
+#     bodies, and an error for every `sed`/`cat` that happened to print a
+#     traceback out of a file it was reading. Exactly one signal is expected
+#     from this whole fixture: the last heredoc's OWN target, which really is a
+#     repository path outside job `a`'s lane.
+# --------------------------------------------------------------------------- #
+WF6="$SESSION/subagents/workflows/wf_review2"
+mkdir -p "$WF6"
+A8=a888888888888888
+REG8="$PY -B $EMIT register-lane --run-dir $RUN --job-id a --cwd $WTA --repo-root $SANDBOX --isolation worktree"
+
+cat >"$WF6/agent-$A8.jsonl" <<JSONL
+{"type":"user","agentId":"$A8","timestamp":"$NOW","message":{"role":"user","content":"Implementer for job a of $RUN."}}
+{"type":"assistant","agentId":"$A8","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"s1","name":"Bash","input":{"command":"$REG8"}}]}}
+{"type":"user","agentId":"$A8","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"s1","is_error":false,"content":"{\"registered\": \"a\"}"}]}}
+{"type":"assistant","agentId":"$A8","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"s2","name":"Bash","input":{"command":"true >= 1 && echo ok"}}]}}
+{"type":"user","agentId":"$A8","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"s2","content":"ok"}]}}
+{"type":"assistant","agentId":"$A8","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"s3","name":"Bash","input":{"command":"cat > $T/scratch/gen.py <<PYEOF\nassert s.count(old) >= 1\nprint('a > b', '$SANDBOX/README.md')\nopen('$SANDBOX/docs/nope.md', 'w')\nPYEOF"}}]}}
+{"type":"user","agentId":"$A8","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"s3","content":""}]}}
+{"type":"assistant","agentId":"$A8","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"s4","name":"Bash","input":{"command":"cat > $WTA/src/gen2.py <<'PYEOF'\nx = 1 >= 0\nPYEOF"}}]}}
+{"type":"user","agentId":"$A8","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"s4","content":""}]}}
+{"type":"assistant","agentId":"$A8","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"s5","name":"Bash","input":{"command":"sed -n 1,40p $SANDBOX/src/broken.py"}}]}}
+{"type":"user","agentId":"$A8","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"s5","content":"Traceback (most recent call last):\n  File \"broken.py\", line 1\nValueError: quoted, not raised here"}]}}
+{"type":"assistant","agentId":"$A8","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"s6","name":"Bash","input":{"command":"grep -n BLOCKED $SANDBOX/docs/gate.md | head -5"}}]}}
+{"type":"user","agentId":"$A8","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"s6","content":"BLOCKED means the gate refused the job\ncommand not found is one of its reasons"}]}}
+{"type":"assistant","agentId":"$A8","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"s7","name":"Bash","input":{"command":"cat > $SANDBOX/README.md <<PYEOF\nassert x >= 1\nPYEOF"}}]}}
+{"type":"user","agentId":"$A8","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"s7","content":""}]}}
+JSONL
+
+cat >"$WF6/journal.jsonl" <<JSONL
+{"type":"started","key":"k8","agentId":"$A8"}
+{"type":"result","key":"k8","agentId":"$A8"}
+JSONL
+
+OUT10="$T/out10.txt"
+"$PY" -B "$WATCH" --run-dir "$RUN" --transcripts "$SESSION" --wf wf_review2 --once \
+      --state "$T/state10.json" >"$OUT10" 2>&1
+check "a >= comparison is not a redirect into a file called '='" \
+      "$(grep -qE 'out-of-lane +=? *$' "$OUT10" && echo 0 || echo 1)"
+check "a heredoc BODY names no write target — not the paths it quotes" \
+      "$(grep -qE 'nope\.md|gen\.py' "$OUT10" && echo 0 || echo 1)"
+check "...and the heredoc's own target is silent when it is IN lane (src/gen2.py)" \
+      "$(grep -q 'src/gen2.py' "$OUT10" && echo 0 || echo 1)"
+check "...and fires exactly once when it is a repository path OUT of lane" \
+      "$([ "$(grep -cE 'out-of-lane.*README\.md' "$OUT10")" = 1 ] && echo 1 || echo 0)"
+check "a sed that PASTES a traceback is not this agent's error" \
+      "$(grep -qE ' error .*Traceback' "$OUT10" && echo 0 || echo 1)"
+check "...nor is a grep|head that prints BLOCKED and 'command not found'" \
+      "$(grep -qE ' error ' "$OUT10" && echo 0 || echo 1)"
+check "so review 2's fixture emits EXACTLY the one real out-of-lane signal" \
+      "$([ "$(grep -cE ' (out-of-lane|wrong-cwd|error|denied|stall) ' "$OUT10")" = 1 ] && echo 1 || echo 0)"
+
+# --------------------------------------------------------------------------- #
 # 12. The script's own --selftest, run through this suite so CI cannot lose it.
 # --------------------------------------------------------------------------- #
 "$PY" -B "$WATCH" --selftest >"$T/selftest.txt" 2>&1
