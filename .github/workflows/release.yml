@@ -92,6 +92,25 @@ jobs:
           print("Extracted %d chars of notes." % len(body))
           PY
 
+      # A release must not publish on a red validate. Both workflows start on the
+      # same push; on 2026-09-03 v3.4.0 was published while "Validate Plugin" was
+      # failing on the very same commit (the anti-ruflo gate), and nothing connected
+      # the two. Wait, bounded, for that run on THIS sha and require success.
+      - name: Require "Validate Plugin" green on this commit
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for i in $(seq 1 40); do
+            line=$(gh run list --workflow validate.yml --commit "${{ github.sha }}"                      --json status,conclusion --jq '.[0] | "\(.status) \(.conclusion // "")"' 2>/dev/null || true)
+            case "$line" in
+              "completed success") echo "Validate Plugin: success"; exit 0 ;;
+              completed*) echo "❌ Validate Plugin concluded '$line' on ${{ github.sha }} — not releasing"; exit 1 ;;
+              *) echo "waiting for Validate Plugin ($line)…"; sleep 30 ;;
+            esac
+          done
+          echo "❌ Validate Plugin did not finish in time — not releasing"; exit 1
+
       - name: Create the release
         if: steps.check.outputs.exists == 'false'
         env:
