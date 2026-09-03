@@ -1,0 +1,26 @@
+{
+  "run_id": "2026-09-03-v3.4.3-codex-sandbox-checkout-r2",
+  "phase": "PARTITION_VERIFIED",
+  "pre_eval_id": "2026-09-03T062154Z-implement-v3-4-3-per-docs-superpowers-specs-2026-09-03-v3-4-96ff",
+  "updated_at": "2026-09-03T06:41:37Z",
+  "jobs": {
+    "sandbox-helper": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "docs-note": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "spec-review": {
+      "status": "pending",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null
+    }
+  }
+}
