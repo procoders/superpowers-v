@@ -19,10 +19,18 @@
       }
     },
     "readme": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_423b5480-cc1-11",
+      "session_id": null,
+      "baseline": "04adc3d20c0cf25714c2eb1fb50dac9a67c39368",
+      "realised_commit": "04adc3d20c0cf25714c2eb1fb50dac9a67c39368",
+      "merged": {
+        "realised_commit": "04adc3d20c0cf25714c2eb1fb50dac9a67c39368",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "0e62a339497c62d8be4542904ae641c5b67153d0"
+      }
     },
     "routing-svg": {
       "status": "done",
@@ -72,6 +80,16 @@
         "init-baseref"
       ],
       "commit": "f63f21552eb00a9d3e6c23513c5f1a3f6aa5e473",
+      "integrated": true
+    },
+    "2": {
+      "jobs": [
+        "readme"
+      ],
+      "merged": [
+        "readme"
+      ],
+      "commit": "0e62a339497c62d8be4542904ae641c5b67153d0",
       "integrated": true
     }
   }

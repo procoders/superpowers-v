@@ -1,0 +1,246 @@
+diff --git a/README.md b/README.md
+index 03f90fd..86602a2 100644
+--- a/README.md
++++ b/README.md
+@@ -2,151 +2,129 @@
+ 
+ **Compound V** — a multi-model coding sidekick for [Superpowers](https://github.com/obra/superpowers), running on Claude Code.
+ 
+-> *"You don't tell people you're injecting them with Compound V. You just hand them the spec and watch them ship."*
+-
+ ![Compound V — a sidekick to Superpowers](assets/compound-v-cover.png)
+ 
+-You describe a feature. Claude plans it, splits it into non-overlapping pieces, and hands the implementation out across **Claude / Codex / Antigravity / Cursor** — each working in its own isolated sandbox. Then it reviews the result (including a second opinion from a different model) before merging. You don't press a "start" button — it kicks in on its own as you work.
+-
+----
+-
++You describe a feature. Claude sizes the request, plans it, splits it into non-overlapping pieces, and hands each piece to a worker in its own isolated worktree.
++Every write is checked against the files that worker was allowed to touch, and a review gates "done". There is no start button — a hook sizes each request as you work.
+ 
+ ## Requirements
+-
+-**Claude Code ≥ 2.1.219.** Compound V 3.0 hands execution to the native Workflow runtime and to native hook events (`PreToolUse`, `UserPromptSubmit`, `PostCompact`, `Stop`); older versions lack them.
+-
+-**On measurement, stated up front.** No speed or cost claim ships with 3.0. The observation that motivated proportionate tests — a small change running a full suite — was not reproduced during the design recon, so the test-scoping defaults are **principle-derived, not measured**. The scoped floor is early feedback and does **not** restore what a full suite guarantees; the merge-blocking CI run does, and it always runs. The pipeline records selected-test counts and measured-only durations so a future release can speak from real data instead.
+-
+-**One ambient cost worth knowing before you install.** The lane-enforcement hook runs on every `Write`/`Edit`/`Bash` tool call in every session, and its cost depends on the machine — **it is a small table, not a single number** — because it first has to find an interpreter that can read a manifest. Re-measured 2026-09-03: **~149 ms** on the ordinary machine — the one whose first candidate interpreter can `import yaml`, which on macOS is `/usr/bin/python3`, and which pays exactly **one** viability probe — rising to **~200 ms** where **no** candidate has PyYAML and the hook pays **three** probes (two `import yaml`, one `-c pass`). A machine whose *second* candidate has PyYAML pays two probes, about **175 ms**; that one is derived from the measured parts, not timed end to end, and is flagged as such rather than published as if it had been. All three are the **unresolved** path — the ordinary human session, and the only path a session that never dispatches will ever take. Once a job resolves and the manifest is parsed the figure is **~240 ms**, whether that write is then allowed or denied (the verdict has never been the expensive part; resolution and the manifest parse are). Method: mean of 50 invocations per cell, on macOS 26.5.2 / arm64 with `/usr/bin/python3` 3.9.6, against a sandbox project carrying copies of this repository's 48 run directories, with the bare-interpreter floor — **26 ms** — taken in the same round; **two** rounds qualified and both are published above. Take the floor with every round you take, **discard any round whose floor is above ~31 ms**, and measure the unresolved path somewhere actually unresolved — a checkout that a live run's lane map claims measures the *resolved* path and calls it unresolved, which is exactly how the first attempt at this round produced a 247 ms "unresolved" figure. Reproduce it from a checkout root — the total divided by 50:
+-
+-```bash
+-P=$(printf '{"hook_event_name":"PreToolUse","tool_name":"Write","session_id":"s","cwd":"%s","tool_input":{"file_path":"%s/README.md"}}' "$PWD" "$PWD")
+-time (for i in $(seq 1 50); do printf '%s' "$P" | ./hooks/lane-guard.sh >/dev/null; done)
+-```
+-
+-The resolved figure needs a lane map, so drive the same loop against the sandbox `tests/test-lane-guard.sh` builds. Set `CV_LANE_GUARD_LOG` and read it back to confirm which path you actually hit: the hook names the interpreter it chose on **every** path, but **once per session**, not once per call — measured over 50 invocations in one session, that is **1** interpreter line instead of 50 (100 log lines → 51 on the unresolved path; 50 → 1 on a resolved in-lane allow). A repeat is suppressed by a marker kept beside the log, so if the line is missing from the run you are timing, look earlier in the same log rather than concluding the ladder did not run; a *change* — a different interpreter, a candidate newly passed over — is a different message and reappears. An unresolved call adds `ALLOW (job unresolved)`, while a resolved in-lane allow says nothing more. A checkout with a **live** run in it does not take the unresolved path at all — if that run's lane map claims the checkout for a job, the recipe above measures the resolved path, and the log is how you find that out instead of publishing it.
+-
+-**On the 167/245 ms this file published on 2026-09-02:** superseded as noisy, not withdrawn as wrong. Today's two rounds put the same cells at ~149 ms and ~240 ms by the same protocol, with no code in between that touches either path — that gap is round-to-round variation on a shared machine, which is why the method and the floor are published alongside the number. **The 47–81 ms from 2026-09-01 stays withdrawn**, and so does the 63 ms before it: two defences landed after that measurement and neither was cheap. The `PYTHONPYCACHEPREFIX` redirection that stops a planted `.pyc` being executed costs about **59 ms per call** — a redirected bytecode-cache lookup that `PYTHONDONTWRITEBYTECODE` forbids populating recompiles every stdlib module from source, every time (31 ms plain → 90 ms with both, measured directly). The interpreter **viability probe** costs about **25 ms** marginal and is what guarantees the guard never picks an interpreter that cannot run. Both are worth paying; neither was free, and this file once said they were. **Every external process the hook starts is bounded**: 0.9 s per interpreter probe (against a ~25 ms ordinary probe — the bound is there for the interpreter that *hangs*), 5 s for a delegated manifest parse, and `timeout: 10` on the registration in `hooks/hooks.json`, because a budget a hook applies to itself is not a budget on the hook. A probe that runs out of budget stops the ladder, says so once, and allows. And when the hook cannot create the private bytecode-cache directory that redirection needs, it now imports **nothing** — it used to carry on without the redirection, which dropped the defence on precisely the machine whose temp dir is full, unwritable or hostile. It is what turns lane enforcement from detection-after-the-fact into a refusal before the write.
+-
+-## 🎮 New here? Learn it as a game → **[Compound V Academy](https://amiainative.dev/compound-v)**
+-
+-The fastest way to *get* what this plugin does. Three gamified episodes — **Developer · Product Owner · Universal Creator** — walk you through the whole pipeline (onboarding → the three scouts → manifest + dispatch → the review gates), with the squad — **The Trench**, **Bootcher**, **Monsieur Contexte**, **Motherboard**, **Git Noir**, **A-Express** — as your guides. 👉 **<https://amiainative.dev/compound-v>**
+-
+-[![Compound V Academy — meet the squad](assets/compound-v-squad.png)](https://amiainative.dev/compound-v)
+-
+-📄 Prefer a quick reference? The **[Compound V Cheatsheet](https://amiainative.dev/compound-v/cheatsheet)** puts the whole 8-phase pipeline, commands, skill triggers, memory, and backend-routing rules on one page.
+-
+----
+-
+-## Main features
+-
+-- **Multi-model orchestration** — Claude builds the plan and routes implementation jobs to the right backend (**Claude / Codex / Antigravity / Cursor**). Each worker runs isolated under a scope check, so nothing writes outside the files it was given.
+-
+-- **Cross-model (Codex) review** — a second opinion on the plan **and** the code. Different models have different blind spots, so it's very good at catching planning gaps and mistakes. Advisory — the orchestrator makes the final call.
+-
+-- **Epic mode** — feed it a whole PRD with many tasks and it builds feature by feature, in dependency order, on one branch. By default it checkpoints after each feature so you can review (raise the budget to let it run longer).
+-
+-- **Epic autonomy** (v3.4, native) — when an epic's stance is `marathon`, `/v:epic` offers, never arms silently, a native way to keep going past a checkpoint: `/loop 30m /v:epic <epic-id>` to keep resuming inside this session, or a `/schedule` routine for the same command in the cloud, plus `/goal` (or a plain `/goal <condition>` typed by hand) to let the harness's own evaluator decide when the epic is met. `/v:epic` is re-entrant, so every firing is a plain resume, and it stops its own loop or scheduled entry once the epic is terminal. Honesty boundary: **`/loop` shares the session's fate** — paused while the session is busy or gone, and its interval mode expires after 7 days like any recurring `CronCreate` job; **`/schedule` is the actual machine-off path**, and it runs under its own cloud-routine auth, not this session's.
+-
+-- **V-memory** — project memory that builds up as you work: decisions made, bugs fixed, things that failed. It surfaces the relevant bits when you plan or review.
+-
+-- **Co-change advisory** (v2.17) — before dispatch, the partition reviewer asks this repo's own git history which files almost always move together, and warns when a plan owns one but forgot its usual partner. Pure `git log`, no model involved. It is **advisory**: it only appends a warning, never changes the PASS/FAIL verdict, and adds no new gate. On a short or squash-merged history it will legitimately find nothing — and it says "could not tell" rather than "all clear".
+-
+-- **Research-grounded brainstorming** 🧪 — before a brainstorm on an unfamiliar topic, a gated, bounded recon pass (off by one config key) writes an evidence doc the brainstorm reads first. And when the brainstorm has 3+ *independent* clarifying questions, it can batch them into one screen — the Visual Companion form if you've accepted it, else a structured question, else the usual one-at-a-time (dependent questions always stay sequential). Both are description-driven guidance, not hook-enforced.
+-
+----
+-
+-## How it routes the work
+-
+-Compound V never lets a worker pick its own model. A **deterministic router** looks at each job — its type, the files it may touch, whether it is a review — and assigns the mode from code, not from a vibe. Two forks, three worker modes:
+-
+-![How Compound V decides who does the work](docs/routing.svg)
+-
+-- **Pre-Evaluation** splits the request first: trivially simple and low-impact takes a cheap **fast path** (one worker); anything real enters the full pipeline.
+-- In the pipeline an **orchestrator** (a strong model) plans and splits the work, then the **router** assigns each job a mode: **full Opus** for risky / review / security / cross-cutting work, **Sonnet solo** for routine mechanical jobs, and, *opt-in*, **a cheaper executor plus an on-demand read-only advisor** for medium, self-contained jobs. When advisor mode is enabled on an eligible job, that job's executor MAY, on a genuinely hard sub-decision, consult a read-only advisor of a different brand (Codex if you have it, otherwise Opus) for a second opinion, then decide and do the writing itself. The advisor is read-only by contract: it advises, it never writes files. Each consult is logged, and the count is recorded honestly on the job (it is derived by counting the consult log, not self-reported). It is a subagent pattern, no API key — and it is wired only on the residual `Task` dispatch path: Engine C, the default engine since 3.0, emits no consult step, so on a default run the advisor does not fire.
+-- Everything runs in parallel, every write is checked against a git-derived scope gate, and an Opus reviewer gates "done".
+-
+----
++- **Claude Code ≥ 2.1.219.** Compound V runs on the native Workflow runtime and on native hook events (`PreToolUse`, `UserPromptSubmit`, `PostCompact`, `Stop`). Older versions lack them.
++- **One ambient cost.** The lane-guard hook runs on every `Write`/`Edit`/`Bash` call and takes roughly 150–240 ms, depending on the machine. The numbers and the method are in [AGENTS.md](AGENTS.md).
++- **One project setting.** `worktree.baseRef` has to be `head` for jobs that depend on each other. It is a native Claude Code setting, not a Compound V one — see Install.
+ 
+ ## Install
+-
+-In Claude Code:
+-
+ ```
+ /plugin marketplace add https://github.com/procoders/superpowers-v
+ /plugin install superpowers-v@procoders
+ ```
+ 
+-**Want the other models too?** Install and log into their CLIs first — Compound V picks them up automatically. All optional; without them it just runs Claude-only.
++**Other model CLIs are optional.** Install and log into them and Compound V picks them up; without them it runs Claude-only.
+ 
+-- **Codex:** `npm i -g @openai/codex` → `codex login`
++- **Codex** (≥ 0.144.6, for the gpt-5.6 family): `npm i -g @openai/codex` → `codex login`
+ - **Cursor:** `curl https://cursor.com/install -fsS | bash` → `cursor-agent login`
+ - **Antigravity:** install the `agy` CLI → log in
+ 
+-_Recommended combo:_ **Claude Max $200 + Codex Max $100**.
+-
+-_(Optional)_ Context7 MCP makes the library-docs check sharper: `/plugin install context7@claude-plugins-official`.
++Then the one setting. `worktree.baseRef` is a **native Claude Code project setting** in the project's `.claude/settings.json`, with two values: `fresh` (the default) and `head`. It is
++project-wide: `head` branches every worktree from the current `HEAD`, your own `--worktree` sessions included. A job that depends on another needs it, or its worktree cannot see that job.
+ 
+----
++```json
++{ "worktree": { "baseRef": "head" } }
++```
+ 
+-## How to use it — two commands
++_(Optional)_ Context7 MCP sharpens the library-docs check: `/plugin install context7@claude-plugins-official`.
+ 
+-**1. Set up once:**
++## How to use it
++Run this once — it detects which model CLIs you have, saves the config, and offers the `baseRef` setting above.
+ 
+ ```
+ /v:init
+ ```
+ 
+-It detects which model CLIs you have, picks a routing setup, and saves the config.
++**Then just work.** Describe the feature, or start brainstorming as usual. A `UserPromptSubmit` hook scores the first change request of each session
++and sizes it as DIRECT, SCOPED or FULL. There is no command to launch the orchestration; it is automatic.
++
++## 🎮 New here? Learn it as a game → **[Compound V Academy](https://amiainative.dev/compound-v)**
++Three gamified episodes walk you through the whole pipeline, and the **[cheatsheet](https://amiainative.dev/compound-v/cheatsheet)** puts commands, triggers, memory and routing on one page.
+ 
+-**2. Then just work.** Describe the feature or start brainstorming as usual — Compound V takes over planning and execution by itself. On unfamiliar topics it first *offers* a quick pre-brainstorm research pass (gated, bounded, off by one config key) and saves the findings as a recon doc in `docs/superpowers/recon/` for the brainstorm — and the later pre-flights — to read. **There is no command to "launch" the orchestration; it's automatic.**
++## How it routes the work
++![How Compound V decides who does the work](docs/routing.svg)
+ 
+-That's it.
++- **DIRECT** — a trivial, unambiguous edit: one worker edits, runs the test floor, commits. No model routing happens: it is an ordinary commit by whichever model is already in the session.
++- **SCOPED** — a bounded change: only the tests that reference what changed run, not the whole suite. The Opus reviewer still gates done.
++- **SCOPED+** — a small edit on a sensitive path: SCOPED plus a mandatory deep review and a cross-model (Codex) second opinion, with you accepting.
++- **FULL** — anything real: recon, three pre-flights (code archaeology, domain expert, library check), a plan, a manifest, parallel dispatch in isolated worktrees, a three-pass review.
+ 
+-### Want to drive it by hand?
++**Who does what.** Opus plans, judges and reviews. Sonnet runs junior slices and the two scanning agents. Codex is an opt-in worker (kernel-sandboxed) and the second opinion; Antigravity
++and Cursor are opt-in, lower-trust workers. Every write is checked against a git-derived scope gate — an out-of-lane write is blocked before it merges — and an Opus review gates "done".
+ 
++## Main features
++- **Multi-model orchestration.** Codex is dogfooded in this repository. Antigravity and Cursor have their CLI invocation verified live but have never been dispatched here.
++  opencode and Devin are experimental: the adapters exist, execution is unverified.
++- **Cross-model review.** A second opinion from another model family, on the plan and on the code. Different models have different blind spots. Advisory — the orchestrator decides.
++- **Epic mode.** Feed it a whole PRD and it builds feature by feature, in dependency order, on one branch. It checkpoints after each feature unless you raise the budget.
++- **Epic autonomy.** On the `marathon` stance, `/v:epic` offers — never arms silently — a native way to keep going: `/loop` to keep resuming in this session, or `/schedule` in the cloud.
++- **V-memory.** Project memory over `docs/superpowers/**` — decisions, bugs, dead ends. Local, offline, and fresh by construction: a search refreshes its own index before it queries.
++- **Co-change advisory.** When the partition reviewer runs, it asks git history which files almost always move together, and warns when a plan forgot one. It never changes a verdict.
++- **Research-grounded brainstorming** 🧪 — on an unfamiliar topic, a gated recon pass writes an evidence doc the brainstorm reads first, and independent questions batch into one screen.
++
++## Commands
+ | Command | What it does |
+ |---|---|
+-| `/v:epic <PRD or brief>` | Build a whole multi-feature PRD, feature by feature |
+-| `/v:remember "<query>"` | Search the project memory |
+-| `/v:status` · `/v:resume <id>` | Check progress / continue after a crash |
+-| `/v:dashboard` (v2.15, native in 3.4) | `emit` a static HTML snapshot of past runs/epics — a live run is watched natively, with `/workflows` and `/tasks` |
+-| `/v:preferences` (v2.16) | Your own dated past-brainstorm reasoning, as **falsifiable memory + a challenge** — `stats` / `distill` / `show` / `purge`. `marked` mode badges the option matching your history (never pre-selects it); raw log stays local, the scrubbed distillate is `/v:remember`-able |
+-| `/v:models` | Refresh which model each backend uses |
++| `/v:init` | Set up the project: detect backends, pick a routing stance, save the config |
++| `/v:onboard` | Build a citation-verified knowledge base of this repo, behind an approval gate |
++| `/v:epic <PRD>` | Build a multi-feature PRD feature by feature, in dependency order, on one branch |
++| `/v:dispatch <plan\|manifest\|run-id>` | Run the pipeline: partition review → parallel dispatch → scope gate → review |
++| `/v:orchestrate <plan>` | Materialize the manifest from a plan, without dispatching it |
++| `/v:triage` | Size one change request and write the triage record: DIRECT, SCOPED or FULL |
++| `/v:review-plan <plan>` | Cross-model (Codex) adversarial review of a plan before dispatch |
++| `/v:pr-review [url\|number]` | Two-axis review of a PR, an MR, or a local branch. Never edits code |
++| `/v:adr <decision>` | Record one architecture decision as a thin, human-confirmed ADR |
++| `/v:remember "<query>"` | Search the project memory for what this repo already learned |
++| `/v:memory-refresh` | Re-index the memory; `--bootstrap` adds the optional semantic lane |
++| `/v:status [run-id]` | Show a run's phase and per-job table; `--live` watches a running dispatch |
++| `/v:resume <run-id>` | Reconcile against git and re-dispatch only the jobs that did not finish |
++| `/v:dashboard` | Emit a static HTML snapshot of past runs and epics |
++| `/v:preferences` | Your own past reasoning, as falsifiable memory plus a challenge |
++| `/v:models` | Refresh which concrete model each backend tier uses |
++
++## What runs in every session
++| Event | What it does |
++|---|---|
++| `SessionStart` | Prints the resume banner; refreshes the memory index in the background |
++| `UserPromptSubmit` | Scores the first change request of the session and writes the triage record |
++| `PreToolUse` (Write/Edit/Bash) | The lane guard: refuses a write outside the job's declared lane |
++| `PreToolUse` (Skill) | Reminds a brainstorm to run its recon pass first. Reminder only |
++| `PostToolUse` (Write) | Nudges when a plan is saved; refreshes the memory index |
++| `PreCompact` / `PostCompact` | Snapshots the run state before a compaction, and reports it after |
++| `Stop` | The triage gate: holds the turn open when code changed and no triage record covers it |
+ 
+----
++The triage gate is on by default. It is exempt on `docs/superpowers/**`, fires at most once per session, and fails open. To turn it off, put
++`{ "enforcement": { "triage_gate": false } }` in `.claude/compound-v.json` — an explicit `false` is the only value that does it.
+ 
+ ## Good to know
+-
+-- **Antigravity and Cursor are lower-trust** (no kernel sandbox). The scope check catches out-of-bounds writes *after the fact* but can't *prevent* them. For anything sensitive or untrusted, prefer **Codex** — it runs in a real workspace sandbox.
+-- **Cursor on a Free plan** can only use its `auto` model (named models are paid).
+-- **Epic mode is bounded by default** — it stops after each feature for a human checkpoint. It is *not* a fire-and-forget overnight build unless you raise the budget.
+-- **Marathon mode (opt-in) is still not fire-and-forget-overnight.** It removes the per-feature checkpoint and adds an arbiter panel + blocker ledger + global breakers so it can run further unattended in one sitting — but on its own it does not self-revive after a hard death. If the session dies, you re-run `/v:epic <epic-id>` yourself; it resumes from the last committed state.
+-- **The triage gate is ON by default (3.2.0), and here is how to turn it off.** The `UserPromptSubmit` hook now scores the first change request of a session itself — it runs the same scorer `/v:triage` does and writes the record (uncommitted; `/v:orchestrate` commits it at bind, and a DIRECT commit includes it by hand) — so a manual `/v:triage` is only needed for the T3 escalation path. Once per session, in a repo that has a `.claude/compound-v.json`, if the working tree carries code changes that no triage record covers, the `Stop` hook holds the turn open and asks for `/v:triage`. It is exempt on `docs/superpowers/**`, it fires at most once per session, it is bounded at ~800 ms and fails open on any timeout or error, and a project that never ran `/v:init` never sees it. The scorer resolves the request to one of three tiers — DIRECT (a trivial, unambiguous edit), SCOPED (the tests that reference what changed, not the whole suite; a small edit on a sensitive path is the SCOPED+ flavor — mandatory deep review plus a cross-model second opinion), and FULL (the full test contract) — sized to the change itself, not just the glob its path happens to match (3.4.1). To opt out:
+-
+-  ```json
+-  { "enforcement": { "triage_gate": false } }
+-  ```
+-
+-  in `.claude/compound-v.json`. An explicit `false` is the only value that turns it off. It is **advisory** — the runtime discards a `Stop` block when a turn ends via a tool result or a loop tick, and `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` (default 8) lets the harness override it outright. It raises the cost of skipping the pipeline; it cannot make skipping impossible.
+-- No daemon, no server, no MCP service, no made-up cost numbers. Everything is small, readable scripts.
+-
+----
++- **Antigravity and Cursor are lower-trust** — no kernel sandbox, so the scope gate catches an out-of-bounds write after the fact but cannot prevent it. Prefer Codex for anything sensitive.
++- **Cursor on a Free plan** can only use its `auto` model; named models are paid.
++- **Epic mode is bounded by default** — it stops after each feature for a human checkpoint, and is not an overnight build unless you raise the budget.
++- **Marathon mode is still not fire-and-forget.** It drops the checkpoint and adds an arbiter panel, a blocker ledger and breakers, but after a hard death you re-run `/v:epic <epic-id>` yourself.
+ 
+ ## Verification program
+-
+-Compound V is dogfooded against its own claims through a staged verification program: eight stages, each a dogfood cycle run against native Claude Code mechanisms rather than trusted from prose. Every cycle's review is recorded in [docs/superpowers/dogfood/README.md](docs/superpowers/dogfood/README.md), which as of this writing logs 36 review files, 5 APPROVED. Read that index for the full history and current stage.
+-
+----
+-
+-## Under the hood (for the curious)
+-
+-The orchestration, scope enforcement, routing, and memory are plain bash + Python scripts and skill docs you can read. Start here:
+-
+-- [skills/compound-v/SKILL.md](skills/compound-v/SKILL.md) — the orchestrator, which can play back a dispatch's live agent transcripts (`scripts/compound-v-transcript-watch.py`, `/v:status --live`) to catch an out-of-lane write or a stall minutes before the gate would
+-- [skills/compound-v/epic-mode.md](skills/compound-v/epic-mode.md) — epic mode
+-- [skills/compound-v/memory.md](skills/compound-v/memory.md) — V-memory
+-- [skills/backend-launcher/SKILL.md](skills/backend-launcher/SKILL.md) — the backend workers
+-- [CHANGELOG.md](CHANGELOG.md) — full version history
++Compound V is dogfooded against its own claims in eight staged cycles, each run against native Claude Code mechanisms rather than trusted from prose. Every cycle's review is
++recorded in [docs/superpowers/dogfood/README.md](docs/superpowers/dogfood/README.md), which as of this writing logs 40 review files, 5 APPROVED — read it for the current stage.
++
++1. **DIRECT, attended** — one file, an ordinary commit, the Stop gate silent.
++2. **SCOPED** — the triage-size feature, run through the SCOPED path itself.
++3. **FULL with zero manual interventions** — the transcript-watch feature.
++4. **Multi-model** — a `backend: codex` job dispatched on Engine C.
++5. **The first epic** — features chained end to end on one branch; 5a and 5b cover V-memory recall being real, then recall turning into action.
++6. **A foreign repository** — set up from `/v:init` and driven through a real change.
++7. **Death and resurrection** — a killed run resumed from committed state.
++8. **A perfect pass with a stopwatch.**
++
++## Under the hood
++The orchestration, scope enforcement, routing and memory are plain bash and Python scripts and skill docs you can read.
++
++- [skills/compound-v/SKILL.md](skills/compound-v/SKILL.md) — the orchestrator · [skills/compound-v/epic-mode.md](skills/compound-v/epic-mode.md) — epic mode
++- [skills/compound-v/memory.md](skills/compound-v/memory.md) — V-memory · [skills/backend-launcher/SKILL.md](skills/backend-launcher/SKILL.md) — the backend workers
++- [CHANGELOG.md](CHANGELOG.md) — version history · [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — when it breaks
+ 
+ Built as a sidekick to [Superpowers](https://github.com/obra/superpowers). MIT licensed.

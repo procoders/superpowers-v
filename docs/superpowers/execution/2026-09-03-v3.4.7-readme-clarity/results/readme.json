@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "README.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "04adc3d20c0cf25714c2eb1fb50dac9a67c39368",
+    "diff_digest": "sha256:92eb31c834e442b011a93b96e8abeee1e250045ecdf20b783c802a73e42652ce",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"04adc3d20c0cf25714c2eb1fb50dac9a67c39368\",\n  \"changed\": [\n    \"README.md\"\n  ],\n  \"allowed\": [\n    \"README.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "04adc3d20c0cf25714c2eb1fb50dac9a67c39368",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task A \u2014 README.md rewritten for a five-minute read",
+  "tests": {
+    "command": "/usr/bin/python3 -B scripts/lint-frontmatter.py .\nbash -c 'test $(wc -l < README.md) -le 130 && /usr/bin/python3 -B scripts/lint-frontmatter.py .'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_423b5480-cc1-11"
+}
