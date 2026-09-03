@@ -1,14 +1,22 @@
 {
   "run_id": "2026-09-03-v3.4.6-triage-test-scoping-fixes-r9",
-  "phase": "PARTITION_VERIFIED",
+  "phase": "BLOCKED",
   "pre_eval_id": "2026-09-03T113149Z-implement-v3-4-6-per-docs-superpowers-specs-2026-09-03-v3-4-0cb5",
   "updated_at": "2026-09-03T14:00:06Z",
   "jobs": {
     "spec-review-2": {
-      "status": "pending",
+      "status": "failed",
       "isolation": "direct",
-      "worktree": null,
-      "session_id": null
+      "worktree": "",
+      "session_id": null,
+      "realised_commit": null
     }
-  }
+  },
+  "triage_actual": {
+    "merge_pending": true,
+    "pre_eval_id": "2026-09-03T113149Z-implement-v3-4-6-per-docs-superpowers-specs-2026-09-03-v3-4-0cb5",
+    "run_id": "2026-09-03-v3.4.6-triage-test-scoping-fixes-r9"
+  },
+  "blocked_reason": "wave 1: integration REFUSED by scripts/compound-v-integration-gate.py: {\"unverifiable\": 1}. Nothing was merged and nothing was committed.",
+  "blocked_at": "2026-09-03T14:04:18Z"
 }
