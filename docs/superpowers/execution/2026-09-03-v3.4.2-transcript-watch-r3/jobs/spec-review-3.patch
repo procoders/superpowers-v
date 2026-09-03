@@ -1,0 +1,389 @@
+diff --git a/docs/superpowers/dogfood/2026-09-03-v3.4.2-transcript-watch-review-3.md b/docs/superpowers/dogfood/2026-09-03-v3.4.2-transcript-watch-review-3.md
+new file mode 100644
+index 0000000..6bb1077
+--- /dev/null
++++ b/docs/superpowers/dogfood/2026-09-03-v3.4.2-transcript-watch-review-3.md
+@@ -0,0 +1,383 @@
++# Review Gate — run `2026-09-03-v3.4.2-transcript-watch-r3`, round 3 (last within the cycle cap)
++
++**VERDICT: APPROVED**
++
++| Pass | Result |
++|---|---|
++| PASS 1 SPEC | ✅ — both job specs implemented, no scope violation, no over-build |
++| PASS 2 QUALITY | ✅ — no regression, no reward hack, no fabricated metric; suite 45 → 52 cases, zero assertions removed |
++| PASS 3 INTEGRATION | ✅ — build green, floor + tier-owed tests exit 0, and **all four feature acceptance criteria pass**, AC 2 included |
++
++Merged tree reviewed: `1785da2` (wave 1 of r3) against baseline `af48f8f`. Both jobs `success`,
++both `violations: []`, partition disjoint (`watch-script` → the script + its suite; `reviewer-contract`
++→ `agents/spec-reviewer.md`).
++
++**All three of review-2's issues are closed**, each with a command and its output below. The one that
++blocked — feature AC 2's "zero out-of-lane for the merged jobs" — now passes on this run's own
++transcripts: eight transcripts, eight roster lines, **zero `out-of-lane`, zero `wrong-cwd`**, exit 0.
++
++---
++
++## Recall
++
++**Step 0, review intent:**
++
++```
++$ /usr/bin/python3 -B scripts/compound-v-memory.py search \
++    "transcript watch redirect parsing heredoc false positive" --intent review --top 8
++V-memory: index is 91 new / 0 removed docs behind the repo — run /v:memory-refresh
++1. docs/superpowers/specs/2026-09-01-v3.0-triage-tests-orchestration-design.md — E2. What it does not cover, said plainly
++2. docs/superpowers/preflight/2026-09-01-v3.0-1d-native-enforcement-probe.md — The hole this probe also exposed
++3. docs/superpowers/specs/2026-07-14-v2.14-blockers-and-headless-design.md — B.2 The design
++4. docs/superpowers/archaeology/2026-07-14-v2.14-blockers-and-headless.md — a1 (arbiter)
++5-8. (v2.5.3 autoskills scope, v2.5.0 hang-detector scope, v2.9 pre-evaluation risks, v2.14 B.3)
++```
++
++Hit 1 is the load-bearing citation and it is evidence, not authority.
++`…-triage-tests-orchestration-design.md` §E2 — *"A `Write|Edit` matcher is trivially bypassed by
++writing through the shell. `sed -i`, a heredoc, `cp`, `git checkout`, or a build step never reach
++those matchers"* — is the repository already saying that **a heredoc is where shell-write detection
++gets hard**, which is precisely the parse class review-2 issue 1 named. Hit 7's *"R2 false-positive
++noise → distrust of the whole gate"* is the same lesson from the other side. Both agree with the
++code as merged; where they would not, the code wins.
++
++**`recall-check` over this diff's globs** — the conservative bridge:
++
++```
++$ /usr/bin/python3 -B scripts/compound-v-memory.py recall-check --files \
++    scripts/compound-v-transcript-watch.py tests/test-transcript-watch.sh agents/spec-reviewer.md
++recall-check: none (1/2 match on scripts/compound-v-transcript-watch.py,
++  tests/test-transcript-watch.sh, agents/spec-reviewer.md)
++```
++
++`none`, not `tighten`. No control escalated on this basis, and recall never loosens one. Recall is
++not a routing input and affected no judgment below.
++
++---
++
++## SPEC
++
++**Scope lock: no violation.** `git show --stat 1785da2`:
++
++```
++ agents/spec-reviewer.md                |   4 +-
++ scripts/compound-v-transcript-watch.py | 172 +++++++++++++++++++++++++++++++--
++ tests/test-transcript-watch.sh         |  58 +++++++++++
++ 3 files changed, 222 insertions(+), 12 deletions(-)
++```
++
++Three files, each inside the lane of the job that wrote it. Both gate receipts carry
++`"verdict": "pass"` and `"violations": []`; both results carry `"blocked": false`.
++
++### Review-2's three issues
++
++| # | Review-2 finding | State | Proof (all run on the merged tree) |
++|---|---|---|---|
++| 1 | `out-of-lane` fires on `>=`, and heredoc bodies are scanned as command text | **CLOSED** | `strip_heredocs` + `_is_write_target` + `bash_write_targets` in `scripts/compound-v-transcript-watch.py`; REPL below; two new selftest cases and four new suite cases; **zero `out-of-lane` in the required run** |
++| 2 | `error` fires on a verbatim traceback inside a document a read-only command printed | **CLOSED** | `READ_ONLY_COMMANDS` + `is_read_only_command` + `error_evidence(text, is_error, read_only)`; the three `sed`/`grep`-of-a-review-doc signals of round 2 are gone, and the four signals that remain are all true positives — verified one at a time below |
++| 3 | `agents/spec-reviewer.md:175` contradicts the derived-default rule | **CLOSED** | the FULL row now reads *"follows the derived-default rule, same as every other tier: a declared, non-empty `impacted_map` is honoured … **plus `full_command`** for each changed path matching no rule"*, and the paragraph below replaces the flat *"FULL is unchanged"* with *"FULL differs only in the unmapped-path fallback … demanding `full_command` of a FULL job that has a declared `impacted_map` and no changed path outside it is a review error too"* |
++
++**Issue 1, reproduced directly** — review-2's exact REPL cases, plus the r3 manifest's:
++
++```
++$ /usr/bin/python3 -B -   (importing the merged module by path)
++bash_write_targets('true >= 1')                                            -> []
++bash_write_targets("cat > /tmp/x.py <<PYEOF\nassert s.count(old) >= 1\nPYEOF")
++                                                                           -> ['/tmp/x.py']
++bash_write_targets('[ $n >= 2 ] && echo ok')                               -> []
++is_read_only_command('sed -n 1,20p f.py')                                  -> True
++error_evidence('Traceback (most recent call last):\n  File x', False, True) -> None
++error_evidence('exit code 2', False, True)                                 -> 'exit code 2'
++```
++
++Both of the job's stated equalities hold verbatim. The fix is the honest one — `strip_heredocs`
++removes the *body* and keeps the opener, so the heredoc's own redirect target survives;
++`_is_write_target` refuses a target that is empty, a separator, or opens with `= < > & | ;` — a class
++of tokens, rather than special-casing the literal `>=` to make a fixture pass.
++
++**Issue 2 is anchored on the tool's own verdict, not on wider text matching.** `error_evidence` gains
++a third parameter; when the result came from a Bash call whose command only reads *and* the harness
++did not mark `is_error`, only `EXIT_CODE_PATTERN` (`exit code [1-9]`) still counts. That is a
++narrowing of one detector, not a removal: `is_error` and non-zero exits keep firing everywhere.
++
++### Spec coverage and over-build
++
++Every acceptance bullet of both job bodies is implemented (the rows above are the requirement list),
++so no `SPEC_GAP`. No `OVER_BUILD`: the four new module-level names each earn their place —
++`EXIT_CODE_PATTERN` is the exception the read-only anchor needs, `_HEREDOC` and `READ_ONLY_COMMANDS`
++are the two tables the fixes are made of, and `_tool_name` / `_tool_read_only` exist only to keep a
++`--state` file written by an older build readable (the tools table is persisted across ticks, so the
++`[name, read_only]` pair had to stay backward-compatible). No new flag, no new export, no speculative
++abstraction. `reviewer-contract` changed exactly two lines of prose and nothing else.
++
++---
++
++## QUALITY
++
++### Reward-hacking — clean
++
++`tests/test-transcript-watch.sh` has **58 insertions and 0 deletions** in this diff. No assertion
++removed, no threshold loosened, no `.skip`, no raise converted to a swallow, no scorer or grader
++edited. The script's twelve deleted lines are all replaced-in-place signatures and call sites, plus
++one regex lifted into a named constant. The suite grew **45 → 52** cases and every new case asserts
++*silence* where the shipped code spoke, over a fixture (section 13) built from the exact idioms of
++round 2's real traffic — including the strictest form available, *"so review 2's fixture emits EXACTLY
++the one real out-of-lane signal"*, which is a **count** assertion, not a substring one. §2.6 does not
++apply: no marathon feature, no `blocked_external` verdict, no `done_with_blockers` terminal here.
++
++### Fabricated metrics — clean
++
++No cost meter, no token count, no hardcoded baseline, no invented duration anywhere in the diff.
++`agents/spec-reviewer.md` gained no number at all.
++
++### No regression
++
++`full_command` green on the merged tree (quoted in `## INTEGRATION`). Both changed signatures have
++every call site updated: `error_evidence` gained `read_only=False` — defaulted, so the pre-existing
++two-argument calls in `_selftest` stay correct — and the single production caller passes
++`_tool_read_only(entry)`. The tools table's value type widened from `str` to `str | [str, int]` and
++**both** readers go through `_tool_name` / `_tool_read_only`, which return the old behaviour for a
++bare string, so a `--state` file written by the r2 build still loads. No `REGRESSION`.
++
++### Test alignment
++
++Each closed issue has a test that fails if the fix regresses, and each is behavioural rather than
++grep-shaped: issue 1 by two selftest cases (`>= is a comparison…`, `a heredoc BODY is data…`) *and*
++four suite cases that assert on the watcher's own output over a transcript fixture; issue 2 by two
++selftest cases and two suite cases. Issue 3 is a prose contract with no executable surface; its guard
++is `lint-frontmatter`, which is green. No `TEST_GAP`.
++
++### Three quality observations — recorded, none blocking
++
++- **`<<` inside a quoted string starts a heredoc scan.** `strip_heredocs` runs before tokenizing, so
++  it cannot know a `<<` is quoted. Reproduced on the merged tree:
++
++  ```
++  bash_write_targets('echo "a << b"\nrm -f q\necho hi > /tmp/real.txt') -> []
++  ```
++
++  The body scan swallows the remaining lines looking for a terminator `b`, and the real redirect is
++  lost. This is a **missed** signal, not a false one — the conservative direction the module docstring
++  commits to (*"a false out-of-lane line costs the reader more than a missed one… the gate is still
++  the authority"*). Worth a sentence in that docstring, not a fix in this run.
++- **`find` and `diff` sit in `READ_ONLY_COMMANDS`.** `find … -delete` and `find … -exec rm` write.
++  The consequence is bounded: the read-only flag suppresses only the `error` signal, never
++  `out-of-lane`, which is computed from `bash_write_targets` and unaffected by this table.
++  Low severity.
++- **`_tool_read_only` inherits the 400-entry `TOOL_NAME_CAP`.** A `Bash` result whose `tool_use` has
++  aged out resolves to `entry = None`, so `read_only` is False and the *old*, wider `error` behaviour
++  returns for a long-running agent's oldest open exchanges. Same shape as review-2's second
++  observation, same low severity; it fails toward a false positive on very long agents, not a miss.
++
++---
++
++## INTEGRATION
++
++### Partition and seams
++
++No `PARTITION_LEAK`: `watch-script` wrote `scripts/compound-v-transcript-watch.py` +
++`tests/test-transcript-watch.sh`; `reviewer-contract` wrote `agents/spec-reviewer.md`. Disjoint, and
++both gate receipts confirm it from git rather than from prose.
++
++No `INTEGRATION_MISMATCH`. The seam that mattered this round is that `reviewer-contract` amends the
++rule **this very review is judged by**, while `watch-script` changes the behaviour AC 2 measures. They
++do not touch each other, and the amended FULL row is consistent with what both jobs actually ran (the
++§3.3 table below). The by-path import contract still holds — no second matcher, no PyYAML:
++
++```
++$ grep -nE "fnmatch|glob_to_regex|import yaml|spec_from_file_location" scripts/compound-v-transcript-watch.py
++41:     There is no `import yaml` in this file.
++178:    spec = importlib.util.spec_from_file_location(name, path)
++```
++
++Line 41 is the module docstring's own prose; 178 is the single by-path loader both imports go through.
++
++### Build, and the tests the tier owes
++
++`triage.tier: FULL`; `impacted_map` declared with five rules.
++
++**Floor** (unconditional), run by me on the merged tree:
++
++```
++$ /usr/bin/python3 -B scripts/compound-v-scope-check.py --selftest
++  ok   - shadow: the verdict is unaffected — docs/leak.md still BLOCKS
++  ok   - shadow: the planted subprocess.py was never imported
++SELFTEST PASSED
++FLOOR_RC=0
++```
++
++**`full_command`**, run by me on the merged tree:
++
++```
++$ bash -c 'for s in scripts/compound-v-*.py; do grep -q -- "--selftest" "$s" || continue; \
++    /usr/bin/python3 -B "$s" --selftest >/dev/null 2>&1 || { echo "FAIL $s"; exit 1; }; done; \
++    for t in tests/*.sh; do bash "$t" >/dev/null 2>&1 || { echo "FAIL $t"; exit 1; }; done; \
++    echo all-tests-ok'
++all-tests-ok
++FULL_RC=0
++```
++
++Per-job evidence, read from `results/*.json`, never from the summary prose, with the obligation
++derived against the map myself rather than taken on the worker's word:
++
++| Job | `files_changed` vs `impacted_map` | `tests.scope` | `tests.exit_code` | `selected_count` | Owed |
++|---|---|---|---|---|---|
++| `watch-script` | both paths mapped (`scripts/compound-v-*.py`, `tests/*.sh`) | `impacted` | 0 | 3 | ✅ floor + the two matched rules; no unmapped path ⇒ `full_command` not owed |
++| `reviewer-contract` | `agents/spec-reviewer.md` matches **no** rule | `full` | 0 | 2 | ✅ an unmapped path at FULL ⇒ floor + `full_command` |
++
++That is the amended FULL row applied to its own author, and it agrees with the derived-default table
++in `skills/compound-v/execution-manifest.md`. Neither job is silent, both exit 0.
++No `NO_TEST_EVIDENCE`, no `BUILD_RED`.
++
++### Feature acceptance criteria (the r1 manifest's four, re-run on the merged tree)
++
++| # | Criterion | Status |
++|---|---|---|
++| 1 | `tests/test-transcript-watch.sh` + `--selftest` green; every other suite and selftest stays green | ✅ |
++| 2 | `--once` against THIS run's transcripts, no `--wf`: names every agent with its job, **zero out-of-lane** and **zero wrong-cwd** for the merged jobs, exit 0 | ✅ |
++| 3 | matcher imported by path (no second matcher); never writes the run dir or the repo; exit 0 on every advisory path | ✅ |
++| 4 | `v-status.md` documents `--live`; `v-dispatch.md` documents the background watch and the two TaskStop signals; CHANGELOG heading; versions 3.4.2; lint green | ✅ (same deliberate step-number deviation as r2, below) |
++
++**Criterion 1:**
++
++```
++$ bash tests/test-transcript-watch.sh
++ … PASS a >= comparison is not a redirect into a file called '='
++   PASS a heredoc BODY names no write target — not the paths it quotes
++   PASS ...and the heredoc's own target is silent when it is IN lane (src/gen2.py)
++   PASS ...and fires exactly once when it is a repository path OUT of lane
++   PASS a sed that PASTES a traceback is not this agent's error
++   PASS ...nor is a grep|head that prints BLOCKED and 'command not found'
++   PASS so review 2's fixture emits EXACTLY the one real out-of-lane signal
++   PASS --selftest is green
++
++52 passed, 0 failed
++
++$ /usr/bin/python3 -B scripts/compound-v-transcript-watch.py --selftest
++SELFTEST PASSED
++```
++
++`full_command` above is every other `tests/*.sh` and every other script's `--selftest`; it is green.
++
++**Criterion 2 — the required run**, discovery by run-directory path, no `--wf`, against **this run's
++own transcripts**:
++
++```
++$ /usr/bin/python3 -B scripts/compound-v-transcript-watch.py --once \
++    --run-dir docs/superpowers/execution/2026-09-03-v3.4.2-transcript-watch-r3
++watching wf_52f41e36-efe (8 agent transcripts) for 2026-09-03-v3.4.2-transcript-watch-r3
++07:05:12 spec-review-3 a85c43fe denied Compound V lane guard: job 'spec-review-3' is not allowed
++                                       to write 'scripts/compound-v-transcript-watch.py'. Its
++                                       write_allowed lane is: docs
++07:00:09 watch-script af9423a6 error  Traceback (most recent call last):
++07:01:54 watch-script af9423a6 error  {"type":"user","agentId":"$A8","timestamp":"$NOW", … "Tr
++07:03:39 watch-script af9423a6 error  head: /Users/oleg/.claude/projects/…/wf_09947bdf-568/ag
++jobs: reviewer-contract=done spec-review-3=pending watch-script=done  agents: 1 live, 7 returned
++a0eec02f (unregistered)           returned
++a7ed3fa9 reviewer-contract        returned
++a85c43fe spec-review-3            live
++ad51e827 (unregistered)           returned
++aeebd785 (unregistered)           returned
++af6eed24 (unregistered)           returned
++af9423a6 watch-script             returned
++afac19a2 (unregistered)           returned
++EXIT=0
++```
++
++Clause by clause:
++
++- **exit 0** — ✅.
++- **discovery with no `--wf`** — ✅, found `wf_52f41e36-efe` from the run directory's path alone.
++- **names every agent of the run with its job** — ✅. **8 transcripts, 8 roster lines**, each with its
++  job or `(unregistered)`, and its status.
++- **zero `wrong-cwd` for the merged jobs** — ✅, none emitted.
++- **zero `out-of-lane` for the merged jobs** — ✅. **None.** Round 2's single `out-of-lane Bash =` is
++  gone, and its trigger is still in the corpus: `watch-script`'s r3 transcript writes its own patches
++  through `cat > … <<'PYEOF'` heredocs whose bodies contain `assert … >= 1`. The criterion passes.
++
++**The four remaining signals are all true positives**, each checked against the raw transcript rather
++than assumed:
++
++| Signal | `is_error` | Command behind it | Verdict |
++|---|---|---|---|
++| `denied` (spec-review-3) | — | my own `git show <sha> -- <path>`, refused by `hooks/lane-guard.sh` because the pathspec reads as a write target | true positive; the evidence rendered is the matching line |
++| `error` 07:00:09 | **true** | `/usr/bin/python3 -B - <<'PYEOF'` patch script — `AssertionError`, `Exit code 1` | true positive (the implementer's own patch attempt failed) |
++| `error` 07:01:54 | **true** | a second patch heredoc, **refused by the permission clamp** | true positive; the ugly evidence line is fixture JSONL inside the refused command, matched because `is_error` lifts the line anchor by design |
++| `error` 07:03:39 | **true** | `head -c 400 <a transcript path that does not exist>` — `Exit code 1` | true positive |
++
++And the round-2 false class is demonstrably dead **on live traffic**, not only on a fixture: this
++agent's own `sed -n … tests/test-transcript-watch.sh` and
++`grep -n … scripts/compound-v-transcript-watch.py` results do contain `Traceback` and `BLOCKED`, are
++`is_error: false`, and produced **no signal**.
++
++**Criterion 3 — read-only, proven, and the advisory path:**
++
++```
++$ git status --porcelain > before.txt ; ls -laR <run-dir> > rundir-before.txt
++$ … --once --run-dir docs/superpowers/execution/2026-09-03-v3.4.2-transcript-watch-r3 …
++$ git status --porcelain > after.txt  ; ls -laR <run-dir> > rundir-after.txt
++$ diff before.txt after.txt                 → no output, GIT_DIFF_RC=0
++$ diff rundir-before.txt rundir-after.txt   → no output, RUNDIR_DIFF_RC=0
++
++$ /usr/bin/python3 -B scripts/compound-v-transcript-watch.py --once --run-dir <a dir outside any checkout>
++transcript-watch: no manifest.yaml in the run directory
++no transcripts found for <dir> (searched ~/.claude/projects//*)
++EXIT=0
++```
++
++The before/after captures were written under the session scratchpad, outside the repository, so the
++measurement does not perturb what it measures. Nothing was written to the working tree or the run
++directory; the advisory path degrades to two sentences and exit 0. The by-path matcher grep is quoted
++under **Partition and seams**. ✅
++
++**Criterion 4:**
++
++```
++$ /usr/bin/python3 -B scripts/lint-frontmatter.py .
++✅ All frontmatter clean
++$ head -7 CHANGELOG.md | tail -1
++## [3.4.2] - 2026-09-03
++$ grep -n '"version"' .claude-plugin/plugin.json .claude-plugin/marketplace.json
++.claude-plugin/plugin.json:4:  "version": "3.4.2",
++.claude-plugin/marketplace.json:12:      "version": "3.4.2",
++$ grep -n 'out-of-lane|wrong-cwd|every 120' commands/v-dispatch.md
++176:   python3 scripts/compound-v-transcript-watch.py --run-dir …/<run-id> --every 120
++180:   … **`out-of-lane`** (a write outside the job's `write_allowed`) and **`wrong-cwd`** …
++```
++
++`commands/v-status.md:11-17` parses and strips the leading `--live`; `:115-136` documents the section
++and its degrade contract. ✅
++
++**The same deliberate deviation as round 2, recorded rather than flagged.** The r1 criterion says
++*"`v-dispatch.md` **step 6** documents the background watch"*; it is step **7**, because archaeology
++§7.7 and review-1 issue 8 required it be its own step and named the r1 wording as the upstream defect.
++The intent is met at step 7, its literal step number was superseded on purpose, and the file's
++cross-references are consistent.
++
++---
++
++## Verdict
++
++**APPROVED.** No numbered issues remain.
++
++| Pass | Evidence |
++|---|---|
++| PASS 1 SPEC | requirements 2/2 jobs · both `write_allowed` lanes respected (gate receipts `pass`, confirmed at the seam) · over-build clean · both jobs' narrow `acceptance` met |
++| PASS 2 QUALITY | code-quality clean (three low-severity observations recorded, none blocking) · no regression, state file backward-compatible · every closed issue carries a guard test · no fabricated metrics · no reward-hacking (58 insertions / 0 deletions in the suite; 45 → 52 cases) |
++| PASS 3 INTEGRATION | no partition leak · seams hold · build green (`all-tests-ok`, exit 0) · floor + tier-owed tests ran and exit 0 for both jobs (`impacted` for the mapped job, `full` for the unmapped one) · feature AC **4/4** met |
++
++Review-2's three issues, closed: **1** — `>=` is no longer a redirect and a heredoc body is no longer
++command text, fixed at the tokenizer rather than by special-casing the operator, and the criterion it
++was failing now passes on this run's own traffic; **2** — `error` anchors on the tool's own verdict
++for a read-only command, proven dead against live results that still carry the triggering text;
++**3** — the reviewer contract's FULL row now says what the resolver does, and this review is the first
++to apply it, to the job that wrote it.
++
++What should survive the next round: all three fixes are *narrowings with a stated cost direction*.
++`strip_heredocs` keeps the opener and drops only the body, so the heredoc's real target still counts;
++`_is_write_target` refuses a class of tokens rather than one literal; `is_read_only_command` is
++deliberately strict — *"one unrecognised command, one redirect, one unresolvable token and the answer
++is False"* — so the suppression fails toward reporting. The one imprecision left is a quoted `<<` that
++eats the rest of a command string, and it fails toward silence, which is the direction this tool
++committed to in its own docstring and which the git-derived scope gate, not the watcher, exists to
++catch.

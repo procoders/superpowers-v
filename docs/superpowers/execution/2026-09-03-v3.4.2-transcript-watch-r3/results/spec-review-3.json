@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-03-v3.4.2-transcript-watch-review-3.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "3b224e38ad6c0ae7616e1fdde1db3a33e84cc671",
+    "diff_digest": "sha256:bceeb34f8682dd27c33086ea0b75b5b76ba71a6d288944cc855fe419560ecd45",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"3b224e38ad6c0ae7616e1fdde1db3a33e84cc671\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.2-transcript-watch-review-3.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.2-transcript-watch-review-3.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "3b224e38ad6c0ae7616e1fdde1db3a33e84cc671",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Review Gate pass 3 \u2014 review-2's three issues against the merged tree (last within the cycle cap)",
+  "tests": {
+    "command": "/usr/bin/python3 -B scripts/compound-v-scope-check.py --selftest\nbash -c 'for s in scripts/compound-v-*.py; do grep -q -- \"--selftest\" \"$s\" || continue; /usr/bin/python3 -B \"$s\" --selftest >/dev/null 2>&1 || { echo \"FAIL $s\"; exit 1; }; done; for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; echo all-tests-ok'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "full",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": ""
+}
