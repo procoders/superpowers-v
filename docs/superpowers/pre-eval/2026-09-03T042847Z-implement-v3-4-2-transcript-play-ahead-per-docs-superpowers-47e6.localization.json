@@ -1,0 +1,14 @@
+{
+  "confidence": "exact",
+  "digest": "sha256:d20c31fab4b91a9890730a8db2530f69497f8ab46ea5c80ea7df10593d11a6cc",
+  "fan_out": 4,
+  "flags": [
+    "sensitive_path"
+  ],
+  "resolved_paths": [
+    "commands/v-dispatch.md",
+    "commands/v-status.md",
+    "docs/superpowers/plans/2026-09-03-v3.4.2-transcript-watch.md",
+    "docs/superpowers/specs/2026-09-03-v3.4.2-transcript-watch-design.md"
+  ]
+}

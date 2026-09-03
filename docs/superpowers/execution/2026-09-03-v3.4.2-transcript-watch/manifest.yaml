@@ -1,0 +1,93 @@
+run_id: 2026-09-03-v3.4.2-transcript-watch
+feature: 'v3.4.2 transcript play-ahead: read the workers'' transcripts before their results (stage 3: FULL, zero interventions)'
+routing_stance: balanced
+max_parallel: 2
+spec_path: docs/superpowers/specs/2026-09-03-v3.4.2-transcript-watch-design.md
+plan_path: docs/superpowers/plans/2026-09-03-v3.4.2-transcript-watch.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-09-03-v3-4-2-transcript-watch.md
+  domain: docs/superpowers/specs/2026-09-03-v3.4.2-transcript-watch-design.md
+  library: docs/superpowers/library-audit/2026-09-03-v3-4-2-transcript-watch.md
+triage:
+  tier: FULL
+  pre_eval_id: 2026-09-03T042847Z-implement-v3-4-2-transcript-play-ahead-per-docs-superpowers-47e6
+  taxonomy_digest: sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a
+  decided_at: '2026-09-03T04:28:47Z'
+acceptance_criteria:
+- bash tests/test-transcript-watch.sh and /usr/bin/python3 -B scripts/compound-v-transcript-watch.py --selftest are green; every other tests/*.sh and scripts/compound-v-*.py --selftest stays green under /usr/bin/python3 -B.
+- 'Run --once against THIS run''s own transcripts (discovery by the run directory path, no --wf) on the merged tree: it names every agent of the run with its job, reports zero out-of-lane and zero wrong-cwd signals for the merged jobs, and exits 0; the output is quoted in the review.'
+- 'The script imports the path matcher from scripts/compound-v-scope-check.py by path (grep shows no second glob matcher), never writes into the run directory or the repository (strace-free proof: git status is clean after a --once), and exits 0 on every advisory path.'
+- 'commands/v-status.md documents --live and commands/v-dispatch.md step 6 documents the background watch and the two signals that justify TaskStop; CHANGELOG top heading is ## [3.4.2] - 2026-09-03; plugin.json and marketplace.json say 3.4.2; lint-frontmatter is green.'
+test_contract:
+  floor_command: /usr/bin/python3 -B scripts/compound-v-scope-check.py --selftest
+  full_command: bash -c 'for s in scripts/compound-v-*.py; do grep -q -- "--selftest" "$s" || continue; /usr/bin/python3 -B "$s" --selftest >/dev/null 2>&1 || { echo "FAIL $s"; exit 1; }; done; for t in tests/*.sh; do bash "$t" >/dev/null 2>&1 || { echo "FAIL $t"; exit 1; }; done; echo all-tests-ok'
+  impacted_map:
+  - when: scripts/compound-v-*.py
+    run: bash -c '[ -f {path} ] || exit 0; grep -q -- "--selftest" {path} || exit 0; /usr/bin/python3 -B {path} --selftest'
+  - when: tests/*.sh
+    run: bash -c '[ -f {path} ] || exit 0; bash {path}'
+  - when: tests/v2.9-e2e/*.py
+    run: bash -c '[ -f {path} ] || exit 0; /usr/bin/python3 -B -m unittest discover -s "$(dirname {path})" -p "$(basename {path})"'
+  - when: commands/*.md
+    run: /usr/bin/python3 -B scripts/lint-frontmatter.py .
+  - when: .claude-plugin/*.json
+    run: bash -c 'jq empty .claude-plugin/plugin.json && jq empty .claude-plugin/marketplace.json'
+jobs:
+- id: watch-script
+  title: 'Task A — scripts/compound-v-transcript-watch.py and tests/test-transcript-watch.sh: five signals, discovery by run-dir path, read-only'
+  type: implement
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: worktree
+  run: parallel
+  write_allowed:
+  - scripts/compound-v-transcript-watch.py
+  - tests/test-transcript-watch.sh
+  read_allowed:
+  - '**'
+  acceptance:
+  - bash tests/test-transcript-watch.sh is green and asserts exactly the signal set of plan Task A Step 1 (grep the test for out-of-lane, wrong-cwd, error, denied, stall, and for the no-signal in-lane write); /usr/bin/python3 -B scripts/compound-v-transcript-watch.py --selftest is green.
+  - The script imports the matcher from scripts/compound-v-scope-check.py by path, keeps per-agent offsets in --state so --once twice emits no repeated signal, emits --json objects with ts/job/agent/signal/evidence/line, and exits 0 on every advisory path.
+  - 'Discovery: with no --wf, the script finds the workflow directory whose agent transcripts mention the run directory''s absolute path, newest first; --transcripts and --wf override.'
+  - 'The script imports load_yaml from scripts/compound-v-validate-manifest.py by path (no PyYAML import of its own), reads meta.json with .get(), matches the denied signal on the literal `Compound V lane guard: job ''` only, and prints a non-crashing ''no transcripts found'' line when discovery matches nothing.'
+  body: Implement plan Task A against the spec (docs/superpowers/specs/2026-09-03-v3.4.2-transcript-watch-design.md §Decisions 1–4, §Pre-flight amendments 1–6, §Testing). Write the failing test first, then the script. Python 3.9 stdlib only. The path matcher comes from scripts/compound-v-scope-check.py by importlib path import — never a second glob matcher. The script must never write into the run directory or the repository (its --state file defaults under the OS temp dir). Read the archaeology audit named in the manifest before writing. Run python with -B; register your lane with a literal --cwd.
+- id: docs-release
+  title: Task B — /v:status --live, /v:dispatch step 6 advice, CHANGELOG 3.4.2, versions, README sentence
+  type: implement
+  backend: claude
+  tier: standard
+  effort: medium
+  isolation: worktree
+  run: parallel
+  write_allowed:
+  - commands/v-status.md
+  - commands/v-dispatch.md
+  - CHANGELOG.md
+  - .claude-plugin/plugin.json
+  - .claude-plugin/marketplace.json
+  - README.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - commands/v-status.md has a --live section that runs the watch --once and prints its lines after the state table; commands/v-dispatch.md step 6 documents the background --every 120 watch and names out-of-lane and wrong-cwd as the signals that justify TaskStop + re-orchestrate.
+  - 'CHANGELOG.md''s top heading is ## [3.4.2] - 2026-09-03 with one Added section naming the five signals and the discovery rule; plugin.json and marketplace.json both say 3.4.2; README has one sentence under the orchestrator surface; /usr/bin/python3 -B scripts/lint-frontmatter.py . is green.'
+  body: Implement plan Task B against the spec §Decisions 5 and the CLI contract of §Decisions 1 (you will not see Task A's script — it runs in parallel; describe the CLI exactly as the spec fixes it). No fabricated metrics. Run python with -B; register your lane with a literal --cwd.
+- id: spec-review
+  title: Review Gate — three passes against the spec and the feature-level acceptance criteria
+  type: review
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: direct
+  run: serial
+  depends_on:
+  - watch-script
+  - docs-release
+  write_allowed:
+  - docs/superpowers/dogfood/2026-09-03-v3.4.2-transcript-watch-review-1.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - 'The review file exists with ## Recall, ## SPEC, ## QUALITY, ## INTEGRATION, ## Verdict; every feature-level acceptance criterion is checked by running its command on the merged tree and the output is quoted, including the watch run --once against this run''s own transcripts; the verdict is APPROVED or ISSUES with a numbered list.'
+  body: Your agent definition carries the three-pass Review Gate and a Step 0 (V-memory recall). Follow it. Run every feature-level acceptance criterion of this manifest on the merged tree with /usr/bin/python3 -B — criterion 2 means running scripts/compound-v-transcript-watch.py --once --run-dir <this run's directory> with no --wf and quoting its output. Write docs/superpowers/dogfood/2026-09-03-v3.4.2-transcript-watch-review-1.md. Run python with -B; register your lane with a literal --cwd.
