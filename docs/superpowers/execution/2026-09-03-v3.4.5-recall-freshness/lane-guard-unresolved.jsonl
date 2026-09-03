@@ -1,0 +1,1 @@
+{"agent_id": "aa5e4389f4b6fbadb", "cwd": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_8e9239df-899-1", "tool": "Bash", "ts": "2026-09-03T10:20:26Z", "why": "lane guard could not resolve this caller to a job; the write was NOT lane-checked (register-lane missing, ran late, or its entry was lost)"}

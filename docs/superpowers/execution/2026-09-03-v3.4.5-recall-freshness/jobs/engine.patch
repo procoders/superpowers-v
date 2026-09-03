@@ -1,0 +1,305 @@
+diff --git a/scripts/compound-v-memory.py b/scripts/compound-v-memory.py
+index a9408d1..ca756f1 100755
+--- a/scripts/compound-v-memory.py
++++ b/scripts/compound-v-memory.py
+@@ -695,6 +695,32 @@ def _now() -> str:
+     return time.strftime("%Y-%m-%dT%H:%M:%S")
+ 
+ 
++def refresh_fts5(conn, root):
++    """The FTS5-only (re)index body, shared by `cmd_refresh`'s non-embedding path and
++    `cmd_search`'s inline refresh: tracked files -> changed/removed -> `reindex_file` /
++    purge -> `indexed_files` upkeep. NEVER touches an embedder — that is the one structural
++    guarantee that a search-triggered refresh cannot silently start embedding. Stamps
++    `chunker_version` itself, so a project whose only refreshes are search-triggered still
++    gets an identity match on a later `bootstrap`. Returns (n_indexed, n_removed)."""
++    files = tracked_files(root)
++    present = set(files)
++    known = {r[0]: r[1] for r in conn.execute("SELECT path,content_hash FROM indexed_files")}
++    changed = [f for f in files if file_sha(os.path.join(root, f)) != known.get(f)]
++    removed = [p for p in known if p not in present]
++    n_idx = 0
++    for f in changed:
++        n_idx += 1
++        reindex_file(conn, root, f, None)
++    for p in removed:
++        conn.execute("BEGIN IMMEDIATE")
++        conn.execute("DELETE FROM chunks WHERE path=?", (p,))
++        conn.execute("DELETE FROM indexed_files WHERE path=?", (p,))
++        conn.execute("COMMIT")
++    meta_set(conn, "chunker_version", CHUNKER_VERSION)
++    conn.commit()
++    return n_idx, len(removed)
++
++
+ def cmd_refresh(args) -> int:
+     root = find_repo_root(args.repo or os.getcwd())
+     paths = cache_paths(root)
+@@ -733,12 +759,20 @@ def cmd_refresh(args) -> int:
+             ensure_embedder(paths)  # redeploy embedder.py from EMBEDDER_SRC (sync code changes)
+             embedder = lambda texts: embed_texts(paths, model, "passage", texts)  # noqa: E731
+ 
+-        # Which files to (re)index? Content-changed always. When embedding, ALSO re-embed
+-        # files that have missing vectors, and re-embed everything on an identity drift
+-        # (model/chunker/embedder changed) — so `bootstrap` then `refresh --with-embeddings`
+-        # actually populates vectors even when the FTS index already exists.
+-        to_index = list(changed)
+-        if embedder is not None:
++        if embedder is None:
++            # FTS5-only: delegate to the shared helper (also used by cmd_search's inline
++            # refresh). It re-derives changed/removed itself and stamps chunker_version.
++            n_idx, n_removed = refresh_fts5(conn, root)
++        else:
++            # Which files to (re)index? Content-changed always (the PRE-refresh `changed`
++            # list computed above — never re-derived after any FTS5 write, which is exactly
++            # the ordering hazard: refresh_fts5 rewrites indexed_files.content_hash the
++            # moment a file is FTS5-refreshed, so a hash-diff taken afterward would read
++            # zero changed files). ALSO re-embed files that have missing vectors, and
++            # re-embed everything on an identity drift (model/chunker/embedder changed) —
++            # so `bootstrap` then `refresh --with-embeddings` actually populates vectors
++            # even when the FTS index already exists.
++            to_index = list(changed)
+             if not identity_matches(conn, model):
+                 to_index = list(files)  # identity drift ⇒ re-embed the whole corpus
+                 _invalidate_query_cache(conn)  # …and drop stale query vectors (same drift)
+@@ -749,30 +783,25 @@ def cmd_refresh(args) -> int:
+                     if f in missing and f not in to_index:
+                         to_index.append(f)
+ 
+-        # Embed ALL files' chunks in ONE embedder call (one model load per refresh); the per-file
+-        # path stays for the FTS5-only case (embedder is None).
+-        if embedder is not None:
++            # Embed ALL files' chunks in ONE embedder call (one model load per refresh).
+             n_idx = reindex_batch(conn, root, to_index, embedder)
+-        else:
+-            n_idx = 0
+-            for f in to_index:
+-                n_idx += 1
+-                reindex_file(conn, root, f, embedder)
+-        for p in removed:
+-            conn.execute("BEGIN IMMEDIATE")
+-            conn.execute("DELETE FROM chunks WHERE path=?", (p,))
+-            conn.execute("DELETE FROM indexed_files WHERE path=?", (p,))
+-            conn.execute("COMMIT")
+-
+-        meta_set(conn, "chunker_version", CHUNKER_VERSION)
+-        if embedder is not None:  # record the embed identity so a later drift forces a rebuild
++            for p in removed:
++                conn.execute("BEGIN IMMEDIATE")
++                conn.execute("DELETE FROM chunks WHERE path=?", (p,))
++                conn.execute("DELETE FROM indexed_files WHERE path=?", (p,))
++                conn.execute("COMMIT")
++            n_removed = len(removed)
++
++            meta_set(conn, "chunker_version", CHUNKER_VERSION)
++            # record the embed identity so a later drift forces a rebuild
+             meta_set(conn, "embed_model", model)
+             meta_set(conn, "embedder_src", _embedder_src_hash())
+-        conn.commit()
++            conn.commit()
++
+         total = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+         nvec = conn.execute("SELECT COUNT(*) FROM chunks WHERE embedding IS NOT NULL").fetchone()[0]
+         print("V-memory: indexed/updated %d, removed %d, unchanged %d, %d chunks total%s"
+-              % (n_idx, len(removed), len(files) - n_idx, total,
++              % (n_idx, n_removed, len(files) - n_idx, total,
+                  (" (%d with vectors)" % nvec) if embedder else " (FTS5-only)"))
+         return 0
+     finally:
+@@ -914,35 +943,61 @@ def context_pack(results, q, as_json):
+ 
+ 
+ def index_staleness(conn, root):
+-    """Cheap path-set staleness (no hashing, ~one `git ls-files`): how many git-tracked docs
+-    are not yet indexed, and how many indexed docs are gone. This is the MULTI-DEV freshness
+-    signal — after a `git pull` brings teammates' new docs, search can say the index is behind
+-    before a refresh catches up. Knowledge accumulates via the committed corpus; this just tells
+-    you your local cache hasn't caught up yet."""
+-    files = set(tracked_files(root))
+-    known = {r[0] for r in conn.execute("SELECT path FROM indexed_files")}
+-    return len(files - known), len(known - files)
++    """(new, changed, removed) doc counts: how many git-tracked docs are not yet indexed, how
++    many are indexed but have changed on disk, and how many indexed docs are gone. This is the
++    MULTI-DEV freshness signal (after a `git pull` brings teammates' new/changed docs, search
++    can say the index is behind before a refresh catches up) AND the trigger `cmd_search` uses
++    to decide whether its inline refresh has anything to do. Single source of truth for
++    `cmd_search`, the selftest and `doctor` — no duplicate inline computation."""
++    files = tracked_files(root)
++    present = set(files)
++    known = {r[0]: r[1] for r in conn.execute("SELECT path,content_hash FROM indexed_files")}
++    new = [f for f in files if f not in known]
++    changed = [f for f in files if f in known and file_sha(os.path.join(root, f)) != known[f]]
++    removed = [p for p in known if p not in present]
++    return len(new), len(changed), len(removed)
++
++
++def _staleness_warning(new, changed, removed):
++    # multi-dev: a teammate's pulled/changed docs aren't indexed yet (or some were removed).
++    sys.stderr.write("V-memory: index is %d new / %d changed / %d removed docs behind the "
++                     "repo — run /v:memory-refresh to include the latest pulled knowledge.\n"
++                     % (new, changed, removed))
+ 
+ 
+ def cmd_search(args) -> int:
+     root = find_repo_root(args.repo or os.getcwd())
+     paths = cache_paths(root)
+-    if not os.path.exists(paths["db"]):
++    if not os.path.exists(paths["db"]) and args.no_refresh:
++        # today's behaviour, unchanged: --no-refresh never builds an index.
+         print("V-memory index not found. Run: python3 scripts/compound-v-memory.py refresh")
+         return 1
+-    conn = open_db_checked(paths["db"])
++    conn = open_db_checked(paths["db"])  # missing ⇒ created empty; staleness below reads it as fully new
++    # Staleness FIRST — before any search — so the inline refresh below (or the warning) is
++    # driven by the real decision, not a cosmetic afterthought.
++    new, changed, removed = index_staleness(conn, root)
++    stale = new + changed + removed
++    if stale and not args.no_refresh:
++        lock = acquire_lock(paths["lock"])
++        if lock is not None:
++            # Inline refresh: FTS5 lane ONLY — never the --quick cap, never an embedder, never
++            # config_wants_embeddings(). A search must never silently start embedding.
++            n_idx, n_removed = refresh_fts5(conn, root)
++            release_lock(lock)
++            sys.stderr.write("V-memory: refreshed %d stale doc(s) before recall (FTS5 lane)\n"
++                             % (n_idx + n_removed))
++        else:
++            # Another refresh already holds the lock — search the stale index, silently
++            # (never refresh's own "already running — skipped" line).
++            _staleness_warning(new, changed, removed)
++    elif stale:
++        _staleness_warning(new, changed, removed)
+     pool = max(args.top * 4, 20)
+     bm25_list = bm25_search(conn, args.query, pool)
+     dense_list = []
+     if not args.no_embed and dense_active(conn, paths, meta_get(conn, "embed_model", DEFAULT_MODEL)):
+         dense_list = dense_search(conn, paths, meta_get(conn, "embed_model", DEFAULT_MODEL), args.query, pool)
+     results = rank_union(bm25_list, dense_list, args.top)
+-    new, removed = index_staleness(conn, root)
+-    if new or removed:
+-        # multi-dev: a teammate's pulled docs aren't indexed yet (or some were removed).
+-        sys.stderr.write("V-memory: index is %d new / %d removed docs behind the repo — "
+-                         "run /v:memory-refresh to include the latest pulled knowledge.\n"
+-                         % (new, removed))
+     print(context_pack(results, args.query, args.json))
+     return 0
+ 
+@@ -1107,14 +1162,9 @@ def cmd_doctor(args) -> int:
+         nv = conn.execute("SELECT COUNT(*) FROM chunks WHERE embedding IS NOT NULL").fetchone()[0]
+         print("  files/chunks: %d files, %d chunks (%d with vectors)" % (nf, n, nv))
+         print("  embed_model : %s" % meta_get(conn, "embed_model", "(none)"))
+-        files = tracked_files(root)
+-        present = set(files)
+-        known = {r[0]: r[1] for r in conn.execute("SELECT path,content_hash FROM indexed_files")}
+-        new = [f for f in files if f not in known]
+-        changed = [f for f in files if f in known and file_sha(os.path.join(root, f)) != known[f]]
+-        removed = [p for p in known if p not in present]
++        new, changed, removed = index_staleness(conn, root)
+         print("  staleness   : %d new, %d changed, %d removed (run refresh to sync)"
+-              % (len(new), len(changed), len(removed)))
++              % (new, changed, removed))
+     print("  embeddings  : %s" % ("bootstrapped" if is_bootstrapped(paths) else "not bootstrapped (FTS5-only)"))
+     print("  scale gate  : dense engages at >= %d vectors" % SCALE_GATE_MIN_CHUNKS)
+     return 0
+@@ -1283,9 +1333,47 @@ def _selftest() -> int:
+         # multi-dev staleness: a new tracked doc not yet indexed reads as "behind the repo"
+         with open(os.path.join(docs, "specs", "teammate-pulled.md"), "w") as fh:
+             fh.write("# Pulled\nA teammate's freshly pulled knowledge, not yet indexed locally.\n")
+-        s_new, s_removed = index_staleness(conn, find_repo_root(tmp))
++        s_new, s_changed, s_removed = index_staleness(conn, find_repo_root(tmp))
+         check("staleness flags an un-indexed pulled doc", s_new >= 1)
+ 
++        # --- v3.4.5: search refreshes the FTS5 lane inline when the index is behind ------
++        import contextlib as _ctxlib
++        import io
++        with open(os.path.join(docs, "specs", "2026-09-03-later.md"), "w") as fh:
++            fh.write("# Later\nA freshly added doc mentions quokka-freshness by name.\n")
++
++        class SA:  # cmd_search args shim — every attribute cmd_search reads
++            def __init__(self, no_refresh):
++                self.repo = tmp
++                self.query = "quokka-freshness"
++                self.top = 8
++                self.intent = None
++                self.json = True
++                self.no_embed = True
++                self.no_refresh = no_refresh
++
++        out1, err1 = io.StringIO(), io.StringIO()
++        with _ctxlib.redirect_stdout(out1), _ctxlib.redirect_stderr(err1):
++            rc1 = cmd_search(SA(True))
++        check("search --no-refresh: exit 0, later.md NOT recalled",
++              rc1 == 0 and "later" not in out1.getvalue())
++        check("search --no-refresh: prints the staleness warning, not the refresh line",
++              "behind the repo" in err1.getvalue() and "refreshed" not in err1.getvalue())
++
++        out2, err2 = io.StringIO(), io.StringIO()
++        with _ctxlib.redirect_stdout(out2), _ctxlib.redirect_stderr(err2):
++            rc2 = cmd_search(SA(False))
++        check("search: exit 0, later.md recalled via the inline refresh",
++              rc2 == 0 and "later" in out2.getvalue())
++        check("search: prints exactly one refresh line on stderr",
++              err2.getvalue().count("V-memory: refreshed") == 1 and "FTS5 lane" in err2.getvalue())
++
++        out3, err3 = io.StringIO(), io.StringIO()
++        with _ctxlib.redirect_stdout(out3), _ctxlib.redirect_stderr(err3):
++            rc3 = cmd_search(SA(False))
++        check("search: a second plain search prints no refresh line (nothing stale)",
++              rc3 == 0 and err3.getvalue() == "")
++
+         # /v:init opt-in: .claude/compound-v.json drives the dense lane (no --with-embeddings flag)
+         cfgdir = os.path.join(tmp, ".claude"); os.makedirs(cfgdir, exist_ok=True)
+         check("config embeddings default false", config_wants_embeddings(tmp) is False)
+@@ -1381,6 +1469,43 @@ def _selftest() -> int:
+     finally:
+         shutil.rmtree(d, ignore_errors=True)
+ 
++    # v3.4.5: cmd_search against a repo with no index yet — missing-db behaviour
++    import contextlib as _ctxlib2
++    import io as _io2
++    d3 = tempfile.mkdtemp()
++    try:
++        os.environ["COMPOUND_V_MEMORY_HOME"] = os.path.join(d3, "cache")
++        docs3 = os.path.join(d3, DOCS_REL)
++        os.makedirs(os.path.join(docs3, "specs"))
++        with open(os.path.join(docs3, "specs", "first.md"), "w") as fh:
++            fh.write("# First\nA brand-new repo whose index does not exist yet, "
++                     "mentioning zorbex-marker.\n")
++
++        class SB:  # cmd_search args shim
++            def __init__(self, no_refresh):
++                self.repo = d3
++                self.query = "zorbex-marker"
++                self.top = 8
++                self.intent = None
++                self.json = True
++                self.no_embed = True
++                self.no_refresh = no_refresh
++
++        out_nr, err_nr = _io2.StringIO(), _io2.StringIO()
++        with _ctxlib2.redirect_stdout(out_nr), _ctxlib2.redirect_stderr(err_nr):
++            rc_missing_noref = cmd_search(SB(True))
++        check("search --no-refresh on a missing index: today's exit 1 + message, unchanged",
++              rc_missing_noref == 1 and "index not found" in out_nr.getvalue())
++
++        out_bi, err_bi = _io2.StringIO(), _io2.StringIO()
++        with _ctxlib2.redirect_stdout(out_bi), _ctxlib2.redirect_stderr(err_bi):
++            rc_missing = cmd_search(SB(False))
++        check("search on a missing index builds one and finds the doc",
++              rc_missing == 0 and "first" in out_bi.getvalue())
++    finally:
++        os.environ.pop("COMPOUND_V_MEMORY_HOME", None)
++        shutil.rmtree(d3, ignore_errors=True)
++
+     # A8: a corrupt index.sqlite must exit 1 with an actionable message — never a raw
+     # sqlite3.DatabaseError traceback (open_db_checked is what every CLI entry point uses).
+     import contextlib
+@@ -1437,6 +1562,8 @@ def build_parser():
+     sp.add_argument("--intent", choices=["planning", "review"], default=None)
+     sp.add_argument("--json", action="store_true")
+     sp.add_argument("--no-embed", dest="no_embed", action="store_true")
++    sp.add_argument("--no-refresh", dest="no_refresh", action="store_true",
++                     help="read exactly what is indexed; never refresh the FTS5 lane inline")
+ 
+     sp = sub.add_parser("recall-check", help="deterministic recurring-failure -> tighten verdict")
+     add_repo(sp)

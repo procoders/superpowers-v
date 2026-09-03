@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "scripts/compound-v-memory.py"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "931f68e526c5b15df242d9841661d3954b0a7429",
+    "diff_digest": "sha256:4d46f11883b6f125b3211f15927d816a127fac4210f70a8092f982605f1278db",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"931f68e526c5b15df242d9841661d3954b0a7429\",\n  \"changed\": [\n    \"scripts/compound-v-memory.py\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-memory.py\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "931f68e526c5b15df242d9841661d3954b0a7429",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task A \u2014 search refreshes the FTS5 lane inline (scripts/compound-v-memory.py + selftest)",
+  "tests": {
+    "command": "/usr/bin/python3 -B scripts/compound-v-memory.py --selftest",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 1
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_8e9239df-899-1"
+}

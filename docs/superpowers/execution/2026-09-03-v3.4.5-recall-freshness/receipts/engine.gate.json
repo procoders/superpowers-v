@@ -1,0 +1,42 @@
+{
+  "baseline_commit": "931f68e526c5b15df242d9841661d3954b0a7429",
+  "diff_digest": "sha256:4d46f11883b6f125b3211f15927d816a127fac4210f70a8092f982605f1278db",
+  "exit_code": 0,
+  "job_id": "engine",
+  "patch_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-v3.4.5-recall-freshness/jobs/engine.patch",
+  "patch_paths": [
+    "scripts/compound-v-memory.py"
+  ],
+  "patch_sha256": "sha256:4d46f11883b6f125b3211f15927d816a127fac4210f70a8092f982605f1278db",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"931f68e526c5b15df242d9841661d3954b0a7429\",\n  \"changed\": [\n    \"scripts/compound-v-memory.py\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-memory.py\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "931f68e526c5b15df242d9841661d3954b0a7429",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "scripts/compound-v-memory.py"
+    ],
+    "checks": [
+      {
+        "checker": "/usr/bin/python3 -B scripts/compound-v-memory.py --selftest",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (3 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 1 command(s) from 1 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_8e9239df-899-1"
+}
