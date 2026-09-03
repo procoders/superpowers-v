@@ -1,0 +1,16 @@
+{
+  "baseline_commit": "b7f8c46514ab8fc90c323037694417eeac174f71",
+  "diff_digest": "sha256:189fcdaa549b1a5b8d292de94fd32700030b564283a1f082b4d2c80ec68e73f1",
+  "exit_code": 1,
+  "job_id": "spec-review-1",
+  "patch_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-glob-parity-one-matcher-r2/jobs/spec-review-1.patch",
+  "patch_paths": [
+    "docs/superpowers/dogfood/2026-09-03-epic-gp-one-matcher-r2-review-1.md"
+  ],
+  "patch_sha256": "sha256:de71797ae1e8fffbbecc308b883fa5aebb7b5f5392ab7abc58b133f3c146a174",
+  "raw_stdout": "{\n  \"verdict\": \"blocked\",\n  \"mode\": \"direct\",\n  \"baseline\": \"b7f8c46514ab8fc90c323037694417eeac174f71\",\n  \"changed\": [\n    \"CHANGELOG.md\",\n    \"docs/superpowers/dogfood/2026-09-03-epic-gp-one-matcher-r2-review-1.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-03-epic-gp-one-matcher-r2-review-1.md\"\n  ],\n  \"violations\": [\n    \"CHANGELOG.md\"\n  ]\n}\n",
+  "realised_commit": "f74e7c697f63d622efb9a2e15cb718652d571d1f",
+  "source": "gate-receipt",
+  "verdict": "blocked",
+  "worktree": ""
+}

@@ -1,6 +1,6 @@
 {
   "run_id": "2026-09-03-glob-parity-one-matcher-r2",
-  "phase": "DISPATCHED",
+  "phase": "BLOCKED",
   "updated_at": "2026-09-03T19:50:00Z",
   "pre_eval_id": "2026-09-03T194637Z-retry-epic-feature-one-matcher-attempt-2-retry-fix-after-the-f79a",
   "escalated_to": null,
@@ -26,11 +26,13 @@
       }
     },
     "spec-review-1": {
-      "status": "pending",
+      "status": "blocked",
       "isolation": "direct",
-      "worktree": null,
+      "worktree": "",
       "session_id": null,
-      "log": null
+      "log": null,
+      "baseline": "b7f8c46514ab8fc90c323037694417eeac174f71",
+      "realised_commit": "f74e7c697f63d622efb9a2e15cb718652d571d1f"
     }
   },
   "waves": {
@@ -44,5 +46,12 @@
       "commit": "42cac0197f746eec11f3156a4d629538e5767c32",
       "integrated": true
     }
-  }
+  },
+  "triage_actual": {
+    "merge_pending": true,
+    "pre_eval_id": "2026-09-03T194637Z-retry-epic-feature-one-matcher-attempt-2-retry-fix-after-the-f79a",
+    "run_id": "2026-09-03-glob-parity-one-matcher-r2"
+  },
+  "blocked_reason": "wave 2: integration REFUSED by scripts/compound-v-integration-gate.py: {\"blocked\": 1}. Nothing was merged and nothing was committed.",
+  "blocked_at": "2026-09-03T19:50:00Z"
 }

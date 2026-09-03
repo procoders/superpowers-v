@@ -1,0 +1,209 @@
+diff --git a/docs/superpowers/dogfood/2026-09-03-epic-gp-one-matcher-r2-review-1.md b/docs/superpowers/dogfood/2026-09-03-epic-gp-one-matcher-r2-review-1.md
+new file mode 100644
+index 0000000..8e19103
+--- /dev/null
++++ b/docs/superpowers/dogfood/2026-09-03-epic-gp-one-matcher-r2-review-1.md
+@@ -0,0 +1,203 @@
++# Review Gate — F1 `one-matcher` attempt 2 (retry_fix) · run `2026-09-03-glob-parity-one-matcher-r2`
++
++Three-pass `spec-reviewer` gate over the merged wave-1 commit `42cac01` (job `selftest-row`, worktree
++`wf_7f9ffa97-bcc-1`, realised `4e89e92`), against
++`docs/superpowers/plans/2026-09-03-epic-gp-one-matcher-r2.md` and the finding it claims to close —
++`docs/superpowers/execution/epics/2026-09-03-glob-parity/arbiter/one-matcher-1-sample-audit.md` **item 1
++(TEST_GAP, blocking)**.
++
++**VERDICT: ISSUES** — the sample-audit's blocking finding is **not closed**. The new row passes on the
++real file *and on the guardless copy*; it is not load-bearing against the guard it names. Reproduced
++live, twice, two independent ways (§SPEC 3).
++
++---
++
++## Recall
++
++| Probe | Result |
++|---|---|
++| `compound-v-memory.py search "fail-closed private bytecode cache selftest one matcher" --intent review --top 8` | 8 hits, all on-topic: the r2 plan (Steps 1–2), the sample-audit itself, the attempt-1 review, pre-flight amendment 1 in `specs/one-matcher.md`, the attempt-1 plan's `_scope_matches` sketch. Nothing contradicting the plan; nothing settled that this review re-litigates. |
++| `compound-v-memory.py recall-check --files scripts/compound-v-memory.py` | `recall-check: none (0/2 match on scripts/compound-v-memory.py)` — **no `tighten` verdict**. No control escalated on recall grounds. |
++
++Cited constraint, quoted, from `docs/superpowers/execution/epics/2026-09-03-glob-parity/specs/one-matcher.md`
++(pre-flight amendment 1): the loader must be *"the hardened `load_scope_matcher` shape"* — the bytecode
++cache redirected to a private directory, and **NOTHING loaded when that directory cannot be created**.
++Prose and code agree here; the disagreement this review finds is between the *test* and that constraint.
++
++---
++
++## SPEC
++
++### 1. Scope lock
++
++| Check | Evidence |
++|---|---|
++| Files written vs `write_allowed: [scripts/compound-v-memory.py]` | `git show --stat 42cac01` → `scripts/compound-v-memory.py | 18 ++++++` — one file, `+18/-0` |
++| Deterministic gate | `receipts/selftest-row.gate.json` → `verdict: "pass"`, `violations: []`, `diff_digest sha256:e6feacf…`, baseline `4e89e92` |
++
++✅ No scope violation. The gate ran and passed; confirmed at the seam.
++
++### 2. Spec coverage
++
++| Plan step | Implemented in | Status |
++|---|---|---|
++| Step 1 — append the row after `"matcher missing -> unavailable"` | `scripts/compound-v-memory.py:1658-1675` — the block is byte-identical to the plan's snippet, placed directly after `:1656` | ✅ |
++| Step 2 — prove the row is load-bearing (row FAILS on the guardless copy) | not demonstrated; **and it is false** — see §3 | ❌ |
++| Step 3 — both selftests green | `memory --selftest` → `83 ok / 0 failed / all self-tests passed`; `scope-check --selftest` → `SELFTEST PASSED` | ✅ |
++| Step 4 — commit in the worktree | `42cac01` (merge of `4e89e92`) | ✅ |
++| Job body — *"Report in your summary the exact output line of the guardless-copy run"* | `results/selftest-row.json` `summary` is the harness-default job title, verbatim: `"Task A — the fail-closed selftest row (no private bytecode cache ⇒ unavailable, nothing loaded)"`. No proof line reported; `log: null`. | ❌ |
++
++### 3. ISSUE: ACCEPTANCE_GAP / TEST_GAP (blocking) — the row is not load-bearing
++
++**Manifest `acceptance_criteria[0]` requires:** *"the row FAILS on a copy of the file whose `if err is None:`
++guard in `_scope_matches` is removed (the plan's Step 2)"*. **The job `acceptance` repeats it.** Both are unmet.
++
++I reproduced Step 2 myself. Two runs, one conclusion.
++
++**(a) The plan's own recipe, corrected.** The guardless copy is built by replacing
++`        if err is None:\n            spec = ` with `        if True:\n            spec = ` (1 occurrence,
++at `scripts/compound-v-memory.py:1089`). Run verbatim into `/tmp` as the plan writes it, the copy does
++not test anything — `_SCOPE_CHECK_PATH` is derived from `__file__`'s dirname, so with no sibling
++`compound-v-scope-check.py` next to it the copy dies at `:1633` (`RuntimeError: … No such file or
++directory`) before ever reaching the new row, and the plan's `grep 'no private bytecode cache'` prints
++nothing — an absence a careless reader scores as "it failed". **The plan's Step 2 recipe is itself a
++false-positive proof** (secondary finding, below). With the sibling copied alongside, the copy runs to
++completion:
++
++```
++  ok   matcher missing -> unavailable
++  ok   no private bytecode cache -> unavailable, nothing loaded
++
++0 failed
++all self-tests passed
++```
++
++The guardless copy prints **`ok`**, not `FAIL`. Expected by plan and manifest: `FAIL no private bytecode
++cache -> unavailable, nothing loaded`.
++
++**(b) Marker instrumentation — the hole is real and the row is blind to it.** Same two copies (real,
++guardless) in one scratch directory beside a `compound-v-scope-check.py` whose first line appends one
++byte to a `MARKER` file on execution, so the marker counts how many times the sibling is actually
++imported during one `--selftest`:
++
++| Copy | selftest result | `MARKER` bytes = sibling imports |
++|---|---|---|
++| real `scripts/compound-v-memory.py` | `0 failed / all self-tests passed` | **1** (the parity rows' one legitimate load; the fail-closed row loaded nothing) |
++| guardless (`if True:` at `:1089`) | `0 failed / all self-tests passed` | **2** — the sibling is executed a second time with `sys.pycache_prefix` **never redirected**: precisely the forged-`.pyc` execution the guard exists to prevent |
++
++The guard's removal changes real, observable behaviour — and the selftest stays green either way.
++
++**Root cause (why the row cannot fail).** The row asserts only on the *verdict* and the *note*. Removing
++the `:1089` guard does not change either, because `err` was already set by the `except` branch above, and
++the second guard at `:1105-1109` (`fn = … if err is None else None`; `if err is not None: raise
++RuntimeError(err)`) still raises with the identical message. Measured, both copies, same patched
++`tempfile.mkdtemp`:
++
++```
++real      -> unavailable | scope-check matcher unavailable: refusing to import the scope matcher without a private bytecode cache (no space left)
++guardless -> unavailable | scope-check matcher unavailable: refusing to import the scope matcher without a private bytecode cache (no space left)
++```
++
++Byte-identical. The `:1089` guard governs a **side effect** (whether the module is executed), not the
++returned verdict — so a verdict-only assertion is provably incapable of distinguishing guarded from
++guardless. The row's own title claims *"nothing loaded"* and asserts nothing of the kind. The
++observable the requirement needs — *the sibling module must not be executed when the private cache
++cannot be created* — is exactly what the row does not check.
++
++→ **Sample-audit finding 1 remains OPEN.** The retry did not close it.
++
++### 4. Audit / pre-flight constraint check
++
++| Source | MUST | Satisfied | Notes |
++|---|---|---|---|
++| Pre-flight amendment 1 (`specs/one-matcher.md`) | fail closed — nothing loaded when the private bytecode cache cannot be created | ✅ in production code (`:1084-1090`, unchanged) | The *behaviour* is correct and was already correct; only its *guard test* is missing |
++| Sample-audit item 1 | a row that fails when the `:1089` guard is deleted | ❌ | §3 |
++| Plan Global Constraints | only `scripts/compound-v-memory.py`, only inside `_selftest` | ✅ | `_selftest` spans `:1258` → `:1681`; the hunk is `:1658-1675` |
++| Plan Global Constraints | the two LOW audit notes recorded, not acted on | ✅ | parity rows and `_file_matches` untouched (0-line diff outside the hunk) |
++
++### 5. Over-build
++
++✅ Clean. `+18/-0`, no new flag, helper, export, abstraction or logging. The block is the plan's snippet
++verbatim.
++
++**PASS 1 SPEC: ISSUES** (ACCEPTANCE_GAP / TEST_GAP, blocking; plus the missing Step-2 report).
++
++---
++
++## QUALITY
++
++Run despite the SPEC failure, because the finding is narrow and withholding the rest would cost a
++re-derivation next round. Ranked; nothing held back.
++
++| # | Severity | Check | Result |
++|---|---|---|---|
++| 1 | — | **2.4 fabricated metrics** | ✅ none. No count, saving, percentage or duration printed, logged or documented. |
++| 2 | — | **2.5 reward-hacking** | ✅ none. `+18/-0`: no assertion removed, loosened or commented; no threshold moved; no test file deleted, renamed or skipped; no `.skip`/`xit`; the scorer (`check`/`fails`) untouched; no exception newly swallowed. `scope-check.py` has a 0-line diff. |
++| 3 | — | **2.2 regression** | ✅ none. `83 ok / 0 failed` (was 82 before; `+1` row, consistent with `+18/-0`). `scope-check --selftest` `SELFTEST PASSED`. No signature changed, no export removed, no caller touched. |
++| 4 | HIGH | **2.3 test alignment** | ❌ the MUST from pre-flight amendment 1 has a row that *names* it but cannot fail for it — §SPEC 3. A test that passes in both worlds is not a guard; it is worse than no guard, because the marathon will read it as closure. Same defect as sample-audit item 1, one layer up. |
++| 5 | LOW | **plan defect, `2026-09-03-epic-gp-one-matcher-r2.md` Step 2** | The recipe writes the guardless copy to `/tmp/cv-mem-guardless.py` with no sibling `compound-v-scope-check.py`. `_SCOPE_CHECK_PATH = dirname(abspath(__file__))/compound-v-scope-check.py` makes that copy crash at `:1633` before the row runs; the prescribed `grep` then prints nothing, which reads as "failed". Any future attempt following Step 2 verbatim reaches the right conclusion by the wrong evidence. Fix the recipe alongside the row. |
++| 6 | LOW | `scripts/compound-v-memory.py:1665` | `_no_cache` is defined but the row never asserts *that it was called* — a future refactor that stops routing through `tempfile.mkdtemp` (e.g. `mkdtemp` moved behind a helper, or the redirection dropped entirely) leaves the patch inert and the row still green for an unrelated reason. Related to #4, distinct cause. |
++| 7 | INFO | `scripts/compound-v-memory.py:1666,1671` | `import tempfile as _tf` patches the *global* `tempfile` module for the duration of the `recall_check` call. Correct here — `finally` restores it, and `results_root="/nonexistent-results"` means no other `mkdtemp` consumer runs inside the window — but it is a process-global mutation in a test with no isolation; noted, not a defect. |
++| 8 | INFO | `:1670`, `:1674` | `globals()["_SCOPE_MATCH"] = None; globals()["_SCOPE_MATCH_ERR"] = None` — two statements on one line. Matches the existing idiom at `:1650`/`:1654` exactly, so this is consistency, not a lapse. |
++
++**PASS 2 QUALITY: ISSUES** (item 4, HIGH; items 5–6 LOW).
++
++---
++
++## INTEGRATION
++
++### Partition & seams
++
++✅ Single-job wave. One file, one function, no shared type, no barrel, no registry. No partition leak
++possible and none observed. `lane-map.json` resolves both lanes distinctly
++(`wf_7f9ffa97-bcc-1` → `selftest-row`, repo root → `spec-review-1`).
++
++### Build green, and the tests the tier owes
++
++Manifest `triage.tier: SCOPED`. `files_changed: [scripts/compound-v-memory.py]`, which matches the single
++`impacted_map` rule `when: scripts/compound-v-*.py` — so nothing falls through to the unmapped-path
++referencing heuristic and `full_command` is **not** owed. Owed: floor ∪ impacted.
++
++| Field (`results/selftest-row.json`) | Value | Owed? |
++|---|---|---|
++| `tests.command` | floor `bash -c 'python3 -B scripts/compound-v-memory.py --selftest … && … scope-check.py --selftest …'` **+** the impacted rule resolved to `scripts/compound-v-memory.py` | ✅ both present, non-empty |
++| `tests.exit_code` | `0` | ✅ |
++| `tests.scope` | `impacted` | ✅ matches SCOPED |
++| `tests.selected_count` | `2` (commands, not cases) | ✅ = floor + 1 impacted |
++| `receipts/…gate.json tests.contract_notes` | `impacted: 1 command(s) from 1 changed path(s)`; `previously-failing: 0`; `newly-added: 0` | ✅ consistent |
++
++Re-run by me on the merged tree, not taken on the worker's word:
++
++```
++/usr/bin/python3 -B scripts/compound-v-memory.py --selftest      → 83 ok, 0 failed, all self-tests passed
++/usr/bin/python3 -B scripts/compound-v-scope-check.py --selftest → SELFTEST PASSED
++```
++
++✅ Build/suite green. No `NO_TEST_EVIDENCE`, no `BUILD_RED`.
++
++### Feature acceptance criteria (`manifest.acceptance_criteria`)
++
++| Criterion | Evidence | Status |
++|---|---|---|
++| 1. `--selftest` passes with a new row `"no private bytecode cache -> unavailable, nothing loaded"` … **the row FAILS on a copy whose `if err is None:` guard is removed** … `scope-check --selftest` still passes | row present and passing (`83 ok`); scope-check `SELFTEST PASSED`; **guardless copy also prints `ok`** — §SPEC 3(a), and §SPEC 3(b) shows the guardless copy really does execute the sibling unredirected while staying green | ❌ **ACCEPTANCE_GAP** |
++| 2. `git diff --stat` shows only `scripts/compound-v-memory.py`, only lines inside `_selftest`; no production code changed; no existing check weakened or removed | `+18/-0` at `:1658-1675`, inside `_selftest` (`:1258`–`:1681`); scope gate `pass`; §QUALITY 2 | ✅ |
++
++**PASS 3 INTEGRATION: ISSUES** (criterion 1 unmet). §2.6 confirmed-blocker integrity: **n/a** — no
++`blocked_external` verdict and no `done_with_blockers` terminal in this run.
++
++---
++
++## Verdict
++
++| Pass | Result |
++|---|---|
++| PASS 1 SPEC | **ISSUES** — ACCEPTANCE_GAP / TEST_GAP: the row passes on the guardless copy; Step-2 proof neither reproduced nor reported |
++| PASS 2 QUALITY | **ISSUES** — non-load-bearing guard test (HIGH); plan Step-2 recipe is a false-positive proof (LOW); `_no_cache` never asserted called (LOW). No fabricated metric, no reward-hack, no regression. |
++| PASS 3 INTEGRATION | **ISSUES** — feature acceptance criterion 1 unmet. Suite green, tier-owed tests ran (exit 0), scope lock respected, no partition leak. |
++
++The change is honest, in scope, well-formed and green. It simply does not do the one thing the retry
++existed to do: sample-audit item 1 stays open, because the assertion is on a verdict that the guard does
++not affect, while the guard's actual effect — whether the sibling module gets executed without a private
++bytecode cache — goes unobserved. Not "close enough."
++
++VERDICT: ISSUES
