@@ -966,11 +966,18 @@ def index_staleness(conn, root):
     return new, changed, removed
 
 
-def _staleness_warning(new, changed, removed):
+def _staleness_warning(new, changed, removed, why="--no-refresh"):
     # multi-dev: a teammate's pulled/changed docs aren't indexed yet (or some were removed).
+    # The advice names the path that was actually taken: with --no-refresh the caller asked
+    # to read the index as it is; when another refresh holds the lock this search read the
+    # stale index rather than wait. Neither is "run /v:memory-refresh first" — a plain
+    # search refreshes the FTS5 lane itself (review-2 of v3.4.5, item 2).
+    if why == "lock":
+        advice = "another refresh holds the lock, so this search read the index as it is"
+    else:
+        advice = "searched as indexed (--no-refresh); a plain search refreshes the FTS5 lane itself"
     sys.stderr.write("V-memory: index is %d new / %d changed / %d removed docs behind the "
-                     "repo — run /v:memory-refresh to include the latest pulled knowledge.\n"
-                     % (new, changed, removed))
+                     "repo — %s.\n" % (new, changed, removed, advice))
 
 
 def cmd_search(args) -> int:
@@ -1002,7 +1009,7 @@ def cmd_search(args) -> int:
         else:
             # Another refresh already holds the lock — search the stale index, silently
             # (never refresh's own "already running — skipped" line).
-            _staleness_warning(len(new), len(changed), len(removed))
+            _staleness_warning(len(new), len(changed), len(removed), why="lock")
     elif stale:
         _staleness_warning(len(new), len(changed), len(removed))
     pool = max(args.top * 4, 20)

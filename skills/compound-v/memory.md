@@ -140,8 +140,7 @@ truth is the git-tracked files, and the index is only a local, disposable cache 
 - **Freshness by construction:** `search` checks whether the FTS5 index is behind the working
   tree by running `git ls-files` plus a content hash of every tracked doc (~0.09s over ~275
   docs, measured) — still cheap enough to pay before every search — and, unless `--no-refresh`
-  is passed, refreshes it inline
-  before the query runs — printing one stderr line, `V-memory: refreshed N stale doc(s) before
+  is passed, refreshes it inline before the query runs — printing one stderr line, `V-memory: refreshed N stale doc(s) before
   recall (FTS5 lane)`. So a dev who just pulled a teammate's docs gets current recall on the
   very next search, with no separate `/v:memory-refresh` step. `--no-refresh` searches whatever
   is already indexed and prints the staleness warning instead. A repo with no index yet builds
