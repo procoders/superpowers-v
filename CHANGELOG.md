@@ -90,6 +90,10 @@ Task route as the fallback. (Implementation note: `--tools` is a variadic CLI fl
 trailing positional, so the prompt must come immediately after `-p`, before `--tools ""` — the argv
 builder and its selftest pin the order.)
 
+### Fixed — every consumer of the test slice knows the 3.4.1 label (three review passes)
+
+Three review passes over the feature found the same defect on three seams: a producer's new field (`scope: impacted+referencing`, `selected_count`) that a consumer did not know. The five external workers' `tc_validate` refused it as malformed before the model ran (pass 2); `schemas/job_result.schema.json`'s `tests.scope` enum did not name it and the native emitter's `TESTS_SCOPES` filter silently downgraded it to `impacted` (pass 3); the backend-launcher skill, the five adapter docs and four "unmapped ⇒ full_command" sentences still described the old rule. All closed; `tests/test-engine-c-contract.sh` pins each worker's validator against the real slice and reds on the previous code, and the emitter's selftest pins the label surviving translation verbatim. The cycle cap was three passes: these were closed by the orchestrator with tests, not by a fourth pass.
+
 ### Fixed — the phase advance to MERGED was a prose step; fourteen finished runs silenced the triage hook
 
 `finalize-wave` integrated, committed and pruned, but never touched `state.json.phase`; only `/v:dispatch` step 9 (a human step) wrote `MERGED`. Every run of the 3.4.0 night sat at `PARTITION_VERIFIED` after a successful merge, the dashboard's `resume` named fourteen "unfinished" runs for 72 hours, and `triage-prompt-nudge.sh` stayed silent for the whole repository. The finalizer now moves a run to `DISPATCHED` while waves remain and to `MERGED` once every manifest job is integrated (`merged_at` recorded), and commits the run's own record in a second, plain commit — never folded into the wave commit the authority proves. Sixteen historical runs whose every wave integrated are retro-marked `MERGED` with a note.

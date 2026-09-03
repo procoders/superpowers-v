@@ -200,7 +200,7 @@ scripts/compound-v-run-codex-worker.sh \
   The caller resolves it (`impacted_map` globs stay in the caller's Python — a second matcher here
   would diverge from the authority and silently *drop* tests); the worker executes exactly that list.
 - It is **structurally validated before codex is launched**. A malformed contract, an unknown key,
-  a scope outside `full|impacted|floor_only`, an empty `resolved_commands`, or a blank command is a
+  a scope outside `full|impacted|floor_only|impacted+referencing`, a non-integer `selected_count`, an empty `resolved_commands`, or a blank command is a
   **usage fault (exit 2)**, not a test failure — a blank command would `bash -c` to a silent exit 0.
 - Each command runs under the process-group supervisor with `</dev/null`, `--cwd` the worktree, and
   its output captured to files under `$WT.art/tests/` (outside the worktree, so stdout stays exactly

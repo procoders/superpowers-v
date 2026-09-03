@@ -109,9 +109,10 @@
           "enum": [
             "full",
             "impacted",
-            "floor_only"
+            "floor_only",
+            "impacted+referencing"
           ],
-          "description": "The job's resolved `test_scope` (execution-manifest.md, Feature B2), copied verbatim from the contract the caller passed as an argument. `floor_only` means ONLY the floor, never nothing; a changed path matching no `when` glob resolves to `full_command`, so an unmapped file is never silently untested."
+          "description": "The job's resolved `test_scope` (execution-manifest.md, Feature B2), copied verbatim from the contract the caller passed as an argument. `floor_only` means ONLY the floor, never nothing; a changed path matching no `when` glob resolves to `full_command` at tier FULL and, since 3.4.1, to the referencing tests (label `impacted+referencing`, cap 5) or the floor alone at SCOPED/DIRECT — so an unmapped file is never silently untested, and never the whole suite at a proportionate tier."
         },
         "selected_count": {
           "type": "integer",

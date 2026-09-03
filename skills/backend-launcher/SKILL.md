@@ -32,7 +32,7 @@ There is no skill-import API: an adapter is a sibling doc (`adapter-codex.md`, `
   "network": false,                    // maps to sandbox_workspace_write.network_access
   "output_schema": "/abs/schemas/job_result.schema.json", // optional
   "test_contract": {                   // optional (v3.0 Feature B3) — the RESOLVED test contract
-    "scope": "impacted",               //   full | impacted | floor_only (the job's test_scope)
+    "scope": "impacted",               //   full | impacted | floor_only | impacted+referencing (the job's test_scope; the last is 3.4.1's SCOPED/DIRECT unmapped-path resolution)
     "floor_command": "bash tests/run-floor.sh",
     "full_command":  "bash tests/run-all.sh",
     "resolved_commands": [             //   caller-resolved, ordered, deduped; the floor is first
@@ -103,22 +103,24 @@ failure the triage block exists to remove, one layer down.
 
 ```jsonc
 "test_contract": {
-  "scope": "impacted",                    // full | impacted | floor_only — the job's test_scope
+  "scope": "impacted",                    // full | impacted | floor_only | impacted+referencing — the job's test_scope
   "floor_command": "bash tests/run-floor.sh",   // optional, informational: what the floor was
   "full_command":  "bash tests/run-all.sh",     // optional, informational: what full would have been
   "resolved_commands": ["bash tests/run-floor.sh", "python3 scripts/compound-v-preeval.py --selftest"]
 }
 ```
 
-Only `scope` and `resolved_commands` are required; unknown keys are rejected, so a `resolved_command`
-typo cannot pass silently as "nothing to run".
+Only `scope` and `resolved_commands` are required; `floor_command`, `full_command` and (3.4.1) an
+integer `selected_count` are the only optional keys — anything else is rejected, so a
+`resolved_command` typo cannot pass silently as "nothing to run".
 
 **Resolution belongs to the CALLER, execution to the worker.** The caller turns the manifest's
 `test_contract` (`floor_command` / `full_command` / `impacted_map`) plus the job's `test_scope` into
 the ordered, deduped `resolved_commands` list, applying the rules in
 [`execution-manifest.md`](../compound-v/execution-manifest.md): the floor always runs and comes
 first; overlapping `when` globs **union**; a changed path matching no `when` glob resolves to
-`full_command`; `floor_only` means *only the floor*, never nothing. That glob matching stays in the
+`full_command` at tier FULL and, since 3.4.1 (decision 4), to at most five tests that REFERENCE
+the changed module — else the floor alone — at SCOPED and DIRECT (label `impacted+referencing`); `floor_only` means *only the floor*, never nothing. That glob matching stays in the
 caller's Python for the same reason the scope gate does — a second, weaker matcher written in bash
 five times over would diverge from the authority, and a divergence here silently *drops* tests.
 The worker never re-derives the set; it executes exactly the list it was handed.

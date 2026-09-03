@@ -3192,7 +3192,11 @@ def merge_back(worktree, repo_root, baseline, files_changed):
 #     `tests.scope` is exactly the field a reviewer checks against the tier, so a
 #     label derived from less than the resolver used cannot do that job.
 # --------------------------------------------------------------------------- #
-TESTS_SCOPES = ("full", "impacted", "floor_only")
+# `impacted+referencing` joined in 3.4.1 (decision 4): a SCOPED/DIRECT job whose unmapped
+# path resolved to referencing tests. Without it here the translation silently DOWNGRADED
+# that label to the derived default, so the record said `impacted` for a slice that ran
+# something else — the label the reviewer checks against the tier (review-3 of 3.4.1).
+TESTS_SCOPES = ("full", "impacted", "floor_only", "impacted+referencing")
 
 
 def _tests_block_from_floor(floor, contract=None, job=None, tier=None):
@@ -5768,6 +5772,17 @@ def selftest():
                                        "FULL")["scope"] == "impacted"
                and _tests_block_from_floor(floor_pass, _c_map, {},
                                            "SCOPED")["scope"] == "impacted")
+        # review-3 of 3.4.1, finding 1: the resolver's `impacted+referencing` label must
+        # survive translation VERBATIM — until this cell the filter downgraded it to the
+        # derived default and the record said `impacted` for a slice that ran something else.
+        _ref_block = _tests_block_from_floor(
+            floor_pass, {"scope": "impacted+referencing", "resolved_commands": ["x"],
+                         "selected_count": 1}, {}, "SCOPED")
+        _check("tests.scope keeps the resolver's impacted+referencing label verbatim",
+               (_ref_block or {}).get("scope") == "impacted+referencing", str(_ref_block))
+        with open(os.path.join(HERE, "..", "schemas", "job_result.schema.json"), "r") as _fh:
+            _jr_enum = json.load(_fh)["properties"]["tests"]["properties"]["scope"]["enum"]
+        _check("...and the job_result schema's enum names it", "impacted+referencing" in _jr_enum)
         _check("no map and no DIRECT floor is full, the resolver's own default",
                _tests_block_from_floor(floor_pass, _c_nomap, {},
                                        "FULL")["scope"] == "full")
