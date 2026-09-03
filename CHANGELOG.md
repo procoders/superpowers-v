@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added — a transient API failure is retried inside the workflow, and a stuck reviewer is lifted, not lost (findings 118, 119)
+
+Three consecutive `529 Overloaded` on the Opus reviewer during a live run each cost a run, a
+bookkeeping commit and a human relaunch: the emitted Workflow JS never looped `agent()`, so a
+transient failure (or, on the path the runtime actually takes, `agent()` resolving to `null`
+with no error text) became `status: error` on the first hit, even though
+[`failure-policy.md`](skills/compound-v/failure-policy.md) already owned the right
+classify-then-decide table for the residual subagent dispatcher and the external workers. Every
+`agent()` call the emitted script makes (implement, gate, record, finalize, review) is now
+wrapped in `withRetry`, which retries on the policy's transient classes up to a new manifest
+knob, `retry.max_attempts` (int 1–3, default 3; `1` disables retries) — backoff is the policy's
+table **without jitter** (2 s → 4 s → 8 s, capped at 60 s; `Date.now()`/`Math.random()` are
+refused inside a workflow script) and each retry is logged in that stage's result as
+`retries: [{stage, attempt, wait_ms}]`. On the `null`-resolution path the failing class can't be
+named, so exhaustion records `failure_class: other` with a reason that says so, never a guessed
+`overloaded`. A review job that exhausts its budget on `tier: deep` is re-spawned once on
+`frontier` (Fable) when `retry.escalate_reviewer` (default true) — the same
+`sonnet → opus → fable` ladder used elsewhere, requested and stated as such, never below `deep`;
+implementers are never escalated this way, and fast-path reviewers (schema-pinned to `deep`) are
+out of scope. `execution-manifest.md`'s reviewer-invariant paragraph is corrected to say what it
+should always have said: a reviewer's floor is `deep`, not a ceiling — `frontier`/Fable also
+satisfies it. `failure-policy.md` and `agents/parallel-dispatcher.md` Step 2c document the same
+mechanism for parity with the dispatcher's own retry loop.
+
 ## [3.4.7] - 2026-09-03
 
 A documentation release, run through the pipeline like any feature: four jobs in three waves, zero

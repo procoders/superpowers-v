@@ -9,6 +9,24 @@ The two scripts below **are** the tables. This doc explains how the dispatcher w
 - **Classifier** — [`scripts/compound-v-classify-failure.py`](../../scripts/compound-v-classify-failure.py)
 - **Decision table** — [`scripts/compound-v-failure-policy.py`](../../scripts/compound-v-failure-policy.py)
 
+**This table also applies inside Engine C's workflow (v3.4.8, findings 118/119) — same table, no
+jitter.** The residual subagent dispatcher and the external workers ran this classify → decide →
+act loop already; the emitted Workflow JS did not — it never looped `agent()`, so a transient
+`529`/`429`/network failure (or, on the path the runtime actually uses, `agent()` resolving to
+`null` with no error text at all) became `status: error` on the first hit. Since 3.4.8 the
+emitted script wraps every `agent()` call (implement, gate, record, finalize, review) in a
+`withRetry` that retries on the **same** classes this doc defines, up to the manifest's
+[`retry.max_attempts`](execution-manifest.md#retry--transient-failure-retry-inside-the-workflow-v348)
+(default 3). Two differences from the dispatcher path, both forced by the runtime: the workflow
+backoff is the **same table, without jitter** (`Date.now()`/`Math.random()` are refused inside a
+workflow script, so it can't de-sync siblings) — 2 s → 4 s → 8 s, capped at 60 s — and on the
+`null`-resolution path (no error text reaches the script) the class **cannot** be named, so
+exhaustion writes `failure_class: other` with a reason that says so, never a guessed
+`overloaded`. A review job that exhausts its budget on `tier: deep` is re-spawned once on
+`frontier` (Fable) when `retry.escalate_reviewer` (default true) — the REQUESTED escalation
+documented in `execution-manifest.md`, never a confirmed one. Fast-path reviewers (schema-pinned
+to `deep`) are out of scope for the lift.
+
 The re-route is the **same** env-aware codex→claude rewrite as [`routing-policy.md`](routing-policy.md) — invoked here at **runtime** on an out-of-credits event, not only at `/v:init`.
 
 ---

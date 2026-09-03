@@ -279,6 +279,20 @@ A `job_result.status` that is **not** `success` and **not** `blocked` is a backe
      - **context_length already at the deepest tier** (`--current-tier deep`) — no bigger model exists, so **split the job → back to planning/partition**; do not loop on escalation.
      - **auth** — the policy returns `halt` + `circuit_break: true`. As with **any** `circuit_break: true` result (out_of_credits OR auth), **open the breaker object** `circuit_open[<backend>] = {"open": true, "reason": "<failure_class>", "opened_at": "<iso-ts>", "cleared_by": null}` — for auth, cleared only by re-auth (`/v:init`) on `/v:resume`. Opening the breaker is keyed on `circuit_break: true`, not on the action being `reroute`.
 
+   - **Transient exhaustion on a reviewer ⇒ one lift, never a loss (v3.4.8, findings 118/119).**
+     This applies to Engine C's in-workflow retry, not this dispatcher's own loop — stated here
+     for parity, since the invariant is the same one this doc's job partition already assumes
+     ([`execution-manifest.md`](../skills/compound-v/execution-manifest.md) invariant 4). When a
+     **review** stage's `withRetry` exhausts `retry.max_attempts` on `tier: deep`, it is
+     re-spawned **once** on `frontier` (Fable) — via the existing `sonnet → opus → fable` ladder,
+     never below `deep` — rather than being recorded `halt`ed. The receipt/result carry
+     `escalated_from: deep` as the REQUESTED escalation (an org allowlist can substitute silently;
+     the field states what was asked for). This is gated by `retry.escalate_reviewer` (default
+     `true`) and never applies to implementers (their cap is turns, not model capacity) or to a
+     fast-path reviewer (schema-pinned to `deep`, out of scope). See
+     [`execution-manifest.md`](../skills/compound-v/execution-manifest.md#retry--transient-failure-retry-inside-the-workflow-v348)
+     and [`failure-policy.md`](../skills/compound-v/failure-policy.md) for the full mechanism.
+
 **Circuit-break is check-before-launch.** Before dispatching each job in a batch, check `circuit_open[<job.backend>]`; if it is open, do NOT launch the job — defer it to reroute/halt. A break discovered mid-batch cannot un-launch jobs already in flight on that backend (there is no daemon) — those complete and **fail fast** (an `out_of_credits` returns immediately). So "re-route the remaining jobs" means the remaining **unlaunched** jobs; in-flight ones are not force-killed.
 
 Write `state.json` after every transition. "Deprioritize, don't remove": a transient failure gets a short `cooldowns[<backend>]` timestamp (probed half-open next batch), only a confirmed `out_of_credits`/`auth` opens the breaker **object** for the run (which [`/v:resume`](../commands/v-resume.md) reconciles by `reason` — top-up/probe for credits, re-auth for auth — never a silent re-dispatch). **Never** retry `out_of_credits`/`auth`; cap retries by **count AND wall-clock** (per-(job,class) ceiling *and* `max_total_retries`); classify by error **TYPE**, not HTTP status.
