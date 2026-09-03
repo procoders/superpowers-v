@@ -13,16 +13,15 @@
       "attempts": 2,
       "last_error": "attempt 2: reviewer ISSUES \u2014 the new selftest row passes on the guardless copy too (not load-bearing: err from mkdtemp still raises at the end); review job also refused at the gate (orchestrator commit during a direct job)",
       "disposition": {
-        "disposition": "retry_fix",
-        "attempt": 1,
+        "disposition": "halt_feature",
+        "attempt": 2,
         "confirmed": false,
-        "reason": "retry_fix majority: Claude, GPT, Gemini \u2014 one missing selftest row (fail-closed mkdtemp), no production change",
+        "reason": "non-retry majority but disagreement among them -- conservative halt_feature",
         "families_agreeing": [
-          "Claude",
           "GPT",
           "Gemini"
         ],
-        "recorded_at": "2026-09-03T19:45:53.706222+00:00"
+        "recorded_at": "2026-09-03T20:02:00.441065+00:00"
       },
       "sample_audit_due": false
     },
@@ -55,7 +54,7 @@
   "blocker_ledger": [],
   "no_progress_cycles": 1,
   "total_attempts": 2,
-  "updated_at": "2026-09-03T19:59:28Z",
+  "updated_at": "2026-09-03T20:02:00Z",
   "last_done_count": 0,
   "processed_cycle_ids": [
     "c1",

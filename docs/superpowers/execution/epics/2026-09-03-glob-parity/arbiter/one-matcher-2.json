@@ -1,0 +1,56 @@
+{
+  "disposition": "halt_feature",
+  "confirmed": false,
+  "reason": "non-retry majority but disagreement among them -- conservative halt_feature",
+  "evidence": null,
+  "ballots": [
+    {
+      "source": "codex",
+      "family": "GPT",
+      "model": "gpt-5.6-sol",
+      "valid": true,
+      "disposition": "halt_feature",
+      "reason": "Attempt 2 still fails the quality gate because its selftest does not prove fail-closed short-circuiting, and the feature's retry cap is exhausted.",
+      "evidence": null,
+      "blocker_category": null,
+      "counted": true
+    },
+    {
+      "source": "agy",
+      "family": "Gemini",
+      "model": "Gemini 3.1 Pro (High)",
+      "valid": true,
+      "disposition": "halt_feature",
+      "reason": "Feature attempt retry cap reached (2 of 2 attempts exhausted).",
+      "evidence": null,
+      "blocker_category": null,
+      "counted": true
+    },
+    {
+      "source": "claude",
+      "family": "Claude",
+      "model": "claude",
+      "valid": true,
+      "disposition": "halt_epic",
+      "reason": "Retry budget is exhausted (attempts 2 of cap 2, can_retry false) on a defect the pipeline demonstrably cannot self-verify \u2014 the plan's own Step-2 load-bearing proof was itself a false positive and both attempts produced a green test that passes identically on the guardless copy \u2014 and there is nothing independent left to continue on (F2 matcher-docs depends_on one-matcher), while the orchestrator's commit-to-shared-checkout defect (finding 150) that refused this run's direct-mode review job is epic-level infrastructure that would refuse the next one too; a human is required either way, so stop the epic rather than advance F2 on a fail-closed guard whose only test the marathon would read as closure.",
+      "evidence": null,
+      "blocker_category": null,
+      "counted": true
+    }
+  ],
+  "families_present": [
+    "Claude",
+    "GPT",
+    "Gemini"
+  ],
+  "families_agreeing": [
+    "GPT",
+    "Gemini"
+  ],
+  "challenge_id": "ch-203f328bad72d4db",
+  "epic_id": "2026-09-03-glob-parity",
+  "feature": "one-matcher",
+  "attempt": 2,
+  "audit_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/epics/2026-09-03-glob-parity/arbiter/one-matcher-2.json",
+  "recorded_at": "2026-09-03T20:01:27.889888+00:00"
+}

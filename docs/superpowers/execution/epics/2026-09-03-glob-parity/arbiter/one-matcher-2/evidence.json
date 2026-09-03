@@ -1,0 +1,16 @@
+{
+  "epic_id": "2026-09-03-glob-parity",
+  "feature": "one-matcher",
+  "attempt": 2,
+  "failure_kind": "reviewer_issues",
+  "what_failed": "Attempt 2 (retry_fix for the sample-audit TEST_GAP) merged one selftest row (commit 42cac01) but the Review Gate returned ISSUES: the row passes on the real file AND on a guardless copy, so it does not prove the fail-closed guard. Root cause: with tempfile.mkdtemp patched to raise, `err` is set and the final `if err is not None: raise` fires whether or not the `if err is None:` load guard exists \u2014 the row must instead prove the sibling is NEVER executed (e.g. patch importlib.util.spec_from_file_location to raise/record and assert it was not called).",
+  "also": "The direct-mode review job was refused at the gate because the orchestrator committed CHANGELOG.md to the shared checkout while the job was registered (finding 150) \u2014 a process error, not a code defect; the review content stands.",
+  "retry_cap": {
+    "attempts": 2,
+    "cap": 2,
+    "can_retry": false
+  },
+  "fix_size_estimate": "one selftest row replacement (assert spec_from_file_location is not reached when mkdtemp fails); no production change",
+  "review_file": "docs/superpowers/dogfood/2026-09-03-epic-gp-one-matcher-r2-review-1.md",
+  "prior_audit": "docs/superpowers/execution/epics/2026-09-03-glob-parity/arbiter/one-matcher-1-sample-audit.md"
+}
