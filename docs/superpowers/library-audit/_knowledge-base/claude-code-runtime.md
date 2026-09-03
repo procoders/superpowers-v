@@ -378,3 +378,55 @@ Sources: [`code.claude.com/docs/en/workflows.md`](https://code.claude.com/docs/e
 full, 2026-09-03) · this file's own 2026-09-01 entry (`BINARY`, installed Claude Code `2.1.238`) ·
 `scripts/compound-v-emit-workflow.py:2171-2179,2201-2249,2267-2311` (`Grep`+`Read`, this session, current
 HEAD).
+
+---
+
+## Updated 2026-09-03 — `agent()` schema property-addition semantics (v3.4.9 kb_files/retries)
+
+Validated for
+[`docs/superpowers/library-audit/2026-09-03-v3-4-9-preflight-kb-paths-and-retries-schema.md`](../2026-09-03-v3-4-9-preflight-kb-paths-and-retries-schema.md).
+No Context7 attached to this subagent (fourth same-week 1C run recording this). Sources: a live `WebFetch` of
+`code.claude.com/docs/en/workflows.md`, prompted specifically for the `schema` option's property-addition
+semantics (narrower than the same-day v3.4.8 fetch above, which focused on error/retry behavior) · direct
+read of `scripts/compound-v-emit-preflight.py`'s already-shipping `RESULT_SCHEMA` and wrapper-prompt JS
+template · `schemas/job_result.schema.json`'s existing (v3.4.8) `retries.items` sub-schema.
+
+**The array-of-strings schema shape is documented AND already running in this repo.** The live doc's own
+worked example uses exactly `{type: 'array', items: {type: 'string'}}` for a schema property. This repo's
+`RESULT_SCHEMA["properties"]["blocking"]` (`compound-v-emit-preflight.py:102`) is byte-identical to that
+shape and has been shipping in production since the pre-flight emitter existed — stronger evidence than any
+doc statement, because it is observed running code. Adding a second array-of-strings property (`kb_files`)
+to the same schema carries zero shape-currency risk.
+
+**Gap in the live doc: it describes schema *shape*, never schema *evolution*.** No mention anywhere on the
+fetched page of a property-count limit, nesting-depth limit, or guidance on adding a new property to an
+already-working schema. Nothing found either way — treat as unaddressed by the doc, not as "confirmed safe
+by the doc" (the confirmation instead comes from the running-code precedent above).
+
+**Required-vs-optional JSON Schema semantics apply to `agent()`'s `schema` option, and this repo's own code
+already demonstrates it.** A property listed in `properties` but absent from `required` may legitimately be
+omitted from a schema-compliant `agent()` response — standard JSON Schema behavior, not Claude-Code-specific
+and not subject to library drift. `RESULT_SCHEMA`'s existing `notes` property (`properties`-only, never
+`required`, never explicitly asked for by name in the wrapper prompt) is direct, already-running evidence
+of this: nothing forces an agent to fill it, and nothing in this repo currently does. **Any future field
+added to this schema that the orchestrator actually depends on being present must either go in `required`,
+or be explicitly asked for by name in the wrapper prompt text — schema membership alone is not enough.**
+
+**`RESULT_SCHEMA` and the wrapper prompt are ONE shared object/string across all three parallel pre-flight
+phases.** `compound-v-emit-preflight.py:236-267`: the `parallel()` fan-out for 1A (code-archaeologist), 1B
+(domain-expert), and 1C (doc-validator) all receive the identical `CFG.schema` and near-identical `prompt`
+template, differing only in interpolated `purpose`/`out` strings. A schema field addition is global across
+all three phases by construction — not opt-in per phase — even when only some phases' own agent
+instructions describe using it.
+
+**Three result-construction sites in the JS template bypass `agent()`/`schema` entirely and get no schema
+enforcement or defaulting.** The `e.skipped` branch (`:240`), the `r === null`/`undefined` branch
+(`:287-288`), and the `catch` branch (`:296-297`) are hand-written object literals returned directly from
+the `parallel()` callback, never passed through structured-output validation. Each already lists
+`blocking: []` explicitly — the established precedent that any field the post-processing step reads
+unconditionally must be defensively present (or coalesced with `|| []`) at all three sites, not only
+wherever the schema is defined.
+
+Sources: [`code.claude.com/docs/en/workflows.md`](https://code.claude.com/docs/en/workflows.md) (fetched
+2026-09-03, this session) · `scripts/compound-v-emit-preflight.py:91-105,209-267,302-324` (`Read`, this
+session, current HEAD) · `schemas/job_result.schema.json:219-257` (`Read`, this session).

@@ -1,0 +1,32 @@
+{
+  "run_id": "2026-09-03-v3.4.9-preflight-kb-paths-and-retries-schema",
+  "phase": "PARTITION_VERIFIED",
+  "pre_eval_id": "2026-09-03T170419Z-implement-v3-4-9-per-docs-superpowers-specs-2026-09-03-v3-4-a42f",
+  "updated_at": "2026-09-03T17:15:28Z",
+  "jobs": {
+    "preflight-kb": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "retries-schema": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "changelog": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "spec-review": {
+      "status": "pending",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null
+    }
+  }
+}
