@@ -1,0 +1,48 @@
+{
+  "base_commit": "915686d25d3ed05bd98b888b7014f0f1909f2df0",
+  "confidence": "localization:new_file; tiers:localization,T1",
+  "decision": "FULL_PIPELINE",
+  "declared_paths": [
+    "docs/superpowers/dogfood/README.md",
+    "docs/superpowers/execution/epics/2026-09-03-verification-index/specs/review-index.md",
+    "scripts/compound-v-dogfood-index.sh",
+    "tests/test-dogfood-index.sh"
+  ],
+  "difficulty": {
+    "band": "high",
+    "display": 8
+  },
+  "digest": "sha256:7aa2909c218d78821aa84cbe87d97681a5f6d15ffc463c02a63b290690182a26",
+  "impact": {
+    "band": "high",
+    "display": 8
+  },
+  "localization": {
+    "confidence": "new_file",
+    "fan_out": 4,
+    "flags": [
+      "new_file"
+    ],
+    "resolved_paths": [
+      "docs/superpowers/dogfood/README.md",
+      "docs/superpowers/execution/epics/2026-09-03-verification-index/specs/review-index.md",
+      "scripts/compound-v-dogfood-index.sh",
+      "tests/test-dogfood-index.sh"
+    ]
+  },
+  "min_sample_status": "insufficient",
+  "override_fired": null,
+  "pre_eval_id": "2026-09-03T080658Z-build-epic-feature-review-index-docs-superpowers-execution-e-0e49",
+  "request_slug": "build-epic-feature-review-index-docs-superpowers-execution-e",
+  "session_id": "stage5f1b-1788422817",
+  "status": "PRE_EVAL_DONE",
+  "taxonomy_digest": "sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a",
+  "taxonomy_ref": "docs/superpowers/pre-eval/2026-09-03T080658Z-build-epic-feature-review-index-docs-superpowers-execution-e-0e49.taxonomy-snapshot.yaml",
+  "taxonomy_version": 1,
+  "tier": "FULL",
+  "tiers_signalled": [
+    "localization",
+    "T1"
+  ],
+  "ts": "2026-09-03T08:06:58Z"
+}

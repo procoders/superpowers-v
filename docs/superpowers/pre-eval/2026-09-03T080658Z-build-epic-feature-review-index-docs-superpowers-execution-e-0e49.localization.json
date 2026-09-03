@@ -1,0 +1,14 @@
+{
+  "confidence": "new_file",
+  "digest": "sha256:7703820630c2435a7dfff9d7e4198af2dc34a6a7c8a23edccaf15c4f94e4e841",
+  "fan_out": 4,
+  "flags": [
+    "new_file"
+  ],
+  "resolved_paths": [
+    "docs/superpowers/dogfood/README.md",
+    "docs/superpowers/execution/epics/2026-09-03-verification-index/specs/review-index.md",
+    "scripts/compound-v-dogfood-index.sh",
+    "tests/test-dogfood-index.sh"
+  ]
+}

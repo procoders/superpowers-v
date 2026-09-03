@@ -1,0 +1,27 @@
+{
+  "run_id": "2026-09-03-verification-index-review-index",
+  "phase": "PARTITION_VERIFIED",
+  "pre_eval_id": "2026-09-03T080658Z-build-epic-feature-review-index-docs-superpowers-execution-e-0e49",
+  "epic_id": "2026-09-03-verification-index",
+  "updated_at": "2026-09-03T08:15:52Z",
+  "jobs": {
+    "index-script": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "index-output": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "spec-review": {
+      "status": "pending",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null
+    }
+  }
+}

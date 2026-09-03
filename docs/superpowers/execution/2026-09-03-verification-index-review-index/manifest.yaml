@@ -1,0 +1,80 @@
+run_id: 2026-09-03-verification-index-review-index
+feature: 'epic 2026-09-03-verification-index · F1 review-index: the dogfood review index generator and its generated output'
+routing_stance: balanced
+max_parallel: 2
+spec_path: docs/superpowers/execution/epics/2026-09-03-verification-index/specs/review-index.md
+plan_path: docs/superpowers/plans/2026-09-03-epic-vi-review-index.md
+audits:
+  archaeology: docs/superpowers/archaeology/2026-09-03-epic-vi-review-index.md
+  domain: docs/superpowers/execution/epics/2026-09-03-verification-index/specs/review-index.md
+  library: docs/superpowers/library-audit/2026-09-03-epic-vi-review-index.md
+triage:
+  tier: FULL
+  pre_eval_id: 2026-09-03T080658Z-build-epic-feature-review-index-docs-superpowers-execution-e-0e49
+  taxonomy_digest: sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a
+  decided_at: '2026-09-03T08:06:58Z'
+acceptance_criteria:
+- bash tests/test-dogfood-index.sh is green and shellcheck scripts/compound-v-dogfood-index.sh is clean; every other tests/*.sh and scripts/compound-v-*.py --selftest stays green under /usr/bin/python3 -B.
+- docs/superpowers/dogfood/README.md exists; its row count equals `ls docs/superpowers/dogfood/*review*.md | wc -l`; running `bash scripts/compound-v-dogfood-index.sh` again on the merged tree leaves `git diff --exit-code docs/superpowers/dogfood/README.md` clean (idempotent).
+- 'The footer reads `Reviews: N · APPROVED: A · ISSUES: I · other: O` with N == A+I+O; A is >= the number of files matching `grep -lE ''^(#+[[:space:]]*)?\\**VERDICT:?\\**[[:space:]]*\\**APPROVED'' docs/superpowers/dogfood/*-review*.md`; three files are spot-checked and quoted, including one whose verdict line starts with `## ` and one written as `VERDICT: **ISSUES**`; no `-impl.md` file appears as a row.'
+test_contract:
+  floor_command: bash tests/test-engine-c-contract.sh
+  full_command: bash -c 'for s in scripts/compound-v-*.py; do grep -q -- "--selftest" "$s" || continue; /usr/bin/python3 -B "$s" --selftest >/dev/null 2>&1 || { echo "FAIL $s"; exit 1; }; done; for t in tests/*.sh; do bash "$t" >/dev/null 2>&1 || { echo "FAIL $t"; exit 1; }; done; echo all-tests-ok'
+  impacted_map:
+  - when: scripts/compound-v-*.sh
+    run: bash -c '[ -f {path} ] || exit 0; shellcheck {path}'
+  - when: tests/*.sh
+    run: bash -c '[ -f {path} ] || exit 0; bash {path}'
+  - when: docs/superpowers/dogfood/README.md
+    run: 'bash -c ''test -s docs/superpowers/dogfood/README.md && grep -q "^Reviews: " docs/superpowers/dogfood/README.md'''
+jobs:
+- id: index-script
+  title: Task A — scripts/compound-v-dogfood-index.sh and tests/test-dogfood-index.sh
+  type: implement
+  backend: claude
+  tier: standard
+  effort: medium
+  isolation: worktree
+  run: parallel
+  write_allowed:
+  - scripts/compound-v-dogfood-index.sh
+  - tests/test-dogfood-index.sh
+  read_allowed:
+  - '**'
+  acceptance:
+  - 'bash tests/test-dogfood-index.sh is green and asserts every case of plan Task A Step 1 (three rows in date/pass order with ISSUES/APPROVED/unknown, the footer counts, byte-identical second run, non-zero exit with a message on a missing dir); shellcheck scripts/compound-v-dogfood-index.sh is clean; bash 3.2, set -eu, no python. The fixture includes a `## VERDICT: APPROVED` file, a `VERDICT: **ISSUES**` file, a two-digit pass (`-review-10.md`), a `-reviewer-x-impl.md` decoy that yields no row, and a file with no verdict line; the test runs the script with `/bin/bash` explicitly.'
+  body: 'Implement plan Task A (docs/superpowers/plans/2026-09-03-epic-vi-review-index.md) against the spec (docs/superpowers/execution/epics/2026-09-03-verification-index/specs/review-index.md). Test first — and read the spec''s §Pre-flight amendments 1–5 before the regex: the corpus has `## VERDICT: …` headings, `VERDICT: **ISSUES**`, two-digit passes, and `-reviewer-…-impl.md` files that must not be rows; bash 3.2 idioms only, POSIX classes, `|| true` on every grep that may not match, `LC_ALL=C` on sorts, no `sed -i`. Do not write docs/superpowers/dogfood/README.md (Task B owns it). You are unattended: decide and return. Run python with -B; register your lane with a literal --cwd.'
+- id: index-output
+  title: Task B — the generated docs/superpowers/dogfood/README.md
+  type: implement
+  backend: claude
+  tier: light
+  effort: low
+  isolation: worktree
+  run: serial
+  depends_on:
+  - index-script
+  write_allowed:
+  - docs/superpowers/dogfood/README.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - docs/superpowers/dogfood/README.md is exactly the output of `bash scripts/compound-v-dogfood-index.sh` run from the repository root on the merged tree (a second run changes nothing); its row count equals the number of *review*.md files under docs/superpowers/dogfood/.
+  body: 'Task B: run `bash scripts/compound-v-dogfood-index.sh` from your worktree root (Task A''s script is in HEAD by the time you run); the produced docs/superpowers/dogfood/README.md is the deliverable. Do not hand-edit it; run the script a second time and confirm `git diff --exit-code docs/superpowers/dogfood/README.md`. Run python with -B; register your lane with a literal --cwd.'
+- id: spec-review
+  title: Review Gate — three passes against the spec and the feature acceptance criteria
+  type: review
+  backend: claude
+  tier: deep
+  effort: high
+  isolation: direct
+  run: serial
+  depends_on:
+  - index-output
+  write_allowed:
+  - docs/superpowers/dogfood/2026-09-03-epic-vi-review-index-review-1.md
+  read_allowed:
+  - '**'
+  acceptance:
+  - 'The review file exists with ## Recall, ## SPEC, ## QUALITY, ## INTEGRATION, ## Verdict; every feature-level acceptance criterion is checked by running its command on the merged tree and quoting the output (including the idempotence check); the verdict is APPROVED or ISSUES with a numbered list.'
+  body: 'Your agent definition carries the three-pass Review Gate and a Step 0 (V-memory recall). Follow it. This feature is F1 of epic 2026-09-03-verification-index. Note: your own review file lands in docs/superpowers/dogfood/ AFTER the index was generated — say so in the review rather than calling the index stale; F2''s review will regenerate it. Write docs/superpowers/dogfood/2026-09-03-epic-vi-review-index-review-1.md. Run python with -B; register your lane with a literal --cwd.'

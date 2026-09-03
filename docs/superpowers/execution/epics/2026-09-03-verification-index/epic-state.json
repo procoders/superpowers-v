@@ -8,8 +8,8 @@
       "title": "F1 \u2014 the dogfood review index generator",
       "depends_on": [],
       "spec_path": "docs/superpowers/execution/epics/2026-09-03-verification-index/specs/review-index.md",
-      "status": "pending",
-      "run_id": null
+      "status": "running",
+      "run_id": "2026-09-03-verification-index-review-index"
     },
     {
       "id": "readme-section",
@@ -21,5 +21,6 @@
       "status": "pending",
       "run_id": null
     }
-  ]
+  ],
+  "updated_at": "2026-09-03T08:09:13Z"
 }
