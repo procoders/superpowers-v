@@ -1,0 +1,38 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 213659d..e175225 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+ 
+ ## [Unreleased]
+ 
++### Fixed — the pre-flight result names the knowledge-base files it appended (finding 100)
++
++`compound-v-emit-preflight.py`'s three auditors (archaeology, domain expert, library validator)
++each write into their own `_knowledge-base` directory, but the emitted result never said which
++files it had touched — `v-orchestrate.md` Step 8's audit commit staged the KB directories
++wholesale, with no record of what a given pre-flight run actually added. The wrapper prompt text
++now asks each auditor for `kb_files` by name, `RESULT_SCHEMA['properties']` carries it, and the
++result object carries `kb_files` per audit plus a de-duplicated top-level list — the three bypass
++branches (skipped / null / catch) default it to `[]` rather than omitting the key. 1A has no
++KB-write step today, so its `kb_files` is expected empty, documented as such rather than invented.
++`v-orchestrate.md` Step 8 now stages the pre-flight result's `kb_files` alongside the three
++`_knowledge-base` directories, with the reason recorded; `v-dispatch.md` is untouched, since it has
++no audit-commit step to fix.
++
++### Fixed — collect-results conformance-checks `retries[]` items like usage (finding 126)
++
++`retries: [{stage, job, attempt, wait_ms}]` entries (added in 3.4.8) went straight onto the
++`job_result` with no shape check — a malformed entry (a missing `stage`, a string `attempt`, a
++stray key) would pass through undetected, unlike the usage payload, which
++`compound-v-collect-results.py` already conformance-checks and hard-blocks on. `retries[]` now
++gets the same treatment, reusing `_usage_conformance_errors`'s type-map pattern plus the
++required-field check it lacked: each item needs `stage:str` and `attempt:int` ≥ 1 (bool rejected),
++may carry `job:str`, `wait_ms:int` ≥ 0, and `escalated_from`/`model:str|null`, and no other key —
++a violation names the item's index and the offending key, and hard-blocks like the usage checks
++do. `schemas/job_result.schema.json` is untouched; the checks are conformance validation on top of
++the existing schema, not a schema change.
++
+ ## [3.4.8] - 2026-09-03
+ 
+ Three consecutive `API Error: 529 Overloaded` on the Opus reviewer cost three runs and three human

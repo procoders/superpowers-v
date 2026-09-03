@@ -1,0 +1,48 @@
+{
+  "baseline_commit": "2af0cc93e3eb732431f8b431899a0fd550933430",
+  "diff_digest": "sha256:d10729efab750b91cde16c243864565acfc713eb2981f5bc4aa792a12fa42d90",
+  "exit_code": 0,
+  "job_id": "changelog",
+  "patch_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-v3.4.9-preflight-kb-paths-and-retries-schema/jobs/changelog.patch",
+  "patch_paths": [
+    "CHANGELOG.md"
+  ],
+  "patch_sha256": "sha256:d10729efab750b91cde16c243864565acfc713eb2981f5bc4aa792a12fa42d90",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"2af0cc93e3eb732431f8b431899a0fd550933430\",\n  \"changed\": [\n    \"CHANGELOG.md\"\n  ],\n  \"allowed\": [\n    \"CHANGELOG.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "2af0cc93e3eb732431f8b431899a0fd550933430",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "CHANGELOG.md"
+    ],
+    "checks": [
+      {
+        "checker": "bash tests/test-engine-c-contract.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "/usr/bin/python3 -B scripts/lint-frontmatter.py .",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (5 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 1 command(s) from 1 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_c0a862d4-91a-3"
+}

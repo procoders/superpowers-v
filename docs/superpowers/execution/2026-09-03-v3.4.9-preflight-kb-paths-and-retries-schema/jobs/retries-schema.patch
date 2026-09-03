@@ -1,0 +1,147 @@
+diff --git a/scripts/compound-v-collect-results.py b/scripts/compound-v-collect-results.py
+index d0cd2b8..a87f103 100755
+--- a/scripts/compound-v-collect-results.py
++++ b/scripts/compound-v-collect-results.py
+@@ -438,6 +438,77 @@ def _usage_conformance_errors(usage: Dict[str, Any],
+     return errs
+ 
+ 
++def _retries_conformance_errors(retries: List[Any],
++                                 retries_schema: Dict[str, Any]) -> List[str]:
++    """TARGETED one-level check of EACH `retries[]` item against its sub-schema.
++
++    Same rationale as _usage_conformance_errors: the top-level loop only confirms
++    `retries` is an array, so a bogus item like {"stage": "x", "bogus": 1} or one
++    missing the required `stage` would slip through. This validates every item:
++    unknown keys are rejected (additionalProperties:false), `stage` required as a
++    string, `attempt` required as an integer >= 1 (a bool is not an integer here),
++    and the optional job/wait_ms/escalated_from/model fields are type- and
++    minimum-checked when present. Field types/required/minimum are read from the
++    REAL items sub-schema so this stays in sync with job_result.schema.json.
++    Errors name both the item's index and the offending key, per Task B.
++    """
++    errs = []  # type: List[str]
++    if not isinstance(retries_schema, dict):
++        return errs
++    items_schema = retries_schema.get("items", {})
++    if not isinstance(items_schema, dict):
++        return errs
++    iprops = items_schema.get("properties", {})
++    iadditional = items_schema.get("additionalProperties", True)
++    irequired = items_schema.get("required", [])
++
++    for idx, item in enumerate(retries):
++        if not isinstance(item, dict):
++            errs.append("retries[%d] must be an object, got %s"
++                        % (idx, type(item).__name__))
++            continue
++
++        for key in irequired:
++            if key not in item:
++                errs.append("retries[%d] missing required key: %s" % (idx, key))
++
++        if iadditional is False:
++            for key in item:
++                if key not in iprops:
++                    errs.append(
++                        "retries[%d] has unexpected key "
++                        "(additionalProperties:false): %s" % (idx, key)
++                    )
++
++        for key, spec in iprops.items():
++            if key not in item:
++                continue
++            want = spec.get("type")
++            val = item[key]
++            want_list = want if isinstance(want, list) else ([want] if want else [])
++            if val is None:
++                if want_list and "null" not in want_list:
++                    errs.append("retries[%d] key %s must be %s, got null"
++                                % (idx, key, "/".join(want_list)))
++                continue
++            # bool is a subclass of int — reject a boolean for an int-only field
++            # (this is exactly what catches a string/bool `attempt`).
++            if "integer" in want_list and "boolean" not in want_list and isinstance(val, bool):
++                errs.append("retries[%d] key %s must be integer, got boolean"
++                            % (idx, key))
++                continue
++            pytypes = tuple(_TYPE_MAP[t] for t in want_list if t in _TYPE_MAP)
++            if pytypes and not isinstance(val, pytypes):
++                errs.append("retries[%d] key %s must be %s, got %s"
++                            % (idx, key, "/".join(want_list), type(val).__name__))
++                continue
++            minimum = spec.get("minimum")
++            if minimum is not None and isinstance(val, (int, float)) and val < minimum:
++                errs.append("retries[%d] key %s must be >= %s, got %s"
++                            % (idx, key, minimum, val))
++    return errs
++
++
+ def conformance_errors(result: Dict[str, Any], schema_path: str) -> List[str]:
+     errs = []  # type: List[str]
+     schema = _read_json(schema_path)
+@@ -497,6 +568,12 @@ def conformance_errors(result: Dict[str, Any], schema_path: str) -> List[str]:
+     # (unknown keys, wrong field types) would pass conformance.
+     if isinstance(result.get("usage"), dict):
+         errs.extend(_usage_conformance_errors(result["usage"], props.get("usage", {})))
++
++    # Deep-validate `retries[]` the same way: the top-level loop only confirms
++    # `retries` is an array, so a schema-INVALID item (unknown key, missing
++    # `stage`, non-integer `attempt`) would otherwise pass conformance.
++    if isinstance(result.get("retries"), list):
++        errs.extend(_retries_conformance_errors(result["retries"], props.get("retries", {})))
+     return errs
+ 
+ 
+@@ -999,6 +1076,51 @@ def _selftest() -> int:
+     nulls["input_tokens"] = None  # null IS allowed (["integer","null"])
+     check("usage.null_ok", _usage_conformance_errors(nulls, usage_schema) == [])
+ 
++    # (b2) A schema-VIOLATING retries[] item is caught by _retries_conformance_errors,
++    #      using the REAL retries sub-schema from job_result.schema.json (Task B).
++    retries_schema = schema["properties"]["retries"] if isinstance(schema, dict) else {}
++    good_retries = [{"stage": "impl", "attempt": 1},
++                    {"stage": "review", "job": "j1", "attempt": 2, "wait_ms": 500,
++                     "escalated_from": "sonnet", "model": "opus"}]
++    check("retries.good_clean",
++          _retries_conformance_errors(good_retries, retries_schema) == [])
++    unknown_key = [{"stage": "impl", "attempt": 1, "bogus": 1}]
++    unknown_errs = _retries_conformance_errors(unknown_key, retries_schema)
++    check("retries.unknown_key_caught", len(unknown_errs) > 0)
++    check("retries.unknown_key_names_index_and_key",
++          any("retries[0]" in e and "bogus" in e for e in unknown_errs))
++    missing_stage = [{"attempt": 1}]
++    missing_errs = _retries_conformance_errors(missing_stage, retries_schema)
++    check("retries.missing_stage_caught", len(missing_errs) > 0)
++    check("retries.missing_stage_names_index_and_key",
++          any("retries[0]" in e and "stage" in e for e in missing_errs))
++    string_attempt = [{"stage": "impl", "attempt": "1"}]
++    string_errs = _retries_conformance_errors(string_attempt, retries_schema)
++    check("retries.string_attempt_caught", len(string_errs) > 0)
++    check("retries.string_attempt_names_index_and_key",
++          any("retries[0]" in e and "attempt" in e for e in string_errs))
++    bool_attempt = [{"stage": "impl", "attempt": True}]
++    check("retries.bool_attempt_caught",
++          len(_retries_conformance_errors(bool_attempt, retries_schema)) > 0)
++    zero_attempt = [{"stage": "impl", "attempt": 0}]
++    check("retries.attempt_below_minimum_caught",
++          len(_retries_conformance_errors(zero_attempt, retries_schema)) > 0)
++    negative_wait = [{"stage": "impl", "attempt": 1, "wait_ms": -1}]
++    check("retries.negative_wait_ms_caught",
++          len(_retries_conformance_errors(negative_wait, retries_schema)) > 0)
++
++    # (b3) A schema-VIOLATING retries[] item hard-blocks the top-level conformance
++    #      check exactly like usage: build_result + conformance_errors together
++    #      refuse to write a result whose retries[] item fails.
++    res_bad_retries = dict(res)
++    res_bad_retries["retries"] = missing_stage
++    check("retries.hard_blocks_conformance",
++          len(conformance_errors(res_bad_retries, _default_schema_path())) > 0)
++    res_good_retries = dict(res)
++    res_good_retries["retries"] = good_retries
++    check("retries.good_conformant",
++          conformance_errors(res_good_retries, _default_schema_path()) == [])
++
+     # (c) The "a successful job never carries a failure class" invariant: a
+     #     failure_class/retry passed alongside a success status is zeroed out.
+     res_c = build_result(_mk_args(files_changed="a.py", exit_code=0,

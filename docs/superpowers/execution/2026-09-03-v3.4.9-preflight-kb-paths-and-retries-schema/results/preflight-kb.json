@@ -1,0 +1,30 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "commands/v-orchestrate.md",
+    "scripts/compound-v-emit-preflight.py"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "2af0cc93e3eb732431f8b431899a0fd550933430",
+    "diff_digest": "sha256:6a15e59fa200b86c00c4cda411c637a2d2db012336a0339e22fc9a5b65f1381e",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"2af0cc93e3eb732431f8b431899a0fd550933430\",\n  \"changed\": [\n    \"commands/v-orchestrate.md\",\n    \"scripts/compound-v-emit-preflight.py\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-emit-preflight.py\",\n    \"commands/v-orchestrate.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "2af0cc93e3eb732431f8b431899a0fd550933430",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task A \u2014 the pre-flight result names its knowledge-base files; v-dispatch commits them",
+  "tests": {
+    "command": "bash tests/test-engine-c-contract.sh\n/usr/bin/python3 -B scripts/lint-frontmatter.py .\n/usr/bin/python3 -B scripts/compound-v-emit-preflight.py --selftest",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 3
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_c0a862d4-91a-1"
+}

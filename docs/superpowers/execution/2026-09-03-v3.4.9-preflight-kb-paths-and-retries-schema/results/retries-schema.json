@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "scripts/compound-v-collect-results.py"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "2af0cc93e3eb732431f8b431899a0fd550933430",
+    "diff_digest": "sha256:12dc39557277e67e74b917e6b6fb0afac2b67fd05d55228b1872d513c8d523e3",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"2af0cc93e3eb732431f8b431899a0fd550933430\",\n  \"changed\": [\n    \"scripts/compound-v-collect-results.py\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-collect-results.py\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "2af0cc93e3eb732431f8b431899a0fd550933430",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task B \u2014 collect-results validates retries[] items like usage",
+  "tests": {
+    "command": "bash tests/test-engine-c-contract.sh\n/usr/bin/python3 -B scripts/compound-v-collect-results.py --selftest",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_c0a862d4-91a-2"
+}

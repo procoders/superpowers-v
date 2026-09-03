@@ -1,32 +1,72 @@
 {
   "run_id": "2026-09-03-v3.4.9-preflight-kb-paths-and-retries-schema",
-  "phase": "PARTITION_VERIFIED",
+  "phase": "DISPATCHED",
   "pre_eval_id": "2026-09-03T170419Z-implement-v3-4-9-per-docs-superpowers-specs-2026-09-03-v3-4-a42f",
   "updated_at": "2026-09-03T17:15:28Z",
   "jobs": {
     "preflight-kb": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_c0a862d4-91a-1",
+      "session_id": null,
+      "baseline": "2af0cc93e3eb732431f8b431899a0fd550933430",
+      "realised_commit": "2af0cc93e3eb732431f8b431899a0fd550933430",
+      "merged": {
+        "realised_commit": "2af0cc93e3eb732431f8b431899a0fd550933430",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "34dbeb6ec4aa6f2fa2c5b6ab9775a0cbefb1b48b"
+      }
     },
     "retries-schema": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_c0a862d4-91a-2",
+      "session_id": null,
+      "baseline": "2af0cc93e3eb732431f8b431899a0fd550933430",
+      "realised_commit": "2af0cc93e3eb732431f8b431899a0fd550933430",
+      "merged": {
+        "realised_commit": "2af0cc93e3eb732431f8b431899a0fd550933430",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "34dbeb6ec4aa6f2fa2c5b6ab9775a0cbefb1b48b"
+      }
     },
     "changelog": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_c0a862d4-91a-3",
+      "session_id": null,
+      "baseline": "2af0cc93e3eb732431f8b431899a0fd550933430",
+      "realised_commit": "2af0cc93e3eb732431f8b431899a0fd550933430",
+      "merged": {
+        "realised_commit": "2af0cc93e3eb732431f8b431899a0fd550933430",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "34dbeb6ec4aa6f2fa2c5b6ab9775a0cbefb1b48b"
+      }
     },
     "spec-review": {
       "status": "pending",
       "isolation": "direct",
       "worktree": null,
       "session_id": null
+    }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "preflight-kb",
+        "retries-schema",
+        "changelog"
+      ],
+      "merged": [
+        "preflight-kb",
+        "retries-schema",
+        "changelog"
+      ],
+      "commit": "34dbeb6ec4aa6f2fa2c5b6ab9775a0cbefb1b48b",
+      "integrated": true
     }
   }
 }
