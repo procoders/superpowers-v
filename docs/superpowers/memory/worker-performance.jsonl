@@ -6,7 +6,7 @@
 {"backend": "claude", "type": "implement", "total": 28, "success": 27, "blocked": 1, "error": 0, "timeout": 0, "avg_rework": 0.0, "block_rate": 0.036, "error_rate": 0.0, "success_rate": 0.964, "health": "healthy"}
 {"backend": "claude", "type": "large_isolated", "total": 2, "success": 2, "blocked": 0, "error": 0, "timeout": 0, "avg_rework": 0.0, "block_rate": 0.0, "error_rate": 0.0, "success_rate": 1.0, "health": "insufficient_data"}
 {"backend": "claude", "type": "mechanical_refactor", "total": 4, "success": 3, "blocked": 1, "error": 0, "timeout": 0, "avg_rework": 0.0, "block_rate": 0.25, "error_rate": 0.0, "success_rate": 0.75, "health": "insufficient_data"}
-{"backend": "claude", "type": "review", "total": 42, "success": 35, "blocked": 7, "error": 0, "timeout": 0, "avg_rework": 0.0, "block_rate": 0.167, "error_rate": 0.0, "success_rate": 0.833, "health": "watch"}
+{"backend": "claude", "type": "review", "total": 43, "success": 36, "blocked": 7, "error": 0, "timeout": 0, "avg_rework": 0.0, "block_rate": 0.163, "error_rate": 0.0, "success_rate": 0.837, "health": "watch"}
 {"backend": "claude", "type": "shared_foundation", "total": 8, "success": 8, "blocked": 0, "error": 0, "timeout": 0, "avg_rework": 0.0, "block_rate": 0.0, "error_rate": 0.0, "success_rate": 1.0, "health": "healthy"}
 {"backend": "claude", "type": "validation", "total": 2, "success": 2, "blocked": 0, "error": 0, "timeout": 0, "avg_rework": 0.0, "block_rate": 0.0, "error_rate": 0.0, "success_rate": 1.0, "health": "insufficient_data"}
 {"backend": "codex", "type": "large_isolated", "total": 3, "success": 2, "blocked": 1, "error": 0, "timeout": 0, "avg_rework": 0.0, "block_rate": 0.333, "error_rate": 0.0, "success_rate": 0.667, "health": "insufficient_data"}
