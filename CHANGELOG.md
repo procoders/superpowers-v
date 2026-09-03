@@ -23,6 +23,10 @@ non-empty destination. Implemented by a `codex exec` worker (`gpt-5.6-terra`) in
 `$TMPDIR/compound-v/<run>/<job>`, gated by the git-derived scope check against that same tree — no
 timing or token figures are claimed here; none were measured for this job.
 
+### Fixed — an external worker is told it is unattended, and the authority reads a stricter receipt as honest (findings 82, 83)
+
+The Codex fix job of stage 4 ended its turn by asking for confirmation — nobody answers a headless `codex exec` — and the gate correctly refused the empty diff as an absent implementation; every external worker's prompt file now carries a "You are unattended" section. The authority then filed that honest refusal as `forged` (raw `pass` vs receipt `blocked`, compared without direction) and, once direction was fixed, as `contradicted` (its scope-only re-derivation did not know the gate's absent-implementation rule). A receipt stricter than its raw evidence is the gate refusing itself; the re-derivation now applies the same rule and answers `blocked`. Authority selftest 81/81; emitter 417/417.
+
 ### Fixed — the lane guard no longer denies read-only git commands that name a path after `--`
 
 `git show <sha> -- <path>`, `git log -- <path>` and `git diff -- <path>` write nothing; the guard's `--` rule now applies to the writing subcommands only (`checkout`, `restore`, `reset`, `clean`, `add`, `apply`, `stash`, …). The stage-4 reviewer had been denied reading the very commit it was reviewing. Decision table: three cases.

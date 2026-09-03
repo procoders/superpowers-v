@@ -714,10 +714,22 @@ def receipt_binding_faults(receipt, pinned_baseline, observed_head, observed_dig
         doc = None
     if isinstance(doc, dict) and "verdict" in doc:
         if doc["verdict"] != receipt["verdict"]:
-            faults.append(
-                "raw_stdout reports verdict %r but the receipt claims %r"
-                % (doc["verdict"], receipt["verdict"])
-            )
+            # DIRECTION MATTERS. A receipt LAXER than its own raw evidence (raw
+            # `blocked`, receipt `pass`) is a forgery. A receipt STRICTER than
+            # the raw scope verdict is the gate refusing itself — `gate-receipt`
+            # demotes `pass` to `blocked` when a lane-declaring job changed
+            # nothing ("absent implementation") — and the stage-4 authority
+            # filed that honest refusal as `forged` (2026-09-03, finding 83).
+            if receipt["verdict"] == "pass" or doc["verdict"] in ("blocked", "error"):
+                faults.append(
+                    "raw_stdout reports verdict %r but the receipt claims %r"
+                    % (doc["verdict"], receipt["verdict"])
+                )
+            else:
+                notes_extra = ("receipt is STRICTER than its raw scope verdict (raw %r, "
+                               "receipt %r): the gate refused its own pass — honest, not forged"
+                               % (doc["verdict"], receipt["verdict"]))
+                receipt.setdefault("_authority_notes", []).append(notes_extra)
     elif receipt["verdict"] != "error":
         # `error` is the one case the gate may emit on stderr / non-JSON.
         faults.append("raw_stdout is not the gate's JSON verdict document")
@@ -1198,6 +1210,20 @@ def evaluate_job(job, state_job, run_dir, repo_root, scope_check):
                     % (len(out["violations"]), ", ".join(out["violations"][:5]))
                 )
                 return out
+        # THE GATE'S OWN "ABSENT IMPLEMENTATION" RULE, mirrored. gate-receipt
+        # demotes a scope `pass` to `blocked` when a job that declares write lanes
+        # changed nothing; this re-derivation only knows scope, so it derived
+        # `pass` and called the honest refusal a contradiction (stage-4 r4,
+        # finding 83). Same rule, same answer.
+        if (receipt["verdict"] == "blocked" and verdict == "pass"
+                and not (out.get("changed") or []) and (job.get("write_allowed") or [])):
+            out["verdict"] = "blocked"
+            out["notes"].append(
+                "the receipt refused its own scope pass: the job declares write lanes and "
+                "changed nothing — an absent implementation, blocked by the gate and by this "
+                "re-derivation alike (not a contradiction)"
+            )
+            return out
         out["verdict"] = "contradicted"
         out["reasons"].append(
             "receipt claims verdict %r but the same tree derives %r — the digest "
@@ -1874,6 +1900,29 @@ def _selftest():
                rep_e["results"][0]["verdict"] == "unverifiable"
                and any("empty" in r for r in rep_e["results"][0]["reasons"]))
         os.remove(patch_artifact_path(run_r, "job-a"))
+        # finding 83: a receipt STRICTER than its raw scope verdict is the gate
+        # refusing an absent implementation (lanes declared, nothing changed) —
+        # the authority must say `blocked`, never `forged` or `contradicted`.
+        f83_run = os.path.join(tmp, "f83-run"); os.makedirs(os.path.join(f83_run, "receipts"))
+        os.makedirs(os.path.join(f83_run, "results"))
+        f83_wt = os.path.join(tmp, "f83-wt"); shutil.copytree(repo, f83_wt)
+        _f83_base = subprocess.run(["git", "-C", f83_wt, "rev-parse", "HEAD"],
+                                   capture_output=True, text=True).stdout.strip()
+        f83_rcpt = _honest_receipt(scope_check, f83_wt, _f83_base, ["scripts/**"])
+        f83_rcpt = dict(f83_rcpt, verdict="blocked", exit_code=1)   # the gate's own demotion
+        with open(os.path.join(f83_run, "receipts", "job-a.gate.json"), "w") as fh:
+            json.dump(f83_rcpt, fh)
+        with open(os.path.join(f83_run, "manifest.yaml"), "w") as fh:
+            fh.write("run_id: f83\njobs:\n  - id: job-a\n    isolation: worktree\n    write_allowed:\n      - 'scripts/**'\n")
+        _put_result(f83_run, "job-a", dict(_result(f83_wt, receipt=f83_rcpt), status="blocked", blocked=True))
+        with open(os.path.join(f83_run, "state.json"), "w") as fh:
+            json.dump({"run_id": "f83", "jobs": {"job-a": {"worktree": f83_wt, "isolation": "worktree",
+                                                          "baseline": _f83_base}}}, fh)
+        rep83 = evaluate_run(f83_run, repo, scope_check)
+        expect("finding 83: an empty-diff receipt demoted to blocked by the gate is BLOCKED here too — "
+               "not forged, not contradicted (%s :: %s)" % (rep83["results"][0]["verdict"],
+                                                            "; ".join(rep83["results"][0].get("reasons", [])[:2])),
+               rep83["results"][0]["verdict"] == "blocked")
         expect("without a sealed patch, even the real commit is unverifiable — overlap is not proof",
                rep_n["results"][0]["verdict"] == "unverifiable"
                and any("pathname overlap is not proof" in r for r in rep_n["results"][0]["reasons"]))

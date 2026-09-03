@@ -1284,6 +1284,15 @@ def render_worker_prompt(job, run_id):
     if deps:
         lines += ["Prerequisites, already merged and COMMITTED into your base "
                   "before this worktree was created: %s." % ", ".join(deps), ""]
+    lines.append("## You are unattended")
+    lines.append("")
+    lines.append("No one reads this session while it runs and no one will answer a question:")
+    lines.append("a turn that ends by asking for confirmation, approval or a preference does")
+    lines.append("NOTHING, and the job is then recorded as an absent implementation. Decide")
+    lines.append("with the spec, the plan and this prompt; when they are silent, choose the")
+    lines.append("smallest change that meets the acceptance, do it, run the checks, and return.")
+    lines.append("")
+
     lines += ["## Write-allowed (your lane — anything else is a scope violation)", ""]
     for glob in (job.get("write_allowed") or []):
         lines.append("- `%s`" % glob)
@@ -5022,6 +5031,13 @@ def selftest():
                "ten minutes, the harness" in _ext_script and "timeout: 600000" in _ext_script)
         # finding 77: the wrapper agent is spawned as a CLAUDE model; the backend's
         # model reaches the launch argv only.
+        _check("finding 82: the external worker's prompt file says it is unattended and must not ask",
+               "## You are unattended" in render_worker_prompt(
+                   {"id": "ext", "backend": "codex", "write_allowed": ["src/**"],
+                    "title": "t", "body": "b", "acceptance": ["a"]}, "run-x")
+               and "NOTHING, and the job is then recorded" in render_worker_prompt(
+                   {"id": "ext", "backend": "codex", "write_allowed": ["src/**"],
+                    "title": "t", "body": "b", "acceptance": ["a"]}, "run-x"))
         _check("finding 79: an external job's gate runs in worktree mode at the WORKER's returned tree",
                "const externalBackend = job.backend && job.backend !== 'claude';" in _ext_script
                and "(job.agent_isolation === 'worktree' || externalBackend) ? 'worktree' : 'direct'" in _ext_script)
