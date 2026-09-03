@@ -1,0 +1,9 @@
+{
+  "confidence": "exact",
+  "digest": "sha256:a17085c8e0fb87d7ef96e0ed990d4412684ef915e70270f4d2712140d4c87dcd",
+  "fan_out": 1,
+  "flags": [],
+  "resolved_paths": [
+    "docs/superpowers/loops.md"
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "base_commit": "78961852efa8c75944d7d0033dcd292244950efa",
+  "confidence": "localization:exact; tiers:localization,T1",
+  "decision": "FASTPATH_ELIGIBLE",
+  "declared_paths": [
+    "docs/superpowers/loops.md"
+  ],
+  "difficulty": {
+    "band": "low",
+    "display": 2
+  },
+  "digest": "sha256:67d52feaa1c9a4289e70991dfa1e5da64e0890a9b74f46d2dd459ddd6d900be6",
+  "impact": {
+    "band": "low",
+    "display": 2
+  },
+  "localization": {
+    "confidence": "exact",
+    "fan_out": 1,
+    "flags": [],
+    "resolved_paths": [
+      "docs/superpowers/loops.md"
+    ]
+  },
+  "min_sample_status": "insufficient",
+  "override_fired": null,
+  "pre_eval_id": "2026-09-03T020942Z-docs-superpowers-loops-md-line-68-says-which-of-the-17-v-com-efd5",
+  "request_slug": "docs-superpowers-loops-md-line-68-says-which-of-the-17-v-com",
+  "session_id": "stage1b-1788401382",
+  "status": "PRE_EVAL_DONE",
+  "taxonomy_digest": "sha256:1f2a12f634422ca72a66cfa195b731a0e19743b5e7fe622fb799821cf5e88e85",
+  "taxonomy_ref": "docs/superpowers/pre-eval/2026-09-03T020942Z-docs-superpowers-loops-md-line-68-says-which-of-the-17-v-com-efd5.taxonomy-snapshot.yaml",
+  "taxonomy_version": 1,
+  "tier": "DIRECT",
+  "tiers_signalled": [
+    "localization",
+    "T1"
+  ],
+  "ts": "2026-09-03T02:09:42Z"
+}
