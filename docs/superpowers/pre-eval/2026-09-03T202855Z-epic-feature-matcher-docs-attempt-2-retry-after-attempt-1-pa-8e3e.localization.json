@@ -1,0 +1,12 @@
+{
+  "confidence": "exact",
+  "digest": "sha256:c7871e4b7d8bcf2c69cc2835ef8a15d3dcd0c0d777cc699a6e3101b91718844a",
+  "fan_out": 2,
+  "flags": [
+    "sensitive_path"
+  ],
+  "resolved_paths": [
+    "skills/compound-v/execution-manifest.md",
+    "skills/compound-v/memory.md"
+  ]
+}
