@@ -1,0 +1,50 @@
+{
+  "baseline_commit": "8e4702b696d911e203d422f0fa605f3dd315a176",
+  "diff_digest": "sha256:1d4c4e6fff5eded48df0201d50079e9cd887a22b718e44b755e60294c9f3441b",
+  "exit_code": 0,
+  "job_id": "docs-3",
+  "patch_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-v3.4.5-recall-freshness-r3/jobs/docs-3.patch",
+  "patch_paths": [
+    "skills/compound-v/memory.md",
+    "skills/compound-v/phase-0-recon.md"
+  ],
+  "patch_sha256": "sha256:1d4c4e6fff5eded48df0201d50079e9cd887a22b718e44b755e60294c9f3441b",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"8e4702b696d911e203d422f0fa605f3dd315a176\",\n  \"changed\": [\n    \"skills/compound-v/memory.md\",\n    \"skills/compound-v/phase-0-recon.md\"\n  ],\n  \"allowed\": [\n    \"skills/compound-v/phase-0-recon.md\",\n    \"skills/compound-v/memory.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "8e4702b696d911e203d422f0fa605f3dd315a176",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "skills/compound-v/memory.md",
+      "skills/compound-v/phase-0-recon.md"
+    ],
+    "checks": [
+      {
+        "checker": "/usr/bin/python3 -B scripts/compound-v-memory.py --selftest",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "/usr/bin/python3 -B scripts/lint-frontmatter.py .",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (4 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 2 command(s) from 2 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_84c8f87d-8dc-1"
+}

@@ -1,0 +1,30 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "skills/compound-v/memory.md",
+    "skills/compound-v/phase-0-recon.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "8e4702b696d911e203d422f0fa605f3dd315a176",
+    "diff_digest": "sha256:1d4c4e6fff5eded48df0201d50079e9cd887a22b718e44b755e60294c9f3441b",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"8e4702b696d911e203d422f0fa605f3dd315a176\",\n  \"changed\": [\n    \"skills/compound-v/memory.md\",\n    \"skills/compound-v/phase-0-recon.md\"\n  ],\n  \"allowed\": [\n    \"skills/compound-v/phase-0-recon.md\",\n    \"skills/compound-v/memory.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "8e4702b696d911e203d422f0fa605f3dd315a176",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task B'' \u2014 the two doc gaps review-1 blocked on (phase-0-recon.md, memory.md) \u2014 r2's identical patch was refused on a test-suite timeout",
+  "tests": {
+    "command": "/usr/bin/python3 -B scripts/compound-v-memory.py --selftest\n/usr/bin/python3 -B scripts/lint-frontmatter.py .",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_84c8f87d-8dc-1"
+}
