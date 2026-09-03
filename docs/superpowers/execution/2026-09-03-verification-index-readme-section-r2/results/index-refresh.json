@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "docs/superpowers/dogfood/README.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "0a49912f43ed57ec152b1ac6e181dc072c69d4cb",
+    "diff_digest": "sha256:a73dc212f6665d6b6883a51a993efa3b8157b10924ead60b5ddc8007a288617d",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"0a49912f43ed57ec152b1ac6e181dc072c69d4cb\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/README.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/README.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "0a49912f43ed57ec152b1ac6e181dc072c69d4cb",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task 0 \u2014 regenerate the dogfood index so F1's review files are counted",
+  "tests": {
+    "command": "/usr/bin/python3 -B scripts/lint-frontmatter.py .\nbash -c 'test -s docs/superpowers/dogfood/README.md && grep -q \"^Reviews: \" docs/superpowers/dogfood/README.md'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_c952fe0f-856-1"
+}

@@ -1,0 +1,48 @@
+{
+  "baseline_commit": "0a49912f43ed57ec152b1ac6e181dc072c69d4cb",
+  "diff_digest": "sha256:a73dc212f6665d6b6883a51a993efa3b8157b10924ead60b5ddc8007a288617d",
+  "exit_code": 0,
+  "job_id": "index-refresh",
+  "patch_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-verification-index-readme-section-r2/jobs/index-refresh.patch",
+  "patch_paths": [
+    "docs/superpowers/dogfood/README.md"
+  ],
+  "patch_sha256": "sha256:a73dc212f6665d6b6883a51a993efa3b8157b10924ead60b5ddc8007a288617d",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"0a49912f43ed57ec152b1ac6e181dc072c69d4cb\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/README.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/README.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "0a49912f43ed57ec152b1ac6e181dc072c69d4cb",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "docs/superpowers/dogfood/README.md"
+    ],
+    "checks": [
+      {
+        "checker": "/usr/bin/python3 -B scripts/lint-frontmatter.py .",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'test -s docs/superpowers/dogfood/README.md && grep -q \"^Reviews: \" docs/superpowers/dogfood/README.md'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (2 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 1 command(s) from 1 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_c952fe0f-856-1"
+}
