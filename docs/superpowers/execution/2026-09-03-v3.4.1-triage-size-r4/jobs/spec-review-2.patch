@@ -1,0 +1,562 @@
+diff --git a/docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-2.md b/docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-2.md
+new file mode 100644
+index 0000000..3802986
+--- /dev/null
++++ b/docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-2.md
+@@ -0,0 +1,556 @@
++# Review Gate pass 2 — run `2026-09-03-v3.4.1-triage-size-r4`
++
++**The five issues of review-1, against the merged tree**
++**Reviewer:** `compound-v:spec-reviewer` (job `spec-review-2`, `direct` isolation)
++**Merged tree reviewed:** `10c2068` · **new code under review:** `e9ab86f`
++**Predecessor:** `docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-1.md`
++**Date:** 2026-09-03
++
++```plaintext
++VERDICT: ISSUES
++  PASS 1 SPEC        (commit e9ab86f):  ✅
++  PASS 2 QUALITY     (commit e9ab86f):  ISSUES — one stale claim the fix itself introduced
++  PASS 3 INTEGRATION (run-level AC):    ISSUES — a cross-job seam review-1 did not reach
++```
++
++**Review-1's headline finding is closed.** Issue #1 — the configuration that pinned 42 of 44
++scripts and hooks to FULL — is fixed, and I reproduced all six tier outcomes live, including the
++two that failed last round and the never-demote case review-1 said its own test never exercised.
++Issues #3 and #5 are closed. Issues #2 and #4 are **closed only where review-1 pointed**: the same
++instruction survives in a fifth document, and the same label defect survives in a sibling branch of
++the same function.
++
++Four findings, ranked. **#1 is the one that blocks**, and it is not one of review-1's five: a
++SCOPED job with an unmapped changed path emits a slice that **every external worker rejects as
++malformed before the model runs**. Review-1 verified that slice by reading it; it never handed it
++to the thing that consumes it.
++
++---
++
++## Recall
++
++Step 0 ran at review intent, on the merged tree:
++
++```bash
++/usr/bin/python3 -B scripts/compound-v-memory.py search \
++  "triage size content scan exclude demotion SCOPED+" --intent review --top 8
++/usr/bin/python3 -B scripts/compound-v-memory.py recall-check \
++  --files .claude/compound-v-impact-taxonomy.yaml scripts/compound-v-fastpath-run.py \
++          scripts/compound-v-taxonomy.py agents/parallel-dispatcher.md
++```
++
++`search` returned the v3.0 triage spec and plan, the v2.9 pre-evaluation design, and the
++2026-09-01 triage-calibration dogfood record. Two bear on this review and were applied:
++
++- **`docs/superpowers/dogfood/2026-09-01-v3.0-triage-calibration.md`, finding 1** — *"Natural
++  language does not localize in this repository. The request resolved to 296 paths at
++  `confidence: ambiguous`, which fires hard override #1 and fail-closes to FULL."* Cited because
++  it is exactly why review-1 flagged its own `.env` case as vacuous, and why I added the
++  `.github/workflows/validate.yml` case below — a FULL that comes from override #1 proves nothing
++  about the never-demote list.
++- **`docs/superpowers/specs/2026-09-01-v3.0-triage-tests-orchestration-design.md`, §A4** —
++  *"Any failure demotes to SCOPED before commit, and the demotion is recorded."* Cited as the
++  standing rule that a demotion must be auditable, which is what I checked in the record's
++  `t3_demotion` block rather than in the hook's prose.
++
++`recall-check` over this diff's globs returned **`none` (1/2 match)** — no `tighten` escalation, so
++no control was raised. The index still reports itself **83 documents behind** the repo (review-1
++said 82); it did not change any finding here, and it is still worth a `/v:memory-refresh`.
++
++Prose-versus-code disagreements found during recall are reported as findings below, not resolved
++in prose's favour.
++
++---
++
++## SPEC
++
++Commit `e9ab86f` is the orchestrator's fix for review-1's five issues. Nine files.
++
++### Scope
++
++`e9ab86f` is an orchestrator commit outside any job lane, so there is no `write_allowed` list to
++test it against; I read it as new code, which is what the job body asked for. This job's own lane
++is one file (`docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-2.md`); `git status`
++after every probe showed only this run's own bookkeeping and no stray `.pyc` — every probe ran in
++a sandbox outside the checkout.
++
++### Coverage — one row per issue review-1 raised
++
++| Review-1 issue | Fixed in | Status |
++|---|---|---|
++| #1 ACCEPTANCE_GAP — content scan vetoes both new routes | `.claude/compound-v-impact-taxonomy.yaml:160-167` (+`.example.yaml:192-196`), pinned by `scripts/compound-v-taxonomy.py:1027-1040` | ✅ **CLOSED** |
++| #2 INTEGRATION_MISMATCH — three docs author `MERGED` | `agents/parallel-dispatcher.md:349,446-454`, `commands/v-resume.md:53`, `commands/v-collect.md:114` | ⚠️ **PARTIAL** → finding #2 |
++| #3 QUALITY — two shipped claims falsified | resolved by #1; the two sentences now hold | ✅ **CLOSED** → but see finding #3 |
++| #4 QUALITY — `tests.scope` label vs. tier obligation | `scripts/compound-v-fastpath-run.py:883-889` | ⚠️ **PARTIAL** → finding #4 |
++| #5 note — `[Unreleased]` intro dropped | `CHANGELOG.md:9` | ✅ **CLOSED** |
++
++### Issue #1 — CLOSED, reproduced on six cases
++
++Method, identical to review-1's so the two rounds are comparable: a sandbox built from
++`git archive HEAD | tar x` (byte-identical tracked content of `10c2068`), fresh `git init`, run
++directory removed, empty `docs/superpowers/pre-eval/`. The hook is deliberately silent on a
++checkout with an active run, and **this** run is active, so driving it in place would have proved
++nothing. Each case: one synthetic `UserPromptSubmit` payload, one throwaway `session_id`.
++
++```bash
++jq -nc --arg p "<request>" --arg s "<sid>" --arg c "$SB" \
++  '{hook_event_name:"UserPromptSubmit", prompt:$p, session_id:$s, cwd:$c}' \
++  | ./hooks/triage-prompt-nudge.sh
++```
++
++| # | Request | AC demands | Actual | Wall |
++|---|---|---|---|---|
++| 1 | `Fix the column alignment in the table rendered by scripts/compound-v-scorecard.py` | `TIER SCOPED` | **`TIER SCOPED`** · `SCOPED_PIPELINE` · `flavor: null` · `t3_reason: "demotion"` | 8 s |
++| 2 | `Fix the trailing slash handling in scripts/compound-v-scope-check.py` | `TIER SCOPED`, `flavor: scoped_plus` | **`TIER SCOPED`** · `flavor: "scoped_plus"` · `override_fired: null` · `t3_reason: "sensitive"` | 6 s |
++| 3 | `Rotate the credential in the .env file and update the loader` | `TIER FULL` | **`TIER FULL`** · `override_fired: 1` | 1 s |
++| 4 | `Fix the typo in README.md` | `TIER DIRECT` | **`TIER DIRECT`** · `FASTPATH_ELIGIBLE` | 0 s |
++| 5 | `Bump the python version in .github/workflows/validate.yml` | never demoted | **`TIER FULL`** · `override_fired: 2` · `t3_demotion: null` · no T3 asked | 0 s |
++| 6 | `Create scripts/compound-v-brand-new-thing.py to render a small table` | (new file) | **`TIER SCOPED`** · `t3_reason: "demotion"` | 7 s |
++
++The two records that failed last round, read verbatim off disk:
++
++```json
++// case 1 — the §A2 demotion
++{"decision":"SCOPED_PIPELINE","tier":"SCOPED","flavor":null,"override_fired":null,
++ "t3_reason":"demotion",
++ "t3_demotion":{"applied":true,"category":"plumbing","from":{"difficulty":"high","impact":"high"}},
++ "difficulty":{"band":"medium","display":5},"impact":{"band":"medium","display":5}}
++
++// case 2 — the §A3 SCOPED+ flavor
++{"decision":"SCOPED_PIPELINE","tier":"SCOPED","flavor":"scoped_plus","override_fired":null,
++ "t3_reason":"sensitive",
++ "t3_demotion":{"applied":true,"category":"plumbing","from":{"difficulty":"high","impact":"high"},
++                "sensitive":true}}
++```
++
++Both bands capped to `(medium, medium)`, both demotions auditable in the record, `override_fired`
++null on the sensitive path. The headless T3 chain ran live on cases 1, 2 and 6
++(`headless T3 classify: plumbing (backend=claude)`).
++
++All six records validated against `schemas/pre-eval-record.schema.json` with `jsonschema`:
++**VALID ×6**. Acceptance criterion 2 now passes 4 of 4.
++
++**Case 5 answers review-1's "vacuous" note.** Review-1 observed that its `.env` case reached FULL
++through override #1 (ambiguous localization over 45 unrelated files), so the hard never-demote list
++was never exercised. Case 5 exercises it: `confidence: "exact"`, `fan_out: 1`,
++`resolved_paths: [".github/workflows/validate.yml"]` — a single, correctly-resolved sensitive path
++that is on `NEVER_DEMOTE_GLOBS`. It went FULL **without the engine ever asking for T3**, which is
++the behaviour the criterion was written to prove. Case 3's route is unchanged from review-1
++(`override_fired: 1`, `fan_out: 45`) — the tier is right for the wrong reason, and that remains a
++weak test case rather than a defect.
++
++### Over-build
++
++None. The taxonomy change is three lines plus a comment; the resolver change is one assignment
++plus a note; the three document edits replace an instruction with its inverse. No new flag, no new
++helper, no speculative surface.
++
++**SPEC: ✅**
++
++---
++
++## QUALITY
++
++### Code quality
++
++Two code files changed, both minimally and in the right place.
++
++- `.claude/compound-v-impact-taxonomy.yaml:160-167` widens `content_scan_exclude` to
++  `["**/*.md", "**/*.py", "**/*.sh"]` and carries a comment naming the review, the finding and
++  the reason config stays scanned. This is the correct fix location: review-1 explicitly warned
++  against relaxing `_content_raises_impact`, and the diff does not touch it.
++  `compound-v-validate-taxonomy.py` → `{"verdict":"valid","violations":[]}`.
++- `scripts/compound-v-fastpath-run.py:883-889` sets `scope = "full"` inside the non-scoped
++  unmapped branch only. I read the surrounding function (`:840-935`): `slice_["scope"]` is
++  `scope_label or scope`, and `scope_label` is `None` on that branch, so the assignment reaches the
++  output without disturbing the SCOPED path's `impacted+referencing` label.
++
++### No regression
++
++Everything below ran on the merged tree under `/usr/bin/python3 -B` (3.9.6), macOS:
++
++```
++floor:   /usr/bin/python3 -B scripts/compound-v-preeval.py --selftest   → SELFTEST PASSED, exit 0
++full:    <manifest full_command>                                        → all-tests-ok, exit 0 (2m18s)
++all 34   scripts/compound-v-*.py --selftest                             → 34 total, 0 failed
++all 9    tests/*.sh                                                     → 9 total, 0 failed
++e2e:     python3 -m unittest discover -s tests/v2.9-e2e                 → Ran 24 tests, OK
++lint:    scripts/lint-frontmatter.py .                                  → ✅ All frontmatter clean
++```
++
++No regression. The taxonomy digest still resolves — `compound-v-validate-manifest.py
++--require-triage` on this run's own manifest returns `{"verdict":"valid","violations":[]}`, so
++widening the exclusion list did not orphan the record binding.
++
++### Test alignment
++
++The fix adds guards rather than only changing expectations, which is the right shape:
++
++| Requirement | Guard |
++|---|---|
++| source files leave the content scan | `compound-v-taxonomy.py:1030-1032` — `{"**/*.py","**/*.sh"} <= set(...)` |
++| config files stay scanned | `:1032-1033` — asserts no `.yaml`/`.json`/`.env` glob is in the list |
++| a script naming `%s` and `timeout` raises no content flag | `:1034-1037` — positive case |
++| a config naming `price` still raises impact | `:1038-1040` — negative case |
++| a FULL unmapped slice labels `full` | `compound-v-fastpath-run.py:2033-2037` + `tests/v2.9-e2e/test_fastpath_and_escalation.py:735` |
++
++### No fabricated metrics (anti-ruflo)
++
++Every number the diff introduces is a count or a wall-clock reading. The commit message's
++"7.6 s incl. headless T3" is a measured elapsed time and is corroborated by my own 6–8 s readings
++on cases 1, 2 and 6. "42 of the 44 files" is a count, made in review-1 and quoted here. No token
++cost, no savings meter, no hardcoded baseline, no speedup percentage. **Clean.**
++
++### No reward-hacking
++
++The diff touches two test files, so I diffed both against their pre-change versions.
++
++1. `scripts/compound-v-taxonomy.py:1027` — `rt["content_scan_exclude"] == ["**/*.md"]` loosened to
++   `"**/*.md" in rt["content_scan_exclude"]`. This is a **loosened assertion**, and it is the
++   pattern §2.5 exists to catch — so it needs its justification stated, not waved off. It is
++   justified: the exact-equality assertion pinned the very configuration value review-1's issue #1
++   ordered changed, and the same diff replaces it with **four stronger assertions** (the table
++   above), including a negative case that would fail if someone excluded config. A loosened check
++   superseded by a stronger replacement in the same diff is not a reward hack. **Cleared.**
++2. `tests/v2.9-e2e/test_fastpath_and_escalation.py:735` — `assertEqual(scope, "impacted")` →
++   `"full"`. A changed expectation tracking a deliberate behaviour change that review-1 itself
++   prescribed ("either the resolver should promote the label to `full`… or §3.3 should say…").
++   The orchestrator picked the resolver side. **Cleared.**
++
++No test deleted, skipped, renamed without replacement; no threshold widened; no timeout raised; no
++exception swallowed; no scorer or grader edited.
++
++### Confirmed-blocker integrity (§2.6)
++
++**n/a** — no marathon, no `blocked_external` verdict, no `done_with_blockers` terminal.
++
++**QUALITY: ISSUES** — finding #3 (a stale claim this commit introduced).
++
++---
++
++## INTEGRATION
++
++### Partition integrity
++
++One job in this run (`spec-review-2`, `direct`), one file in its lane, no path claimed twice. The
++commit under review is an orchestrator commit outside any lane. **No partition leak.**
++
++### Cross-job seams
++
++The seam between the resolver (Task D's output) and the worker scripts that consume it **does not
++hold** — finding #1. The seam between the finalizer and the four documents that describe the phase
++advance holds in four places and breaks in a fifth — finding #2.
++
++### Build green, and the tests this tier owes
++
++`triage.tier: DIRECT`, job `test_scope` resolved to `floor_only`
++(`jobs/spec-review-2.test-contract.json`). The floor is unconditional and ran (exit 0). I ran
++`full_command` as well (exit 0, 2m18s) plus every suite in the repository, evidence quoted under
++**No regression** above — observed, not asserted. **Build green.**
++
++### Feature acceptance criteria (r1/r4 manifest)
++
++| # | Criterion | Evidence | Status |
++|---|---|---|---|
++| 1 | every `compound-v-*.py --selftest` + every `tests/*.sh` green under `python3 -B`; `tests/v2.9-e2e` passes | 34/34, 9/9, `Ran 24 tests … OK` | ✅ |
++| 2 | hook returns SCOPED · SCOPED+ · FULL · DIRECT for the four named requests, each with a schema-valid record | 4/4 (plus 2 extra cases), 6/6 records VALID | ✅ |
++| 3 | localizer never searches a plain word; resolves a trailing-period path; returns `new_file` | `failed`/`fan_out:0` · `exact`/`hooks/triage-prompt-nudge.sh` · `new_file` | ✅ |
++| 4 | `fastpath-run` at SCOPED resolves an unmapped path to ≤5 referencing tests + floor, never `full_command`; at FULL still `full_command` | both run below | ✅ |
++| 5 | `--require-triage` rejects `scoped_plus` without a deep review job and accepts with; `--require-cross-model-receipt` rejects missing / digest-mismatched | 4/4 below | ✅ |
++| 6 | no prose says the hook degrades to a reminder on `needs_t3`, or that `/v:dispatch` step 9 writes phase MERGED by hand | grep sweep below | ✅ **as written** — finding #2 sits beside it |
++
++**All six feature acceptance criteria pass.** The findings below are defects the criteria do not
++reach, which is why the verdict is ISSUES and not a failed AC.
++
++**INTEGRATION: ISSUES.**
++
++---
++
++## Findings, ranked
++
++### FINDING #1 — INTEGRATION_MISMATCH · **blocks DONE** · new, not one of review-1's five
++
++**The resolver's own output slice is rejected as malformed by every external worker. A SCOPED job
++with an unmapped changed path cannot be dispatched to Codex, Antigravity, Cursor, opencode or
++Devin — the worker dies at usage-fault exit 2 before the model runs.**
++
++Two independent causes, both in the same slice:
++
++| Cause | Producer | Consumer that rejects it |
++|---|---|---|
++| `scope: "impacted+referencing"` | `scripts/compound-v-fastpath-run.py:891` (`scope_label`) | `scripts/compound-v-run-codex-worker.sh:131` — `.scope as $s \| ["full","impacted","floor_only"] \| index($s) != null` |
++| the extra key `selected_count` | `scripts/compound-v-fastpath-run.py:929-930` | `scripts/compound-v-run-codex-worker.sh:129` — `((keys) - ["scope","floor_command","full_command","resolved_commands"]) \| length == 0` |
++
++The same guard is duplicated verbatim in `compound-v-run-antigravity-worker.sh:138`,
++`compound-v-run-cursor-worker.sh:145`, `compound-v-run-opencode-worker.sh:179` and
++`compound-v-run-devin-worker.sh:158`.
++
++The two ends are wired directly together: `compound-v-emit-workflow.py:2662-2676` writes the
++slice by calling `resolve-tests --out <path>` and returns that same path, which
++`:1335-1336` then passes as `--test-contract-file`. Nothing normalises the label or strips the
++key in between.
++
++**Reproduced**, on a sandbox repo with an unmapped changed path at `triage.tier: SCOPED`:
++
++```bash
++compound-v-fastpath-run.py resolve-tests --worktree "$WT" --baseline "$B" \
++  --manifest "$M" --job-id j1 --no-prior-run --out slice.json
++```
++```json
++{"scope": "impacted+referencing",
++ "resolved_commands": ["sh -c 'echo floor'", "python3 tests/test_ref1.py", …],
++ "selected_count": 6, "floor_command": "…", "full_command": "…"}
++```
++```bash
++jq -e '(((keys) - ["scope","floor_command","full_command","resolved_commands"]) | length) == 0
++       and (.scope as $s | ["full","impacted","floor_only"] | index($s) != null)' slice.json
++# guard exit=1     → tc_validate() calls die "--test-contract-file is malformed"
++```
++
++This is **not** introduced by `e9ab86f`. Both the label and `selected_count` came from the 3.4.1
++decision-4 jobs and landed in r3. Review-1 verified the slice by reading its JSON and never handed
++it to the thing that consumes it, which is exactly the seam PASS 3 exists to check. It is invisible
++to every criterion because this repository dispatches Claude jobs, which do not go through
++`tc_validate`.
++
++The `job_result` schema note in the reviewer contract ("the resolved *slice* additionally carries
++the output-only label `impacted+referencing`") documents the producer's side. The five worker
++scripts document the consumer's, and they disagree.
++
++→ Pick one contract and make both ends obey it. Either the workers' guard accepts
++`impacted+referencing` and an optional `selected_count`, or the emitted `--test-contract-file`
++carries the three-value label with the extra detail in the notes. Do not fix it by deleting the
++guard — it is the check that stops a blank or empty command set becoming a fabricated pass.
++
++### FINDING #2 — INTEGRATION_MISMATCH (review-1 issue #2, **partially closed**)
++
++**A fifth document still instructs the agent to author `phase: MERGED`, and the dispatcher's own
++Step 5 still implies its Step 7 does.**
++
++The four documents review-1 named are fixed, verified by grep:
++
++| File:line | Now says |
++|---|---|
++| `agents/parallel-dispatcher.md:349` | "Read `phase` back from `state.json` … never author it here" ✅ |
++| `agents/parallel-dispatcher.md:446-454` | heading is "Confirm `MERGED` (the finalizer wrote it)"; "**Read the phase back; never author it here**" ✅ |
++| `commands/v-resume.md:53` | "**do not write the phase by hand**" ✅ |
++| `commands/v-collect.md:114` | "The phase itself is the workflow finalizer's (3.4.1) … read it back" ✅ |
++
++The one it did not name still carries the repealed instruction verbatim:
++
++```
++skills/compound-v/phase-3-parallel-opus-dispatch.md:292
++  This is the final pass of the three-pass Review Gate (spec / quality / integration) —
++  see agents/spec-reviewer.md. On PASS, advance `state.json` to `MERGED` and hand off to
++  superpowers:finishing-a-development-branch.
++```
++
++Found with `grep -rn "MERGED" skills commands agents | grep -i "write\|advance\|set phase\|author"`.
++This is a skill file on the dispatch path, and it is the same defect class the 3.4.1 CHANGELOG
++names ("the mechanism moved, and only some of the documents that describe it moved with it") —
++now at four of five instead of one of four.
++
++Second, smaller: `agents/parallel-dispatcher.md:382-384` still reads "proceed to Step 6 …, then
++Step 7 (commit + `MERGED` + hand off). Do **not** advance `state.json` to `MERGED` **yet**". The
++word *yet* means "Step 7 will", which the rewritten Step 7 at `:446` now forbids. One agent, two
++answers, twelve lines apart.
++
++→ `phase-3-parallel-opus-dispatch.md:292` and `parallel-dispatcher.md:382-384`: read the phase
++back, never author it — the same sentence the other four now carry.
++
++### FINDING #3 — QUALITY (the fix commit introduced a fresh stale claim)
++
++**`CHANGELOG.md:51` now describes a configuration that no longer exists — and it is the same
++defect class as review-1's issue #3, which this commit was closing.**
++
++```
++CHANGELOG.md:51
++  The taxonomy gains an optional `content_scan_exclude` glob list (this repo sets `["**/*.md"]`) …
++```
++
++```
++.claude/compound-v-impact-taxonomy.yaml:160-167
++  content_scan_exclude:
++    - "**/*.md"
++    - "**/*.py"
++    - "**/*.sh"
++```
++
++The commit added its intro line and its SCOPED+ paragraph but did not revisit the decision-2
++section eighteen lines below, which states the old value as fact. Every other prose mention is a
++plan or an archaeology document — correctly frozen historical records, not shipping claims — so
++this is the only one that ships.
++
++Review-1's two named claims are, by contrast, now **true**: `CHANGELOG.md:31-36` ("a small edit
++there is SCOPED+ … while a small edit to any other script … is plain SCOPED") is exactly probe
++cases 2 and 1, and `README.md:125` ("sized to the change itself, not just the glob its path
++happens to match") is what all six cases demonstrate. Issue #3 is closed; this is its successor.
++
++→ `CHANGELOG.md:51` — state the value the repository actually sets, and say why source is on the
++list (the taxonomy's own comment at `:161-165` already says it well).
++
++### FINDING #4 — QUALITY, low (review-1 issue #4, **partially closed**)
++
++**The label follows the obligation on the unmapped branch and not on its sibling. A slice that
++pulled in `full_command` through the previously-failing fallback still says `impacted`.**
++
++The fix is correct where review-1 pointed:
++
++```
++tier=FULL, unmapped path src/widget.go
++  "scope": "full"
++  "resolved_commands": ["sh -c 'echo floor'", "sh -c 'echo FULLSUITE'"]
++  note: "scope: labelled `full` — full_command was added for an unmapped path at this tier"
++```
++
++But `resolve_test_commands` appends `full_command` from **two** places, and only one relabels.
++The other is `scripts/compound-v-fastpath-run.py:864-868` — the previously-failing set is
++uncomputable, so the floor falls back to the whole suite. Reproduced at tier SCOPED with a
++`last_result` carrying no `tests.failures[]`:
++
++```json
++{"scope": "impacted+referencing",
++ "resolved_commands": ["sh -c 'echo floor'", "sh -c 'echo FULLSUITE'",
++                       "python3 tests/test_ref1.py", … ],
++ "selected_count": 7}
++```
++```
++note: "previously-failing: UNCOMPUTABLE … falling back to full_command rather than silently
++       dropping the set"
++note: "unmapped: src/widget.py … resolves to the 5 test(s) REFERENCING the changed module(s),
++       NOT to full_command (v3.4.1 decision 4; capped at 5)"
++```
++
++`full_command` is in the set; one note says it was added and the other says it was not; the label
++says neither. This over-runs rather than under-runs, so nothing goes untested — but it is the same
++reviewer-facing contradiction issue #4 named, in the branch the fix did not reach, and it now
++makes the two notes in a single slice disagree with each other.
++
++→ Apply the same rule at `:864-868`, or say in one place that the label reports the declared slice
++and the obligation is read from `resolved_commands`. Not both, in two branches of one function.
++
++### Closed without residue
++
++- **Review-1 issue #1** — closed, six cases above.
++- **Review-1 issue #5** — closed. `CHANGELOG.md:9` now reads "Stage verification, cycles 1 and 2
++  (DIRECT attended, then SCOPED as the feature below), 2026-09-03 — the first real request after
++  3.4.0 got no triage at all, and the fixes under 'Fixed' further down came out of those two
++  cycles." The framing review-1 said was lost is back, and widened to name cycle 2.
++
++---
++
++## Verification log
++
++Every command ran on the merged tree (`10c2068`) under `/usr/bin/python3 -B`, macOS, Python 3.9.6,
++except the hook probes, which ran on a byte-identical sandbox of it.
++
++**AC1 — the suites.** Quoted in full under **No regression** above: floor exit 0, `full_command`
++`all-tests-ok` exit 0 (2m18s), 34/34 selftests, 9/9 shell tests, `Ran 24 tests … OK`, frontmatter
++clean.
++
++**AC2 — the hook.** Six cases, table above. Records written to the sandbox's
++`docs/superpowers/pre-eval/`, never to this checkout; all six validated against
++`schemas/pre-eval-record.schema.json`:
++
++```
++VALID SCOPED None        2026-09-03T035845Z-fix-the-column-alignment-…-774c.json
++VALID SCOPED scoped_plus 2026-09-03T035900Z-fix-the-trailing-slash-…-5cf4.json
++VALID FULL   None        2026-09-03T035913Z-rotate-the-credential-…-e35e.json
++VALID DIRECT None        2026-09-03T035921Z-fix-the-typo-in-readme-md-c3e8.json
++VALID FULL   None        2026-09-03T035924Z-bump-the-python-version-…-1b18.json
++VALID SCOPED None        2026-09-03T035929Z-create-scripts-compound-v-…-7282.json
++```
++
++**AC3 — the localizer.**
++
++```
++--request "make the button red and friendly"
++  → {"confidence":"failed","fan_out":0,"flags":[],"resolved_paths":[]}          ✅ no repo scan
++--request "Update the guard in hooks/triage-prompt-nudge.sh."
++  → {"confidence":"exact","fan_out":1,"flags":["sensitive_path"],
++     "resolved_paths":["hooks/triage-prompt-nudge.sh"]}                         ✅ trailing period
++--request "Create scripts/compound-v-brand-new-thing.py to do the thing"
++  → {"confidence":"new_file","fan_out":1,"flags":["new_file"]}                  ✅
++```
++
++Note the middle result carries `sensitive_path` and **no** `content:` flag — before `e9ab86f`
++a `.sh` file would have raised `content:i18n_placeholder` here.
++
++**AC4 — proportionate tests.** Sandbox repo, unmapped changed path, the r4 `test_contract` shape
++with only `triage.tier` varied:
++
++| tier | resolved | `full_command` present? |
++|---|---|---|
++| FULL | `scope: "full"`, floor + `full_command` | yes ✅ (label now matches — issue #4) |
++| SCOPED (no referencing tests) | `scope: "impacted"`, floor only | **no** ✅ |
++| SCOPED (7 referencing tests exist) | `scope: "impacted+referencing"`, floor + **5** suites, `selected_count: 6` | **no** ✅ cap honoured |
++
++**AC5 — the validator.** Four for four:
++
++```
++--require-triage, scoped_plus WITHOUT a deep claude review job → exit 1, verdict invalid
++    "manifest triage.flavor 'scoped_plus' requires a review job with type: review,
++     tier: deep and backend: claude"
++--require-triage, scoped_plus WITH one                          → exit 0, {"verdict":"valid","violations":[]}
++--require-cross-model-receipt <missing file>                    → exit 1, "could not be read …
++                                                                   (fail-closed)"
++--require-cross-model-receipt <digest mismatch>                 → exit 1, "diff_digest 'sha256:000…'
++                                                                   != the sealed patch the caller
++                                                                   reviewed ('sha256:111…') —
++                                                                   the receipt is from a different
++                                                                   diff (stale-replay, fail-closed)"
++```
++
++**AC6 — the prose sweep.**
++
++- `needs_t3` → reminder: no document says it. `commands/v-triage.md:31-34` states the new behaviour
++  ("As of **v3.4.1** a request needing T3 is no longer one of those cases … It falls back to its
++  reminder only when no classifier could be RUN at all"), and that matches the hook's three
++  degrade paths at `hooks/triage-prompt-nudge.sh:616-630`, each of which is a genuine
++  could-not-run. ✅
++- `/v:dispatch` step 9 writes MERGED by hand: `commands/v-dispatch.md:232` forbids it. ✅
++  (One skill file still instructs it — finding #2.)
++
++**Housekeeping.** `git status --porcelain` on this checkout after every probe: four entries, all
++this run's own bookkeeping (`state.json`, `jobs/`, `lane-map.json`, `preexisting/`). No stray
++files, no `.pyc`. `compound-v-validate-taxonomy.py .claude/compound-v-impact-taxonomy.yaml` →
++`{"verdict":"valid","violations":[]}`. `compound-v-validate-manifest.py --require-triage` on this
++run's manifest → `{"verdict":"valid","violations":[]}`.
++
++---
++
++## Verdict
++
++```plaintext
++REVIEW GATE pass 2 — run 2026-09-03-v3.4.1-triage-size-r4
++
++VERDICT: ISSUES
++  PASS 1 SPEC:        ✅  — all five of review-1's issues addressed in e9ab86f; no over-build;
++                            no scope leak
++  PASS 2 QUALITY:     ISSUES — finding #3
++  PASS 3 INTEGRATION: ISSUES — findings #1, #2, #4; all six feature AC pass
++```
++
++Review-1's blocking issue is closed and re-verified on six cases, two more than the criterion
++demands. What remains:
++
++1. **FINDING #1 · blocks** — `resolve-tests` emits `scope: "impacted+referencing"` and an extra
++   `selected_count` key; every external worker's `tc_validate` rejects exactly that slice as
++   malformed (exit 2) before the model runs. Producer `compound-v-fastpath-run.py:891,929`;
++   consumers `compound-v-run-{codex,antigravity,cursor,opencode,devin}-worker.sh`. Pre-existing
++   from r3, missed by review-1, invisible to every acceptance criterion because this repository
++   dispatches Claude jobs.
++2. **FINDING #2** — `skills/compound-v/phase-3-parallel-opus-dispatch.md:292` still says "advance
++   `state.json` to `MERGED`"; `agents/parallel-dispatcher.md:382-384` still implies Step 7 does.
++   Review-1's issue #2 fixed four documents of five.
++3. **FINDING #3** — `CHANGELOG.md:51` still says "this repo sets `["**/*.md"]`" after the same
++   commit changed it to `["**/*.md","**/*.py","**/*.sh"]`.
++4. **FINDING #4** — the `full`-label rule was applied to the unmapped branch and not to the
++   previously-failing fallback twelve lines above it
++   (`scripts/compound-v-fastpath-run.py:864-868`), so a slice can carry `full_command` under the
++   label `impacted+referencing` with two notes that contradict each other.
++
++None of the four is a scope violation, a fabricated metric, a reward hack, or a regression, and
++none causes a test to be skipped. #1 stops a dispatch; #2, #3 and #4 are the same disease this
++release exists to treat — a mechanism that moved while one of the documents describing it stayed
++put — and they should be closed in the same pass, not carried to a third round.

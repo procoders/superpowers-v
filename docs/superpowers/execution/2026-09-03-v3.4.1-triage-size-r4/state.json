@@ -1,14 +1,40 @@
 {
   "run_id": "2026-09-03-v3.4.1-triage-size-r4",
-  "phase": "PARTITION_VERIFIED",
+  "phase": "MERGED",
   "pre_eval_id": "2026-09-03T035057Z-review-pass-2-of-v3-4-1-triage-size-verify-that-the-five-iss-c296",
   "updated_at": "2026-09-03T03:51:27Z",
   "jobs": {
     "spec-review-2": {
-      "status": "pending",
+      "status": "done",
       "isolation": "direct",
-      "worktree": null,
-      "session_id": null
+      "worktree": "",
+      "session_id": null,
+      "baseline": "10c2068b7c0b678417ffea9110612014aed0c7ec",
+      "realised_commit": "10c2068b7c0b678417ffea9110612014aed0c7ec",
+      "merged": {
+        "realised_commit": "10c2068b7c0b678417ffea9110612014aed0c7ec",
+        "mode": "direct",
+        "integrated": true,
+        "commit": "cd3ad933685afc1b5d03e512c0b7f756f3ae3f22"
+      }
     }
-  }
+  },
+  "triage_actual": {
+    "merge_pending": true,
+    "pre_eval_id": "2026-09-03T035057Z-review-pass-2-of-v3-4-1-triage-size-verify-that-the-five-iss-c296",
+    "run_id": "2026-09-03-v3.4.1-triage-size-r4"
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "spec-review-2"
+      ],
+      "merged": [
+        "spec-review-2"
+      ],
+      "commit": "cd3ad933685afc1b5d03e512c0b7f756f3ae3f22",
+      "integrated": true
+    }
+  },
+  "merged_at": "2026-09-03T04:07:06Z"
 }

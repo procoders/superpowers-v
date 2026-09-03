@@ -1,0 +1,76 @@
+{
+  "baseline_commit": "10c2068b7c0b678417ffea9110612014aed0c7ec",
+  "diff_digest": "sha256:1aacc4d30465a53308794c79705ac22e99c28e0824b3b337925c92b5fd9eb62c",
+  "exit_code": 0,
+  "job_id": "spec-review-2",
+  "patch_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r4/jobs/spec-review-2.patch",
+  "patch_paths": [
+    "docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-2.md"
+  ],
+  "patch_sha256": "sha256:1aacc4d30465a53308794c79705ac22e99c28e0824b3b337925c92b5fd9eb62c",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"10c2068b7c0b678417ffea9110612014aed0c7ec\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-2.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-2.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "10c2068b7c0b678417ffea9110612014aed0c7ec",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "docs/superpowers/dogfood/2026-09-03-v3.4.1-triage-size-review-2.md",
+      "docs/superpowers/execution/2026-09-02-df1-test-scope/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df10-reviewer/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df11-reviewer-retry/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df12-reviewer-third/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df13-reviewer-fourth/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df14-floor-fails/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df15-reviewer-fifth/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df16-floor-fails-again/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df18-direct-digest/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df19-clean/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df2-frontier/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df20-final/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df21-postgate/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df22-closed/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df24-recall-review/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df25-recall-reachable/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df27-full-pass/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df2b-direct-bookkeeping/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df2c-direct-retry/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df3-scope-violation/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df6-no-work/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df7-narrowing/.run.lock",
+      "docs/superpowers/execution/2026-09-02-df9-escalation/.run.lock",
+      "docs/superpowers/execution/2026-09-02-v3.0.5-model-routing/.run.lock",
+      "docs/superpowers/execution/2026-09-02-v3.0.6-implement-narrowing/.run.lock",
+      "docs/superpowers/execution/2026-09-02-v3.4-native-first-r13/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r2/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r3/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r4/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r4/jobs/spec-review-2.baseline",
+      "docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r4/jobs/spec-review-2.prompt.md",
+      "docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r4/jobs/spec-review-2.test-contract.json",
+      "docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r4/lane-map.json",
+      "docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r4/preexisting/spec-review-2.txt",
+      "docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r4/preexisting/spec-review-2.verified.txt",
+      "docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r4/state.json",
+      "docs/superpowers/execution/2026-09-03-v3.4.1-triage-size/.run.lock"
+    ],
+    "checks": [
+      {
+        "checker": "/usr/bin/python3 -B scripts/compound-v-preeval.py --selftest",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'floor_only' \u2014 triage tier DIRECT with a declared floor_command \u2014 the floor is the whole test obligation at this tier",
+      "floor: floor_command runs at every tier and comes first"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": ""
+}
