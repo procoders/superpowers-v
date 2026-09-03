@@ -342,7 +342,147 @@ check "...so a FAILED-OPEN notice on its own produces no signal at all" \
       "$([ "$(grep -cE ' (out-of-lane|wrong-cwd|error|denied|stall) ' "$OUT6")" = 0 ] && echo 1 || echo 0)"
 
 # --------------------------------------------------------------------------- #
-# 7. The script's own --selftest, run through this suite so CI cannot lose it.
+# 7. THE ROSTER (review-1 issue 7). The per-tick summary must name EVERY agent
+#    of the workflow with the job it registered, not only the ones that emitted
+#    a signal — which is what "names every agent of the run with its job" asks
+#    for. Checked on the section-1 output, which has all four agents.
+# --------------------------------------------------------------------------- #
+check "the summary carries a roster line per agent, naming its job" \
+      "$(grep -qE '^a1111111 +a +returned' "$OUT" \
+         && grep -qE '^a2222222 +b +returned' "$OUT" \
+         && grep -qE '^a4444444 +\(unregistered\) +live' "$OUT" && echo 1 || echo 0)"
+check "...one line for every agent transcript, including the silent ones" \
+      "$([ "$(grep -cE '^a[0-9]+ ' "$OUT")" = 4 ] && echo 1 || echo 0)"
+
+# --------------------------------------------------------------------------- #
+# 8. THE FALSE-POSITIVE CLASSES OF REVIEW 1 — one fixture each, in one agent
+#    that is correctly registered and does nothing wrong at all.
+#
+#    Against this run's own transcripts the shipped detectors reported five
+#    out-of-lane signals that were all `Bash /dev/null`, and twelve denials that
+#    were all an agent READING its own instructions. Every line below is an
+#    idiom out of that traffic; the whole fixture must be silent.
+# --------------------------------------------------------------------------- #
+WF4="$SESSION/subagents/workflows/wf_falsepos"
+mkdir -p "$WF4" "$T/scratch"
+A6=a666666666666666
+DENY="Compound V lane guard: job 'a' is not allowed to write 'x'"
+REG6="$PY -B $EMIT register-lane --run-dir $RUN --job-id a --cwd $WTA --repo-root $SANDBOX --isolation worktree"
+
+cat >"$WF4/agent-$A6.jsonl" <<JSONL
+{"type":"user","agentId":"$A6","timestamp":"$NOW","message":{"role":"user","content":"Implementer for job a of $RUN."}}
+{"type":"assistant","agentId":"$A6","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"q1","name":"Bash","input":{"command":"$REG6"}}]}}
+{"type":"user","agentId":"$A6","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"q1","is_error":false,"content":"{\"registered\": \"a\"}"}]}}
+{"type":"assistant","agentId":"$A6","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"q2","name":"Bash","input":{"command":"ls -la $RUN && cat $RUN/manifest.yaml 2>/dev/null | head -100"}}]}}
+{"type":"user","agentId":"$A6","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"q2","content":"run_id: run1"}]}}
+{"type":"assistant","agentId":"$A6","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"q3","name":"Write","input":{"file_path":"$T/scratch/notes.md","content":"scratch"}}]}}
+{"type":"user","agentId":"$A6","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"q3","content":"File created successfully at: $T/scratch/notes.md"}]}}
+{"type":"assistant","agentId":"$A6","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"q4","name":"Bash","input":{"command":"true"}}]}}
+{"type":"user","agentId":"$A6","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"q4","content":"The plan says the literal $DENY must anchor to a refused call."}]}}
+{"type":"assistant","agentId":"$A6","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"q5","name":"Bash","input":{"command":"true"}}]}}
+{"type":"user","agentId":"$A6","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"q5","content":"3. Render the run-level phase, one of SPEC_READY to BLOCKED to REVIEWED."}]}}
+{"type":"assistant","agentId":"$A6","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"q6","name":"Bash","input":{"command":"true"}}]}}
+{"type":"user","agentId":"$A6","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"q6","content":"PASS exit code 0 is not an error, exit code 1 is"}]}}
+{"type":"assistant","agentId":"$A6","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"q7","name":"Read","input":{"file_path":"$SANDBOX/docs/guard.md"}}]}}
+{"type":"user","agentId":"$A6","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"q7","content":"$DENY"}]}}
+JSONL
+
+cat >"$WF4/journal.jsonl" <<JSONL
+{"type":"started","key":"k6","agentId":"$A6"}
+{"type":"result","key":"k6","agentId":"$A6"}
+JSONL
+
+OUT7="$T/out7.txt"
+"$PY" -B "$WATCH" --run-dir "$RUN" --transcripts "$SESSION" --wf wf_falsepos --once \
+      --state "$T/state7.json" >"$OUT7" 2>&1
+check "a Bash 2>/dev/null redirect is NOT an out-of-lane write" \
+      "$(grep -q 'dev/null' "$OUT7" && echo 0 || echo 1)"
+check "a write to a path outside the repository is NOT an out-of-lane write" \
+      "$(grep -q 'scratch/notes.md' "$OUT7" && echo 0 || echo 1)"
+check "a tool_result that merely QUOTES the deny literal is NOT a denial" \
+      "$(grep -q 'denied' "$OUT7" && echo 0 || echo 1)"
+check "prose naming BLOCKED, and a selftest line naming exit code 1, are NOT errors" \
+      "$(grep -qE ' error ' "$OUT7" && echo 0 || echo 1)"
+check "so the whole clean-agent fixture emits NO signal at all" \
+      "$([ "$(grep -cE ' (out-of-lane|wrong-cwd|error|denied|stall) ' "$OUT7")" = 0 ] && echo 1 || echo 0)"
+check "...and it still appears in the roster, with its job" \
+      "$(grep -qE '^a6666666 +a +returned' "$OUT7" && echo 1 || echo 0)"
+
+# --------------------------------------------------------------------------- #
+# 9. A TICK BOUNDARY between a register-lane and its result (review-1 issue 3).
+#    The first --once sees the tool_use alone; the result and an IN-LANE write
+#    land afterwards. The agent must still be job `a` on the second pass — the
+#    pending exchange is state, not a local — and its in-lane write must be
+#    silent. Read whole, this transcript emits nothing; read across a boundary
+#    it used to emit a false out-of-lane against a phantom (unregistered) agent.
+# --------------------------------------------------------------------------- #
+WF5="$SESSION/subagents/workflows/wf_tick"
+mkdir -p "$WF5"
+A7=a777777777777777
+REG7="$PY -B $EMIT register-lane --run-dir $RUN --job-id a --cwd $WTA --repo-root $SANDBOX --isolation worktree"
+
+cat >"$WF5/agent-$A7.jsonl" <<JSONL
+{"type":"user","agentId":"$A7","timestamp":"$NOW","message":{"role":"user","content":"Implementer for job a of $RUN."}}
+{"type":"assistant","agentId":"$A7","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"r1","name":"Bash","input":{"command":"$REG7"}}]}}
+JSONL
+cat >"$WF5/journal.jsonl" <<JSONL
+{"type":"started","key":"k7","agentId":"$A7"}
+JSONL
+
+STT="$T/state_tick.json"
+"$PY" -B "$WATCH" --run-dir "$RUN" --transcripts "$SESSION" --wf wf_tick --once \
+      --state "$STT" >"$T/tick1.txt" 2>&1
+check "tick 1, the register-lane result not yet written, emits no signal" \
+      "$([ "$(grep -cE ' (out-of-lane|wrong-cwd|error|denied|stall) ' "$T/tick1.txt")" = 0 ] && echo 1 || echo 0)"
+
+cat >>"$WF5/agent-$A7.jsonl" <<JSONL
+{"type":"user","agentId":"$A7","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"r1","is_error":false,"content":"{\"registered\": \"a\"}"}]}}
+{"type":"assistant","agentId":"$A7","timestamp":"$NOW","message":{"role":"assistant","content":[{"type":"tool_use","id":"r2","name":"Write","input":{"file_path":"$WTA/src/ok2.py","content":"print(2)"}}]}}
+{"type":"user","agentId":"$A7","timestamp":"$NOW","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"r2","content":"File created successfully at: $WTA/src/ok2.py"}]}}
+JSONL
+
+"$PY" -B "$WATCH" --run-dir "$RUN" --transcripts "$SESSION" --wf wf_tick --once \
+      --state "$STT" >"$T/tick2.txt" 2>&1
+check "a register-lane split across two ticks keeps the agent registered" \
+      "$(grep -qE '^a7777777 +a +live' "$T/tick2.txt" && echo 1 || echo 0)"
+check "...so the in-lane write that follows the boundary is NOT out-of-lane" \
+      "$([ "$(grep -cE ' (out-of-lane|wrong-cwd|error|denied|stall) ' "$T/tick2.txt")" = 0 ] && echo 1 || echo 0)"
+
+# --------------------------------------------------------------------------- #
+# 10. A RUN DIRECTORY OUTSIDE ANY GIT CHECKOUT (review-1 issue 4), on the
+#     DEFAULT discovery path — no --transcripts, which is what masked this.
+#     Advisory means exit 0 and a sentence, never a traceback.
+# --------------------------------------------------------------------------- #
+mkdir -p "$T/norepo/run"
+OUT8="$T/out8.txt"
+"$PY" -B "$WATCH" --run-dir "$T/norepo/run" --once --state "$T/state8.json" >"$OUT8" 2>&1
+RC8=$?
+check "a run directory outside any git checkout exits 0" \
+      "$([ "$RC8" = 0 ] && echo 1 || echo 0)"
+check "...with no traceback, on the default discovery path" \
+      "$(grep -q 'Traceback' "$OUT8" && echo 0 || echo 1)"
+
+# --------------------------------------------------------------------------- #
+# 11. DISCOVERY THROUGH CLAUDE_CONFIG_DIR — the session_roots branch, which no
+#     test in this repository exercised because every invocation above passes
+#     --transcripts. Only wf_test-1 is copied under the fake config root, so the
+#     assertion names the workflow discovery had to find on its own.
+# --------------------------------------------------------------------------- #
+ENC="$("$PY" -B -c 'import os,sys;print(os.path.realpath(sys.argv[1]).replace("/","-"))' "$SANDBOX")"
+CFG="$T/cfg"
+mkdir -p "$CFG/projects/$ENC/sess/subagents/workflows"
+cp -R "$WF1" "$CFG/projects/$ENC/sess/subagents/workflows/"
+OUT9="$T/out9.txt"
+CLAUDE_CONFIG_DIR="$CFG" "$PY" -B "$WATCH" --run-dir "$RUN" --once \
+      --state "$T/state9.json" >"$OUT9" 2>&1
+RC9=$?
+check "discovery resolves the session root through CLAUDE_CONFIG_DIR" \
+      "$([ "$RC9" = 0 ] && grep -q 'wf_test-1' "$OUT9" && echo 1 || echo 0)"
+check "...and reports the same roster it does under --transcripts" \
+      "$(grep -qE '^a1111111 +a +returned' "$OUT9" && echo 1 || echo 0)"
+
+# --------------------------------------------------------------------------- #
+# 12. The script's own --selftest, run through this suite so CI cannot lose it.
 # --------------------------------------------------------------------------- #
 "$PY" -B "$WATCH" --selftest >"$T/selftest.txt" 2>&1
 RC7=$?

@@ -8,8 +8,14 @@ The run-id (optional) is `{{args}}`.
 
 ## Steps
 
-1. **Locate the run.**
-   - If `{{args}}` names a run-id, the run dir is `docs/superpowers/execution/{{args}}/`.
+1. **Parse `{{args}}`, then locate the run.** `--live` is the only flag this command recognizes. If
+   `{{args}}` is exactly `--live`, or starts with `--live` followed by whitespace, strip that leading
+   token, note that the live watch (step "Live watch" below) is requested, and treat whatever remains
+   (trimmed) as the run-id for the rest of this step — e.g. `--live 2026-09-01-foo` locates run
+   `2026-09-01-foo` and requests the watch; a bare `--live` requests the watch with no run-id, same as
+   the no-argument case below. `{{args}}` with no leading `--live` is a bare run-id (or empty), exactly
+   as before, and the live watch is not requested.
+   - If the (flag-stripped) `{{args}}` names a run-id, the run dir is `docs/superpowers/execution/<run-id>/`.
    - If `{{args}}` is empty, list the subdirectories of `docs/superpowers/execution/` — **except `epics/`**, which holds epic spines (`epics/<epic-id>/epic-state.json`), not runs; it is rendered by the "Epic progress" section below, never as a run row. If there is exactly one, use it. If there are several, show them (newest first by run-id date prefix) and render the most recent, noting the others.
    - If `docs/superpowers/execution/` is absent or empty, tell the user there are no **Compound V**
      orchestrator runs yet. Before stopping, do one cheap check: does `.superpowers/sdd/` exist in
@@ -122,6 +128,12 @@ one line per **new** signal since its last state: `out-of-lane`, `wrong-cwd`, `e
 It is advisory only — it never acts on a signal, never mutates the run, and exits 0 on every path. Print
 its lines verbatim under the per-job table; a clean pass with no new signals is worth stating explicitly
 ("no new signals") rather than silently omitting the section.
+
+**Degrade-safe, same rule as every other optional section in this file.** If
+`scripts/compound-v-transcript-watch.py` is missing, the run's transcripts cannot be found, or the
+probe errors or exits non-zero, say so in one line ("live watch unavailable: no transcripts found for
+this run" or similar) and stop there — never show a traceback or raw stack output, and never break the
+state table rendered above it.
 
 ## Dashboard (v2.15) — `--html`
 

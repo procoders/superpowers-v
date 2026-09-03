@@ -56,7 +56,7 @@ delegating, the epic inherits Engine C along with everything else.
    The flag also carries the SCOPED+ rule: a manifest with `triage.flavor: scoped_plus` is
    rejected unless it declares a `type: review` job with `tier: deep` and `backend: claude`. That
    half is checkable here because the reviewer is *declared*; the cross-model half is evidence
-   that does not exist yet, and step 8 checks it after the fact.
+   that does not exist yet, and step 9 checks it after the fact.
 
    Pick the mode by manifest kind (CR5-1): a `fast_path` block ⇒ `--mode pre-dispatch`; a legacy
    plan-based manifest carries no such block and is validated mode-lessly, as before — a mode-less
@@ -99,7 +99,7 @@ delegating, the epic inherits Engine C along with everything else.
    > both Gate and Record — the v2.6.4 audit-trail loss, reproduced structurally.
    >
    > **Two authority passes, deliberately.** `finalize-wave` gates each wave before committing it;
-   > step 7 re-runs the gate run-wide afterwards. The first is what makes a dependent's worktree see
+   > step 8 re-runs the gate run-wide afterwards. The first is what makes a dependent's worktree see
    > its prerequisite; the second is the run-level authority and is cheap. Neither replaces the other.
    >
    > **Still true, and the reason 3.0.1 existed:** Engine C has now been exercised by 143 selftest
@@ -123,7 +123,7 @@ delegating, the epic inherits Engine C along with everything else.
    - Probe succeeds → **Engine C** (step 5). `engine_c: false` in `.claude/compound-v.json` still
      forces the residual path for anyone who wants it.
    - Probe fails, or this is a subagent context → the **residual subagent path**
-     ([`parallel-dispatcher.md`](../agents/parallel-dispatcher.md)), then rejoin at step 7.
+     ([`parallel-dispatcher.md`](../agents/parallel-dispatcher.md)), then rejoin at step 8.
 
    **Do not justify the fallback by claiming workflows are unavailable headless.** They are
    available in `claude -p` and in the Agent SDK; only the `ultracode` keyword is route-restricted.
@@ -166,11 +166,11 @@ delegating, the epic inherits Engine C along with everything else.
    - `receipts/<job-id>.gate.json` and `results/<job-id>.json` — one result per job, exactly one;
    - `state.json` per-job `worktree`, `baseline`, `status` and `merged`;
    - `docs/superpowers/memory/triage-outcomes.jsonl` — the precision-IGNORED `merge_pending`
-     `actual`, appended once every job is terminal. Step 9 writes the terminal one.
+     `actual`, appended once every job is terminal. Step 10 writes the terminal one.
 
-   **Watch the live transcripts in the background (v3.4.2).** While the workflow runs, use the
-   Monitor tool to run the read-only transcript watch every two minutes rather than waiting for the
-   gate to catch a problem after the fact:
+7. **Watch the live transcripts in the background (v3.4.2).** While the workflow launched in step 6
+   runs, use the Monitor tool to run the read-only transcript watch every two minutes rather than
+   waiting for the gate to catch a problem after the fact:
 
    ```bash
    python3 scripts/compound-v-transcript-watch.py --run-dir docs/superpowers/execution/<run-id> --every 120
@@ -181,9 +181,9 @@ delegating, the epic inherits Engine C along with everything else.
    (a write outside the job's `write_allowed`) and **`wrong-cwd`** (a `register-lane` whose isolation or
    cwd disagrees with the manifest). Either one, seen live, is reason enough to `TaskStop` the workflow
    and re-orchestrate early — the same move that would have caught 3.4.0's r1 defect and 3.4.1's r2
-   defect in their first minute instead of at the gate.
+   defect early, before the gate, instead of only after it.
 
-7. **Gate integration on the authority — BEFORE any job commit is integrated.**
+8. **Gate integration on the authority — BEFORE any job commit is integrated.**
 
    ```
    python3 scripts/compound-v-integration-gate.py \
@@ -202,7 +202,7 @@ delegating, the epic inherits Engine C along with everything else.
    authority as a correct script with no caller, which is the exact defect this release exists to
    fix, reproduced in its own cure.
 
-8. **Review Gate — three passes (Opus), AC-gated.** [`spec-reviewer`](../agents/spec-reviewer.md):
+9. **Review Gate — three passes (Opus), AC-gated.** [`spec-reviewer`](../agents/spec-reviewer.md):
    SPEC (each job's `acceptance`), QUALITY (no regressions, no fabricated metrics), INTEGRATION
    (cross-job seams, feature-level `acceptance_criteria`). DONE is gated on all three.
 
@@ -241,9 +241,9 @@ delegating, the epic inherits Engine C along with everything else.
    bytes — which is why the validator refuses a receipt whose ids do not bind, whose
    `diff_digest` is not the patch you sealed, or whose self-digest does not re-derive. A run whose
    receipt does not verify does not proceed to the merge; fix it or re-run the review. Commit the
-   receipt and the patch with the rest of the run substrate in step 9.
+   receipt and the patch with the rest of the run substrate in step 10.
 
-9. **Append the terminal `actual`, commit the run substrate, then hand off**
+10. **Append the terminal `actual`, commit the run substrate, then hand off**
    to `superpowers:finishing-a-development-branch`. **Do not write `phase: MERGED` into
    `state.json` by hand** — the workflow finalizer has advanced the phase itself since stage 1
    (`fix(finalize)`, commit f0dfc30), so a hand-written phase here is at best a duplicate and at

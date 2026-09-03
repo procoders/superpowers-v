@@ -26,9 +26,26 @@ exit), **`stall`** (no tool activity past a threshold on an agent that has not r
 signal, and exits 0 on every advisory path. Discovery needs no new state: it scans the session's
 Workflow transcripts for the run directory's own absolute path — every worker's `register-lane` call
 carries it — and the newest matching workflow wins, so `--wf`/`--transcripts` are overrides, not
-requirements. `/v:status --live` runs it once after the state table; `/v:dispatch` step 6 runs it every
-two minutes in the background and treats `out-of-lane`/`wrong-cwd` as reason enough to `TaskStop` and
-re-orchestrate early.
+requirements. `/v:status --live` runs it once after the state table; `/v:dispatch` runs it every
+two minutes in the background as its own step and treats `out-of-lane`/`wrong-cwd` as reason enough to
+`TaskStop` and re-orchestrate early.
+
+### Fixed — review-1's ten findings against the watcher (detector precision, tick-safety, wiring)
+
+A first review pass against the watcher's own real transcripts (`docs/superpowers/dogfood/2026-09-03-v3.4.2-transcript-watch-review-1.md`)
+found ten issues, closed in a second wave: `out-of-lane` no longer fires on a Bash redirect or a path
+outside the repository (issue 1); `denied` and `error` now anchor to the matching transcript line
+instead of a generic substring match, so quoting the lane-guard's deny text or the word `BLOCKED` in
+documentation no longer trips a false positive (issues 2, 2b); `register-lane` resolution survives a
+poll landing between the tool call and its result instead of leaving the agent permanently
+`(unregistered)` (issue 3); default transcript discovery degrades to an explicit no-match message
+instead of a traceback when the run directory sits outside a git checkout (issue 4); the test suite
+gained one fixture per false-positive class plus a discovery test exercising the untested default path
+(issue 6); `/v:dispatch`'s background-watch guidance moved out of step 6's prose into its own numbered
+step, keeping step 6 narrowly scoped as the archaeology audit required (issue 8); and dead code in the
+state-save path was removed (issue 10). `/v:status --live` gained explicit
+`{{args}}` flag-parsing prose and the same degrade-to-one-line contract every other optional section in
+that file already carries (issue 5).
 
 ### Fixed — a finished run's lane map claimed the checkout forever (finding 68)
 
