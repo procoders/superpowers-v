@@ -1,0 +1,8 @@
+{
+  "agents": {},
+  "manifest": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r2/manifest.yaml",
+  "run_id": "2026-09-03-v3.4.1-triage-size-r2",
+  "worktrees": {
+    "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_267dd094-28b-2": "test-scope"
+  }
+}

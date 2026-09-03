@@ -1,0 +1,67 @@
+{
+  "baseline_commit": "9da28c4aface884552f9446024754972b6ae63e8",
+  "diff_digest": "sha256:f6bd7204fc33c51eab46cc5de1ccf6adb3a7b40f9a525e117447f07c7fcf670d",
+  "exit_code": 0,
+  "job_id": "test-scope",
+  "patch_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-v3.4.1-triage-size-r2/jobs/test-scope.patch",
+  "patch_paths": [
+    "agents/spec-reviewer.md",
+    "scripts/compound-v-fastpath-run.py",
+    "skills/compound-v/execution-manifest.md",
+    "tests/v2.9-e2e/test_fastpath_and_escalation.py"
+  ],
+  "patch_sha256": "sha256:f6bd7204fc33c51eab46cc5de1ccf6adb3a7b40f9a525e117447f07c7fcf670d",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"9da28c4aface884552f9446024754972b6ae63e8\",\n  \"changed\": [\n    \"agents/spec-reviewer.md\",\n    \"scripts/compound-v-fastpath-run.py\",\n    \"skills/compound-v/execution-manifest.md\",\n    \"tests/v2.9-e2e/test_fastpath_and_escalation.py\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-fastpath-run.py\",\n    \"tests/v2.9-e2e/test_fastpath_and_escalation.py\",\n    \"skills/compound-v/execution-manifest.md\",\n    \"agents/spec-reviewer.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "9da28c4aface884552f9446024754972b6ae63e8",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "agents/spec-reviewer.md",
+      "scripts/compound-v-fastpath-run.py",
+      "skills/compound-v/execution-manifest.md",
+      "tests/v2.9-e2e/test_fastpath_and_escalation.py"
+    ],
+    "checks": [
+      {
+        "checker": "/usr/bin/python3 -B scripts/compound-v-preeval.py --selftest",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f scripts/compound-v-fastpath-run.py ] || exit 0; /usr/bin/python3 -B scripts/compound-v-fastpath-run.py --selftest'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f tests/v2.9-e2e/test_fastpath_and_escalation.py ] || exit 0; /usr/bin/python3 -B -m unittest discover -s \"$(dirname tests/v2.9-e2e/test_fastpath_and_escalation.py)\" -p \"$(basename tests/v2.9-e2e/test_fastpath_and_escalation.py)\"'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'for s in scripts/compound-v-preeval.py scripts/compound-v-localize.py scripts/compound-v-taxonomy.py scripts/compound-v-validate-taxonomy.py scripts/compound-v-fastpath-run.py scripts/compound-v-classify-request.py scripts/compound-v-validate-manifest.py; do /usr/bin/python3 -B \"$s\" --selftest >/dev/null 2>&1 || { echo \"FAIL $s\"; exit 1; }; done; for t in tests/*.sh; do bash \"$t\" >/dev/null 2>&1 || { echo \"FAIL $t\"; exit 1; }; done; /usr/bin/python3 -B -m unittest discover -s tests/v2.9-e2e -p \"test_*.py\" >/dev/null 2>&1 || { echo \"FAIL e2e\"; exit 1; }; echo all-tests-ok'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (7 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 2 command(s) from 4 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)",
+      "unmapped: agents/spec-reviewer.md, skills/compound-v/execution-manifest.md matched no `when` glob \u2014 unknown blast radius resolves to full_command, never to nothing"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_267dd094-28b-2"
+}

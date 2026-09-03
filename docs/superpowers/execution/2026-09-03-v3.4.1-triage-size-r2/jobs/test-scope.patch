@@ -1,0 +1,684 @@
+diff --git a/agents/spec-reviewer.md b/agents/spec-reviewer.md
+index 775a26f..f500cbd 100644
+--- a/agents/spec-reviewer.md
++++ b/agents/spec-reviewer.md
+@@ -173,11 +173,13 @@ The composite must build/compile. What must have been *tested* is tier-aware, an
+ | Tier | Required beyond the unconditional floor |
+ |---|---|
+ | **FULL** | `full_command` — ran, exit 0 |
+-| **SCOPED** | the declared impacted set: every `impacted_map` rule whose `when` matches a changed path, unioned — not the first match |
+-| **DIRECT** | the declared impacted set — **plus `full_command` when the change lands unattended** (the auto-route class): the floor alone does not carry the guarantee an auto-committing change trades on |
+-| **any tier** | `full_command` whenever the job carries a changed path matching **no** `impacted_map` rule — an unmapped file is unknown blast radius, never "nothing to run" |
++| **SCOPED** | the declared impacted set: every `impacted_map` rule whose `when` matches a changed path, unioned — not the first match — **plus, for each changed path matching no rule, the referencing tests (≤5) and never `full_command`** |
++| **DIRECT** | the same as SCOPED — **plus `full_command` when the change lands unattended** (the auto-route class): the floor alone does not carry the guarantee an auto-committing change trades on |
++| **no `triage.tier` in the manifest** | `full_command` whenever the job carries a changed path matching **no** `impacted_map` rule — with no tier there is no size decision to honour, and an unmapped file is unknown blast radius, never "nothing to run" |
+ 
+-The last row overrides the three above it: one unmapped path in a SCOPED or DIRECT job promotes that job to `full_command`. Derive it yourself — match each entry of the job's `files_changed` against the map — rather than taking "impacted" on the worker's word. (DIRECT dispatches no reviewer by default; that row governs the reviews that do happen at DIRECT and the bar an unattended landing must clear before it commits.)
++**What a SCOPED job owes, since 3.4.1 (decision 4).** The floor, the impacted set, and — for any changed path no `impacted_map` rule matched — at most **five referencing suites**: the test files that name the changed module, selected by `referencing_tests()` in [`compound-v-fastpath-run.py`](../scripts/compound-v-fastpath-run.py). When none of them exists, the floor **alone** is the whole obligation. **`full_command` is not owed at SCOPED or DIRECT, and demanding it here is now a review error** — an unmapped path used to promote every tier to the full suite, which handed back the entire suite the triage engine had just decided against. FULL is unchanged, and the merge-blocking CI run remains the only thing that restores what a full suite guarantees; the referencing heuristic is early feedback, textual, and neither sound nor complete.
++
++Derive it yourself — match each entry of the job's `files_changed` against the map — rather than taking "impacted" on the worker's word. (DIRECT dispatches no reviewer by default; that row governs the reviews that do happen at DIRECT and the bar an unattended landing must clear before it commits.)
+ 
+ Read the evidence from the job result ([`job_result.schema.json`](../schemas/job_result.schema.json)), never from the summary prose:
+ 
+@@ -185,7 +187,7 @@ Read the evidence from the job result ([`job_result.schema.json`](../schemas/job
+ |---|---|
+ | `tests.command` | the command(s) actually executed, newline-separated. Non-empty. |
+ | `tests.exit_code` | `0` iff every executed command exited 0; anything else is red |
+-| `tests.scope` | the resolved `full` \| `impacted` \| `floor_only` — it must match what the tier owes above |
++| `tests.scope` | the resolved `full` \| `impacted` \| `floor_only` — it must match what the tier owes above. The resolved *slice* additionally carries the output-only label `impacted+referencing` when an unmapped path at SCOPED/DIRECT was answered by the referencing heuristic; read it as `impacted` plus the ≤5 suites, and check the resolver's notes for which files they were. No manifest may **declare** that label — `test_scope` stays the three-value enum. |
+ | `tests.selected_count` | how many **commands** ran. Not test cases: no bundled worker parses a runner's output, so a case count would be fabricated. Never read this as a case count, and never ask for one. |
+ 
+ **A job reporting no test command at all is a FAIL** → **ISSUE: NO_TEST_EVIDENCE**. That is a job claiming `status: "success"` with the `tests` object absent, or with `tests.command` empty or whitespace. Silence is not success — an absent record is exactly what a worker that skipped the step looks like, and it is indistinguishable from one that ran nothing on purpose. (`tests` is legitimately absent on a job that never reached the test step — `blocked`, `timeout`, `error` — and such a job fails this gate on its own terms.)
+diff --git a/scripts/compound-v-fastpath-run.py b/scripts/compound-v-fastpath-run.py
+index dfc37a5..48dd202 100644
+--- a/scripts/compound-v-fastpath-run.py
++++ b/scripts/compound-v-fastpath-run.py
+@@ -70,6 +70,14 @@ v3.0 (Feature B1/B2/B3) — the floor finally has a PRODUCER and three sets:
+   * The changed-path derivation now happens BEFORE the tier-1 return, which is what makes
+     a configured-tests floor diff-proportionate at all.
+ 
++v3.4.1 (decision 4) — a SCOPED job runs the tests in its scope, never the whole app:
++
++  * an unmapped path resolves to ``full_command`` only at tier FULL (or when the manifest
++    declares no tier). At SCOPED and DIRECT it resolves to ``referencing_tests()`` — the
++    test files that NAME the changed module, sorted, bounded and capped at five — and to
++    the floor alone when there are none. The slice is then labelled
++    ``impacted+referencing`` and carries ``selected_count``.
++
+   THE FLOOR IS EARLY FEEDBACK, NOT A GUARANTEE. It does not restore what the full suite
+   guaranteed; CI does. The three sets structurally omit every existing, previously-passing
+   test the declared map fails to select — change ``src/parser.py``, break
+@@ -97,6 +105,7 @@ Exit codes: 0 = phase OK / floor holds / review accepted; 1 = floor failed, revi
+ 
+ import argparse
+ import datetime as _dt
++import fnmatch
+ import hashlib
+ import json
+ import os
+@@ -464,6 +473,9 @@ def _run_parse_checks(worktree, changed_paths, checkers):
+ # prose in a prompt. See skills/backend-launcher/SKILL.md and
+ # skills/compound-v/execution-manifest.md — this code is their mechanical half.
+ # --------------------------------------------------------------------------- #
++# INPUT enum. A manifest declares one of exactly these three, and 3.4.1 does not add a
++# fourth: `impacted+referencing` is an OUTPUT label on the resolved slice, never a value
++# a job may write in its `test_scope`.
+ VALID_TEST_SCOPES = ("full", "impacted", "floor_only")
+ 
+ 
+@@ -621,8 +633,141 @@ def _dedupe(items):
+     return out
+ 
+ 
++# --------------------------------------------------------------------------- #
++# v3.4.1 decision 4 — what a SCOPED job owes.
++#
++# An unmapped path is unknown blast radius, and until 3.4.1 that resolved to
++# `full_command` at EVERY tier — so a two-line change the triage engine had already
++# called SCOPED still ran the whole suite the moment one changed file matched no
++# `when` glob. Decision 4, taken 2026-09-03: at SCOPED and DIRECT an unmapped path
++# resolves instead to the tests that REFERENCE the changed module, capped, and to the
++# floor alone when there are none. FULL keeps today's rule, and CI stays the
++# merge-blocking backstop either way.
++#
++# This is a HEURISTIC and is labelled as one. A textual reference is not a call graph:
++# it over-selects (a test that merely names the file in a comment) and under-selects
++# (a test that reaches the module through three layers of indirection and never spells
++# its name). It buys early feedback proportionate to the change; it does not restore
++# what the full suite guaranteed, and nothing here may be written as if it did.
++# --------------------------------------------------------------------------- #
++REFERENCING_CAP = 5              # suites selected beyond impacted + floor
++REFERENCING_MAX_FILES = 2000     # candidate test files considered (bounded walk)
++REFERENCING_READ_BYTES = 200000  # bytes read per candidate (bounded read)
++REFERENCING_MIN_TOKEN = 3        # a 1-2 char token would "reference" everything
++
++TEST_DIR_NAMES = ("tests", "test", "spec", "__tests__")
++TEST_FILE_GLOBS = ("*_test.*", "test_*.*", "*.spec.*")
++_REFERENCING_SKIP_DIRS = frozenset((
++    "node_modules", "__pycache__", "venv", "vendor", "dist", "build",
++    "target", "coverage", "site-packages",
++))
++# Language-agnostic on purpose: a suffix known to be executable gets a runner, and
++# everything else is REPORTED and not run rather than guessed at. A guessed runner
++# that exits 0 because it did nothing is a fabricated pass wearing a green tick.
++_TEST_RUNNERS = ((".sh", "bash"), (".py", "python3"))
++
++
++def _is_test_path(rel):
++    """The repository's test surface, by convention only: any file under a ``tests/``,
++    ``test/``, ``spec/`` or ``__tests__/`` directory at any depth, plus the three
++    filename conventions (``*_test.*``, ``test_*.*``, ``*.spec.*``) anywhere."""
++    parts = rel.split("/")
++    if any(part in TEST_DIR_NAMES for part in parts[:-1]):
++        return True
++    name = parts[-1]
++    return any(fnmatch.fnmatchcase(name, pat) for pat in TEST_FILE_GLOBS)
++
++
++def _test_runner_for(rel):
++    """``bash <file>`` / ``python3 <file>``, or None when nothing here knows how to run
++    it. None means REPORTED, never run — see the note above."""
++    for suffix, runner in _TEST_RUNNERS:
++        if rel.endswith(suffix):
++            return "%s %s" % (runner, shlex.quote(rel))
++    return None
++
++
++def referencing_tests(repo, changed_paths, cap=REFERENCING_CAP):
++    """The tests that mention the changed paths: ``[{"file": rel, "run": cmd|None}]``.
++
++    A candidate is a test file (``_is_test_path``) whose first ``REFERENCING_READ_BYTES``
++    contain the basename of a changed path or its module name (that basename without its
++    extension). Plain substring matching, so it is LANGUAGE-AGNOSTIC — a Go test naming
++    ``parser.go``, a shell test naming ``deploy.sh`` and a Python test importing
++    ``compound_v_thing`` are all found by the same rule, with no per-language parser to
++    keep current.
++
++    BOUNDED in three directions, because this runs on every SCOPED job: the walk visits
++    at most ``REFERENCING_MAX_FILES`` candidates, each file is read up to
++    ``REFERENCING_READ_BYTES``, and at most ``cap`` results are returned. The walk and
++    the result are SORTED by repository-relative path, so the same worktree always yields
++    the same list — a test set that varies with filesystem order is not a contract. A
++    changed path never selects itself.
++
++    Tokens shorter than ``REFERENCING_MIN_TOKEN`` are dropped: ``a`` would "reference"
++    almost every file in the repository, which is the full suite wearing a scoped label.
++    """
++    repo = repo or "."
++    try:
++        cap = int(cap)
++    except (TypeError, ValueError):
++        cap = REFERENCING_CAP
++    if cap <= 0:
++        return []
++
++    tokens = set()
++    changed_set = set()
++    for path in changed_paths or []:
++        rel = str(path).strip().replace("\\", "/")
++        while rel.startswith("./"):
++            rel = rel[2:]
++        if not rel:
++            continue
++        changed_set.add(rel)
++        base = rel.rsplit("/", 1)[-1]
++        stem = base.rsplit(".", 1)[0] if "." in base else base
++        for token in (base, stem):
++            if len(token) >= REFERENCING_MIN_TOKEN:
++                tokens.add(token)
++    if not tokens:
++        return []
++
++    candidates = []
++    for dirpath, dirnames, filenames in os.walk(repo):
++        # Prune before descending: dot-directories (`.git`, `.venv`, `.tox`, and the
++        # `.claude/worktrees` trees this pipeline itself creates) and the usual vendored
++        # ones. Symlinked directories are not followed (os.walk's default).
++        dirnames[:] = sorted(d for d in dirnames
++                             if not d.startswith(".") and d not in _REFERENCING_SKIP_DIRS)
++        for name in sorted(filenames):
++            rel = os.path.relpath(os.path.join(dirpath, name), repo)
++            rel = rel.replace(os.sep, "/")
++            if rel in changed_set or not _is_test_path(rel):
++                continue
++            candidates.append(rel)
++            if len(candidates) >= REFERENCING_MAX_FILES:
++                break
++        if len(candidates) >= REFERENCING_MAX_FILES:
++            break
++
++    out = []
++    for rel in sorted(candidates):
++        try:
++            with open(os.path.join(repo, rel), "rb") as fh:
++                blob = fh.read(REFERENCING_READ_BYTES)
++        except (OSError, IOError):
++            continue
++        text = blob.decode("utf-8", "replace")
++        if any(token in text for token in tokens):
++            out.append({"file": rel, "run": _test_runner_for(rel)})
++            if len(out) >= cap:
++                break
++    return out
++
++
+ def resolve_test_commands(contract, scope, changed_paths=None, new_paths=None,
+-                          prev_failures=None, prev_failures_available=True):
++                          prev_failures=None, prev_failures_available=True,
++                          tier=None, referencing=None):
+     """Resolve a manifest ``test_contract`` + one job's ``test_scope`` into the ordered,
+     deduped command list a worker executes.
+ 
+@@ -640,8 +785,17 @@ def resolve_test_commands(contract, scope, changed_paths=None, new_paths=None,
+     * ``impacted`` runs the floor plus the UNION OF THREE SETS —
+       impacted ∪ previously-failing ∪ newly-added — because running only the impacted set
+       is the mistake regression-test-selection practice already made and corrected;
+-    * a changed path matching no ``when`` glob resolves to ``full_command``;
+-    * an uncomputable previously-failing set also resolves to ``full_command``.
++    * a changed path matching no ``when`` glob resolves to ``full_command`` — but only at
++      tier FULL or when no tier was given (v3.4.1 decision 4). At SCOPED and DIRECT it
++      resolves instead to ``referencing`` (the list ``referencing_tests()`` computed),
++      and to the floor alone when that list is empty;
++    * an uncomputable previously-failing set also resolves to ``full_command``, at every
++      tier — that is a fail-closed rule about DATA THIS RUN COULD NOT READ, not about the
++      size of the change, and the tier has nothing to say about it.
++
++    ``tier`` is the manifest's ``triage.tier``; ``referencing`` is the caller's already-
++    computed referencing list, so this function stays a pure resolver and the filesystem
++    walk happens exactly once, in ``resolve_from_manifest``.
+ 
+     Raises ``TestContractError`` whenever the answer would be an empty command set."""
+     contract = contract if isinstance(contract, dict) else {}
+@@ -649,6 +803,9 @@ def resolve_test_commands(contract, scope, changed_paths=None, new_paths=None,
+     if scope in (None, ""):
+         scope, derived_note = default_scope_for(contract)
+     scope = str(scope)
++    tier_s = str(tier or "").strip().upper()
++    scoped_tier = tier_s in ("SCOPED", "DIRECT")
++    scope_label = None
+     if scope not in VALID_TEST_SCOPES:
+         raise TestContractError(
+             "test_scope %r is not one of %s" % (scope, ", ".join(VALID_TEST_SCOPES)))
+@@ -718,10 +875,36 @@ def resolve_test_commands(contract, scope, changed_paths=None, new_paths=None,
+                      "(git diff --diff-filter=A)" % (len(new_cmds), len(new)))
+ 
+         if unmapped or new_unmapped:
+-            ordered.append(full)
+-            notes.append("unmapped: %s matched no `when` glob — unknown blast radius "
+-                         "resolves to full_command, never to nothing"
+-                         % ", ".join(sorted(set(unmapped + new_unmapped))))
++            missing = ", ".join(sorted(set(unmapped + new_unmapped)))
++            if not scoped_tier:
++                ordered.append(full)
++                notes.append("unmapped: %s matched no `when` glob — unknown blast radius "
++                             "resolves to full_command, never to nothing" % missing)
++            else:
++                # v3.4.1 decision 4. The triage engine has already said this change is
++                # small; answering "then run everything" contradicts the tier that was
++                # just computed. Take the tests that NAME the changed module instead.
++                rows = [r for r in (referencing or []) if isinstance(r, dict)]
++                runnable = [str(r.get("run")).strip() for r in rows
++                            if str(r.get("run") or "").strip()]
++                reported = [str(r.get("file")) for r in rows
++                            if not str(r.get("run") or "").strip()]
++                if runnable:
++                    ordered.extend(runnable)
++                    scope_label = "impacted+referencing"
++                    notes.append(
++                        "unmapped: %s matched no `when` glob — at tier %s that resolves "
++                        "to the %d test(s) REFERENCING the changed module(s), not to "
++                        "full_command (v3.4.1 decision 4; capped at %d). This is a "
++                        "textual heuristic, not a call graph: CI stays the backstop"
++                        % (missing, tier_s, len(runnable), REFERENCING_CAP))
++                else:
++                    notes.append("unmapped: referencing tests found none — floor only "
++                                 "at tier %s" % tier_s)
++                if reported:
++                    notes.append("unmapped: %d referencing file(s) REPORTED and not run "
++                                 "(no known runner for them): %s"
++                                 % (len(reported), ", ".join(reported)))
+ 
+     ordered = _dedupe([c for c in ordered if str(c).strip()])
+     if not ordered:
+@@ -730,7 +913,14 @@ def resolve_test_commands(contract, scope, changed_paths=None, new_paths=None,
+             "to running nothing (declare floor_command / full_command / impacted_map)"
+             % scope)
+ 
+-    slice_ = {"scope": scope, "resolved_commands": ordered}
++    # The label is OUTPUT-ONLY. `VALID_TEST_SCOPES` is unchanged as an INPUT enum — no
++    # manifest may declare `test_scope: impacted+referencing` — but a slice whose
++    # unmapped paths were answered by the referencing heuristic says so, because a
++    # reviewer reading `impacted` could not otherwise tell which rule selected the set.
++    # `selected_count` rides with it: the number of commands, a count and never a saving.
++    slice_ = {"scope": scope_label or scope, "resolved_commands": ordered}
++    if scope_label:
++        slice_["selected_count"] = len(ordered)
+     if floor:
+         slice_["floor_command"] = floor
+     if full:
+@@ -752,9 +942,17 @@ def resolve_from_manifest(manifest, job_id=None, scope=None, worktree=None,
+     The previously-failing set is the one input a caller can get wrong by SAYING NOTHING,
+     so silence is the conservative answer here: pass ``last_result`` (a parsed
+     ``job_result``) or assert ``no_prior_run=True``. Neither ⇒ the set is treated as
+-    uncomputable and the floor falls back to ``full_command``. Returns ``(slice, notes)``."""
++    uncomputable and the floor falls back to ``full_command``.
++
++    v3.4.1: the manifest's ``triage.tier`` is read UNCONDITIONALLY (it used to be consulted
++    only when the scope had to be derived) and passed to ``resolve_test_commands``, because
++    the tier now decides how an unmapped path resolves — not just what the default scope
++    is. At SCOPED and DIRECT this also computes ``referencing_tests()`` from the worktree.
++    Returns ``(slice, notes)``."""
+     manifest = manifest if isinstance(manifest, dict) else {}
+     contract = manifest.get("test_contract")
++    triage = manifest.get("triage")
++    tier = triage.get("tier") if isinstance(triage, dict) else None
+     if scope in (None, "") and job_id:
+         for job in manifest.get("jobs") or []:
+             if isinstance(job, dict) and str(job.get("id")) == str(job_id):
+@@ -762,8 +960,6 @@ def resolve_from_manifest(manifest, job_id=None, scope=None, worktree=None,
+                 break
+     derived_note = None
+     if scope in (None, ""):
+-        triage = manifest.get("triage")
+-        tier = triage.get("tier") if isinstance(triage, dict) else None
+         scope, derived_note = default_scope_for(contract, tier)
+ 
+     if scope == "impacted":
+@@ -792,6 +988,14 @@ def resolve_from_manifest(manifest, job_id=None, scope=None, worktree=None,
+             derived_note = ("%s, so the DERIVED 'impacted' default degraded to 'full' "
+                             "rather than halting the run" % degrade)
+ 
++    # v3.4.1: the referencing set only matters where an unmapped path could resolve to
++    # it — `impacted` at SCOPED/DIRECT. Computing it anywhere else would be a filesystem
++    # walk whose result nothing reads.
++    referencing = None
++    if scope == "impacted" and str(tier or "").strip().upper() in ("SCOPED", "DIRECT"):
++        referencing = referencing_tests(
++            worktree, list(changed_paths or []) + list(new_paths or []))
++
+     if no_prior_run:
+         failures, available = [], True      # empty BY CONSTRUCTION — nothing has run
+     elif last_result is None:
+@@ -799,7 +1003,8 @@ def resolve_from_manifest(manifest, job_id=None, scope=None, worktree=None,
+     else:
+         failures, available = previously_failing(last_result)
+     resolved, notes = resolve_test_commands(contract, scope, changed_paths, new_paths,
+-                                           failures, available)
++                                           failures, available, tier=tier,
++                                           referencing=referencing)
+     if derived_note:
+         notes = ["scope: no test_scope declared, defaulted to %r — %s"
+                  % (scope, derived_note)] + list(notes)
+@@ -1807,6 +2012,110 @@ def _selftest():
+         expect("B2: an unmapped changed path resolves to full_command",
+                "sh -c 'echo full'" in un)
+ 
++        # ---- v3.4.1 decision 4: what a SCOPED job owes ----
++        REF = [{"file": "tests/test_parser.py", "run": "python3 tests/test_parser.py"},
++               {"file": "tests/parser_notes.md", "run": None}]
++
++        def sl(tier=None, referencing=None, changed=None):
++            slice_, notes = resolve_test_commands(
++                CONTRACT, "impacted", changed or ["src/parser.py"], [], [], True,
++                tier=tier, referencing=referencing)
++            return slice_, notes
++
++        s_full, _ = sl(tier="FULL", referencing=REF)
++        expect("C: at tier FULL an unmapped path still resolves to full_command",
++               "sh -c 'echo full'" in s_full["resolved_commands"]
++               and s_full["scope"] == "impacted"
++               and "selected_count" not in s_full)
++        s_none, _ = sl(tier=None, referencing=REF)
++        expect("C: with NO tier the unmapped rule is unchanged (full_command)",
++               "sh -c 'echo full'" in s_none["resolved_commands"])
++
++        s_sc, n_sc = sl(tier="SCOPED", referencing=REF)
++        expect("C: at tier SCOPED an unmapped path resolves to the referencing test, "
++               "NOT full_command",
++               s_sc["resolved_commands"] == ["sh -c 'exit 0'",
++                                             "python3 tests/test_parser.py"])
++        expect("C: the slice is labelled impacted+referencing and counts its commands",
++               s_sc["scope"] == "impacted+referencing" and s_sc["selected_count"] == 2)
++        expect("C: a referencing file with no known runner is REPORTED, never run",
++               any("REPORTED and not run" in n for n in n_sc)
++               and not any("parser_notes.md" in c for c in s_sc["resolved_commands"]))
++        s_dir, _ = sl(tier="DIRECT", referencing=REF)
++        expect("C: DIRECT behaves exactly as SCOPED",
++               s_dir["resolved_commands"] == s_sc["resolved_commands"]
++               and s_dir["scope"] == "impacted+referencing")
++
++        s_bare, n_bare = sl(tier="SCOPED", referencing=[])
++        expect("C: no referencing test at SCOPED ⇒ the floor only, never full_command",
++               s_bare["resolved_commands"] == ["sh -c 'exit 0'"]
++               and "sh -c 'echo full'" not in s_bare["resolved_commands"])
++        expect("C: and the note says so, in the pinned words",
++               any("referencing tests found none — floor only at tier SCOPED" in n
++                   for n in n_bare))
++        expect("C: a floor-only referencing result keeps the plain `impacted` label",
++               s_bare["scope"] == "impacted" and "selected_count" not in s_bare)
++
++        # The cap is the caller's (referencing_tests) AND is honoured verbatim here:
++        # whatever the caller hands over is what runs, so seven rows never become seven
++        # commands by accident — referencing_tests already capped them at five.
++        seven = [{"file": "tests/t%d_test.py" % i, "run": "python3 tests/t%d_test.py" % i}
++                 for i in range(7)]
++        expect("C: the resolver runs exactly what it is handed (the cap lives in "
++               "referencing_tests, which is where the reading happens)",
++               len(sl(tier="SCOPED", referencing=seven)[0]["resolved_commands"]) == 8)
++
++        # An UNCOMPUTABLE previously-failing set is a data failure, not a size decision:
++        # it still falls back to full_command at SCOPED.
++        s_unc, _ = resolve_test_commands(CONTRACT, "impacted", ["src/parser.py"], [],
++                                         None, False, tier="SCOPED", referencing=REF)
++        expect("C: an uncomputable previously-failing set still reaches full_command at "
++               "SCOPED (fail-closed on DATA, not on size)",
++               "sh -c 'echo full'" in s_unc["resolved_commands"])
++
++        # referencing_tests() itself, against a REAL tree.
++        r = new_repo("referencing")
++        write(r, "src/parser.py", "def parse():\n    return 1\n")
++        write(r, "tests/test_parser.py", "import parser  # exercises src/parser.py\n")
++        write(r, "tests/test_unrelated.py", "x = 1\n")
++        write(r, "tests/smoke_test.sh", "# checks parser.py end to end\n")
++        write(r, "tests/notes.txt", "parser.py is described here\n")
++        write(r, "docs/parser.md", "parser.py — not a test file\n")
++        git(r, ["add", "-A"]); git(r, ["commit", "-qm", "seed"])
++        rows = referencing_tests(r, ["src/parser.py"])
++        files = [row["file"] for row in rows]
++        expect("C: referencing_tests finds the tests that NAME the changed module",
++               "tests/test_parser.py" in files and "tests/smoke_test.sh" in files)
++        expect("C: a test that never names it is not selected",
++               "tests/test_unrelated.py" not in files)
++        expect("C: a non-test file that names it is not selected (docs/parser.md)",
++               "docs/parser.md" not in files)
++        expect("C: language-agnostic runners — bash for .sh, python3 for .py, None else",
++               {row["file"]: row["run"] for row in rows}["tests/smoke_test.sh"]
++               == "bash tests/smoke_test.sh"
++               and {row["file"]: row["run"] for row in rows}["tests/test_parser.py"]
++               == "python3 tests/test_parser.py"
++               and {row["file"]: row["run"] for row in rows}.get("tests/notes.txt", "x")
++               is None)
++        expect("C: the result is sorted by path (a deterministic set, not FS order)",
++               files == sorted(files))
++        expect("C: a changed path never selects itself",
++               "tests/test_parser.py" not in
++               [row["file"] for row in referencing_tests(r, ["tests/test_parser.py"])])
++
++        # The cap: seven candidates, five run.
++        r2 = new_repo("referencing-cap")
++        write(r2, "src/widget.py", "x = 1\n")
++        for i in range(7):
++            write(r2, "tests/test_w%d.py" % i, "# widget.py and zz\n")
++        git(r2, ["add", "-A"]); git(r2, ["commit", "-qm", "seed"])
++        expect("C: referencing_tests caps at 5 (and the cap is a parameter)",
++               len(referencing_tests(r2, ["src/widget.py"])) == 5
++               and len(referencing_tests(r2, ["src/widget.py"], cap=2)) == 2)
++        expect("C: a 1-2 character token selects NOTHING even though every candidate "
++               "contains it (it would otherwise select the whole repository)",
++               referencing_tests(r2, ["zz"]) == [])
++
+         # B2 set 2 — previously failing.
+         pf = cmds("impacted", ["docs/a.md"], [], ["pytest tests/test_x.py::test_y"], True)
+         expect("B2: previously-failing commands are unioned into the set",
+@@ -1836,10 +2145,13 @@ def _selftest():
+         # The slice carries ONLY the keys the worker's --test-contract-file accepts.
+         slice_only, _ = resolve_test_commands(CONTRACT, "full")
+         expect("B3: the slice holds only {scope, resolved_commands, floor_command, "
+-               "full_command}",
++               "full_command} (+ selected_count, 3.4.1, only when the referencing "
++               "heuristic contributed)",
+                set(slice_only) <= {"scope", "resolved_commands", "floor_command",
+                                    "full_command"}
+-               and slice_only["scope"] == "full")
++               and slice_only["scope"] == "full"
++               and set(s_sc) <= {"scope", "resolved_commands", "floor_command",
++                                 "full_command", "selected_count"})
+ 
+         # previously_failing() — the three honest answers.
+         expect("B3: no prior run ⇒ empty BY CONSTRUCTION (not unknown)",
+diff --git a/skills/compound-v/execution-manifest.md b/skills/compound-v/execution-manifest.md
+index 65d140d..74b5cc9 100644
+--- a/skills/compound-v/execution-manifest.md
++++ b/skills/compound-v/execution-manifest.md
+@@ -53,7 +53,7 @@ Worked example: [`examples/manifest.example.yaml`](../../examples/manifest.examp
+ | `read_allowed` | string[] | yes | Glob list this job MAY read. **ADVISORY only — NOT enforced** (git cannot track reads). Documents intent + scopes the prompt. Auto-includes Task 0 outputs + the three audits. |
+ | `acceptance` | string[] | yes | This job's narrow acceptance, checked in its per-task review. |
+ | `body` | string | **yes** | The task itself — the instructions the worker reads. `description`, `prompt` and `spec` are accepted aliases. **A job with none of them is refused at emit**: a prompt carrying lanes and no instructions asks the worker to invent the task, and an invented task that stays inside its lane passes every gate here, because the scope gate checks WHICH files changed and never what they say. This field was undocumented until 3.3.4, and the emitter read only the three aliases while every manifest wrote `body` — so the task text was dropped from every worker prompt for twenty-five runs. |
+-| `test_scope` | enum | no | v3.0 (Feature B2): `full` \| `impacted` \| `floor_only`. **Absent ⇒ DERIVED (3.1.0)** — see below; it is no longer a flat `full`. `floor_only` requires a non-empty `test_contract.floor_command`; `impacted` requires a non-empty `full_command` (an unmapped path resolves to it). |
++| `test_scope` | enum | no | v3.0 (Feature B2): `full` \| `impacted` \| `floor_only`. **Absent ⇒ DERIVED (3.1.0)** — see below; it is no longer a flat `full`. `floor_only` requires a non-empty `test_contract.floor_command`; `impacted` requires a non-empty `full_command` (an unmapped path resolves to it at tier FULL, and an uncomputable previously-failing set at every tier — 3.4.1). |
+ | `timeout_sec` | integer | no | Wall-clock seconds this job's worker gets before the supervisor kills it. Domain **60 … 21600** inclusive (a bool is rejected — `true` is not `1`). **Absent ⇒ the worker script's own `DEFAULT_TIMEOUT_SEC=900`, unchanged**, which is what every manifest committed before v2.18 relies on. Applies to the **worker-script backends** (`codex`, `antigravity`, `cursor`, `devin`, `opencode`), where the dispatcher passes it through as `--timeout-sec`; for `claude` (in-harness `Task`) there is no equivalent knob and the field is advisory. Anything above **600** MUST be dispatched on the background path — see the outer-bound rule in [`parallel-dispatcher.md`](../../agents/parallel-dispatcher.md). |
+ 
+ ¹ **Every job MUST have `model` OR `tier`** (at least one). Most jobs carry `tier` (+ optional `effort`) and let the dispatcher resolve the concrete model; a job MAY instead pin an explicit `model` override that skips resolution. A job with neither is a validation failure.
+@@ -165,7 +165,43 @@ the fail-closed empty-set refusal, and the standing statement that the scoped fl
+ strictly less information than a call graph, and call-graph selection is already measured at
+ 0.2%–10.6% unsafe per revision.
+ 
+-12. **A scope never resolves to nothing (v3.0).** `test_scope: floor_only` requires a non-empty `test_contract.floor_command`; `test_scope: impacted` requires a non-empty `full_command`; every `impacted_map` entry carries both `when` and `run`.
++### What a SCOPED job owes (3.4.1, decision 4) — the tier reaches the test set
++
++Deriving the *scope* was only half the job. An unmapped path — a changed file matching no
++`when` glob — resolved to `full_command` at **every** tier, so a change the triage engine had
++already called SCOPED still ran the whole suite the moment one file fell outside the map. The
++size decision was taken and then discarded.
++
++Since 3.4.1 the unmapped rule is tier-aware:
++
++| `triage.tier` | An unmapped changed path resolves to |
++|---|---|
++| `FULL`, or no `triage` block at all | `full_command` — unchanged. With no size decision to honour, "all of them" is still the only truthful answer. |
++| `SCOPED` / `DIRECT` | the **referencing tests**: test files that name the changed path's basename or module name, at most **5**. |
++| `SCOPED` / `DIRECT`, none found | the **floor alone** — never `full_command`, and never nothing. |
++
++`referencing_tests(repo, changed_paths, cap=5)` in
++[`compound-v-fastpath-run.py`](../../scripts/compound-v-fastpath-run.py) selects them: any file
++under `tests/`, `test/`, `spec/` or `__tests__/` at any depth, or matching `*_test.*`,
++`test_*.*`, `*.spec.*` anywhere, whose first 200 KB mention the basename or the module name.
++Plain substring matching, so it is **language-agnostic**; the walk, the per-file read and the
++result are all **bounded**, and the result is **sorted** so the same worktree always yields the
++same set. A `.sh` file runs as `bash <file>`, a `.py` file as `python3 <file>`, and anything
++else is **reported and not run** rather than given a guessed runner.
++
++**Two things this is not.** It is not a call graph: a textual reference over-selects (a comment
++naming the file) and under-selects (three layers of indirection and the name never appears), so
++it is early feedback and nothing more — the merge-blocking CI run is still what restores the
++guarantee. And it is not a new `test_scope`: the resolved slice is *labelled*
++`impacted+referencing` and carries `selected_count` (a count of **commands**, never a saving)
++when the heuristic contributed, but `test_scope` remains the three-value enum
++`full | impacted | floor_only` and no manifest may declare the label.
++
++**The uncomputable previously-failing set is untouched by all of this.** It still falls back to
++`full_command` at every tier, SCOPED included: that is a fail-closed rule about data this run
++could not read, not a statement about the size of the change.
++
++12. **A scope never resolves to nothing (v3.0).** `test_scope: floor_only` requires a non-empty `test_contract.floor_command`; `test_scope: impacted` requires a non-empty `full_command`; every `impacted_map` entry carries both `when` and `run`. **3.4.1:** `full_command` stays mandatory for `impacted` even though a SCOPED job's unmapped paths no longer reach it — the uncomputable previously-failing set still does, at every tier. At SCOPED and DIRECT an unmapped path resolves to at most five *referencing* tests and, when there are none, to the floor alone — which is why `floor_only`'s floor requirement is what keeps that branch from resolving to nothing.
+ 
+ A violation of rule 1, 3, 4, 5, 6, 7, 8, 11 or 12 is a hard validation failure (non-zero exit + specifics). Rules 2/9/10 are partition-design rules enforced jointly by `partition-reviewer` and the validator.
+ 
+@@ -411,7 +447,7 @@ jobs:
+ |---|---|---|---|
+ | `test_contract` | map | no | Absent ⇒ no declared contract; every job runs `full`. |
+ | `test_contract.floor_command` | string | no¹ | The merge-blocking floor. Runs at every tier. |
+-| `test_contract.full_command` | string | no¹ | The full suite. Also the resolution of any changed path that matches no `when` glob. |
++| `test_contract.full_command` | string | no¹ | The full suite. Also the resolution of a changed path that matches no `when` glob **at tier FULL** (3.4.1 sends SCOPED/DIRECT to the referencing tests instead), and of an uncomputable previously-failing set at every tier. |
+ | `test_contract.impacted_map` | list | no | Declarative `{when, run}` rules. **Both fields are mandatory per entry** — a half-declared rule selects nothing. Unknown keys are rejected. |
+ | `test_scope` (per job) | enum | no | `full` \| `impacted` \| `floor_only`. **Absent ⇒ DERIVED** — see *The derived default* below. |
+ 
+@@ -420,8 +456,9 @@ resolve to running **nothing**:
+ 
+ - a job with `test_scope: floor_only` requires a **non-empty `floor_command`** — `floor_only` means
+   *only the floor*, never nothing;
+-- a job with `test_scope: impacted` requires a **non-empty `full_command`**, because a changed path
+-  matching no `when` glob is unknown blast radius and resolves to the full suite.
++- a job with `test_scope: impacted` requires a **non-empty `full_command`**, because at tier FULL a
++  changed path matching no `when` glob is unknown blast radius and resolves to the full suite — and
++  because an uncomputable previously-failing set resolves to it at *every* tier, 3.4.1 included.
+ 
+ Overlapping `when` globs **union** (every matching `run` is selected); first-match-wins would silently
+ drop coverage the map explicitly declares.
+diff --git a/tests/v2.9-e2e/test_fastpath_and_escalation.py b/tests/v2.9-e2e/test_fastpath_and_escalation.py
+index 8f01a1c..5ec7eeb 100644
+--- a/tests/v2.9-e2e/test_fastpath_and_escalation.py
++++ b/tests/v2.9-e2e/test_fastpath_and_escalation.py
+@@ -653,5 +653,122 @@ class TestFeatureBTestFloorProducer(_RepoCase):
+         self.assertEqual(shlex.split(res["failures"][0]), ["sh", "-c", "exit 3"])
+ 
+ 
++# =========================================================================== #
++# v3.4.1 decision 4 — the tests a SCOPED job owes.
++#
++# The size decision the triage engine already took has to reach the test set, or it
++# decided nothing: before 3.4.1 a change SCOPED by the engine still ran `full_command`
++# the moment one changed file matched no `when` glob, which is the whole suite arriving
++# through the back door. At SCOPED and DIRECT an unmapped path now resolves to the tests
++# that REFERENCE the changed module — capped, sorted, bounded — and to the floor alone
++# when there are none. FULL is untouched, and the merge-blocking CI run is still the only
++# thing that restores what a full suite guarantees. This drives the REAL CLI against real
++# git fixtures; nothing here is a unit-level stub.
++# =========================================================================== #
++def _scoped_manifest(tier):
++    """The B2 contract plus a `triage.tier`, which is the input decision 4 reads."""
++    return """run_id: r-scoped
++triage:
++  tier: %s
++test_contract:
++  floor_command: "sh -c 'exit 0'"
++  full_command: "sh -c 'echo FULL'"
++  impacted_map:
++    - when: "scripts/compound-v-*.py"
++      run: "sh -c 'echo selftest {path}'"
++jobs:
++  - id: task-1
++    test_scope: impacted
++""" % tier
++
++
++class TestDecision4ScopedRunsReferencingTests(_RepoCase):
++
++    def _seed(self, tier, changed_rel, extra_files=None):
++        """One UNMAPPED changed file, plus whatever test files the case needs."""
++        repo = self.new_repo("scoped")
++        write_file(repo, changed_rel, "def parse():\n    return 1\n")
++        for rel, body in (extra_files or {}).items():
++            write_file(repo, rel, body)
++        write_file(repo, "m.yaml", _scoped_manifest(tier))
++        git(repo, "add", "-A")
++        git(repo, "commit", "-qm", "seed")
++        base = git_head(repo)
++        write_file(repo, changed_rel, "def parse():\n    return 2\n")
++        git(repo, "add", "-A")
++        git(repo, "commit", "-qm", "change")
++        return repo, base
++
++    def _resolve(self, repo, base):
++        rc, data, out, err = run_json(
++            "compound-v-fastpath-run.py", "resolve-tests", "--worktree", repo,
++            "--manifest", os.path.join(repo, "m.yaml"), "--job-id", "task-1",
++            "--baseline", base, "--no-prior-run")
++        self.assertEqual(rc, 0, "%s%s" % (out, err))
++        return data
++
++    def test_scoped_unmapped_path_runs_the_referencing_test_not_the_full_suite(self):
++        repo, base = self._seed("SCOPED", "src/parser.py", {
++            "tests/test_parser.py": "# exercises src/parser.py\n",
++            "tests/test_unrelated.py": "x = 1\n",
++        })
++        data = self._resolve(repo, base)
++        contract = data["contract"]
++        self.assertEqual(contract["resolved_commands"],
++                         ["sh -c 'exit 0'", "python3 tests/test_parser.py"])
++        self.assertEqual(contract["scope"], "impacted+referencing")
++        self.assertEqual(contract["selected_count"], 2)
++        self.assertNotIn("sh -c 'echo FULL'", contract["resolved_commands"],
++                         "a SCOPED job must never reach full_command through an "
++                         "unmapped path")
++        self.assertTrue(any("referencing" in n.lower() for n in data["notes"]),
++                        data["notes"])
++
++    def test_full_tier_keeps_todays_unmapped_rule(self):
++        """Decision 4 changes SCOPED and DIRECT only. At FULL an unmapped path is still
++        unknown blast radius and still resolves to `full_command`."""
++        repo, base = self._seed("FULL", "src/parser.py", {
++            "tests/test_parser.py": "# exercises src/parser.py\n",
++        })
++        contract = self._resolve(repo, base)["contract"]
++        self.assertIn("sh -c 'echo FULL'", contract["resolved_commands"])
++        self.assertEqual(contract["scope"], "impacted")
++        self.assertNotIn("selected_count", contract)
++
++    def test_scoped_with_no_referencing_test_runs_the_floor_only(self):
++        """Nothing names the changed module, so the honest scoped answer is the floor —
++        NOT the whole suite, and never nothing. CI remains the backstop, and the note
++        says which rule produced this set."""
++        repo, base = self._seed("SCOPED", "src/orphan.py", {
++            "tests/test_unrelated.py": "x = 1\n",
++        })
++        data = self._resolve(repo, base)
++        self.assertEqual(data["contract"]["resolved_commands"], ["sh -c 'exit 0'"])
++        self.assertTrue(
++            any("referencing tests found none — floor only at tier SCOPED" in n
++                for n in data["notes"]), data["notes"])
++
++    def test_the_referencing_set_is_capped(self):
++        """Seven candidate suites, five selected — 'the tests in the change's scope'
++        must stay bounded or it is the full suite wearing a scoped label."""
++        extra = dict(("tests/test_w%d.py" % i, "# widget.py\n") for i in range(7))
++        repo, base = self._seed("SCOPED", "src/widget.py", extra)
++        contract = self._resolve(repo, base)["contract"]
++        selected = [c for c in contract["resolved_commands"] if c != "sh -c 'exit 0'"]
++        self.assertEqual(len(selected), 5, selected)
++        self.assertEqual(contract["selected_count"], 6)   # the floor + the five
++        # Capped deterministically, by sorted path — not by filesystem order.
++        self.assertEqual(selected, sorted(selected))
++
++    def test_direct_tier_behaves_as_scoped(self):
++        repo, base = self._seed("DIRECT", "src/parser.py", {
++            "tests/test_parser.py": "# exercises src/parser.py\n",
++        })
++        contract = self._resolve(repo, base)["contract"]
++        self.assertEqual(contract["resolved_commands"],
++                         ["sh -c 'exit 0'", "python3 tests/test_parser.py"])
++        self.assertEqual(contract["scope"], "impacted+referencing")
++
++
+ if __name__ == "__main__":
+     unittest.main(verbosity=2)
