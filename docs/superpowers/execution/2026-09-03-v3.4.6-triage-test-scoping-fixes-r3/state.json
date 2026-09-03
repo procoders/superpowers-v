@@ -1,0 +1,56 @@
+{
+  "run_id": "2026-09-03-v3.4.6-triage-test-scoping-fixes-r3",
+  "phase": "PARTITION_VERIFIED",
+  "pre_eval_id": "2026-09-03T113149Z-implement-v3-4-6-per-docs-superpowers-specs-2026-09-03-v3-4-0cb5",
+  "updated_at": "2026-09-03T12:13:25Z",
+  "jobs": {
+    "localizer": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "fastpath": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "validator": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "emitter": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "workers": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "contract-docs": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "changelog": {
+      "status": "pending",
+      "isolation": "worktree",
+      "worktree": null,
+      "session_id": null
+    },
+    "spec-review": {
+      "status": "pending",
+      "isolation": "direct",
+      "worktree": null,
+      "session_id": null
+    }
+  }
+}
