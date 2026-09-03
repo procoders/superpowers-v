@@ -6290,6 +6290,33 @@ def selftest():
                "gateRoot = CFG.repo_root" in script_2)
 
         # --- findings 107/108: an implementer that returned nothing no longer voids the wave.
+        # --- v3.4.6 review-2 TEST_GAP: the three hand closures get their guards.
+        def _argv_timeout(entry_extra):
+            _e = {"worker_script": "/w/run-worker.sh", "test_contract_file": "/r/jobs/j.test-contract.json",
+                  "backend": "codex", "tier": "standard", "effort": "medium"}
+            _e.update(entry_extra)
+            try:
+                _argv = build_launch_argv({"id": "j-tc", "backend": "codex", "tier": "standard"}, _e,
+                                          "run-tc", "/repo", "/repo/docs/superpowers/execution/run-tc", "gpt-x")
+            except Exception as _exc:  # noqa: BLE001 — a wrong fixture must FAIL, never skip
+                return "raised: %r" % (_exc,)
+            return _argv[_argv.index("--test-timeout-sec") + 1] if "--test-timeout-sec" in _argv else "absent"
+        _check("external worker always gets --test-timeout-sec: absent ⇒ 480 (review-2, item 1)",
+               _argv_timeout({}) == "480")
+        _check("external worker gets the manifest's timeout_s when declared",
+               _argv_timeout({"test_contract_timeout_s": 300}) == "300")
+        _check("an out-of-range or float timeout_s falls back to 480, never passes through",
+               _argv_timeout({"test_contract_timeout_s": 600}) == "480"
+               and _argv_timeout({"test_contract_timeout_s": 1.5}) == "480")
+        import tempfile as _tf_rl
+        with _tf_rl.TemporaryDirectory() as _rl_tmp:
+            _rl_lock = os.path.join(_rl_tmp, ".run.lock")
+            for _ph, _gone in (("DISPATCHED", False), ("PARTITION_VERIFIED", False), ("MERGED", True), ("BLOCKED", True)):
+                _atomic_write(os.path.join(_rl_tmp, "state.json"), json.dumps({"phase": _ph}))
+                _atomic_write(_rl_lock, "x")
+                _rv = _retire_run_lock(_rl_tmp)
+                _check("_retire_run_lock at phase %s ⇒ lock %s (review-2, item 6)" % (_ph, "gone" if _gone else "kept"),
+                       (not os.path.exists(_rl_lock)) == _gone and bool(_rv) == _gone)
         _check("gate JS routes a NULL implementer result through the same fallback (finding 113)",
                "external worker returned null" in script_2 and "impl = {};" in script_2)
         _check("gate JS falls back to the registered lane for a claude worktree job with no result",

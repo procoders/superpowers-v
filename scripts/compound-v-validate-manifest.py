@@ -5100,21 +5100,23 @@ def _selftest():
         not any("reviewer job 'task-3-spec-review'" in p for p in good),
     )
     # Finding 119: a reviewer lifted to the frontier tier (Fable) is STRONGER than
-    # deep and must pass; a light-tier reviewer must still fail.
-    _fr = copy.deepcopy(GOOD) if "GOOD" in globals() else None
-    if _fr is not None:
-        for _j in _fr.get("jobs", []):
-            if _j.get("id") == "task-3-spec-review":
-                _j["tier"] = "frontier"; _j.pop("model", None)
-        _fr_probs = validate(_fr) if "validate" in globals() else []
-        expect("reviewer via tier:frontier accepted — stronger passes (finding 119)",
-               not any("reviewer job 'task-3-spec-review'" in p for p in _fr_probs))
-        for _j in _fr.get("jobs", []):
-            if _j.get("id") == "task-3-spec-review":
-                _j["tier"] = "light"
-        _fr_probs2 = validate(_fr) if "validate" in globals() else ["reviewer job 'task-3-spec-review'"]
-        expect("reviewer via tier:light still refused (finding 119 never weakens)",
-               any("reviewer job 'task-3-spec-review'" in p for p in _fr_probs2))
+    # deep and must pass; a light-tier reviewer must still fail. The GOOD manifest
+    # re-parsed, mutated, re-dumped — validate_text is the same entry the case
+    # above used, so the two verdicts differ only in the reviewer's tier.
+    import yaml as _yaml_f119
+    _fr = _yaml_f119.safe_load(GOOD_MANIFEST)
+    for _j in _fr.get("jobs", []):
+        if _j.get("id") == "task-3-spec-review":
+            _j["tier"] = "frontier"; _j.pop("model", None)
+    _fr_probs = validate_text(_yaml_f119.safe_dump(_fr, sort_keys=False))
+    expect("reviewer via tier:frontier accepted — stronger passes (finding 119)",
+           not any("reviewer job 'task-3-spec-review'" in p for p in _fr_probs))
+    for _j in _fr.get("jobs", []):
+        if _j.get("id") == "task-3-spec-review":
+            _j["tier"] = "light"
+    _fr_probs2 = validate_text(_yaml_f119.safe_dump(_fr, sort_keys=False))
+    expect("reviewer via tier:light still refused (finding 119 never weakens)",
+           any("reviewer job 'task-3-spec-review'" in p for p in _fr_probs2))
 
     # Empty / malformed.
     expect("no jobs -> violation", validate_text("run_id: x") != [])

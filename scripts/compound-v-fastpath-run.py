@@ -2134,6 +2134,18 @@ def _selftest():
                       "docs/superpowers/execution/x/jobs/a/.run.lock",
                       "docs/superpowers/execution/x/jobs/b/.run.lock",
                       "docs/superpowers/execution/x/jobs/c/.run.lock"]
+        # v3.4.6 review-2 TEST_GAP (item 7): the slice enforces int 1..540 exactly like the validator.
+        for _bad in (1.5, 0, 541, True, "480"):
+            _raised = False
+            try:
+                resolve_test_commands(dict(BK_CONTRACT, timeout_s=_bad), "impacted", ["scripts/a.py"], [])
+            except TestContractError:
+                _raised = True
+            except Exception:  # noqa: BLE001
+                _raised = False
+            expect("resolve_test_commands refuses timeout_s=%r" % (_bad,), _raised)
+        _ok_slice, _ = resolve_test_commands(dict(BK_CONTRACT, timeout_s=480), "impacted", ["scripts/a.py"], [])
+        expect("resolve_test_commands carries timeout_s=480 into the slice", _ok_slice.get("timeout_s") == 480)
         s_bk, n_bk = resolve_test_commands(BK_CONTRACT, "impacted", bk_changed,
                                            [], [], True)
         expect("105: docs/superpowers/execution/** bookkeeping paths never promote "
