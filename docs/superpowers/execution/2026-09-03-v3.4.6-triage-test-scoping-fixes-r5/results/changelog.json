@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "CHANGELOG.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "6eb26f756d90e3158a91feddc9936ffec1f5bb93",
+    "diff_digest": "sha256:06dd560e6d3601fc9bf625f2639bcfd8ba90cd904082d45d131da958440af2c4",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"6eb26f756d90e3158a91feddc9936ffec1f5bb93\",\n  \"changed\": [\n    \"CHANGELOG.md\"\n  ],\n  \"allowed\": [\n    \"CHANGELOG.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "6eb26f756d90e3158a91feddc9936ffec1f5bb93",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task C \u2014 CHANGELOG [Unreleased] entries for findings 99 and 102",
+  "tests": {
+    "command": "bash tests/test-engine-c-contract.sh\n/usr/bin/python3 -B scripts/lint-frontmatter.py .",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_17779ee6-289-11"
+}

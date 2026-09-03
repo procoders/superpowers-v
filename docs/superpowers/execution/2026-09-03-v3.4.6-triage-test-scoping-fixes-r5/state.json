@@ -1,6 +1,6 @@
 {
   "run_id": "2026-09-03-v3.4.6-triage-test-scoping-fixes-r5",
-  "phase": "DISPATCHED",
+  "phase": "BLOCKED",
   "pre_eval_id": "2026-09-03T113149Z-implement-v3-4-6-per-docs-superpowers-specs-2026-09-03-v3-4-0cb5",
   "updated_at": "2026-09-03T12:34:13Z",
   "jobs": {
@@ -47,16 +47,26 @@
       }
     },
     "changelog": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_17779ee6-289-11",
+      "session_id": null,
+      "baseline": "6eb26f756d90e3158a91feddc9936ffec1f5bb93",
+      "realised_commit": "6eb26f756d90e3158a91feddc9936ffec1f5bb93",
+      "merged": {
+        "realised_commit": "6eb26f756d90e3158a91feddc9936ffec1f5bb93",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "207ebe2e7b5b902942b4e16d681a5158dbf5f7c1"
+      }
     },
     "emitter": {
-      "status": "pending",
+      "status": "failed",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_17779ee6-289-12",
+      "session_id": null,
+      "baseline": "6eb26f756d90e3158a91feddc9936ffec1f5bb93",
+      "realised_commit": "6eb26f756d90e3158a91feddc9936ffec1f5bb93"
     },
     "contract-rows": {
       "status": "pending",
@@ -85,6 +95,19 @@
       ],
       "commit": "f36c1b2122647d827ee468c24388bc25d524406e",
       "integrated": true
+    },
+    "2": {
+      "jobs": [
+        "changelog",
+        "emitter"
+      ],
+      "merged": [
+        "changelog"
+      ],
+      "commit": "207ebe2e7b5b902942b4e16d681a5158dbf5f7c1",
+      "integrated": false
     }
-  }
+  },
+  "blocked_reason": "wave 2 refused: emitter",
+  "blocked_at": "2026-09-03T12:48:17Z"
 }

@@ -1,0 +1,166 @@
+diff --git a/scripts/compound-v-emit-workflow.py b/scripts/compound-v-emit-workflow.py
+index b988877..4182cbb 100644
+--- a/scripts/compound-v-emit-workflow.py
++++ b/scripts/compound-v-emit-workflow.py
+@@ -1352,6 +1352,15 @@ def build_launch_argv(job, entry, run_id, repo_root, run_dir, model):
+     argv += ["--events-log", os.path.join(run_dir, "logs", "%s.events.jsonl" % job["id"])]
+     if entry.get("test_contract_file"):
+         argv += ["--test-contract-file", entry["test_contract_file"]]
++        # The worker script's tc_run also re-derives `timeout_s` from the
++        # slice file itself, so this flag is belt-and-braces rather than the
++        # only path — but it is the EXPLICIT declaration the manifest made,
++        # passed as a real argument rather than left to be re-parsed. Absent
++        # ⇒ the worker's own `--test-timeout-sec` default applies unchanged.
++        _tc_timeout_s = entry.get("test_contract_timeout_s")
++        if isinstance(_tc_timeout_s, int) and not isinstance(_tc_timeout_s, bool) \
++                and _tc_timeout_s > 0:
++            argv += ["--test-timeout-sec", str(_tc_timeout_s)]
+     return argv
+ 
+ 
+@@ -1425,6 +1434,18 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
+     declares_contract = isinstance(manifest.get("test_contract"), dict) and bool(
+         manifest.get("test_contract")
+     )
++    # The manifest's OWN `test_contract.timeout_s` (validated int, 1..540 by
++    # compound-v-validate-manifest.py) — the same value `resolve-tests` copies
++    # verbatim into the resolved slice (jobs/<id>.test-contract.json). Read
++    # here, at PLAN time, so an external worker's launch argv can carry it as
++    # a real `--test-timeout-sec` flag — the slice file itself is not written
++    # until register-lane runs, per job, later.
++    _contract_timeout_s = None
++    if declares_contract:
++        _raw_timeout_s = manifest.get("test_contract", {}).get("timeout_s")
++        if isinstance(_raw_timeout_s, int) and not isinstance(_raw_timeout_s, bool) \
++                and _raw_timeout_s > 0:
++            _contract_timeout_s = _raw_timeout_s
+ 
+     def worker_script_for(backend):
+         path = os.path.join(workers_dir, "compound-v-run-%s-worker.sh" % backend)
+@@ -1501,6 +1522,12 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
+                 test_contract_path(os.path.abspath(run_dir), job_id)
+                 if backend != "claude" and declares_contract else None
+             ),
++            # The `--test-timeout-sec` build_launch_argv passes an external
++            # worker alongside `--test-contract-file` — same manifest value,
++            # never None unless the manifest declares no timeout_s at all.
++            "test_contract_timeout_s": (
++                _contract_timeout_s if backend != "claude" else None
++            ),
+             "implement_clamp": clamp,
+             "prompt_file": worker_prompt_path(abs_run_dir, job_id),
+             "launch_argv_file": None,
+@@ -3379,8 +3406,29 @@ def _tests_block_from_floor(floor, contract=None, job=None, tier=None):
+         "selected_count": len(commands),
+     }
+     failures = floor.get("failures")
++    # `failures[]` is tier-1's own per-command identifier list (comment above:
++    # tiers 2/3 never set it), and it is where a checker's timeout is recorded
++    # as `timeout after N s: <checker>`. `reasons[]` is the floor's narrative
++    # trail — normally a DIFFERENT sentence for the same event — but it is the
++    # only place a timeout would surface if `failures` were ever absent for
++    # it, and the schema has no separate slot for `reasons`. When `failures`
++    # IS present (even empty — "measured and nothing failed" per the schema,
++    # not the same as absent) it is copied as before, extended with any
++    # reason carrying that same identifier shape; when it is ABSENT, a
++    # matching reason still reaches the block rather than being dropped.
++    reasons = floor.get("reasons")
++    timeout_reasons = (
++        [str(r) for r in reasons if "timeout after" in str(r)]
++        if isinstance(reasons, list) else []
++    )
+     if isinstance(failures, list):
+-        block["failures"] = [str(f) for f in failures]
++        merged_failures = [str(f) for f in failures]
++        for reason in timeout_reasons:
++            if reason not in merged_failures:
++                merged_failures.append(reason)
++        block["failures"] = merged_failures
++    elif timeout_reasons:
++        block["failures"] = timeout_reasons
+     duration = floor.get("duration_ms")
+     if isinstance(duration, int) and not isinstance(duration, bool) and duration >= 0:
+         block["duration_ms"] = duration
+@@ -4012,6 +4060,30 @@ def _retire_lane_map(run_dir):
+         return False
+ 
+ 
++def _retire_run_lock(run_dir):
++    """Delete the run's OWN `.run.lock` at the same TERMINAL phase transition
++    that retires lane-map.json (finding 105).
++
++    `.run.lock` is `_run_dir_lock`'s file, never committed (the finalizer's
++    own bookkeeping commit `git reset`s it back out by name). Stale ones
++    accumulate on disk regardless: 46 of them across old finished runs were
++    still THERE for the test-contract resolver's own change-scan to see as a
++    changed gitignored path — the very thing that promoted every DIRECT job's
++    slice to `full_command` for a run that had already finished. A run past
++    MERGED/BLOCKED will not `register-lane` again, so nothing needs this file
++    to still exist. Best-effort, never fatal, and called only AFTER any
++    `with _run_dir_lock(...)` that covered this same transition has already
++    exited — deleting the file this process is still holding open would
++    leave a concurrent `_run_dir_lock` free to flock a freshly-created inode
++    at the same path while this one's descriptor (and its lock) is still
++    live."""
++    try:
++        os.remove(os.path.join(run_dir, ".run.lock"))
++        return True
++    except OSError:
++        return False
++
++
+ def _load_manifest_dict(path):
+     """The manifest as a dict, through the validator's loader (one parser)."""
+     with open(path, "r", encoding="utf-8") as fh:
+@@ -4165,6 +4237,7 @@ def cmd_finalize_wave(argv):
+             _save_state(run_dir, _halted, now=args.now)
+         if _retire_lane_map(run_dir):
+             out["lane_map_retired"] = True
++        _retire_run_lock(run_dir)
+         return emit(1)
+ 
+     # ---- 2. merge the permitted slices ------------------------------------- #
+@@ -4351,6 +4424,11 @@ def cmd_finalize_wave(argv):
+             out["reason"] = err
+             out["integrated"] = False
+             _apply(now=args.now)
++            # `_apply`'s own `with _run_dir_lock(...)` has released by the time
++            # it returns, so retiring the lock file here (never inside that
++            # `with`) cannot race the lock this same process still holds.
++            if out.get("lane_map_retired"):
++                _retire_run_lock(run_dir)
+             return emit(1)
+         if sha:
+             out["commit"] = sha
+@@ -4490,6 +4568,10 @@ def cmd_finalize_wave(argv):
+                 out["scorecard_update_error"] = (err_sc or "").strip()[:200]
+ 
+     _apply(now=args.now)
++    # Same rule as the refusal path above: `_apply`'s own run-dir lock has
++    # already been released, so the retirement runs here, never inside it.
++    if out.get("lane_map_retired"):
++        _retire_run_lock(run_dir)
+ 
+     # ---- COMMIT THE RUN'S OWN RECORD, separately from the work -------------- #
+     # The audit-trail gate requires a committed state.json, and finishing a
+@@ -6298,6 +6380,10 @@ def selftest():
+                    _head_commit(fin_repo) == head_before)
+             _check("finding 68: a BLOCKED run's lane-map.json is retired too",
+                    not os.path.exists(os.path.join(ref_dir, "lane-map.json")))
++            _check("finding 105: a BLOCKED run's .run.lock is retired at the "
++                   "same terminal transition (the finalizer itself took the "
++                   "lock at least once above, so it exists to be retired)",
++                   not os.path.exists(os.path.join(ref_dir, ".run.lock")))
+             _check("a refused wave marks the run BLOCKED with the reason (finding 47 residual)",
+                    _load_state(ref_dir).get("phase") == "BLOCKED"
+                    and "REFUSED" in str(_load_state(ref_dir).get("blocked_reason")),
+@@ -6426,6 +6512,9 @@ def selftest():
+             _check("finalize-wave advances the phase to MERGED when every job is integrated",
+                    _bk4_state.get("phase") == "MERGED" and bool(_bk4_state.get("merged_at")),
+                    str(_bk4_state.get("phase")))
++            _check("finding 105: a MERGED run's .run.lock is retired at the same "
++                   "terminal transition as lane-map.json",
++                   not os.path.exists(os.path.join(bk4_run, ".run.lock")))
+             _rc_h, _head_files, _ = _git(bk4_repo, ["show", "--name-only", "--format=", "HEAD"])
+             _rc_p, _head_sha, _ = _git(bk4_repo, ["rev-parse", "HEAD"])
+             _check("...and commits the run's bookkeeping SEPARATELY from the wave commit",
