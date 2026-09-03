@@ -1,0 +1,15 @@
+diff --git a/docs/superpowers/dogfood/2026-09-03-v3.4.6-triage-test-scoping-fixes-review-2.md b/docs/superpowers/dogfood/2026-09-03-v3.4.6-triage-test-scoping-fixes-review-2.md
+new file mode 100644
+index 0000000..094881c
+--- /dev/null
++++ b/docs/superpowers/dogfood/2026-09-03-v3.4.6-triage-test-scoping-fixes-review-2.md
+@@ -0,0 +1,9 @@
++# v3.4.6 triage/test-scoping fixes — Review Gate, pass 2 (run r8)
++
++_Skeleton written before verification; filled in place as each check ran._
++
++## Recall
++## SPEC
++## QUALITY
++## INTEGRATION
++## Verdict

@@ -1,14 +1,33 @@
 {
   "run_id": "2026-09-03-v3.4.6-triage-test-scoping-fixes-r8",
-  "phase": "PARTITION_VERIFIED",
+  "phase": "BLOCKED",
   "pre_eval_id": "2026-09-03T113149Z-implement-v3-4-6-per-docs-superpowers-specs-2026-09-03-v3-4-0cb5",
   "updated_at": "2026-09-03T13:17:04Z",
   "jobs": {
     "spec-review-2": {
-      "status": "pending",
+      "status": "failed",
       "isolation": "direct",
-      "worktree": null,
-      "session_id": null
+      "worktree": "",
+      "session_id": null,
+      "baseline": "4c6eb82d6f11b3639edebf9088d2da533925722f",
+      "realised_commit": "4c6eb82d6f11b3639edebf9088d2da533925722f"
     }
-  }
+  },
+  "triage_actual": {
+    "merge_pending": true,
+    "pre_eval_id": "2026-09-03T113149Z-implement-v3-4-6-per-docs-superpowers-specs-2026-09-03-v3-4-0cb5",
+    "run_id": "2026-09-03-v3.4.6-triage-test-scoping-fixes-r8"
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "spec-review-2"
+      ],
+      "merged": [],
+      "commit": "4c6eb82d6f11b3639edebf9088d2da533925722f",
+      "integrated": false
+    }
+  },
+  "blocked_reason": "wave 1 refused: spec-review-2",
+  "blocked_at": "2026-09-03T13:30:41Z"
 }

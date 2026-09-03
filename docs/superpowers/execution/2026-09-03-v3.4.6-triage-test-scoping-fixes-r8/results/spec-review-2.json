@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": "other",
+  "files_changed": [
+    "docs/superpowers/dogfood/2026-09-03-v3.4.6-triage-test-scoping-fixes-review-2.md"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "4c6eb82d6f11b3639edebf9088d2da533925722f",
+    "diff_digest": "sha256:adb9c637e2f66fe64b093dc40bb232c0e5b1bc7a39d9064c0491edbab50796ee",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"4c6eb82d6f11b3639edebf9088d2da533925722f\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.6-triage-test-scoping-fixes-review-2.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-03-v3.4.6-triage-test-scoping-fixes-review-2.md\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "4c6eb82d6f11b3639edebf9088d2da533925722f",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "error",
+  "summary": "implementer returned no result (turn cap or crash); the registered worktree was gated as evidence \u2014 Review Gate \u2014 three passes against the spec and the feature acceptance criteria",
+  "tests": {
+    "command": "bash tests/test-engine-c-contract.sh\n/usr/bin/python3 -B scripts/lint-frontmatter.py .",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": ""
+}
