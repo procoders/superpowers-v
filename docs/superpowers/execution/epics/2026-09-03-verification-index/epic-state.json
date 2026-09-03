@@ -18,9 +18,9 @@
         "review-index"
       ],
       "spec_path": "docs/superpowers/execution/epics/2026-09-03-verification-index/specs/readme-section.md",
-      "status": "pending",
-      "run_id": null
+      "status": "running",
+      "run_id": "2026-09-03-verification-index-readme-section"
     }
   ],
-  "updated_at": "2026-09-03T09:08:07Z"
+  "updated_at": "2026-09-03T09:08:08Z"
 }
