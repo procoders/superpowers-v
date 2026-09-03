@@ -1,6 +1,6 @@
 {
   "run_id": "2026-09-03-glob-parity-one-matcher",
-  "phase": "DISPATCHED",
+  "phase": "MERGED",
   "updated_at": "2026-09-03T19:41:00Z",
   "pre_eval_id": "2026-09-03T190910Z-build-epic-feature-one-matcher-docs-superpowers-execution-ep-2a9b",
   "escalated_to": null,
@@ -26,11 +26,19 @@
       }
     },
     "spec-review-1": {
-      "status": "pending",
+      "status": "done",
       "isolation": "direct",
-      "worktree": null,
+      "worktree": "",
       "session_id": null,
-      "log": null
+      "log": null,
+      "baseline": "cd8f2142d146b7ddb88a8eeab361e229ba7f1002",
+      "realised_commit": "cd8f2142d146b7ddb88a8eeab361e229ba7f1002",
+      "merged": {
+        "realised_commit": "cd8f2142d146b7ddb88a8eeab361e229ba7f1002",
+        "mode": "direct",
+        "integrated": true,
+        "commit": "cfd6eee4855ae9a6898a439fb15e961866092eed"
+      }
     }
   },
   "blocked_reason": "wave 1: integration REFUSED by scripts/compound-v-integration-gate.py: {\"blocked\": 1}. Nothing was merged and nothing was committed.",
@@ -45,6 +53,22 @@
       ],
       "commit": "4bc979a39759deafbfd8471405c18a433cd4a5e3",
       "integrated": true
+    },
+    "2": {
+      "jobs": [
+        "spec-review-1"
+      ],
+      "merged": [
+        "spec-review-1"
+      ],
+      "commit": "cfd6eee4855ae9a6898a439fb15e961866092eed",
+      "integrated": true
     }
-  }
+  },
+  "triage_actual": {
+    "merge_pending": true,
+    "pre_eval_id": "2026-09-03T190910Z-build-epic-feature-one-matcher-docs-superpowers-execution-ep-2a9b",
+    "run_id": "2026-09-03-glob-parity-one-matcher"
+  },
+  "merged_at": "2026-09-03T19:41:00Z"
 }

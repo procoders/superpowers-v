@@ -1,0 +1,67 @@
+{
+  "baseline_commit": "cd8f2142d146b7ddb88a8eeab361e229ba7f1002",
+  "diff_digest": "sha256:96c492d4efa0f5f42a92b6a2a34d16d8ab68a8ae027daba8ac044d7f77272d9c",
+  "exit_code": 0,
+  "job_id": "spec-review-1",
+  "patch_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-glob-parity-one-matcher/jobs/spec-review-1.patch",
+  "patch_paths": [
+    "docs/superpowers/dogfood/2026-09-03-epic-gp-one-matcher-review-1.md"
+  ],
+  "patch_sha256": "sha256:96c492d4efa0f5f42a92b6a2a34d16d8ab68a8ae027daba8ac044d7f77272d9c",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"direct\",\n  \"baseline\": \"cd8f2142d146b7ddb88a8eeab361e229ba7f1002\",\n  \"changed\": [\n    \"docs/superpowers/dogfood/2026-09-03-epic-gp-one-matcher-review-1.md\"\n  ],\n  \"allowed\": [\n    \"docs/superpowers/dogfood/2026-09-03-epic-gp-one-matcher-review-1.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "cd8f2142d146b7ddb88a8eeab361e229ba7f1002",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "docs/superpowers/dogfood/2026-09-03-epic-gp-one-matcher-review-1.md",
+      "docs/superpowers/execution/2026-09-03-glob-parity-one-matcher/.run.lock",
+      "docs/superpowers/execution/2026-09-03-glob-parity-one-matcher/jobs/spec-review-1.baseline",
+      "docs/superpowers/execution/2026-09-03-glob-parity-one-matcher/jobs/spec-review-1.test-contract.json",
+      "docs/superpowers/execution/2026-09-03-glob-parity-one-matcher/lane-map.json",
+      "docs/superpowers/execution/2026-09-03-glob-parity-one-matcher/preexisting/spec-review-1.txt",
+      "docs/superpowers/execution/2026-09-03-glob-parity-one-matcher/preexisting/spec-review-1.verified.txt",
+      "docs/superpowers/execution/2026-09-03-glob-parity-one-matcher/state.json",
+      "docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r2/logs/sandbox-helper.events.jsonl",
+      "docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r3/logs/sandbox-helper.events.jsonl",
+      "docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r4/logs/sandbox-helper-fix.events.jsonl",
+      "docs/superpowers/execution/2026-09-03-v3.4.3-codex-sandbox-checkout-r5/logs/sandbox-helper-fix.events.jsonl",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r2/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r3/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r4/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r5/.run.lock",
+      "docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes/.run.lock"
+    ],
+    "checks": [
+      {
+        "checker": "bash -c 'python3 -B scripts/compound-v-memory.py --selftest >/dev/null && python3 -B scripts/compound-v-scope-check.py --selftest >/dev/null'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c 'for s in scripts/compound-v-*.py; do grep -q -- \"--selftest\" \"$s\" || continue; /usr/bin/python3 -B \"$s\" --selftest >/dev/null 2>&1 || { echo \"FAIL $s\"; exit 1; }; done'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (1 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 0 command(s) from 17 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)",
+      "ignored 16 bookkeeping path(s) for the unmapped rule",
+      "unmapped: docs/superpowers/dogfood/2026-09-03-epic-gp-one-matcher-review-1.md matched no `when` glob \u2014 unknown blast radius resolves to full_command, never to nothing",
+      "scope: labelled `full` \u2014 full_command was added for an unmapped path at this tier, so the whole suite is what ran"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": ""
+}
