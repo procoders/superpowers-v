@@ -1,0 +1,13 @@
+{
+  "confidence": "exact",
+  "digest": "sha256:e0da1401716b89b4743071fc64804fd4064c02f9e1e461343cfdbbbf39a5e9d9",
+  "fan_out": 3,
+  "flags": [
+    "content_scan_incomplete"
+  ],
+  "resolved_paths": [
+    "docs/superpowers/specs/2026-09-03-v3.4.6-triage-test-scoping-fixes-design.md",
+    "scripts/compound-v-fastpath-run.py",
+    "scripts/compound-v-localize.py"
+  ]
+}

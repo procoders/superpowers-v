@@ -1,0 +1,46 @@
+{
+  "base_commit": "767d3ceb38e3d5a82e7b0212820c48b5f0009887",
+  "confidence": "localization:exact; tiers:localization,T1",
+  "decision": "FULL_PIPELINE",
+  "declared_paths": [
+    "docs/superpowers/specs/2026-09-03-v3.4.6-triage-test-scoping-fixes-design.md",
+    "scripts/compound-v-fastpath-run.py",
+    "scripts/compound-v-localize.py"
+  ],
+  "difficulty": {
+    "band": "high",
+    "display": 8
+  },
+  "digest": "sha256:e0c2261881749a15a8fa4313f1d466f316533fd89d91b42494799400f6a01569",
+  "impact": {
+    "band": "high",
+    "display": 8
+  },
+  "localization": {
+    "confidence": "exact",
+    "fan_out": 3,
+    "flags": [
+      "content_scan_incomplete"
+    ],
+    "resolved_paths": [
+      "docs/superpowers/specs/2026-09-03-v3.4.6-triage-test-scoping-fixes-design.md",
+      "scripts/compound-v-fastpath-run.py",
+      "scripts/compound-v-localize.py"
+    ]
+  },
+  "min_sample_status": "insufficient",
+  "override_fired": null,
+  "pre_eval_id": "2026-09-03T113149Z-implement-v3-4-6-per-docs-superpowers-specs-2026-09-03-v3-4-0cb5",
+  "request_slug": "implement-v3-4-6-per-docs-superpowers-specs-2026-09-03-v3-4",
+  "session_id": "s-5a6",
+  "status": "PRE_EVAL_DONE",
+  "taxonomy_digest": "sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a",
+  "taxonomy_ref": "docs/superpowers/pre-eval/2026-09-03T113149Z-implement-v3-4-6-per-docs-superpowers-specs-2026-09-03-v3-4-0cb5.taxonomy-snapshot.yaml",
+  "taxonomy_version": 1,
+  "tier": "FULL",
+  "tiers_signalled": [
+    "localization",
+    "T1"
+  ],
+  "ts": "2026-09-03T11:31:49Z"
+}
