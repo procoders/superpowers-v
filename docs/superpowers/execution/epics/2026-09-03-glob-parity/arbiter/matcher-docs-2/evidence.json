@@ -1,0 +1,16 @@
+{
+  "epic_id": "2026-09-03-glob-parity",
+  "feature": "matcher-docs",
+  "attempt": 2,
+  "failure_kind": "reviewer_issues",
+  "what_failed": "Attempt 2 (deep tier, Opus) stated six rules in both files in identical wording (substance \u2705) but not the plan's verbatim sentence, appended them INSIDE the execution-manifest.md write_allowed table cell (now 1170 chars) instead of the paragraph after the Per-job fields section, added 7 lines to memory.md instead of the same-line-count row replacement, skipped the plan's Step 0 (undo attempt 1's hunks), and kept attempt 1's weaker proof pointer. Two workers of different tiers both worked from the previous diff rather than from the plan's exact text.",
+  "review_verdict": "VERDICT: ISSUES \u2014 SPEC 1 gap + 4 constraint violations; QUALITY 2 (a 1170-char table cell; carried-over pointer); INTEGRATION 2 acceptance gaps. Rules technically correct; no regression; links resolve.",
+  "why_the_gate_passed": "The manifest's six-rule grep lived only in test_contract.full_command; the run was SCOPED, so only floor + impacted ran and the guard never executed (finding 154).",
+  "retry_cap": {
+    "attempts": 2,
+    "cap": 3,
+    "can_retry": true
+  },
+  "fix_size_estimate": "docs only, ~20 lines: reset both files to 16786b7 (git checkout \u2014 only the two F2 attempts touched them since), then paste the exact paragraph and row. For attempt 3 the exact text goes INTO the job body and the six-rule grep INTO floor_command so the gate itself enforces it.",
+  "review_file": "docs/superpowers/dogfood/2026-09-03-epic-gp-matcher-docs-r2-review-1.md"
+}

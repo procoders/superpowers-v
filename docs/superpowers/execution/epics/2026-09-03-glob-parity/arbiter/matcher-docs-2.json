@@ -1,0 +1,57 @@
+{
+  "disposition": "retry_fix",
+  "confirmed": false,
+  "reason": "retry_fix majority",
+  "evidence": null,
+  "ballots": [
+    {
+      "source": "codex",
+      "family": "GPT",
+      "model": "gpt-5.6-sol",
+      "valid": true,
+      "disposition": "retry_fix",
+      "reason": "A third attempt is available, the defects are bounded documentation/spec-conformance issues with an explicit reset-and-reapply fix, and the floor gate can enforce the exact required text.",
+      "evidence": null,
+      "blocker_category": null,
+      "counted": true
+    },
+    {
+      "source": "agy",
+      "family": "Gemini",
+      "model": "Gemini 3.1 Pro (High)",
+      "valid": true,
+      "disposition": "retry_fix",
+      "reason": "Retry cap permits attempt 3 and a clear, small docs-only fix is identified for the spec violations.",
+      "evidence": null,
+      "blocker_category": null,
+      "counted": true
+    },
+    {
+      "source": "claude",
+      "family": "Claude",
+      "model": "claude",
+      "valid": true,
+      "disposition": "retry_fix",
+      "reason": "Content is verified-correct and identical in both files; only placement/line-count/verbatim constraints failed, all because the plan's Step 0 reset was skipped and the six-rule grep sat in full_command that the SCOPED tier never ran \u2014 attempt 3 is a deterministic docs-only fix (git checkout 16786b7 -- the two files, confirmed touched by only d7dc25d and 887d2f6, then paste the plan's existing verbatim Step 2/3 text with the grep moved into the floor/impacted set so the gate enforces it mechanically instead of by prose), the epic is otherwise healthy (F1 one-matcher done, no_progress_cycles 1), and halting the feature would freeze the merged regression in place (1170-char table cell, false '\u00a7 Job fields' pointer, manifest full_command exiting 1 on main) since abandonment performs no revert.",
+      "evidence": null,
+      "blocker_category": null,
+      "counted": true
+    }
+  ],
+  "families_present": [
+    "Claude",
+    "GPT",
+    "Gemini"
+  ],
+  "families_agreeing": [
+    "Claude",
+    "GPT",
+    "Gemini"
+  ],
+  "challenge_id": "ch-b7cfa986bc8d6070",
+  "epic_id": "2026-09-03-glob-parity",
+  "feature": "matcher-docs",
+  "attempt": 2,
+  "audit_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/epics/2026-09-03-glob-parity/arbiter/matcher-docs-2.json",
+  "recorded_at": "2026-09-03T20:44:35.850097+00:00"
+}
