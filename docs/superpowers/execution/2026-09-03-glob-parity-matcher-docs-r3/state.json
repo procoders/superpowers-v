@@ -1,7 +1,7 @@
 {
   "run_id": "2026-09-03-glob-parity-matcher-docs-r3",
-  "phase": "PARTITION_VERIFIED",
-  "updated_at": "2026-09-03T20:44:16Z",
+  "phase": "DISPATCHED",
+  "updated_at": "2026-09-03T20:58:00Z",
   "pre_eval_id": "2026-09-03T204415Z-epic-feature-matcher-docs-attempt-3-reset-skills-compound-v-5461",
   "escalated_to": null,
   "total_retries": 0,
@@ -11,9 +11,9 @@
   "attempts": {},
   "jobs": {
     "docs-exact": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_95512621-323-1",
       "session_id": null,
       "log": null,
       "recall_check": {
@@ -31,8 +31,16 @@
         ],
         "k": 2,
         "match_count": 2,
-        "recall_check_ms": 120,
+        "recall_check_ms": 112,
         "verdict": "tighten"
+      },
+      "baseline": "5ec8db5d4ffc61c5301fc3033de6172ba338d1f6",
+      "realised_commit": "5ec8db5d4ffc61c5301fc3033de6172ba338d1f6",
+      "merged": {
+        "realised_commit": "5ec8db5d4ffc61c5301fc3033de6172ba338d1f6",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "9cbf3dd28fda5ff3ee948747bfb691be1a6d0c78"
       }
     },
     "spec-review-1": {
@@ -41,6 +49,18 @@
       "worktree": null,
       "session_id": null,
       "log": null
+    }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "docs-exact"
+      ],
+      "merged": [
+        "docs-exact"
+      ],
+      "commit": "9cbf3dd28fda5ff3ee948747bfb691be1a6d0c78",
+      "integrated": true
     }
   }
 }

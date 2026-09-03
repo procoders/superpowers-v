@@ -1,0 +1,56 @@
+{
+  "baseline_commit": "5ec8db5d4ffc61c5301fc3033de6172ba338d1f6",
+  "diff_digest": "sha256:32722fd002ec9059d4d7e1a7413345e393379d26d2523c3535e051cbab9a17b0",
+  "exit_code": 0,
+  "job_id": "docs-exact",
+  "patch_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-glob-parity-matcher-docs-r3/jobs/docs-exact.patch",
+  "patch_paths": [
+    "skills/compound-v/execution-manifest.md",
+    "skills/compound-v/memory.md"
+  ],
+  "patch_sha256": "sha256:32722fd002ec9059d4d7e1a7413345e393379d26d2523c3535e051cbab9a17b0",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"5ec8db5d4ffc61c5301fc3033de6172ba338d1f6\",\n  \"changed\": [\n    \"skills/compound-v/execution-manifest.md\",\n    \"skills/compound-v/memory.md\"\n  ],\n  \"allowed\": [\n    \"skills/compound-v/memory.md\",\n    \"skills/compound-v/execution-manifest.md\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "5ec8db5d4ffc61c5301fc3033de6172ba338d1f6",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "skills/compound-v/execution-manifest.md",
+      "skills/compound-v/memory.md"
+    ],
+    "checks": [
+      {
+        "checker": "bash -c 'for f in skills/compound-v/memory.md skills/compound-v/execution-manifest.md; do [ \"$(grep -c \"matches within one path segment\" \"$f\")\" = \"1\" ] || { echo \"six-rule sentence count != 1 in $f\"; exit 1; }; grep -q \"the same matcher\" \"$f\" || { echo \"missing phrase in $f\"; exit 1; }; done; [ \"$(wc -l < skills/compound-v/memory.md | tr -d \" \")\" = \"202\" ] || { echo \"memory.md line count changed\"; exit 1; }; grep -q \"^\\*\\*Glob semantics\" skills/compound-v/execution-manifest.md || { echo \"paragraph not at line start (inside a table?)\"; exit 1; }'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f skills/compound-v/execution-manifest.md ] || exit 0; /usr/bin/python3 scripts/lint-frontmatter.py >/dev/null'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "bash -c '[ -f skills/compound-v/memory.md ] || exit 0; /usr/bin/python3 scripts/lint-frontmatter.py >/dev/null'",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (1 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 2 command(s) from 2 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_95512621-323-1"
+}
