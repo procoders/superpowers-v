@@ -87,7 +87,7 @@ match, **not** embedding similarity:
   `status ∈ {blocked, error, timeout}` (or a scope `violation`) on the same lane. `N ≥ k`
   (default `k=2`, the "two is a pattern" rule) ⇒ verdict `tighten`.
 - **The two real actions (tighten only):**
-  1. **Always (unless `emit --no-recall`; no script reads `memory.auto_recall`):** the implementer prompt gains a
+  1. **Always, when `memory.auto_recall` is on (default true; the /v:init "Manual only" stance sets it false, and `emit --no-recall` forces it off for one emit):** the implementer prompt gains a
      `## Prior failures on your lane` section — the count, the last three evidence lines
      (run · status · file), and a reading-budget instruction that follows from them (`grep -n`
      then `sed -n` targeted ranges, ≤ 20 reading calls, never read a large file top to bottom,

@@ -1293,7 +1293,8 @@ def escalate_claude_model(model):
 #
 # THE VERDICT IS EVIDENCE, NEVER AN AUTHORITY. By default the only consequence is
 # a prompt section the implementer can read and dismiss. The single mechanical
-# consequence — one rung of tier — is opt-in per manifest (`memory.auto_tighten`),
+# consequence — one rung of tier — is opt-in per project config (`memory.auto_tighten`
+# in .claude/compound-v.json; a manifest `memory:` block overrides per run),
 # conservative-only (it never lowers a tier and never reroutes to another
 # backend), and it yields to an explicit `model:`, because a routing decision a
 # human wrote down is not ours to override from a heuristic.
@@ -1788,6 +1789,11 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
     if isinstance(_man_mem, dict):
         memory_cfg.update(_man_mem)
     auto_tighten = bool(memory_cfg.get("auto_tighten"))
+    # `memory.auto_recall` (default true) is the /v:init "Manual only" switch;
+    # `emit --no-recall` forces it off for one emit. Review-2 of v3.4.10, item 1:
+    # until now no script read it and /v:init offered a switch that reached nothing.
+    _auto_recall = memory_cfg.get("auto_recall", True)
+    recall = bool(recall) and (_auto_recall is not False)
     recall_results_root = os.path.abspath(
         recall_results_root
         or os.path.join(abs_repo_root, "docs", "superpowers", "execution")
@@ -1797,10 +1803,12 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
         _jid = _job.get("id")
         if not _jid:
             continue
-        if str(_job.get("type") or "implement") == "review":
+        if recall and str(_job.get("type") or "implement") == "review":
             # A reviewer declares no implementation lane; the bridge is about
             # prior failures on the files an IMPLEMENTER is about to touch
             # (review-1, item 5: spec says implement jobs, code ran every job).
+            # Ordered AFTER the recall switch so `--no-recall` / auto_recall off
+            # records `unavailable` for every job alike (review-2, item 3).
             recalls[_jid] = {"verdict": "none", "match_count": 0, "evidence": [],
                              "note": "review job: recall-check is for implement lanes",
                              "recall_check_ms": 0}
@@ -1813,7 +1821,7 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
         else:
             recalls[_jid] = {
                 "verdict": "unavailable", "match_count": 0, "evidence": [],
-                "note": "recall not run for this emit (`--no-recall`)",
+                "note": "recall not run for this emit (`--no-recall`, or memory.auto_recall is false)",
                 "recall_check_ms": 0,
             }
     tightened = sorted(jid for jid, doc in recalls.items()
@@ -8136,18 +8144,47 @@ def selftest():
              "model": "opus", "write_allowed": ["scripts/foo.py"]},
             {"id": "rev", "type": "review", "tier": "standard",
              "acceptance": ["the diff matches the spec"],
-             "write_allowed": ["docs/untouched/**"]},
+             # a DIRTY lane on purpose: the review short-circuit must skip the
+             # lookup, not merely find a clean lane (review-2, item 3)
+             "write_allowed": ["scripts/foo.py"]},
         ]
 
-        def _rk_plan(auto_tighten, recall=True):
+        def _rk_plan(auto_tighten, recall=True, manifest_memory=True, config_memory=None):
             man = _tiny_manifest(json.loads(json.dumps(_rk_jobs)), max_parallel=4)
-            man["memory"] = {"auto_tighten": auto_tighten}
+            if manifest_memory:
+                man["memory"] = {"auto_tighten": auto_tighten}
+            _cfg_dir = os.path.join(tmp, ".claude"); os.makedirs(_cfg_dir, exist_ok=True)
+            _cfg_p = os.path.join(_cfg_dir, "compound-v.json")
+            if config_memory is None:
+                if os.path.exists(_cfg_p):
+                    os.remove(_cfg_p)
+            else:
+                _atomic_write(_cfg_p, json.dumps({"memory": config_memory}))
             man["_manifest_path"] = os.path.join(tmp, "manifest.yaml")
             plan = build_plan(man, tmp, tmp, "/usr/bin/python3",
                               os.path.abspath(__file__), SCOPE_CHECK_DEFAULT,
                               FASTPATH_DEFAULT, tmp, recall=recall,
                               recall_results_root=_rk_root)
             return plan, dict((j["id"], j) for w in plan["waves"] for j in w)
+
+        # review-2 (v3.4.10) guards: the review short-circuit, the config switch, auto_recall
+        _rk_p1, _rk_b1 = _rk_plan(False)
+        _check("a review job with a DIRTY lane is skipped by the bridge (note says so), never looked up",
+               (_rk_b1["rev"].get("recall_check") or {}).get("verdict") == "none"
+               and "review job" in str((_rk_b1["rev"].get("recall_check") or {}).get("note")))
+        _rk_p2, _rk_b2 = _rk_plan(False, recall=False)
+        _check("--no-recall wins over the review short-circuit: every job records unavailable",
+               all((_rk_b2[k].get("recall_check") or {}).get("verdict") == "unavailable" for k in ("impl", "rev")))
+        _rk_p3, _rk_b3 = _rk_plan(False, manifest_memory=False, config_memory={"auto_tighten": True})
+        _check("auto_tighten read from .claude/compound-v.json with no manifest block raises the tier",
+               _rk_b3["impl"].get("tier") == "standard")
+        _rk_p4, _rk_b4 = _rk_plan(False, manifest_memory=True, config_memory={"auto_tighten": True})
+        _check("a manifest memory: block overrides the project config (false wins here)",
+               _rk_b4["impl"].get("tier") == "light")
+        _rk_p5, _rk_b5 = _rk_plan(False, manifest_memory=False, config_memory={"auto_recall": False})
+        _check("memory.auto_recall: false in the project config disables recall for the emit",
+               all((_rk_b5[k].get("recall_check") or {}).get("verdict") == "unavailable" for k in ("impl", "clean", "rev")))
+        _rk_plan(False)  # leave the fixture as the later checks expect it
 
         _rk_plan_off, _rk_off = _rk_plan(False)
         _rk_impl = _rk_off["impl"]["recall_check"]
