@@ -1,0 +1,56 @@
+{
+  "base_commit": "30d9efea4d7a1c257e32e3c4bfa8618034700221",
+  "confidence": "localization:exact; tiers:localization,T1,T3",
+  "decision": "SCOPED_PIPELINE",
+  "declared_paths": [
+    "docs/superpowers/specs/2026-09-03-v3.4.13-preflight-git-history-design.md",
+    "scripts/compound-v-emit-preflight.py"
+  ],
+  "difficulty": {
+    "band": "medium",
+    "display": 5
+  },
+  "digest": "sha256:e1e41f26c46417feef18a890828f17c15a30af62c6edbd0ec2bb3f0569d68760",
+  "flavor": "scoped_plus",
+  "impact": {
+    "band": "medium",
+    "display": 5
+  },
+  "localization": {
+    "confidence": "exact",
+    "fan_out": 2,
+    "flags": [
+      "sensitive_path"
+    ],
+    "resolved_paths": [
+      "docs/superpowers/specs/2026-09-03-v3.4.13-preflight-git-history-design.md",
+      "scripts/compound-v-emit-preflight.py"
+    ]
+  },
+  "min_sample_status": "insufficient",
+  "override_fired": null,
+  "pre_eval_id": "2026-09-03T211541Z-let-the-pre-flight-auditors-read-git-history-scripts-compoun-af46",
+  "request_slug": "let-the-pre-flight-auditors-read-git-history-scripts-compoun",
+  "session_id": "e619cb38-ebe3-4b45-a1f4-c3007616291d",
+  "status": "PRE_EVAL_DONE",
+  "t3_demotion": {
+    "applied": true,
+    "category": "plumbing",
+    "from": {
+      "difficulty": "high",
+      "impact": "high"
+    },
+    "sensitive": true
+  },
+  "t3_reason": "sensitive",
+  "taxonomy_digest": "sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a",
+  "taxonomy_ref": "docs/superpowers/pre-eval/2026-09-03T211541Z-let-the-pre-flight-auditors-read-git-history-scripts-compoun-af46.taxonomy-snapshot.yaml",
+  "taxonomy_version": 1,
+  "tier": "SCOPED",
+  "tiers_signalled": [
+    "localization",
+    "T1",
+    "T3"
+  ],
+  "ts": "2026-09-03T21:15:42Z"
+}

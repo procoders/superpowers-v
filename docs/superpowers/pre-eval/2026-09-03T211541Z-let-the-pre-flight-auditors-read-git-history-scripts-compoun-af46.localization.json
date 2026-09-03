@@ -1,0 +1,12 @@
+{
+  "confidence": "exact",
+  "digest": "sha256:5af798767e643f4fc1c14486ba3f65056ab35311505c32f0fb5b323cd9e21c92",
+  "fan_out": 2,
+  "flags": [
+    "sensitive_path"
+  ],
+  "resolved_paths": [
+    "docs/superpowers/specs/2026-09-03-v3.4.13-preflight-git-history-design.md",
+    "scripts/compound-v-emit-preflight.py"
+  ]
+}
