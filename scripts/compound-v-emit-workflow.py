@@ -1208,14 +1208,10 @@ def apply_retry_meta(result, meta):
     Two deliberate non-actions:
 
     * the class is `other`, never `overloaded` - see RETRY_EXHAUSTED_REASON;
-    * `retries` and `escalated_from` are NOT added as top-level keys.
-      schemas/job_result.schema.json is `additionalProperties: false` and offers
-      no free-form field, and that schema is outside this job's write lane, so
-      the log lives in state.json (and in Record's ack), where it breaks no
-      contract. The result carries the FACT in `summary`, which is in-schema.
-      Adding `retries`/`escalated_from` to that schema is a one-line follow-up;
-      until it lands, emitting them here would reproduce the exact incident
-      tests/test-engine-c-contract.sh exists to prevent.
+    * `retries` and `escalated_from` are stamped by Record, not here: the
+      3.4.8 review-1 closure extended schemas/job_result.schema.json with both
+      keys, so the job_result carries the log (state.json and Record's ack keep
+      their copies). This helper owns only the class and the reason.
     """
     if not meta or not meta.get("exhausted"):
         return result
@@ -4281,6 +4277,9 @@ def cmd_record(argv):
         if retry_meta.get("retries"):
             state_job["retries"] = retry_meta["retries"]
             ack["retries"] = retry_meta["retries"]
+            # v3.4.8 review-1 item 2: the schema now carries `retries`, so the
+            # job_result — the record every consumer reads — carries the log too.
+            result["retries"] = retry_meta["retries"]
         if retry_meta.get("exhausted"):
             state_job["retry_exhausted"] = True
             ack["retry_exhausted"] = True
@@ -4289,6 +4288,7 @@ def cmd_record(argv):
     if isinstance(_escalated_from, str) and _escalated_from.strip():
         state_job["escalated_from"] = _escalated_from.strip()
         ack["escalated_from"] = _escalated_from.strip()
+        result["escalated_from"] = _escalated_from.strip()
     apply_retry_meta(result, retry_meta)
 
     # ---- ONE result file per job -------------------------------------------
@@ -7703,8 +7703,8 @@ def selftest():
                and _rt_res["failure_class"] in (
                    None, "none", "out_of_credits", "rate_limited", "overloaded",
                    "auth", "context_length", "timeout", "network", "other"))
-        _check("the retry log does NOT become an out-of-schema top-level key "
-               "(job_result.schema.json is additionalProperties: false)",
+        _check("apply_retry_meta stamps only class + reason; the log is Record's "
+               "(review-1 item 2: the schema now carries retries/escalated_from)",
                "retries" not in _rt_res and "escalated_from" not in _rt_res)
         _rt_ok = _job_result_from(
             {"verdict": "pass", "reason": "ok",
@@ -7759,8 +7759,9 @@ def selftest():
                _rt_state.get("escalated_from") == "opus"
                and (_rt_state.get("retries") or [{}])[0].get("wait_ms") == 2000,
                json.dumps(_rt_state)[:240])
-        _check("...and leaves the schema-bound result free of both keys",
-               "retries" not in _rt_result and "escalated_from" not in _rt_result,
+        _check("...and onto the job_result itself (schema extended in the 3.4.8 review-1 closure)",
+               _rt_result.get("escalated_from") == "opus"
+               and (_rt_result.get("retries") or [{}])[0].get("wait_ms") == 2000,
                json.dumps(sorted(_rt_result))[:240])
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

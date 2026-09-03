@@ -148,24 +148,23 @@ external workers.
 **The trigger is a `null` resolution, not only a throw.** `agent()` resolves to `null` on a
 terminal API error — the installed runtime, its docs, and this repo's own null-path handling
 all agree — and the 529s that motivated this feature arrived that way. The emitted JS's
-`withRetry(label, fn)` wraps every `agent()` call (implement, gate, record, finalize, review)
-and retries on **either** a thrown error matching the transient classes (`529`, `Overloaded`,
-`rate limit`, `429`, `ECONNRESET`/`ETIMEDOUT`/`network`, `overloaded_error`) **or** a `null`
-return. Every other thrown error, and the last transient failure once attempts are exhausted,
-propagate exactly as before this feature.
-
-**No error text reaches the script on the `null` path**, so the class cannot be named there:
-Record writes `failure_class: other` with a reason string that says so explicitly — never a
-guessed `overloaded`. A thrown error the classifier CAN read still gets its real class.
+`withRetry(stage, jobId, fn)` wraps every `agent()` call (implement, gate, record, finalize,
+review) and retries **any** failed call — a `null` resolution or a throw — **unclassified**: the
+script is handed no error text, so there is nothing to filter on. When the budget is exhausted the
+stage takes exactly the `null` path it had before this feature (nothing is written less than
+before), and Record writes `failure_class: other` with a reason string that says why the class
+cannot be named — never a guessed `overloaded`. A permanent failure (`auth`, `out_of_credits`)
+is therefore retried too; the cost is bounded (two extra spawns, 6 s) and the dispatcher's own
+breaker still sees it.
 
 **The backoff is deterministic, not the policy's jittered one.** A live probe
 (`wf_8884a773-73f`) confirmed `setTimeout` works inside a workflow script, but
 `Date.now()`/`Math.random()`/`new Date()` are refused by the runtime (it needs a deterministic
 replay on resume) — so the in-workflow backoff is the policy's table **without jitter**: 2 s →
 4 s → 8 s, capped at 60 s. Each retry is appended to that stage's result as
-`retries: [{stage, attempt, wait_ms}]` (Record stamps the time it writes the result — never a
-timestamp taken inside the script) — **measured**, never estimated, and no timing claim beyond
-that log is made anywhere in this feature.
+`retries: [{stage, job, attempt, wait_ms}]` on the job_result (and in `state.json`); `wait_ms` is
+the wait that was **requested** — the script cannot read a clock — and Record stamps its own
+time when it writes the result. No timing claim beyond that log is made anywhere in this feature.
 
 **The reviewer lift is a REQUESTED escalation, not a guarantee.** It reuses the existing
 `escalate_claude_model()` ladder (`sonnet → opus → fable`; a model the manifest pinned
@@ -191,7 +190,7 @@ in flight — no new resume mechanism, just more calls at the site that already 
 1. **Disjoint writes.** Every file path belongs to exactly one job's `write_allowed`. No glob in two jobs may overlap. Overlap ⇒ validation fails with the colliding pair.
 2. **Shared resources → serial Task 0.** Lockfiles, generated code, schema migrations, barrels, and shared type files are not splittable. They go into a single `type: shared_foundation`, `run: serial`, `isolation: direct` job (conventionally `task-0-*`) that no sibling can race. Other jobs `depends_on` it.
 3. **Codex ⇒ worktree.** Any job with `backend: codex` MUST have `isolation: worktree`. (Codex's sandbox can only restrict writes to a *directory*, not a file allow-list, so the worktree + `git diff` combo is the only file-scope enforcement.)
-4. **Reviewers ⇒ deep.** Any review/reviewer job MUST resolve to the strongest tier — `tier: deep` OR an explicit `model: opus`. (Mirrors the frontmatter rule: reviewers are always Opus; `deep` resolves to `opus` for claude.)
+4. **Reviewers ⇒ deep or stronger.** Any review/reviewer job MUST resolve to deep reasoning or stronger — `tier: deep` or `tier: frontier`, OR an explicit `model: opus` or `model: fable` (the validator's rule since 3.4.6, finding 119: a stronger seat passes, a weaker one never does). `deep` resolves to `opus` for claude, `frontier` to `fable`.
 5. **Model OR tier.** Every job MUST carry at least one of `model` or `tier`. A job with neither cannot be dispatched (the resolver has nothing to route on) and fails validation.
 6. **Tier / effort enums.** If present, `tier ∈ {deep, standard, light}` and `effort ∈ {low, medium, high, xhigh}`. `xhigh` is valid **iff** `backend: codex`; every other backend rejects it with a clear error naming the rule (use `high` instead). Any other value fails validation.
 7. **Parallel ⇒ worktree.** A `run: parallel` job MUST be `isolation: worktree`. `isolation: direct` is only valid with `run: serial`. (A repo-wide `git diff` cannot attribute a parallel direct job's writes to that job, so per-job isolation is mandatory for parallel work.) Hard validation failure.

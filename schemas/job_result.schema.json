@@ -44,11 +44,11 @@
       "items": {
         "type": "string"
       },
-      "description": "Subset of files_changed that fall outside write_allowed. Non-empty \u21d2 blocked. Git-derived."
+      "description": "Subset of files_changed that fall outside write_allowed. Non-empty ⇒ blocked. Git-derived."
     },
     "summary": {
       "type": "string",
-      "description": "Human-readable one-paragraph summary. Sourced from --output-last-message (or the schema'd JSON) \u2014 informational only, never used for enforcement."
+      "description": "Human-readable one-paragraph summary. Sourced from --output-last-message (or the schema'd JSON) — informational only, never used for enforcement."
     },
     "session_id": {
       "type": "string",
@@ -88,7 +88,7 @@
     "tests": {
       "type": "object",
       "additionalProperties": false,
-      "description": "OPTIONAL, MEASURED-ONLY record of the test contract this job actually ran (v3.0 Feature B3). The resolved contract reaches a worker as a REAL ARGUMENT (--test-contract-file), never as prose inside the prompt, and the values here are produced by the WORKER that ran the commands \u2014 never self-reported by the executor model, the same rule that governs blocked/files_changed/violations. Omitted entirely when the job ran no tests (no contract passed, or the job was blocked/timed out/errored and never reached the test step): absent is honest, an invented zero is not. Tests run AFTER the git-derived scope gate, so a file a test writes into the worktree can never become a false violation \u2014 and, for the same reason, anything a test creates after the gate is outside the gate's authority and MUST NOT be merged (see skills/backend-launcher/SKILL.md, Merge-back).",
+      "description": "OPTIONAL, MEASURED-ONLY record of the test contract this job actually ran (v3.0 Feature B3). The resolved contract reaches a worker as a REAL ARGUMENT (--test-contract-file), never as prose inside the prompt, and the values here are produced by the WORKER that ran the commands — never self-reported by the executor model, the same rule that governs blocked/files_changed/violations. Omitted entirely when the job ran no tests (no contract passed, or the job was blocked/timed out/errored and never reached the test step): absent is honest, an invented zero is not. Tests run AFTER the git-derived scope gate, so a file a test writes into the worktree can never become a false violation — and, for the same reason, anything a test creates after the gate is outside the gate's authority and MUST NOT be merged (see skills/backend-launcher/SKILL.md, Merge-back).",
       "required": [
         "command",
         "exit_code",
@@ -98,11 +98,11 @@
       "properties": {
         "command": {
           "type": "string",
-          "description": "The test command(s) this job ACTUALLY executed, in execution order, newline-separated when the resolved set held more than one. Never a plan or an intention \u2014 only what ran. The review gate reads this field, and a job that reports no test command at all is a FAIL (Feature B4), which is why it is required whenever this object is present."
+          "description": "The test command(s) this job ACTUALLY executed, in execution order, newline-separated when the resolved set held more than one. Never a plan or an intention — only what ran. The review gate reads this field, and a job that reports no test command at all is a FAIL (Feature B4), which is why it is required whenever this object is present."
         },
         "exit_code": {
           "type": "integer",
-          "description": "0 iff EVERY executed command exited 0; otherwise the exit code of the FIRST command that failed (124 when the process-group timeout supervisor fired). Commands are not short-circuited \u2014 every resolved command runs, so `failures` is complete even when an early one fails. A non-zero value is merge-blocking for the caller: the worker only observes and reports, it never merges."
+          "description": "0 iff EVERY executed command exited 0; otherwise the exit code of the FIRST command that failed (124 when the process-group timeout supervisor fired). Commands are not short-circuited — every resolved command runs, so `failures` is complete even when an early one fails. A non-zero value is merge-blocking for the caller: the worker only observes and reports, it never merges."
         },
         "scope": {
           "type": "string",
@@ -117,19 +117,19 @@
         "selected_count": {
           "type": "integer",
           "minimum": 0,
-          "description": "How many resolved COMMANDS this run executed \u2014 a count of selected commands, not of individual test cases. No bundled worker parses an arbitrary runner's output, and reporting a case count it never read would be fabrication. A producer that does read a machine-readable report MAY report selected test cases instead, and must say so in `command`/`failures` granularity terms."
+          "description": "How many resolved COMMANDS this run executed — a count of selected commands, not of individual test cases. No bundled worker parses an arbitrary runner's output, and reporting a case count it never read would be fabrication. A producer that does read a machine-readable report MAY report selected test cases instead, and must say so in `command`/`failures` granularity terms."
         },
         "duration_ms": {
           "type": "integer",
           "minimum": 0,
-          "description": "MEASURED-ONLY total wall-clock milliseconds around the supervised test invocations (it therefore includes the supervisor's own start-up, which is what running a test through this worker actually costs). ABSENT \u2014 never estimated, never zero-filled \u2014 when the runner or the worker could not measure it. It exists so a later release can say from our OWN data whether scoping saved time; a selected_count with no duration cannot answer that."
+          "description": "MEASURED-ONLY total wall-clock milliseconds around the supervised test invocations (it therefore includes the supervisor's own start-up, which is what running a test through this worker actually costs). ABSENT — never estimated, never zero-filled — when the runner or the worker could not measure it. It exists so a later release can say from our OWN data whether scoping saved time; a selected_count with no duration cannot answer that."
         },
         "failures": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "description": "MEASURED-ONLY machine-readable identifiers of the units that FAILED. The bundled workers report the exact failing command strings \u2014 command granularity is the finest identifier they can observe without parsing an arbitrary runner's output, and it is directly re-runnable. A producer that can read a machine-readable report (JUnit XML, pytest --json) SHOULD report per-test ids instead. An EMPTY array means measured-and-nothing-failed; the field is ABSENT when the runner reported nothing machine-readable, and B2's rule then applies: the next run's floor falls back to `full_command` rather than silently dropping the previously-failing set. Without this field \"previously failing\" is uncomputable, and the three-set floor silently degrades to two."
+          "description": "MEASURED-ONLY machine-readable identifiers of the units that FAILED. The bundled workers report the exact failing command strings — command granularity is the finest identifier they can observe without parsing an arbitrary runner's output, and it is directly re-runnable. A producer that can read a machine-readable report (JUnit XML, pytest --json) SHOULD report per-test ids instead. An EMPTY array means measured-and-nothing-failed; the field is ABSENT when the runner reported nothing machine-readable, and B2's rule then applies: the next run's floor falls back to `full_command` rather than silently dropping the previously-failing set. Without this field \"previously failing\" is uncomputable, and the three-set floor silently degrades to two."
         }
       }
     },
@@ -149,7 +149,7 @@
         "baseline_commit": {
           "type": "string",
           "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$",
-          "description": "Full commit hash the job's diff was measured AGAINST \u2014 the SHA captured BEFORE `git worktree add` (or the recorded pre-dispatch commit for a direct job), never the literal \"HEAD\". Pinning the SHA is what makes an executor that COMMITS inside its worktree still visible to the gate."
+          "description": "Full commit hash the job's diff was measured AGAINST — the SHA captured BEFORE `git worktree add` (or the recorded pre-dispatch commit for a direct job), never the literal \"HEAD\". Pinning the SHA is what makes an executor that COMMITS inside its worktree still visible to the gate."
         },
         "realised_commit": {
           "type": "string",
@@ -159,7 +159,7 @@
         "diff_digest": {
           "type": "string",
           "pattern": "^[a-z0-9]+:[0-9a-f]+$",
-          "description": "Content address of the job's realised diff, as `<alg>:<hex>`. PINNED DEFAULT RECIPE, so a producer and the verification layer cannot diverge: `git -C <gate-root> add -A` (which brings untracked files \u2014 the half a plain `git diff` would miss \u2014 into the index), then sha256 over the raw bytes of `git -C <gate-root> diff --cached --binary <baseline_commit>`, rendered as `sha256:<64-hex>`. A producer using any other recipe MUST be able to say so, because a digest the verification layer cannot recompute is treated exactly like a missing one: the gate is re-run."
+          "description": "Content address of the job's realised diff, as `<alg>:<hex>`. PINNED DEFAULT RECIPE, so a producer and the verification layer cannot diverge: `git -C <gate-root> add -A` (which brings untracked files — the half a plain `git diff` would miss — into the index), then sha256 over the raw bytes of `git -C <gate-root> diff --cached --binary <baseline_commit>`, rendered as `sha256:<64-hex>`. A producer using any other recipe MUST be able to say so, because a digest the verification layer cannot recompute is treated exactly like a missing one: the gate is re-run."
         },
         "verdict": {
           "type": "string",
@@ -168,7 +168,7 @@
             "blocked",
             "error"
           ],
-          "description": "The gate's own verdict field, copied verbatim from its JSON output. `error` is a gate/environment fault and is NOT a pass \u2014 it fails closed, exactly as null does."
+          "description": "The gate's own verdict field, copied verbatim from its JSON output. `error` is a gate/environment fault and is NOT a pass — it fails closed, exactly as null does."
         },
         "raw_stdout": {
           "type": "string",
@@ -186,15 +186,24 @@
       "description": "OPTIONAL, INFORMATIONAL, MEASURED-ONLY token/advisor accounting for this job. Worker-sourced like `summary` (extracted from the backend's own structured usage events by compound-v-usage-extract.py), NEVER fabricated and NEVER used for enforcement. When a backend emits no machine-readable usage (agy/antigravity, claude Task subagent, devin) or the events log is missing/unparseable, `measured` is false and the token counts are null (anti-ruflo: a null is honest, a made-up number is not). Omitted entirely when the worker provided no usage object.",
       "properties": {
         "input_tokens": {
-          "type": ["integer", "null"],
+          "type": [
+            "integer",
+            "null"
+          ],
           "description": "Total input/prompt tokens consumed by the job, summed across the backend's usage events. null when not measured."
         },
         "output_tokens": {
-          "type": ["integer", "null"],
+          "type": [
+            "integer",
+            "null"
+          ],
           "description": "Total output/completion tokens produced by the job, summed across the backend's usage events. null when not measured."
         },
         "advisor_calls": {
-          "type": ["integer", "null"],
+          "type": [
+            "integer",
+            "null"
+          ],
           "description": "Number of times the executor actually consulted the read-only advisor subagent. Worker-COUNTED (not derived from CLI turn/iteration counts), set by the advisor worker, not by the usage extractor. null when unknown or not applicable."
         },
         "backend": {
@@ -206,6 +215,53 @@
           "description": "True only when real token counts were extracted from the backend's structured usage events. False when the backend emits no machine-readable usage or the events log was absent/empty/unparseable; in that case the token counts are null."
         }
       }
+    },
+    "retries": {
+      "type": "array",
+      "description": "v3.4.8: every in-workflow retry of this job's stages — {stage, job, attempt, wait_ms} plus escalated_from/model on the reviewer lift. wait_ms is the wait that was REQUESTED (a workflow script cannot read a clock); Record stamps its own time when it writes the result.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "stage": {
+            "type": "string"
+          },
+          "job": {
+            "type": "string"
+          },
+          "attempt": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "wait_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "escalated_from": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "stage",
+          "attempt"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "escalated_from": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "v3.4.8: the MODEL rung a review job was lifted from (e.g. `opus`) when its retry budget was exhausted transiently — the REQUESTED escalation, never a confirmed outcome (an org allowlist can substitute silently). null when no lift happened."
     }
   }
 }

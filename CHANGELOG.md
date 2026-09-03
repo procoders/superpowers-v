@@ -15,11 +15,11 @@ with no error text) became `status: error` on the first hit, even though
 [`failure-policy.md`](skills/compound-v/failure-policy.md) already owned the right
 classify-then-decide table for the residual subagent dispatcher and the external workers. Every
 `agent()` call the emitted script makes (implement, gate, record, finalize, review) is now
-wrapped in `withRetry`, which retries on the policy's transient classes up to a new manifest
+wrapped in `withRetry`, which retries any failed call — a `null` resolution or a throw, unclassified, since the script sees no error text — up to a new manifest
 knob, `retry.max_attempts` (int 1–3, default 3; `1` disables retries) — backoff is the policy's
 table **without jitter** (2 s → 4 s → 8 s, capped at 60 s; `Date.now()`/`Math.random()` are
-refused inside a workflow script) and each retry is logged in that stage's result as
-`retries: [{stage, attempt, wait_ms}]`. On the `null`-resolution path the failing class can't be
+refused inside a workflow script) and each retry is logged on the job_result as
+`retries: [{stage, job, attempt, wait_ms}]` (the requested wait; the script cannot read a clock). On the `null`-resolution path the failing class can't be
 named, so exhaustion records `failure_class: other` with a reason that says so, never a guessed
 `overloaded`. A review job that exhausts its budget on `tier: deep` is re-spawned once on
 `frontier` (Fable) when `retry.escalate_reviewer` (default true) — the same

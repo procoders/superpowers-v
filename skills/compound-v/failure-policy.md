@@ -15,7 +15,7 @@ act loop already; the emitted Workflow JS did not — it never looped `agent()`,
 `529`/`429`/network failure (or, on the path the runtime actually uses, `agent()` resolving to
 `null` with no error text at all) became `status: error` on the first hit. Since 3.4.8 the
 emitted script wraps every `agent()` call (implement, gate, record, finalize, review) in a
-`withRetry` that retries on the **same** classes this doc defines, up to the manifest's
+`withRetry` that retries **any** failed call — a `null` resolution or a throw, unclassified, because the script sees no error text — up to the manifest's
 [`retry.max_attempts`](execution-manifest.md#retry--transient-failure-retry-inside-the-workflow-v348)
 (default 3). Two differences from the dispatcher path, both forced by the runtime: the workflow
 backoff is the **same table, without jitter** (`Date.now()`/`Math.random()` are refused inside a

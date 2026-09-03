@@ -286,7 +286,7 @@ A `job_result.status` that is **not** `success` and **not** `blocked` is a backe
      **review** stage's `withRetry` exhausts `retry.max_attempts` on `tier: deep`, it is
      re-spawned **once** on `frontier` (Fable) — via the existing `sonnet → opus → fable` ladder,
      never below `deep` — rather than being recorded `halt`ed. The receipt/result carry
-     `escalated_from: deep` as the REQUESTED escalation (an org allowlist can substitute silently;
+     `escalated_from: opus` (the MODEL rung it was lifted from, never a tier) as the REQUESTED escalation (an org allowlist can substitute silently;
      the field states what was asked for). This is gated by `retry.escalate_reviewer` (default
      `true`) and never applies to implementers (their cap is turns, not model capacity) or to a
      fast-path reviewer (schema-pinned to `deep`, out of scope). See
