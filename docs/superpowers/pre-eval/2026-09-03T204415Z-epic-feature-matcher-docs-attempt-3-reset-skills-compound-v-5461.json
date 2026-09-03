@@ -1,0 +1,56 @@
+{
+  "base_commit": "015e61d5d4e2a3f1e945dbf23a5860f67831bbc3",
+  "confidence": "localization:exact; tiers:localization,T1,T3",
+  "decision": "SCOPED_PIPELINE",
+  "declared_paths": [
+    "skills/compound-v/execution-manifest.md",
+    "skills/compound-v/memory.md"
+  ],
+  "difficulty": {
+    "band": "medium",
+    "display": 5
+  },
+  "digest": "sha256:cbbd020bfeb1076d111d0659ca50a103ad5a63e31cdbb0bbe9e3c63a2f496a1f",
+  "flavor": "scoped_plus",
+  "impact": {
+    "band": "medium",
+    "display": 5
+  },
+  "localization": {
+    "confidence": "exact",
+    "fan_out": 2,
+    "flags": [
+      "sensitive_path"
+    ],
+    "resolved_paths": [
+      "skills/compound-v/execution-manifest.md",
+      "skills/compound-v/memory.md"
+    ]
+  },
+  "min_sample_status": "insufficient",
+  "override_fired": null,
+  "pre_eval_id": "2026-09-03T204415Z-epic-feature-matcher-docs-attempt-3-reset-skills-compound-v-5461",
+  "request_slug": "epic-feature-matcher-docs-attempt-3-reset-skills-compound-v",
+  "session_id": "e619cb38-ebe3-4b45-a1f4-c3007616291d",
+  "status": "PRE_EVAL_DONE",
+  "t3_demotion": {
+    "applied": true,
+    "category": "plumbing",
+    "from": {
+      "difficulty": "low",
+      "impact": "low"
+    },
+    "sensitive": true
+  },
+  "t3_reason": "sensitive",
+  "taxonomy_digest": "sha256:73763c8ac80e3a5b5438a8330b0bb26dbb98125dc9804d3e650ec938bc13425a",
+  "taxonomy_ref": "docs/superpowers/pre-eval/2026-09-03T204415Z-epic-feature-matcher-docs-attempt-3-reset-skills-compound-v-5461.taxonomy-snapshot.yaml",
+  "taxonomy_version": 1,
+  "tier": "SCOPED",
+  "tiers_signalled": [
+    "localization",
+    "T1",
+    "T3"
+  ],
+  "ts": "2026-09-03T20:44:15Z"
+}
