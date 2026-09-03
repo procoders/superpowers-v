@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "scripts/compound-v-localize.py"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "1737e46964b6244f1194e43e960bdf28a365d5fb",
+    "diff_digest": "sha256:649607f67cae6e9a65a91874fc959f31c5499a9e3f2e99493cafdf62e010527f",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"1737e46964b6244f1194e43e960bdf28a365d5fb\",\n  \"changed\": [\n    \"scripts/compound-v-localize.py\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-localize.py\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "1737e46964b6244f1194e43e960bdf28a365d5fb",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task A \u2014 no content_scan_incomplete for a content-scan-excluded file (finding 99)",
+  "tests": {
+    "command": "bash tests/test-engine-c-contract.sh\nbash -c '/usr/bin/python3 -B scripts/compound-v-localize.py --selftest && /usr/bin/python3 -B scripts/compound-v-preeval.py --selftest'",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_3a4d82e5-2bd-1"
+}

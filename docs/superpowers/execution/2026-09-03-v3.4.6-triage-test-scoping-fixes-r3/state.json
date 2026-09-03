@@ -1,26 +1,44 @@
 {
   "run_id": "2026-09-03-v3.4.6-triage-test-scoping-fixes-r3",
-  "phase": "PARTITION_VERIFIED",
+  "phase": "BLOCKED",
   "pre_eval_id": "2026-09-03T113149Z-implement-v3-4-6-per-docs-superpowers-specs-2026-09-03-v3-4-0cb5",
   "updated_at": "2026-09-03T12:13:25Z",
   "jobs": {
     "localizer": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_3a4d82e5-2bd-1",
+      "session_id": null,
+      "baseline": "1737e46964b6244f1194e43e960bdf28a365d5fb",
+      "realised_commit": "1737e46964b6244f1194e43e960bdf28a365d5fb",
+      "merged": {
+        "realised_commit": "1737e46964b6244f1194e43e960bdf28a365d5fb",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "35e8ed04b2d4afc2aaa3e46e80b258aa7281ac09"
+      }
     },
     "fastpath": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_3a4d82e5-2bd-2",
+      "session_id": null,
+      "baseline": "1737e46964b6244f1194e43e960bdf28a365d5fb",
+      "realised_commit": "1737e46964b6244f1194e43e960bdf28a365d5fb",
+      "merged": {
+        "realised_commit": "1737e46964b6244f1194e43e960bdf28a365d5fb",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "35e8ed04b2d4afc2aaa3e46e80b258aa7281ac09"
+      }
     },
     "validator": {
-      "status": "pending",
+      "status": "blocked",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_3a4d82e5-2bd-3",
+      "session_id": null,
+      "baseline": "1737e46964b6244f1194e43e960bdf28a365d5fb",
+      "realised_commit": "1737e46964b6244f1194e43e960bdf28a365d5fb"
     },
     "emitter": {
       "status": "pending",
@@ -52,5 +70,22 @@
       "worktree": null,
       "session_id": null
     }
-  }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "localizer",
+        "fastpath",
+        "validator"
+      ],
+      "merged": [
+        "localizer",
+        "fastpath"
+      ],
+      "commit": "35e8ed04b2d4afc2aaa3e46e80b258aa7281ac09",
+      "integrated": false
+    }
+  },
+  "blocked_reason": "wave 1 refused: validator",
+  "blocked_at": "2026-09-03T12:21:38Z"
 }

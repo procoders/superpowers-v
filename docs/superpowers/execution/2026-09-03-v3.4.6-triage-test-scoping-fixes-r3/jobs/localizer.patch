@@ -1,0 +1,97 @@
+diff --git a/scripts/compound-v-localize.py b/scripts/compound-v-localize.py
+index 7c80a24..73c6b2d 100644
+--- a/scripts/compound-v-localize.py
++++ b/scripts/compound-v-localize.py
+@@ -501,6 +501,22 @@ def _classify_paths(repo, resolved, taxonomy):
+     flags = set()
+     incomplete = False
+     for rel in resolved:
++        if tax.content_scan_excluded(taxonomy, rel):
++            # v3.4.6 finding 99: a path listed in the taxonomy's `content_scan_exclude`
++            # has its CONTENT scan suppressed by design (§A5) -- there is no scan to be
++            # incomplete about, so an oversized excluded file must not read at all and
++            # must not raise `content_scan_incomplete`. Its PATH rows (and sensitive_path)
++            # still apply via classify(path=..., content=None); the over-cap/unreadable
++            # branches below are for files that ARE scanned, so this path skips them by
++            # `continue`-ing before `open()` is ever called.
++            # Tradeoff: `_is_generated`'s content-marker scan needs bytes, so an excluded
++            # file that carries a generated-file marker but doesn't match a generated glob
++            # will not be flagged `is_generated` -- only the glob half of that check runs.
++            c = tax.classify(taxonomy or {}, path=rel, content=None)
++            flags |= _map_classify_flags(c.get("flags", []))
++            if _is_generated(rel, None):
++                flags.add("is_generated")
++            continue
+         try:
+             with open(os.path.join(repo, rel), "rb") as fh:
+                 raw = fh.read(MAX_FILE_READ_BYTES + 1)
+@@ -820,6 +836,28 @@ sensitive_path_list:
+   - "src/auth/**"
+ """
+ 
++# v3.4.6 finding 99 — a NEW fixture (never rewrites _SHARED_TOKEN_TAXONOMY, which
++# excludes nothing) exercising content_scan_exclude against an oversized file.
++_CONTENT_SCAN_EXCLUDE_TAXONOMY = """
++version: 1
++path_patterns:
++  - glob: "scripts/**"
++    difficulty_band: low
++    impact_band: low
++  - glob: "docs/**"
++    difficulty_band: low
++    impact_band: low
++content_patterns:
++  - match: "shared_token_marker"
++    pattern_type: literal
++    case: sensitive
++    scan: content
++    kind: shared_token
++    impact_band: high
++content_scan_exclude:
++  - "**/*.py"
++"""
++
+ 
+ def _write(path, text):
+     os.makedirs(os.path.dirname(path), exist_ok=True)
+@@ -1260,6 +1298,40 @@ def _selftest():
+                and _new_file_candidate(repo, "../escape/x.py") is None
+                and _new_file_candidate(repo, "/etc/x.py") is None)
+ 
++    # ===================================================================== #
++    # v3.4.6 finding 99 — content_scan_exclude'd oversized files must not raise
++    # `content_scan_incomplete`: there is no incomplete scan when no scan ran.
++    # ===================================================================== #
++    with tempfile.TemporaryDirectory() as repo:
++        excl_taxonomy = tax_mod.load_taxonomy(text=_CONTENT_SCAN_EXCLUDE_TAXONOMY)
++        _write(os.path.join(repo, "scripts/big.py"),
++               "# big\n" + "C" * (MAX_FILE_READ_BYTES + 4096) + "\n")
++        _write(os.path.join(repo, "docs/big.md"),
++               "# big\n" + "D" * (MAX_FILE_READ_BYTES + 4096) + "\n")
++
++        # An oversized .py file, excluded by `content_scan_exclude: **/*.py` -> `exact`,
++        # no `content_scan_incomplete` (no read, no scan, nothing to be incomplete about).
++        res = localize("tweak scripts/big.py", repo, excl_taxonomy)
++        expect("finding-99: excluded oversized .py -> exact, no content_scan_incomplete",
++               res["confidence"] == "exact"
++               and res["resolved_paths"] == ["scripts/big.py"]
++               and "content_scan_incomplete" not in res["flags"])
++
++        # The SAME oversized .py file with NO exclusion (the shared, unmodified taxonomy
++        # fixture) still raises the flag — the exclusion is what changes the outcome.
++        res = localize("tweak scripts/big.py", repo, taxonomy)
++        expect("finding-99: the same oversized .py with no exclusion -> flag still fires",
++               res["confidence"] == "exact"
++               and res["resolved_paths"] == ["scripts/big.py"]
++               and "content_scan_incomplete" in res["flags"])
++
++        # An oversized .md file is NOT covered by `**/*.py` -> still scanned, still flagged.
++        res = localize("tweak docs/big.md", repo, excl_taxonomy)
++        expect("finding-99: oversized .md not covered by the .py exclusion -> flag fires",
++               res["confidence"] == "exact"
++               and res["resolved_paths"] == ["docs/big.md"]
++               and "content_scan_incomplete" in res["flags"])
++
+     # (2) A request with NO identifier: `failed`, and the search backend is NEVER invoked.
+     #     Proven with the fake CLIs — the marker directory stays empty, which an
+     #     implementation that greps a plain word cannot do.

@@ -1,0 +1,48 @@
+{
+  "baseline_commit": "1737e46964b6244f1194e43e960bdf28a365d5fb",
+  "diff_digest": "sha256:088dbaf3dc9778c351cb31549a9b7c0a187f73b471726d797b1bb23157201489",
+  "exit_code": 0,
+  "job_id": "fastpath",
+  "patch_path": "/Users/oleg/Dev/superpowers-v/docs/superpowers/execution/2026-09-03-v3.4.6-triage-test-scoping-fixes-r3/jobs/fastpath.patch",
+  "patch_paths": [
+    "scripts/compound-v-fastpath-run.py"
+  ],
+  "patch_sha256": "sha256:088dbaf3dc9778c351cb31549a9b7c0a187f73b471726d797b1bb23157201489",
+  "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"1737e46964b6244f1194e43e960bdf28a365d5fb\",\n  \"changed\": [\n    \"scripts/compound-v-fastpath-run.py\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-fastpath-run.py\"\n  ],\n  \"violations\": []\n}\n",
+  "realised_commit": "1737e46964b6244f1194e43e960bdf28a365d5fb",
+  "source": "gate-receipt",
+  "tests": {
+    "changed_paths": [
+      "scripts/compound-v-fastpath-run.py"
+    ],
+    "checks": [
+      {
+        "checker": "bash tests/test-engine-c-contract.sh",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      },
+      {
+        "checker": "/usr/bin/python3 -B scripts/compound-v-fastpath-run.py --selftest",
+        "rc": 0,
+        "status": "pass",
+        "tier": 1
+      }
+    ],
+    "contract_notes": [
+      "scope: no test_scope declared, defaulted to 'impacted' \u2014 test_contract declares an impacted_map (10 rule(s)) \u2014 the repository has said which tests relate to which paths, so the default honours it instead of running everything",
+      "floor: floor_command runs at every tier and comes first",
+      "impacted: 1 command(s) from 1 changed path(s) (every matching rule unions)",
+      "previously-failing: 0 command(s) from the last run's tests.failures[]",
+      "newly-added: 0 command(s) from 0 added path(s) (git diff --diff-filter=A)"
+    ],
+    "failures": [],
+    "merge_blocked": false,
+    "passed": true,
+    "phase": "test_floor",
+    "reasons": [],
+    "tier_used": 1
+  },
+  "verdict": "pass",
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_3a4d82e5-2bd-2"
+}

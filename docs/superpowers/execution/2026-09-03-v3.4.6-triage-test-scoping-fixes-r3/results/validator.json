@@ -1,0 +1,32 @@
+{
+  "blocked": true,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "scripts/compound-v-validate-manifest.py",
+    "tests/test-engine-c-contract.sh"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "1737e46964b6244f1194e43e960bdf28a365d5fb",
+    "diff_digest": "sha256:54680533c782d7c2e18a82476d6067ddf73be38b9d89d80aeb174eec71e4db1e",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"1737e46964b6244f1194e43e960bdf28a365d5fb\",\n  \"changed\": [\n    \"scripts/compound-v-validate-manifest.py\",\n    \"tests/test-engine-c-contract.sh\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-validate-manifest.py\",\n    \"tests/test-engine-c-contract.sh\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "1737e46964b6244f1194e43e960bdf28a365d5fb",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "blocked",
+  "summary": "Task B2a \u2014 validate-manifest.py accepts test_contract.timeout_s; the engine-c contract test rows",
+  "tests": {
+    "command": "bash tests/test-engine-c-contract.sh\n/usr/bin/python3 -B scripts/compound-v-validate-manifest.py --selftest",
+    "exit_code": 1,
+    "failures": [
+      "bash tests/test-engine-c-contract.sh"
+    ],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_3a4d82e5-2bd-3"
+}

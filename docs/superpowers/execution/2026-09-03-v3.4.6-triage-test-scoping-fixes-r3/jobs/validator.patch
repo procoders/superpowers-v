@@ -1,0 +1,69 @@
+diff --git a/scripts/compound-v-validate-manifest.py b/scripts/compound-v-validate-manifest.py
+index 7f26c73..a0a268b 100755
+--- a/scripts/compound-v-validate-manifest.py
++++ b/scripts/compound-v-validate-manifest.py
+@@ -842,7 +842,7 @@ DEFAULT_TAXONOMY_REL = os.path.join(".claude", "compound-v-impact-taxonomy.yaml"
+ # --------------------------------------------------------------------------- #
+ VALID_TEST_SCOPES = ("full", "impacted", "floor_only")
+ DEFAULT_TEST_SCOPE = "full"
+-TEST_CONTRACT_ALLOWED_KEYS = ("floor_command", "full_command", "impacted_map")
++TEST_CONTRACT_ALLOWED_KEYS = ("floor_command", "full_command", "impacted_map", "timeout_s")
+ IMPACTED_MAP_REQUIRED_KEYS = ("when", "run")
+ 
+ # Top-level required fields (per execution-manifest.md "Top-level fields").
+@@ -2255,6 +2255,14 @@ def _validate_test_contract(manifest, job_scopes):
+             if val is not None and not isinstance(val, str):
+                 problems.append("manifest test_contract.%s must be a string "
+                                 "(got %r)" % (key, val))
++        if "timeout_s" in contract:
++            tval = contract.get("timeout_s")
++            if (not isinstance(tval, int) or isinstance(tval, bool)
++                    or not (1 <= tval <= 540)):
++                problems.append(
++                    "manifest test_contract.timeout_s must be an integer "
++                    "1-540 (got %r)" % (tval,)
++                )
+         imap = contract.get("impacted_map")
+         if imap is not None:
+             if not isinstance(imap, list):
+@@ -5564,6 +5572,20 @@ def _selftest():
+     expect("test_contract: unknown test_contract key caught",
+            any("test_contract has unknown key 'floor_cmd'" in p for p in _c_unknown))
+ 
++    # timeout_s: an integer 1-540, and only that.
++    _c_timeout_ok = validate_text(_v3_manifest(contract_block=(
++        'test_contract:\n  floor_command: "f"\n  full_command: "F"\n'
++        '  timeout_s: 480\n')))
++    expect("test_contract: timeout_s 480 accepted (%r)" % _c_timeout_ok,
++           _c_timeout_ok == [])
++    for _bad_timeout in (0, -1, 541, True, "480"):
++        _c_timeout_bad = validate_text(_v3_manifest(contract_block=(
++            'test_contract:\n  floor_command: "f"\n  full_command: "F"\n'
++            '  timeout_s: %r\n' % (_bad_timeout,))))
++        expect("test_contract: timeout_s %r refused" % (_bad_timeout,),
++               any("test_contract.timeout_s must be an integer" in p
++                   for p in _c_timeout_bad))
++
+     # floor_only must never resolve to running NOTHING — the whole point of a floor.
+     _c_floor_empty = validate_text(_v3_manifest(
+         contract_block='test_contract:\n  floor_command: ""\n  full_command: "F"\n',
+diff --git a/tests/test-engine-c-contract.sh b/tests/test-engine-c-contract.sh
+index 3c19d16..7fdf68e 100755
+--- a/tests/test-engine-c-contract.sh
++++ b/tests/test-engine-c-contract.sh
+@@ -328,6 +328,15 @@ for w in codex antigravity cursor opencode devin; do
+   if run_tcv "$TCV/ok.json"; then pass "$w worker: tc_validate ACCEPTS the 3.4.1 slice (impacted+referencing, selected_count)"; else fail "$w worker: tc_validate REJECTS the 3.4.1 slice the resolver now produces"; fi
+   if run_tcv "$TCV/bad-count.json"; then fail "$w worker: tc_validate accepted a non-numeric selected_count"; else pass "$w worker: tc_validate rejects a non-numeric selected_count"; fi
+   if run_tcv "$TCV/bad-key.json"; then fail "$w worker: tc_validate accepted an unknown key"; else pass "$w worker: tc_validate still rejects an unknown key"; fi
++  # B2a: test_contract.timeout_s (validate-manifest: integer 1-540). A worker's
++  # tc_validate must accept a slice carrying a valid timeout_s and refuse one
++  # carrying an out-of-range value. This is written against the CONTRACT, not
++  # against today's worker scripts — it may fail until the paired workers job
++  # (which teaches tc_validate the timeout_s key) merges.
++  printf '%s\n' '{"scope":"impacted+referencing","resolved_commands":["true"],"selected_count":2,"floor_command":"true","timeout_s":480}' > "$TCV/ok-timeout.json"
++  printf '%s\n' '{"scope":"impacted+referencing","resolved_commands":["true"],"selected_count":2,"floor_command":"true","timeout_s":0}' > "$TCV/bad-timeout.json"
++  if run_tcv "$TCV/ok-timeout.json"; then pass "$w worker: tc_validate ACCEPTS a slice with timeout_s 480"; else fail "$w worker: tc_validate REJECTS a slice with a valid timeout_s 480"; fi
++  if run_tcv "$TCV/bad-timeout.json"; then fail "$w worker: tc_validate accepted timeout_s 0 (out of range 1-540)"; else pass "$w worker: tc_validate rejects timeout_s 0 (out of range 1-540)"; fi
+ done
+ "$PY" "$EMIT" finalize-wave --run-dir "$RD" --repo-root "$R" \
+   --manifest "$RD/manifest.yaml" --jobs job-happy,job-floorfail,job-blocked \

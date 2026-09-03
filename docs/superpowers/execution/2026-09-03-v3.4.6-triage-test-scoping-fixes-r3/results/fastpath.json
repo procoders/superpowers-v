@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "scripts/compound-v-fastpath-run.py"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "1737e46964b6244f1194e43e960bdf28a365d5fb",
+    "diff_digest": "sha256:088dbaf3dc9778c351cb31549a9b7c0a187f73b471726d797b1bb23157201489",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"1737e46964b6244f1194e43e960bdf28a365d5fb\",\n  \"changed\": [\n    \"scripts/compound-v-fastpath-run.py\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-fastpath-run.py\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "1737e46964b6244f1194e43e960bdf28a365d5fb",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task B1 \u2014 fastpath-run.py: budget from the slice, 124 \u21d2 failures entry, bookkeeping paths never promote (findings 102 + 105)",
+  "tests": {
+    "command": "bash tests/test-engine-c-contract.sh\n/usr/bin/python3 -B scripts/compound-v-fastpath-run.py --selftest",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 2
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_3a4d82e5-2bd-2"
+}
