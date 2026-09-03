@@ -1,20 +1,30 @@
 {
   "run_id": "2026-09-03-v3.4.5-recall-freshness-r2",
-  "phase": "PARTITION_VERIFIED",
+  "phase": "BLOCKED",
   "pre_eval_id": "2026-09-03T100838Z-make-v-memory-search-refresh-the-fts5-index-automatically-wh-5801",
   "updated_at": "2026-09-03T10:46:08Z",
   "jobs": {
     "engine-2": {
-      "status": "pending",
+      "status": "done",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_7de3a338-4de-1",
+      "session_id": null,
+      "baseline": "8a112a3f203dbf0bd4e4c6eb2c3493bcec307101",
+      "realised_commit": "8a112a3f203dbf0bd4e4c6eb2c3493bcec307101",
+      "merged": {
+        "realised_commit": "8a112a3f203dbf0bd4e4c6eb2c3493bcec307101",
+        "mode": "worktree",
+        "integrated": true,
+        "commit": "233e6f76ee8de3e9bf1bf7ac1d97caf86bd3f43d"
+      }
     },
     "docs-2": {
-      "status": "pending",
+      "status": "blocked",
       "isolation": "worktree",
-      "worktree": null,
-      "session_id": null
+      "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_7de3a338-4de-2",
+      "session_id": null,
+      "baseline": "8a112a3f203dbf0bd4e4c6eb2c3493bcec307101",
+      "realised_commit": "8a112a3f203dbf0bd4e4c6eb2c3493bcec307101"
     },
     "spec-review-2": {
       "status": "pending",
@@ -22,5 +32,20 @@
       "worktree": null,
       "session_id": null
     }
-  }
+  },
+  "waves": {
+    "1": {
+      "jobs": [
+        "engine-2",
+        "docs-2"
+      ],
+      "merged": [
+        "engine-2"
+      ],
+      "commit": "233e6f76ee8de3e9bf1bf7ac1d97caf86bd3f43d",
+      "integrated": false
+    }
+  },
+  "blocked_reason": "wave 1 refused: docs-2",
+  "blocked_at": "2026-09-03T10:52:28Z"
 }

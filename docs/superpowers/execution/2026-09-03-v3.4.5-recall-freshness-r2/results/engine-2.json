@@ -1,0 +1,29 @@
+{
+  "blocked": false,
+  "exit_code": 0,
+  "failure_class": null,
+  "files_changed": [
+    "scripts/compound-v-memory.py"
+  ],
+  "gate_receipt": {
+    "baseline_commit": "8a112a3f203dbf0bd4e4c6eb2c3493bcec307101",
+    "diff_digest": "sha256:9b03a4ef33f674f57c73ac7d7ab69f57f30f9322f0fb0f1f772b4149b30b6c8d",
+    "exit_code": 0,
+    "raw_stdout": "{\n  \"verdict\": \"pass\",\n  \"mode\": \"worktree\",\n  \"baseline\": \"8a112a3f203dbf0bd4e4c6eb2c3493bcec307101\",\n  \"changed\": [\n    \"scripts/compound-v-memory.py\"\n  ],\n  \"allowed\": [\n    \"scripts/compound-v-memory.py\"\n  ],\n  \"violations\": []\n}\n",
+    "realised_commit": "8a112a3f203dbf0bd4e4c6eb2c3493bcec307101",
+    "verdict": "pass"
+  },
+  "retry_after_seconds": 0,
+  "session_id": "",
+  "status": "success",
+  "summary": "Task A' \u2014 lock release in a finally, one hash pass on the inline path, a lock-held selftest (review-1 items 3\u20135)",
+  "tests": {
+    "command": "/usr/bin/python3 -B scripts/compound-v-memory.py --selftest",
+    "exit_code": 0,
+    "failures": [],
+    "scope": "impacted",
+    "selected_count": 1
+  },
+  "violations": [],
+  "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_7de3a338-4de-1"
+}

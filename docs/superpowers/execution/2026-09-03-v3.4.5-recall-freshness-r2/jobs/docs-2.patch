@@ -1,0 +1,30 @@
+diff --git a/skills/compound-v/memory.md b/skills/compound-v/memory.md
+index e0ba656..277d75a 100644
+--- a/skills/compound-v/memory.md
++++ b/skills/compound-v/memory.md
+@@ -137,8 +137,10 @@ truth is the git-tracked files, and the index is only a local, disposable cache
+   conflicts, model/OS mismatches, and stale blobs; instead each dev's cache rebuilds from the
+   pulled files. After a pull, the index refreshes on the next SessionStart (the silent hook), on
+   the next write under `docs/superpowers/`, or via an explicit `/v:memory-refresh`.
+-- **Freshness by construction:** `search` checks (cheaply, one `git ls-files`) whether the FTS5
+-  index is behind the working tree and, unless `--no-refresh` is passed, refreshes it inline
++- **Freshness by construction:** `search` checks whether the FTS5 index is behind the working
++  tree by running `git ls-files` plus a content hash of every tracked doc (~0.09s over ~275
++  docs, measured) — still cheap enough to pay before every search — and, unless `--no-refresh`
++  is passed, refreshes it inline
+   before the query runs — printing one stderr line, `V-memory: refreshed N stale doc(s) before
+   recall (FTS5 lane)`. So a dev who just pulled a teammate's docs gets current recall on the
+   very next search, with no separate `/v:memory-refresh` step. `--no-refresh` searches whatever
+diff --git a/skills/compound-v/phase-0-recon.md b/skills/compound-v/phase-0-recon.md
+index abf9846..e58921e 100644
+--- a/skills/compound-v/phase-0-recon.md
++++ b/skills/compound-v/phase-0-recon.md
+@@ -42,7 +42,7 @@ Before searching the web, check what the repo already knows. From the **repo roo
+ python3 scripts/compound-v-memory.py search "<topic>" --top 8 --json
+ ```
+ 
+-- **If the output warns the index is behind** ("index is N new / M removed docs behind the repo") → run `python3 scripts/compound-v-memory.py refresh` first, then re-run the search; otherwise recent recon docs false-miss.
++- **A search refreshes the FTS5 index itself** — no separate refresh step is needed. When the index was behind, the search prints one stderr line, `V-memory: refreshed N stale doc(s) before recall (FTS5 lane)`, then runs against current docs; recent recon docs never false-miss on staleness.
+ - **Exclude `doc_type: "memory"` rows** (jsonl telemetry noise) before judging; then **open and read the top remaining results**. The JSON has **no score field** — numeric thresholds are impossible; **rank alone never suffices**.
+ - **Strong hit** = ALL of: same product/domain, AND same task class, AND written under the current framework/runtime constraints, AND **fresh** — volatile material (libraries, APIs, regulations, availability, best practices) **older than ~30 days degrades to partial**: still evidence for the brainstorm, no longer skip-authority.
+ - **Epic rule:** a sibling feature's recon inside the same epic is **partial by default**; strong only if it covers this feature's specific delta (actors, workflow, external systems, constraints, currentness).
