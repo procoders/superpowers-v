@@ -282,12 +282,12 @@ reaching `fable`:
   "balanced": {
     "claude":      { "frontier": "fable", "deep": "opus", "standard": "sonnet", "light": "sonnet" },
     "codex":       { "deep": "gpt-5.6-sol", "standard": "gpt-5.6-terra", "light": "gpt-5.6-luna" },
-    "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" }
+    "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.6 Flash (Low)" }
   },
   "cost-aware": {
     "claude":      { "frontier": "opus", "deep": "opus", "standard": "sonnet", "light": "sonnet" },
     "codex":       { "deep": "gpt-5.6-sol", "standard": "gpt-5.6-terra", "light": "gpt-5.6-luna" },
-    "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)" }
+    "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.6 Flash (Low)" }
   }
 }
 ```

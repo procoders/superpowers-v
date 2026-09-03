@@ -93,11 +93,11 @@ _CODEX = {"frontier": "gpt-5.6-sol", "deep": "gpt-5.6-sol",
 # Antigravity (agy): FALLBACK default; the live catalog is discoverable headlessly
 # (`agy models </dev/null`), and /v:models/+/v:init pipe it through
 # compound-v-discover-models.py to OVERRIDE this map in .claude/compound-v.json. Names
-# VERIFIED against `agy models` (1.0.13). Effort is baked into the agy model NAME (no
+# VERIFIED against `agy models` (1.1.22, 2026-09-03: 3.6/3.7/3.8 Flash + 3.1 Pro; 3.5 Flash is gone). Effort is baked into the agy model NAME (no
 # separate effort flag); the worker omits --model if the value is empty. Gemini family
 # chosen for error-decorrelation; override with --model.
 _ANTIGRAVITY = {"frontier": "Gemini 3.1 Pro (High)", "deep": "Gemini 3.1 Pro (High)",
-                "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.5 Flash (Low)"}
+                "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.6 Flash (Low)"}
 # Cursor (cursor-agent): "auto" is the SAFE DEFAULT for every tier — a FREE plan can ONLY
 # use Auto (named models error: "Named models unavailable"). Paid plans override per-tier
 # via /v:models — `cursor-agent models` lists the live catalog for manual discovery (not

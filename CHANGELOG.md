@@ -6,6 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [3.4.11] - 2026-09-03
+
+Stage 6 of the verification program: `/v:init` from scratch in a foreign repository (a three-file
+Python project with no `.claude/`). Every probe ran as written, the doc's own fixture passed 11/11,
+and both hooks fired inside the nested session (the SessionStart banner and the UserPromptSubmit
+sizing were quoted back verbatim). One step wrote garbage: the Antigravity model seed. Two defects
+sat on top of each other there, and nobody had ever run the documented seed pipeline against a
+`/v:init`-shaped config before.
+
+### Fixed — the Antigravity seed parsed `agy models` as one column and ranked GPT-OSS 120B above Gemini 3.1 Pro (finding 138)
+
+`agy` 1.1.22 prints `id<TAB>Display Name`; `compound-v-discover-models.py` parsed the whole line as a
+display name, the Gemini family check failed, the ranker fell to "all families", and version **120**
+(GPT-OSS 120B) won frontier and deep — then the tab-carrying string was written to the config. The
+parser now ranks on the display column and keeps writing display names (agy accepts both `--model
+gemini-3.1-pro-low` and `--model "Gemini 3.1 Pro (Low)"`, probed live). Selftest on a two-column catalog.
+
+### Fixed — the seed write silently disabled the whole per-stance model map (finding 142)
+
+`write_config` dropped a flat `models.antigravity` key beside the four stance blocks `/v:init` writes.
+The resolver picks the per-stance branch only when *every* top-level `models` key is a stance name, so
+the one flat sibling flipped the map to the legacy branch and every other backend's override fell back
+to the built-in defaults, without an error. The merge is now shape-aware (seed every stance block),
+the stance list is mirrored from the resolver with a parity selftest, and a selftest reads the seed back
+through the resolver's own cell lookup.
+
+### Changed — the built-in Antigravity `light` default is `Gemini 3.6 Flash (Low)`
+
+`Gemini 3.5 Flash` is no longer in the live catalog (3.6/3.7/3.8 Flash and 3.1 Pro are). The resolver's
+fallback map and every doc that prints it now name 3.6 Flash (Low), the same value the seed proposes.
+
+### Fixed — agents are documented under the prefix that exists (finding 140)
+
+`/v:init` Step 1c and `AGENTS.md` named `compound-v:parallel-dispatcher` and friends; the installed
+prefix is the plugin name, `superpowers-v:`.
+
+### Verified — stage 6 report
+
+Probes: Codex 0.144.1 with the exec flag surface, agy 1.1.22, cursor-agent 2026.07.09 (authenticated),
+devin 3000.1.27 (authenticated, macOS sandbox ready), opencode 1.17.18 (no stored credentials, ambient
+`ANTHROPIC_BASE_URL` — the doc's own `ambient-env` case), Context7 under the plain `context7` name,
+the Workflow tool present, `deep-research` absent from the skills listing. The user capability cache was
+two months stale and is refreshed; `.claude/compound-v.json` was written from the Step 4a template and
+resolves through the shared loader. `baseRef` and `CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT` were offered and
+not written — no yes was available. Known, not fixed: a question longer than 200 characters or without a
+trailing `?` is sized like a change request and mints pre-eval records before the prose rule can stop it
+(finding 139) — the documented short-question exit, unchanged.
+
 ## [3.4.10] - 2026-09-03
 
 Stage 5b of the verification program: does recall ever *act*? It could have — the deterministic

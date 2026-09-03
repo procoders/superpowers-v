@@ -42,9 +42,23 @@ import sys
 _EFFORT_RANK = {"high": 3, "thinking": 3, "max": 4, "medium": 2, "standard": 2, "low": 1}
 
 
+# Stance names, mirrored from compound-v-resolve-model.py VALID_STANCES (the selftest
+# asserts parity so the two cannot drift apart silently).
+_STANCES = ("balanced", "conservative", "cost-aware", "claude-only")
+
+
 def _parse_line(line):
-    """'Gemini 3.1 Pro (High)' -> dict(full, series, version, strength, effort_rank)."""
+    """'Gemini 3.1 Pro (High)' -> dict(full, series, version, strength, effort_rank).
+
+    agy >= 1.1 prints two columns, ``id<TAB>Display Name`` (verified 1.1.22:
+    ``gemini-3.1-pro-low\tGemini 3.1 Pro (Low)``); older builds printed the display
+    name alone. Rank on the display column and keep it as the value written — agy
+    1.1.22 accepts both forms for ``--model`` (probed live 2026-09-03), and every
+    adapter doc, fixture and built-in default already uses the display name.
+    """
     full = line.strip()
+    if "\t" in full:
+        full = full.split("\t")[-1].strip()
     if not full:
         return None
     m = re.search(r"\(([^)]+)\)\s*$", full)
@@ -136,7 +150,17 @@ def write_config(config_path, backend, tier_map):
     models = data.get("models")
     if not isinstance(models, dict):
         models = {}
-    models[backend] = tier_map
+    keys = list(models.keys())
+    if keys and all(k in _STANCES for k in keys):
+        # Per-stance shape — what /v:init Step 4a writes. The resolver discriminates the
+        # two shapes by "EVERY top-level key is a stance name", so a flat `models.<backend>`
+        # key dropped beside stance blocks flips the WHOLE map to the legacy branch and
+        # silently disables every other backend's override (finding 142). Seed every stance.
+        for st in keys:
+            if isinstance(models[st], dict):
+                models[st][backend] = dict(tier_map)
+    else:
+        models[backend] = tier_map
     data["models"] = models
     d = os.path.dirname(config_path)
     if d and not os.path.isdir(d):
@@ -188,6 +212,44 @@ def _selftest():
           r3["proposed"]["frontier"] == r3["proposed"]["deep"])
 
     check("empty catalog -> None", propose([], "Gemini")["proposed"] is None)
+
+    # agy >= 1.1 two-column catalog (id<TAB>display): rank on the display column, never
+    # write the id or the tab (finding 138 — the whole line used to be parsed as a name,
+    # the family check failed, and GPT-OSS 120B won deep/frontier on "version 120").
+    cat_tsv = ["gemini-3.8-flash-low\tGemini 3.8 Flash (Low)", "gemini-3.1-pro-high\tGemini 3.1 Pro (High)",
+               "gemini-3.1-pro-low\tGemini 3.1 Pro (Low)", "gpt-oss-120b-medium\tGPT-OSS 120B (Medium)"]
+    p4 = propose(cat_tsv, family="Gemini")["proposed"]
+    check("tsv: deep = Pro High", p4["deep"] == "Gemini 3.1 Pro (High)")
+    check("tsv: light = Flash Low", p4["light"] == "Gemini 3.8 Flash (Low)")
+    check("tsv: no tab or id in any value", all("\t" not in v and not v.startswith("gemini-") for v in p4.values()))
+    check("tsv: avoids non-Gemini families", all("Gemini" in v for v in p4.values()))
+
+    # Per-stance config (/v:init Step 4a shape): the seed lands in EVERY stance block and
+    # never as a flat sibling key, and the resolver actually reads it back (finding 142).
+    import importlib.util
+    rp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "compound-v-resolve-model.py")
+    spec = importlib.util.spec_from_file_location("cv_resolve", rp)
+    rmod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rmod)
+    check("stance names mirror the resolver", set(_STANCES) == set(rmod.VALID_STANCES))
+    import tempfile
+    fd, path2 = tempfile.mkstemp(suffix=".json")
+    os.close(fd)
+    try:
+        per_stance = {st: {"claude": {"deep": "opus"}, "antigravity": {"deep": "OLD"}} for st in _STANCES}
+        with open(path2, "w") as fh:
+            json.dump({"stance": "balanced", "models": per_stance}, fh)
+        write_config(path2, "antigravity", {"frontier": "P", "deep": "P", "standard": "Q", "light": "R"})
+        with open(path2) as fh:
+            got2 = json.load(fh)["models"]
+        check("per-stance: no flat sibling key", set(got2) == set(_STANCES))
+        check("per-stance: every stance seeded", all(got2[st]["antigravity"]["deep"] == "P" for st in _STANCES))
+        check("per-stance: other backends untouched", all(got2[st]["claude"] == {"deep": "opus"} for st in _STANCES))
+        check("per-stance: resolver reads the seed back",
+              rmod._config_cell(got2, "balanced", "antigravity", "deep") == "P"
+              and rmod._config_cell(got2, "cost-aware", "claude", "deep") == "opus")
+    finally:
+        os.unlink(path2)
 
     # write_config merges, preserving other backends
     import tempfile
