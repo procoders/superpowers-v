@@ -23,6 +23,10 @@ non-empty destination. Implemented by a `codex exec` worker (`gpt-5.6-terra`) in
 `$TMPDIR/compound-v/<run>/<job>`, gated by the git-derived scope check against that same tree — no
 timing or token figures are claimed here; none were measured for this job.
 
+### Fixed — the lane guard no longer denies read-only git commands that name a path after `--`
+
+`git show <sha> -- <path>`, `git log -- <path>` and `git diff -- <path>` write nothing; the guard's `--` rule now applies to the writing subcommands only (`checkout`, `restore`, `reset`, `clean`, `add`, `apply`, `stash`, …). The stage-4 reviewer had been denied reading the very commit it was reviewing. Decision table: three cases.
+
 ### Fixed — an external worker's thread id reaches state and the result (finding 81)
 
 The wrapper agent returns only status, worktree and summary, so nothing on Engine C carried the Codex worker's `job_result.session_id` into `state.json` — the review of the first merged Codex job found `session_id: ""` beside an events log that held the UUID. Record now reads the `thread.started` line of the events log the worker wrote (UUID-validated) into the job's state and result; `/v:resume` can name it to `codex exec resume`.

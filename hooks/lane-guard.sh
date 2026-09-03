@@ -1394,6 +1394,10 @@ def _nonflag(args, cmd):
     return out
 
 
+# git subcommands after which `-- <path>` names a path the command WRITES.
+GIT_WRITING_SUBCOMMANDS = ("checkout", "restore", "reset", "clean", "add", "apply",
+                           "stash", "am", "revert", "cherry-pick", "merge", "rebase")
+
 def bash_targets(cmd_string, cwd):
     """-> (targets, saw_cd). `saw_cd` means relative paths from that point on
     are unresolvable, so the caller must only evaluate absolute ones.
@@ -1476,11 +1480,14 @@ def bash_targets(cmd_string, cwd):
             rest = args[1:]
             if sub in ("mv", "rm"):
                 targets.extend((f, saw_cd) for f in _nonflag(rest, "git"))
-            elif "--" in rest:
+            elif sub in GIT_WRITING_SUBCOMMANDS and "--" in rest:
                 # `git checkout -- <paths>` / `git restore -- <paths>`: only
                 # after `--` is a token unambiguously a path. A bare
                 # `git checkout <branch>` is NOT treated as a path (that would
-                # deny every branch switch).
+                # deny every branch switch). READ-ONLY subcommands — `git show
+                # <sha> -- <path>`, `git log -- <path>`, `git diff -- <path>` —
+                # write nothing and are never targets: the stage-4 reviewer was
+                # denied `git show d210e92 -- scripts/…` (review-1, issue 3).
                 after = rest[rest.index("--") + 1:]
                 targets.extend((f, saw_cd) for f in after)
             continue

@@ -347,6 +347,14 @@ check "the deny is logged" \
 file_case "out-of-lane Edit" deny Edit agent_abc123 "$WT" "$WT/docs/existing.md"
 file_case "out-of-lane MultiEdit" deny MultiEdit agent_abc123 "$WT" "$WT/docs/existing.md"
 
+echo "=== 2z. review-1 of 3.4.3, issue 3: read-only git with -- is not a write ==="
+bash_case "git show <sha> -- <out-of-lane path> is READ-ONLY (allowed)" allow \
+  agent_abc123 "$WT" "git show HEAD -- README.md"
+bash_case "git log -- <out-of-lane path> is READ-ONLY (allowed)" allow \
+  agent_abc123 "$WT" "git log --oneline -3 -- README.md"
+bash_case "git checkout -- <out-of-lane path> still WRITES (denied)" deny \
+  agent_abc123 "$WT" "git checkout -- README.md"
+
 echo "=== 2a. finding 78: the LONGEST worktree prefix wins ===================="
 # The sandbox run's lane map claims $WT for job-under-test. Add a claim on the
 # PROJECT ROOT by another job (a direct job's "worktree" is the checkout): a
