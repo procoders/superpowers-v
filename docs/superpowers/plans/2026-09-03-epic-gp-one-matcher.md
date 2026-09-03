@@ -55,11 +55,14 @@ Shared resources: none. Task 0: none (one implementer).
           and _scope("docs/a/b.md", "docs/**") is True and _file_matches("docs2/a.md", ["docs"]) is False)
     # loader failure -> unavailable, never none
     saved = globals()["_SCOPE_CHECK_PATH"]
-    globals()["_SCOPE_CHECK_PATH"] = "/nonexistent/compound-v-scope-check.py"; globals()["_SCOPE_MATCH"] = None
+    globals()["_SCOPE_CHECK_PATH"] = "/nonexistent/compound-v-scope-check.py"
+    globals()["_SCOPE_MATCH"] = None; globals()["_SCOPE_MATCH_ERR"] = None
     v = recall_check(["src/**"], "/nonexistent-results", 1)
-    globals()["_SCOPE_CHECK_PATH"] = saved; globals()["_SCOPE_MATCH"] = None
+    v2 = recall_check(["src/**"], "/nonexistent-results", 1)   # cached failure, same shape
+    globals()["_SCOPE_CHECK_PATH"] = saved
+    globals()["_SCOPE_MATCH"] = None; globals()["_SCOPE_MATCH_ERR"] = None
     check("matcher missing -> unavailable", v["verdict"] == "unavailable"
-          and v["note"].startswith("scope-check matcher unavailable"))
+          and v["note"].startswith("scope-check matcher unavailable") and v2 == v)
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -67,26 +70,62 @@ Shared resources: none. Task 0: none (one implementer).
 Run: `python3 scripts/compound-v-memory.py --selftest 2>&1 | tail -5`
 Expected: `NameError: _scope_matches` (or FAIL lines for `app/[locale]/**` under fnmatch).
 
-- [ ] **Step 3: Implement the loader and the delegation** — replace `_file_matches` (and remove `import fnmatch` at line 32):
+- [ ] **Step 3: Implement the loader and the delegation** — replace `_file_matches` (and remove `import fnmatch` at line 32). The loader is the hardened `load_scope_matcher` shape from `scripts/compound-v-integration-gate.py:417-470` (pre-flight amendment 1), memoized including a failed load (amendment 2):
 
 ```python
 _SCOPE_CHECK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "compound-v-scope-check.py")
-_SCOPE_MATCH = None
+_SCOPE_MATCH = None      # the loaded `matches` callable, once per process
+_SCOPE_MATCH_ERR = None  # a cached load failure — never retried within the process
 
 
 def _scope_matches():
-    """The scope gate's matcher, loaded once by path. One matcher for recall and the gate:
-    `*` within a segment, `**` across, `dir/**` includes `dir`, `[`/`]` literal, anchored."""
-    global _SCOPE_MATCH
-    if _SCOPE_MATCH is None:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("cv_scope_check", _SCOPE_CHECK_PATH)
-        if spec is None or spec.loader is None:
-            raise ImportError("cannot load %s" % _SCOPE_CHECK_PATH)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        _SCOPE_MATCH = mod.matches
-    return _SCOPE_MATCH
+    """The scope gate's matcher, loaded ONCE from source — one matcher for recall and the gate.
+    Same hardening as compound-v-integration-gate.py load_scope_matcher: the bytecode cache is
+    redirected to a private directory for the import (a forged in-tree .pyc would otherwise run
+    here), and NOTHING is loaded when that directory cannot be created. Raises RuntimeError with
+    the reason on failure; the failure is cached so recall_check never re-execs per pair."""
+    global _SCOPE_MATCH, _SCOPE_MATCH_ERR
+    if _SCOPE_MATCH is not None:
+        return _SCOPE_MATCH
+    if _SCOPE_MATCH_ERR is not None:
+        raise RuntimeError(_SCOPE_MATCH_ERR)
+    import importlib.util as _ilu
+    import shutil as _shutil
+    import tempfile as _tempfile
+    prev_prefix = getattr(sys, "pycache_prefix", None)
+    tmp_pycache = None
+    module = None
+    err = None
+    try:
+        try:
+            tmp_pycache = _tempfile.mkdtemp(prefix="cv-pycache-")
+            sys.pycache_prefix = tmp_pycache
+        except Exception as exc:  # noqa: BLE001
+            err = ("refusing to import the scope matcher without a private bytecode cache (%s)" % exc)
+        if err is None:
+            spec = _ilu.spec_from_file_location("cv_scope_check", _SCOPE_CHECK_PATH)
+            if not (spec and spec.loader):
+                err = "no import spec for %s" % _SCOPE_CHECK_PATH
+            else:
+                module = _ilu.module_from_spec(spec)
+                spec.loader.exec_module(module)
+    except Exception as exc:  # noqa: BLE001
+        err = "loading %s raised: %s" % (_SCOPE_CHECK_PATH, exc)
+    finally:
+        try:
+            sys.pycache_prefix = prev_prefix
+        except Exception:  # noqa: BLE001
+            pass
+        if tmp_pycache:
+            _shutil.rmtree(tmp_pycache, ignore_errors=True)
+    fn = getattr(module, "matches", None) if err is None else None
+    if err is None and not callable(fn):
+        err = "%s defines no matches()" % _SCOPE_CHECK_PATH
+    if err is not None:
+        _SCOPE_MATCH_ERR = err
+        raise RuntimeError(err)
+    _SCOPE_MATCH = fn
+    return fn
 
 
 def _file_matches(changed, globs):
@@ -102,12 +141,12 @@ def _file_matches(changed, globs):
     return False
 ```
 
-and at the top of `recall_check`, before `scan_failures`:
+(`sys` is already imported at the top of the file; check with `grep -n '^import sys' scripts/compound-v-memory.py`.) And at the top of `recall_check`, before `scan_failures` (amendment 3 — a well-formed verdict, exit 0):
 
 ```python
     try:
         _scope_matches()
-    except (OSError, ImportError, AttributeError, SyntaxError) as e:
+    except RuntimeError as e:
         return {"verdict": "unavailable", "match_count": 0, "k": k, "files_queried": file_globs,
                 "actions": [], "evidence": [],
                 "note": "scope-check matcher unavailable: %s" % e}

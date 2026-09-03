@@ -117,6 +117,71 @@ Audit: [`docs/superpowers/library-audit/2026-09-03-v3-4-10-recall-to-action.md`]
 
 ### DENSE-lane third-party packages (`numpy`, `onnxruntime`, `tokenizers`, `huggingface_hub`) — confirmed still isolated, still out of reach of `recall-check`
 
+## Updated 2026-09-03 — epic-gp-one-matcher (F1)
+
+Audit: [`docs/superpowers/library-audit/2026-09-03-epic-gp-one-matcher.md`](../2026-09-03-epic-gp-one-matcher.md).
+No Context7 attached to this subagent (`ToolSearch` → no match); `bashCommandClamp` allowed
+only the V-memory search script — all code inspection below is direct `Read`/`Grep` against
+the live tree at current `HEAD`, 2026-09-03.
+
+### Two competing in-repo patterns for loading `compound-v-scope-check.py` in-process — only one is safe to copy
+
+F1 (`scripts/compound-v-memory.py`'s `_file_matches`) needs to import
+`scripts/compound-v-scope-check.py` in-process to reuse its `matches(path, pattern)`. This
+repo already has **two** different precedents for dynamically importing a sibling `.py` file
+by path via `importlib.util.spec_from_file_location`/`module_from_spec`/`exec_module`, and
+they are not interchangeable:
+
+1. **Plain / unhardened** — `scripts/compound-v-discover-models.py:228-234`, inside a
+   developer-invoked `--selftest` only, loads `compound-v-resolve-model.py`. No cache
+   protection of any kind.
+2. **Hardened** — `scripts/compound-v-integration-gate.py:417-470`
+   (`load_scope_matcher`), loads **the same file F1 needs**
+   (`compound-v-scope-check.py`). Redirects `sys.pycache_prefix` to a private
+   `tempfile.mkdtemp()` directory before `exec_module`, and imports **nothing at all** if that
+   directory cannot be created — restoring the prior prefix and removing the temp dir in a
+   `finally`. Has dedicated selftest coverage (`:2372-2398`) that plants a forged
+   `scripts/__pycache__/compound-v-scope-check.pyc` and asserts it is never executed.
+
+**Why pattern 2 exists, evidenced not asserted:** `docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-4.md`
+("ISSUE 1 — QUALITY: the narrowed carve-out still hides a forged `.pyc`, and that `.pyc`
+executes as the lane guard's own matcher — demonstrated end to end") records this as a
+found-and-fixed vulnerability in this exact codebase, against this exact target file, days
+before the one-matcher spec was written. `AGENTS.md`'s own top-of-file cost accounting calls
+the `PYTHONPYCACHEPREFIX` redirection out by name as deliberate, non-free defense-in-depth.
+
+**Why F1 must use pattern 2, not pattern 1 (and not a subprocess either):**
+`compound-v-integration-gate.py`'s own **production** per-job scope check
+(`run_scope_check:742-747`) avoids this whole question by shelling out —
+`subprocess.run([sys.executable, scope_check], ...)`, with the comment *"A subprocess, not an
+import: this script must not be able to perturb the matcher it is checking against."* A
+subprocess running a script as `__main__` is never written to or read from `__pycache__`, so
+it is naturally immune to the forged-bytecode class. But `recall_check` calls `_file_matches`
+once per `(failure, changed-file)` pair in a nested loop — a subprocess-per-call design is not
+viable there. Given in-process loading is the only workable choice for F1's call shape,
+pattern 2 (hardened) is the only one of the two existing precedents that is safe to copy.
+`agents/partition-reviewer.md:16-19` confirms `recall-check` is not interactive-only — it runs
+automatically for every lane before every dispatch, the same automated trust boundary the
+hardening was built to protect.
+
+**Call-frequency trap for whoever implements this:** load once, reuse the callable. Do not
+put the `spec_from_file_location`/`mkdtemp` dance inside `_file_matches` itself — it is called
+many times per single `recall-check` invocation, and unlike `fnmatch.fnmatch` (pure stdlib,
+no I/O), `tempfile.mkdtemp()` is a real filesystem syscall.
+
+**Practical implication for any future spec that needs to consume `compound-v-scope-check.py`
+from a third file:** cite `compound-v-integration-gate.py:417-470` as the reference
+implementation, not `compound-v-discover-models.py`'s selftest form — the two are not
+equivalent, and only one has been through an adversarial review pass against this specific
+attack.
+
+Sources: `scripts/compound-v-integration-gate.py:417-470,742-747,2372-2398` (`Read`/`Grep`,
+this session, current HEAD) · `scripts/compound-v-discover-models.py:228-234` (`Grep`) ·
+`agents/partition-reviewer.md:16-19` (`Grep`) ·
+`docs/superpowers/dogfood/2026-09-02-v3.4-native-first-review-4.md` and `-review-5.md`
+(V-memory recall, cross-checked against the live code above rather than trusted standalone) ·
+`AGENTS.md` (root, `PYTHONPYCACHEPREFIX` cost-accounting paragraph).
+
 - No new information beyond `_knowledge-base/agent-instruction-tooling.md`'s existing 2026-06-30
   entry (same packages, same isolated-venv architecture) — recorded here only as a cross-reference
   because this audit re-found the same imports (`compound-v-memory.py:453-454`, inside the

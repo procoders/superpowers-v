@@ -30,3 +30,22 @@ via the `/**` fallback — assert `_file_matches` True and `scope.matches("docs/
 `python3 scripts/compound-v-scope-check.py --selftest` unchanged and passing; `grep -n fnmatch
 scripts/compound-v-memory.py` finds nothing; `python3 -B scripts/compound-v-memory.py recall-check --files
 'app/[locale]/**' --json` exits 0 with a verdict in `none|tighten|unavailable`.
+
+## Pre-flight amendments (2026-09-03, after 1A archaeology and 1C library audit; 1B skipped — internal plumbing)
+
+1. **Loader = the hardened pattern, not the bare triple.** Load `compound-v-scope-check.py` exactly as
+   `scripts/compound-v-integration-gate.py` `load_scope_matcher` does: `sys.pycache_prefix` redirected to a private
+   `tempfile.mkdtemp` directory for the duration of the import, **fail closed** (no load) when that directory cannot be
+   created, the whole `spec_from_file_location` / `module_from_spec` / `exec_module` sequence inside one `try/except`,
+   `callable(getattr(module, "matches", None))` verified before use. The discover-models selftest pattern named above is
+   the path-resolution idiom only. recall-check runs automatically before every dispatch (partition-reviewer), so it sits
+   on the trust boundary a forged `.pyc` already exploited on 2026-09-02.
+2. **Lazy and memoized, failure included.** Never load at module top level (`compound-v-onboard.py` imports this module
+   for unrelated symbols on every `/v:onboard`). Load once per process on first use and cache the callable; cache a
+   failed load too (its reason), so `recall_check` never re-execs the sibling per (record × file) pair.
+3. **`unavailable` is a well-formed verdict, exit 0.** Any load failure is translated into the same JSON shape as
+   `none`/`tighten`: `verdict: unavailable`, `match_count 0`, `note: "scope-check matcher unavailable: <reason>"`.
+4. **Bare-dir fallback is `/**`**, not `/*` (the current source narrows bare dirs to one level; the parity row
+   `("docs", "docs/a/b.md")` catches it).
+5. **Untouched:** `scripts/compound-v-scope-check.py` (including its selftest); no third-party packages; `import fnmatch`
+   removed (nothing else in the file uses it).
