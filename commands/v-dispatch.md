@@ -195,7 +195,11 @@ delegating, the epic inherits Engine C along with everything else.
    wins; a receipt whose bindings disagree with the tree is **refused outright, never
    re-derived**; a receipt that verifies but whose conclusion disagrees with an independent
    re-derivation is refused as **contradicted**; `unverifiable` and duplicate receipts fail closed.
-   Anything other than a clean report ⇒ **HALT**, do not merge, surface it.
+   Anything other than a clean report ⇒ **HALT**, do not merge, surface it. **On Engine C this call
+   already ran inside every `finalize-wave`** — its verdicts are what merged each wave — so a run-wide
+   re-run after the last wave is a confirmation, and it reports an already-merged `direct` job as
+   `stale` once the bookkeeping commit moved HEAD (finding 149): read `tally` and `merged.integrated`
+   in `state.json` before treating that as a halt.
 
    The workflow Gate stage is defence in depth and an early exit, never the authority — a clamp
    limits what an agent *can do*, not what it *returns*. Skipping this step would leave the

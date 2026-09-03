@@ -6,6 +6,86 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [3.4.12] - 2026-09-03
+
+Stage 7 of the verification program: death and resurrection of a marathon epic. A two-feature epic
+(`2026-09-03-glob-parity`: recall-check adopts the scope gate's glob matcher; the docs state the one
+contract) was initialised in the marathon stance, its first feature's workflow was killed with 93
+uncommitted lines in the implementer's worktree, and the epic was re-entered from disk alone. The
+resurrection found a real defect on its first step, the marathon's own quality loop then found two
+more in the feature itself, and the epic parked itself at `blocked_needing_human` exactly as designed
+— where the human lever it needed did not exist. Every step below was observed, not simulated.
+
+### Fixed — a resumed job re-registered under its crashed attempt's stale baseline pin (finding 146)
+
+`register-lane` keeps the first pin (right against a worker that re-registers after committing). A
+resume is the orchestrator re-dispatching a job that never integrated, in a fresh worktree branched
+from the *current* HEAD, so the gate's `git diff <stale pin>` charged the resumed job with every
+commit landed since the death — one docs commit was enough to BLOCK a clean implementation.
+`compound-v-emit-workflow.py resume-prepare --run-dir` now runs before the relaunch (`/v:resume`
+step 5): every job without an integrated result loses its pin and its dead worktree entry, goes back
+to `pending`, and its superseded receipt is archived out of the authority's path. Selftested both ways
+(508/508), and the third launch pinned the relaunch's own HEAD and merged.
+
+### Added — `--clear-breaker --set-max-attempts-per-feature N` (finding 151)
+
+The marathon parked with F1 at attempts 2/2. The runbook re-arms the total-attempt cap and the wall
+clock; nothing raised the per-feature cap short of editing `epic-state.json`. The lever now sits
+beside `--set-max-total-attempts`, validated like `--init`, reported in the summary, selftested (an
+exhausted feature reads `can_retry: true` again). The halt page names it.
+
+### Fixed — `agy models` two-column catalog, per-stance seed merge, stale Gemini default (stage 6 leftovers already shipped in 3.4.11)
+
+### Changed — documentation honesty (findings 143, 148, 144)
+
+- The 3.4.10 lead no longer says the reading budget lands "always": it lands with a `tighten` verdict.
+- `v-epic.md` §4: a due sample-audit gates the terminal, not the next feature; the driver runs it right
+  after the done mark.
+- `v-resume.md` step 5 no longer promises a job-subset re-emit the emitter does not have; it names
+  `resume-prepare` and the whole-script relaunch the at-most-once guard makes safe.
+
+### Verified — the marathon loop end to end, including its failure paths
+
+Offers only (`/loop`, `/schedule`, `/goal` printed, none armed without a yes); `--next --autonomous`
+→ `epic needs reconcile` after the kill; `/v:resume`; the first success sampled (§4) and failed the
+fresh adversarial audit (a missing fail-closed selftest row); `--record-audit-failed`; the arbiter
+panel (Claude + Codex/GPT + Gemini, all `retry_fix`); attempt 2 merged a row the Review Gate then
+proved NOT load-bearing; a second panel (GPT + Gemini `halt_feature`, Claude `halt_epic` → conservative
+`halt_feature`); `blocked_needing_human` with the §7 halt page; human recovery; attempt 3.
+
+### Verified, continued — F2 and the second halt
+
+F2's second attempt (deep tier) stated the rules in its own words inside a table cell and skipped the
+plan's reset step; its Review Gate said ISSUES again. The manifest's six-rule grep sat only in
+`test_contract.full_command`, which a SCOPED run never executes (finding 154). Attempt 3 carried the
+exact text in the job body — after a first launch was stopped because a single-quoted YAML scalar
+had folded the paragraph into one 622-character line (finding 155) — with the grep in
+`floor_command`; it merged and was APPROVED. The marathon then tripped its `max_total_attempts`
+breaker (6/6) at the final-review gate, parked a second time, and was re-armed by the operator with
+`--clear-breaker --set-max-total-attempts 8` before the final cross-feature review.
+
+### Known
+
+- Finding 149: a post-hoc `compound-v-integration-gate.py --run-dir` run reports an already-merged
+  `direct` job as `stale` once the tree advanced; on Engine C the authority already ran per wave, so
+  `/v:dispatch` step 8 must not HALT on that — code fix deferred to a cycle that does not touch the
+  authority mid-epic.
+- Finding 150 (process): the orchestrator must make no commit and no write in the shared checkout
+  while a direct-mode job is registered there; the lane guard cannot see a `python3 - <<PY` write.
+- Findings 145, 147: the pre-flight archaeologist's Bash clamp blocks `git log`/`git blame`; the lane
+  guard logs the implementer's own `register-lane` call as unresolved.
+- Finding 152: `results/<job>.json` carries the job title as `summary`, not the worker's summary.
+- Finding 153: the partition reviewer described `standard` as Opus under the balanced stance; the
+  resolver maps it to Sonnet (agent text corrected in this release).
+
+### Addendum (F2) — the docs feature failed once for the opposite reason
+
+F2's first implementer ran on the `standard` tier — Sonnet under the balanced stance, which the partition
+reviewer had been reporting as Opus (finding 153) — and paraphrased an exact-text task into two
+cross-reference sentences: the six-rule sentence landed in neither file. The Review Gate caught it,
+the arbiter panel (three families) said `retry_fix`, and attempt 2 ran on the deep tier with a body
+that forbids paraphrase and a full test command that greps the contract in both files.
+
 ## [3.4.11] - 2026-09-03
 
 Stage 6 of the verification program: `/v:init` from scratch in a foreign repository (a three-file
