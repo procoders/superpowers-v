@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [3.4.18] - 2026-09-04
+
+`/v:onboard --refresh` on the architecture knowledge base, which had not been regenerated since 2026-07-14
+(v2.6) and was flagged stale on every session banner since.
+
+### Changed — docs regenerated off HEAD, citation-verified
+
+- `docs/superpowers/architecture/{architecture,business-logic,tech-context}.md` and `CONVENTIONS.md`
+  rewritten against v3.4.17: Engine C (emit → per-wave pipeline, Implement/Gate/Record, the six
+  subcommands), the lane guard and its fail-open contract, Stage −1 triage on `UserPromptSubmit`, the
+  integration authority, `resume-prepare`, measured usage including the Engine C transcript mode,
+  `global_constraints`/`interfaces`, the backend-maturity ladder; claims about mechanisms removed in
+  3.4.0–3.4.16 (epic watcher, headless shim, Devin, the v2.11 "self-resurrecting" loop) deleted.
+  191/191 `file:line` citations resolve; staleness is down from 36 entries to the one structural
+  `uncited-new-file` floor the checker always reports for a cited directory with uncited siblings.
+- CONVENTIONS.md records only rules the repo actually states or enforces (each cited). Two 3.4-era process
+  rules — no checkout writes while a direct-mode job is registered, and double-quoted YAML job bodies —
+  live only in CHANGELOG prose and are grounded here on `state-machine.md` and the example manifest;
+  the 120-column rule is not recorded because nothing in the repo enforces it.
+
 ## [3.4.17] - 2026-09-04
 
 The Superpowers-integration audit (3.4.16, audit §7) closed. Checked against the installed Superpowers

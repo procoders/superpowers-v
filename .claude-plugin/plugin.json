@@ -1,7 +1,7 @@
 {
   "name": "superpowers-v",
   "description": "Compound V for Superpowers: triple parallel pre-flight (code archaeology + domain-expert advisor + library/doc validator — Context7 MCP when the session has it attached, WebSearch/WebFetch otherwise), disjoint file partitioning, manifest-driven multi-backend dispatch (Claude + headless Codex + Antigravity + Cursor workers), git-diff scope enforcement, crash-resumable runs, adaptive tier-based routing, epic mode for multi-feature builds, V-memory local-first semantic+lexical recall over docs/superpowers (opt-in pure-python embeddings + a deterministic recall→action bridge), and batched parallel dispatch (Opus default, Sonnet for narrow junior-task carve-out), plus /v:onboard — a project-onboarding command that builds a citation-verified knowledge base + AGENTS.md/CLAUDE.md bridge behind a human gate. Auto-intercepts three transitions: brainstorming → writing-plans → execution; a gated pre-brainstorm recon pass and batched elicitation are guidance the brainstorm follows, not enforced mechanisms.",
-  "version": "3.4.17",
+  "version": "3.4.18",
   "author": {
     "name": "Oleg",
     "email": "copeus@gmail.com"
