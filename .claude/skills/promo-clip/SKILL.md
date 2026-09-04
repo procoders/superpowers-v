@@ -175,3 +175,11 @@ master to about -1.2 dBFS."
 | Transitions package on a different version | TypeScript errors on presentations | Pin to the `remotion` version |
 | A colour picked by eye | Off-brand, rejected | Extract hexes from the live site CSS |
 | Polite escape hatch in the agy music prompt | "I cannot generate audio" | Demand the file "by any means" |
+
+## No strobes — motion the eye reads as a glitch
+
+A per-frame or 3-frame opacity toggle ("power-cut flicker") at 30 fps reads as a rendering defect, not
+an effect; the maintainer called v3's 27–30 s "twitching". The same goes for sine shakes above ~2 px.
+Use ONE eased dip instead (`interpolate(frame, [0, 6, 12, 22], [1, 0.25, 0.25, 1], { easing: Easing.inOut(Easing.quad) })`),
+ease every redraw (`Easing.out(Easing.cubic)`), keep sways ≤ 1.5 px and slow (`Math.sin(frame / 6)`), and
+prefer `fade()` over `slide()` into a calm end card.
