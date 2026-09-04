@@ -61,7 +61,7 @@ CV_VERSION_FLOOR="${CV_VERSION_FLOOR:-2.1.219}"
 # on macOS did not always carry it, and a fallback ladder is more code than this.
 _semver_lt() {
   local l="$1" r="$2" lp rp i
-  for i in 1 2 3; do
+  for _ in 1 2 3; do
     lp="${l%%.*}"; rp="${r%%.*}"
     case "$lp" in ''|*[!0-9]*) return 1 ;; esac
     case "$rp" in ''|*[!0-9]*) return 1 ;; esac
