@@ -1,6 +1,6 @@
 # Phase 1B — Domain-Expert Advisor
 
-**When this fires:** Brainstorming has produced a spec. Runs **in parallel with Phase 1A (archaeology)** before invoking `writing-plans`.
+**When this fires:** Brainstorming has handed off to `writing-plans` — i.e. the user has approved the spec (`superpowers/6.2.0/skills/brainstorming/SKILL.md:122-127`), not merely that a spec file exists. Runs **in parallel with Phase 1A (archaeology)**, before the plan is written.
 
 **Goal:** Force an honest look at the **product/domain** reality the new design has to satisfy. Phase 1A catches *technical* surprises (what the code already does). Phase 1B catches *domain* surprises (what the field already knows that the brainstorm probably missed).
 

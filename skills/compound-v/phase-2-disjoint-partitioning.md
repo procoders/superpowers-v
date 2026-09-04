@@ -149,7 +149,18 @@ One manifest per run. The full schema, every field, and the worked example live 
    - `depends_on` = predecessor job ids (every parallel task `depends_on` Task 0; later batches `depends_on` the earlier-batch authors whose files they link to).
    - `run` = `serial` for Task 0, `parallel` for the batch.
 4. **Route each job** — backend · model · isolation come from [`routing-policy.md`](routing-policy.md), applied to the job's `type` under the active stance. Do **not** hand-pick them per job; let the policy decide and record what it returns. The policy also consults [`routing-lessons.md`](../../docs/superpowers/memory/routing-lessons.md), so a recorded lesson can override the table default.
-5. **Preserve the two structural rules** the partition already guarantees, now as manifest invariants:
+5. **Carry the plan's two 6.2.0 sections across, verbatim.** The mapping from plan to manifest is
+   three-way and each leg has exactly one destination: a task's **Partition Map** row becomes that
+   job's `write_allowed`; the plan header's `## Global Constraints` block becomes top-level
+   `global_constraints` (one list entry per line, binding on every job); and a task's
+   `**Interfaces:**` block becomes that job's `interfaces: {consumes: [...], produces: [...]}`.
+   Superpowers 6.2.0 added the latter two *for* an implementer who sees only their own task, which
+   is exactly what a Compound V job is — so copy them, never paraphrase (a reworded version floor is
+   a different floor, and a reworded signature is a different signature), and never let a constraint
+   or a declared interface widen a `write_allowed` lane. Both fields are optional: a plan written
+   before 6.2.0 has neither section and the manifest then carries neither key. See
+   [`execution-manifest.md`](execution-manifest.md) § The two Superpowers 6.2.0 plan fields.
+6. **Preserve the two structural rules** the partition already guarantees, now as manifest invariants:
    - **Disjoint writes** — no path appears in two jobs' `write_allowed`. (This is the Partition Map's "No file appears in two rows ✅," restated for the validator.)
    - **Shared resources → serial Task 0** — the `shared_foundation` job is `run: serial`, `isolation: direct`, and every other job `depends_on` it. No sibling races it.
 

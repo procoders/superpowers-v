@@ -6,6 +6,79 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [3.4.17] - 2026-09-04
+
+The Superpowers-integration audit (3.4.16, audit §7) closed. Checked against the installed Superpowers
+**6.2.0**, not the 6.0.3 the previous notes assumed.
+
+### Fixed — the one place a compliant agent had to disobey one of the two plugins
+
+- **Trigger 1 no longer jumps brainstorming's user-review gate.** The three pre-flights used to be
+  dispatched by `hooks/plan-saved-nudge.sh` the moment a spec file was written — before the user had
+  read it, and against brainstorming's "the ONLY skill you invoke after brainstorming is writing-plans"
+  (6.2.0 `brainstorming/SKILL.md:61,122-127`). They now fire when `superpowers:writing-plans` is invoked,
+  which is the first moment the spec is approved: `hooks/brainstorm-trigger0-nudge.sh` backstops both
+  Trigger 0 (brainstorming) and Trigger 1 (writing-plans); the spec-saved arm only says "the user reviews
+  it next". New `tests/test-skill-nudges.sh` (13 cases, planted-violation checked); every doc that said
+  "fires when the spec is saved" reworded.
+
+### Added — the two plan fields 6.2.0 wrote for isolated implementers
+
+- **`global_constraints` and per-job `interfaces` reach the manifest and every implementer prompt.**
+  writing-plans 6.2.0 added `## Global Constraints` and per-task `**Interfaces:**` (consumes/produces)
+  precisely because "a task's implementer sees only their own task"; `/v:orchestrate` never copied them and
+  the emitter never rendered them. Now: schema + validator (type-checked, absent is valid, 20 selftest rows),
+  emitter renders `GLOBAL CONSTRAINTS` and `INTERFACES` in both the Workflow prompt and the external
+  worker's prompt file (hostile constraint text survives byte-identical, `node --check` on the emitted
+  script), `/v:orchestrate` step 5 copies verbatim, partition-reviewer warns (advisory) when the plan has a
+  section the manifest dropped. `examples/manifest.example.yaml` carries both.
+- **Per-job measured usage for Engine C runs.** `results/<job>.json` from a native Workflow run never
+  carried `usage`; the v2.12 per-ticket measurement only covered the residual subagent path.
+  `compound-v-usage-extract.py --backend claude --workflow-transcript <project-transcript-dir> --run-dir <run>
+  [--write]` finds the Workflow's `agent-*.jsonl` transcripts (they nest under
+  `<session>/subagents/workflows/<wf-id>/`), ties each to a job by the `--run-dir` **and** `--job-id` its
+  stage prompt embeds (a job-id alone would credit another run's `spec-review-1`), sums implement + gate +
+  record stages **deduplicated by message id** (one message spans several lines repeating the same
+  cumulative usage — summing per line inflated cache figures by roughly half), and writes input, output,
+  cache-read and cache-creation tokens with `source: workflow-transcript`. Wave-level `finalize-wave` spend
+  is reported as `run_level`, never divided among jobs; a job with no transcript stays unmeasured. Schema and
+  aggregator extended; `tests/test-usage-workflow.sh` (35 checks, three planted regressions caught).
+  Dogfooded on a real run: uncached input was 62 tokens against 1.77M cache-read — a usage line showing
+  only `in=` would have understated the run by five orders of magnitude.
+  Self-found on the way: the aggregator's em-dash "not measured" marker crashed the whole render under an
+  ASCII stdout (`PYTHONIOENCODING=ascii`, C locale) — pre-existing since v2.12; it now degrades to `-`.
+
+### Fixed — stale claims about the base plugin
+
+- **Worktree-cleanup rationale.** Eleven sites justified "commit the run directory before flipping phase"
+  with "finishing-a-development-branch runs `git worktree remove` on Merge and Discard". 6.2.0 has no
+  Discard option and removes only worktrees it created under `.worktrees/`; the rule stands because an
+  uncommitted run directory is simply not in the repository (`git clean`, a fresh clone, a removed
+  worktree). Rule and ordering unchanged; cause corrected everywhere.
+- **"Cheap model" SDD claim.** 6.2.0 subagent-driven-development tiers models by role and warns against
+  the cheapest; our docs said we override a "cheap model default". Reworded to what it actually does.
+- **`/v:status` SDD check** says it is presence-only and names what it does not read (6.2.0's plan-scoped
+  workspace, ledger, 5-round breaker).
+- **`"shell": "bash"`** on all ten hook registrations (documented field; Superpowers' Windows fix).
+- **Two Superpowers hand-offs that were missing:** `/v:dispatch` invokes
+  `superpowers:verification-before-completion` before declaring a run done (also `/v:epic`, `/v:collect`),
+  and applies `superpowers:receiving-code-review` before minting fix jobs from spec-reviewer ISSUES.
+- Audit §7 row 5 corrected: Superpowers' `hooks: {}` lives in its **Codex** manifest, which we do not ship.
+
+### Review
+
+- Codex (gpt-5.6-sol) cross-model review of the code lanes, three rounds: 7 findings (1 HIGH: `--write` path
+  escape through a hostile job id) → 5 (1 HIGH: a symlink at the predictable temp path) → 3 HIGH (a second
+  emitter command on the same line, a NUL reaching `realpath`, a symlinked `results/` as its own trusted
+  root). Every finding closed with a test that fails when the fix is reverted; the review cap is three
+  rounds, so the round-3 closures are proven by tests, not by a fourth verdict. The usage extractor's
+  dogfood numbers stayed byte-identical through all fixes (md5-checked).
+
+### CI
+
+- 3.4.16 went red twice on `shellcheck` SC2034 in the version-floor probe; fixed, and the local release
+  gate now runs the exact CI shellcheck line.
+
 ## [3.4.16] - 2026-09-04
 
 The audit's cut list, executed as the maintainer decided it: everything proposed goes, except the

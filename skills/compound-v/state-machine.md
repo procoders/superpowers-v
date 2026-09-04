@@ -40,11 +40,20 @@ run directory (final `state.json`, `results/*.json`) before handing off to
 `superpowers:finishing-a-development-branch` — Engine C
 ([`scripts/compound-v-emit-workflow.py`](../../scripts/compound-v-emit-workflow.py)) by default since
 3.0, and the residual [`parallel-dispatcher`](../../agents/parallel-dispatcher.md) subagent as the
-fallback where no Workflow tool exists. This matters because that skill's cleanup step runs
-`git worktree remove` on Merge/Discard — a normal git operation that **silently deletes any
-uncommitted files** in the worktree, no warning, no confirmation. Skip either commit point and a
-crash, an early "discard," or just reaching the worktree-cleanup step can erase the run's own
-audit trail — `/v:status` will then honestly (and confusingly) report no runs ever happened.
+fallback where no Workflow tool exists. This matters because an **uncommitted** run directory is
+not in the repository at all: `git clean -fdx` wipes it, a fresh clone never had it, and removing
+the worktree it was written in takes it along — no warning, no confirmation. The committed record
+is the only durable audit trail. Skip either commit point and a crash, a discarded branch, or a
+removed worktree can erase the run's own audit trail — `/v:status` will then honestly (and
+confusingly) report no runs ever happened.
+
+The hand-off skill itself is not the hazard this rule was once pinned on: in Superpowers 6.2.0
+`finishing-a-development-branch` presents three options — merge back locally, push and open a PR,
+keep the branch as-is (`finishing-a-development-branch/SKILL.md:55-65`) — with no Discard among
+them; a discard happens only when the human asks for one in so many words (`SKILL.md:78-82`, `:196`),
+and even then cleanup removes a worktree only when the path sits under `.worktrees/` or
+`worktrees/`, leaving any other workspace to the host (`SKILL.md:169-178`). The commit points stand
+on git's durability, which is why they are ordered *before* the hand-off rather than justified by it.
 
 ---
 

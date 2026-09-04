@@ -247,6 +247,12 @@ delegating, the epic inherits Engine C along with everything else.
    receipt does not verify does not proceed to the merge; fix it or re-run the review. Commit the
    receipt and the patch with the rest of the run substrate in step 10.
 
+   **When `spec-reviewer` returns ISSUES, apply `superpowers:receiving-code-review` before minting
+   a single fix job:** check each finding against the code as it actually is, and push back with the technical
+   reason when a finding is wrong for this codebase instead of dispatching a fix for it. Findings
+   are input to your judgment, not orders — and a finding you cannot verify is not thereby
+   dismissed: say what you could not check and why.
+
 10. **Append the terminal `actual`, commit the run substrate, then hand off**
    to `superpowers:finishing-a-development-branch`. **Do not write `phase: MERGED` into
    `state.json` by hand** — the workflow finalizer has advanced the phase itself since stage 1
@@ -278,13 +284,57 @@ delegating, the epic inherits Engine C along with everything else.
    bootstrap manifest is one): say so and skip the append — never mint an id to make the join
    close.
 
+   **Per-ticket usage — extract it before the run-substrate commit below.** On Engine C the implementers are Workflow
+   agents, so their token counts are in no worker-written `job_result`; they live in the Workflow's
+   own transcripts. Sum them into the run's results:
+
+   ```
+   /usr/bin/python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v-usage-extract.py" --backend claude \
+     --workflow-transcript "$HOME/.claude/projects/<cwd-slug>/" \
+     --run-dir docs/superpowers/execution/<run-id> --write
+   ```
+
+   `<cwd-slug>` is the absolute working directory with every `/` replaced by `-` — for this repo,
+   `-Users-oleg-Dev-superpowers-v`. Engine C's agent transcripts sit under
+   `<slug>/<session-uuid>/subagents/workflows/<wf-id>/agent-*.jsonl`; the scan is recursive, so the
+   project directory is the right thing to point at. A transcript is tied to a job by the `--run-dir`
+   **and** `--job-id` that every stage prompt embeds — the run dir is what keeps a repeated job id like
+   `spec-review-1` from crediting another run's tokens to this one — and a job's implement, gate and
+   record stages are summed together, deduplicated by message id (one message spans several transcript
+   lines and each repeats the same cumulative usage; summing per line inflates the cache figures by
+   roughly half). The written `usage` carries input, output, cache-read and cache-creation tokens with
+   `source: workflow-transcript`, and the commit below then carries it.
+
+   The dry run (no `--write`) prints one line per job, then `unmeasured:`, then `unmatched:`. A large
+   `unmatched:` count is normal — it is every transcript in the project that belongs to some other run.
+   A `run_level:` line reports the wave-level `finalize-wave` stages: real spend on this run that belongs
+   to no single job, reported rather than divided among them.
+
+   **A job with no transcript stays unmeasured** — `--write` leaves its result file untouched, no `usage`
+   key, and `/v:status` renders `—` for it. Never estimate, extrapolate or back-fill a token count to
+   fill that gap (anti-ruflo). `--write` is idempotent: the totals are recomputed from the transcripts
+   and replace the previous object, so re-running it cannot double-count. Exit 2 means the transcript
+   directory or the run directory does not exist.
+
+   **Before anything here reads as "the run is done", run `superpowers:verification-before-completion`.**
+   Its rule is evidence before claims: name the command that proves the claim, run it fresh, read
+   its full output and exit code, and only then state the claim — no completion claim without fresh
+   verification evidence. Every verdict this step reports (review passed, integration gate clean,
+   tests green) must come from output in hand now, not from a step you remember succeeding.
+
    Then commit `state.json` together with `results/*.json`, `receipts/*.json` (including a
    SCOPED+ run's `receipts/cross-model.json` and the `cross-model.patch` its digest binds to),
    `lane-map.json`,
    `jobs/*.test-contract.json`, `dispatch.workflow.js`,
    `docs/superpowers/memory/triage-outcomes.jsonl` and any refreshed memory/scorecard files — in
-   that one commit, before any worktree cleanup. `finishing-a-development-branch` runs
-   `git worktree remove` on both Merge and Discard, which silently deletes anything uncommitted.
+   that one commit, before any worktree cleanup — because an uncommitted run directory is not in
+   the repository at all: `git clean -fdx` wipes it, a fresh clone never had it, and removing the
+   worktree it was written in takes it along. The committed record is the only durable audit trail.
+   (Not because the hand-off skill discards it: Superpowers 6.2.0's `finishing-a-development-branch`
+   menu is merge locally / push a PR / keep the branch as-is, with no Discard option
+   (`finishing-a-development-branch/SKILL.md:55-65`) — a discard needs the human to ask for one in
+   so many words — and its cleanup removes a worktree only when
+   the path sits under `.worktrees/` or `worktrees/` (`SKILL.md:169-178`).)
 
 ## Safety
 

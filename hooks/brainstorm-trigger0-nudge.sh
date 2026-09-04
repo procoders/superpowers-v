@@ -1,7 +1,18 @@
 #!/usr/bin/env bash
-# Compound V — PreToolUse(Skill) hook: Trigger-0 backstop
-# Fires when the Skill tool invokes superpowers:brainstorming and injects a
-# one-line idempotent reminder to run the Trigger 0 gates from phase-0-recon.md.
+# Compound V — PreToolUse(Skill) hook: Trigger-0 AND Trigger-1 backstop
+# Fires on two Superpowers skill invocations and injects a one-line idempotent
+# reminder for the Compound V trigger that belongs at that transition:
+#   * superpowers:brainstorming  -> Trigger 0 (run the gates in phase-0-recon.md)
+#   * superpowers:writing-plans  -> Trigger 1 (run the three pre-flights FIRST)
+# Trigger 1 is nudged HERE, not when the spec file is written, because
+# brainstorming puts a user-review gate between the two: its state machine goes
+# "User reviews spec?" -> "Invoke writing-plans skill" [approved]
+# (superpowers/6.2.0/skills/brainstorming/SKILL.md:55-57), the User Review Gate
+# says "Wait for the user's response ... Only proceed once the user approves"
+# (:122-127), and "The ONLY skill you invoke after brainstorming is
+# writing-plans" (:61). So the invocation of writing-plans — not the Write that
+# saves the spec — is the moment the spec is approved, and the pre-flights must
+# run on an APPROVED spec.
 # Reminder only, never enforcement: it emits additionalContext exclusively —
 # no permissionDecision, no blocking exit code — and is silent (exit 0) for
 # every other tool, skill, or malformed input.
@@ -40,11 +51,20 @@ input="$(cat)"
 tool_name=$(echo "$input" | jq -r '.tool_name // empty' 2>/dev/null || echo "")
 skill_name=$(echo "$input" | jq -r '.tool_input.skill // empty' 2>/dev/null || echo "")
 
-# Fire only for the Skill tool invoking superpowers:brainstorming
+# Fire only for the Skill tool
 [ "$tool_name" = "Skill" ] || exit 0
-[ "$skill_name" = "superpowers:brainstorming" ] || exit 0
 
-nudge="💉 Compound V — Trigger 0 backstop: run the Trigger 0 gates from phase-0-recon.md if not already done for this brainstorm (reminder only — the gates in that doc decide whether recon actually runs)."
+case "$skill_name" in
+  superpowers:brainstorming)
+    nudge="💉 Compound V — Trigger 0 backstop: run the Trigger 0 gates from phase-0-recon.md if not already done for this brainstorm (reminder only — the gates in that doc decide whether recon actually runs)."
+    ;;
+  superpowers:writing-plans)
+    nudge="💉 Compound V — Trigger 1: the spec has passed brainstorming's user-review gate — writing-plans is invoked only after the user approved the spec, so the approved spec is what the audits must read. BEFORE writing the plan, run the three pre-flights (code-archaeologist ∥ domain-expert ∥ doc-validator) on that approved spec as ONE native Workflow on Engine C: python3 scripts/compound-v-emit-preflight.py --spec <spec> --out … then Workflow({ scriptPath }) — see skills/compound-v/SKILL.md \"Trigger 1\". Then write the plan with the three audits as design-constraint sources. ALL THREE: doc-validator is skipped only when the spec has ZERO technical dependencies — \"no NEW dependency\" is not the rule, because dependencies you already use go stale and acquire CVEs. If this spec RESCOPES work whose earlier features already went through the pipeline, that earlier compliance does not carry: the rescope re-enters at the top."
+    ;;
+  *)
+    exit 0
+    ;;
+esac
 
 # Emit context-injection JSON per platform
 if [ -n "${CURSOR_PLUGIN_ROOT:-}" ]; then

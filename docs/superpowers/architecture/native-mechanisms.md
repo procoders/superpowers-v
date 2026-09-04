@@ -172,7 +172,7 @@
 
 | Событие | Регистрируем | Чем |
 |---|---|---|
-| `PreToolUse` | ✅ | `lane-guard.sh` (deny вне полосы) + `brainstorm-trigger0-nudge.sh` |
+| `PreToolUse` | ✅ | `lane-guard.sh` (deny вне полосы) + `brainstorm-trigger0-nudge.sh` — с 3.4.17 один хук на матчере `Skill` бэкстопит **два** триггера: `superpowers:brainstorming` → Trigger 0, `superpowers:writing-plans` → Trigger 1 (три пре-флайта). Trigger 1 переехал сюда из spec-ветки `plan-saved-nudge.sh`: спека пишется **до** пользовательского гейта brainstorming (`superpowers/6.2.0/skills/brainstorming/SKILL.md:122-127`), а writing-plans вызывается **после** него |
 | `PostToolUse` | ✅ | `plan-saved-nudge.sh` |
 | `PostToolUseFailure` | ❌ **удалено 3.4.0** | зарегистрировано в 3.3.0 без читателя; `tool-failure-ledger.sh` удалён. **Вернём регистрацию, когда появится потребитель** — довод 3.3.0 остаётся в силе как довод *на будущее*, а не как описание текущего состояния: это единственное событие, видящее отказ в момент отказа, и классификатор отказов (есть с 2.x) кормят только внешние воркеры, так что упавший `Bash` у `backend: claude` по-прежнему не видит никто. Механизм без читателя мы не держим — сначала читатель |
 | `UserPromptSubmit` | ✅ | `triage-prompt-nudge.sh` |

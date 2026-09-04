@@ -24,6 +24,20 @@
     "scope": "impacted+referencing",
     "selected_count": 6
   },
+  "usage": {
+    "backend": "claude",
+    "cache_creation_input_tokens": 161008,
+    "cache_read_input_tokens": 4406873,
+    "input_tokens": 112,
+    "measured": true,
+    "output_tokens": 30478,
+    "source": "workflow-transcript",
+    "transcripts": [
+      "agent-a26c40b0a6bdb887a.jsonl",
+      "agent-a45e53a675775083b.jsonl",
+      "agent-a786ebced0da173fb.jsonl"
+    ]
+  },
   "violations": [],
   "worktree": ""
 }

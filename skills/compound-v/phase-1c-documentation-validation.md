@@ -1,6 +1,6 @@
 # Phase 1C — Library & Documentation Validation
 
-**When this fires:** Brainstorming has produced a spec. Runs **in parallel with Phase 1A (archaeology) and Phase 1B (domain-expert)** before invoking `writing-plans`.
+**When this fires:** Brainstorming has handed off to `writing-plans` — i.e. the user has approved the spec (`superpowers/6.2.0/skills/brainstorming/SKILL.md:122-127`), not merely that a spec file exists. Runs **in parallel with Phase 1A (archaeology) and Phase 1B (domain-expert)**, before the plan is written.
 
 **Goal:** Validate every library, framework, SDK, API, and version the spec mentions (or implies) against **current documentation**. Catch stale dependencies, deprecated APIs, version drift, and abandoned libraries BEFORE the plan locks them in.
 

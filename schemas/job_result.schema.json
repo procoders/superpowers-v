@@ -183,21 +183,35 @@
     "usage": {
       "type": "object",
       "additionalProperties": false,
-      "description": "OPTIONAL, INFORMATIONAL, MEASURED-ONLY token accounting for this job. Worker-sourced like `summary` (extracted from the backend's own structured usage events by compound-v-usage-extract.py), NEVER fabricated and NEVER used for enforcement. When a backend emits no machine-readable usage (agy/antigravity, claude Task subagent) or the events log is missing/unparseable, `measured` is false and the token counts are null (anti-ruflo: a null is honest, a made-up number is not). Omitted entirely when the worker provided no usage object.",
+      "description": "OPTIONAL, INFORMATIONAL, MEASURED-ONLY token accounting for this job. Worker-sourced like `summary`, NEVER fabricated and NEVER used for enforcement. TWO sources, both produced by compound-v-usage-extract.py and distinguished by `source`: (1) `backend-events` — the external backend's own structured usage events (codex/opencode/cursor); (2) `workflow-transcript` — for an Engine C job, the Claude Code subagent transcripts of that job's stages, deduplicated by message id (v3.4.17; a Claude worker writes no events log, which is why an Engine C result carried no usage at all before). When neither source exists (agy/antigravity, or a claude job whose transcripts were not scanned) `measured` is false and the token counts are null (anti-ruflo: a null is honest, a made-up number is not). Omitted entirely when no usage object was produced.",
       "properties": {
         "input_tokens": {
           "type": [
             "integer",
             "null"
           ],
-          "description": "Total input/prompt tokens consumed by the job, summed across the backend's usage events. null when not measured."
+          "description": "Total input/prompt tokens consumed by the job, summed across the backend's usage events (or across the job's transcript messages). null when not measured."
         },
         "output_tokens": {
           "type": [
             "integer",
             "null"
           ],
-          "description": "Total output/completion tokens produced by the job, summed across the backend's usage events. null when not measured."
+          "description": "Total output/completion tokens produced by the job, summed across the backend's usage events (or across the job's transcript messages). null when not measured."
+        },
+        "cache_read_input_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "OPTIONAL. Prompt-cache READ tokens, summed the same way. Emitted by the `workflow-transcript` source, where the harness reports it per assistant message; null or absent when the source does not report it. Separate from input_tokens on purpose — folding cached reads into the input total would misstate both."
+        },
+        "cache_creation_input_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "OPTIONAL. Prompt-cache WRITE (creation) tokens, summed the same way. Emitted by the `workflow-transcript` source; null or absent when the source does not report it."
         },
         "backend": {
           "type": "string",
@@ -205,7 +219,22 @@
         },
         "measured": {
           "type": "boolean",
-          "description": "True only when real token counts were extracted from the backend's structured usage events. False when the backend emits no machine-readable usage or the events log was absent/empty/unparseable; in that case the token counts are null."
+          "description": "True only when real token counts were read from a real record — the backend's structured usage events, or the job's own subagent transcripts. False when no such record exists or it was absent/empty/unparseable; in that case the token counts are null."
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "backend-events",
+            "workflow-transcript"
+          ],
+          "description": "OPTIONAL. Which record the numbers were read from: `backend-events` = the external backend's own structured events log; `workflow-transcript` = the Claude Code subagent transcripts of this job's Engine C stages. Absent on results written before v3.4.17, which are all backend-events."
+        },
+        "transcripts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "OPTIONAL, `workflow-transcript` source only. Basenames of the agent-*.jsonl transcripts that were summed for this job — normally its implement, gate and record stages. It is the evidence trail: a total whose transcripts cannot be named is a number nobody can re-derive."
         }
       }
     },

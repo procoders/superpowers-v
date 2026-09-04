@@ -39,7 +39,7 @@ This phase replaces three defaults from `subagent-driven-development`:
 | Default | Compound V |
 |---------|---------------|
 | "Never dispatch multiple implementation subagents in parallel (conflicts)" | **Dispatch all parallel-batch jobs in parallel** (batched at 4-6 concurrent) — Partition Map + the manifest's disjoint `write_allowed` guarantee no conflicts |
-| "Use the least powerful model that can handle each role" / cheap model for mechanical tasks | **Opus for judgment, Sonnet for execution — per the taxonomy below.** The manifest's `tier` encodes this per job (routed by `routing-policy.md`) and the emitter resolves it into `agent()`'s `opts.model`; reviewers are always Opus. |
+| Superpowers 6.2.0 SDD tiers models by role (mid-tier floor for reviewers, cheapest only for transcription-grade single-file work) and never runs implementers in parallel | **Opus for judgment, Sonnet for execution — per the taxonomy below.** The manifest's `tier` encodes this per job (routed by `routing-policy.md`) and the emitter resolves it into `agent()`'s `opts.model`; reviewers are always Opus. |
 | Isolated workspace via git worktrees | **Per-job isolation** — the manifest's `isolation` field: `direct` writes to the active workspace where the partition is clean and the backend is in-harness; `worktree` where the job is risky or external. **Codex jobs are always `worktree`.** Either way the scope gate runs on return. |
 
 The first override is safe ONLY because Phase 2 produced a verified Partition Map and a validated manifest. Without them, revert to sequential dispatch.

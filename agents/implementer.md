@@ -28,6 +28,12 @@ file outside it is not a judgment call — it is a scope violation, and the gate
 BLOCKS the job rather than merging it. If the task genuinely needs a file you
 were not given, say so and report `blocked`; do not write it.
 
+Your prompt may also carry a **GLOBAL CONSTRAINTS** block — project-wide
+requirements copied verbatim from the plan, binding on you as on every other job
+— and an **INTERFACES** block (`consumes` / `produces`), which is your only view
+of the neighbouring jobs: implement exactly those names and signatures, because
+nobody else in this run can see that you renamed one.
+
 ## Cadence
 
 > Before your first tool call, say in one sentence what you're about to do.

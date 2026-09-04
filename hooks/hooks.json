@@ -1,5 +1,5 @@
 {
-  "$comment": "Compound V hooks. SubagentStop was removed in v0.1.1 on the premise that it was undocumented. That premise was WRONG (verified 2026-07-25): Stop and SubagentStop are both documented, exit 2 / decision:block prevents the turn from ending, and Anthropic's own ralph-loop plugin ships a Stop hook. v2.18 RESTORES a blocking Stop hook (epic-goal-stop.sh). SessionStart matcher pattern copied from upstream obra/superpowers v5.1.0. memory-refresh.sh (v2.0) is APPENDED to both events — it is silent (emits no context) and self-backgrounds an FTS5-only `refresh --quick`, so it composes with the banner/nudge without blocking and never installs/downloads. brainstorm-trigger0-nudge.sh (v2.8) uses PreToolUse additionalContext — live-probed 2026-07-11 on Claude Code 2.1.197 (see the probe comment in that hook); reminder only, never blocks.",
+  "$comment": "Compound V hooks. SubagentStop was removed in v0.1.1 on the premise that it was undocumented. That premise was WRONG (verified 2026-07-25): Stop and SubagentStop are both documented, exit 2 / decision:block prevents the turn from ending, and Anthropic's own ralph-loop plugin ships a Stop hook. v2.18 RESTORES a blocking Stop hook (epic-goal-stop.sh). SessionStart matcher pattern copied from upstream obra/superpowers, re-checked against the installed 6.2.0 (superpowers/6.2.0/hooks/hooks.json still registers SessionStart with matcher `startup|clear|compact`). Every command entry here carries `\"shell\": \"bash\"`, mirroring that same upstream file: the field is documented in the official hooks reference (code.claude.com/docs/en/hooks, \"Command hook fields\" — optional, accepts `bash` or `powershell`, ignored when `args` is set), and stating it explicitly keeps these bash scripts off PowerShell on a Windows box with no Git Bash, where the default flips. memory-refresh.sh (v2.0) is APPENDED to both events — it is silent (emits no context) and self-backgrounds an FTS5-only `refresh --quick`, so it composes with the banner/nudge without blocking and never installs/downloads. brainstorm-trigger0-nudge.sh (v2.8) uses PreToolUse additionalContext — live-probed 2026-07-11 on Claude Code 2.1.197 (see the probe comment in that hook); reminder only, never blocks. As of v3.4.17 that one registration backstops TWO triggers off the same `Skill` matcher — the hook branches on tool_input.skill: `superpowers:brainstorming` -> Trigger 0, `superpowers:writing-plans` -> Trigger 1 (the three pre-flights). Trigger 1 moved here from the spec arm of plan-saved-nudge.sh because a spec is WRITTEN before brainstorming's user-review gate and writing-plans is invoked AFTER it, so this matcher is the first moment the spec is approved.",
   "$comment_stop": "Stop takes NO matcher — it is not a tool event. The `|| true` suffix is MECHANISM (a) of the two-part fail-open contract: a non-zero exit from a Stop hook IS a block, and a syntax error in the script is fatal before any in-script trap can run, so the registration itself must neutralize it. MECHANISM (b) lives inside epic-goal-stop.sh (an unconditional-exit-0 EXIT trap plus output suppression on a failed run). Both are required; neither is sufficient. Do NOT remove the `|| true` — see tests/test-epic-goal-stop.sh, which asserts it is present and proves the raw script really does exit non-zero when broken.",
   "$comment_lane_guard": "PreToolUse lane-guard (v3.0 Feature E) is registered WITHOUT a `|| true` suffix, and that is deliberate rather than an omission. A non-zero PreToolUse exit is NOT a deny -- it is a non-blocking error whose stderr is shown to the user -- so `|| true` buys nothing here, while lane-guard.sh's own wrapper already discards non-JSON output and exits 0 unconditionally. Copying the Stop idiom would be cargo-culting a mechanism that does not apply. The matcher is `Write|Edit|MultiEdit|NotebookEdit|Bash`: `Bash` is in the list because the 1D probe (0982ce0) showed a Write|Edit-only matcher is decorative in an environment that nudges agents toward sed/heredocs, and the hook's own header is explicit that shell-command inspection is a supplement -- the git-derived scope gate remains the authority. It carries `timeout: 10` as of v3.4: the hook spawns foreign executables (interpreter viability probes, and a delegated manifest parse) and bounds each of them itself — 0.9 s per probe, 5 s for the parse — but a bound the hook applies to itself is not a bound on the hook, and this one runs on EVERY Write/Edit/Bash call. 10 s is the outer envelope those inner budgets fit inside; a hook that overruns it is killed and the tool call proceeds, which is the same fail-open the script's own contract specifies.",
   "$comment_native_points": "UserPromptSubmit + PostCompact (v3.0, task-16) close two rows of docs/superpowers/architecture/native-mechanisms.md. UserPromptSubmit is the native \"a change request arrived\" event -- the activation surface the sizing engine never had, which is why it had run zero times. As of v3.4 triage-prompt-nudge.sh RUNS THE SCORER (`compound-v-preeval.py triage`, the same subcommand /v:triage step T2 calls) rather than printing a reminder to run it: a reminder is skippable by construction, which is the whole defect this event was registered to fix. It writes a session-bound pre-eval record and never commits -- the engine never runs git -- and it fires only when no active run and no covering triage record exist, once per session, and never on a slash command or a short question. It carries `|| true` for the same reason the Stop hook does, and a sharper one: UserPromptSubmit is blocking-capable and exit 2 REJECTS THE USER'S PROMPT, which is exactly what bash returns for a parse error above the in-script trap. PostCompact receives the compaction summary (SessionStart does not), so postcompact-resume.sh reuses `compound-v-dashboard.py resume` and reports whether the summary carried the active run ids; in Claude Code 2.1.238 its stdout becomes the compaction's display text, NOT model context, so it complements the v2.19 SessionStart banner rather than replacing it. Both are bounded because they run on every prompt / every compaction and must never be the reason a turn stalls -- a scorer that overruns its timeout loses its context line and the prompt proceeds. As of v3.4.1 UserPromptSubmit -- and ONLY that event -- carries `timeout: 25` instead of 10: a request the deterministic layers cannot band now finishes T3 inside the hook with one headless `claude -p` classify (capped at 15 s plus the supervisor's 3 s grace) rather than degrading to a printed reminder, and 15 + 3 does not fit inside 10. PostCompact keeps `timeout: 10`; it starts no external model call and raising it would buy nothing.",
@@ -11,6 +11,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/epic-goal-stop.sh\" || true",
+            "shell": "bash",
             "async": false
           }
         ]
@@ -23,6 +24,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/brainstorm-trigger0-nudge.sh\"",
+            "shell": "bash",
             "async": false
           }
         ]
@@ -33,6 +35,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/lane-guard.sh\"",
+            "shell": "bash",
             "async": false,
             "timeout": 10
           }
@@ -45,6 +48,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/triage-prompt-nudge.sh\" || true",
+            "shell": "bash",
             "async": false,
             "timeout": 25
           }
@@ -57,6 +61,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/postcompact-resume.sh\" || true",
+            "shell": "bash",
             "async": false,
             "timeout": 10
           }
@@ -70,11 +75,13 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/session-banner.sh\"",
+            "shell": "bash",
             "async": false
           },
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/memory-refresh.sh\"",
+            "shell": "bash",
             "async": false
           }
         ]
@@ -87,11 +94,13 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/plan-saved-nudge.sh\"",
+            "shell": "bash",
             "async": false
           },
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/memory-refresh.sh\"",
+            "shell": "bash",
             "async": false
           }
         ]
@@ -103,6 +112,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/precompact-snapshot.sh\" || true",
+            "shell": "bash",
             "async": false,
             "timeout": 10
           }

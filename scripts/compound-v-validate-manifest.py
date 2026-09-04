@@ -853,6 +853,18 @@ IMPACTED_MAP_REQUIRED_KEYS = ("when", "run")
 # --------------------------------------------------------------------------- #
 RETRY_ALLOWED_KEYS = ("max_attempts", "escalate_reviewer")
 
+# --------------------------------------------------------------------------- #
+# v3.4.17 — the two fields Superpowers 6.2.0's writing-plans added for isolated
+# implementers, materialized into the manifest:
+#   global_constraints: [string]                  (top level; the plan's
+#                                                  `## Global Constraints` lines)
+#   jobs[].interfaces:  {consumes: [string], produces: [string]}
+# BOTH ARE ABSENT-VALID. A plan written before 6.2.0 has neither section, so a
+# manifest materialized from it carries neither key, and that must stay green —
+# every manifest committed before 3.4.17 is in exactly that shape.
+# --------------------------------------------------------------------------- #
+INTERFACES_ALLOWED_KEYS = ("consumes", "produces")
+
 # Top-level required fields (per execution-manifest.md "Top-level fields").
 TOPLEVEL_REQUIRED = (
     "run_id",
@@ -2270,6 +2282,79 @@ def _validate_retry(manifest):
     return problems
 
 
+def _string_list_problems(value, label):
+    """Return violations for ``value`` as a list of non-empty strings.
+
+    Shared by ``global_constraints`` and both ``interfaces`` keys so the two
+    fields cannot drift into two different definitions of "a list of lines"."""
+    problems = []
+    if not isinstance(value, list):
+        problems.append("%s must be a list of strings (got %r)" % (label, value))
+        return problems
+    for idx, item in enumerate(value):
+        # bool is not a str, so `- true` is caught here rather than accepted as
+        # a line. An empty or whitespace-only entry is caught too: a blank
+        # constraint is a line the implementer cannot act on.
+        if not isinstance(item, str) or not item.strip():
+            problems.append("%s[%d] must be a non-empty string (got %r)"
+                            % (label, idx, item))
+    return problems
+
+
+def _validate_global_constraints(manifest):
+    """Return violations for the optional top-level ``global_constraints`` list
+    (v3.4.17): the plan's ``## Global Constraints`` lines, copied VERBATIM.
+
+    ABSENT is valid — a plan written before Superpowers 6.2.0 has no such
+    section, so a manifest materialized from it carries no such key."""
+    if "global_constraints" not in manifest:
+        return []
+    # ONLY A MISSING KEY IS ABSENT (cross-model review r1, finding 6). A bare
+    # `global_constraints:` line parses to None in BOTH parsers, and this used to
+    # read that as the absent case — so a materializer that wrote the key and
+    # then failed to fill it validated clean and every implementer prompt lost
+    # the plan's constraints silently. A key someone wrote down has to hold the
+    # documented shape; `[]` is how you say "none" on purpose. (This is
+    # deliberately stricter than `retry`, whose null-is-absent leniency predates
+    # the rule and is not a precedent to copy.)
+    return _string_list_problems(manifest.get("global_constraints"),
+                                 "manifest 'global_constraints'")
+
+
+def _validate_interfaces(job, jid):
+    """Return violations for one job's optional ``interfaces`` mapping
+    (v3.4.17): ``{consumes: [string], produces: [string]}``, copied VERBATIM
+    from the plan task's ``**Interfaces:**`` block.
+
+    ABSENT is valid, and so is either key on its own — a first task consumes
+    nothing, a last task produces nothing anyone else reads."""
+    if "interfaces" not in job:
+        return []
+    # Only a MISSING key is absent — see _validate_global_constraints. A bare
+    # `interfaces:` line is None, which is not a mapping and is refused as one.
+    iface = job.get("interfaces")
+    problems = []
+    if not isinstance(iface, dict):
+        problems.append(
+            "job '%s' interfaces must be a mapping with keys %s (got %r)"
+            % (jid, "/".join(INTERFACES_ALLOWED_KEYS), iface)
+        )
+        return problems
+    for key in iface:
+        if key not in INTERFACES_ALLOWED_KEYS:
+            problems.append(
+                "job '%s' interfaces has unknown key '%s' (allowed: %s)"
+                % (jid, key, ", ".join(INTERFACES_ALLOWED_KEYS))
+            )
+    for key in INTERFACES_ALLOWED_KEYS:
+        # Same rule one level down: a bare `consumes:` is None, not absent.
+        if key not in iface:
+            continue
+        problems.extend(_string_list_problems(
+            iface.get(key), "job '%s' interfaces.%s" % (jid, key)))
+    return problems
+
+
 def validate(manifest, mode=None, repo_root=None, config_path=None,
              receipt_path=None, manifest_bytes=None, diff_root=None,
              expected_attempt=None, require_triage=False, taxonomy_path=None,
@@ -2361,6 +2446,12 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
     # a manifest broken in some other way must not hide a malformed retry block.
     problems.extend(_validate_retry(manifest))
 
+    # v3.4.17: the optional top-level `global_constraints` list — the plan's
+    # `## Global Constraints` lines, verbatim. Checked here, before the jobs
+    # early-return, for the same reason the blocks above are: a manifest broken
+    # in some other way must not hide a malformed constraints list.
+    problems.extend(_validate_global_constraints(manifest))
+
     jobs = manifest.get("jobs")
     if not isinstance(jobs, list) or not jobs:
         problems.append("manifest has no non-empty 'jobs' list")
@@ -2420,6 +2511,11 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
             if _lf in job and job.get(_lf) is not None:
                 if not isinstance(job.get(_lf), list):
                     problems.append("job '%s' %s must be a list" % (jid, _lf))
+
+        # v3.4.17: the optional per-job `interfaces` mapping — the plan task's
+        # `**Interfaces:**` block, verbatim. ABSENT is valid (a pre-6.2.0 plan
+        # has no such block); either key may be absent on its own.
+        problems.extend(_validate_interfaces(job, jid))
 
         # never-Haiku policy (execution layer). The frontmatter linter only sees
         # agent/skill frontmatter; a manifest job can pin an execution-layer
@@ -3297,11 +3393,14 @@ jobs:
 """ % (("    timeout_sec: %s\n" % timeout_line) if timeout_line != "" else "")
 
 
-def _v3_manifest(triage_block="", contract_block="", job_line="", retry_block=""):
+def _v3_manifest(triage_block="", contract_block="", job_line="", retry_block="",
+                 constraints_block=""):
     """A complete, otherwise-valid single-job manifest whose ONLY variables are the
     v3.0 additions: the top-level ``triage`` block (Feature A2), the top-level
     ``test_contract`` block (Feature B2), one extra per-job line (``test_scope``),
-    and the v3.4.8 top-level ``retry`` block (Task B).
+    the v3.4.8 top-level ``retry`` block (Task B), and the v3.4.17 top-level
+    ``global_constraints`` list (``job_line`` also carries the per-job
+    ``interfaces`` mapping, which is several lines rather than one).
 
     Pass "" to omit a block entirely — the ABSENT case, which is what every manifest
     committed before 3.0 looks like and which MUST stay valid when ``--require-triage``
@@ -3320,7 +3419,7 @@ routing_stance: balanced
 max_parallel: 2
 acceptance_criteria:
   - "ships"
-%s%s%sjobs:
+%s%s%s%sjobs:
   - id: task-1-v3
     title: "v3 slice"
     type: bounded_crud
@@ -3332,7 +3431,7 @@ acceptance_criteria:
 %s    write_allowed: [src/features/**]
     read_allowed: [src/**]
     acceptance: ["builds"]
-""" % (triage_block, contract_block, retry_block, job_line)
+""" % (triage_block, contract_block, retry_block, constraints_block, job_line)
 
 
 # A well-formed `triage` block (Feature A2). `digest` is substituted so a test can
@@ -5310,6 +5409,152 @@ def _selftest():
     expect("retry: fallback parser flags an out-of-range max_attempts",
            any("retry.max_attempts must be an integer between 1 and 3" in p
                for p in _r_fallback))
+
+    # --- v3.4.17: `global_constraints` + per-job `interfaces` ---------------- #
+    # The two fields Superpowers 6.2.0's writing-plans added for isolated
+    # implementers. ABSENT-VALID is the first row and the load-bearing one: every
+    # manifest materialized from a pre-6.2.0 plan carries neither key.
+    _gc_absent = validate_text(_v3_manifest())
+    expect("6.2.0 fields: both absent stays valid (%r)" % _gc_absent,
+           _gc_absent == [])
+
+    _GC_OK = ('global_constraints:\n'
+              '  - "Python 3.9-safe, stdlib only"\n'
+              '  - "No new runtime dependency"\n')
+    _IFACE_OK = ('    interfaces:\n'
+                 '      consumes:\n'
+                 '        - "load_yaml(text) -> dict"\n'
+                 '      produces:\n'
+                 '        - "validate(manifest) -> list[str]"\n')
+
+    _gc_ok = validate_text(_v3_manifest(constraints_block=_GC_OK,
+                                        job_line=_IFACE_OK))
+    expect("6.2.0 fields: both present and well-formed valid (%r)" % _gc_ok,
+           _gc_ok == [])
+
+    _gc_only = validate_text(_v3_manifest(constraints_block=_GC_OK))
+    expect("global_constraints: alone (no interfaces) valid (%r)" % _gc_only,
+           _gc_only == [])
+
+    _if_only = validate_text(_v3_manifest(job_line=_IFACE_OK))
+    expect("interfaces: alone (no global_constraints) valid (%r)" % _if_only,
+           _if_only == [])
+
+    # Either interfaces key may be absent: a first task consumes nothing, a last
+    # task produces nothing anyone else reads.
+    for _half, _yaml_half in (
+            ("consumes only",
+             '    interfaces:\n      consumes:\n        - "f(x) -> y"\n'),
+            ("produces only",
+             '    interfaces:\n      produces:\n        - "g(x) -> y"\n'),
+            ("empty mapping", '    interfaces: {}\n')):
+        _if_half = validate_text(_v3_manifest(job_line=_yaml_half))
+        expect("interfaces: %s accepted (%r)" % (_half, _if_half),
+               _if_half == [])
+
+    # An empty list is the absent case written longhand — not a violation.
+    _gc_empty = validate_text(_v3_manifest(
+        constraints_block="global_constraints: []\n"))
+    expect("global_constraints: empty list accepted (%r)" % _gc_empty,
+           _gc_empty == [])
+
+    # A NULL VALUE IS NOT ABSENT (cross-model review r1, finding 6). A bare
+    # `global_constraints:` / `interfaces:` / `consumes:` line parses to None in
+    # BOTH parsers (verified), and reading that as "absent" let a materializer
+    # write the key, fail to fill it, and validate clean — with every implementer
+    # prompt silently losing the field. Only a MISSING key is absent.
+    _gc_null = validate_text(_v3_manifest(
+        constraints_block="global_constraints:\n"))
+    expect("global_constraints: explicit null REFUSED, not read as absent (%r)"
+           % _gc_null,
+           any("'global_constraints' must be a list of strings" in p
+               for p in _gc_null))
+
+    _if_null = validate_text(_v3_manifest(job_line="    interfaces:\n"))
+    expect("interfaces: explicit null REFUSED, not read as absent (%r)" % _if_null,
+           any("interfaces must be a mapping with keys consumes/produces" in p
+               for p in _if_null))
+
+    for _nk in ("consumes", "produces"):
+        _if_knull = validate_text(_v3_manifest(
+            job_line="    interfaces:\n      %s:\n" % _nk))
+        expect("interfaces.%s: explicit null REFUSED (%r)" % (_nk, _if_knull),
+               any("interfaces.%s must be a list of strings" % _nk in p
+                   for p in _if_knull))
+
+    # Fallback-parser parity for the null case: the subset parser yields None for
+    # a bare key too, so the machine WITHOUT PyYAML must refuse it identically.
+    _gc_null_fb = validate(_mini_yaml(_v3_manifest(
+        constraints_block="global_constraints:\n",
+        job_line="    interfaces:\n      consumes:\n")))
+    expect("null values: fallback parser refuses both, same messages",
+           any("'global_constraints' must be a list of strings" in p
+               for p in _gc_null_fb)
+           and any("interfaces.consumes must be a list of strings" in p
+                   for p in _gc_null_fb))
+
+    # Wrong SHAPES, each with its own message.
+    _gc_scalar = validate_text(_v3_manifest(
+        constraints_block='global_constraints: "stdlib only"\n'))
+    expect("global_constraints: scalar refused (%r)" % _gc_scalar,
+           any("'global_constraints' must be a list of strings" in p
+               for p in _gc_scalar))
+
+    _gc_map = validate_text(_v3_manifest(
+        constraints_block="global_constraints:\n  python: \"3.9\"\n"))
+    expect("global_constraints: mapping refused (%r)" % _gc_map,
+           any("'global_constraints' must be a list of strings" in p
+               for p in _gc_map))
+
+    for _bad_item, _bad_yaml in (("empty string", '  - ""\n'),
+                                 ("boolean", "  - true\n"),
+                                 ("integer", "  - 39\n")):
+        _gc_bad = validate_text(_v3_manifest(
+            constraints_block="global_constraints:\n" + _bad_yaml))
+        expect("global_constraints: %s entry refused (%r)" % (_bad_item, _gc_bad),
+               any("'global_constraints'[0] must be a non-empty string" in p
+                   for p in _gc_bad))
+
+    _if_scalar = validate_text(_v3_manifest(
+        job_line='    interfaces: "consumes load_yaml"\n'))
+    expect("interfaces: scalar refused (%r)" % _if_scalar,
+           any("interfaces must be a mapping with keys consumes/produces" in p
+               for p in _if_scalar))
+
+    _if_list = validate_text(_v3_manifest(
+        job_line='    interfaces:\n      - "load_yaml(text)"\n'))
+    expect("interfaces: list refused (%r)" % _if_list,
+           any("interfaces must be a mapping with keys consumes/produces" in p
+               for p in _if_list))
+
+    _if_unknown = validate_text(_v3_manifest(
+        job_line='    interfaces:\n      requires:\n        - "load_yaml"\n'))
+    expect("interfaces: unknown key caught (%r)" % _if_unknown,
+           any("interfaces has unknown key 'requires'" in p
+               for p in _if_unknown))
+
+    _if_str = validate_text(_v3_manifest(
+        job_line='    interfaces:\n      consumes: "load_yaml(text)"\n'))
+    expect("interfaces: string-valued consumes refused (%r)" % _if_str,
+           any("interfaces.consumes must be a list of strings" in p
+               for p in _if_str))
+
+    _if_blank = validate_text(_v3_manifest(
+        job_line='    interfaces:\n      produces:\n        - ""\n'))
+    expect("interfaces: blank produces entry refused (%r)" % _if_blank,
+           any("interfaces.produces[0] must be a non-empty string" in p
+               for p in _if_blank))
+
+    # Fallback-parser parity for both fields (the machine WITHOUT PyYAML).
+    _gc_fb = validate(_mini_yaml(_v3_manifest(constraints_block=_GC_OK,
+                                              job_line=_IFACE_OK)))
+    expect("6.2.0 fields: fallback parser accepts both (%r)" % _gc_fb,
+           _gc_fb == [])
+    _gc_fb_bad = validate(_mini_yaml(_v3_manifest(
+        job_line='    interfaces:\n      requires:\n        - "x"\n')))
+    expect("6.2.0 fields: fallback parser flags an unknown interfaces key",
+           any("interfaces has unknown key 'requires'" in p
+               for p in _gc_fb_bad))
 
     # The committed audit trail: every run manifest + the shipped example must still
     # validate WITHOUT the flag. This is the bootstrap exemption, and it is only honest

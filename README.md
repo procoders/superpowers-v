@@ -94,8 +94,8 @@ and the two scanning agents. Codex is an opt-in sandboxed worker and the second 
 | `SessionStart` | Prints the resume banner; refreshes the memory index in the background |
 | `UserPromptSubmit` | Scores the first change request of the session and writes the triage record |
 | `PreToolUse` (Write/Edit/Bash) | The lane guard: refuses a write outside the job's declared lane |
-| `PreToolUse` (Skill) | Reminds a brainstorm to run its recon pass first. Reminder only |
-| `PostToolUse` (Write) | Nudges when a plan is saved; refreshes the memory index |
+| `PreToolUse` (Skill) | Reminds a brainstorm to run its recon pass first, and reminds `writing-plans` to run the three pre-flights on the just-approved spec first. Reminders only |
+| `PostToolUse` (Write) | Nudges when a plan, spec or recon doc is saved; refreshes the memory index. A saved spec is told to wait for your review — the pre-flights fire later, at `writing-plans` |
 | `PreCompact` / `PostCompact` | Snapshots the run state before a compaction, and reports it after |
 | `Stop` | The triage gate: holds the turn open when code changed and no triage record covers it |
 

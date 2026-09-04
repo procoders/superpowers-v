@@ -473,13 +473,21 @@ Engine C — the emitted `dispatch.workflow.js`. `git add <run-dir>/` sweeps all
 point: **the exact orchestration that ran is in the run directory**, and it is worthless
 uncommitted.
 
-**This is not optional.** `finishing-a-development-branch`'s cleanup step (Options 1/Merge and
-4/Discard) runs `git worktree remove` on the branch this run happened in — that command silently
-deletes any *uncommitted* files, including an uncommitted run directory or memory update.
-Skipping this step means Compound V's own audit trail — the thing `state-machine.md` calls "the
-record" — and the scorecard's routing signal can both vanish the moment the branch is merged, and
-`/v:status` will report "no orchestrator runs" afterward even though one demonstrably happened (a
-real incident — noticed by Oscar Salcedo). **Only after this commit succeeds**, hand off to
+**This is not optional.** An *uncommitted* run directory is not in the repository at all: one
+`git clean -fdx` wipes it, a fresh clone never had it, and removing the worktree it was written in
+takes it along. The committed record is the only durable audit trail there is. Skipping this step
+means Compound V's own audit trail — the thing `state-machine.md` calls "the record" — and the
+scorecard's routing signal can both vanish, and `/v:status` will report "no orchestrator runs"
+afterward even though one demonstrably happened (a real incident — noticed by Oscar Salcedo).
+
+Do **not** justify the rule with the old claim that the hand-off skill deletes the tree on "Merge
+or Discard". In Superpowers 6.2.0 `finishing-a-development-branch` presents exactly three options —
+merge back locally, push and open a PR, keep the branch as-is
+(`finishing-a-development-branch/SKILL.md:55-65`) — and Discard is not among them; a discard happens
+only when the human asks for one in so many words (`SKILL.md:78-82`, `:196`), and even then cleanup
+removes a worktree only when the path sits under `.worktrees/` or `worktrees/`, otherwise leaving the
+workspace to the host (`SKILL.md:169-178`). The rule stands on the durability of git, not on that
+skill's behaviour. **Only after this commit succeeds**, hand off to
 `superpowers:finishing-a-development-branch`.
 
 ## Output

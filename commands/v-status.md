@@ -19,13 +19,27 @@ The run-id (optional) is `{{args}}`.
    - If `{{args}}` is empty, list the subdirectories of `docs/superpowers/execution/` — **except `epics/`**, which holds epic spines (`epics/<epic-id>/epic-state.json`), not runs; it is rendered by the "Epic progress" section below, never as a run row. If there is exactly one, use it. If there are several, show them (newest first by run-id date prefix) and render the most recent, noting the others.
    - If `docs/superpowers/execution/` is absent or empty, tell the user there are no **Compound V**
      orchestrator runs yet. Before stopping, do one cheap check: does `.superpowers/sdd/` exist in
-     this repo (plain Superpowers' `subagent-driven-development` task-tracking directory —
-     `task-N-brief.md` / `task-N-report.md` / `progress.md` / `review-<sha>..<sha>.diff`)? If so,
-     say so explicitly: work clearly happened here, just not through Compound V's manifest-driven
-     dispatch (auto-interception didn't trigger, or the plan predates it) — **do not** parse or
-     summarize its contents (that directory's format belongs to the base Superpowers plugin, not
-     Compound V; a presence check is all that's warranted). Otherwise stop as before — genuinely
-     no orchestrator runs of either kind.
+     this repo? That is plain Superpowers' `subagent-driven-development` workspace root, and in 6.2.0
+     it is **plan-scoped**: the skill's `scripts/sdd-workspace <plan>` prints and creates
+     `<repo-root>/.superpowers/sdd/<plan-basename>/`, writing a self-ignoring `.gitignore` at
+     `.superpowers/sdd/`, so one plan's whole artifact set — the `progress.md` ledger whose first
+     line names its plan, `task-N-brief.md` (`scripts/task-brief`), the implementer's report file,
+     and the `review-<base7>..<head7>.diff` review packages (`scripts/review-package`) — sits one
+     level deeper and stays git-ignored (`subagent-driven-development/SKILL.md:122-135`). That
+     ledger is the SDD controller's recovery map, and its per-task fix loop runs **five rounds
+     maximum** before a breaker trips and the controller adjudicates each open finding itself,
+     parking it in the ledger with a ruling (`subagent-driven-development/SKILL.md:319-320,358-364`).
+     A clean final review deletes the plan's workspace outright (`SKILL.md:416-421`), so an absent
+     directory is not evidence that no SDD run happened either.
+
+     `/v:status` **only checks that the directory exists.** It does not read the ledger — so it does
+     not know which plan ran, which tasks are complete, how many fix rounds were spent, whether the
+     breaker tripped, or which findings were parked — and it never parses briefs, reports or review
+     packages: that format belongs to the base Superpowers plugin, not Compound V, and a presence
+     check is all that's warranted. If the directory is there, say so explicitly: work clearly
+     happened here, just not through Compound V's manifest-driven dispatch (auto-interception didn't
+     trigger, or the plan predates it), and point the user at `progress.md` instead of summarizing
+     it. Otherwise stop as before — genuinely no orchestrator runs of either kind.
 
 2. **Read `state.json`** from the run dir (and `manifest.yaml` for job titles). If `state.json` is missing or unreadable, report that the run dir exists but has no state yet, and stop.
 
@@ -44,7 +58,7 @@ The run-id (optional) is `{{args}}`.
 
    **Liveness (hang detection).** Populate the `Liveness` column for any job whose `status` is `running` from [`scripts/compound-v-liveness.py`](../scripts/compound-v-liveness.py) `<run-dir> --json` — it classifies each running job from **git + filesystem only** (never model-self-report): `WORKING`, `LIKELY-DONE` (the worktree has a commit past its baseline — work landed, only the completion notification is stuck; hint: *`/v:resume`, or the dispatcher auto-collects it*), `STALE` (no progress past the threshold — a **suspected hang**), `DEAD` (a recorded pid died), or `UNKNOWN`. Non-running jobs show `—`. **Degrade-safe:** if the probe errors or is missing, show `—` for every row — never break the table. Surface any `STALE`/`DEAD` prominently in the summary and point the user at `/v:resume`. Never print fabricated metrics.
 
-   **Usage (measured-only).** Populate the `Usage` column from [`scripts/compound-v-usage-aggregate.py`](../scripts/compound-v-usage-aggregate.py) `--run-dir <run-dir>` — it reads each job's OPTIONAL `usage` object out of `<run-dir>/results/*.json` (worker-sourced, git-collected) and returns a per-job list plus measured-only totals. For a job whose `usage.measured == true`, show its real token counts (e.g. `in=12.3k out=4.1k`). For any job that is **unmeasured** — `measured:false` (a backend with no machine-readable usage: agy/antigravity, claude Task subagent), or no `usage` key at all — show `—`. **Measured only, never estimated:** never derive, guess, or back-fill a token number the backend did not report; an honest `—` beats a fabricated count (anti-ruflo). **Degrade-safe:** when `results/` is absent (a pending run) the aggregator returns empty totals with a `note` and exits 0 — show `—` for every row and never break the table (same rule as the Liveness column above). Optionally add a run-level total line to the summary (step 6) from the aggregator's `--format text` output (e.g. `measured: in=1.2M out=340k | 4 measured, 2 unmeasured`) — it already reports the honest unmeasured count, so a partially-instrumented run is never dressed up as a complete one.
+   **Usage (measured-only).** Populate the `Usage` column from [`scripts/compound-v-usage-aggregate.py`](../scripts/compound-v-usage-aggregate.py) `--run-dir <run-dir>` — it reads each job's OPTIONAL `usage` object out of `<run-dir>/results/*.json` (worker-sourced, git-collected) and returns a per-job list plus measured-only totals. For a job whose `usage.measured == true`, show its real token counts (e.g. `in=12.3k out=4.1k`). For any job that is **unmeasured** — `measured:false` (a backend with no machine-readable usage: agy/antigravity, claude Task subagent), or no `usage` key at all — show `—`. **Measured only, never estimated:** never derive, guess, or back-fill a token number the backend did not report; an honest `—` beats a fabricated count (anti-ruflo). **Degrade-safe:** when `results/` is absent (a pending run) the aggregator returns empty totals with a `note` and exits 0 — show `—` for every row and never break the table (same rule as the Liveness column above). Optionally add a run-level total line to the summary (step 6) from the aggregator's `--format text` output (e.g. `measured: in=1.2M out=340k | 4 measured, 2 unmeasured`) — it already reports the honest unmeasured count, so a partially-instrumented run is never dressed up as a complete one. Since 3.4.17 the aggregator's text line appends `cache_read=… cache_create=…` when a source reported them (Engine C transcripts do), and its JSON `totals` carries the same two keys — null for a pre-3.4.17 run, whose line is unchanged.
 
 5. **Render backend health (the circuit breaker).** From `state.json`, surface graceful-failure state so re-routes and credit-exhaustion are never silent (the fields are defined in [`state-machine.md`](../skills/compound-v/state-machine.md), the policy in [`failure-policy.md`](../skills/compound-v/failure-policy.md)):
    - **Circuit-open backends** — any `circuit_open[<backend>] == true` (out for the run — out-of-credits or auth). Call it out prominently.

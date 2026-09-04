@@ -177,7 +177,7 @@ coverage it never claimed.
 
 The engine deliberately **never runs git**, and neither does the UserPromptSubmit hook; committing
 is this command's job, and it is not optional. An uncommitted record is invisible to the Stop-hook
-triage gate (which reads committed files back with `jq`) and is destroyed by `git worktree remove`
+triage gate (which reads committed files back with `jq`) and is lost to `git clean`, a fresh clone or a removed worktree
 the moment a branch is merged or discarded — the v2.6.4 data-loss shape.
 
 **This step also applies to a record the hook wrote.** If you skipped T2 because

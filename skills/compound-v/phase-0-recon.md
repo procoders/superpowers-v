@@ -146,7 +146,7 @@ Rules, all binding:
     git commit -m "docs(recon): <topic>" -- docs/superpowers/recon/<file>.md docs/superpowers/memory/recon-outcomes.jsonl
     ```
 
-    Check each exit code. This is the v2.6.4 discipline — an uncommitted recon doc vanishes on worktree cleanup and never indexes into V-memory (the FTS5 lane indexes **git-tracked** prose), so gate 2 can never hit on it.
+    Check each exit code. This is the v2.6.4 discipline — an uncommitted recon doc is not in the repository (a `git clean`, a fresh clone or a removed worktree loses it) and never indexes into V-memory (the FTS5 lane indexes **git-tracked** prose), so gate 2 can never hit on it.
 11. **On commit failure:** announce *"recon written but not committed: <reason>"* and continue the brainstorm — never claim the doc is committed or indexed when it isn't.
 
 When the doc is committed, announce: *"💉 Compound V — recon saved at `docs/superpowers/recon/<file>.md`. Starting the brainstorm with it (directions-late)."* The brainstorm consumes it per the §1 directions-late protocol and the `consumed` event is appended (§6).
@@ -188,7 +188,7 @@ Recon is **reconnaissance**; the pre-flights are the **audit**. Different jobs, 
 
 | | Phase 0 recon | Phase 1B/1C pre-flights |
 |---|---|---|
-| When | before the brainstorm's first question | after the brainstorm produces a spec |
+| When | before the brainstorm's first question | after the user approved the spec, when writing-plans is invoked |
 | Input | a topic (no spec exists yet) | the full spec |
 | Depth | bounded scout pass, ≤150 lines | full domain / library audit with KB persistence |
 | Claims | VERIFIED (provisional) + UNVERIFIED LEADS, honestly split | verified against live sources |

@@ -26,6 +26,7 @@ Worked example: [`examples/manifest.example.yaml`](../../examples/manifest.examp
 | `triage` | map | no† | v3.0 (Feature A2): `{tier, pre_eval_id, taxonomy_digest, decided_at}`. **Required under `--require-triage`**, which `/v:dispatch` passes on every live dispatch. See the v3.0 section below. |
 | `test_contract` | map | no | v3.0 (Feature B2): `{floor_command, full_command, impacted_map}`. Absent ⇒ every job runs `full`. See the v3.0 section below. |
 | `retry` | map | no | v3.4.8 (findings 118/119): `{max_attempts, escalate_reviewer}`. Absent ⇒ defaults (`max_attempts: 3`, `escalate_reviewer: true`). See [§ `retry` — transient-failure retry inside the workflow](#retry--transient-failure-retry-inside-the-workflow-v348) below. |
+| `global_constraints` | string[] | no | v3.4.17: the plan's `## Global Constraints` lines, verbatim. [§ below](#the-two-superpowers-620-plan-fields-v3417). |
 
 **`{path}` substitution is the contract, not an illustration.** Inside a rule's `run`, the literal token `{path}` is replaced by the changed path that matched the rule's `when` glob, once per matching path. It appeared only inside examples until now, so an implementer had to infer it; a rule whose `run` omits `{path}` is still valid and simply runs once per match.
 
@@ -52,6 +53,7 @@ Worked example: [`examples/manifest.example.yaml`](../../examples/manifest.examp
 | `depends_on` | string[] | no | Job ids that must finish first (defaults to empty). |
 | `write_allowed` | string[] | yes | Glob list this job MAY write. The scope gate **enforces** it (git-derived). |
 | `read_allowed` | string[] | yes | Glob list this job MAY read. **ADVISORY only — NOT enforced** (git cannot track reads). Documents intent + scopes the prompt. Auto-includes Task 0 outputs + the three audits. |
+| `interfaces` | map | no | v3.4.17: `{consumes: [], produces: []}` — this task's `**Interfaces:**` block, verbatim. Either key may be absent. |
 | `acceptance` | string[] | yes | This job's narrow acceptance, checked in its per-task review. |
 | `body` | string | **yes** | The task itself — the instructions the worker reads. `description`, `prompt` and `spec` are accepted aliases. **A job with none of them is refused at emit**: a prompt carrying lanes and no instructions asks the worker to invent the task, and an invented task that stays inside its lane passes every gate here, because the scope gate checks WHICH files changed and never what they say. This field was undocumented until 3.3.4, and the emitter read only the three aliases while every manifest wrote `body` — so the task text was dropped from every worker prompt for twenty-five runs. |
 | `test_scope` | enum | no | v3.0 (Feature B2): `full` \| `impacted` \| `floor_only`. **Absent ⇒ DERIVED (3.1.0)** — see below; it is no longer a flat `full`. `floor_only` requires a non-empty `test_contract.floor_command`; `impacted` requires a non-empty `full_command` (an unmapped path resolves to it at tier FULL, and an uncomputable previously-failing set at every tier — 3.4.1). |
@@ -189,6 +191,68 @@ cached-prefix resume replays completed calls in order and re-enters `withRetry` 
 in flight — no new resume mechanism, just more calls at the site that already existed.
 
 ---
+
+### The two Superpowers 6.2.0 plan fields (v3.4.17)
+
+Superpowers 6.2.0's `writing-plans` added two sections to the plan **for the benefit of an
+implementer who sees nothing but their own task**: a plan-header `## Global Constraints` block
+(`SKILL.md:69-74` — project-wide requirements, one line each, exact values copied verbatim from the
+spec, implicitly part of every task's requirements) and a per-task `**Interfaces:**` block
+(`SKILL.md:89-93` — `- Consumes:` / `- Produces:`, exact function names, parameter and return types,
+because "a task's implementer sees only their own task; this block is how they learn the names and
+types neighboring tasks use").
+
+Compound V's implementers are the most isolated readers those two sections have: a separate agent, a
+separate context, usually a separate git worktree, and no view of any sibling job. `/v:orchestrate`
+therefore copies both into the manifest — the plan's constraint lines into top-level
+`global_constraints`, each task's block into that job's `interfaces` — and the emitter renders them
+into every implementation job's prompt. Dropping either on the way from plan to prompt is a
+**materialization defect**, not a stylistic choice: it deletes the only channel the field had.
+
+```yaml
+global_constraints:                       # top level; binds EVERY job
+  - "Node 20 LTS or newer — no APIs added after 20.x"
+  - "No new runtime dependency without an ADR"
+
+jobs:
+  - id: task-2-api
+    interfaces:                           # per job; either key may be absent
+      consumes:
+        - "type Sequence, type SequenceStep from src/types/sequence.ts"
+      produces:
+        - "GET/POST/PATCH/DELETE /api/sequences/:id -> Sequence"
+```
+
+**Copied, never paraphrased.** Both fields carry exact values — a version floor, a dependency rule, a
+function signature. A reworded version floor is a different floor and a reworded signature is a
+different signature, so `/v:orchestrate` transcribes the plan's lines and does not summarize,
+reorder, merge or "clean up" them. The same rule the manifest already applies to
+`acceptance_criteria`.
+
+**Both are OPTIONAL, and a plan without them is valid.** A plan written before 6.2.0 has neither
+section; the manifest materialized from it carries neither key; the validator accepts it and the
+emitter renders nothing — no heading, no placeholder. That is the shape of every manifest committed
+before 3.4.17 and it stays green. Within `interfaces`, either key may also be absent on its own: a
+first task consumes nothing and a last task produces nothing anyone else reads.
+
+**What the validator checks** (`_validate_global_constraints` / `_validate_interfaces`):
+`global_constraints` must be a list of non-empty strings; `interfaces` must be a mapping whose only
+keys are `consumes` and `produces`, each a list of non-empty strings. Any other shape — a scalar, a
+mapping where a list belongs, an unknown key like `requires`, a blank or non-string entry — is a hard
+validation failure naming the field and the offending value. An empty list, and an `interfaces: {}`,
+are the absent case written longhand and stay valid.
+
+**Only a MISSING key is absent — an explicit null is not.** A bare `global_constraints:`,
+`interfaces:` or `consumes:` line (no value under it) parses to `None` in both the reference parser
+and the embedded subset parser, and it is **rejected** with the same shape message as any other wrong
+type. A key someone wrote down has to carry the documented shape; writing `[]` is how you say "none"
+on purpose. Reading null as absent is what would let a materializer emit the key, fail to fill it,
+and validate clean while every implementer prompt silently lost the field.
+
+**What they are not.** Neither field is a routing input, and neither widens a lane. `write_allowed`
+is still the only enforced boundary: a constraint cannot authorize a write outside it, and an
+interface a neighbouring job declared does not entitle this job to edit that job's files.
+
 
 ## Invariant rules (deterministic — enforced by `compound-v-validate-manifest.py`)
 

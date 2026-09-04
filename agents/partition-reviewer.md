@@ -115,7 +115,7 @@ If the parallel batch has > `max_parallel` (or > 6) jobs, verify the manifest/pl
 
 ### Step 6.5 — Determine and WRITE the verdict
 
-Steps 0-6 are the **whole** of the verdict. At this point you decide `PASS` or `FAIL` and **write the report down to and including the PASS/FAIL body**. The verdict is now fixed. Only then continue to Step 7.
+Steps 0-6 are the **whole** of the verdict. At this point you decide `PASS` or `FAIL` and **write the report down to and including the PASS/FAIL body**. The verdict is now fixed. Only then continue to Steps 7 and 8 — both advisory, both append-only.
 
 This ordering is the mechanism, not a formality: an advisory signal that arrives *after* the verdict is on the page cannot influence it.
 
@@ -150,6 +150,21 @@ python3 scripts/compound-v-cochange.py check --patterns 'scripts/**' 'agents/par
 4. Co-change adds **no new hard gate**. The hard gates are the ones that already exist — the manifest validator, the CI lockstep guards, and the selftest loop.
 
 A finding is a genuinely useful prompt — *"a job owns `plugin.json`, but no job owns `CHANGELOG.md`, which moved with it in <support> of `plugin.json`'s <antecedent_commits> commits"* is worth a planner's second look. But it is a prompt, not a verdict, and the planner may well have a good reason.
+
+### Step 8 — Materialization advisory: the plan's 6.2.0 fields (appends to `WARNINGS` only)
+
+Runs after Step 7, under exactly the same contract: **append to `WARNINGS`, never touch `VERDICT`.**
+
+Superpowers 6.2.0's `writing-plans` added a plan-header `## Global Constraints` section and a per-task `**Interfaces:**` block, both written *for* an implementer who sees only their own task — which is precisely what a Compound V job is. `/v:orchestrate` is supposed to copy them into top-level `global_constraints` and each job's `interfaces`. Nothing deterministic checks that it did: `compound-v-validate-manifest.py` type-checks both fields but **never opens the plan file**, so a silently dropped section validates clean.
+
+You already read plan files (Step 0) and already grep for files the manifest references, so this is a grep, not a new capability. **Only run it when you can actually read the plan** — you were given a plan path, or the manifest's `plan_path` resolves under a repo root you were given. Otherwise skip the step and say so in `WARNINGS` (`NOTE: MATERIALIZATION_UNCHECKED — plan not readable from here`); never infer a missing section from the manifest alone.
+
+```bash
+grep -n '^## Global Constraints' <plan_path>
+grep -n '^\*\*Interfaces:\*\*' <plan_path>
+```
+
+Emit `WARN: PLAN_FIELD_DROPPED` when the plan has a section the manifest lacks the field for — `## Global Constraints` present but no top-level `global_constraints`, or `**Interfaces:**` blocks present but no job carries `interfaces`. Report which section, and the plan line it is on. A plan with neither section (anything written before 6.2.0) is the normal case and gets **no** warning. This is **advisory only**: there is no `FAIL: PLAN_FIELD_*` code, do not invent one, and a dropped field never changes `PASS`/`FAIL`.
 
 ## Output
 
@@ -218,6 +233,15 @@ WARNINGS
   NOTE: COCHANGE_UNAVAILABLE
     - compound-v-cochange.py exited 2 (operational error): "<error text>". The advisory did not
       run. This is not a partition finding and not a FAIL.
+
+  WARN: PLAN_FIELD_DROPPED
+    - <plan_path>:69 has `## Global Constraints`, but the manifest declares no top-level
+      `global_constraints` — the plan's project-wide requirements reach no implementer prompt.
+    → Advisory. Re-run the copy step in /v:orchestrate, or confirm the omission is intentional.
+
+  NOTE: MATERIALIZATION_UNCHECKED
+    - The plan named by `plan_path` is not readable from here, so the 6.2.0 field check did not
+      run. This is NOT "the fields are present" — it is "we could not look".
 ```
 
 Not every warning appears in every report — render the ones that apply, drop the rest, and write `WARNINGS: none` if none apply. The `WARNINGS` heading itself is never omitted.
@@ -229,8 +253,9 @@ A PASS clears dispatch. For **high-stakes** plans the orchestrator SHOULD *addit
 ## Constraints on YOU
 
 - DO run `compound-v-validate-manifest.py` whenever a manifest exists — it is the deterministic backing gate, not optional. A non-zero exit is an automatic FAIL.
-- DO write the `VERDICT` line **before** running the co-change step (Step 6.5 precedes Step 7). Never re-open a verdict you have already written.
+- DO write the `VERDICT` line **before** running the advisory steps (Step 6.5 precedes Steps 7 and 8). Never re-open a verdict you have already written.
 - DO NOT let a co-change finding, an incomplete scan, or a failed scan change `VERDICT`. There is no `FAIL: COCHANGE_*` code; do not invent one. Co-change **only** appends to `WARNINGS`.
+- DO NOT let a dropped-plan-field finding change `VERDICT` either. There is no `FAIL: PLAN_FIELD_*` code. Step 8, like Step 7, **only** appends to `WARNINGS`, and it is skipped outright when the plan is not readable.
 - DO NOT report an incomplete co-change scan (`complete: false`) as "no missing partners". It is "could not tell".
 - DO NOT propose fixes beyond the one-line "→" hints. The planner fixes; you review.
 - DO NOT rationalize ("the overlap is small"). Overlap is overlap.

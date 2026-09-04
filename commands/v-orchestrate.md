@@ -71,6 +71,25 @@ The manifest schema and rules are defined in [`skills/compound-v/execution-manif
 
 5. **Materialize `manifest.yaml`** in the run dir per the schema in [`execution-manifest.md`](../skills/compound-v/execution-manifest.md): top-level `run_id`, `feature`, `spec_path`, `plan_path`, `audits`, `acceptance_criteria`, `routing_stance`, `max_parallel`, and `jobs[]` with `id · title · type · backend · model · isolation · run · depends_on · write_allowed · read_allowed · acceptance`. Shared/contract/schema/version files go in a single serial `type: shared_foundation` Task 0; every other job `depends_on` it. `read_allowed` need not re-list Task 0 outputs or the audits (auto-included). The worked shape is [`examples/manifest.example.yaml`](../examples/manifest.example.yaml).
 
+   **Copy the plan's `## Global Constraints` and each task's `**Interfaces:**` block — verbatim.**
+   Superpowers 6.2.0's `writing-plans` added those two sections for exactly one reader: an
+   implementer who sees nothing but their own task. The plan-header `## Global Constraints` block
+   holds the spec's project-wide requirements one line each; a task's `**Interfaces:**` block holds
+   the `- Consumes:` / `- Produces:` names and signatures its neighbours rely on, because "a task's
+   implementer sees only their own task; this block is how they learn the names and types
+   neighboring tasks use". Compound V's implementers are the most isolated readers those sections
+   have — separate agent, separate context, usually a separate worktree — so put the constraint
+   lines in top-level `global_constraints` and each task's block in that job's
+   `interfaces: {consumes: [...], produces: [...]}`. `compound-v-emit-workflow.py` renders both into
+   every implementation job's prompt.
+
+   **Transcribe, do not paraphrase**, exactly as with `acceptance_criteria`: these fields carry exact
+   values — a version floor, a dependency rule, a function signature — and a reworded floor is a
+   different floor. Both fields are OPTIONAL: a plan written before 6.2.0 has neither section, the
+   manifest then carries neither key, and the validator accepts it. But **dropping a section the plan
+   does have is a materialization defect** — it deletes the only channel that carried it, and the
+   worker discovers the missing signature by inventing one.
+
 6. **Write the initial `state.json`** per the shape in [`state-machine.md`](../skills/compound-v/state-machine.md): `phase: PARTITION_VERIFIED` (the manifest exists and the partition is the verified one from the plan), `updated_at`, and a `jobs` map with every job `status: pending`, its `isolation`, `worktree: null`, `session_id: null`. **If this run is pre-eval-backed** — the invocation carried a `--pre-eval-id`, or the plan traces to a pre-eval whose offer was declined and is now becoming a normal run — set `pre_eval_id: <the id>` (else `null`). This is what lets a declined pre-eval later be re-joined to its triage record (CR3-2).
 
 7. **Validate before declaring done.** Run the deterministic manifest validator:
@@ -86,7 +105,17 @@ The manifest schema and rules are defined in [`skills/compound-v/execution-manif
    git add <each path in the pre-flight result's kb_files, if any>
    git commit -m "chore(v-orchestrate): materialize run <run-id>"
    ```
-   This is not optional. If this run is happening inside a git worktree, an *uncommitted* run directory is silently deleted by `git worktree remove` — the cleanup step in `superpowers:finishing-a-development-branch` — the very moment the branch is merged or discarded, taking Compound V's own audit trail with it. See [`state-machine.md`](../skills/compound-v/state-machine.md)'s note on this.
+   This is not optional, and the reason is simpler than the one this step used to give. An
+   *uncommitted* run directory is not durable: `git clean` removes it, a fresh clone never has it, and
+   a worktree the user deletes takes it with them. Nothing else keeps it — the committed record is the
+   only durable audit trail Compound V has, and `/v:status`, `/v:resume` and every later join read it.
+
+   (The older wording blamed `superpowers:finishing-a-development-branch` for silently deleting it on
+   Merge or Discard. That is no longer accurate: 6.2.0's menu is *Merge locally · Create PR · Keep the
+   branch as-is* with no Discard option at all — discarding happens only when the human asks for it in
+   so many words — and its cleanup removes a worktree **only** when the path is under `.worktrees/` or
+   `worktrees/`, i.e. one Superpowers created; anything else belongs to the host and is left in place.
+   The rule is unchanged; only the cause was wrong.) See [`state-machine.md`](../skills/compound-v/state-machine.md)'s note on this.
 
    **Stage the three knowledge-base directories too, and name the exact files from `kb_files`.** 1C appends to `docs/superpowers/library-audit/_knowledge-base/<topic>.md` (its Step 7); 1A may do the same under `docs/superpowers/archaeology/_knowledge-base/<topic>.md`, and 1B under `docs/superpowers/expert/_knowledge-base/<topic>.md`. Those are already-tracked files after their first run, so the scope gate's untracked-file protection does not cover a later modification — it gets charged to whatever direct-mode job runs next (finding 100: it had to be stashed mid-run on 2026-09-03). Read the pre-flight result's `kb_files` (Step 2's audits came from that same pre-flight run) and `git add` each path it names, in addition to the three directory globs above — the globs catch a KB write this run-id has not seen before; `kb_files` catches the modification to one it has.
 

@@ -26,10 +26,22 @@ Input (one of):
   --run-dir docs/superpowers/execution/<run-id>   (reads <run-dir>/results/)
   --results-dir <dir>                             (reads <dir> directly)
 
+Sources (v3.4.17). `usage` now arrives from either of two records, and this
+aggregator treats them IDENTICALLY: `backend-events` (an external backend's own
+structured events) and `workflow-transcript` (an Engine C job's Claude Code
+subagent transcripts). Totals semantics are unchanged — measured-only, null over
+a fabricated zero, per-metric independence. The transcript source additionally
+reports `cache_read_input_tokens` / `cache_creation_input_tokens`; those are
+summed under the same rules and, because a backend-events result carries neither
+key, a pre-3.4.17 run totals them as null and its text line is byte-identical to
+what it was before.
+
 Output:
   --format json  (default) : full per-job + totals object
   --format text            : one-line summary, e.g.
       measured: in=1234 out=567 | 4 measured, 2 unmeasured
+    and, when a source reported the cache metrics:
+      measured: in=174 out=40680 cache_read=6174478 cache_create=286647 | 2 measured, 0 unmeasured
 
 Optional annotation (grouping is per-run; these only label the output):
   --feature <name>   --epic <name>
@@ -123,11 +135,24 @@ def aggregate(results_dir: str,
         measured = bool(usage.get("measured")) if isinstance(usage, dict) else False
         in_tok = _valid_int(usage.get("input_tokens")) if isinstance(usage, dict) else None
         out_tok = _valid_int(usage.get("output_tokens")) if isinstance(usage, dict) else None
+        # v3.4.17: the workflow-transcript source also reports the two prompt-cache
+        # metrics. They are carried through UNCHANGED in kind — measured-only,
+        # null when absent — and kept SEPARATE from input_tokens, because on a
+        # real Engine C job the cache-read figure dwarfs the uncached input
+        # (1.77M vs 62 on run 2026-09-03-glob-parity-one-matcher-r3) and folding
+        # them together would misstate both. A backend-events result simply has
+        # neither key, so it contributes nothing to them: the existing
+        # input/output totals are byte-identical to what they were before.
+        cr_tok = _valid_int(usage.get("cache_read_input_tokens")) if isinstance(usage, dict) else None
+        cc_tok = _valid_int(usage.get("cache_creation_input_tokens")) if isinstance(usage, dict) else None
         jobs.append({
             "id": job_id,
             "measured": measured,
             "input_tokens": in_tok,
             "output_tokens": out_tok,
+            "cache_read_input_tokens": cr_tok,
+            "cache_creation_input_tokens": cc_tok,
+            "source": usage.get("source") if isinstance(usage, dict) else None,
         })
 
     return _assemble(jobs, notes, feature, epic)
@@ -145,6 +170,8 @@ def _assemble(jobs: List[Dict[str, Any]],
     """
     sum_in = None      # type: Optional[int]
     sum_out = None     # type: Optional[int]
+    sum_cr = None      # type: Optional[int]
+    sum_cc = None      # type: Optional[int]
     measured_jobs = 0
     unmeasured_jobs = 0
 
@@ -157,6 +184,13 @@ def _assemble(jobs: List[Dict[str, Any]],
                 sum_in = (sum_in or 0) + j["input_tokens"]
             if j["output_tokens"] is not None:
                 sum_out = (sum_out or 0) + j["output_tokens"]
+            # Same rule for the two cache metrics: a source that does not report
+            # them leaves them null, and null contributes nothing. A run of
+            # backend-events results therefore still totals them as null, not 0.
+            if j.get("cache_read_input_tokens") is not None:
+                sum_cr = (sum_cr or 0) + j["cache_read_input_tokens"]
+            if j.get("cache_creation_input_tokens") is not None:
+                sum_cc = (sum_cc or 0) + j["cache_creation_input_tokens"]
         else:
             # measured==false OR no usage key: TOKENS honestly unmeasured.
             unmeasured_jobs += 1
@@ -164,6 +198,8 @@ def _assemble(jobs: List[Dict[str, Any]],
     totals = {
         "input_tokens": sum_in,
         "output_tokens": sum_out,
+        "cache_read_input_tokens": sum_cr,
+        "cache_creation_input_tokens": sum_cc,
         "measured_jobs": measured_jobs,
         "unmeasured_jobs": unmeasured_jobs,
     }
@@ -180,18 +216,54 @@ def _assemble(jobs: List[Dict[str, Any]],
     return out
 
 
+def _null_dash():  # type: () -> str
+    """The character standing for "not measured", safe for THIS stdout.
+
+    "—" is the documented rendering (commands/v-status.md), but a stream whose
+    encoding is ASCII — `PYTHONIOENCODING=ascii`, or a C locale on a Python
+    without UTF-8 mode — cannot encode it, and the write raised UnicodeEncodeError
+    and took the whole render down. A status line that crashes is worse than one
+    that prints "-". The one thing that must never happen either way is a 0
+    standing in for a number nobody measured.
+
+    NOTE: compound-v-usage-extract.py carries the identical helper. It is a
+    property of the caller's own stdout, asked locally, not a shared constant —
+    but keep the two in step.
+    """
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        u"\u2014".encode(encoding)
+    except (LookupError, UnicodeEncodeError):
+        return "-"
+    return u"\u2014"
+
+
 def _fmt_num(val: Optional[int]) -> str:
-    """Render a null total as an em dash — never a fabricated 0."""
-    return "—" if val is None else str(val)
+    """Render a null total as a dash — never a fabricated 0."""
+    return _null_dash() if val is None else str(val)
 
 
 def _format_text(agg: Dict[str, Any]) -> str:
-    """One-line, measured-only summary. A null total prints "—", never a 0."""
+    """One-line, measured-only summary. A null total prints "—", never a 0.
+
+    The cache clause is APPENDED ONLY when a source actually reported the two
+    cache metrics (today: `workflow-transcript`). A run of backend-events
+    results renders exactly the string it rendered before 3.4.17 — nothing is
+    printed for a metric nobody measured. It is not cosmetic: on Engine C the
+    cache-read figure is four orders of magnitude larger than the uncached
+    input, so a line that showed only `in=` would understate the run's real
+    prompt volume while looking complete.
+    """
     t = agg["totals"]
-    return "measured: in=%s out=%s | %d measured, %d unmeasured" % (
-        _fmt_num(t["input_tokens"]), _fmt_num(t["output_tokens"]),
-        t["measured_jobs"], t["unmeasured_jobs"],
-    )
+    line = "measured: in=%s out=%s" % (
+        _fmt_num(t["input_tokens"]), _fmt_num(t["output_tokens"]))
+    if t.get("cache_read_input_tokens") is not None \
+            or t.get("cache_creation_input_tokens") is not None:
+        line += " cache_read=%s cache_create=%s" % (
+            _fmt_num(t.get("cache_read_input_tokens")),
+            _fmt_num(t.get("cache_creation_input_tokens")))
+    return "%s | %d measured, %d unmeasured" % (
+        line, t["measured_jobs"], t["unmeasured_jobs"])
 
 
 def _resolve_results_dir(args: argparse.Namespace) -> str:
@@ -281,14 +353,56 @@ def _selftest() -> int:
     check("claude.measured", claude_job["measured"], False)
     check("claude.input_tokens", claude_job["input_tokens"], None)
 
-    # text format
+    # text format — UNCHANGED for backend-events results (no cache clause)
     txt = _format_text(agg)
     check("text", txt, "measured: in=1244 out=567 | 3 measured, 3 unmeasured")
+    check("no_cache_totals", (t["cache_read_input_tokens"],
+                              t["cache_creation_input_tokens"]), (None, None))
 
     # via run-dir resolution (results subdir)
     ns = argparse.Namespace(run_dir=run_dir, results_dir=None)
     agg2 = aggregate(_resolve_results_dir(ns))
     check("run_dir.input_tokens", agg2["totals"]["input_tokens"], 1244)
+
+    # v3.4.17: a `workflow-transcript` run aggregates with the SAME semantics,
+    # and its two extra cache metrics roll up under the same null-safe rule.
+    wf_dir = os.path.join(tmp, "wf", "results")
+    os.makedirs(wf_dir)
+    _write_result(wf_dir, "load-bearing-row", _base_result(usage={
+        "input_tokens": 62, "output_tokens": 10202,
+        "cache_read_input_tokens": 1767605,
+        "cache_creation_input_tokens": 125639,
+        "backend": "claude", "measured": True,
+        "source": "workflow-transcript",
+        "transcripts": ["agent-a027dffb35f90a354.jsonl"],
+    }))
+    _write_result(wf_dir, "spec-review-1", _base_result(usage={
+        "input_tokens": 112, "output_tokens": 30478,
+        "cache_read_input_tokens": 4406873,
+        "cache_creation_input_tokens": 161008,
+        "backend": "claude", "measured": True,
+        "source": "workflow-transcript",
+        "transcripts": ["agent-a26c40b0a6bdb887a.jsonl"],
+    }))
+    # A job the transcript scan could not measure stays unmeasured, exactly as
+    # an agy job does — the source changes, the honesty rule does not.
+    _write_result(wf_dir, "no-transcript", _base_result())
+    wfagg = aggregate(wf_dir)
+    wt = wfagg["totals"]
+    check("wf.input_tokens", wt["input_tokens"], 174)
+    check("wf.output_tokens", wt["output_tokens"], 40680)
+    check("wf.cache_read", wt["cache_read_input_tokens"], 6174478)
+    check("wf.cache_create", wt["cache_creation_input_tokens"], 286647)
+    check("wf.measured_jobs", wt["measured_jobs"], 2)
+    check("wf.unmeasured_jobs", wt["unmeasured_jobs"], 1)
+    check("wf.text", _format_text(wfagg),
+          "measured: in=174 out=40680 cache_read=6174478 cache_create=286647 "
+          "| 2 measured, 1 unmeasured")
+    wf_job = [j for j in wfagg["jobs"] if j["id"] == "spec-review-1"][0]
+    check("wf.job.source", wf_job["source"], "workflow-transcript")
+    wf_none = [j for j in wfagg["jobs"] if j["id"] == "no-transcript"][0]
+    check("wf.job.no_source", wf_none["source"], None)
+    check("wf.job.no_cache", wf_none["cache_read_input_tokens"], None)
 
     # FIX 3: zero measured jobs -> NULL token totals + "—" text, never a real 0.
     zero_dir = os.path.join(tmp, "zero", "results")
@@ -304,8 +418,11 @@ def _selftest() -> int:
     check("zero.output_tokens", zt["output_tokens"], None)
     check("zero.measured_jobs", zt["measured_jobs"], 0)
     check("zero.unmeasured_jobs", zt["unmeasured_jobs"], 2)
+    # The dash is whatever THIS stdout can encode, so the expectation is built
+    # the same way — an ASCII stream must not turn a passing test into a crash.
+    _d = _fmt_num(None)
     check("zero.text", _format_text(zagg),
-          "measured: in=— out=— | 0 measured, 2 unmeasured")
+          "measured: in=%s out=%s | 0 measured, 2 unmeasured" % (_d, _d))
 
     # fail-open: missing results dir -> NULL totals + note, no crash
     agg3 = aggregate(os.path.join(tmp, "does-not-exist", "results"))

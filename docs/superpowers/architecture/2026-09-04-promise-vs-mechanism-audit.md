@@ -91,9 +91,32 @@ v-archaeology, parallel-dispatcher, doc-validator-prompt · пины agy 1.0.13 
 | 2 | Обоснование правила «коммить audit-trail, иначе `git worktree remove` его удалит» устарело: в 6.2.0 нет варианта Discard, а чистка касается только `.worktrees/`, не `.claude/worktrees/` (правило оставить, причину исправить) | 6 мест: parallel-dispatcher:476, v-dispatch:286, v-orchestrate:89, v-collect:62, v-epic:393 | `finishing-a-development-branch/SKILL.md:55-65,169-178` |
 | 3 | writing-plans 6.2.0 добавил **Global Constraints** и per-task **Interfaces** ровно для изолированных исполнителей — `/v:orchestrate` их не читает и в промпты не кладёт | `commands/v-orchestrate.md:60-64` | `writing-plans/SKILL.md:69-74,89-93` |
 | 4 | `"shell": "bash"` в регистрациях хуков (Windows-фикс 6.2.0) у нас отсутствует; `hooks.json` ссылается на 5.1.0 как источник | `hooks/hooks.json` | `SP/hooks/hooks.json` |
-| 5 | В `plugin.json` нет поля `hooks` — на других харнессах наши хуки регистрируются автоматически (SP закрыл это `hooks: {}` в 6.1.1) | `.claude-plugin/plugin.json` | SP 6.1.1 release notes |
+| 5 | **НЕ ПРИМЕНИМО (строка была неверной).** `hooks: {}` из 6.1.1 SP закрыл в своём **Codex**-манифесте, а не в Claude-плагине: `SP/.codex-plugin/plugin.json:24` содержит `"hooks": {}`, а в `SP/.claude-plugin/plugin.json` поля `hooks` нет вовсе — фикс нужен был против codex-овского авто-дискавери `hooks/hooks.json`. Мы Codex-манифеста не поставляем (`.codex-plugin/` в репозитории отсутствует) и установку в Codex не заявляем, так что закрывать нечего | `.claude-plugin/plugin.json` — без изменений | `SP/RELEASE-NOTES.md:40`, `SP/.codex-plugin/plugin.json:24` |
 | 6 | SDD в 6.2.0 сам тирует модели и предупреждает против самой дешёвой — наш текст про «cheap model» устарел; presence-check `.superpowers/sdd/` не видит ledger/breaker 6.2.0 | `skills/compound-v/SKILL.md:109,264`, `commands/v-status.md:21` | `subagent-driven-development/SKILL.md:159-192` |
 | 7 | Шесть skills Superpowers мы не используем вовсе: verification-before-completion, requesting-/receiving-code-review, systematic-debugging, writing-skills, (TDD — частично) — наш spec-reviewer и floor их переизобретают | — | `SP/skills/` |
 | 8 | Нет теста на хук Trigger 0 (`brainstorm-trigger0-nudge.sh`), единственный перехват рядом с enforcement | `tests/` | — |
 
 Кандидаты в 3.4.17: 1 (нудж после ворот, не при записи), 3 (Global Constraints + Interfaces в манифест/промпт), 4, 5, 2, 6, 8.
+
+### Что закрыто в 3.4.17 (документационная полоса)
+
+- **Строка 2 — правило оставлено, причина исправлена.** Пять мест (`agents/parallel-dispatcher.md`,
+  `commands/v-dispatch.md`, `commands/v-collect.md`, `commands/v-epic.md`,
+  `skills/compound-v/state-machine.md`) больше не ссылаются на «Merge и Discard»: коммит обоснован
+  долговечностью git (`git clean -fdx`, свежий клон, снятый worktree), с цитатами
+  `finishing-a-development-branch/SKILL.md:55-65` (три опции, Discard среди них нет) и `:169-178`
+  (чистится только путь под `.worktrees/`/`worktrees/`). Все формулировки порядка («коммит до
+  смены фазы», «до MERGED») сохранены дословно. `commands/v-orchestrate.md` — соседняя полоса;
+  `skills/compound-v/adr-capture.md:127`, `skills/compound-v/phase-0-recon.md:149`,
+  `skills/compound-v/phase-preeval.md:15,107`, `commands/v-triage.md:180` всё ещё несут старую
+  причину и в эту полосу не входили.
+- **Строка 5 — не применимо**, см. исправленную строку в таблице.
+- **Строка 6, половина про presence-check.** `commands/v-status.md` описывает 6.2.0 как есть:
+  план-скоупленный воркспейс `.superpowers/sdd/<plan-basename>/` (`scripts/sdd-workspace`), ledger
+  `progress.md`, брифы/отчёты/review-пакеты, брейкер на 5 раундов
+  (`subagent-driven-development/SKILL.md:122-135,319-320,358-364`) — и прямо называет, чего
+  `/v:status` НЕ читает. Половина про «cheap model» в `skills/compound-v/SKILL.md` — соседняя полоса.
+- **Строка 7, две из шести.** `superpowers:verification-before-completion` подключён в терминальных
+  шагах `/v:dispatch`, `/v:collect`, `/v:epic`; `superpowers:receiving-code-review` — в ревью-шаге
+  `/v:dispatch` перед выпуском fix-джобов.
+- Строки 1, 3, 4, 8 — не эта полоса (хуки, `/v:orchestrate`, `tests/`).

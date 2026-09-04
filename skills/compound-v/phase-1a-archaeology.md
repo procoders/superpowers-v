@@ -1,6 +1,6 @@
 # Phase 1A — Pre-Flight Archaeology
 
-**When this fires:** Brainstorming has produced a spec. Runs **in parallel with Phase 1B (domain-expert advisor)** before invoking `writing-plans`.
+**When this fires:** Brainstorming has handed off to `writing-plans` — i.e. the user has approved the spec (`superpowers/6.2.0/skills/brainstorming/SKILL.md:122-127`), not merely that a spec file exists. Runs **in parallel with Phase 1B (domain-expert advisor)**, before the plan is written.
 
 **Goal:** Force an honest look at the existing **code** the new design will sit next to. Without this, the plan inherits latent bugs and silently conflicts with sibling code.
 

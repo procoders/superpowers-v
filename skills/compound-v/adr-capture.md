@@ -124,7 +124,7 @@ test), say so at the draft step instead of writing a weak record.
 
 An ADR that is written but never committed is **invisible to recall** — the FTS5 lane indexes
 **git-tracked files only**, so an uncommitted `docs/superpowers/adr/*.md` cannot be found by
-`/v:remember`. Worse, `finishing-a-development-branch`'s worktree cleanup can silently delete an
+`/v:remember`. Worse, an uncommitted file is not in the repository at all — `git clean`, a fresh clone or a removed worktree silently loses an
 uncommitted doc (the v2.6.4 audit-trail incident). So capture is not done until the file is
 committed.
 

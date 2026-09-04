@@ -1546,7 +1546,77 @@ def job_turn_cap(job):
     return cap, source
 
 
-def render_worker_prompt(job, run_id):
+# --------------------------------------------------------------------------- #
+# v3.4.17 — the two plan fields Superpowers 6.2.0 added for ISOLATED implementers.
+#
+# `## Global Constraints` (plan header) and a task's `**Interfaces:**` block
+# exist precisely because "a task's implementer sees only their own task"
+# (SP 6.2.0 skills/writing-plans/SKILL.md:92-93). Compound V's implementers are
+# the most isolated of all — a separate agent, often a separate worktree, always
+# a separate context — so dropping either field on the way from the plan to the
+# prompt removes the only channel that carried it. Both are OPTIONAL: a plan
+# written before 6.2.0 has neither section, the manifest then carries neither
+# key, and NOTHING is rendered. Ordering is fixed (constraints, then consumes,
+# then produces) so two emits of one manifest produce byte-identical prompts.
+# --------------------------------------------------------------------------- #
+def _job_interfaces(job):
+    """Normalize a job's `interfaces` into `{consumes: [...], produces: [...]}`.
+
+    Only non-empty strings survive, and a missing/malformed key becomes an empty
+    list — the validator is what REFUSES a malformed block; this renderer never
+    invents a signature and never fails a run over one."""
+    raw = job.get("interfaces")
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for key in ("consumes", "produces"):
+        vals = raw.get(key)
+        if not isinstance(vals, list):
+            continue
+        kept = [v.strip() for v in vals if isinstance(v, str) and v.strip()]
+        if kept:
+            out[key] = kept
+    return out
+
+
+def _constraint_lines(constraints, heading, bullet="  - "):
+    """The GLOBAL CONSTRAINTS block, or `[]` when there are none."""
+    kept = [c.strip() for c in (constraints or [])
+            if isinstance(c, str) and c.strip()]
+    if not kept:
+        return []
+    lines = [heading, "",
+             "Project-wide, and binding on EVERY job in this run including yours.",
+             "Copied verbatim from the plan — do not reinterpret, relax or widen",
+             "them.", ""]
+    lines += ["%s%s" % (bullet, c) for c in kept]
+    lines.append("")
+    return lines
+
+
+def _interface_lines(interfaces, heading, bullet="  - "):
+    """The INTERFACES block, or `[]` when the job declares none."""
+    iface = interfaces if isinstance(interfaces, dict) else {}
+    consumes = iface.get("consumes") or []
+    produces = iface.get("produces") or []
+    if not consumes and not produces:
+        return []
+    lines = [heading, "",
+             "You see only your own job. This block is the ONLY view you get of the",
+             "names and signatures neighbouring jobs rely on — implement exactly",
+             "these, and do not rename or re-shape them.", ""]
+    if consumes:
+        lines += ["consumes (what earlier jobs give you):", ""]
+        lines += ["%s%s" % (bullet, c) for c in consumes]
+        lines.append("")
+    if produces:
+        lines += ["produces (what later jobs will call):", ""]
+        lines += ["%s%s" % (bullet, p) for p in produces]
+        lines.append("")
+    return lines
+
+
+def render_worker_prompt(job, run_id, global_constraints=None):
     """The task itself, as the file the worker is handed via `--prompt-file`.
 
     WHAT THIS TEMPLATE DELIBERATELY DOES NOT ADD: an imperative to verify, to
@@ -1634,6 +1704,14 @@ def render_worker_prompt(job, run_id):
     for glob in (job.get("write_allowed") or []):
         lines.append("- `%s`" % glob)
     lines.append("")
+    # v3.4.17: the plan's project-wide constraints and this task's interface
+    # contract, in that fixed order. Both absent on a pre-6.2.0 plan ⇒ nothing.
+    lines += _constraint_lines(global_constraints,
+                               "## Global constraints (binding on every job)",
+                               bullet="- ")
+    lines += _interface_lines(_job_interfaces(job),
+                              "## Interfaces (your only view of the neighbours)",
+                              bullet="- ")
     read_allowed = job.get("read_allowed") or []
     if read_allowed:
         lines += ["## Read-allowed (advisory — git cannot enforce reads)", ""]
@@ -1752,6 +1830,12 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
     # per-backend map. Both are optional and both degrade to the resolver's
     # built-in balanced defaults.
     stance = str(manifest.get("routing_stance") or "").strip() or None
+    # v3.4.17: the plan's `## Global Constraints` lines (Superpowers 6.2.0),
+    # copied into the manifest by /v:orchestrate and binding on EVERY job. Read
+    # once here; every job's prompt renders the same list. Absent ⇒ empty ⇒ the
+    # block is not rendered at all, which is what every pre-6.2.0 run looks like.
+    global_constraints = [c for c in (manifest.get("global_constraints") or [])
+                          if isinstance(c, str) and c.strip()]
     config_path = os.path.join(abs_repo_root, ".claude", "compound-v.json")
     if not os.path.isfile(config_path):
         config_path = None
@@ -1948,6 +2032,10 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
             "timeout_sec": job.get("timeout_sec"),
             "write_allowed": job.get("write_allowed") or [],
             "read_allowed": job.get("read_allowed") or [],
+            # v3.4.17: this task's `**Interfaces:**` block from the plan — the
+            # ONLY view an isolated implementer gets of the names and signatures
+            # its neighbours rely on. Absent ⇒ `{}` ⇒ nothing is rendered.
+            "interfaces": _job_interfaces(job),
             "acceptance": acceptance,
             "depends_on": job.get("depends_on") or [],
             "test_scope": job.get("test_scope"),
@@ -2011,7 +2099,7 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
                 entry["model_note"] = merr
         artefacts[job_id] = {
             "prompt_file": entry["prompt_file"],
-            "prompt_text": render_worker_prompt(job, run_id),
+            "prompt_text": render_worker_prompt(job, run_id, global_constraints),
             "launch_argv_file": None,
             "launch_argv": None,
             # Written only for a job that tightened, because that is the only
@@ -2073,6 +2161,7 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
         )),
         "python": python_bin,
         "emitter": self_path,
+        "global_constraints": global_constraints,
         "scope_check": scope_check,
         "fastpath": fastpath,
         "max_parallel": max_parallel,
@@ -2305,6 +2394,15 @@ def _implement_prompt(job, plan):
     for glob in job["write_allowed"]:
         lines.append("  - %s" % glob)
     lines.append("")
+    # v3.4.17: the plan's project-wide constraints, then this job's interface
+    # contract — in that fixed order, before the acceptance list. Superpowers
+    # 6.2.0 added both sections to writing-plans FOR the isolated implementer,
+    # and this prompt is where that isolation is at its most complete. Absent on
+    # a pre-6.2.0 plan ⇒ neither block is rendered.
+    lines += _constraint_lines(plan.get("global_constraints"),
+                               "GLOBAL CONSTRAINTS (binding on every job in this run):")
+    lines += _interface_lines(job.get("interfaces"),
+                              "INTERFACES (your only view of the neighbouring jobs):")
     if job["acceptance"]:
         lines.append("ACCEPTANCE (your definition of done):")
         for item in job["acceptance"]:
@@ -2409,14 +2507,32 @@ def emit_script(plan):
         "prompts": prompts,
     }
 
-    body = JS_TEMPLATE
-    body = body.replace("__META__", neutralize_in_data(_js_json(meta)))
-    body = body.replace("__CFG__", neutralize_in_data(_js_json(cfg)))
-    body = body.replace("__IMPLEMENT_SCHEMA__", _js_json(IMPLEMENT_SCHEMA))
-    body = body.replace("__GATE_SCHEMA__", _js_json(GATE_SCHEMA))
-    body = body.replace("__RECORD_SCHEMA__", _js_json(RECORD_SCHEMA))
-    body = body.replace("__FINALIZE_SCHEMA__", _js_json(FINALIZE_SCHEMA))
-    return body
+    # ONE NON-RECURSIVE PASS OVER THE TEMPLATE (v3.4.17, cross-model review r1
+    # finding 7). This was six sequential `body.replace(...)` calls, and every
+    # call after the first re-scanned text that an EARLIER call had just
+    # injected. `__CFG__` carries every job prompt verbatim, so a manifest whose
+    # constraint, interface line, title, acceptance item or task body contained
+    # the literal text `__IMPLEMENT_SCHEMA__` had the raw schema JSON spliced
+    # into the middle of a quoted JS string — a syntax error in the emitted
+    # script, produced by data the manifest was entitled to write. The same
+    # hazard ran the other way: a run_id is id-safe but may contain `__CFG__`,
+    # which lands in `__META__`'s JSON and is then eaten by the `__CFG__` pass.
+    #
+    # `re.sub` with a CALLABLE never rescans its own replacement and never
+    # interprets backreferences in it, so each sentinel is substituted exactly
+    # once and injected data is inert. Longest-first alternation so no sentinel
+    # name can be shadowed by a prefix of another.
+    substitutions = {
+        "__META__": neutralize_in_data(_js_json(meta)),
+        "__CFG__": neutralize_in_data(_js_json(cfg)),
+        "__IMPLEMENT_SCHEMA__": _js_json(IMPLEMENT_SCHEMA),
+        "__GATE_SCHEMA__": _js_json(GATE_SCHEMA),
+        "__RECORD_SCHEMA__": _js_json(RECORD_SCHEMA),
+        "__FINALIZE_SCHEMA__": _js_json(FINALIZE_SCHEMA),
+    }
+    pattern = re.compile("|".join(
+        re.escape(k) for k in sorted(substitutions, key=len, reverse=True)))
+    return pattern.sub(lambda m: substitutions[m.group(0)], JS_TEMPLATE)
 
 
 # `export const meta = { name, description, phases }` MUST be the FIRST statement
@@ -5816,6 +5932,22 @@ class _quiet(object):
         return False
 
 
+def _cfg_of(script):
+    """The emitted script's CFG object, or None when the script is not parseable.
+
+    Returns None instead of raising: a regression that CORRUPTS the CFG blob
+    (r1 finding 7 — a sentinel inside prompt data being substituted a second
+    time) must surface as a failed check with the other results, not as a
+    traceback that kills the run before any report is printed."""
+    try:
+        blob = script.split("const CFG = ", 1)[1]
+        # Pretty-printed with indent=2, so the only bare `}` at column zero is
+        # this object's own terminator.
+        return json.loads(blob[:blob.index("\n};") + 2])
+    except (ValueError, IndexError, KeyError):
+        return None
+
+
 def _check(name, condition, detail=""):
     if condition:
         _PASSES[0] += 1
@@ -8473,6 +8605,192 @@ def selftest():
         _check("...and the emitted script carries the evidence into the prompt",
                "Prior failures on your lane" in _rk_script
                and "READING BUDGET" in _rk_script)
+
+        # --- v3.4.17: Superpowers 6.2.0's `global_constraints` + `interfaces` --
+        # Both are OPTIONAL. The absent case is the one every pre-6.2.0 manifest
+        # is in, so it is checked first and checked for SILENCE, not for a
+        # placeholder.
+        _gc_man = _tiny_manifest([
+            {"id": "impl", "title": "Impl", "tier": "standard",
+             "write_allowed": ["src/**"], "acceptance": ["it builds"],
+             "interfaces": {"consumes": ["load_yaml(text) -> dict"],
+                            "produces": ["validate(manifest) -> list[str]",
+                                         "ManifestParseError"]}},
+            {"id": "plain", "title": "Plain", "tier": "standard",
+             "write_allowed": ["docs/**"], "acceptance": ["it reads"]},
+            {"id": "ext", "title": "Ext", "backend": "codex", "tier": "standard",
+             "isolation": "worktree", "write_allowed": ["ext/**"],
+             "acceptance": ["it builds"],
+             "interfaces": {"produces": ["run_worker(argv) -> int"]}},
+        ], max_parallel=3)
+        _gc_man["global_constraints"] = [
+            "Python 3.9-safe, stdlib only",
+            "No new runtime dependency",
+        ]
+        _gc_dir = os.path.join(tmp, "gcrun")
+        os.makedirs(_gc_dir, exist_ok=True)
+        _gc_workers = os.path.join(tmp, "workers-gc")
+        os.makedirs(_gc_workers, exist_ok=True)
+        with open(os.path.join(_gc_workers, "compound-v-run-codex-worker.sh"),
+                  "w", encoding="utf-8") as _gc_fh:
+            _gc_fh.write("#!/bin/sh\nexit 0\n")
+        _gc_plan = _plan_for(_gc_man, _gc_dir, workers_dir=_gc_workers)
+        _gc_entries = dict((j["id"], j) for w in _gc_plan["waves"] for j in w)
+        _gc_prompt = _implement_prompt(_gc_entries["impl"], _gc_plan)
+        _check("the implementer prompt carries GLOBAL CONSTRAINTS, every line",
+               "GLOBAL CONSTRAINTS (binding on every job in this run):" in _gc_prompt
+               and "Python 3.9-safe, stdlib only" in _gc_prompt
+               and "No new runtime dependency" in _gc_prompt, _gc_prompt[:400])
+        _check("...and INTERFACES, both directions with their exact signatures",
+               "INTERFACES (your only view of the neighbouring jobs):" in _gc_prompt
+               and "consumes (what earlier jobs give you):" in _gc_prompt
+               and "load_yaml(text) -> dict" in _gc_prompt
+               and "produces (what later jobs will call):" in _gc_prompt
+               and "validate(manifest) -> list[str]" in _gc_prompt
+               and "ManifestParseError" in _gc_prompt)
+        _check("...in a stable order: constraints, then consumes, then produces",
+               _gc_prompt.index("GLOBAL CONSTRAINTS")
+               < _gc_prompt.index("INTERFACES (your only")
+               < _gc_prompt.index("consumes (what earlier")
+               < _gc_prompt.index("produces (what later")
+               < _gc_prompt.index("ACCEPTANCE (your definition of done)"))
+        _gc_plain = _implement_prompt(_gc_entries["plain"], _gc_plan)
+        _check("a job with no interfaces gets the constraints and NO interfaces "
+               "block",
+               "GLOBAL CONSTRAINTS" in _gc_plain and "INTERFACES" not in _gc_plain)
+        _check("the external worker's own prompt file carries both blocks too",
+               "## Global constraints (binding on every job)"
+               in _gc_plan["artefacts"]["ext"]["prompt_text"]
+               and "## Interfaces (your only view of the neighbours)"
+               in _gc_plan["artefacts"]["ext"]["prompt_text"]
+               and "run_worker(argv) -> int"
+               in _gc_plan["artefacts"]["ext"]["prompt_text"])
+        _check("...and renders only the half it was given (no empty `consumes:`)",
+               "consumes (what earlier jobs give you):"
+               not in _gc_plan["artefacts"]["ext"]["prompt_text"])
+
+        # ABSENT ⇒ NOTHING. Neither heading, in either renderer.
+        _gc_none_man = _tiny_manifest([
+            {"id": "impl", "title": "Impl", "tier": "standard",
+             "write_allowed": ["src/**"], "acceptance": ["it builds"]},
+        ])
+        _gc_none_dir = os.path.join(tmp, "gcrun-none")
+        os.makedirs(_gc_none_dir, exist_ok=True)
+        _gc_none_plan = _plan_for(_gc_none_man, _gc_none_dir)
+        _gc_none_entry = _gc_none_plan["waves"][0][0]
+        _gc_none_prompt = _implement_prompt(_gc_none_entry, _gc_none_plan)
+        _check("a manifest with neither field renders neither block",
+               "GLOBAL CONSTRAINTS" not in _gc_none_prompt
+               and "INTERFACES" not in _gc_none_prompt
+               and "Global constraints"
+               not in _gc_none_plan["artefacts"]["impl"]["prompt_text"]
+               and "Interfaces"
+               not in _gc_none_plan["artefacts"]["impl"]["prompt_text"])
+        _check("...and an empty/malformed interfaces block renders nothing either",
+               _job_interfaces({"interfaces": {}}) == {}
+               and _job_interfaces({"interfaces": {"consumes": []}}) == {}
+               and _job_interfaces({"interfaces": "consumes x"}) == {}
+               and _job_interfaces({}) == {}
+               and _interface_lines({}, "H") == []
+               and _constraint_lines([], "H") == []
+               and _constraint_lines(["   "], "H") == [])
+
+        # HOSTILE TEXT. A constraint is copied verbatim from a human-written plan,
+        # so it may legitimately contain a backtick, a quote, a newline or a JS
+        # template placeholder. The prompt is embedded in the emitted script as
+        # JSON data, so the script must still PARSE and the decoded text must be
+        # byte-identical to what the manifest wrote.
+        _gc_hostile = ('Copy `${x}` and "y" verbatim\nacross a newline; '
+                       "keep 'quotes' and </script> intact")
+        _gc_h_man = _tiny_manifest([
+            {"id": "impl", "title": "Impl", "tier": "standard",
+             "write_allowed": ["src/**"], "acceptance": ["it builds"],
+             "interfaces": {"produces": ['render(`${tpl}`) -> "str"']}},
+        ])
+        _gc_h_man["global_constraints"] = [_gc_hostile]
+        _gc_h_dir = os.path.join(tmp, "gcrun-hostile")
+        os.makedirs(_gc_h_dir, exist_ok=True)
+        _gc_h_plan = _plan_for(_gc_h_man, _gc_h_dir)
+        _gc_h_script = emit_script(_gc_h_plan)
+        _check("a backtick/quote/newline constraint does not break the emitted "
+               "script (node --check; skipped without node)",
+               _js_parses(_gc_h_script), "node --check rejected the emitted script")
+        _gc_h_cfg = _cfg_of(_gc_h_script)
+        _gc_h_impl = ((_gc_h_cfg or {}).get("prompts", {})
+                      .get("impl", {}).get("implement", ""))
+        _check("...and the constraint survives verbatim through the JSON round-trip",
+               _gc_hostile.splitlines()[0] in _gc_h_impl
+               and _gc_hostile.splitlines()[1] in _gc_h_impl
+               and 'render(`${tpl}`) -> "str"' in _gc_h_impl,
+               _gc_h_impl[:300])
+
+        # TEMPLATE SENTINELS ARE DATA WHEN THEY ARRIVE FROM A MANIFEST
+        # (cross-model review r1, finding 7). emit_script used to run six
+        # sequential `body.replace(...)` calls, so a prompt containing the
+        # literal `__IMPLEMENT_SCHEMA__` had raw schema JSON spliced into the
+        # middle of a quoted JS string by a LATER pass. Every sentinel the
+        # template actually uses is derived here rather than hardcoded, so a
+        # seventh one added without a substitution entry trips this check.
+        _sent_names = sorted(set(re.findall(r"__[A-Z0-9_]+__", JS_TEMPLATE)))
+        _check("every template sentinel is known to emit_script's substitution map",
+               _sent_names == ["__CFG__", "__FINALIZE_SCHEMA__", "__GATE_SCHEMA__",
+                               "__IMPLEMENT_SCHEMA__", "__META__",
+                               "__RECORD_SCHEMA__"],
+               str(_sent_names))
+        _sent_man = _tiny_manifest([
+            {"id": "impl", "tier": "standard", "write_allowed": ["src/**"],
+             "title": "Title %s" % _sent_names[0],
+             "body": "Task body mentioning %s verbatim." % " and ".join(_sent_names),
+             "acceptance": ["acceptance names %s" % _sent_names[-1]],
+             "interfaces": {"consumes": ["consume(%s) -> x" % n
+                                         for n in _sent_names],
+                            "produces": ["produce(%s) -> y" % n
+                                         for n in _sent_names]}},
+        ])
+        # A run_id is id-safe but may legitimately contain a sentinel name, and it
+        # reaches META — which used to be injected BEFORE the __CFG__ pass ate it.
+        _sent_man["run_id"] = "selftest__CFG__run"
+        _sent_man["global_constraints"] = ["constraint carries %s literally" % n
+                                           for n in _sent_names]
+        _sent_dir = os.path.join(tmp, "gcrun-sentinel")
+        os.makedirs(_sent_dir, exist_ok=True)
+        _sent_plan = _plan_for(_sent_man, _sent_dir)
+        _sent_script = emit_script(_sent_plan)
+        _check("a manifest carrying every template sentinel still emits valid JS "
+               "(node --check; skipped without node)",
+               _js_parses(_sent_script),
+               "node --check rejected the emitted script")
+        _sent_cfg = _cfg_of(_sent_script)
+        _check("...and the CFG blob is still parseable JSON after the injection",
+               _sent_cfg is not None,
+               "the CFG object was corrupted by a second substitution pass")
+        _sent_impl = ((_sent_cfg or {}).get("prompts", {})
+                      .get("impl", {}).get("implement", ""))
+        _sent_missing = [n for n in _sent_names
+                         if ("constraint carries %s literally" % n) not in _sent_impl
+                         or ("consume(%s) -> x" % n) not in _sent_impl
+                         or ("produce(%s) -> y" % n) not in _sent_impl]
+        _check("...and every sentinel survives BYTE-IDENTICAL inside the CFG blob "
+               "— constraint, consumes and produces alike",
+               _sent_missing == [], "clobbered: %s" % _sent_missing)
+        try:
+            _sent_meta = json.loads(
+                _sent_script.split("export const meta = ", 1)[1]
+                .split("\n};", 1)[0] + "\n}")
+        except (ValueError, IndexError):
+            _sent_meta = {}
+        _check("...and a run_id carrying a sentinel survives into META and CFG "
+               "(the __META__-then-__CFG__ ordering hazard)",
+               (_sent_cfg or {}).get("run_id") == "selftest__CFG__run"
+               and "selftest__CFG__run" in _sent_meta.get("name", "")
+               and "selftest__CFG__run" in _sent_meta.get("description", ""),
+               json.dumps(_sent_meta)[:200])
+        _sent_wp = _sent_plan["artefacts"]["impl"]["prompt_text"]
+        _check("...and the worker prompt FILE carries every sentinel unclobbered",
+               all(("constraint carries %s literally" % n) in _sent_wp
+                   and ("produce(%s) -> y" % n) in _sent_wp
+                   for n in _sent_names)
+               and all(n in _sent_wp for n in _sent_names))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

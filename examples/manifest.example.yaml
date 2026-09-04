@@ -28,6 +28,16 @@ acceptance_criteria:
 routing_stance: balanced            # balanced | conservative | cost-aware | claude-only
 max_parallel: 5                     # batch ceiling (phase-3 concurrency reality)
 
+# v3.4.17 — the plan's `## Global Constraints` section (Superpowers 6.2.0), copied
+# VERBATIM, one line per entry. OPTIONAL: a plan written before 6.2.0 has no such
+# section and a manifest materialized from it carries no such key — still valid.
+# Binding on EVERY job: the emitter renders the whole list into every implementer
+# prompt. Copy, never paraphrase — a reworded version floor is a different floor.
+global_constraints:
+  - "Node 20 LTS or newer — no APIs added after 20.x"
+  - "No new runtime dependency without an ADR"
+  - "Every user-facing string goes through i18n; no literals in JSX"
+
 # v3.0 (Feature A2) — the triage decision this run was dispatched under. OPTIONAL by
 # default and MANDATORY under --require-triage, which /v:dispatch passes on every live
 # dispatch. The digest is an ILLUSTRATIVE placeholder here: under the flag it is
@@ -70,6 +80,14 @@ jobs:
       - "src/types/sequence.ts"
     read_allowed:
       - "src/db/**"
+    # v3.4.17 — this task's `**Interfaces:**` block from the plan, copied VERBATIM.
+    # OPTIONAL, and either key may be absent on its own: Task 0 runs first, so it
+    # consumes nothing. This is the ONLY view a later job's isolated implementer
+    # gets of the names it must import.
+    interfaces:
+      produces:
+        - "type Sequence = { id: string; steps: SequenceStep[] }"
+        - "type SequenceStep = { id: string; order: number; body: string }"
     acceptance:
       - "migration applies cleanly"
       - "types exported"
@@ -123,6 +141,11 @@ jobs:
     read_allowed:
       - "src/server/**"
       - "src/types/sequence.ts"
+    interfaces:
+      consumes:
+        - "type Sequence, type SequenceStep from src/types/sequence.ts"
+      produces:
+        - "GET/POST/PATCH/DELETE /api/sequences/:id -> Sequence"
     acceptance:
       - "CRUD endpoints"
       - "input validation"

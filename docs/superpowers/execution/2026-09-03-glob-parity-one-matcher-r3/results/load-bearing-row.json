@@ -24,6 +24,20 @@
     "scope": "impacted",
     "selected_count": 2
   },
+  "usage": {
+    "backend": "claude",
+    "cache_creation_input_tokens": 125639,
+    "cache_read_input_tokens": 1767605,
+    "input_tokens": 62,
+    "measured": true,
+    "output_tokens": 10202,
+    "source": "workflow-transcript",
+    "transcripts": [
+      "agent-a027dffb35f90a354.jsonl",
+      "agent-ab59d5f952bd925f0.jsonl",
+      "agent-abcc668210811e462.jsonl"
+    ]
+  },
   "violations": [],
   "worktree": "/Users/oleg/Dev/superpowers-v/.claude/worktrees/wf_8eb3aec3-b82-1"
 }
