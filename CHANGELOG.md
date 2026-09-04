@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [3.5.1] - 2026-09-04
+
+### Fixed — contributed
+
+- **V-memory dense lane: embeddings are sent in bounded sub-batches** (256 chunks per embedder call) instead of
+  one flat call over the whole corpus, which on a sizable repo overran the embedder's wall-clock and silently
+  left every vector NULL — the semantic lane never activated and nothing said why. All-or-nothing on failure
+  (a partial vector set is never persisted), order preserved, selftest rows added. Contributed by
+  [@khymerao](https://github.com/khymerao) in [#9](https://github.com/procoders/superpowers-v/pull/9).
+
+### Housekeeping
+
+- Open PRs triaged: #10 (validator fail-closed on malformed YAML) closed as already fixed on main; #5–#8
+  (GLM/Qwen backends, tier pools, cooldown failover) closed as superseded by the 3.x rewrite and the 3.4.16
+  cut list, with the small-adapter path described; #4 (operations dimension for `/v:onboard`) stays open
+  pending a rebase.
+
 ## [3.5.0] - 2026-09-04
 
 Compound V's agents plug into Claude Code's own memory. Two native mechanisms, both documented at
