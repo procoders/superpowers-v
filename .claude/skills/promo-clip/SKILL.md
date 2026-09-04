@@ -183,3 +183,12 @@ an effect; the maintainer called v3's 27–30 s "twitching". The same goes for s
 Use ONE eased dip instead (`interpolate(frame, [0, 6, 12, 22], [1, 0.25, 0.25, 1], { easing: Easing.inOut(Easing.quad) })`),
 ease every redraw (`Easing.out(Easing.cubic)`), keep sways ≤ 1.5 px and slow (`Math.sin(frame / 6)`), and
 prefer `fade()` over `slide()` into a calm end card.
+
+## Audio: never gate to digital zero
+
+A composed "power-cut" that drops to exact silence in 100 ms and slams back with a full-scale step
+(0.88 sample jump) is heard as the sound tearing — the maintainer flagged 27–28 s of v3. Check the
+track with a 100 ms RMS envelope and the largest sample-to-sample jump around every hard cut
+(`/usr/bin/python3` has numpy). Fix in post: an eased fade-out of ≥150 ms, a quiet low-passed bed
+(≈−16 dB, one bar looped through a ~600 Hz one-pole) instead of zeros, and a 25–30 ms cosine fade-in
+on the return — the punch stays, the click goes. Ask the composer for the same up front.
