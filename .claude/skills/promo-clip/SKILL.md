@@ -191,4 +191,8 @@ A composed "power-cut" that drops to exact silence in 100 ms and slams back with
 track with a 100 ms RMS envelope and the largest sample-to-sample jump around every hard cut
 (`/usr/bin/python3` has numpy). Fix in post: an eased fade-out of ≥150 ms, a quiet low-passed bed
 (≈−16 dB, one bar looped through a ~600 Hz one-pole) instead of zeros, and a 25–30 ms cosine fade-in
-on the return — the punch stays, the click goes. Ask the composer for the same up front.
+on the return — the punch stays, the click goes. But a patched gap still "felt cut" to the maintainer:
+when a listener rejects a transition, RE-COMPOSE the track with the transition written as music (drums drop
+out, the pad and a filter sweep carry through, a riser brings the beat back) and make the composer verify
+programmatically — largest sample jump < 0.25 FS, no 50 ms window under −40 dBFS before the final fade —
+rather than resurrecting the old file in post.
