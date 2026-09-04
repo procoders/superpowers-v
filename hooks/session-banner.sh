@@ -60,7 +60,7 @@ CV_VERSION_FLOOR="${CV_VERSION_FLOOR:-2.1.219}"
 # lower than 2.1.219, which a lexical compare gets backwards. No `sort -V` — BSD sort
 # on macOS did not always carry it, and a fallback ladder is more code than this.
 _semver_lt() {
-  local l="$1" r="$2" lp rp i
+  local l="$1" r="$2" lp rp
   for _ in 1 2 3; do
     lp="${l%%.*}"; rp="${r%%.*}"
     case "$lp" in ''|*[!0-9]*) return 1 ;; esac
