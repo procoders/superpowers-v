@@ -42,7 +42,7 @@ Worked example: [`examples/manifest.example.yaml`](../../examples/manifest.examp
 | `id` | string | yes | Unique job id within the run (e.g. `task-1-editor-ui`). |
 | `title` | string | yes | One-line job title. |
 | `type` | string | yes | Job-type token used by the routing policy (e.g. `shared_foundation`, `bounded_crud`, `large_isolated`, `core_slice`, `mechanical_refactor`, `docs`, `tests_new`, `interface_design`, `external_api`, `review`). |
-| `backend` | enum | yes | `claude` \| `codex` \| `antigravity` \| `cursor` \| `devin` \| `opencode`. **Execution-layer data — NEVER appears in any frontmatter.** (`antigravity`/`cursor`/`opencode` are opt-in, lower-trust, no kernel sandbox ⇒ always `worktree`; `devin` has a Research-Preview kernel sandbox treated as unverified/no-confinement for v1 ⇒ also always `worktree`. `devin`/`opencode` are **worker-only** — never a routable arbiter/review-panel seat, since both are multi-provider brokers whose resolved model family is data-dependent.) |
+| `backend` | enum | yes | `claude` \| `codex` \| `antigravity` \| `cursor` \| `opencode`. **Execution-layer data — NEVER appears in any frontmatter.** (`antigravity`/`cursor`/`opencode` are opt-in, lower-trust, no kernel sandbox ⇒ always `worktree`. `opencode` is **worker-only** — never a routable arbiter/review-panel seat, since it is a multi-provider broker whose resolved model family is data-dependent.) |
 | `tier` | enum | yes¹ | `frontier` \| `deep` \| `standard` \| `light`. The **intent** the routing policy assigns; the dispatcher resolves it to a concrete model and passes it as `agent()`'s `opts.model`. Stable vocabulary that survives model churn. |
 | `effort` | enum | no | `low` \| `medium` \| `high` \| `xhigh`. Orthogonal reasoning-effort hint. Default pairing `frontier→high`, `deep→high`, `standard→medium`, `light→low`, but independently tunable per task-type. For `codex` it maps to `-c model_reasoning_effort=<effort>`; for `claude` it is advisory (the `Task` path has no separate effort flag). `xhigh` is valid **iff** `backend: codex`; every other backend rejects it with a clear error naming the rule (use `high` instead). **Effort buys thinking, not output length** — prompt for length explicitly instead. By job kind: new code and design decisions `deep`·**high**; a **fix job minted from a review finding** **medium** (the thinking is already written down in the finding); a reviewer **high** on its first pass and **medium** on a re-pass over the same diff; the pipeline's own transports **low**. See [`routing-policy.md`](routing-policy.md) § Effort by job kind. |
 | `max_turns` | integer | no | v3.4.0. Positive turn cap for this job. **Absent ⇒ the tier default: `light` 30, `standard` 50, `deep`/`frontier` 80.** A value this loader cannot read — `"80"`, `0`, `-1`, `true` — degrades to the tier default **and says so**, in the rendered prompt's `Turn cap` line and in the emit output; a manifest that meant to raise a cap and quoted the number used to get the default with no hint its value had been discarded. For `backend: claude` the cap is carried natively by the agent DEFINITION the job is spawned as (`agents/implementer.md` declares `maxTurns: 80`, matching the `deep` default above; the workflow `agent()` options have no equivalent field, so an inline-definition fallback spawn loses it and logs that it did). For an external worker the value is **stated in the prompt, not enforced by any runtime** — it is a budget the worker is told. The validator accepts the key (it rejects no unknown per-job key by design). |
@@ -55,7 +55,7 @@ Worked example: [`examples/manifest.example.yaml`](../../examples/manifest.examp
 | `acceptance` | string[] | yes | This job's narrow acceptance, checked in its per-task review. |
 | `body` | string | **yes** | The task itself — the instructions the worker reads. `description`, `prompt` and `spec` are accepted aliases. **A job with none of them is refused at emit**: a prompt carrying lanes and no instructions asks the worker to invent the task, and an invented task that stays inside its lane passes every gate here, because the scope gate checks WHICH files changed and never what they say. This field was undocumented until 3.3.4, and the emitter read only the three aliases while every manifest wrote `body` — so the task text was dropped from every worker prompt for twenty-five runs. |
 | `test_scope` | enum | no | v3.0 (Feature B2): `full` \| `impacted` \| `floor_only`. **Absent ⇒ DERIVED (3.1.0)** — see below; it is no longer a flat `full`. `floor_only` requires a non-empty `test_contract.floor_command`; `impacted` requires a non-empty `full_command` (an unmapped path resolves to it at tier FULL, and an uncomputable previously-failing set at every tier — 3.4.1). |
-| `timeout_sec` | integer | no | Wall-clock seconds this job's worker gets before the supervisor kills it. Domain **60 … 21600** inclusive (a bool is rejected — `true` is not `1`). **Absent ⇒ the worker script's own `DEFAULT_TIMEOUT_SEC=900`, unchanged**, which is what every manifest committed before v2.18 relies on. Applies to the **worker-script backends** (`codex`, `antigravity`, `cursor`, `devin`, `opencode`), where the dispatcher passes it through as `--timeout-sec`; for `claude` (in-harness `Task`) there is no equivalent knob and the field is advisory. Anything above **600** MUST be dispatched on the background path — see the outer-bound rule in [`parallel-dispatcher.md`](../../agents/parallel-dispatcher.md). |
+| `timeout_sec` | integer | no | Wall-clock seconds this job's worker gets before the supervisor kills it. Domain **60 … 21600** inclusive (a bool is rejected — `true` is not `1`). **Absent ⇒ the worker script's own `DEFAULT_TIMEOUT_SEC=900`, unchanged**, which is what every manifest committed before v2.18 relies on. Applies to the **worker-script backends** (`codex`, `antigravity`, `cursor`, `opencode`), where the dispatcher passes it through as `--timeout-sec`; for `claude` (in-harness `Task`) there is no equivalent knob and the field is advisory. Anything above **600** MUST be dispatched on the background path — see the outer-bound rule in [`parallel-dispatcher.md`](../../agents/parallel-dispatcher.md). |
 
 ¹ **Every job MUST have `model` OR `tier`** (at least one). Most jobs carry `tier` (+ optional `effort`) and let the dispatcher resolve the concrete model; a job MAY instead pin an explicit `model` override that skips resolution. A job with neither is a validation failure.
 
@@ -78,10 +78,10 @@ however mechanical each individual edit looks.
 
 | Tier | Strongest fit | Routes to (Balanced) |
 |---|---|---|
-| `frontier` | The extreme case. Reachable by design, assigned rarely: it is what a **re-attempt escalates into** after a recorded failure, and where interface-design work belongs. | claude `fable`, codex `gpt-5.6-sol`, antigravity top model, cursor `auto`, devin `claude-opus-4.6`, opencode `anthropic/claude-opus-4-6`. Under `cost-aware` it caps at claude `opus`. |
-| `deep` | Judgment: architecture, security/auth/payments, coupled business logic, designing tests, external APIs, **ALL reviewers**, shared-foundation Task 0. | claude `opus`, codex `gpt-5.6-sol`, antigravity top model, cursor `auto`, devin `claude-opus-4.6`, opencode `anthropic/claude-opus-4-6`. |
-| `standard` | Execution against a spec that is already settled: bounded core/feature build, incl. large isolated codex work. | claude `sonnet` (`opus` under the `conservative` stance), codex `gpt-5.6-terra`, antigravity mid model, cursor `auto`, devin `claude-sonnet-4`, opencode `openai/gpt-5.6-terra`. |
-| `light` | Mechanical single-file / docs / i18n / scanning. Also where the pipeline's own **transport** stages run (Gate, Record, Finalize — each one clamped command, verbatim JSON back). | claude `sonnet`, codex `gpt-5.6-luna`, antigravity flash model, cursor `auto`, devin `gpt-5.5`, opencode `opencode/mimo-v2.5-free` (a real credential-free model). |
+| `frontier` | The extreme case. Reachable by design, assigned rarely: it is what a **re-attempt escalates into** after a recorded failure, and where interface-design work belongs. | claude `fable`, codex `gpt-5.6-sol`, antigravity top model, cursor `auto`, opencode `anthropic/claude-opus-4-6`. Under `cost-aware` it caps at claude `opus`. |
+| `deep` | Judgment: architecture, security/auth/payments, coupled business logic, designing tests, external APIs, **ALL reviewers**, shared-foundation Task 0. | claude `opus`, codex `gpt-5.6-sol`, antigravity top model, cursor `auto`, opencode `anthropic/claude-opus-4-6`. |
+| `standard` | Execution against a spec that is already settled: bounded core/feature build, incl. large isolated codex work. | claude `sonnet` (`opus` under the `conservative` stance), codex `gpt-5.6-terra`, antigravity mid model, cursor `auto`, opencode `openai/gpt-5.6-terra`. |
+| `light` | Mechanical single-file / docs / i18n / scanning. Also where the pipeline's own **transport** stages run (Gate, Record, Finalize — each one clamped command, verbatim JSON back). | claude `sonnet`, codex `gpt-5.6-luna`, antigravity flash model, cursor `auto`, opencode `opencode/mimo-v2.5-free` (a real credential-free model). |
 
 **A reviewer's floor is `deep`, not a ceiling.** Invariant 4 demands `tier: deep` **or
 stronger** (`frontier`/Fable) — or an explicit `model: opus`/`fable` — because a sealed review
@@ -100,13 +100,13 @@ choose would be a fabricated routing decision.
 
 `effort ∈ {low, medium, high, xhigh}` is orthogonal to tier. The default pairing (`frontier→high`, `deep→high`, `standard→medium`, `light→low`) is just a default — a task-type may pin a different effort independently. `xhigh` is valid **iff** `backend: codex`; every other backend rejects it with a clear error naming the rule (use `high` instead) — it maps to codex's `model_reasoning_effort=xhigh` (live-verified 2026-07-11 on codex-cli 0.144.1).
 
-Resolution is **stance-aware**: the `standard` Claude row resolves to `sonnet` under `balanced` / `cost-aware` / `claude-only`, and to `opus` under `conservative` — that is what the conservative stance means. `frontier` is `fable` everywhere except `cost-aware`, whose ceiling is `opus`. `deep` (incl. all reviewers + sensitive surfaces) is `opus` in every stance, and `codex`/`antigravity`/`cursor`/`devin`/`opencode` are identical across stances.
+Resolution is **stance-aware**: the `standard` Claude row resolves to `sonnet` under `balanced` / `cost-aware` / `claude-only`, and to `opus` under `conservative` — that is what the conservative stance means. `frontier` is `fable` everywhere except `cost-aware`, whose ceiling is `opus`. `deep` (incl. all reviewers + sensitive surfaces) is `opus` in every stance, and `codex`/`antigravity`/`cursor`/`opencode` are identical across stances.
 
 The dispatcher reads the manifest's `routing_stance` and passes it (`--stance`) to the resolver on every resolve, along with `--config` for the project map; omitting the stance defaults to `balanced`. **Both were unwired until 3.0.5** — every resolution silently used the built-in balanced defaults, and on `backend: claude` the resolver was not called at all.
 
 ### Config `models` map (project `.claude/compound-v.json`)
 
-The concrete model behind each tier lives in a **refreshable** map in the project config — not hardcoded in any job. This is what lets the plugin survive model churn: when models change, refresh the map (`/v:models`), not the manifests. The map is **per-stance** — its shape is `{<stance>: {<backend>: {<tier>: model}}}`. Only the `claude` rows differ across stances (`conservative.claude.standard = opus`; everywhere else `standard` is `sonnet`, and `cost-aware.claude.frontier` caps at `opus`); `codex`/`antigravity`/`cursor`/`devin`/`opencode` are identical in every stance. `opencode`'s cells are full `provider/model` strings (the provider may legitimately differ per tier — no schema change, the resolver already treats every cell as opaque):
+The concrete model behind each tier lives in a **refreshable** map in the project config — not hardcoded in any job. This is what lets the plugin survive model churn: when models change, refresh the map (`/v:models`), not the manifests. The map is **per-stance** — its shape is `{<stance>: {<backend>: {<tier>: model}}}`. Only the `claude` rows differ across stances (`conservative.claude.standard = opus`; everywhere else `standard` is `sonnet`, and `cost-aware.claude.frontier` caps at `opus`); `codex`/`antigravity`/`cursor`/`opencode` are identical in every stance. `opencode`'s cells are full `provider/model` strings (the provider may legitimately differ per tier — no schema change, the resolver already treats every cell as opaque):
 
 ```jsonc
 "models": {
@@ -115,7 +115,6 @@ The concrete model behind each tier lives in a **refreshable** map in the projec
     "codex":       { "deep": "gpt-5.6-sol",                "standard": "gpt-5.6-terra",                "light": "gpt-5.6-luna" },
     "antigravity": { "deep": "Gemini 3.1 Pro (High)",     "standard": "Gemini 3.1 Pro (Low)",        "light": "Gemini 3.8 Flash (Low)" },
     "cursor":      { "deep": "auto",                       "standard": "auto",                        "light": "auto" },
-    "devin":       { "deep": "claude-opus-4.6",            "standard": "claude-sonnet-4",              "light": "gpt-5.5" },
     "opencode":    { "deep": "anthropic/claude-opus-4-6",  "standard": "openai/gpt-5.6-terra",         "light": "opencode/mimo-v2.5-free" }
   },
   "cost-aware": {
@@ -123,7 +122,6 @@ The concrete model behind each tier lives in a **refreshable** map in the projec
     "codex":       { "deep": "gpt-5.6-sol",                "standard": "gpt-5.6-terra",                "light": "gpt-5.6-luna" },
     "antigravity": { "deep": "Gemini 3.1 Pro (High)",     "standard": "Gemini 3.1 Pro (Low)",        "light": "Gemini 3.8 Flash (Low)" },
     "cursor":      { "deep": "auto",                       "standard": "auto",                        "light": "auto" },
-    "devin":       { "deep": "claude-opus-4.6",            "standard": "claude-sonnet-4",              "light": "gpt-5.5" },
     "opencode":    { "deep": "anthropic/claude-opus-4-6",  "standard": "openai/gpt-5.6-terra",         "light": "opencode/mimo-v2.5-free" }
   }
   // claude-only mirrors balanced; conservative keeps standard on opus
@@ -394,7 +392,7 @@ rely on `_seg_is_literal` alone (that only rejects `*?[`, not traversal or symli
 ## v2.12 — Optional `usage` on `job_result` (measured-only)
 
 Each job's `job_result` ([`schemas/job_result.schema.json`](../../schemas/job_result.schema.json)) MAY carry an
-optional `usage` object recording the job's token/advisor accounting. It is **worker-sourced and
+optional `usage` object recording the job's token accounting. It is **worker-sourced and
 informational — exactly like `summary`, NEVER git-derived enforcement.** The scope gate and every DONE
 decision ignore it; nothing routes on it. It is a property only (never `required`), so pre-2.12
 results without it stay valid.
@@ -403,7 +401,6 @@ results without it stay valid.
 usage:
   input_tokens: 12480      # int | null
   output_tokens: 3120      # int | null
-  advisor_calls: 1         # int | null
   backend: codex           # string
   measured: true           # bool
 ```
@@ -412,8 +409,7 @@ usage:
 |---|---|---|
 | `input_tokens` | int \| null | Total input/prompt tokens for the job, summed across the backend's own usage events. `null` when not measured. |
 | `output_tokens` | int \| null | Total output/completion tokens for the job, summed across the backend's own usage events. `null` when not measured. |
-| `advisor_calls` | int \| null | Times the executor actually consulted the read-only advisor subagent. **Worker-COUNTED** by the advisor worker (not derived from any CLI turn/iteration count, which is turns, not advisor consults), and set only when advisor mode ran; `null` otherwise. |
-| `backend` | string | Backend the usage was extracted for (`codex` \| `opencode` \| `cursor` \| `agy`/`antigravity` \| `claude` \| `devin`). |
+| `backend` | string | Backend the usage was extracted for (`codex` \| `opencode` \| `cursor` \| `agy`/`antigravity` \| `claude`). |
 | `measured` | bool | `true` **only** when real token counts were extracted from the backend's structured usage events; `false` when the backend exposes nothing (see below). |
 
 ### Measured-only contract (anti-ruflo)
@@ -430,7 +426,6 @@ honest; a made-up number is not.
 | `cursor` | **yes** | `result.usage` (needs `-f`/trust) |
 | `agy` (antigravity) | **no** → `measured:false`, null tokens | no structured usage (`--print` only) |
 | `claude` via `Task` subagent | **no** → `measured:false`, null tokens | in-harness, returns text only |
-| `devin` | **no** → `measured:false`, null tokens | no machine-readable usage |
 
 The three measured backends (`codex`, `opencode`, `cursor`) each use a different casing/shape, so a
 single normalizer handles them. The worker's stdout stays EXACTLY one `job_result` JSON — the

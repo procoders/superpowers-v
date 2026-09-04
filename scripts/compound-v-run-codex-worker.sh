@@ -106,7 +106,7 @@ emit_job_result() {
 # The executor model never fills `tests` — same rule as blocked/files_changed/violations.
 #
 # These three functions are BYTE-IDENTICAL in all five worker scripts
-# (scripts/compound-v-run-{codex,antigravity,cursor,devin,opencode}-worker.sh).
+# (scripts/compound-v-run-{codex,antigravity,cursor,opencode}-worker.sh).
 # Fix them in all five, or in none.
 
 # Read one resolved command by INDEX, never by line: a command may legitimately
@@ -694,7 +694,7 @@ usage_json=""
 usage_json=$(python3 "$SCRIPT_DIR/compound-v-usage-extract.py" \
   --backend codex --events-log "$EVENTS_LOG" 2>/dev/null) || usage_json=""
 if [ -z "$usage_json" ] || ! printf '%s' "$usage_json" | jq -e . >/dev/null 2>&1; then
-  usage_json='{"input_tokens":null,"output_tokens":null,"advisor_calls":null,"backend":"codex","measured":false}'
+  usage_json='{"input_tokens":null,"output_tokens":null,"backend":"codex","measured":false}'
 fi
 
 # --- run the resolved test contract (v3.0 Feature B3) ------------------------

@@ -7,16 +7,12 @@ Scans a run's `results/*.json` job_result files, reads each one's OPTIONAL
 through compound-v-collect-results.py), and produces honest per-run totals for
 `/v:status` and any epic/feature roll-up.
 
-Design contract (v2.12 usage & advisor, anti-ruflo charter):
+Design contract (v2.12 usage, anti-ruflo charter):
 
   - PER-METRIC, INDEPENDENT aggregation. Token sums require valid token
     measurement (`usage.measured == true` AND a valid non-negative integer for
-    that side). `advisor_calls` is aggregated INDEPENDENTLY of token
-    measurement: a non-null, non-negative integer `advisor_calls` contributes
-    REGARDLESS of `usage.measured` — because `measured` describes TOKEN
-    measurement, and a Claude job legitimately has measured:false tokens AND a
-    real worker-counted advisor_calls.
-  - NULL, NEVER A FABRICATED ZERO. Every token/advisor total starts null. A
+    that side).
+  - NULL, NEVER A FABRICATED ZERO. Every token total starts null. A
     numeric sum is emitted for a metric ONLY when at least one valid
     measurement contributed to it; otherwise the total renders as null (json)
     / "—" (text). With 0 measured jobs the token totals are null, never 0.
@@ -33,7 +29,7 @@ Input (one of):
 Output:
   --format json  (default) : full per-job + totals object
   --format text            : one-line summary, e.g.
-      measured: in=1234 out=567 advisor_calls=3 | 4 measured, 2 unmeasured
+      measured: in=1234 out=567 | 4 measured, 2 unmeasured
 
 Optional annotation (grouping is per-run; these only label the output):
   --feature <name>   --epic <name>
@@ -127,13 +123,11 @@ def aggregate(results_dir: str,
         measured = bool(usage.get("measured")) if isinstance(usage, dict) else False
         in_tok = _valid_int(usage.get("input_tokens")) if isinstance(usage, dict) else None
         out_tok = _valid_int(usage.get("output_tokens")) if isinstance(usage, dict) else None
-        adv = _valid_int(usage.get("advisor_calls")) if isinstance(usage, dict) else None
         jobs.append({
             "id": job_id,
             "measured": measured,
             "input_tokens": in_tok,
             "output_tokens": out_tok,
-            "advisor_calls": adv,
         })
 
     return _assemble(jobs, notes, feature, epic)
@@ -147,16 +141,12 @@ def _assemble(jobs: List[Dict[str, Any]],
 
     Every total starts null and becomes numeric only when a valid measurement
     contributed. Token sums require token measurement (measured:true + a valid
-    non-negative int for that side). advisor_calls is aggregated INDEPENDENTLY:
-    any valid non-negative int advisor_calls counts, even on a measured:false
-    (e.g. Claude) job whose tokens are unmeasured.
+    non-negative int for that side).
     """
     sum_in = None      # type: Optional[int]
     sum_out = None     # type: Optional[int]
-    sum_adv = None     # type: Optional[int]
     measured_jobs = 0
     unmeasured_jobs = 0
-    advisor_jobs = 0
 
     for j in jobs:
         if j["measured"]:
@@ -171,19 +161,11 @@ def _assemble(jobs: List[Dict[str, Any]],
             # measured==false OR no usage key: TOKENS honestly unmeasured.
             unmeasured_jobs += 1
 
-        # advisor_calls is independent of token `measured`: a worker-counted,
-        # non-null non-negative integer contributes regardless.
-        if j["advisor_calls"] is not None:
-            sum_adv = (sum_adv or 0) + j["advisor_calls"]
-            advisor_jobs += 1
-
     totals = {
         "input_tokens": sum_in,
         "output_tokens": sum_out,
-        "advisor_calls": sum_adv,
         "measured_jobs": measured_jobs,
         "unmeasured_jobs": unmeasured_jobs,
-        "advisor_jobs": advisor_jobs,
     }
     out = {
         "jobs": jobs,
@@ -206,8 +188,8 @@ def _fmt_num(val: Optional[int]) -> str:
 def _format_text(agg: Dict[str, Any]) -> str:
     """One-line, measured-only summary. A null total prints "—", never a 0."""
     t = agg["totals"]
-    return "measured: in=%s out=%s advisor_calls=%s | %d measured, %d unmeasured" % (
-        _fmt_num(t["input_tokens"]), _fmt_num(t["output_tokens"]), _fmt_num(t["advisor_calls"]),
+    return "measured: in=%s out=%s | %d measured, %d unmeasured" % (
+        _fmt_num(t["input_tokens"]), _fmt_num(t["output_tokens"]),
         t["measured_jobs"], t["unmeasured_jobs"],
     )
 
@@ -260,30 +242,29 @@ def _selftest() -> int:
 
     # measured codex job
     _write_result(results_dir, "task-0-schema", _base_result(usage={
-        "input_tokens": 1000, "output_tokens": 400, "advisor_calls": 2,
+        "input_tokens": 1000, "output_tokens": 400,
         "backend": "codex", "measured": True,
     }))
-    # measured opencode job, null advisor_calls (counts as 0 in the sum)
+    # measured opencode job
     _write_result(results_dir, "task-1-slice", _base_result(usage={
-        "input_tokens": 234, "output_tokens": 167, "advisor_calls": None,
+        "input_tokens": 234, "output_tokens": 167,
         "backend": "opencode", "measured": True,
     }))
     # measured:false job (agy) — unmeasured, NOT summed as zero
     _write_result(results_dir, "task-2-agy", _base_result(usage={
-        "input_tokens": None, "output_tokens": None, "advisor_calls": None,
+        "input_tokens": None, "output_tokens": None,
         "backend": "agy", "measured": False,
     }))
     # NO usage key at all (older worker / claude Task) — unmeasured
     _write_result(results_dir, "task-3-claude", _base_result())
-    # a second measured job to exercise advisor_calls summation
-    _write_result(results_dir, "task-4-advisor", _base_result(usage={
-        "input_tokens": 10, "output_tokens": 0, "advisor_calls": 1,
+    # a second measured job to exercise token summation
+    _write_result(results_dir, "task-4-extra", _base_result(usage={
+        "input_tokens": 10, "output_tokens": 0,
         "backend": "codex", "measured": True,
     }))
-    # FIX 4: measured:false (Claude) job WITH a real worker-counted advisor_calls.
-    # Its advisor_calls MUST contribute even though its tokens are unmeasured.
-    _write_result(results_dir, "task-5-claude-advisor", _base_result(usage={
-        "input_tokens": None, "output_tokens": None, "advisor_calls": 3,
+    # a second measured:false (Claude) job — unmeasured, never summed as zero
+    _write_result(results_dir, "task-5-claude", _base_result(usage={
+        "input_tokens": None, "output_tokens": None,
         "backend": "claude", "measured": False,
     }))
 
@@ -291,10 +272,8 @@ def _selftest() -> int:
     t = agg["totals"]
     check("input_tokens", t["input_tokens"], 1244)          # 1000 + 234 + 10
     check("output_tokens", t["output_tokens"], 567)         # 400 + 167 + 0
-    check("advisor_calls", t["advisor_calls"], 6)           # 2 + 0 + 1 + 3(measured:false)
     check("measured_jobs", t["measured_jobs"], 3)
-    check("unmeasured_jobs", t["unmeasured_jobs"], 3)       # agy + claude(no-usage) + claude-advisor
-    check("advisor_jobs", t["advisor_jobs"], 3)             # task-0, task-4, task-5
+    check("unmeasured_jobs", t["unmeasured_jobs"], 3)       # agy + claude(no-usage) + claude
     check("job_count", len(agg["jobs"]), 6)
 
     # per-job fidelity for the no-usage job
@@ -304,7 +283,7 @@ def _selftest() -> int:
 
     # text format
     txt = _format_text(agg)
-    check("text", txt, "measured: in=1244 out=567 advisor_calls=6 | 3 measured, 3 unmeasured")
+    check("text", txt, "measured: in=1244 out=567 | 3 measured, 3 unmeasured")
 
     # via run-dir resolution (results subdir)
     ns = argparse.Namespace(run_dir=run_dir, results_dir=None)
@@ -315,7 +294,7 @@ def _selftest() -> int:
     zero_dir = os.path.join(tmp, "zero", "results")
     os.makedirs(zero_dir)
     _write_result(zero_dir, "z0-agy", _base_result(usage={
-        "input_tokens": None, "output_tokens": None, "advisor_calls": None,
+        "input_tokens": None, "output_tokens": None,
         "backend": "agy", "measured": False,
     }))
     _write_result(zero_dir, "z1-claude", _base_result())  # no usage key at all
@@ -323,33 +302,14 @@ def _selftest() -> int:
     zt = zagg["totals"]
     check("zero.input_tokens", zt["input_tokens"], None)
     check("zero.output_tokens", zt["output_tokens"], None)
-    check("zero.advisor_calls", zt["advisor_calls"], None)
     check("zero.measured_jobs", zt["measured_jobs"], 0)
     check("zero.unmeasured_jobs", zt["unmeasured_jobs"], 2)
     check("zero.text", _format_text(zagg),
-          "measured: in=— out=— advisor_calls=— | 0 measured, 2 unmeasured")
-
-    # FIX 4 (isolated): advisor_calls contributes with ZERO measured token jobs.
-    adv_dir = os.path.join(tmp, "advonly", "results")
-    os.makedirs(adv_dir)
-    _write_result(adv_dir, "a0-claude", _base_result(usage={
-        "input_tokens": None, "output_tokens": None, "advisor_calls": 3,
-        "backend": "claude", "measured": False,
-    }))
-    aagg = aggregate(adv_dir)
-    at = aagg["totals"]
-    check("advonly.advisor_calls", at["advisor_calls"], 3)
-    check("advonly.input_tokens", at["input_tokens"], None)   # tokens stay null
-    check("advonly.output_tokens", at["output_tokens"], None)
-    check("advonly.measured_jobs", at["measured_jobs"], 0)
-    check("advonly.advisor_jobs", at["advisor_jobs"], 1)
-    check("advonly.text", _format_text(aagg),
-          "measured: in=— out=— advisor_calls=3 | 0 measured, 1 unmeasured")
+          "measured: in=— out=— | 0 measured, 2 unmeasured")
 
     # fail-open: missing results dir -> NULL totals + note, no crash
     agg3 = aggregate(os.path.join(tmp, "does-not-exist", "results"))
     check("missing.input_tokens", agg3["totals"]["input_tokens"], None)
-    check("missing.advisor_calls", agg3["totals"]["advisor_calls"], None)
     check("missing.measured_jobs", agg3["totals"]["measured_jobs"], 0)
     check("missing.unmeasured_jobs", agg3["totals"]["unmeasured_jobs"], 0)
     check("missing.has_note", "note" in agg3 and bool(agg3["note"]), True)

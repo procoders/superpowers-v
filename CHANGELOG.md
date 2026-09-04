@@ -6,6 +6,59 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [3.4.16] - 2026-09-04
+
+The audit's cut list, executed as the maintainer decided it: everything proposed goes, except the
+opencode backend, which stays because it is widely used.
+
+### Removed — declared, never used
+
+- **Decision preferences** (`/v:preferences`, `compound-v-preferences.py`, `decision-preferences.md`,
+  the `brainstorm.preferences` config key): no store was ever created in three months; native
+  auto-memory covers the need.
+- **The cross-brand advisor mode** (`compound-v-advisor-consult.sh`, `adapter-advisor.md`,
+  `advisor_eligible`, `usage.advisor_calls`): zero references in Engine C, one run on 2026-07-13,
+  second time on a cut list.
+- **The Devin backend** (worker, adapter, enums, model maps): present-only, never dispatched.
+- **`/v:archaeology`**: never runnable under the installed agent prefix; Phase 1A runs inside the pre-flights.
+- **`/v:dashboard`** and the static-HTML `emit` path of `compound-v-dashboard.py` (no snapshot was ever
+  produced); the `resume` path the compaction hooks and `/v:status` use stays.
+- **`/v:triage --land`** (Phase L: CAS commit, lock-ref, throwaway index, `sweep-landings`) and its test:
+  no landing ever happened; a DIRECT change is edited and committed by the human, the triage record and
+  the Stop gate stay. `v-triage.md` 833 → 236 lines.
+- **`workflows-accelerator.md`** and the `workflows_accelerator` key: Engine C has been the native
+  Workflow engine since 3.0; there is no separate accelerator.
+
+### Changed — honest wording where the mechanism did not match the claim
+
+Context7 is used when the session has it attached; pre-flight agents launched inside a Workflow do not
+inherit MCP tools and fall back to WebSearch/WebFetch (12 of the last 16 library audits ran without it).
+Trigger 0 recon and batched elicitation are guidance the brainstorm follows, not mechanisms. Cursor and
+opencode are marked experimental: workers verified standalone, never dispatched through Engine C. The
+lane-guard millisecond figures are gone from README and AGENTS (the measurement recipe stays).
+
+### Added — a version-floor probe at session start
+
+`hooks/session-banner.sh` reads `claude --version` once (fail-silent) and warns below 2.1.219, the
+floor 3.x needs for native Workflows and hooks; five test cases.
+
+### Verified — `/v:pr-review` dogfooded on a hostless range, and what it found
+
+The first real run of the two-axis review (range 3.4.11 → 3.4.15, `reviews/pr-review-findings-local.md`)
+found four defects that are fixed here: the model ranker compared versions as floats (`3.10` < `3.8` —
+now tuples of ints, with a selftest); `resume-prepare` cleared the worktree of every non-integrated job,
+which made the documented `codex exec resume` path unreachable (an environmental failure with a live
+worktree and a session id is now left in place); a superseded receipt at the same commit was clobbered;
+and the runbook never named `--set-max-attempts-per-feature`. The run also produced ten notes on the
+command's own docs (no range input mode, undefined "host but no PR", specs not discovered under
+`docs/superpowers/specs/`, gates that block a non-interactive run, reading the live tree instead of the
+ref — which wrote one false finding before it was caught); the skill docs were corrected accordingly.
+
+### Known
+
+`_scope_matches()` in `compound-v-memory.py` duplicates the hardened loader in
+`compound-v-integration-gate.py` (CONVENTIONS asks for one) — a shared loader is the next cycle's job.
+
 ## [3.4.15] - 2026-09-04
 
 ### Audited — every promise against its mechanism and its evidence

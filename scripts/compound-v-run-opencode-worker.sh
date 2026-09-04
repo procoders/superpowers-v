@@ -40,7 +40,7 @@
 # only inside a worktree the git-diff scope gate can observe), rather than trusting
 # opencode's undocumented-in-practice wide-open default. The worktree + post-hoc `git
 # diff` gate is still the ONLY real enforcement — same opt-in, lower-trust tier as
-# Antigravity/Cursor/Devin. Prefer Codex (kernel-sandboxed) for untrusted / high-stakes work.
+# Antigravity/Cursor. Prefer Codex (kernel-sandboxed) for untrusted / high-stakes work.
 #
 # Portability: stock-macOS bash 3.2.57 (NO associative arrays / mapfile / ${var,,})
 # + jq. shellcheck-clean. Absolute paths throughout. Caller (the dispatcher) owns the
@@ -55,7 +55,7 @@
 #     [--read-only true|false] [--output-schema <abs-path>] [--effort <variant>] \
 #     [--test-contract-file <abs-path>] [--test-timeout-sec <n>]
 #
-# --model is REQUIRED (unlike devin/antigravity/cursor): opencode addresses models as a
+# --model is REQUIRED (unlike antigravity/cursor): opencode addresses models as a
 # `provider/model` string with no single-vendor default to fall back on. --effort is
 # OPTIONAL and maps to opencode's own `--variant` flag (provider-specific vocabulary —
 # high/max/minimal — NOT Compound V's low/medium/high/xhigh; passed through best-effort,
@@ -154,7 +154,7 @@ emit_job_result() {
 # The executor model never fills `tests` — same rule as blocked/files_changed/violations.
 #
 # These three functions are BYTE-IDENTICAL in all five worker scripts
-# (scripts/compound-v-run-{codex,antigravity,cursor,devin,opencode}-worker.sh).
+# (scripts/compound-v-run-{codex,antigravity,cursor,opencode}-worker.sh).
 # Fix them in all five, or in none.
 
 # Read one resolved command by INDEX, never by line: a command may legitimately
@@ -334,7 +334,7 @@ done
 [ -n "$JOB_ID" ]      || die "--job-id is required"
 [ -n "$REPO" ]        || die "--repo is required"
 [ -n "$PROMPT_FILE" ] || die "--prompt-file is required"
-# --model is REQUIRED for opencode (unlike devin/antigravity/cursor): opencode addresses
+# --model is REQUIRED for opencode (unlike antigravity/cursor): opencode addresses
 # models as a `provider/model` string and has no single coherent "configured default"
 # across its many proxied vendors the way a single-vendor CLI does.
 [ -n "$MODEL" ]       || die "--model is required for opencode (must be a provider/model string, e.g. anthropic/claude-opus-4-6)"
@@ -594,7 +594,7 @@ JSONEOF
 #     --title "compound-v-$JOB_ID" -- "$PROMPT" </dev/null
 #
 # Load-bearing facts (adapter-opencode.md):
-#   * `--dir "$WT"` = opencode's real --cd-equivalent (unlike antigravity/cursor/devin).
+#   * `--dir "$WT"` = opencode's real --cd-equivalent (unlike antigravity/cursor).
 #   * `--format json` = a JSONL event stream on stdout, one JSON object per line. Every
 #     line carries `.sessionID`; `type:"text"` events carry `.part.text` — there is NO
 #     `--output-last-message` equivalent, so summary/session_id are built by PARSING
@@ -887,7 +887,7 @@ usage_json=""
 usage_json=$(python3 "$SCRIPT_DIR/compound-v-usage-extract.py" \
   --backend opencode --events-log "$EVENTS_LOG" 2>/dev/null) || usage_json=""
 if [ -z "$usage_json" ] || ! printf '%s' "$usage_json" | jq -e . >/dev/null 2>&1; then
-  usage_json='{"input_tokens":null,"output_tokens":null,"advisor_calls":null,"backend":"opencode","measured":false}'
+  usage_json='{"input_tokens":null,"output_tokens":null,"backend":"opencode","measured":false}'
 fi
 
 # --- run the resolved test contract (v3.0 Feature B3) ------------------------

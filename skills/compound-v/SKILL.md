@@ -19,6 +19,8 @@ Compound V is a **transparent interceptor** that sits between Superpowers phases
 2. **Inside `writing-plans`** → enforces **Disjoint File Partitioning** and **materializes a `manifest.yaml`** (the machine-readable contract) so tasks can run in parallel
 3. **At execution** → runs the **orchestration pipeline**: dispatch each manifested job to its backend (an Engine C `agent()` per job, its model resolved from the job's `tier` — **Opus judges, Sonnet executes**, Fable on escalation — or a headless **Codex** worker for large isolated builds — see `phase-3-parallel-opus-dispatch.md`), **enforce file-scope with a `git diff` gate after every job**, collect canonical `job_result`s, review against the spec's Acceptance Criteria, and update outcome memory. Runs **autonomously with guardrails** and is **crash-resumable** via `state.json`.
 
+Engine C is the native Workflow dispatch engine (`scripts/compound-v-emit-workflow.py`); there is no separate accelerator.
+
 **The unified pipeline (orchestrator-as-default):**
 
 ```

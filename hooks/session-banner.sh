@@ -46,6 +46,43 @@ if command -v python3 >/dev/null 2>&1 && [ -d "docs/superpowers/execution" ]; th
   fi
 fi
 
+# Version floor probe. Compound V 3.x hands execution to the native Workflow runtime
+# and to native hook events that landed in Claude Code 2.1.219; below that floor the
+# pipeline simply does not run, and README claimed the floor for months with nothing
+# anywhere that checked it. SessionStart is the one place a user reliably reads a
+# warning. One extra process, read-only, and it MUST fail silent: a missing binary, a
+# refused exec, or output this does not recognise says NOTHING rather than guessing a
+# version. No `timeout` wrapper — it is absent from a default macOS, and the hook is
+# already bounded by `timeout: 10` on its registration in hooks/hooks.json.
+CV_VERSION_FLOOR="${CV_VERSION_FLOOR:-2.1.219}"
+
+# Strictly-lower comparison over major.minor.patch, numeric PER COMPONENT: 2.1.9 is
+# lower than 2.1.219, which a lexical compare gets backwards. No `sort -V` — BSD sort
+# on macOS did not always carry it, and a fallback ladder is more code than this.
+_semver_lt() {
+  local l="$1" r="$2" lp rp i
+  for i in 1 2 3; do
+    lp="${l%%.*}"; rp="${r%%.*}"
+    case "$lp" in ''|*[!0-9]*) return 1 ;; esac
+    case "$rp" in ''|*[!0-9]*) return 1 ;; esac
+    if [ "$lp" -lt "$rp" ]; then return 0; fi
+    if [ "$lp" -gt "$rp" ]; then return 1; fi
+    l="${l#*.}"; r="${r#*.}"
+  done
+  return 1
+}
+
+if command -v claude >/dev/null 2>&1; then
+  _cv_ver_raw="$(claude --version 2>/dev/null || true)"
+  _cv_ver_re='([0-9]+\.[0-9]+\.[0-9]+)'
+  if [[ "$_cv_ver_raw" =~ $_cv_ver_re ]]; then
+    _cv_ver="${BASH_REMATCH[1]}"
+    if _semver_lt "$_cv_ver" "$CV_VERSION_FLOOR"; then
+      banner="$banner ⚠ Claude Code $_cv_ver < $CV_VERSION_FLOOR — Compound V 3.x needs native Workflows/hooks; update."
+    fi
+  fi
+fi
+
 # JSON, WITHOUT REQUIRING jq, AND IN THE SHAPE THE RUNTIME ACTUALLY READS.
 #
 # Two defects a Phase-1B audit found here, both live:

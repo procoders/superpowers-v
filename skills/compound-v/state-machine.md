@@ -4,7 +4,7 @@ This is the **lightweight execution substrate** for an orchestrator run: a run d
 
 Resume is **owned by the verification layer** (`state.json` + the helper scripts), not by any engine. It is deliberately **not** the native runtime's resume: that is same-session-only, starts fresh after a Claude Code exit — which fails the crash case by design — and, past a failure point, **re-runs completed agents**, so a 16-job run whose job 3 failed would re-run jobs 4–16 that already succeeded.
 
-**Since 3.0 the scope gate and the state write happen INSIDE the run, on Engine C.** That reverses what this file said in 1.0, and the reversal is deliberate: keeping them "outside" kept them in prose, and on the `claude` backend — 73 of 73 recorded jobs — no program ran the gate at all. See [`workflows-accelerator.md`](workflows-accelerator.md) and [`ADR 0004`](../../docs/superpowers/adr/0004-workflow-as-the-dispatch-engine.md). What did **not** move is this document: cross-session recovery, and the git-derived integration postcondition that decides what enters the tree, remain here.
+**Since 3.0 the scope gate and the state write happen INSIDE the run, on Engine C.** That reverses what this file said in 1.0, and the reversal is deliberate: keeping them "outside" kept them in prose, and on the `claude` backend — 73 of 73 recorded jobs — no program ran the gate at all. See [`ADR 0004`](../../docs/superpowers/adr/0004-workflow-as-the-dispatch-engine.md). What did **not** move is this document: cross-session recovery, and the git-derived integration postcondition that decides what enters the tree, remain here.
 
 ---
 

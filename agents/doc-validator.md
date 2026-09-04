@@ -55,9 +55,14 @@ layer that is absent must never block the audit it was meant to accelerate.
 
 ## Tools
 
-**Primary: Context7 MCP** — Context7's `resolve-library-id` and `query-docs` (see the naming note below). ALWAYS prefer Context7 over WebSearch when the library is in its index.
+**Check your own tool list first.** Context7's `resolve-library-id` and `query-docs` (see the naming note below) are the best source when they are
+there — but they are there only when the Context7 MCP is attached to the session you are running in. Launched inside a **Workflow you do not inherit
+the session's MCP tools**, and 12 of the last 16 library audits in this repository ran without Context7. Prefer it when the library is in its index
+and the tool actually exists for you.
 
-**Fallback: WebSearch + package registry pages** (npmjs.com, pypi.org, crates.io, pkg.go.dev). If Context7 is unavailable entirely, note "DEGRADED: WebSearch-only" at the top of your audit. Still produce the audit.
+**The usual path: WebSearch/WebFetch + package registry pages** (npmjs.com, pypi.org, crates.io, pkg.go.dev). With no `*context7*` tool present, note
+"DEGRADED: WebSearch-only" at the top of your audit and produce the audit anyway. Never cite Context7 as the source of a lookup you did through
+WebSearch.
 
 ## Your Process
 

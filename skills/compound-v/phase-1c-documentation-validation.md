@@ -27,11 +27,17 @@ Run Phase 1C if ANY of these apply (almost always true):
 
 **Skip only if:** the spec is pure prose/UX copy with zero technical surface. Almost never.
 
-## Prerequisite: MCP Context7
+## Optional: Context7 MCP — and why you usually will not have it
 
-Phase 1C is most useful when [Context7 MCP](https://github.com/upstash/context7) is installed (its `*context7*` tools). Context7 fetches current, authoritative library documentation directly — bypassing training data staleness.
+Phase 1C is sharper when [Context7 MCP](https://github.com/upstash/context7) is attached to **the session you are running in** (its `*context7*`
+tools). Context7 fetches current, authoritative library documentation directly — bypassing training data staleness.
 
-**Detection:** if Context7 tools are unavailable, Phase 1C degrades to WebSearch-only. Still useful, but slower and less authoritative. Note the degradation in the audit output.
+**Expect not to have it.** A pre-flight agent launched inside a **Workflow does not inherit the session's MCP tools**: 12 of the last 16 library
+audits in this repository ran with no Context7 attached. The interactive path is where it shows up. So WebSearch/WebFetch plus the package registry is
+the *normal* toolset here, not the emergency one.
+
+**Detection:** check your own tool list before you claim a source. If no `*context7*` tool is present, run on WebSearch/WebFetch and write `DEGRADED:
+WebSearch-only` at the top of the audit — never cite Context7 for a lookup you did through WebSearch.
 
 ## How To Invoke
 

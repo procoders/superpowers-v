@@ -7759,6 +7759,28 @@ def selftest():
                        for n in os.listdir(os.path.join(pin_dir, "receipts"))))
         _check("resume-prepare leaves the run pre-dispatch, not BLOCKED",
                _rp_after.get("phase") == "PARTITION_VERIFIED")
+        # a codex job with an environmental failure and a live worktree is left for `codex exec resume`
+        _rp3 = _load_state(pin_dir)
+        _rp3["jobs"]["p3"] = {"status": "failed", "baseline": "c" * 40, "worktree": fin_repo,
+                              "session_id": "uuid-1", "failure_class": "timeout", "isolation": "worktree"}
+        _save_state(pin_dir, _rp3)
+        _atomic_write(baseline_pin_path(pin_dir, "p3"), "c" * 40 + "\n")
+        with _quiet():
+            cmd_resume_prepare(["--run-dir", pin_dir])
+        _rp3b = _load_state(pin_dir)["jobs"]["p3"]
+        _check("resume-prepare keeps a codex resume-eligible job's pin, worktree and session",
+               _rp3b.get("baseline") == "c" * 40 and _rp3b.get("worktree") == fin_repo
+               and os.path.exists(baseline_pin_path(pin_dir, "p3")))
+        # two superseded receipts at the same realised commit keep both files
+        os.makedirs(os.path.join(pin_dir, "receipts"), exist_ok=True)
+        for _ in range(2):
+            _atomic_write(os.path.join(pin_dir, "receipts", "p1.gate.json"),
+                          json.dumps({"verdict": "blocked", "realised_commit": "d" * 40}))
+            with _quiet():
+                cmd_resume_prepare(["--run-dir", pin_dir])
+        _check("resume-prepare never clobbers an earlier superseded receipt",
+               len([n for n in os.listdir(os.path.join(pin_dir, "receipts"))
+                    if n.startswith("p1.gate.superseded-")]) >= 2)
         with _quiet():
             _rp_rc2 = cmd_register_lane([
                 "--run-dir", pin_dir, "--job-id", "p1", "--cwd", fin_repo,
@@ -8496,6 +8518,15 @@ def cmd_resume_prepare(argv):
             if isinstance(merged, dict) and merged.get("integrated"):
                 out["kept"].append(job_id)
                 continue
+            # A codex worktree job whose failure was ENVIRONMENTAL and whose worktree still
+            # exists is resumed IN PLACE (`codex exec resume <uuid>`, the resume-eligibility
+            # rule in commands/v-resume.md) — its pin and worktree stay; clearing them here
+            # would make that rule unreachable (pr-review 2026-09-04).
+            wt = entry.get("worktree")
+            if (entry.get("failure_class") in ("timeout", "network") and entry.get("session_id")
+                    and isinstance(wt, str) and wt and os.path.isdir(wt)):
+                out.setdefault("resume_in_place", []).append(job_id)
+                continue
             was = read_pinned_baseline(run_dir, job_id, entry)
             pin_path = baseline_pin_path(run_dir, job_id)
             if os.path.exists(pin_path):
@@ -8514,6 +8545,10 @@ def cmd_resume_prepare(argv):
                 tag = (str(doc.get("realised_commit") or "")[:12]
                        or datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
                 dest = os.path.join(run_dir, "receipts", "%s.gate.superseded-%s.json" % (job_id, tag))
+                n = 2
+                while os.path.exists(dest):  # a second attempt at the same commit must not clobber the first
+                    dest = os.path.join(run_dir, "receipts", "%s.gate.superseded-%s-%d.json" % (job_id, tag, n))
+                    n += 1
                 os.replace(receipt, dest)
                 out["receipts_archived"].append(os.path.relpath(dest, run_dir))
             out["unpinned"].append({"job": job_id, "was": was})

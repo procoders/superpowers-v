@@ -1,5 +1,5 @@
 ---
-description: Refresh the Compound V tier→model map — discover the concrete models each backend (claude, codex, antigravity, cursor, devin, opencode) currently offers, show them, let you assign frontier/deep/standard/light, and write the result into .claude/compound-v.json so intent-based routing survives model churn without touching any call site.
+description: Refresh the Compound V tier→model map — discover the concrete models each backend (claude, codex, antigravity, cursor, opencode) currently offers, show them, let you assign frontier/deep/standard/light, and write the result into .claude/compound-v.json so intent-based routing survives model churn without touching any call site.
 disable-model-invocation: true
 ---
 
@@ -15,9 +15,9 @@ at dispatch time, so refreshing the map here is the *only* thing you ever touch
 when models churn.
 
 Argument (optional): `{{args}}` may name a single backend to refresh in isolation
-(`claude` | `codex` | `antigravity` | `cursor` | `devin` | `opencode`); otherwise walk
-all of them. `devin` and `opencode` are **worker-only** backends (v1) — their model
-maps drive dispatch only, never any arbiter/review panel seat.
+(`claude` | `codex` | `antigravity` | `cursor` | `opencode`); otherwise walk
+all of them. `opencode` is a **worker-only** backend (v1) — its model
+map drives dispatch only, never any arbiter/review panel seat.
 
 **This is the "skill picks the models and offers you the options" surface.** Do the
 discovery, *show* what you found, then let the user choose. Never silently pick a
@@ -155,32 +155,6 @@ command -v cursor-agent && cursor-agent status </dev/null >/dev/null 2>&1 && ech
   `sonnet-4-thinking`) — a curated roster like codex (no discovery; whatever the plan accepts
   via `cursor-agent --model` is valid). Only offer named models if the user confirms a paid plan.
 
-### 1e. devin — curated list, no discovery command (mirrors codex's pattern)
-
-Devin has **no `devin models` / `--list-models` subcommand** — like codex, discovery is
-only via the interactive `/model` picker inside a session, so the map is a small
-**curated** roster the user can override by hand (devin accepts whatever string you pass
-to `--model`). Present this curated starting roster (DOC-CLAIMED aliases — devin-cli
-3000.1.27's own `--help` uses these exact strings as its examples, but no authenticated
-run has confirmed they resolve):
-
-- `claude-opus-4.6` — strongest; suggested for `deep`
-- `claude-sonnet-4` — balanced; suggested for `standard`
-- `gpt-5.5` — fast/cheap; suggested for `light`
-
-Confirm devin is even usable first:
-
-```bash
-command -v devin && devin auth status </dev/null 2>&1 | grep -q 'Not logged in' \
-  && echo "devin present, unauthenticated" || echo "devin usable (or absent)"
-```
-
-If devin is unavailable/unauthenticated, say so, keep the existing devin block
-unchanged, and skip its reassignment. **Devin is model-agnostic** (`--model` spans
-Claude/GPT/Gemini/Devin's own SWE family) — remind the user that whichever family they
-pick here determines Devin's error-correlation with the rest of the panel, which is
-exactly why it stays **worker-only, never an arbiter seat**, in this plugin.
-
 ### 1f. opencode — real discovery command, but curated + user-confirmed assignment
 
 opencode **does** have a real, live discovery command that works even with **zero**
@@ -225,7 +199,6 @@ fast/cheap option → `light`). Example shape:
 | claude | opus, sonnet | opus | opus | sonnet |
 | codex | gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna | gpt-5.6-sol | gpt-5.6-terra | gpt-5.6-luna |
 | antigravity | *(from `agy models </dev/null`)* | Gemini 3.1 Pro (High) | Gemini 3.1 Pro (Low) | Gemini 3.8 Flash (Low) |
-| devin | *(curated: claude-opus-4.6, claude-sonnet-4, gpt-5.5)* | claude-opus-4.6 | claude-sonnet-4 | gpt-5.5 |
 | opencode | *(from `opencode models </dev/null`)* | anthropic/claude-opus-4-6 | openai/gpt-5.6-terra | opencode/mimo-v2.5-free |
 
 Then **let the user assign** each tier per backend — accept the suggestion as-is, or
@@ -248,7 +221,7 @@ Guardrails on every assignment:
 ## Step 3 — Write the map into `.claude/compound-v.json`
 
 Merge the confirmed assignments into the config's `models` block. **Preserve every
-other key** in the file (`stance`, `memory`, `epic`, `review`, `workflows_accelerator`,
+other key** in the file (`stance`, `memory`, `epic`, `review`,
 …) and any backend block you did not refresh this run. Create the file (and parent
 dir) if absent, seeding the non-`models` keys from `/v:init` conventions if they
 aren't there yet. **Never write `backends` or `checked_at`** — machine-local
@@ -269,7 +242,6 @@ Resulting shape (only `models` is this command's responsibility) — write the
       "codex":       { "deep": "gpt-5.6-sol", "standard": "gpt-5.6-terra", "light": "gpt-5.6-luna" },
       "antigravity": { "deep": "…",       "standard": "…",       "light": "…" },
       "cursor":      { "deep": "auto",    "standard": "auto",    "light": "auto" },
-      "devin":       { "deep": "claude-opus-4.6", "standard": "claude-sonnet-4", "light": "gpt-5.5" },
       "opencode":    { "deep": "anthropic/claude-opus-4-6", "standard": "openai/gpt-5.6-terra", "light": "opencode/mimo-v2.5-free" }
     },
     "cost-aware": {
@@ -277,7 +249,6 @@ Resulting shape (only `models` is this command's responsibility) — write the
       "codex":       { "deep": "gpt-5.6-sol", "standard": "gpt-5.6-terra", "light": "gpt-5.6-luna" },
       "antigravity": { "deep": "…",       "standard": "…",       "light": "…" },
       "cursor":      { "deep": "auto",    "standard": "auto",    "light": "auto" },
-      "devin":       { "deep": "claude-opus-4.6", "standard": "claude-sonnet-4", "light": "gpt-5.5" },
       "opencode":    { "deep": "anthropic/claude-opus-4-6", "standard": "openai/gpt-5.6-terra", "light": "opencode/mimo-v2.5-free" }
     }
     // claude-only mirrors balanced; conservative keeps standard on opus
@@ -304,7 +275,7 @@ resolver reads the per-stance block you wrote (omitting it defaults to `balanced
 
 ```bash
 for s in balanced cost-aware; do
-  for b in claude codex antigravity cursor devin opencode; do
+  for b in claude codex antigravity cursor opencode; do
     for t in deep standard light; do
       python3 scripts/compound-v-resolve-model.py --backend "$b" --tier "$t" \
         --stance "$s" --config .claude/compound-v.json
@@ -341,7 +312,6 @@ with a clear error naming the rule (use `high` instead).
 and `opencode models </dev/null` both run headlessly and return live catalogs, so
 report the discovered models as discovered. Only if the CLI is **absent** do we fall
 back to the built-in map — say so plainly when that happens, rather than passing the
-fallback off as discovered. devin has no discovery command at all — its roster is
-always curated, say so. Never print token or cost numbers (anti-ruflo). Never assign
-`haiku`. Always remind the user that `devin` and `opencode` are worker-only backends —
-whatever they assign here never seats either on an arbiter/review panel.
+fallback off as discovered. Never print token or cost numbers (anti-ruflo). Never assign
+`haiku`. Always remind the user that `opencode` is a worker-only backend —
+whatever they assign here never seats it on an arbiter/review panel.

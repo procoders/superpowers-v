@@ -3,7 +3,8 @@
 - **Status:** Accepted
 - **Date:** 2026-09-01
 - **Reverses:** the "What STAYS in Engine A — even when C runs" guarantee, which commit `c27d33e`
-  deleted from [`skills/compound-v/workflows-accelerator.md`](../../../skills/compound-v/workflows-accelerator.md);
+  deleted from the former `skills/compound-v/workflows-accelerator.md` note, folded into Engine C
+  ([`scripts/compound-v-emit-workflow.py`](../../../scripts/compound-v-emit-workflow.py));
   it survives only in git — `git show c27d33e^:skills/compound-v/workflows-accelerator.md`
 - **Deciders:** Compound V v3.0 design, Feature D
   ([spec § "Feature D — Dispatch on the native Workflow runtime"](../specs/2026-09-01-v3.0-triage-tests-orchestration-design.md))
@@ -13,7 +14,8 @@
 In 1.0 this project decided where the native Workflow runtime — Engine C — was allowed to touch the
 system, and called that boundary load-bearing. Verbatim, from the § "What STAYS in Engine A — even
 when C runs" section that commit `c27d33e` deleted from
-[`workflows-accelerator.md`](../../../skills/compound-v/workflows-accelerator.md) — the quoted lines
+the former `workflows-accelerator.md` note, folded into Engine C
+([`scripts/compound-v-emit-workflow.py`](../../../scripts/compound-v-emit-workflow.py)) — the quoted lines
 are `:60-71` of the pre-deletion blob, `git show c27d33e^:skills/compound-v/workflows-accelerator.md`:
 
 > This is the load-bearing guarantee. Engine C only changes **how jobs fan out**, never

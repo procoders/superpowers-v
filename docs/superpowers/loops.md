@@ -24,7 +24,7 @@ approval — this gate lives **upstream in the Superpowers brainstorming skill**
 version of this doc miscited it to `skills/compound-v/SKILL.md`, which contains no such gate. It is also
 prose upstream, not a mechanism — see [ADR 0002](adr/0002-limits-ship-with-the-claim.md) on stating limits
 with claims), and the v2.16
-[`/v:preferences`](../../commands/v-preferences.md) recall (evidence for you, never an answer). A checkpoint
+`/v:preferences` recall (the command was removed in 3.4.16; native auto-memory replaces it). A checkpoint
 epic ([`skills/compound-v/epic-mode.md`](../../skills/compound-v/epic-mode.md)) builds one feature, reports
 `--stats`, and stops for you. *Triggered by your prompt · ends when you review.*
 
@@ -67,7 +67,7 @@ auth is the user's to keep alive. *Triggered by an event / schedule · ends when
 
 Which of the 18 `/v:*` commands drives each loop:
 
-- **01 · turn-based** — most of the toolbelt: [`/v:dispatch`](../../commands/v-dispatch.md), [`/v:orchestrate`](../../commands/v-orchestrate.md), [`/v:collect`](../../commands/v-collect.md), [`/v:status`](../../commands/v-status.md), [`/v:resume`](../../commands/v-resume.md), [`/v:remember`](../../commands/v-remember.md), [`/v:preferences`](../../commands/v-preferences.md), [`/v:dashboard`](../../commands/v-dashboard.md), [`/v:onboard`](../../commands/v-onboard.md), [`/v:pr-review`](../../commands/v-pr-review.md), [`/v:review-plan`](../../commands/v-review-plan.md), [`/v:adr`](../../commands/v-adr.md), [`/v:archaeology`](../../commands/v-archaeology.md), [`/v:init`](../../commands/v-init.md), [`/v:models`](../../commands/v-models.md), [`/v:memory-refresh`](../../commands/v-memory-refresh.md) — plus [`/v:epic`](../../commands/v-epic.md) in the checkpoint stance.
+- **01 · turn-based** — most of the toolbelt: [`/v:dispatch`](../../commands/v-dispatch.md), [`/v:orchestrate`](../../commands/v-orchestrate.md), [`/v:collect`](../../commands/v-collect.md), [`/v:status`](../../commands/v-status.md), [`/v:resume`](../../commands/v-resume.md), [`/v:remember`](../../commands/v-remember.md), [`/v:onboard`](../../commands/v-onboard.md), [`/v:pr-review`](../../commands/v-pr-review.md), [`/v:review-plan`](../../commands/v-review-plan.md), [`/v:adr`](../../commands/v-adr.md), [`/v:init`](../../commands/v-init.md), [`/v:models`](../../commands/v-models.md), [`/v:memory-refresh`](../../commands/v-memory-refresh.md) — plus [`/v:epic`](../../commands/v-epic.md) in the checkpoint stance.
 - **02 · goal-based** — `/v:epic --stance marathon`.
 - **03 · time-based** — `/loop 30m /v:epic <epic-id>` (the native loop skill, offered by `/v:epic` §0c).
 - **04 · proactive** — a `/schedule` routine running `/v:epic <epic-id>`, left unattended + `/v:resume` for a

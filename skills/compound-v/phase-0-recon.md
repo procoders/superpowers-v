@@ -74,7 +74,7 @@ Read from `.claude/compound-v.json`. **Fail-closed rule:** Missing file or key â
 > **Naming, because this ladder used to collide with the dispatch engines.** These rungs are
 > **research engines** for a recon pass and have nothing to do with how jobs execute. Compound V's
 > execution engine is **Engine C** (a native Workflow â€” see
-> [`workflows-accelerator.md`](workflows-accelerator.md)); the rungs below are named **R-A / R-B /
+> [`ADR 0004`](../../docs/superpowers/adr/0004-workflow-as-the-dispatch-engine.md)); the rungs below are named **R-A / R-B /
 > R-C** so a sentence like "recon ran on B" can never be read as a dispatch-engine claim. A live
 > validation log from v2.8 did exactly that.
 

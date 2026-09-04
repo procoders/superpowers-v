@@ -113,7 +113,7 @@ emit_job_result() {
 # The executor model never fills `tests` — same rule as blocked/files_changed/violations.
 #
 # These three functions are BYTE-IDENTICAL in all five worker scripts
-# (scripts/compound-v-run-{codex,antigravity,cursor,devin,opencode}-worker.sh).
+# (scripts/compound-v-run-{codex,antigravity,cursor,opencode}-worker.sh).
 # Fix them in all five, or in none.
 
 # Read one resolved command by INDEX, never by line: a command may legitimately

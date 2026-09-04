@@ -247,7 +247,9 @@ Compound V agents don't currently auto-consolidate the KB — that's a P2 enhanc
 
 ## How do I run only Phase 1A (no domain or library audit)?
 
-Use the slash command: `/v:archaeology <topic>`.
+`/v:archaeology` was removed in 3.4.16 — Phase 1A now runs inside the pre-flights (the
+`superpowers-v:code-archaeologist` agent), so ask for the archaeology pre-flight rather than a
+standalone command.
 
 ## How do I run only Phase 1B?
 

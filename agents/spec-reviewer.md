@@ -37,7 +37,7 @@ python3 scripts/compound-v-memory.py recall-check --files <globs from the diff>
 ```
 
 If the same file pattern carries repeated prior `blocked` / `error` / `timeout` or
-scope-violation records, it returns the single verdict **`tighten`** — force
+scope-violation records, it returns **`tighten`** (or `none` — no repeat failure — or `unavailable` when its matcher could not load) — force
 worktree, add a review pass, fold into Task 0. It is the one path from recall back
 into action, and it is **escalation-only**: it can never loosen a control, reroute
 to a cheaper backend, or turn an ISSUES verdict into APPROVED.

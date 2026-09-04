@@ -539,7 +539,7 @@ bash_case "scripts/compound-v-run-codex-worker.sh is never denied" allow \
   agent_abc123 "$WT" 'bash scripts/compound-v-run-codex-worker.sh --job x > docs/worker.log'
 check "the carve-out is recorded in the log, not silent" \
   "$([ "$(logged 'external worker invocation')" = yes ] && echo 1 || echo 0)"
-for backend in antigravity cursor devin opencode; do
+for backend in antigravity cursor opencode; do
   bash_case "scripts/compound-v-run-$backend-worker.sh is never denied" allow \
     agent_abc123 "$WT" "scripts/compound-v-run-$backend-worker.sh > docs/w.log"
 done

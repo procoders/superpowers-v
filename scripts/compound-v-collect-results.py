@@ -21,14 +21,6 @@ Design contract (PRD §4.2 #6, plan §3 / §4 Q6):
     be read, but its enforcement fields are IGNORED in favor of the scope verdict.
   - NO fabricated cost / token metrics. The schema has no cost field and this
     script never invents one (anti-ruflo charter, plan §7).
-  - `usage.advisor_calls` is SCRIPT-DERIVED (like the git-derived enforcement
-    fields), never worker-self-reported: it is the non-empty line count of the
-    conventional per-job advisor log `<run-dir>/logs/<job-id>.advisor.jsonl`
-    (appended one line per consult by compound-v-advisor-consult.sh). Present log
-    ⇒ set/overwrite advisor_calls to the count; absent/empty ⇒ leave it null
-    (fail-open, never fabricate). When the worker emitted no usage but a count was
-    derived, a minimal usage object {input_tokens:null, output_tokens:null,
-    advisor_calls:<count>, backend:<--backend>, measured:false} is synthesized.
 
 Inputs (all paths absolute or run-dir-relative):
 
@@ -75,9 +67,7 @@ import collections
 import json
 import os
 import re
-import shutil
 import sys
-import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
 STATUS_VALUES = ("success", "blocked", "timeout", "error")
@@ -144,42 +134,6 @@ def _union_preserve_order(primary: List[str], extra: List[str]) -> List[str]:
             seen.add(item)
             out.append(item)
     return out
-
-
-def _advisor_log_path(run_dir: Optional[str], job_id: str) -> Optional[str]:
-    """Conventional per-job advisor log: <run-dir>/logs/<job-id>.advisor.jsonl.
-
-    Mirrors the results/<id>.json convention the collector already uses to locate
-    output, so run-dir + job-id fully determine the log path. Returns None when no
-    run-dir is known (e.g. --out was given without --run-dir).
-    """
-    if not run_dir:
-        return None
-    return os.path.join(run_dir, "logs", "%s.advisor.jsonl" % job_id)
-
-
-def _count_advisor_calls(run_dir: Optional[str], job_id: str) -> Optional[int]:
-    """Script-DERIVED advisor-consult count from the per-job advisor JSONL log.
-
-    `compound-v-advisor-consult.sh` appends one JSON line per consult to
-    <run-dir>/logs/<job-id>.advisor.jsonl. We count its non-empty lines — an
-    honest, git/log-derived number (like the enforcement fields), never
-    self-reported by the worker. Fail-open: a missing/unreadable/empty log yields
-    None so advisor_calls stays null (never fabricate a count).
-    """
-    path = _advisor_log_path(run_dir, job_id)
-    if not path or not os.path.exists(path):
-        return None
-    try:
-        with open(path, "r") as fh:
-            lines = fh.readlines()
-    except OSError:
-        return None
-    count = 0
-    for line in lines:
-        if line.strip():
-            count += 1
-    return count if count > 0 else None
 
 
 def _coerce_summary(worker_text: str) -> str:
@@ -348,29 +302,8 @@ def build_result(args: argparse.Namespace) -> Dict[str, Any]:
     worker_usage = wjson.get("usage")
     usage = dict(worker_usage) if isinstance(worker_usage, dict) else None
 
-    # advisor_calls is SCRIPT-DERIVED, never worker-self-reported: count the
-    # per-job advisor JSONL log (like the git-derived enforcement fields). A
-    # worker-supplied advisor_calls is ALWAYS DISCARDED (round-2: a malicious /
-    # buggy worker could otherwise inject e.g. advisor_calls:999 with no log and
-    # have it survive). The derived value is the count when the log exists, else
-    # None (missing/unreadable/no-run-dir => null, fail-open, never fabricated).
-    advisor_calls = _count_advisor_calls(args.run_dir, args.job_id)
-    if usage is not None:
-        # Overwrite unconditionally, dropping any worker-reported count.
-        usage["advisor_calls"] = advisor_calls
-    elif advisor_calls is not None:
-        # No worker usage, but a real derived count: synthesize a minimal object.
-        usage = {
-            "input_tokens": None,
-            "output_tokens": None,
-            "advisor_calls": advisor_calls,
-            "backend": args.backend or "",
-            "measured": False,
-        }
-
-    # Include `usage` ONLY when the worker provided one OR we derived advisor_calls;
-    # when neither, omit it entirely (usage is optional in the schema, so omission
-    # stays conformant).
+    # Include `usage` ONLY when the worker provided one; when absent, omit it
+    # entirely (usage is optional in the schema, so omission stays conformant).
     if isinstance(usage, dict):
         result["usage"] = usage
 
@@ -400,7 +333,7 @@ def _usage_conformance_errors(usage: Dict[str, Any],
     like {"bogus": 1} would slip through even though the real schema declares
     additionalProperties:false and five typed fields. This validates JUST the usage
     object (not a general recursive JSON-Schema engine): unknown keys are rejected,
-    input_tokens/output_tokens/advisor_calls must be int-or-null, backend a string,
+    input_tokens/output_tokens must be int-or-null, backend a string,
     measured a bool. Field types are read from the schema so they stay in sync.
     """
     errs = []  # type: List[str]
@@ -1060,7 +993,7 @@ def _selftest() -> int:
     #     using the REAL usage sub-schema from job_result.schema.json.
     schema = _read_json(_default_schema_path())
     usage_schema = schema["properties"]["usage"] if isinstance(schema, dict) else {}
-    good_usage = {"input_tokens": 1, "output_tokens": 2, "advisor_calls": 0,
+    good_usage = {"input_tokens": 1, "output_tokens": 2,
                   "backend": "codex", "measured": True}
     check("usage.good_clean", _usage_conformance_errors(dict(good_usage), usage_schema) == [])
     extra = dict(good_usage)
@@ -1129,33 +1062,6 @@ def _selftest() -> int:
     check("success_no_failure_class.status", res_c["status"] == "success")
     check("success_no_failure_class.class", res_c["failure_class"] is None)
     check("success_no_failure_class.retry", res_c["retry_after_seconds"] == 0)
-
-    # (d) usage.advisor_calls is SCRIPT-DERIVED: a worker-reported count is
-    #     ALWAYS discarded. With no advisor log -> null (fail-open); with an N-line
-    #     log -> N. Everything runs inside a tmp dir; no real filesystem touched.
-    d = tempfile.mkdtemp(prefix="cv-collect-selftest-")
-    try:
-        wo = os.path.join(d, "worker.txt")
-        with open(wo, "w") as fh:
-            json.dump({"summary": "did the thing",
-                       "usage": {"input_tokens": 10, "output_tokens": 5,
-                                 "advisor_calls": 999, "backend": "codex",
-                                 "measured": True}}, fh)
-        args_d = _mk_args(job_id="job-d", run_dir=d, worker_output=wo)
-        res_d = build_result(args_d)
-        check("advisor.usage_present", isinstance(res_d.get("usage"), dict))
-        check("advisor.worker_count_discarded", res_d["usage"]["advisor_calls"] is None)
-        check("advisor.tokens_preserved", res_d["usage"]["input_tokens"] == 10)
-        check("advisor.summary_from_worker", res_d["summary"] == "did the thing")
-
-        logs = os.path.join(d, "logs")
-        os.makedirs(logs, exist_ok=True)
-        with open(os.path.join(logs, "job-d.advisor.jsonl"), "w") as fh:
-            fh.write('{"consult":1}\n{"consult":2}\n{"consult":3}\n')
-        res_d2 = build_result(args_d)
-        check("advisor.derived_count", res_d2["usage"]["advisor_calls"] == 3)
-    finally:
-        shutil.rmtree(d, ignore_errors=True)
 
     # (e) Status derivation for success/blocked/timeout/error.
     check("status.success", _derive_status(False, 0, None, False) == "success")
@@ -1396,8 +1302,7 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     p.add_argument("--retry-after-seconds", type=int, default=0,
                    help="Seconds-until-retry from the provider, 0 if unknown")
     p.add_argument("--backend",
-                   help="Job backend name (codex|opencode|cursor|agy|antigravity|claude|devin); "
-                        "labels a usage object synthesized purely from a derived advisor_calls count")
+                   help="Job backend name (codex|opencode|cursor|agy|antigravity|claude)")
     p.add_argument("--files-changed", help="Comma-separated files_changed")
     p.add_argument("--violations", help="Comma-separated violations")
     blocked_grp = p.add_mutually_exclusive_group()

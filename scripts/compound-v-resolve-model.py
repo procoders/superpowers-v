@@ -38,18 +38,7 @@ Usage
     compound-v-resolve-model.py --backend claude --tier light --effort low
     compound-v-resolve-model.py --backend codex --tier standard --config .claude/compound-v.json
     compound-v-resolve-model.py --backend codex --tier deep --explicit-model gpt-5.6
-    compound-v-resolve-model.py --backend claude --tier standard --job-type bounded_crud
-    compound-v-resolve-model.py --advisor-eligible --tier standard --job-type bounded_crud
-    compound-v-resolve-model.py --select-advisor --executor claude --available codex,claude
     compound-v-resolve-model.py --selftest
-
-Advisor helpers (v2.12, Feature B1):
-  * ``advisor_eligible`` — a `standard`-tier / core-slice implementer OR a fast-path
-    Claude worker MAY carry an advisor; reviewer/docs/shared_foundation jobs may not.
-  * ``select_advisor`` — cross-brand advisor picker restricted to backends with an
-    IMPLEMENTED read-only consult path: codex (cross-brand, preferred) > opus fallback
-    (backend claude, model opus). cursor/antigravity/devin/opencode have NO consult
-    adapter, so they are NEVER offered as advisors. NEVER haiku.
 
 Python 3.9-safe (no match, no X|Y unions), stdlib only.
 """
@@ -104,17 +93,6 @@ _ANTIGRAVITY = {"frontier": "Gemini 3.1 Pro (High)", "deep": "Gemini 3.1 Pro (Hi
 # auto-ranked: it spans unrelated vendor families with no shared naming convention).
 # Lower-trust tier (no kernel sandbox; headless -f required).
 _CURSOR = {"frontier": "auto", "deep": "auto", "standard": "auto", "light": "auto"}
-# Devin (devin-cli): multi-vendor model broker (like Cursor, unlike Codex/Antigravity's
-# single-family catalogs) -- `--model` is a free string, no `devin models`/`--list-models`
-# equivalent exists, so this curated map mirrors the Codex pattern (curated +
-# user-overridable roster). DOC-CLAIMED aliases (devin-cli 3000.1.27's own --help text
-# uses these exact strings as its examples, but no authenticated run has confirmed they
-# resolve -- see skills/backend-launcher/adapter-devin.md). Lower-trust tier: devin's
-# --sandbox is a live [Research Preview] kernel flag (unlike antigravity/cursor), but its
-# non-shell-tool coverage and network confinement are unverified, so it ships in the same
-# opt-in/lower-trust tier for v1. NEVER haiku.
-_DEVIN = {"frontier": "claude-opus-4.6", "deep": "claude-opus-4.6",
-          "standard": "claude-sonnet-4", "light": "gpt-5.5"}
 # opencode (opencode-ai): provider-agnostic router -- every cell is a full "provider/model"
 # string (e.g. "anthropic/claude-opus-4-6"), and the provider is allowed to DIFFER per
 # cell (unlike every other backend's single-vendor map) -- this is the key design point
@@ -136,14 +114,13 @@ _OPENCODE = {
 
 def _stance_map(claude_map):
     """Assemble a full {backend -> {tier -> model}} map for one stance. Only the claude
-    sub-map varies by stance; codex/antigravity/cursor/devin/opencode are shared
+    sub-map varies by stance; codex/antigravity/cursor/opencode are shared
     (read-only)."""
     return {
         "claude": claude_map,
         "codex": _CODEX,
         "antigravity": _ANTIGRAVITY,
         "cursor": _CURSOR,
-        "devin": _DEVIN,
         "opencode": _OPENCODE,
     }
 
@@ -159,7 +136,7 @@ DEFAULT_MODELS_BY_STANCE = {
 # working unchanged: balanced is the default stance.
 DEFAULT_MODELS = DEFAULT_MODELS_BY_STANCE["balanced"]
 
-BACKENDS = ("claude", "codex", "antigravity", "cursor", "devin", "opencode")
+BACKENDS = ("claude", "codex", "antigravity", "cursor", "opencode")
 TIERS = ("frontier", "deep", "standard", "light")
 # `xhigh` is valid iff backend == "codex": it maps to codex's kernel
 # model_reasoning_effort dimension, which live-accepts xhigh (verified
@@ -264,12 +241,10 @@ def _is_provider_model_shaped(model):
 
 
 def resolve(backend, tier, effort=None, config_models=None, explicit_model=None,
-            stance="balanced", job_type=None, fast_path=False):
+            stance="balanced"):
     """Resolve to a concrete model. Precedence: explicit_model > config_models > the
     stance's built-in default map. Raises ValueError on unknown backend/tier/effort/stance
-    or an unresolvable cell. When ``job_type`` is provided (enough context), the returned
-    dict also carries an additive ``advisor_eligible`` boolean; callers that only read
-    ``["model"]`` ignore it."""
+    or an unresolvable cell."""
     if backend not in BACKENDS:
         raise ValueError("unknown backend '%s' (expected one of %s)" % (backend, ", ".join(BACKENDS)))
     if tier not in TIERS:
@@ -294,12 +269,8 @@ def resolve(backend, tier, effort=None, config_models=None, explicit_model=None,
                 "exactly one '/'); bare or malformed model names are rejected"
                 % explicit_model
             )
-        _r = {"backend": backend, "tier": tier, "model": explicit_model, "effort": resolved_effort}
-        if job_type is not None:
-            _r["advisor_eligible"] = advisor_eligible(
-                tier=tier, job_type=job_type, backend=backend, fast_path=fast_path
-            )
-        return _r
+        return {"backend": backend, "tier": tier, "model": explicit_model,
+                "effort": resolved_effort}
 
     model = _config_cell(config_models, stance, backend, tier)
     if model is None:
@@ -319,136 +290,12 @@ def resolve(backend, tier, effort=None, config_models=None, explicit_model=None,
             % (model, stance, backend, tier)
         )
 
-    result = {"backend": backend, "tier": tier, "model": model, "effort": resolved_effort}
-    if job_type is not None:
-        result["advisor_eligible"] = advisor_eligible(
-            tier=tier, job_type=job_type, backend=backend, fast_path=fast_path
-        )
-    return result
-
-
-# --------------------------------------------------------------------------- #
-# Advisor eligibility + cross-brand advisor selector (v2.12, Feature B1).
-#
-# The "cheap executor + on-demand cross-brand advisor" pattern lets a cheap
-# implementer (a `standard`-tier / core-slice job, or a fast-path Claude worker)
-# consult a DIFFERENT-brand advisor on a hard sub-decision. Two pure helpers:
-#
-#   advisor_eligible(...) -> bool
-#       Is THIS job allowed to carry an advisor? Reviewers, docs, and
-#       shared_foundation jobs are structurally ineligible (they are not
-#       core-slice implementers); a `standard`-tier implementer OR a fast-path
-#       Claude worker is eligible.
-#
-#   select_advisor(executor_backend, available_backends) -> {advisor_backend, tier, model}
-#       Given the executor's backend and the backends available in this run,
-#       pick the advisor backend, PREFERRING a different brand than the executor —
-#       but ONLY among backends with an implemented read-only consult path:
-#           codex (cross-brand, preferred) > opus fallback
-#       cursor/antigravity/devin/opencode are NEVER selected as advisors — no consult
-#       adapter exists for them, so choosing one would be deterministic death
-#       ("unsupported advisor backend"). Opus fallback = backend "claude", model "opus"
-#       (always available, never haiku).
-# --------------------------------------------------------------------------- #
-
-# Job-type tokens that are NEVER advisor-eligible (substring match, mirroring the
-# reviewer-token convention in compound-v-validate-manifest.py). A reviewer, a
-# docs job, or a shared_foundation job is not a core-slice implementer.
-ADVISOR_INELIGIBLE_TYPE_TOKENS = ("review", "reviewer", "docs", "shared_foundation")
-
-# Non-claude advisor backends with an IMPLEMENTED read-only consult path — the ONLY
-# non-claude backends select_advisor may return. codex is the cross-brand preferred
-# advisor; the sole other consultable path is the Claude/opus fallback (below).
-# cursor/antigravity/devin/opencode have NO consult adapter, so offering them as an
-# advisor is deterministic death — they are deliberately excluded. NEVER haiku.
-ADVISOR_CONSULTABLE_NONCLAUDE = ("codex",)
-
-
-def advisor_eligible(tier=None, job_type=None, backend=None, fast_path=False):
-    """True iff a job MAY carry an advisor block. Structurally-ineligible job
-    types (reviewer/docs/shared_foundation) are rejected regardless of tier; a
-    `standard`-tier implementer OR a fast-path Claude worker is eligible."""
-    jt = str(job_type or "").strip().lower()
-    for tok in ADVISOR_INELIGIBLE_TYPE_TOKENS:
-        if tok and tok in jt:
-            return False
-    b = str(backend or "").strip().lower()
-    t = str(tier or "").strip().lower()
-    if fast_path and b == "claude":
-        return True
-    if t == "standard":
-        return True
-    return False
-
-
-def select_advisor(executor_backend, available_backends, stance="balanced"):
-    """Pick the cross-brand advisor backend, restricted to backends with an IMPLEMENTED
-    read-only consult path. Prefer a DIFFERENT brand than the executor: codex > opus
-    fallback. cursor/antigravity/devin/opencode are NEVER returned (no consult adapter —
-    selecting one would be deterministic 'unsupported advisor backend' death). Returns a
-    dict with ``advisor_backend`` / ``tier`` / ``model``. The opus fallback (backend
-    'claude', model 'opus') is always available. NEVER haiku."""
-    exec_b = str(executor_backend or "").strip().lower()
-    avail = set(
-        str(b).strip().lower() for b in (available_backends or []) if str(b).strip()
-    )
-    for cand in ADVISOR_CONSULTABLE_NONCLAUDE:
-        if cand in avail and cand != exec_b:
-            model = resolve(cand, "deep", stance=stance)["model"]
-            return {"advisor_backend": cand, "tier": "deep", "model": model}
-    # Opus fallback — the only other backend with an implemented consult path; a
-    # different brand than any non-claude executor, and always available.
-    return {"advisor_backend": "claude", "tier": "deep", "model": "opus"}
-
-
-def _main_advisor_eligible(argv):
-    """CLI: --advisor-eligible --tier <t> --job-type <jt> [--backend <b>] [--fast-path]
-    Prints 'true' or 'false'."""
-    parser = argparse.ArgumentParser(
-        prog="compound-v-resolve-model.py --advisor-eligible",
-        description="Is this job advisor-eligible?",
-    )
-    parser.add_argument("--advisor-eligible", action="store_true")
-    parser.add_argument("--tier", default=None, choices=list(TIERS))
-    parser.add_argument("--job-type", default=None)
-    parser.add_argument("--backend", default=None, choices=list(BACKENDS))
-    parser.add_argument("--fast-path", action="store_true")
-    args = parser.parse_args(argv[1:])
-    ok = advisor_eligible(
-        tier=args.tier, job_type=args.job_type,
-        backend=args.backend, fast_path=args.fast_path,
-    )
-    print("true" if ok else "false")
-    return 0
-
-
-def _main_select_advisor(argv):
-    """CLI: --select-advisor --executor <b> --available codex,claude [--stance <s>]
-    Prints a JSON object {advisor_backend, tier, model}."""
-    parser = argparse.ArgumentParser(
-        prog="compound-v-resolve-model.py --select-advisor",
-        description="Pick the cross-brand advisor backend.",
-    )
-    parser.add_argument("--select-advisor", action="store_true")
-    parser.add_argument("--executor", required=True,
-                        help="the executor backend (advisor prefers a different brand)")
-    parser.add_argument("--available", required=True,
-                        help="comma-separated list of available backends")
-    parser.add_argument("--stance", default="balanced", choices=list(VALID_STANCES))
-    args = parser.parse_args(argv[1:])
-    available = [b for b in args.available.split(",") if b.strip()]
-    result = select_advisor(args.executor, available, stance=args.stance)
-    print(json.dumps(result))
-    return 0
+    return {"backend": backend, "tier": tier, "model": model, "effort": resolved_effort}
 
 
 def main(argv):
     if "--selftest" in argv[1:]:
         return _selftest()
-    if "--select-advisor" in argv[1:]:
-        return _main_select_advisor(argv)
-    if "--advisor-eligible" in argv[1:]:
-        return _main_advisor_eligible(argv)
 
     parser = argparse.ArgumentParser(
         prog="compound-v-resolve-model.py",
@@ -465,10 +312,6 @@ def main(argv):
         default=None,
         help="manifest model override; always wins, skips resolution",
     )
-    parser.add_argument("--job-type", default=None,
-                        help="job type; when given, output carries advisor_eligible")
-    parser.add_argument("--fast-path", action="store_true",
-                        help="mark this as a fast-path worker (advisor-eligibility input)")
     parser.add_argument(
         "--selftest", action="store_true", help="run built-in self-tests"
     )
@@ -488,8 +331,6 @@ def main(argv):
             config_models=config_models,
             explicit_model=args.explicit_model,
             stance=args.stance,
-            job_type=args.job_type,
-            fast_path=args.fast_path,
         )
     except ValueError as e:
         print(json.dumps({"error": str(e)}), file=sys.stderr)
@@ -535,20 +376,6 @@ def _selftest():
         "antigravity/deep -> curated Gemini",
         resolve("antigravity", "deep")["model"] == "Gemini 3.1 Pro (High)"
         and resolve("antigravity", "deep")["effort"] == "high",
-    )
-
-    # Devin (multi-vendor broker, curated DOC-CLAIMED aliases) resolves for every tier.
-    expect(
-        "devin/deep -> claude-opus-4.6",
-        resolve("devin", "deep")["model"] == "claude-opus-4.6",
-    )
-    expect(
-        "devin/standard -> claude-sonnet-4",
-        resolve("devin", "standard")["model"] == "claude-sonnet-4",
-    )
-    expect(
-        "devin/light -> gpt-5.5",
-        resolve("devin", "light")["model"] == "gpt-5.5",
     )
 
     # opencode (provider-agnostic router): every cell resolves, AND every cell is a
@@ -637,10 +464,6 @@ def _selftest():
     expect(
         "cursor+xhigh rejected",
         raises(lambda: resolve("cursor", "deep", effort="xhigh")),
-    )
-    expect(
-        "devin+xhigh rejected",
-        raises(lambda: resolve("devin", "deep", effort="xhigh")),
     )
     expect(
         "opencode+xhigh rejected",
@@ -765,60 +588,6 @@ def _selftest():
            all(isinstance(DEFAULT_MODELS_BY_STANCE[st][b].get(t), str)
                and DEFAULT_MODELS_BY_STANCE[st][b][t].strip()
                for st in VALID_STANCES for b in BACKENDS for t in TIERS))
-
-    # --- advisor eligibility (v2.12, B1) ---
-    expect("standard-tier implementer is advisor-eligible",
-           advisor_eligible(tier="standard", job_type="bounded_crud") is True)
-    expect("fast-path Claude worker is advisor-eligible (tier not standard)",
-           advisor_eligible(tier="light", job_type="bounded_crud",
-                            backend="claude", fast_path=True) is True)
-    expect("deep-tier non-fast-path implementer is NOT advisor-eligible",
-           advisor_eligible(tier="deep", job_type="bounded_crud") is False)
-    expect("light-tier docs job is NOT advisor-eligible",
-           advisor_eligible(tier="light", job_type="docs") is False)
-    expect("reviewer job is NOT advisor-eligible",
-           advisor_eligible(tier="deep", job_type="review") is False)
-    expect("shared_foundation is NOT advisor-eligible even at standard tier",
-           advisor_eligible(tier="standard", job_type="shared_foundation") is False)
-    expect("fast-path but non-claude backend is NOT eligible via fast-path alone",
-           advisor_eligible(tier="light", job_type="bounded_crud",
-                            backend="codex", fast_path=True) is False)
-    # resolve() carries advisor_eligible ONLY when job_type is supplied (additive).
-    expect("resolve without job_type has NO advisor_eligible key (backward compat)",
-           "advisor_eligible" not in resolve("claude", "standard"))
-    expect("resolve WITH job_type carries advisor_eligible=True",
-           resolve("claude", "standard", job_type="bounded_crud")["advisor_eligible"] is True)
-    expect("resolve WITH docs job_type carries advisor_eligible=False",
-           resolve("claude", "light", job_type="docs")["advisor_eligible"] is False)
-    expect("resolve advisor_eligible does not disturb model key",
-           resolve("claude", "standard", job_type="bounded_crud")["model"] == "sonnet")
-
-    # --- cross-brand advisor selector (v2.12, B1) ---
-    expect("selector prefers codex over opus when codex available",
-           select_advisor("claude", ["codex", "claude"])["advisor_backend"] == "codex")
-    expect("selector codex advisor resolves to a concrete deep model",
-           select_advisor("claude", ["codex", "claude"])["model"]
-           == DEFAULT_MODELS["codex"]["deep"])
-    expect("selector falls back to opus when only claude available",
-           select_advisor("claude", ["claude"])
-           == {"advisor_backend": "claude", "tier": "deep", "model": "opus"})
-    expect("selector skips SAME-brand executor (codex exec) -> opus fallback",
-           select_advisor("codex", ["codex", "claude"])["advisor_backend"] == "claude")
-    # FIX 6: only codex + the opus fallback have an implemented read-only consult path.
-    # cursor/antigravity/devin/opencode must NEVER be offered as advisors (no consult
-    # adapter => deterministic 'unsupported advisor backend' death).
-    expect("selector does NOT offer cursor -> opus fallback (not cursor)",
-           select_advisor("claude", ["cursor", "claude"])
-           == {"advisor_backend": "claude", "tier": "deep", "model": "opus"})
-    expect("selector does NOT offer antigravity/devin/opencode -> opus fallback",
-           select_advisor("claude", ["antigravity", "devin", "opencode", "claude"])
-           == {"advisor_backend": "claude", "tier": "deep", "model": "opus"})
-    expect("selector still picks codex when available (executor claude)",
-           select_advisor("claude", ["codex", "claude"])["advisor_backend"] == "codex")
-    expect("selector prefers codex even when a non-consultable brand is also present",
-           select_advisor("claude", ["cursor", "codex"])["advisor_backend"] == "codex")
-    expect("selector opus fallback is never haiku",
-           select_advisor("codex", [])["model"] == "opus")
 
     # Unknown backend / tier / effort raise.
     expect("unknown backend raises", raises(lambda: resolve("gemini", "deep")))

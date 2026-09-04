@@ -378,18 +378,16 @@ These hold in **every** stance and are checked by `compound-v-validate-manifest.
    tier — `tier: deep` **OR** an explicit `model: opus`. (`deep` resolves to `opus`
    for claude, so this mirrors the frontmatter rule that reviewers/agents always
    carry `model: opus`.)
-2. **Codex / Antigravity / Cursor / Devin / opencode ⇒ worktree.** Any `backend: codex`,
-   `backend: antigravity`, `backend: cursor`, `backend: devin`, **or** `backend: opencode`
-   job MUST be `isolation: worktree`. All five are external workers with no per-file
+2. **Codex / Antigravity / Cursor / opencode ⇒ worktree.** Any `backend: codex`,
+   `backend: antigravity`, `backend: cursor`, **or** `backend: opencode`
+   job MUST be `isolation: worktree`. All four are external workers with no per-file
    enforcement of their own: Codex's sandbox restricts writes only to a *directory*;
    Antigravity, Cursor, and opencode have **no kernel sandbox at all** (Cursor's headless
-   `-f` grants arbitrary write+shell; opencode defaults to allowing all operations); Devin
-   has a live but Research-Preview `--sandbox` whose coverage is unverified and is treated
-   as no-confinement for enforcement purposes (v1) — so worktree + `git diff` is the only
-   file-scope enforcement any of the five external backends actually get. The validator
-   rejects any of these backends with `isolation: direct`. `devin` and `opencode` are also
+   `-f` grants arbitrary write+shell; opencode defaults to allowing all operations) — so
+   worktree + `git diff` is the only file-scope enforcement any of the four external
+   backends actually get. The validator
+   rejects any of these backends with `isolation: direct`. `opencode` is also
    **worker-only** — never a routable arbiter/review-panel seat (see
-   [`adapter-devin.md`](../backend-launcher/adapter-devin.md) /
    [`adapter-opencode.md`](../backend-launcher/adapter-opencode.md)).
 3. **Unclear scope ⇒ return to planning.** A job whose scope the planner cannot pin
    never dispatches with a guessed partition — it goes back to writing-plans.
@@ -537,71 +535,4 @@ override. The loop is the same closed loop, with one extra derived artifact: run
 results → {lessons (hand-curated), scorecard (auto-aggregated)} → routing.
 
 For a **live** view of a run's jobs as they progress — rather than the post-hoc
-scorecard/dashboard snapshot — use the native `/workflows` and `/tasks` surfaces.
-
----
-
-## Advisor mode (opt-in cross-brand consult) and the escalation sensor
-
-**Classic dispatch** is everything above: a job is routed to one backend at one tier,
-that worker builds the slice alone, and its output is gated and reviewed. The worker
-never consults anyone mid-flight.
-
-**Advisor mode** is an **opt-in** alternative for a narrow band of jobs: a *cheap
-executor* that, when it hits a genuinely hard sub-decision, may pause and consult a
-**read-only advisor of a different model/brand** before continuing. The executor still
-does all the writing; the advisor only *advises* — it runs with **no write tools** and
-**never** `--dangerously-skip-permissions` (a no-write advisor is structurally
-incapable of a side-effect). See [`adapter-advisor.md`](../backend-launcher/adapter-advisor.md).
-
-### When advisor mode is chosen (vs classic dispatch)
-
-Advisor mode is **never the default** — it is selected per-job in the manifest, and
-only for jobs the resolver marks **`advisor_eligible`**:
-
-- a **`standard` / `core_slice`** implementer (a cheap-tier build that may need a
-  second opinion on a design fork), **or**
-- a **fast-path Claude worker** (a job the pre-eval offered as `FASTPATH_ELIGIBLE`).
-
-Every other job type routes **classic** — a reviewer, a sensitive-surface job, a
-`deep` architecture slice, or `shared_foundation` Task 0 is **not** advisor-eligible
-(they already sit at the strongest seat; there is nothing cheaper to consult *up*
-from). The manifest validator rejects an `advisor:` block on an ineligible job type
-with a clear message. The advisor **backend** is chosen **cross-brand first**: a
-different brand from the executor (Codex when available), falling back to **Opus** when
-no cross-brand backend exists — so the consult is a genuinely independent second model,
-not the same family talking to itself.
-
-### The `advisor_calls → escalate` sensor (post-run, escalation-only)
-
-An advisor consult is **evidence, never a routing input** at dispatch time. But it
-carries a signal *after* the run: a fast-path/standard job that had to stop and consult
-the advisor **repeatedly** is evidence the work was **harder than its tier** — it
-outran the cheap classification it was dispatched under.
-
-The pre-eval scorer captures this exactly like the **churn** sensor
-([`compound-v-preeval.py`](../../scripts/compound-v-preeval.py)), and with the same
-three guarantees:
-
-- **Post-run only.** `score()` is a **pre-dispatch pure function** — it never reads
-  files. The count is read *after* the run by the caller-side `_advisor_hot_for(repo,
-  run_dir)`, which scans the run's completed `results/*.json` for
-  `usage.advisor_calls` (the **measured, worker-counted** consult count folded into
-  `job_result.usage` by the A0/collect passthrough) and returns a single bool into
-  `score()`. The pre-dispatch scorer stays file-free.
-- **Escalation-only.** When any completed job's `advisor_calls` **exceeds**
-  `ADVISOR_HOT_THRESHOLD` (strictly-greater — a couple of consults is normal; *more*
-  than that is the signal), reclassification fires a new **escalation-only override
-  (#7)**, evaluated right after the churn override (#5): the request is forced to
-  `FULL_PIPELINE` at `high/high`. It can only ever push the tier **UP**, never down —
-  identical in spirit to `unhealthy → escalate` and `churn.hot → escalate`.
-- **Fail-open.** An absent/unreadable `results/` dir, a missing file, or a
-  null/absent/non-integer `advisor_calls` all read as **not hot** (`False`) — **absence
-  never escalates**. A repo that never ran an advisor job, or a run whose results were
-  swept, simply gets no escalation signal; it never fabricates one.
-
-So the closed loop extends to advisor consults with **no new numbers invented**: a
-cheap executor that leans on its cross-brand advisor too many times is, on the next
-reclassification pass, promoted off the fast path into the full pipeline. Like every
-other escalation in this document, it is one-directional and conservative — it makes
-routing *more* careful, never less.
+scorecard snapshot — use the native `/workflows` and `/tasks` surfaces.

@@ -124,48 +124,6 @@ cursor-agent status </dev/null 2>&1 | head -3   # or: [ -n "$CURSOR_API_KEY" ]
 > preferred for untrusted / high-stakes work**. See
 > [`adapter-cursor.md`](../skills/backend-launcher/adapter-cursor.md).
 
-### 1a-quater. Devin CLI (`devin`) — optional, lower-trust, WORKER-ONLY backend
-
-```bash
-command -v devin
-```
-
-If absent → Devin is **not available** (record it; routing never offers it).
-
-If present → check **authentication** (auth-free command, verified live):
-
-```bash
-devin auth status </dev/null 2>&1 | head -3   # or: [ -n "$COGNITION_API_KEY" ]
-```
-
-- Installed **and** authenticated (`devin auth login`, or `COGNITION_API_KEY` set) →
-  Devin is **usable**; record it and add it to `backends`. The pinned headless invocation
-  (devin-cli 3000.1.27, verified live for its help/flag surface — task-execution behavior is
-  DOC-CLAIMED, unverified without an authenticated run):
-  `cd "$WT" && devin -p "<prompt>" --permission-mode dangerous [--model <M>] --export <path> </dev/null`.
-  Also probe sandbox availability (auth-free, verified live): `devin sandbox setup` — on macOS
-  reports *"No sandbox setup is required"*; on Linux it either confirms `bubblewrap`+`socat`
-  are present or prints install instructions. Record the result — it tells `/v:models` /
-  the operator whether Devin's `--sandbox` (Research Preview) is even usable on this machine,
-  though this plugin does **not** rely on it for enforcement in v1 (see below).
-- Installed but **not** authenticated → record it as **present but unauthenticated**; treat as
-  unavailable and tell the user to run `devin auth login` (or set `COGNITION_API_KEY`).
-
-> **Flag it as lower-trust AND worker-only when you record it.** Devin has a real,
-> live-confirmed kernel `--sandbox` flag (macOS Seatbelt / Linux bwrap+seccomp) — a
-> genuine differentiator from Antigravity/Cursor — but Cognition labels it
-> **"[Research Preview]"**, its coverage is scoped to "exec-tool processes" (non-shell
-> file-edit tool coverage unverified), and its network-filtering is called "currently
-> unstable" in Cognition's own docs. Until those are live-verified, this plugin treats
-> Devin as **opt-in, lower-trust — the same tier as Antigravity/Cursor**, NOT Codex: the
-> worktree + `git diff` gate is the *real* enforcement (detection, not confirmed
-> prevention). **Prefer Codex for untrusted / high-stakes work.** Devin is also
-> **model-agnostic** (`--model` accepts a free string spanning Claude/GPT/Gemini/Devin's
-> own SWE family) — its resolved model family is data-dependent, so it is **WORKER-ONLY
-> for v1, excluded from any cross-model arbiter/review panel** until family-dedup keys on
-> the resolved model rather than the backend name. See
-> [`adapter-devin.md`](../skills/backend-launcher/adapter-devin.md).
-
 ### 1a-quinquies. opencode CLI (`opencode`) — optional, lower-trust, WORKER-ONLY, multi-provider backend
 
 ```bash
@@ -199,7 +157,7 @@ opencode providers list </dev/null 2>&1 | grep -qv '0 credentials' \
 > posture from Cursor/Antigravity, which refuse until explicitly unlocked. The worktree +
 > `git diff` gate is the only real enforcement (detection, not prevention). **Prefer Codex
 > for untrusted / high-stakes work.** opencode addresses models as `provider/model`
-> strings (e.g. `anthropic/claude-opus-4-6`), so — like Devin — its resolved model family
+> strings (e.g. `anthropic/claude-opus-4-6`), so its resolved model family
 > is data-dependent; it is **WORKER-ONLY for v1, excluded from any cross-model
 > arbiter/review panel** until family-dedup keys on the resolved model. See
 > [`adapter-opencode.md`](../skills/backend-launcher/adapter-opencode.md) for the
@@ -241,12 +199,11 @@ Confirm the Compound V surface is present in this install:
 If any are missing, the plugin is not fully installed — tell the user to reinstall the
 `superpowers-v` plugin before proceeding.
 
-### 1d. Dynamic Workflows (optional accelerator)
+### 1d. Dynamic Workflows (capability probe)
 
 Note whether Dynamic Workflows look available (they are not exposed in a plain subagent
-shell). This only decides whether to *offer* the opt-in
-[`workflows-accelerator.md`](../skills/compound-v/workflows-accelerator.md) in Step 3 —
-it is never required and defaults OFF.
+shell). Record it in the capability cache (Step 4b). Engine C — the native Workflow
+dispatch engine — is the default and needs no opt-in.
 
 ### 1d-bis. `deep-research` bundled skill (advisory presence probe)
 
@@ -304,9 +261,6 @@ Stances are defined in [`routing-policy.md`](../skills/compound-v/routing-policy
      fallback; Codex rows collapse to `claude · opus`, worktree).
 2. Offer the alternatives explicitly: **Conservative** (Opus-heavy, no Codex) and
    **Cost-aware** (more Sonnet/Codex). Let the user override the recommendation.
-3. If Dynamic Workflows were detected in 1d, **offer** the opt-in Workflows accelerator
-   (default OFF). Only set it on if the user explicitly says yes.
-
 Confirm the chosen stance back to the user before saving.
 
 ---
@@ -522,7 +476,6 @@ was, in those two fields).
       "codex":       { "frontier": "gpt-5.6-sol", "deep": "gpt-5.6-sol", "standard": "gpt-5.6-terra", "light": "gpt-5.6-luna" },
       "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.8 Flash (Low)" },
       "cursor":      { "deep": "auto",                  "standard": "auto",                  "light": "auto" },
-      "devin":       { "deep": "claude-opus-4.6",        "standard": "claude-sonnet-4",        "light": "gpt-5.5" },
       "opencode":    { "deep": "anthropic/claude-opus-4-6", "standard": "openai/gpt-5.6-terra", "light": "opencode/mimo-v2.5-free" }
     },
     "cost-aware": {
@@ -530,25 +483,22 @@ was, in those two fields).
       "codex":       { "frontier": "gpt-5.6-sol", "deep": "gpt-5.6-sol", "standard": "gpt-5.6-terra", "light": "gpt-5.6-luna" },
       "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.8 Flash (Low)" },
       "cursor":      { "deep": "auto",                  "standard": "auto",                  "light": "auto" },
-      "devin":       { "deep": "claude-opus-4.6",        "standard": "claude-sonnet-4",        "light": "gpt-5.5" },
       "opencode":    { "deep": "anthropic/claude-opus-4-6", "standard": "openai/gpt-5.6-terra", "light": "opencode/mimo-v2.5-free" }
     }
   }
 }
 ```
 
-- `devin` and `opencode` are **worker-only** backends (v1): excluded from any cross-model
+- `opencode` is a **worker-only** backend (v1): excluded from any cross-model
   arbiter/review panel until family-dedup keys on the *resolved* model rather than the
-  backend name (both are multi-provider routers, so `backend: devin`/`backend: opencode`
-  does not fix a single model family — see `adapter-devin.md` / `adapter-opencode.md`).
+  backend name (it is a multi-provider router, so `backend: opencode`
+  does not fix a single model family — see `adapter-opencode.md`).
 
 (`conservative` and `claude-only` mirror `balanced` — seed those two stance blocks
 identically to `balanced`. Only `cost-aware.claude.standard` differs: `sonnet`, not
 `opus`; `cost-aware.claude.deep` stays `opus`.)
 
 - `stance` = the stance chosen in Step 3.
-- If the user opted into the Workflows accelerator, also include
-  `"workflows_accelerator": true` (omit otherwise — default OFF).
 - **`memory.embeddings`** = the Step 3b lane choice (default `false` = FTS5-only). When `true`,
   `compound-v-memory.py` adds the semantic lane on every refresh (the engine reads this flag),
   but only after an explicit `bootstrap` — it never installs on its own. `false` keeps the
@@ -662,13 +612,6 @@ The user-level cache of what this machine can do, reused across repos:
   "codex": { "available": true, "exec_flags_verified": true, "version": "<from `codex --version`>" },
   "antigravity": { "available": false, "trust": "lower (no kernel sandbox)", "version": "<from `agy --version`>" },
   "cursor": { "available": false, "authenticated": false, "trust": "lower (no kernel sandbox)", "version": "<from `cursor-agent --version`>" },
-  "devin": {
-    "available": false,
-    "authenticated": false,
-    "trust": "lower (Research-Preview kernel sandbox; exec-tool-only coverage unverified; network filtering unstable per vendor); worker-only",
-    "version": "<from `devin --version`>",
-    "sandbox_setup_required": null
-  },
   "opencode": {
     "available": false,
     "auth": "none",
@@ -688,17 +631,13 @@ The user-level cache of what this machine can do, reused across repos:
 - `antigravity.available` reflects the Step 1a-bis `command -v agy` probe; record the
   `version` from `agy --version`. When present, Step 1a-bis also seeds a real model map
   via `agy models </dev/null` (headless — no TTY needed).
-- `devin.available` reflects the Step 1a-quater `command -v devin` probe;
-  `devin.authenticated` reflects `devin auth status`. `sandbox_setup_required` records
-  whether `devin sandbox setup` reported readiness (macOS: always ready; Linux: depends
-  on `bubblewrap`/`socat`) — informational only, not relied on for enforcement in v1.
 - `opencode.available` reflects the Step 1a-quinquies `command -v opencode` probe;
   `opencode.auth` records **how** it is authenticating (`ambient-env` /
   `stored-credentials` / `none`) — this machine-local nuance matters more for opencode
   than any other backend, given the live-observed ambient-credential finding (see
   `adapter-opencode.md`).
-- `devin` and `opencode` are never added to any arbiter/review-panel capability block —
-  they are **worker-only** in v1.
+- `opencode` is never added to any arbiter/review-panel capability block — it is
+  **worker-only** in v1.
 - `deep_research` reflects the Step 1d-bis presence probe (is `deep-research` in the
   available-skills listing?) — an **advisory hint only**: Trigger 0 re-checks the live
   listing at fire time, because the flag can go stale (`disableBundledSkills` /

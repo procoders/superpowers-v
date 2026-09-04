@@ -1,42 +1,34 @@
 #!/usr/bin/env python3
 """
-Compound V observability dashboard -- v2.15.0 (NEW file, PRESENT-ONLY, read-only).
+Compound V execution-state reader -- PRESENT-ONLY, read-only.
 
-Closes the plugin's observability gap over docs/superpowers/execution/** WITHOUT a daemon,
-a persistent service, or any write/control surface. Subcommands + a self-test:
+Reads the run/epic JSON under docs/superpowers/execution/** WITHOUT a daemon, a persistent
+service, or any write/control surface. One subcommand + a self-test:
 
-  * emit   -- read the run/epic JSON under an execution root and write ONE self-contained,
-            theme-aware HTML snapshot (all CSS/JS inlined, offline, no CDN, no external
-            http(s) resource). Prints the path. The static page stamps
-            "snapshot -- generated from files as of <newest state-file mtime>".
+  * resume -- print one line naming unfinished runs/epics (the SessionStart banner input,
+            also consumed by the PreCompact / PostCompact hooks and the triage nudge).
 
-  * resume -- print one line naming unfinished runs/epics (the SessionStart banner input).
-
-For a LIVE view, use the harness's native `/workflows` (running Compound V dispatches) and
-`/tasks` (state.json / epic-state.json progress) surfaces instead of a bespoke HTTP server --
-this script no longer ships one (removed in v3.4: native-first).
+For a view of a run, use `/v:status` and the harness's native `/workflows` (running Compound V
+dispatches) and `/tasks` (state.json / epic-state.json progress) surfaces. The static HTML
+snapshot this file once emitted was removed together with the dashboard command that was its
+only caller.
 
 Design posture -- "observe in the UI, act via the CLI": there is NO merge/kill/retry/edit
-control anywhere. Enforcement stays with the git-derived gates; the dashboard only reflects.
+control anywhere. Enforcement stays with the git-derived gates; this reader only reflects.
 
-ANTI-RUFLO (the identity -- a dashboard that does not lie):
-  * Render ONLY what is in the state files. NO fabricated progress percentages -- only real
-    counts (N/M jobs|features done). The whole document is written with ZERO "%" characters
-    so a percentage can never sneak in.
-  * Usage is MEASURED-ONLY: a job whose usage.measured != true (or has no usage object) shows
-    an em-dash, NEVER a fabricated 0.
+ANTI-RUFLO (the identity -- a reader that does not lie):
+  * Report ONLY what is in the state files. NO fabricated progress percentages -- only real
+    counts (N/M jobs|features done).
   * Every timestamp comes from a state-file field (updated_at / started_at / last_progress_at /
-    recorded_at) or a real file mtime -- never datetime.now(). All rendered data is escaped
-    with html.escape.
+    recorded_at) or a real file mtime -- never datetime.now().
 
 DEGRADE-SAFE:
-  * A run dir with only manifest.yaml (no state.json) -> an honest "no state yet" card.
-  * Malformed/partial JSON -> an "unparseable" note on that card, never a crash.
-  * Empty execution root -> "no runs yet".
+  * A run dir with only manifest.yaml (no state.json) -> an honest "NO STATE" record.
+  * Malformed/partial JSON -> an "UNPARSEABLE" status on that record, never a crash.
+  * Empty execution root -> nothing at all.
 
-Pure Python 3.9-safe stdlib only (json, html, argparse, os, inspect, ast, datetime). No
-third-party imports. LANG=C clean (all file I/O is explicitly utf-8; the source is ASCII-only
-and emits HTML entities for symbols).
+Pure Python 3.9-safe stdlib only (json, argparse, os, inspect, ast, datetime). No
+third-party imports. LANG=C clean (all file I/O is explicitly utf-8; the source is ASCII-only).
 
 Run the self-test with:  python3 scripts/compound-v-dashboard.py --selftest
 """
@@ -44,7 +36,6 @@ Run the self-test with:  python3 scripts/compound-v-dashboard.py --selftest
 import argparse
 import ast
 import datetime
-import html
 import inspect
 import json
 import os
@@ -56,10 +47,8 @@ import time
 # ---------------------------------------------------------------------------
 
 DEFAULT_EXECUTION_ROOT = "docs/superpowers/execution"
-DEFAULT_OUT = "docs/superpowers/execution/dashboard.html"
 
 DONE_JOB_STATES = ("done", "success")
-MDASH = "&mdash;"
 
 # --- resume context (v2.19) --------------------------------------------------
 # A compaction re-injects the SessionStart banner but NOT the agent's position in
@@ -416,8 +405,8 @@ def load_epic(dirpath, root):
 def build_records(root):
     """Walk the execution root; a dir with manifest.yaml is a run, one with epic-state.json an epic.
 
-    `root` MUST be an os.path.realpath'd absolute directory (render_html resolves it once, at
-    startup): every reader below is realpath-contained to this exact root.
+    `root` MUST be an os.path.realpath'd absolute directory (`active_records` resolves it
+    once): every reader below is realpath-contained to this exact root.
     """
     records = []
     if not os.path.isdir(root):
@@ -432,415 +421,24 @@ def build_records(root):
 
 
 # ---------------------------------------------------------------------------
-# HTML rendering (all data html.escape'd; zero "%" characters in the document)
-# ---------------------------------------------------------------------------
-
-def _esc(val):
-    if val is None:
-        return MDASH
-    return html.escape(str(val))
-
-
-def _pill_class(status):
-    s = str(status).lower()
-    if s in ("merged", "done", "success", "done_with_blockers", "reviewed"):
-        return "pill-ok"
-    if s in ("blocked", "failed", "error", "timeout", "blocked_needing_human",
-             "escalation_required", "unparseable"):
-        return "pill-bad"
-    if s in ("dispatched", "collected", "running", "fastpath_dispatched",
-             "running_with_failures", "spec_ready", "preflight_done", "partition_verified"):
-        return "pill-run"
-    return "pill-neutral"
-
-
-def _pill(status):
-    return '<span class="pill {cls}">{txt}</span>'.format(
-        cls=_pill_class(status), txt=_esc(status))
-
-
-def _usage_cell(result_obj):
-    """Measured-only: absent/measured!=true -> em-dash, never a fabricated 0."""
-    if not isinstance(result_obj, dict):
-        return MDASH
-    usage = result_obj.get("usage")
-    if not isinstance(usage, dict) or usage.get("measured") is not True:
-        return MDASH
-    it = usage.get("input_tokens")
-    ot = usage.get("output_tokens")
-    it_txt = _esc(it) if it is not None else MDASH
-    ot_txt = _esc(ot) if ot is not None else MDASH
-    return "in {i} / out {o}".format(i=it_txt, o=ot_txt)
-
-
-CSS = """
-:root{
-  --bg:#f7f8fa; --fg:#1b1f24; --muted:#5a6472; --card:#ffffff; --border:#d8dee6;
-  --ok-bg:#e3f6e9; --ok-fg:#166534; --bad-bg:#fde7e7; --bad-fg:#9b1c1c;
-  --run-bg:#e5eefc; --run-fg:#1d4ed8; --neu-bg:#eceff3; --neu-fg:#414b57;
-  --thead:#eef1f5; --code:#f0f2f5;
-}
-@media (prefers-color-scheme: dark){
-  :root{
-    --bg:#0f1216; --fg:#e6e9ee; --muted:#9aa5b1; --card:#181c22; --border:#2a313a;
-    --ok-bg:#123324; --ok-fg:#6ee7a8; --bad-bg:#3a1717; --bad-fg:#f4a3a3;
-    --run-bg:#132447; --run-fg:#8fb6ff; --neu-bg:#22272e; --neu-fg:#c1c9d2;
-    --thead:#20262e; --code:#12161b;
-  }
-}
-:root[data-theme="dark"]{
-  --bg:#0f1216; --fg:#e6e9ee; --muted:#9aa5b1; --card:#181c22; --border:#2a313a;
-  --ok-bg:#123324; --ok-fg:#6ee7a8; --bad-bg:#3a1717; --bad-fg:#f4a3a3;
-  --run-bg:#132447; --run-fg:#8fb6ff; --neu-bg:#22272e; --neu-fg:#c1c9d2;
-  --thead:#20262e; --code:#12161b;
-}
-:root[data-theme="light"]{
-  --bg:#f7f8fa; --fg:#1b1f24; --muted:#5a6472; --card:#ffffff; --border:#d8dee6;
-  --ok-bg:#e3f6e9; --ok-fg:#166534; --bad-bg:#fde7e7; --bad-fg:#9b1c1c;
-  --run-bg:#e5eefc; --run-fg:#1d4ed8; --neu-bg:#eceff3; --neu-fg:#414b57;
-  --thead:#eef1f5; --code:#f0f2f5;
-}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);
-  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-  line-height:1.45;font-size:15px}
-.wrap{max-width:64rem;margin:0 auto;padding:1.25rem}
-header.top{display:flex;flex-wrap:wrap;align-items:baseline;gap:0.6rem;
-  border-bottom:1px solid var(--border);padding-bottom:0.75rem;margin-bottom:1rem}
-header.top h1{font-size:1.25rem;margin:0}
-.stamp{color:var(--muted);font-size:0.82rem}
-.card{background:var(--card);border:1px solid var(--border);border-radius:10px;
-  padding:0.85rem 1rem;margin-bottom:0.9rem}
-.card > summary{list-style:none;cursor:pointer;display:flex;flex-wrap:wrap;
-  align-items:center;gap:0.55rem}
-.card > summary::-webkit-details-marker{display:none}
-.rid{font-weight:600;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.92rem}
-.kind{font-size:0.7rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted);
-  border:1px solid var(--border);border-radius:5px;padding:0.05rem 0.35rem}
-.title{color:var(--muted);font-size:0.88rem}
-.counts{margin-left:auto;color:var(--muted);font-size:0.82rem;white-space:nowrap}
-.pill{display:inline-block;font-size:0.72rem;font-weight:600;border-radius:999px;
-  padding:0.12rem 0.5rem;letter-spacing:0.02em}
-.pill-ok{background:var(--ok-bg);color:var(--ok-fg)}
-.pill-bad{background:var(--bad-bg);color:var(--bad-fg)}
-.pill-run{background:var(--run-bg);color:var(--run-fg)}
-.pill-neutral{background:var(--neu-bg);color:var(--neu-fg)}
-.detail{margin-top:0.8rem}
-.tablewrap{overflow-x:auto}
-table{border-collapse:collapse;font-size:0.82rem;min-width:34rem}
-th,td{text-align:left;padding:0.32rem 0.55rem;border-bottom:1px solid var(--border);
-  vertical-align:top}
-thead th{background:var(--thead);position:sticky;top:0}
-td.mono,th.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-.note{color:var(--muted);font-size:0.85rem;margin:0.4rem 0}
-.note.bad{color:var(--bad-fg)}
-.deps{font-size:0.78rem;color:var(--muted)}
-.deps code,.evid code{background:var(--code);border-radius:4px;padding:0.03rem 0.28rem;
-  font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-.panel{display:flex;flex-wrap:wrap;gap:0.5rem;margin:0.6rem 0}
-.metric{background:var(--code);border:1px solid var(--border);border-radius:8px;
-  padding:0.35rem 0.6rem;font-size:0.8rem}
-.metric b{display:block;font-size:1rem}
-h3.sect{font-size:0.9rem;margin:0.9rem 0 0.35rem}
-.empty{color:var(--muted);padding:2rem 0;text-align:center}
-.evid{font-size:0.8rem;color:var(--muted)}
-ul.ledger{margin:0.3rem 0;padding-left:1.1rem}
-ul.ledger li{margin:0.25rem 0}
-""".strip()
-
-POLL_JS = """
-(function(){
-  function tick(){
-    fetch(window.location.pathname+'?_t='+Date.now(),{cache:'no-store'})
-      .then(function(r){return r.text();})
-      .then(function(t){
-        var doc=new DOMParser().parseFromString(t,'text/html');
-        var fresh=doc.getElementById('dash-body');
-        var cur=document.getElementById('dash-body');
-        if(fresh&&cur){cur.innerHTML=fresh.innerHTML;}
-        // MEDIUM-4: the header stamp is a real, file-sourced time from the fetched HTML
-        // (newest state-file mtime). NO viewer wall-clock is ever synthesised here.
-        var fs=doc.getElementById('page-stamp');
-        var cs=document.getElementById('page-stamp');
-        if(fs&&cs){cs.textContent=fs.textContent;}
-      })
-      .catch(function(){/* transient; keep polling */});
-  }
-  setInterval(tick,3000);
-})();
-""".strip()
-
-
-def _render_run_detail(rec):
-    parts = []
-    if rec.get("manifest_error"):
-        parts.append('<p class="note bad">unparseable manifest.yaml: {}</p>'.format(
-            _esc(rec["manifest_error"])))
-    if rec.get("state_error"):
-        parts.append('<p class="note bad">unparseable state.json: {}</p>'.format(
-            _esc(rec["state_error"])))
-    if not rec.get("has_state"):
-        parts.append('<p class="note">not dispatched / no state yet.</p>')
-
-    jobs = rec.get("jobs") or []
-    state_jobs = rec.get("state_jobs") or {}
-    if not jobs and not state_jobs:
-        parts.append('<p class="note">no jobs found.</p>')
-        return "\n".join(parts)
-
-    rows = []
-    # union of manifest jobs and state-only job ids
-    ordered_ids = [j.get("id") for j in jobs if j.get("id")]
-    for jid in state_jobs:
-        if jid not in ordered_ids:
-            ordered_ids.append(jid)
-    job_by_id = {j.get("id"): j for j in jobs if j.get("id")}
-
-    for jid in ordered_ids:
-        j = job_by_id.get(jid, {})
-        sj = state_jobs.get(jid, {}) if isinstance(state_jobs, dict) else {}
-        status = sj.get("status") if isinstance(sj, dict) else None
-        res = rec["results"].get(jid, {}) if rec.get("results") else {}
-        robj = res.get("obj")
-        rerr = res.get("err")
-        # scope gate -- MEDIUM-3: PASS is asserted ONLY on a complete, well-typed clean result.
-        # A partial ({}), a contradictory ({"blocked":false,"violations":[...]}), or a wrong-typed
-        # result renders UNKNOWN (never a false PASS); every len()/count is type-guarded so a
-        # scalar `violations`/`files_changed` cannot crash or be counted as characters.
-        if rerr:
-            gate = '<span class="pill pill-bad">UNPARSEABLE</span>'
-            files_changed = MDASH
-        elif isinstance(robj, dict):
-            blocked = robj.get("blocked")
-            violations = robj.get("violations")
-            viol_is_list = isinstance(violations, list)
-            if blocked is True or (viol_is_list and len(violations) > 0):
-                nviol = len(violations) if viol_is_list else 0
-                gate = '<span class="pill pill-bad">BLOCKED ({})</span>'.format(nviol)
-            elif blocked is False and viol_is_list and len(violations) == 0:
-                gate = '<span class="pill pill-ok">PASS</span>'
-            else:
-                gate = '<span class="pill pill-neutral">UNKNOWN</span>'
-            fc = robj.get("files_changed")
-            files_changed = _esc(len(fc)) if isinstance(fc, list) else MDASH
-        else:
-            gate = MDASH
-            files_changed = MDASH
-        rows.append(
-            "<tr><td class=\"mono\">{id}</td><td>{backend}</td><td>{tier}</td>"
-            "<td>{status}</td><td>{gate}</td><td>{fc}</td><td>{usage}</td></tr>".format(
-                id=_esc(jid),
-                backend=_esc(j.get("backend")),
-                tier=_esc(j.get("tier") or j.get("model")),
-                status=_pill(status) if status else MDASH,
-                gate=gate,
-                fc=files_changed,
-                usage=_usage_cell(robj),
-            ))
-
-    table = (
-        '<div class="tablewrap"><table><thead><tr>'
-        '<th class="mono">id</th><th>backend</th><th>tier</th><th>status</th>'
-        '<th>scope-gate</th><th>files</th><th>usage</th>'
-        "</tr></thead><tbody>{}</tbody></table></div>".format("".join(rows)))
-    parts.append(table)
-
-    # depends_on edges as a simple textual list (no graph lib)
-    dep_lines = []
-    for j in jobs:
-        deps = j.get("depends_on")
-        if isinstance(deps, list) and deps:
-            dep_lines.append("<li><code>{jid}</code> &larr; {deps}</li>".format(
-                jid=_esc(j.get("id")),
-                deps=", ".join("<code>{}</code>".format(_esc(d)) for d in deps)))
-    if dep_lines:
-        parts.append('<h3 class="sect">depends_on</h3><ul class="deps">{}</ul>'.format(
-            "".join(dep_lines)))
-    return "\n".join(parts)
-
-
-def _render_epic_detail(rec):
-    parts = []
-    if rec.get("state_error"):
-        parts.append('<p class="note bad">unparseable epic-state.json: {}</p>'.format(
-            _esc(rec["state_error"])))
-        return "\n".join(parts)
-    if not rec.get("state"):
-        parts.append('<p class="note">no epic state.</p>')
-        return "\n".join(parts)
-
-    features = rec.get("features") or []
-    if features:
-        rows = []
-        for f in features:
-            rows.append(
-                "<tr><td class=\"mono\">{id}</td><td>{status}</td>"
-                "<td class=\"mono\">{run}</td><td>{att}</td><td>{disp}</td></tr>".format(
-                    id=_esc(f.get("id")),
-                    status=_pill(f.get("status")) if f.get("status") else MDASH,
-                    run=_esc(f.get("run_id")),
-                    att=_esc(f.get("attempts")) if f.get("attempts") is not None else MDASH,
-                    disp=_esc(f.get("disposition")) if f.get("disposition") is not None else MDASH,
-                ))
-        parts.append(
-            '<div class="tablewrap"><table><thead><tr>'
-            '<th class="mono">feature</th><th>status</th><th class="mono">run_id</th>'
-            '<th>attempts</th><th>disposition</th>'
-            "</tr></thead><tbody>{}</tbody></table></div>".format("".join(rows)))
-
-    # marathon / watch panel (breaker axes) -- counts only, never a fabricated cost
-    st = rec["state"]
-    auto = st.get("autonomy") if isinstance(st.get("autonomy"), dict) else {}
-    if auto:
-        metrics = [
-            ("total_attempts", st.get("total_attempts")),
-            ("no_progress_cycles", st.get("no_progress_cycles")),
-            ("resume_count", st.get("resume_count")),
-        ]
-        watch_on = bool(auto.get("watch"))
-        watchers = st.get("watcher_registry") if isinstance(st.get("watcher_registry"), list) else []
-        armed = sum(1 for w in watchers if isinstance(w, dict) and w.get("status") == "armed")
-        cells = []
-        for label, val in metrics:
-            if val is not None:
-                cells.append('<span class="metric"><b>{v}</b>{l}</span>'.format(
-                    v=_esc(val), l=_esc(label)))
-        cells.append('<span class="metric"><b>{v}</b>watcher armed</span>'.format(
-            v=(_esc(armed) if watch_on else "off")))
-        parts.append('<h3 class="sect">marathon / watch</h3><div class="panel">{}</div>'.format(
-            "".join(cells)))
-
-    # blocker ledger
-    ledger = st.get("blocker_ledger") if isinstance(st.get("blocker_ledger"), list) else []
-    if ledger:
-        items = []
-        for entry in ledger:
-            if not isinstance(entry, dict):
-                continue
-            confirmed = entry.get("confirmed") is True
-            tag = ('<span class="pill pill-ok">confirmed</span>' if confirmed
-                   else '<span class="pill pill-bad">SUSPECTED</span>')
-            fams = entry.get("families_agreeing")
-            if isinstance(fams, list):
-                fams = ", ".join(str(x) for x in fams)
-            evid = entry.get("evidence")
-            items.append(
-                "<li>{tag} <code>{feat}</code> &middot; category: {cat} &middot; "
-                "families: {fams}{evid}</li>".format(
-                    tag=tag,
-                    feat=_esc(entry.get("feature") or entry.get("feature_id")),
-                    cat=_esc(entry.get("category") or entry.get("blocker_category")),
-                    fams=_esc(fams),
-                    evid=(' &middot; <span class="evid">{}</span>'.format(_esc(evid)) if evid else ""),
-                ))
-        if items:
-            parts.append('<h3 class="sect">blocker ledger</h3><ul class="ledger">{}</ul>'.format(
-                "".join(items)))
-    return "\n".join(parts)
-
-
-def _render_card(rec):
-    if rec["kind"] == "run":
-        counts = "{d}/{t} jobs done".format(d=rec["done"], t=rec["total"])
-        title = rec.get("feature")
-        detail = _render_run_detail(rec)
-    else:
-        counts = "{d}/{t} features done".format(d=rec["done"], t=rec["total"])
-        title = rec.get("title")
-        detail = _render_epic_detail(rec)
-
-    ts = rec.get("display_ts")
-    ts_html = ('<span class="stamp">{}</span>'.format(_esc(ts)) if ts else "")
-    title_html = ('<span class="title">{}</span>'.format(_esc(title)) if title else "")
-    return (
-        '<details class="card"><summary>'
-        '<span class="kind">{kind}</span>'
-        '<span class="rid">{rid}</span>'
-        '{title}{pill}'
-        '<span class="counts">{counts} {ts}</span>'
-        "</summary>"
-        '<div class="detail">{detail}</div>'
-        "</details>").format(
-            kind=_esc(rec["kind"]),
-            rid=_esc(rec["id"]),
-            title=title_html,
-            pill=_pill(rec["status"]),
-            counts=_esc(counts),
-            ts=ts_html,
-            detail=detail)
-
-
-def render_html(root, live=False):
-    # HIGH-1: resolve the execution root ONCE, here, and thread that SAME realpath'd root
-    # through every reader. Never render from an unresolved root (defeats containment/TOCTOU).
-    root = os.path.realpath(root)
-    records = build_records(root)
-    if records:
-        newest = max(r.get("sort_ts", 0.0) for r in records)
-        as_of = _fmt_mtime(newest) if newest else MDASH
-    else:
-        as_of = MDASH
-
-    if live:
-        # MEDIUM-4: NO client-side clock. The stamp is the newest state-file mtime -- a real,
-        # file-sourced time recomputed server-side on each poll -- or a bare "live" when none.
-        head_stamp = ("live" if as_of == MDASH
-                      else "live &middot; data as of {}".format(as_of))
-        script = "<script>{}</script>".format(POLL_JS)
-    else:
-        head_stamp = "snapshot &middot; generated from files as of {}".format(as_of)
-        script = ""
-
-    if records:
-        body_inner = "\n".join(_render_card(r) for r in records)
-    else:
-        body_inner = '<div class="empty">no runs yet</div>'
-
-    return (
-        "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
-        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-        "<title>Compound V dashboard</title><style>{css}</style></head>"
-        "<body><div class=\"wrap\">"
-        "<header class=\"top\"><h1>Compound V &middot; execution dashboard</h1>"
-        "<span class=\"stamp\" id=\"page-stamp\">{stamp}</span></header>"
-        "<div id=\"dash-body\">{body}</div>"
-        "</div>{script}</body></html>").format(
-            css=CSS, stamp=head_stamp, body=body_inner, script=script)
-
-
-# ---------------------------------------------------------------------------
-# emit
-# ---------------------------------------------------------------------------
-
-def _write_text(path, text):
-    """The ONE and ONLY write path in this program (self-test asserts this via AST)."""
-    parent = os.path.dirname(os.path.abspath(path))
-    if parent and not os.path.isdir(parent):
-        os.makedirs(parent, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(text)
-
-
-def cmd_emit(args):
-    root = args.execution_root
-    out = args.out
-    html_text = render_html(root, live=False)
-    _write_text(out, html_text)
-    print(os.path.abspath(out))
-    return 0
-
-
-# ---------------------------------------------------------------------------
 # Self-test
 # ---------------------------------------------------------------------------
-# (the ephemeral http.server live viewer was removed in v3.4: native-first --
-# use the harness's native /workflows and /tasks surfaces for a live view.)
 
 
 def _selftest():
     import tempfile
 
     failures = []
+
+    def _fx_write(path, text):
+        """The ONE and ONLY write path in this program -- a SELF-TEST FIXTURE writer.
+        The AST assertion below proves nothing outside it ever opens a file for
+        writing, which is what "present-only, read-only" means here."""
+        parent = os.path.dirname(os.path.abspath(path))
+        if parent and not os.path.isdir(parent):
+            os.makedirs(parent, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
 
     def check(cond, msg):
         if not cond:
@@ -853,7 +451,7 @@ def _selftest():
         # --- fixture 1: a full run (state + results, measured + unmeasured usage) ---
         run_dir = os.path.join(root, "2099-06-01-fullrun")
         os.makedirs(os.path.join(run_dir, "results"))
-        _write_text(os.path.join(run_dir, "manifest.yaml"), (
+        _fx_write(os.path.join(run_dir, "manifest.yaml"), (
             "run_id: 2099-06-01-fullrun\n"
             "feature: \"Full run fixture\"\n"
             "jobs:\n"
@@ -869,7 +467,7 @@ def _selftest():
             "      - task-0-base\n"
             "    write_allowed:\n"
             "      - \"src/ui/**\"\n"))
-        _write_text(os.path.join(run_dir, "state.json"), json.dumps({
+        _fx_write(os.path.join(run_dir, "state.json"), json.dumps({
             "run_id": "2099-06-01-fullrun",
             "phase": "MERGED",
             "updated_at": "2099-06-01T12:00:00Z",
@@ -879,7 +477,7 @@ def _selftest():
             },
         }))
         # measured-usage result
-        _write_text(os.path.join(run_dir, "results", "task-0-base.json"), json.dumps({
+        _fx_write(os.path.join(run_dir, "results", "task-0-base.json"), json.dumps({
             "status": "success", "blocked": False,
             "files_changed": ["src/base.ts"], "violations": [],
             "summary": "base done", "session_id": "", "worktree": "",
@@ -888,7 +486,7 @@ def _selftest():
                       "backend": "claude", "measured": True},
         }))
         # unmeasured-usage result (measured false -> must render em-dash, never 0)
-        _write_text(os.path.join(run_dir, "results", "task-1-ui.json"), json.dumps({
+        _fx_write(os.path.join(run_dir, "results", "task-1-ui.json"), json.dumps({
             "status": "success", "blocked": False,
             "files_changed": ["src/ui/a.ts", "src/ui/b.ts"], "violations": [],
             "summary": "ui done", "session_id": "", "worktree": "",
@@ -900,7 +498,7 @@ def _selftest():
         # --- fixture 2: manifest-only run (no state.json) ---
         manonly = os.path.join(root, "2099-05-01-manifestonly")
         os.makedirs(manonly)
-        _write_text(os.path.join(manonly, "manifest.yaml"), (
+        _fx_write(os.path.join(manonly, "manifest.yaml"), (
             "run_id: 2099-05-01-manifestonly\n"
             "feature: \"Manifest only\"\n"
             "jobs:\n"
@@ -911,14 +509,14 @@ def _selftest():
         # --- fixture 3: malformed state.json ---
         badrun = os.path.join(root, "2099-04-01-badjson")
         os.makedirs(badrun)
-        _write_text(os.path.join(badrun, "manifest.yaml"),
+        _fx_write(os.path.join(badrun, "manifest.yaml"),
                     "run_id: 2099-04-01-badjson\nfeature: \"Bad json\"\njobs:\n  - id: task-y\n    backend: claude\n")
-        _write_text(os.path.join(badrun, "state.json"), "{ this is not valid json ")
+        _fx_write(os.path.join(badrun, "state.json"), "{ this is not valid json ")
 
         # --- fixture 4: an epic with a confirmed + a SUSPECTED blocker ---
         epic_dir = os.path.join(root, "epics", "2099-07-01-epicfix")
         os.makedirs(epic_dir)
-        _write_text(os.path.join(epic_dir, "epic-state.json"), json.dumps({
+        _fx_write(os.path.join(epic_dir, "epic-state.json"), json.dumps({
             "epic_id": "2099-07-01-epicfix",
             "title": "Epic fixture",
             "status": "running_with_failures",
@@ -940,93 +538,78 @@ def _selftest():
             ],
         }))
 
-        # ---- (1) emit over the fixtures ----
-        out = os.path.join(tmp, "dash.html")
-        # pin the newest state-file mtime to a fixed epoch to prove the stamp is mtime-derived
-        fixed_epoch = 4084992000  # 2099-06-01T00:00:00Z, well beyond "now"
-        os.utime(os.path.join(run_dir, "state.json"), (fixed_epoch, fixed_epoch))
-        html_text = render_html(root, live=False)
-        _write_text(out, html_text)
+        # ---- (1) read the fixtures back as records ----
+        recs = {r["id"]: r for r in build_records(os.path.realpath(root))}
 
-        # parses as HTML/XML-ish? at minimum well-formed enough for ElementTree tolerance:
-        check(html_text.strip().startswith("<!doctype html>"), "emit: missing doctype")
-        check(html_text.count("<html") == 1 and "</html>" in html_text, "emit: html wrapper")
+        check("2099-06-01-fullrun" in recs, "read: full run missing")
+        check("2099-07-01-epicfix" in recs, "read: epic missing")
+        full = recs.get("2099-06-01-fullrun") or {}
+        check(full.get("kind") == "run", "read: full run not typed as a run")
+        check(full.get("status") == "MERGED", "read: run phase not carried")
+        check((full.get("done"), full.get("total")) == (2, 2),
+              "read: run job counts wrong, got "
+              + repr((full.get("done"), full.get("total"))))
+        check(full.get("display_ts") == "2099-06-01T12:00:00Z",
+              "anti-ruflo: display_ts not sourced from the state file")
+        # usage is carried verbatim from results/*.json -- measured stays measured,
+        # unmeasured stays null and is NEVER coerced to a fabricated 0.
+        r0 = ((full.get("results") or {}).get("task-0-base") or {}).get("obj") or {}
+        r1 = ((full.get("results") or {}).get("task-1-ui") or {}).get("obj") or {}
+        check(r0.get("usage", {}).get("input_tokens") == 1234,
+              "anti-ruflo: measured token count not read back")
+        check(r1.get("usage", {}).get("measured") is False
+              and r1.get("usage", {}).get("input_tokens") is None,
+              "anti-ruflo: unmeasured usage must stay null, never 0")
 
-        # run + epic ids present
-        check("2099-06-01-fullrun" in html_text, "emit: full run id missing")
-        check("2099-07-01-epicfix" in html_text, "emit: epic id missing")
-        # status pills present
-        check("MERGED" in html_text, "emit: run phase pill missing")
-        check("running_with_failures" in html_text, "emit: epic status pill missing")
-        check('class="pill' in html_text, "emit: no pills rendered")
+        epic = recs.get("2099-07-01-epicfix") or {}
+        check(epic.get("kind") == "epic", "read: epic not typed as an epic")
+        check(epic.get("status") == "running_with_failures", "read: epic status not carried")
+        check((epic.get("done"), epic.get("total")) == (1, 2),
+              "read: epic feature counts wrong")
+        ledger = (epic.get("state") or {}).get("blocker_ledger") or []
+        check(len(ledger) == 2 and ledger[0].get("confirmed") is True
+              and ledger[1].get("confirmed") is False,
+              "read: blocker ledger confirmed/suspected not carried")
 
-        # measured usage shows the real number; unmeasured shows an em-dash, never 0
-        check("1234" in html_text, "anti-ruflo: measured token count not rendered")
-        check("in 1234 / out 567" in html_text, "anti-ruflo: measured usage format")
-        check(MDASH in html_text, "anti-ruflo: em-dash placeholder missing")
-        # the unmeasured job must NOT render a fabricated 0 usage
-        check("in 0 / out 0" not in html_text, "anti-ruflo: fabricated 0 usage rendered")
-
-        # NO percent-progress anywhere in the document (zero '%' chars)
-        check("%" not in html_text, "anti-ruflo: '%' present (possible fabricated progress)")
-
-        # no invented timestamp: the 'generated as of' stamp is the pinned file mtime
-        expected_stamp = _fmt_mtime(fixed_epoch)
-        check(expected_stamp in html_text, "anti-ruflo: stamp not sourced from file mtime")
-        # and no current-year ISO wall clock leaked in (fixtures are all year 2099)
-        this_year_iso = str(datetime.datetime.utcnow().year) + "-"
-        check(this_year_iso not in html_text, "anti-ruflo: current-year timestamp leaked")
-
-        # degrade-safe rendering
-        check("no state yet" in html_text, "degrade: manifest-only 'no state yet' missing")
-        check("unparseable" in html_text, "degrade: malformed json 'unparseable' missing")
-
-        # blocker ledger: confirmed vs SUSPECTED
-        check("confirmed" in html_text, "epic: confirmed blocker label missing")
-        check("SUSPECTED" in html_text, "epic: SUSPECTED blocker label missing")
-        # watcher-armed panel + breaker axes
-        check("watcher armed" in html_text, "epic: watcher panel missing")
-        check("total_attempts" in html_text, "epic: breaker axis missing")
+        # degrade-safe reading
+        check((recs.get("2099-05-01-manifestonly") or {}).get("status") == "NO STATE",
+              "degrade: manifest-only run must read as NO STATE")
+        check((recs.get("2099-04-01-badjson") or {}).get("status") == "UNPARSEABLE",
+              "degrade: malformed state.json must read as UNPARSEABLE")
 
         # empty-root honesty
         empty_root = os.path.join(tmp, "empty")
         os.makedirs(empty_root)
-        check("no runs yet" in render_html(empty_root, live=False), "degrade: empty root")
+        check(build_records(os.path.realpath(empty_root)) == [], "degrade: empty root")
 
-        # HIGH-1 (render-path containment): a run whose state.json symlinks OUTSIDE the root must
-        # be skipped by GET / (render_html), not read+rendered. Direct requests already 403 above.
+        # HIGH-1 (containment): a run whose state.json symlinks OUTSIDE the root must be
+        # skipped (never read), not followed.
         leak_run = os.path.join(root, "2099-01-01-leakrun")
         os.makedirs(leak_run)
-        _write_text(os.path.join(leak_run, "manifest.yaml"), "jobs: []\n")
+        _fx_write(os.path.join(leak_run, "manifest.yaml"), "jobs: []\n")
         secret = os.path.join(tmp, "render_secret.json")
-        _write_text(secret, '{"phase": "RENDER_LEAK_MARKER"}')
+        _fx_write(secret, '{"phase": "READ_LEAK_MARKER"}')
         try:
             os.symlink(secret, os.path.join(leak_run, "state.json"))
-            leaked = render_html(root, live=False)
-            check("RENDER_LEAK_MARKER" not in leaked,
-                  "render: out-of-root symlink content leaked via GET /")
+            leaked = build_records(os.path.realpath(root))
+            check(all(r.get("status") != "READ_LEAK_MARKER" for r in leaked),
+                  "read: out-of-root symlink content followed")
         except (OSError, NotImplementedError):
             pass  # symlinks unsupported -> skip this assertion only
 
-        # MEDIUM-4 (no fabricated clock): neither static nor live HTML uses the viewer's clock.
-        static_html = render_html(root, live=False)
-        live_html = render_html(root, live=True)
-        check("new Date(" not in static_html and "toLocaleTimeString" not in static_html,
-              "render: static HTML uses a client-side clock (anti-ruflo)")
-        check("new Date(" not in live_html and "toLocaleTimeString" not in live_html,
-              "render: live HTML uses a client-side clock (anti-ruflo)")
-
         # MEDIUM-6 (union denominator): 2 manifest jobs + a 3rd state-only done job must never
-        # render an impossible "3/2 done"; the denominator unions manifest + state job ids.
+        # produce an impossible "3/2 done"; the denominator unions manifest + state job ids.
         cnt_run = os.path.join(root, "2099-02-02-countrun")
         os.makedirs(os.path.join(cnt_run, "results"))
-        _write_text(os.path.join(cnt_run, "manifest.yaml"),
-                    "jobs:\n  - id: j1\n  - id: j2\n")
-        _write_text(os.path.join(cnt_run, "state.json"),
-                    '{"phase": "DISPATCHED", "jobs": {"j1": {"status": "done"}, '
-                    '"j2": {"status": "done"}, "j3": {"status": "done"}}}')
-        cnt_html = render_html(root, live=False)
-        check("3/2" not in cnt_html, "render: impossible progress count (3/2) -- denominator not unioned")
+        _fx_write(os.path.join(cnt_run, "manifest.yaml"),
+                  "jobs:\n  - id: j1\n  - id: j2\n")
+        _fx_write(os.path.join(cnt_run, "state.json"),
+                  '{"phase": "DISPATCHED", "jobs": {"j1": {"status": "done"}, '
+                  '"j2": {"status": "done"}, "j3": {"status": "done"}}}')
+        cnt = [r for r in build_records(os.path.realpath(root))
+               if r.get("id") == "2099-02-02-countrun"][0]
+        check(cnt["done"] <= cnt["total"] and cnt["total"] == 3,
+              "read: impossible progress count -- denominator not unioned")
 
         # ---- present-only, via source introspection ----
         # Needles built via concatenation so this self-test's own assertion strings
@@ -1036,12 +619,12 @@ def _selftest():
         check(("web" + "browser") not in src, "present-only: browser-launch module referenced")
         check(("sub" + "process") not in src, "present-only: process-spawn module referenced")
 
-        # AST: the only write-mode open() lives inside _write_text
+        # AST: the only write-mode open() lives inside the self-test's fixture writer
         tree = ast.parse(src)
         write_calls = []
         wt_range = None
         for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef) and node.name == "_write_text":
+            if isinstance(node, ast.FunctionDef) and node.name == "_fx_write":
                 wt_range = (node.lineno, node.end_lineno)
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "open":
                 mode = None
@@ -1056,7 +639,7 @@ def _selftest():
         if write_calls and wt_range:
             ln = write_calls[0]
             check(wt_range[0] <= ln <= wt_range[1],
-                  "present-only: write-mode open() outside _write_text")
+                  "present-only: write-mode open() outside the fixture writer")
 
     # -----------------------------------------------------------------
     # resume context (v2.19) -- the anti-amnesia banner input
@@ -1074,11 +657,11 @@ def _selftest():
         def _mkrun(name, phase, hours_ago, jobs=2, done=1, with_state=True):
             d = os.path.join(rroot, name)
             os.makedirs(d)
-            _write_text(os.path.join(d, "manifest.yaml"),
+            _fx_write(os.path.join(d, "manifest.yaml"),
                         "run_id: " + name + "\njobs:\n"
                         + "".join("  - id: j%d\n" % i for i in range(jobs)))
             if with_state:
-                _write_text(os.path.join(d, "state.json"), json.dumps({
+                _fx_write(os.path.join(d, "state.json"), json.dumps({
                     "run_id": name, "phase": phase, "updated_at": _iso(hours_ago),
                     "jobs": dict(("j%d" % i,
                                   {"status": "done" if i < done else "pending"})
@@ -1128,7 +711,7 @@ def _selftest():
                                     ("2099-02-02-epicdone", "done", 3.0)):
             d = os.path.join(rroot, name)
             os.makedirs(d)
-            _write_text(os.path.join(d, "epic-state.json"), json.dumps({
+            _fx_write(os.path.join(d, "epic-state.json"), json.dumps({
                 "epic_id": name, "status": status, "updated_at": _iso(hours),
                 "features": [{"id": "f1", "status": "done"},
                              {"id": "f2", "status": "pending"}],
@@ -1304,18 +887,12 @@ def cmd_resume(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="compound-v-dashboard.py",
-        description="Present-only, read-only observability dashboard over "
-                    "docs/superpowers/execution/** (emit a static snapshot; for a live view "
-                    "use the harness's native /workflows and /tasks surfaces).")
+        description="Present-only, read-only reader over docs/superpowers/execution/** "
+                    "(for a view of a run use /v:status and the harness's native "
+                    "/workflows and /tasks surfaces).")
     parser.add_argument("--selftest", action="store_true",
                         help="run the built-in self-test and exit")
     sub = parser.add_subparsers(dest="cmd")
-
-    p_emit = sub.add_parser("emit", help="write a self-contained HTML snapshot; print its path")
-    p_emit.add_argument("--execution-root", default=DEFAULT_EXECUTION_ROOT,
-                        help="execution root to read (default: %(default)s)")
-    p_emit.add_argument("--out", default=DEFAULT_OUT,
-                        help="output HTML path (default: %(default)s)")
 
     p_resume = sub.add_parser("resume",
                               help="print one line naming unfinished runs/epics (banner input)")
@@ -1334,8 +911,6 @@ def main(argv=None):
 
     if args.selftest:
         return _selftest()
-    if args.cmd == "emit":
-        return cmd_emit(args)
     if args.cmd == "resume":
         return cmd_resume(args)
     parser.print_help()

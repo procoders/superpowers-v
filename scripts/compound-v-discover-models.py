@@ -65,7 +65,9 @@ def _parse_line(line):
     effort = m.group(1).strip().lower() if m else ""
     series = re.sub(r"\s*\([^)]*\)\s*$", "", full).strip()  # name without the effort paren
     ver_m = re.search(r"(\d+(?:\.\d+)?)", series)
-    version = float(ver_m.group(1)) if ver_m else 0.0
+    # A tuple of ints, never a float: float("3.10") == 3.1 < 3.8 would rank a newer
+    # generation below an older one (pr-review 2026-09-04 on the 3.4.14 ranker).
+    version = tuple(int(x) for x in ver_m.group(1).split(".")) if ver_m else (0,)
     low = series.lower()
     if "ultra" in low:
         strength = 3
@@ -240,6 +242,11 @@ def _selftest():
     check("moving Flash line: light = newest Flash (Low)", p5["light"] == "Gemini 3.8 Flash (Low)")
     check("moving Flash line: deep/standard stay on Pro", p5["deep"] == "Gemini 3.1 Pro (High)"
           and p5["standard"] == "Gemini 3.1 Pro (Low)")
+    # two-digit minors: 3.10 is newer than 3.8 (a float compare says the opposite)
+    cat6 = ["Gemini 3.8 Flash (Low)", "Gemini 3.10 Flash (Low)", "Gemini 3.1 Pro (High)", "Gemini 3.10 Pro (High)"]
+    p6 = propose(cat6, family="Gemini")["proposed"]
+    check("3.10 > 3.8 for light", p6["light"] == "Gemini 3.10 Flash (Low)")
+    check("3.10 > 3.1 for deep", p6["deep"] == "Gemini 3.10 Pro (High)")
 
     # Per-stance config (/v:init Step 4a shape): the seed lands in EVERY stance block and
     # never as a flat sibling key, and the resolver actually reads it back (finding 142).

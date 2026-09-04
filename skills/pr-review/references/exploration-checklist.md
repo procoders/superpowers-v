@@ -63,6 +63,10 @@ If you can't articulate (3), you haven't explored enough.
 
 ## Loop-Break Rule
 
+**No user at all** (subagent, `claude -p`, a workflow): there is no batch to break — resolve from the code,
+or record the question as an Open Question for the author with its `Already checked:` line. See the
+interactivity table in [SKILL.md](../SKILL.md).
+
 If during Phase 4 the user answers "not sure / verify / I don't know" 2+ times in a single `AskUserQuestion` batch:
 
 1. **Stop the batch.** Don't continue with the remaining questions.

@@ -9,7 +9,8 @@ Every write is checked against the files that worker was allowed to touch, and a
 
 ## Requirements
 - **Claude Code ≥ 2.1.219.** Compound V runs on the native Workflow runtime and on native hook events (`PreToolUse`, `UserPromptSubmit`, `PostCompact`, `Stop`). Older versions lack them.
-- **One ambient cost.** The lane-guard hook runs on every `Write`/`Edit`/`Bash` call and takes roughly 150–240 ms, depending on the machine. The numbers and the method are in [AGENTS.md](AGENTS.md).
+  The floor is checked at session start: the `SessionStart` banner reads `claude --version` and appends one warning line when the running version is below it.
+- **One ambient cost.** The lane-guard hook runs on every `Write`/`Edit`/`Bash` call. What it costs depends on the machine — measure it on yours; the recipe is in [AGENTS.md](AGENTS.md).
 - **One project setting.** `worktree.baseRef` has to be `head` for jobs that depend on each other. It is a native Claude Code setting, not a Compound V one — see Install.
 
 ## Install
@@ -31,7 +32,8 @@ project-wide: `head` branches every worktree from the current `HEAD`, your own `
 { "worktree": { "baseRef": "head" } }
 ```
 
-_(Optional)_ Context7 MCP sharpens the library-docs check: `/plugin install context7@claude-plugins-official`.
+_(Optional)_ Context7 MCP gives the doc-validator real library docs — but only when it is attached to the session you are in. A pre-flight agent launched inside a Workflow does
+not inherit MCP tools and falls back to WebSearch/WebFetch (12 of the last 16 library audits ran that way). `/plugin install context7@claude-plugins-official`.
 
 ## How to use it
 Run this once — it detects which model CLIs you have, saves the config, and offers the `baseRef` setting above.
@@ -59,14 +61,13 @@ only after that job has exhausted its retry budget on Opus (repeated 529s, say),
 and the two scanning agents. Codex is an opt-in sandboxed worker and the second opinion; Antigravity and Cursor are lower-trust opt-in workers. The scope gate blocks out-of-lane writes.
 
 ## Main features
-- **Multi-model orchestration.** Codex is dogfooded in this repository. Antigravity and Cursor have their CLI invocation verified live but have never been dispatched here.
-  opencode and Devin are experimental: the adapters exist, execution is unverified.
+- **Multi-model orchestration.** Codex is dogfooded in this repository. Antigravity has its CLI invocation verified live but has never been dispatched here.
+  Cursor and opencode are experimental — present, their workers verified standalone, never dispatched through Engine C.
 - **Cross-model review.** A second opinion from another model family, on the plan and on the code. Different models have different blind spots. Advisory — the orchestrator decides.
 - **Epic mode.** Feed it a whole PRD and it builds feature by feature, in dependency order, on one branch. It checkpoints after each feature unless you raise the budget.
 - **Epic autonomy.** On the `marathon` stance, `/v:epic` offers — never arms silently — a native way to keep going: `/loop` to keep resuming in this session, or `/schedule` in the cloud.
 - **V-memory.** Project memory over `docs/superpowers/**`: decisions, bugs, dead ends. Local and offline; a search refreshes its own index first, and reviewers read it before every verdict.
 - **Co-change advisory.** When the partition reviewer runs, it asks git history which files almost always move together, and warns when a plan forgot one. It never changes a verdict.
-- **Research-grounded brainstorming** 🧪 — on an unfamiliar topic, a gated recon pass writes an evidence doc the brainstorm reads first, and independent questions batch into one screen.
 
 ## Commands
 | Command | What it does |
@@ -85,8 +86,6 @@ and the two scanning agents. Codex is an opt-in sandboxed worker and the second 
 | `/v:status [run-id]` | Show a run's phase and per-job table; `--live` watches a running dispatch |
 | `/v:collect <run-id>` | Re-run the collect + scope-gate + review tail of a run, without re-dispatching workers |
 | `/v:resume <run-id>` | Reconcile against git and re-dispatch only the jobs that did not finish |
-| `/v:dashboard` | Emit a static HTML snapshot of past runs and epics |
-| `/v:preferences` | Your own past reasoning, as falsifiable memory plus a challenge |
 | `/v:models` | Refresh which concrete model each backend tier uses |
 
 ## What runs in every session
@@ -107,6 +106,8 @@ The triage gate is on by default. It is exempt on `docs/superpowers/**`, fires a
 - **Antigravity and Cursor are lower-trust** — no kernel sandbox, so the scope gate catches an out-of-bounds write after the fact but cannot prevent it. Prefer Codex for anything sensitive.
 - **Cursor on a Free plan** can only use its `auto` model; named models are paid.
 - **Epic mode is bounded by default** — it stops after each feature for a human checkpoint, and is not an overnight build unless you raise the budget.
+- **Research-grounded brainstorming is guidance, not a mechanism** 🧪 — the skill asks a brainstorm on an unfamiliar topic to run a gated recon pass first, and to batch
+  independent questions into one screen. A hook only reminds; nothing enforces either, and the recon doc is evidence, never a routing input.
 - **Marathon mode is still not fire-and-forget.** It drops the checkpoint and adds an arbiter panel, a blocker ledger and breakers, but after a hard death you re-run `/v:epic <epic-id>` yourself.
 
 ## Verification program

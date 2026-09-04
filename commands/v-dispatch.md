@@ -3,7 +3,7 @@ description: Execute a Compound-V-ready plan, manifest, or run-id on Engine C �
 ---
 
 You are about to execute **Phase 3** of Compound V on `{{args}}` — manifest-driven dispatch on
-**Engine C**, the native Workflow engine ([`workflows-accelerator.md`](../skills/compound-v/workflows-accelerator.md)).
+**Engine C**, the native Workflow engine (`scripts/compound-v-emit-workflow.py`).
 
 **You run this yourself, at the top level. Do not delegate the run to the
 `superpowers-v:parallel-dispatcher` subagent.** A subagent has no Workflow tool — probed live under

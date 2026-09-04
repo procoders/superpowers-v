@@ -1127,10 +1127,12 @@ def _churn_hot_for(repo, resolved_paths):
     return any(cm.read_path(cache, p).get("hot") for p in resolved_paths)
 
 
-# Repeated advisor consults signal the job was harder than its tier: a fast-path/standard
-# worker that had to stop and consult a cross-brand advisor MORE than a couple of times is
-# evidence the work outran its classification. STRICTLY-greater-than gate (escalation-only —
-# it can only push the tier UP on reclassification, never down).
+# VESTIGIAL as of 3.4.16: the cross-brand advisor mode that produced `usage.advisor_calls`
+# was removed, and the field is gone from schemas/job_result.schema.json — so no conformant
+# result can carry it and this sensor now reads permanently cold (fail-open False). The
+# STRICTLY-greater-than, escalation-only gate is kept intact so that any future
+# consult-style counter can re-arm it by writing the same field; it can only push the tier
+# UP on reclassification, never down.
 ADVISOR_HOT_THRESHOLD = 2
 
 
@@ -1415,8 +1417,7 @@ def run_preeval(request, repo=".", taxonomy_path=None, t3_category=None,
 # Predicate 6's test-path set. The taxonomy has no test-file key, so this is a
 # deliberately BROAD heuristic: every extra shape it catches removes a change from the
 # auto-route class, which is the safe direction. Widen it freely; narrowing it is a
-# policy change. `commands/v-triage.md` Phase L carries the same set for the REALISED
-# path, which it re-derives post-diff.
+# policy change.
 _TEST_PATH_SEGMENTS = ("test", "tests", "spec", "specs", "__tests__", "testing")
 
 # Control characters in a declared path. `hooks/epic-goal-stop.sh` silently DROPS a
@@ -1463,9 +1464,8 @@ def auto_route_predicates(record, repo, pre_eval_id):
     """Spec §A4 predicates 1-6 for a written record — the six this side of the edit can
     establish. Returns a list of `{"n", "name", "pass", "why"}` in spec order.
 
-    Predicates 7 (the floor), 8 (the full post-diff re-validation) and 9 (the circuit
-    breaker) are POST-EDIT and belong to `commands/v-triage.md` Phase L; they are not
-    evaluated here and are not reported as passing.
+    There are six: the pre-edit predicates are the whole set. A DIRECT change is an
+    ordinary commit made by the human, so nothing post-edit is evaluated here.
 
     Predicate 3 is a real digest match, not a restatement: the taxonomy is read back from
     the snapshot THIS RECORD PINNED and re-content-addressed, so a taxonomy edited between

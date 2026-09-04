@@ -1,6 +1,6 @@
 ---
 name: pr-review
-description: Use when the user wants to deeply review a pull/merge request or a local diff — "review this PR", "grill the MR", "stress-test this diff", "deep-dive code review", "code review before merge", or when they name a PR/MR URL, number, or feature branch. Works on GitHub (gh), GitLab (glab), or a plain local branch with no host. Review-only — never edits code.
+description: Use when the user wants to deeply review a pull/merge request or a local diff — "review this PR", "grill the MR", "stress-test this diff", "deep-dive code review", "code review before merge", or when they name a PR/MR URL, number, branch, commit range (`A..B`/`A...B`), tag or SHA. Works on GitHub (gh), GitLab (glab), or a hostless local branch or range. Review-only — never edits code.
 ---
 
 # PR Review — Two-Axis, Stack-Agnostic Deep Code Review
@@ -28,7 +28,11 @@ The two axes run as **separate sub-agents** so neither pollutes the other's cont
 
 1. **Review only — never modify code.** No edits, fixes, commits, pushes, or merges. If the user asks for a fix mid-review, stop and confirm they want to leave the review before touching code.
 2. **Exhaust the codebase before asking.** Every question to the user (or the author) must include an `Already checked:` line citing what you grepped/read and why it didn't answer it. If you can't write that line, you haven't explored enough. See [references/exploration-checklist.md](references/exploration-checklist.md).
-3. **Use AskUserQuestion for every judgment question.** Never plain-text a question. Lead with your recommendation (first option, `(Recommended)`). Batch up to 4 same-domain questions per call.
+3. **Use AskUserQuestion for every judgment question.** Never plain-text a question. Lead with your
+   recommendation (first option, `(Recommended)`). Batch up to 4 same-domain questions per call. **When there is
+   no user to ask** — a subagent, `claude -p`, a workflow step — do not plain-text the question to nobody:
+   resolve it from the code, or promote it to an Open Question for the author, per the interactivity table in
+   *Inputs & VCS Auto-Detection*.
 4. **Don't surface what the code already answers.** Anti-pattern: asking something that 30 seconds of `grep` resolves. Reserve user questions for genuine judgment calls and author-intent for genuine non-local unknowns.
 5. **Stay concrete.** Anchor every question and finding to a specific `file:line` and a specific failure mode.
 6. **Promote real unknowns to review comments.** When neither code nor user can answer, record as an Open Question for the Author (defaults to post = `[x]`).
@@ -48,17 +52,59 @@ The only host side-effects this skill performs are **posting review comments** (
 
 ## Inputs & VCS Auto-Detection
 
-Resolve the target and the host **once**, in Phase 0. Pick the cheapest mode that works — never require a host.
+Resolve the target, the host and the **interactivity mode** once, in Phase 0. Pick the cheapest mode that works — never require a host.
 
 | Input | Mode | How to fetch |
 |-------|------|--------------|
 | PR/MR **URL** | host from the URL domain | `github.com` → `gh`; `gitlab.*` → `glab` |
 | PR/MR **number** | host from `git remote get-url origin` | github.com → `gh`; gitlab.* → `glab` |
+| **commit range** `A..B` / `A...B` | **local** (no host) | `git diff A..B` / `git diff A...B`, `git log A..B` |
+| **tag or SHA** `X` | **local** (no host) | `git diff <base>...X`, or `git diff X^..X` for a single commit already on the base |
 | **empty / "current branch"** | **local** (no host) | `git diff <base>...HEAD`, `git log <base>..HEAD` |
+
+**Which diff form — say it out loud.** On a range the choice changes the answer, so name the exact command in the findings-file header:
+- **Three dots** (`git diff A...B`) is the **merge-base** diff — B against `git merge-base A B`, i.e. only what
+  B added since it diverged. It is the deliberate default for branch-vs-base review
+  (`git diff <base>...HEAD`): it never blames the branch for commits that landed on base afterwards.
+- **Two dots** (`git diff A..B`) is a plain endpoint-to-endpoint diff. When the user hands you `A..B`, honour it literally — never silently rewrite it to `A...B`.
+- `git log` is the mirror image: the commit list is `git log A..B` (two dots) in both cases.
+- A **tag or bare SHA** `X` is ambiguous alone: use `<base>...X` when `X` is not an ancestor of the base branch,
+  and the single commit `X^..X` when it is (`git merge-base --is-ancestor X <base>` decides). Ask only if that
+  is still unclear; non-interactive → take `<base>...X` and record the choice.
 
 **Host detection:** parse `git remote get-url origin`. If it contains `github.com` and `gh` exists → GitHub. If it contains `gitlab` and `glab` exists → GitLab. If neither CLI is present, or the remote is unknown, **fall back to local mode** and tell the user posting will be unavailable.
 
+**Host present but no PR — still local mode.** A host CLI can exist, and the remote be perfectly well known,
+with nothing to fetch. Run **local mode**, and make no PR/MR fetch attempt at all, when either:
+- the target is a **range or a ref** — a range has no PR by construction, so do not go looking for one; or
+- `gh pr view --json number` / `glab mr view` reports **no PR/MR for the current branch**.
+
+This is the ordinary case for reviewing an already-merged range — treat it as local mode, not as an error. Phases 2, 7 and 8 are skipped exactly as in any other local run, and posting is unavailable.
+
 **Base branch detection:** `git symbolic-ref refs/remotes/origin/HEAD` → strip to branch name; fall back to `main`, then `master`. Confirm with the user via `AskUserQuestion` only if ambiguous.
+
+**An empty diff is not a clean review — it is nothing to review.** On the base branch itself (HEAD `main`,
+base `origin/main`) the documented `git diff <base>...HEAD` is empty, because there is no branch to compare.
+Do not open Phase 1 on it and do not report "no findings": say plainly *"nothing to review — pass a commit
+range, e.g. `A..B`"*, and stop.
+
+**Interactivity (resolved once, in Phase 0, referenced by every gate).** Decide up front whether a human can answer at all:
+- **Interactive** — a user is present; every gate behaves as written.
+- **Auto Mode** — a user exists but opted into autonomy ("review it, don't ask me").
+- **Non-interactive** — there is *no user to ask*: a subagent, `claude -p`, a workflow step, a hook. `AskUserQuestion` has nobody to answer it, so a gate that waits is a gate that hangs.
+
+In Auto Mode and non-interactive mode **no gate blocks**: take the documented default below and **record the
+choice in the findings file**, one line per gate under `## Gate decisions (auto)` — which gate, which default,
+why nobody was asked. A recorded default is a reviewable act; a silent one is indistinguishable from a skipped
+phase.
+
+| Gate | Default when no user can answer |
+|------|----------------------------------|
+| **Phase 1 exit** (briefing confirmed) | Self-confirm the briefing, continue to Phase 2; record `briefing: auto-confirmed`. |
+| **Phase 4 / Prime Directive 3** (judgment questions) | Don't ask: resolve from the code; if it survives the exploration gate, promote it to an **Open Question for the author** (`Post?` `[x]`). |
+| **Phase 5** (verdict + confidence) | Assign both autonomously — no `AskUserQuestion` batch. |
+| **Phase 6** (triage) | Apply the documented `Post?` defaults unchanged; record `triage: defaults applied`. Nothing is posted — Phase 7 still needs an explicit instruction. |
+| **Re-Review R4** (verdict) | **Never auto-finalize.** Write the proposed verdict marked `unconfirmed — non-interactive` and stop before R5. |
 
 **Metadata fetch (host modes):**
 - GitHub: `gh pr view {n} --json title,body,author,baseRefName,headRefName,files,additions,deletions,headRefOid,commits` + `gh pr diff {n}`
@@ -77,12 +123,22 @@ Do NOT hardcode any project's doc paths. In Phase 0, **discover** the two axes' 
 - Convention docs: `docs/coding-standards/**`, `docs/**/best_practices*/**`, `docs/conventions/**`, `docs/architecture/**`, `docs/**/style*`
 - Tooling configs as ground truth: `.editorconfig`, `eslint*`, `.prettier*`, `tsconfig*`, `ruff*`, `.golangci*` — but **skip anything the linter already enforces** (don't re-flag what CI catches).
 
-**Spec-axis sources** (first match wins; if none → "no spec available"):
-- A spec/PRD matching the branch/feature: `specs/*/spec.md`, `specs/**/spec.md`, `docs/prd/**`, `docs/specs/**`, `.scratch/**` (match by branch slug or feature name).
+**Spec-axis sources** (build a **coverage map** — do NOT stop at the first hit):
+- A spec/PRD matching the branch/feature: `specs/*/spec.md`, `specs/**/spec.md`, `docs/prd/**`, `docs/specs/**`,
+  `docs/**/specs/**` (this repo's own specs live at `docs/superpowers/specs/*-design.md`), `.scratch/**` — match
+  by branch slug, feature name, release number or date. A spec is not always named `spec.md`: `*-design.md`,
+  `*-spec.md`, `*-plan.md` count, so glob the directory before concluding a repo has no specs.
+- The **`CHANGELOG.md` entries covering the range** — take the versions from `git log <range>` / the release
+  commits, then read the matching `## [x.y.z]` sections. For a range of point releases the changelog entry is
+  frequently the *only* spec, and it is a real one: the diff is checkable against it.
 - A **linked issue/story** referenced in the branch name or PR/MR body. Parse common ID shapes: `#NNN`, `GH-NNN`, `sc-NNNNN`, `[A-Z]+-\d+` (Jira), GitLab `!NN`/`#NN`. Fetch via `gh issue view` / `glab issue view` when a host is available.
-- If multiple candidates, ask the user which is authoritative (`AskUserQuestion`).
+- **Per file/area, not first-match-wins.** Partial coverage is the normal case on a range — one release has a
+  design doc, the next four have only a changelog line. Record coverage per changed file or area as
+  `spec: <path>` | `changelog only` | `none`, and hold the diff to whichever source actually covers it. "No spec
+  available" is reserved for the case where *nothing* covers *anything*.
+- If two candidates claim the same area, ask which is authoritative (`AskUserQuestion`); non-interactive → take the most specific path and record the choice.
 
-**Exit:** the findings file's `## What this PR does` section names the Standards sources read and the Spec source (or "no spec available").
+**Exit:** the findings file's `## What this PR does` section names the Standards sources read and the **Spec coverage map** — per file/area, `spec: <path>` / `changelog only` / `none`.
 
 ---
 
@@ -99,9 +155,9 @@ In **local mode** there are no host comments — always first review.
 
 ---
 
-## Worktree Isolation (optional, host modes)
+## Worktree Isolation (host modes) & Reading From the Ref (local ranges)
 
-So a review never disturbs the user's working tree or another concurrent review:
+So a review never disturbs the user's working tree or another concurrent review — and is never disturbed BY one:
 
 1. **Never `git checkout` in the session's working tree.** Materialize the PR/MR in a dedicated detached worktree.
 2. Deterministic path so concurrent sessions converge: `<repo-parent>/<repo>-reviews/pr-{n}`.
@@ -119,7 +175,15 @@ git worktree add --detach "$REVIEW_WT" FETCH_HEAD
 
 - Reuse `$REVIEW_WT` if it exists; refresh to the head SHA if stale.
 - If worktree creation fails, fall back to read-only inspection: fetch the ref and read files via `git show <ref>:{path}`.
-- **Skip entirely in local mode** — the session's own worktree IS the review target.
+- **Skip the worktree in local mode — but not the isolation.** When the target is a **ref or a range**, read
+  from the ref: every file read for the review comes from `git show <ref>:{path}` (the fallback above), and
+  every anchor is verified with `git show` / `git ls-tree <ref> -- {path}` — never from the live checkout. Only
+  when the target is the *live branch* (empty argument) is the session's own worktree the review target.
+  **Why:** the shared working tree belongs to whoever else is working in it, and this section's own rationale —
+  "or another concurrent review" — applies hardest where the skill used to drop it. In this skill's dogfood run
+  the tree carried 42 uncommitted paths from concurrent sessions, including a **staged deletion** of a file that
+  exists at the reviewed commit; reading the tree produced a false finding that survived into a written draft
+  and was caught only by an unrelated `git ls-tree` cross-check.
 - The **findings file lives in the launch repo** (`./reviews/`), never inside the disposable worktree.
 - Offer `git worktree remove "$REVIEW_WT"` at the end (decline if another session may still use it).
 
@@ -128,7 +192,10 @@ git worktree add --detach "$REVIEW_WT" FETCH_HEAD
 ## Phase Order (the spine — each phase has an exit gate; do not skip)
 
 ### Phase 0 — Context Setup
-1. Resolve target + host + base branch (see Inputs). Fetch metadata, diff, head SHA, comments. **Determine the mode** (first vs re-review). If re-review → jump to the [Re-Review Flow](#re-review-flow).
+1. Resolve target + host + base branch + **interactivity mode** (see Inputs). A range/ref target, or a host
+   with no PR for the branch, resolves to **local mode — no PR fetch**. Otherwise fetch metadata, diff, head
+   SHA, comments. **Determine the mode** (first vs re-review).
+   If re-review → jump to the [Re-Review Flow](#re-review-flow).
 2. (Host modes) Materialize the PR/MR in an isolated worktree.
 3. **Auto-discover the Standards and Spec sources** (see Source Auto-Discovery).
 4. Read the changed files in full (surrounding context, not just hunks).
@@ -144,7 +211,9 @@ Plain-English, zoomed out enough to picture the change inside the whole system. 
 
 Write it to the findings file under `## What this PR does`. Present it; the user confirms or corrects.
 
-**Exit gate:** user confirms the briefing (or accepts corrections). Do not start Phase 2 before this.
+**Exit gate:** user confirms the briefing (or accepts corrections). Do not start Phase 2 before this. **Auto
+Mode / non-interactive:** self-confirm, continue, and record `briefing: auto-confirmed (non-interactive)`
+under `## Gate decisions (auto)` — with nobody to answer, this gate is a record, not a block.
 
 ### Phase 2 — Description Audit
 Does the PR/MR body actually describe the change?
@@ -152,19 +221,26 @@ Does the PR/MR body actually describe the change?
 - **Stale/partial** → finding flagging the divergence.
 - **Accurate** → no finding.
 
-(In local mode with no PR yet, skip.) **Exit gate:** none.
+(Skip in local mode — a range or an unopened branch has no PR body to audit.) **Exit gate:** none.
 
-### Phase 3 — Diff Anchor Classification
-For each file in context, classify:
+### Phase 3 — Diff Anchor Classification (posting mode only; skip in local mode)
+Anchor class exists for one purpose: routing comments in Phase 7. **In local mode nothing is posted, so skip
+this phase** and leave the `Anchor` column `n/a (local)` — don't pay the bookkeeping in the mode the skill
+calls cheapest.
+
+For each file in context (host modes), classify:
 - **Inline-anchorable** — file appears in the diff. Inline comments will work.
 - **Summary-only** — referenced but NOT modified. Inline comments will fail; findings go in the review body, citing `file:line` in prose.
 
-**Exit gate:** none — but every finding from Phase 4 on MUST carry its anchor class.
+**Exit gate:** none — but in **host modes** every finding from Phase 4 on MUST carry its anchor class.
 
 ### Phase 3.5 — Two-Axis Parallel Pre-Pass (Standards ⊥ Spec)
 Run **two context-isolated sub-agents in parallel** (two `Agent` calls, `subagent_type: general-purpose`, ONE message) to produce a baseline along each axis. This front-loads deterministic, codebase-grounded findings so Phase 4 can focus on judgment calls.
 
-Pin the inputs (gathered in Phase 0): the diff command + commit list; the discovered Standards sources; the discovered Spec source (or "no spec available"). Each sub-agent runs all grep/read against the review worktree (or local tree) with absolute paths.
+Pin the inputs (gathered in Phase 0): the **exact diff command** (two-dot or three-dot, as resolved) + commit
+list; the discovered Standards sources; the **Spec coverage map** (or "no spec available"). Each sub-agent
+runs all grep/read against the review worktree with absolute paths — or, on a ref/range target, against the
+ref via `git show <ref>:{path}`, never the live checkout.
 
 **Standards sub-agent prompt** (include diff command + commit list + discovered Standards source paths):
 > Report — per file/hunk — every place the diff violates a documented convention in this repo. Use the provided instruction/convention files to find the relevant rule per changed area. Cite the source file + the specific rule for each finding. Distinguish hard violations (rule clearly broken) from judgement calls (rule arguably bent). Skip anything tooling enforces (lint/format). Anchor each to `file:line`. Under 400 words. Return the report as your final message — it is data, not a human-facing summary.
@@ -193,8 +269,10 @@ Assign two mandatory fields per finding:
 - **Confidence:** High (verified by grep/code reading) / Medium (plausible pattern) / Low (suspicion).
 - **Verdict:** `Fix before merge` / `Reviewer decides` / `Verify before merge` / `Nice-to-have` / `Confirmed safe`.
 
-**Auto Mode** (the user opted into autonomous operation — e.g. "review it, don't ask me", or a
-non-interactive run): assign verdict + confidence autonomously, no `AskUserQuestion` batch.
+**Auto Mode / non-interactive** (resolved in Phase 0 — the user opted into autonomous operation,
+e.g. "review it, don't ask me", or there is no user at all: a subagent, `claude -p`, a workflow):
+assign verdict + confidence autonomously, no `AskUserQuestion` batch, and record
+`verdicts: assigned autonomously` under `## Gate decisions (auto)`.
 **Otherwise:** present as `AskUserQuestion` batch(es) and let the user adjust.
 
 **Class generalization (High/Medium confidence only).** Before the exit gate, take each finding that
@@ -220,7 +298,9 @@ a later reader can tell "we looked" from "we never asked". Low-confidence rows r
 ### Phase 6 — Triage With User
 Present the complete findings table ([references/findings-format.md](references/findings-format.md)). User checks `[x]` in Post?. Defaults: Open Questions → `[x]`; Confirmed-safe → `[ ]`; Low hygiene → `[ ]`; everything else → `[ ]` (opt in).
 
-**Exit gate:** user finalized Post? selections.
+**Exit gate:** user finalized Post? selections. **Auto Mode / non-interactive:** apply the documented `Post?`
+defaults unchanged, record `triage: defaults applied (non-interactive)`, and proceed — nothing goes out either
+way, since Phase 7 posts only on an explicit instruction.
 
 ### Phase 7 — Post Comments (explicit instruction only; host modes only)
 Do not post on Phase-6 completion — wait for "post the comments". Route per Phase-3 anchor class (inline vs summary). See [references/posting-comments.md](references/posting-comments.md) for the gh + glab recipes (head SHA, payload shapes, GitLab discussion positions, fallbacks). After posting, report which comments went out (URLs); mark posted rows `[posted]`. **Local mode: skip — the findings file is the deliverable.**
@@ -245,7 +325,10 @@ Entered from Phase 0 when the current user already commented. **Replaces Phases 
 - **R1 — Collect prior state.** Gather every prior comment by the current user (inline + summary), each with its `file:line`, what it flagged, and its original verdict (check `./reviews/pr-review-findings-{n}.md` if it survives). Read author replies. Identify the **delta since last review** (commits after the last comment timestamp; diff `{sha-at-last-review}...HEAD`).
 - **R2 — Resolution check** (per prior comment, by reading the code at the worktree, not trusting reply text): Resolved / Partially resolved / Not resolved / Won't-fix-but-justified. Apply Prime Directive 2 — record an `Already checked:` line for any "not resolved" call.
 - **R3 — Sanity check the delta.** Focused pass (not the full Domain sweep): did fixes introduce regressions or new edge cases? Did unrelated changes sneak in? Quick scan against Domain 0 + obviously-touched domains, changed lines only. New issues → fresh findings (verdict + confidence + anchor).
-- **R4 — Verdict (always user-confirmed).** Per-prior-comment status table + new findings + proposed overall verdict and icon. **Require explicit user confirmation before acting — always, including Auto Mode.** Write under `## Re-review ({date})`, appended below prior content.
+- **R4 — Verdict (always user-confirmed).** Per-prior-comment status table + new findings + proposed overall
+  verdict and icon. **Require explicit user confirmation before acting — always, including Auto Mode.** With
+  **no user at all** (non-interactive) the verdict is not finalized: write it marked
+  `unconfirmed — non-interactive` and stop before R5. Write under `## Re-review ({date})`, appended below.
 - **R5 — Post & retitle** once confirmed; then offer worktree cleanup.
 
 ---
@@ -256,7 +339,7 @@ All file artifacts go in `./reviews/` of the **launch** repo (create if missing)
 
 | Artifact | Purpose | Lifecycle |
 |----------|---------|-----------|
-| **Findings file** (`./reviews/pr-review-findings-{n}.md`, or `-local.md`) | Working doc; survives compaction; holds briefing, two-axis pre-pass (kept separate), table with verdict+confidence+anchor, Post? selections. | Updated per domain; persisted to disk. |
+| **Findings file** (`pr-review-findings-{n}.md`; local mode `pr-review-findings-<base>..<head>-<date>.md`) | Working doc; survives compaction; holds briefing, two-axis pre-pass (kept separate), table with verdict+confidence+anchor, Post? selections. | Updated per domain; persisted to disk. |
 | **Posted comments** | Published output to the author. | Only what the user checked. |
 | **Title icon** (💬/🔴/🟢) | At-a-glance verdict. | Set in Phase 8; replaced on re-review. |
 | **Chat** | Live interrogation. | Don't regurgitate the table after writing the file; don't volunteer an end-of-session summary unless asked. |
@@ -275,7 +358,12 @@ All file artifacts go in `./reviews/` of the **launch** repo (create if missing)
 
 Tool constraints: 2–4 options, header ≤12 chars, `multiSelect: true` only when options aren't mutually exclusive.
 
-**Fallback (no AskUserQuestion):** `**[Domain] — [Topic] — file:line**` + question + `**My read:**` + `**Already checked:**` + 2–3 lettered options including one "I don't know — promote to comment."
+**Fallback (no AskUserQuestion *tool*):** `**[Domain] — [Topic] — file:line**` + question + `**My read:**` +
+`**Already checked:**` + 2–3 lettered options including one "I don't know — promote to comment."
+
+**Fallback (no *user*, i.e. non-interactive):** a different case — asking is pointless, not just unformatted.
+Resolve the question from the code; if it survives the exploration gate, record it as an Open Question for the
+author with its `Already checked:` line and note the auto-promotion under `## Gate decisions (auto)`.
 
 ---
 

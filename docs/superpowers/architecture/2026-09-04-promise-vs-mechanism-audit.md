@@ -79,3 +79,21 @@ v-archaeology, parallel-dispatcher, doc-validator-prompt · пины agy 1.0.13 
 
 144 (re-emit подмножества джобов), 147, 149 (post-hoc authority `stale`), 152 (summary = title), 154/155 (предупреждения валидатора),
 156 (грязные worktree), политические 112 и 104.
+
+## 7. Интеграция с базовым Superpowers (проверено против установленного 6.2.0, не 6.0.3)
+
+Все 8 имён `superpowers:*`, на которые мы ссылаемся, существуют; SessionStart-хуки обоих плагинов совместимы (оба добавляют
+контекст, дублей нет). Разрывы по убыванию влияния:
+
+| # | Разрыв | Наша сторона | Сторона Superpowers |
+|---|---|---|---|
+| 1 | **Trigger 1 перепрыгивает пользовательские ворота**: brainstorming 6.2.0 говорит «после спеки — только writing-plans» и ждёт ревью спеки человеком, а мы запускаем три пре-флайта в момент записи файла | `hooks/plan-saved-nudge.sh:35`, `skills/compound-v/SKILL.md` | `brainstorming/SKILL.md:61,122-132` |
+| 2 | Обоснование правила «коммить audit-trail, иначе `git worktree remove` его удалит» устарело: в 6.2.0 нет варианта Discard, а чистка касается только `.worktrees/`, не `.claude/worktrees/` (правило оставить, причину исправить) | 6 мест: parallel-dispatcher:476, v-dispatch:286, v-orchestrate:89, v-collect:62, v-epic:393 | `finishing-a-development-branch/SKILL.md:55-65,169-178` |
+| 3 | writing-plans 6.2.0 добавил **Global Constraints** и per-task **Interfaces** ровно для изолированных исполнителей — `/v:orchestrate` их не читает и в промпты не кладёт | `commands/v-orchestrate.md:60-64` | `writing-plans/SKILL.md:69-74,89-93` |
+| 4 | `"shell": "bash"` в регистрациях хуков (Windows-фикс 6.2.0) у нас отсутствует; `hooks.json` ссылается на 5.1.0 как источник | `hooks/hooks.json` | `SP/hooks/hooks.json` |
+| 5 | В `plugin.json` нет поля `hooks` — на других харнессах наши хуки регистрируются автоматически (SP закрыл это `hooks: {}` в 6.1.1) | `.claude-plugin/plugin.json` | SP 6.1.1 release notes |
+| 6 | SDD в 6.2.0 сам тирует модели и предупреждает против самой дешёвой — наш текст про «cheap model» устарел; presence-check `.superpowers/sdd/` не видит ledger/breaker 6.2.0 | `skills/compound-v/SKILL.md:109,264`, `commands/v-status.md:21` | `subagent-driven-development/SKILL.md:159-192` |
+| 7 | Шесть skills Superpowers мы не используем вовсе: verification-before-completion, requesting-/receiving-code-review, systematic-debugging, writing-skills, (TDD — частично) — наш spec-reviewer и floor их переизобретают | — | `SP/skills/` |
+| 8 | Нет теста на хук Trigger 0 (`brainstorm-trigger0-nudge.sh`), единственный перехват рядом с enforcement | `tests/` | — |
+
+Кандидаты в 3.4.17: 1 (нудж после ворот, не при записи), 3 (Global Constraints + Interfaces в манифест/промпт), 4, 5, 2, 6, 8.

@@ -317,7 +317,7 @@ fi
 # the resolver produced a slice that all five workers refused as malformed (exit 2)
 # before the model ran; invisible here because this repository dispatches Claude jobs.
 TCV="$T/tcv"; mkdir -p "$TCV"
-for w in codex antigravity cursor opencode devin; do
+for w in codex antigravity cursor opencode; do
   W="$REPO/scripts/compound-v-run-$w-worker.sh"
   [ -f "$W" ] || { fail "worker script missing: $W"; continue; }
   printf '%s\n' '{"scope":"impacted+referencing","resolved_commands":["true"],"selected_count":2,"floor_command":"true"}' > "$TCV/ok.json"

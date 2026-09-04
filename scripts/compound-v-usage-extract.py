@@ -6,9 +6,9 @@ Reads a backend's own structured events log and prints a canonical `usage`
 object (the optional field in schemas/job_result.schema.json) to stdout:
 
   {"input_tokens": int|null, "output_tokens": int|null,
-   "advisor_calls": int|null, "backend": str, "measured": bool}
+   "backend": str, "measured": bool}
 
-Design contract (v2.12 usage & advisor, anti-ruflo charter):
+Design contract (v2.12 usage, anti-ruflo charter):
 
   - MEASURED-ONLY. Token counts come exclusively from the backend's OWN
     structured usage events, using the EXACT field names live-probed in
@@ -16,7 +16,7 @@ Design contract (v2.12 usage & advisor, anti-ruflo charter):
     backend uses a different casing/shape, so normalization is per-backend.
   - FAIL-OPEN, NEVER FABRICATE. If the events log is missing, empty, or
     unparseable — or the backend emits no machine-readable usage at all
-    (agy/antigravity, claude Task subagent, devin) — emit measured:false
+    (agy/antigravity, claude Task subagent) — emit measured:false
     with null token counts. A null is honest; a made-up number is not.
   - A usage event contributes to the measured sum ONLY when BOTH required
     token fields are present AND are non-negative JSON INTEGERS. A malformed
@@ -26,9 +26,6 @@ Design contract (v2.12 usage & advisor, anti-ruflo charter):
     counts stay null and measured stays false. A genuine well-formed 0 from a
     real event is fine; an empty/absent usage object is NOT a real zero.
   - Non-JSON lines and error/deprecation event items are SKIPPED, never fatal.
-  - `advisor_calls` is NOT extracted here. It is worker-COUNTED by the advisor
-    executor (times it actually consulted the advisor) and folded in elsewhere.
-    This extractor always leaves it null.
 
 Per-backend token sources (field names are exact, from the library audit):
 
@@ -38,7 +35,7 @@ Per-backend token sources (field names are exact, from the library audit):
               .part.tokens.input and .part.tokens.output.
   cursor    : JSONL. The final `type=="result"` line's
               .usage.inputTokens and .usage.outputTokens.
-  agy/antigravity, claude, devin : no machine-readable usage -> measured:false.
+  agy/antigravity, claude : no machine-readable usage -> measured:false.
 
 Python 3.9-safe, stdlib only. Exit 0 on a printed usage object; the --selftest
 mode exits 0 on success, non-zero on failure.
@@ -54,7 +51,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # Backends that expose no machine-readable per-job token usage. For these we
 # always emit measured:false + null tokens (never a fabricated number).
 UNMEASURED_BACKENDS = frozenset(
-    ("agy", "antigravity", "claude", "devin")
+    ("agy", "antigravity", "claude")
 )
 
 
@@ -101,7 +98,6 @@ def _unmeasured(backend: str) -> Dict[str, Any]:
     return {
         "input_tokens": None,
         "output_tokens": None,
-        "advisor_calls": None,
         "backend": backend,
         "measured": False,
     }
@@ -111,7 +107,6 @@ def _measured(backend: str, input_tokens: int, output_tokens: int) -> Dict[str, 
     return {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
-        "advisor_calls": None,
         "backend": backend,
         "measured": True,
     }
@@ -249,7 +244,6 @@ def _selftest() -> int:
     check("codex.measured", u["measured"], True)
     check("codex.input_tokens", u["input_tokens"], 300)
     check("codex.output_tokens", u["output_tokens"], 100)
-    check("codex.advisor_calls", u["advisor_calls"], None)
     check("codex.backend", u["backend"], "codex")
 
     # --- opencode: SUM across step_finish.part.tokens ---
@@ -285,7 +279,7 @@ def _selftest() -> int:
     check("cursor.backend", u["backend"], "cursor")
 
     # --- unmeasured backends: always measured:false + null tokens ---
-    for b in ("agy", "antigravity", "claude", "devin"):
+    for b in ("agy", "antigravity", "claude"):
         u = extract_usage(b, None)
         check("%s.measured" % b, u["measured"], False)
         check("%s.input_tokens" % b, u["input_tokens"], None)
@@ -388,7 +382,7 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
                     "backend's structured events log."
     )
     p.add_argument("--backend", help="Backend name (codex|opencode|cursor|agy|"
-                                     "antigravity|claude|devin)")
+                                     "antigravity|claude)")
     p.add_argument("--events-log", help="Path to the backend's structured events log (JSONL)")
     p.add_argument("--selftest", action="store_true",
                    help="Run inline fixtures and exit 0 on success, non-zero on failure")

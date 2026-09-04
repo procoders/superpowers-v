@@ -44,7 +44,7 @@ The run-id (optional) is `{{args}}`.
 
    **Liveness (hang detection).** Populate the `Liveness` column for any job whose `status` is `running` from [`scripts/compound-v-liveness.py`](../scripts/compound-v-liveness.py) `<run-dir> --json` — it classifies each running job from **git + filesystem only** (never model-self-report): `WORKING`, `LIKELY-DONE` (the worktree has a commit past its baseline — work landed, only the completion notification is stuck; hint: *`/v:resume`, or the dispatcher auto-collects it*), `STALE` (no progress past the threshold — a **suspected hang**), `DEAD` (a recorded pid died), or `UNKNOWN`. Non-running jobs show `—`. **Degrade-safe:** if the probe errors or is missing, show `—` for every row — never break the table. Surface any `STALE`/`DEAD` prominently in the summary and point the user at `/v:resume`. Never print fabricated metrics.
 
-   **Usage (measured-only).** Populate the `Usage` column from [`scripts/compound-v-usage-aggregate.py`](../scripts/compound-v-usage-aggregate.py) `--run-dir <run-dir>` — it reads each job's OPTIONAL `usage` object out of `<run-dir>/results/*.json` (worker-sourced, git-collected) and returns a per-job list plus measured-only totals. For a job whose `usage.measured == true`, show its real token counts (e.g. `in=12.3k out=4.1k`, and `+Nadv` when `advisor_calls > 0`). For any job that is **unmeasured** — `measured:false` (a backend with no machine-readable usage: agy/antigravity, claude Task subagent, devin), or no `usage` key at all — show `—`. **Measured only, never estimated:** never derive, guess, or back-fill a token number the backend did not report; an honest `—` beats a fabricated count (anti-ruflo). **Degrade-safe:** when `results/` is absent (a pending run) the aggregator returns empty totals with a `note` and exits 0 — show `—` for every row and never break the table (same rule as the Liveness column above). Optionally add a run-level total line to the summary (step 6) from the aggregator's `--format text` output (e.g. `measured: in=1.2M out=340k advisor_calls=3 | 4 measured, 2 unmeasured`) — it already reports the honest unmeasured count, so a partially-instrumented run is never dressed up as a complete one.
+   **Usage (measured-only).** Populate the `Usage` column from [`scripts/compound-v-usage-aggregate.py`](../scripts/compound-v-usage-aggregate.py) `--run-dir <run-dir>` — it reads each job's OPTIONAL `usage` object out of `<run-dir>/results/*.json` (worker-sourced, git-collected) and returns a per-job list plus measured-only totals. For a job whose `usage.measured == true`, show its real token counts (e.g. `in=12.3k out=4.1k`). For any job that is **unmeasured** — `measured:false` (a backend with no machine-readable usage: agy/antigravity, claude Task subagent), or no `usage` key at all — show `—`. **Measured only, never estimated:** never derive, guess, or back-fill a token number the backend did not report; an honest `—` beats a fabricated count (anti-ruflo). **Degrade-safe:** when `results/` is absent (a pending run) the aggregator returns empty totals with a `note` and exits 0 — show `—` for every row and never break the table (same rule as the Liveness column above). Optionally add a run-level total line to the summary (step 6) from the aggregator's `--format text` output (e.g. `measured: in=1.2M out=340k | 4 measured, 2 unmeasured`) — it already reports the honest unmeasured count, so a partially-instrumented run is never dressed up as a complete one.
 
 5. **Render backend health (the circuit breaker).** From `state.json`, surface graceful-failure state so re-routes and credit-exhaustion are never silent (the fields are defined in [`state-machine.md`](../skills/compound-v/state-machine.md), the policy in [`failure-policy.md`](../skills/compound-v/failure-policy.md)):
    - **Circuit-open backends** — any `circuit_open[<backend>] == true` (out for the run — out-of-credits or auth). Call it out prominently.
@@ -135,25 +135,16 @@ probe errors or exits non-zero, say so in one line ("live watch unavailable: no 
 this run" or similar) and stop there — never show a traceback or raw stack output, and never break the
 state table rendered above it.
 
-## Dashboard (v2.15) — `--html`
+## Live view and resume context
 
-The same read-only state this command renders as text can be rendered as a **browser dashboard** via
-[`scripts/compound-v-dashboard.py`](../scripts/compound-v-dashboard.py) — a **present-only** generator (no daemon,
-no persistent service, no control surface; observe in the browser, act via the CLI). It is read-only and
-renders **only** what is in the state files — measured-only usage (`—` when unmeasured), real counts (never a
-fabricated `%`-progress), real timestamps only.
+**For a LIVE view, use the native surfaces.** The bespoke local HTTP server was removed in the 3.4 line, and the
+static HTML snapshot after it (never once generated in this repo's history): [`/workflows`](https://code.claude.com/docs/en/workflows)
+shows a running dispatch's live progress, and `/tasks` shows `state.json` / `epic-state.json` progress for runs
+and epics without a snapshot step.
 
-**For a LIVE view, use the native surfaces.** The bespoke local HTTP server was removed in v3.4 (native-first):
-[`/workflows`](https://code.claude.com/docs/en/workflows) shows a running dispatch's live progress, and `/tasks`
-shows `state.json` / `epic-state.json` progress for runs and epics without a snapshot step. `emit` is for a
-shareable, offline artifact — not for watching a dispatch in progress.
-
-- **`/v:status --html [run-id]`** → `python3 scripts/compound-v-dashboard.py emit [--execution-root docs/superpowers/execution] [--out docs/superpowers/execution/dashboard.html]`. Writes a **self-contained static HTML snapshot** (data inlined, offline, theme-aware — good for sharing / audit) of every run + epic, and prints the file path to open (`file://…`). The generated `dashboard.html` is git-ignored (a build artifact).
 - **Resume context (banner-internal, v2.19)** → `python3 scripts/compound-v-dashboard.py resume [--max-age-hours N] [--json]`. Prints ONE line naming unfinished runs/epics, or nothing at all. It exists because `SessionStart` fires on **`compact`** and the banner is otherwise stateless: a compaction destroys the agent's *position* in a pipeline, not its knowledge of the rules. Freshness comes from the **recorded** `updated_at`/`last_progress_at`, never a file mtime — git rewrites mtimes on clone and branch-switch, which would make every historical run look seconds old on a fresh checkout. A record with no recorded timestamp stays **silent** rather than being assigned a fabricated age.
-
-The discoverable alias is [`/v:dashboard`](v-dashboard.md).
 
 ## Notes
 
 - This command never mutates the run. To recover an interrupted run, use [`/v:resume`](v-resume.md).
-- **Measured usage only, never estimated (anti-ruflo).** You MAY print the REAL token/advisor counts that `compound-v-usage-aggregate.py` extracts from each job's `results/*.json` `usage` object (worker-sourced, backend-measured). You may NOT print estimated, extrapolated, or invented cost/token numbers — `state.json` itself carries none, and an unmeasured job shows `—`, never a guessed figure. When in doubt, degrade to `—`.
+- **Measured usage only, never estimated (anti-ruflo).** You MAY print the REAL token counts that `compound-v-usage-aggregate.py` extracts from each job's `results/*.json` `usage` object (worker-sourced, backend-measured). You may NOT print estimated, extrapolated, or invented cost/token numbers — `state.json` itself carries none, and an unmeasured job shows `—`, never a guessed figure. When in doubt, degrade to `—`.

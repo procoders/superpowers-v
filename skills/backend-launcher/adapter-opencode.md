@@ -22,7 +22,7 @@ Verified live against **opencode-ai 1.17.18** (npm, installed via `npm install -
 
 > **The worker script MUST NOT blindly inherit the dispatcher's own provider environment variables into the `opencode run` child process.** If it does, a job could silently authenticate as the ORCHESTRATOR's own Claude/OpenAI/Anthropic credentials rather than a credential intentionally scoped to that job — an unintended privilege leak from the calling process into an isolated, lower-trust worker. The worker MUST explicitly pass through only a documented allow-list of provider env vars (or none at all, forcing `opencode providers login` / a real `auth.json`), never a raw environment inherit (`env -i` plus an explicit allow-list, or an explicit `unset` of every known provider var before exec, is the correct shape — pick one and document it in the worker script when built).
 
-**WORKER-ONLY — never an arbiter/review-panel seat (separate from the trust-tier question above).** opencode addresses models as `provider/model` strings, and the provider is allowed to differ **per tier cell** — so opencode's resolved model family is data-dependent, exactly like Devin. A `backend: opencode, model: "anthropic/claude-opus-4-6"` ballot would land in the SAME family bucket as the native Claude arbiter (`model_family()`'s existing substring heuristic), and a `backend: opencode, model: "openai/gpt-5.6-sol"` ballot would collapse with Codex's own bucket. Adding opencode to any arbiter panel without first keying family-dedup on the *resolved* model (never the backend name) would let a correlated ballot silently masquerade as an independent vote — **this adapter is worker dispatch only**; the family-dedup fix is a separate, later change.
+**WORKER-ONLY — never an arbiter/review-panel seat (separate from the trust-tier question above).** opencode addresses models as `provider/model` strings, and the provider is allowed to differ **per tier cell** — so opencode's resolved model family is data-dependent. A `backend: opencode, model: "anthropic/claude-opus-4-6"` ballot would land in the SAME family bucket as the native Claude arbiter (`model_family()`'s existing substring heuristic), and a `backend: opencode, model: "openai/gpt-5.6-sol"` ballot would collapse with Codex's own bucket. Adding opencode to any arbiter panel without first keying family-dedup on the *resolved* model (never the backend name) would let a correlated ballot silently masquerade as an independent vote — **this adapter is worker dispatch only**; the family-dedup fix is a separate, later change.
 
 ---
 
@@ -75,7 +75,7 @@ python3 "$SUPERVISOR" --timeout "$timeout_sec" --grace 3 -- \
 
 **Verified facts — load-bearing:**
 
-- **`--dir "$WT"`** — VERIFIED live flag: *"directory to run in"*. opencode has a real `--cd`-equivalent, unlike Antigravity/Cursor/Devin.
+- **`--dir "$WT"`** — VERIFIED live flag: *"directory to run in"*. opencode has a real `--cd`-equivalent, unlike Antigravity/Cursor.
 - **`--format json`** — VERIFIED live: JSONL event stream to stdout, one JSON object per line. Sample captured live:
   ```json
   {"type":"step_start","timestamp":...,"sessionID":"ses_0a775d09dffe4xAFfV57IyRwki","part":{...}}
@@ -105,7 +105,7 @@ python3 "$SUPERVISOR" --timeout "$timeout_sec" --grace 3 -- \
 
 ### `--read-only` / `--network` are advisory for opencode
 
-No kernel sandbox toggle exists (VERIFIED live by omission), and network access for tool calls is governed only by the same advisory `permission` config. The worker would accept `--read-only` / `--network` for **CLI parity** only, exactly like Antigravity/Cursor/Devin. A read-only / review job is enforced post-hoc: pass an **empty** `--write-allowed`.
+No kernel sandbox toggle exists (VERIFIED live by omission), and network access for tool calls is governed only by the same advisory `permission` config. The worker would accept `--read-only` / `--network` for **CLI parity** only, exactly like Antigravity/Cursor. A read-only / review job is enforced post-hoc: pass an **empty** `--write-allowed`.
 
 ### Model + effort: resolved before dispatch, not hardcoded — the `provider/model` design
 
@@ -117,7 +117,7 @@ standard → openai/gpt-5.6-terra
 light    → opencode/mimo-v2.5-free      # a real, credential-free model — verified live via `opencode models`
 ```
 
-`light` legitimately points at one of opencode's own curated **free** models — VERIFIED live via `opencode models` (works with zero configured credentials, backed by models.dev): `opencode/big-pickle`, `opencode/deepseek-v4-flash-free`, `opencode/hy3-free`, `opencode/mimo-v2.5-free`, `opencode/nemotron-3-ultra-free`, `opencode/north-mini-code-free`. This is the **one backend where a real free tier exists out of the box** — no other backend in this plugin offers that. `opencode models [provider]` is real live discovery (unlike Codex/Devin's curated-only pattern); `/v:models` shows the catalog, but assignment stays curated + user-confirmed (opencode's catalog spans unrelated vendor families with no shared naming convention, mirroring the Cursor precedent — Compound V does not auto-rank it).
+`light` legitimately points at one of opencode's own curated **free** models — VERIFIED live via `opencode models` (works with zero configured credentials, backed by models.dev): `opencode/big-pickle`, `opencode/deepseek-v4-flash-free`, `opencode/hy3-free`, `opencode/mimo-v2.5-free`, `opencode/nemotron-3-ultra-free`, `opencode/north-mini-code-free`. This is the **one backend where a real free tier exists out of the box** — no other backend in this plugin offers that. `opencode models [provider]` is real live discovery (unlike Codex's curated-only pattern); `/v:models` shows the catalog, but assignment stays curated + user-confirmed (opencode's catalog spans unrelated vendor families with no shared naming convention, mirroring the Cursor precedent — Compound V does not auto-rank it).
 
 An explicit manifest `model` override skips resolution and wins.
 
@@ -125,7 +125,7 @@ An explicit manifest `model` override skips resolution and wins.
 
 ### Timeout — the shared process-group supervisor
 
-No built-in `--timeout` flag was found in `--help`. A worker script would run opencode under [`scripts/compound-v-run-with-timeout.py`](../../scripts/compound-v-run-with-timeout.py) exactly like Codex/Antigravity/Cursor/Devin — `killpg`s the whole `opencode` process tree on expiry and returns 124 → `status: "timeout"`. Small-sample live testing showed clean, fast (~2s) exit-1 behavior on a forced bad-model error (no hang), consistent with the supervisor's exit-code contract.
+No built-in `--timeout` flag was found in `--help`. A worker script would run opencode under [`scripts/compound-v-run-with-timeout.py`](../../scripts/compound-v-run-with-timeout.py) exactly like Codex/Antigravity/Cursor — `killpg`s the whole `opencode` process tree on expiry and returns 124 → `status: "timeout"`. Small-sample live testing showed clean, fast (~2s) exit-1 behavior on a forced bad-model error (no hang), consistent with the supervisor's exit-code contract.
 
 ---
 

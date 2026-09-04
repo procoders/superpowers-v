@@ -654,8 +654,7 @@ EOF
   case "$tier" in
     DIRECT)
       next="DIRECT — implement it here, run the test floor, and commit it as an \
-ORDINARY commit alongside the record. /v:triage --land is the UNATTENDED landing \
-gate and is not what an attended change needs."
+ORDINARY commit alongside the record."
       ;;
     SCOPED)
       if [ "$flavor" = "scoped_plus" ]; then

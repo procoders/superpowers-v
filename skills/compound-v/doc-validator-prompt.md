@@ -67,21 +67,24 @@ slug. Scanning is fallback-only.
 
 ## Tools
 
-**Primary: Context7 MCP** — Context7's `resolve-library-id` and
-`query-docs` (see the naming note at the end of this file). Use these to fetch
-authoritative current docs. ALWAYS prefer Context7 over WebSearch when
-the library is in its index.
+**Check your own tool list first.** Context7's `resolve-library-id` and
+`query-docs` (see the naming note at the end of this file) fetch authoritative
+current docs — but only when the Context7 MCP is attached to the session you are
+running in. Launched inside a **Workflow you do not inherit the session's MCP
+tools**, and 12 of the last 16 library audits in this repository ran without
+Context7. Prefer it when it exists for you and the library is in its index.
 
-**Fallback: WebSearch + package registry pages.** If Context7 doesn't
-have a library, search:
+**The usual path: WebSearch/WebFetch + package registry pages.** With no
+`*context7*` tool, or when Context7 doesn't have the library, search:
   - npmjs.com/package/<name> (Node)
   - pypi.org/project/<name> (Python)
   - crates.io/crates/<name> (Rust)
   - pkg.go.dev/<name> (Go)
   - github.com/<owner>/<repo> (commits, last release, open issues)
 
-If Context7 is unavailable entirely, note "DEGRADED: WebSearch-only" at
-the top of your audit. Still produce the audit; just lower confidence.
+With no `*context7*` tool available, note "DEGRADED: WebSearch-only" at
+the top of your audit. Still produce the audit; just lower confidence. Never
+cite Context7 as the source of a lookup you did through WebSearch.
 
 ---
 
