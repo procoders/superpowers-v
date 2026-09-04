@@ -33,7 +33,7 @@
 #
 # Testing: honor $COMPOUND_V_ADVISOR_STUB (a path to a fake backend) so the whole path can be
 # proven WITHOUT a live backend run — when set, the stub is invoked in place of the real
-# codex/claude binary with the IDENTICAL argv. See scripts/test-advisor-worker-stub.sh.
+# codex/claude binary with the IDENTICAL argv. See tests/test-advisor-worker-stub.sh.
 #
 # Usage:
 #   compound-v-advisor-consult.sh \

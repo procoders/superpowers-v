@@ -255,8 +255,8 @@ See [rationalization-table.md](rationalization-table.md) for the full list with 
 |---|---|
 | `superpowers:brainstorming` | **Trigger 0 fires before it starts** (gated pre-brainstorm recon → [phase-0-recon.md](phase-0-recon.md)). The skill itself runs unchanged **except the gated elicitation override** ([brainstorm-elicitation.md](brainstorm-elicitation.md)). On completion, fire Trigger 1 (1A + 1B + 1C in parallel). |
 | `code-archaeology` (mcpize or equivalent) | Inserted as Phase 1A. |
-| Universal domain-expert advisor (this plugin) | Inserted as Phase 1B. Dispatchable as `subagent_type: "compound-v:domain-expert"` (see `agents/domain-expert.md`). |
-| Library/doc validator via Context7 (this plugin) | Inserted as Phase 1C. Dispatchable as `subagent_type: "compound-v:doc-validator"` (see `agents/doc-validator.md`). |
+| Universal domain-expert advisor (this plugin) | Inserted as Phase 1B. Dispatchable as `subagent_type: "superpowers-v:domain-expert"` (see `agents/domain-expert.md`). |
+| Library/doc validator via Context7 (this plugin) | Inserted as Phase 1C. Dispatchable as `subagent_type: "superpowers-v:doc-validator"` (see `agents/doc-validator.md`). |
 | MCP `plugin:context7:context7` | Required for Phase 1C (Phase 1C degrades to WebSearch if Context7 unavailable). |
 | `superpowers:writing-plans` | When `memory.auto_recall` is on (the `/v:init` default), recall related prior work via `/v:remember` (V-memory) as planning evidence before planning the feature; then run with Partition Map requirement (Trigger 2). |
 | `superpowers:subagent-driven-development` | Replace its "sequential implementer, cheap model, with worktree" defaults with Compound V dispatch (Trigger 3). |

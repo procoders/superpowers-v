@@ -4,7 +4,7 @@
 
 The Cursor backend is a **Bash-spawned `cursor-agent -p` worker** — its own process, its own git worktree. It mirrors the Codex / Antigravity adapters step-for-step ([`adapter-antigravity.md`](adapter-antigravity.md)): worktree isolation, a git-derived scope gate, normalize → `job_result`, caller merges. The orchestrator hands this adapter a `job_spec` and gets back the canonical `job_result`; enforcement is git-derived by the caller, identical to every other backend.
 
-Verified live against **cursor-agent 2026.06.26** on stock macOS (bash 3.2.57) — refreshed 2026-07-10 (was 2025.09.12): the headless invocation writes files into the worktree and the scope gate enforces `write_allowed` on both the success and BLOCKED paths (see *Verified facts*). The pinned facts below are load-bearing — do not re-derive them per run; re-probe only in `/v:init`.
+Verified live against **cursor-agent 2026.07.09-a3815c0** on stock macOS (bash 3.2.57) — refreshed 2026-09-04 (was 2026.06.26): the headless invocation writes files into the worktree and the scope gate enforces `write_allowed` on both the success and BLOCKED paths (see *Verified facts*). The pinned facts below are load-bearing — do not re-derive them per run; re-probe only in `/v:init`.
 
 ---
 
@@ -51,7 +51,7 @@ This is the *instructed* half of planner/executor separation; the git-diff scope
 
 ---
 
-## Pinned `cursor-agent` invocation (cursor-agent 2026.06.26)
+## Pinned `cursor-agent` invocation (cursor-agent 2026.07.09-a3815c0)
 
 The script uses **exactly** this shape — verified to write files into the worktree, print one JSON object to stdout, and exit 0:
 

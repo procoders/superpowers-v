@@ -66,7 +66,7 @@ The skill content lives at `skills/compound-v/SKILL.md` and its phase reference 
 
 | Claude Code | Codex / generic |
 |---|---|
-| `Task(subagent_type, prompt, model, maxTurns, run_in_background)` | `subagent <name> --model opus --max-turns 15 --background` |
+| `Task(subagent_type, prompt, model, maxTurns, run_in_background)` | `subagent <name> --model opus --max-turns 50 --background` |
 | `Skill <name>` | Read the skill file directly and apply |
 | `*context7*` tools | Whatever the local Context7 MCP installation exposes |
 | Codex backend (`adapter-codex.md`) | A Bash-spawned `codex exec` worker process — its own process, its own git worktree. NOT a subagent, NOT the `openai-codex` JSON-RPC broker (single-flight, can't fan out). |
@@ -83,7 +83,7 @@ These work in any harness that reads `agents/*.md` frontmatter. Codex CLI loads 
 - `superpowers-v:partition-reviewer` — pre-execution gate; runs `compound-v-validate-manifest.py` as its deterministic backing check
 - `superpowers-v:parallel-dispatcher` — manifest-driven multi-backend dispatcher; calls `compound-v-scope-check.py` after every job and HALTS on BLOCKED
 - `superpowers-v:spec-reviewer` — the three-pass Review Gate (spec acceptance criteria · quality/no-regression/no-fabricated-metrics · final integration), AC-gated
-- `superpowers-v:implementer` — the role every Claude implementation job arrives as (3.4.0). Carries the turn cap (`maxTurns: 60` — a field of an agent definition, which is the only native way a workflow job gets one) and the official Opus 5 guidance on scope, narration cadence and deliverable length
+- `superpowers-v:implementer` — the role every Claude implementation job arrives as (3.4.0). Carries the turn cap (`maxTurns: 80` — a field of an agent definition, which is the only native way a workflow job gets one) and the official Opus 5 guidance on scope, narration cadence and deliverable length
 
 All reviewers/agents carry `model: opus`. Manifest `backend`/`model` values (`gpt-5.5`, etc.) are execution-layer data and **never** appear in any frontmatter.
 

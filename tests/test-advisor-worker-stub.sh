@@ -17,7 +17,7 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")/../scripts" && pwd -P)"
 CONSULT="$SCRIPT_DIR/compound-v-advisor-consult.sh"
 
 command -v jq      >/dev/null 2>&1 || { echo "FAIL: jq not found on PATH"; exit 2; }

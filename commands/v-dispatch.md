@@ -6,7 +6,7 @@ You are about to execute **Phase 3** of Compound V on `{{args}}` — manifest-dr
 **Engine C**, the native Workflow engine ([`workflows-accelerator.md`](../skills/compound-v/workflows-accelerator.md)).
 
 **You run this yourself, at the top level. Do not delegate the run to the
-`compound-v:parallel-dispatcher` subagent.** A subagent has no Workflow tool — probed live under
+`superpowers-v:parallel-dispatcher` subagent.** A subagent has no Workflow tool — probed live under
 both the public name `Workflow` and the internal `RunWorkflow` — so delegating would silently
 drop the run onto the residual path. It is also what kept `/v:epic` off Engine C: `/v:epic`
 invokes `/v:dispatch` as a *command*, executed by the top-level agent, so once dispatch stops
@@ -63,7 +63,7 @@ delegating, the epic inherits Engine C along with everything else.
    `fast_path` manifest is fail-closed rejected. Non-zero exit ⇒ fix the manifest and re-run.
 
 3. **Run the partition reviewer** (Iron Rule #4: no execution without a verified Partition Map):
-   - Dispatch [`compound-v:partition-reviewer`](../agents/partition-reviewer.md) with the plan
+   - Dispatch [`superpowers-v:partition-reviewer`](../agents/partition-reviewer.md) with the plan
      **and** the manifest (it runs `compound-v-validate-manifest.py` as its deterministic backing
      gate, then verifies disjointness + invariants).
    - `FAIL` → **STOP.** Surface the failure. Do not dispatch implementers.

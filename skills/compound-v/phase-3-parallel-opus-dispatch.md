@@ -30,7 +30,7 @@ Two other runtime limits shape the emitted script:
 - **Foreground parallel limit: 4-6 Task calls in one message.** Beyond that you hit rate-limit cascades and permission-prompt thrashing.
 - **Background limit (`run_in_background: true`): 5-10.** Background agents auto-deny permission prompts (use already-granted perms) and the parent gets a notification when each finishes.
 - **`run_in_background: true` for an implementer wave is acceptable** when permissions are pre-granted for the workspace. Background subagents do NOT carry working-directory state between Bash calls; foreground subagents do. Plan accordingly — every path in a prompt must be absolute.
-- **Cap runaway reasoning:** include `maxTurns: 15` (or your project's limit) on every dispatched Claude Task call. Implementers that haven't finished in 15 turns are usually stuck and need a re-dispatch with more context, not more turns. (External worker jobs are bounded by `timeout_sec` in the `job_spec` instead — see `backend-launcher`.)
+- **Cap runaway reasoning:** every dispatched Claude job carries a turn cap — the tier default (`light` 30, `standard` 50, `deep`/`frontier` 80) from `TURN_CAP_BY_TIER` in `scripts/compound-v-emit-workflow.py`, or the job's own `max_turns` when it declares one. An implementer that hasn't finished inside its cap is usually stuck and needs a re-dispatch with more context, not more turns. (External worker jobs are bounded by `timeout_sec` in the `job_spec` instead — see `backend-launcher`.)
 
 ## The Three Overrides
 
@@ -119,7 +119,7 @@ Read `manifest.yaml`. Honor `depends_on`, `run`, and `max_parallel`. Each job is
 
 For each job, the dispatcher builds a `job_spec` (`backend`, `prompt`, `tier`, optional `effort`, `model` [resolved from tier/effort, or an explicit manifest override], `cwd`, `write_allowed`, `read_only`, `timeout_sec`, `network`, optional `output_schema`) and routes by `backend`. The concrete `model` is resolved before dispatch by [`compound-v-resolve-model.py`](../../scripts/compound-v-resolve-model.py) (see Step 2 below):
 
-- **`backend: claude`** → [`adapter-claude.md`](../backend-launcher/adapter-claude.md): an in-harness `Task` call with the `model` override and `maxTurns: 15`. `isolation: direct` writes to the active workspace against a baseline commit; `isolation: worktree` runs inside an isolated worktree.
+- **`backend: claude`** → [`adapter-claude.md`](../backend-launcher/adapter-claude.md): an in-harness `Task` call with the `model` override and a turn cap of the tier default (`light` 30, `standard` 50, `deep`/`frontier` 80). `isolation: direct` writes to the active workspace against a baseline commit; `isolation: worktree` runs inside an isolated worktree.
 - **`backend: codex`** → [`adapter-codex.md`](../backend-launcher/adapter-codex.md): a Bash-spawned headless `codex exec` worker (own process, own worktree — **always** `worktree`), via [`scripts/compound-v-run-codex-worker.sh`](../../scripts/compound-v-run-codex-worker.sh). Never an `agents/` entry, never the openai-codex broker.
 - **`backend: antigravity`** → [`adapter-antigravity.md`](../backend-launcher/adapter-antigravity.md): a Bash-spawned headless `agy --print` worker (own process, own worktree — **always** `worktree`), via [`scripts/compound-v-run-antigravity-worker.sh`](../../scripts/compound-v-run-antigravity-worker.sh). **Lower-trust / opt-in** (no kernel sandbox); `--model` is omitted when empty. (Shipped 1.1.)
 - **`backend: cursor`** → [`adapter-cursor.md`](../backend-launcher/adapter-cursor.md): a Bash-spawned headless `cursor-agent -p -f` worker (own process, own worktree — **always** `worktree`), via [`scripts/compound-v-run-cursor-worker.sh`](../../scripts/compound-v-run-cursor-worker.sh). **Lower-trust / opt-in** (no kernel sandbox; requires an authenticated `cursor-agent`); resolves tier→`model` (default `auto` — the only option on a Cursor Free plan). (Shipped 2.1.)
@@ -171,7 +171,7 @@ Each dispatch must include:
    - **An explicit manifest `model:` override skips resolution** (call the resolver with `--explicit-model <M>`, or pass the model straight through). This keeps existing explicit-model jobs valid — a job MUST carry `model` OR `tier`.
 
    A `claude` job lands on `opus` for `deep`, on `sonnet` for `standard` and `light` (`standard` stays on `opus` only under `conservative`), and on `fable` for `frontier`. Reviewer jobs always route `tier: deep` ⇒ opus and are never escalated.
-2. **Turn/time bound:** `maxTurns: 15` on Claude Task calls; `timeout_sec` in the `job_spec` for Codex workers. An implementer that hasn't finished in 15 turns is usually stuck and needs a re-dispatch with more *context*, not more turns.
+2. **Turn/time bound:** a turn cap on Claude Task calls — the tier default (`light` 30, `standard` 50, `deep`/`frontier` 80), or the job's `max_turns`; `timeout_sec` in the `job_spec` for Codex workers. An implementer that hasn't finished inside its cap is usually stuck and needs a re-dispatch with more *context*, not more turns.
 3. **`run_in_background: true`** is acceptable for the implementer batch — lets the orchestrator continue prep work while implementers run. The parent receives a notification per agent when it completes. Background subagents do NOT carry cwd state between Bash calls; **plan absolute paths in the prompt** (this is also why Codex worktree paths in the `job_spec` are always absolute).
 4. **Strict scope lock** — paste this verbatim at the top of the prompt (it is the *instructed* half; the git-diff scope gate in Step 2b is the *enforced* half):
 
@@ -264,7 +264,7 @@ Then update `state.json` (the run's single source of truth — schema in [`state
 
 `state.json` is written after every per-job transition, so a crash never loses more than the in-flight job, and [`/v:resume`](../../commands/v-resume.md) can reconcile against git (git-wins) and re-dispatch only the incomplete.
 
-> The wiring above is what [`agents/parallel-dispatcher.md`](../../agents/parallel-dispatcher.md) actually does: dispatch → scope-check → state.json, HALT on BLOCKED. This skill is the spec; that agent is the executable.
+> The wiring above is what [`agents/parallel-dispatcher.md`](../../agents/parallel-dispatcher.md) actually does: dispatch → scope-check → state.json, HALT on BLOCKED. This skill is the spec; that agent is the residual fallback (Engine C, `scripts/compound-v-emit-workflow.py`, is the default executor).
 
 ### Step 3: Parallel Reviewer Batch
 
@@ -294,7 +294,7 @@ This is the final pass of the three-pass Review Gate (spec / quality / integrati
 ## Dispatch Template (implementer)
 
 ```
-[Task tool call: subagent_type: "general-purpose", model: "opus", maxTurns: 15, description: "Implement Task K: <name>", run_in_background: true (optional)]
+[Task tool call: subagent_type: "general-purpose", model: "opus", maxTurns: <the tier default — light 30, standard 50, deep/frontier 80 — or the job's max_turns>, description: "Implement Task K: <name>", run_in_background: true (optional)]
 
 SCOPE LOCK (Compound V):
 You may ONLY read and write these files:

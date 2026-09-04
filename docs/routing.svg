@@ -1,6 +1,6 @@
 <svg viewBox="0 0 1060 1000" xmlns="http://www.w3.org/2000/svg" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
   <title>How Compound V routes a request across three tiers</title>
-  <desc>A triage hook scores every change request and sorts it into one of three tiers. DIRECT implements in place on the current session with no manifest and no model of its own. SCOPED opens a manifest and run directory for the touched slice, and SCOPED+ adds a mandatory deep review plus a cross-model second opinion on sensitive paths. FULL runs the whole pipeline: recon and pre-flights, then an orchestrator and router that assign each job to Opus for judgment and review, Sonnet for junior slices and scans, or an opt-in Codex worker for large isolated builds or a second opinion; Fable, the frontier tier, is opt-in for business-critical jobs and the reviewer's lift when Opus is overloaded. SCOPED and FULL both close through a git-diff scope gate and an Opus review — plus an optional Codex review of the finished diff, mandatory in SCOPED+ — before the work merges.</desc>
+  <desc>A triage hook scores every change request and sorts it into one of three tiers. DIRECT implements in place on the current session with no manifest and no model of its own. SCOPED opens a manifest and run directory for the touched slice, and SCOPED+ adds a mandatory deep review plus a cross-model second opinion on sensitive paths. FULL runs the whole pipeline: recon and pre-flights, then an orchestrator and router that assign each job to Opus for judgment and review, Sonnet for junior slices and scans, or an opt-in Codex worker for large isolated builds or a second opinion; Fable, the frontier tier, is opt-in for business-critical jobs and the one-time lift for a review job that has exhausted its retry budget on Opus. SCOPED and FULL both close through a git-diff scope gate and an Opus review — plus an optional Codex review of the finished diff, mandatory in SCOPED+ — before the work merges.</desc>
 
   <defs>
     <linearGradient id="brandbar" x1="0" y1="0" x2="1" y2="0">
@@ -118,7 +118,7 @@
   <rect x="252" y="898" width="20" height="14" rx="3" fill="#111133" stroke="#575868" stroke-width="1.4"/>
   <text x="282" y="910" font-size="12.5" fill="#cdcfdd">DIRECT — the current session, no dispatched model at all</text>
   <rect x="252" y="922" width="20" height="14" rx="3" fill="#111133" stroke="#dc02df" stroke-width="1.6" stroke-dasharray="4 3"/>
-  <text x="282" y="934" font-size="12.5" fill="#cdcfdd">Fable — frontier tier: opt-in for business-critical jobs; the reviewer's lift when Opus is overloaded</text>
+  <text x="282" y="934" font-size="12.5" fill="#cdcfdd">Fable — frontier tier: opt-in for business-critical jobs; lifts a review job whose Opus retries ran out</text>
   <text x="566" y="838" font-size="12" font-family="ui-monospace, monospace" letter-spacing="1.5" fill="#4db3f7">THE KEY RULE</text>
   <text x="566" y="858" font-size="12" fill="#cdcfdd">the triage hook picks the tier by</text>
   <text x="566" y="875" font-size="12" fill="#cdcfdd">mechanically checkable predicates;</text>

@@ -35,6 +35,8 @@ Phase 1C is most useful when [Context7 MCP](https://github.com/upstash/context7)
 
 ## How To Invoke
 
+> **How the three pre-flights are actually launched (3.3.5+).** 1A, 1B and 1C are emitted as **one native Workflow** by [`scripts/compound-v-emit-preflight.py`](../../scripts/compound-v-emit-preflight.py) and run with `Workflow({ scriptPath })` — see [`SKILL.md`](SKILL.md). The raw `Task` form below is the **residual** path, for a session with no Workflow tool.
+
 Dispatch a fresh subagent using the **`doc-validator-prompt.md`** template (in this skill directory). Key dispatch rules:
 
 1. **Model: `opus`** — the subagent must reason about whether to flag, not just retrieve. Opus.

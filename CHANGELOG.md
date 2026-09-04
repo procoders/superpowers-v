@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [3.4.15] - 2026-09-04
+
+### Audited — every promise against its mechanism and its evidence
+
+Four independent inventories (54 promises in README/AGENTS/plugin.json; 18 commands, 7 agents, 9 hooks;
+47 scripts and their callers; 24 skill documents, 7 adapters and the 2026-09-02 cut list) plus three
+hand checks. Report with the maintainer's decision list:
+[`docs/superpowers/architecture/2026-09-04-promise-vs-mechanism-audit.md`](docs/superpowers/architecture/2026-09-04-promise-vs-mechanism-audit.md).
+Headline facts, stated plainly: 0 of 101 Engine C results carry a `usage` object (per-ticket usage is
+dead on Engine C); Context7 was not attached in 12 of the last 16 pre-flight library audits (Workflow
+agents do not inherit MCP tools); `/v:preferences` has no store after three months; Devin/opencode were
+never dispatched; two test scripts lived in `scripts/` where CI never ran them.
+
+### Fixed — the contradictions the audit found in the documents (no decision needed)
+
+README's dogfood tally (40/5 → the index's 56/11, index named as the source of truth); the Fable lift
+described as "when Opus is overloaded" → after the review job exhausts its retries (README + routing.svg);
+`maxTurns` 60 vs 80 and five stale "15 turns" → the real tier defaults (light 30 · standard 50 ·
+deep/frontier 80); tier enums gain `frontier`; fourteen `compound-v:<agent>` references → the installed
+`superpowers-v:` prefix (`/v:archaeology` was un-runnable because of it); version pins (agy 1.1.25,
+cursor 2026.07.09, claude 2.1.238); memory.md's "Always"; the residual dispatcher named as the fallback,
+Engine C as the executor; phase-1 docs point at the emitted pre-flight Workflow; `workflows-accelerator.md`
+no longer claims `/workflow-authoring` is unavailable; `/v:collect` listed in README; the two orphan
+test scripts moved into `tests/` (both pass, CI now runs them).
+
 ## [3.4.14] - 2026-09-03
 
 ### Changed — the Antigravity `light` default is the newest Flash, `Gemini 3.8 Flash (Low)`

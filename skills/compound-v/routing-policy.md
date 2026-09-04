@@ -395,7 +395,7 @@ These hold in **every** stance and are checked by `compound-v-validate-manifest.
    never dispatches with a guessed partition — it goes back to writing-plans.
 4. **Model OR tier.** Every job MUST carry at least one of `model` or `tier`. A job
    with neither gives the resolver nothing to route on and fails validation.
-5. **Tier / effort enums.** When present, `tier ∈ {deep, standard, light}` and
+5. **Tier / effort enums.** When present, `tier ∈ {frontier, deep, standard, light}` and
    `effort ∈ {low, medium, high, xhigh}`. `xhigh` is valid **iff** `backend: codex`;
    every other backend rejects it with a clear error naming the rule (use `high`
    instead). NEVER `haiku` anywhere — not in the map, not as a model override, not

@@ -35,10 +35,12 @@ SPEC_READY ─► PREFLIGHT_DONE ─► PARTITION_VERIFIED ─► DISPATCHED ─
 "The run directory *is* the record" (above) is a promise that only holds if it's actually in git.
 Two mandatory commit points close the gap (a real incident — noticed by Oscar Salcedo — is what
 surfaced this): [`/v:orchestrate`](../../commands/v-orchestrate.md) commits `manifest.yaml` +
-the initial `state.json` right after materializing them, and
-[`parallel-dispatcher`](../../agents/parallel-dispatcher.md) commits the full run directory
-(final `state.json`, `results/*.json`) before handing off to
-`superpowers:finishing-a-development-branch`. This matters because that skill's cleanup step runs
+the initial `state.json` right after materializing them, and the dispatch engine commits the full
+run directory (final `state.json`, `results/*.json`) before handing off to
+`superpowers:finishing-a-development-branch` — Engine C
+([`scripts/compound-v-emit-workflow.py`](../../scripts/compound-v-emit-workflow.py)) by default since
+3.0, and the residual [`parallel-dispatcher`](../../agents/parallel-dispatcher.md) subagent as the
+fallback where no Workflow tool exists. This matters because that skill's cleanup step runs
 `git worktree remove` on Merge/Discard — a normal git operation that **silently deletes any
 uncommitted files** in the worktree, no warning, no confirmation. Skip either commit point and a
 crash, an early "discard," or just reaching the worktree-cleanup step can erase the run's own
@@ -59,7 +61,7 @@ three new lifecycle tokens. Read them with one distinction firmly in mind (AC-7/
 
 **No script hard-codes any phase enum** (phases are prose-only; `compound-v-liveness.py` keys on
 per-job `status`, not run `phase`). This section is the authority readers (`/v:status`, `/v:resume`,
-`parallel-dispatcher`) implement against.
+Engine C and the residual `parallel-dispatcher` fallback) implement against.
 
 ### Transitions
 

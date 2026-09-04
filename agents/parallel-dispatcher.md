@@ -32,7 +32,7 @@ The executable spec you implement is [`skills/compound-v/phase-3-parallel-opus-d
 1. **Manifest path** OR **plan file path.**
    - Manifest: `docs/superpowers/execution/<run-id>/manifest.yaml` — preferred; drives dispatch directly.
    - Plan: `docs/superpowers/plans/YYYY-MM-DD-<feature>.md` — **backward-compatible** path. The `plan-saved-nudge` hook and 0.1.x users pass plan paths. If given a plan with no manifest, you **materialize a manifest first** (see Step 0) before dispatching.
-2. **Partition-review verdict** — output of `compound-v:partition-reviewer` must be `PASS`. If `FAIL`, refuse to dispatch and surface the failure to the human.
+2. **Partition-review verdict** — output of `superpowers-v:partition-reviewer` must be `PASS`. If `FAIL`, refuse to dispatch and surface the failure to the human.
 3. **Audit paths** — `docs/superpowers/archaeology/<topic>.md`, `docs/superpowers/expert/<topic>.md`, `docs/superpowers/library-audit/<topic>.md` (whichever exist).
 4. **Run directory** — `docs/superpowers/execution/<run-id>/`, holding `manifest.yaml`, `state.json`, `jobs/<id>.prompt.md`, `results/<id>.json` (schema in [`state-machine.md`](../skills/compound-v/state-machine.md)). If absent, create it when you materialize the manifest.
 
@@ -63,7 +63,7 @@ Honor the manifest's `depends_on`, `run`, and `max_parallel`. For each job you b
 
 | `backend` | Adapter | Mechanism |
 |---|---|---|
-| `claude` | [`adapter-claude.md`](../skills/backend-launcher/adapter-claude.md) | in-harness `Task` (resolved-model override, `maxTurns: 15`); `direct` against a baseline commit, or `worktree`. Effort is advisory on this path. |
+| `claude` | [`adapter-claude.md`](../skills/backend-launcher/adapter-claude.md) | in-harness `Task` (resolved-model override, `maxTurns` = the tier default (`light` 30, `standard` 50, `deep`/`frontier` 80), or the job's `max_turns`); `direct` against a baseline commit, or `worktree`. Effort is advisory on this path. |
 | `codex` | [`adapter-codex.md`](../skills/backend-launcher/adapter-codex.md) | Bash-spawned `codex exec` worker via [`scripts/compound-v-run-codex-worker.sh`](../scripts/compound-v-run-codex-worker.sh) (`--model <resolved>` + `--effort <effort>`); **always** `worktree` |
 | `antigravity` | [`adapter-antigravity.md`](../skills/backend-launcher/adapter-antigravity.md) | Bash-spawned `agy --print` worker via [`scripts/compound-v-run-antigravity-worker.sh`](../scripts/compound-v-run-antigravity-worker.sh) (`--model <resolved>`, omitted when empty; no effort flag); **always** `worktree`. **Lower-trust / opt-in** (no kernel sandbox); only when `agy` is installed. (1.1) |
 | `cursor` | [`adapter-cursor.md`](../skills/backend-launcher/adapter-cursor.md) | Bash-spawned `cursor-agent -p -f` worker via [`scripts/compound-v-run-cursor-worker.sh`](../scripts/compound-v-run-cursor-worker.sh) (`--model <resolved>`, default `auto`; no effort flag); **always** `worktree`. **Lower-trust / opt-in** (no kernel sandbox); only when `cursor-agent` is installed AND authenticated. (2.1) |
@@ -149,7 +149,7 @@ worktree path is absolute.)
 2. **Isolation from the manifest** — `direct` for clean in-harness Claude jobs (gated against a baseline commit), `worktree` for risky/broad-surface Claude jobs and **always** for Codex/Antigravity/Cursor, whose worker script **creates and owns its own worktree**. Every dispatch — first attempt **or retry** — goes through the backend's full worker-script lifecycle (create → run → observe → merge/remove), which recreates the worktree fresh at current `HEAD`; never shortcut by re-invoking the CLI against a worktree left over from a prior attempt. The ordering consequence of that "fresh at HEAD" is Step 1's wave-barrier rule — read it before dispatching anything with a `depends_on`. Mechanism and rationale: [`backend-launcher/SKILL.md`](../skills/backend-launcher/SKILL.md) §Worktree git-base fixes.
 
    **On Engine C the same job's *workflow agent* runs at `isolation: 'direct'` whenever its backend is not `claude`** — the worker owns the isolation, and nesting a worker's worktree inside a workflow worktree is untested and not shipped.
-3. **Turn/time bound** — `maxTurns: 15` on Claude Task calls; `timeout_sec` in the `job_spec` for the worker-script backends. A job that hasn't finished in 15 turns is usually stuck and needs re-dispatch with more *context*, not more turns.
+3. **Turn/time bound** — a turn cap on Claude Task calls (the tier default (`light` 30, `standard` 50, `deep`/`frontier` 80), or the job's `max_turns`); `timeout_sec` in the `job_spec` for the worker-script backends. A job that hasn't finished inside its cap is usually stuck and needs re-dispatch with more *context*, not more turns.
 
    **`timeout_sec` is the INNER bound and it must actually be passed.** The manifest field is an integer number of seconds in **60 … 21600** (validated by [`compound-v-validate-manifest.py`](../scripts/compound-v-validate-manifest.py)); when present, hand it to the worker script as `--timeout-sec <n>`, which the script hands to the supervisor as `--timeout <n> --grace 3`. When the field is absent, pass nothing — the worker script's own `DEFAULT_TIMEOUT_SEC=900` stands, so every pre-v2.18 manifest behaves exactly as before.
 
@@ -374,7 +374,7 @@ Advance the parent `phase` to terminal `ESCALATION_REQUIRED` with `escalated_to`
 ### Step 3 — Parallel Reviewer Batch(es)
 
 When all implementers in a batch return PASS, dispatch **2N reviewers** (one spec-compliance + one code-quality per task), batched at 4-6 per message:
-  - `subagent_type: "compound-v:spec-reviewer"` for spec compliance
+  - `subagent_type: "superpowers-v:spec-reviewer"` for spec compliance
   - `subagent_type: "general-purpose"` for code quality (until a first-class code-quality reviewer ships)
 
 Reviewers are ALWAYS Opus. No Sonnet exception — they're the safety net (and `validate-manifest.py` enforces reviewers⇒opus, so a Sonnet reviewer would never have passed the partition gate).

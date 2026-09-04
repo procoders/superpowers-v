@@ -58,7 +58,7 @@ This sits in the three-layer plan check, each layer catching a different class o
 | Layer | Who | Catches |
 |---|---|---|
 | Deterministic | `scripts/compound-v-validate-manifest.py` | hard invariants (disjoint write-scope, codex⇒worktree, reviewers⇒opus/deep) — no opinions |
-| Primary judgment | `compound-v:partition-reviewer` (Opus) | decomposition sense, coverage |
+| Primary judgment | `superpowers-v:partition-reviewer` (Opus) | decomposition sense, coverage |
 | **Independent second opinion** | **Codex, tier `deep`, effort `xhigh`** | the planner-family's own blind spots |
 
 ---

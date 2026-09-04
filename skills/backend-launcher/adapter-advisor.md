@@ -12,7 +12,7 @@ The advisor is the "cheap executor + on-demand cross-brand advisor" pattern (v2.
 
 This is not a stylistic preference — it is the structural mitigation for a real incident. On **2026-07-13 a live nested bypass agent (`claude -p --dangerously-skip-permissions`) deleted this entire repo.** A no-write advisor is *structurally incapable* of that class of damage regardless of what it is asked to do or what a prompt-injection tries to make it do. So the read-only property is enforced at the invocation layer, on **both** backend paths, and neither path ever passes `--dangerously-skip-permissions` (nor `--yolo`, nor a bypass `--permission-mode`).
 
-The consult is **stub-first**: it is proven end-to-end by [`scripts/test-advisor-worker-stub.sh`](../../scripts/test-advisor-worker-stub.sh) against a FAKE backend, with **no real backend ever invoked**. A real probe is permitted ONLY under the read-only sandbox path — never a live opus fallback in this test.
+The consult is **stub-first**: it is proven end-to-end by [`tests/test-advisor-worker-stub.sh`](../../tests/test-advisor-worker-stub.sh) against a FAKE backend, with **no real backend ever invoked**. A real probe is permitted ONLY under the read-only sandbox path — never a live opus fallback in this test.
 
 ---
 
@@ -59,7 +59,7 @@ claude -p \
   "$prompt" </dev/null
 ```
 
-`--permission-mode plan` is the structural no-write guarantee (`plan` cannot edit — verified against `claude --help`, choices include `plan`); `--disallowedTools` is redundant defense-in-depth. The advice text is parsed from the **last** `result` event's `.result` in the stream-json output. This path **NEVER** passes `--dangerously-skip-permissions` / `--allow-dangerously-skip-permissions` / `--yolo` / `--permission-mode bypassPermissions` — the `--advisor` flag the PRD originally imagined **does not exist** (`claude 2.1.207`, 0 matches; see [library-audit](../../docs/superpowers/library-audit/2026-07-13-usage-and-advisor.md)), so the advisor is this harness subagent pattern instead.
+`--permission-mode plan` is the structural no-write guarantee (`plan` cannot edit — verified against `claude --help`, choices include `plan`); `--disallowedTools` is redundant defense-in-depth. The advice text is parsed from the **last** `result` event's `.result` in the stream-json output. This path **NEVER** passes `--dangerously-skip-permissions` / `--allow-dangerously-skip-permissions` / `--yolo` / `--permission-mode bypassPermissions` — the `--advisor` flag the PRD originally imagined **does not exist** (`claude 2.1.238`, re-checked 2026-09-04, 0 matches; see [library-audit](../../docs/superpowers/library-audit/2026-07-13-usage-and-advisor.md)), so the advisor is this harness subagent pattern instead.
 
 Both paths run under the shared process-group timeout supervisor [`scripts/compound-v-run-with-timeout.py`](../../scripts/compound-v-run-with-timeout.py) (`--timeout … --stdout … --stderr … --max-output-bytes …`, stdin `</dev/null`), so a hung or runaway advisor is capped in wall-clock and in output bytes, exactly like every other worker.
 
@@ -107,4 +107,4 @@ Output (stdout) — exactly one JSON object:
 - `--executor` (default `claude`) + `--available <csv>` feed the cross-brand selector; `--advisor-backend` overrides it.
 - `--run-dir <dir> --job-id <id>` (optional, both together) — on each SUCCESSFUL consult, append one compact JSON line to the INTERNALLY-constructed, realpath-contained `<run-dir>/logs/<job-id>.advisor.jsonl` (`logs/` auto-created; append, never truncate; symlink/non-regular target refused; job id validated). The caller never passes a raw path. collect-results counts those lines to derive `usage.advisor_calls`. Omitting both means no logging.
 - The script writes **only** ephemeral scratch under `$TMPDIR` (plus the append-only per-job advisor-log line, contained under `--run-dir`, when logging is enabled) to capture the backend's own output — it never writes a repo/deliverable file, and its stdout is exactly one JSON object.
-- **Testing:** set `$COMPOUND_V_ADVISOR_STUB` to a fake backend path and the consult invokes it in place of the real `codex`/`claude` binary with the **identical argv** — how [`test-advisor-worker-stub.sh`](../../scripts/test-advisor-worker-stub.sh) proves the selector, the safety flags, and the advice parse with no live run.
+- **Testing:** set `$COMPOUND_V_ADVISOR_STUB` to a fake backend path and the consult invokes it in place of the real `codex`/`claude` binary with the **identical argv** — how [`test-advisor-worker-stub.sh`](../../tests/test-advisor-worker-stub.sh) proves the selector, the safety flags, and the advice parse with no live run.

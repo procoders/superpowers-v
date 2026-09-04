@@ -1,14 +1,14 @@
 # Doc-Validator — Dispatch Template (Phase 1C)
 
 **Preferred dispatch (when this plugin is installed):**
-- `subagent_type`: `compound-v:doc-validator` (first-class agent at `agents/doc-validator.md`)
+- `subagent_type`: `superpowers-v:doc-validator` (first-class agent at `agents/doc-validator.md`)
 - `model` and system prompt come from the agent definition
 - Just pass the spec + manifest paths + KB path + the exact Trigger 0 recon path (if any)
 
 **Fallback dispatch:**
 - `subagent_type`: `general-purpose`
 - `model`: `opus`
-- `maxTurns`: 15
+- `maxTurns`: the tier default — `light` 30, `standard` 50, `deep`/`frontier` 80 (`TURN_CAP_BY_TIER`, `scripts/compound-v-emit-workflow.py`); an audit is deep work, so 80
 - `description`: `"Library/doc audit: <feature topic>"`
 - Run in the **same message** as the Phase 1A archaeology + Phase 1B domain-expert Task calls (parallel pre-flight)
 - Use the full prompt below

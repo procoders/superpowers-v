@@ -54,7 +54,8 @@ Three gamified episodes walk you through the whole pipeline, and the **[cheatshe
 - **SCOPED+** — a small edit on a sensitive path: SCOPED plus a mandatory deep review and a cross-model (Codex) second opinion, with you accepting.
 - **FULL** — anything real: recon, three pre-flights (archaeology, domain, library), plan, manifest, parallel dispatch in worktrees, a three-pass Opus review, then an optional Codex diff review.
 
-**Who does what.** Opus plans, judges and reviews; Fable (the frontier tier) is opt-in for business-critical jobs and lifts the reviewer when Opus is overloaded. Sonnet runs junior slices
+**Who does what.** Opus plans, judges and reviews; Fable (the frontier tier) is opt-in for business-critical jobs, and lifts a review job once —
+only after that job has exhausted its retry budget on Opus (repeated 529s, say), never merely because Opus looks busy. Sonnet runs junior slices
 and the two scanning agents. Codex is an opt-in sandboxed worker and the second opinion; Antigravity and Cursor are lower-trust opt-in workers. The scope gate blocks out-of-lane writes.
 
 ## Main features
@@ -82,6 +83,7 @@ and the two scanning agents. Codex is an opt-in sandboxed worker and the second 
 | `/v:remember "<query>"` | Search the project memory for what this repo already learned |
 | `/v:memory-refresh` | Re-index the memory; `--bootstrap` adds the optional semantic lane |
 | `/v:status [run-id]` | Show a run's phase and per-job table; `--live` watches a running dispatch |
+| `/v:collect <run-id>` | Re-run the collect + scope-gate + review tail of a run, without re-dispatching workers |
 | `/v:resume <run-id>` | Reconcile against git and re-dispatch only the jobs that did not finish |
 | `/v:dashboard` | Emit a static HTML snapshot of past runs and epics |
 | `/v:preferences` | Your own past reasoning, as falsifiable memory plus a challenge |
@@ -109,7 +111,8 @@ The triage gate is on by default. It is exempt on `docs/superpowers/**`, fires a
 
 ## Verification program
 Compound V is dogfooded against its own claims in eight staged cycles, each run against native Claude Code mechanisms rather than trusted from prose. Every cycle's review is
-recorded in [docs/superpowers/dogfood/README.md](docs/superpowers/dogfood/README.md), which as of this writing logs 40 review files, 5 APPROVED — read it for the current stage.
+recorded in [docs/superpowers/dogfood/README.md](docs/superpowers/dogfood/README.md) — a generated index whose footer carries the current tally and is the
+source of truth for it (56 reviews, 11 APPROVED as this was written). Read it for the current stage.
 
 1. **DIRECT, attended** — one file, an ordinary commit, the Stop gate silent.
 2. **SCOPED** — the triage-size feature, run through the SCOPED path itself.

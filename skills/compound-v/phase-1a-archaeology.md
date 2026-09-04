@@ -23,6 +23,8 @@ If you're unsure → run it. The cost of running archaeology on a small feature 
 
 ## How To Invoke
 
+> **How the three pre-flights are actually launched (3.3.5+).** 1A, 1B and 1C are emitted as **one native Workflow** by [`scripts/compound-v-emit-preflight.py`](../../scripts/compound-v-emit-preflight.py) and run with `Workflow({ scriptPath })` — see [`SKILL.md`](SKILL.md). The raw `Task` form below is the **residual** path, for a session with no Workflow tool.
+
 Use the `code-archaeology` skill if present in this environment, OR run its five-phase audit manually:
 
 1. **Matrix enumeration** — every branching dimension × every combination × marked "new code handles?"

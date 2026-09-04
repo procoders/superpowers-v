@@ -9,7 +9,7 @@ This skips Phase 1B (domain-expert) and Phase 1C (library-validator). Use the fu
 ## Steps
 
 1. Read the brainstorming spec (or use the topic argument as the spec context).
-2. Dispatch the `compound-v:code-archaeologist` agent with:
+2. Dispatch the `superpowers-v:code-archaeologist` agent with:
    - **Topic / spec** from `{{args}}` or the most recent brainstorming output
    - **Repo root** = current working directory
    - **Knowledge base path** = `docs/superpowers/archaeology/_knowledge-base/`

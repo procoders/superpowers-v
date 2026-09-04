@@ -1,14 +1,14 @@
 # Domain-Expert Advisor — Dispatch Template
 
 **Preferred dispatch (when this plugin is installed):**
-- `subagent_type`: `compound-v:domain-expert` (first-class agent at `agents/domain-expert.md`)
+- `subagent_type`: `superpowers-v:domain-expert` (first-class agent at `agents/domain-expert.md`)
 - `model` and system prompt come from the agent definition — no need to repeat them
 - Just pass the spec + KB path + the exact Trigger 0 recon path (if any) as the prompt
 
 **Fallback dispatch (plugin not installed / generic call):**
 - `subagent_type`: `general-purpose`
 - `model`: `opus` (claude-opus-4-7)
-- `maxTurns`: 15
+- `maxTurns`: the tier default — `light` 30, `standard` 50, `deep`/`frontier` 80 (`TURN_CAP_BY_TIER`, `scripts/compound-v-emit-workflow.py`); an audit is deep work, so 80
 - `description`: `"Domain audit: <feature topic>"`
 - Run in the **same message** as the Phase 1A archaeology Task call AND the Phase 1C library-validator Task call (parallel pre-flight)
 - Use the full prompt below

@@ -160,6 +160,6 @@ The dispatcher's between-batch **liveness sweep** ([`agents/parallel-dispatcher.
 - Classifier: [`scripts/compound-v-classify-failure.py`](../../scripts/compound-v-classify-failure.py) · Decision table: [`scripts/compound-v-failure-policy.py`](../../scripts/compound-v-failure-policy.py)
 - The re-route mechanism (env-aware codex→claude): [`routing-policy.md`](routing-policy.md)
 - Circuit-breaker fields + resume: [`state-machine.md`](state-machine.md)
-- Dispatcher wiring (the executable): [`agents/parallel-dispatcher.md`](../../agents/parallel-dispatcher.md)
+- Dispatcher wiring on the **residual** subagent path (the fallback where no Workflow tool exists; Engine C — `scripts/compound-v-emit-workflow.py` — is the default executor since 3.0): [`agents/parallel-dispatcher.md`](../../agents/parallel-dispatcher.md)
 - The job_result contract carrying `failure_class`: [`backend-launcher/SKILL.md`](../backend-launcher/SKILL.md) · [`schemas/job_result.schema.json`](../../schemas/job_result.schema.json)
 - Phase-3 dispatch step: [`phase-3-parallel-opus-dispatch.md`](phase-3-parallel-opus-dispatch.md)

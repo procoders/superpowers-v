@@ -4,7 +4,7 @@
 
 The Antigravity backend is a **Bash-spawned `agy --print` worker** — its own process, its own git worktree. It mirrors the Codex adapter step-for-step ([`adapter-codex.md`](adapter-codex.md)): worktree isolation, a git-derived scope gate, normalize → `job_result`, caller merges. The orchestrator hands this adapter a `job_spec` and gets back the canonical `job_result`; enforcement is git-derived by the caller, identical to every other backend.
 
-Verified live against **agy 1.0.13** on stock macOS (bash 3.2.57). The verified facts below are pinned — do not re-derive them per run; re-probe only in `/v:init`.
+Verified live against **agy 1.1.25** on stock macOS (bash 3.2.57) — version re-probed 2026-09-04 (was 1.0.13; agy self-updates). The verified facts below are pinned — do not re-derive them per run; re-probe only in `/v:init`.
 
 ---
 
@@ -54,7 +54,7 @@ The worker prompt is passed via `--prompt-file <abs-path>` (a file, not an inlin
 
 ---
 
-## Pinned `agy` invocation (agy 1.0.13)
+## Pinned `agy` invocation (agy 1.1.25)
 
 The script uses **exactly** this shape — verified to write files into the worktree, print the agent's response to stdout, and exit 0:
 

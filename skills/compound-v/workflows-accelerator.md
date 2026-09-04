@@ -300,5 +300,6 @@ confirmed-blocker bar — is untouched: none of it lives in the dispatch loop.
 
 ## Version floor
 
-**Claude Code ≥ 2.1.219.** The `/workflow-authoring` skill requires 2.1.248 and is unavailable on
-the development machine, so nothing here depends on it.
+**Claude Code ≥ 2.1.219.** The bundled `workflow-authoring` skill is available on the development
+machine and is the reference for the script API; nothing here depends on it, but read it before
+authoring or editing an emitted workflow script.
