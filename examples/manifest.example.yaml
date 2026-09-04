@@ -187,7 +187,21 @@ jobs:
       - task-1-editor-ui
       - task-2-api
       - task-3-docs
-    write_allowed: []               # reviewers write nothing
+    # The reviewer writes no CODE. It does write two things, and both belong in
+    # its lane: the review file, and — because `agents/spec-reviewer.md` declares
+    # `memory: project` — its own memory directory. That directory is out of lane
+    # for every implementer, which is what stops one planting text in the
+    # reviewer's memory.
+    #
+    # PAIR THEM. A job that declares a lane and changes nothing is refused as
+    # `no_work`, so a lane made of the memory glob ALONE passes only when the
+    # reviewer happens to have something to save — which pressures it to invent
+    # an entry. `compound-v-validate-manifest.py` raises the advisory
+    # "memory-only lane" on exactly that shape. A reviewer that genuinely writes
+    # nothing keeps `write_allowed: []` instead.
+    write_allowed:
+      - "docs/superpowers/dogfood/sequence-editor-review-1.md"
+      - ".claude/agent-memory/spec-reviewer/**"
     read_allowed:
       - "src/features/sequences/**"
       - "docs/features/sequences.md"

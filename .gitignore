@@ -67,6 +67,14 @@ docs/superpowers/execution/2026-07-11-v2.9-pre-evaluation/baselines/
 __pycache__/
 *.pyc
 
+# Native persistent subagent memory (3.5.0), LOCAL scope only.
+# `memory: local` resolves to `.claude/agent-memory-local/<agent>/` and is the scope
+# whose whole point is that it is NOT checked in. `.claude/agent-memory/` — the
+# `project` scope our five review/pre-flight agents declare — is deliberately NOT
+# ignored: it is committed, shared through version control, and reviewable, and
+# ignoring it would also hide it from the scope gate's untracked probe.
+.claude/agent-memory-local/
+
 # per-run mutex, written by the emitter; never part of the record
 .run.lock
 

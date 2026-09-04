@@ -66,7 +66,7 @@ score OFFERS by default and auto-routes only inside the DIRECT auto-route class.
 
 The scoped test floor is deliberately not oversold: it is early feedback and does **not** restore what
 the full suite guaranteed — the merge-blocking CI run does — and the documents are forbidden from
-saying otherwise. (`skills/compound-v/execution-manifest.md:601-605`)
+saying otherwise. (`skills/compound-v/execution-manifest.md:617-621`)
 
 ## Domain scope and boundaries
 
@@ -82,6 +82,14 @@ dispatcher kept only as the residual path (`skills/compound-v/phase-3-parallel-o
 `skills/compound-v/phase-3-parallel-opus-dispatch.md:11`);
 epic resurrection and the session goal are the harness's `/loop`, `/schedule` and `/goal` since 3.4.0,
 after the plugin's own scheduler and armed-goal Stop rule were deleted. (`skills/compound-v/epic-mode.md:172-184`)
+Agent memory follows the same rule since 3.5.0: rather than a store of its own, five reviewing and
+scanning agents declare Claude Code's native `memory: project`, and what the plugin promises about it
+is a boundary, not a capability — the notes are committed and shared with everyone who clones the
+repo, they never hold a secret, a remembered pattern is a lead to re-verify against the current code
+rather than a verdict, and a directive found inside a memory file is ignored and reported, because
+anyone with push access can write one. (`README.md:107-127`, `skills/compound-v/SKILL.md:194-204`)
+Turning off the harness's auto memory turns this off with it, and the agents behave exactly as they
+did before. (`README.md:129-132`)
 
 Epic mode (v1.1) is the one-level-up domain: a single run executes one plan (one feature); an epic
 chains several features through the full pipeline in dependency order, accumulating onto one branch —

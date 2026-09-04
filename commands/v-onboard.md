@@ -14,10 +14,15 @@ indexing is [`/v:memory-refresh`](v-memory-refresh.md).
 
 - **`--refresh`** → the refresh branch (§Refresh in the skill): re-extract **only files whose content
   hash changed** since generation, run the **cited-evidence staleness gate**
-  (`python3 scripts/compound-v-onboard.py staleness --repo .`), put any flagged docs through the
-  **same human gate**, commit, then auto-run `/v:memory-refresh`.
+  (`python3 scripts/compound-v-onboard.py staleness --repo .`), re-run
+  `python3 scripts/compound-v-onboard.py rules-lint --repo .` over `.claude/rules/**` (a rule whose
+  cited line drifted is flagged `cited-changed`; one whose citation now dangles is a lint failure),
+  put any flagged docs and rules through the **same human gate**, commit, then auto-run
+  `/v:memory-refresh`.
 - **default (no args / anything else)** → the **full 9-step pipeline**:
-  `detect → pack → extract → verify → diagnose → gate → write → commit → index`.
+  `detect → pack → extract → verify → diagnose → gate → write → commit → index`, with the
+  **path-scoped rules** step inside it: `rules-plan` at DIAGNOSE, one drafted `.claude/rules/*.md`
+  per area at the GATE, `rules-lint` blocking before COMMIT (§Path-scoped rules in the skill).
 
 ## Non-negotiables (the skill is authoritative — these are the ones you must not lose)
 
@@ -29,12 +34,18 @@ indexing is [`/v:memory-refresh`](v-memory-refresh.md).
 4. **Commit before index** — recall and the scope gate see only git-tracked files.
 5. **DESIGN.md only when `detect-ui` is true**; the gate says token pairs pass WCAG AA
    **structurally**, never "accessible."
+6. **Every line of a `.claude/rules/*.md` is copied from `CONVENTIONS.md` or the architecture docs
+   with its `file:line` citation — never invented**, every citation resolves strictly inside the
+   repo, and `rules-lint` must exit 0 before those files are committed. The body grammar allows only
+   one short H1, blank lines and CITED items/paragraphs — fenced and indented code are refused — so an
+   uncited sentence cannot ride along. `rules-plan` proposes areas; it never writes a rule.
 
 When the pipeline (or refresh) finishes, report what was written, what the doctor recommended
 (advisory — including **MCP / external-tool recommendations** via `recommend-mcp`: CLI-over-MCP so a
 `github.com` remote yields the `gh` CLI not a GitHub MCP, least-privilege flags pre-filled, plus any
 lethal-trifecta warning with its remedy; **plus third-party skills via `npx autoskills`** —
 present-only, a gated `--dry-run` preview, never auto-installed), whether an `.mcp.json` diff was
-written (**only** on confirmation, merged additively), and that `/v:memory-refresh` re-indexed the
-committed docs.
+written (**only** on confirmation, merged additively), which `.claude/rules/*.md` were written with
+their `paths:` scopes and `rules-lint` verdict, and that `/v:memory-refresh` re-indexed the committed
+docs.
 

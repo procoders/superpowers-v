@@ -63,6 +63,22 @@ Worked example: [`examples/manifest.example.yaml`](../../examples/manifest.examp
 
 `backend`, `tier`, `effort`, and `model` are execution-layer values. They drive dispatch; they MUST NOT leak into any agent/skill/command frontmatter (`lint-frontmatter.py` + `validate.yml` reject Haiku, and reviewers/agents always carry `model: opus`).
 
+**A `type: review` job's lane includes the reviewer's own memory.** `agents/spec-reviewer.md` declares
+`memory: project`, so `.claude/agent-memory/spec-reviewer/` is a directory that reviewer writes: it must
+appear in the review job's `write_allowed` as `.claude/agent-memory/spec-reviewer/**`, beside whatever
+review file the job produces. It is deliberately outside every implementer's lane, and that asymmetry is
+the point — an implementer that tried to plant text in the reviewer's memory is denied by the lane guard
+and blocked by the scope gate.
+
+**Pair it with the job's real output lane.** A job that declares a lane and changes nothing is refused
+as `no_work` (`scripts/compound-v-emit-workflow.py:3859`), so a lane made of the memory glob ALONE
+passes only when the agent happens to have something durable to save — and pressures it to invent an
+entry when it does not. `compound-v-validate-manifest.py` raises the advisory **`memory-only lane`** on
+exactly that shape (its `warnings` channel, never a violation and never verdict-changing;
+`agents/partition-reviewer.md` surfaces it as `WARN: MEMORY_ONLY_LANE`). A review job that genuinely
+writes nothing keeps `write_allowed: []` instead, and its memory write then fails loudly rather than
+quietly deciding the job's verdict.
+
 **Glob semantics (`write_allowed`, `impacted_map.when`; `read_allowed` is advisory, never matched).**
 `*` matches within one path segment (never `/`); `**` matches across segments; `dir/**` also matches `dir` itself;
 `?` matches one non-`/` character; `[` and `]` are literal (no character classes — `app/[locale]/**` is a real

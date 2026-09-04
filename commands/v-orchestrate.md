@@ -71,6 +71,17 @@ The manifest schema and rules are defined in [`skills/compound-v/execution-manif
 
 5. **Materialize `manifest.yaml`** in the run dir per the schema in [`execution-manifest.md`](../skills/compound-v/execution-manifest.md): top-level `run_id`, `feature`, `spec_path`, `plan_path`, `audits`, `acceptance_criteria`, `routing_stance`, `max_parallel`, and `jobs[]` with `id · title · type · backend · model · isolation · run · depends_on · write_allowed · read_allowed · acceptance`. Shared/contract/schema/version files go in a single serial `type: shared_foundation` Task 0; every other job `depends_on` it. `read_allowed` need not re-list Task 0 outputs or the audits (auto-included). The worked shape is [`examples/manifest.example.yaml`](../examples/manifest.example.yaml).
 
+   **A `type: review` job's `write_allowed` must include the reviewer's memory.**
+   `agents/spec-reviewer.md` declares `memory: project`, so the review job writes
+   `.claude/agent-memory/spec-reviewer/**` as well as its review file, and both belong in its lane. The
+   directory is out of lane for every implementer on purpose — that is what stops one planting text in
+   the reviewer's memory — so leaving it out of the reviewer's own lane makes the lane guard deny the
+   write and the scope gate block the job for it. **Pair it with the review file, never ship it alone:** a
+   job that declares a lane and changes nothing is refused as `no_work`, so a memory-only lane passes only
+   when the reviewer happens to have something to save. Step 7's validator raises the advisory
+   `memory-only lane` on that shape. A review job you expect to produce nothing at all keeps
+   `write_allowed: []` instead.
+
    **Copy the plan's `## Global Constraints` and each task's `**Interfaces:**` block — verbatim.**
    Superpowers 6.2.0's `writing-plans` added those two sections for exactly one reader: an
    implementer who sees nothing but their own task. The plan-header `## Global Constraints` block

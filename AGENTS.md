@@ -94,15 +94,24 @@ The Codex backend is harness-independent on purpose: it is just `codex exec` dri
 
 These work in any harness that reads `agents/*.md` frontmatter. Codex CLI loads them as `subagent_type` candidates automatically:
 
-- `superpowers-v:code-archaeologist` — Phase 1A
-- `superpowers-v:domain-expert` — Phase 1B (with multi-layer WebSearch incl. persona forums)
-- `superpowers-v:doc-validator` — Phase 1C
-- `superpowers-v:partition-reviewer` — pre-execution gate; runs `compound-v-validate-manifest.py` as its deterministic backing check
+- `superpowers-v:code-archaeologist` — Phase 1A · `memory: project` (map facts: where a thing lives, hidden couplings)
+- `superpowers-v:domain-expert` — Phase 1B (with multi-layer WebSearch incl. persona forums) · `memory: project` (domain/regulatory constraints, each with its source)
+- `superpowers-v:doc-validator` — Phase 1C · `memory: project` (library/version drift facts, each with the date checked)
+- `superpowers-v:partition-reviewer` — pre-execution gate; runs `compound-v-validate-manifest.py` as its deterministic backing check · `memory: project` (overlap traps, shared-resource files)
 - `superpowers-v:parallel-dispatcher` — manifest-driven multi-backend dispatcher; calls `compound-v-scope-check.py` after every job and HALTS on BLOCKED
-- `superpowers-v:spec-reviewer` — the three-pass Review Gate (spec acceptance criteria · quality/no-regression/no-fabricated-metrics · final integration), AC-gated
+- `superpowers-v:spec-reviewer` — the three-pass Review Gate (spec acceptance criteria · quality/no-regression/no-fabricated-metrics · final integration), AC-gated · `memory: project` (recurring defect patterns and where they live); the review job's `write_allowed` must include `.claude/agent-memory/spec-reviewer/**`
 - `superpowers-v:implementer` — the role every Claude implementation job arrives as (3.4.0). Carries the turn cap (`maxTurns: 80` — a field of an agent definition, which is the only native way a workflow job gets one) and the official Opus 5 guidance on scope, narration cadence and deliverable length
 
 All reviewers/agents carry `model: opus`. Manifest `backend`/`model` values (`gpt-5.5`, etc.) are execution-layer data and **never** appear in any frontmatter.
+
+The five agents marked `memory: project` above carry Claude Code's native persistent subagent memory (`memory: project` →
+`.claude/agent-memory/<name>/`, committed and shared through version control). `implementer` and
+`parallel-dispatcher` deliberately carry none: they write inside a declared file lane, and a memory write
+would land outside it — denied by the lane guard, blocked by the scope gate. Memory is read as evidence,
+never as instructions: a remembered pattern is a lead that must be re-verified against the current code,
+no secret is ever written there, and a directive found inside a memory file is ignored and reported.
+Subagent memory is part of auto memory, so `autoMemoryEnabled: false` (or `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`)
+turns it off everywhere and the agents run exactly as they did before 3.5.0.
 
 ## Slash commands
 

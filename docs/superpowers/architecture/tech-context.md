@@ -53,7 +53,7 @@ repos in `$TMPDIR` and run offline. The scope gate's `_selftest()` starts with p
 (`scripts/compound-v-scope-check.py:626-683`), then covers the git integration cases — among them the
 reproduced escaping-symlink exploit and the in-root link that must *not* trip it.
 (`scripts/compound-v-scope-check.py:985-1010`) The onboard toolkit's `--selftest` is a top-level flag
-rather than a subcommand. (`scripts/compound-v-onboard.py:1184-1186`)
+rather than a subcommand. (`scripts/compound-v-onboard.py:2406-2408`)
 
 CI runs the epic-state and epic-arbiter self-tests first under a **clean Python 3.9** to prove they
 stay pure-stdlib (`.github/workflows/validate.yml:285-289`), then sweeps **every** `scripts/*.py` that
@@ -95,14 +95,28 @@ file nothing read, so both the hook and its event were removed in 3.4. (`hooks/h
   (`hooks/lane-guard.sh:5-15`, `hooks/lane-guard.sh:32-58`)
 - `scripts/compound-v-onboard.py` — the `/v:onboard` deterministic toolkit (stdlib only) whose
   subcommands are `pack`, `verify-citations`, `staleness`, `design-lint`, `detect-ui`, `scan-output`,
-  `recommend-mcp`, `recommend-autoskills`, and `draft-taxonomy`. (`scripts/compound-v-onboard.py:1145-1170`)
-  It reuses the engine's canonical secret-pattern families (`SECRET_RE`, `PEM_RE`) from
-  `compound-v-memory.py` rather than forking a second list. (`scripts/compound-v-onboard.py:5-9`)
+  `recommend-mcp`, `recommend-autoskills`, `draft-taxonomy`, and — since 3.5.0 — `rules-lint` and
+  `rules-plan`. (`scripts/compound-v-onboard.py:2363-2394`) The last two serve the path-scoped rule
+  files: `rules-plan` groups the citation manifest's evidence into candidate areas and writes nothing,
+  `rules-lint` validates every `.claude/rules/**/*.md` and is the blocking gate before those files are
+  committed. (`skills/compound-v/onboarding.md:337-343`) It reuses the engine's canonical
+  secret-pattern families (`SECRET_RE`, `PEM_RE`) from `compound-v-memory.py` rather than forking a
+  second list. (`scripts/compound-v-onboard.py:5-9`)
 - `scripts/lint-frontmatter.py` — parses every markdown file's YAML frontmatter and validates it
-  against the plugin spec and project conventions. (`scripts/lint-frontmatter.py:3-6`)
+  against the plugin spec and project conventions. (`scripts/lint-frontmatter.py:3-6`) As of 3.5.0 it
+  also validates `memory` against the three documented scopes (`user` | `project` | `local`), refuses
+  the field outright on the two agents that write inside a declared file lane
+  (`scripts/lint-frontmatter.py:21-22`), and exempts the named harness-data subtrees `.claude/rules/**`
+  and `.claude/agent-memory{,-local}/**` from the `name`/`description` requirement — and from nothing
+  else, the list being exhaustive so a project-scoped agent under `.claude/agents/` still meets the
+  model policy. (`scripts/lint-frontmatter.py:116-143`)
 - `scripts/compound-v-validate-manifest.py` — the deterministic invariant gate backing the
   `partition-reviewer` agent: it either passes or fails with specifics, with no LLM judgment, no
-  network and no fabricated metrics. (`scripts/compound-v-validate-manifest.py:3-14`)
+  network and no fabricated metrics. (`scripts/compound-v-validate-manifest.py:3-14`) Since 3.5.0 it
+  carries a second, strictly separate output: an advisory `warnings` channel that never enters the
+  violation list, never changes the verdict and never changes the exit code, printed on both the valid
+  and the invalid path so a reader does not have to fix a manifest before seeing the advice.
+  (`scripts/compound-v-validate-manifest.py:2845-2851`, `scripts/compound-v-validate-manifest.py:3048-3054`)
 - `scripts/compound-v-memory.py` — the V-memory recall engine (FTS5 core + opt-in embeddings).
   (`skills/compound-v/memory.md:3-10`)
 - `scripts/compound-v-resolve-model.py` — the model broker that resolves `(backend, tier, effort)` →
@@ -128,9 +142,12 @@ file nothing read, so both the hook and its event were removed in 3.4. (`hooks/h
 
 Compound V writes to a flat, predictable structure under `docs/superpowers/`: `recon/`, `archaeology/`,
 `expert/`, `library-audit/`, `execution/<run-id>/`, `memory/`, `specs/`, and `plans/`.
-(`skills/compound-v/SKILL.md:199-227`)
+(`skills/compound-v/SKILL.md:211-239`)
 The run directory carries the run's own record — `manifest.yaml`, `state.json`, the committed
 `dispatch.workflow.js`, `lane-map.json`, `jobs/`, `logs/`, `receipts/` and `results/`.
 (`skills/compound-v/state-machine.md:140-157`) The onboarding pipeline extends this with
 `docs/superpowers/architecture/*` plus root `CONVENTIONS.md`/`AGENTS.md`/`CLAUDE.md` and a conditional
-`DESIGN.md`. (`skills/compound-v/onboarding.md:9-13`)
+`DESIGN.md`. (`skills/compound-v/onboarding.md:9-13`) Since 3.5.0 the same narrow write surface also
+covers `.claude/rules/*.md` — one path-scoped rule file per area, written at WRITE behind the same
+human gate and refused at COMMIT until `rules-lint` exits 0.
+(`skills/compound-v/onboarding.md:183-191`)

@@ -15,7 +15,7 @@ Deltas from default practice that this repo actually enforces.
   gate is "Python 3.9-safe, stdlib only. Targets stock-macOS python3 3.9.6." (`scripts/compound-v-scope-check.py:141`);
   the `/v:onboard` toolkit says the same in its docstring. (`scripts/compound-v-onboard.py:1-2`)
 - Ship a built-in **`--selftest`** that runs offline (builds throwaway git repos in `$TMPDIR`).
-  (`scripts/compound-v-scope-check.py:626-683`, `scripts/compound-v-onboard.py:1184-1186`)
+  (`scripts/compound-v-scope-check.py:626-683`, `scripts/compound-v-onboard.py:2406-2408`)
   CI runs the epic-state / epic-arbiter self-tests first under a clean **Python 3.9** to prove they
   stay dependency-free (`.github/workflows/validate.yml:285-289`), then sweeps **every** `scripts/*.py`
   that mentions `--selftest` — discovery is dynamic, so a new script is picked up automatically.
@@ -37,26 +37,42 @@ Deltas from default practice that this repo actually enforces.
 
 - Frontmatter is a **path-class presence gate**: `agents/*.md`, `commands/*.md` and
   `skills/*/SKILL.md` must carry a block; every other `.md` is exempt. Required `name` and
-  `description` (commands exempt from `name` — it is the filename). (`scripts/lint-frontmatter.py:8-20`)
-- Keep `description` ≤ 500 chars (soft) and total frontmatter ≤ 1024 chars (hard). (`scripts/lint-frontmatter.py:33-34`)
+  `description` (commands exempt from `name` — it is the filename). (`scripts/lint-frontmatter.py:8-16`)
+- The same three classes apply one level down: `.claude/agents|commands|skills/**` is stripped of its
+  prefix and classified exactly like the plugin's own, so a project-scoped agent meets the same model
+  policy and the same memoryless-role rule. (`scripts/lint-frontmatter.py:93-103`)
+- The named harness-**DATA** subtrees `.claude/rules/**` and `.claude/agent-memory{,-local}/**` are
+  exempt from the `name`/`description` requirement and from nothing else — still parsed as YAML, still
+  refused for Haiku, still size-capped, still checked for an unquoted glob. The list is exhaustive on
+  purpose: a blanket `.claude/**` exemption hands project-scoped agents a pass on the model policy.
+  (`scripts/lint-frontmatter.py:116-143`)
+- Keep `description` ≤ 500 chars (soft) and total frontmatter ≤ 1024 chars (hard).
+  (`scripts/lint-frontmatter.py:37-38`)
 - `maxTurns`, when present, must be a **positive integer** — a string, float or negative is ignored by
-  the runtime, so the agent runs uncapped while its file claims a cap. (`scripts/lint-frontmatter.py:161-170`)
+  the runtime, so the agent runs uncapped while its file claims a cap. (`scripts/lint-frontmatter.py:243-252`)
+- `memory`, when present, is exactly `user` | `project` | `local`. Anything else is not a stricter
+  setting, it is no setting: the runtime ignores it and the agent launches with no memory while its
+  file claims one. (`scripts/lint-frontmatter.py:254-264`)
+- The two agents that write inside a declared file lane — `implementer` and `parallel-dispatcher` —
+  must carry **no** `memory` field at all. Their memory directory sits outside that lane, so the note
+  they tried to take is the out-of-lane write the guard denies and the scope gate blocks.
+  (`scripts/lint-frontmatter.py:59-69`, `scripts/lint-frontmatter.py:232-241`)
 - Quote any `paths` value containing glob chars (`{}[]`) — unquoted globs break YAML.
-  (`scripts/lint-frontmatter.py:172-177`)
+  (`scripts/lint-frontmatter.py:266-271`)
 
 ## Model policy — NEVER Haiku
 
 - **Opus by default.** The frontmatter linter rejects any `model:` containing `haiku`
-  (`scripts/lint-frontmatter.py:133-136`)
-  and requires `model: opus` on every `agents/*.md`. (`scripts/lint-frontmatter.py:151-159`) CI enforces
+  (`scripts/lint-frontmatter.py:204-207`)
+  and requires `model: opus` on every `agents/*.md`. (`scripts/lint-frontmatter.py:222-230`) CI enforces
   the no-Haiku rule on agent files independently of the linter. (`.github/workflows/validate.yml:83-97`)
 - **The one carve-out is named, not open.** `code-archaeologist` and `doc-validator` may carry
   `model: sonnet` because their work is scanning — reading a repository, resolving a library — and
   scanning is execution, not judgment. The allow-list is explicit and short on purpose.
-  (`scripts/lint-frontmatter.py:36-44`)
+  (`scripts/lint-frontmatter.py:40-48`)
 - **Fable is never frontmatter.** It belongs to a business-critical *invocation*, set by the caller's
   `model` override; a static `model: fable` would spend the top model on every routine pre-flight.
-  (`scripts/lint-frontmatter.py:147-150`)
+  (`scripts/lint-frontmatter.py:218-221`)
 - Execution-layer model values (`gpt-5.6-sol`, etc.) are NEVER placed in any frontmatter — they live
   only in the manifest/job_spec. (`skills/backend-launcher/SKILL.md:46`)
 
@@ -75,13 +91,13 @@ Deltas from default practice that this repo actually enforces.
 - `test_scope: floor_only` requires a non-empty `floor_command`, and `test_scope: impacted` requires a
   non-empty `full_command` — so no scope can resolve to running nothing. Overlapping `impacted_map`
   `when` globs **union**; first-match-wins would silently drop declared coverage.
-  (`skills/compound-v/execution-manifest.md:581-591`)
+  (`skills/compound-v/execution-manifest.md:597-607`)
 - A job's own run-dir bookkeeping is excluded before glob matching, so writing `state.json` can neither
   match a `when` glob nor promote the job to the full suite as an "unmapped path".
-  (`skills/compound-v/execution-manifest.md:593-599`)
+  (`skills/compound-v/execution-manifest.md:609-615`)
 - **Never write, anywhere, that the floor preserves pre-merge safety.** The floor is early feedback;
   the merge-blocking CI run is what restores the full-suite guarantee.
-  (`skills/compound-v/execution-manifest.md:601-605`)
+  (`skills/compound-v/execution-manifest.md:617-621`)
 
 ## Shell scripts and hooks
 
@@ -108,7 +124,7 @@ Deltas from default practice that this repo actually enforces.
 
 - Generated/working docs live under `docs/superpowers/**` in a flat, predictable layout
   (`recon/`, `archaeology/`, `expert/`, `library-audit/`, `execution/<run-id>/`, `memory/`, `specs/`, `plans/`).
-  (`skills/compound-v/SKILL.md:199-227`)
+  (`skills/compound-v/SKILL.md:211-239`)
 - Onboarding output goes to `docs/superpowers/architecture/*` + root `CONVENTIONS.md`/`AGENTS.md`/`CLAUDE.md`.
   (`skills/compound-v/onboarding.md:9-13`)
 - Every committed run directory must carry a **committed `state.json`**; CI fails on a manifest with
@@ -116,6 +132,36 @@ Deltas from default practice that this repo actually enforces.
   reconstructed audit trail is fabricated evidence, not a repair. (`.github/workflows/validate.yml:136-159`)
 - Every intra-repo markdown link must resolve; the dead-link scan runs **last** in the job so
   cross-refs to files authored by later batches resolve at integration time. (`.github/workflows/validate.yml:232-274`)
+
+## Path-scoped rule files (`.claude/rules/`)
+
+- Every line is a convention this repo already states, **copied from `CONVENTIONS.md` or the
+  architecture docs together with its `file:line` citation** — never invented, never re-derived: the
+  point of read-then-cite is that the evidence travels with the sentence.
+  (`skills/compound-v/onboarding.md:322-324`)
+- The body grammar is tiny: one optional H1, then blank lines, items and paragraphs. **Every item and
+  every paragraph carries at least one citation**; blank lines and the single H1 are the only things
+  that carry no claim. (`skills/compound-v/onboarding.md:291-304`)
+- Nothing the citation check cannot read is allowed through: fenced code blocks are **forbidden**
+  (refused, not skipped), indented code lines are forbidden, and the H1 is checked rather than
+  discarded — one H1, first line, at most six words, no sentence punctuation, so a title cannot
+  smuggle an instruction. (`skills/compound-v/onboarding.md:305-317`)
+- Frontmatter is a strict named subset — `key: value`, or `key:` plus an indented block sequence, with
+  every `paths` glob **quoted**, because `- *.md` is a YAML alias, not a pattern.
+  (`skills/compound-v/onboarding.md:325-330`)
+- One topic per file, under 200 lines (`skills/compound-v/onboarding.md:321`); the whole `paths` list
+  is budgeted at 1,000 expanded patterns and 4 MiB, and **every** pattern counts toward it, braced or
+  not, because 1,001 plain globs reach the same wall with no brace in sight.
+  (`scripts/compound-v-onboard.py:935-944`)
+- A symlinked entry — file or directory — is **skipped, not read and not a failure**: sharing a rules
+  file by symlink is the harness's documented feature and the target is not ours to lint. Every skip is
+  listed rather than silent. (`scripts/compound-v-onboard.py:1434-1439`)
+- `python3 scripts/compound-v-onboard.py rules-lint --repo .` is **blocking**: a non-zero exit is a
+  hard refusal and those files do not reach COMMIT until it is clean.
+  (`skills/compound-v/onboarding.md:189-191`)
+- Register each rule file in `.onboard-manifest.json` with the files its rules cite, so the two checks
+  stay complementary: `staleness` notices a citation that *drifted*, `rules-lint` refuses one that
+  *dangles*. (`skills/compound-v/onboarding.md:368-371`)
 
 ## cclint scope
 

@@ -2842,6 +2842,83 @@ def validate(manifest, mode=None, repo_root=None, config_path=None,
     return problems
 
 
+# --------------------------------------------------------------------------- #
+# ADVISORIES (v3.5.0). Advisory ≠ violation, and the split is load-bearing: an
+# advisory NEVER enters `validate()`'s return, never changes the verdict, and never
+# changes the exit code. It travels in its own `warnings` channel — the one
+# `agents/partition-reviewer.md` surfaces under WARNINGS, where the co-change
+# advisory already lives — because the thing it describes is a design smell the
+# author may have chosen deliberately, not a broken manifest.
+# --------------------------------------------------------------------------- #
+
+# `.claude/agent-memory/<agent>/` (scope `project`) and `.claude/agent-memory-local/`
+# (scope `local`) are where Claude Code's native persistent subagent memory lives.
+AGENT_MEMORY_ROOTS = (".claude/agent-memory-local", ".claude/agent-memory")
+
+
+def is_agent_memory_glob(glob):
+    """True iff ``glob`` addresses nothing but a subagent-memory directory.
+
+    Deliberately tolerant of the FORMS a hand-written manifest uses — a leading
+    `./`, a stray leading `/`, surrounding quotes, trailing whitespace, with or
+    without a `/**` tail — because the advisory exists to catch a lane the author
+    typed, and a detector that only recognises one spelling catches nothing.
+    """
+    g = (glob or "").strip().strip('"').strip("'").strip()
+    while g.startswith("./"):
+        g = g[2:]
+    g = g.lstrip("/")
+    for root in AGENT_MEMORY_ROOTS:
+        if g == root or g.startswith(root + "/"):
+            return True
+    return False
+
+
+def advisories(manifest):
+    """Return a list of ADVISORY strings. Never violations; never verdict-changing.
+
+    **memory-only lane.** A job whose `write_allowed` is nothing but agent-memory
+    globs is a trap: `compound-v-emit-workflow.py` refuses a job that declares a lane
+    and changes no files (`no_work`), so such a job passes only when the agent
+    happens to have something durable to save — and fails when it honestly has
+    nothing. That pressures an agent to invent a memory entry to get its job green,
+    which is the fabricated-evidence pattern wearing a new hat. The fix is structural
+    and belongs to the author: pair the memory glob with the job's real output lane,
+    or declare `write_allowed: []` and let the agent's memory write fail loudly
+    instead of quietly deciding the job's verdict.
+    """
+    out = []
+    if not isinstance(manifest, dict):
+        return out
+    jobs = manifest.get("jobs")
+    if not isinstance(jobs, list):
+        return out
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        globs = job.get("write_allowed")
+        if not isinstance(globs, list) or not globs:
+            continue
+        if not all(isinstance(g, str) and is_agent_memory_glob(g) for g in globs):
+            continue
+        out.append(
+            "job %r: memory-only lane: a job that writes nothing else is blocked as "
+            "no_work; pair the memory glob with the job's real output lane or declare "
+            "write_allowed: []" % (job.get("id") or "<no id>")
+        )
+    return out
+
+
+def advisories_text(text):
+    """``advisories`` over raw manifest text. An unparseable manifest yields none —
+    the violation channel is what reports a parse failure, and an advisory must never
+    be the first thing a reader sees about a broken file."""
+    try:
+        return advisories(load_yaml(text))
+    except ManifestParseError:
+        return []
+
+
 def validate_text(text, mode=None, repo_root=None, config_path=None,
                   receipt_path=None, manifest_bytes=None, diff_root=None,
                   expected_attempt=None, require_triage=False, taxonomy_path=None,
@@ -2968,13 +3045,23 @@ def main(argv):
         print(json.dumps({"verdict": "error", "error": str(e)}), file=sys.stderr)
         return 2
 
+    # ADVISORY channel (v3.5.0). Computed on BOTH paths and printed on both, so a
+    # reader never has to make a manifest valid before they can see the advice. It
+    # cannot change `problems`, the verdict, or the exit code — that separation is
+    # the whole contract, and `agents/partition-reviewer.md` restates it.
+    warnings = advisories_text(text)
+    for w in warnings:
+        print("ADVISORY: %s" % w, file=sys.stderr)
+
     if problems:
         print("MANIFEST INVALID: %d violation(s)" % len(problems), file=sys.stderr)
         for p in problems:
             print("  - %s" % p, file=sys.stderr)
-        print(json.dumps({"verdict": "invalid", "violations": problems}, indent=2))
+        print(json.dumps({"verdict": "invalid", "violations": problems,
+                          "warnings": warnings}, indent=2))
         return 1
-    print(json.dumps({"verdict": "valid", "violations": []}, indent=2))
+    print(json.dumps({"verdict": "valid", "violations": [],
+                      "warnings": warnings}, indent=2))
     return 0
 
 
@@ -5570,6 +5657,54 @@ def _selftest():
             _hp = validate_text(_fh.read(), repo_root=_repo3)
         expect("committed manifest validates without --require-triage: %s (%r)"
                % (os.path.basename(os.path.dirname(_hm)), _hp), _hp == [])
+
+    # --- ADVISORIES: the memory-only lane (v3.5.0, Codex round-1 #8) -----------
+    # A job whose whole lane is agent memory is refused as `no_work` the moment the
+    # agent has nothing durable to save, which pressures it to invent an entry. The
+    # advisory says so; it must NEVER become a violation, because pairing the glob
+    # with a real output lane is the author's call, not the validator's.
+    def _lane(*globs):
+        return _v3_manifest().replace(
+            "write_allowed: [src/features/**]",
+            "write_allowed: [%s]" % ", ".join(globs))
+
+    _mem_only = _lane('".claude/agent-memory/spec-reviewer/**"')
+    _mem_msgs = advisories_text(_mem_only)
+    expect("advisory: a memory-only lane warns", len(_mem_msgs) == 1)
+    # Bound-checked on purpose: a regressed detector must FAIL this row, not raise
+    # an IndexError that ends the whole selftest before the later rows ever run.
+    expect("advisory: the warning names the job and the remedy",
+           bool(_mem_msgs) and all(s in _mem_msgs[0] for s in
+                                   ("task-1-v3", "memory-only lane", "no_work",
+                                    "pair the memory glob", "write_allowed: []")))
+    # THE contract: advisory ≠ violation. Same manifest, still valid.
+    expect("advisory: a memory-only lane does NOT change the verdict",
+           validate_text(_mem_only) == [])
+    expect("advisory: memory glob + a real output lane does NOT warn",
+           advisories_text(_lane('".claude/agent-memory/spec-reviewer/**"',
+                                 '"docs/superpowers/dogfood/r-1.md"')) == [])
+    expect("advisory: an empty write_allowed does NOT warn",
+           advisories_text(_lane()) == [])
+    expect("advisory: an ordinary code lane does NOT warn",
+           advisories_text(_lane('"src/**"')) == [])
+    # `in any form`: a detector that knows one spelling detects nothing.
+    for _form in ('"./.claude/agent-memory/spec-reviewer/**"',
+                  '".claude/agent-memory/spec-reviewer"',
+                  '".claude/agent-memory-local/spec-reviewer/**"',
+                  '"/.claude/agent-memory/spec-reviewer/MEMORY.md"'):
+        expect("advisory: memory-only lane detected as %s" % _form,
+               len(advisories_text(_lane(_form))) == 1)
+    expect("advisory: a look-alike path outside the memory roots does NOT warn",
+           advisories_text(_lane('".claude/agent-memoryX/spec-reviewer/**"')) == [])
+    expect("advisory: an unparseable manifest yields no advisory, only violations",
+           advisories_text("\tnot: [valid") == [])
+    # The SHIPPED example must not trip the advisory it documents.
+    _ex = os.path.join(_repo3, "examples", "manifest.example.yaml")
+    if os.path.isfile(_ex):
+        with open(_ex, "r", encoding="utf-8") as _fh:
+            _ex_warn = advisories_text(_fh.read())
+        expect("advisory: examples/manifest.example.yaml raises none (%r)" % _ex_warn,
+               _ex_warn == [])
 
     # v2.9 conditional fast-path suite (on-disk fixtures).
     _selftest_fastpath(expect)

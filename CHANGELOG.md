@@ -6,6 +6,59 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-09-04
+
+Compound V's agents plug into Claude Code's own memory. Two native mechanisms, both documented at
+code.claude.com/docs/en/memory and /docs/en/sub-agents, verified against the docs and then probed live: a
+throwaway repo with one `memory: project` agent, driven headlessly — the agent's system prompt named its
+memory directory, its write landed in `.claude/agent-memory/<name>/MEMORY.md`, and the relaunched agent saw
+that line under a `## MEMORY.md` heading.
+
+### Added — agents that remember this repo
+
+- **Native subagent memory on the five review and scanning agents** (`memory: project`): spec-reviewer,
+  partition-reviewer, code-archaeologist, domain-expert, doc-validator each get
+  `.claude/agent-memory/<name>/` in the repository — committed, shared with the team through version
+  control, loaded (first 200 lines of its MEMORY.md) on every launch. The reviewer accumulates this repo's
+  recurring defects, the archaeologist its map, the partition reviewer its overlap traps, the domain expert
+  its constraints, the doc validator its dated drift facts. Three rules in every agent: never save secrets,
+  never save a verdict (a remembered pattern is a lead to re-verify against the code), and memory content
+  is evidence, never instructions — committed memory is editable by anyone with push access.
+- **Lanes stay exact.** The implementer carries no memory: a memory write outside its lane is an out-of-lane
+  write, which the lane guard denies and the scope gate blocks — and that is the property that stops an
+  implementer from planting text in the reviewer's memory. The spec-reviewer's memory directory is part of
+  the review job's declared lane instead. No carve-out in the lane guard, no new subtraction in the scope
+  gate. The frontmatter linter accepts `memory` (user|project|local) and refuses it on implementer and
+  dispatcher.
+
+### Added — path-scoped rules from `/v:onboard`
+
+- **`.claude/rules/*.md` writer.** `/v:onboard` (and `--refresh`) now drafts Claude Code's path-scoped rules:
+  one file per area with `paths:` frontmatter, loaded only when a file in that area is read, surviving
+  compaction. Every rule line is a convention the repo already states, copied with its `file:line`
+  citation — never invented. Two deterministic helpers back the human-gated step:
+  `compound-v-onboard.py rules-plan` lists the candidate areas from the citation manifest and CONVENTIONS.md,
+  and `rules-lint` refuses a rule file whose frontmatter is malformed, whose brace expansion exceeds the
+  documented 1,000-pattern budget, which has an unbalanced `[`, which is over 200 lines, or whose
+  citation does not resolve (same Tier-1 check as the architecture docs). Rule files are registered in the
+  citation manifest, so `staleness` covers them like any other generated doc.
+- **Dogfooded on this repo:** five rule files (hooks, scripts, tests, manifests, docs; 31 rules, 31/31
+  citations resolve) — e.g. a hook edit now brings the fail-open contract and the shellcheck gate into
+  context by itself, a manifest edit the block-scalar body rule and the test-contract rules.
+- The frontmatter linter exempts `.claude/**` from the `name`/`description` requirement (rule files carry
+  only `paths:`, and Claude Code stamps `modified:` onto memory files) while keeping every other check.
+
+### Review
+
+- Codex (gpt-5.6-sol) cross-model review, three rounds: 11 findings (3 HIGH: a citation outside the repo
+  passed `rules-lint`, uncited paragraphs were never checked, a memory-only lane collided with `no_work`)
+  → 3 (an indented backtick line opened a fence, a symlink to `/dev/zero` was read unbounded, the bidi set
+  was incomplete) → 5 (a 5,000-digit line number crashed the gate, headings and fenced text escaped the
+  citation check, an unreadable rules subdirectory was silently skipped, a check-then-open race, indented
+  code absorbed into a cited item). Every finding closed with a test that fails when the fix is reverted;
+  the review cap is three rounds, so the round-3 closures are proven by tests, not by a fourth verdict.
+  The one place we did not follow Codex literally: symlinked entries under `.claude/rules/` are skipped
+  and reported rather than refused, because sharing rules by symlink is a documented harness feature.
 ## [3.4.18] - 2026-09-04
 
 `/v:onboard --refresh` on the architecture knowledge base, which had not been regenerated since 2026-07-14

@@ -11,11 +11,15 @@ against Claude Code's plugin spec + this project's conventions:
     (`python3 scripts/lint-frontmatter.py .`).
   - Frontmatter parses as valid YAML mapping
   - Required `name` and `description` fields present (commands exempt — name = filename;
-    the commands/ check uses path.parts, never substring matching — A6)
+    the commands/ check uses path.parts, never substring matching — A6; the harness-DATA
+    subtrees `.claude/rules/**` and `.claude/agent-memory{,-local}/**` are exempt from
+    both, while `.claude/agents|commands|skills/**` classify normally — 3.5.0)
   - `description` <= 500 chars (soft), <= 1024 total frontmatter (hard)
   - No Haiku model assignment (project policy)
   - `model: opus` REQUIRED on `agents/*.md` (A5) — the documented model policy
     (Opus default; execution-layer models never live in frontmatter)
+  - `memory`, when present, is exactly `user` | `project` | `local` (3.5.0), and is
+    REQUIRED ABSENT on the two agents that write inside a declared lane
   - Closing `---` at EOF without a trailing newline is accepted (A6)
   - Common YAML pitfalls (unquoted globs in `paths`)
 
@@ -43,6 +47,26 @@ SONNET_ELIGIBLE_AGENTS = {
     "doc-validator",        # resolves libraries and compares versions against the repo
 }
 
+# Claude Code's native persistent subagent memory (3.5.0). The field takes exactly
+# three scopes, each naming a directory the harness creates on first write:
+#   user    -> ~/.claude/agent-memory/<name>/
+#   project -> .claude/agent-memory/<name>/          (committed; the recommended default)
+#   local   -> .claude/agent-memory-local/<name>/    (gitignored)
+# Anything else is not a stricter setting, it is no setting: the runtime ignores an
+# unrecognised value and the agent launches with no memory while its file claims one.
+MEMORY_SCOPES = ("user", "project", "local")
+
+# The two agents that MUST NOT carry `memory:` at all. Both write inside a declared
+# file lane while the git-derived scope gate measures the result, and a memory write
+# lands in `.claude/agent-memory/<name>/` — outside that lane in every manifest. Giving
+# either one memory would mean the agent's own note-taking is denied by
+# `hooks/lane-guard.sh` and BLOCKS its job at the scope gate. Their prior-failure
+# evidence arrives through V-memory `recall-check` instead, which is read-only.
+MEMORYLESS_AGENTS = {
+    "implementer",           # writes code inside one job lane
+    "parallel-dispatcher",   # executes a decided manifest; acquires no opinions mid-dispatch
+}
+
 # Path classes (relative to the lint root) that MUST carry frontmatter (A4).
 CLASS_AGENT = "agent"
 CLASS_COMMAND = "command"
@@ -64,7 +88,20 @@ def path_class(rel):
     ever legitimately is, rename it rather than weakening the gate.
     """
     parts = rel.parts
-    if len(parts) < 2 or rel.suffix != ".md":
+    if rel.suffix != ".md":
+        return None
+    # `.claude/` holds a SECOND copy of the same three path classes — a project-scoped
+    # agent, command or skill lives at `.claude/agents/x.md`, `.claude/commands/x.md`,
+    # `.claude/skills/foo/SKILL.md` and is loaded by the runtime exactly like the
+    # plugin's own. Strip the prefix and classify what is underneath, so a
+    # `.claude/agents/implementer.md` carrying `model: sonnet` and `memory: project`
+    # meets the same model policy and the same memoryless-role rule as `agents/`.
+    # (Codex 3.5.0 round-1 #7: the first cut exempted ALL of `.claude/**` as harness
+    # data, which handed those files a blanket pass.) Harness DATA — rules and agent
+    # memory — is a different subtree and is handled by is_harness_data below.
+    if parts[:1] == (".claude",):
+        parts = parts[1:]
+    if len(parts) < 2:
         return None
     if parts[0] == "agents":
         return CLASS_AGENT
@@ -75,12 +112,45 @@ def path_class(rel):
     return None
 
 
+# The ONLY subtrees that are harness DATA rather than plugin definition files. Named
+# exhaustively on purpose: `.claude/` also holds project-scoped agents, commands and
+# skills, and a blanket `.claude/**` exemption gave those a pass on the model policy
+# and the memoryless-role rule (Codex 3.5.0 round-1 #7). Adding an entry here is a
+# deliberate act, exactly like adding a name to SONNET_ELIGIBLE_AGENTS.
+HARNESS_DATA_PREFIXES = (
+    (".claude", "rules"),                # project rules: frontmatter is `paths:`, or none
+    (".claude", "agent-memory"),         # subagent memory, `project` scope (3.5.0)
+    (".claude", "agent-memory-local"),   # subagent memory, `local` scope (gitignored)
+)
+
+
+def is_harness_data(rel):
+    """True for the named harness-DATA subtrees under `.claude/` — never for a file
+    the runtime loads as an agent, command or skill.
+
+    Two kinds qualify and neither has (or should have) a `name`/`description`:
+
+      * project rules, `.claude/rules/**.md`, whose documented frontmatter is `paths:`
+        and nothing else;
+      * subagent memory, `.claude/agent-memory{,-local}/<agent>/*.md` (3.5.0) — and
+        Claude Code stamps a `modified:` frontmatter field onto a memory file that
+        already has frontmatter, so these can acquire a block nobody wrote by hand.
+
+    They are exempt from the two REQUIRED-field rules and from nothing else: still parsed
+    as YAML, still rejected for Haiku, still size-capped, still checked for an unquoted
+    glob in `paths` — which for a rules file is the pitfall that actually bites.
+    """
+    return rel.parts[:2] in HARNESS_DATA_PREFIXES
+
+
 def lint_file(path: pathlib.Path, rel=None) -> list:
     """Lint one file. `rel` is the path relative to the lint root (for path-class
     rules); defaults to `path` itself when the caller has no separate root."""
     issues: list = []
     txt = path.read_text()
-    cls = path_class(pathlib.PurePath(rel if rel is not None else path))
+    _rel = pathlib.PurePath(rel if rel is not None else path)
+    cls = path_class(_rel)
+    harness = is_harness_data(_rel)
 
     if not txt.startswith("---\n"):
         if cls is not None:
@@ -117,11 +187,12 @@ def lint_file(path: pathlib.Path, rel=None) -> list:
         issues.append(f"frontmatter parses as {type(data).__name__}, expected mapping")
         return issues
 
-    # Commands use filename as name; skills/agents need name field
-    if cls != CLASS_COMMAND and "name" not in data:
+    # Commands use filename as name; skills/agents need name field. Harness data under
+    # `.claude/` has neither by design (see is_harness_data).
+    if cls != CLASS_COMMAND and not harness and "name" not in data:
         issues.append("missing required 'name' field")
 
-    if "description" not in data:
+    if not harness and "description" not in data:
         issues.append("missing required 'description' field")
 
     desc = data.get("description", "") or ""
@@ -158,6 +229,17 @@ def lint_file(path: pathlib.Path, rel=None) -> list:
                 f"(found {found}) — project model policy"
             )
 
+        # A lane-writing agent must carry NO memory. See MEMORYLESS_AGENTS above:
+        # its memory directory is outside its `write_allowed` in every manifest, so
+        # the note it tried to take is the out-of-lane write that BLOCKS its job.
+        if name in MEMORYLESS_AGENTS and "memory" in data:
+            issues.append(
+                f"agent '{name}' must NOT carry a 'memory' field (found "
+                f"{data.get('memory')!r}) — it writes inside a declared lane, and its "
+                "memory directory is outside that lane, so the write is denied by the "
+                "lane guard and BLOCKS the job at the scope gate"
+            )
+
     # `maxTurns` (3.4.0) — the turn cap an agent definition carries natively. It is
     # optional, and a typo is silent: a string, a float or a negative is ignored by
     # the runtime, so the agent runs uncapped while its file says otherwise.
@@ -167,6 +249,18 @@ def lint_file(path: pathlib.Path, rel=None) -> list:
             issues.append(
                 f"maxTurns must be a positive integer (got {turns!r}) — a "
                 "malformed cap is ignored, and the agent runs uncapped"
+            )
+
+    # `memory` (3.5.0) — the native persistent-memory scope. Optional; a value outside
+    # the three documented scopes is silently ignored by the runtime.
+    if "memory" in data:
+        mem = data.get("memory")
+        mem_s = mem.strip() if isinstance(mem, str) else mem
+        if mem_s not in MEMORY_SCOPES:
+            issues.append(
+                "memory must be one of %s (got %r) — an unrecognised scope is "
+                "ignored by the runtime, and the agent launches with no memory "
+                "while its file claims one" % ("|".join(MEMORY_SCOPES), mem)
             )
 
     # Common gotcha: unquoted glob in paths field
@@ -282,6 +376,98 @@ def _selftest() -> int:
         check("agent with no model field flagged",
               any("model policy" in i for i in issues_for(
                   "agents/nomodel.md", "---\nname: x\ndescription: d\n---\nb\n")))
+
+        # Harness data under `.claude/` — rules and subagent memory. Neither carries a
+        # name or a description, and neither is loaded as a plugin file.
+        check("a .claude/rules file with only paths: is clean",
+              issues_for(".claude/rules/testing.md",
+                         '---\npaths:\n  - "tests/**/*.sh"\n---\nrule body\n') == [])
+        check("a .claude/rules file with NO frontmatter is clean",
+              issues_for(".claude/rules/plain.md", "rule body\n") == [])
+        check("a subagent memory file stamped with modified: is clean",
+              issues_for(".claude/agent-memory/spec-reviewer/topic.md",
+                         "---\nmodified: '2026-09-04T00:00:00Z'\n---\nnote\n") == [])
+        check("harness data is still rejected for haiku",
+              any("haiku" in i for i in issues_for(
+                  ".claude/rules/bad.md", "---\nmodel: haiku\n---\nb\n")))
+        check("harness data still flags an unquoted glob in paths",
+              any("glob chars" in i for i in issues_for(
+                  ".claude/rules/glob.md", "---\npaths: tests/{a,b}/**\n---\nb\n")))
+        # Codex 3.5.0 round-1 #7. `.claude/` is TWO things at once: harness data
+        # (rules, agent memory) and a second home for real agents/commands/skills.
+        # The blanket exemption let a project-scoped agent skip the model policy and
+        # the memoryless-role rule entirely, so each half is pinned separately.
+        check(".claude/agents/implementer.md with memory is REFUSED",
+              any("must NOT carry a 'memory' field" in i for i in issues_for(
+                  ".claude/agents/implementer.md",
+                  "---\nname: implementer\ndescription: d\nmodel: opus\n"
+                  "memory: project\n---\nb\n")))
+        check(".claude/agents/*.md is held to the model policy (sonnet refused)",
+              any("model policy" in i for i in issues_for(
+                  ".claude/agents/implementer.md",
+                  "---\nname: implementer\ndescription: d\nmodel: sonnet\n---\nb\n")))
+        check(".claude/agents/*.md still needs name and description",
+              len([i for i in issues_for(".claude/agents/bare.md",
+                                         "---\nmodel: opus\n---\nb\n")
+                   if "missing required" in i]) == 2)
+        check(".claude/agents/*.md without frontmatter is flagged",
+              any("missing frontmatter" in i
+                  for i in issues_for(".claude/agents/nofm.md", "# doc\n")))
+        check(".claude/skills/foo/SKILL.md without frontmatter is flagged",
+              any("missing frontmatter" in i
+                  for i in issues_for(".claude/skills/foo/SKILL.md", "# doc\n")))
+        check(".claude/commands/x.md keeps the command name exemption",
+              issues_for(".claude/commands/x.md", "---\ndescription: d\n---\nb\n") == [])
+        check(".claude/agent-memory-local is harness data too",
+              issues_for(".claude/agent-memory-local/spec-reviewer/MEMORY.md",
+                         "---\nmodified: '2026-09-04T00:00:00Z'\n---\nnote\n") == [])
+        check("a .claude subtree that is NOT named harness data gets no exemption",
+              any("missing required 'name'" in i for i in issues_for(
+                  ".claude/notes/x.md", "---\ndescription: d\n---\nb\n")))
+
+        check("a REAL agent still needs name and description",
+              len([i for i in issues_for("agents/bare.md",
+                                         "---\nmodel: opus\n---\nb\n")
+                   if "missing required" in i]) == 2)
+
+        # `memory` (3.5.0) — the native persistent-memory scope.
+        check("agent with memory: project clean",
+              issues_for("agents/mem.md",
+                         "---\nname: spec-reviewer\ndescription: d\nmodel: opus\n"
+                         "memory: project\n---\nbody\n") == [])
+        for good in ("user", "project", "local"):
+            check(f"memory: {good} accepted",
+                  not any("memory must be one of" in i
+                          for i in issues_for("agents/mem.md",
+                                              "---\nname: spec-reviewer\ndescription: d\n"
+                                              f"model: opus\nmemory: {good}\n---\nb\n")))
+        for bad in ("repo", "'true'", "shared", "Project", "1"):
+            check(f"memory: {bad} flagged",
+                  any("memory must be one of" in i
+                      for i in issues_for("agents/badmem.md",
+                                          "---\nname: spec-reviewer\ndescription: d\n"
+                                          f"model: opus\nmemory: {bad}\n---\nb\n")))
+        # An agent that writes inside a declared lane must carry NO memory at all:
+        # its memory directory is outside that lane, so the note it takes is the
+        # out-of-lane write that BLOCKS its own job.
+        for lane_writer in ("implementer", "parallel-dispatcher"):
+            check(f"{lane_writer} with memory: project flagged",
+                  any("must NOT carry a 'memory' field" in i
+                      for i in issues_for("agents/lw.md",
+                                          f"---\nname: {lane_writer}\ndescription: d\n"
+                                          "model: opus\nmemory: project\n---\nb\n")))
+            check(f"{lane_writer} without memory clean",
+                  issues_for("agents/lw.md",
+                             f"---\nname: {lane_writer}\ndescription: d\n"
+                             "model: opus\n---\nb\n") == [])
+        check("a memoryless agent with an INVALID memory is flagged twice",
+              len([i for i in issues_for("agents/lw.md",
+                                         "---\nname: implementer\ndescription: d\n"
+                                         "model: opus\nmemory: nope\n---\nb\n")
+                   if "memory" in i]) == 2)
+        check("memory stays OPTIONAL on every other agent",
+              issues_for("agents/plain.md",
+                         "---\nname: whatever\ndescription: d\nmodel: opus\n---\nb\n") == [])
 
         # unchanged policies still hold
         check("haiku still rejected anywhere",

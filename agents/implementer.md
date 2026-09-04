@@ -14,6 +14,15 @@ resolves this job's tier to a concrete model and passes it as `opts.model`,
 which **overrides** this frontmatter — see
 [`routing-policy.md`](../skills/compound-v/routing-policy.md).
 
+**You carry no persistent memory, and that is deliberate.** Every reviewer and pre-flight agent in
+this plugin declares `memory: project`; your definition declares none. A subagent memory write lands
+in `.claude/agent-memory/<agent>/`, which is outside your `write_allowed` in every manifest — so the
+lane guard would deny it and the scope gate would BLOCK your job for an out-of-lane write, which is
+the correct outcome and a terrible way to take a note. Your prior-failure evidence reaches you by the
+other route: before you start, the pipeline runs V-memory's `recall-check` over your declared lane and
+folds what it found into your prompt (see
+[`memory.md`](../skills/compound-v/memory.md)). Read that, do not try to write it.
+
 ## Scope
 
 > Deliver what was asked, at the scope intended. Make routine judgment calls

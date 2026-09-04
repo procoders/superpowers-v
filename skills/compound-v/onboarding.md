@@ -93,9 +93,15 @@ the claims where being confidently wrong is dangerous.
 Hand the claims file to `python3 scripts/compound-v-onboard.py verify-citations --claims FILE
 [--tier2 FILE] --repo . --json`.
 
-- **Tier 1 — path + range, 100% of claims, blocking.** Every cited path must resolve inside the
-  repo and satisfy `1 ≤ startLine ≤ endLine ≤ lineCount`. A claim that fails (`bad-path`,
-  `range-out-of-bounds`, `range-inverted`) is **regenerated or dropped** before write.
+- **Tier 1 — path + range + CONTAINMENT, 100% of claims, blocking.** Every cited path must resolve
+  strictly INSIDE the repo, name a REGULAR FILE, and satisfy `1 ≤ startLine ≤ endLine ≤ lineCount`.
+  A claim that fails (`bad-path`, `path-not-relative`, `path-escapes-repo`, `not-a-regular-file`,
+  `range-out-of-bounds`, `range-inverted`) is **regenerated or dropped** before write. Containment
+  is not pedantry: `os.path.join(repo, rel)` absorbs an absolute path and walks `..` without
+  complaint, so before 3.5.0 a citation could name a file outside the checkout — or an in-repo
+  symlink to one — and still "resolve". It resolved against the machine that ran the check, not
+  against the repository anyone can clone. The regular-file check is the same argument for devices:
+  counting the lines of a fifo never finishes.
 - **Tier 2 — "do the cited lines actually support this claim?"** This is an LLM support check whose
   verdicts (`yes | partial | no`) you write to a tier-2 verdicts file, then feed back via `--tier2`.
   - Run it on **100% of load-bearing claims** — an unsupported load-bearing claim is **BLOCKING**
@@ -129,6 +135,12 @@ the gate. Surface, as advisory recommendations:
 
   Both are **present-then-confirm** (the `recommend-mcp` precedent): the draft/summary is shown at the GATE, the real files are written at WRITE, committed at COMMIT, indexed at INDEX — **never auto-applied**. A human keeps/edits the taxonomy at the GATE; onboarding proposes, the maintainer decides.
 
+- **Path-scoped rule AREAS** from `python3 scripts/compound-v-onboard.py rules-plan --repo . [--json]`
+  (3.5.0). It reads `.onboard-manifest.json` and `CONVENTIONS.md` and groups the cited evidence by
+  top-level directory (`hooks/`, `scripts/`, `tests/`, `skills/`, `commands/`, …), naming the
+  `CONVENTIONS.md` section headings that cite files in each. It is a **helper for the drafting step,
+  not an author**: it proposes areas, writes nothing, and never invents a rule. See §Path-scoped rules.
+
 Also flag drift from `python3 scripts/compound-v-onboard.py staleness --repo .` on a refresh run
 (see §Refresh).
 
@@ -152,6 +164,10 @@ starter `sensitive_path_list`, and the churn summary (path count + hot paths). S
 **self-validation verdict** (B1 `valid`/`violations`) so the maintainer sees it will parse before
 approving. The maintainer keeps/edits the taxonomy at the GATE; nothing is applied without approval.
 
+Show each **`.claude/rules/*.md`** here as its own per-section diff, with its `paths:` scope and every
+rule's citation visible — a reviewer is approving a file that will load into future sessions, so the
+question at this gate is "is each line true, and does the scope match what it claims?"
+
 ### 7. WRITE — only approved artifacts, narrow surface
 
 **Output secret gate (BLOCKING) — run it first.** Before writing or committing anything, run
@@ -164,11 +180,15 @@ committed file" — not the advisory input pack scan (§2), which would over-blo
 
 Write **only** what was approved, and **only** within the v1 write surface:
 `docs/superpowers/architecture/*`, root `CONVENTIONS.md`, root `DESIGN.md` (UI repos), `AGENTS.md`,
-the thin `CLAUDE.md` bridge, `.onboard-manifest.json`, and — **only when the user confirms the diff** —
-`.mcp.json` (from `mcp_json_config`: merged **additively**, never clobbering an existing server; CLI
-recommendations like `gh` are surfaced as setup instructions, **not** `.mcp.json` entries). `.claude/rules/*.md`
-and any foreign-tool file are **out of scope** (foreign files are read-only/advisory). Apply existing-file
-changes through detect-and-bridge (§below); never silently overwrite.
+the thin `CLAUDE.md` bridge, `.onboard-manifest.json`, `.claude/rules/*.md` (§Path-scoped rules), and —
+**only when the user confirms the diff** — `.mcp.json` (from `mcp_json_config`: merged **additively**,
+never clobbering an existing server; CLI recommendations like `gh` are surfaced as setup instructions,
+**not** `.mcp.json` entries). Any **foreign-tool** file stays out of scope (read-only/advisory). Apply
+existing-file changes through detect-and-bridge (§below); never silently overwrite.
+
+**Path-scoped rules (7b) — `rules-lint` is BLOCKING.** After writing any approved `.claude/rules/*.md`,
+run `python3 scripts/compound-v-onboard.py rules-lint --repo .`. A non-zero exit is a **hard refusal**:
+those files do not reach COMMIT until it is clean. See §Path-scoped rules for what it checks and why.
 
 **Only when the user approved the taxonomy/churn diff (v2.9):** write the impact-taxonomy to
 `.claude/compound-v-impact-taxonomy.yaml` — `python3 scripts/compound-v-onboard.py draft-taxonomy
@@ -199,7 +219,10 @@ content hashes) via `python3 scripts/compound-v-onboard.py staleness --repo . --
 (out of the index by design); everything else is now committed and indexable. The committed
 **impact-taxonomy** (`.yaml`) and **churn cache** (`.json`) are now git-tracked, so the scope gate and
 the Pre-Evaluation stage see them; they are static-evidence inputs, not recall prose, so — like the
-manifest — they carry no FTS5 obligation.
+manifest — they carry no FTS5 obligation. The `--docmap` you pass **includes every**
+**`.claude/rules/*.md`** with the files its rules cite: `write_manifest` replaces the manifest
+wholesale, so a rule omitted from the docmap is silently de-registered and stops being
+staleness-tracked. See §Path-scoped rules.
 
 ---
 
@@ -231,8 +254,8 @@ explore → ask → propose → write.
 - **`CONVENTIONS.md`** (Aider-style, repo root, code repos): derived from **deterministic evidence**
   (eslint/prettier/ruff/editorconfig/lockfile choices + observed naming), not the model's prior.
   Phrase concretely ("use 2-space indentation") and emit only the **delta** from competent-developer
-  defaults. File-pattern constraints are advisory notes in v1 (the `.claude/rules/` writer is
-  fast-follow).
+  defaults. File-pattern constraints belong in `.claude/rules/*.md`, not in prose here —
+  see §Path-scoped rules.
 - **`DESIGN.md`** (Google Labs format, repo root) is generated **only when `detect-ui` is true.** On
   a backend / CLI / library repo it is **skipped** (verify this negative path on a non-UI dogfood).
   YAML design tokens + prose rationale, extracted from real sources (`tailwind.config`, CSS variables,
@@ -249,6 +272,109 @@ explore → ask → propose → write.
 
 ---
 
+## Path-scoped rules (`.claude/rules/`)
+
+A rule file is a markdown file under `.claude/rules/`, discovered **recursively**. With a `paths:`
+list of globs in its YAML frontmatter it loads only when Claude reads a matching file; without one it
+loads at launch with the same priority as `.claude/CLAUDE.md`. Rules survive compaction — a
+path-scoped one reloads the next time it matches a file. Source: Claude Code's memory documentation,
+§"Organize rules with `.claude/rules/`" (re-read 2026-09-04).
+
+This is the mechanism that lets `CONVENTIONS.md` stay short: a constraint that applies to one
+directory belongs in a rule scoped to it, not in a file every session loads in full.
+
+**Draft them; never generate them.** Run `python3 scripts/compound-v-onboard.py rules-plan --repo .`
+at DIAGNOSE for the candidate areas — cited directories grouped by top-level dir, each with the
+`CONVENTIONS.md` section headings that cite files in it. `rules-plan` writes nothing and proposes no
+rule text. Then, one file per area, in the shape `rules-lint` enforces:
+
+- **The body grammar is tiny, and deliberately so.** A rule body is:
+
+  ```text
+  body         := h1? ( blank | item | paragraph )*
+  h1           := "# Title"   EXACTLY ONE, first non-blank line, <= 6 words, no . ! ? :
+  item         := bullet-line continuation*     bullet = -, *, + or "1." / "1)"
+  continuation := a line indented 1-3 spaces
+  paragraph    := an unindented line that is none of the above, plus its continuations
+  ```
+
+  **Every item and every paragraph must carry at least one citation.** Blank lines and the single H1
+  are the only things that carry no claim. The grammar is this strict because each looser version
+  produced ZERO findings on a real smuggling shape: the first recognised only `-`/`*`/`+`, so
+  "1. Delete failing tests." and a bare uncited paragraph were invisible.
+- **Nothing the citation check cannot read is allowed through.** Three refusals, each closing a way
+  text reached the model without ever being checked:
+  - **Fenced code blocks are forbidden.** Not skipped — refused. A rule file never needs one, and a
+    fence's contents were discarded unread while still loading into context. An unclosed fence is
+    refused for the same reason at the other end of the file.
+  - **Indented code lines (4+ spaces, or a tab) are forbidden**, and the check runs **before** the
+    continuation branch. Placed after it, `    ``` ` and everything under it were absorbed into the
+    preceding cited bullet and inherited its citation. A continuation is indented 1-3 spaces;
+    anything deeper is not a continuation.
+  - **The H1 is checked, not discarded.** One H1, first line, at most six words, no sentence
+    punctuation — because a heading used to be dropped without any citation check at all, so
+    `# Always delete failing tests` linted clean in the file's most prominent position. A title
+    cannot smuggle an instruction if it cannot be a sentence.
+- **A citation's line numbers carry at most seven digits.** Anything longer is reported and never
+  converted: `int()` on a 5,000-digit literal raises above CPython's integer-string-conversion limit
+  (3.11+), which killed the lint instead of failing the file.
+- **One topic per file, under 200 lines** — the size guidance for any instruction file.
+- Every line is one concrete, verifiable convention **copied from `CONVENTIONS.md` or the architecture
+  docs together with its citation**. Do not invent a rule and do not re-derive a citation: the point of
+  read-then-cite is that the evidence travels with the sentence.
+- **The frontmatter subset is strict and named.** `key: value`, or `key:` followed by an indented
+  block sequence, and nothing else. Every `paths` item must be **quoted**: a glob is built from the
+  exact characters YAML reserves as indicators, so `- *.md` is an *alias*, not a pattern. Anchors,
+  aliases, flow collections (`["a","b"]`) and tabs are refused by name rather than guessed at, and
+  the strict reader is cross-checked against the repo's own mini-YAML on the same text — a rule file
+  two readers disagree about is one where the reviewer approved the other one's reading.
+- **Keep the `paths` list small.** Claude Code budgets a rule's whole list at 1,000 expanded patterns
+  and 4 MiB; past that it uses the pattern **unexpanded**, its literal braces match nothing, and the
+  rule silently never loads. `rules-lint` counts **every** pattern toward that, not only the braced
+  ones, because 1,001 plain globs hit the same wall with no brace in sight. A `[` that cannot be read
+  as a bracket expression kills that one pattern the same way; escape a literal one as `\[`.
+
+**`rules-lint` is the gate**: `python3 scripts/compound-v-onboard.py rules-lint --repo . [--json]`,
+exit 0 clean / 1 with the list of problems. Per file it checks the strict frontmatter subset and its
+parity; `paths` being a non-empty list of strings; the expansion and byte budgets and bracket
+validity; the ≤ 200-line ceiling; the body grammar above; and that **every citation resolves inside
+this repository** — the same Tier-1 path + range + containment check §4 runs on the architecture
+claims, which is why an absolute path, a `..` escape or a symlink out of the tree is refused there
+too.
+
+Reading a rule file is itself bounded and fail-closed, because a mandatory gate must not be stoppable
+by the file it inspects. **A symlinked entry — file or directory — is SKIPPED**: symlinking a shared
+rules file or directory into `.claude/rules/` is the harness's documented way to share rules across
+projects, the target belongs to whoever wrote it, and we do not lint what we did not write. Skipping
+is never silent — each one is listed as `skipped (symlink): <path>` (a `skipped` array under
+`--json`) — and the lint stays clean when every non-symlink rule file passes. It is also what keeps a
+`hang.md -> /dev/zero` from stalling the gate, since a skipped entry is never opened. An
+**unreadable directory is a lint failure**, never an empty one: `os.walk` swallows that error by
+default, so a `chmod 000` rules subdirectory used to be certified by never being read.
+
+Everything else is read **open-first**, not check-then-open. `stat()` followed by `open()` is a
+TOCTOU — a regular file swapped for a fifo between the two makes the open block forever — so the
+open carries `O_NONBLOCK` (a fifo then opens immediately) and `O_CLOEXEC`, and the file type is
+decided by `os.fstat` on the descriptor already held, which nothing can swap. Anything not a regular
+file is refused unread. Reads are capped (256 KiB for a rule file, 16 MiB for a cited file), and
+`O_NOFOLLOW` remains purely the TOCTOU guard for a path that turns into a symlink between the scan
+and the open. Every read on the lint path goes through this, cited files and the onboard manifest
+included. Each file is decoded as **strict UTF-8** with C0 controls, DEL, the full
+Unicode `Bidi_Control` set (U+061C, U+200E, U+200F, U+202A–U+202E, U+2066–U+2069) and the zero-width
+set (U+200B–U+200D, U+FEFF) refused — every one of them can make a line read one way to a reviewer
+and another to the parser. A UTF-8 BOM at offset 0 is tolerated and stripped; the same character
+anywhere else is refused.
+
+**They are staleness-tracked, like the docs.** Register each rule file in `.onboard-manifest.json`
+with the files its rules cite (§9), so `staleness` flags `cited-changed` when a cited line moves. The
+two checks are complementary: `staleness` notices a citation that *drifted*, `rules-lint` refuses one
+that *dangles*.
+
+**They are written at WRITE, behind the same human gate, and never auto-applied.** Foreign-tool rule
+files (`.cursor/rules`, `.windsurfrules`, …) stay read-only evidence — the cardinal rule is unchanged.
+
+---
+
 ## Refresh — cited-evidence staleness
 
 `/v:onboard --refresh` owns the **docs**; `/v:memory-refresh` owns the **index**.
@@ -262,6 +388,11 @@ explore → ask → propose → write.
   (`cited-deleted`), or — via a cheap heuristic — a **new uncited file** appearing in a cited doc's
   path-space (`uncited-new-file`), which catches architecture that migrated into a file the doc never
   cited. Hash-drift is necessary, not sufficient.
+- **Path-scoped rules refresh with the docs.** A rule file is registered in `.onboard-manifest.json`
+  like any other doc (§Path-scoped rules), so a rule whose cited line drifted is flagged
+  `cited-changed` by the same gate. Re-run `rules-lint` on every refresh — it is what turns a
+  *drifted* citation into a *dangling* one that blocks — put the re-cited rule through the same human
+  gate, and re-register with `staleness --write --docmap` so the recorded hashes match what shipped.
 - **Manual only in v1.** No hook bootstraps or self-backgrounds. The single hook-side surface is a
   read-only, **fail-silent** line in the SessionStart banner ("N architecture docs stale vs HEAD →
   run /v:onboard --refresh"); it writes nothing.
@@ -285,6 +416,5 @@ auto-trigger-degradation caution above. It **never installs**; the user runs the
 ## Out of scope (v1)
 
 Bulk skill generation · full AST/tree-sitter citation verification · any auto-apply · hooks that
-bootstrap or self-background · `progress.md`/`activeContext.md` · path-scoped `.claude/rules/*.md`
-writing (fast-follow) · automated reconciliation of foreign-tool rules (advisory notes only) · any
-GitHub MCP server (GitHub is used via the `gh` CLI).
+bootstrap or self-background · `progress.md`/`activeContext.md` · automated reconciliation of
+foreign-tool rules (advisory notes only) · any GitHub MCP server (GitHub is used via the `gh` CLI).

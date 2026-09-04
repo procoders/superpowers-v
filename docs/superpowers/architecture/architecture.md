@@ -33,10 +33,10 @@ with `BLOCKED` as the terminal halt. (`skills/compound-v/state-machine.md:13-19`
 The triage decision is prose until something refuses to run without it, and the `triage` block in the
 manifest is that something: `tier` ∈ `{DIRECT, SCOPED, FULL}` compared verbatim, the `pre_eval_id` of
 a committed pre-eval record, a `taxonomy_digest` over the raw bytes of the impact taxonomy, and
-`decided_at`; unknown keys inside the block are rejected. (`skills/compound-v/execution-manifest.md:517-537`)
+`decided_at`; unknown keys inside the block are rejected. (`skills/compound-v/execution-manifest.md:533-553`)
 `--require-triage` ships default OFF in the validator, and the closure is behavioural: `/v:dispatch`
 passes it on every live dispatch, while the CI historical sweep stays flag-less so committed run
-manifests stay valid without a back-filled block. (`skills/compound-v/execution-manifest.md:539-549`)
+manifests stay valid without a back-filled block. (`skills/compound-v/execution-manifest.md:555-565`)
 
 The scoring engine is `scripts/compound-v-preeval.py`, which runs first, scores two separate axes
 (difficulty ⊥ impact) from tiered deterministic evidence, and is the sole producer of the `decision`
@@ -79,9 +79,9 @@ as of 3.4.17: top-level `global_constraints` and per-job `interfaces` (`consumes
 Compound V's implementers are the most isolated readers those sections have — a separate agent, a
 separate context, usually a separate worktree — so `/v:orchestrate` copies both verbatim and the
 emitter renders them into every implementation job's prompt; dropping either is a materialization
-defect, not a stylistic choice. (`skills/compound-v/execution-manifest.md:205-210`) Both are optional
+defect, not a stylistic choice. (`skills/compound-v/execution-manifest.md:221-226`) Both are optional
 and validated by shape: `global_constraints` a list of non-empty strings, `interfaces` a mapping whose
-only keys are `consumes` and `produces`. (`skills/compound-v/execution-manifest.md:238-243`)
+only keys are `consumes` and `produces`. (`skills/compound-v/execution-manifest.md:254-259`)
 
 ## Engine C — dispatch is a generated program, not prose
 
@@ -126,7 +126,7 @@ dispatched through Engine C. (`README.md:64-65`)
 
 Per-job isolation: disjoint Claude jobs write `direct` to the active workspace, while Codex/external
 workers and overlap-prone jobs run in a worktree and merge back on PASS via an index-based patch that
-includes new files. (`skills/compound-v/SKILL.md:193`)
+includes new files. (`skills/compound-v/SKILL.md:205`)
 
 ## The git-diff scope gate (enforced after every job)
 
@@ -247,6 +247,30 @@ evidence and a reading budget to the implementer prompt, and — only under `mem
 raises the job's tier one rung and adds a reviewer re-check clause. It never reroutes to a lower-trust
 backend, never loosens a test slice, and never picks a different backend. (`skills/compound-v/memory.md:89-105`)
 
+## Native subagent memory (3.5.0)
+
+Beside V-memory's recall lane sits the harness's own persistence. Five agents declare Claude Code's
+native persistent subagent memory, `memory: project` — `spec-reviewer`, `partition-reviewer`,
+`code-archaeologist`, `domain-expert` and `doc-validator` — so each keeps a committed directory at
+`.claude/agent-memory/<agent>/`, reads it before starting and saves durable, repo-specific learnings
+after finishing. It carries the same charter as recall: evidence, never a routing input, never a
+verdict, never a secret, and — because `project` scope is committed and editable by anyone with push
+access — never an instruction. (`skills/compound-v/SKILL.md:194-204`, `agents/spec-reviewer.md:5`)
+
+Lanes are what make that asymmetry hold. A `type: review` job's `write_allowed` lists
+`.claude/agent-memory/spec-reviewer/**` beside the review file it produces, and that directory is
+deliberately outside every implementer's lane — so an implementer that tried to plant text in the
+reviewer's memory is denied by the lane guard and blocked by the scope gate, with no carve-out in
+either. (`skills/compound-v/execution-manifest.md:66-71`) The two agents that write inside a declared
+lane, `implementer` and `parallel-dispatcher`, therefore carry no `memory` field at all, and the
+frontmatter linter refuses one. (`scripts/lint-frontmatter.py:59-69`)
+
+A lane made of the memory glob **alone** is the shape the manifest warns about: a job that declares a
+lane and changes nothing is refused as `no_work`, so such a job passes only when the agent happens to
+have something durable to save — which pressures it to invent an entry. The validator reports it on an
+advisory `warnings` channel that never changes the verdict; a review job that genuinely writes nothing
+keeps `write_allowed: []` instead. (`skills/compound-v/execution-manifest.md:73-80`)
+
 ## Trigger 0 recon + the autonomous epic layer
 
 **Trigger 0 — gated pre-brainstorm recon.** Before a brainstorm begins, a gated, bounded
@@ -282,7 +306,20 @@ existing instruction file (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, cursor/windsur
 are NEVER executed during onboarding. (`skills/compound-v/onboarding.md:22-28`) The pipeline runs nine
 steps in order: `DETECT → PACK → EXTRACT → VERIFY → DIAGNOSE → GATE → WRITE → COMMIT → INDEX`.
 (`skills/compound-v/onboarding.md:49-51`) Generation is read-then-cite, verified by a two-tier citation
-gate where Tier 1 (path + range) runs on 100% of claims and is blocking, and Tier 2 (do the cited lines
-support the claim?) runs on 100% of load-bearing claims where an unsupported load-bearing claim is
-BLOCKING. (`skills/compound-v/onboarding.md:92-105`) The command itself (`commands/v-onboard.md`) is a
-thin loader that branches on args and defers to this authority doc. (`commands/v-onboard.md:5-13`)
+gate where Tier 1 (path + range + containment) runs on 100% of claims and is blocking, and Tier 2 (do
+the cited lines support the claim?) runs on 100% of load-bearing claims where an unsupported
+load-bearing claim is BLOCKING. (`skills/compound-v/onboarding.md:96-111`) The command itself
+(`commands/v-onboard.md`) is a thin loader that branches on args and defers to this authority doc.
+(`commands/v-onboard.md:5-13`)
+
+Since 3.5.0 the pipeline also drafts Claude Code's **path-scoped rules**: one `.claude/rules/*.md` per
+area, `paths:`-scoped so it loads only when a file in that area is read, every line copied from
+`CONVENTIONS.md` or the architecture docs together with its citation rather than invented.
+(`skills/compound-v/onboarding.md:275-289`) Two deterministic helpers back the human-gated step —
+`rules-plan` proposes candidate areas and writes nothing, while `rules-lint` gates the frontmatter
+subset, the `paths` budgets, the ≤200-line ceiling, the body grammar, and the same Tier-1 containment
+check the architecture claims get. (`skills/compound-v/onboarding.md:337-343`,
+`scripts/compound-v-onboard.py:2391-2394`) Rule files are registered in the citation manifest like any
+other generated doc, so the two checks stay complementary: `staleness` notices a citation that
+*drifted*, `rules-lint` refuses one that *dangles*. (`skills/compound-v/onboarding.md:368-371`)
+`/v:onboard --refresh` re-runs both before the same human gate. (`commands/v-onboard.md:15-25`)

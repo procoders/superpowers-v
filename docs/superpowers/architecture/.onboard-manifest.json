@@ -3,8 +3,9 @@
   "docs": {
     "docs/superpowers/architecture/architecture.md": {
       "cited": {
-        "README.md": "335882343992fb90d89d13d1610e9978d75a833340652b32f09fde866613d23f",
-        "commands/v-onboard.md": "fc3539f2a6d9af91cdd6fb63833e8b4560c2ae452ba5410b6943b068d68b6c8e",
+        "README.md": "6a318f0b5c443e96cbe3ca26630a53d19ddcff32547fe36005bd079aafb8671d",
+        "agents/spec-reviewer.md": "5d1a460b22c5853c4d1460c6674b4bbe8a59ccee699b3a2e13a843d66d21877b",
+        "commands/v-onboard.md": "801a3bdefa85d3e255878a4dac6d1e0371ef48b58fb6d19cb8739f5aa51f0589",
         "hooks/brainstorm-trigger0-nudge.sh": "a063d413b17352803cc822a0cd7ae5f8f6485e843b41d6e8143be445c0a4d305",
         "hooks/hooks.json": "f24b7639a53e2e95a7b4a38894ee1d9bb9d329d8efde87bb832269d70afa099e",
         "hooks/lane-guard.sh": "d8b4f5a029325ab59aca07cd563dbe7793660e71bfbf3b484038f3d60021dd50",
@@ -13,34 +14,36 @@
         "scripts/compound-v-epic-arbiter.py": "15e239695339bcb0db70ee3181a481a81cbf917e319fc9dc1c63e8ab8881c54a",
         "scripts/compound-v-epic-state.py": "d5e8f8f68d8d2a9923813506848831c2a9fdab62104d57091ec628600babdac3",
         "scripts/compound-v-integration-gate.py": "9b9fafb5fb81a980fb72b18240fc780c313e62e9add6009b985fd669ae4c2497",
+        "scripts/compound-v-onboard.py": "a6ba7b1ddcc1d6218648634e4a20cbee001b595c8c83899f8706d64f4792abc4",
         "scripts/compound-v-preeval.py": "2757c13be4015fd7bde5f3250eda196dadc59c4a3c23a9fca77bcd96c57d1df2",
         "scripts/compound-v-scope-check.py": "890768c03321a761649f425dcfdf75ed4483cadf528b999182f83b0d1f1a357e",
         "scripts/compound-v-usage-aggregate.py": "e6dfc527dd55b6a8a37384ca4c86df26eb00230da8b8a739d0b029e915eb0f1b",
         "scripts/compound-v-usage-extract.py": "caa00bc1265b2da3421b1cc785b889c5a7bb98e19b684d08ad7682857ac7a518",
+        "scripts/lint-frontmatter.py": "22fe3c98b01ef07b9878d2d7986b77be8238b9bdf17664e812bd10c5225e030c",
         "skills/backend-launcher/SKILL.md": "90da8734006de34095f6ab4e9fbbc20f290d45c6914c3bfcc950aee800fe78c1",
-        "skills/compound-v/SKILL.md": "2a8994b5ee0bc18bc6fec32bab47437575553909c61431a434de594345dfaa4e",
+        "skills/compound-v/SKILL.md": "9666b64c7cd6a9978716e630974abe13a483dc3f0d29ca265329a9eddac67fcd",
         "skills/compound-v/epic-mode.md": "139239ce1728fbd7cdf7985467b718e1858e52d6b001de5a2a4d5d95aee7dc09",
-        "skills/compound-v/execution-manifest.md": "5456a58c0e4bbb7691ec102cac84cd80f5811b7331e1c9781c382b2c006d73ff",
+        "skills/compound-v/execution-manifest.md": "be89eb1c9bfead808acf0f41297d3899d25e419b45c0fd5d7d6be950aff4ac6f",
         "skills/compound-v/memory.md": "d52bb02a47358bf8044fb218afaad43e6f6838456bd06a92e0b4ec77a61b0960",
-        "skills/compound-v/onboarding.md": "0e4254364de8901cf36daeac61ab8304245d1d4c284dcc21c7fad5b7eed56480",
+        "skills/compound-v/onboarding.md": "5f83d2fc0d4014b7b8cca246514a6e879146f74b41be9d0bb506ba04b6d73835",
         "skills/compound-v/phase-3-parallel-opus-dispatch.md": "6e4ddb8f3eb7fda422e7a34358b22c778d11f1498b46e21fcbf5ccd807cdbd08",
         "skills/compound-v/state-machine.md": "2af724adbe3aa3364c1fe8f6d908078c39486a90b3698b3ced741804c216ec96"
       }
     },
     "docs/superpowers/architecture/business-logic.md": {
       "cited": {
-        ".claude-plugin/plugin.json": "ae3435f27301c3846f38852a8276688e7da4b67eb558958ab6d90988d7dced6f",
-        "README.md": "335882343992fb90d89d13d1610e9978d75a833340652b32f09fde866613d23f",
+        ".claude-plugin/plugin.json": "414182fb0dace5b8c19d9ed90ba25aba8dd1775aff6f33a3c357af5d2f676be3",
+        "README.md": "6a318f0b5c443e96cbe3ca26630a53d19ddcff32547fe36005bd079aafb8671d",
         "skills/backend-launcher/SKILL.md": "90da8734006de34095f6ab4e9fbbc20f290d45c6914c3bfcc950aee800fe78c1",
-        "skills/compound-v/SKILL.md": "2a8994b5ee0bc18bc6fec32bab47437575553909c61431a434de594345dfaa4e",
+        "skills/compound-v/SKILL.md": "9666b64c7cd6a9978716e630974abe13a483dc3f0d29ca265329a9eddac67fcd",
         "skills/compound-v/epic-mode.md": "139239ce1728fbd7cdf7985467b718e1858e52d6b001de5a2a4d5d95aee7dc09",
-        "skills/compound-v/execution-manifest.md": "5456a58c0e4bbb7691ec102cac84cd80f5811b7331e1c9781c382b2c006d73ff",
+        "skills/compound-v/execution-manifest.md": "be89eb1c9bfead808acf0f41297d3899d25e419b45c0fd5d7d6be950aff4ac6f",
         "skills/compound-v/phase-3-parallel-opus-dispatch.md": "6e4ddb8f3eb7fda422e7a34358b22c778d11f1498b46e21fcbf5ccd807cdbd08"
       }
     },
     "docs/superpowers/architecture/tech-context.md": {
       "cited": {
-        ".claude-plugin/plugin.json": "ae3435f27301c3846f38852a8276688e7da4b67eb558958ab6d90988d7dced6f",
+        ".claude-plugin/plugin.json": "414182fb0dace5b8c19d9ed90ba25aba8dd1775aff6f33a3c357af5d2f676be3",
         ".github/workflows/validate.yml": "d344cc33ec90382a7ba82998df69b6acbd3b78c61b98250c1adc1369912f0c1d",
         "hooks/hooks.json": "f24b7639a53e2e95a7b4a38894ee1d9bb9d329d8efde87bb832269d70afa099e",
         "hooks/lane-guard.sh": "d8b4f5a029325ab59aca07cd563dbe7793660e71bfbf3b484038f3d60021dd50",
@@ -48,18 +51,18 @@
         "scripts/compound-v-epic-arbiter.py": "15e239695339bcb0db70ee3181a481a81cbf917e319fc9dc1c63e8ab8881c54a",
         "scripts/compound-v-epic-state.py": "d5e8f8f68d8d2a9923813506848831c2a9fdab62104d57091ec628600babdac3",
         "scripts/compound-v-integration-gate.py": "9b9fafb5fb81a980fb72b18240fc780c313e62e9add6009b985fd669ae4c2497",
-        "scripts/compound-v-onboard.py": "876318023e5a4c2bcd35475a55e969af80d0fba45942eea30e42cd7125253d74",
+        "scripts/compound-v-onboard.py": "a6ba7b1ddcc1d6218648634e4a20cbee001b595c8c83899f8706d64f4792abc4",
         "scripts/compound-v-preeval.py": "2757c13be4015fd7bde5f3250eda196dadc59c4a3c23a9fca77bcd96c57d1df2",
         "scripts/compound-v-resolve-model.py": "880638c2baf050a34a11ad8f72989cc11e0508be97c2a5000b84bfe86944f1d8",
         "scripts/compound-v-scope-check.py": "890768c03321a761649f425dcfdf75ed4483cadf528b999182f83b0d1f1a357e",
         "scripts/compound-v-usage-aggregate.py": "e6dfc527dd55b6a8a37384ca4c86df26eb00230da8b8a739d0b029e915eb0f1b",
         "scripts/compound-v-usage-extract.py": "caa00bc1265b2da3421b1cc785b889c5a7bb98e19b684d08ad7682857ac7a518",
-        "scripts/compound-v-validate-manifest.py": "6c810e833bc470309e8ef8c8a9efed2c90d0103a543413635b86fd88c56f77cc",
-        "scripts/lint-frontmatter.py": "1994cff0fcc1678001c3b1b2b4a59d912ce8bbc8b279b2565474fb89cd3b5378",
-        "skills/compound-v/SKILL.md": "2a8994b5ee0bc18bc6fec32bab47437575553909c61431a434de594345dfaa4e",
+        "scripts/compound-v-validate-manifest.py": "721e12e75dbde5d173c11426bf69b6144ada3870b6015c9f9129303b82177aec",
+        "scripts/lint-frontmatter.py": "22fe3c98b01ef07b9878d2d7986b77be8238b9bdf17664e812bd10c5225e030c",
+        "skills/compound-v/SKILL.md": "9666b64c7cd6a9978716e630974abe13a483dc3f0d29ca265329a9eddac67fcd",
         "skills/compound-v/epic-mode.md": "139239ce1728fbd7cdf7985467b718e1858e52d6b001de5a2a4d5d95aee7dc09",
         "skills/compound-v/memory.md": "d52bb02a47358bf8044fb218afaad43e6f6838456bd06a92e0b4ec77a61b0960",
-        "skills/compound-v/onboarding.md": "0e4254364de8901cf36daeac61ab8304245d1d4c284dcc21c7fad5b7eed56480",
+        "skills/compound-v/onboarding.md": "5f83d2fc0d4014b7b8cca246514a6e879146f74b41be9d0bb506ba04b6d73835",
         "skills/compound-v/state-machine.md": "2af724adbe3aa3364c1fe8f6d908078c39486a90b3698b3ced741804c216ec96"
       }
     },
@@ -67,18 +70,59 @@
       "cited": {
         ".cclintrc.json": "8ac23a19d14a834e5fb062fe4c3962e2a2398386311bcfaa77bd5c08c03652dc",
         ".github/workflows/validate.yml": "d344cc33ec90382a7ba82998df69b6acbd3b78c61b98250c1adc1369912f0c1d",
-        "examples/manifest.example.yaml": "a4b689cfb723786cb07f496b7f8141fdbed1ba8fc907b2b1985d71d368b14ba7",
+        "examples/manifest.example.yaml": "6de8369f2aaaf097b96de4069d165d659e68dbaf8733426070eb94f09ba32ae0",
         "hooks/hooks.json": "f24b7639a53e2e95a7b4a38894ee1d9bb9d329d8efde87bb832269d70afa099e",
         "hooks/lane-guard.sh": "d8b4f5a029325ab59aca07cd563dbe7793660e71bfbf3b484038f3d60021dd50",
-        "scripts/compound-v-onboard.py": "876318023e5a4c2bcd35475a55e969af80d0fba45942eea30e42cd7125253d74",
+        "scripts/compound-v-onboard.py": "a6ba7b1ddcc1d6218648634e4a20cbee001b595c8c83899f8706d64f4792abc4",
         "scripts/compound-v-scope-check.py": "890768c03321a761649f425dcfdf75ed4483cadf528b999182f83b0d1f1a357e",
         "scripts/compound-v-usage-extract.py": "caa00bc1265b2da3421b1cc785b889c5a7bb98e19b684d08ad7682857ac7a518",
-        "scripts/lint-frontmatter.py": "1994cff0fcc1678001c3b1b2b4a59d912ce8bbc8b279b2565474fb89cd3b5378",
+        "scripts/lint-frontmatter.py": "22fe3c98b01ef07b9878d2d7986b77be8238b9bdf17664e812bd10c5225e030c",
         "skills/backend-launcher/SKILL.md": "90da8734006de34095f6ab4e9fbbc20f290d45c6914c3bfcc950aee800fe78c1",
-        "skills/compound-v/SKILL.md": "2a8994b5ee0bc18bc6fec32bab47437575553909c61431a434de594345dfaa4e",
-        "skills/compound-v/execution-manifest.md": "5456a58c0e4bbb7691ec102cac84cd80f5811b7331e1c9781c382b2c006d73ff",
-        "skills/compound-v/onboarding.md": "0e4254364de8901cf36daeac61ab8304245d1d4c284dcc21c7fad5b7eed56480",
+        "skills/compound-v/SKILL.md": "9666b64c7cd6a9978716e630974abe13a483dc3f0d29ca265329a9eddac67fcd",
+        "skills/compound-v/execution-manifest.md": "be89eb1c9bfead808acf0f41297d3899d25e419b45c0fd5d7d6be950aff4ac6f",
+        "skills/compound-v/onboarding.md": "5f83d2fc0d4014b7b8cca246514a6e879146f74b41be9d0bb506ba04b6d73835",
         "skills/compound-v/state-machine.md": "2af724adbe3aa3364c1fe8f6d908078c39486a90b3698b3ced741804c216ec96"
+      }
+    },
+    ".claude/rules/docs.md": {
+      "cited": {
+        ".github/workflows/validate.yml": "d344cc33ec90382a7ba82998df69b6acbd3b78c61b98250c1adc1369912f0c1d",
+        "CONVENTIONS.md": "4f588cc869746b817e5c2e7ef59ec57249efbfcf0ecac7ea813b7918d23135d2",
+        "skills/compound-v/SKILL.md": "9666b64c7cd6a9978716e630974abe13a483dc3f0d29ca265329a9eddac67fcd",
+        "skills/compound-v/onboarding.md": "5f83d2fc0d4014b7b8cca246514a6e879146f74b41be9d0bb506ba04b6d73835"
+      }
+    },
+    ".claude/rules/hooks.md": {
+      "cited": {
+        ".github/workflows/validate.yml": "d344cc33ec90382a7ba82998df69b6acbd3b78c61b98250c1adc1369912f0c1d",
+        "CONVENTIONS.md": "4f588cc869746b817e5c2e7ef59ec57249efbfcf0ecac7ea813b7918d23135d2",
+        "hooks/hooks.json": "f24b7639a53e2e95a7b4a38894ee1d9bb9d329d8efde87bb832269d70afa099e",
+        "hooks/lane-guard.sh": "d8b4f5a029325ab59aca07cd563dbe7793660e71bfbf3b484038f3d60021dd50",
+        "skills/compound-v/state-machine.md": "2af724adbe3aa3364c1fe8f6d908078c39486a90b3698b3ced741804c216ec96"
+      }
+    },
+    ".claude/rules/manifests.md": {
+      "cited": {
+        ".github/workflows/validate.yml": "d344cc33ec90382a7ba82998df69b6acbd3b78c61b98250c1adc1369912f0c1d",
+        "CONVENTIONS.md": "4f588cc869746b817e5c2e7ef59ec57249efbfcf0ecac7ea813b7918d23135d2",
+        "examples/manifest.example.yaml": "6de8369f2aaaf097b96de4069d165d659e68dbaf8733426070eb94f09ba32ae0",
+        "skills/compound-v/execution-manifest.md": "be89eb1c9bfead808acf0f41297d3899d25e419b45c0fd5d7d6be950aff4ac6f"
+      }
+    },
+    ".claude/rules/scripts.md": {
+      "cited": {
+        ".github/workflows/validate.yml": "d344cc33ec90382a7ba82998df69b6acbd3b78c61b98250c1adc1369912f0c1d",
+        "CONVENTIONS.md": "4f588cc869746b817e5c2e7ef59ec57249efbfcf0ecac7ea813b7918d23135d2",
+        "scripts/compound-v-onboard.py": "a6ba7b1ddcc1d6218648634e4a20cbee001b595c8c83899f8706d64f4792abc4",
+        "scripts/compound-v-scope-check.py": "890768c03321a761649f425dcfdf75ed4483cadf528b999182f83b0d1f1a357e",
+        "scripts/compound-v-usage-extract.py": "caa00bc1265b2da3421b1cc785b889c5a7bb98e19b684d08ad7682857ac7a518",
+        "scripts/lint-frontmatter.py": "22fe3c98b01ef07b9878d2d7986b77be8238b9bdf17664e812bd10c5225e030c"
+      }
+    },
+    ".claude/rules/tests.md": {
+      "cited": {
+        ".github/workflows/validate.yml": "d344cc33ec90382a7ba82998df69b6acbd3b78c61b98250c1adc1369912f0c1d",
+        "CONVENTIONS.md": "4f588cc869746b817e5c2e7ef59ec57249efbfcf0ecac7ea813b7918d23135d2"
       }
     }
   }
