@@ -39,6 +39,8 @@ indexing is [`/v:memory-refresh`](v-memory-refresh.md).
    repo, and `rules-lint` must exit 0 before those files are committed. The body grammar allows only
    one short H1, blank lines and CITED items/paragraphs — fenced and indented code are refused — so an
    uncited sentence cannot ride along. `rules-plan` proposes areas; it never writes a rule.
+7. **`operations.md` only when `detect-ops` found ops signals (or the maintainer pointed at a bespoke
+   deployer), and confirmed at the gate.** An empty scan is an open question, never a "no ops" verdict.
 
 When the pipeline (or refresh) finishes, report what was written, what the doctor recommended
 (advisory — including **MCP / external-tool recommendations** via `recommend-mcp`: CLI-over-MCP so a
