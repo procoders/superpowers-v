@@ -848,10 +848,15 @@ PRECOMPACT="${PRECOMPACT_SRC:-$REPO/hooks/precompact-snapshot.sh}"
 npc_proj="$WORK/projPC"
 mkdir -p "$npc_proj/scripts" "$npc_proj/docs/superpowers/execution/2026-01-01-x"
 cp "$REPO/scripts/compound-v-dashboard.py" "$npc_proj/scripts/" 2>/dev/null || true
-cat >"$npc_proj/docs/superpowers/execution/2026-01-01-x/state.json" <<'JSON'
-{"run_id":"2026-01-01-x","phase":"DISPATCHED","updated_at":"2026-09-02T00:00:00Z",
- "jobs":{"a":{"status":"pending"},"b":{"status":"done"}}}
-JSON
+# `updated_at` MUST be generated, never hardcoded. `dashboard resume` filters on
+# DEFAULT_RESUME_MAX_AGE_HOURS (72h), so a literal date is a time bomb: it passes
+# while the clock is near it and starts failing the day wall-clock drifts past the
+# window — silently, and nowhere near the code that broke. The other three run
+# fixtures in this file already use now_ts(); this one did not.
+jq -n --arg ts "$(now_ts)" \
+  '{run_id:"2026-01-01-x", phase:"DISPATCHED", updated_at:$ts,
+    jobs:{"a":{status:"pending"},"b":{status:"done"}}}' \
+  >"$npc_proj/docs/superpowers/execution/2026-01-01-x/state.json"
 # A run dir is only a run dir to the dashboard when it carries a manifest as well
 # as a state file — found by probing the real scanner, not by reading it.
 printf 'run_id: 2026-01-01-x\n' >"$npc_proj/docs/superpowers/execution/2026-01-01-x/manifest.yaml"
