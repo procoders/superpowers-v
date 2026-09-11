@@ -8,7 +8,7 @@
 
 `/v:onboard` studies an existing repository and builds a **trusted, citation-verified knowledge
 base** (`docs/superpowers/architecture/*`) plus **cross-tool agent instructions** (`AGENTS.md` +
-a thin `CLAUDE.md` bridge, root `CONVENTIONS.md`, conditional `DESIGN.md`) — all behind a human
+a thin `CLAUDE.md` bridge, root `CONVENTIONS.md`, conditional `DESIGN.md`, conditional `operations.md`) — all behind a human
 approval gate — then feeds them into V-memory. What onboarding writes becomes recall
 (`/v:remember`) and pre-flight context for the orchestrator. It **extends** `docs/superpowers/**`;
 it never rewrites the recall engine or the routing layer.
@@ -55,6 +55,21 @@ Inventory the ground truth, write nothing:
 - **Existing instruction files** (treat per the cardinal rule above), stack, git remote origin.
 - **UI presence** via `python3 scripts/compound-v-onboard.py detect-ui --repo .` → `ui` / `no-ui`.
   This is the only thing that decides whether the DESIGN.md branch runs (step 9 / §DESIGN below).
+- **Operations / Deployment signals** via `python3 scripts/compound-v-onboard.py detect-ops
+  --repo . --json` → `{signals_found, ci_cd[], containers[], deploy[]}`. Inventories CI/CD
+  (`.github/workflows/*`, `.gitlab-ci.yml`, `.circleci/config.yml`, `Jenkinsfile`,
+  `azure-pipelines.yml`, `.travis.yml`, `bitbucket-pipelines.yml`), container/infra
+  (`Dockerfile*`, `docker-compose*`/`compose.*`, `*.tf`/`*.tfvars`, and k8s heuristics —
+  `k8s/`, `kustomization.yaml`, Helm `Chart.yaml`), and deploy/PaaS (`Procfile`, `fly.toml`,
+  `vercel.json`, `netlify.toml`, `render.yaml`, `serverless.yml`, `app.yaml`, `deploy*.sh`).
+  Silent inventory like `detect-ui` — the *include-it?* ask lives at the GATE (§6), not here.
+  The fixed signal list is a **common-case accelerator, not a verdict**: `signals_found: true`
+  proposes the operations.md branch with the found files; `signals_found: false` means **"no
+  signals found," NOT "this project has no ops layer"** — a bespoke deployer (e.g. a hand-rolled
+  `ship.sh`) matches nothing yet still exists. So the empty case is **never a silent skip**; it
+  becomes an **open question at the GATE** (§6). An incomplete scan must never read as a clean
+  one. k8s detection is a filename/dir heuristic (it cannot see manifest content) — stated as
+  such here and in the operations.md doc section.
 - **Style configs**: eslint / prettier / ruff / editorconfig / tsconfig / lockfiles — the
   deterministic evidence `CONVENTIONS.md` is later derived from.
 - **Cross-tool signal** for the bridge decision: presence of `.cursor*`, `.windsurf*`, `GEMINI.md`,
@@ -82,12 +97,20 @@ load-bearing.
 Generation is **read-then-cite**: open the files, claim only what you actually read, and attach a
 `file:line` citation to every architecture / business-logic claim. Emit a **claims file** in the
 schema VERIFY consumes (locked in "Shared Interfaces"): each claim carries `text`, `type`
-(`architecture | business-logic | tech-context | convention`), `citations[{path,startLine,endLine}]`,
+(`architecture | business-logic | tech-context | convention | operations`), `citations[{path,startLine,endLine}]`,
 `load_bearing` + `load_bearing_reason` (`security | fail-closed | concurrency | other`), `confidence`,
 and `target_doc_section`.
 
 A claim is **load-bearing** when it concerns **security, fail-closed behavior, or concurrency** —
 the claims where being confidently wrong is dangerous.
+
+`operations` claims (CI/CD, container topology, deploy target, runbook pointers) target
+`operations.md` and are emitted when DETECT found ops signals (`signals_found: true`) **or** when
+the maintainer answered the GATE's open question by pointing at a bespoke deployer the signal list
+missed (§6). The load-bearing rule still bites: a deploy-secret path, a production/branch deploy
+gate, or a fail-closed CI check is **load-bearing** (`security` / `fail-closed`) and blocks on
+unsupported per the two-tier gate (§4) like any other load-bearing claim. `type` is free-form to
+`verify-citations`, so this adds no schema change.
 
 ### 4. VERIFY — the two-tier citation gate
 Hand the claims file to `python3 scripts/compound-v-onboard.py verify-citations --claims FILE
@@ -148,6 +171,25 @@ Also flag drift from `python3 scripts/compound-v-onboard.py staleness --repo .` 
 Present, for approval, a **per-artifact AND per-section diff**, alongside confidence/staleness and
 the diagnosis. **Nothing is written before explicit approval** — no auto-apply, ever.
 
+**Operations coverage — surface it in BOTH branches; the detector is an accelerator, never a verdict:**
+
+- **`signals_found: true`** — present `operations.md` as its **own explicit per-artifact confirm**,
+  framed with the detected inventory: *"DevOps/deployment tooling detected —
+  `<ci_cd / containers / deploy counts + paths>` — include `operations.md`?"* Declining drops the doc
+  and writes nothing for it; this is the *"ask the user whether to take DevOps into account"* decision.
+- **`signals_found: false`** — do **not** conclude "no ops layer" and skip silently. The fixed signal
+  list is blind to bespoke deployers, so surface the gap as an **open question**, not a verdict:
+  *"No explicit ops files detected. If this project does deploy, point me at it (e.g. a hand-rolled
+  `ship.sh`, a Makefile target, an internal runbook) and I'll document it in `operations.md`."* If the
+  maintainer names something, EXTRACT reads-then-cites it into `operations.md`; if they confirm there
+  is genuinely nothing, it is skipped — but the **human**, not the heuristic, made that call.
+
+A fully autonomous / unattended run (auto-approve / `--permission-mode dontAsk`) auto-approves the
+`signals_found: true` doc like every other artifact (ops taken into account **without asking** — no
+separate code path). With `signals_found: false` and no human to answer, it records **"ops coverage:
+no signals found (not confirmed absent)"** rather than asserting there is no ops layer — the open
+question survives to the next interactive pass instead of being silently resolved as "none".
+
 Critically, the diff **expands every `@import` target** (to the 4-hop limit). `@import` is **not a
 token optimization** — an imported file loads in **full** at launch; only path-scoped rules and
 skills defer. So an approver must see *what actually loads after this change*, not just the literal
@@ -179,7 +221,8 @@ section before proceeding. **This** is the gate that enforces "no credential rea
 committed file" — not the advisory input pack scan (§2), which would over-block on benign fixtures.
 
 Write **only** what was approved, and **only** within the v1 write surface:
-`docs/superpowers/architecture/*`, root `CONVENTIONS.md`, root `DESIGN.md` (UI repos), `AGENTS.md`,
+`docs/superpowers/architecture/*` (including `operations.md` — **only when the ops gate was approved**,
+§6), root `CONVENTIONS.md`, root `DESIGN.md` (UI repos), `AGENTS.md`,
 the thin `CLAUDE.md` bridge, `.onboard-manifest.json`, `.claude/rules/*.md` (§Path-scoped rules), and —
 **only when the user confirms the diff** — `.mcp.json` (from `mcp_json_config`: merged **additively**,
 never clobbering an existing server; CLI recommendations like `gh` are surfaced as setup instructions,
@@ -222,7 +265,10 @@ the Pre-Evaluation stage see them; they are static-evidence inputs, not recall p
 manifest — they carry no FTS5 obligation. The `--docmap` you pass **includes every**
 **`.claude/rules/*.md`** with the files its rules cite: `write_manifest` replaces the manifest
 wholesale, so a rule omitted from the docmap is silently de-registered and stops being
-staleness-tracked. See §Path-scoped rules.
+staleness-tracked. See §Path-scoped rules. **An approved `operations.md` is a docmap key too**
+(`{"docs": {"docs/superpowers/architecture/operations.md": [<cited files>], …}}`) — omit it and
+`staleness` never flags a stale `operations.md`; a bare `--write` with no `--docmap` writes an EMPTY
+manifest, de-registering everything.
 
 ---
 
@@ -269,6 +315,22 @@ explore → ask → propose → write.
   green). Therefore the gate states **"token pairs pass WCAG AA structurally"** — **never
   "accessible."** Document the linter's blindness in the gate output, and flag multi-theme / arbitrary
   Tailwind class colors as "partial capture" rather than implying full coverage.
+- **`operations.md`** (`docs/superpowers/architecture/`, ops repos) is generated when `detect-ops`
+  found signals (`signals_found: true`) **or** when the maintainer answered the GATE's open question
+  (§6) by naming a bespoke deployer the signal list missed. It is skipped **only** when
+  `signals_found: false` **and** the human confirmed there is genuinely nothing — never silently on an
+  empty scan alone (the "no signals found ≠ no ops layer" distinction is the whole point; verify both
+  the found path and the open-question path on dogfoods). Read-then-cite from the real workflow /
+  Docker / compose / Terraform / deploy files DETECT inventoried (or the file the maintainer pointed
+  at) — never from the model's prior. Cover: container topology (services, ports, volumes), CI/CD
+  stages (build → test → deploy triggers and branch/environment gates), the deploy target +
+  production domain, and runbook pointers. Citations obey the same Tier-1 containment gate (§4) —
+  a cited path that is absolute, walks `..`, escapes the repo via symlink, or names a non-regular
+  file is `path-escapes-repo`/`not-a-regular-file` and blocks. **No credential is ever extracted
+  into the doc** — the blocking `scan-output` gate (§7) refuses a generated file that contains one,
+  and a deploy-secret reference is documented by *path*, not value. It is a normal cited arch doc, so
+  it rides the same `.onboard-manifest.json` cited-evidence staleness machinery (§9 / §Refresh) with
+  no new gate.
 
 ---
 
