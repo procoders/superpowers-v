@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added — `post-merge-cleanup` skill
+
+After a PR is merged, the skill proves the merge read-only (merge commit in `origin/<base>`, every touched file
+in base, closing issues closed), then deletes only the branches, worktrees and temp files that are provably the
+author's, and asks before touching anything else. It works for squash and rebase merges, where `git branch
+--merged` cannot tell. The bundled `scripts/inventory.sh` never deletes. It is the step after
+`superpowers:finishing-a-development-branch`, which ends when the PR is opened.
+
 ## [3.7.5] - 2026-09-30
 
 ### Changed — Codex implementation moves to `gpt-6.1-sol`; review stays on Astra
