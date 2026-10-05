@@ -8,8 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added — `post-merge-cleanup` skill
 
-After a PR is merged, the skill proves the merge read-only (merge commit in the default branch, every line the PR
-added still in it, closing issues closed), then deletes only the branches, worktrees and temp files that are
+After a PR is merged, the skill proves the merge read-only (merge commit in the branch the PR targeted, every line the PR
+added still in it, closing issues closed; a PR merged into `dev` rather than the default branch gets a warning, not a stop), then deletes only the branches, worktrees and temp files that are
 provably the author's, after one confirmation. It works for squash and rebase merges, where `git branch --merged`
 cannot tell. The bundled `scripts/inventory.sh` never deletes and exits 1 on a failed gate; `--git-only <branch>`
 works without `gh` or `jq`. It never deletes the origin branch of a fork PR or of a PR written by someone else on

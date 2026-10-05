@@ -43,14 +43,19 @@ user (step 4). Exit 2 means the script could not run (missing `gh`/`jq`, wrong r
 | Gate | Why the obvious check is not enough |
 |---|---|
 | PR state is `MERGED` (full mode only) | — |
-| Merge commit is an ancestor of `origin/<default branch>` (the default branch, not only the PR's own base: a PR merged into a parent branch says nothing about it) | A stacked PR can merge into its parent branch *after* that parent already landed. GitHub shows MERGED, and the code never reaches main. The badge is not proof. |
+| Merge commit is an ancestor of `origin/<base>`, the branch the PR was merged into (`main`, `dev`, a release branch) | The MERGED badge is not proof: the merge commit has to be in the branch the PR targeted. A PR merged into `dev` is proven by `origin/dev`, not by `main`. |
 | Every file the PR touched is identical in `origin/<base>`, or every line the PR added to it is still in `origin/<base>` | Squash and rebase merges create new commits. `git branch -d` refuses and `git branch --merged` lies, so content comparison is the only proof. "A later commit touched the file" is not proof: a change reverted after the merge would pass. A file whose added lines are gone, a deleted file that still exists, or a binary that differs is a `GATE`, and you verify it by hand. |
 | Issues the PR closes are `CLOSED` | An issue still open despite "Closes #N" is the classic sign of the stacked-merge race above. |
 
 If a gate fails only because later commits rewrote the file, check one distinctive line of the change by
 hand (`git show origin/<base>:<file> | grep -c '<line>'`) and tell the user what you found. The decision to
 go on is theirs.
-"A later commit touched the file" is not proof that it kept your change.
+
+**A PR merged into a branch other than the default** (`dev`, a release branch, a parent branch) is proven
+against that branch and gets a `WARN`, not a `GATE`: deleting the PR's branch loses nothing while the base
+still holds its commits. Tell the user the code reaches the default branch only when the base does, and ask.
+The real trap is a stacked PR merged into a parent that already landed: if that parent was deleted, the script
+says so and proves against the default branch, where the PR's code is then missing, which is a `GATE`.
 
 ## Step 2 — Close out the work before removing it
 

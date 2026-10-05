@@ -8,7 +8,7 @@
 #
 # Scenarios (PR number in the name):
 #   s1 PR 11  squash-merged, clean                                  -> proofs pass, nothing to warn about
-#   s2 PR 12  stacked: merged into a parent that never reached main -> GATE, delete nothing
+#   s2 PR 12  merged into 'parent' (like dev), not into main        -> proven against parent, WARN: ask
 #   s3 PR 17  squash-merged, plus another session's branch fix-1734 and a stash -> only feat-17 is a candidate
 #   s4 PR 14  squash-merged, but the local branch has an unpushed commit -> WARN: unmerged work
 #   s5 PR 15  fork PR whose head name matches an unrelated origin branch -> WARN fork, origin never touched
@@ -170,7 +170,9 @@ run() { # run <s> <pr-or-branch args...>: output in $out, exit code in $rc
 has() { grep -Eq -- "$1" <<<"$out"; }  # here-string: grep -q in a pipe would SIGPIPE the writer under pipefail
 
 run s1 11;            t $([ "$rc" = 0 ] && has '^OK merge commit' && has '^OK every file the branch touched is identical' && echo 0 || echo 1) "s1: squash-merged branch passes every gate"
-run s2 12;            t $([ "$rc" = 1 ] && has "^GATE PR base is 'parent'" && has '^GATE merge commit .* NOT in origin/main' && echo 0 || echo 1) "s2: stacked PR is a GATE"
+run s2 12;            t $([ "$rc" = 0 ] && has "^WARN PR merged into 'parent', not the default branch 'main'" && has '^OK merge commit .* is in origin/parent' && echo 0 || echo 1) "s2: a PR merged into a non-default base is proven against that base, with a WARN"
+build s2 "$T/s2d"; git -C "$T/s2d/work" push -q origin --delete parent; out=$(PATH="$T/s2d/bin:$PATH" bash "$INV" 12 "$T/s2d/work" 2>&1); rc=$?
+                      t $([ "$rc" = 1 ] && has "no longer exists on origin" && has '^GATE merge commit .* NOT in origin/main' && echo 0 || echo 1) "s2 with the base deleted: proven against main, so the stacked-PR trap is a GATE"
 run s3 17;            t $([ "$rc" = 0 ] && has '^INFO feat-17 ' && ! has 'fix-1734 \[' && echo 0 || echo 1) "s3: PR number matches a whole token, not 'fix-1734'"
 run s4 14;            t $([ "$rc" = 0 ] && has '^WARN feat-14 has 1 commit' && echo 0 || echo 1) "s4: unpushed follow-up commit is a WARN"
 run s5 15;            t $([ "$rc" = 0 ] && has '^WARN fork PR' && has '^INFO fork PR .* origin is not checked' && echo 0 || echo 1) "s5: fork PR never reaches the origin branch"

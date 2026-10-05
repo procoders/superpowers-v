@@ -60,17 +60,17 @@ else
   [ -n "$HEAD_OID" ] || { echo "WARN no local or origin branch named '$HEAD' — nothing to inventory"; exit 2; }
 fi
 
-# The branch every proof is taken against: the repository's default branch, not the PR's own base. A stacked PR
-# merged into its parent shows MERGED, yet says nothing about the default branch.
+# Every proof is taken against the branch the PR was merged INTO (its base): a PR merged into `dev` is proven by
+# `origin/dev`. The repository's default branch is only used to tell the user when the two differ.
 DEFAULT=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')
-CMP="$BASE"; [ "$MODE" = full ] && [ -n "$DEFAULT" ] && CMP="$DEFAULT"
+CMP="$BASE"
 
 echo "== PR"
 if [ "$MODE" = full ]; then
   echo "INFO #$PR state=$STATE head=$HEAD base=$BASE author=$AUTHOR (you: $ME) fork=$CROSS mergedAt=$(q '.mergedAt // "-"')"
   [ "$STATE" = "MERGED" ] || gate "PR is not merged — stop: there is nothing to clean up yet"
-  if [ "$BASE" != "$CMP" ]; then
-    gate "PR base is '$BASE', not the default branch '$CMP': merging there reaches $CMP only if $BASE does. Proofs below are against $CMP — verify by hand"
+  if [ -n "$DEFAULT" ] && [ "$BASE" != "$DEFAULT" ]; then
+    echo "WARN PR merged into '$BASE', not the default branch '$DEFAULT'. Normal for an integration branch such as dev; but its code reaches $DEFAULT only when $BASE does (a stacked PR merged into a parent that already landed never does). Proofs below are against origin/$BASE — tell the user, and ask before deleting"
   fi
   if [ "$AUTHOR" != "$ME" ]; then
     echo "WARN the PR is by $AUTHOR, not by you ($ME) — its origin branch is theirs: never delete it on a general cleanup request, only if the user names it. Your own local review checkout is yours"
@@ -83,8 +83,12 @@ else
   echo "WARN no proof here that a PR for '$HEAD' was ever opened or merged — the user must confirm it merged. Do not delete a remote branch unless it is yours and they confirm"
 fi
 
-git fetch -q origin "$CMP" 2>/dev/null || echo "WARN could not fetch origin/$CMP — results below may be stale"
-git rev-parse --verify --quiet "origin/$CMP" >/dev/null || { echo "WARN origin/$CMP does not exist"; exit 2; }
+git fetch -q origin "$CMP" 2>/dev/null
+if ! git rev-parse --verify --quiet "origin/$CMP" >/dev/null && [ -n "$DEFAULT" ] && [ "$CMP" != "$DEFAULT" ]; then
+  echo "INFO base branch '$BASE' no longer exists on origin (deleted after the merge) — proofs are against $DEFAULT, so a stacked PR whose parent was deleted is checked there"
+  CMP="$DEFAULT"; git fetch -q origin "$CMP" 2>/dev/null
+fi
+git rev-parse --verify --quiet "origin/$CMP" >/dev/null || { echo "WARN origin/$CMP does not exist and cannot be fetched"; exit 2; }
 
 echo "== MERGE PROOF (the badge is not proof: a stacked PR can show MERGED and never reach $BASE)"
 if [ "$MODE" = full ]; then
