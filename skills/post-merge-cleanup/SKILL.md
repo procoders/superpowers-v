@@ -1,0 +1,131 @@
+---
+name: post-merge-cleanup
+description: Clean the local machine after a pull request is merged — local and remote branches, git worktrees, temp files, dev servers — and close out the ticket, deleting only what is provably yours or provably merged. Use when the user says the PR is merged and asks to tidy up ("смержено, чисти", "clean up after merge", "delete my branches/worktree"), and before deleting any branch or worktree whose PR was squash- or rebase-merged.
+---
+
+# Post-merge cleanup
+
+The goal is a machine with no trace of finished work and **zero lost work**. Those two pull in
+opposite directions, so the whole skill is about one distinction: what you can *prove* (check it
+yourself, act without asking) versus what you can only *assume* (ask first).
+
+Deletion is the one step that cannot be undone, and the things most likely to be destroyed by
+mistake look exactly like your leftovers: another session's branch, the app's worktree pool, a stash
+entry from a different worktree, a secret the user placed by hand. So the default for anything you
+did not create in this work is "leave it and mention it", not "clean it".
+
+## Step 1 — Prove the merge (read-only)
+
+Run the bundled inventory, `scripts/inventory.sh` in this skill's base directory. It never deletes, checks
+out or pushes; its one write is `git fetch`, which updates remote-tracking refs. It needs `git`, `gh` (logged in to the repo's account) and `jq`:
+
+```bash
+bash <skill-base-dir>/scripts/inventory.sh <pr-number> <repo-dir>
+```
+
+**No `gh` or `jq`, or no GitHub?** Use git-only mode. It needs nothing but `git`:
+
+```bash
+bash <skill-base-dir>/scripts/inventory.sh --git-only <head-branch> <repo-dir>
+```
+
+Git-only mode cannot see the forge, so the proof is weaker and the script says so. It proves what git can:
+the branch is already in `origin/<base>`, or every line it added is (a local commit that was never merged
+fails this gate). It does **not** prove that a PR for the branch was opened or merged, and it does not check
+the PR author, fork status or closing issues. So **before deleting anything, ask the user to confirm the PR
+merged**, and never delete a remote branch the user has not said is theirs. When `gh` is missing, the
+full-mode script exits 2 and tells you to switch to this mode.
+
+Every line starts with `OK` / `INFO` / `WARN` / `GATE`. A `GATE` line is a failed gate and the script
+then exits 1: **stop, report it, delete nothing.** A `WARN` line is not a stop, it is a question for the
+user (step 4). Exit 2 means the script could not run (missing `gh`/`jq`, wrong repo or account).
+
+| Gate | Why the obvious check is not enough |
+|---|---|
+| PR state is `MERGED` (full mode only) | — |
+| Merge commit is an ancestor of `origin/<base>`, the branch the PR was merged into (`main`, `dev`, a release branch) | The MERGED badge is not proof: the merge commit has to be in the branch the PR targeted. A PR merged into `dev` is proven by `origin/dev`, not by `main`. |
+| Every file the PR touched is identical in `origin/<base>`, or every line the PR added to it is still in `origin/<base>` | Squash and rebase merges create new commits. `git branch -d` refuses and `git branch --merged` lies, so content comparison is the only proof. "A later commit touched the file" is not proof: a change reverted after the merge would pass. A file whose added lines are gone, a deleted file that still exists, or a binary that differs is a `GATE`, and you verify it by hand. |
+| Issues the PR closes are `CLOSED` | An issue still open despite "Closes #N" is the classic sign of the stacked-merge race above. |
+
+If a gate fails only because later commits rewrote the file, check one distinctive line of the change by
+hand (`git show origin/<base>:<file> | grep -c '<line>'`) and tell the user what you found. The decision to
+go on is theirs.
+
+**A PR merged into a branch other than the default** (`dev`, a release branch, a parent branch) is proven
+against that branch and gets a `WARN`, not a `GATE`: deleting the PR's branch loses nothing while the base
+still holds its commits. Tell the user the code reaches the default branch only when the base does, and ask.
+The real trap is a stacked PR merged into a parent that already landed: if that parent was deleted, the script
+says so and proves against the default branch, where the PR's code is then missing, which is a `GATE`.
+
+## Step 2 — Close out the work before removing it
+
+Do this first, because cleanup removes the commits these steps derive data from:
+
+- If the repo has a ticket workflow (a project skill or doc describing how tickets are closed), run its ship step:
+  Done status, actual end date, actual hours. A squash merge leaves one commit, so hours cannot be
+  derived from history. Give an honest estimate and say it is an estimate.
+- Update or close any memory note about the work ("✅ DONE, PR #N merged <date>").
+
+## Step 3 — Build the deletion list: only what is provably yours
+
+An item is **yours** when this conversation (or its memory note) shows you created it for this work.
+A name that merely contains the ticket number is a hint, not proof. Typical items:
+
+- the PR's head branch, locally and on `origin`. For a **fork PR** (`fork=true`) the head branch is in the
+  author's fork: never delete it on `origin`, because a same-named branch there belongs to someone else.
+  The same goes when the PR author is not you (compare `author` with `you` in the first line of the output): the
+  origin branch is that person's. A general instruction such as "clean up after this PR" or "delete the PR's
+  branches" is **not** a yes for it, because the user was speaking about their own work. Delete it only if the
+  user names that branch and says it is theirs to remove. Your own local review checkout of it (for example
+  `alice-feat-20` created to try the PR) is yours and goes through the normal confirmation;
+- the branch the session started on (for example an app-created `claude/<slug>` branch) — only if it
+  holds no commits beyond base;
+- temp files you wrote: eval output, PR body drafts, files under the session scratchpad or `$TMPDIR`;
+- dev servers or background processes you started (stop them with the tool that started them).
+
+An item is **safe to put on the list** only when it is yours *and*:
+
+- **Branch:** all its commits are in the PR head (`commits-after-PR-head=0`), so nothing on it is
+  unmerged. On the remote (own-repo PR only), it still points at the PR head (nobody pushed after the merge).
+- **Temp file:** it holds only output you can regenerate. Temp files need no question.
+
+"Yours" is a judgement from conversation evidence, and after a context compaction that evidence may be
+gone. So **branches are always confirmed once, even the provably-yours ones** (step 4).
+
+## Step 4 — Ask before touching any of these
+
+Ask once, as a short list, and act only on a clear yes. Each one needs a question for its own reason:
+
+| Item | Why it needs a yes |
+|---|---|
+| **Every branch you plan to delete**, local or remote, including the provably-yours head branch | Show the exact list (name, commits-not-in-base, where it is checked out) and get one yes. Ownership is a judgement, and the conversation evidence for it may be gone after a compaction. |
+| Uncommitted changes, or commits not in the PR (`commits-after-PR-head>0`, `dirty>0`) | This is unmerged work, and deleting it is unrecoverable. |
+| The worktree this session is running in | Removing it from inside breaks the session. If the desktop app created it, the clean path is archiving the session, which ends the conversation, so the user must agree. Never `rm -rf` it. |
+| Detached worktrees you did not create (for example a "kept ready" pool under `.claude/worktrees/`) | The app reuses them and reaps them itself. |
+| Branches, worktrees or stash entries of other sessions or teammates | Parallel sessions share the repo. Their work looks like stale leftovers. |
+| A remote branch that moved past the PR head, or the origin branch of a PR authored by someone else | Someone may still be using it. A blanket "clean up after the PR" does not cover it: only the user naming that branch does. |
+| Any `git stash` entry | The stash is shared across every worktree. Report it; never pop or drop it. |
+| Secrets or config the user placed (`.env.local`, API keys), memory notes | These were the user's deliberate input, not your leftovers. |
+| Global caches (`pnpm store prune`, Docker images, `~/Library/Caches`) | They affect every project on the machine. Worth offering when disk is short, never a silent part of cleanup. |
+
+## Step 5 — Delete, in a safe order
+
+1. Temp files and scratch output.
+2. Remote branch: `git push origin --delete <head>` — only for a PR whose `fork=false` and whose author is
+   you, only when step 3 cleared it, and only after the yes from step 4. For a fork PR, skip this step.
+3. Local branches. A branch checked out in your own worktree cannot be deleted, so first
+   `git checkout --detach origin/<base>` there. Use `git branch -D` only after the content proof in
+   step 1; that proof is what makes `-D` safe after a squash merge.
+4. `git fetch --prune origin` so stale remote-tracking refs go too.
+5. The worktree itself, last, and only with the user's yes from step 4.
+
+Re-run `inventory.sh` afterwards. The PR's branches should be gone and nothing new should show as WARN.
+
+## Report
+
+Lead with the one open decision (usually "archive the session to remove the worktree?"), then list:
+
+- **Proven:** merge commit in base, content in base, issue closed;
+- **Deleted:** each branch, remote branch and file group;
+- **Left on purpose:** each item with its reason (user's secret, app pool, other session's branch);
+- **Closed out:** ticket status and hours, marking estimated hours as estimates.
