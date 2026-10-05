@@ -16,24 +16,27 @@ did not create in this work is "leave it and mention it", not "clean it".
 
 ## Step 1 — Prove the merge (read-only)
 
-Run the bundled inventory, `scripts/inventory.sh` in this skill's base directory. It only fetches and
-reads; it never deletes, checks out or pushes. It needs `git`, `gh` (logged in to the repo's account) and `jq`:
+Run the bundled inventory, `scripts/inventory.sh` in this skill's base directory. It never deletes, checks
+out or pushes; its one write is `git fetch`, which updates remote-tracking refs. It needs `git`, `gh` (logged in to the repo's account) and `jq`:
 
 ```bash
 bash <skill-base-dir>/scripts/inventory.sh <pr-number> <repo-dir>
 ```
 
-Every line starts with `OK` / `WARN` / `INFO`. Read it against these gates. **Any failed gate stops
-the cleanup**: report the failure and do not delete anything.
+Every line starts with `OK` / `INFO` / `WARN` / `GATE`. A `GATE` line is a failed gate and the script
+then exits 1: **stop, report it, delete nothing.** A `WARN` line is not a stop, it is a question for the
+user (step 4). Exit 2 means the script could not run (missing `gh`/`jq`, wrong repo or account).
 
 | Gate | Why the obvious check is not enough |
 |---|---|
 | PR state is `MERGED` | — |
 | Merge commit is an ancestor of `origin/<base>` | A stacked PR can merge into its parent branch *after* that parent already landed. GitHub shows MERGED, and the code never reaches main. The badge is not proof. |
-| Every file the PR touched is identical in `origin/<base>`, or differs only because of later commits on base | Squash and rebase merges create new commits. `git branch -d` refuses and `git branch --merged` lies, so content comparison is the only proof. If a file differs and no later commit explains it, the PR content may be missing. |
+| Every file the PR touched is identical in `origin/<base>`, or every line the PR added to it is still in `origin/<base>` | Squash and rebase merges create new commits. `git branch -d` refuses and `git branch --merged` lies, so content comparison is the only proof. "A later commit touched the file" is not proof: a change reverted after the merge would pass. A file whose added lines are gone, a deleted file that still exists, or a binary that differs is a `GATE`, and you verify it by hand. |
 | Issues the PR closes are `CLOSED` | An issue still open despite "Closes #N" is the classic sign of the stacked-merge race above. |
 
-Spot-check one distinctive line of the change in `origin/<base>` (`git show origin/main:<file> | grep -c '<line>'`).
+If a gate fails only because later commits rewrote the file, check one distinctive line of the change by
+hand (`git show origin/<base>:<file> | grep -c '<line>'`) and tell the user what you found. The decision to
+go on is theirs.
 "A later commit touched the file" is not proof that it kept your change.
 
 ## Step 2 — Close out the work before removing it
@@ -50,17 +53,22 @@ Do this first, because cleanup removes the commits these steps derive data from:
 An item is **yours** when this conversation (or its memory note) shows you created it for this work.
 A name that merely contains the ticket number is a hint, not proof. Typical items:
 
-- the PR's head branch, locally and on `origin`;
+- the PR's head branch, locally and on `origin`. For a **fork PR** (`fork=true`) the head branch is in the
+  author's fork: never delete it on `origin`, because a same-named branch there belongs to someone else.
+  The same goes when the PR author is not you (compare `author` with `you` in the first line of the output);
 - the branch the session started on (for example an app-created `claude/<slug>` branch) — only if it
   holds no commits beyond base;
 - temp files you wrote: eval output, PR body drafts, files under the session scratchpad or `$TMPDIR`;
 - dev servers or background processes you started (stop them with the tool that started them).
 
-An item is **deletable without asking** only when it is yours *and* safe:
+An item is **safe to put on the list** only when it is yours *and*:
 
 - **Branch:** all its commits are in the PR head (`commits-after-PR-head=0`), so nothing on it is
-  unmerged. On the remote, it still points at the PR head (nobody pushed after the merge).
-- **Temp file:** it holds only output you can regenerate.
+  unmerged. On the remote (own-repo PR only), it still points at the PR head (nobody pushed after the merge).
+- **Temp file:** it holds only output you can regenerate. Temp files need no question.
+
+"Yours" is a judgement from conversation evidence, and after a context compaction that evidence may be
+gone. So **branches are always confirmed once, even the provably-yours ones** (step 4).
 
 ## Step 4 — Ask before touching any of these
 
@@ -68,6 +76,7 @@ Ask once, as a short list, and act only on a clear yes. Each one needs a questio
 
 | Item | Why it needs a yes |
 |---|---|
+| **Every branch you plan to delete**, local or remote, including the provably-yours head branch | Show the exact list (name, commits-not-in-base, where it is checked out) and get one yes. Ownership is a judgement, and the conversation evidence for it may be gone after a compaction. |
 | Uncommitted changes, or commits not in the PR (`commits-after-PR-head>0`, `dirty>0`) | This is unmerged work, and deleting it is unrecoverable. |
 | The worktree this session is running in | Removing it from inside breaks the session. If the desktop app created it, the clean path is archiving the session, which ends the conversation, so the user must agree. Never `rm -rf` it. |
 | Detached worktrees you did not create (for example a "kept ready" pool under `.claude/worktrees/`) | The app reuses them and reaps them itself. |
@@ -80,7 +89,8 @@ Ask once, as a short list, and act only on a clear yes. Each one needs a questio
 ## Step 5 — Delete, in a safe order
 
 1. Temp files and scratch output.
-2. Remote branch: `git push origin --delete <head>` (only when step 3 cleared it).
+2. Remote branch: `git push origin --delete <head>` — only for a PR whose `fork=false` and whose author is
+   you, only when step 3 cleared it, and only after the yes from step 4. For a fork PR, skip this step.
 3. Local branches. A branch checked out in your own worktree cannot be deleted, so first
    `git checkout --detach origin/<base>` there. Use `git branch -D` only after the content proof in
    step 1; that proof is what makes `-D` safe after a squash merge.
