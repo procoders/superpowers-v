@@ -32,8 +32,8 @@
     },
     "docs/superpowers/architecture/business-logic.md": {
       "cited": {
-        ".claude-plugin/plugin.json": "9826922f27280d469d8d7bc601f8a469bee9d1e3a62ff4ebb98b49199d7e3529",
-        "AGENTS.md": "a10939a48ad46ca2218b84fc33cc56e6e30eda55505fc8c958e62196f7c2aee3",
+        ".claude-plugin/plugin.json": "01a5bbf09957c4b9809c69fdeaecc175a8217a6268e2dec7d5a475714b569826",
+        "AGENTS.md": "87838796e25d6f4ed69bd8f47e4da477d57319b93e9c4d4103875fed906ad146",
         "README.md": "2abefd7aecd1c382003b9cdccf055baa7263c871c8132c9835c38835ddf777d5",
         "agents/spec-reviewer.md": "54637927295a8863ed910e2c598e07ab75b130554338e35daabb4c6b3466e716",
         "skills/backend-launcher/SKILL.md": "181e2a31d1d563bfb1edec9e513d7bb40f50ca6579b815a62cfb358872d4f36b",
@@ -45,7 +45,7 @@
     },
     "docs/superpowers/architecture/tech-context.md": {
       "cited": {
-        ".claude-plugin/plugin.json": "9826922f27280d469d8d7bc601f8a469bee9d1e3a62ff4ebb98b49199d7e3529",
+        ".claude-plugin/plugin.json": "01a5bbf09957c4b9809c69fdeaecc175a8217a6268e2dec7d5a475714b569826",
         ".github/workflows/validate.yml": "d344cc33ec90382a7ba82998df69b6acbd3b78c61b98250c1adc1369912f0c1d",
         "hooks/hooks.json": "cbede14912c1c2eebcebb98215f2a25d7cd8fd994450374440806d07a31fb330",
         "hooks/lane-guard.sh": "c615f6f509ac2304e025406dbd93e62caae2cfe53ccbdbd6c930d570b620ff2d",

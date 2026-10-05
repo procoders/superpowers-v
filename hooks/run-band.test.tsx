@@ -7,6 +7,7 @@ const RUN = {
   done: 1,
   total: 3,
   running: 1,
+  unresolved: 0,
   state_error: false,
   waves: [
     {
@@ -29,6 +30,24 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const calls: string[] = []
     let hud: unknown = { run: RUN }
     let mtime = 1
+    let fiveHour = 34.5
+    const store: Record<string, unknown> = {}
+    on('session.usage', () => ({
+      value: {
+        startedAt: 0,
+        context: {} as never,
+        rateLimits: [
+          { kind: 'five_hour', percentUsed: fiveHour },
+          { kind: 'seven_day', percentUsed: 88 },
+        ],
+      },
+    }))
+    on('store.get', ($$, e) => ({ value: store[e.key] }))
+    on('store.set', ($$, e) => {
+      store[e.key] = e.value
+
+      return { value: undefined }
+    })
 
     on('session.start', () => ({ cwd: '/repo' }))
   on('env.get', () => ({ value: undefined }))
@@ -70,17 +89,30 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.findAll({ type: 'Text', text: /^▰▰$/ })).toHaveLength(3)
     expect(toasts).toEqual(['Compound V · docs-skills is STALE, no progress for 11m'])
 
-    // the same state again: no second toast
+    // the same state again: no second toast; the quota footer shows movement since the run appeared
     mtime = 2
+    fiveHour = 41
     await clock.advance(5_000)
+    await ui.redraw()
     expect(toasts).toHaveLength(1)
+    expect(await ui.find({ type: 'Text', text: /^5h \+6\.5% → 41%$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^7d \+0% → 88%$/ })).toBeDefined()
+    expect(store.quota).toMatchObject({ runId: '2026-10-05-demo', base: { five_hour: 34.5, seven_day: 88 } })
+
+    // a caller the lane guard could not resolve: one warning row, one toast
+    hud = { run: { ...RUN, unresolved: 2 } }
+    mtime = 2.5
+    await clock.advance(5_000)
+    await ui.redraw()
+    expect(await ui.find({ type: 'Text', text: /2 caller\(s\) wrote without a lane check/ })).toBeDefined()
+    expect(toasts).toHaveLength(2)
 
     // the run leaves the active set: one closing line, then nothing
     hud = { run: null }
     mtime = 3
     await clock.advance(5_000)
     await ui.redraw()
-    expect(await ui.find({ text: /2026-10-05-demo · MERGED · 3\/3 done/ })).toBeDefined()
+    expect(await ui.find({ text: /2026-10-05-demo · MERGED · 3\/3 done.*account quota 5h \+6\.5% → 41%/ })).toBeDefined()
     expect(await ui.find({ text: /docs-skills/ })).toBeUndefined()
 
     await clock.advance(65_000)
