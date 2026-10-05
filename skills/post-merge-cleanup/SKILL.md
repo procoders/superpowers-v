@@ -23,14 +23,27 @@ out or pushes; its one write is `git fetch`, which updates remote-tracking refs.
 bash <skill-base-dir>/scripts/inventory.sh <pr-number> <repo-dir>
 ```
 
+**No `gh` or `jq`, or no GitHub?** Use git-only mode. It needs nothing but `git`:
+
+```bash
+bash <skill-base-dir>/scripts/inventory.sh --git-only <head-branch> <repo-dir>
+```
+
+Git-only mode cannot see the forge, so the proof is weaker and the script says so. It proves what git can:
+the branch is already in `origin/<base>`, or every line it added is (a local commit that was never merged
+fails this gate). It does **not** prove that a PR for the branch was opened or merged, and it does not check
+the PR author, fork status or closing issues. So **before deleting anything, ask the user to confirm the PR
+merged**, and never delete a remote branch the user has not said is theirs. When `gh` is missing, the
+full-mode script exits 2 and tells you to switch to this mode.
+
 Every line starts with `OK` / `INFO` / `WARN` / `GATE`. A `GATE` line is a failed gate and the script
 then exits 1: **stop, report it, delete nothing.** A `WARN` line is not a stop, it is a question for the
 user (step 4). Exit 2 means the script could not run (missing `gh`/`jq`, wrong repo or account).
 
 | Gate | Why the obvious check is not enough |
 |---|---|
-| PR state is `MERGED` | — |
-| Merge commit is an ancestor of `origin/<base>` | A stacked PR can merge into its parent branch *after* that parent already landed. GitHub shows MERGED, and the code never reaches main. The badge is not proof. |
+| PR state is `MERGED` (full mode only) | — |
+| Merge commit is an ancestor of `origin/<default branch>` (the default branch, not only the PR's own base: a PR merged into a parent branch says nothing about it) | A stacked PR can merge into its parent branch *after* that parent already landed. GitHub shows MERGED, and the code never reaches main. The badge is not proof. |
 | Every file the PR touched is identical in `origin/<base>`, or every line the PR added to it is still in `origin/<base>` | Squash and rebase merges create new commits. `git branch -d` refuses and `git branch --merged` lies, so content comparison is the only proof. "A later commit touched the file" is not proof: a change reverted after the merge would pass. A file whose added lines are gone, a deleted file that still exists, or a binary that differs is a `GATE`, and you verify it by hand. |
 | Issues the PR closes are `CLOSED` | An issue still open despite "Closes #N" is the classic sign of the stacked-merge race above. |
 
