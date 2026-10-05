@@ -44,7 +44,7 @@ gate() { echo "GATE $*"; GATES=$((GATES + 1)); }
 
 if [ "$MODE" = full ]; then
   json=$(gh pr view "$PR" --json number,state,mergedAt,mergeCommit,headRefName,headRefOid,baseRefName,baseRefOid,files,closingIssuesReferences,isCrossRepository,author 2>/dev/null) \
-    || { echo "WARN gh cannot read PR $PR (wrong account or repo?)"; exit 2; }
+    || { echo "WARN gh cannot read PR $PR (wrong account or repo, or gh is not logged in) — without gh use: inventory.sh --git-only <head-branch>"; exit 2; }
   q() { printf '%s' "$json" | jq -r "$1"; }
 
   STATE=$(q .state); HEAD=$(q .headRefName); HEAD_OID=$(q .headRefOid); BASE=$(q .baseRefName)
@@ -73,7 +73,7 @@ if [ "$MODE" = full ]; then
     gate "PR base is '$BASE', not the default branch '$CMP': merging there reaches $CMP only if $BASE does. Proofs below are against $CMP — verify by hand"
   fi
   if [ "$AUTHOR" != "$ME" ]; then
-    echo "WARN the PR is by $AUTHOR, not by you ($ME) — its branches are not yours; ask before deleting any"
+    echo "WARN the PR is by $AUTHOR, not by you ($ME) — its origin branch is theirs: never delete it on a general cleanup request, only if the user names it. Your own local review checkout is yours"
   fi
   if [ "$CROSS" = "true" ]; then
     echo "WARN fork PR — the head branch lives in the author's fork, not in origin. Never delete '$HEAD' on origin: a same-named branch there is someone else's"

@@ -68,7 +68,11 @@ A name that merely contains the ticket number is a hint, not proof. Typical item
 
 - the PR's head branch, locally and on `origin`. For a **fork PR** (`fork=true`) the head branch is in the
   author's fork: never delete it on `origin`, because a same-named branch there belongs to someone else.
-  The same goes when the PR author is not you (compare `author` with `you` in the first line of the output);
+  The same goes when the PR author is not you (compare `author` with `you` in the first line of the output): the
+  origin branch is that person's. A general instruction such as "clean up after this PR" or "delete the PR's
+  branches" is **not** a yes for it, because the user was speaking about their own work. Delete it only if the
+  user names that branch and says it is theirs to remove. Your own local review checkout of it (for example
+  `alice-feat-20` created to try the PR) is yours and goes through the normal confirmation;
 - the branch the session started on (for example an app-created `claude/<slug>` branch) — only if it
   holds no commits beyond base;
 - temp files you wrote: eval output, PR body drafts, files under the session scratchpad or `$TMPDIR`;
@@ -94,7 +98,7 @@ Ask once, as a short list, and act only on a clear yes. Each one needs a questio
 | The worktree this session is running in | Removing it from inside breaks the session. If the desktop app created it, the clean path is archiving the session, which ends the conversation, so the user must agree. Never `rm -rf` it. |
 | Detached worktrees you did not create (for example a "kept ready" pool under `.claude/worktrees/`) | The app reuses them and reaps them itself. |
 | Branches, worktrees or stash entries of other sessions or teammates | Parallel sessions share the repo. Their work looks like stale leftovers. |
-| A remote branch that moved past the PR head, or a PR authored by someone else | Someone may still be using it. |
+| A remote branch that moved past the PR head, or the origin branch of a PR authored by someone else | Someone may still be using it. A blanket "clean up after the PR" does not cover it: only the user naming that branch does. |
 | Any `git stash` entry | The stash is shared across every worktree. Report it; never pop or drop it. |
 | Secrets or config the user placed (`.env.local`, API keys), memory notes | These were the user's deliberate input, not your leftovers. |
 | Global caches (`pnpm store prune`, Docker images, `~/Library/Caches`) | They affect every project on the machine. Worth offering when disk is short, never a silent part of cleanup. |

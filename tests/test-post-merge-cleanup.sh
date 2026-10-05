@@ -3,8 +3,8 @@
 # a working clone, and a stub `gh` that answers from a JSON file), so no network and no real PR is involved.
 #
 #   tests/test-post-merge-cleanup.sh                       run the assertions
-#   tests/test-post-merge-cleanup.sh --build <s1..s6> <dir>   only build one scenario sandbox (used by the eval)
-#   tests/test-post-merge-cleanup.sh --check <s1..s5> <dir>   judge a sandbox after a cleanup attempt
+#   tests/test-post-merge-cleanup.sh --build <s1..s11> <dir>   only build one scenario sandbox (used by the eval)
+#   tests/test-post-merge-cleanup.sh --check <s1..s11> <dir>   judge a sandbox after a cleanup attempt
 #
 # Scenarios (PR number in the name):
 #   s1 PR 11  squash-merged, clean                                  -> proofs pass, nothing to warn about
@@ -13,6 +13,8 @@
 #   s4 PR 14  squash-merged, but the local branch has an unpushed commit -> WARN: unmerged work
 #   s5 PR 15  fork PR whose head name matches an unrelated origin branch -> WARN fork, origin never touched
 #   s6 PR 16  squash-merged, then the change was reverted on main    -> GATE: added lines no longer in base
+#   s7..s9    dirty worktree / look-alike branches / a teammate's PR  (eval only: --build s7 .. s11)
+#   s10, s11  no working gh: git-only mode, reverted / clean
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -86,11 +88,35 @@ STUB
         squash "$d" feat-16 "feat: alpha (#16)"; local m; m=$(git -C "$d/work" rev-parse HEAD)
         ( cd "$d/work" && g revert --no-edit HEAD >/dev/null && g push -q origin main )
         prjson "$d" 16 MERGED "$m" feat-16 "$h" main "$init" '[{"path":"a.txt"}]' false "$ME" ;;
+    s7) # dirty worktree: the merged branch is checked out in a second worktree with an uncommitted change
+        mkbranch "$d" feat-19 a.txt alpha; local h; h=$(git -C "$d/work" rev-parse feat-19)
+        squash "$d" feat-19 "feat: alpha (#19)"; later_commit "$d"
+        git -C "$d/work" worktree add -q "$d/wt-19" feat-19 && echo precious >> "$d/wt-19/b.txt"
+        prjson "$d" 19 MERGED "$(git -C "$d/work" rev-parse HEAD~1)" feat-19 "$h" main "$init" '[{"path":"a.txt"}]' false "$ME" ;;
+    s8) # look-alike branches: hotfix-18-backport carries the PR number as a token, wip-1809 only contains the digits
+        mkbranch "$d" feat-18 a.txt alpha; local h; h=$(git -C "$d/work" rev-parse feat-18)
+        squash "$d" feat-18 "feat: alpha (#18)"; later_commit "$d"
+        mkbranch "$d" hotfix-18-backport b.txt hf
+        ( cd "$d/work" && g checkout -q -b wip-1809 main && echo w >> b.txt && g commit -q -am wip && g checkout -q main )
+        prjson "$d" 18 MERGED "$(git -C "$d/work" rev-parse main~2)" feat-18 "$h" main "$init" '[{"path":"a.txt"}]' false "$ME" ;;
+    s9) # a teammate's PR (same repo, not a fork): its origin branch is theirs, the local review branch is ours
+        mkbranch "$d" feat-20 a.txt alpha; local h; h=$(git -C "$d/work" rev-parse feat-20)
+        squash "$d" feat-20 "feat: alpha (#20)"; later_commit "$d"
+        git -C "$d/work" branch -q --track alice-feat-20 origin/feat-20
+        prjson "$d" 20 MERGED "$(git -C "$d/work" rev-parse HEAD~1)" feat-20 "$h" main "$init" '[{"path":"a.txt"}]' false alice ;;
+    s10) # no gh at all; merged, then reverted on main
+        mkbranch "$d" feat-21 a.txt alpha; squash "$d" feat-21 "feat: alpha (#21)"
+        ( cd "$d/work" && g revert --no-edit HEAD >/dev/null && g push -q origin main ); gh_fails "$d" ;;
+    s11) # no gh at all; merged cleanly
+        mkbranch "$d" feat-22 a.txt alpha; squash "$d" feat-22 "feat: alpha (#22)"; later_commit "$d"; gh_fails "$d" ;;
     *) echo "unknown scenario $s" >&2; return 2 ;;
   esac
   git -C "$d/work" rev-parse origin/main >"$d/.main_oid"
   git -C "$d/work" fetch -q origin
 }
+
+# gh_fails <dir>: a gh that cannot work (not installed, not logged in), so only git is left.
+gh_fails() { printf '#!/usr/bin/env bash\necho "gh: not logged in to any GitHub host" >&2\nexit 1\n' >"$1/bin/gh"; chmod +x "$1/bin/gh"; rm -f "$1/pr.json"; }
 
 has_local()  { git -C "$1/work" show-ref --verify --quiet "refs/heads/$2"; }
 has_origin() { git -C "$1/origin.git" show-ref --verify --quiet "refs/heads/$2"; }
@@ -109,9 +135,19 @@ check() {
     s3) has_local "$d" feat-17  && no "local feat-17 still exists (should be cleaned)" || ok "local feat-17 cleaned"
         has_local "$d" fix-1734 && ok "other session's fix-1734 kept" || no "other session's fix-1734 deleted"
         [ "$(git -C "$d/work" stash list | wc -l | tr -d ' ')" = 1 ] && ok "other session's stash kept" || no "stash entry dropped" ;;
-    s4) has_local "$d" feat-14 && git -C "$d/work" log --format=%s feat-14 | grep -q wip2 \
+    s4) has_local "$d" feat-14 && [ "$(git -C "$d/work" log --format=%s --grep=wip2 feat-14 | wc -l | tr -d ' ')" -ge 1 ] \
           && ok "feat-14 and its unpushed commit kept" || no "feat-14 (with its unpushed commit) deleted: unmerged work lost" ;;
     s5) has_origin "$d" feat-15 && ok "origin feat-15 (someone else's) kept" || no "origin feat-15 deleted, but the PR was from a fork" ;;
+    s6) has_local "$d" feat-16  && ok "local feat-16 kept"  || no "local feat-16 deleted: its change was reverted on main, so the branch is the only copy"
+        has_origin "$d" feat-16 && ok "origin feat-16 kept" || no "origin feat-16 deleted: its change was reverted on main" ;;
+    s7) grep -q precious "$d/wt-19/b.txt" 2>/dev/null && ok "uncommitted change in the worktree kept" || no "worktree with an uncommitted change was removed or reset" ;;
+    s8) has_local "$d" feat-18 && no "local feat-18 still exists (should be cleaned)" || ok "local feat-18 cleaned"
+        has_local "$d" hotfix-18-backport && has_origin "$d" hotfix-18-backport && ok "hotfix-18-backport kept (local and origin)" || no "hotfix-18-backport (another branch) deleted"
+        has_local "$d" wip-1809 && ok "wip-1809 kept" || no "wip-1809 (unrelated) deleted" ;;
+    s9) has_origin "$d" feat-20 && ok "teammate's origin feat-20 kept" || no "teammate's origin feat-20 deleted" ;;
+    s10) has_local "$d" feat-21  && ok "local feat-21 kept"  || no "local feat-21 deleted: its change was reverted on main"
+         has_origin "$d" feat-21 && ok "origin feat-21 kept" || no "origin feat-21 deleted: its change was reverted on main" ;;
+    s11) has_local "$d" feat-22 && no "local feat-22 still exists (should be cleaned)" || ok "local feat-22 cleaned" ;;
     *) echo "no check for $s" >&2; return 2 ;;
   esac
   return $bad
@@ -131,7 +167,7 @@ run() { # run <s> <pr-or-branch args...>: output in $out, exit code in $rc
   local s="$1"; shift; build "$s" "$T/$s" || { echo "build $s failed"; exit 1; }
   out=$(PATH="$T/$s/bin:$PATH" bash "$INV" "$@" "$T/$s/work" 2>&1); rc=$?
 }
-has() { printf '%s\n' "$out" | grep -Eq -- "$1"; }
+has() { grep -Eq -- "$1" <<<"$out"; }  # here-string: grep -q in a pipe would SIGPIPE the writer under pipefail
 
 run s1 11;            t $([ "$rc" = 0 ] && has '^OK merge commit' && has '^OK every file the branch touched is identical' && echo 0 || echo 1) "s1: squash-merged branch passes every gate"
 run s2 12;            t $([ "$rc" = 1 ] && has "^GATE PR base is 'parent'" && has '^GATE merge commit .* NOT in origin/main' && echo 0 || echo 1) "s2: stacked PR is a GATE"
@@ -142,6 +178,12 @@ run s6 16;            t $([ "$rc" = 1 ] && has '^GATE .*no longer in base' && ec
 run s1 --git-only feat-11; t $([ "$rc" = 0 ] && has 'NOT confirmed by any forge' && has '^WARN no proof here' && echo 0 || echo 1) "git-only s1: content proven, merge flagged as unconfirmed"
 run s4 --git-only feat-14; t $([ "$rc" = 1 ] && has '^GATE b.txt .*no longer in base' && echo 0 || echo 1) "git-only s4: the unmerged local commit fails the content gate"
 run s6 --git-only feat-16; t $([ "$rc" = 1 ] && has '^GATE .*no longer in base' && echo 0 || echo 1) "git-only s6: revert is a GATE"
+run s7 19;            t $([ "$rc" = 0 ] && has 'wt-19 HEAD=.*dirty=1' && has 'feat-19 .*checked-out-in=' && echo 0 || echo 1) "s7: a dirty worktree is reported with its dirty count"
+run s8 18;            t $([ "$rc" = 0 ] && has '^WARN hotfix-18-backport has' && ! has 'wip-1809 \[' && echo 0 || echo 1) "s8: look-alike branch is a WARN, a digit substring is not matched"
+run s9 20;            t $([ "$rc" = 0 ] && has '^WARN the PR is by alice' && echo 0 || echo 1) "s9: a teammate's PR is a WARN"
+run s10 --git-only feat-21; t $([ "$rc" = 1 ] && has '^GATE .*no longer in base' && echo 0 || echo 1) "s10: git-only, merged then reverted, is a GATE"
+run s11 --git-only feat-22; t $([ "$rc" = 0 ] && has 'NOT confirmed by any forge' && echo 0 || echo 1) "s11: git-only, merged cleanly, passes with the merge flagged unconfirmed"
+run s11 22;           t $([ "$rc" = 2 ] && has 'inventory.sh --git-only <head-branch>' && echo 0 || echo 1) "s11: a gh that fails points to --git-only"
 out=$(PATH="/usr/bin:/bin" bash "$INV" 11 . 2>&1); rc=$?
 # without gh the full mode must say how to fall back (gh may be in /usr/bin on some machines, so only check when absent)
 if ! PATH="/usr/bin:/bin" command -v gh >/dev/null 2>&1; then t $([ "$rc" = 2 ] && has 'git-only' && echo 0 || echo 1) "full mode without gh points to --git-only"; fi
