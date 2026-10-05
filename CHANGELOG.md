@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+- **`/v:onboard` Operations/Deployment dimension** (#4, @khymerao). New `detect-ops` subcommand
+  inventories CI/CD + container + deploy signals and produces a cited, gated
+  `docs/superpowers/architecture/operations.md` — a layer previously dropped from the generated KB.
+  The detector is a common-case accelerator, never a verdict: an empty scan reports "no signals
+  found" (`no-signals`) and the HUMAN GATE surfaces it as an open question ("point me at your
+  deployer"), never a confident "no ops".
+
 ## [3.8.3] - 2026-10-05
 
 ### Changed — the run band wears the project's own colours, and its columns line up

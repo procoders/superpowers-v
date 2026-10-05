@@ -380,6 +380,81 @@ def detect_ui(repo: str) -> bool:
     return False
 
 
+# Operations-file taxonomy, kept as named signal sets so the surface is documented in ONE place and
+# widening coverage is a data edit, not new control flow. Two literal kinds, matched by _ops_category:
+#   _OPS_PATH_FILES  — full repo-relative path (root-anchored configs like .circleci/config.yml)
+#   _OPS_BASE_FILES  — exact basename, at any depth (Jenkinsfile, Procfile, ...)
+# The remaining signals are shape-based (prefix/suffix/path-segment) and live in the predicates below.
+_YAML_EXT = (".yml", ".yaml")
+_OPS_PATH_FILES = {
+    "ci_cd": frozenset((".gitlab-ci.yml", ".circleci/config.yml", ".travis.yml",
+                        "azure-pipelines.yml", "bitbucket-pipelines.yml")),
+}
+_OPS_BASE_FILES = {
+    "ci_cd":      frozenset(("jenkinsfile",)),
+    "containers": frozenset(("kustomization.yaml", "chart.yaml")),
+    "deploy":     frozenset(("procfile", "fly.toml", "vercel.json", "netlify.toml",
+                             "render.yaml", "serverless.yml", "app.yaml")),
+}
+
+
+def _is_ci_cd(low, base):
+    return (base in _OPS_BASE_FILES["ci_cd"]
+            or low in _OPS_PATH_FILES["ci_cd"]
+            or (low.startswith(".github/workflows/") and low.endswith(_YAML_EXT)))
+
+
+def _is_containers(low, base):
+    return (base == "dockerfile" or base.startswith("dockerfile.")
+            or base in _OPS_BASE_FILES["containers"]
+            or low.endswith((".tf", ".tfvars"))
+            or ((base.startswith("docker-compose") or base.startswith("compose.")) and low.endswith(_YAML_EXT))
+            # k8s: filename/dir heuristic — it cannot see manifest content.
+            or low.startswith("k8s/") or "/k8s/" in low)
+
+
+def _is_deploy(low, base):
+    return (base in _OPS_BASE_FILES["deploy"]
+            or (base.startswith("deploy") and base.endswith(".sh")))
+
+
+# Evaluated in order; the first category whose predicate matches wins.
+_OPS_RULES = (("ci_cd", _is_ci_cd), ("containers", _is_containers), ("deploy", _is_deploy))
+
+
+def _ops_category(rel: str):
+    """Classify a repo-relative path into an operations category (ci_cd | containers | deploy),
+    or None. Signal surface lives in the _OPS_* sets and the _is_* predicates above."""
+    low = rel.lower()
+    base = low.rsplit("/", 1)[-1]
+    for category, matches in _OPS_RULES:
+        if matches(low, base):
+            return category
+    return None
+
+
+def detect_ops(repo: str) -> dict:
+    """Inventory CI/CD + container/infra + deploy files. Iterates `_repo_files(repo)`: git-tracked
+    files, so gitignored secrets (`*.tfvars`, `.terraform/`, `.venv/`) never become cited signals,
+    with an os.walk fallback (excluding VENDOR_DIRS) for non-git trees. Reads only filenames, never
+    file contents, so the hardened bounded-read path (_open_regular/_read_bounded) does not apply here.
+
+    `signals_found` is True iff at least one KNOWN signal matched. Its falsity means "no signals
+    found" — NOT a verdict that the project has no ops layer. The signal list is a fixed accelerator
+    for the common case; a bespoke deployer (e.g. `ship.sh`) matches nothing, so an empty result is
+    an OPEN QUESTION the gate must surface ("no explicit ops files — if this project deploys, point
+    me at it"), never a confident "no ops". An incomplete scan must never read as a clean one."""
+    found = {"ci_cd": [], "containers": [], "deploy": []}
+    for rel in _repo_files(repo):
+        cat = _ops_category(rel)
+        if cat:
+            found[cat].append(rel)
+    for k in ("ci_cd", "containers", "deploy"):
+        found[k].sort()
+    found["signals_found"] = any(found[k] for k in ("ci_cd", "containers", "deploy"))
+    return found
+
+
 def _design_result_ok(result: dict) -> bool:
     return int(result.get("summary", {}).get("errors", 1)) == 0
 
@@ -1757,6 +1832,44 @@ def _selftest() -> int:
         shutil.rmtree(d5, ignore_errors=True)
     check("detect_ui false on bare", detect_ui(tempfile.mkdtemp()) is False)
 
+    # detect_ops: CI/CD + container + deploy inventory (non-git tree ⇒ _repo_files' os.walk fallback).
+    d5b = tempfile.mkdtemp()
+    try:
+        os.makedirs(os.path.join(d5b, ".github", "workflows"))
+        with open(os.path.join(d5b, ".github", "workflows", "ci.yml"), "w") as fh: fh.write("on: push\n")
+        with open(os.path.join(d5b, "Dockerfile"), "w") as fh: fh.write("FROM alpine\n")
+        with open(os.path.join(d5b, "fly.toml"), "w") as fh: fh.write("app='x'\n")
+        r_ops = detect_ops(d5b)
+        check("detect_ops signals_found true on ci+docker", r_ops["signals_found"] is True)
+        check("detect_ops finds ci_cd workflow", ".github/workflows/ci.yml" in r_ops["ci_cd"])
+        check("detect_ops finds container Dockerfile", "Dockerfile" in r_ops["containers"])
+        check("detect_ops finds deploy fly.toml", "fly.toml" in r_ops["deploy"])
+    finally:
+        shutil.rmtree(d5b, ignore_errors=True)
+    # Git tree ⇒ only TRACKED files are signals. A gitignored `infra/terraform.tfvars` (often holds
+    # credentials) and `.terraform/` must never be listed, or EXTRACT would read and cite them.
+    d5g = tempfile.mkdtemp()
+    try:
+        _sp.run(["git", "-C", d5g, "init", "-q"], check=True)
+        os.makedirs(os.path.join(d5g, "infra", ".terraform"))
+        with open(os.path.join(d5g, ".gitignore"), "w") as fh: fh.write("*.tfvars\n.terraform/\n")
+        with open(os.path.join(d5g, "infra", "main.tf"), "w") as fh: fh.write("terraform {}\n")
+        with open(os.path.join(d5g, "infra", "terraform.tfvars"), "w") as fh: fh.write("db_password = \"x\"\n")
+        with open(os.path.join(d5g, "infra", ".terraform", "mod.tf"), "w") as fh: fh.write("\n")
+        _sp.run(["git", "-C", d5g, "add", "-A"], check=True)
+        r_g = detect_ops(d5g)
+        check("detect_ops lists tracked infra/main.tf", "infra/main.tf" in r_g["containers"])
+        check("detect_ops skips gitignored tfvars and .terraform/",
+              not any(p.endswith(".tfvars") or "/.terraform/" in p for p in r_g["containers"]))
+    finally:
+        shutil.rmtree(d5g, ignore_errors=True)
+    # Bare tree ⇒ signals_found False. This is "no signals found" (an open question for the gate),
+    # never a "no ops layer" verdict — a bespoke deployer would match nothing yet still exist.
+    d5c = detect_ops(tempfile.mkdtemp())
+    check("detect_ops signals_found false on bare", d5c["signals_found"] is False)
+    check("detect_ops empty lists on bare (no false verdict, just no signals)",
+          d5c["ci_cd"] == [] and d5c["containers"] == [] and d5c["deploy"] == [])
+
     # OUTPUT-side secret gate: blocks a secret in a GENERATED doc, passes clean prose.
     d6 = tempfile.mkdtemp()
     try:
@@ -2443,6 +2556,7 @@ def build_parser():
     sp = sub.add_parser("design-lint")
     sp.add_argument("--file", required=True); sp.add_argument("--json", action="store_true")
     sp = sub.add_parser("detect-ui"); sp.add_argument("--repo", default=".")
+    sp = sub.add_parser("detect-ops"); sp.add_argument("--repo", default="."); sp.add_argument("--json", action="store_true")
     sp = sub.add_parser("scan-output")
     sp.add_argument("--files", nargs="+", required=True)
     sp.add_argument("--repo", default="."); sp.add_argument("--json", action="store_true")
@@ -2491,6 +2605,14 @@ def main(argv) -> int:
         return 0 if result["ok"] else 2
     if args.cmd == "detect-ui":
         print("ui" if detect_ui(os.path.abspath(args.repo)) else "no-ui")
+        return 0
+    if args.cmd == "detect-ops":
+        result = detect_ops(os.path.abspath(args.repo))
+        if args.json:
+            print(json.dumps(result, indent=2))
+        else:
+            # "no-signals" (an open question for the gate), NOT "no-ops" (a false absence verdict).
+            print("ops" if result["signals_found"] else "no-signals")
         return 0
     if args.cmd == "scan-output":
         result = scan_output_files(os.path.abspath(args.repo), args.files)
