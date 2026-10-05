@@ -3,13 +3,13 @@
   "docs": {
     "docs/superpowers/architecture/architecture.md": {
       "cited": {
-        "README.md": "f681ee339a0c53aa3cca6477a6b2013d08fc23205c9abc5a96af3ece0c3420b0",
+        "README.md": "b8ee7f4e00f52cd754086fbc35eeb6613e1c480fe99a9c608cd7f3b279e91b60",
         "agents/spec-reviewer.md": "54637927295a8863ed910e2c598e07ab75b130554338e35daabb4c6b3466e716",
         "commands/v-onboard.md": "278cfbd57f975eaaa4f0ca58148f66d4f39a59d97025f603ad01f1abb515342c",
-        "hooks/brainstorm-trigger0-nudge.sh": "76987d50c3aeee4f9f0920a4b658b49da68e3fef813af67e18cba6eeac8be3a8",
+        "hooks/brainstorm-trigger0-nudge.sh": "991d71a574e7ce0c32fa98d12303714d3865d36d34709de039fbf673c92336b3",
         "hooks/hooks.json": "cbede14912c1c2eebcebb98215f2a25d7cd8fd994450374440806d07a31fb330",
         "hooks/lane-guard.sh": "c615f6f509ac2304e025406dbd93e62caae2cfe53ccbdbd6c930d570b620ff2d",
-        "hooks/triage-prompt-nudge.sh": "124ce6c0f07446f2f859caf34edf8dff59acdc69631c1754688fd188366a6e9e",
+        "hooks/triage-prompt-nudge.sh": "53fd8385640d57c16e4adc267bb241c98c769fe1c8958dcc1d09ec1bd88e8030",
         "scripts/compound-v-emit-workflow.py": "cc448bf31071c4e177e20982597800d1194d96d1df114db520b2df8a5b460ae2",
         "scripts/compound-v-epic-arbiter.py": "25464f9c481bb05b930bc9090d9989beb3d6db58773659a2f0b586eb9775c061",
         "scripts/compound-v-epic-state.py": "d5e8f8f68d8d2a9923813506848831c2a9fdab62104d57091ec628600babdac3",
@@ -21,7 +21,7 @@
         "scripts/compound-v-usage-extract.py": "4552e3b2103c1b8a544b8455bdb0bc5a4376db47763bfc737e37cde2d99f6c51",
         "scripts/lint-frontmatter.py": "11fe55ac49f2915cfc10f77d0748e67b6ef9480153e205356ab0edad3c682e77",
         "skills/backend-launcher/SKILL.md": "181e2a31d1d563bfb1edec9e513d7bb40f50ca6579b815a62cfb358872d4f36b",
-        "skills/compound-v/SKILL.md": "f4767666bfd3eda44a88a260db5bb65af18d1f3d19a9ccef2dd2568a75a61fde",
+        "skills/compound-v/SKILL.md": "8825e59b63fc1b22adb8def9795a1262f7e85803af6aefb180f49210b5a8d226",
         "skills/compound-v/epic-mode.md": "139239ce1728fbd7cdf7985467b718e1858e52d6b001de5a2a4d5d95aee7dc09",
         "skills/compound-v/execution-manifest.md": "44eb3be06892f444a3ab2aca45f5c59bc14497153b0a6b42b5214042221f7ff7",
         "skills/compound-v/memory.md": "5857c83d6c41971c33c8e08c3019695a674d6bbef6b442a29fc0bdea166ec8c3",
@@ -32,12 +32,12 @@
     },
     "docs/superpowers/architecture/business-logic.md": {
       "cited": {
-        ".claude-plugin/plugin.json": "6b677f84f771cf17eb2e9055d127c8c6b6df355fd05c32f7d73682a0ff2b7da9",
+        ".claude-plugin/plugin.json": "a6e779956366c82b6a608749f9f4db36d1d7adddb231a8d664396379a7aced45",
         "AGENTS.md": "5ea19ac79c5054ecbee248b0492fb403f98a6957d0ec4e96adc65e01aaea825a",
-        "README.md": "f681ee339a0c53aa3cca6477a6b2013d08fc23205c9abc5a96af3ece0c3420b0",
+        "README.md": "b8ee7f4e00f52cd754086fbc35eeb6613e1c480fe99a9c608cd7f3b279e91b60",
         "agents/spec-reviewer.md": "54637927295a8863ed910e2c598e07ab75b130554338e35daabb4c6b3466e716",
         "skills/backend-launcher/SKILL.md": "181e2a31d1d563bfb1edec9e513d7bb40f50ca6579b815a62cfb358872d4f36b",
-        "skills/compound-v/SKILL.md": "f4767666bfd3eda44a88a260db5bb65af18d1f3d19a9ccef2dd2568a75a61fde",
+        "skills/compound-v/SKILL.md": "8825e59b63fc1b22adb8def9795a1262f7e85803af6aefb180f49210b5a8d226",
         "skills/compound-v/epic-mode.md": "139239ce1728fbd7cdf7985467b718e1858e52d6b001de5a2a4d5d95aee7dc09",
         "skills/compound-v/execution-manifest.md": "44eb3be06892f444a3ab2aca45f5c59bc14497153b0a6b42b5214042221f7ff7",
         "skills/compound-v/phase-3-parallel-opus-dispatch.md": "486b51e27796722ed4b41bd5ac8345c85068b9b1406f191648e9918e5b36c227"
@@ -45,7 +45,7 @@
     },
     "docs/superpowers/architecture/tech-context.md": {
       "cited": {
-        ".claude-plugin/plugin.json": "6b677f84f771cf17eb2e9055d127c8c6b6df355fd05c32f7d73682a0ff2b7da9",
+        ".claude-plugin/plugin.json": "a6e779956366c82b6a608749f9f4db36d1d7adddb231a8d664396379a7aced45",
         ".github/workflows/validate.yml": "d344cc33ec90382a7ba82998df69b6acbd3b78c61b98250c1adc1369912f0c1d",
         "hooks/hooks.json": "cbede14912c1c2eebcebb98215f2a25d7cd8fd994450374440806d07a31fb330",
         "hooks/lane-guard.sh": "c615f6f509ac2304e025406dbd93e62caae2cfe53ccbdbd6c930d570b620ff2d",
@@ -61,7 +61,7 @@
         "scripts/compound-v-usage-extract.py": "4552e3b2103c1b8a544b8455bdb0bc5a4376db47763bfc737e37cde2d99f6c51",
         "scripts/compound-v-validate-manifest.py": "f73bbe78e3b21b799b5231a18a0f9fd9c28403adf4af495700d5deac40b7dcec",
         "scripts/lint-frontmatter.py": "11fe55ac49f2915cfc10f77d0748e67b6ef9480153e205356ab0edad3c682e77",
-        "skills/compound-v/SKILL.md": "f4767666bfd3eda44a88a260db5bb65af18d1f3d19a9ccef2dd2568a75a61fde",
+        "skills/compound-v/SKILL.md": "8825e59b63fc1b22adb8def9795a1262f7e85803af6aefb180f49210b5a8d226",
         "skills/compound-v/epic-mode.md": "139239ce1728fbd7cdf7985467b718e1858e52d6b001de5a2a4d5d95aee7dc09",
         "skills/compound-v/memory.md": "5857c83d6c41971c33c8e08c3019695a674d6bbef6b442a29fc0bdea166ec8c3",
         "skills/compound-v/onboarding.md": "2cfdbe49e3e3bc8ce164921f633259cac6c4e67adfa1954d7d2e0034f532ea8b",
@@ -80,7 +80,7 @@
         "scripts/compound-v-usage-extract.py": "4552e3b2103c1b8a544b8455bdb0bc5a4376db47763bfc737e37cde2d99f6c51",
         "scripts/lint-frontmatter.py": "11fe55ac49f2915cfc10f77d0748e67b6ef9480153e205356ab0edad3c682e77",
         "skills/backend-launcher/SKILL.md": "181e2a31d1d563bfb1edec9e513d7bb40f50ca6579b815a62cfb358872d4f36b",
-        "skills/compound-v/SKILL.md": "f4767666bfd3eda44a88a260db5bb65af18d1f3d19a9ccef2dd2568a75a61fde",
+        "skills/compound-v/SKILL.md": "8825e59b63fc1b22adb8def9795a1262f7e85803af6aefb180f49210b5a8d226",
         "skills/compound-v/execution-manifest.md": "44eb3be06892f444a3ab2aca45f5c59bc14497153b0a6b42b5214042221f7ff7",
         "skills/compound-v/onboarding.md": "2cfdbe49e3e3bc8ce164921f633259cac6c4e67adfa1954d7d2e0034f532ea8b",
         "skills/compound-v/state-machine.md": "2d2325619dfa19bf1ab7751abf3931be80d09756a02169b44ae7ef6f768234d8"
@@ -90,7 +90,7 @@
       "cited": {
         ".github/workflows/validate.yml": "d344cc33ec90382a7ba82998df69b6acbd3b78c61b98250c1adc1369912f0c1d",
         "CONVENTIONS.md": "adabe44259d4c81610c37c673856b7217ebe8dbc43634ae78334fce7d10d32ad",
-        "skills/compound-v/SKILL.md": "f4767666bfd3eda44a88a260db5bb65af18d1f3d19a9ccef2dd2568a75a61fde",
+        "skills/compound-v/SKILL.md": "8825e59b63fc1b22adb8def9795a1262f7e85803af6aefb180f49210b5a8d226",
         "skills/compound-v/onboarding.md": "2cfdbe49e3e3bc8ce164921f633259cac6c4e67adfa1954d7d2e0034f532ea8b"
       }
     },

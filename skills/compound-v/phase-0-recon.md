@@ -23,7 +23,7 @@ Recon exists because a brainstorm that starts cold on an unfamiliar topic asks s
 
 ## 2. Gate Order — Three Gates, Always in This Order
 
-Recon is gated, not fire-by-default (the same philosophy as [skill-escalation.md](skill-escalation.md)). Evaluate the gates in order; the first gate that says "skip" ends the check, emits the one-line log, and appends exactly one terminal event to the outcomes stream (§6). **Announce Phase 0 (`💉 Compound V — pre-brainstorm recon (gated).`) only when the gates decide to RUN** — a skip gets the log line and its event, no announcement:
+Recon is gated, not fire-by-default (the same philosophy as [skill-escalation.md](skill-escalation.md)). Evaluate the gates in order; the first gate that says "skip" ends the check, emits the one-line log, and appends exactly one terminal event to the outcomes stream (§6). **Announce Phase 0 (`Compound V — pre-brainstorm recon (gated).`) only when the gates decide to RUN** — a skip gets the log line and its event, no announcement:
 
 ```
 RECON fired — gates: plumbing=pass, KB=weak, config=ask→accepted (scope narrowed). Engine: deep-research.
@@ -151,7 +151,7 @@ Rules, all binding:
     Check each exit code. This is the v2.6.4 discipline — an uncommitted recon doc is not in the repository (a `git clean`, a fresh clone or a removed worktree loses it) and never indexes into V-memory (the FTS5 lane indexes **git-tracked** prose), so gate 2 can never hit on it.
 11. **On commit failure:** announce *"recon written but not committed: <reason>"* and continue the brainstorm — never claim the doc is committed or indexed when it isn't.
 
-When the doc is committed, announce: *"💉 Compound V — recon saved at `docs/superpowers/recon/<file>.md`. Starting the brainstorm with it (directions-late)."* The brainstorm consumes it per the §1 directions-late protocol and the `consumed` event is appended (§6).
+When the doc is committed, announce: *"Compound V — recon saved at `docs/superpowers/recon/<file>.md`. Starting the brainstorm with it (directions-late)."* The brainstorm consumes it per the §1 directions-late protocol and the `consumed` event is appended (§6).
 
 ---
 

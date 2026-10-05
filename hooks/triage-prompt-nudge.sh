@@ -426,7 +426,7 @@ _classify_headless() {
 # the engine could not run, or could not band the request without a model call
 # that a hook cannot make. It asks for exactly the thing that failed.
 _reminder_text() {
-  printf '%s' "💉 Compound V — the triage engine could not size this prompt here, so \
+  printf '%s' "Compound V — the triage engine could not size this prompt here, so \
 this prompt has NO triage record. IF this prompt is a change request (not a question, a status \
 check, or work an existing record already covers), size it first: run /v:triage <what \
 the change is>. It classifies the change, writes and COMMITS the pre-eval record, and \
@@ -683,7 +683,7 @@ Read ${record_ref} and route it by hand."
   esac
 
   local msg
-  msg="💉 Compound V sized this prompt before you read it. TIER: ${tier} (decision \
+  msg="Compound V sized this prompt before you read it. TIER: ${tier} (decision \
 ${decision}, pre_eval_id ${pid}). ${next} The record ${record_ref} is WRITTEN AND \
 UNCOMMITTED — this hook never runs git, so committing it is yours to do and it is not \
 optional. The Stop-time triage gate reads records off disk, so this one already covers \

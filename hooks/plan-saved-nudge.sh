@@ -40,10 +40,10 @@ file_path=$(echo "$input" | jq -r '.tool_input.file_path // empty' 2>/dev/null |
 nudge=""
 case "$file_path" in
   *docs/superpowers/plans/*.md)
-    nudge="💉 Compound V — plan saved at $file_path. To execute: run /v:dispatch $file_path yourself at the top level — it materializes the manifest, requires a /v:triage record, runs compound-v:partition-reviewer, then launches Engine C (the native Workflow) and the integration gate. /v:orchestrate $file_path only materializes the manifest. Delegate to compound-v:parallel-dispatcher only if this session has no Workflow tool."
+    nudge="Compound V — plan saved at $file_path. To execute: run /v:dispatch $file_path yourself at the top level — it materializes the manifest, requires a /v:triage record, runs compound-v:partition-reviewer, then launches Engine C (the native Workflow) and the integration gate. /v:orchestrate $file_path only materializes the manifest. Delegate to compound-v:parallel-dispatcher only if this session has no Workflow tool."
     ;;
   *docs/superpowers/specs/*.md)
-    nudge="💉 Compound V — spec saved at $file_path. If this came from brainstorming, the next step is the user's own review of the spec (brainstorming's User Review Gate), not a dispatch. Do NOT start the pre-flights now: they fire when superpowers:writing-plans is invoked (Trigger 1), which happens only after the user approves this spec — that is the whole point of running the audits on an APPROVED spec. If this spec RESCOPES work whose earlier features already went through the pipeline, that earlier compliance does not carry: the rescope re-enters at the top."
+    nudge="Compound V — spec saved at $file_path. If this came from brainstorming, the next step is the user's own review of the spec (brainstorming's User Review Gate), not a dispatch. Do NOT start the pre-flights now: they fire when superpowers:writing-plans is invoked (Trigger 1), which happens only after the user approves this spec — that is the whole point of running the audits on an APPROVED spec. If this spec RESCOPES work whose earlier features already went through the pipeline, that earlier compliance does not carry: the rescope re-enters at the top."
     # Trigger 0 runs BEFORE a brainstorm, so by the time a spec exists it can no
     # longer be run -- a retroactive recon is the fabricated-evidence pattern, not
     # a recovery. All this can honestly do is turn a silent skip into a declared
@@ -53,7 +53,7 @@ case "$file_path" in
     fi
     ;;
   *docs/superpowers/recon/*.md)
-    nudge="💉 Compound V — recon saved at $file_path. Start the brainstorm with it: read it before the first question; treat DIRECTIONS as non-exhaustive."
+    nudge="Compound V — recon saved at $file_path. Start the brainstorm with it: read it before the first question; treat DIRECTIONS as non-exhaustive."
     ;;
   *)
     # Not relevant — exit silently

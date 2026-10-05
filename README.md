@@ -1,4 +1,4 @@
-# superpowers-v 💉
+# superpowers-v
 
 **Compound V** — a multi-model coding sidekick for [Superpowers](https://github.com/obra/superpowers), running on Claude Code.
 

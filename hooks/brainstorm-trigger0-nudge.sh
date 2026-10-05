@@ -77,10 +77,10 @@ hook_cwd=$(echo "$input" | jq -r '.cwd // empty' 2>/dev/null || echo "")
 
 case "$skill_name" in
   superpowers:brainstorming)
-    nudge="💉 Compound V — Trigger 0 backstop: run the Trigger 0 gates from phase-0-recon.md if not already done for this brainstorm (reminder only — the gates in that doc decide whether recon actually runs)."
+    nudge="Compound V — Trigger 0 backstop: run the Trigger 0 gates from phase-0-recon.md if not already done for this brainstorm (reminder only — the gates in that doc decide whether recon actually runs)."
     ;;
   superpowers:writing-plans)
-    nudge="💉 Compound V — Trigger 1: the spec has passed brainstorming's user-review gate — writing-plans is invoked only after the user approved the spec, so the approved spec is what the audits must read. BEFORE writing the plan, run the three pre-flights (code-archaeologist ∥ domain-expert ∥ doc-validator) on that approved spec as ONE native Workflow on Engine C: python3 scripts/compound-v-emit-preflight.py --spec <spec> --out … then Workflow({ scriptPath }) — see skills/compound-v/SKILL.md \"Trigger 1\". Then write the plan with the three audits as design-constraint sources. ALL THREE: doc-validator is skipped only when the spec has ZERO technical dependencies — \"no NEW dependency\" is not the rule, because dependencies you already use go stale and acquire CVEs. If this spec RESCOPES work whose earlier features already went through the pipeline, that earlier compliance does not carry: the rescope re-enters at the top."
+    nudge="Compound V — Trigger 1: the spec has passed brainstorming's user-review gate — writing-plans is invoked only after the user approved the spec, so the approved spec is what the audits must read. BEFORE writing the plan, run the three pre-flights (code-archaeologist ∥ domain-expert ∥ doc-validator) on that approved spec as ONE native Workflow on Engine C: python3 scripts/compound-v-emit-preflight.py --spec <spec> --out … then Workflow({ scriptPath }) — see skills/compound-v/SKILL.md \"Trigger 1\". Then write the plan with the three audits as design-constraint sources. ALL THREE: doc-validator is skipped only when the spec has ZERO technical dependencies — \"no NEW dependency\" is not the rule, because dependencies you already use go stale and acquire CVEs. If this spec RESCOPES work whose earlier features already went through the pipeline, that earlier compliance does not carry: the rescope re-enters at the top."
     ;;
   *)
     exit 0

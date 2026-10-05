@@ -59,10 +59,10 @@ All three are independent — different failure modes, different lookup paths, n
 **The skyscraper metaphor** (see [assets/skyscraper-metaphor.md](../../assets/skyscraper-metaphor.md)): Without pre-flight you build a 500m² hat on a 200m² tower. With the pre-flight audits, you add three proper floors that fit the building AND the building code.
 
 **Announce at start of each phase:**
-- Phase 0: `"💉 Compound V — pre-brainstorm recon (gated)."` — **only when the gates decide to RUN**; a gate-skip gets the one-line log plus its terminal event, no announcement
-- Phase 1: `"💉 Compound V injected — triple pre-flight (archaeology + domain-expert + library-validator) in parallel."`
-- Phase 2: `"💉 Compound V — enforcing Disjoint Partition Map."`
-- Phase 3: `"💉 Compound V — dispatching N jobs on Engine C (tier-routed: Opus judges, Sonnet executes)."`
+- Phase 0: `"Compound V — pre-brainstorm recon (gated)."` — **only when the gates decide to RUN**; a gate-skip gets the one-line log plus its terminal event, no announcement
+- Phase 1: `"Compound V injected — triple pre-flight (archaeology + domain-expert + library-validator) in parallel."`
+- Phase 2: `"Compound V — enforcing Disjoint Partition Map."`
+- Phase 3: `"Compound V — dispatching N jobs on Engine C (tier-routed: Opus judges, Sonnet executes)."`
 
 (Heavy theming is optional flavor; technical content is straight business.)
 
