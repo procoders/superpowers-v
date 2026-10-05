@@ -726,6 +726,11 @@ def _selftest():
               and _flat["ghost"]["attention"] is True and _flat["ghost"]["backend"] is None,
               "hud: done/pending are quiet; a blocked state-only job needs attention")
         check(_hm["done"] == 1 and _hm["total"] == 4, "hud: done/total are the loader's counts")
+        check(_hm["unresolved"] == 0, "hud: no unresolved-caller log -> 0")
+        _fx_write(os.path.join(_hd, "lane-guard-unresolved.jsonl"),
+                  '{"agent_id": "a"}\n\n{"agent_id": "b"}\n')
+        check(hud_model(_hrec)["unresolved"] == 2,
+              "hud: unresolved counts the non-empty lines of lane-guard-unresolved.jsonl")
         import shutil as _sh; _sh.rmtree(_hd)
 
         ids2 = [r["id"] for r in active_records(rroot, now=now, open_jobs_only=True)]
@@ -990,6 +995,22 @@ def _hud_job_model(mj, routing):
     return None
 
 
+def _hud_unresolved(run_dir):
+    """How many callers the lane guard could not tie to a job in this run -- the lines of
+    <run>/lane-guard-unresolved.jsonl, which the guard writes once per such caller. Their
+    writes were NOT lane-checked. 0 when the file is absent or unreadable."""
+    if not run_dir:
+        return 0
+    path = os.path.join(run_dir, "lane-guard-unresolved.jsonl")
+    try:
+        if not _contained(path, os.path.realpath(run_dir)) or not os.path.isfile(path):
+            return 0
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return sum(1 for line in fh if line.strip())
+    except OSError:
+        return 0
+
+
 def hud_model(rec):
     """The band's document for one loaded run record."""
     state_jobs = rec.get("state_jobs") if isinstance(rec.get("state_jobs"), dict) else {}
@@ -1039,6 +1060,7 @@ def hud_model(rec):
             "run_dir": rec.get("path"),
             "done": rec.get("done", 0), "total": rec.get("total", 0),
             "running": sum(1 for w in waves for j in w["jobs"] if j["status"] == "running"),
+            "unresolved": _hud_unresolved(rec.get("path")),
             "state_error": bool(rec.get("state_error")),
             "waves": waves}
 

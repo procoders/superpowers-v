@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Band, HudJob, HudRun, Live } from '../types'
+import type { Band, HudJob, HudRun, Live, Quota } from '../types'
 
 // Compound V run band. Everything it prints was read off disk by the plugin's own
 // readers: statuses from state.json and backend/tier from manifest.yaml (via
@@ -35,7 +35,7 @@ const C = {
 const GLYPH_WIDTH = 2
 const BACKEND_WIDTH = 12 // "antigravity" + 1
 
-const EMPTY: Band = { run: null, live: null, alerted: [], closing: null, error: null }
+const EMPTY: Band = { run: null, live: null, alerted: [], quota: [], closing: null, error: null }
 
 async function scriptPath($: EngineInterface, name: string): Promise<string | null> {
   const path = `${$.plugin.root}/scripts/${name}`
@@ -105,6 +105,50 @@ function age(seconds: number | null | undefined): string {
   return `${Math.floor(seconds / 3600)}h${Math.floor((seconds % 3600) / 60)}m`
 }
 
+const QUOTA_LABEL: Record<string, string> = { five_hour: '5h', seven_day: '7d', spend_limit: 'spend' }
+
+/**
+ * The account's rate-limit windows now, against where they stood when this run was first
+ * seen. The baseline lives in `$.store` under the run id, so a restarted session keeps it.
+ * These are ACCOUNT windows: anything else running on the account moves them too.
+ */
+async function readQuota($: EngineInterface, runId: string): Promise<Quota[]> {
+  let windows: { kind: string; percentUsed: number; resetsAt?: string }[] = []
+  try {
+    windows = (await $.session.usage()).rateLimits
+  } catch {
+    return []
+  }
+  if (windows.length === 0) {
+    return []
+  }
+  let saved = (await $.store.get('quota')) as { runId?: string; base?: Record<string, number> } | undefined
+  if (!saved || saved.runId !== runId || typeof saved.base !== 'object' || saved.base === null) {
+    saved = { runId, base: {} }
+  }
+  const base = saved.base ?? {}
+  let hasNew = false
+  for (const w of windows) {
+    if (typeof base[w.kind] !== 'number') {
+      base[w.kind] = w.percentUsed
+      hasNew = true
+    }
+  }
+  if (hasNew) {
+    await $.store.set('quota', { runId, base })
+  }
+
+  return windows.map(w => ({ kind: w.kind, start: base[w.kind] ?? w.percentUsed, now: w.percentUsed, resetsAt: w.resetsAt }))
+}
+
+/** `5h +6.5% → 41%`; after a window reset (now below the start) only where it stands. */
+function quotaText(q: Quota): string {
+  const label = QUOTA_LABEL[q.kind] ?? q.kind
+  const delta = Math.round((q.now - q.start) * 10) / 10
+
+  return delta >= 0 ? `${label} +${delta}% → ${q.now}%` : `${label} → ${q.now}%`
+}
+
 /** What a job runs on, after the backend name: the resolved model, else its tier. */
 function route(job: HudJob): string {
   const what = job.model ?? job.tier ?? ''
@@ -149,11 +193,13 @@ function trouble(job: HudJob, live: Record<string, Live> | null): string | null 
   return null
 }
 
-function closingLine(run: HudRun): string {
+function closingLine(run: HudRun, quota: Quota[]): string {
   const bad = run.waves.flatMap(w => w.jobs).filter(j => j.attention)
   const tail = bad.length > 0 ? ` · ${bad.map(j => `${j.id} ${j.status}`).join(', ')}` : ''
+  const spent = quota.length > 0 ? ` · account quota ${quota.map(quotaText).join(', ')}` : ''
+  const loose = run.unresolved > 0 ? ` · ${run.unresolved} caller(s) not lane-checked` : ''
 
-  return `${run.id} · ${run.phase} · ${run.done}/${run.total} done${tail}`
+  return `${run.id} · ${run.phase} · ${run.done}/${run.total} done${tail}${loose}${spent}`
 }
 
 // The poller's own bookkeeping. Module variables start over on a hot reload, which is
@@ -187,7 +233,7 @@ async function step($: EngineInterface): Promise<void> {
     if (doc?.run) {
       mem.stateMtime = -1
       mem.livenessAt = 0
-      await update($, band, b => ({ ...(b ?? EMPTY), run: doc.run, live: null, alerted: [], error: null }))
+      await update($, band, b => ({ ...(b ?? EMPTY), run: doc.run, live: null, alerted: [], quota: [], error: null }))
 
       // Same tick, tracked path: liveness and the first toasts should not wait 5 s.
       return step($)
@@ -205,7 +251,12 @@ async function step($: EngineInterface): Promise<void> {
   }
   const hasChanged = mtime !== mem.stateMtime
   const isLivenessDue = tracked.running > 0 && now - mem.livenessAt >= LIVENESS_MS
+  const quota = await readQuota($, tracked.id)
   if (!hasChanged && !isLivenessDue) {
+    if (JSON.stringify(quota) !== JSON.stringify(cur.quota)) {
+      await update($, band, b => ({ ...(b ?? EMPTY), quota }))
+    }
+
     return
   }
 
@@ -227,7 +278,8 @@ async function step($: EngineInterface): Promise<void> {
         run: doc.run,
         live: null,
         alerted: [],
-        closing: { text: closingLine(last), until: now + CLOSING_MS },
+        quota: [],
+        closing: { text: closingLine(last, quota), until: now + CLOSING_MS },
         error: null,
       }))
 
@@ -256,7 +308,13 @@ async function step($: EngineInterface): Promise<void> {
     }
   }
 
-  await update($, band, b => ({ ...(b ?? EMPTY), run, live, alerted, error: null }))
+  const looseKey = `unresolved:${run.unresolved}`
+  if (run.unresolved > 0 && !alerted.includes(looseKey)) {
+    alerted.push(looseKey)
+    $.ui.toast(`Compound V · ${run.unresolved} caller(s) wrote without a lane check`, { timeoutMs: 8_000 })
+  }
+
+  await update($, band, b => ({ ...(b ?? EMPTY), run, live, alerted, quota, error: null }))
 }
 
 /** `CV_DISABLED_HOOKS=run-band` turns the band off, like any other Compound V hook. */
@@ -336,7 +394,7 @@ export const register: Register = on => {
       const cell = jobs.length > 24 ? '▰' : '▰▰'
       const waveCount = run.waves.filter(w => w.n !== null && w.n !== '?').length
       const nameWidth = Math.min(28, Math.max(...jobs.map(j => j.id.length), 4) + 2)
-      const isTable = jobs.length <= TABLE_MAX_JOBS && jobs.length + 1 <= e.props.maxRows
+      const isTable = jobs.length <= TABLE_MAX_JOBS && jobs.length + 3 <= e.props.maxRows
 
       // Header: who and where on the left; one segment per job and the count on the right.
       rows.push(
@@ -431,6 +489,33 @@ export const register: Register = on => {
           )
         }
       }
+    }
+
+    if (b.run !== null && b.run.unresolved > 0) {
+      rows.push(
+        <Box flexDirection="row" columnGap={1}>
+          <Text color={C.warn}>⚠</Text>
+          <Text color={C.warn} wrap="truncate-end">
+            {b.run.unresolved} caller(s) wrote without a lane check — the guard could not tell whose they were
+          </Text>
+          <Text dimColor>lane-guard-unresolved.jsonl</Text>
+        </Box>,
+      )
+    }
+
+    if (b.run !== null && b.quota.length > 0) {
+      rows.push(
+        <Box flexDirection="row" justifyContent="space-between" columnGap={2}>
+          <Text dimColor>account quota since this run appeared</Text>
+          <Box flexDirection="row" columnGap={2}>
+            {b.quota.map(q => (
+              <Text color={q.now >= 95 ? C.bad : q.now >= 80 ? C.warn : undefined} dimColor={q.now < 80}>
+                {quotaText(q)}
+              </Text>
+            ))}
+          </Box>
+        </Box>,
+      )
     }
 
     return (

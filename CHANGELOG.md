@@ -16,6 +16,22 @@ works without `gh` or `jq`. It never deletes the origin branch of a fork PR or o
 a general "clean up" instruction. It is the step after `superpowers:finishing-a-development-branch`, which ends when
 the PR is opened. `tests/test-post-merge-cleanup.sh` covers it on throwaway repositories.
 
+## [3.8.4] - 2026-10-05
+
+### Added — the run band shows account quota movement, and writes the lane guard could not check
+
+- **Quota footer.** `account quota since this run appeared   5h +6.5% → 41%   7d +1.2% → 88%`. The figures are
+  Claude Code's own rate-limit windows (`$.session.usage()`): where each stands now, and how far it moved since
+  the band first saw this run. The starting point is kept in the plugin's store under the run id, so a restarted
+  session does not lose it. Amber from 80%, red from 95%. The closing line carries the same figures.
+  **What it is not:** a per-task cost. The windows belong to the account, so another session running at the same
+  time moves them too, and Codex or Gemini limits are not in them. Off a subscription the footer is absent.
+  After a window resets, only where it stands is shown.
+- **Unchecked writes.** When the lane guard cannot tie a caller to a job it lets the write through and records
+  the caller in `lane-guard-unresolved.jsonl`. Nothing surfaced that file: one earlier run carries two such
+  records nobody noticed. The band now shows an amber row with the count and raises one toast when it grows.
+  `compound-v-dashboard.py hud` reports it as `unresolved`.
+
 ## [3.8.3] - 2026-10-05
 
 ### Changed — the run band wears the project's own colours, and its columns line up
