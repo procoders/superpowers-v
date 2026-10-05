@@ -118,9 +118,9 @@ however mechanical each individual edit looks.
 
 | Tier | Strongest fit | Routes to (Balanced) |
 |---|---|---|
-| `frontier` | The extreme case. Reachable by design, assigned rarely: it is what a **re-attempt escalates into** after a recorded failure, and where interface-design work belongs. Also, since 2026-09-24, where every **Codex review/judge role** (cross-model plan review, `/v:review-plan`, the epic arbiter's Codex ballot) resolves — review is where the strongest reasoning pays. | claude `fable`, codex `gpt-6-astra`, antigravity top model, cursor `auto`, opencode `anthropic/claude-opus-4-6`. Under `cost-aware` it caps at claude `opus`. Codex is the one backend where `frontier` is genuinely a rung above `deep` (GPT-6 ships a dedicated frontier model, `astra`, above the workhorse `sol`) — for the other external backends `frontier` still defaults to the same value as `deep`. |
-| `deep` | Judgment: architecture, security/auth/payments, coupled business logic, designing tests, external APIs, **ALL reviewers**, shared-foundation Task 0. | claude `opus`, codex `gpt-6.1-sol`, antigravity top model, cursor `auto`, opencode `anthropic/claude-opus-4-6`. |
-| `standard` | Execution against a spec that is already settled: bounded core/feature build, incl. large isolated codex work. | claude `sonnet` (`opus` under the `conservative` stance), codex `gpt-6.1-sol` (same model as `deep`, differing only by `effort`), antigravity mid model, cursor `auto`, opencode `openai/gpt-5.6-terra`. |
+| `frontier` | The extreme case. Reachable by design, assigned rarely: it is what a **re-attempt escalates into** after a recorded failure, and where interface-design work belongs. Also, since 2026-09-24, where every **Codex review/judge role** (cross-model plan review, `/v:review-plan`, the epic arbiter's Codex ballot) resolves — review is where the strongest reasoning pays. | claude `fable`, codex `gpt-6-astra`, antigravity top model, cursor `auto`, opencode `anthropic/claude-opus-5-5`. Under `cost-aware` it caps at claude `opus`. Codex is the one backend where `frontier` is genuinely a rung above `deep` (GPT-6 ships a dedicated frontier model, `astra`, above the workhorse `sol`) — for the other external backends `frontier` still defaults to the same value as `deep`. |
+| `deep` | Judgment: architecture, security/auth/payments, coupled business logic, designing tests, external APIs, **ALL reviewers**, shared-foundation Task 0. | claude `opus`, codex `gpt-6.1-sol`, antigravity top model, cursor `auto`, opencode `anthropic/claude-opus-5-5`. |
+| `standard` | Execution against a spec that is already settled: bounded core/feature build, incl. large isolated codex work. | claude `sonnet` (`opus` under the `conservative` stance), codex `gpt-6.1-sol` (same model as `deep`, differing only by `effort`), antigravity mid model, cursor `auto`, opencode `openai/gpt-6.1-sol`. |
 | `light` | Mechanical single-file / docs / i18n / scanning. Also where the pipeline's own **transport** stages run (Gate, Record, Finalize — each one clamped command, verbatim JSON back). | claude `sonnet`, codex `gpt-6-luna`, antigravity flash model, cursor `auto`, opencode `opencode/mimo-v2.5-free` (a real credential-free model). |
 
 **A reviewer's floor is `deep`, not a ceiling.** Invariant 4 demands `tier: deep` **or
@@ -155,14 +155,14 @@ The concrete model behind each tier lives in a **refreshable** map in the projec
     "codex":       { "frontier": "gpt-6-astra",            "deep": "gpt-6.1-sol",  "standard": "gpt-6.1-sol",  "light": "gpt-6-luna" },
     "antigravity": { "deep": "Gemini 3.1 Pro (High)",     "standard": "Gemini 3.1 Pro (Low)",        "light": "Gemini 3.8 Flash (Low)" },
     "cursor":      { "deep": "auto",                       "standard": "auto",                        "light": "auto" },
-    "opencode":    { "deep": "anthropic/claude-opus-4-6",  "standard": "openai/gpt-5.6-terra",         "light": "opencode/mimo-v2.5-free" }
+    "opencode":    { "deep": "anthropic/claude-opus-5-5",  "standard": "openai/gpt-6.1-sol",         "light": "opencode/mimo-v2.5-free" }
   },
   "cost-aware": {
     "claude":      { "frontier": "opus",  "deep": "opus",  "standard": "sonnet",                     "light": "sonnet" },
     "codex":       { "frontier": "gpt-6-astra",            "deep": "gpt-6.1-sol",  "standard": "gpt-6.1-sol",  "light": "gpt-6-luna" },
     "antigravity": { "deep": "Gemini 3.1 Pro (High)",     "standard": "Gemini 3.1 Pro (Low)",        "light": "Gemini 3.8 Flash (Low)" },
     "cursor":      { "deep": "auto",                       "standard": "auto",                        "light": "auto" },
-    "opencode":    { "deep": "anthropic/claude-opus-4-6",  "standard": "openai/gpt-5.6-terra",         "light": "opencode/mimo-v2.5-free" }
+    "opencode":    { "deep": "anthropic/claude-opus-5-5",  "standard": "openai/gpt-6.1-sol",         "light": "opencode/mimo-v2.5-free" }
   }
   // claude-only mirrors balanced; conservative keeps standard on opus
 }

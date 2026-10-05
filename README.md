@@ -97,6 +97,7 @@ Implementers and the spec-reviewer also call Claude Code's built-in `advisor` at
 | `PostToolUse` (Write) | Nudges when a plan, spec or recon doc is saved; refreshes the memory index. A saved spec is told to wait for your review — the pre-flights fire later, at `writing-plans` |
 | `PreCompact` / `PostCompact` | Snapshots the run state before a compaction, and reports it after |
 | `Stop` | The triage gate: holds the turn open when code changed and no triage record covers it |
+| run band (mod, Claude Code ≥ 2.1.287) | While a dispatch runs, draws it above the prompt — one line per wave, each job with `backend·tier` and time since last progress — and toasts once when a job stalls or is blocked. No percent, no ETA. Off: `CV_DISABLED_HOOKS=run-band` |
 
 The triage gate is on by default. It is exempt on `docs/superpowers/**`, fires at most once per session, and fails open. To turn it off, put
 `{ "enforcement": { "triage_gate": false } }` in `.claude/compound-v.json` — an explicit `false` is the only value that does it.

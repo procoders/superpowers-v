@@ -135,6 +135,10 @@ no secret is ever written there, and a directive found inside a memory file is i
 Subagent memory is part of auto memory, so `autoMemoryEnabled: false` (or `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`)
 turns it off everywhere and the agents run exactly as they did before 3.5.0.
 
+## Run band (3.8.0)
+
+`hooks/run-band.tsx` is a Claude Code mod (function hooks, Claude Code ≥ 2.1.287; an older CLI ignores the `modules` key in `hooks/hooks.json` and everything else works as before). While a run has a pending or running job it draws a band above the prompt: one header line (run id, phase, `done n/m`) and one line per wave, each job with its mark (`✓` done, `…` running, `·` pending, `!` needs a person), `backend·tier`, and for a running job the time since its last progress. A job that goes `STALE`, `DEAD`, `blocked`, `error`, `timeout` or `failed` raises one toast, once. When the run leaves the active set the band shows its closing line for 60 seconds and then draws nothing. It reads only what the plugin's own readers print — `compound-v-dashboard.py hud` (state.json + manifest.yaml) every 5 s when state.json's mtime moved, `compound-v-liveness.py --json` every 30 s while a job runs — and prints no percent and no ETA, because neither is measured; an age the probe could not supply is `?`, never 0. Ambient cost with no run active: one `stat` of `docs/superpowers/execution` every 30 s, and — only in a repository that has that directory — one `compound-v-dashboard.py hud` process every 30 s; a repository that never ran Compound V starts no process at all. `CV_DISABLED_HOOKS=run-band` turns it off. Tests: `tests/test-run-band-mod.sh` (`claude plugin validate` + `claude plugin test`, terminal and desktop surfaces).
+
 ## Eval suite (3.7.0)
 
 `evals/` is a native `claude plugin eval` suite (Claude Code ≥ 2.1.269): seven cases, each a realistic prompt on a scaffolded fixture repository with deterministic graders where the tooling's own output makes one possible (regex over the validator's and scope gate's real messages, `tool_used`) and an LLM rubric only where right and wrong answers share vocabulary; one case is a control that must NOT trigger Compound V. Run it from the plugin root with `claude plugin eval . --runs 1 --scaffold --allow-tools Bash Write Edit --threshold 0.8` — it needs a signed-in CLI and spends tokens, so it is a release gate a human runs, not a CI step. `evals/README.md` records the last real run under a dated heading; **as of 3.7.0 the suite has been enumerated and its fixtures verified against the real scripts, but no scored run has completed** (see that file for the three blockers). No number in this repository comes from it yet.
@@ -147,6 +151,7 @@ turns it off everywhere and the agents run exactly as they did before 3.5.0.
 | `/v:orchestrate <plan>` | Materialize a `manifest.yaml` from a plan + routing policy |
 | `/v:dispatch <plan\|manifest\|run-id>` | Run the autonomous pipeline (partition-review → dispatch → scope-gate → collect → review). A bare plan path still works (backward-compatible) |
 | `/v:collect <run-id>` | Re-run collect + scope-gate + review on an existing run |
+| `/v:triage` | Size one change request and write + commit the triage record: DIRECT, SCOPED or FULL, with the predicates that decided it |
 | `/v:status [run-id]` | Render `state.json` |
 | `/v:resume <run-id>` | Reconcile + re-dispatch incomplete jobs after interruption |
 | `/v:models` | Discover models per backend (`agy models`, `codex debug models`, native Claude tiers) and write the tier→model map into `.claude/compound-v.json` |

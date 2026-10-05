@@ -33,8 +33,10 @@ fi
 # abort the whole banner on any non-zero exit, so guard python and swallow errors.
 if command -v python3 >/dev/null 2>&1 && [ -e "docs/superpowers/architecture/.onboard-manifest.json" ]; then
   stale=$(python3 "${CLAUDE_PLUGIN_ROOT:-.}/scripts/compound-v-onboard.py" staleness --quiet 2>/dev/null || echo 0)
-  if [ "${stale:-0}" -gt 0 ] 2>/dev/null; then
-    banner="$banner ⚠ $stale architecture doc(s) stale vs HEAD — run /v:onboard --refresh."
+  if [ "${stale:-0}" = "unregistered" ]; then
+    banner="$banner ⚠ The onboard manifest registers no cited files, so doc staleness cannot be checked — run /v:onboard --refresh to re-verify and re-register."
+  elif [ "${stale:-0}" -gt 0 ] 2>/dev/null; then
+    banner="$banner ⚠ $stale generated doc(s) cite files that changed since they were verified — run /v:onboard --refresh."
   fi
 fi
 
@@ -104,7 +106,7 @@ _cv_join() {
 }
 
 if [ -n "${CV_DISABLED_HOOKS:-}" ]; then
-  _cv_known=" brainstorm-trigger0-nudge epic-goal-stop memory-refresh plan-saved-nudge postcompact-resume precompact-snapshot session-banner triage-prompt-nudge "
+  _cv_known=" brainstorm-trigger0-nudge epic-goal-stop memory-refresh plan-saved-nudge postcompact-resume precompact-snapshot session-banner triage-prompt-nudge run-band "
   _cv_disabled_list="" _cv_unknown_list="" _cv_lane_named=""
   _cv_raw="$(printf '%s' "${CV_DISABLED_HOOKS}" | tr -d ' \t')"
   _cv_saved_ifs="$IFS"

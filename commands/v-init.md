@@ -171,7 +171,7 @@ opencode providers list </dev/null 2>&1 | grep -qv '0 credentials' \
 > posture from Cursor/Antigravity, which refuse until explicitly unlocked. The worktree +
 > `git diff` gate is the only real enforcement (detection, not prevention). **Prefer Codex
 > for untrusted / high-stakes work.** opencode addresses models as `provider/model`
-> strings (e.g. `anthropic/claude-opus-4-6`), so its resolved model family
+> strings (e.g. `anthropic/claude-opus-5-5`), so its resolved model family
 > is data-dependent; it is **WORKER-ONLY for v1, excluded from any cross-model
 > arbiter/review panel** until family-dedup keys on the resolved model. See
 > [`adapter-opencode.md`](../skills/backend-launcher/adapter-opencode.md) for the
@@ -578,14 +578,14 @@ was, in those two fields).
       "codex":       { "frontier": "gpt-6-astra", "deep": "gpt-6.1-sol", "standard": "gpt-6.1-sol", "light": "gpt-6-luna" },
       "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.8 Flash (Low)" },
       "cursor":      { "deep": "auto",                  "standard": "auto",                  "light": "auto" },
-      "opencode":    { "deep": "anthropic/claude-opus-4-6", "standard": "openai/gpt-5.6-terra", "light": "opencode/mimo-v2.5-free" }
+      "opencode":    { "deep": "anthropic/claude-opus-5-5", "standard": "openai/gpt-6.1-sol", "light": "opencode/mimo-v2.5-free" }
     },
     "cost-aware": {
       "claude":      { "frontier": "opus",  "deep": "opus",  "standard": "sonnet",                "light": "sonnet" },
       "codex":       { "frontier": "gpt-6-astra", "deep": "gpt-6.1-sol", "standard": "gpt-6.1-sol", "light": "gpt-6-luna" },
       "antigravity": { "deep": "Gemini 3.1 Pro (High)", "standard": "Gemini 3.1 Pro (Low)", "light": "Gemini 3.8 Flash (Low)" },
       "cursor":      { "deep": "auto",                  "standard": "auto",                  "light": "auto" },
-      "opencode":    { "deep": "anthropic/claude-opus-4-6", "standard": "openai/gpt-5.6-terra", "light": "opencode/mimo-v2.5-free" }
+      "opencode":    { "deep": "anthropic/claude-opus-5-5", "standard": "openai/gpt-6.1-sol", "light": "opencode/mimo-v2.5-free" }
     }
   }
 }

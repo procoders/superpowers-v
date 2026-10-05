@@ -124,5 +124,6 @@
         ]
       }
     ]
-  }
+  },
+  "modules": ["./run-band.tsx"]
 }

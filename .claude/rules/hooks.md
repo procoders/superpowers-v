@@ -20,7 +20,7 @@ Sourced from `CONVENTIONS.md` §"Shell scripts and hooks". (`CONVENTIONS.md:102-
   a deny, so copying the `Stop` idiom there would be cargo-culting. (`hooks/hooks.json:4`)
 - Shell-command inspection is a supplement, never a replacement: a deny that can be walked around
   (`eval`, an interpreter one-liner, a variable holding the path) leaves the git-derived scope gate as
-  the authority. (`hooks/lane-guard.sh:17-23`)
+  the authority. (`hooks/lane-guard.sh:24-30`)
 - Without a run's `lane-map.json` the guard resolves no job, fails open, and silently allows every
   write — which is why the guard is a floor and not the enforcement.
   (`skills/compound-v/state-machine.md:166`)

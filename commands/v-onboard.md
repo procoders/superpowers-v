@@ -28,7 +28,9 @@ of this repo.
 
 - **`--refresh`** → the refresh branch (§Refresh in the skill): re-extract **only files whose content
   hash changed** since generation, run the **cited-evidence staleness gate**
-  (`python3 "$CV/scripts/compound-v-onboard.py" staleness --repo .`), re-run
+  (`python3 "$CV/scripts/compound-v-onboard.py" staleness --repo .` — if it answers
+  `state: unregistered`, the manifest registers nothing and its `count: 0` is not a clean result:
+  re-verify every generated doc's citations and re-register with `staleness --write --docmap`), re-run
   `python3 "$CV/scripts/compound-v-onboard.py" rules-lint --repo .` over `.claude/rules/**` (a rule whose
   cited line drifted is flagged `cited-changed`; one whose citation now dangles is a lint failure),
   put any flagged docs and rules through the **same human gate**, commit, then auto-run

@@ -264,8 +264,25 @@ def cmd_verify(args) -> int:
 MANIFEST_REL = os.path.join("docs", "superpowers", "architecture", ".onboard-manifest.json")
 
 
+def docmap_problems(docmap) -> list:
+    """Why this docmap must not be written (issue #21). An empty map, or a doc registered
+    with no cited file, produces a manifest the staleness gate can never flag — it then
+    answers `count: 0` forever, which reads as "current" and means "nothing registered"."""
+    if not isinstance(docmap, dict) or not docmap:
+        return ["the docmap registers no documents"]
+    out = []
+    for doc, srcs in docmap.items():
+        if not isinstance(srcs, (list, tuple)) or not [x for x in srcs if isinstance(x, str) and x]:
+            out.append("%s cites no files" % doc)
+    return out
+
+
 def write_manifest(repo: str, docmap: dict) -> str:
     import datetime
+    problems = docmap_problems(docmap)
+    if problems:
+        raise ValueError("refusing to write an onboard manifest that can never go stale: "
+                         + "; ".join(problems))
     docs = {}
     for doc, srcs in docmap.items():
         cited = {}
@@ -283,12 +300,24 @@ def write_manifest(repo: str, docmap: dict) -> str:
 
 def check_staleness(repo: str) -> dict:
     path = os.path.join(repo, MANIFEST_REL)
+    # `state` separates the three answers that all used to read `count: 0` (issue #21):
+    #   no_manifest — never onboarded;  unregistered — a manifest that registers no cited
+    #   file, so nothing can ever be compared (NOT "current");  registered — a real check.
     if not os.path.exists(path):
-        return {"stale": [], "count": 0}
+        return {"state": "no_manifest", "stale": [], "count": 0, "docs_registered": 0,
+                "docs_stale": 0}
     man = json.load(open(path, encoding="utf-8"))
+    registered = man.get("docs") if isinstance(man.get("docs"), dict) else {}
+    if not any(isinstance(i, dict) and i.get("cited") for i in registered.values()):
+        return {"state": "unregistered", "stale": [], "count": 0,
+                "docs_registered": len(registered), "docs_stale": 0,
+                "note": "the manifest registers no cited files, so staleness cannot be "
+                        "checked — this is NOT a clean result. Re-register with "
+                        "`staleness --write --docmap <file>` (docmap: {\"docs\": {doc: "
+                        "[cited files]}}) after re-verifying the docs' citations."}
     stale = []
     cited_paths = set()
-    for doc, info in man.get("docs", {}).items():
+    for doc, info in registered.items():
         for src, sha in info.get("cited", {}).items():
             cited_paths.add(src)
             ab = os.path.join(repo, src)
@@ -303,20 +332,35 @@ def check_staleness(repo: str) -> dict:
         if os.path.dirname(f) in cited_dirs and f not in cited_paths:
             stale.append({"doc": "(path-space)", "reason": "uncited-new-file"})
             break
-    return {"stale": stale, "count": len(stale)}
+    # `count` is stale CITATIONS (one doc can carry twenty); `docs_stale` is documents.
+    docs_stale = len({x["doc"] for x in stale if x["doc"] != "(path-space)"})
+    return {"state": "registered", "stale": stale, "count": len(stale),
+            "docs_registered": len(registered), "docs_stale": docs_stale}
 
 
 def cmd_staleness(args) -> int:
     repo = os.path.abspath(args.repo)
     if args.write:
-        docmap = json.load(open(args.docmap, encoding="utf-8"))["docs"] if args.docmap else {}
-        write_manifest(repo, docmap)
+        if not args.docmap:
+            print("staleness --write requires --docmap <file> ({\"docs\": {\"<doc path>\": "
+                  "[\"<cited file>\", ...]}}). Without it the manifest registered nothing and "
+                  "--refresh reported \"0 stale\" forever (issue #21).", file=sys.stderr)
+            return 2
+        try:
+            docmap = json.load(open(args.docmap, encoding="utf-8")).get("docs")
+            write_manifest(repo, docmap)
+        except (OSError, ValueError, AttributeError) as exc:
+            print("staleness --write: %s" % exc, file=sys.stderr)
+            return 2
         if not args.quiet:
-            print(json.dumps({"written": MANIFEST_REL}, indent=2))
+            print(json.dumps({"written": MANIFEST_REL, "docs_registered": len(docmap)}, indent=2))
         return 0
     result = check_staleness(repo)
     if args.quiet:
-        print(result["count"])
+        # One token for the SessionStart banner: `unregistered`, or the number of stale
+        # DOCUMENTS (it used to print stale citations and the banner called them docs).
+        # (the path-space heuristic row names no document: it stays in the JSON only)
+        print("unregistered" if result["state"] == "unregistered" else result["docs_stale"])
     else:
         print(json.dumps(result, indent=2))
     return 0
@@ -1666,8 +1710,36 @@ def _selftest() -> int:
         with open(os.path.join(d4, "src.py"), "w") as fh: fh.write("v2 changed\n")
         st = check_staleness(d4)
         check("staleness flags cited-changed", any(s["reason"] == "cited-changed" for s in st["stale"]))
+        check("staleness counts documents apart from citations",
+              st["state"] == "registered" and st["docs_stale"] == 1 and st["docs_registered"] == 1)
         os.remove(os.path.join(d4, "src.py"))
         check("staleness flags cited-deleted", any(s["reason"] == "cited-deleted" for s in check_staleness(d4)["stale"]))
+        # issue #21: an empty manifest is "unregistered", never a clean zero.
+        with open(os.path.join(arch, ".onboard-manifest.json"), "w") as fh:
+            json.dump({"generated": "2026-07-16", "docs": {}}, fh)
+        check("issue 21: an empty manifest reads `unregistered`, not clean",
+              check_staleness(d4)["state"] == "unregistered" and "NOT a clean" in check_staleness(d4)["note"])
+        os.remove(os.path.join(arch, ".onboard-manifest.json"))
+        check("issue 21: no manifest reads `no_manifest`", check_staleness(d4)["state"] == "no_manifest")
+        for _bad in ({}, None, {"a.md": []}, {"a.md": ["x.py"], "b.md": []}):
+            try:
+                write_manifest(d4, _bad); _raised = False
+            except ValueError:
+                _raised = True
+            check("issue 21: write_manifest refuses %r" % (_bad,), _raised)
+        check("issue 21: a refused write leaves no manifest behind",
+              not os.path.exists(os.path.join(arch, ".onboard-manifest.json")))
+
+        class _A:
+            repo = d4; write = True; docmap = None; quiet = True
+        check("issue 21: `staleness --write` without --docmap exits 2", cmd_staleness(_A()) == 2)
+        with open(os.path.join(d4, "src.py"), "w") as fh: fh.write("v3\n")
+        _dm = os.path.join(d4, "docmap.json")
+        with open(_dm, "w") as fh: json.dump({"docs": {"docs/a.md": ["src.py"]}}, fh)
+        _A.docmap = _dm
+        check("issue 21: a real docmap writes and then reads registered + clean",
+              cmd_staleness(_A()) == 0 and check_staleness(d4)["state"] == "registered"
+              and check_staleness(d4)["count"] == 0)
     finally:
         shutil.rmtree(d4, ignore_errors=True)
 

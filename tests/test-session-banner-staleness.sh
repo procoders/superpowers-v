@@ -50,3 +50,14 @@ case "$out" in
   *) echo "PASS missing claude binary silent" ;;
 esac
 rm -rf "$fake"
+
+# --- issue #21: an empty onboard manifest is reported, never silently "0 stale". ---
+emp="$(mktemp -d)"; mkdir -p "$emp/docs/superpowers/architecture"
+printf '{"generated":"2026-07-16","docs":{}}' > "$emp/docs/superpowers/architecture/.onboard-manifest.json"
+out="$(cd "$emp" && CLAUDE_PLUGIN_ROOT="$REPO" bash "$REPO/hooks/session-banner.sh" 2>/dev/null || true)"
+case "$out" in
+  *"registers no cited files"*) echo "PASS empty manifest is reported as unregistered" ;;
+  *) echo "FAIL empty manifest was silent"; exit 1 ;;
+esac
+echo "$out" | jq -e '.hookSpecificOutput.additionalContext' >/dev/null || { echo "FAIL banner JSON invalid"; exit 1; }
+echo "PASS banner staleness suite"

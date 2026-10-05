@@ -404,7 +404,7 @@ done
 # --model is REQUIRED for opencode (unlike antigravity/cursor): opencode addresses
 # models as a `provider/model` string and has no single coherent "configured default"
 # across its many proxied vendors the way a single-vendor CLI does.
-[ -n "$MODEL" ]       || die "--model is required for opencode (must be a provider/model string, e.g. anthropic/claude-opus-4-6)"
+[ -n "$MODEL" ]       || die "--model is required for opencode (must be a provider/model string, e.g. anthropic/claude-opus-5-5)"
 # NOTE: --write-allowed may legitimately be EMPTY for a read-only / review job.
 # An empty allow-list means NO writes are permitted, so ANY changed path is a
 # violation (the scope gate, run with zero allowed globs, blocks everything).

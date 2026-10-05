@@ -225,7 +225,11 @@ means the fast-path gate has no static evidence to read.
 
 ### 9. INDEX — write the manifest, then auto `/v:memory-refresh`
 Write/update `docs/superpowers/architecture/.onboard-manifest.json` (each doc's cited files + their
-content hashes) via `python3 "$CV/scripts/compound-v-onboard.py" staleness --repo . --write`, then **auto-run
+content hashes) via `python3 "$CV/scripts/compound-v-onboard.py" staleness --repo . --write --docmap <docmap.json>`
+(`{"docs": {"<doc path>": ["<cited file>", ...]}}` — every generated doc with every file it cites;
+`--docmap` is required, and a map that registers no documents, or a document with no cited file, is
+refused with exit 2: until 3.7.6 the flag was optional and its absence wrote an empty manifest that made
+`--refresh` report "0 stale" forever, issue #21), then **auto-run
 [`/v:memory-refresh`](../../commands/v-memory-refresh.md)** so the new docs (and root
 `AGENTS.md`/`CLAUDE.md`/`CONVENTIONS.md`/`DESIGN.md`) become recallable. The manifest stays `.json`
 (out of the index by design); everything else is now committed and indexable. The committed
@@ -396,7 +400,9 @@ files (`.cursor/rules`, `.windsurfrules`, …) stay read-only evidence — the c
   `/v:memory-refresh`.
 - **Staleness is deterministic** ("cited-evidence staleness," not full doc freshness):
   `python3 "$CV/scripts/compound-v-onboard.py" staleness --repo .` reports drift from
-  `.onboard-manifest.json` — a cited file whose hash changed (`cited-changed`), a cited file deleted
+  `.onboard-manifest.json`. Read its `state` first: `registered` is a real check; `no_manifest` and
+  `unregistered` (a manifest that registers no cited file) both carry `count: 0` and mean **nothing
+  could be compared**, never "current". `count` is stale citations, `docs_stale` is documents. Drift is — a cited file whose hash changed (`cited-changed`), a cited file deleted
   (`cited-deleted`), or — via a cheap heuristic — a **new uncited file** appearing in a cited doc's
   path-space (`uncited-new-file`), which catches architecture that migrated into a file the doc never
   cited. Hash-drift is necessary, not sufficient.

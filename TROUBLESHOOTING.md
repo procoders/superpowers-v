@@ -172,6 +172,22 @@ Re-run the validator (or `/v:dispatch`) until it's clean. The manifest schema + 
 
 **Fix:** `codex update` (standalone install) or `npm i -g @openai/codex`, then `codex debug models` should list `gpt-6.1-sol`. To stay on an old client, pin the previous workhorse in `.claude/compound-v.json`: `"models": {"codex": {"deep": "gpt-6-sol", "standard": "gpt-6-sol"}}`.
 
+## `/v:onboard --refresh` always says 0 stale, though the code changed
+
+**Cause (before 3.7.6):** step 9 wrote `.onboard-manifest.json` with `docs: {}`, so there was nothing to compare (issue #21).
+
+**Check:** `python3 scripts/compound-v-onboard.py staleness --repo .`. `state: unregistered` means the manifest registers no cited file; its `count: 0` is not a clean result. `state: registered` is a real check.
+
+**Fix:** update to 3.7.6 or later and run `/v:onboard --refresh`. It re-verifies each generated doc's citations and re-registers them with `staleness --write --docmap <file>`; the write now fails loudly without a docmap.
+
+## The run band above the prompt does not appear (or I want it gone)
+
+**It appears only while a run has a pending or running job**, and only on Claude Code ≥ 2.1.287 in the terminal or the desktop Code tab; with no active run it draws nothing by design. Check the reader it draws from: `python3 scripts/compound-v-dashboard.py hud` prints `{"run": null}` when nothing is active. A run older than 72 hours is not shown.
+
+**An age shows `?`:** the liveness probe did not answer in time; the band prints "unknown" rather than a number it did not measure.
+
+**Turn it off:** `CV_DISABLED_HOOKS=run-band` in the shell that launches Claude Code.
+
 ## A run was interrupted — how do I resume?
 
 **Symptom:** You killed a session (or it crashed) mid-batch. Some jobs finished, some didn't.

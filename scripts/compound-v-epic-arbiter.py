@@ -607,7 +607,7 @@ def resolve_codex_model(config_path=None, explicit_model=None, tier="frontier"):
 
 def resolve_agy_model(config_path=None, explicit_model=None, tier="deep"):
     """Resolve the EXPLICIT Gemini model the agy poll pins (mirrors resolve_codex_model). agy
-    1.1.1's live catalog is NO LONGER Gemini-only (it also serves Claude Opus/Sonnet 4.6 and
+    1.1.1's live catalog is NO LONGER Gemini-only (it also serves Claude Opus/Sonnet — 5.5 as of 2026-10-05 — and
     GPT-OSS 120B), so the poll must never ride agy's ambient default: it pins this resolved
     string and resolves model_family() from THAT same string, fail-closed."""
     if explicit_model:

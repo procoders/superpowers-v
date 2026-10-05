@@ -101,7 +101,7 @@ _CLAUDE_COST_AWARE = {"frontier": "opus", "deep": "opus",
 # "standard-strength" sibling the way Astra/Sol/Luna cover frontier/deep/light.
 # The older GPT-5.6 family (Sol/Terra/Luna, verified live 2026-07-10 on codex-cli
 # 0.144.1) is listed "Older ..." in the catalog and still works -- gpt-5.5 is
-# also still listed but retires 2026-10-14 (upgrade target: gpt-5.6-sol). An
+# also still listed but retires 2026-10-14 (upgrade target per the catalog: gpt-6.1-sol as of 0.160.0). An
 # under-floor client fails LOUD (not silent; the failure-policy retries once
 # then halts cleanly).
 _CODEX = {"frontier": "gpt-6-astra", "deep": "gpt-6.1-sol",
@@ -121,7 +121,7 @@ _ANTIGRAVITY = {"frontier": "Gemini 3.1 Pro (High)", "deep": "Gemini 3.1 Pro (Hi
 # Lower-trust tier (no kernel sandbox; headless -f required).
 _CURSOR = {"frontier": "auto", "deep": "auto", "standard": "auto", "light": "auto"}
 # opencode (opencode-ai): provider-agnostic router -- every cell is a full "provider/model"
-# string (e.g. "anthropic/claude-opus-4-6"), and the provider is allowed to DIFFER per
+# string (e.g. "anthropic/claude-opus-5-5"), and the provider is allowed to DIFFER per
 # cell (unlike every other backend's single-vendor map) -- this is the key design point
 # from the research: the resolver treats every model string as opaque, so no schema
 # change is needed. `light` legitimately points at one of opencode's own curated
@@ -131,15 +131,15 @@ _CURSOR = {"frontier": "auto", "deep": "auto", "standard": "auto", "light": "aut
 # per its own docs, defaults to allowing all operations -- see
 # skills/backend-launcher/adapter-opencode.md for the mandatory env-scrub + pinned
 # opencode.json mitigation. NEVER haiku anywhere (light is a free model, not haiku).
-# `standard` stayed on gpt-5.6-terra during the 2026-09-24 codex GPT-6 pass: `opencode
-# models openai` on this machine returned "Provider not found: openai" (no openai
-# provider/credentials configured in this environment), so gpt-6.1-sol's presence in
-# opencode's own catalog could not be live-confirmed here -- do not swap this string
-# on the codex probe alone; re-check `opencode models openai` before changing it.
+# 2026-10-05: frontier/deep -> anthropic/claude-opus-5-5 and standard -> openai/gpt-6.1-sol
+# (were claude-opus-4-6 and gpt-5.6-terra). Checked against models.dev, the registry
+# opencode reads its catalog from: both ids are listed under their providers there.
+# NOT run through `opencode run` -- this machine has no anthropic/openai provider
+# configured in opencode -- so treat them as registry-verified, not live-verified.
 _OPENCODE = {
-    "frontier": "anthropic/claude-opus-4-6",
-    "deep": "anthropic/claude-opus-4-6",
-    "standard": "openai/gpt-5.6-terra",
+    "frontier": "anthropic/claude-opus-5-5",
+    "deep": "anthropic/claude-opus-5-5",
+    "standard": "openai/gpt-6.1-sol",
     "light": "opencode/mimo-v2.5-free",
 }
 
@@ -620,8 +620,8 @@ def _selftest():
     # one backend where that opaque string legitimately varies its provider prefix
     # per tier).
     expect(
-        "opencode/deep -> anthropic/claude-opus-4-6",
-        resolve("opencode", "deep")["model"] == "anthropic/claude-opus-4-6",
+        "opencode/deep -> anthropic/claude-opus-5-5",
+        resolve("opencode", "deep")["model"] == "anthropic/claude-opus-5-5",
     )
     expect(
         "opencode/light -> credential-free opencode/* model",
@@ -655,8 +655,8 @@ def _selftest():
     )
     expect(
         "opencode explicit provider/model accepted",
-        resolve("opencode", "deep", explicit_model="anthropic/claude-opus-4-6")["model"]
-        == "anthropic/claude-opus-4-6",
+        resolve("opencode", "deep", explicit_model="anthropic/claude-opus-5-5")["model"]
+        == "anthropic/claude-opus-5-5",
     )
     expect(
         "non-opencode backend is NOT shape-checked (bare model fine)",
