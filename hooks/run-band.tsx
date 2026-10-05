@@ -9,6 +9,7 @@ import type { Band, HudJob, HudRun, Live } from '../types'
 // `compound-v-liveness.py`. No percent, no ETA: neither is measured.
 
 const band = atom({ plugin: 'superpowers-v', key: 'band' } as const, null)
+const spin = atom({ plugin: 'superpowers-v', key: 'spin' } as const, 0)
 
 const TICK_MS = 5_000
 const IDLE_POLL_EVERY = 6 // ticks: with no run tracked, ask the reader every 30 s
@@ -17,6 +18,22 @@ const CLOSING_MS = 60_000
 const READER_TIMEOUT_MS = 8_000
 const LIVENESS_TIMEOUT_MS = 15_000
 const STALLED = ['STALE', 'DEAD']
+const SPIN_MS = 500
+const SPIN_FRAMES = ['◐', '◓', '◑', '◒']
+const TABLE_MAX_JOBS = 8 // more than this and the band falls back to one line per wave
+
+// The amiainative.dev palette (its CSS custom properties), one meaning each.
+const C = {
+  brand: '#DC02DF', // --color-magenta: the V mark
+  run: '#1195F2', // --color-blue: running
+  done: '#34D399', // --color-emerald: done
+  warn: '#FFC53D', // the site's amber: five minutes without progress
+  bad: '#FB2C36', // --color-red-500: stalled, dead, blocked
+  route: '#6565F2', // --color-violet: the backend a job runs on
+  idle: '#575868', // --color-slate: queued
+}
+const GLYPH_WIDTH = 2
+const BACKEND_WIDTH = 12 // "antigravity" + 1
 
 const EMPTY: Band = { run: null, live: null, alerted: [], closing: null, error: null }
 
@@ -88,8 +105,35 @@ function age(seconds: number | null | undefined): string {
   return `${Math.floor(seconds / 3600)}h${Math.floor((seconds % 3600) / 60)}m`
 }
 
-function lane(job: HudJob): string {
-  return job.backend ? `${job.backend}${job.tier ? `·${job.tier}` : ''}` : ''
+/** What a job runs on, after the backend name: the resolved model, else its tier. */
+function route(job: HudJob): string {
+  const what = job.model ?? job.tier ?? ''
+
+  return job.effort ? `${what} · ${job.effort}` : what
+}
+
+type Look = { glyph: string; color: string; note: string; isLoud: boolean }
+
+/** One job's mark, color and right-hand note. `frame` animates a running job. */
+function look(job: HudJob, live: Record<string, Live> | null, frame: number): Look {
+  const why = trouble(job, live)
+  const idle = live?.[job.id]?.idle_s
+  if (why !== null) {
+    const since = STALLED.includes(why) ? ` · ${age(idle)}` : ''
+
+    return { glyph: '✕', color: C.bad, note: `${why}${since}`, isLoud: true }
+  }
+  if (job.status === 'done' || job.status === 'success') {
+    return { glyph: '●', color: C.done, note: 'done', isLoud: false }
+  }
+  if (job.status === 'running') {
+    const isSlow = typeof idle === 'number' && idle >= 300
+    const note = live === null ? '?' : age(idle)
+
+    return { glyph: SPIN_FRAMES[frame % SPIN_FRAMES.length] ?? '◐', color: isSlow ? C.warn : C.run, note, isLoud: true }
+  }
+
+  return { glyph: '○', color: C.idle, note: 'queued', isLoud: false }
 }
 
 /** Why a job needs a person, or null. The key is what a toast is deduplicated on. */
@@ -225,6 +269,14 @@ async function isDisabled($: EngineInterface): Promise<boolean> {
     .includes('run-band')
 }
 
+/** Advances the running-job glyph, only while a tracked run has a job running. */
+async function spinTick($: EngineInterface): Promise<void> {
+  const cur = await read($, band)
+  if (cur?.run && cur.run.running > 0) {
+    await update($, spin, n => (n + 1) % SPIN_FRAMES.length)
+  }
+}
+
 async function tick($: EngineInterface): Promise<void> {
   if (mem.isBusy) {
     return
@@ -245,6 +297,9 @@ export const register: Register = on => {
       $.clock.every(TICK_MS, () => {
         void tick($)
       })
+      $.clock.every(SPIN_MS, () => {
+        void spinTick($)
+      })
       void tick($)
     }
 
@@ -253,6 +308,7 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const b = await read($, band)
+    const frame = await read($, spin)
     const beneath = await next(e)
     if (e.props.hasSurvey || b === null || (b.run === null && b.closing === null)) {
       return beneath
@@ -263,55 +319,125 @@ export const register: Register = on => {
 
     if (b.closing !== null) {
       rows.push(
-        <Text dimColor wrap="truncate-end">
-          <Text bold>V</Text> {b.closing.text}
-        </Text>,
+        <Box flexDirection="row" columnGap={1}>
+          <Text bold color={C.brand}>
+            V
+          </Text>
+          <Text dimColor wrap="truncate-end">
+            {b.closing.text}
+          </Text>
+        </Box>,
       )
     }
 
     if (b.run !== null) {
       const run = b.run
+      const jobs = run.waves.flatMap(w => w.jobs)
+      const cell = jobs.length > 24 ? '▰' : '▰▰'
       const waveCount = run.waves.filter(w => w.n !== null && w.n !== '?').length
-      rows.push(
-        <Text wrap="truncate-end">
-          <Text bold>V</Text> {run.id} <Text dimColor>·</Text> {run.phase} <Text dimColor>·</Text> done{' '}
-          {run.done}/{run.total}
-          {b.error !== null && <Text dimColor> · {b.error}</Text>}
-          {run.state_error && <Text dimColor> · state.json did not parse</Text>}
-        </Text>,
-      )
-      for (const wave of run.waves) {
-        const label = wave.n === null ? '' : wave.n === '?' ? 'unplaced ' : `wave ${wave.n}/${waveCount} `
-        rows.push(
-          <Text wrap="truncate-end">
-            {'  '}
-            <Text dimColor>{label}</Text>
-            {wave.jobs.map(job => {
-              const why = trouble(job, b.live)
-              const live = b.live?.[job.id]
-              const isDone = job.status === 'done' || job.status === 'success'
-              const isRunning = job.status === 'running'
-              const mark = why !== null ? '!' : isDone ? '✓' : isRunning ? '…' : '·'
-              const idle = isRunning ? ` ${b.live === null ? '?' : age(live?.idle_s)}` : ''
+      const nameWidth = Math.min(28, Math.max(...jobs.map(j => j.id.length), 4) + 2)
+      const isTable = jobs.length <= TABLE_MAX_JOBS && jobs.length + 1 <= e.props.maxRows
 
-              return (
-                <Text color={why !== null ? 'red' : undefined} dimColor={why === null && !isRunning}>
-                  {mark} {job.id}
-                  {lane(job) !== '' && <Text dimColor> {lane(job)}</Text>}
-                  {why !== null ? ` ${why}` : ''}
-                  {idle}
-                  {'   '}
-                </Text>
-              )
-            })}
-          </Text>,
-        )
+      // Header: who and where on the left; one segment per job and the count on the right.
+      rows.push(
+        <Box flexDirection="row" justifyContent="space-between" columnGap={2}>
+          <Box flexDirection="row" columnGap={1}>
+            <Text bold color={C.brand}>
+              V
+            </Text>
+            <Text bold wrap="truncate-end">
+              {run.id}
+            </Text>
+            <Text dimColor>{run.phase.toLowerCase()}</Text>
+            {b.error !== null && <Text color={C.warn}>{b.error}</Text>}
+            {run.state_error && <Text color={C.warn}>state.json did not parse</Text>}
+          </Box>
+          <Box flexDirection="row" columnGap={1}>
+            <Box flexDirection="row">
+              {jobs.map(job => {
+                const l = look(job, b.live, 0)
+
+                return (
+                  <Text color={l.color}>{cell}</Text>
+                )
+              })}
+            </Box>
+            <Text bold>
+              {run.done}/{run.total}
+            </Text>
+          </Box>
+        </Box>,
+      )
+
+      for (const wave of run.waves) {
+        const label = wave.n === null ? '' : wave.n === '?' ? 'unplaced' : `wave ${wave.n}/${waveCount}`
+        if (isTable) {
+          rows.push(
+            <Box flexDirection="row" alignItems="flex-start">
+              <Box width={10}>
+                <Text dimColor>{label}</Text>
+              </Box>
+              <Box flexDirection="column" flexGrow={1}>
+                {wave.jobs.map(job => {
+                  const l = look(job, b.live, frame)
+
+                  return (
+                    <Box flexDirection="row" justifyContent="space-between" columnGap={2}>
+                      <Box flexDirection="row">
+                        <Box width={GLYPH_WIDTH}>
+                          <Text color={l.color}>{l.glyph}</Text>
+                        </Box>
+                        <Box width={nameWidth}>
+                          <Text bold={l.isLoud} dimColor={!l.isLoud} wrap="truncate-end">
+                            {job.id}
+                          </Text>
+                        </Box>
+                        <Box width={BACKEND_WIDTH}>
+                          {job.backend !== null && <Text color={C.route}>{job.backend}</Text>}
+                        </Box>
+                        {route(job) !== '' && <Text dimColor>{route(job)}</Text>}
+                      </Box>
+                      <Text color={l.isLoud ? l.color : undefined} dimColor={!l.isLoud}>
+                        {l.note}
+                      </Text>
+                    </Box>
+                  )
+                })}
+              </Box>
+            </Box>,
+          )
+        } else {
+          rows.push(
+            <Box flexDirection="row" alignItems="flex-start">
+              <Box width={10}>
+                <Text dimColor>{label}</Text>
+              </Box>
+              <Box flexDirection="row" flexWrap="wrap" columnGap={2} flexGrow={1}>
+                {wave.jobs.map(job => {
+                  const l = look(job, b.live, frame)
+
+                  return (
+                    <Box flexDirection="row" columnGap={1}>
+                      <Text color={l.color}>{l.glyph}</Text>
+                      <Text bold={l.isLoud} dimColor={!l.isLoud}>
+                        {job.id}
+                      </Text>
+                      {l.isLoud && <Text color={l.color}>{l.note}</Text>}
+                    </Box>
+                  )
+                })}
+              </Box>
+            </Box>,
+          )
+        }
       }
     }
 
     return (
       <Box flexDirection="column">
-        {rows}
+        <Box flexDirection="column" paddingX={1}>
+          {rows}
+        </Box>
         {beneath}
       </Box>
     )

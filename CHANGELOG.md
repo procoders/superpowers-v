@@ -16,6 +16,46 @@ works without `gh` or `jq`. It never deletes the origin branch of a fork PR or o
 a general "clean up" instruction. It is the step after `superpowers:finishing-a-development-branch`, which ends when
 the PR is opened. `tests/test-post-merge-cleanup.sh` covers it on throwaway repositories.
 
+## [3.8.3] - 2026-10-05
+
+### Changed — the run band wears the project's own colours, and its columns line up
+
+- **Palette.** The band now uses the amiainative.dev colours, taken from that site's CSS custom properties:
+  magenta `#DC02DF` for the `V` mark, blue `#1195F2` running, emerald `#34D399` done, violet `#6565F2` for the
+  backend, slate `#575868` queued, amber `#FFC53D` five minutes without progress, red `#FB2C36` stalled or
+  blocked. The per-vendor colours of 3.8.2 are gone: every backend is violet.
+- **Alignment.** Seen live on the desktop surface, whose font is proportional: the wave label sat in the
+  middle of its group, and rows drifted because the status marks differ in width. The label now sits on the
+  group's first row, and the mark and the backend each have a fixed-width column.
+- **Header bar.** One `▰▰` block per job instead of a thin rule.
+
+## [3.8.2] - 2026-10-05
+
+### Changed — the run band is a table now, with colour and the model each job runs on
+
+The first band was three lines of running text. Seen live, it read as a log line, not as a status display.
+
+```
+ V 2026-10-05-band-demo dispatched                         ━━━━━━━━ 1/4
+ wave 1/2  ● docs-core      claude opus                            done
+           ◐ docs-skills    codex gpt-6.1-sol                       23s
+           ✕ docs-backend   claude sonnet                   STALE · 11m
+ wave 2/2  ○ spec-review    claude opus                          queued
+```
+
+- **Header.** Run id and phase on the left. On the right, one segment per job, coloured by that job's state,
+  and the `done/total` count. The segments show which jobs are finished; they are not a percentage.
+- **One row per job**, in columns: status mark, job id, backend, model, and on the right the time since last
+  progress or the status. The mark of a running job turns.
+- **The model.** `compound-v-dashboard.py hud` now resolves each job's backend and tier through
+  `compound-v-resolve-model.py` under the project's current config and stance (an explicit `model` in the
+  manifest wins). It is the route as configured when the band reads it, not a record of what a worker ran.
+- **Colour, one meaning each.** Green done, blue running, amber five minutes without progress, red stalled,
+  dead or blocked. Backends carry their vendor's colour.
+- **Large runs.** More than eight jobs, or more rows than the band may take, folds to one line per wave.
+
+Seen live on the desktop Code tab against a fixture run; still not seen on a real dispatch.
+
 ## [3.8.1] - 2026-10-05
 
 ### Changed — the syringe mark is gone

@@ -714,6 +714,10 @@ def _selftest():
         check([w["n"] for w in _hm["waves"]] == ["1", "2", "?"],
               "hud: waves in numeric order, a state-only job in a trailing group, got "
               + repr([w["n"] for w in _hm["waves"]]))
+        check(_flat["b"]["model"] == "gpt-6.1-sol" and _flat["a"]["model"] == "opus"
+              and _flat["ghost"]["model"] is None,
+              "hud: each job carries the model its backend/tier resolves to, got "
+              + repr([_flat[k]["model"] for k in ("a", "b", "ghost")]))
         check(_flat["b"]["backend"] == "codex" and _flat["b"]["tier"] == "standard"
               and _flat["b"]["status"] == "running" and _flat["b"]["attention"] is False
               and _hm["running"] == 1 and _hm["run_dir"] == _hd,
@@ -921,6 +925,71 @@ def cmd_resume(args):
 HUD_ATTENTION_STATUS = ("blocked", "error", "timeout", "failed")
 
 
+_HUD_RESOLVER = {}
+
+
+def _hud_resolver():
+    """compound-v-resolve-model.py, imported once (it is a pure function over a table and
+    a config file -- no process is started). None when it cannot be loaded."""
+    if "mod" not in _HUD_RESOLVER:
+        mod = None
+        try:
+            import importlib.util as _ilu
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "compound-v-resolve-model.py")
+            spec = _ilu.spec_from_file_location("cv_resolve_model", path)
+            mod = _ilu.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+        except Exception:  # noqa: BLE001 -- no resolver means no model column, not a crash
+            mod = None
+        _HUD_RESOLVER["mod"] = mod
+    return _HUD_RESOLVER["mod"]
+
+
+def _hud_routing(run_dir):
+    """(config_models, stance) from the project's .claude/compound-v.json, found by walking
+    up from the run directory; ({}, 'balanced') when there is none or it does not parse."""
+    mod = _hud_resolver()
+    d = os.path.abspath(run_dir or ".")
+    for _ in range(8):
+        cfg = os.path.join(d, ".claude", "compound-v.json")
+        if os.path.isfile(cfg):
+            stance = "balanced"
+            try:
+                with open(cfg, encoding="utf-8") as fh:
+                    raw = json.load(fh)
+                if isinstance(raw, dict) and isinstance(raw.get("stance"), str):
+                    stance = raw["stance"]
+                models = mod.load_config_models(cfg) if mod else {}
+            except Exception:  # noqa: BLE001
+                models = {}
+            return models, stance
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    return {}, "balanced"
+
+
+def _hud_job_model(mj, routing):
+    """The model this job resolves to NOW: the manifest's explicit `model`, else the
+    resolver's answer for (backend, tier) under the project's current config and stance.
+    It is the route as configured at read time, not a record of what a worker ran."""
+    if isinstance(mj.get("model"), str) and mj["model"].strip():
+        return mj["model"].strip()
+    mod = _hud_resolver()
+    backend, tier = mj.get("backend"), mj.get("tier")
+    if mod is None or not isinstance(backend, str) or not isinstance(tier, str):
+        return None
+    models, stance = routing
+    for st in (stance, "balanced"):
+        try:
+            return mod.resolve(backend, tier, config_models=models, stance=st)["model"]
+        except Exception:  # noqa: BLE001 -- unknown stance/backend/tier: no model shown
+            continue
+    return None
+
+
 def hud_model(rec):
     """The band's document for one loaded run record."""
     state_jobs = rec.get("state_jobs") if isinstance(rec.get("state_jobs"), dict) else {}
@@ -936,6 +1005,8 @@ def hud_model(rec):
             by_id[jid] = {}
             order.append(jid)
 
+    routing = _hud_routing(rec.get("path"))
+
     def job(jid):
         sj = state_jobs.get(jid) if isinstance(state_jobs.get(jid), dict) else {}
         mj = by_id.get(jid) or {}
@@ -943,6 +1014,9 @@ def hud_model(rec):
         return {"id": jid, "status": status,
                 "backend": mj.get("backend") if isinstance(mj.get("backend"), str) else None,
                 "tier": mj.get("tier") if isinstance(mj.get("tier"), str) else None,
+                "model": _hud_job_model(mj, routing),
+                "effort": mj.get("effort") if isinstance(mj.get("effort"), str) else None,
+                "type": mj.get("type") if isinstance(mj.get("type"), str) else None,
                 "attention": status in HUD_ATTENTION_STATUS}
 
     waves = []

@@ -3,6 +3,8 @@ export type HudJob = {
   status: string
   backend: string | null
   tier: string | null
+  model: string | null
+  effort: string | null
   attention: boolean
 }
 
@@ -35,6 +37,6 @@ export type Band = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'superpowers-v': { band: Band | null }
+    'superpowers-v': { band: Band | null; spin: number }
   }
 }

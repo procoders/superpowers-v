@@ -3,7 +3,7 @@
   "docs": {
     "docs/superpowers/architecture/architecture.md": {
       "cited": {
-        "README.md": "b8ee7f4e00f52cd754086fbc35eeb6613e1c480fe99a9c608cd7f3b279e91b60",
+        "README.md": "2abefd7aecd1c382003b9cdccf055baa7263c871c8132c9835c38835ddf777d5",
         "agents/spec-reviewer.md": "54637927295a8863ed910e2c598e07ab75b130554338e35daabb4c6b3466e716",
         "commands/v-onboard.md": "278cfbd57f975eaaa4f0ca58148f66d4f39a59d97025f603ad01f1abb515342c",
         "hooks/brainstorm-trigger0-nudge.sh": "991d71a574e7ce0c32fa98d12303714d3865d36d34709de039fbf673c92336b3",
@@ -32,9 +32,9 @@
     },
     "docs/superpowers/architecture/business-logic.md": {
       "cited": {
-        ".claude-plugin/plugin.json": "a6e779956366c82b6a608749f9f4db36d1d7adddb231a8d664396379a7aced45",
-        "AGENTS.md": "5ea19ac79c5054ecbee248b0492fb403f98a6957d0ec4e96adc65e01aaea825a",
-        "README.md": "b8ee7f4e00f52cd754086fbc35eeb6613e1c480fe99a9c608cd7f3b279e91b60",
+        ".claude-plugin/plugin.json": "9826922f27280d469d8d7bc601f8a469bee9d1e3a62ff4ebb98b49199d7e3529",
+        "AGENTS.md": "a10939a48ad46ca2218b84fc33cc56e6e30eda55505fc8c958e62196f7c2aee3",
+        "README.md": "2abefd7aecd1c382003b9cdccf055baa7263c871c8132c9835c38835ddf777d5",
         "agents/spec-reviewer.md": "54637927295a8863ed910e2c598e07ab75b130554338e35daabb4c6b3466e716",
         "skills/backend-launcher/SKILL.md": "181e2a31d1d563bfb1edec9e513d7bb40f50ca6579b815a62cfb358872d4f36b",
         "skills/compound-v/SKILL.md": "8825e59b63fc1b22adb8def9795a1262f7e85803af6aefb180f49210b5a8d226",
@@ -45,7 +45,7 @@
     },
     "docs/superpowers/architecture/tech-context.md": {
       "cited": {
-        ".claude-plugin/plugin.json": "a6e779956366c82b6a608749f9f4db36d1d7adddb231a8d664396379a7aced45",
+        ".claude-plugin/plugin.json": "9826922f27280d469d8d7bc601f8a469bee9d1e3a62ff4ebb98b49199d7e3529",
         ".github/workflows/validate.yml": "d344cc33ec90382a7ba82998df69b6acbd3b78c61b98250c1adc1369912f0c1d",
         "hooks/hooks.json": "cbede14912c1c2eebcebb98215f2a25d7cd8fd994450374440806d07a31fb330",
         "hooks/lane-guard.sh": "c615f6f509ac2304e025406dbd93e62caae2cfe53ccbdbd6c930d570b620ff2d",

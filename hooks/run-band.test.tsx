@@ -12,11 +12,11 @@ const RUN = {
     {
       n: '1',
       jobs: [
-        { id: 'docs-core', status: 'done', backend: 'claude', tier: 'deep', attention: false },
-        { id: 'docs-skills', status: 'running', backend: 'codex', tier: 'standard', attention: false },
+        { id: 'docs-core', status: 'done', backend: 'claude', tier: 'deep', model: 'opus', effort: null, attention: false },
+        { id: 'docs-skills', status: 'running', backend: 'codex', tier: 'standard', model: 'gpt-6.1-sol', effort: 'medium', attention: false },
       ],
     },
-    { n: '2', jobs: [{ id: 'review', status: 'pending', backend: 'claude', tier: 'deep', attention: false }] },
+    { n: '2', jobs: [{ id: 'review', status: 'pending', backend: 'claude', tier: 'deep', model: 'opus', effort: null, attention: false }] },
   ],
 }
 
@@ -62,9 +62,12 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
     const ui = await $.ui.mount({ plugin: 'superpowers-v', surface, component: 'AbovePrompt', props: BAND })
     expect(await ui.find({ text: /2026-10-05-demo/ })).toBeDefined()
-    expect(await ui.find({ text: /done 1\/3/ })).toBeDefined()
-    expect(await ui.find({ text: /docs-skills.*codex·standard.*STALE.*11m/ })).toBeDefined()
-    expect(await ui.find({ text: /wave 2\/2/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^1\/3$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^docs-skills$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^gpt-6\.1-sol · medium$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^STALE · 11m$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^wave 2\/2$/ })).toBeDefined()
+    expect(await ui.findAll({ type: 'Text', text: /^▰▰$/ })).toHaveLength(3)
     expect(toasts).toEqual(['Compound V · docs-skills is STALE, no progress for 11m'])
 
     // the same state again: no second toast
