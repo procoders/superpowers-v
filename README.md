@@ -127,7 +127,7 @@ resurrection** (a killed run resumed from committed state) → **a perfect pass 
 The orchestration, scope enforcement, routing and memory are plain bash and Python scripts and skill docs you can read.
 
 - [skills/compound-v/SKILL.md](skills/compound-v/SKILL.md) — the orchestrator · [skills/compound-v/epic-mode.md](skills/compound-v/epic-mode.md) — epic mode
-- [skills/compound-v/memory.md](skills/compound-v/memory.md) — V-memory · [skills/backend-launcher/SKILL.md](skills/backend-launcher/SKILL.md) — the backend workers
+- [skills/compound-v/memory.md](skills/compound-v/memory.md) — V-memory · [skills/backend-launcher/SKILL.md](skills/backend-launcher/SKILL.md) — the backend workers · [skills/post-merge-cleanup/SKILL.md](skills/post-merge-cleanup/SKILL.md) — tidy up after a merged PR
 - [CHANGELOG.md](CHANGELOG.md) — version history · [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — when it breaks
 
 Built as a sidekick to [Superpowers](https://github.com/obra/superpowers). MIT licensed.
