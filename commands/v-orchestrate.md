@@ -58,7 +58,9 @@ of this repo.
      --request-env V_TRIAGE_REQUEST --repo . --json
    ```
 
-   (Use `--pre-eval-id <id>` instead when `{{args}}` named the record.) Exit 0 means the record is
+   `--request-env` matches the request text verbatim (a paraphrase finds nothing), so use
+   `--pre-eval-id <id>` instead when `{{args}}` named the record or you found it by its paths
+   above. Exit 0 means the record is
    dispatchable: bind its `pre_eval_id`. Exit 1 prints a `reason`, and each one has one fix:
 
    - **null `taxonomy_digest`, and `.claude/compound-v-impact-taxonomy.yaml` now exists** — the
