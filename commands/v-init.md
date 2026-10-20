@@ -239,7 +239,7 @@ python3 -c 'import yaml' 2>/dev/null && echo "PyYAML (python3): ok" || echo "PyY
   it cannot import it. Two interpreters matter: the `python3` you run `/v:dispatch`'s commands
   with, and `/usr/bin/python3`, which is what the emitted workflow runs every Gate, Record and
   Finalize command with (`emit --python` defaults to it, and the clamp rules name it literally).
-  On macOS `/usr/bin/python3` ships PyYAML.
+  The emitter's error message says macOS ships PyYAML there; do not rely on that — probe it.
 
 ### 1c-ter. The repository has a first commit
 

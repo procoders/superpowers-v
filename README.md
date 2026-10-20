@@ -12,7 +12,7 @@ Every write is checked against the files that worker was allowed to touch, and a
 - **One ambient cost.** The lane-guard hook runs on every `Write`/`Edit`/`Bash` call. What it costs depends on the machine — measure it on yours; the recipe is in [AGENTS.md](AGENTS.md).
 - **[Superpowers](https://github.com/obra/superpowers), installed as its own plugin.** Every trigger keys on `superpowers:brainstorming` and `superpowers:writing-plans`; without it nothing fires.
 - **`jq` on `PATH`.** The hooks read their payload with it and return silently without it — no triage nudge, no reminders, no triage gate.
-- **PyYAML for `/usr/bin/python3`** (and for the `python3` you run commands with). The workflow emitter reads `manifest.yaml` with it, and the emitted workflow runs its Gate and Record commands under `/usr/bin/python3`. macOS ships it there.
+- **PyYAML for `/usr/bin/python3`** (and for the `python3` you run commands with). The workflow emitter reads `manifest.yaml` with it, and the emitted workflow runs its Gate and Record commands under `/usr/bin/python3`. `/v:init` checks both.
 - **A git repository with at least one commit.** A job's baseline is pinned to a commit; with no `HEAD` there is nothing to pin.
 - **One project setting.** `worktree.baseRef` should be `head`, or a dependent job runs in the main checkout and such jobs are serialized. `/v:init` writes it unless you say no — see Install.
 
