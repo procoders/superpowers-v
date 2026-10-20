@@ -39,6 +39,8 @@
 #   * NOT A SLASH COMMAND — `/v:status`, `/clear` and `/v:triage` itself are
 #     invocations, not change requests.
 #   * NOT A SHORT QUESTION — `<=200` chars ending in `?`.
+#   * NOT A SHORT READ INSTRUCTION — `<=80` chars, one clause, starting with
+#     read / show me / explain / summarize / look at / cat ("Read prd.md").
 #   * NO ACTIVE RUN — mid-pipeline, the change is already sized and a fresh
 #     record would contaminate the stream the run is measured by.
 #   * NO COVERING RECORD for this session already.
@@ -84,8 +86,11 @@
 #      AND nothing to bind the record to, and a record bound to null covers
 #      nothing at the Stop gate. Both halves say the same thing: stay silent.
 #   4. the project looks Compound-V-enabled: `docs/superpowers/` or
-#      `.claude/compound-v.json` exists. Present-only, like the dashboard
-#   5. this session has not been handled before (temp-dir marker)
+#      `.claude/compound-v.json` exists. When it does not, the hook prints ONE
+#      "not set up here, run /v:init" notice per session and writes nothing into
+#      the repository (its marker lives in the temp-dir store)
+#   5. this session has not been decided before (temp-dir marker) and has not
+#      used up its _MAX_ATTEMPTS scoring attempts
 #   6. NO covering triage record: no `docs/superpowers/pre-eval/*.json` carries
 #      this `session_id`
 #   7. NO active run: `compound-v-dashboard.py resume` prints nothing
@@ -109,19 +114,16 @@
 # it. A per-prompt score was rejected outright — it is the pollution above,
 # multiplied by every turn.
 #
-# TWO GATES, ON PURPOSE (spec WS2, AMENDED 2026-09-02). The spec first said the
-# temp-dir marker was to be retired and "the record itself is the marker"
-# (`_has_session_record`). It is not, and the amendment records why: the record
-# only exists AFTER the engine returns. A crashed, killed or timed-out engine
-# would leave the session still armed, and the next prompt would mint a second
-# record for the same session — the exact per-turn pollution the once-rule
-# exists to prevent, arriving through the failure path instead of the happy one.
-# So the marker is written BEFORE the engine runs and both gates stand:
-# `_has_session_record` answers "is this session already sized", the marker
-# answers "has this session already been ATTEMPTED". The observable difference
-# the amendment accepts: a session whose first scoring failed is spent, and only
-# `/v:triage` can recover it. That is the fail-closed direction — one attempt
-# per session, whatever the outcome.
+# TWO GATES, ON PURPOSE. `_has_session_record` answers "is this session already
+# sized"; the temp-dir store answers "has this session already been DECIDED". The
+# spent-marker (`nudged-<key>`) is written only after a tier line was emitted (or
+# the stage reported itself disabled). Until 3.8.6 it was written BEFORE the engine
+# ran, so one failed or killed scoring silenced the hook for the whole session. A
+# failure now leaves the session retryable, bounded by an attempt counter
+# (`attempt-<key>`, bumped before each engine run so a run the harness kills still
+# counts): after _MAX_ATTEMPTS undecided attempts the session is spent. A second
+# record cannot be minted by a retry, because any record that did get written
+# satisfies `_has_session_record` first.
 #
 # FAIL-OPEN CONTRACT — and here it is sharper than for a Stop hook.
 # Probed in the installed runtime (2.1.238): UserPromptSubmit is in the
@@ -173,6 +175,9 @@
 # UserPromptSubmit is one of the three events whose additionalContext is
 # injected into the model's context (with SessionStart and UserPromptExpansion).
 #
+# NO jq: the payload cannot be parsed, so the hook prints ONE constant notice per
+# session naming jq (its marker keyed on a pattern-matched session id) and stops.
+#
 # COST. The early exits (slash command, short question, or marker set) are ~9 ms.
 # The eligibility path adds a records scan and a resume query (~89 ms), and the
 # engine adds a bounded read-only localization pass on top. A request the
@@ -206,6 +211,9 @@ _log() { printf '%s: %s\n' "$_HOOK_TAG" "$*" >&2; }
 # would be carried through an environment variable, a slug and a fingerprint for
 # no extra signal.
 _REQUEST_MAX_CHARS=4000
+
+# Scoring attempts per session before a session that never got a decision is spent.
+_MAX_ATTEMPTS=3
 
 # --- store -------------------------------------------------------------------
 # Its OWN directory, not the Stop hook's: a temp sweep of one must not re-arm
@@ -439,6 +447,73 @@ this line and do not mint a record for it — a record per question is how the o
 stream stops meaning anything."
 }
 
+_SETUP_NOTICE="Compound V is installed but not set up in this project, so it will not size \
+or route this request. Run /v:init to set it up here."
+_SETUP_CTX="If it matters for this request, mention that line to the user once, then carry on."
+
+# Fixed text with no quote or backslash in it: the no-jq path prints it inside a
+# hand-written JSON string.
+_NOJQ_NOTICE="Compound V: jq is not installed, so the prompt triage hook is off in every \
+session until it is. Install jq (brew install jq, or apt-get install jq) to turn it on."
+
+# A one-line notice the USER sees (systemMessage); the model gets it plus "$2".
+_emit_notice() {
+  local msg="$1" ctx="$1${2:+ $2}"
+  if [ -n "${CURSOR_PLUGIN_ROOT:-}" ] || [ -n "${COPILOT_CLI:-}" ]; then
+    _emit "$ctx"
+    return $?
+  fi
+  jq -n --arg msg "$msg" --arg ctx "$ctx" \
+    '{systemMessage: $msg,
+      hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $ctx}}' \
+    2>/dev/null || return 1
+}
+
+# 0 when the marker store is NOT inside the project. A TMPDIR under the repo
+# would make a once-marker a file in the user's tree.
+_store_outside() {
+  local proj="$1" t
+  t="${TMPDIR:-/tmp}"
+  t="$(cd "$t" 2>/dev/null && pwd -P)" || return 1
+  case "${t}/" in
+    "${proj%/}/"*) return 1 ;;
+  esac
+  return 0
+}
+
+# Creates "$1" in the store; 0 only when this call created it.
+_claim_once() {
+  local f="$1"
+  [ -e "$f" ] && return 1
+  mkdir -p "$(dirname "$f")" 2>/dev/null || return 1
+  ( set -C; : >"$f" ) 2>/dev/null || return 1
+}
+
+# No jq: the payload cannot be parsed properly, so the session id is lifted with a
+# bounded pattern and used only as a marker name. The output is a constant.
+_no_jq_notice() {
+  local input="$1" flat sid
+  flat="$(printf '%s' "$input" | tr -d '\r\n' | head -c 65536)"
+  case "$flat" in
+    *'"hook_event_name"'*)
+      printf '%s' "$flat" \
+        | grep -q '"hook_event_name"[[:space:]]*:[[:space:]]*"UserPromptSubmit"' || return 1
+      ;;
+  esac
+  sid="$(printf '%s' "$flat" \
+         | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9._:-]\{1,128\}\)".*/\1/p')"
+  [ -n "$sid" ] || return 1
+  _claim_once "$(_store_dir)/nojq-${sid}" || return 1
+  if [ -n "${CURSOR_PLUGIN_ROOT:-}" ]; then
+    printf '{"additional_context": "%s"}\n' "$_NOJQ_NOTICE"
+  elif [ -n "${COPILOT_CLI:-}" ]; then
+    printf '{"additionalContext": "%s"}\n' "$_NOJQ_NOTICE"
+  else
+    printf '{"systemMessage": "%s", "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": "%s"}}\n' \
+      "$_NOJQ_NOTICE" "$_NOJQ_NOTICE"
+  fi
+}
+
 _emit() {
   local msg="$1"
   if [ -n "${CURSOR_PLUGIN_ROOT:-}" ]; then
@@ -459,11 +534,15 @@ _emit() {
 hook_main() {
   trap - EXIT
 
-  command -v jq >/dev/null 2>&1 || return 1
-
   local input
   input="$(cat)" || return 1
   [ -n "$input" ] || return 1
+
+  # A jq that is on PATH but cannot run counts as missing.
+  if ! jq -n 'empty' >/dev/null 2>&1; then
+    _no_jq_notice "$input"
+    return $?
+  fi
 
   # ONE jq pass for the DECISION fields. `slash` is the first character of the
   # prompt reduced to `/` or nothing, so a multi-line prompt cannot shift the
@@ -483,17 +562,24 @@ hook_main() {
     (((.prompt // "") | tostring) | ascii_downcase
        | gsub("^[[:space:]]+"; "") | gsub("[[:space:]]+$"; "")
        | if (length > 0 and length <= 200 and (.[-1:] == "?"))
-         then "q" else "" end)
+         then "q" else "" end),
+    (((.prompt // "") | tostring) | ascii_downcase
+       | gsub("^[[:space:]]+"; "") | gsub("[[:space:]]+$"; "")
+       | if (length <= 80
+             and test("^(read|show me|explain|summari[sz]e|look at|cat)[[:space:]]")
+             and (test("[\n;,]| and | then | also ") | not))
+         then "r" else "" end)
   ' 2>/dev/null)" || return 1
   [ -n "$fields" ] || return 1
 
-  local ev slash sid cwdv question
+  local ev slash sid cwdv question readonly_lead
   {
     read -r ev
     read -r slash
     read -r sid
     read -r cwdv
     read -r question
+    read -r readonly_lead
   } <<EOF
 ${fields}
 EOF
@@ -525,6 +611,13 @@ EOF
     return 1
   fi
 
+  # A short single-clause READ instruction ("Read prd.md", "explain the auth
+  # flow") is not a change request either, and scoring it would spend the
+  # session on a FULL record for nothing. Same direction of error as above.
+  if [ "${readonly_lead:-}" = "r" ]; then
+    return 1
+  fi
+
   # No session id ⇒ nothing to deduplicate on AND nothing to bind to ⇒ silent.
   [ -n "${sid:-}" ] || return 1
 
@@ -535,15 +628,26 @@ EOF
   proj="$(_project_root "$root")"
   [ -n "$proj" ] || return 1
 
-  # Present-only: never write into a repository that does not use Compound V.
-  [ -d "${proj}/docs/superpowers" ] || [ -f "${proj}/.claude/compound-v.json" ] || return 1
-
-  local store key marker
+  local store key marker attempts
   store="$(_store_dir)"
   key="$(_digest "${proj}|${sid}")" || return 1
   [ -n "$key" ] || return 1
+
+  # Not set up here: say so once per session, and write nothing into the repo.
+  if [ ! -d "${proj}/docs/superpowers" ] && [ ! -f "${proj}/.claude/compound-v.json" ]; then
+    _store_outside "$proj" || return 1
+    _claim_once "${store}/setup-${key}" || return 1
+    _emit_notice "$_SETUP_NOTICE" "$_SETUP_CTX"
+    return $?
+  fi
+
   marker="${store}/nudged-${key}"
+  attempts="${store}/attempt-${key}"
   [ -e "$marker" ] && return 1
+  if [ -f "$attempts" ] \
+     && [ "$(wc -c <"$attempts" 2>/dev/null | tr -d ' ')" -ge "$_MAX_ATTEMPTS" ] 2>/dev/null; then
+    return 1
+  fi
 
   # Covering record for THIS session ⇒ the size question was already asked.
   if _has_session_record "${proj}/docs/superpowers/pre-eval" "$sid"; then
@@ -558,13 +662,6 @@ EOF
     return 1
   fi
 
-  # MARKER BEFORE THE ENGINE, and a marker we cannot write means we do nothing.
-  # The order is load-bearing now that the hook writes: a crashed or timed-out
-  # engine must not leave the session armed to mint a SECOND record on the next
-  # prompt. Once per session means once, whatever the outcome.
-  mkdir -p "$store" 2>/dev/null || return 1
-  : >"$marker" 2>/dev/null || return 1
-
   # The RAW request, capped. Kept out of the decision-fields pass above because
   # that one deliberately strips and folds every field it reads.
   local request
@@ -574,6 +671,11 @@ EOF
   if [ -z "${request// /}" ]; then
     return 1
   fi
+
+  # The attempt is counted BEFORE the engine runs (a run the harness kills still
+  # counts); the spent-marker is written only once a decision was emitted.
+  mkdir -p "$store" 2>/dev/null || return 1
+  printf 'x' >>"$attempts" 2>/dev/null || return 1
 
   _log "scoring session ${sid} (no covering record, no active run)"
 
@@ -592,6 +694,7 @@ EOF
   # wrote nothing, and narrating that the stage is off is not a service.
   if [ "$disabled" = "true" ]; then
     _log "pre_eval.enabled is false — the stage is a no-op, silent"
+    : >"$marker" 2>/dev/null || true
     return 1
   fi
 
@@ -673,8 +776,11 @@ pre-flights are skipped), then /v:dispatch."
       fi
       ;;
     FULL)
-      next="FULL — offer it to the user; on acceptance run the unchanged pipeline \
-(recon, the three pre-flights, brainstorm, plan, /v:orchestrate, /v:dispatch)."
+      next="FULL — if this prompt is a change request, tell the user in one line that \
+Compound V sized it FULL and that you are starting the Compound V pipeline now \
+(superpowers:brainstorming → superpowers:writing-plans → /v:orchestrate → /v:dispatch; the \
+pre-flights run at the writing-plans hand-off) unless they say to skip it, then invoke \
+superpowers:brainstorming. If they say skip, do the work without the pipeline."
       ;;
     *)
       next="The engine reported tier ${tier}, which this hook does not recognise. \
@@ -694,11 +800,14 @@ localization artifact, the taxonomy snapshot and \
 docs/superpowers/memory/triage-outcomes.jsonl. Its declared_paths are: ${declared:-none} \
 — if the work you are about to do is somewhere else, that record does not cover it and \
 the Stop-time gate will say so. If this prompt was NOT a change request, leave the \
-record uncommitted and say so rather than building on it. This is a size decision, not \
-permission: SCOPED and FULL still need a human offer and acceptance."
+record uncommitted and say so rather than building on it. A size decision is not \
+permission: SCOPED and SCOPED+ still need a human offer and acceptance; for FULL the \
+one-line notice and the user's chance to say skip is that offer."
 
-  _emit "$msg"
-  return $?
+  _emit "$msg" || return 1
+  : >"$marker" 2>/dev/null || true
+  rm -f "$attempts" 2>/dev/null || true
+  return 0
 }
 
 out="$(hook_main)"
