@@ -169,7 +169,8 @@ never the gate.
 > (architecture, sensitive surfaces, **all reviewers**) stays Opus. As of 3.0.5 that
 > is no longer what distinguishes this stance: `balanced` routes `standard` to Sonnet
 > too. What cost-aware still changes is the ceiling — its `frontier` cell caps at
-> `opus`, so a re-attempt under this stance never escalates into Fable. `light` is
+> `opus`, so neither a re-attempt nor the reviewer lift under this stance escalates
+> into Fable (the emitter cuts both ladders at that cell). `light` is
 > `sonnet` in every stance, and `codex`/`antigravity`/`cursor` are identical across stances.
 
 ---
@@ -285,12 +286,19 @@ are routed through the same resolver instead of inheriting whatever model the se
 happens to be running.
 
 **Escalation.** A job with a recorded non-success result in this run is re-dispatched
-**one rung up** the claude ladder — `sonnet → opus → fable` — and stops at the top.
+**one rung up** the claude ladder — `sonnet → opus → fable` — and stops at the
+**stance's ceiling**: whatever the stance and the project's `models` map resolve the
+claude `frontier` tier to (`fable` under `balanced`/`conservative`/`claude-only`, `opus`
+under `cost-aware`). The same cut applies to the in-run reviewer lift (a reviewer whose
+every attempt died transiently is re-spawned once on the next rung), so under
+`cost-aware` neither ladder ever requests Fable. A ceiling the ladder cannot place by
+name falls back to Opus under `cost-aware` and to the full ladder otherwise.
 The signal is the recorded `results/<id>.json` status, never a counter we keep: an
 absent result is not a failure. Two exemptions, both load-bearing: a **reviewer** is
-never escalated (its sealed receipt must carry a Claude Opus `reviewer_model`), and a
-**model the manifest pinned explicitly** is never escalated, because stepping a value
-we did not choose would be a fabricated routing decision.
+never escalated across runs (its sealed receipt must carry a Claude Opus
+`reviewer_model`), and a **model the manifest pinned explicitly** is never escalated —
+by either ladder — because stepping a value we did not choose would be a fabricated
+routing decision.
 
 `effort ∈ {low, medium, high, xhigh}` is **orthogonal** to tier. The default pairing
 (`frontier→high`, `deep→high`, `standard→medium`, `light→low`) is only a default; a task-type may pin

@@ -1241,16 +1241,44 @@ def retry_backoff_ms(attempt):
                RETRY_BACKOFF_BASE_MS * (2 ** (max(1, int(attempt)) - 1)))
 
 
-def escalation_map():
+def _ladder_rung(model):
+    """The ladder rung a resolved Claude model names, or None (`opus` and
+    `claude-opus-5-5` are both the `opus` rung)."""
+    key = str(model or "").strip().lower()
+    if key in CLAUDE_ESCALATION:
+        return key
+    hits = [r for r in CLAUDE_ESCALATION if re.search(r"(?<![a-z])%s(?![a-z])" % r, key)]
+    return hits[0] if len(hits) == 1 else None
+
+
+def escalation_ladder(ceiling=None, stance=None):
+    """(ladder, note). CLAUDE_ESCALATION cut at the stance's ceiling.
+
+    `ceiling` is what the project's stance and config resolve the claude
+    `frontier` tier to — the most a re-attempt may reach (`opus` under
+    cost-aware). A ceiling the ladder cannot place falls back to the stance's
+    documented ceiling: Opus for cost-aware, the full ladder otherwise.
+    """
+    rung = _ladder_rung(ceiling)
+    note = None
+    if rung is None:
+        rung = "opus" if stance == "cost-aware" else CLAUDE_ESCALATION[-1]
+        if ceiling:
+            note = ("the frontier model %r is not a ladder rung; capped at %s"
+                    % (ceiling, rung))
+    return CLAUDE_ESCALATION[:CLAUDE_ESCALATION.index(rung) + 1], note
+
+
+def escalation_map(ladder=CLAUDE_ESCALATION):
     """The ladder as a lookup the emitted script can use: {sonnet: opus, opus: fable}.
 
-    Emitted from CLAUDE_ESCALATION rather than written out in JS, so the reviewer
-    lift and `escalate_claude_model` step the same rungs. A model that is not a
-    key - an explicit manifest pin we do not own, or the top rung - has no
+    Emitted from the (stance-capped) ladder rather than written out in JS, so the
+    reviewer lift and `escalate_claude_model` step the same rungs. A model that is
+    not a key - an explicit manifest pin we do not own, or the top rung - has no
     successor and is therefore never escalated, which is the same refusal
     `escalate_claude_model` makes in Python.
     """
-    return dict(zip(CLAUDE_ESCALATION[:-1], CLAUDE_ESCALATION[1:]))
+    return dict(zip(ladder[:-1], ladder[1:]))
 
 
 def retry_config(manifest):
@@ -1390,20 +1418,23 @@ def prior_attempt_failed(run_dir, job_id):
     return bool(status) and status != "success"
 
 
-def escalate_claude_model(model):
-    """(model, capped_reason). One rung up the ladder, or unchanged at the top.
+def escalate_claude_model(model, ladder=CLAUDE_ESCALATION):
+    """(model, capped_reason). One rung up `ladder`, or unchanged at its top.
 
     A model outside the ladder (an explicitly pinned string we do not own) is
     returned untouched: escalating a value we did not choose would be a
-    fabricated routing decision.
+    fabricated routing decision. `ladder` is the stance-capped one from
+    `escalation_ladder`; a model above its top is never stepped either.
     """
     key = str(model or "").strip().lower()
     if key not in CLAUDE_ESCALATION:
         return model, "%r is not on the claude ladder" % model
-    i = CLAUDE_ESCALATION.index(key)
-    if i + 1 >= len(CLAUDE_ESCALATION):
+    if key not in ladder or ladder.index(key) + 1 >= len(ladder):
+        if len(ladder) < len(CLAUDE_ESCALATION):
+            return model, ("already at the top of the ladder this stance allows (%s)"
+                           % ladder[-1])
         return model, "already at the top of the ladder"
-    return CLAUDE_ESCALATION[i + 1], None
+    return ladder[ladder.index(key) + 1], None
 
 
 # --------------------------------------------------------------------------- #
@@ -2364,6 +2395,12 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
     transport_model, transport_note = resolve_job_model(
         {"id": "__transport__", "backend": "claude", "tier": "light"},
         python_bin, stance=stance, config_path=config_path)
+    # The escalation ceiling is the stance's own `frontier` cell, resolved the
+    # way every job's model is: cost-aware caps both ladders at Opus.
+    _frontier_model, _ = resolve_job_model(
+        {"id": "__ceiling__", "backend": "claude", "tier": "frontier"},
+        python_bin, stance=stance, config_path=config_path)
+    ladder, ladder_note = escalation_ladder(_frontier_model, stance)
     # `agents/transport.md` (3.6.4) — resolved ONCE per run, never per job or
     # per stage, because Gate/Record/Finalize/Continuity are not job types and
     # never key off a job's own `type` the way `AGENT_TYPE_BY_JOB_TYPE` does.
@@ -2646,11 +2683,13 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
                 entry["model"] = resolved
                 entry["model_source"] = ("explicit" if job.get("model") else "tier")
                 # A job that already failed in this run is re-dispatched one rung
-                # up. Reviewers are exempt: a sealed review receipt must carry a
-                # Claude Opus `reviewer_model`, so escalating one would invalidate
-                # the very receipt it exists to produce.
-                if not _is_reviewer_job(job) and prior_attempt_failed(abs_run_dir, job_id):
-                    stepped, capped = escalate_claude_model(resolved)
+                # up, never past the stance's ceiling. Reviewers are exempt: a
+                # sealed review receipt must carry a Claude Opus `reviewer_model`,
+                # so escalating one would invalidate the very receipt it exists
+                # to produce. An explicit manifest pin stays pinned.
+                if (not explicit_model and not _is_reviewer_job(job)
+                        and prior_attempt_failed(abs_run_dir, job_id)):
+                    stepped, capped = escalate_claude_model(resolved, ladder)
                     if stepped != resolved:
                         entry["model"] = stepped
                         entry["model_source"] = "escalated"
@@ -2747,7 +2786,9 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
         # The workflow's retry budget and the escalation ladder, resolved ONCE
         # here so the emitted script never re-derives either.
         "retry": retry_config(manifest),
-        "escalation": escalation_map(),
+        "escalation": escalation_map(ladder),
+        "escalation_ceiling": ladder[-1],
+        "escalation_ceiling_note": ladder_note,
         "waves": [[job_entry(j) for j in wave] for wave in waves],
         # WHY THE WAVE PLAN MAY NOT MATCH THE PARTITION MAP. A stderr line is gone
         # the moment emit finishes, and `dispatch.workflow.js` is what gets committed
@@ -3130,7 +3171,8 @@ def emit_script(plan):
         "implement_disallowed": plan["implement_disallowed"],
         "transport_model": plan["transport_model"],
         "retry": plan.get("retry") or retry_config({}),
-        "escalation": plan.get("escalation") or escalation_map(),
+        "escalation": (plan["escalation"] if isinstance(plan.get("escalation"), dict)
+                       else escalation_map()),
         "waves": waves,
         "prompts": prompts,
     }
@@ -3414,7 +3456,10 @@ async function implementStage(job) {
     // the ladder — has no successor and is left exactly as it was.
     if (first.exhausted && isReviewJob(job) && CFG.retry.escalate_reviewer) {
       const current = opts.model ? String(opts.model).toLowerCase() : null;
-      const next = current ? (CFG.escalation[current] || null) : null;
+      // CFG.escalation is already cut at the stance's ceiling; an explicit
+      // manifest pin is never stepped.
+      const next = (current && job.model_source !== 'explicit')
+        ? (CFG.escalation[current] || null) : null;
       if (next) {
         log('review ' + job.id + ': ' + CFG.retry.max_attempts + ' attempt(s) on ' +
             current + ' produced no result — lifting ONCE to ' + next +
@@ -3435,8 +3480,9 @@ async function implementStage(job) {
         }
       } else {
         log('review ' + job.id + ': NOT lifted — ' +
-            (current ? current + ' is not a rung of the escalation ladder'
-                     : 'no model is pinned, so there is no rung to step from'));
+            (!current ? 'no model is pinned, so there is no rung to step from'
+             : job.model_source === 'explicit' ? current + ' is an explicit manifest pin'
+             : current + ' is not a rung below the stance escalation ceiling'));
       }
     }
     return { job: job, implement: (raw === undefined ? null : raw),
@@ -4224,13 +4270,16 @@ RUN_DIR_EXEMPT_BY_NAME = (
 # by the same Record call, for the same reason — an unbounded family, matched by
 # pattern below.
 RUN_DIR_EXEMPT_ATTEMPTS = r"^results/attempts/{id}\.\d+\.json$"
+# A superseded attempt's gate receipt, archived by `_supersede_attempt` under the
+# tag it computes (realised sha prefix or UTC stamp, plus `-N` on a collision).
+RUN_DIR_EXEMPT_SUPERSEDED = r"^receipts/{id}\.gate\.superseded-[0-9A-Za-z]+(-\d+)?\.json$"
 
 
 def run_dir_owned_by_name(rel, run_dir_rel, job_id):
     """True iff ``rel`` is one of the pipeline's own files for THIS job in THIS
     run's directory — exactly the classes in RUN_DIR_EXEMPT_BY_NAME plus the
-    results/attempts/ family. Everything else — manifest, prompts, and anything a
-    worker invents — is NOT exempt here."""
+    results/attempts/ and superseded-receipt families. Everything else — manifest,
+    prompts, and anything a worker invents — is NOT exempt here."""
     if not run_dir_rel:
         return False
     prefix = run_dir_rel.rstrip("/") + "/"
@@ -4239,7 +4288,10 @@ def run_dir_owned_by_name(rel, run_dir_rel, job_id):
     tail = rel[len(prefix):]
     if tail in tuple(t.replace("{id}", job_id) for t, _why in RUN_DIR_EXEMPT_BY_NAME):
         return True
-    return bool(re.match(RUN_DIR_EXEMPT_ATTEMPTS.replace("{id}", re.escape(job_id)), tail))
+    for pattern in (RUN_DIR_EXEMPT_ATTEMPTS, RUN_DIR_EXEMPT_SUPERSEDED):
+        if re.match(pattern.replace("{id}", re.escape(job_id)), tail):
+            return True
+    return False
 
 
 def _preexisting_snapshot(root, python_bin):
@@ -6444,8 +6496,8 @@ def _prior_attempt_concluded(run_dir, job_id, state_entry):
     would gain nothing from a re-pin: the gate diffs the sealed patch against
     the new pin, so a commit hidden behind it never merges. A DIRECT worker can
     write anywhere in the checkout, including a forged `results/<id>.json`,
-    which is why the caller only ever re-pins in worktree mode and merely
-    warns in direct mode.
+    which is why the caller only ever re-pins in worktree mode and, in direct
+    mode, refuses a stale pin instead (exit 2, naming `/v:resume`).
 
     `merged.integrated: true` vetoes it — an integrated job's registration is
     not a re-attempt at anything; there is nothing left to supersede.
@@ -6458,7 +6510,80 @@ def _prior_attempt_concluded(run_dir, job_id, state_entry):
     return os.path.exists(receipt) or os.path.exists(result)
 
 
-def _supersede_attempt(run_dir, job_id, entry, wts, keep_cwd=None):
+def _resume_in_place(entry):
+    """A codex worktree job `resume-prepare` deliberately leaves pinned: its
+    failure was environmental, its session is recorded and its worktree exists,
+    so `codex exec resume <uuid>` continues it (commands/v-resume.md)."""
+    wt = entry.get("worktree")
+    return bool(entry.get("failure_class") in ("timeout", "network")
+                and entry.get("session_id")
+                and isinstance(wt, str) and wt and os.path.isdir(wt))
+
+
+def _reattempt_guidance(run_dir):
+    run_id = os.path.basename(os.path.normpath(run_dir))
+    return ("run `/v:resume %s` — or, by hand, `compound-v-emit-workflow.py "
+            "resume-prepare --run-dir %s` — before dispatching again: it retires "
+            "the previous attempt's pin and bookkeeping so the gate measures "
+            "this attempt from the current HEAD." % (run_id, run_dir))
+
+
+def _stale_attempt_pins(run_dir, job_ids, head):
+    """{job_id: pin} for every job a fresh dispatch would run again although a
+    concluded previous attempt (a receipt or result on disk) still holds a pin
+    that is no longer `head`: not integrated, not superseded, not a
+    resume-in-place job. A pin equal to HEAD charges the job with nothing."""
+    jobs = (_load_state(run_dir).get("jobs") or {})
+    stale = {}
+    for job_id in job_ids:
+        entry = jobs.get(job_id)
+        entry = entry if isinstance(entry, dict) else {}
+        if _resume_in_place(entry) or not _prior_attempt_concluded(run_dir, job_id, entry):
+            continue
+        pin = read_pinned_baseline(run_dir, job_id, entry)
+        if pin and pin != head:
+            stale[job_id] = pin
+    return stale
+
+
+# Run-dir files `register-lane` rewrites for a job on every registration: their
+# attempt-1 digests can never match attempt 2's bytes. Nothing else is re-hashed.
+SUPERSEDE_REHASH = ("jobs/{id}.baseline", "jobs/{id}.test-contract.json",
+                    "lane-map.json", "preexisting/{id}.verified.txt")
+
+
+def _retire_snapshot(run_dir, job_id, isolation):
+    snap = os.path.join(run_dir, "preexisting", "%s.txt" % job_id)
+    verified = os.path.join(run_dir, "preexisting", "%s.verified.txt" % job_id)
+    if isolation == "worktree":
+        cleared = False
+        for p in (snap, verified):
+            if os.path.exists(p):
+                os.remove(p)
+                cleared = True
+        return "cleared" if cleared else None
+    if os.path.exists(verified):
+        os.remove(verified)
+    if not os.path.isfile(snap):
+        return None
+    targets = [os.path.join(run_dir, t.replace("{id}", job_id)).replace(os.sep, "/")
+               for t in SUPERSEDE_REHASH]
+    with open(snap, "r", encoding="utf-8") as fh:
+        lines = [ln.rstrip("\n") for ln in fh if ln.strip()]
+    kept = []
+    for ln in lines:
+        parts = ln.split("  ", 1)
+        rel = parts[1].strip() if len(parts) == 2 else ln.strip()
+        # Matched as a path suffix of the run-dir file itself, so a symlinked
+        # spelling of the repo root (/var vs /private/var) cannot defeat it.
+        if any(t.endswith("/" + rel) for t in targets):
+            continue
+        kept.append(ln)
+    _atomic_write(snap, "\n".join(kept) + ("\n" if kept else ""))
+    return "rehash:%d" % (len(lines) - len(kept))
+
+
+def _supersede_attempt(run_dir, job_id, entry, wts, keep_cwd=None, isolation=None):
     """Retire a concluded attempt at `job_id`: unpin its baseline, reset it to
     `pending`, drop its lane-map worktree entries, and archive its gate receipt
     so the integration authority never reads a superseded attempt's verdict as
@@ -6476,11 +6601,22 @@ def _supersede_attempt(run_dir, job_id, entry, wts, keep_cwd=None):
     that exact path itself, so a lane-map cleanup pass here can't undo work its
     own caller hasn't done yet.
 
+    The before-image is retired too, by isolation (`isolation`, else the
+    entry's own): a worktree job's snapshot describes a tree that is gone, so
+    both files are deleted and the next registration re-provisions. A direct
+    job's snapshot is KEPT — re-photographing the checkout would excuse whatever
+    a halted attempt left out of lane — and only the lines for the files
+    registration itself rewrites (`SUPERSEDE_REHASH`) are dropped, so the next
+    `register-lane` digests them afresh instead of carrying attempt 1's bytes.
+
     Returns `{"was": <old pinned baseline sha, or None>,
               "lane_entries_dropped": <int>,
-              "receipt_archived": <path relative to run_dir, or None>}`.
+              "receipt_archived": <path relative to run_dir, or None>,
+              "snapshot": "cleared" | "rehash:<n>" | None}`.
     """
     was = read_pinned_baseline(run_dir, job_id, entry)
+    snapshot = _retire_snapshot(run_dir, job_id,
+                                isolation or entry.get("isolation") or "direct")
     pin_path = baseline_pin_path(run_dir, job_id)
     if os.path.exists(pin_path):
         os.remove(pin_path)
@@ -6508,7 +6644,7 @@ def _supersede_attempt(run_dir, job_id, entry, wts, keep_cwd=None):
         os.replace(receipt, dest)
         receipt_archived = os.path.relpath(dest, run_dir)
     return {"was": was, "lane_entries_dropped": lane_entries_dropped,
-            "receipt_archived": receipt_archived}
+            "receipt_archived": receipt_archived, "snapshot": snapshot}
 
 
 # --------------------------------------------------------------------------- #
@@ -6518,7 +6654,9 @@ def cmd_register_lane(argv):
     ap = argparse.ArgumentParser(prog="compound-v-emit-workflow.py register-lane")
     ap.add_argument("--run-dir", required=True)
     ap.add_argument("--job-id", required=True)
-    ap.add_argument("--cwd", required=True)
+    ap.add_argument("--cwd",
+                    help="the job's working tree. Omitted, it is the directory "
+                         "this command runs in.")
     ap.add_argument("--manifest")
     ap.add_argument("--repo-root", required=True,
                     help="the PROJECT root. Required: a direct job's baseline is "
@@ -6543,7 +6681,18 @@ def cmd_register_lane(argv):
                          "refusal — recall is evidence, and a job must not fail "
                          "to start because a memory read did.")
     args = ap.parse_args(argv)
+    args.cwd = os.path.abspath(args.cwd or os.getcwd())
     run_dir = os.path.abspath(args.run_dir)
+    # ---- A REPOSITORY WITH NO FIRST COMMIT: refused before anything is written.
+    _pin_root = (os.path.abspath(args.repo_root) if args.isolation == "direct"
+                 else args.cwd)
+    if (os.path.isdir(_pin_root) and not _head_commit(_pin_root)
+            and _git(_pin_root, ["rev-parse", "--git-dir"])[0] == 0):
+        sys.stderr.write(
+            "cannot pin a baseline: %s is a git repository with no commits yet. "
+            "Make a first commit (for example `git add -A && git commit -m "
+            "\"initial commit\"`) and dispatch again.\n" % _pin_root)
+        return 2
     # An external job's wrapper (backend != claude) is listed, never a claim on
     # the checkout (finding 78). Read the backend off the manifest when given.
     _is_external_wrapper = False
@@ -6585,47 +6734,45 @@ def cmd_register_lane(argv):
             _reg_wts = (_reg_lm.get("worktrees")
                        if isinstance(_reg_lm, dict) and isinstance(_reg_lm.get("worktrees"), dict)
                        else None)
+            # The old before-image is for a DIFFERENT worktree, so the helper
+            # deletes it and the branch below re-runs `provision_command`.
             _reg_result = _supersede_attempt(
                 run_dir, args.job_id, _reg_entry, _reg_wts,
-                keep_cwd=os.path.abspath(args.cwd))
+                keep_cwd=args.cwd, isolation="worktree")
             if _reg_wts is not None:
                 _reg_lm["worktrees"] = _reg_wts
                 _atomic_write(lane_map_path(run_dir),
                               json.dumps(_reg_lm, indent=2, sort_keys=True) + "\n")
             _save_state(run_dir, _reg_state)
-        # The old before-image is for a DIFFERENT worktree — its digests describe
-        # a tree that no longer exists — so it must go too, along with its
-        # verified subset, so the worktree branch below re-runs `provision_command`
-        # and re-photographs the fresh tree rather than trusting a stale picture.
-        _reg_snapshot_cleared = False
-        for _reg_snap in (
-            os.path.join(run_dir, "preexisting", "%s.txt" % args.job_id),
-            os.path.join(run_dir, "preexisting", "%s.verified.txt" % args.job_id),
-        ):
-            if os.path.exists(_reg_snap):
-                os.remove(_reg_snap)
-                _reg_snapshot_cleared = True
         _reg_ack_reattempt = {
             "superseded_receipt": _reg_result["receipt_archived"],
             "unpinned_was": _reg_result["was"],
-            "snapshot_cleared": _reg_snapshot_cleared,
+            "snapshot_cleared": _reg_result["snapshot"] == "cleared",
         }
-    elif args.isolation == "direct" and _prior_attempt_concluded(
-            run_dir, args.job_id, _reg_state_entry):
+    elif args.isolation == "direct":
         # A direct worker can write ANYWHERE in the checkout, including a forged
-        # `results/<id>.json` — the one file `_prior_attempt_concluded` trusts —
-        # so the one-shot pin rule must hold here regardless. This only WARNS;
-        # it changes nothing about the pin the code below writes (or, since one
-        # already exists, does not rewrite).
+        # `results/<id>.json`, so the one-shot pin is never rewritten here. A pin
+        # that no longer matches HEAD on a job that has not integrated is a
+        # previous attempt's: the gate would charge this one with every commit
+        # since, so the call is REFUSED before it writes anything. Keyed on the
+        # pin, not on a concluded receipt, so an attempt that died before Gate
+        # is refused too.
+        _reg_merged = _reg_state_entry.get("merged") or {}
         _reg_existing_pin = read_pinned_baseline(run_dir, args.job_id, _reg_state_entry)
         _reg_current_head = _head_commit(os.path.abspath(args.repo_root))
-        if _reg_existing_pin and _reg_current_head and _reg_existing_pin != _reg_current_head:
+        if (_reg_existing_pin and _reg_current_head
+                and _reg_existing_pin != _reg_current_head
+                and not (isinstance(_reg_merged, dict) and _reg_merged.get("integrated"))):
             _reg_ack_stale_pin_warning = (
-                "the pinned baseline %s predates HEAD %s; the gate will charge "
-                "this job with every commit made since — run `resume-prepare "
-                "--run-dir %s` (or `/v:resume`) before re-dispatching this direct "
-                "job." % (_reg_existing_pin, _reg_current_head, run_dir)
-            )
+                "the pinned baseline %s predates HEAD %s; the gate would charge "
+                "this job with every commit made since — %s"
+                % (_reg_existing_pin, _reg_current_head, _reattempt_guidance(run_dir)))
+            sys.stderr.write("REFUSING TO REGISTER direct job %s: %s\n"
+                             % (args.job_id, _reg_ack_stale_pin_warning))
+            print(json.dumps({"registered": None, "refused": args.job_id,
+                              "stale_pin_warning": _reg_ack_stale_pin_warning},
+                             indent=2, sort_keys=True))
+            return 2
 
     lane = register_lane(
         run_dir, args.job_id, args.cwd,
@@ -6756,7 +6903,7 @@ def cmd_register_lane(argv):
     # pin file and popped `entry["baseline"]`, so `read_pinned_baseline` below
     # finds nothing and this block pins the NEW worktree's HEAD instead of
     # silently keeping the old one. A direct job's pin is never touched by that
-    # block — only warned about — so its one-shot rule holds unconditionally;
+    # block — a stale one is refused — so its one-shot rule holds unconditionally;
     # `/v:resume`'s `resume-prepare` (which calls the same `_supersede_attempt`
     # helper) remains the only way to clear a direct job's stale pin.
     repo_root = os.path.abspath(args.repo_root)
@@ -7065,6 +7212,24 @@ def cmd_emit(argv):
             "job's patch to the wrong repository.\n"
         )
         return 2
+
+    # A PREVIOUS ATTEMPT'S PINS STILL IN PLACE. Re-emitting into this run dir
+    # starts a new attempt whose gate would diff against the old pins and charge
+    # each job with every commit made since them. `--print` writes nothing and
+    # stays open.
+    if not args.to_stdout:
+        _stale = _stale_attempt_pins(run_dir, [
+            str(j.get("id")) for j in (manifest.get("jobs") or [])
+            if isinstance(j, dict) and j.get("id")], _head_commit(repo_root))
+        if _stale:
+            sys.stderr.write(
+                "REFUSING TO EMIT: run directory %s still holds a previous "
+                "attempt for %s (pinned baseline%s %s). %s\n"
+                % (run_dir, ", ".join(sorted(_stale)),
+                   "s" if len(_stale) > 1 else "",
+                   ", ".join(_stale[k][:12] for k in sorted(_stale)),
+                   _reattempt_guidance(run_dir)))
+            return 2
 
     try:
         plan = build_plan(
@@ -8067,6 +8232,67 @@ def selftest():
         _check("a failed job already at the top stays there, and says so",
                esc["e-top"]["model"] == "fable"
                and "top" in (esc["e-top"]["model_note"] or ""))
+        _check("the default stance keeps the full ladder in CFG",
+               esc_plan["escalation"] == {"sonnet": "opus", "opus": "fable"}
+               and esc_plan["escalation_ceiling"] == "fable")
+
+        # ---- cost-aware: neither ladder ever reaches Fable (routing-policy) --
+        with open(os.path.join(esc_dir, "results", "e-pin.json"),
+                  "w", encoding="utf-8") as fh:
+            json.dump({"job_id": "e-pin", "status": "failed"}, fh)
+        with open(os.path.join(esc_dir, "results", "e-deep.json"),
+                  "w", encoding="utf-8") as fh:
+            json.dump({"job_id": "e-deep", "status": "failed"}, fh)
+        ca_manifest = _tiny_manifest([
+            {"id": "e-fail", "tier": "standard", "write_allowed": ["g/**"]},
+            {"id": "e-deep", "tier": "deep", "write_allowed": ["k/**"]},
+            {"id": "e-top", "tier": "frontier", "write_allowed": ["j/**"]},
+            {"id": "e-pin", "model": "opus", "write_allowed": ["l/**"]},
+        ], max_parallel=4)
+        ca_manifest["routing_stance"] = "cost-aware"
+        ca_manifest["_manifest_path"] = os.path.join(esc_dir, "manifest.yaml")
+        ca_plan = build_plan(_with_body(ca_manifest), esc_dir, tmp, "/usr/bin/python3",
+                             os.path.abspath(__file__), SCOPE_CHECK_DEFAULT,
+                             FASTPATH_DEFAULT, tmp)
+        ca = {e["id"]: e for w in ca_plan["waves"] for e in w}
+        _check("cost-aware: the reviewer-lift map stops at opus",
+               ca_plan["escalation"] == {"sonnet": "opus"}
+               and ca_plan["escalation_ceiling"] == "opus", str(ca_plan["escalation"]))
+        _check("cost-aware: a failed sonnet job still steps to opus",
+               ca["e-fail"]["model"] == "opus"
+               and ca["e-fail"]["model_source"] == "escalated")
+        _check("cost-aware: a failed opus job is NOT escalated into fable, and says why",
+               ca["e-deep"]["model"] == "opus" and ca["e-top"]["model"] == "opus"
+               and "allows (opus)" in (ca["e-deep"]["model_note"] or ""),
+               "%s / %s" % (ca["e-deep"]["model"], ca["e-deep"].get("model_note")))
+        _check("cost-aware: no job in the plan resolves to fable",
+               not any(str(e.get("model") or "").lower() == "fable" for e in ca.values()))
+        _check("an explicit `model: opus` pin with a recorded failure stays pinned",
+               ca["e-pin"]["model"] == "opus" and ca["e-pin"]["model_source"] == "explicit")
+        esc_manifest2 = _tiny_manifest([
+            {"id": "e-pin", "model": "opus", "write_allowed": ["l/**"]}])
+        esc_manifest2["_manifest_path"] = os.path.join(esc_dir, "manifest.yaml")
+        _pin_plan = build_plan(_with_body(esc_manifest2), esc_dir, tmp, "/usr/bin/python3",
+                               os.path.abspath(__file__), SCOPE_CHECK_DEFAULT,
+                               FASTPATH_DEFAULT, tmp)
+        _check("...under the default stance too (no fabricated escalation of a pin)",
+               _pin_plan["waves"][0][0]["model"] == "opus"
+               and _pin_plan["waves"][0][0]["model_source"] == "explicit")
+        _ca_cfg = _cfg_of(emit_script(ca_plan)) or {}
+        _check("cost-aware: the emitted CFG carries the capped map, and each job "
+               "its model_source for the reviewer lift",
+               _ca_cfg.get("escalation") == {"sonnet": "opus"}
+               and all("model_source" in j for w in (_ca_cfg.get("waves") or []) for j in w))
+        _check("escalation_ladder: an off-ladder frontier id is placed by name, and "
+               "an unplaceable one under cost-aware still caps at opus",
+               escalation_ladder("claude-opus-5-5")[0] == ("sonnet", "opus")
+               and escalation_ladder("acme-x", "cost-aware")[0] == ("sonnet", "opus")
+               and escalation_ladder("acme-x", "balanced")[0] == CLAUDE_ESCALATION
+               and escalation_ladder(None)[0] == CLAUDE_ESCALATION)
+        _check("escalate_claude_model honours a capped ladder",
+               escalate_claude_model("opus", ("sonnet", "opus"))[0] == "opus"
+               and escalate_claude_model("sonnet", ("sonnet", "opus"))[0] == "opus"
+               and escalate_claude_model("fable", ("sonnet", "opus"))[0] == "fable")
 
         # A planted violation must be caught, or the check is decorative.
         planted = script + "\nconst t = Date.now();\n"
@@ -9533,6 +9759,14 @@ def selftest():
                    run_dir_owned_by_name(_own, "run", "j2") == (_tmpl == "state.json"))
         _check("exempt by pattern: results/attempts/j1.3.json",
                run_dir_owned_by_name("run/results/attempts/j1.3.json", "run", "j1"))
+        for _sup in ("receipts/j1.gate.superseded-0123456789ab.json",
+                     "receipts/j1.gate.superseded-20261021T101500Z-2.json"):
+            _check("exempt by pattern: %s" % _sup,
+                   run_dir_owned_by_name("run/" + _sup, "run", "j1"))
+            _check("NOT exempt: another job's %s" % _sup,
+                   not run_dir_owned_by_name("run/" + _sup, "run", "j2"))
+            _check("NOT exempt: a sibling of %s" % _sup,
+                   not run_dir_owned_by_name("run/" + _sup + ".bak", "run", "j1"))
         _check("NOT exempt: manifest.yaml is digest-bound, never by name",
                not run_dir_owned_by_name("run/manifest.yaml", "run", "j1"))
         # Dogfood r4: `git rm` in a worktree could never merge back.
@@ -11213,6 +11447,83 @@ def selftest():
                    and _head0_b4 in str(_ack_b4.get("stale_pin_warning"))
                    and _head1_b4 in str(_ack_b4.get("stale_pin_warning")),
                    json.dumps(_ack_b4)[:400])
+            _check("B4: ...and the registration is REFUSED (rc 2), naming /v:resume",
+                   _rc_b4 == 2 and _ack_b4.get("registered") is None
+                   and "/v:resume b4" in str(_ack_b4.get("stale_pin_warning")),
+                   "rc=%r %s" % (_rc_b4, json.dumps(_ack_b4)[:300]))
+            _rc_e4 = cmd_emit([_man_b4, "--no-recall"])
+            _check("B4: emit refuses to re-dispatch into a run dir holding a "
+                   "previous attempt's pin", _rc_e4 == 2, "rc=%r" % _rc_e4)
+            with _quiet():
+                _rc_e4p = cmd_emit([_man_b4, "--no-recall", "--print"])
+            _check("B4: ...but `emit --print` (writes nothing) stays open",
+                   _rc_e4p != 2, "rc=%r" % _rc_e4p)
+
+            # ---- B6: resume-prepare retires a DIRECT job's snapshot by surgery -
+            _snap_b6 = os.path.join(_run_b4, "preexisting", "w1.txt")
+            _ver_b6 = os.path.join(_run_b4, "preexisting", "w1.verified.txt")
+            _atomic_write(_ver_b6, "x\n")
+            with open(_snap_b6, "r", encoding="utf-8") as fh:
+                _b6_before = [ln for ln in fh.read().splitlines() if ln.strip()]
+            _atomic_write(_snap_b6, "\n".join(_b6_before + [
+                "%s  stray-from-attempt-1.txt" % ("0" * 64)]) + "\n")
+            with _quiet():
+                _rc_rp6 = cmd_resume_prepare(["--run-dir", _run_b4])
+            with open(_snap_b6, "r", encoding="utf-8") as fh:
+                _b6_after = [ln for ln in fh.read().splitlines() if ln.strip()]
+            _b6_rels = [ln.split("  ", 1)[1] for ln in _b6_after if "  " in ln]
+            _check("B6: resume-prepare drops the job's own bookkeeping lines from "
+                   "a direct snapshot and nothing else",
+                   _rc_rp6 == 0
+                   and not any(r.endswith("/jobs/w1.baseline") or r.endswith("/lane-map.json")
+                               for r in _b6_rels)
+                   and "stray-from-attempt-1.txt" in _b6_rels
+                   and any(r.endswith("/manifest.yaml") for r in _b6_rels)
+                   and not os.path.exists(_ver_b6),
+                   json.dumps(_b6_after)[:400])
+            with _quiet():
+                _rc_b6r = cmd_register_lane([
+                    "--run-dir", _run_b4, "--job-id", "w1", "--cwd", _repo_b4,
+                    "--repo-root", _repo_b4, "--isolation", "direct",
+                    "--manifest", _man_b4, "--no-test-contract"])
+            _check("B6: after resume-prepare the direct job registers and pins HEAD",
+                   _rc_b6r == 0 and read_pinned_baseline(_run_b4, "w1") == _head1_b4)
+            _b6_kept = read_preexisting_unchanged(_snap_b6, _repo_b4)
+            _check("B6: ...and its NEW pin is exempt by its new digest",
+                   any(k.endswith("/jobs/w1.baseline") for k in _b6_kept), str(_b6_kept))
+            with _quiet():
+                _rc_b6s = cmd_register_lane([
+                    "--run-dir", _run_b4, "--job-id", "w1",
+                    "--repo-root", _repo_b4, "--isolation", "direct",
+                    "--manifest", _man_b4, "--no-test-contract"])
+            _check("B6: same-attempt re-registration (no --cwd) stays idempotent",
+                   _rc_b6s == 0 and read_pinned_baseline(_run_b4, "w1") == _head1_b4)
+
+            # ---- B7: a worktree job's snapshot is deleted by resume-prepare ----
+            _b7_state = _load_state(_run_b4)
+            _b7_state["jobs"]["w7"] = {"status": "failed", "isolation": "worktree",
+                                       "baseline": _head1_b4}
+            _save_state(_run_b4, _b7_state)
+            _atomic_write(os.path.join(_run_b4, "preexisting", "w7.txt"),
+                          "%s  node_modules/x.js\n" % ("1" * 64))
+            with _quiet():
+                cmd_resume_prepare(["--run-dir", _run_b4])
+            _check("B7: resume-prepare deletes a worktree job's provisioned "
+                   "snapshot, so the fresh worktree is provisioned again",
+                   not os.path.exists(os.path.join(_run_b4, "preexisting", "w7.txt"))
+                   and read_pinned_baseline(_run_b4, "w7") is None)
+
+            # ---- B8: a repository with no first commit is refused cleanly ------
+            _repo_b8 = os.path.join(tmp, "v386-unborn")
+            os.makedirs(_repo_b8)
+            _run(["git", "init", "-q", _repo_b8])
+            _run_b8 = os.path.join(_repo_b8, "run")
+            os.makedirs(_run_b8)
+            _rc_b8 = cmd_register_lane([
+                "--run-dir", _run_b8, "--job-id", "u1", "--cwd", _repo_b8,
+                "--repo-root", _repo_b8, "--isolation", "direct", "--no-test-contract"])
+            _check("B8: no first commit -> rc 2 before anything is written",
+                   _rc_b8 == 2 and not os.listdir(_run_b8), str(os.listdir(_run_b8)))
 
             # ---- B5: resume-prepare's existing rows are unaffected by the
             # extraction into `_supersede_attempt` — asserted by running the
@@ -11256,9 +11567,11 @@ def cmd_resume_prepare(argv):
 
     This remains the ONLY path that clears a `direct` job's pin: a direct
     worker can write anywhere in the checkout, including a forged
-    `results/<id>.json`, so `register-lane`'s own re-attempt door only WARNS
-    for a direct job (`ack["stale_pin_warning"]`) rather than re-pinning it —
-    the operator is expected to run this command (or `/v:resume`) first.
+    `results/<id>.json`, so `register-lane` REFUSES a direct job whose pin
+    predates HEAD (exit 2, `ack["stale_pin_warning"]`) rather than re-pinning
+    it, and `emit` refuses a run dir holding such a pin — the operator runs this
+    command (or `/v:resume`) first. A direct job's snapshot is kept and only
+    its registration-rewritten lines are dropped (`_retire_snapshot`).
     """
     ap = argparse.ArgumentParser(prog="compound-v-emit-workflow.py resume-prepare")
     ap.add_argument("--run-dir", required=True)
@@ -11281,12 +11594,12 @@ def cmd_resume_prepare(argv):
             # exists is resumed IN PLACE (`codex exec resume <uuid>`, the resume-eligibility
             # rule in commands/v-resume.md) — its pin and worktree stay; clearing them here
             # would make that rule unreachable (pr-review 2026-09-04).
-            wt = entry.get("worktree")
-            if (entry.get("failure_class") in ("timeout", "network") and entry.get("session_id")
-                    and isinstance(wt, str) and wt and os.path.isdir(wt)):
+            if _resume_in_place(entry):
                 out.setdefault("resume_in_place", []).append(job_id)
                 continue
             _res = _supersede_attempt(run_dir, job_id, entry, wts)
+            if _res["snapshot"]:
+                out.setdefault("snapshots", {})[job_id] = _res["snapshot"]
             out["lane_entries_dropped"] += _res["lane_entries_dropped"]
             if _res["receipt_archived"]:
                 out["receipts_archived"].append(_res["receipt_archived"])

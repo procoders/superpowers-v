@@ -85,6 +85,8 @@ already have.
   matches a literal command prefix and refuses shell substitution — `"$PWD"` or
   `$(pwd)` is denied, and a job denied on *that* command never registers, which
   leaves `hooks/lane-guard.sh` with nothing to resolve for the rest of the job.
+  `--cwd` may also be omitted: it then defaults to the directory the command runs
+  in, which is your working tree.
 - **Run every Python command with `-B`** (or export `PYTHONDONTWRITEBYTECODE=1`).
   The scope gate forgives no path by extension, so a stray `.pyc` written beside
   a script is an out-of-lane write that BLOCKS you.
