@@ -49,6 +49,45 @@ of this repo.
    fabricated-evidence pattern rather than a repair. Carry the resulting `pre_eval_id` into Step 6's
    `state.json`, Step 8b's `bind`, and the manifest's `triage` block.
 
+   **Bind the newest record, and only one `--require-triage` will accept.** A request can own
+   several records: re-running `/v:triage` never rewrites one, it writes a new record whose intent
+   `supersedes` the old. Resolve the newest for the request and check it before binding:
+
+   ```bash
+   V_TRIAGE_REQUEST='<the request text>' python3 "$CV/scripts/compound-v-preeval.py" record-status \
+     --request-env V_TRIAGE_REQUEST --repo . --json
+   ```
+
+   (Use `--pre-eval-id <id>` instead when `{{args}}` named the record.) Exit 0 means the record is
+   dispatchable: bind its `pre_eval_id`. Exit 1 prints a `reason`, and each one has one fix:
+
+   - **null `taxonomy_digest`, and `.claude/compound-v-impact-taxonomy.yaml` now exists** — the
+     record was scored before the taxonomy. Run `/v:triage <the request>` again; it writes a
+     superseding record with the digest. Bind that one.
+   - **null `taxonomy_digest`, and the taxonomy is missing** — stop and tell the user to create it
+     first: `/v:init` drafts it (or `/v:onboard` builds it), then `/v:triage <the request>`. A record
+     without a taxonomy cannot be dispatched, and FULL does not change that.
+   - **the taxonomy changed since the record**, or **`superseded_by` is set** — re-run
+     `/v:triage <the request>` (or bind the successor it names).
+   - **a config-disabled record while `pre_eval.enabled` is on again** — re-run `/v:triage`.
+
+   The manifest's `triage` block is copied from the bound record, never typed:
+
+   ```yaml
+   triage:
+     tier: <SCOPED|FULL>         # the record's `tier` (DECISION_TO_TIER of its decision)
+     pre_eval_id: <record pre_eval_id>
+     taxonomy_digest: "<record taxonomy_digest>"
+     decided_at: "<record ts>"
+     # flavor: scoped_plus       # only when the record has it
+     # disabled_by_config: true  # only for a config-disabled record (its digest is null)
+   ```
+
+   `disabled_by_config: true` is for the record `/v:triage` writes when `pre_eval.enabled` is false
+   (`record-status` reports `disabled_by_config: true`). Write `taxonomy_digest: null` beside it.
+   `--require-triage` accepts that block only for tier FULL, only when the committed record is that
+   config-disabled record, and only while the project config still disables the stage.
+
    **Copy the record's `flavor` into the manifest's `triage` block verbatim when it has one.** The
    only value is `scoped_plus` — a SCOPED-sized change on a sensitive path — and it is a routing
    *consequence*, not a routing input: it tells this command to give the run a `type: review` job
