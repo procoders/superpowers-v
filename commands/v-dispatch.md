@@ -20,14 +20,16 @@ delegating, the epic inherits Engine C along with everything else.
 | a **manifest path** (`…/execution/<run-id>/manifest.yaml`) | dispatch it directly (already materialized). |
 | a **run-id** (a dir name under `docs/superpowers/execution/`) | resolve to that run's `manifest.yaml` and dispatch directly. |
 
-**Re-dispatching a halted run (v3.6.3).** Running `/v:dispatch` again on a run-id or manifest path
-that already halted is not the same thing as `/v:resume`, but a `worktree` job now re-pins itself
-safely either way: `register-lane` detects the concluded previous attempt (a receipt or result
-already on disk) and re-baselines against the fresh worktree's `HEAD` before re-registering, so the
-bookkeeping this pipeline committed between attempts is no longer charged to the job (see
-[`state-machine.md`](../skills/compound-v/state-machine.md) § `baseline` re-pins on a re-attempt).
-A `direct` job does **not** re-pin automatically — it still needs [`/v:resume <run-id>`](v-resume.md),
-which is the only path that clears its stale pin.
+**Re-dispatching a run that already ran (3.8.6).** Running `/v:dispatch` again on a run-id or
+manifest path whose run directory already holds an attempt — any of `jobs/*.baseline`,
+`receipts/*.gate.json` or `results/*.json` — first runs `resume-prepare` (step 5), exactly as
+[`/v:resume`](v-resume.md) does. Without it a `direct` job keeps the first attempt's pin, and
+every commit made since — the run's own bookkeeping, a taxonomy you added, anything — is charged
+to the job as a violation. `register-lane` only *warns* about that pin (`stale_pin_warning`), and
+the warning reaches the Workflow agent, not you, so the refusal used to read as an unexplained
+baseline violation. A `worktree` job re-pins itself on a concluded attempt (v3.6.3, see
+[`state-machine.md`](../skills/compound-v/state-machine.md) § `baseline` re-pins on a re-attempt);
+`resume-prepare` covers both kinds.
 
 ## Resolving the plugin root
 
@@ -36,13 +38,18 @@ your own repository. Resolve the plugin root once per session before calling any
 
 ```bash
 CV="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$HOME"/.claude/plugins/cache/*/superpowers-v/*/ 2>/dev/null | sort -V | tail -1)}"
-CV="${CV:-$PWD}"; CV="${CV%/}"
+CV="${CV%/}"
+[ -f "$CV/scripts/compound-v-emit-workflow.py" ] || CV="$PWD"
+[ -f "$CV/scripts/compound-v-emit-workflow.py" ] || { echo "superpowers-v plugin root not found: reinstall the plugin" >&2; CV=""; }
 ```
 
 `CLAUDE_PLUGIN_ROOT` is set for hooks but is not set in this Bash environment, so treat it as a
-hint, never the whole answer — the fallback line covers an installed plugin cache or a checkout
-of this repo. Paths under `docs/superpowers/` stay relative; only the plugin's own `scripts/` and
-`schemas/` get `$CV`.
+hint, never the whole answer. The cache line covers an installed plugin; `$PWD` is used only when
+the current directory is a checkout of this plugin. Anywhere else an unresolved root is reported
+instead of pointing `$CV` at a `scripts/` directory your repository does not have — the old
+fallback did exactly that in every user repository. An empty `$CV` is a stop: do not run the
+steps below with it. Paths under `docs/superpowers/` stay relative; only the plugin's own
+`scripts/` and `schemas/` get `$CV`.
 
 ## Steps
 
@@ -85,6 +92,12 @@ of this repo. Paths under `docs/superpowers/` stay relative; only the plugin's o
    Pick the mode by manifest kind (CR5-1): a `fast_path` block ⇒ `--mode pre-dispatch`; a legacy
    plan-based manifest carries no such block and is validated mode-lessly, as before — a mode-less
    `fast_path` manifest is fail-closed rejected. Non-zero exit ⇒ fix the manifest and re-run.
+
+   A refusal that names `.claude/compound-v-impact-taxonomy.yaml` ("does not exist", or a
+   `taxonomy_digest` that "does not match") is not a manifest defect: the repository has no
+   committed taxonomy, or the triage record predates it. Run [`/v:init`](v-init.md) Step 4g to
+   draft and commit one, re-run [`/v:triage`](v-triage.md) for the request, and re-materialize the
+   manifest ([`/v:orchestrate`](v-orchestrate.md)) so its `triage` block binds the new record.
 
 3. **Run the partition reviewer** (Iron Rule #4: no execution without a verified Partition Map):
    - Dispatch [`superpowers-v:partition-reviewer`](../agents/partition-reviewer.md) with the plan
@@ -158,6 +171,21 @@ of this repo. Paths under `docs/superpowers/` stay relative; only the plugin's o
    refuses `scriptPath`, and the clamp may be unsupported on an older build.
 
 5. **Emit the workflow, and commit it before it runs.**
+
+   **A run that already ran is prepared first.** If the run directory holds any of
+   `jobs/*.baseline`, `receipts/*.gate.json` or `results/*.json`, run this before `emit`:
+
+   ```
+   python3 "$CV/scripts/compound-v-emit-workflow.py" resume-prepare \
+     --run-dir docs/superpowers/execution/<run-id>
+   ```
+
+   It is the same call [`/v:resume`](v-resume.md) step 5 makes: for every job not yet integrated
+   it deletes the stale pin, resets the job to `pending`, drops its lane-map entries and archives
+   its gate receipt as `receipts/<id>.gate.superseded-*.json`; integrated jobs are left alone, and
+   the phase returns to `PARTITION_VERIFIED`. `emit` refuses with exit 2, naming `/v:resume`, when
+   it finds a previous attempt's pin that this call has not cleared — do not work around that
+   refusal by deleting files by hand.
 
    ```
    python3 "$CV/scripts/compound-v-emit-workflow.py" emit \

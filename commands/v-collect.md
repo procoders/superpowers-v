@@ -15,12 +15,15 @@ your own repository. Resolve the plugin root once per session before calling any
 
 ```bash
 CV="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$HOME"/.claude/plugins/cache/*/superpowers-v/*/ 2>/dev/null | sort -V | tail -1)}"
-CV="${CV:-$PWD}"; CV="${CV%/}"
+CV="${CV%/}"
+[ -f "$CV/scripts/compound-v-emit-workflow.py" ] || CV="$PWD"
+[ -f "$CV/scripts/compound-v-emit-workflow.py" ] || { echo "superpowers-v plugin root not found: reinstall the plugin" >&2; CV=""; }
 ```
 
 `CLAUDE_PLUGIN_ROOT` is set for hooks but is not set in this Bash environment, so treat it as a
-hint, never the whole answer — the fallback line covers an installed plugin cache or a checkout
-of this repo. Paths under `docs/superpowers/` stay relative; only the plugin's own `scripts/` and
+hint, never the whole answer. The cache line covers an installed plugin; `$PWD` is used only when
+the current directory is a checkout of this plugin. Anywhere else an unresolved root is reported
+instead of pointing `$CV` at a `scripts/` directory your repository does not have. Paths under `docs/superpowers/` stay relative; only the plugin's own `scripts/` and
 `schemas/` get `$CV`.
 
 ## Steps
@@ -41,14 +44,29 @@ of this repo. Paths under `docs/superpowers/` stay relative; only the plugin's o
    ```
    Output lands in `<run-dir>/results/<job-id>.json`. The collector checks each result against [`schemas/job_result.schema.json`](../schemas/job_result.schema.json) — **but read that as the partial check it is**: its runtime checker walks TOP-LEVEL field types only and is blind to the `tests` sub-object, so a `tests` block that violates the schema outright passes it. That blind spot is how a release shipped in which every Engine C `job_result` carried the raw `test-floor` document in `tests` and failed the schema on the clean happy path. Full conformance is asserted by [`tests/test-engine-c-contract.sh`](../tests/test-engine-c-contract.sh), which validates a really-generated `job_result` with `jsonschema`; do not read a clean collector run as proof the document conforms. Its `files_changed` / `violations` / `blocked` fields are **git-derived** (folded in from `--scope`), never model-self-reported; `--worker-output` feeds only the human `summary`. It prints **no fabricated cost metrics**.
 
-3. **Scope gate — git-diff authority, every job.** Re-run the scope gate on each job against its `write_allowed` from the manifest. The script takes a mutually-exclusive **mode flag** (`--worktree` OR `--repo`) plus the allowed globs (`--allow-file`) — no positional path. Use the mode matching how the job was dispatched (mirrors [`phase-3-parallel-opus-dispatch.md`](../skills/compound-v/phase-3-parallel-opus-dispatch.md)):
+3. **Scope gate — git-diff authority, every job not yet integrated.** Re-run the scope gate on each job against its `write_allowed` from the manifest, **with the same inputs Engine C's Gate (`compound-v-emit-workflow.py gate-receipt`) gives it** — otherwise this pass and the run's own gate can disagree about the same tree. Skip jobs already integrated (`python3 "$CV/scripts/compound-v-emit-workflow.py" integrated-jobs --run-dir <run-dir>` lists them): their verdict is step 3b's. The script takes a mutually-exclusive **mode flag** (`--worktree` OR `--repo`) plus the allowed globs (`--allow-file`) — no positional path. Use the mode the job was dispatched in:
    ```
-   # worktree jobs:
-   python3 "$CV/scripts/compound-v-scope-check.py" --worktree <wt-dir> --allow-file <allow-globs-file>
+   # worktree jobs (<wt-dir> = state.json jobs[<id>].worktree):
+   python3 "$CV/scripts/compound-v-scope-check.py" --worktree <wt-dir> \
+     --baseline <state.json jobs[<id>].baseline, else jobs/<id>.baseline> \
+     --allow-file <allow-globs-file> \
+     [--preexisting <run-dir>/preexisting/<id>.verified.txt] \
+     [--toolchain-artifact <glob> ...]
    # direct (in-repo) jobs:
-   python3 "$CV/scripts/compound-v-scope-check.py" --repo <repo-dir> --baseline <pre-dispatch-commit> --allow-file <allow-globs-file>
+   python3 "$CV/scripts/compound-v-scope-check.py" --repo <repo-dir> \
+     --baseline <state.json jobs[<id>].baseline, else jobs/<id>.baseline> \
+     --allow-file <allow-globs-file> \
+     [--preexisting <run-dir>/preexisting/<id>.verified.txt] \
+     [--toolchain-artifact <glob> ...]
    ```
-   Exit codes: `0` = pass, `1` = blocked (violations present), `2` = usage/git error. It derives changed files with `git -C <worktree-or-repo> diff --name-only HEAD` ∪ `git ... ls-files --others --exclude-standard`. Any path outside `write_allowed` ⇒ the job is **BLOCKED**: mark it `blocked` in `state.json`, retain its worktree, **do not merge it**, and **HALT the run** — surface the offending paths to the user. A BLOCKED job is corrected and re-dispatched via `/v:resume`, not silently merged.
+   - **`--baseline` is the pinned pre-launch SHA in both modes.** In `--worktree` mode the script defaults it to `HEAD`, which the Gate never uses: a worker that committed inside its worktree has moved that `HEAD`, and a `HEAD`-relative diff then shows nothing. No pin on an Engine C run ⇒ do not guess one; the Gate fails closed there too.
+   - **`--preexisting` is the `.verified.txt` list the Gate materialized** — the snapshot paths whose bytes still matched at gate time, plus the run directory's own bookkeeping. Never pass the raw `preexisting/<id>.txt`: its lines are `<sha256>  <path>` pairs, not paths. No `.verified.txt` (the Gate never ran for this job) ⇒ omit the flag and let step 3b re-derive.
+   - **One `--toolchain-artifact` per entry of the manifest's top-level `toolchain_artifacts`** — the script subtracts a match only when `git check-ignore` confirms it.
+   - A run dispatched before Engine C's cutover has no pin and no snapshot: use its recorded pre-dispatch commit as `--baseline` and leave the other two flags out.
+
+   Exit codes: `0` = pass, `1` = blocked (violations present), `2` = usage/git error. It derives changed files from three probes against the baseline — `git diff --name-only <baseline>`, `git ls-files --others --exclude-standard`, and the same with `--ignored` — minus the `--preexisting` list. Any path outside `write_allowed` ⇒ the job is **BLOCKED**: mark it `blocked` in `state.json`, retain its worktree, **do not merge it**, and **HALT the run** — surface the offending paths to the user. A BLOCKED job is corrected and re-dispatched via `/v:resume`, not silently merged.
+
+   Do not call `gate-receipt` from here to get the same inputs: it rewrites `receipts/<id>.gate.json`, and on a job whose worktree is gone it would replace a good receipt with an error one that step 3b then refuses.
 
    **Then run the test floor per job, from the same producer.** Ordering is load-bearing and is the reverse of the fast-path tail: the executor runs, the gate computes `files_changed`/`violations`, and *then* the resolved commands run inside the worktree. Running tests before the gate would let a coverage file or a cache directory a test wrote become a false `violation`. The flip side is real and is the caller's problem: **anything a test creates after the gate is outside the gate's authority and must not be merged** — which is why merge-back stages by `files_changed` and not by `git add -A`.
 
