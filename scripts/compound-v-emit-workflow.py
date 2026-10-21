@@ -1267,6 +1267,11 @@ def escalation_ladder(ceiling=None, stance=None):
         if ceiling:
             note = ("the frontier model %r is not a ladder rung; capped at %s"
                     % (ceiling, rung))
+    elif stance == "cost-aware" and rung == "fable":
+        # A legacy flat `models.claude.frontier: fable` applies to every stance;
+        # cost-aware's ceiling is Opus whatever the config map says.
+        rung = "opus"
+        note = "cost-aware caps re-attempt escalation at opus (config frontier was fable)"
     return CLAUDE_ESCALATION[:CLAUDE_ESCALATION.index(rung) + 1], note
 
 
@@ -8346,6 +8351,9 @@ def selftest():
                and escalation_ladder("acme-x", "cost-aware")[0] == ("sonnet", "opus")
                and escalation_ladder("acme-x", "balanced")[0] == CLAUDE_ESCALATION
                and escalation_ladder(None)[0] == CLAUDE_ESCALATION)
+        _check("cost-aware: a fable ceiling from a flat config map is clamped to opus",
+               escalation_ladder("fable", "cost-aware")[0] == ("sonnet", "opus")
+               and escalation_ladder("fable", "balanced")[0] == CLAUDE_ESCALATION)
         _check("escalate_claude_model honours a capped ladder",
                escalate_claude_model("opus", ("sonnet", "opus"))[0] == "opus"
                and escalate_claude_model("sonnet", ("sonnet", "opus"))[0] == "opus"
@@ -11736,6 +11744,9 @@ def cmd_resume_prepare(argv):
             out["lane_entries_dropped"] += _res["lane_entries_dropped"]
             if _res["receipt_archived"]:
                 out["receipts_archived"].append(_res["receipt_archived"])
+                _left = _leftover_violations(run_dir, _res["receipt_archived"])
+                if _left:
+                    out.setdefault("leftover_violations", {})[job_id] = _left
             out["unpinned"].append({"job": job_id, "was": _res["was"]})
         if wts is not None:
             lm["worktrees"] = wts
@@ -11743,8 +11754,30 @@ def cmd_resume_prepare(argv):
         if out["unpinned"]:
             state["phase"] = "PARTITION_VERIFIED"
         _save_state(run_dir, state)
+    if out.get("leftover_violations"):
+        out["leftover_note"] = (
+            "these paths blocked the superseded attempt of a direct job and are still in "
+            "the working tree; the next attempt will be blocked on them again. Remove or "
+            "revert them first — resume-prepare never forgives them.")
     print(json.dumps(out, indent=2, sort_keys=True))
     return 0
+
+
+def _leftover_violations(run_dir, archived_rel):
+    """Paths a superseded DIRECT attempt was blocked on that still exist in the tree."""
+    doc = _read_json(os.path.join(run_dir, archived_rel), None) or {}
+    if doc.get("worktree"):
+        return []
+    try:
+        parsed = json.loads(doc.get("raw_stdout") or "{}")
+    except ValueError:
+        return []
+    paths = (parsed or {}).get("violations") or []
+    rc, top, _err = _run(["git", "-C", run_dir, "rev-parse", "--show-toplevel"])
+    root = (top or "").strip() if rc == 0 else ""
+    if not root:
+        return []
+    return [p for p in paths if isinstance(p, str) and os.path.lexists(os.path.join(root, p))]
 
 
 def cmd_integrated_jobs(argv):

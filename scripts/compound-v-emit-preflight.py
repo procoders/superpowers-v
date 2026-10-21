@@ -508,9 +508,36 @@ def _cut_words(text, cap):
     return cut.rstrip(" —-·,;:")
 
 
+_NON_SOURCE_EXT = (".md", ".markdown", ".txt", ".rst", ".json", ".yaml", ".yml", ".toml",
+                   ".lock", ".gitignore", ".gitattributes", ".editorconfig", ".png", ".jpg",
+                   ".jpeg", ".gif", ".svg", ".ico", ".pdf")
+_NON_SOURCE_DIRS = ("docs/", ".claude/", ".github/", ".vscode/", ".idea/")
+
+
+def is_greenfield(repo):
+    """True when git tracks no source file yet (only docs, config and assets): a
+    code-archaeology pre-flight would have nothing to read. None when git cannot say."""
+    try:
+        out = subprocess.run(["git", "-C", repo or ".", "ls-files", "-z"],
+                             capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    for rel in out.stdout.decode("utf-8", "replace").split("\0"):
+        if not rel or rel.startswith(_NON_SOURCE_DIRS):
+            continue
+        base = rel.rsplit("/", 1)[-1].lower()
+        if base in ("license", "licence", "readme", "notice", "copying"):
+            continue
+        if not base.endswith(_NON_SOURCE_EXT):
+            return False
+    return True
+
+
 def build_plan(spec_path, topic, today, skip=(), recon=None, root=None,
                recall=False, recall_engine=None, recall_timeout=RECALL_TIMEOUT_SEC,
-               repo_root=None):
+               repo_root=None, greenfield=False):
     """Everything the emitted script needs, as plain data.
 
     `recall=True` runs the ONE V-memory search this pre-flight carries (see the
@@ -529,6 +556,11 @@ def build_plan(spec_path, topic, today, skip=(), recon=None, root=None,
     entries = []
     for phase, role, outdir, purpose in PREFLIGHTS:
         if phase.lower() in skip:
+            continue
+        if greenfield and phase == "1A":
+            entries.append({"phase": phase, "role": role, "skipped":
+                            "greenfield repository: git tracks no source file yet, so "
+                            "there is no existing code to audit (--no-greenfield-skip runs it)"})
             continue
         if not agent_available(role, root):
             # A missing agent is skipped with a NOTICE, never silently: an audit
@@ -766,6 +798,8 @@ def main(argv):
     ap.add_argument("--topic", help="topic slug source (defaults to the spec's stem)")
     ap.add_argument("--recon", default="", help="exact Trigger-0 recon path, if one exists")
     ap.add_argument("--skip", default="", help="comma-separated phases to skip, e.g. 1a,1c")
+    ap.add_argument("--no-greenfield-skip", action="store_true",
+                    help="run 1A even when git tracks no source file yet")
     ap.add_argument("--out", help="write the script here (default: stdout)")
     ap.add_argument("--today", help="YYYY-MM-DD for the output filenames")
     ap.add_argument("--selftest", action="store_true")
@@ -810,7 +844,9 @@ def main(argv):
                       skip=[s for s in args.skip.split(",") if s.strip()],
                       recon=args.recon, recall=args.recall,
                       recall_engine=args.recall_engine,
-                      recall_timeout=args.recall_timeout, repo_root=args.repo)
+                      recall_timeout=args.recall_timeout, repo_root=args.repo,
+                      greenfield=(not args.no_greenfield_skip
+                                  and is_greenfield(args.repo or ".") is True))
     sys.stderr.write("compound-v pre-flight: %s\n" % plan["recall"]["summary"])
     script = emit_script(plan)
     hits = forbidden_hits(script)
@@ -901,6 +937,21 @@ def _selftest():
     check("a missing agent file yields no definition, not a guessed one",
           agent_definition("no-such-agent") is None)
 
+    import tempfile as _tf
+    with _tf.TemporaryDirectory() as _g:
+        subprocess.run(["git", "init", "-q", _g], check=True)
+        for _rel in ("README.md", "prd.md", "docs/spec.md", ".claude/compound-v.json"):
+            os.makedirs(os.path.dirname(os.path.join(_g, _rel)) or _g, exist_ok=True)
+            open(os.path.join(_g, _rel), "w").close()
+        subprocess.run(["git", "-C", _g, "add", "-A"], check=True)
+        check("greenfield: a repo of docs and config only is greenfield", is_greenfield(_g) is True)
+        open(os.path.join(_g, "app.py"), "w").close()
+        subprocess.run(["git", "-C", _g, "add", "-A"], check=True)
+        check("greenfield: one tracked source file ends it", is_greenfield(_g) is False)
+    _gp = build_plan("s.md", "t", "2026-01-02", greenfield=True)
+    check("greenfield: 1A is skipped WITH a notice, 1B and 1C still run",
+          [(e["phase"], "skipped" in e) for e in _gp["entries"]]
+          == [("1A", True), ("1B", False), ("1C", False)])
     skipped = build_plan("s.md", "t", "2026-01-02", skip=["1b"])
     check("--skip drops exactly that phase",
           [e["phase"] for e in skipped["entries"]] == ["1A", "1C"])

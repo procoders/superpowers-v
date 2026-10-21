@@ -686,10 +686,9 @@ was, in those two fields).
   backend name (it is a multi-provider router, so `backend: opencode`
   does not fix a single model family — see `adapter-opencode.md`).
 
-(`conservative` and `claude-only` mirror `balanced` — seed those two stance blocks
-identically to `balanced`. Only `cost-aware.claude.frontier` differs: `opus`, not `fable`;
-`cost-aware.claude.deep` stays `opus`. The resolver's built-in `conservative` map also keeps
-`standard` on `opus`, so a seeded block that mirrors `balanced` overrides that.)
+(`claude-only` mirrors `balanced`; seed `conservative` like `balanced` except
+`claude.standard: "opus"`, which is what that stance means. Only `cost-aware.claude.frontier`
+differs from `balanced`: `opus`, not `fable`; `cost-aware.claude.deep` stays `opus`.)
 
 - `stance` = the stance chosen in Step 3 (`cost-aware` under Step 3f's `lightweight` profile, which
   also writes `brainstorm.deep_research: "off"` and the `retry` block below).
@@ -1133,12 +1132,14 @@ by anything in `pre_eval.*`); **(c)** a remembered category is displayable + rev
 category** (structurally, because `remember` can only ever store the literal `"fastpath"`; the
 overrides themselves are re-checked by the scorer per spec §2, never by this config).
 
-Run from the repo root; it exits non-zero on any failure:
+Run from the repo root with `$CV` resolved (see "Resolving the plugin root"); it exits non-zero
+on any failure:
 
 ```bash
-python3 - <<'PY'
+CV="$CV" python3 - <<'PY'
 import importlib.util, os, tempfile
-spec = importlib.util.spec_from_file_location("cfg", "scripts/compound-v-project-config.py")
+spec = importlib.util.spec_from_file_location(
+    "cfg", os.path.join(os.environ["CV"], "scripts", "compound-v-project-config.py"))
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 
 fails = []

@@ -89,12 +89,13 @@ honestly what discovery actually returned.
 
 Claude resolves a tier to one of its **native model aliases**. The shipped tiers are:
 
+- `frontier` → `fable` (`opus` under `cost-aware`; what a re-attempt escalates into)
 - `deep` → `opus` (strongest reasoning)
-- `standard` → `opus`
+- `standard` → `sonnet` (`opus` under `conservative`)
 - `light` → `sonnet`
 
-There is no list command to run; the alias set is `opus` / `sonnet`. **Never
-`haiku`.** Offer `opus` and `sonnet` as the only choices per tier.
+There is no list command to run; the alias set is `fable` / `opus` / `sonnet`. **Never
+`haiku`.** Offer `opus` and `sonnet` per tier, and `fable` only for `frontier` outside `cost-aware`.
 
 ### 1b. codex — headless `codex debug models` discovery (real names)
 
@@ -261,7 +262,7 @@ fast/cheap option → `light`). Example shape:
 
 | Backend | Available now | deep | standard | light |
 |---|---|---|---|---|
-| claude | opus, sonnet | opus | opus | sonnet |
+| claude | fable, opus, sonnet | opus | sonnet | sonnet |
 | codex | gpt-6-astra, gpt-6.1-sol, gpt-6-luna | gpt-6.1-sol | gpt-6.1-sol | gpt-6-luna |
 | antigravity | *(from `agy models </dev/null`)* | Gemini 4 Argon (High) | Gemini 4 Argon (Low) | Gemini 3.8 Flash (Low) |
 | opencode | *(from `opencode models </dev/null`)* | anthropic/claude-opus-5-5 | openai/gpt-6.1-sol | opencode/mimo-v2.5-free |
@@ -296,21 +297,21 @@ untouched — they're inert, no migration needed.
 
 Resulting shape (only `models` is this command's responsibility) — write the
 **per-stance** shape, refreshing each backend's row inside every stance block (only
-`cost-aware.claude.standard` differs: `sonnet`, not `opus`):
+`cost-aware.claude.frontier` differs: `opus`, not `fable`):
 
 ```jsonc
 {
   "stance": "…",            // preserved
   "models": {
     "balanced": {
-      "claude":      { "deep": "opus",    "standard": "opus",    "light": "sonnet" },
+      "claude":      { "frontier": "fable", "deep": "opus", "standard": "sonnet",  "light": "sonnet" },
       "codex":       { "frontier": "gpt-6-astra", "deep": "gpt-6.1-sol", "standard": "gpt-6.1-sol", "light": "gpt-6-luna" },
       "antigravity": { "deep": "…",       "standard": "…",       "light": "…" },
       "cursor":      { "deep": "auto",    "standard": "auto",    "light": "auto" },
       "opencode":    { "deep": "anthropic/claude-opus-5-5", "standard": "openai/gpt-6.1-sol", "light": "opencode/mimo-v2.5-free" }
     },
     "cost-aware": {
-      "claude":      { "deep": "opus",    "standard": "sonnet",  "light": "sonnet" },
+      "claude":      { "frontier": "opus",  "deep": "opus", "standard": "sonnet",  "light": "sonnet" },
       "codex":       { "frontier": "gpt-6-astra", "deep": "gpt-6.1-sol", "standard": "gpt-6.1-sol", "light": "gpt-6-luna" },
       "antigravity": { "deep": "…",       "standard": "…",       "light": "…" },
       "cursor":      { "deep": "auto",    "standard": "auto",    "light": "auto" },
@@ -341,7 +342,7 @@ resolver reads the per-stance block you wrote (omitting it defaults to `balanced
 ```bash
 for s in balanced cost-aware; do
   for b in claude codex antigravity cursor opencode; do
-    for t in deep standard light; do
+    for t in frontier deep standard light; do
       python3 "$CV/scripts/compound-v-resolve-model.py" --backend "$b" --tier "$t" \
         --stance "$s" --config .claude/compound-v.json
     done
@@ -353,8 +354,8 @@ Each line should be a JSON object whose `model` matches the cell you just assign
 that stance (the resolver's per-stance `--config models.<stance>.<backend>.<tier>`
 override beats its built-in default; under a legacy flat config the `--stance` is
 ignored and the same map applies to every stance). In particular,
-`--backend claude --tier standard --stance cost-aware` must resolve to `sonnet`, while
-`--stance balanced` (or omitted) resolves to `opus`. A non-zero exit or a mismatched
+`--backend claude --tier frontier --stance cost-aware` must resolve to `opus`, while
+`--stance balanced` resolves to `fable`. (Omitting `--stance` uses the config's own `stance`.) A non-zero exit or a mismatched
 model means the write didn't take — fix the JSON and re-run. (Skip the `codex` rows if
 codex is unavailable on this machine; the map entries are still valid for when it
 returns.)

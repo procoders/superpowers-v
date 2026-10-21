@@ -122,7 +122,9 @@ out=$(gate)
 case "$out" in blocked*stray.txt*) ok "attempt 1 is blocked on stray.txt" ;;
   *) bad "attempt 1 is blocked on stray.txt" "$out" ;; esac
 commit_docs
-resume_prepare
+rp=$("$PY" -B "$EMIT" resume-prepare --run-dir "$RD")
+case "$rp" in *leftover_violations*stray.txt*) ok "resume-prepare names the leftover that will block again" ;;
+  *) bad "resume-prepare does not name the leftover" "$rp" ;; esac
 reg >/dev/null
 echo v2 > "$R/src/app.txt"
 out=$(gate)

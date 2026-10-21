@@ -459,6 +459,11 @@ def _config_cell(config_models, stance, backend, tier):
         backend_map = stance_cfg.get(backend) if isinstance(stance_cfg, dict) else None
     else:                                                         # legacy flat shape
         backend_map = config_models.get(backend)
+        # The flat shape applies to every stance, so it cannot be read as a
+        # cost-aware choice of Fable: cost-aware's ceiling is Opus.
+        if (stance == "cost-aware" and backend == "claude" and isinstance(backend_map, dict)
+                and "fable" in str(backend_map.get(tier) or "").lower()):
+            return None
     if isinstance(backend_map, dict):
         candidate = backend_map.get(tier)
         if isinstance(candidate, str) and candidate.strip():
@@ -1001,6 +1006,10 @@ def _selftest():
         with open(cp, "w") as fh:
             fh.write('{"stance": "anything"}')
         expect("config stance: an unknown value -> balanced", config_stance(cp) == "balanced")
+    _flat = {"claude": {"frontier": "fable"}}
+    expect("a legacy flat frontier: fable does not survive cost-aware",
+           resolve("claude", "frontier", config_models=_flat, stance="cost-aware")["model"] == "opus"
+           and resolve("claude", "frontier", config_models=_flat, stance="balanced")["model"] == "fable")
 
     if failures:
         print("\nSELFTEST FAILED: %d case(s)" % len(failures))
