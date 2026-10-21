@@ -2552,6 +2552,8 @@ def _selftest():
             src = os.path.join(here, name)
             if os.path.exists(src):
                 shutil.copyfile(src, os.path.join(plug, name))
+        if os.path.isdir(os.path.join(here, "cv_validate")):
+            shutil.copytree(os.path.join(here, "cv_validate"), os.path.join(plug, "cv_validate"))
         with open(os.path.join(plug, "yaml.py"), "w") as fh:
             fh.write(
                 "def safe_load(text):\n"
