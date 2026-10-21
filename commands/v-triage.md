@@ -40,7 +40,16 @@ ls -t docs/superpowers/pre-eval/*.json 2>/dev/null | head -5
 If one carries this session's id, **do not mint a second**: commit it (step T3) and go. A record per
 prompt is how the outcome stream the circuit breaker reads stops meaning anything. Run Phase T when
 the hook did not fire — a slash-command invocation, a second request in the same session, or any
-session the hook was not registered in.
+session the hook was not registered in — **or when the record can no longer be dispatched**:
+
+```bash
+python3 "$CV/scripts/compound-v-preeval.py" record-status --pre-eval-id <pre_eval_id> --repo . --json
+```
+
+Exit 0 means `--require-triage` will accept it. Exit 1 prints a `reason`: the record was scored
+before `.claude/compound-v-impact-taxonomy.yaml` existed, the taxonomy changed since, it was
+superseded (`superseded_by` names the record to use), or it is a config-disabled record and
+`pre_eval.enabled` is on again. Running Phase T again on the same request fixes each of these.
 
 As of **v3.4.1 a request needing T3 is no longer one of those cases**: the hook finishes the classify
 itself with the headless one-shot (see T2) and records a real tier. It falls back to its reminder
@@ -119,13 +128,19 @@ quoting, and argv is visible to every process on the machine) and run this from 
 
 ```bash
 V_TRIAGE_REQUEST='<the request text>' python3 "$CV/scripts/compound-v-preeval.py" triage \
-  --request-env V_TRIAGE_REQUEST --repo . \
+  --request-env V_TRIAGE_REQUEST --repo . --record-disabled \
   --session-id "${CLAUDE_CODE_SESSION_ID:-}" --base-commit "$(git rev-parse HEAD)" --json
 ```
 
 It prints one JSON object: `pre_eval_id`, `tier`, `decision`, `needs_t3`, `record_ref`,
 `predicates` (spec §A4's 1-6, each with a `pass` and a `why`), `declared_paths`, plus `member`
-(all six hold), `refused_paths`, `disabled` and the binding echoed back.
+(all six hold), `refused_paths`, `disabled`, `supersedes`, `reused` and the binding echoed back.
+
+**Re-running T2 on the same request is safe, and it is how a stale record is replaced.** Records
+are immutable. When nothing the record classifies has changed, the call returns the existing
+record (`reused: true`, same `pre_eval_id`). When the taxonomy appeared or changed, the session
+differs, or the score moved, it writes a **new** record under a new `pre_eval_id` whose intent
+names the old one (`supersedes`); the old record stays as it was. Bind and commit the new one.
 
 **This is the same call `hooks/triage-prompt-nudge.sh` makes** — see `triage_request`'s docstring
 in the engine, which names both callers. That is the point of it being a subcommand rather than
@@ -138,12 +153,20 @@ after a `needs_t3` result. Add `--taxonomy PATH` only to point at a non-default 
 
 **Two results are not a tier, and each has one right response:**
 
-- `"disabled": true` — `pre_eval.enabled` is false. The stage is a no-op, **nothing was written**,
-  and this change is FULL by the operator's own configuration. Say so; do not hand-write a record.
+- `"disabled": true` — `pre_eval.enabled` is false. Nothing was localized or scored, and the change
+  is FULL by the operator's own configuration. Because T2 passes `--record-disabled`, the engine
+  writes one **config-disabled record** (decision `FULL_PIPELINE`, null taxonomy, localization flag
+  `pre_eval_disabled`, no `predicted` event) and `record_ref` names it. Commit it in T3 like any
+  other. `/v:orchestrate` copies it into the manifest as `tier: FULL`, `taxonomy_digest: null`,
+  `disabled_by_config: true`, and `--require-triage` accepts that block **only while
+  `.claude/compound-v.json` still says `pre_eval.enabled: false`**. Turn the stage back on and the
+  record stops verifying; re-run T2. Without `--record-disabled` (the `UserPromptSubmit` hook's
+  call) nothing is written and the hook stays silent. Never hand-write a record.
 - `"needs_t3": true` — the deterministic layers cannot band the request without a light classify.
   Answer the returned `t3_prompt` with one of the returned `t3_categories` and re-invoke with
   `--t3-category <enum>`. The re-invocation resumes the same `pre_eval_id` (discovered by request
-  fingerprint) rather than minting a second. Any error, timeout, or non-enum reply is `unknown`,
+  fingerprint) rather than minting a second, unless the taxonomy changed in between — then it
+  supersedes the paused id. Any error, timeout, or non-enum reply is `unknown`,
   which is FULL.
 
   **The headless one-shot is the default route** (v3.4.1, finding 50). Write the returned
@@ -230,9 +253,10 @@ Print the tier, the predicate list exactly as T2 emitted it, and the next step:
 
 - **Never widen the class.** `auto_route_allow`, the `sensitive` set and the line budget come from
   the taxonomy through `match_auto_route`; do not add a special case here.
-- **Never hand-write or re-score a record that already exists.** The UserPromptSubmit hook and
-  Phase T are the two producers and they call the same subcommand; a third copy of the scoring is
-  the drift v3.4 removed.
+- **Never hand-write or edit a record.** The UserPromptSubmit hook and Phase T are the two
+  producers and they call the same subcommand; a third copy of the scoring is the drift v3.4
+  removed. A stale record is replaced by re-running T2, which writes a superseding record and
+  leaves the old one untouched.
 - **Never edit the taxonomy to widen a class.** The two policy files are sensitive in code
   (`compound-v-taxonomy.MANDATORY_SENSITIVE`) as well as in this repo's taxonomy, so a taxonomy that
   forgets them still cannot be self-widened.

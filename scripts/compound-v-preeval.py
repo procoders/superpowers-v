@@ -111,11 +111,15 @@ Python 3.9-safe, stdlib only; soft-PyYAML via the shared taxonomy loader (never 
 
 Usage:
     compound-v-preeval.py triage --request-env VAR --repo DIR [--session-id S]
-        [--base-commit SHA] [--t3-category C] [--json]
+        [--base-commit SHA] [--t3-category C] [--record-disabled] [--json]
         # Phase T: score + BIND + write the record, and report the tier with spec §A4
         # predicates 1-6. Its two callers are `hooks/triage-prompt-nudge.sh` (the
         # UserPromptSubmit producer) and `commands/v-triage.md` step T2 — see
         # `triage_request`, which both of them are one line on top of.
+    compound-v-preeval.py record-status (--pre-eval-id ID | --request-env VAR)
+        [--repo DIR] [--taxonomy PATH] [--json]
+        # read-only: would --require-triage accept this record, and if not, what to run.
+        # Exit 0 = dispatchable, 1 = not (the JSON `reason` says why).
     compound-v-preeval.py --request "<text>" --repo DIR [--taxonomy PATH]
         [--t3-category plumbing|user-facing-minor|user-facing-major|unknown]
         [--pre-eval-id ID]                       # end-to-end Phase-P run (writes artifacts)
@@ -153,6 +157,19 @@ DECISION_TO_TIER = {
     DECISION_SCOPED: "SCOPED",
     DECISION_FULL: "FULL",
 }
+
+# v3.8.6 — the record `/v:triage --record-disabled` writes when `pre_eval.enabled` is false.
+# The record schema has no field for it, so the marker rides in `localization.flags`
+# (a free string list) and `confidence` (a free evidence string). The manifest validator
+# reads the same flag by value; its selftest asserts the two spellings agree.
+DISABLED_BY_CONFIG_FLAG = "pre_eval_disabled"
+DISABLED_BY_CONFIG_CONFIDENCE = ("pre_eval disabled by project config "
+                                 "(pre_eval.enabled: false); tier FULL, nothing scored")
+
+# Fields that do not make two records different classifications: when it was written,
+# the self-digest over it, and HEAD at the time (recorded, never decisive — the schema's
+# own words). Everything else is scored or bound content.
+_RECORD_IDENTITY_IGNORED = ("ts", "digest", "base_commit")
 
 # --------------------------------------------------------------------------- #
 # v3.1.0 — the cross-model review gate, derived from the SAME tier.
@@ -889,10 +906,13 @@ def record_path(repo, pre_eval_id):
     return os.path.join(pre_eval_dir(repo), pre_eval_id + ".json")
 
 
-def write_intent_record(repo, pre_eval_id, request, ts=None):
+def write_intent_record(repo, pre_eval_id, request, ts=None, supersedes=None):
     """CR5-10: the write-once intent record (request fingerprint → pre_eval_id), written
-    FIRST in Phase P so a fresh-process resume can find partial state. Idempotent: an
-    existing intent for the same pre_eval_id is left untouched (returns its rel path)."""
+    before the other artifacts so a fresh-process resume can find partial state. Idempotent:
+    an existing intent for the same pre_eval_id is left untouched (returns its rel path).
+
+    `supersedes` names the earlier pre_eval_id for the same request that this one replaces
+    (the record schema has no field for the link; intents have no schema)."""
     if not PRE_EVAL_ID_RE.match(pre_eval_id or ""):
         raise ValueError("invalid pre_eval_id: %r" % pre_eval_id)
     full = intent_path(repo, pre_eval_id)
@@ -903,6 +923,8 @@ def write_intent_record(repo, pre_eval_id, request, ts=None):
         "request_slug": slugify(request),
         "ts": ts or _now_iso(),
     }
+    if supersedes:
+        body["supersedes"] = supersedes
     try:
         _write_once_text(full, json.dumps(body, indent=2, sort_keys=True,
                                           ensure_ascii=False) + "\n")
@@ -911,13 +933,10 @@ def write_intent_record(repo, pre_eval_id, request, ts=None):
     return rel
 
 
-def find_pre_eval_id_by_request(repo, request):
-    """Resume discovery: scan intent records for a matching request fingerprint; return the
-    existing pre_eval_id or None. Never mints — the caller mints only on a miss."""
-    fp = request_fingerprint(request)
+def _iter_intents(repo):
     d = pre_eval_dir(repo)
     if not os.path.isdir(d):
-        return None
+        return
     for name in sorted(os.listdir(d)):
         if not name.endswith(".intent.json"):
             continue
@@ -926,11 +945,80 @@ def find_pre_eval_id_by_request(repo, request):
                 obj = json.load(fh)
         except (OSError, ValueError):
             continue
-        if isinstance(obj, dict) and obj.get("request_fingerprint") == fp:
+        if isinstance(obj, dict):
             pid = obj.get("pre_eval_id")
-            if pid and PRE_EVAL_ID_RE.match(pid):
-                return pid
+            if isinstance(pid, str) and PRE_EVAL_ID_RE.match(pid):
+                yield obj
+
+
+def find_pre_eval_id_by_request(repo, request):
+    """Resume discovery: the NEWEST pre_eval_id for this request fingerprint, or None.
+    Never mints — the caller mints only on a miss.
+
+    A request can own several ids once one record supersedes another. Newest = the one
+    no other intent names in `supersedes`; ties (two ids minted in one second) fall back
+    to the lexically last id, which is time-prefixed."""
+    fp = request_fingerprint(request)
+    matches, superseded = [], set()
+    for obj in _iter_intents(repo):
+        if obj.get("request_fingerprint") != fp:
+            continue
+        matches.append(obj["pre_eval_id"])
+        if isinstance(obj.get("supersedes"), str):
+            superseded.add(obj["supersedes"])
+    heads = [m for m in matches if m not in superseded] or matches
+    return max(heads) if heads else None
+
+
+def find_superseding_id(repo, pre_eval_id):
+    """The pre_eval_id whose intent names `pre_eval_id` in `supersedes`, or None."""
+    for obj in _iter_intents(repo):
+        if obj.get("supersedes") == pre_eval_id:
+            return obj["pre_eval_id"]
     return None
+
+
+def load_record(repo, pre_eval_id):
+    """The on-disk record for `pre_eval_id` as a dict, or None when absent/unreadable."""
+    if not pre_eval_id or not PRE_EVAL_ID_RE.match(pre_eval_id):
+        return None
+    try:
+        with io.open(record_path(repo, pre_eval_id), encoding="utf-8") as fh:
+            obj = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def record_identity(record):
+    """The part of a record that decides whether two writes are the same classification."""
+    return {k: v for k, v in (record or {}).items() if k not in _RECORD_IDENTITY_IGNORED}
+
+
+def is_disabled_by_config_record(record):
+    """True iff `record` is the config-disabled FULL record `--record-disabled` writes."""
+    if not isinstance(record, dict):
+        return False
+    loc = record.get("localization")
+    flags = loc.get("flags") if isinstance(loc, dict) else None
+    return (record.get("decision") == DECISION_FULL
+            and record.get("taxonomy_digest") is None
+            and isinstance(flags, list) and DISABLED_BY_CONFIG_FLAG in flags)
+
+
+def _mint_superseding_id(repo, request, ts, prior):
+    """Mint an id for `request` that differs from `prior` and from every existing intent.
+    The default nonce is derived from (request, ts), so a re-mint in the same second would
+    collide with `prior` without a salt."""
+    salt = 0
+    while True:
+        nonce = hashlib.sha256(("%s|%s|%s|%d" % (request_fingerprint(request), ts,
+                                                 prior or "", salt)).encode("utf-8")
+                               ).hexdigest()[:4]
+        pid = mint_pre_eval_id(request, ts_iso=ts, nonce=nonce)
+        if pid != prior and not os.path.exists(intent_path(repo, pid)):
+            return pid
+        salt += 1
 
 
 def write_taxonomy_snapshot(repo, pre_eval_id, taxonomy_bytes):
@@ -955,7 +1043,8 @@ def write_taxonomy_snapshot(repo, pre_eval_id, taxonomy_bytes):
 
 
 def build_record(pre_eval_id, request, verdict, localization, taxonomy_version,
-                 taxonomy_ref, taxonomy_digest, ts=None, binding=None):
+                 taxonomy_ref, taxonomy_digest, ts=None, binding=None,
+                 disabled_by_config=False):
     """Assemble the write-once pre-eval RECORD (conforms to pre-eval-record.schema.json).
     `status: PRE_EVAL_DONE` is a RECORD field, not a state.json phase (AC-7/CR2-8).
 
@@ -995,7 +1084,8 @@ def build_record(pre_eval_id, request, verdict, localization, taxonomy_version,
         "override_fired": verdict["override_fired"],
         "decision": verdict["decision"],
         "min_sample_status": verdict["min_sample_status"],
-        "confidence": _evidence_confidence(verdict, localization),
+        "confidence": (DISABLED_BY_CONFIG_CONFIDENCE if disabled_by_config
+                       else _evidence_confidence(verdict, localization)),
     }
 
     # v3.4.1 — the proportionate-tier evidence, written ONLY when there is any. A verdict
@@ -1062,15 +1152,23 @@ def write_record(repo, pre_eval_id, record):
             return _rel(repo, full), True
         try:
             old_rec = json.loads(existing)
-            moved = sorted(k for k in set(old_rec) | set(record)
-                           if old_rec.get(k) != record.get(k))
         except ValueError:
+            old_rec = None
+        if isinstance(old_rec, dict) and record_identity(old_rec) == record_identity(record):
+            # Same classification written at a different time (or HEAD): the on-disk
+            # record stands. Without this, every re-run raised, because `ts` is fresh.
+            return _rel(repo, full), True
+        if isinstance(old_rec, dict):
+            moved = sorted(k for k in set(old_rec) | set(record)
+                           if k not in _RECORD_IDENTITY_IGNORED
+                           and old_rec.get(k) != record.get(k))
+        else:
             moved = ["<existing record is not valid JSON>"]
         raise ValueError(
             "pre-eval record %s already exists with DIFFERENT content; refusing to "
-            "overwrite an audit artifact. Fields that differ: %s. Re-running the same "
-            "request is fine — this means the same id now scores differently, which is "
-            "a conflict a human should look at." % (pre_eval_id, ", ".join(moved) or "(none)"))
+            "overwrite an audit artifact. Fields that differ: %s. Re-running triage "
+            "without --pre-eval-id mints a new record that supersedes this one; an "
+            "explicit id cannot be superseded." % (pre_eval_id, ", ".join(moved) or "(none)"))
     _write_once_text(full, payload)
     return _rel(repo, full), False
 
@@ -1201,7 +1299,7 @@ def run_preeval(request, repo=".", taxonomy_path=None, t3_category=None,
                 pre_eval_id=None, ts=None, config_values=None, tier2=None,
                 churn_hot=None, advisor_hot=None, run_dir=None, _localize=None,
                 write_localization=True, stream_path=None, append_predicted=True,
-                binding=None):
+                binding=None, record_when_disabled=False):
     """End-to-end Phase-P run. Writes intent → (localization) → taxonomy snapshot → record,
     then appends the `predicted` triage event. NEVER runs git (the orchestrator commits).
 
@@ -1220,11 +1318,14 @@ def run_preeval(request, repo=".", taxonomy_path=None, t3_category=None,
     `_localize` is injectable for tests (a callable `(request, repo, taxonomy) -> loc dict`);
     defaults to A1's real `localize()`. On `needs_t3`, returns the payload WITHOUT writing
     the record or appending `predicted` — the parent runs the light Task and re-invokes with
-    `--t3-category`. Resume: an existing intent record for the same request fingerprint reuses
-    its pre_eval_id and continues from the first missing artifact.
+    `--t3-category`. Resume: the newest intent for the same request fingerprint reuses its
+    pre_eval_id while its artifacts agree with this run; a finished record is reused only
+    when this run would write the same classification (`record_identity`), otherwise a new
+    id is minted whose intent `supersedes` the old one. Records are never rewritten.
 
-    Config honored (fail-closed, HIGH-4): `pre_eval.enabled==false` → the whole stage is a
-    no-op (no artifacts) → FULL_PIPELINE; `pre_eval.fast_path=="off"` → hard kill-switch, the
+    Config honored (fail-closed, HIGH-4): `pre_eval.enabled==false` → FULL_PIPELINE with no
+    artifacts, or with one config-disabled record when `record_when_disabled`;
+    `pre_eval.fast_path=="off"` → hard kill-switch, the
     score is still computed but the decision is forced FULL_PIPELINE (never
     FASTPATH_ELIGIBLE and never SCOPED_PIPELINE — both are proportionate tiers);
     `pre_eval.min_sample_count` floors the Tier-2 cohort lookup applied per the spec's cohort
@@ -1246,39 +1347,81 @@ def run_preeval(request, repo=".", taxonomy_path=None, t3_category=None,
     min_sample_count = config_values.get("min_sample_count")
     fast_path_off = config_values.get("fast_path") == "off"  # hard kill-switch (AC-10)
 
-    # HIGH-4(a): pre_eval.enabled == false → the WHOLE stage is a no-op → FULL_PIPELINE.
-    # Nothing is localized, scored, snapshotted, or recorded; the harness proceeds on the
-    # normal (full-pipeline) path exactly as if pre-eval did not exist. No artifacts, no git.
+    # HIGH-4(a): pre_eval.enabled == false → nothing is localized, scored or snapshotted, and
+    # the tier is FULL. By default nothing is written either (the UserPromptSubmit hook's
+    # path). `record_when_disabled` (`triage --record-disabled`, which `/v:triage` passes)
+    # writes a truthful config-disabled FULL record instead, because `/v:dispatch` runs
+    # `--require-triage` and a FULL with no record is a dead end there.
     if config_values.get("enabled") is False:
-        return {"needs_t3": False, "pre_eval_disabled": True,
-                "decision": DECISION_FULL, "pre_eval_id": None}
-
-    # Phase-P step 0/1: discover-or-mint pre_eval_id, then the write-once intent record.
-    if not pre_eval_id:
-        pre_eval_id = find_pre_eval_id_by_request(repo, request) \
-            or mint_pre_eval_id(request, ts_iso=ts)
-    intent_rel = write_intent_record(repo, pre_eval_id, request, ts=ts)
+        if not record_when_disabled:
+            return {"needs_t3": False, "pre_eval_disabled": True,
+                    "decision": DECISION_FULL, "pre_eval_id": None}
+        return _record_disabled(request, repo, ts, binding, pre_eval_id)
 
     # Load taxonomy (raw bytes for the content-address + dict for scoring).
     taxonomy, taxonomy_bytes, taxonomy_version = _load_taxonomy(repo, taxonomy_path)
+    tax = _tax()
+    digest_now = (tax.taxonomy_digest_bytes(taxonomy_bytes)
+                  if taxonomy_bytes is not None else None)
 
-    # Phase-P step 2: bounded read-only localization + its committed-later artifact (A1).
+    # Phase-P step 2: bounded read-only localization (in memory; written below).
     localize_fn = _localize or _localize_mod().localize
     localization = localize_fn(request, repo, taxonomy or {})
-    localization_ref = None
-    if write_localization:
-        lm = _localize_mod()
-        try:
-            localization_ref = lm.write_localization_artifact(repo, pre_eval_id, localization)
-        except FileExistsError:
-            localization_ref = lm.artifact_rel_path(pre_eval_id)  # resume: already written
+    sid = (binding or {}).get("session_id")
 
-    # Phase-P step 3: content-address the taxonomy into an immutable snapshot (only when a
-    # taxonomy exists — an absent-taxonomy request has no snapshot and no digest).
-    taxonomy_ref = taxonomy_digest = None
-    if taxonomy_bytes is not None:
-        taxonomy_ref, taxonomy_digest = write_taxonomy_snapshot(
-            repo, pre_eval_id, taxonomy_bytes)
+    # Phase-P step 0/1: choose the id BEFORE any artifact is written — localization and
+    # snapshot are write-once under it. Records are immutable, so a re-run reuses the
+    # newest id only while what it would record is unchanged; a changed taxonomy, session
+    # or localization gets a NEW id whose intent names the one it supersedes.
+    explicit_id = bool(pre_eval_id)
+    supersedes = None
+    prior_record = None
+    if explicit_id:
+        prior_record = load_record(repo, pre_eval_id)
+    else:
+        prior = find_pre_eval_id_by_request(repo, request)
+        if prior:
+            prior_record = load_record(repo, prior)
+            if prior_record is not None:
+                stale = (prior_record.get("taxonomy_digest") != digest_now
+                         or prior_record.get("session_id") != sid)
+            else:
+                stale = not _in_progress_consistent(repo, prior, digest_now, localization)
+            if stale:
+                supersedes, prior, prior_record = prior, None, None
+        pre_eval_id = prior or (_mint_superseding_id(repo, request, ts, supersedes)
+                                if supersedes else mint_pre_eval_id(request, ts_iso=ts))
+
+    def _materialize(pid, sup):
+        """Write intent → localization → snapshot for `pid`; return their refs."""
+        i_rel = write_intent_record(repo, pid, request, ts=ts, supersedes=sup)
+        l_ref = None
+        if write_localization:
+            lm = _localize_mod()
+            try:
+                l_ref = lm.write_localization_artifact(repo, pid, localization)
+            except FileExistsError:
+                l_ref = lm.artifact_rel_path(pid)  # resume: already written
+        t_ref = t_dig = None
+        if taxonomy_bytes is not None:
+            t_ref, t_dig = write_taxonomy_snapshot(repo, pid, taxonomy_bytes)
+        return i_rel, l_ref, t_ref, t_dig
+
+    if prior_record is not None:
+        # A finished record exists under this id: write nothing to it. The refs it would
+        # carry are recomputed so the identity comparison below is like for like.
+        intent_rel = _rel(repo, intent_path(repo, pre_eval_id))
+        localization_ref = None
+        if write_localization:
+            _lrel = _localize_mod().artifact_rel_path(pre_eval_id)
+            if os.path.exists(os.path.join(repo, _lrel)):
+                localization_ref = _lrel
+        taxonomy_digest = digest_now
+        taxonomy_ref = (_rel(repo, snapshot_path(repo, pre_eval_id))
+                        if digest_now is not None else None)
+    else:
+        intent_rel, localization_ref, taxonomy_ref, taxonomy_digest = _materialize(
+            pre_eval_id, supersedes)
 
     # Churn signal (escalation-only) — computed if not supplied.
     if churn_hot is None:
@@ -1339,6 +1482,7 @@ def run_preeval(request, repo=".", taxonomy_path=None, t3_category=None,
             "intent_ref": intent_rel,
             "localization_ref": localization_ref,
             "taxonomy_ref": taxonomy_ref,
+            "supersedes": supersedes,
         }
 
     # Phase-P step 4 (write) + 5 (append): write-once record, then predicted event.
@@ -1353,7 +1497,24 @@ def run_preeval(request, repo=".", taxonomy_path=None, t3_category=None,
     record = build_record(pre_eval_id, request, verdict, localization,
                           taxonomy_version, taxonomy_ref, taxonomy_digest, ts=ts,
                           binding=record_binding)
+
+    if (prior_record is not None and not explicit_id
+            and record_identity(record) != record_identity(prior_record)):
+        # The residual case the pre-check cannot see: the same taxonomy and session, but
+        # the score moved (churn, Tier-2 history, a different T3 answer). Supersede.
+        supersedes = pre_eval_id
+        pre_eval_id = _mint_superseding_id(repo, request, ts, supersedes)
+        intent_rel, localization_ref, taxonomy_ref, taxonomy_digest = _materialize(
+            pre_eval_id, supersedes)
+        record = build_record(pre_eval_id, request, verdict, localization,
+                              taxonomy_version, taxonomy_ref, taxonomy_digest, ts=ts,
+                              binding=record_binding)
+        prior_record = None
+
     record_rel, record_already_existed = write_record(repo, pre_eval_id, record)
+    if record_already_existed:
+        # Report what the file holds, not the re-built copy with a fresher `ts`.
+        record = load_record(repo, pre_eval_id) or record
 
     predicted_event = None
     if append_predicted and not record_already_existed:
@@ -1372,9 +1533,9 @@ def run_preeval(request, repo=".", taxonomy_path=None, t3_category=None,
     return {
         "needs_t3": False,
         "pre_eval_id": pre_eval_id,
-        "decision": verdict["decision"],
-        "flavor": verdict.get("flavor"),
-        "override_fired": verdict["override_fired"],
+        "decision": record["decision"],
+        "flavor": record.get("flavor"),
+        "override_fired": record["override_fired"],
         "record": record,
         "record_ref": record_rel,
         "intent_ref": intent_rel,
@@ -1383,6 +1544,89 @@ def run_preeval(request, repo=".", taxonomy_path=None, t3_category=None,
         "taxonomy_digest": taxonomy_digest,
         "predicted_event": predicted_event,
         "refused_paths": refused_paths,
+        "supersedes": supersedes,
+        "reused": bool(record_already_existed),
+    }
+
+
+def _in_progress_consistent(repo, pre_eval_id, digest_now, localization):
+    """An id with an intent but no record (a paused `needs_t3`, or a crash) may be resumed
+    only if what is already written under it still agrees with this run: the snapshot
+    content-addresses to the current taxonomy, and the localization artifact holds the same
+    localization. Otherwise the resumed record would pin bytes it was not scored against."""
+    snap = snapshot_path(repo, pre_eval_id)
+    if os.path.exists(snap):
+        try:
+            with open(snap, "rb") as fh:
+                if _tax().taxonomy_digest_bytes(fh.read()) != digest_now:
+                    return False
+        except OSError:
+            return False
+    lm = _localize_mod()
+    art_full = os.path.join(repo, lm.artifact_rel_path(pre_eval_id))
+    if os.path.exists(art_full):
+        try:
+            with io.open(art_full, encoding="utf-8") as fh:
+                on_disk = json.load(fh)
+        except (OSError, ValueError):
+            return False
+        try:
+            fresh = lm.build_artifact(localization)
+        except (KeyError, TypeError):
+            return False
+        if on_disk != fresh:
+            return False
+    return True
+
+
+def _record_disabled(request, repo, ts, binding, pre_eval_id=None):
+    """Write the config-disabled FULL record (`pre_eval.enabled: false`).
+
+    Nothing is localized, snapshotted or scored and no `predicted` event is appended — a
+    tier forced by configuration is not a prediction, and the stream the circuit breaker
+    reads must not count it. The record is truthful: unknown bands, null taxonomy, empty
+    localization flagged `pre_eval_disabled`, and a `confidence` that says why."""
+    localization = {"resolved_paths": [], "fan_out": 0,
+                    "flags": [DISABLED_BY_CONFIG_FLAG], "confidence": "failed"}
+    verdict = _verdict(DECISION_FULL, override=None, diff="unknown", imp="unknown",
+                       tiers=[], min_sample="insufficient")
+    record_binding = dict(binding, declared_paths=[]) if binding else None
+
+    def _build(pid):
+        return build_record(pid, request, verdict, localization, None, None, None, ts=ts,
+                            binding=record_binding, disabled_by_config=True)
+
+    supersedes = None
+    if not pre_eval_id:
+        prior = find_pre_eval_id_by_request(repo, request)
+        prior_record = load_record(repo, prior) if prior else None
+        if prior and (prior_record is None
+                      or record_identity(prior_record) != record_identity(_build(prior))):
+            supersedes, prior = prior, None
+        pre_eval_id = prior or (_mint_superseding_id(repo, request, ts, supersedes)
+                                if supersedes else mint_pre_eval_id(request, ts_iso=ts))
+    intent_rel = write_intent_record(repo, pre_eval_id, request, ts=ts, supersedes=supersedes)
+    record = _build(pre_eval_id)
+    record_rel, existed = write_record(repo, pre_eval_id, record)
+    if existed:
+        record = load_record(repo, pre_eval_id) or record
+    return {
+        "needs_t3": False,
+        "pre_eval_disabled": True,
+        "pre_eval_id": pre_eval_id,
+        "decision": DECISION_FULL,
+        "flavor": None,
+        "override_fired": None,
+        "record": record,
+        "record_ref": record_rel,
+        "intent_ref": intent_rel,
+        "localization_ref": None,
+        "taxonomy_ref": None,
+        "taxonomy_digest": None,
+        "predicted_event": None,
+        "refused_paths": [],
+        "supersedes": supersedes,
+        "reused": bool(existed),
     }
 
 
@@ -1517,7 +1761,7 @@ def auto_route_predicates(record, repo, pre_eval_id):
 
 
 def triage_request(request, repo=".", session_id=None, base_commit=None,
-                   t3_category=None, ts=None, **kwargs):
+                   t3_category=None, ts=None, record_disabled=False, **kwargs):
     """Score ONE change request, bind it, write its record, and report the tier.
 
     Called by `hooks/triage-prompt-nudge.sh` (the UserPromptSubmit hook, which is the
@@ -1527,7 +1771,9 @@ def triage_request(request, repo=".", session_id=None, base_commit=None,
     Returns a dict with, always:
         pre_eval_id, tier, decision, flavor, needs_t3, record_ref, predicates,
         declared_paths
-    plus `disabled` (the `pre_eval.enabled: false` no-op), `t3_prompt` + `t3_reason`
+    plus `disabled` (`pre_eval.enabled: false`; a config-disabled FULL record is written
+    only when `record_disabled`), `supersedes` + `reused` (the id this record replaces,
+    and whether an identical existing record was reused), `t3_prompt` + `t3_reason`
     when `needs_t3`,
     `member` (all six predicates hold), `override_fired`, `refused_paths`, and the
     binding echoed back.
@@ -1568,7 +1814,7 @@ def triage_request(request, repo=".", session_id=None, base_commit=None,
     binding = {"session_id": sid, "base_commit": base}
 
     res = run_preeval(request, repo=repo, t3_category=t3_category, ts=ts,
-                      binding=binding, **kwargs)
+                      binding=binding, record_when_disabled=record_disabled, **kwargs)
 
     base_out = {
         "pre_eval_id": res.get("pre_eval_id"),
@@ -1586,11 +1832,13 @@ def triage_request(request, repo=".", session_id=None, base_commit=None,
         # `/v:orchestrate` both read it; an absent key would make "no flavor" and "an older
         # engine that cannot produce one" look identical to a caller.
         "flavor": None,
+        "supersedes": res.get("supersedes"),
+        "reused": bool(res.get("reused")),
     }
 
-    # `pre_eval.enabled: false` — the whole stage is a no-op. NOTHING was written, so
-    # there is no record to report and no predicate to evaluate; the change is FULL by
-    # the operator's own configuration.
+    # `pre_eval.enabled: false` — nothing was scored, so there is no predicate to
+    # evaluate; the change is FULL by the operator's own configuration. A record exists
+    # only when the caller asked for one (`record_ref` then names it).
     if res.get("pre_eval_disabled"):
         base_out.update(decision=DECISION_FULL,
                         tier=DECISION_TO_TIER[DECISION_FULL])
@@ -1620,6 +1868,100 @@ def triage_request(request, repo=".", session_id=None, base_commit=None,
     return base_out
 
 
+def _config_pre_eval_disabled(repo):
+    """True only when the project config loads cleanly AND says `pre_eval.enabled: false`.
+    A config that fails to load is not evidence the stage is off (fail-closed)."""
+    cfg_mod = _config_mod()
+    try:
+        values, _w = cfg_mod.resolve_pre_eval(cfg_mod.load_project_config(repo))
+    except (OSError, ValueError):
+        return False
+    return values.get("enabled") is False
+
+
+def record_status(repo, pre_eval_id, taxonomy_path=None):
+    """Would `--require-triage` accept a manifest bound to this record, and if not, what
+    to run. Read-only; mirrors `compound-v-validate-manifest.py`'s triage checks."""
+    repo = repo or "."
+    rec = load_record(repo, pre_eval_id)
+    tax_path = taxonomy_path or os.path.join(repo, DEFAULT_TAXONOMY_REL)
+    current = None
+    if os.path.isfile(tax_path):
+        try:
+            current = _tax().taxonomy_digest_file(tax_path)
+        except OSError:
+            current = None
+    out = {
+        "pre_eval_id": pre_eval_id,
+        "record_exists": rec is not None,
+        "decision": (rec or {}).get("decision"),
+        "tier": DECISION_TO_TIER.get((rec or {}).get("decision")),
+        "taxonomy_digest": (rec or {}).get("taxonomy_digest"),
+        "current_taxonomy_digest": current,
+        "taxonomy_path": _rel(repo, tax_path) if not taxonomy_path else taxonomy_path,
+        "disabled_by_config": is_disabled_by_config_record(rec),
+        "superseded_by": find_superseding_id(repo, pre_eval_id),
+        "dispatchable": False,
+        "reason": None,
+    }
+    retriage = "re-run `/v:triage <the same request>`, then bind its new pre_eval_id"
+    if rec is None:
+        out["reason"] = "no record for this id — run `/v:triage <request>`"
+    elif out["superseded_by"]:
+        out["reason"] = "superseded by %s — bind that record instead" % out["superseded_by"]
+    elif out["disabled_by_config"]:
+        if _config_pre_eval_disabled(repo):
+            out["dispatchable"] = True
+            out["reason"] = "config-disabled FULL record; pre_eval.enabled is still false"
+        else:
+            out["reason"] = ("config-disabled record, but pre_eval.enabled is no longer "
+                             "false — " + retriage)
+    elif out["taxonomy_digest"] is None:
+        if current is None:
+            out["reason"] = ("the impact taxonomy %s is missing — `/v:init` drafts it or "
+                             "`/v:onboard` builds it; then %s"
+                             % (DEFAULT_TAXONOMY_REL, retriage))
+        else:
+            out["reason"] = ("the record was scored before the impact taxonomy existed — "
+                             + retriage)
+    elif out["taxonomy_digest"] != current:
+        out["reason"] = ("the taxonomy changed since the record was scored (or is "
+                         "missing) — " + retriage)
+    else:
+        out["dispatchable"] = True
+        out["reason"] = "taxonomy digest matches the taxonomy on disk"
+    return out
+
+
+def _record_status_cli(argv):
+    """`compound-v-preeval.py record-status --pre-eval-id ID | --request-env NAME`."""
+    ap = argparse.ArgumentParser(prog="compound-v-preeval.py record-status")
+    src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("--pre-eval-id", dest="pre_eval_id")
+    src.add_argument("--request-env", dest="request_env", metavar="NAME",
+                     help="resolve the NEWEST record for the request in env var NAME")
+    ap.add_argument("--repo", default=".")
+    ap.add_argument("--taxonomy", default=None)
+    ap.add_argument("--json", action="store_true")
+    args = ap.parse_args(argv)
+    pid = args.pre_eval_id
+    if args.request_env:
+        req = (os.environ.get(args.request_env) or "").strip()
+        if not req:
+            sys.stderr.write("REFUSED: record-status needs a non-empty request\n")
+            return 2
+        pid = find_pre_eval_id_by_request(args.repo, req)
+    if not pid:
+        print(json.dumps({"pre_eval_id": None, "record_exists": False,
+                          "dispatchable": False,
+                          "reason": "no record for this request — run `/v:triage <request>`"},
+                         indent=2, sort_keys=True))
+        return 1
+    out = record_status(args.repo, pid, taxonomy_path=args.taxonomy)
+    print(json.dumps(out, indent=2, sort_keys=True))
+    return 0 if out["dispatchable"] else 1
+
+
 def _triage_cli(argv):
     """`compound-v-preeval.py triage …` — the subcommand both callers invoke."""
     ap = argparse.ArgumentParser(prog="compound-v-preeval.py triage")
@@ -1640,6 +1982,10 @@ def _triage_cli(argv):
     ap.add_argument("--t3-category", dest="t3_category", choices=list(T3_CATEGORIES),
                     help="pre-resolved T3 enum for a needs_t3 re-invocation")
     ap.add_argument("--taxonomy", help="taxonomy YAML path (default: .claude/…yaml)")
+    ap.add_argument("--record-disabled", dest="record_disabled", action="store_true",
+                    help="when pre_eval.enabled is false, write the config-disabled FULL "
+                         "record that --require-triage accepts while the config stays "
+                         "disabled (default: write nothing — the hook's path)")
     ap.add_argument("--json", action="store_true",
                     help="emit the result as JSON (the only supported output today; the "
                          "flag is accepted so both callers can be explicit)")
@@ -1657,6 +2003,7 @@ def _triage_cli(argv):
         out = triage_request(request, repo=args.repo, session_id=args.session_id,
                              base_commit=args.base_commit,
                              t3_category=args.t3_category,
+                             record_disabled=args.record_disabled,
                              taxonomy_path=args.taxonomy)
     except (OSError, ValueError, RuntimeError) as exc:
         sys.stderr.write("triage failed: %s\n" % exc)
@@ -1677,6 +2024,8 @@ def main(argv):
     # making every existing flag optional-but-meaningless on the new path.
     if len(argv) > 1 and argv[1] == "triage":
         return _triage_cli(argv[2:])
+    if len(argv) > 1 and argv[1] == "record-status":
+        return _record_status_cli(argv[2:])
 
     ap = argparse.ArgumentParser(prog="compound-v-preeval.py")
     ap.add_argument("--request", help="the free-text change request")
@@ -3068,6 +3417,147 @@ def _selftest():
                td["disabled"] is True and td["record_ref"] is None
                and td["tier"] == "FULL"
                and not os.path.isdir(os.path.join(repo, PRE_EVAL_DIR_REL)))
+
+    # v3.8.6 — re-triage after the taxonomy appears or changes. Records are immutable, so
+    # the fix is a NEW record that supersedes the old one, never a rewrite. One fixed `ts`
+    # throughout on purpose: the default nonce is derived from (request, ts), so this also
+    # proves a same-second re-mint cannot collide with the id it supersedes.
+    with tempfile.TemporaryDirectory() as repo:
+        stream = os.path.join(repo, "docs", "superpowers", "memory", "triage-outcomes.jsonl")
+        _req = "make the card border red"
+        fk_r = fake_localize_factory(_loc(["src/ui/card.css"], flags=[], fan_out=1))
+        _ts = "2026-10-21T09:00:00Z"
+        r0 = triage_request(_req, repo=repo, session_id="s-r", ts=_ts,
+                            _localize=fk_r, stream_path=stream)
+        rec0_bytes = io.open(os.path.join(repo, r0["record_ref"]), "rb").read()
+        expect("RETAX: no taxonomy -> FULL with a null digest",
+               r0["tier"] == "FULL"
+               and json.loads(rec0_bytes.decode("utf-8"))["taxonomy_digest"] is None)
+        r0b = triage_request(_req, repo=repo, session_id="s-r", ts="2026-10-21T09:00:05Z",
+                             _localize=fk_r, stream_path=stream)
+        _pred = io.open(stream, encoding="utf-8").read().count('"event": "predicted"')
+        expect("RETAX: an unchanged re-run at a later ts reuses the id (was a crash)",
+               r0b["pre_eval_id"] == r0["pre_eval_id"] and r0b["reused"] is True
+               and r0b["supersedes"] is None)
+        expect("RETAX: the reused re-run appends no second predicted event", _pred == 1)
+
+        os.makedirs(os.path.join(repo, ".claude"))
+        _tf = os.path.join(repo, DEFAULT_TAXONOMY_REL)
+        with open(_tf, "w", encoding="utf-8") as fh:
+            fh.write(_EXAMPLE_TAXONOMY_TEXT)
+        r1 = triage_request(_req, repo=repo, session_id="s-r", ts=_ts,
+                            _localize=fk_r, stream_path=stream)
+        rec1 = load_record(repo, r1["pre_eval_id"])
+        expect("RETAX: taxonomy added -> re-triage succeeds under a NEW id",
+               r1["pre_eval_id"] != r0["pre_eval_id"] and rec1 is not None)
+        expect("RETAX: the new record pins the taxonomy (non-null digest)",
+               rec1["taxonomy_digest"] == tax.taxonomy_digest_file(_tf))
+        expect("RETAX: the new id supersedes the old one (result + intent)",
+               r1["supersedes"] == r0["pre_eval_id"]
+               and json.load(open(intent_path(repo, r1["pre_eval_id"]))).get("supersedes")
+               == r0["pre_eval_id"])
+        expect("RETAX: the old record is byte-for-byte untouched",
+               io.open(os.path.join(repo, r0["record_ref"]), "rb").read() == rec0_bytes)
+        expect("RETAX: nothing new was written under the superseded id",
+               not os.path.exists(snapshot_path(repo, r0["pre_eval_id"])))
+        expect("RETAX: newest-wins discovery returns the superseding id",
+               find_pre_eval_id_by_request(repo, _req) == r1["pre_eval_id"]
+               and find_superseding_id(repo, r0["pre_eval_id"]) == r1["pre_eval_id"])
+        _s0 = record_status(repo, r0["pre_eval_id"])
+        _s1 = record_status(repo, r1["pre_eval_id"])
+        expect("RETAX: record-status refuses the superseded record and names its successor",
+               _s0["dispatchable"] is False and _s0["superseded_by"] == r1["pre_eval_id"])
+        expect("RETAX: record-status accepts the new record", _s1["dispatchable"] is True)
+        _schema_check(expect, rec1, must_validate=True,
+                      label="RETAX: the superseding record validates against the schema")
+
+        with open(_tf, "a", encoding="utf-8") as fh:
+            fh.write("# edited\n")
+        expect("RETAX: a taxonomy edit makes the newest record non-dispatchable",
+               record_status(repo, r1["pre_eval_id"])["dispatchable"] is False)
+        r2 = triage_request(_req, repo=repo, session_id="s-r", ts=_ts,
+                            _localize=fk_r, stream_path=stream)
+        expect("RETAX: a changed taxonomy supersedes again, pinning the new bytes",
+               r2["supersedes"] == r1["pre_eval_id"]
+               and load_record(repo, r2["pre_eval_id"])["taxonomy_digest"]
+               == tax.taxonomy_digest_file(_tf))
+        r3 = triage_request(_req, repo=repo, session_id="s-other", ts=_ts,
+                            _localize=fk_r, stream_path=stream)
+        expect("RETAX: another session gets its own record (coverage is per session)",
+               r3["supersedes"] == r2["pre_eval_id"]
+               and load_record(repo, r3["pre_eval_id"]).get("session_id") == "s-other")
+        fk_r2 = fake_localize_factory(_loc(["src/ui/card.css", "src/ui/list.css"],
+                                           flags=[], fan_out=2))
+        r4 = triage_request(_req, repo=repo, session_id="s-other", ts=_ts,
+                            _localize=fk_r2, stream_path=stream)
+        _art4 = os.path.join(repo, _localize_mod().artifact_rel_path(r4["pre_eval_id"]))
+        expect("RETAX: a moved score (same taxonomy + session) supersedes too",
+               r4["supersedes"] == r3["pre_eval_id"] and os.path.isfile(_art4)
+               and json.load(open(_art4))["resolved_paths"]
+               == ["src/ui/card.css", "src/ui/list.css"])
+
+        # A paused needs_t3 whose snapshot no longer matches the taxonomy is not resumed.
+        fk_t3 = fake_localize_factory(_loc(["tools/gen.py"], flags=[], fan_out=1))
+        p0 = triage_request("regenerate the tool output", repo=repo, session_id="s-r",
+                            ts=_ts, _localize=fk_t3, stream_path=stream)
+        with open(_tf, "a", encoding="utf-8") as fh:
+            fh.write("# edited again\n")
+        p1 = triage_request("regenerate the tool output", repo=repo, session_id="s-r",
+                            ts=_ts, t3_category="plumbing", _localize=fk_t3,
+                            stream_path=stream)
+        expect("RETAX: a paused id with a stale snapshot is superseded, not resumed",
+               p0["needs_t3"] is True and p1["pre_eval_id"] != p0["pre_eval_id"]
+               and p1["supersedes"] == p0["pre_eval_id"]
+               and load_record(repo, p1["pre_eval_id"])["taxonomy_digest"]
+               == tax.taxonomy_digest_file(_tf))
+
+        _rec3 = load_record(repo, r3["pre_eval_id"])
+        _rec3["decision"] = DECISION_SCOPED
+        expect("RETAX: an explicit id is still never rewritten with different content",
+               _rejects(lambda: write_record(repo, r3["pre_eval_id"], _rec3), ValueError))
+
+    # v3.8.6 — `pre_eval.enabled: false` with `--record-disabled`: a truthful FULL record
+    # that `--require-triage` accepts only while the config still says disabled.
+    with tempfile.TemporaryDirectory() as repo:
+        os.makedirs(os.path.join(repo, ".claude"))
+        _cfgp = os.path.join(repo, ".claude", "compound-v.json")
+        with open(_cfgp, "w", encoding="utf-8") as fh:
+            fh.write('{"pre_eval": {"enabled": false}}\n')
+        stream = os.path.join(repo, "docs", "superpowers", "memory", "triage-outcomes.jsonl")
+        tdr = triage_request("add a booking page", repo=repo, session_id="sess-d",
+                             base_commit="abc1234", record_disabled=True,
+                             stream_path=stream)
+        drec = load_record(repo, tdr["pre_eval_id"])
+        expect("DISABLED: --record-disabled writes a FULL record",
+               tdr["disabled"] is True and tdr["tier"] == "FULL" and drec is not None
+               and drec["decision"] == DECISION_FULL and drec.get("tier") == "FULL")
+        expect("DISABLED: the record says why (flag + confidence), and pins no taxonomy",
+               is_disabled_by_config_record(drec)
+               and drec["confidence"] == DISABLED_BY_CONFIG_CONFIDENCE
+               and drec["taxonomy_ref"] is None and drec["override_fired"] is None)
+        expect("DISABLED: nothing was localized, snapshotted or predicted",
+               not os.path.exists(snapshot_path(repo, tdr["pre_eval_id"]))
+               and not os.path.exists(os.path.join(
+                   repo, _localize_mod().artifact_rel_path(tdr["pre_eval_id"])))
+               and not os.path.exists(stream))
+        expect("DISABLED: the record's own digest verifies",
+               _tax().record_digest(drec, exclude_field="digest") == drec["digest"])
+        _schema_check(expect, drec, must_validate=True,
+                      label="DISABLED: the config-disabled record validates against the schema")
+        expect("DISABLED: record-status accepts it while the config is disabled",
+               record_status(repo, tdr["pre_eval_id"])["dispatchable"] is True)
+        tdr2 = triage_request("add a booking page", repo=repo, session_id="sess-d",
+                              base_commit="def5678", record_disabled=True,
+                              stream_path=stream)
+        expect("DISABLED: an unchanged re-run reuses the record",
+               tdr2["pre_eval_id"] == tdr["pre_eval_id"] and tdr2["reused"] is True)
+        with open(_cfgp, "w", encoding="utf-8") as fh:
+            fh.write('{"pre_eval": {"enabled": true}}\n')
+        expect("DISABLED: re-enabling the stage makes the record non-dispatchable",
+               record_status(repo, tdr["pre_eval_id"])["dispatchable"] is False)
+        expect("DISABLED: an ordinary null-digest FULL record is not config-disabled",
+               not is_disabled_by_config_record(dict(drec, localization=dict(
+                   drec["localization"], flags=[]))))
 
     expect("TRIAGE: declare_paths refuses what the Stop gate would silently drop",
            declare_paths(["ok/a.md", "/abs.md", "../up.md", "ok/a.md"])
