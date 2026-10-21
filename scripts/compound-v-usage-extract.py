@@ -1458,7 +1458,7 @@ def _emitter_dispatch_table():  # type: () -> Optional[frozenset]
     """The subcommand names in the emitter's own `SUBCOMMANDS = {...}` block,
     parsed from source (never executed). None when the sibling is not there."""
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        "compound-v-emit-workflow.py")
+                        "cv_emit", "emit.py")
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
             src = fh.read()
