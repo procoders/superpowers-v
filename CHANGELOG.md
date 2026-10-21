@@ -6,6 +6,79 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [3.9.0] - 2026-10-21
+
+A partner tested 3.8.5 on a fresh repository before recording a tutorial (a small salon booking app) and it never
+reached code: `/v:dispatch` demanded a taxonomy only `/v:onboard` creates, every re-attempt stopped on a "baseline
+violation", Fable was spent under the `cost-aware` stance, and the plugin engaged only through explicit commands.
+Three independent reviews (Claude, Codex, Gemini) traced each to code; two were reproduced in throwaway repos. This
+release fixes all of them. Nothing here is measured yet: the end-to-end run with time and usage is the next step.
+
+### Fixed — a re-attempt of a direct job blocked itself, forever
+
+`resume-prepare` removed the baseline pin but kept the first attempt's snapshot digests, so the gate charged the
+job with its own new `jobs/<id>.baseline` on every attempt. Task 0 (`shared_foundation`) is always direct, so this
+hit job 1 of every FULL run. Retiring an attempt now drops only the lines for the files registration rewrites
+(`jobs/<id>.baseline`, `jobs/<id>.test-contract.json`, `lane-map.json`, `preexisting/<id>.verified.txt`); everything
+else stays digest-bound, so a halted attempt's out-of-lane leftover is still a violation. A worktree job's snapshot
+is deleted and re-provisioned. Behind that fix sat a second one: once the gate passed, the integration authority
+refused every direct re-attempt as `contradicted`, because Record archives the previous result as
+`results/attempts/<id>.<n>.json` and the gate's exemption list did not name it. The gate now lists that archive
+before Record writes it. A superseded receipt (`receipts/<id>.gate.superseded-*.json`) is exempt by name.
+`tests/test-reattempt-direct.sh` runs attempt 1, `/v:resume`, attempts 2 and 3 and `finalize-wave`.
+
+### Fixed — a hand re-run of `/v:dispatch` charged the job with every commit since attempt 1
+
+Committing anything between attempts (the partner committed the taxonomy) blocked the direct job on that commit,
+and the only warning went to the Workflow agent. `/v:dispatch <run-id>` now runs `resume-prepare` before emitting;
+if that is skipped, `emit` and `register-lane` exit 2 naming `/v:resume <run-id>`. `/v:resume` re-emits the workflow
+too, so re-attempt escalation and the current `retry` settings apply. A second registration inside the same attempt
+no longer re-photographs a worktree (it used to forgive the worker's own out-of-lane writes).
+
+### Fixed — the taxonomy `/v:dispatch` requires was never created
+
+`/v:init` Step 4g drafts `.claude/compound-v-impact-taxonomy.yaml` with `compound-v-onboard.py draft-taxonomy`, shows
+it and commits it on a yes. Re-running `/v:triage` after the taxonomy appears mints a new record that supersedes the
+old one instead of crashing on "already exists with DIFFERENT content"; an identical re-run reuses its record. The
+null-digest refusal names the taxonomy, `/v:init`, `/v:onboard` and the re-triage, and
+`compound-v-preeval.py record-status` says whether a record is dispatchable. `--require-triage` now also refuses a
+manifest bound to a superseded record, or whose tier or flavor disagrees with its record (a SCOPED+ record's deep
+review could be dropped by omitting the flavor). `pre_eval.enabled: false` writes a config-disabled FULL record that
+`--require-triage` accepts while the stage stays disabled, instead of a dead end.
+
+### Fixed — Fable was reachable under `cost-aware`
+
+The re-attempt escalation ladder and the reviewer lift ignored the stance. Both now stop at the stance's frontier
+model (Opus under `cost-aware`); an explicitly pinned model is never escalated. A manifest without `routing_stance`
+takes the project's `stance` (emitter, fast-path materializer and the resolver behind the residual dispatcher), and
+without Codex the stance is kept instead of switching to `claude-only`, whose frontier is Fable. `/v:init` Step 4e
+offers the advisor on Opus, or off, first under `cost-aware`.
+
+### Fixed — the plugin stayed silent on a plain request
+
+The triage prompt hook spent its once-per-session chance before scoring, so a first message like "Read prd.md", a
+greeting, or a scoring failure silenced it for the whole session. The session is now spent only by a SCOPED or FULL
+decision; failures retry up to three times, a DIRECT decision does not silence the next request (capped at six), and
+greetings and short read instructions are skipped. A project that is not set up gets one "run /v:init" line per
+session, and a missing `jq` is reported once instead of silently disabling the hook. For a FULL tier the hook tells
+Claude to start the pipeline unless the user says to skip it, rather than to "offer" it.
+
+### Added — install prerequisites and a lightweight budget profile
+
+README and `/v:init` now name and probe what the flow needs: upstream Superpowers, `jq`, PyYAML for the interpreter
+Engine C uses, and a first commit. `/v:init` offers a `lightweight` profile built from existing knobs (stance
+`cost-aware`, recon off, `retry: {max_attempts: 1, escalate_reviewer: false}` — now read from
+`.claude/compound-v.json`, not only the manifest — advisor on Opus or off, pre-flight 1A skipped on greenfield work).
+Its savings are not measured. `worktree.baseRef: head` is offered default-yes.
+
+### Fixed — smaller
+
+- Every command and skill resolves the plugin root with a guarded block; the old fallback pointed `$CV` at the
+  user's repository, which has no `scripts/`.
+- `/v:collect` and the integration gate use the same inputs as Engine C's gate (pinned baseline, digest-checked
+  snapshot, `toolchain_artifacts`).
+- `register-lane --cwd` may be omitted; a repository with no first commit gets a message saying so.
+
 ## [3.8.5] - 2026-10-14
 
 ### Fixed — Antigravity jobs would fail: Gemini 3.1 Pro left the catalog
