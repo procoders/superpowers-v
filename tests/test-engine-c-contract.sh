@@ -382,6 +382,7 @@ fi
 PLUG="$T/plugins/superpowers-v"
 mkdir -p "$PLUG/scripts" "$PLUG/schemas"
 cp "$REPO"/scripts/compound-v-*.py "$PLUG/scripts/"
+cp -R "$REPO"/scripts/cv_emit "$PLUG/scripts/"
 cp "$REPO"/scripts/compound-v-*.sh "$PLUG/scripts/"
 cp "$REPO"/schemas/*.json "$PLUG/schemas/" 2>/dev/null || true
 # The plugin repo carries a README.md whose blob matches the project's. That is
