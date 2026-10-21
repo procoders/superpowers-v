@@ -123,6 +123,9 @@ jobs:
           # The deterministic manifest validator is the partition gate. A missing
           # validator is a HARD failure (a rename must never silently drop the gate).
           test -f scripts/compound-v-validate-manifest.py || { echo "❌ scripts/compound-v-validate-manifest.py is missing — the partition gate would silently vanish"; exit 1; }
+          for pkg in cv_validate cv_emit; do
+            test -f "scripts/$pkg/__init__.py" || { echo "❌ scripts/$pkg/ is missing — its entry point cannot load"; exit 1; }
+          done
           python3 scripts/compound-v-validate-manifest.py examples/manifest.example.yaml
           echo "✅ example manifest passes the invariant gate"
           # Also validate every tracked run-manifest — exercise the gate on real data,

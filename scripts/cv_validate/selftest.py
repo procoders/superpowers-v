@@ -648,9 +648,6 @@ jobs:
     finally:
         _shutil_c2.rmtree(_c2_tmp, ignore_errors=True)
 
-    if failures:
-        print("\nSELFTEST FAILED: %d case(s)" % len(failures))
-        return 1
     # --- 3.3.0: `type` decides who is a reviewer ---------------------------
     # Dogfood 10: a job TITLED "Writes the thing the reviewer reviews" was refused
     # for not being deep-tier. `integration` and `quality` are in the token list,
@@ -674,5 +671,8 @@ jobs:
     expect("the fallback does not fire on 'disintegration'",
            _is_reviewer({"id": "d1", "title": "model disintegration study"}) is False)
 
+    if failures:
+        print("\nSELFTEST FAILED: %d case(s)" % len(failures))
+        return 1
     print("\nSELFTEST PASSED")
     return 0

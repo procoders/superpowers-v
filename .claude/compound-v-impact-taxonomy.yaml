@@ -146,6 +146,7 @@ sensitive_path_list:
   - "scripts/compound-v-validate-manifest.py"
   - "scripts/compound-v-emit-workflow.py"
   - "scripts/cv_emit/**"
+  - "scripts/cv_validate/**"
   - "scripts/compound-v-emit-preflight.py"
   - "scripts/compound-v-preeval.py"
 

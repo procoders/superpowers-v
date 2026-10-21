@@ -141,7 +141,11 @@ def _load_package():
                           % (PACKAGE, exc))
     sys.pycache_prefix = tmp_pycache
     try:
-        pkg_dir = os.path.join(HERE, PACKAGE)
+        # realpath: a symlinked entry must still find the package beside the real file.
+        pkg_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), PACKAGE)
+        if not os.path.isfile(os.path.join(pkg_dir, "__init__.py")):
+            raise ImportError("%s not found beside the entry point (%s): reinstall the plugin"
+                              % (PACKAGE, pkg_dir))
         spec = importlib.util.spec_from_file_location(
             PACKAGE, os.path.join(pkg_dir, "__init__.py"),
             submodule_search_locations=[pkg_dir])

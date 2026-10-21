@@ -212,7 +212,8 @@ _PACKAGE_MODULES = (
 
 
 def _load_package():
-    pkg_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), _PACKAGE)
+    # realpath: a symlinked entry must still find the package beside the real file.
+    pkg_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), _PACKAGE)
     for name in [n for n in sys.modules if n == _PACKAGE or n.startswith(_PACKAGE + ".")]:
         del sys.modules[name]
     saved = sys.dont_write_bytecode
@@ -237,7 +238,14 @@ def _load_package():
         sys.dont_write_bytecode = saved
 
 
-_load_package()
+try:
+    _load_package()
+except (ImportError, OSError) as _exc:
+    if __name__ != "__main__":
+        raise
+    sys.stderr.write("compound-v-validate-manifest.py: %s not loaded (%s): reinstall the plugin\n"
+                     % (_PACKAGE, _exc))
+    sys.exit(2)
 
 from cv_validate.yamlload import (
     ManifestParseError, load_yaml, _strip_comment, _scalar, _inline_list, _split_commas,
