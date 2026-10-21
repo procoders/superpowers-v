@@ -367,8 +367,19 @@ o="$(jq -n --arg c "$PROJ" '{hook_event_name:"PreToolUse", session_id:"sess-H",
 check "a non-UserPromptSubmit payload is silent (a mis-registration must not score on every tool call)" \
   "$([ -z "$o" ] && echo 1 || echo 0)"
 
+# A project with no Compound V surface is no longer silent (3.9.0): a fresh
+# repository gets ONE user-visible "run /v:init" notice per session, writes
+# nothing into the repository (the once-marker lives under TMPDIR), and the
+# second prompt of the same session is silent again.
 o="$(run_nudge sess-I 'add a retry' "$OTHER")"
-check "a project with no Compound V surface is silent" "$([ -z "$o" ] && echo 1 || echo 0)"
+check "a project with no Compound V surface: the systemMessage names /v:init" \
+  "$(printf '%s' "$o" | jq -e '(.systemMessage // "") | contains("/v:init")' >/dev/null 2>&1 \
+     && [ "$NUDGE_RC" = 0 ] && echo 1 || echo 0)"
+check "a project with no Compound V surface: nothing is written inside the repository" \
+  "$([ -z "$(find "$OTHER" -path "$OTHER/.git" -prune -o -mindepth 1 -print 2>/dev/null)" ] && echo 1 || echo 0)"
+o="$(run_nudge sess-I 'add a retry to the second thing' "$OTHER")"
+check "a project with no Compound V surface: a second prompt in the same session is silent" \
+  "$([ -z "$o" ] && [ "$NUDGE_RC" = 0 ] && echo 1 || echo 0)"
 
 n_before="$(count_records)"
 o="$(jq -n --arg c "$PROJ" '{hook_event_name:"UserPromptSubmit", cwd:$c,

@@ -597,19 +597,23 @@ written by the step that already owns it:
 | `brainstorm.deep_research` | `.claude/compound-v.json` (Step 4a) | `"off"` | Trigger 0's research pass before a brainstorm (a deep-research run or up to six web searches) |
 | `review.cross_model` | `.claude/compound-v.json` (Step 4a) | `false` (already the default) | the automatic Codex second opinion on a plan |
 | `advisorModel` | `.claude/settings.json` (Step 4e) | left unset, or `"opus"` | unset turns the advisor off; `opus` keeps it but never on Fable |
-| `retry` | each run's `manifest.yaml`, top level | `{max_attempts: 1, escalate_reviewer: false}` | in-workflow retries of a stage that returned nothing, and the one-shot lift of an exhausted review job onto `frontier` (Fable) |
+| `retry` | `.claude/compound-v.json` (Step 4a) | `{max_attempts: 1, escalate_reviewer: false}` | in-workflow retries of a stage that returned nothing, and the one-shot lift of an exhausted review job onto `frontier` (Fable) |
 | pre-flight 1A | a skip rule, not a key ([`SKILL.md`](../skills/compound-v/SKILL.md) "Skip rules") | skip on greenfield work in a new directory | the code-archaeologist scan of code that does not exist yet |
 
-Two rows are not project config, and say so rather than writing a key nothing reads:
+One row is not project config, and says so rather than writing a key nothing reads:
 
-- **`retry` is a manifest key** ([`execution-manifest.md`](../skills/compound-v/execution-manifest.md)
-  § `retry`). `.claude/compound-v.json` has no `retry` block and nothing reads one, so this profile
-  cannot persist it, and `/v:orchestrate` does not add it on its own. Tell the user to ask for it
-  when a manifest is materialized (or to add it to `manifest.yaml` before `/v:dispatch` validates
-  it). The trade-off: with `max_attempts: 1` a transient API failure fails
-  the stage instead of being retried, and recovering it through `/v:resume` costs more than the
-  retry would have.
 - **Skipping 1A is a judgement the pre-flight caller applies**, per the skip rule. There is no flag.
+
+**How `retry` is read.** `compound-v-emit-workflow.py` resolves each `retry` key in this order: the
+run's `manifest.yaml` top-level `retry` block, then the `retry` block in `.claude/compound-v.json`,
+then the built-in default (`max_attempts: 3`, `escalate_reviewer: true`). The order is per key, so a
+manifest that sets only `max_attempts` still takes `escalate_reviewer` from the project config. A
+config value that is out of range or the wrong type counts as absent and never widens the budget
+(`max_attempts` is `1..3`, `escalate_reviewer` a JSON boolean). A missing or unparseable config
+contributes nothing, and the run proceeds on the manifest and the defaults. The validator checks only the manifest block
+([`execution-manifest.md`](../skills/compound-v/execution-manifest.md) § `retry`). The trade-off:
+with `max_attempts: 1` a transient API failure fails the stage instead of being retried, and
+recovering it through `/v:resume` costs more than the retry would have.
 
 What the profile does **not** turn off, stated plainly: the Opus partition reviewer, the three
 pre-flights other than a skipped 1A (the domain expert runs on Opus), the per-job Gate and Record
@@ -687,7 +691,12 @@ identically to `balanced`. Only `cost-aware.claude.standard` differs: `sonnet`, 
 `opus`; `cost-aware.claude.deep` stays `opus`.)
 
 - `stance` = the stance chosen in Step 3 (`cost-aware` under Step 3f's `lightweight` profile, which
-  also writes `brainstorm.deep_research: "off"`).
+  also writes `brainstorm.deep_research: "off"` and the `retry` block below).
+- **`retry`** — written **only** under Step 3f's `lightweight` profile, as
+  `"retry": { "max_attempts": 1, "escalate_reviewer": false }`; otherwise leave the key out (absent
+  ⇒ the built-in `max_attempts: 3`, `escalate_reviewer: true`). The emitter reads it for every run
+  whose manifest does not set the same key; a manifest `retry` key still wins for its own run
+  (Step 3f, "How `retry` is read").
 - **`memory.embeddings`** = the Step 3b lane choice (default `false` = FTS5-only) — already
   written to disk by Step 3b itself the moment the user answered; this pass writes the same
   value back as part of the whole-file save, it does not decide it. When `true`,

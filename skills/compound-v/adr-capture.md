@@ -152,11 +152,13 @@ checks, is the invariant that keeps the audit trail honest.
 Once committed, the ADR is picked up automatically on the next index refresh — no indexer change,
 no special registration. Confirm it landed. The engine script ships with the plugin, not with the
 target repository, so resolve the plugin root first — `CLAUDE_PLUGIN_ROOT` is a hook-context hint,
-not a Bash variable, so this fallback covers an installed plugin cache or a checkout of this repo:
+not a Bash variable, so the cache line covers an installed plugin, `$PWD` is used only inside a checkout of this plugin, and an empty `$CV` is a stop — do not run the commands below with it:
 
 ```bash
 CV="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$HOME"/.claude/plugins/cache/*/superpowers-v/*/ 2>/dev/null | sort -V | tail -1)}"
-CV="${CV:-$PWD}"; CV="${CV%/}"
+CV="${CV%/}"
+[ -f "$CV/scripts/compound-v-emit-workflow.py" ] || CV="$PWD"
+[ -f "$CV/scripts/compound-v-emit-workflow.py" ] || { echo "superpowers-v plugin root not found: reinstall the plugin" >&2; CV=""; }
 python3 "$CV/scripts/compound-v-memory.py" refresh          # incremental, by file hash
 python3 "$CV/scripts/compound-v-memory.py" search "<a phrase from the decision>"
 ```

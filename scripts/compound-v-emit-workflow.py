@@ -1281,28 +1281,59 @@ def escalation_map(ladder=CLAUDE_ESCALATION):
     return dict(zip(ladder[:-1], ladder[1:]))
 
 
-def retry_config(manifest):
-    """The manifest's optional top-level `retry` block, resolved to CFG.retry.
+def _retry_value_ok(key, value):
+    """True iff ``value`` is a legal ``retry.<key>``: an int ``1..3`` for
+    ``max_attempts`` (a bool is not an int here), a JSON bool for
+    ``escalate_reviewer``. Anything else is not a value, it is an absence."""
+    if key == "max_attempts":
+        return (isinstance(value, int) and not isinstance(value, bool)
+                and 1 <= value <= RETRY_MAX_ATTEMPTS_DEFAULT)
+    if key == "escalate_reviewer":
+        return isinstance(value, bool)
+    return False
 
-    Degrades to the defaults rather than raising: REFUSING a bad value is
+
+def retry_config(manifest, config_path=None):
+    """The run's retry budget, resolved to CFG.retry.
+
+    PRECEDENCE, PER KEY: the manifest's top-level ``retry`` block, then the
+    ``retry`` block of the project config (``.claude/compound-v.json``, the same
+    ``config_path`` model resolution is handed), then the built-in defaults. The
+    config is where /v:init's ``lightweight`` profile writes
+    ``{max_attempts: 1, escalate_reviewer: false}``; a manifest that states a key
+    still wins for that one run. Until 3.9.0 only the manifest was read, and the
+    profile's ``retry`` row had no reader at all.
+
+    Degrades to the defaults rather than raising: REFUSING a bad manifest value is
     compound-v-validate-manifest.py's job (it names the offending key), and the
     emitter's fallback must never be the thing that widens the budget - an
-    out-of-range value falls back to the documented default, never through to
-    the value it asked for.
+    out-of-range value is treated as absent at its level, never passed through,
+    and every value that survives is ``<= RETRY_MAX_ATTEMPTS_DEFAULT``. The config
+    is read the way the ``memory`` block below reads it (``_read_json``): a missing
+    file, an unparseable one, a non-object root or a non-object ``retry``
+    contributes nothing, and the run proceeds on the manifest and the defaults.
     """
     block = manifest.get("retry") if isinstance(manifest, dict) else None
     if not isinstance(block, dict):
         block = {}
-    attempts = block.get("max_attempts")
-    if not (isinstance(attempts, int) and not isinstance(attempts, bool)
-            and 1 <= attempts <= RETRY_MAX_ATTEMPTS_DEFAULT):
-        attempts = RETRY_MAX_ATTEMPTS_DEFAULT
-    escalate = block.get("escalate_reviewer")
-    if not isinstance(escalate, bool):
-        escalate = RETRY_ESCALATE_REVIEWER_DEFAULT
+    cfg_block = {}
+    if isinstance(config_path, str) and config_path and os.path.isfile(config_path):
+        _doc = _read_json(config_path, None)
+        if isinstance(_doc, dict) and isinstance(_doc.get("retry"), dict):
+            cfg_block = _doc["retry"]
+    defaults = {"max_attempts": RETRY_MAX_ATTEMPTS_DEFAULT,
+                "escalate_reviewer": RETRY_ESCALATE_REVIEWER_DEFAULT}
+    resolved = {}
+    for key, default in defaults.items():
+        for source in (block, cfg_block):
+            if key in source and _retry_value_ok(key, source[key]):
+                resolved[key] = source[key]
+                break
+        else:
+            resolved[key] = default
     return {
-        "max_attempts": attempts,
-        "escalate_reviewer": escalate,
+        "max_attempts": resolved["max_attempts"],
+        "escalate_reviewer": resolved["escalate_reviewer"],
         "base_ms": RETRY_BACKOFF_BASE_MS,
         "cap_ms": RETRY_BACKOFF_CAP_MS,
     }
@@ -2785,7 +2816,7 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
         "transport_agent_type_note": transport_agent_type_note,
         # The workflow's retry budget and the escalation ladder, resolved ONCE
         # here so the emitted script never re-derives either.
-        "retry": retry_config(manifest),
+        "retry": retry_config(manifest, config_path),
         "escalation": escalation_map(ladder),
         "escalation_ceiling": ladder[-1],
         "escalation_ceiling_note": ladder_note,
@@ -9974,6 +10005,56 @@ def selftest():
         _check("a non-bool escalate_reviewer falls back to True",
                all(retry_config({"retry": {"escalate_reviewer": bad}})["escalate_reviewer"]
                    is True for bad in ("yes", 1, None, 0)))
+        # 3.9.0: precedence manifest `retry` > .claude/compound-v.json `retry` >
+        # built-in defaults, per key. The lightweight profile writes the config
+        # block; before this nothing read it.
+        _rcfg_dir = tempfile.mkdtemp(prefix="cv-retry-cfg-")
+        try:
+            _rcfg_n = [0]
+
+            def _rcfg(doc_or_text):
+                # A fresh file per call: rows below reuse earlier configs.
+                _rcfg_n[0] += 1
+                _p = os.path.join(_rcfg_dir, "compound-v-%d.json" % _rcfg_n[0])
+                _atomic_write(_p, doc_or_text if isinstance(doc_or_text, str)
+                              else json.dumps(doc_or_text))
+                return _p
+            _rc_light = _rcfg({"retry": {"max_attempts": 1, "escalate_reviewer": False}})
+            _check("retry: a config-only block is honoured when the manifest has none",
+                   retry_config({}, _rc_light)["max_attempts"] == 1
+                   and retry_config({}, _rc_light)["escalate_reviewer"] is False)
+            _check("retry: the manifest wins over the config for the key it states",
+                   retry_config({"retry": {"max_attempts": 3, "escalate_reviewer": True}},
+                                _rc_light)
+                   == {"max_attempts": 3, "escalate_reviewer": True,
+                       "base_ms": RETRY_BACKOFF_BASE_MS, "cap_ms": RETRY_BACKOFF_CAP_MS})
+            _rc_esc = _rcfg({"retry": {"escalate_reviewer": False}})
+            _check("retry: precedence is PER KEY (manifest max_attempts + config "
+                   "escalate_reviewer both apply)",
+                   retry_config({"retry": {"max_attempts": 2}}, _rc_esc)["max_attempts"] == 2
+                   and retry_config({"retry": {"max_attempts": 2}},
+                                    _rc_esc)["escalate_reviewer"] is False)
+            _check("retry: an invalid manifest value is an absence at its level, so the "
+                   "config value applies (never the value the manifest asked for)",
+                   retry_config({"retry": {"max_attempts": 9}}, _rc_light)["max_attempts"] == 1)
+            _rc_bad = _rcfg({"retry": {"max_attempts": 5, "escalate_reviewer": "no"}})
+            _check("retry: an out-of-range config value falls back to the default, "
+                   "never widens the budget",
+                   retry_config({}, _rc_bad)["max_attempts"] == RETRY_MAX_ATTEMPTS_DEFAULT
+                   and retry_config({}, _rc_bad)["escalate_reviewer"] is True)
+            _check("retry: an unparseable config contributes nothing (defaults), "
+                   "the same tolerance model resolution has",
+                   retry_config({}, _rcfg("{not json"))["max_attempts"] == 3)
+            _check("retry: a non-object config root or non-object retry block "
+                   "contributes nothing",
+                   retry_config({}, _rcfg("[1, 2]"))["max_attempts"] == 3
+                   and retry_config({}, _rcfg({"retry": 1}))["max_attempts"] == 3)
+            _check("retry: a missing config path and config_path=None both read as no config",
+                   retry_config({}, os.path.join(_rcfg_dir, "absent.json"))["max_attempts"] == 3
+                   and retry_config({}, None)["max_attempts"] == 3
+                   and retry_config({"retry": {"max_attempts": 2}})["max_attempts"] == 2)
+        finally:
+            shutil.rmtree(_rcfg_dir, ignore_errors=True)
         _check("the escalation map is the ladder, and an off-ladder pin has no rung",
                escalation_map() == {"sonnet": "opus", "opus": "fable"}
                and escalation_map().get("fable") is None
@@ -10164,6 +10245,32 @@ def selftest():
         _rk_p7, _rk_b7 = _rk_plan(False, manifest_memory=False, config_memory={"auto_recall": "false"})
         _check("auto_recall: \"false\" (a string) leaves recall ON (only the boolean false turns it off)",
                (_rk_b7["impl"].get("recall_check") or {}).get("verdict") in ("tighten", "none"))
+        # 3.9.0: build_plan hands retry_config the SAME project config path model
+        # resolution gets, so the lightweight profile's `retry` reaches CFG.retry.
+        _rt_cfg_p = os.path.join(tmp, ".claude", "compound-v.json")
+        os.makedirs(os.path.dirname(_rt_cfg_p), exist_ok=True)
+        _atomic_write(_rt_cfg_p, json.dumps(
+            {"retry": {"max_attempts": 1, "escalate_reviewer": False}}))
+        def _rt_cfg_plan(manifest_retry=None):
+            man = _tiny_manifest(json.loads(json.dumps(_rk_jobs)), max_parallel=4)
+            if manifest_retry is not None:
+                man["retry"] = manifest_retry
+            man["_manifest_path"] = os.path.join(tmp, "manifest.yaml")
+            return build_plan(man, tmp, tmp, "/usr/bin/python3",
+                              os.path.abspath(__file__), SCOPE_CHECK_DEFAULT,
+                              FASTPATH_DEFAULT, tmp, recall=False,
+                              recall_results_root=_rk_root)
+        _rt_cp1 = _rt_cfg_plan()
+        _check("emit: .claude/compound-v.json retry reaches the plan's CFG.retry "
+               "when the manifest has no retry block",
+               _rt_cp1["retry"]["max_attempts"] == 1
+               and _rt_cp1["retry"]["escalate_reviewer"] is False
+               and '"max_attempts": 1' in emit_script(_rt_cp1))
+        _rt_cp2 = _rt_cfg_plan({"max_attempts": 2})
+        _check("emit: a manifest retry key overrides the config for that key only",
+               _rt_cp2["retry"]["max_attempts"] == 2
+               and _rt_cp2["retry"]["escalate_reviewer"] is False)
+        os.remove(_rt_cfg_p)
         _fake_engine = os.path.join(tmp, "fake-recall.py")
         _atomic_write(_fake_engine, "import os,sys; sys.stdout.write(os.environ.get('CV_FAKE_RECALL','{}'))\n")
         def _fake(doc):

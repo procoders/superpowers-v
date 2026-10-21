@@ -569,6 +569,68 @@ check "...by REALPATH, because the script dir arrives resolved and __file__ does
       "$(grep -q 'os.path.realpath' "$GATE" && echo 1 || echo 0)"
 
 # --------------------------------------------------------------------------- #
+# 10. THE EXEMPTIONS THE GATE APPLIES, APPLIED BY THE RE-DERIVATION TOO (3.9.0).
+#     (a) no preexisting/<id>.verified.txt ⇒ the RAW <id>.txt, whose lines are
+#         "<sha256>  <path>". Handed over as-is they exempted nothing, so a path
+#         that was there before the job registered blocked it.
+#     (b) the manifest's toolchain_artifacts reach the scope check, as they do in
+#         gate-receipt; without them a gitignored build artifact the gate forgave
+#         re-derived as a violation.
+# --------------------------------------------------------------------------- #
+raw_snapshot() { # <run-dir> <worktree> <rel> — the shape write_preexisting writes
+  mkdir -p "$1/preexisting"
+  printf '%s  %s\n' "$(shasum -a 256 "$2/$3" | awk '{print $1}')" "$3" >"$1/preexisting/job-a.txt"
+}
+read -r WT RUN <<<"$(new_case raw-snapshot)"
+mkdir -p "$WT/notes"; printf 'before\n' >"$WT/notes/pre.txt"
+raw_snapshot "$RUN" "$WT" notes/pre.txt
+printf 'in lane\n' >"$WT/scripts/allowed.py"
+put_result "$RUN" "$WT"
+run_gate "$RUN"
+check "raw snapshot, no .verified.txt: an unchanged pre-existing path is exempt ⇒ PASS, exit 0" \
+      "$([ "$(verdict_of)" = pass ] && [ "$GATE_RC" = 0 ] && echo 1 || echo 0)"
+read -r WT RUN <<<"$(new_case raw-snapshot-moved)"
+mkdir -p "$WT/notes"; printf 'before\n' >"$WT/notes/pre.txt"
+raw_snapshot "$RUN" "$WT" notes/pre.txt
+printf 'rewritten by the job\n' >"$WT/notes/pre.txt"
+printf 'in lane\n' >"$WT/scripts/allowed.py"
+put_result "$RUN" "$WT"
+run_gate "$RUN"
+check "raw snapshot: a pre-existing path whose bytes moved is still BLOCKED, exit 1" \
+      "$([ "$(verdict_of)" = blocked ] && [ "$GATE_RC" = 1 ] && violations_of | grep -q 'notes/pre.txt' && echo 1 || echo 0)"
+
+printf 'build/\n' >"$SANDBOX/.gitignore"
+git -C "$SANDBOX" add .gitignore && git -C "$SANDBOX" commit -q -m "ignore build"
+BASE_TC="$(git -C "$SANDBOX" rev-parse HEAD)"
+tc_case() { # <name> <declare:0|1> ⇒ echoes "<worktree> <run-dir>"
+  local wt="$WORK/wt-$1" run="$WORK/run-$1"
+  git -C "$SANDBOX" worktree add -q --detach "$wt" "$BASE_TC" >/dev/null 2>&1
+  mkdir -p "$run/results" "$wt/build"
+  write_manifest "$run"
+  if [ "$2" = 1 ]; then
+    "$PY" - "$run/manifest.yaml" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+open(p, "w").write(s.replace("jobs:\n", 'toolchain_artifacts:\n  - "build/**"\njobs:\n', 1))
+PY
+  fi
+  write_state "$run" "$wt" "$BASE_TC"
+  printf 'in lane\n' >"$wt/scripts/allowed.py"
+  printf 'artifact\n' >"$wt/build/out.js"
+  printf '%s %s\n' "$wt" "$run"
+}
+read -r WT RUN <<<"$(tc_case toolchain-declared 1)"
+put_result "$RUN" "$WT"
+run_gate "$RUN"
+check "toolchain_artifacts declared: a gitignored build artifact is forgiven on re-derivation ⇒ PASS, exit 0" \
+      "$([ "$(verdict_of)" = pass ] && [ "$GATE_RC" = 0 ] && echo 1 || echo 0)"
+read -r WT RUN <<<"$(tc_case toolchain-undeclared 0)"
+put_result "$RUN" "$WT"
+run_gate "$RUN"
+check "toolchain_artifacts undeclared: the same artifact is a violation ⇒ BLOCKED, exit 1" \
+      "$([ "$(verdict_of)" = blocked ] && [ "$GATE_RC" = 1 ] && violations_of | grep -q 'build/out.js' && echo 1 || echo 0)"
+
+# --------------------------------------------------------------------------- #
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" = "0" ] || exit 1
 exit 0

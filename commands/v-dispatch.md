@@ -20,16 +20,19 @@ delegating, the epic inherits Engine C along with everything else.
 | a **manifest path** (`…/execution/<run-id>/manifest.yaml`) | dispatch it directly (already materialized). |
 | a **run-id** (a dir name under `docs/superpowers/execution/`) | resolve to that run's `manifest.yaml` and dispatch directly. |
 
-**Re-dispatching a run that already ran (3.8.6).** Running `/v:dispatch` again on a run-id or
+**Re-dispatching a run that already ran (3.9.0).** Running `/v:dispatch` again on a run-id or
 manifest path whose run directory already holds an attempt — any of `jobs/*.baseline`,
 `receipts/*.gate.json` or `results/*.json` — first runs `resume-prepare` (step 5), exactly as
 [`/v:resume`](v-resume.md) does. Without it a `direct` job keeps the first attempt's pin, and
 every commit made since — the run's own bookkeeping, a taxonomy you added, anything — is charged
-to the job as a violation. `register-lane` only *warns* about that pin (`stale_pin_warning`), and
-the warning reaches the Workflow agent, not you, so the refusal used to read as an unexplained
-baseline violation. A `worktree` job re-pins itself on a concluded attempt (v3.6.3, see
-[`state-machine.md`](../skills/compound-v/state-machine.md) § `baseline` re-pins on a re-attempt);
-`resume-prepare` covers both kinds.
+to the job as a violation. Before 3.9.0 `register-lane` only *warned* about that pin, and the
+warning reached the Workflow agent, not you, so the halt read as an unexplained baseline
+violation. Now both doors refuse with exit 2 and name `/v:resume`: `emit` refuses a run directory
+whose concluded attempt still holds a pin other than `HEAD`, and `register-lane` refuses a `direct`
+job whose pin is not `HEAD`. A `worktree` job re-pins itself on a concluded attempt at
+`register-lane` (v3.6.3, see [`state-machine.md`](../skills/compound-v/state-machine.md) §
+`baseline` re-pins on a re-attempt), but `emit`'s refusal covers it too; `resume-prepare` covers
+both kinds.
 
 ## Resolving the plugin root
 
@@ -98,6 +101,24 @@ steps below with it. Paths under `docs/superpowers/` stay relative; only the plu
    committed taxonomy, or the triage record predates it. Run [`/v:init`](v-init.md) Step 4g to
    draft and commit one, re-run [`/v:triage`](v-triage.md) for the request, and re-materialize the
    manifest ([`/v:orchestrate`](v-orchestrate.md)) so its `triage` block binds the new record.
+
+   **One null-digest shape is accepted.** A `triage` block with `disabled_by_config: true` passes
+   with `taxonomy_digest: null` — and only then: its `tier` must be `FULL`, `pre_eval.enabled`
+   must still be `false` in `.claude/compound-v.json`, and `pre_eval_id` must name the committed
+   record [`/v:triage`](v-triage.md) writes with `--record-disabled` (decision `FULL_PIPELINE`,
+   null `taxonomy_digest`, localization flag `pre_eval_disabled`, its own digest intact). Turn the
+   stage back on and the same block is refused; re-triage and bind the scored record.
+
+   **Check a refused record before re-triaging blind:**
+
+   ```
+   python3 "$CV/scripts/compound-v-preeval.py" record-status --pre-eval-id <id> --repo . --json
+   ```
+
+   It is read-only and mirrors these triage checks: exit 0 means `--require-triage` would accept
+   the record, exit 1 means it would not, and `reason` says what to run — a superseded record
+   names its successor (`superseded_by`), a stale or missing taxonomy says to re-run `/v:triage`.
+   `--request-env VAR` resolves the newest record for the request text in `$VAR` instead of an id.
 
 3. **Run the partition reviewer** (Iron Rule #4: no execution without a verified Partition Map):
    - Dispatch [`superpowers-v:partition-reviewer`](../agents/partition-reviewer.md) with the plan
@@ -181,18 +202,41 @@ steps below with it. Paths under `docs/superpowers/` stay relative; only the plu
    ```
 
    It is the same call [`/v:resume`](v-resume.md) step 5 makes: for every job not yet integrated
-   it deletes the stale pin, resets the job to `pending`, drops its lane-map entries and archives
-   its gate receipt as `receipts/<id>.gate.superseded-*.json`; integrated jobs are left alone, and
-   the phase returns to `PARTITION_VERIFIED`. `emit` refuses with exit 2, naming `/v:resume`, when
-   it finds a previous attempt's pin that this call has not cleared — do not work around that
-   refusal by deleting files by hand.
+   (and not a codex job left for resume-in-place) it deletes the stale pin, resets the job to
+   `pending`, drops its lane-map entries, archives its gate receipt as
+   `receipts/<id>.gate.superseded-*.json` and retires its before-image — a `worktree` job's
+   `preexisting/<id>.txt` is deleted, a `direct` job's is kept minus the lines for the files
+   registration rewrites. Integrated jobs are left alone, and the phase returns to
+   `PARTITION_VERIFIED`.
 
-   ```
-   python3 "$CV/scripts/compound-v-emit-workflow.py" emit \
+   `emit` (without `--print`) exits 2 with `REFUSING TO EMIT: run directory … still holds a
+   previous attempt for <job ids> (pinned baseline …)` when any manifest job has a receipt
+   (`receipts/<id>.gate.json`) or result (`results/<id>.json`) on disk, is not
+   `merged.integrated`, is not a codex job left for resume-in-place, and still holds a pin that is
+   not the current `HEAD`. The message names `/v:resume <run-id>` and the `resume-prepare` call
+   above. A pin with no receipt or result yet (an attempt that died before Gate) passes `emit`; a
+   `direct` job carrying one is then refused at `register-lane`, exit 2, `REFUSING TO REGISTER
+   direct job <id>`. Answer either refusal with `resume-prepare`, never by deleting files by hand.
+
+   ```bash
+   EMIT_JSON="$(python3 "$CV/scripts/compound-v-emit-workflow.py" emit \
      docs/superpowers/execution/<run-id>/manifest.yaml \
-     --out docs/superpowers/execution/<run-id>/dispatch.workflow.js
-   git add docs/superpowers/execution/<run-id>/dispatch.workflow.js && git commit -m "…"
+     --out docs/superpowers/execution/<run-id>/dispatch.workflow.js)" &&
+   printf '%s' "$EMIT_JSON" \
+     | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.stdout.write("".join(p+"\0" for p in [d["script"]]+d["job_artefacts"]))' \
+     | xargs -0 git add -- &&
+   git commit -m "…"
    ```
+
+   **Commit every path in `job_artefacts`, not only the script.** `emit` prints one JSON report;
+   `script` is the workflow file and `job_artefacts` lists what it wrote beside it for each job:
+   `jobs/<id>.prompt.md`, `jobs/<id>.launch.argv.json` for an external backend, and
+   `jobs/<id>.recall-check.json` when recall tightened the job. None of them is exempt from the scope
+   gate by name. On a re-dispatch this matters: `resume-prepare` keeps a `direct` job's snapshot,
+   which binds the first attempt's prompt to its old digest, so a re-emitted prompt whose bytes
+   changed and was left uncommitted is charged to that job as an out-of-lane write. Committed, it
+   is part of the new pin and nothing is charged. On a first dispatch the commit costs nothing and
+   keeps the handoff files durable.
 
    The generator turns `depends_on` into topological waves, `max_parallel` into chunking, and
    backend/tier/effort/isolation into `agent()` options. It **refuses to emit** a script containing

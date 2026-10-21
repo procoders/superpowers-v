@@ -739,12 +739,34 @@ def receipt_binding_faults(receipt, pinned_baseline, observed_head, observed_dig
 # --------------------------------------------------------------------------- #
 # re-derivation
 # --------------------------------------------------------------------------- #
-def run_scope_check(scope_check, mode, root, baseline, allow, preexisting=None):
+def toolchain_artifacts_of(manifest):
+    """The manifest's top-level ``toolchain_artifacts`` globs, or ``[]``.
+
+    THE SAME SHAPE RULE AS THE EMITTER'S ``_toolchain_artifacts_spec``, restated
+    rather than imported (this authority imports nothing from the producer it
+    checks): a non-empty list whose every entry is a non-empty string, else
+    nothing declared. The validator is where a malformed value is refused; both
+    sides fail closed into "no exemption" on anything else, so they cannot
+    disagree about what was declared.
+    """
+    raw = manifest.get("toolchain_artifacts") if isinstance(manifest, dict) else None
+    if isinstance(raw, list) and raw and all(isinstance(g, str) and g.strip() for g in raw):
+        return list(raw)
+    return []
+
+
+def run_scope_check(scope_check, mode, root, baseline, allow, preexisting=None,
+                    toolchain_artifacts=None):
     """Invoke scripts/compound-v-scope-check.py as a SUBPROCESS.
 
     A subprocess, not an import: this script must not be able to perturb the
     matcher it is checking against, and the matcher belongs to another lane.
     Returns (verdict, stdout, exit_code, error).
+
+    ``toolchain_artifacts`` is passed exactly as gate-receipt passes it — one
+    ``--toolchain-artifact`` per manifest glob. Until 3.9.0 this re-derivation
+    omitted them, so a gitignored build artifact the gate had forgiven was
+    re-derived as a violation and an honest pass read as ``contradicted``.
     """
     cmd = [sys.executable, scope_check]
     cmd += ["--worktree" if mode == "worktree" else "--repo", root]
@@ -754,6 +776,8 @@ def run_scope_check(scope_check, mode, root, baseline, allow, preexisting=None):
         cmd += ["--allow", glob]
     if preexisting:
         cmd += ["--preexisting", preexisting]
+    for glob in (toolchain_artifacts or []):
+        cmd += ["--toolchain-artifact", glob]
     try:
         proc = subprocess.run(
             cmd,
@@ -825,8 +849,64 @@ def _leading_json(text):
 # --------------------------------------------------------------------------- #
 # per-job evaluation
 # --------------------------------------------------------------------------- #
-def evaluate_job(job, state_job, run_dir, repo_root, scope_check):
-    """Resolve one job to exactly one verdict class. Never raises."""
+def preexisting_unchanged(snapshot_path, root):
+    """(kept, dropped): the exempt paths of a RAW ``preexisting/<id>.txt``.
+
+    A mirror of the emitter's ``read_preexisting_unchanged``, restated here for
+    the same no-import reason as ``toolchain_artifacts_of``. The raw snapshot is
+    ``<sha256>  <path>`` and ``dir  <path>`` lines (``write_preexisting``); the
+    scope gate's ``--preexisting`` takes plain paths, so handing it the raw file
+    made every line a path that matches nothing — no exemption at all, and a
+    job's own pre-dispatch dirt re-derived as its violation. Only a path whose
+    bytes STILL match the recorded digest is kept, a ``dir`` line is kept by
+    name, and any other line is dropped: an exemption without a digest cannot be
+    trusted.
+    """
+    kept, dropped = [], 0
+    try:
+        with open(snapshot_path, "r", encoding="utf-8") as fh:
+            lines = [ln.strip() for ln in fh]
+    except (IOError, OSError, UnicodeDecodeError):
+        return kept, dropped
+    for line in lines:
+        if not line:
+            continue
+        parts = line.split("  ", 1)
+        if len(parts) == 2 and re.match(r"^[0-9a-f]{64}$", parts[0]):
+            rel = parts[1].strip()
+            full = os.path.join(root, rel)
+            if os.path.isfile(full) and sha256_file(full) == "sha256:" + parts[0]:
+                kept.append(rel)
+            else:
+                dropped += 1
+        elif len(parts) == 2 and parts[0] == "dir":
+            kept.append(parts[1].strip())
+        else:
+            dropped += 1
+    return kept, dropped
+
+
+def evaluate_job(job, state_job, run_dir, repo_root, scope_check,
+                 toolchain_artifacts=None):
+    """Resolve one job to exactly one verdict class. Never raises.
+
+    A thin wrapper so the temporary exemption list a raw-snapshot fallback
+    writes is removed on every one of ``_evaluate_job``'s return paths.
+    """
+    scratch = []
+    try:
+        return _evaluate_job(job, state_job, run_dir, repo_root, scope_check,
+                             toolchain_artifacts, scratch)
+    finally:
+        for path in scratch:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+def _evaluate_job(job, state_job, run_dir, repo_root, scope_check,
+                  toolchain_artifacts, scratch):
     job_id = job.get("id") or "<unnamed>"
     out = {
         "job": job_id,
@@ -1056,13 +1136,35 @@ def evaluate_job(job, state_job, run_dir, repo_root, scope_check):
     # that was ours rather than the worker's. Dogfood 19, on a deliberately quiet
     # tree, with nothing else left to blame.
     #
-    # Falling back to the raw file keeps an older run verifiable; it will simply be
-    # stricter, which is the safe direction.
+    # NO `.verified.txt` — the gate never ran for this attempt, or a re-attempt's
+    # `_retire_snapshot` removed it — falls back to the RAW file, put through the
+    # same digest check the gate applies (`preexisting_unchanged`). Until 3.9.0 the
+    # raw file was handed over as-is: its `<sha256>  <path>` lines are not paths,
+    # so it exempted nothing and a job could be falsely blocked by dirt that was
+    # there before it registered. What this fallback still does NOT reconstruct is
+    # the gate's by-name run-directory pass (RUN_DIR_EXEMPT_BY_NAME in the emitter):
+    # that closed list is kept in one file, so a direct-mode run-directory path
+    # may still be reported here — stricter, which is the safe direction, and
+    # said in a note rather than left silent.
     preexisting = os.path.join(run_dir, "preexisting", "%s.verified.txt" % job_id)
     if not os.path.isfile(preexisting):
-        preexisting = os.path.join(run_dir, "preexisting", "%s.txt" % job_id)
-    if not os.path.isfile(preexisting):
         preexisting = None
+        raw_snapshot = os.path.join(run_dir, "preexisting", "%s.txt" % job_id)
+        if os.path.isfile(raw_snapshot):
+            kept, dropped = preexisting_unchanged(raw_snapshot, gate_root)
+            fd, tmp_path = tempfile.mkstemp(prefix="cv-authority-preexisting-",
+                                            suffix=".txt")
+            scratch.append(tmp_path)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write("\n".join(kept) + ("\n" if kept else ""))
+            preexisting = tmp_path
+            out["notes"].append(
+                "no preexisting/%s.verified.txt; exempting the %d raw-snapshot "
+                "path(s) whose bytes still match their register-time digest (%d "
+                "dropped). The gate's by-name run-directory exemptions are not "
+                "reconstructed here, so a run-directory path may still be reported"
+                % (job_id, len(kept), dropped)
+            )
 
     # ---- MISSING ⇒ re-derive ---------------------------------------------- #
     if not complete_receipt:
@@ -1073,7 +1175,8 @@ def evaluate_job(job, state_job, run_dir, repo_root, scope_check):
                 "re-derived rather than refused"
             )
         verdict, raw, code, err = run_scope_check(
-            scope_check, mode, gate_root, baseline, allow, preexisting
+            scope_check, mode, gate_root, baseline, allow, preexisting,
+            toolchain_artifacts=toolchain_artifacts,
         )
         if err:
             out["verdict"] = "unverifiable"
@@ -1174,7 +1277,8 @@ def evaluate_job(job, state_job, run_dir, repo_root, scope_check):
 
     # ---- bindings hold; confirm the CONCLUSION independently --------------- #
     verdict, raw, code, err = run_scope_check(
-        scope_check, mode, gate_root, baseline, allow, preexisting
+        scope_check, mode, gate_root, baseline, allow, preexisting,
+        toolchain_artifacts=toolchain_artifacts,
     )
     if err:
         out["verdict"] = "unverifiable"
@@ -1335,6 +1439,7 @@ def evaluate_run(run_dir, repo_root, scope_check, manifest_path=None, only=None,
                 run_dir,
                 repo_root,
                 scope_check,
+                toolchain_artifacts=toolchain_artifacts_of(manifest),
             )
         )
 
@@ -1824,6 +1929,118 @@ def _selftest():
             "raw_stdout with the gate's human tail still parses ⇒ blocked, not forged",
             rep["results"][0]["verdict"] == "blocked",
         )
+
+        # (3c-pre) 3.9.0: NO .verified.txt ⇒ the RAW snapshot, digest-checked.
+        # Its lines are `<sha256>  <path>` / `dir  <path>`; handed to the scope
+        # gate as-is they exempted nothing, so a provisioned (or pre-dirty) path
+        # the job never touched re-derived as the job's violation.
+        def _pre_case(name, pre_text, mutate_after=None, extra_lines=()):
+            wt, run_dir = fresh_case(name, lambda w: (
+                write(w, "scripts/allowed.py", "1\n"),
+                write(w, "notes/pre.txt", pre_text),
+            ))
+            _dig = hashlib.sha256(pre_text.encode("utf-8")).hexdigest()
+            os.makedirs(os.path.join(run_dir, "preexisting"), exist_ok=True)
+            with open(os.path.join(run_dir, "preexisting", "job-a.txt"), "w") as fh:
+                fh.write("%s  notes/pre.txt\ndir  vendor/\n" % _dig)
+                for _ln in extra_lines:
+                    fh.write(_ln + "\n")
+            if mutate_after:
+                mutate_after(wt)
+            _put_result(run_dir, "job-a", _result(wt, omit_receipt=True))
+            return evaluate_run(run_dir, repo, scope_check)["results"][0]
+
+        # A private temp dir for the fallback's scratch list, so the cleanup row
+        # below cannot be confused by a concurrent run sharing the system tmp.
+        _pre_tmpdir = os.path.join(tmp, "authority-tmp")
+        os.makedirs(_pre_tmpdir)
+        _saved_tempdir = tempfile.tempdir
+        tempfile.tempdir = _pre_tmpdir
+        try:
+            _pr = _pre_case("pre-raw", "before\n")
+            _pr2 = _pre_case("pre-raw-moved", "before\n",
+                             mutate_after=lambda w: write(w, "notes/pre.txt", "rewritten\n"))
+            _pr3 = _pre_case("pre-raw-bare", "before\n",
+                             mutate_after=lambda w: write(w, "notes/bare.txt", "x\n"),
+                             extra_lines=("notes/bare.txt",))
+        finally:
+            tempfile.tempdir = _saved_tempdir
+        expect("no .verified.txt: a raw-snapshot path whose bytes still match its "
+               "digest is exempt (re-derived PASS, not a false block)",
+               _pr["verdict"] == "pass")
+        _dir_snap = os.path.join(tmp, "dir-snapshot.txt")
+        with open(_dir_snap, "w") as fh:
+            fh.write("dir  .claude/worktrees/x/\n" + "f" * 64 + "  gone.txt\n")
+        expect("...a `dir` line is kept by name and a digest whose file is gone is "
+               "dropped, as the gate's read_preexisting_unchanged does",
+               preexisting_unchanged(_dir_snap, tmp) == ([".claude/worktrees/x/"], 1))
+        expect("...and the fallback says so in a note",
+               any("raw-snapshot path(s) whose bytes still match" in n
+                   for n in _pr["notes"]))
+        expect("no .verified.txt: a raw-snapshot path whose bytes MOVED is gated "
+               "like any other write (BLOCKED)",
+               _pr2["verdict"] == "blocked" and "notes/pre.txt" in _pr2["violations"])
+        expect("no .verified.txt: a bare path line (no digest) exempts nothing",
+               _pr3["verdict"] == "blocked" and "notes/bare.txt" in _pr3["violations"])
+        expect("...and the temporary exemption list is removed afterwards",
+               os.listdir(_pre_tmpdir) == [])
+        expect("preexisting_unchanged on an unreadable snapshot exempts nothing",
+               preexisting_unchanged(os.path.join(tmp, "no-such.txt"), tmp) == ([], 0))
+
+        # (3c-tc) 3.9.0: the manifest's `toolchain_artifacts` reach BOTH
+        # re-derivations, as gate-receipt passes them. The `.gitignore` is in the
+        # BASELINE commit, because the scope gate forgives only a path
+        # `git check-ignore` confirms.
+        expect("toolchain_artifacts_of mirrors the emitter's shape rule",
+               toolchain_artifacts_of({"toolchain_artifacts": ["build/**"]}) == ["build/**"]
+               and toolchain_artifacts_of({"toolchain_artifacts": "build/**"}) == []
+               and toolchain_artifacts_of({"toolchain_artifacts": ["build/**", ""]}) == []
+               and toolchain_artifacts_of({"toolchain_artifacts": []}) == []
+               and toolchain_artifacts_of({}) == [] and toolchain_artifacts_of(None) == [])
+        repo_tc = os.path.join(tmp, "repo-tc")
+        _mkrepo(repo_tc)
+        with open(os.path.join(repo_tc, ".gitignore"), "w") as fh:
+            fh.write("build/\n")
+        _sh(repo_tc, "git", "add", "-A")
+        _sh(repo_tc, "git", "commit", "-q", "-m", "ignore build")
+        base_tc = _sh(repo_tc, "git", "rev-parse", "HEAD").strip()
+
+        def _tc_case(name, declare, with_receipt):
+            wt = os.path.join(tmp, "wt-" + name)
+            _sh(repo_tc, "git", "worktree", "add", "-q", "--detach", wt, base_tc)
+            write(wt, "scripts/allowed.py", "1\n")
+            write(wt, "build/out.js", "artifact\n")
+            run_dir = os.path.join(tmp, "run-" + name)
+            _write_run(run_dir, wt, base_tc)
+            if declare:
+                with open(os.path.join(run_dir, "manifest.yaml"), "w") as fh:
+                    fh.write(_MANIFEST_TMPL.replace(
+                        "jobs:\n", "toolchain_artifacts:\n  - \"build/**\"\njobs:\n", 1))
+            receipt = None
+            if with_receipt:
+                v, raw, code, err = run_scope_check(
+                    scope_check, "worktree", wt, base_tc, allow,
+                    toolchain_artifacts=["build/**"] if declare else None)
+                digest, _derr = compute_diff_digest(wt, base_tc)
+                receipt = {"baseline_commit": base_tc, "realised_commit": head_commit(wt),
+                           "diff_digest": digest, "verdict": v, "raw_stdout": raw,
+                           "exit_code": code}
+            _put_result(run_dir, "job-a", _result(wt, receipt=receipt,
+                                                  omit_receipt=not with_receipt))
+            return evaluate_run(run_dir, repo_tc, scope_check)["results"][0]
+
+        _tc1 = _tc_case("tc-missing", True, False)
+        expect("toolchain_artifacts: a MISSING receipt re-derives with the manifest's "
+               "globs, so a gitignored build artifact is forgiven (PASS)",
+               _tc1["verdict"] == "pass")
+        _tc2 = _tc_case("tc-present", True, True)
+        expect("toolchain_artifacts: an honest receipt the gate passed under the "
+               "globs is confirmed, not called contradicted",
+               _tc2["verdict"] == "pass" and _tc2["receipt"] == "present")
+        _tc3 = _tc_case("tc-undeclared", False, False)
+        expect("...and with no toolchain_artifacts declared the same artifact is "
+               "still a violation",
+               _tc3["verdict"] == "blocked" and "build/out.js" in _tc3["violations"])
 
         # (3d) A RETIRED WORKTREE OF AN ALREADY-MERGED JOB IS NOT UNVERIFIABLE —
         # when, and only when, the SEALED PATCH proves the merge (ninth review pass,

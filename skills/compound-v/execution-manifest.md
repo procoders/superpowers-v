@@ -35,9 +35,9 @@ of this repo.
 | `routing_stance` | enum | yes | `balanced` \| `conservative` \| `cost-aware` \| `claude-only`. |
 | `max_parallel` | integer | yes | Batch concurrency ceiling (the phase-3 reality, typically 4–6). |
 | `jobs` | list | yes | One entry per file-scoped job (schema below). |
-| `triage` | map | no† | v3.0 (Feature A2): `{tier, pre_eval_id, taxonomy_digest, decided_at}`. **Required under `--require-triage`**, which `/v:dispatch` passes on every live dispatch. See the v3.0 section below. |
+| `triage` | map | no† | v3.0 (Feature A2): `{tier, pre_eval_id, taxonomy_digest, decided_at}`, plus the optional `flavor` (v3.4.1) and `disabled_by_config` (v3.8.6). **Required under `--require-triage`**, which `/v:dispatch` passes on every live dispatch. `taxonomy_digest` may be null **only** in a `disabled_by_config: true` block for a config-disabled FULL record. See the v3.0 section below. |
 | `test_contract` | map | no | v3.0 (Feature B2): `{floor_command, full_command, impacted_map}`. Absent ⇒ every job runs `full`. See the v3.0 section below. |
-| `retry` | map | no | v3.4.8 (findings 118/119): `{max_attempts, escalate_reviewer}`. Absent ⇒ defaults (`max_attempts: 3`, `escalate_reviewer: true`). See [§ `retry` — transient-failure retry inside the workflow](#retry--transient-failure-retry-inside-the-workflow-v348) below. |
+| `retry` | map | no | v3.4.8 (findings 118/119): `{max_attempts, escalate_reviewer}`. Absent ⇒ the `retry` block of `.claude/compound-v.json`, key by key, then the defaults (`max_attempts: 3`, `escalate_reviewer: true`). See [§ `retry` — transient-failure retry inside the workflow](#retry--transient-failure-retry-inside-the-workflow-v348) below. |
 | `global_constraints` | string[] | no | v3.4.17: the plan's `## Global Constraints` lines, verbatim. [§ below](#the-two-superpowers-620-plan-fields-v3417). |
 | `provision_command` | string | no | v3.6: one dependency install a worktree job runs before its own before-image is taken (e.g. `npm ci`). Non-empty, single-line. See [§ `provision_command` — the dependency install that runs before the before-image](#provision_command--the-dependency-install-that-runs-before-the-before-image-v36) below. |
 | `provision_timeout_s` | integer | no | v3.6: seconds `provision_command` gets. Integer `1..1800` (a bool is rejected). **Absent ⇒ 600.** Same section below. |
@@ -312,6 +312,24 @@ external workers.
 |---|---|---|---|
 | `max_attempts` | integer | no | **Total** attempts per wrapped call, `1..3`. Absent ⇒ `3`. `1` disables retries for the run. The validator rejects `0`, values `> 3`, and non-int types (`"3"`, `true`). |
 | `escalate_reviewer` | boolean | no | Absent ⇒ `true`. When a **review** stage exhausts `max_attempts` on `tier: deep`, it is re-spawned **once** on `frontier` (Fable) rather than recorded as a failure. `false` disables the lift — exhaustion on `deep` fails the review stage as it did before 3.4.8. |
+
+**Where the values come from (3.9.0).** `compound-v-emit-workflow.py` (`retry_config`) resolves each
+of the two keys separately, in this order:
+
+1. this manifest's top-level `retry` block;
+2. the `retry` block of the project config, `.claude/compound-v.json` — the same file, found the same
+   way, that model resolution reads. `/v:init`'s `lightweight` budget profile writes
+   `{max_attempts: 1, escalate_reviewer: false}` there;
+3. the built-in defaults, `max_attempts: 3` and `escalate_reviewer: true`.
+
+"Absent" in the table above means absent at every level. A manifest that sets only `max_attempts`
+still takes `escalate_reviewer` from the project config. The validator checks only the manifest
+block and rejects a bad value there. The project config block is never refused: a value that is out
+of range or the wrong type counts as absent at its level, so no source can widen the budget past
+`3`. A missing config file, one that does not parse, a root that is not an object, or a `retry` that
+is not an object adds nothing, and the run proceeds on the manifest and the defaults. The resolved
+block is baked into the emitted script as `CFG.retry`, so editing the config after emit does not
+change a run that is already emitted.
 
 **The trigger is a `null` resolution, not only a throw.** `agent()` resolves to `null` on a
 terminal API error — the installed runtime, its docs, and this repo's own null-path handling
@@ -685,6 +703,9 @@ triage:
   pre_eval_id: 2026-09-01T101500Z-slug-a1b2 # names the committed pre-eval record
   taxonomy_digest: "sha256:<64-hex>"        # content-address of the taxonomy's RAW bytes
   decided_at: "2026-09-01T10:15:00Z"        # ISO-8601
+  # flavor: scoped_plus                     # optional: only when the record has it
+  # disabled_by_config: true                # optional: only for a config-disabled FULL record,
+  #                                         #   and then taxonomy_digest: null
 ```
 
 | `triage` field | Meaning |
@@ -693,9 +714,41 @@ triage:
 | `pre_eval_id` | The write-once id of the record at `docs/superpowers/pre-eval/<id>.json`. It becomes a path segment, so `/`, `\`, `.` and `..` are rejected. |
 | `taxonomy_digest` | `sha256:<64-hex>` over the RAW bytes of the impact taxonomy that produced the decision. Verified against `.claude/compound-v-impact-taxonomy.yaml` (override with `--taxonomy FILE`) through the shared `compound-v-taxonomy.py` primitive, so a producer and this consumer can never diverge. |
 | `decided_at` | ISO-8601 timestamp. A trailing `Z` is stripped before parsing: Python 3.9 — the CI floor — rejects the Zulu suffix that every producer writes. |
+| `flavor` | Optional (v3.4.1). Only `scoped_plus`: a small edit on a sensitive path, banded SCOPED but reviewed like a FULL. It requires a job with `type: review`, `tier: deep` and `backend: claude`. |
+| `disabled_by_config` | Optional (v3.8.6). Only the literal `true`. It marks the record `/v:triage --record-disabled` writes when `pre_eval.enabled` is `false` in `.claude/compound-v.json`: nothing was scored, so the record is FULL and pins no taxonomy. The block then carries `taxonomy_digest: null`. |
 
-Unknown keys inside the block are rejected. A `taxonomy-digest` typo would otherwise pass silently
-and leave the digest unchecked, which is the one failure this block exists to prevent.
+Unknown keys inside the block are rejected; `flavor` and `disabled_by_config` are the only optional
+ones. A `taxonomy-digest` typo would otherwise pass silently and leave the digest unchecked, which is
+the one failure this block exists to prevent.
+
+**The one null `taxonomy_digest` that is accepted.** A block that carries `disabled_by_config` skips
+the taxonomy comparison, and `compound-v-validate-manifest.py` (`_triage_disabled_problems`) checks
+these instead. Every one must hold, and an input it cannot read fails closed:
+
+- `disabled_by_config` is exactly `true`. Any other value, `false` included, is a violation.
+- `tier` is `FULL`. A stage that scored nothing cannot grant a smaller tier, so accepting the block
+  never widens what can be dispatched.
+- `taxonomy_digest` is null or empty. A config-disabled record pins no taxonomy.
+- `pre_eval.enabled` is still `false` in `.claude/compound-v.json`, read through
+  `compound-v-project-config.py`. If the stage has been turned back on, the block stops verifying:
+  re-run `/v:triage` with the same request and bind the scored record. A config that cannot be read
+  is a violation.
+- The committed record `docs/superpowers/pre-eval/<pre_eval_id>.json` exists and is a JSON object
+  with `decision: FULL_PIPELINE`, a null `taxonomy_digest` and `pre_eval_disabled` in
+  `localization.flags`. If it carries a `digest`, that digest must match the record's content.
+
+Without `disabled_by_config`, a null or absent `taxonomy_digest` is a hard failure. The message
+always begins:
+
+> manifest triage missing required field 'taxonomy_digest': the triage record was scored without
+> the impact taxonomy .claude/compound-v-impact-taxonomy.yaml, so it pins no rules and cannot be
+> dispatched
+
+It then names the cause. If the taxonomy file exists now, it says *the taxonomy exists now, so the
+record predates it*. If the file is missing, it says *the taxonomy is missing — /v:init drafts it
+(or /v:onboard builds it with its draft-taxonomy step)*. Both end the same way: re-run `/v:triage`
+with the same request, copy the new record's `pre_eval_id` and `taxonomy_digest` into the block, and
+check a record with `compound-v-preeval.py record-status --pre-eval-id <id>`.
 
 **When it is required, and why not sooner.** `--require-triage` ships **default OFF in every mode**.
 A mode-scoped default (on for `--mode pre-dispatch`) was designed and removed as circular twice over:
@@ -711,9 +764,11 @@ into them — a reconstructed audit trail is the fabricated-evidence pattern, no
 
 Under the flag, each of these is a hard failure: a **missing** block, a **malformed** one (non-mapping,
 missing field, unknown key, unparseable `decided_at`, mis-shaped digest), a `tier` **outside the enum**,
-and a `taxonomy_digest` that **does not match** the taxonomy bytes on disk. An **absent or unreadable**
-taxonomy also fails — a record whose rules cannot be found has outlived them, and that is the case the
-digest exists to catch, so it fails closed rather than skipping the comparison.
+a **null** `taxonomy_digest` outside a `disabled_by_config` block, and a `taxonomy_digest` that **does
+not match** the taxonomy bytes on disk. An **absent or unreadable** taxonomy also fails — a record whose
+rules cannot be found has outlived them, and that is the case the digest exists to catch, so it fails
+closed rather than skipping the comparison. The single exception is a config-disabled FULL record,
+which pins no taxonomy and is checked by the conditions listed above instead.
 
 ### The `test_contract` block and per-job `test_scope`
 

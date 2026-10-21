@@ -11,9 +11,9 @@ Every write is checked against the files that worker was allowed to touch, and a
 - **Claude Code ≥ 2.1.219.** Compound V runs on the native Workflow runtime and on native hooks (`PreToolUse`, `UserPromptSubmit`, `PostCompact`, `Stop`). `SessionStart` warns below that floor.
 - **One ambient cost.** The lane-guard hook runs on every `Write`/`Edit`/`Bash` call. What it costs depends on the machine — measure it on yours; the recipe is in [AGENTS.md](AGENTS.md).
 - **[Superpowers](https://github.com/obra/superpowers), installed as its own plugin.** Every trigger keys on `superpowers:brainstorming` and `superpowers:writing-plans`; without it nothing fires.
-- **`jq` on `PATH`.** The hooks read their payload with it and return silently without it — no triage nudge, no reminders, no triage gate.
+- **`jq` on `PATH`.** The hooks read their payload with it. Without it the triage hook prints one notice per session naming jq and the rest stay silent — no triage, no reminders, no triage gate.
 - **PyYAML for `/usr/bin/python3`** (and for the `python3` you run commands with). The workflow emitter reads `manifest.yaml` with it, and the emitted workflow runs its Gate and Record commands under `/usr/bin/python3`. `/v:init` checks both.
-- **A git repository with at least one commit.** A job's baseline is pinned to a commit; with no `HEAD` there is nothing to pin.
+- **A git repository with at least one commit.** A job's baseline is pinned to a commit; with no `HEAD` there is nothing to pin. In a fresh project: `git init && git add -A && git commit -m "initial commit"`.
 - **One project setting.** `worktree.baseRef` should be `head`, or a dependent job runs in the main checkout and such jobs are serialized. `/v:init` writes it unless you say no — see Install.
 
 ## Install
@@ -47,7 +47,7 @@ and falls back to WebSearch/WebFetch (12 of the last 16 library audits ran that 
 1. **Install** — the commands above, then a new session.
 2. **Run `/v:init` once.** It checks the prerequisites (Superpowers, `jq`, PyYAML, a first commit), detects which model CLIs you have,
    saves the config, writes `worktree.baseRef: head` unless you say no, and drafts the impact taxonomy
-   (`.claude/compound-v-impact-taxonomy.yaml`) for you to confirm and commit. `/v:dispatch` refuses to run without that file.
+   (`.claude/compound-v-impact-taxonomy.yaml`) for you to confirm and commit. `/v:dispatch` refuses to run without that file (unless pre-eval is disabled by config).
 3. **Work.** Describe the feature, or start brainstorming as usual. A `UserPromptSubmit` hook scores the first change request of each session
    and sizes it as DIRECT, SCOPED or FULL. There is no command to launch the orchestration; Claude runs it for you.
 
@@ -117,7 +117,7 @@ The triage gate is on by default. It is exempt on `docs/superpowers/**`, fires a
 
 ## Good to know
 - **A `lightweight` budget profile** — `/v:init` Step 3f. It sets the `cost-aware` stance, turns pre-brainstorm research off, keeps the advisor off or on Opus,
-  asks for `retry: {max_attempts: 1, escalate_reviewer: false}` in each manifest, and skips the archaeology pre-flight on greenfield work. What it saves is **not measured yet**,
+  lowers the retry budget to `retry: {max_attempts: 1, escalate_reviewer: false}` (see `/v:init` Step 3f for where it is written), and skips the archaeology pre-flight on greenfield work. What it saves is **not measured yet**,
   and it does not turn off the Opus partition review, the domain pre-flight or the three-pass review.
 - **Antigravity and Cursor are lower-trust** — no kernel sandbox, so the scope gate catches an out-of-bounds write after the fact but cannot prevent it. Prefer Codex for anything sensitive.
 - **Cursor on a Free plan** can only use its `auto` model; named models are paid.

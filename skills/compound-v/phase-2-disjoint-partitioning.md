@@ -176,11 +176,13 @@ These come from `routing-policy.md` / `execution-manifest.md` and are enforced d
 
 ### Validate before handing off
 
-Run the deterministic validator against the materialized manifest. **Select the mode by manifest kind (CR5-1):** the manifest this phase emits from a plan carries **no** `fast_path` block, so it is validated **mode-lessly** (legacy), as shown. A `fast_path` manifest — the v2.9 pre-eval-backed single-job kind, materialized by [`compound-v-fastpath-materialize.py`](../../scripts/compound-v-fastpath-materialize.py), not by this phase — MUST instead be validated with `--mode pre-dispatch`; a mode-less `fast_path` manifest is fail-closed rejected. The validator ships with the plugin, not with the target repository — resolve the plugin root once per session (`CLAUDE_PLUGIN_ROOT` is a hook-context hint, not a Bash variable, so this fallback covers an installed plugin cache or a checkout of this repo):
+Run the deterministic validator against the materialized manifest. **Select the mode by manifest kind (CR5-1):** the manifest this phase emits from a plan carries **no** `fast_path` block, so it is validated **mode-lessly** (legacy), as shown. A `fast_path` manifest — the v2.9 pre-eval-backed single-job kind, materialized by [`compound-v-fastpath-materialize.py`](../../scripts/compound-v-fastpath-materialize.py), not by this phase — MUST instead be validated with `--mode pre-dispatch`; a mode-less `fast_path` manifest is fail-closed rejected. The validator ships with the plugin, not with the target repository — resolve the plugin root once per session (`CLAUDE_PLUGIN_ROOT` is a hook-context hint, not a Bash variable, so the cache line covers an installed plugin, `$PWD` is used only inside a checkout of this plugin, and an empty `$CV` is a stop — do not run the commands below with it):
 
 ```bash
 CV="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$HOME"/.claude/plugins/cache/*/superpowers-v/*/ 2>/dev/null | sort -V | tail -1)}"
-CV="${CV:-$PWD}"; CV="${CV%/}"
+CV="${CV%/}"
+[ -f "$CV/scripts/compound-v-emit-workflow.py" ] || CV="$PWD"
+[ -f "$CV/scripts/compound-v-emit-workflow.py" ] || { echo "superpowers-v plugin root not found: reinstall the plugin" >&2; CV=""; }
 # plan-based (legacy) manifest — what this phase emits:
 python3 "$CV/scripts/compound-v-validate-manifest.py" docs/superpowers/execution/<run-id>/manifest.yaml
 # fast_path manifest (produced by the pre-eval materializer, shown here for completeness):

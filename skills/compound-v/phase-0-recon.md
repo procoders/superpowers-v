@@ -36,11 +36,13 @@ Skip **only** when the change cannot alter a shipped artifact, runtime behavior,
 
 ### Gate 2 — Knowledge-base hit (V-memory)
 
-Before searching the web, check what the repo already knows. From the **repo root** (agent bash cwd resets between calls — `cd` explicitly or use an absolute script path). The engine script ships with the plugin, not with the target repository — resolve the plugin root once per session (`CLAUDE_PLUGIN_ROOT` is a hook-context hint, not a Bash variable, so this fallback covers an installed plugin cache or a checkout of this repo):
+Before searching the web, check what the repo already knows. From the **repo root** (agent bash cwd resets between calls — `cd` explicitly or use an absolute script path). The engine script ships with the plugin, not with the target repository — resolve the plugin root once per session (`CLAUDE_PLUGIN_ROOT` is a hook-context hint, not a Bash variable, so the cache line covers an installed plugin, `$PWD` is used only inside a checkout of this plugin, and an empty `$CV` is a stop — do not run the commands below with it):
 
 ```bash
 CV="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$HOME"/.claude/plugins/cache/*/superpowers-v/*/ 2>/dev/null | sort -V | tail -1)}"
-CV="${CV:-$PWD}"; CV="${CV%/}"
+CV="${CV%/}"
+[ -f "$CV/scripts/compound-v-emit-workflow.py" ] || CV="$PWD"
+[ -f "$CV/scripts/compound-v-emit-workflow.py" ] || { echo "superpowers-v plugin root not found: reinstall the plugin" >&2; CV=""; }
 python3 "$CV/scripts/compound-v-memory.py" search "<topic>" --top 8 --json
 ```
 
