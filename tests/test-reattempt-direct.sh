@@ -133,6 +133,19 @@ case "$out" in blocked*stray.txt*) ok "attempt 2 is STILL blocked on stray.txt" 
 case "$out" in *d1.baseline*) bad "attempt 2 charged with its own pin" "$out" ;;
   *) ok "...and not on its own pin" ;; esac
 
+echo "== a leftover the user already restored is not reported"
+setup restored
+reg >/dev/null
+mkdir -p "$R/src"; echo v1 > "$R/src/app.txt"; echo changed >> "$R/README.md"
+out=$(gate)
+case "$out" in blocked*README.md*) ok "attempt 1 is blocked on README.md" ;;
+  *) bad "attempt 1 is blocked on README.md" "$out" ;; esac
+git -C "$R" checkout -q -- README.md
+commit_docs
+rp=$("$PY" -B "$EMIT" resume-prepare --run-dir "$RD")
+case "$rp" in *leftover_violations*) bad "a restored README.md is still reported as a leftover" "$rp" ;;
+  *) ok "a restored file is not reported as a leftover" ;; esac
+
 echo "== re-dispatch with a commit between attempts is refused"
 setup redispatch
 reg >/dev/null

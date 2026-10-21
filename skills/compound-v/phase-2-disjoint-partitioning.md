@@ -139,7 +139,7 @@ One manifest per run. The full schema, every field, and the worked example live 
 
 ### How to build it from the verified partition
 
-1. **Top-level fields.** Fill `run_id` (convention `YYYY-MM-DD-<slug>`), `feature`, `spec_path`, `plan_path`, the three `audits` paths (archaeology / domain / library), `routing_stance` (read from `.claude/compound-v.json`; default `balanced`, `claude-only` when no Codex), and `max_parallel` (the Phase 3 4–6 ceiling — see below).
+1. **Top-level fields.** Fill `run_id` (convention `YYYY-MM-DD-<slug>`), `feature`, `spec_path`, `plan_path`, the three `audits` paths (archaeology / domain / library), `routing_stance` (read from `.claude/compound-v.json`; default `balanced`. With no Codex keep that stance and route its codex jobs to `claude` — `claude-only` would lift a cost-aware project's frontier to Fable), and `max_parallel` (the Phase 3 4–6 ceiling — see below).
 2. **Carry the feature-level `acceptance_criteria`** straight from the spec's Acceptance Criteria. These are **feature-level** and gate the *final integration review* — not any single task. Do **not** synthesize them; copy the spec's AC verbatim. (Each job *also* gets its own narrow `acceptance`; do not confuse the two — see `execution-manifest.md`.)
 3. **One `jobs[]` entry per partition row** (Task 0 + every parallel task). For each, set:
    - `id` (the task id), `title`, and a `type` token the Routing Policy understands (`shared_foundation`, `core_slice`, `bounded_crud`, `large_isolated`, `mechanical_refactor`, `docs`, `tests_new`, `external_api`, `review`).

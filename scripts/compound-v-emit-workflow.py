@@ -11777,7 +11777,20 @@ def _leftover_violations(run_dir, archived_rel):
     root = (top or "").strip() if rc == 0 else ""
     if not root:
         return []
-    return [p for p in paths if isinstance(p, str) and os.path.lexists(os.path.join(root, p))]
+    paths = [p for p in paths if isinstance(p, str) and p]
+    if not paths:
+        return []
+    # Still a leftover only if git still sees it as changed or untracked: a file the
+    # user already restored to HEAD is clean and must not be reported.
+    rc, st, _err = _run(["git", "-C", root, "status", "--porcelain", "-z",
+                         "--untracked-files=all", "--"] + paths)
+    if rc != 0:
+        return []
+    dirty = set()
+    for rec in (st or "").split("\0"):
+        if len(rec) > 3:
+            dirty.add(rec[3:])
+    return [p for p in paths if p in dirty]
 
 
 def cmd_integrated_jobs(argv):

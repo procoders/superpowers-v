@@ -433,7 +433,9 @@ separate OS-specific path) are invisible to this script but still apply at runti
 ## Env-aware Claude-only fallback
 
 If `/v:init` finds **no Codex CLI** (or the user picks Claude-only), the stance
-collapses so nothing routes to a backend that is not installed:
+collapses so nothing routes to a backend that is not installed. The rewrite keeps the chosen
+stance — a `cost-aware` project stays `cost-aware`, whose `frontier` is Opus; only a project that
+chose `claude-only` gets that stance's Fable frontier:
 
 - Every `backend: codex` row is rewritten to **`backend: claude`, `isolation: worktree`**
   and bumped to **`tier: deep`** (the large-isolated build keeps its worktree

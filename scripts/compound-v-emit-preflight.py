@@ -508,10 +508,12 @@ def _cut_words(text, cap):
     return cut.rstrip(" —-·,;:")
 
 
-_NON_SOURCE_EXT = (".md", ".markdown", ".txt", ".rst", ".json", ".yaml", ".yml", ".toml",
-                   ".lock", ".gitignore", ".gitattributes", ".editorconfig", ".png", ".jpg",
-                   ".jpeg", ".gif", ".svg", ".ico", ".pdf")
-_NON_SOURCE_DIRS = ("docs/", ".claude/", ".github/", ".vscode/", ".idea/")
+# Conservative on purpose: only prose, images and the plugin's own .claude/ config count
+# as "not code". A .yml, .json or anything under docs/ or .github/ may be real
+# implementation (a workflow, a playbook, docs/tools/build.py), so it ends greenfield.
+_NON_SOURCE_EXT = (".md", ".markdown", ".txt", ".rst", ".png", ".jpg", ".jpeg", ".gif",
+                   ".svg", ".ico", ".pdf")
+_NON_SOURCE_DIRS = (".claude/",)
 
 
 def is_greenfield(repo):
@@ -528,7 +530,8 @@ def is_greenfield(repo):
         if not rel or rel.startswith(_NON_SOURCE_DIRS):
             continue
         base = rel.rsplit("/", 1)[-1].lower()
-        if base in ("license", "licence", "readme", "notice", "copying"):
+        if base in ("license", "licence", "readme", "notice", "copying", ".gitignore",
+                    ".gitattributes", ".editorconfig"):
             continue
         if not base.endswith(_NON_SOURCE_EXT):
             return False
@@ -945,9 +948,13 @@ def _selftest():
             open(os.path.join(_g, _rel), "w").close()
         subprocess.run(["git", "-C", _g, "add", "-A"], check=True)
         check("greenfield: a repo of docs and config only is greenfield", is_greenfield(_g) is True)
-        open(os.path.join(_g, "app.py"), "w").close()
-        subprocess.run(["git", "-C", _g, "add", "-A"], check=True)
-        check("greenfield: one tracked source file ends it", is_greenfield(_g) is False)
+        for _code in (".github/workflows/ci.yml", "docs/tools/build.py", "app.py"):
+            os.makedirs(os.path.dirname(os.path.join(_g, _code)) or _g, exist_ok=True)
+            open(os.path.join(_g, _code), "w").close()
+            subprocess.run(["git", "-C", _g, "add", "-A"], check=True)
+            check("greenfield: %s ends it" % _code, is_greenfield(_g) is False)
+            subprocess.run(["git", "-C", _g, "rm", "-q", "--cached", _code], check=True)
+            os.remove(os.path.join(_g, _code))
     _gp = build_plan("s.md", "t", "2026-01-02", greenfield=True)
     check("greenfield: 1A is skipped WITH a notice, 1B and 1C still run",
           [(e["phase"], "skipped" in e) for e in _gp["entries"]]

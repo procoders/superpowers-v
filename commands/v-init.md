@@ -371,7 +371,9 @@ Stances are defined in [`routing-policy.md`](../skills/compound-v/routing-policy
 1. If `{{args}}` named a valid stance, pre-select it; else **recommend**:
    - **Codex usable** → recommend **Balanced** (the shipped default).
    - **Codex absent or version-incompatible** → **Claude-only** (the env-aware
-     fallback; Codex rows collapse to `claude · opus`, worktree).
+     fallback; Codex rows collapse to `claude · opus`, worktree). The same codex→claude
+     rewrite applies under **any** stance, so a user who wants **Cost-aware** keeps it:
+     Claude-only's `frontier` is Fable, Cost-aware's is Opus.
 2. Offer the alternatives explicitly: **Conservative** (Opus-heavy, no Codex) and
    **Cost-aware** (more Sonnet/Codex). Let the user override the recommendation.
    Step 3f offers a `lightweight` budget profile on top of the stance.
