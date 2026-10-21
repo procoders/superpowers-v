@@ -78,6 +78,14 @@ Its savings are not measured. `worktree.baseRef: head` is offered default-yes.
 - `/v:collect` and the integration gate use the same inputs as Engine C's gate (pinned baseline, digest-checked
   snapshot, `toolchain_artifacts`).
 - `register-lane --cwd` may be omitted; a repository with no first commit gets a message saying so.
+- `resume-prepare` lists `leftover_violations`: paths that blocked a superseded direct attempt and are still in the
+  working tree. It never forgives them; it says so, so the next attempt is not blocked on the same file unawares.
+- The Trigger 1 reminder named `scripts/compound-v-emit-preflight.py`, a path only this repository has; it now
+  names the installed plugin's copy. On a greenfield repository (git tracks no source file yet) the pre-flight
+  helper skips code-archaeologist with a notice; `--no-greenfield-skip` runs it.
+- `/v:models` and `/v:init` seeded a Claude map that disagreed with the resolver (`standard: opus` under balanced,
+  no `frontier`); both now write the resolver's own per-stance map. A legacy flat `models` map can no longer
+  put Fable under `cost-aware`.
 
 ## [3.8.5] - 2026-10-14
 
