@@ -39,7 +39,9 @@ the interpreter that *hangs*, not for the ordinary one), 5 s for a delegated man
 `hooks/hooks.json`, because a budget a hook applies to itself is not a budget on the hook. A probe that runs out of budget stops the ladder, says so
 once, and allows. And when the hook cannot create the private bytecode-cache directory that redirection needs, it now imports **nothing** — it used to
 carry on without the redirection, which dropped the defence on precisely the machine whose temp dir is full, unwritable or hostile. It is what turns
-lane enforcement from detection-after-the-fact into a refusal before the write.
+lane enforcement from detection-after-the-fact into a refusal before the write. The YAML loader the hook imports, `scripts/compound-v-validate-manifest.py`,
+is an entry point over the `scripts/cv_validate/` package, which it loads by explicit path and from source only: the redirection still covers the entry
+file, and no bytecode cache is consulted for the package at all.
 
 ## What this plugin does
 

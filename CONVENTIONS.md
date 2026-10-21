@@ -22,6 +22,12 @@ Deltas from default practice that this repo actually enforces.
   (`.github/workflows/validate.yml:298-312`)
 - Reuse canonical shared constants instead of forking a second copy (e.g. secret-pattern families are
   imported from `compound-v-memory.py`, not redefined). (`scripts/compound-v-onboard.py:5-9`)
+- A script too large for one file keeps its hyphenated entry point and moves its code into a package
+  beside it (`scripts/cv_validate/` for `compound-v-validate-manifest.py`). The entry hardens
+  `sys.path` first, never puts its own directory back on it, and loads the package **by explicit
+  path, from source only** — no `.pyc` beside the package is ever read or written — then re-exports
+  every name the single file defined, so siblings that load the entry by path see no change.
+  (`scripts/compound-v-validate-manifest.py:192`, `scripts/compound-v-validate-manifest.py:201-240`)
 
 ## Tests live under `tests/`, and the sweep must never match zero
 
