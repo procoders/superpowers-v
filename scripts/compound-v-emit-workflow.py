@@ -115,53 +115,65 @@ def _harden_sys_path():
 _harden_sys_path()
 
 import importlib  # noqa: E402
+import importlib.machinery  # noqa: E402
 import importlib.util  # noqa: E402
 import json  # noqa: E402
-import shutil  # noqa: E402
-import tempfile  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 PACKAGE = "cv_emit"
+# Dependency order: each module's relative imports name only modules loaded before it.
 SUBMODULES = (
     "util", "digest", "roles", "clamp", "retry", "recall", "prompts", "plan", "script_js", "gate",
     "record", "finalize", "lane", "emit", "selftest",
 )
 
 
+class _SourceOnlyLoader(importlib.machinery.SourceFileLoader):
+    """Compiles from the .py itself: no bytecode cache is read or written."""
+
+    def get_code(self, fullname):
+        path = self.get_filename(fullname)
+        return self.source_to_code(self.get_data(path), path)
+
+
 def _load_package():
-    """Load scripts/cv_emit by explicit path, reading no bytecode cache beside it."""
+    """Load scripts/cv_emit by explicit path, every module from source.
+
+    The package's __path__ is emptied, so a module not loaded here cannot be found
+    on disk at all: a planted cv_emit/x/__init__.pyc or .pyc is never consulted."""
+    # realpath: a symlinked entry must still find the package beside the real file.
+    pkg_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), PACKAGE)
+    if not os.path.isfile(os.path.join(pkg_dir, "__init__.py")):
+        raise ImportError("%s not found beside the entry point (%s): reinstall the plugin"
+                          % (PACKAGE, pkg_dir))
     for name in [n for n in sys.modules if n == PACKAGE or n.startswith(PACKAGE + ".")]:
         del sys.modules[name]
-    prev_prefix = getattr(sys, "pycache_prefix", None)
+    saved = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
     try:
-        tmp_pycache = tempfile.mkdtemp(prefix="cv-pycache-")
-    except Exception as exc:  # noqa: BLE001
-        raise ImportError("%s not loaded: no private bytecode cache directory (%s)"
-                          % (PACKAGE, exc))
-    sys.pycache_prefix = tmp_pycache
-    try:
-        # realpath: a symlinked entry must still find the package beside the real file.
-        pkg_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), PACKAGE)
-        if not os.path.isfile(os.path.join(pkg_dir, "__init__.py")):
-            raise ImportError("%s not found beside the entry point (%s): reinstall the plugin"
-                              % (PACKAGE, pkg_dir))
-        spec = importlib.util.spec_from_file_location(
-            PACKAGE, os.path.join(pkg_dir, "__init__.py"),
-            submodule_search_locations=[pkg_dir])
-        package = importlib.util.module_from_spec(spec)
-        sys.modules[PACKAGE] = package
-        spec.loader.exec_module(package)
-        for sub in SUBMODULES:
-            importlib.import_module(PACKAGE + "." + sub)
+        pkg = None
+        for sub in ("__init__",) + SUBMODULES:
+            is_pkg = sub == "__init__"
+            name = PACKAGE if is_pkg else PACKAGE + "." + sub
+            path = os.path.join(pkg_dir, sub + ".py")
+            spec = importlib.util.spec_from_file_location(
+                name, path, loader=_SourceOnlyLoader(name, path),
+                submodule_search_locations=[] if is_pkg else None)
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[name] = mod
+            spec.loader.exec_module(mod)
+            if is_pkg:
+                pkg = mod
+            else:
+                setattr(pkg, sub, mod)
     finally:
-        sys.pycache_prefix = prev_prefix
-        shutil.rmtree(tmp_pycache, ignore_errors=True)
+        sys.dont_write_bytecode = saved
 
 
 try:
     _load_package()
-except ImportError as _exc:
+except (ImportError, OSError) as _exc:
     if __name__ != "__main__":
         raise
     sys.stderr.write("compound-v-emit-workflow.py: %s\n" % _exc)

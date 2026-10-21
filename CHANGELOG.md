@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [3.9.1] - 2026-10-21
+
+### Changed — the two largest scripts are packages now (no behaviour change)
+
+`scripts/compound-v-emit-workflow.py` was 11,700 lines and `scripts/compound-v-validate-manifest.py` 6,400; the
+largest file in any other installed plugin we looked at is under 3,000. Their code now lives in `scripts/cv_emit/`
+(15 modules: util, digest, roles, clamp, retry, recall, prompts, plan, script_js, gate, record, finalize, lane, emit,
+selftest) and `scripts/cv_validate/` (yaml loading, globs, rules, triage, fast path, blocks, core, advisories, CLI,
+selftests). The two entry points keep their filenames, every subcommand and flag, and every top-level name (re-exported),
+so the bashCommandClamp rule, lane-guard's matcher and every script that loads them by path see no change. They load
+their package by explicit path and still never put their own directory on `sys.path`; neither package can execute a
+planted `.pyc` (`cv_emit` redirects the bytecode cache to a private temp directory, `cv_validate` compiles from source).
+Proof of "no behaviour change": golden transcripts of both scripts (157,792 and 5,661 lines: every subcommand's help
+and error exits, `emit` on all 97 committed manifests, the register → gate → record → finalize → resume chain, every
+validator mode) are byte-identical before and after, an AST comparison of every top-level definition finds only the
+declared edits, and every selftest keeps its check count.
+
+### Fixed
+
+- The validator's selftest ran seven reviewer checks after its early `return 1`, so they could never fail the run.
+- An entry point copied without its package now exits 2 with a message; a symlinked entry finds its package.
+- The impact taxonomy marks `scripts/cv_emit/**` and `scripts/cv_validate/**` sensitive, as it did the single files,
+  so an edit to the moved rules still routes as SCOPED+.
+
 ## [3.9.0] - 2026-10-21
 
 A partner tested 3.8.5 on a fresh repository before recording a tutorial (a small salon booking app) and it never

@@ -226,7 +226,7 @@ def _load_package():
             path = os.path.join(pkg_dir, sub + ".py")
             spec = importlib.util.spec_from_file_location(
                 name, path, loader=_SourceOnlyLoader(name, path),
-                submodule_search_locations=[pkg_dir] if is_pkg else None)
+                submodule_search_locations=[] if is_pkg else None)
             mod = importlib.util.module_from_spec(spec)
             sys.modules[name] = mod
             spec.loader.exec_module(mod)
