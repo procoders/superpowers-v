@@ -186,6 +186,31 @@ fin=$("$PY" -B "$EMIT" finalize-wave --run-dir "$RD" --repo-root "$R" \
 case "$fin" in *contradicted*|*REFUSED*) bad "finalize-wave refused the re-attempt" "$(printf '%s' "$fin" | head -c 400)" ;;
   *) ok "finalize-wave admits the re-attempt (no contradicted verdict)" ;; esac
 
+echo "== worktree job: a second registration inside attempt 2 keeps the before-image"
+setup wtjob
+sed -i.bak 's/isolation: direct/isolation: worktree/; s/type: shared_foundation/type: implementation/' "$RD/manifest.yaml" && rm -f "$RD/manifest.yaml.bak"
+printf 'provision_command: "echo dep > dep.txt"\n' >> "$RD/manifest.yaml"
+git -C "$R" add -A && git -C "$R" commit -qm "worktree manifest"
+WT="$T/wtjob-wt"
+git -C "$R" worktree add -q --detach "$WT" HEAD
+regw() {
+  "$PY" -B "$EMIT" register-lane --run-dir "$RD" --job-id d1 --cwd "$WT" \
+    --repo-root "$R" --isolation worktree --no-test-contract >/dev/null 2>&1
+}
+regw
+mkdir -p "$RD/results"; echo '{"job_id":"d1","status":"failed"}' > "$RD/results/d1.json"
+resume_prepare
+regw
+echo leak > "$WT/outside.py"
+regw
+if grep -q 'outside.py' "$RD/preexisting/d1.txt" 2>/dev/null \
+   || grep -q 'outside.py' "$RD/preexisting/d1.verified.txt" 2>/dev/null; then
+  bad "a re-registration inside attempt 2 photographed the worker's own write"
+else
+  ok "a re-registration inside attempt 2 does not forgive the worker's write"
+fi
+git -C "$R" worktree remove --force "$WT" >/dev/null 2>&1
+
 echo "== escalation never requests fable under cost-aware"
 for stance in cost-aware balanced; do
   setup "esc-$stance" "$stance"

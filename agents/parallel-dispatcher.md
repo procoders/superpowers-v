@@ -139,8 +139,9 @@ worktree path is absolute.)
    # Build the flag list with explicit if/else (portable across bash AND zsh —
    # ${VAR:+...} conditional expansion does NOT word-split under zsh).
    # Read `routing_stance` once from the manifest and pass `--stance` on every
-   # resolve (Task 0 included); without it the resolver defaults to `balanced`.
-   STANCE=$(…manifest routing_stance…)   # read once from the manifest, default "balanced"
+   # resolve (Task 0 included); without it the resolver uses --config's `stance`
+   # (the project's), then `balanced` — the same order Engine C's emitter uses.
+   STANCE=$(…manifest routing_stance…)   # read once from the manifest; empty when absent
    set -- --backend "$BACKEND" --tier "$TIER"
    [ -n "$EFFORT" ] && set -- "$@" --effort "$EFFORT"
    [ -n "$CONFIG" ] && set -- "$@" --config "$CONFIG"

@@ -293,6 +293,8 @@ check "E: the salon request after a DIRECT prompt still gets the FULL directive"
   "$(has "$(ctx)" 'TIER: FULL' && has "$(ctx)" 'you are starting the Compound V pipeline' && echo 1 || echo 0)"
 run sE2 'and now rename the stylist model to staff member everywhere' "$PROJE"
 check "E: after FULL the session is spent" "$([ -z "$OUT" ] && echo 1 || echo 0)"
+run sE3 'Build salon app' "$PROJE"
+check "E: a three-word change request is still scored" "$(has "$(ctx)" 'TIER:' && echo 1 || echo 0)"
 
 printf 'tests/test-triage-hook-engagement.sh: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" = "0" ] || exit 1

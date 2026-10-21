@@ -402,6 +402,19 @@ def _project_config_module():
         return None
 
 
+def config_stance(config_path):
+    """The project's `stance` key (written by /v:init), else "balanced"."""
+    if not config_path:
+        return "balanced"
+    try:
+        with open(config_path, "r", encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return "balanced"
+    v = doc.get("stance") if isinstance(doc, dict) else None
+    return v.strip() if isinstance(v, str) and v.strip() in VALID_STANCES else "balanced"
+
+
 def load_config_models(config_path):
     """
     Return the ``models`` mapping from a config JSON, or an empty dict.
@@ -530,8 +543,8 @@ def main(argv):
     parser.add_argument("--backend", required=True, choices=list(BACKENDS))
     parser.add_argument("--tier", required=True, choices=list(TIERS))
     parser.add_argument("--effort", default=None, choices=list(EFFORTS))
-    parser.add_argument("--stance", default="balanced", choices=list(VALID_STANCES),
-                        help="routing stance (default balanced)")
+    parser.add_argument("--stance", default=None, choices=list(VALID_STANCES),
+                        help="routing stance (default: --config's `stance`, else balanced)")
     parser.add_argument("--config", default=None, help="path to compound-v.json")
     parser.add_argument(
         "--explicit-model",
@@ -558,6 +571,7 @@ def main(argv):
         print(json.dumps({"error": str(e)}), file=sys.stderr)
         return 2
 
+    stance = args.stance or config_stance(args.config)
     try:
         result = resolve(
             backend=args.backend,
@@ -565,7 +579,7 @@ def main(argv):
             effort=args.effort,
             config_models=config_models,
             explicit_model=args.explicit_model,
-            stance=args.stance,
+            stance=stance,
         )
     except ValueError as e:
         print(json.dumps({"error": str(e)}), file=sys.stderr)
@@ -976,6 +990,17 @@ def _selftest():
         "unknown effort raises",
         raises(lambda: resolve("claude", "deep", effort="extreme")),
     )
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        cp = os.path.join(td, "compound-v.json")
+        with open(cp, "w") as fh:
+            fh.write('{"stance": "cost-aware"}')
+        expect("config stance: cost-aware is read from --config", config_stance(cp) == "cost-aware")
+        expect("config stance: no config -> balanced", config_stance(None) == "balanced")
+        with open(cp, "w") as fh:
+            fh.write('{"stance": "anything"}')
+        expect("config stance: an unknown value -> balanced", config_stance(cp) == "balanced")
 
     if failures:
         print("\nSELFTEST FAILED: %d case(s)" % len(failures))

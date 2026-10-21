@@ -313,10 +313,16 @@ check "and no slash command minted a record" \
   "$([ "$(count_records)" = "$n_before" ] && echo 1 || echo 0)"
 
 # A covering record for THIS session silences it; one for another session does not.
-jq -n '{id:"2099-01-01-x", session_id:"sess-D", decision:"FASTPATH_ELIGIBLE",
-        tier:"DIRECT", declared_paths:["README.md"]}' >"$PREEVAL/x.json"
+# (3.9.0: only a SCOPED/FULL record spends the session; a DIRECT one does not.)
+jq -n '{id:"2099-01-01-x", session_id:"sess-D", decision:"FULL_PIPELINE",
+        tier:"FULL", declared_paths:["README.md"]}' >"$PREEVAL/x.json"
 o="$(run_nudge sess-D 'change the readme')"
-check "a pre-eval record for this session silences it" "$([ -z "$o" ] && echo 1 || echo 0)"
+check "a FULL pre-eval record for this session silences it" "$([ -z "$o" ] && echo 1 || echo 0)"
+jq -n '{id:"2099-01-01-y", session_id:"sess-DD", decision:"FASTPATH_ELIGIBLE",
+        tier:"DIRECT", declared_paths:["README.md"]}' >"$PREEVAL/y.json"
+o="$(run_nudge sess-DD 'add a retry to the uploader')"
+check "a DIRECT record for this session does NOT silence the next request" "$([ -n "$o" ] && echo 1 || echo 0)"
+rm -f "$PREEVAL/y.json"
 o="$(run_nudge sess-E 'change the readme intro')"
 check "a record for ANOTHER session does not silence it" "$([ -n "$o" ] && echo 1 || echo 0)"
 

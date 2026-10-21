@@ -1995,6 +1995,10 @@ def _validate_triage(manifest, repo_root, taxonomy_path):
     return problems
 
 
+_DECISION_TO_TIER = {"FASTPATH_ELIGIBLE": "DIRECT", "SCOPED_PIPELINE": "SCOPED",
+                     "FULL_PIPELINE": "FULL"}
+
+
 def _triage_record_problems(tri, repo_root):
     """A bound record that is on disk must carry the manifest's taxonomy digest, and no
     re-triage may have superseded it — otherwise a manifest bound before a re-triage
@@ -2008,6 +2012,17 @@ def _triage_record_problems(tri, repo_root):
     retriage = ("re-run /v:triage <the same request> and /v:orchestrate so the manifest "
                 "binds the new record (compound-v-preeval.py record-status shows which)")
     problems = []
+    if isinstance(rec, dict):
+        want_tier = _DECISION_TO_TIER.get(rec.get("decision"))
+        if want_tier and str(tri.get("tier") or "") != want_tier:
+            problems.append("manifest triage.tier %r does not match the record %s (decision "
+                            "%s is %s) — the tier is copied from the record, never chosen"
+                            % (tri.get("tier"), rel, rec.get("decision"), want_tier))
+        if rec.get("flavor") not in (None, "") and tri.get("flavor") != rec.get("flavor"):
+            problems.append("manifest triage.flavor %r does not match the record %s (flavor "
+                            "%r) — a SCOPED+ record's mandatory deep review and cross-model "
+                            "second opinion cannot be dropped by omitting the flavor"
+                            % (tri.get("flavor"), rel, rec.get("flavor")))
     if isinstance(rec, dict) and rec.get("taxonomy_digest") != tri.get("taxonomy_digest"):
         problems.append("manifest triage.taxonomy_digest does not match the record %s "
                         "(%r) — %s" % (rel, rec.get("taxonomy_digest"), retriage))

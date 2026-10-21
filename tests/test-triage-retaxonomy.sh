@@ -148,6 +148,11 @@ manifest "$WORK/m1.yaml" "$ID1" "\"$D1\"" "$(field "$WORK/t1.json" tier)"
 validate "$WORK/m1.yaml" "$WORK/v1.out"
 rc=$?
 check "--require-triage accepts the new record" "$([ $rc -eq 0 ] && echo 1)"
+manifest "$WORK/m1t.yaml" "$ID1" "\"$D1\"" SCOPED
+validate "$WORK/m1t.yaml" "$WORK/v1t.out"
+rc=$?
+check "--require-triage refuses a manifest whose tier disagrees with its record" \
+  "$([ $rc -ne 0 ] && grep -q "does not match the record" "$WORK/v1t.out" && echo 1)"
 manifest "$WORK/m1s.yaml" "$ID0" "\"$D1\"" FULL
 validate "$WORK/m1s.yaml" "$WORK/v1s.out"
 rc=$?

@@ -191,7 +191,8 @@ pre-flights:
 frontmatter and must not be: a static `model: fable` would spend the top model on every
 routine pre-flight. The caller sets it per invocation with the Agent tool's `model`
 override, which takes precedence over the definition. Reach for it when the feature is
-business-critical, not when it is merely large.
+business-critical, not when it is merely large — and never under the `cost-aware` stance,
+whose ceiling is Opus: there the override stops at `opus`.
 
 `scripts/lint-frontmatter.py` enforces this: `model: opus` on every agent, except the two
 named in its `SONNET_ELIGIBLE_AGENTS` allow-list, which may also carry `model: sonnet`.
@@ -538,8 +539,9 @@ is the agent's model and is unrelated to this execution-layer tier resolution.)
 > lower-trust backend"** (step 4, and [What scorecards are NOT](#what-scorecards-are-not)) is about
 > *which backend* an already-routed job gets, and the §A4 amendment does not touch it.
 
-1. Read the active **stance** from `.claude/compound-v.json` (default Balanced;
-   Claude-only if no Codex).
+1. Read the active **stance** from `.claude/compound-v.json` (default Balanced). With no
+   Codex, keep the stance and send its `codex` jobs to `claude` — never switch a cost-aware
+   project to `claude-only`, whose `frontier` is Fable.
 2. Check [`routing-lessons.md`](../../docs/superpowers/memory/routing-lessons.md)
    for a lesson matching this `type` + backend — if one applies, follow it.
 3. Otherwise apply the stance table above to get **backend + (tier, effort)**.

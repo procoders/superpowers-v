@@ -214,6 +214,8 @@ _REQUEST_MAX_CHARS=4000
 
 # Scoring attempts per session before a session that never got a decision is spent.
 _MAX_ATTEMPTS=3
+# DIRECT decisions per session before the hook stops scoring it.
+_MAX_DIRECT=6
 
 # --- store -------------------------------------------------------------------
 # Its OWN directory, not the Stop hook's: a temp sweep of one must not re-arm
@@ -571,10 +573,9 @@ hook_main() {
              and test("^(read|show me|explain|summari[sz]e|look at|cat)[[:space:]]")
              and (test("[\n;,]| and | then | also ") | not))
          then "r" else "" end),
-    (((.prompt // "") | tostring)
-       | gsub("^[[:space:]]+"; "") | gsub("[[:space:]]+$"; "")
-       | if ((split("[[:space:]]+"; null) | length) < 4
-             and (test("[/~]|\\.[A-Za-z0-9]{1,6}([[:space:]]|$)") | not))
+    (((.prompt // "") | tostring) | ascii_downcase
+       | gsub("^[[:space:]]+"; "") | gsub("[[:space:]!.,)(]+$"; "")
+       | if test("^(hi|hello|hey|yo|ok|okay|k|thanks|thank you|thx|ty|yes|yep|no|nope|sure|cool|great|nice|got it|good|perfect|done|привет|спасибо|ок|окей|да|нет|понял|отлично|хорошо|супер)( there| a lot| so much| you)?$")
          then "s" else "" end)
   ' 2>/dev/null)" || return 1
   [ -n "$fields" ] || return 1
@@ -649,8 +650,8 @@ EOF
     return $?
   fi
 
-  # Fewer than four words and nothing path-like ("hi", "ok") is small talk, not
-  # a change request.
+  # A bare greeting or acknowledgement ("hi", "ok", "thanks", "спасибо") is small
+  # talk. Deliberately a closed list: "Build salon app" is three words and real.
   if [ "${tiny:-}" = "s" ]; then
     return 1
   fi
@@ -658,6 +659,10 @@ EOF
   marker="${store}/nudged-${key}"
   attempts="${store}/attempt-${key}"
   [ -e "$marker" ] && return 1
+  if [ -f "${store}/direct-${key}" ] \
+     && [ "$(wc -c <"${store}/direct-${key}" 2>/dev/null | tr -d ' ')" -ge "$_MAX_DIRECT" ] 2>/dev/null; then
+    return 1
+  fi
   if [ -f "$attempts" ] \
      && [ "$(wc -c <"$attempts" 2>/dev/null | tr -d ' ')" -ge "$_MAX_ATTEMPTS" ] 2>/dev/null; then
     return 1
@@ -820,8 +825,11 @@ one-line notice and the user's chance to say skip is that offer."
 
   _emit "$msg" || return 1
   if [ "$tier" = "DIRECT" ]; then
-    # DIRECT leaves the session armed for the next request, but counts toward
-    # the same per-session cap so a chatty session is not scored forever.
+    # DIRECT leaves the session armed for the next request. It clears the
+    # undecided-attempt count (that cap is for failures) and has its own cap, so
+    # a chatty session is not scored on every prompt forever.
+    rm -f "$attempts" 2>/dev/null || true
+    printf 'x' >>"${store}/direct-${key}" 2>/dev/null || true
     return 0
   fi
   : >"$marker" 2>/dev/null || true

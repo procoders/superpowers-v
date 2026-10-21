@@ -6553,8 +6553,15 @@ def _prior_attempt_concluded(run_dir, job_id, state_entry):
     if isinstance(merged, dict) and merged.get("integrated"):
         return False
     receipt = os.path.join(run_dir, "receipts", "%s.gate.json" % job_id)
+    if os.path.exists(receipt):
+        return True
     result = os.path.join(run_dir, "results", "%s.json" % job_id)
-    return os.path.exists(receipt) or os.path.exists(result)
+    if not os.path.exists(result):
+        return False
+    # A result this attempt already superseded is not a NEW conclusion: without
+    # this, every registration inside attempt 2 re-photographed the tree and
+    # forgave whatever the worker had already written outside its lane.
+    return sha256_file(result) != (state_entry or {}).get("superseded_result")
 
 
 def _resume_in_place(entry):
@@ -6670,6 +6677,9 @@ def _supersede_attempt(run_dir, job_id, entry, wts, keep_cwd=None, isolation=Non
     entry.pop("baseline", None)
     entry["status"] = "pending"
     entry["worktree"] = None
+    _result = os.path.join(run_dir, "results", "%s.json" % job_id)
+    if os.path.isfile(_result):
+        entry["superseded_result"] = sha256_file(_result)
     lane_entries_dropped = 0
     if wts is not None:
         dropped = [cwd for cwd, jid in wts.items()
