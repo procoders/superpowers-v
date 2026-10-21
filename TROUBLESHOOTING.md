@@ -206,7 +206,39 @@ Re-run the validator (or `/v:dispatch`) until it's clean. The manifest schema + 
 
 **Cause:** the job's `baseline` was pinned once, at the first attempt, and a bare re-dispatch branches the new worktree from the current `HEAD` while the gate still diffs against that first pin — so every commit the pipeline made to the run directory between attempts (including the previous attempt's own record-keeping) reads as a write this attempt made. This is finding 146 (2026-09-03), reached through a door `/v:resume` does not guard.
 
-**Fix:** fixed in 3.6.3 for `worktree` jobs — `register-lane` now detects a concluded previous attempt (a receipt or result already on disk for the job) and re-pins `baseline` to the fresh worktree's `HEAD` before re-registering, so this no longer happens on a plain re-dispatch. For a `direct` job the pin still does not clear itself; run [`/v:resume <run-id>`](commands/v-resume.md) instead, which calls `resume-prepare` to clear it. See `skills/compound-v/state-machine.md` § `baseline` re-pins on a re-attempt.
+**Fix:** fixed in 3.6.3 for `worktree` jobs — `register-lane` now detects a concluded previous attempt (a receipt or result already on disk for the job) and re-pins `baseline` to the fresh worktree's `HEAD` before re-registering, so this no longer happens on a plain re-dispatch. For a `direct` job the pin does not clear itself, and `register-lane`'s `stale_pin_warning` reaches only the Workflow agent. As of 3.8.6 [`/v:dispatch`](commands/v-dispatch.md) runs `resume-prepare` itself before emitting when the run directory already holds an attempt, and `emit` refuses with exit 2, naming `/v:resume`, if it still finds an uncleared pin. [`/v:resume <run-id>`](commands/v-resume.md) remains the path for a halted run. See `skills/compound-v/state-machine.md` § `baseline` re-pins on a re-attempt.
+
+## Every re-attempt of a job stops on a "baseline violation" — the gate lists `jobs/<id>.baseline`
+
+**Symptom:** a job — typically Task 0 of a FULL run, which always runs `direct` — halts, you run `/v:resume` (or re-run `/v:dispatch`), and the next attempt halts again with the job's own `jobs/<id>.baseline` as a violation. Every further attempt does the same.
+
+**Cause:** the `direct`-mode snapshot `preexisting/<id>.txt` is taken once and binds each path to the digest it had at the first attempt. `resume-prepare` removed the old pin but kept that snapshot, so the next attempt's new pin no longer matched its recorded digest, lost its exemption, and was charged to the job — on every attempt. Reproduced on v3.8.5 in a throwaway repository.
+
+**Fix:** fixed in 3.8.6: retiring an attempt now drops only the pin's line from the snapshot, so the new pin is exempt again while everything else the failed attempt left behind stays measured. Use [`/v:resume <run-id>`](commands/v-resume.md) — not a hand edit of `preexisting/` — to retry. On an older release, upgrade; deleting the snapshot by hand would also forgive whatever the failed attempt wrote.
+
+## `/v:dispatch` refuses: "taxonomy `.claude/compound-v-impact-taxonomy.yaml` … does not exist"
+
+**Symptom:** the plan and manifest look fine, but step 2's `compound-v-validate-manifest.py --require-triage` fails with `manifest triage.taxonomy_digest is unverifiable: taxonomy '…/.claude/compound-v-impact-taxonomy.yaml' is unreadable because it does not exist`, or the triage record carries `taxonomy_digest: null`.
+
+**Cause:** every dispatch requires a triage record bound to the repository's impact taxonomy, and before 3.8.6 only `/v:onboard` wrote that file. A user who followed `/v:init` → work never had one, and every triage they ran was minted with `taxonomy_digest: null`.
+
+**Fix:**
+1. Run [`/v:init`](commands/v-init.md) again; Step 4g drafts the taxonomy from the directory structure (`compound-v-onboard.py draft-taxonomy`), shows it, and on your yes writes and commits it. No knowledge-base scan runs. `/v:onboard` writes the same file if you want the full onboarding anyway.
+2. Re-run [`/v:triage`](commands/v-triage.md) for the request so its record carries the new digest. A record minted before the taxonomy existed will not verify against it.
+3. Re-materialize the manifest ([`/v:orchestrate`](commands/v-orchestrate.md)) so its `triage` block binds the new record, then `/v:dispatch`.
+
+A `taxonomy_digest … does not match the taxonomy on disk` refusal is the same story the other way round: the taxonomy changed after the record was minted. Re-run `/v:triage`.
+
+## Nothing fires, or `/v:dispatch` stops with "PyYAML is required"
+
+**Symptom:** no triage nudge on a change request, no recon or pre-flight reminder at brainstorm or `writing-plans`, no Stop-hook triage gate — or `/v:dispatch` dies at emit with `PyYAML is required. On macOS use /usr/bin/python3, which ships it.`
+
+**Cause:** one of three prerequisites is missing, and two of them fail silently:
+- **Superpowers is not installed.** Compound V is a sidekick: its triggers key on `superpowers:brainstorming` and `superpowers:writing-plans`. Without the plugin those skills never run.
+- **`jq` is not on `PATH`.** Every hook that reads its JSON payload returns early without it (`command -v jq` in `hooks/triage-prompt-nudge.sh`, `brainstorm-trigger0-nudge.sh`, `epic-goal-stop.sh`, `precompact-snapshot.sh`, `postcompact-resume.sh`), printing nothing.
+- **PyYAML is missing** for `python3` or for `/usr/bin/python3` — the interpreter the emitted workflow runs its Gate, Record and Finalize commands with.
+
+**Fix:** run [`/v:init`](commands/v-init.md); Steps 1c–1c-ter probe all three and Step 2 walks you through each install: `/plugin install superpowers@claude-plugins-official`, `brew install jq` (or the distribution package), `/usr/bin/python3 -m pip install --user pyyaml` (or the distribution's `python3-yaml`). Start a new session afterwards so skills and hooks reload.
 
 ## Engine C didn't run — the dispatch fell back to the subagent path
 
@@ -279,7 +311,7 @@ render it — read it from `state.json` or the ack.
 
 **Cause:** `scripts/compound-v-emit-workflow.py`'s `_worktree_base_is_head` reads `worktree.baseRef` from the project's `.claude/settings.json`. Absent (the default), a dependent worktree job's `agent_isolation` resolves to `None` and the agent runs direct in the shared checkout — because a fresh worktree still branches from the default ref, which cannot see the prerequisite wave's commit yet (finding 60). Set to `"head"`, every worktree in the repo branches from the current `HEAD` instead, and the dependent job gets a real, isolated worktree that does contain the prerequisite's commit.
 
-**Fix:** add `{"worktree": {"baseRef": "head"}}` to the project's `.claude/settings.json` (merge — do not overwrite `permissions`/`hooks`/`env` or any other existing key). `/v:init` offers to make this edit for you; see [`v-init.md`](commands/v-init.md) Step 4d. This is a native, project-wide Claude Code setting (not a Compound V config key, and not the same file as `.claude/compound-v.json`) — the only two legal values are `"fresh"` (default) and `"head"`.
+**Fix:** add `{"worktree": {"baseRef": "head"}}` to the project's `.claude/settings.json` (merge — do not overwrite `permissions`/`hooks`/`env` or any other existing key). `/v:init` makes this edit by default — it still asks, with yes as the default answer; see [`v-init.md`](commands/v-init.md) Step 4d. This is a native, project-wide Claude Code setting (not a Compound V config key, and not the same file as `.claude/compound-v.json`) — the only two legal values are `"fresh"` (default) and `"head"`.
 
 **Related:** the finalizer now takes its record of where a job ran from the emitter's own gate receipt rather than trusting the manifest's `isolation` label (finding 89), so a direct-mode dependent job is not refused at integration on that account alone. What `baseRef: head` buys is **parallelism**, not survival. Two or more dependent jobs sharing one checkout cannot be attributed — a single before-image cannot separate concurrent writers, so each job's diff carries the other's files and both are BLOCKED for out-of-lane writes. The emitter no longer allows that shape: a wave carrying 2+ downgraded jobs is split so each runs alone, and emit says on stderr which jobs it serialized and that this setting restores full parallelism. So without the setting a dependent wave still completes, just one job at a time.
 

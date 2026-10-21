@@ -1,5 +1,5 @@
 ---
-description: Initialize Compound V in this project — detect backends and capabilities (Codex, Context7, required skills/agents), walk through any missing installs one at a time, pick a routing stance, and save project + user config.
+description: Initialize Compound V in this project — detect backends and prerequisites (Superpowers, jq, PyYAML, a first commit, Codex, Context7), walk through any missing installs one at a time, pick a routing stance, save project + user config, and draft + commit the impact taxonomy /v:dispatch requires.
 disable-model-invocation: true
 ---
 
@@ -22,12 +22,15 @@ repository. Resolve the plugin root once per session before calling any of them:
 
 ```bash
 CV="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$HOME"/.claude/plugins/cache/*/superpowers-v/*/ 2>/dev/null | sort -V | tail -1)}"
-CV="${CV:-$PWD}"; CV="${CV%/}"
+CV="${CV%/}"
+[ -f "$CV/scripts/compound-v-emit-workflow.py" ] || CV="$PWD"
+[ -f "$CV/scripts/compound-v-emit-workflow.py" ] || { echo "superpowers-v plugin root not found: reinstall the plugin" >&2; CV=""; }
 ```
 
 `CLAUDE_PLUGIN_ROOT` is set for hooks but is not set in this Bash environment, so treat it as a
-hint, never the whole answer — the fallback line covers an installed plugin cache or a checkout
-of this repo.
+hint, never the whole answer. The cache line covers an installed plugin; `$PWD` is used only when
+the current directory is a checkout of this plugin. Anywhere else an unresolved root is reported
+instead of pointing `$CV` at a `scripts/` directory your repository does not have.
 
 ---
 
@@ -213,6 +216,41 @@ Confirm the Compound V surface is present in this install:
 If any are missing, the plugin is not fully installed — tell the user to reinstall the
 `superpowers-v` plugin before proceeding.
 
+**Upstream Superpowers is a separate plugin, and it is required.** Every Compound V trigger keys
+on a Superpowers skill: the Trigger 0 and Trigger 1 reminders fire on `superpowers:brainstorming`
+and `superpowers:writing-plans` ([`hooks/brainstorm-trigger0-nudge.sh`](../hooks/brainstorm-trigger0-nudge.sh)),
+and the sidekick's own description waits for those transitions. Check **your own available-skills
+listing** for `superpowers:brainstorming` and `superpowers:writing-plans` (a presence check, the
+same shape as Step 1d-bis). Absent → record it as missing; Step 2 installs it.
+
+### 1c-bis. Tools the hooks and Engine C need (`jq`, PyYAML)
+
+```bash
+command -v jq >/dev/null 2>&1 && echo "jq: ok" || echo "jq: MISSING"
+/usr/bin/python3 -c 'import yaml' 2>/dev/null && echo "PyYAML (/usr/bin/python3): ok" || echo "PyYAML (/usr/bin/python3): MISSING"
+python3 -c 'import yaml' 2>/dev/null && echo "PyYAML (python3): ok" || echo "PyYAML (python3): MISSING"
+```
+
+- **`jq`** — every hook that reads its JSON payload returns early without it
+  (`command -v jq … || return 1` in [`hooks/triage-prompt-nudge.sh`](../hooks/triage-prompt-nudge.sh)
+  and four other hooks). Nothing fails loudly: the triage nudge, the Trigger 0/1 reminders and the
+  Stop-hook triage gate simply never fire.
+- **PyYAML** — the emitter loads `manifest.yaml` with it and stops with "PyYAML is required" when
+  it cannot import it. Two interpreters matter: the `python3` you run `/v:dispatch`'s commands
+  with, and `/usr/bin/python3`, which is what the emitted workflow runs every Gate, Record and
+  Finalize command with (`emit --python` defaults to it, and the clamp rules name it literally).
+  The emitter's error message says macOS ships PyYAML there; do not rely on that — probe it.
+
+### 1c-ter. The repository has a first commit
+
+```bash
+git rev-parse --verify -q HEAD >/dev/null && echo "first commit: ok" || echo "first commit: MISSING"
+```
+
+A repository with no commit has no `HEAD`: `register-lane` cannot pin a job's baseline, a
+`worktree.baseRef: "head"` worktree has nothing to branch from, and the taxonomy commit in Step
+4g would become the repository's first commit by accident. Missing → Step 2 offers to make one.
+
 ### 1d. Dynamic Workflows (capability probe)
 
 Note whether Dynamic Workflows look available (they are not exposed in a plain subagent
@@ -308,6 +346,18 @@ worked, then move to the next.** Never chain installs.
   After they confirm, re-run the Step 1b namespace grep.
 - **Plugin surface incomplete:** direct them to reinstall `superpowers-v`; stop and
   resume `/v:init` once it is whole.
+- **Superpowers missing:** `/plugin install superpowers@claude-plugins-official`, then a new
+  session (skills load at session start). Re-check the listing before counting it present.
+- **`jq` missing:** `brew install jq` on macOS; on Linux, the distribution's `jq` package. Re-run
+  the Step 1c-bis probe.
+- **PyYAML missing for `/usr/bin/python3`:** `/usr/bin/python3 -m pip install --user pyyaml`,
+  or the distribution's `python3-yaml` package where pip refuses an externally managed
+  interpreter (the same for `python3` if that line was missing too). Re-run the probe.
+- **No first commit:** show `git status --short` and offer to commit what is there as the
+  initial commit. Commit only on a yes, and never stage a path the user asks to leave out.
+
+Superpowers, `jq`, PyYAML and the first commit are **not optional**: without them the triggers
+stay silent, or `/v:dispatch` cannot emit or register a job. Say so if the user declines one.
 
 After each install, **re-probe that one capability** and report the new state before
 touching the next. Codex is **optional** — if the user declines it, proceed Claude-only.
@@ -324,6 +374,7 @@ Stances are defined in [`routing-policy.md`](../skills/compound-v/routing-policy
      fallback; Codex rows collapse to `claude · opus`, worktree).
 2. Offer the alternatives explicitly: **Conservative** (Opus-heavy, no Codex) and
    **Cost-aware** (more Sonnet/Codex). Let the user override the recommendation.
+   Step 3f offers a `lightweight` budget profile on top of the stance.
 Confirm the chosen stance back to the user before saving.
 
 ---
@@ -532,7 +583,42 @@ Confirm the choices back to the user before saving.
 
 ---
 
-## Step 4 — Save config (two files)
+## Step 3f — Budget profile: `lightweight` (optional)
+
+Offer it once, in one question: *"Do you want the lightweight profile? It turns off several
+passes that run before any code is written. What it saves has not been measured yet — there is no
+number for it."* It is not a plan-fitness promise, and do not call it a "Pro" profile: nothing has
+measured a run against any plan's limits. On a yes it changes only knobs that exist today, each
+written by the step that already owns it:
+
+| Knob | Where it lives | Lightweight value | What it turns off |
+|---|---|---|---|
+| `stance` | `.claude/compound-v.json` (Step 4a) | `cost-aware` | `frontier` resolves to Opus instead of Fable, and `standard` Claude jobs run on Sonnet |
+| `brainstorm.deep_research` | `.claude/compound-v.json` (Step 4a) | `"off"` | Trigger 0's research pass before a brainstorm (a deep-research run or up to six web searches) |
+| `review.cross_model` | `.claude/compound-v.json` (Step 4a) | `false` (already the default) | the automatic Codex second opinion on a plan |
+| `advisorModel` | `.claude/settings.json` (Step 4e) | left unset, or `"opus"` | unset turns the advisor off; `opus` keeps it but never on Fable |
+| `retry` | each run's `manifest.yaml`, top level | `{max_attempts: 1, escalate_reviewer: false}` | in-workflow retries of a stage that returned nothing, and the one-shot lift of an exhausted review job onto `frontier` (Fable) |
+| pre-flight 1A | a skip rule, not a key ([`SKILL.md`](../skills/compound-v/SKILL.md) "Skip rules") | skip on greenfield work in a new directory | the code-archaeologist scan of code that does not exist yet |
+
+Two rows are not project config, and say so rather than writing a key nothing reads:
+
+- **`retry` is a manifest key** ([`execution-manifest.md`](../skills/compound-v/execution-manifest.md)
+  § `retry`). `.claude/compound-v.json` has no `retry` block and nothing reads one, so this profile
+  cannot persist it, and `/v:orchestrate` does not add it on its own. Tell the user to ask for it
+  when a manifest is materialized (or to add it to `manifest.yaml` before `/v:dispatch` validates
+  it). The trade-off: with `max_attempts: 1` a transient API failure fails
+  the stage instead of being retried, and recovering it through `/v:resume` costs more than the
+  retry would have.
+- **Skipping 1A is a judgement the pre-flight caller applies**, per the skip rule. There is no flag.
+
+What the profile does **not** turn off, stated plainly: the Opus partition reviewer, the three
+pre-flights other than a skipped 1A (the domain expert runs on Opus), the per-job Gate and Record
+carrier spawns, and the three-pass Opus review. Confirm the profile back to the user, then let
+Steps 4a and 4e write their keys.
+
+---
+
+## Step 4 — Save config
 
 Write **both**. Create parent dirs as needed.
 
@@ -600,7 +686,8 @@ was, in those two fields).
 identically to `balanced`. Only `cost-aware.claude.standard` differs: `sonnet`, not
 `opus`; `cost-aware.claude.deep` stays `opus`.)
 
-- `stance` = the stance chosen in Step 3.
+- `stance` = the stance chosen in Step 3 (`cost-aware` under Step 3f's `lightweight` profile, which
+  also writes `brainstorm.deep_research: "off"`).
 - **`memory.embeddings`** = the Step 3b lane choice (default `false` = FTS5-only) — already
   written to disk by Step 3b itself the moment the user answered; this pass writes the same
   value back as part of the whole-file save, it does not decide it. When `true`,
@@ -787,21 +874,21 @@ Record nothing about it in either config file: it lives in the user's settings, 
 copy of it in `.claude/compound-v.json` would be the machine-local-data-in-a-committed-file
 mistake v2.6.2 already fixed.
 
-### 4d. One optional project setting — `worktree.baseRef`
+### 4d. The recommended project setting — `worktree.baseRef: "head"` (default yes)
 
-**Offer it; never write it without a yes.** `worktree.baseRef` is a **native Claude Code
+**Default yes, still confirmed.** Offer it with yes as the default answer (*"[Y/n]"*), so
+pressing Enter accepts it; an explicit no leaves the file untouched. `worktree.baseRef` is a **native Claude Code
 project setting**, not a Compound V key, and it lives in a different file from Step 4a's
 config: the project's own `.claude/settings.json`, not `.claude/compound-v.json`. It has
-exactly two legal values, `"fresh"` (the default) and `"head"`, and it is **project-wide**
+exactly two legal values, `"fresh"` (Claude Code's default) and `"head"`, and it is **project-wide**
 — it governs every worktree in the repo, including interactive `--worktree` sessions, not
-only Compound V's own dispatch.
+only Compound V's own dispatch. That project-wide reach is the one reason to answer no.
 
-> A job that `depends_on` another needs its own worktree branched from the current `HEAD`,
-> not the default ref — otherwise that worktree cannot see the prerequisite job's commit,
-> and the dependent job's agent falls back to editing the shared main checkout directly
-> instead of an isolated tree (`TROUBLESHOOTING.md`, "A job with `depends_on` runs in the
-> shared checkout instead of its own worktree"). Set `worktree.baseRef` to `"head"` in
-> `.claude/settings.json` to fix that. Shall I show you the edit?
+> Why it is the default: without it, every Claude job in wave 2 or later — anything with
+> `depends_on` — falls back to direct mode in the shared checkout, and those jobs run one at a time.
+> A worktree for such a job would branch from the default ref and could not see the prerequisite's commit
+> (`TROUBLESHOOTING.md`, "A job with `depends_on` runs in the shared checkout instead of its own
+> worktree"). Set `worktree.baseRef` to `"head"` in `.claude/settings.json`? [Y/n]
 
 ```jsonc
 // .claude/settings.json — the PROJECT's file, not the plugin's, not ~/.claude/settings.json.
@@ -830,18 +917,29 @@ it has legal values `fable`, `opus`, `sonnet`, or a full model ID.
 > to catch itself. Subagents inherit whatever `advisorModel` this project sets and apply the same
 > pairing check against their own model. Shall I show you the edit?
 
+**What to offer first follows the stance chosen in Step 3** (or Step 3f's profile), because the
+advisor is model spend the stance does not otherwise see:
+
+| Stance | Offer first | Then offer |
+|---|---|---|
+| `cost-aware` (and the `lightweight` profile) | `"advisorModel": "opus"`, or **off** | `fable`, only if the user asks for it |
+| `balanced`, `conservative`, `claude-only` (the stances whose `frontier` is already Fable) | `"advisorModel": "fable"` | `opus`, or off |
+
+**Off has two forms.** Leaving `advisorModel` unset in the project is off for this project's file —
+the settings reference documents the default as "unset, so the advisor is off" — but a value in
+the user's own `~/.claude/settings.json` still applies. `CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1` turns
+the advisor off whatever any file sets, and the key cannot turn it back on. Offer the unset form
+first; mention the variable when the user has a user-level `advisorModel`.
+
 ```jsonc
 // .claude/settings.json — the PROJECT's file, not the plugin's, not ~/.claude/settings.json.
 // Merge only the "advisorModel" key in; every other key already in this file (worktree,
 // permissions, hooks, env, ...) is preserved untouched. Create the file if it does not exist yet.
+// The value is the one the user picked from the table above: "opus" or "fable".
 {
-  "advisorModel": "fable"
+  "advisorModel": "opus"
 }
 ```
-
-**The `opus` alternative.** If the user would rather not opt into Fable, `"advisorModel": "opus"`
-gets the same advisor-at-decision-points behavior from an Opus reviewer instead — offer it in the
-same breath as the Fable default.
 
 **The pairing rule.** An advisor must be at least as capable as the session's main model, or the
 harness rejects the pairing. Concretely: a Fable main only accepts a same-or-newer Fable advisor
@@ -940,6 +1038,48 @@ Read each file first if it exists, merge the offered key(s) into the parsed obje
 whatever is already there, and write the merged result back — never truncate either file to just
 the key(s) this step adds.
 
+### 4g. The impact taxonomy — required before the first `/v:dispatch`
+
+**This step is not optional.** `/v:dispatch` validates every manifest with `--require-triage`,
+and that check compares the triage record's `taxonomy_digest` against
+`.claude/compound-v-impact-taxonomy.yaml` on disk; with no taxonomy it fails closed
+("taxonomy … is unreadable because it does not exist"). Until 3.8.6 only `/v:onboard` wrote that
+file, so a user who followed `/v:init` → work could never dispatch. This step drafts it from the
+directory structure alone — no knowledge-base scan, no model call — using the same subcommand
+`/v:onboard` runs ([`onboarding.md`](../skills/compound-v/onboarding.md) § 7. WRITE).
+
+1. **Needs a first commit.** If Step 1c-ter found none and the user declined it in Step 2, stop
+   here and say `/v:dispatch` will refuse until both exist.
+2. **Already present?** If `.claude/compound-v-impact-taxonomy.yaml` exists, never overwrite it —
+   it may carry a maintainer's edits. Skip to item 5 (commit it if it is untracked).
+3. **Draft and show it.** Writes nothing:
+   ```bash
+   python3 "$CV/scripts/compound-v-onboard.py" draft-taxonomy --repo . --json
+   ```
+   Show the user `path_patterns` (each band with its evidence), `sensitive_path_list` and
+   `content_kinds`, then the `taxonomy_yaml` text. `valid: false` (exit 2) means the draft failed
+   its own validator: print `violations`, write nothing, and point at `/v:onboard`.
+4. **On a yes, write it** — the same block-style YAML, self-validated:
+   ```bash
+   mkdir -p .claude
+   python3 "$CV/scripts/compound-v-onboard.py" draft-taxonomy --repo . --emit-yaml > .claude/compound-v-impact-taxonomy.yaml
+   ```
+   A non-zero exit here means the file is not trustworthy: delete it and report.
+5. **Commit it, by pathspec.** The digest check reads disk bytes, but the triage records that bind
+   to it are committed, and a taxonomy that exists only in one checkout breaks every teammate's
+   dispatch. Offer to include the two config files this walkthrough wrote in the same commit:
+   ```bash
+   git add .claude/compound-v-impact-taxonomy.yaml   # plus .claude/compound-v.json .claude/settings.json on a yes
+   git commit -m "chore: Compound V impact taxonomy (drafted by /v:init)"
+   ```
+6. **Older triage records.** Any record already under `docs/superpowers/pre-eval/` was minted
+   against no taxonomy (`taxonomy_digest: null`) and will not verify now. Say so, and tell the
+   user to re-run `/v:triage` for the request they intend to dispatch.
+
+The churn cache `/v:onboard` also builds is not needed to dispatch: its signal only ever escalates,
+and its absence never does. `/v:onboard` remains the way to get it, the architecture knowledge
+base and the path-scoped rules.
+
 ---
 
 ## Step 5 — Report
@@ -951,9 +1091,15 @@ default tier→model `models` map was seeded into `.claude/compound-v.json`, and
 [`/v:models`](v-models.md) refreshes or customizes it whenever a backend ships new
 models.
 
-- **Next:** run `/v:onboard` to build the project knowledge base (architecture docs + AGENTS.md bridge). This is a suggestion, not automatic.
+- Report the four prerequisites from Steps 1c–1c-ter (Superpowers, `jq`, PyYAML for both
+  interpreters, first commit) and whether Step 4g wrote and committed the taxonomy. If any of them
+  is still missing, say plainly that `/v:dispatch` will not run until it is fixed.
+- **Next:** describe the feature, or start brainstorming. `/v:onboard` is the fuller, optional
+  setup — the architecture knowledge base, the churn cache and path-scoped rules — not a
+  prerequisite for dispatch any more.
 - Report whether Step 1f's `/skill-doctor` hygiene check ran (and its `superpowers-v:` summary, if
-  so) — or was skipped below the version floor — and whether Step 4e's `advisorModel` offer and
+  so) — or was skipped below the version floor — whether Step 3f's `lightweight` profile was
+  chosen, whether Step 4d's `worktree.baseRef` was written, and whether Step 4e's `advisorModel` offer and
   Step 4f's `bashOutputMaxChars`/`taskOutputMaxChars`/`bashEditDiffEnabled` offers were accepted or
   declined.
 

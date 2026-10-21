@@ -10,13 +10,21 @@ Every write is checked against the files that worker was allowed to touch, and a
 ## Requirements
 - **Claude Code ≥ 2.1.219.** Compound V runs on the native Workflow runtime and on native hooks (`PreToolUse`, `UserPromptSubmit`, `PostCompact`, `Stop`). `SessionStart` warns below that floor.
 - **One ambient cost.** The lane-guard hook runs on every `Write`/`Edit`/`Bash` call. What it costs depends on the machine — measure it on yours; the recipe is in [AGENTS.md](AGENTS.md).
-- **One project setting.** `worktree.baseRef` should be `head`, or a dependent job runs in the main checkout and such jobs are serialized. A native Claude Code setting — see Install.
+- **[Superpowers](https://github.com/obra/superpowers), installed as its own plugin.** Every trigger keys on `superpowers:brainstorming` and `superpowers:writing-plans`; without it nothing fires.
+- **`jq` on `PATH`.** The hooks read their payload with it and return silently without it — no triage nudge, no reminders, no triage gate.
+- **PyYAML for `/usr/bin/python3`** (and for the `python3` you run commands with). The workflow emitter reads `manifest.yaml` with it, and the emitted workflow runs its Gate and Record commands under `/usr/bin/python3`. `/v:init` checks both.
+- **A git repository with at least one commit.** A job's baseline is pinned to a commit; with no `HEAD` there is nothing to pin.
+- **One project setting.** `worktree.baseRef` should be `head`, or a dependent job runs in the main checkout and such jobs are serialized. `/v:init` writes it unless you say no — see Install.
 
 ## Install
 ```
+/plugin install superpowers@claude-plugins-official
 /plugin marketplace add https://github.com/procoders/superpowers-v
 /plugin install superpowers-v@procoders
 ```
+
+Then the two tools, if `/v:init` reports them missing: `brew install jq` (or your distribution's `jq` package) and
+`/usr/bin/python3 -m pip install --user pyyaml` (or the distribution's `python3-yaml` package). Start a new session so the plugins' skills and hooks load.
 
 **Other model CLIs are optional.** Install and log into them and Compound V picks them up; without them it runs Claude-only.
 
@@ -24,7 +32,7 @@ Every write is checked against the files that worker was allowed to touch, and a
 - **Cursor:** `curl https://cursor.com/install -fsS | bash` → `cursor-agent login`
 - **Antigravity:** install the `agy` CLI → log in
 
-Then the one setting. `worktree.baseRef` is a **native Claude Code project setting** in the project's `.claude/settings.json`, with two values: `fresh` (the default) and `head`.
+Then the one setting, which `/v:init` offers with yes as the default. `worktree.baseRef` is a **native Claude Code project setting** in the project's `.claude/settings.json`, with two values: `fresh` (Claude Code's default) and `head`.
 It is project-wide: `head` branches every worktree from the current `HEAD`, your own `--worktree` sessions included. A job that depends on another needs it to see that job's work.
 Without it such a job runs in the main checkout, and a wave with more than one of those is split so each runs alone — it buys parallelism, not correctness: the run completes either way.
 
@@ -36,10 +44,14 @@ _(Optional)_ Context7 MCP gives the doc-validator real library docs, but only in
 and falls back to WebSearch/WebFetch (12 of the last 16 library audits ran that way). Install it with `/plugin install context7@claude-plugins-official`.
 
 ## How to use it
-Run `/v:init` once — it detects which model CLIs you have, saves the config, and offers the `baseRef` setting above.
+1. **Install** — the commands above, then a new session.
+2. **Run `/v:init` once.** It checks the prerequisites (Superpowers, `jq`, PyYAML, a first commit), detects which model CLIs you have,
+   saves the config, writes `worktree.baseRef: head` unless you say no, and drafts the impact taxonomy
+   (`.claude/compound-v-impact-taxonomy.yaml`) for you to confirm and commit. `/v:dispatch` refuses to run without that file.
+3. **Work.** Describe the feature, or start brainstorming as usual. A `UserPromptSubmit` hook scores the first change request of each session
+   and sizes it as DIRECT, SCOPED or FULL. There is no command to launch the orchestration; Claude runs it for you.
 
-**Then just work.** Describe the feature, or start brainstorming as usual. A `UserPromptSubmit` hook scores the first change request of each session
-and sizes it as DIRECT, SCOPED or FULL. There is no command to launch the orchestration; Claude runs it for you.
+`/v:onboard` is optional: it adds a citation-verified knowledge base of the repo, a churn cache and path-scoped rules. It is no longer what creates the taxonomy.
 
 ## 🎮 New here? Learn it as a game → **[Compound V Academy](https://amiainative.dev/compound-v)**
 Three gamified episodes walk you through the whole pipeline, and the **[cheatsheet](https://amiainative.dev/compound-v/cheatsheet)** puts commands, triggers, memory and routing on one page.
@@ -55,7 +67,8 @@ Three gamified episodes walk you through the whole pipeline, and the **[cheatshe
 **Who does what.** Opus plans, judges and reviews; Fable (the frontier tier) is opt-in for business-critical jobs, and lifts a review job once —
 only after that job has exhausted its retry budget on Opus (repeated 529s, say), never merely because Opus looks busy. Sonnet runs junior slices
 and the two scanning agents. Codex is an opt-in sandboxed worker and the second opinion; Antigravity and Cursor are lower-trust opt-in workers. The scope gate blocks out-of-lane writes.
-Implementers and the spec-reviewer also call Claude Code's built-in `advisor` at their own decision points; `advisorModel` names who answers — `fable` here, `opus` if you would rather not.
+Implementers and the spec-reviewer also call Claude Code's built-in `advisor` at their own decision points; `advisorModel` names who answers.
+`/v:init` offers `opus` (or no advisor) first on the `cost-aware` stance, and `fable` first on the stances that already use Fable; this repository itself sets `fable`.
 
 ## Main features
 - **Multi-model orchestration.** Codex is dogfooded here. Antigravity's CLI invocation is verified live but was never dispatched; Cursor and opencode are experimental, verified standalone only.
@@ -70,7 +83,7 @@ Implementers and the spec-reviewer also call Claude Code's built-in `advisor` at
 ## Commands
 | Command | What it does |
 |---|---|
-| `/v:init` | Set up the project: detect backends, pick a routing stance, save the config |
+| `/v:init` | Set up the project: check prerequisites, detect backends, pick a routing stance, save the config, draft and commit the impact taxonomy |
 | `/v:onboard` | Build a citation-verified knowledge base of this repo, behind an approval gate |
 | `/v:epic <PRD>` | Build a multi-feature PRD feature by feature, in dependency order, on one branch |
 | `/v:dispatch <plan\|manifest\|run-id>` | Run the pipeline: partition review → parallel dispatch → scope gate → review |
@@ -103,6 +116,9 @@ The triage gate is on by default. It is exempt on `docs/superpowers/**`, fires a
 `{ "enforcement": { "triage_gate": false } }` in `.claude/compound-v.json` — an explicit `false` is the only value that does it.
 
 ## Good to know
+- **A `lightweight` budget profile** — `/v:init` Step 3f. It sets the `cost-aware` stance, turns pre-brainstorm research off, keeps the advisor off or on Opus,
+  asks for `retry: {max_attempts: 1, escalate_reviewer: false}` in each manifest, and skips the archaeology pre-flight on greenfield work. What it saves is **not measured yet**,
+  and it does not turn off the Opus partition review, the domain pre-flight or the three-pass review.
 - **Antigravity and Cursor are lower-trust** — no kernel sandbox, so the scope gate catches an out-of-bounds write after the fact but cannot prevent it. Prefer Codex for anything sensitive.
 - **Cursor on a Free plan** can only use its `auto` model; named models are paid.
 - **Epic mode is bounded by default** — it stops after each feature for a human checkpoint, and is not an overnight build unless you raise the budget.

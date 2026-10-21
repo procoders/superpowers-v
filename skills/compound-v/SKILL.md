@@ -71,13 +71,13 @@ references ship with the plugin — they are not files in the target repository.
 plugin root once per session before calling any of them:
 
 ```bash
-CV="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$HOME"/.claude/plugins/cache/*/superpowers-v/*/ 2>/dev/null | sort -V | tail -1)}"
-CV="${CV:-$PWD}"; CV="${CV%/}"
+CV="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$HOME"/.claude/plugins/cache/*/superpowers-v/*/ 2>/dev/null | sort -V | tail -1)}"; CV="${CV%/}"; [ -f "$CV/scripts/compound-v-emit-workflow.py" ] || CV="$PWD"
+[ -f "$CV/scripts/compound-v-emit-workflow.py" ] || { echo "superpowers-v plugin root not found: reinstall the plugin" >&2; CV=""; }
 ```
 
-`CLAUDE_PLUGIN_ROOT` is set for hooks but is not set in this Bash environment, so treat it as a
-hint, never the whole answer — the fallback line covers an installed plugin cache or a checkout
-of this repo.
+`CLAUDE_PLUGIN_ROOT` is set for hooks but not in this Bash environment, so it is a hint. The cache
+covers an installed plugin; `$PWD` is used only in a checkout of this plugin, and anywhere else an
+unresolved root is reported rather than pointing `$CV` at scripts the target repository lacks.
 
 ---
 
@@ -193,7 +193,7 @@ If natural decomposition produces overlap, redesign the decomposition (split by 
 ### Phase 3: Parallel Opus Dispatch
 
 When the plan is ready, run [`/v:dispatch <plan>`](../../commands/v-dispatch.md) yourself, at the top level — it **is** Phase 3:
-1. Materialize `manifest.yaml` ([routing-policy.md](routing-policy.md) assigns each job a backend, `tier`, isolation) and validate it with `--require-triage` — a manifest with no `triage` block does not dispatch.
+1. Materialize `manifest.yaml` ([routing-policy.md](routing-policy.md) assigns each job a backend, `tier`, isolation) and validate it with `--require-triage` — a manifest with no `triage` block does not dispatch, and its record must verify against a committed `.claude/compound-v-impact-taxonomy.yaml` ([`/v:init`](../../commands/v-init.md) Step 4g drafts it).
 2. `partition-reviewer` verifies the Partition Map (FAIL → STOP).
 3. `compound-v-emit-workflow.py emit` turns `depends_on` into waves and each job into an `agent()` carrying its resolved `opts.model`, tool narrowing and scope lock; commit the script, then `Workflow({ scriptPath })`. Task 0 is simply wave 1.
 4. Inside the run every job is gated on a git-derived scope verdict; `compound-v-integration-gate.py` re-verifies before any job commit lands.
