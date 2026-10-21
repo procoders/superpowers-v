@@ -37,7 +37,7 @@ plugin; anywhere else an unresolved root is reported, and an empty `$CV` is a st
 | `routing_stance` | enum | yes | `balanced` \| `conservative` \| `cost-aware` \| `claude-only`. |
 | `max_parallel` | integer | yes | Batch concurrency ceiling (the phase-3 reality, typically 4–6). |
 | `jobs` | list | yes | One entry per file-scoped job (schema below). |
-| `triage` | map | no† | v3.0 (Feature A2): `{tier, pre_eval_id, taxonomy_digest, decided_at}`, plus the optional `flavor` (v3.4.1) and `disabled_by_config` (v3.8.6). **Required under `--require-triage`**, which `/v:dispatch` passes on every live dispatch. `taxonomy_digest` may be null **only** in a `disabled_by_config: true` block for a config-disabled FULL record. See the v3.0 section below. |
+| `triage` | map | no† | v3.0 (Feature A2): `{tier, pre_eval_id, taxonomy_digest, decided_at}`, plus the optional `flavor` (v3.4.1) and `disabled_by_config` (v3.9.0). **Required under `--require-triage`**, which `/v:dispatch` passes on every live dispatch. `taxonomy_digest` may be null **only** in a `disabled_by_config: true` block for a config-disabled FULL record. See the v3.0 section below. |
 | `test_contract` | map | no | v3.0 (Feature B2): `{floor_command, full_command, impacted_map}`. Absent ⇒ every job runs `full`. See the v3.0 section below. |
 | `retry` | map | no | v3.4.8 (findings 118/119): `{max_attempts, escalate_reviewer}`. Absent ⇒ the `retry` block of `.claude/compound-v.json`, key by key, then the defaults (`max_attempts: 3`, `escalate_reviewer: true`). See [§ `retry` — transient-failure retry inside the workflow](#retry--transient-failure-retry-inside-the-workflow-v348) below. |
 | `global_constraints` | string[] | no | v3.4.17: the plan's `## Global Constraints` lines, verbatim. [§ below](#the-two-superpowers-620-plan-fields-v3417). |
@@ -717,7 +717,7 @@ triage:
 | `taxonomy_digest` | `sha256:<64-hex>` over the RAW bytes of the impact taxonomy that produced the decision. Verified against `.claude/compound-v-impact-taxonomy.yaml` (override with `--taxonomy FILE`) through the shared `compound-v-taxonomy.py` primitive, so a producer and this consumer can never diverge. |
 | `decided_at` | ISO-8601 timestamp. A trailing `Z` is stripped before parsing: Python 3.9 — the CI floor — rejects the Zulu suffix that every producer writes. |
 | `flavor` | Optional (v3.4.1). Only `scoped_plus`: a small edit on a sensitive path, banded SCOPED but reviewed like a FULL. It requires a job with `type: review`, `tier: deep` and `backend: claude`. |
-| `disabled_by_config` | Optional (v3.8.6). Only the literal `true`. It marks the record `/v:triage --record-disabled` writes when `pre_eval.enabled` is `false` in `.claude/compound-v.json`: nothing was scored, so the record is FULL and pins no taxonomy. The block then carries `taxonomy_digest: null`. |
+| `disabled_by_config` | Optional (v3.9.0). Only the literal `true`. It marks the record `/v:triage --record-disabled` writes when `pre_eval.enabled` is `false` in `.claude/compound-v.json`: nothing was scored, so the record is FULL and pins no taxonomy. The block then carries `taxonomy_digest: null`. |
 
 Unknown keys inside the block are rejected; `flavor` and `disabled_by_config` are the only optional
 ones. A `taxonomy-digest` typo would otherwise pass silently and leave the digest unchecked, which is

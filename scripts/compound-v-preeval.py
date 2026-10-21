@@ -158,7 +158,7 @@ DECISION_TO_TIER = {
     DECISION_FULL: "FULL",
 }
 
-# v3.8.6 — the record `/v:triage --record-disabled` writes when `pre_eval.enabled` is false.
+# v3.9.0 — the record `/v:triage --record-disabled` writes when `pre_eval.enabled` is false.
 # The record schema has no field for it, so the marker rides in `localization.flags`
 # (a free string list) and `confidence` (a free evidence string). The manifest validator
 # reads the same flag by value; its selftest asserts the two spellings agree.
@@ -3432,7 +3432,7 @@ def _selftest():
                and td["tier"] == "FULL"
                and not os.path.isdir(os.path.join(repo, PRE_EVAL_DIR_REL)))
 
-    # v3.8.6 — re-triage after the taxonomy appears or changes. Records are immutable, so
+    # v3.9.0 — re-triage after the taxonomy appears or changes. Records are immutable, so
     # the fix is a NEW record that supersedes the old one, never a rewrite. One fixed `ts`
     # throughout on purpose: the default nonce is derived from (request, ts), so this also
     # proves a same-second re-mint cannot collide with the id it supersedes.
@@ -3532,7 +3532,7 @@ def _selftest():
         expect("RETAX: an explicit id is still never rewritten with different content",
                _rejects(lambda: write_record(repo, r3["pre_eval_id"], _rec3), ValueError))
 
-    # v3.8.6 — `pre_eval.enabled: false` with `--record-disabled`: a truthful FULL record
+    # v3.9.0 — `pre_eval.enabled: false` with `--record-disabled`: a truthful FULL record
     # that `--require-triage` accepts only while the config still says disabled.
     with tempfile.TemporaryDirectory() as repo:
         os.makedirs(os.path.join(repo, ".claude"))

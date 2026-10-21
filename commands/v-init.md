@@ -1054,7 +1054,7 @@ the key(s) this step adds.
 **This step is not optional.** `/v:dispatch` validates every manifest with `--require-triage`,
 and that check compares the triage record's `taxonomy_digest` against
 `.claude/compound-v-impact-taxonomy.yaml` on disk; with no taxonomy it fails closed
-("taxonomy … is unreadable because it does not exist"). Until 3.8.6 only `/v:onboard` wrote that
+("taxonomy … is unreadable because it does not exist"). Until 3.9.0 only `/v:onboard` wrote that
 file, so a user who followed `/v:init` → work could never dispatch. This step drafts it from the
 directory structure alone — no knowledge-base scan, no model call — using the same subcommand
 `/v:onboard` runs ([`onboarding.md`](../skills/compound-v/onboarding.md) § 7. WRITE).

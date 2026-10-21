@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # tests/test-triage-hook-engagement.sh — why hooks/triage-prompt-nudge.sh stayed
-# silent on a fresh project (3.8.6), one section per cause:
+# silent on a fresh project (3.9.0), one section per cause:
 #   A. a failed scoring, or a first prompt like "Read prd.md", spent the session
 #   B. a project with no Compound V surface got no word at all
 #   C. a missing jq disabled the hook without a word

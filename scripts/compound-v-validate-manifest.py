@@ -825,7 +825,7 @@ TRIAGE_REQUIRED_KEYS = ("tier", "pre_eval_id", "taxonomy_digest", "decided_at")
 # TRIAGE_ALLOWED_KEYS, so a `taxonomy-digest` typo is still a violation, while a
 # `flavor` the orchestrator copied from the record is not.
 VALID_TRIAGE_FLAVORS = ("scoped_plus",)
-# v3.8.6 — `disabled_by_config: true` binds the record `/v:triage --record-disabled`
+# v3.9.0 — `disabled_by_config: true` binds the record `/v:triage --record-disabled`
 # writes when `pre_eval.enabled` is false. It is the ONE case a null taxonomy_digest is
 # accepted, and only for tier FULL while the config still says disabled.
 TRIAGE_OPTIONAL_KEYS = ("flavor", "disabled_by_config")
@@ -5694,7 +5694,7 @@ def _selftest():
                    _triage_block("sha256:" + "c" * 64))),
                    repo_root=_tri_root, require_triage=True)))
 
-    # --- v3.8.6: a null taxonomy_digest says what to do; config-disabled FULL is the
+    # --- v3.9.0: a null taxonomy_digest says what to do; config-disabled FULL is the
     # one record a null digest is accepted for. ---
     def _null_block(pid, tier="FULL", extra=""):
         return ("triage:\n  tier: %s\n  pre_eval_id: %s\n  taxonomy_digest: null\n"

@@ -117,7 +117,7 @@
 # TWO GATES, ON PURPOSE. `_has_session_record` answers "is this session already
 # sized"; the temp-dir store answers "has this session already been DECIDED". The
 # spent-marker (`nudged-<key>`) is written only after a tier line was emitted (or
-# the stage reported itself disabled). Until 3.8.6 it was written BEFORE the engine
+# the stage reported itself disabled). Until 3.9.0 it was written BEFORE the engine
 # ran, so one failed or killed scoring silenced the hook for the whole session. A
 # failure now leaves the session retryable, bounded by an attempt counter
 # (`attempt-<key>`, bumped before each engine run so a run the harness kills still
