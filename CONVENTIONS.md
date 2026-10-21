@@ -23,15 +23,17 @@ Deltas from default practice that this repo actually enforces.
 - Reuse canonical shared constants instead of forking a second copy (e.g. secret-pattern families are
   imported from `compound-v-memory.py`, not redefined). (`scripts/compound-v-onboard.py:5-9`)
 - Every `scripts/*.py` is a standalone CLI with no shared import: a script that needs a sibling loads
-  it by explicit path, never by name. The emitter also drops its own directory from `sys.path` before
-  it imports anything, so a job that writes `scripts/yaml.py` cannot shadow PyYAML.
+  it by explicit path, never by name. The large entry points drop their own directory from `sys.path`
+  before importing anything, so a job that writes `scripts/yaml.py` cannot shadow PyYAML.
   (`scripts/compound-v-emit-workflow.py:73-112`, `scripts/compound-v-emit-preflight.py:190-193`)
-  The one package is `scripts/cv_emit/`, the Engine C emitter's modules. `compound-v-emit-workflow.py`
-  is still the only entry point: it loads the package by path with the bytecode cache redirected out
-  of the tree, refuses to load it when that private cache directory cannot be made, and re-exports
-  every name by name. The package's modules import each other only relatively.
-  (`scripts/compound-v-emit-workflow.py:125-243`) The recall renderer stays duplicated in
-  `compound-v-emit-preflight.py`, and a selftest compares the two copies byte for byte.
+- A script too large for one file keeps its hyphenated entry point and moves its code into a package
+  beside it: `scripts/cv_emit/` (`compound-v-emit-workflow.py`) and `scripts/cv_validate/`
+  (`compound-v-validate-manifest.py`). The entry loads the package **by explicit path** and re-exports
+  every name the single file defined, so siblings that load the entry by path see no change; the
+  package's modules import each other only relatively. Neither package can execute a planted `.pyc`:
+  `cv_emit` loads with the bytecode cache redirected to a private temp directory and refuses to load
+  when it cannot make one; `cv_validate` compiles from source only. The recall renderer stays
+  duplicated in `compound-v-emit-preflight.py`, and a selftest compares the two copies byte for byte.
 
 ## Tests live under `tests/`, and the sweep must never match zero
 

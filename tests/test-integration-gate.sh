@@ -546,6 +546,7 @@ mkdir -p "$PLANT"
 cp "$GATE" "$PLANT/compound-v-integration-gate.py"
 cp "$SCOPE" "$PLANT/compound-v-scope-check.py"
 cp "$REPO/scripts/compound-v-validate-manifest.py" "$PLANT/" 2>/dev/null || true
+cp -R "$REPO/scripts/cv_validate" "$PLANT/" 2>/dev/null || true
 cat >"$PLANT/yaml.py" <<'PY'
 def safe_load(text):
     return {"version": 1, "run_id": "gate-test", "jobs": [
