@@ -156,6 +156,36 @@ reg >/dev/null; rc=$?
 echo v2 > "$R/src/app.txt"
 out=$(gate); [ "${out%% *}" = pass ] && ok "the re-dispatched attempt passes" || bad "re-dispatched attempt" "$out"
 
+echo "== full chain: a blocked attempt, /v:resume, then the re-attempt integrates"
+setup chain
+gate_json() {
+  "$PY" -B "$EMIT" gate-receipt --run-dir "$RD" --job-id d1 --worktree "$R" \
+    --mode direct --repo-root "$R" --scope-check "$SCOPE"
+}
+record() {
+  "$PY" -B "$EMIT" record --run-dir "$RD" --job-id d1 --verdict-json "$1" \
+    --repo-root "$R" --no-merge >/dev/null 2>&1
+}
+reg >/dev/null
+mkdir -p "$R/src"; echo v1 > "$R/src/app.txt"; echo stray > "$R/stray.txt"
+record "$(gate_json)"
+rm -f "$R/stray.txt"
+commit_docs
+resume_prepare
+reg >/dev/null
+echo v2 > "$R/src/app.txt"
+g=$(gate_json)
+record "$g"
+[ -f "$RD/results/attempts/d1.1.json" ] && ok "Record archived attempt 1 under results/attempts/" \
+  || bad "no results/attempts/d1.1.json"
+grep -q 'results/attempts/d1.1.json$' "$RD/preexisting/d1.verified.txt" \
+  && ok "the gate listed that archive before Record wrote it" \
+  || bad "the archive is missing from d1.verified.txt"
+fin=$("$PY" -B "$EMIT" finalize-wave --run-dir "$RD" --repo-root "$R" \
+  --manifest "$RD/manifest.yaml" --jobs d1 --wave 1 2>&1)
+case "$fin" in *contradicted*|*REFUSED*) bad "finalize-wave refused the re-attempt" "$(printf '%s' "$fin" | head -c 400)" ;;
+  *) ok "finalize-wave admits the re-attempt (no contradicted verdict)" ;; esac
+
 echo "== escalation never requests fable under cost-aware"
 for stance in cost-aware balanced; do
   setup "esc-$stance" "$stance"
@@ -176,6 +206,16 @@ print(cfg["waves"][0][0]["model"], json.dumps(cfg["escalation"], sort_keys=True)
       || bad "balanced escalation" "$model"
   fi
 done
+
+echo "== a manifest without routing_stance takes the project's stance"
+setup esc-config cost-aware
+sed -i.bak '/^routing_stance:/d' "$RD/manifest.yaml" && rm -f "$RD/manifest.yaml.bak"
+mkdir -p "$R/.claude" "$RD/results"
+echo '{"stance": "cost-aware"}' > "$R/.claude/compound-v.json"
+echo '{"job_id":"d1","status":"failed"}' > "$RD/results/d1.json"
+script=$("$PY" -B "$EMIT" emit "$RD/manifest.yaml" --no-recall --print 2>/dev/null)
+case "$script" in *fable*) bad "config stance cost-aware: the emitted workflow still names fable" ;;
+  *) ok "config stance cost-aware: no fable anywhere in the emitted workflow" ;; esac
 
 echo
 echo "$pass passed, $fail failed"

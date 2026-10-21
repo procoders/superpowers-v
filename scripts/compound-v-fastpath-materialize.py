@@ -822,6 +822,20 @@ def run_materialize(repo, pre_eval_id, *, prompt_text=None, stance="balanced",
 
 # --------------------------------------------------------------------------- #
 # CLI.
+_STANCES = ("balanced", "conservative", "cost-aware", "claude-only")
+
+
+def project_stance(repo):
+    """The `stance` /v:init writes into .claude/compound-v.json, else balanced."""
+    try:
+        with open(os.path.join(repo, ".claude", "compound-v.json"), encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return "balanced"
+    v = doc.get("stance") if isinstance(doc, dict) else None
+    return v.strip() if isinstance(v, str) and v.strip() in _STANCES else "balanced"
+
+
 # --------------------------------------------------------------------------- #
 def main(argv):
     if "--selftest" in argv[1:]:
@@ -834,8 +848,9 @@ def main(argv):
     pm.add_argument("--pre-eval-id", dest="pre_eval_id", required=True)
     pm.add_argument("--prompt-file", dest="prompt_file",
                     help="captured implementer prompt (default: a generated stub)")
-    pm.add_argument("--stance", default="balanced",
-                    choices=["balanced", "conservative", "cost-aware", "claude-only"])
+    pm.add_argument("--stance", default=None,
+                    choices=["balanced", "conservative", "cost-aware", "claude-only"],
+                    help="default: the project's .claude/compound-v.json stance, else balanced")
     pm.add_argument("--feature", help="feature title (default: derived from the record)")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv[1:])
@@ -848,9 +863,10 @@ def main(argv):
     if args.prompt_file:
         with open(args.prompt_file, "r", encoding="utf-8") as fh:
             prompt_text = fh.read()
+    stance = args.stance or project_stance(args.repo)
     try:
         result = run_materialize(args.repo, args.pre_eval_id, prompt_text=prompt_text,
-                                 stance=args.stance, feature=args.feature)
+                                 stance=stance, feature=args.feature)
     except MaterializeError as e:
         sys.stderr.write("REJECTED (fail-closed): %s\n" % e)
         return 1
@@ -1355,6 +1371,19 @@ def _selftest():
         # …and stays valid without the flag, so the historical sweep is untouched.
         expect("A2: absent triage is still valid WITHOUT the flag (no default flipped)",
                val.validate(stripped, mode="pre-dispatch", repo_root=repo) == [])
+
+    with tempfile.TemporaryDirectory() as td:
+        expect("stance: no project config -> balanced", project_stance(td) == "balanced")
+        os.makedirs(os.path.join(td, ".claude"))
+        cfgp = os.path.join(td, ".claude", "compound-v.json")
+        with open(cfgp, "w") as fh:
+            fh.write('{"stance": "cost-aware"}')
+        expect("stance: the project's cost-aware stance is the default",
+               project_stance(td) == "cost-aware")
+        with open(cfgp, "w") as fh:
+            fh.write('{"stance": "fable-everywhere"}')
+        expect("stance: an unknown stance falls back to balanced",
+               project_stance(td) == "balanced")
 
     if failures:
         print("\nSELFTEST FAILED: %d case(s)" % len(failures))

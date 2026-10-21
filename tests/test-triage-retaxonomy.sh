@@ -148,6 +148,11 @@ manifest "$WORK/m1.yaml" "$ID1" "\"$D1\"" "$(field "$WORK/t1.json" tier)"
 validate "$WORK/m1.yaml" "$WORK/v1.out"
 rc=$?
 check "--require-triage accepts the new record" "$([ $rc -eq 0 ] && echo 1)"
+manifest "$WORK/m1s.yaml" "$ID0" "\"$D1\"" FULL
+validate "$WORK/m1s.yaml" "$WORK/v1s.out"
+rc=$?
+check "--require-triage refuses a manifest still bound to the superseded record" \
+  "$([ $rc -ne 0 ] && grep -q "superseded by $ID1" "$WORK/v1s.out" && echo 1)"
 [ $rc -eq 0 ] || cat "$WORK/v1.out"
 
 "$PY" "$PREEVAL" record-status --pre-eval-id "$ID0" --repo "$R" --json >"$WORK/s0b.json"

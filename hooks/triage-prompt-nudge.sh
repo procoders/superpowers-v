@@ -281,7 +281,8 @@ _python() {
 # Records cap. Beyond this the scan is skipped rather than run unbounded.
 _MAX_RECORDS=500
 
-# 0 when some pre-eval record belongs to this session.
+# 0 when a SCOPED or FULL pre-eval record belongs to this session. A DIRECT
+# record does not spend the session: the next request is a different change.
 _has_session_record() {
   local pdir="$1" sid="$2" files
   [ -d "$pdir" ] || return 1
@@ -297,7 +298,8 @@ _has_session_record() {
   # error exits non-zero here and the hook proceeds.
   jq -e -s --arg sid "$sid" \
     'any(.[]?; (type == "object")
-                and (((.session_id // "") | tostring) == $sid))' \
+                and (((.session_id // "") | tostring) == $sid)
+                and (((.decision // "") | tostring) != "FASTPATH_ELIGIBLE"))' \
     "$@" >/dev/null 2>&1
 }
 
@@ -568,11 +570,16 @@ hook_main() {
        | if (length <= 80
              and test("^(read|show me|explain|summari[sz]e|look at|cat)[[:space:]]")
              and (test("[\n;,]| and | then | also ") | not))
-         then "r" else "" end)
+         then "r" else "" end),
+    (((.prompt // "") | tostring)
+       | gsub("^[[:space:]]+"; "") | gsub("[[:space:]]+$"; "")
+       | if ((split("[[:space:]]+"; null) | length) < 4
+             and (test("[/~]|\\.[A-Za-z0-9]{1,6}([[:space:]]|$)") | not))
+         then "s" else "" end)
   ' 2>/dev/null)" || return 1
   [ -n "$fields" ] || return 1
 
-  local ev slash sid cwdv question readonly_lead
+  local ev slash sid cwdv question readonly_lead tiny
   {
     read -r ev
     read -r slash
@@ -580,6 +587,7 @@ hook_main() {
     read -r cwdv
     read -r question
     read -r readonly_lead
+    read -r tiny
   } <<EOF
 ${fields}
 EOF
@@ -639,6 +647,12 @@ EOF
     _claim_once "${store}/setup-${key}" || return 1
     _emit_notice "$_SETUP_NOTICE" "$_SETUP_CTX"
     return $?
+  fi
+
+  # Fewer than four words and nothing path-like ("hi", "ok") is small talk, not
+  # a change request.
+  if [ "${tiny:-}" = "s" ]; then
+    return 1
   fi
 
   marker="${store}/nudged-${key}"
@@ -805,6 +819,11 @@ permission: SCOPED and SCOPED+ still need a human offer and acceptance; for FULL
 one-line notice and the user's chance to say skip is that offer."
 
   _emit "$msg" || return 1
+  if [ "$tier" = "DIRECT" ]; then
+    # DIRECT leaves the session armed for the next request, but counts toward
+    # the same per-session cap so a chatty session is not scored forever.
+    return 0
+  fi
   : >"$marker" 2>/dev/null || true
   rm -f "$attempts" 2>/dev/null || true
   return 0

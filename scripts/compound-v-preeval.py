@@ -978,6 +978,18 @@ def find_superseding_id(repo, pre_eval_id):
     return None
 
 
+def newest_in_chain(repo, pre_eval_id):
+    """Follow `supersedes` links forward to the last record; bounded against a cycle."""
+    seen = {pre_eval_id}
+    cur = pre_eval_id
+    while True:
+        nxt = find_superseding_id(repo, cur)
+        if not nxt or nxt in seen:
+            return cur
+        seen.add(nxt)
+        cur = nxt
+
+
 def load_record(repo, pre_eval_id):
     """The on-disk record for `pre_eval_id` as a dict, or None when absent/unreadable."""
     if not pre_eval_id or not PRE_EVAL_ID_RE.match(pre_eval_id):
@@ -1901,6 +1913,7 @@ def record_status(repo, pre_eval_id, taxonomy_path=None):
         "taxonomy_path": _rel(repo, tax_path) if not taxonomy_path else taxonomy_path,
         "disabled_by_config": is_disabled_by_config_record(rec),
         "superseded_by": find_superseding_id(repo, pre_eval_id),
+        "newest": newest_in_chain(repo, pre_eval_id),
         "dispatchable": False,
         "reason": None,
     }
@@ -1908,7 +1921,8 @@ def record_status(repo, pre_eval_id, taxonomy_path=None):
     if rec is None:
         out["reason"] = "no record for this id — run `/v:triage <request>`"
     elif out["superseded_by"]:
-        out["reason"] = "superseded by %s — bind that record instead" % out["superseded_by"]
+        out["reason"] = ("superseded by %s — bind the newest record in its chain, %s"
+                         % (out["superseded_by"], out["newest"]))
     elif out["disabled_by_config"]:
         if _config_pre_eval_disabled(repo):
             out["dispatchable"] = True
@@ -3467,6 +3481,8 @@ def _selftest():
         _s1 = record_status(repo, r1["pre_eval_id"])
         expect("RETAX: record-status refuses the superseded record and names its successor",
                _s0["dispatchable"] is False and _s0["superseded_by"] == r1["pre_eval_id"])
+        expect("RETAX: record-status names the newest record of the chain",
+               _s0["newest"] == newest_in_chain(repo, r1["pre_eval_id"]))
         expect("RETAX: record-status accepts the new record", _s1["dispatchable"] is True)
         _schema_check(expect, rec1, must_validate=True,
                       label="RETAX: the superseding record validates against the schema")

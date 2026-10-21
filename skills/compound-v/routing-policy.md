@@ -355,8 +355,8 @@ git-derived scope gate would BLOCK only after the fact, and the `PreToolUse` lan
 cannot see coming at all, because they happen inside codex's own process tree, never
 through a Claude Code tool call.
 
-(`conservative` and `claude-only` mirror `balanced`. Only `cost-aware.claude.standard`
-differs — `sonnet`, not `opus`. `cost-aware.claude.deep` stays `opus`.)
+(`claude-only` mirrors `balanced`; `conservative` keeps `standard` on `opus`. `cost-aware`
+differs at `frontier` — `opus`, not `fable`. `cost-aware.claude.deep` stays `opus`.)
 
 The map is **documented, not committed** in this repo — it is project-local config.
 [`/v:init`](../../commands/v-init.md) seeds this per-stance default map so routing

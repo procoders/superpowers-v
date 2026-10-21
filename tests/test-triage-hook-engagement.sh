@@ -268,5 +268,31 @@ check "D: the record is still written and still FULL" \
 check "D: SCOPED is still an offer" \
   "$(grep -q 'SCOPED — offer it to the user; on acceptance' "$NUDGE" && echo 1 || echo 0)"
 
+
+# --------------------------------------------------------------------------- #
+echo "=== E. small talk and DIRECT prompts do not spend the session ==="
+PROJE="$WORK/proje"
+mkrepo "$PROJE"
+mkdir -p "$PROJE/.claude"
+printf '{"stance": "cost-aware"}\n' >"$PROJE/.claude/compound-v.json"
+printf '# prd\n' >"$PROJE/prd.md"
+git -C "$PROJE" add -A && git -C "$PROJE" -c user.email=t@t -c user.name=t commit -qm seed
+python3 "$REPO/scripts/compound-v-onboard.py" draft-taxonomy --repo "$PROJE" --emit-yaml \
+  >"$PROJE/.claude/compound-v-impact-taxonomy.yaml" 2>/dev/null
+for p in 'hi' 'Ok' 'thanks a lot'; do
+  run sE1 "$p" "$PROJE"
+  check "E: small talk '$p' is silent" "$([ "$RC" = 0 ] && [ -z "$OUT" ] && echo 1 || echo 0)"
+done
+check "E: ...and minted no record" "$([ -z "$(records_for "$PROJE" sE1)" ] && echo 1 || echo 0)"
+run sE2 'Please read prd.md' "$PROJE"
+check "E: a polite read of a doc is scored DIRECT" "$(has "$(ctx)" 'TIER: DIRECT' && echo 1 || echo 0)"
+check "E: ...and a DIRECT decision writes no spent-marker" \
+  "$(find "$STORE" -name 'nudged-*' -newer "$PROJE/prd.md" 2>/dev/null | wc -l | tr -d ' ' | grep -qx 0 && echo 1 || echo 0)"
+run sE2 'Build a salon booking app with stylists, services and online payments' "$PROJE"
+check "E: the salon request after a DIRECT prompt still gets the FULL directive" \
+  "$(has "$(ctx)" 'TIER: FULL' && has "$(ctx)" 'you are starting the Compound V pipeline' && echo 1 || echo 0)"
+run sE2 'and now rename the stylist model to staff member everywhere' "$PROJE"
+check "E: after FULL the session is spent" "$([ -z "$OUT" ] && echo 1 || echo 0)"
+
 printf 'tests/test-triage-hook-engagement.sh: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" = "0" ] || exit 1

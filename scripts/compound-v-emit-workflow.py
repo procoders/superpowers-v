@@ -1200,6 +1200,7 @@ def read_pinned_baseline(run_dir, job_id, state_job=None):
 # maintainer's rule is "if we did not solve it the first time, hand it to Fable",
 # and the cheapest honest reading of that is one step at a time.
 CLAUDE_ESCALATION = ("sonnet", "opus", "fable")
+PROJECT_STANCES = ("balanced", "conservative", "cost-aware", "claude-only")
 
 # --- retry policy (v3.4.8) --------------------------------------------------
 # The workflow's own retry budget, and the ONLY source of the backoff table.
@@ -2418,6 +2419,12 @@ def build_plan(manifest, run_dir, repo_root, python_bin, self_path,
     config_path = os.path.join(abs_repo_root, ".claude", "compound-v.json")
     if not os.path.isfile(config_path):
         config_path = None
+    # A manifest without `routing_stance` falls back to the project's `stance`, the
+    # key /v:init writes; without it a cost-aware project resolved frontier to Fable.
+    if stance is None and config_path:
+        _cfg_stance = (_read_json(config_path, {}) or {}).get("stance")
+        if isinstance(_cfg_stance, str) and _cfg_stance.strip() in PROJECT_STANCES:
+            stance = _cfg_stance.strip()
     # Gate, Record and Finalize are TRANSPORT: each runs exactly one clamped
     # command and returns its JSON verbatim, and the command's real logic is
     # Python that the integration authority re-verifies from git. That is the
@@ -4632,12 +4639,21 @@ def cmd_gate_receipt(argv):
         #
         # Chasing these one per run cost five dogfoods. They are enumerated here
         # ONCE, from the three places in this file that write them.
-        for _later in (verified,
-                       os.path.join(args.run_dir, "receipts",
-                                    "%s.gate.json" % args.job_id),
-                       patch_artifact_path(args.run_dir, args.job_id),
-                       os.path.join(args.run_dir, "results",
-                                    "%s.json" % args.job_id)):
+        _later_paths = [verified,
+                        os.path.join(args.run_dir, "receipts",
+                                     "%s.gate.json" % args.job_id),
+                        patch_artifact_path(args.run_dir, args.job_id),
+                        os.path.join(args.run_dir, "results",
+                                     "%s.json" % args.job_id)]
+        # A re-attempt: Record will archive the previous result as the next free
+        # results/attempts/<id>.<n>.json (the same numbering it uses).
+        if os.path.exists(_later_paths[-1]):
+            _att_dir = os.path.join(args.run_dir, "results", "attempts")
+            _n = 1
+            while os.path.exists(os.path.join(_att_dir, "%s.%d.json" % (args.job_id, _n))):
+                _n += 1
+            _later_paths.append(os.path.join(_att_dir, "%s.%d.json" % (args.job_id, _n)))
+        for _later in _later_paths:
             _rel = os.path.relpath(os.path.abspath(_later),
                                    os.path.abspath(root)).replace(os.sep, "/")
             if not _rel.startswith("../") and _rel not in kept:

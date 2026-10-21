@@ -593,7 +593,7 @@ written by the step that already owns it:
 
 | Knob | Where it lives | Lightweight value | What it turns off |
 |---|---|---|---|
-| `stance` | `.claude/compound-v.json` (Step 4a) | `cost-aware` | `frontier` resolves to Opus instead of Fable, and `standard` Claude jobs run on Sonnet |
+| `stance` | `.claude/compound-v.json` (Step 4a) | `cost-aware` | `frontier` resolves to Opus instead of Fable (the only Claude tier it changes; `standard` is Sonnet under balanced too), and re-attempts never escalate into Fable |
 | `brainstorm.deep_research` | `.claude/compound-v.json` (Step 4a) | `"off"` | Trigger 0's research pass before a brainstorm (a deep-research run or up to six web searches) |
 | `review.cross_model` | `.claude/compound-v.json` (Step 4a) | `false` (already the default) | the automatic Codex second opinion on a plan |
 | `advisorModel` | `.claude/settings.json` (Step 4e) | left unset, or `"opus"` | unset turns the advisor off; `opus` keeps it but never on Fable |
@@ -687,8 +687,9 @@ was, in those two fields).
   does not fix a single model family — see `adapter-opencode.md`).
 
 (`conservative` and `claude-only` mirror `balanced` — seed those two stance blocks
-identically to `balanced`. Only `cost-aware.claude.standard` differs: `sonnet`, not
-`opus`; `cost-aware.claude.deep` stays `opus`.)
+identically to `balanced`. Only `cost-aware.claude.frontier` differs: `opus`, not `fable`;
+`cost-aware.claude.deep` stays `opus`. The resolver's built-in `conservative` map also keeps
+`standard` on `opus`, so a seeded block that mirrors `balanced` overrides that.)
 
 - `stance` = the stance chosen in Step 3 (`cost-aware` under Step 3f's `lightweight` profile, which
   also writes `brainstorm.deep_research: "off"` and the `retry` block below).
@@ -786,8 +787,8 @@ identically to `balanced`. Only `cost-aware.claude.standard` differs: `sonnet`, 
 - **`models` — SEED the default per-stance tier→model map (exactly the block above)** so
   intent-based routing resolves out of the box even with no further setup. The map is
   **per-stance** — shape `{<stance>: {<backend>: {<tier>: model}}}`. Only the `claude`
-  rows differ across stances: `cost-aware.claude.standard` is `sonnet` (Sonnet 5),
-  everywhere else `standard` Claude is `opus`, and `cost-aware.claude.deep` stays `opus`;
+  rows differ across stances: `cost-aware.claude.frontier` is `opus` where `balanced` has
+  `fable`, `standard` Claude is `sonnet` in both, and `cost-aware.claude.deep` stays `opus`;
   `codex`/`antigravity`/`cursor` are identical in every stance. This is the same default
   the resolver
   ([`scripts/compound-v-resolve-model.py`](../scripts/compound-v-resolve-model.py))

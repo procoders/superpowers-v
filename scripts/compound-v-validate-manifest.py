@@ -1991,6 +1991,39 @@ def _validate_triage(manifest, repo_root, taxonomy_path):
         else:
             problems.extend(
                 _triage_digest_problems(digest, repo_root, taxonomy_path))
+    problems.extend(_triage_record_problems(tri, repo_root))
+    return problems
+
+
+def _triage_record_problems(tri, repo_root):
+    """A bound record that is on disk must carry the manifest's taxonomy digest, and no
+    re-triage may have superseded it — otherwise a manifest bound before a re-triage
+    would dispatch on a stale size decision. An absent record is not checked here."""
+    pid = str(tri.get("pre_eval_id") or "")
+    if not pid or "/" in pid or "\\" in pid or pid in (".", ".."):
+        return []
+    root = repo_root or "."
+    rel = os.path.join(PRE_EVAL_DIR_REL, pid + ".json")
+    rec, _err = _read_json_file(root, rel)
+    retriage = ("re-run /v:triage <the same request> and /v:orchestrate so the manifest "
+                "binds the new record (compound-v-preeval.py record-status shows which)")
+    problems = []
+    if isinstance(rec, dict) and rec.get("taxonomy_digest") != tri.get("taxonomy_digest"):
+        problems.append("manifest triage.taxonomy_digest does not match the record %s "
+                        "(%r) — %s" % (rel, rec.get("taxonomy_digest"), retriage))
+    d = os.path.join(root, PRE_EVAL_DIR_REL)
+    try:
+        names = sorted(os.listdir(d))
+    except OSError:
+        names = []
+    for name in names:
+        if not name.endswith(".intent.json"):
+            continue
+        obj, _e = _read_json_file(root, os.path.join(PRE_EVAL_DIR_REL, name))
+        if isinstance(obj, dict) and obj.get("supersedes") == pid:
+            problems.append("manifest triage.pre_eval_id %s was superseded by %s — %s"
+                            % (pid, obj.get("pre_eval_id"), retriage))
+            break
     return problems
 
 
