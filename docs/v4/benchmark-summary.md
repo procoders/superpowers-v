@@ -31,7 +31,7 @@ busy developer does before handover and sent fixes (1–2 problems per round) un
 
 | | Plain, one prompt | Plain + requirements + developer rounds | Compound V v4 | v4 + design skill |
 |---|---|---|---|---|
-| Cost | $1.31 | $2.27 (+ ~9 min of the developer's time) | $8.1–11.1 | $10.60 |
+| Cost | $1.31 | $2.27, ~7 min machine time, 2 developer rounds | $8.1–11.1 | $10.60 |
 | Rubric (blind) | 60 | 61, 61 | 74–84 | 80, 84 |
 | Capabilities considered | ~25 | ~39 | ~73 | — |
 | Security & privacy | 1/5 | 1/5 | 4–5/5 | 4–5/5 |

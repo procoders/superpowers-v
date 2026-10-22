@@ -121,3 +121,7 @@ Costs are the CLI's estimate (last turn per session). UX = `RUBRIC-ux.md`, blind
 
 G14 vs G15 in the same sets: +6 (Codex) and +20 (Gemini) UX, rubric level, cost within noise. G14's review-round finding
 (failures from many networks locked out the correct login) became the S6 lockout rule.
+
+Plain vs v4 head-to-head (kit sets bfin-s and the release-gate set): plain A rubric 61 / 61, 57 / 61; considered
+capabilities 20 / 30, 23 / 25 (~25). v4 G10, G12, G13 considered 66 / 85, 61 / 76, 70 / 72 (~71). The judges' security
+dimension: plain 1/5 in every set; v4 4–5/5.
