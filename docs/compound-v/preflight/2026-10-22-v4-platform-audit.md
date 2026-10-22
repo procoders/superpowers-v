@@ -66,3 +66,13 @@ MUST use `skills/` not `commands/`; MUST keep marketplace entry `name` equal to 
 ## Open questions
 1. Live-test the `ref`-pinned marketplace entry and the project-level `enabledPlugins:false` override before 4.0.
 2. Does `worktree.baseRef: "head"` apply to `isolation: worktree` subagents?
+
+## Verified in Task 13 (live probes, 2026-10-22, Claude Code 2.1.306)
+- **enabledPlugins:** a project `.claude/settings.json` with `{"enabledPlugins": {"superpowers@claude-plugins-official": false}}` shows every Superpowers install as `✘ disabled` in `claude plugin list` inside that project, and `✔ enabled` outside it. VERIFIED.
+- **Built-in browser pane is not available to `claude -p`** (native-overlap probe 1). VERIFIED.
+- **Chromium inside the Claude Code sandbox on macOS fails:** `bootstrap_check_in … Permission denied (1100)` (Mach port registration), with or without `allowLocalBinding` / `allowMachLookup: ["*"]`. Running `npx playwright test` as a `sandbox.excludedCommands` entry (plus a matching `Bash(...)` allow rule) passes. VERIFIED. A call with a pipe appended stays sandboxed, as the docs say.
+- **An `Edit(/docs/compound-v/runs/**)` permission deny is also enforced as a sandbox write deny:** a sandboxed `python3` write there fails with `PermissionError: Operation not permitted`. So v4 writes no such rule. VERIFIED.
+- **The sandbox cannot write `~/.claude/compound-v/`:** the receipt key moved to `<git common dir>/compound-v/receipt.key`. VERIFIED by the light smoke.
+- **`cost-state` in `-p`:** a one-turn run's transcript holds one `cost-state` line, written after the Stop hook ran, so a single-turn run's own cost is unknown to the hooks; multi-turn runs see the previous turns'. VERIFIED (light smoke).
+- **Sandbox auto-allow refused two compound commands** with shell variables / `$?`; the skills now say to run each CLI call as one plain line. VERIFIED (light smoke).
+- Still UNVERIFIED: a live install of the `ref: "v3"` marketplace entry (needs the `v3` branch pushed; installing would also change the user's plugin config), and whether a Stop hook exiting 1 blocks (our hooks are registered `|| true` and exit 0 by trap, so it cannot arise).
