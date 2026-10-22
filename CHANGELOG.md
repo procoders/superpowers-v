@@ -91,6 +91,14 @@ briefs and on changes to existing code, are in [docs/v4/benchmark-summary.md](do
   jobs and records `Parallel:` in the spec; the builder uses the Workflow tool only on
   `Parallel: yes (owner)`.
 
+### Fixed — before release
+
+- **A same-second edit could be missed by the tree snapshot.** The snapshot seeds a private index from a copy of the
+  user's index; the copy got a new mtime, which switched off git's racy-git re-check, so a same-size edit in the same
+  second hashed as the old content (seen as a flaky CI test on Linux). The copy now keeps the index mtime, and the
+  snapshot pins `core.trustctime=true` and `core.checkStat=default` so a project's git config cannot weaken the
+  check. Reviewed by Codex; a regression test covers it.
+
 ### Migration
 
 v3 stays installable as `superpowers-v@procoders`, pinned to the `v3` branch. Finish unfinished v3 runs

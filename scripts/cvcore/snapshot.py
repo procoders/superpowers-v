@@ -16,7 +16,8 @@ EVIDENCE_NAMES = re.compile(
     r"(\d{8}-\d{6}-[a-z0-9-]+(-review-\d+|-plan-review)?\.json|\.tmp-[^/]*\.json|\.[^/]*\.lock|triage\.log)\Z")
 CANON = ("-c", "core.autocrlf=false", "-c", "core.fileMode=true",
          "-c", f"core.excludesFile={os.devnull}", "-c", "core.safecrlf=false",
-         "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false")
+         "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false",
+         "-c", "core.trustctime=true", "-c", "core.checkStat=default")
 ENV_GLOBS = (".env*", "*.env", "*.local.*")
 _BIG = 1 << 20
 
@@ -49,7 +50,8 @@ def excludes(paths) -> list:
 def _seed(repo, env) -> None:
     src = Path(repo) / os.fsdecode(git(repo, "rev-parse", "--git-path", "index").strip())
     if src.is_file():
-        shutil.copyfile(str(src), env["GIT_INDEX_FILE"])
+        # copy2 keeps the index mtime, so git still re-reads entries changed in the same second (racy git).
+        shutil.copy2(str(src), env["GIT_INDEX_FILE"])
     else:
         git(repo, *CANON, "read-tree", "HEAD", env=env)
     flagged = [e[2:] for e in zsplit(git(repo, "ls-files", "-v", "-z", env=env)) if e[:1].islower()]

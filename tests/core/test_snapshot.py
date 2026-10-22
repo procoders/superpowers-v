@@ -27,6 +27,19 @@ class SnapshotTest(unittest.TestCase):
         helpers.write(self.repo, {"new.txt": "x\n"})
         self.assertNotEqual(before, snapshot.tree(self.repo))
 
+    def test_edit_hidden_by_restored_mtime_changes_tree(self):
+        helpers.sh(self.repo, "config", "core.trustctime", "false")
+        path = self.repo / "a.txt"
+        past = int(os.stat(path).st_mtime) - 60
+        os.utime(path, (past, past))
+        helpers.sh(self.repo, "update-index", "--refresh")
+        st = os.stat(path)
+        before = snapshot.tree(self.repo)
+        path.write_text("two\n")
+        for p in (path, self.repo / ".git/index"):
+            os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns))
+        self.assertNotEqual(before, snapshot.tree(self.repo))
+
     def test_deletion_and_mode_change_tree(self):
         t0 = snapshot.tree(self.repo)
         (self.repo / "a.txt").unlink()
