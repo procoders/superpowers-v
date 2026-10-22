@@ -73,7 +73,9 @@ criterion. Evidence and the full mapping: `docs/compound-v/preflight/2026-10-22-
   cognitive test. *SC 2.1.1, 1.3.1, 4.1.2, 2.4.7, 2.5.8, 1.4.10, 3.3.7, 3.3.8*
 - **U4** What the interface says is true: notices, privacy text and query-string messages match the stored state, and a
   confirmation step commits exactly what the user saw and approved — if anything changed since, it shows the difference
-  instead of committing something else. From every step, the failure of its precondition included, the user can reach
+  instead of committing something else. Anything can change between steps (a referenced record deleted, a slot taken,
+  a price changed): the commit step re-validates everything inside its transaction, before any write, and answers with a
+  4xx and a fresh preview, never a 500. From every step, the failure of its precondition included, the user can reach
   the alternatives. *HICCUPS Claims; GDPR 12; Hendrickson Interrupt*
 
 How a row is proven is the pipeline's job, not another item: each row's test asserts stored state, and a real-browser
