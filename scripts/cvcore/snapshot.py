@@ -68,8 +68,18 @@ def tree(repo) -> str:
         if skip:
             git(repo, *CANON, "rm", "-r", "--cached", "-q", "--ignore-unmatch", "--",
                 *[f":(literal){p}" for p in skip], env=env)
-        git(repo, *CANON, "add", "-A", "--", ".", *excludes(skip), env=env)
+        git(repo, *CANON, "add", "-A", "--", ".", *excludes(_not_ignored(repo, skip)), env=env)
         return git(repo, *CANON, "write-tree", env=env).decode().strip()
+
+
+def _not_ignored(repo, paths) -> list:
+    # git add errors on an exclude pathspec that names an ignored file; -A skips those anyway.
+    if not paths:
+        return []
+    out = git(repo, "check-ignore", "-z", "--no-index", "--stdin", check=False,
+              input=b"\0".join(os.fsencode(p) for p in paths))
+    ignored = set(zsplit(out))
+    return [p for p in paths if p not in ignored]
 
 
 def verify_tracked(repo, tree_id: str, dest) -> list:

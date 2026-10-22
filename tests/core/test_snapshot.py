@@ -54,6 +54,16 @@ class SnapshotTest(unittest.TestCase):
         helpers.write(self.repo, {"docs/compound-v/plans/p.md": "plan\n"})
         self.assertNotEqual(t0, snapshot.tree(self.repo))
 
+    def test_evidence_ignored_by_project_gitignore(self):
+        helpers.write(self.repo, {".gitignore": "*.log\n*.json\n"})
+        helpers.sh(self.repo, "add", ".gitignore")
+        helpers.sh(self.repo, "commit", "-q", "-m", "ignore logs")
+        helpers.write(self.repo, {"docs/compound-v/runs/triage.log": "{}\n",
+                                  "docs/compound-v/runs/20261022-101500-x.json": "{}"})
+        t0 = snapshot.tree(self.repo)
+        helpers.write(self.repo, {"src/a.js": "1\n"})
+        self.assertNotEqual(t0, snapshot.tree(self.repo))
+
     def test_crlf_config_independent(self):
         helpers.write(self.repo, {"w.txt": b"line\r\n"})
         plain = snapshot.tree(self.repo)
