@@ -23,6 +23,9 @@ Write what you find into the plan (`## Research` and `## Constraints`), never in
 
 ## 2. Plan, then attach it
 
+When the change adds or changes a user interface, read `${CLAUDE_PLUGIN_ROOT}/skills/design/SKILL.md` now, before the plan: `DESIGN.md` and the screenshot spec go into `change_set` and get a task, and you follow the skill while building. Skip it for work with no user interface.
+
+
 Follow `${CLAUDE_PLUGIN_ROOT}/skills/plan/SKILL.md` and `checklists.md`: constraints, every checklist item answered, the acceptance table (boundary rows at −1 / exact / +1 for every number in the rule's own unit, one row per rule of each "same rules as X" clause, every DR row), tasks with their tests, and the `compound-v-plan` block. Then run these two commands, which with `cochange` and `lane finish` (§4) are the only `compound-v.py` commands you may run:
 
 ```bash
@@ -43,8 +46,6 @@ Work through `## Tasks` in order. For each task:
 5. Use adversarial fixture pairs: two records with the same display label and different ids; the same request when different resources are available; the same form submitted twice.
 
 For web projects, write the Playwright test (`live_cmd`) as its task says, and run it: a browser-only failure found now is cheaper than one found in review.
-
-When the change adds or changes a user interface, read and follow `${CLAUDE_PLUGIN_ROOT}/skills/design/SKILL.md` (DESIGN.md, shared components, the craft floor, the screenshot check) before the first screen. Skip it for work with no user interface.
 
 ## 4. Large work only
 

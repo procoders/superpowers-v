@@ -1,5 +1,7 @@
 # Compound V
 
+by [ProCoders](https://procoders.tech)
+
 **Give Claude Code a senior engineer's habits: it interviews the client first and proves the work before it says done.**
 
 ![Compound V](assets/compound-v-squad.png)
@@ -7,11 +9,11 @@
 ## The loop that gets you blamed
 
 You prompt, Claude builds, you click through the happy path, it works, you ship. A week later the client calls:
-the session didn't end on logout, someone booked 24 fake appointments, a mangled cookie crashes the page, a customer's
+the session didn't end on logout, someone booked 24 fake appointments, a mangled cookie returns a server error, a customer's
 name is rejected, and staff still can't change a price without you. The client doesn't blame Claude. They blame you.
 
-We measured that loop. Plain Claude Code got the full requirements, and a developer tested it the way a busy
-developer does and sent fixes until they were happy to hand over ($2.27 of Claude, two rounds). **They found one
+We measured that loop. Plain Claude Code got the full requirements, and a developer (an agent playing a busy one) tested it the
+way a busy developer does and sent fixes until they were happy to hand over ($2.27 of Claude, two rounds). **They found one
 bug. Blind judges then found every defect above in the same build.** Your own happy-path check can't see them,
 because you check what you built, not what you forgot.
 
@@ -19,8 +21,8 @@ because you check what you built, not what you forgot.
 
 - **Before the code: the questions nobody asked.** The brainstorm interviews you (or your client) one question at a
   time: who runs it day to day, what the operator changes without a developer, the country's privacy rules, every
-  form and who could abuse it, the edge cases on purpose. Given just these answers, even a plain build nearly doubled
-  the edge cases it handled (37 → 63).
+  form and who could abuse it, the edge cases on purpose. In an earlier experiment, a plain build given just
+  these answers nearly doubled the edge cases it handled (37 → 63).
 - **In the middle: it picks up a live project.** On existing code the builder reads before it writes. It maps every
   rule, every operation and every guard the change touches, so a new feature goes through the existing validation
   instead of beside it. Added to a running app, recurring bookings scored 85 and 93. Plain Claude Code's attempt
@@ -28,44 +30,48 @@ because you check what you built, not what you forgot.
 - **At handover: acceptance you can't fake.** The project's tests, a real browser submitting real forms, an
   independent reviewer attacking an isolated copy (logout, other users' data, abuse from many networks, production
   start with example secrets), and a look at its own screenshots against the project's `DESIGN.md`. Each check is a
-  signed receipt bound to the exact code. No green receipts, no "done".
+  signed receipt bound to the exact code. Without them Claude can't report "done": if it tries to stop, a hook
+  refuses once and names what is missing, and the run is recorded as incomplete.
 
 ## What reaches the client
 
 One salon-booking brief, one model (Claude Opus), one machine. On the left, the realistic loop: plain Claude Code got
-the full requirements, and a developer checked it and sent fixes until they would hand it over. Every build was judged
+the full requirements, and a developer agent checked it and sent fixes until it would hand it over. Every build was judged
 **blind**: Codex ran the code and attacked it, and a PM-plus-designer panel reviewed the screens.
 
 | | Claude Code + you iterating | **Compound V** |
 |---|---|---|
-| Security holes the client would hit | session survives logout · 24 fake bookings from one source · a mangled cookie crashes the page | **none critical:** sessions revoked, CSRF, throttling, no personal data in confirmations |
+| Security holes the client would hit | session survives logout · 24 fake bookings from one source · a mangled cookie returns a server error | **no critical defect:** sessions revoked, CSRF, no personal data in confirmations; fake bookings throttled after ~10 |
+| Security & privacy, judges (/5) | 1 | **3** in the same sets (4–5 in earlier v4 sets) |
 | Staff can change services and prices without you | no | **yes** |
 | Edge cases and user mistakes handled¹ | 39 | **73 (~2×)** |
-| Product judges | send back: the salon can't manage its own services and prices | *"The only version that looks like a real boutique salon brand"* |
-| Product quality, blind run-based score (/100) | 61 | **80–84** |
+| Product judges | send back: the salon can't manage its own services and prices | *"The only version that looks like a real boutique salon brand"*³ |
+| Product quality, blind run-based score (/100) | 61 | **74–84** |
 | UX, blind PM + designer score (/100)² | ~62: a wall of 27 date buttons on the phone, errors far from their fields | **83:** guided booking, errors beside each field, the salon's brand and contacts on every page |
 | Claude spend · machine time | **$2.27 · ~7 min** | ~$11 · ~35 min |
 | Your manual work | two rounds of testing it yourself and writing fix prompts | **zero rounds:** answer the questions, approve the spec, then fully hands-off |
 
-**What the score means.** The judges check every requirement by running it, then try to break it. ~60 = the happy path
-works and the holes above are open: the client finds them in week one. 80+ = a demanding reviewer would hand it over.
-One critical defect caps any build at 50. The scale isn't linear: the last 20 points are exactly the bugs that bounce
-a delivery.
+**What the score means.** The judges check every requirement by running it, then try to break it, and score
+requirements, correctness under their probes, product thinking, security, code and operability. Around 60, the happy
+path works and holes like the ones above are open. Above 80, the judges found no critical defect and few gaps. One
+critical defect caps any build at 50. It's a rubric, not a production outcome, but the points between 60 and 80 are
+the defects listed in this table.
 
-<sub>¹ Capability census, same blind set. ² UX: Codex panel; a Gemini panel gave 63–74 vs 100. A single plain prompt
+<sub>¹ Capability census, same blind set. ² UX: Codex panel; a Gemini panel gave 63–74 vs 100. ³ Gemini panel. A single plain prompt
 with no iteration: $1.31, 3.5 min, 60 · 50. Judges move ±10 points on the same build, so read ranges, not single runs.
 Full tables and method: [benchmark-summary.md](docs/v4/benchmark-summary.md).</sub>
 
 It isn't one lucky app. On a team-expenses app (TypeScript, Fastify, Drizzle, Zod) plain Claude Code scored 52 (59 with
-the owner's answers) and Compound V 80, all uncapped, with ~82 edge cases handled against 44–52.
+the owner's answers) and Compound V 80 before critical-defect caps (52, 49.5 and 70 after them; v4's one cap was a
+type-check failure, now a rule), with ~82 edge cases handled against 44–52.
 
-**Is ~$10 worth it?** That's less than ten minutes of a developer's time, and far less than one bounced delivery.
+**Is ~$11 worth it?** Compare it with one bounced delivery.
 
 ## Is it for you?
 
 **Yes**, if you build things other people will use: client work, internal tools, SaaS features, anything with
 logins, personal data, money or a real operator behind it. Those are the places where one missed case costs more
-than the $10.
+than the run.
 
 **No**, for prototypes, spikes, throwaway scripts or a tight edit-run loop. There, plain Claude Code is the right
 tool, and Compound V gets out of the way: typos, copy and config changes go straight to a light check.
@@ -126,8 +132,8 @@ verify.
 | `/compound-v:onboard` | Build a citation-checked knowledge base of an existing repo (`--refresh` when stale) |
 | `/compound-v:pr-review` | Deep review of a PR, a commit range or a local diff. Never edits code |
 
-`plan`, `build` and `design` are the builder's own playbook; brainstorm hands off to them. Everything the plugin
-writes in your project lives in `docs/compound-v/`.
+`plan`, `build` and `design` are the builder's own playbook; brainstorm hands off to them. Its own records live in
+`docs/compound-v/`.
 
 ## Light and full
 

@@ -11,9 +11,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 Compound V is now a standalone plugin, `compound-v`. Its cycle is brainstorm → build (one builder
 researches, plans and codes) → verification with tree-bound receipts, and Claude Code does the orchestration. The
 salon experiments on 3.9.1 ([docs/v4/salon-report.md](docs/v4/salon-report.md)) showed the light flow
-beating the full v3 pipeline on every blind judgement at about a tenth of the cost. The component-by-component
-reasoning is in [docs/v4/transition.md](docs/v4/transition.md). Nothing about v4 itself is measured yet:
-the acceptance benchmark runs before release.
+beating the full v3 pipeline on every blind judgement at a sixth to a third of the cost. The component-by-component
+reasoning is in [docs/v4/transition.md](docs/v4/transition.md). v4's own results, against plain Claude Code on two
+briefs and on changes to existing code, are in [docs/v4/benchmark-summary.md](docs/v4/benchmark-summary.md).
 
 ### Removed — and why ([transition table](docs/v4/transition.md))
 
@@ -61,6 +61,15 @@ the acceptance benchmark runs before release.
 - **Agents** `builder` (Opus), `reviewer` (Opus) and `v-memory` (Haiku, read-only: the one exception to never-Haiku).
 - `/compound-v:init` writes `worktree.baseRef: head`, derives `live_cmd` for web projects, and offers
   to disable Superpowers in the project.
+- **design** sub-skill, loaded only for UI work: the project's `DESIGN.md`
+  ([Google's format](https://github.com/google-labs-code/design.md), linted with `@google/design.md@0.4.0`) as the one
+  source of the look, shared components instead of copies, a craft floor and a screenshot check. The brainstorm asks one
+  identity question, only for a new project with a UI. In the same blind sets it added about 13 UX points at no
+  measurable cost. `plan`, `build` and `design` are hidden from the slash menu (`user-invocable: false`).
+- **A universal web-app checklist** (OWASP ASVS 5.0, WSTG, RFC 9110, WCAG 2.2, GOV.UK) with the benchmark's lessons as
+  general rules: the request outranks the spec, one rule in one place, old operations × new data, new routes inherit
+  sibling guards, the commit step re-validates, permissions follow current state, per-target login limits never lock
+  out the correct login, and fields normalise the same way for storage and lookup.
 
 ### Changed — the L1 scheme (after the v4 benchmark)
 

@@ -1,5 +1,6 @@
 ---
 name: build
+user-invocable: false
 description: Use when a Compound V spec is approved and its run is at stage plan. Dispatches one fresh compound-v:builder that does the domain research, the code reading and the library check, writes and attaches the plan, and builds it with tests including the real-browser test. Every later fix goes back to that same builder. Watches the build budget, then hands off to compound-v:verify.
 ---
 

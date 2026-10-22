@@ -1,6 +1,7 @@
 ---
 name: plan
-description: How a Compound V plan is written. The compound-v:builder follows it after its own research, and it can be invoked directly to write or revise a plan. Writes the implementation plan with an acceptance table (behaviour → check), the four checklists answered item by item, tasks with their tests, a task → model table, lanes only for parallel work, and the machine-readable compound-v-plan block. Then attaches it to the run record.
+user-invocable: false
+description: How a Compound V plan is written. The compound-v:builder follows it after its own research, and Claude can load it directly to write or revise a plan. Writes the implementation plan with an acceptance table (behaviour → check), the four checklists answered item by item, tasks with their tests, a task → model table, lanes only for parallel work, and the machine-readable compound-v-plan block. Then attaches it to the run record.
 ---
 
 # Plan
@@ -47,6 +48,8 @@ Sections, in this order:
 - "done when": the command and the result that show it.
 
 For a **web project**, one task writes the real-browser test: Playwright Test (`@playwright/test`, with `webServer` starting the app) submits each main form in a real browser and checks the resulting state (reload, admin view, stored data). Its command is `live_cmd`. curl is not enough: browser-only failures (Origin, cookies, redirects) are exactly what it catches. For a non-web project, `live_cmd` runs the binary or the API through its main flow.
+
+For **UI work**, one task writes `DESIGN.md` and the screenshot spec (`compound-v:design`); both paths go into `change_set`.
 
 Always include a short operator guide (setup, configuration, routine changes, data requests) as part of a task.
 

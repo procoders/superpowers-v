@@ -44,7 +44,7 @@ Budget: at most 20 turns; keep at least 6 of them for probes 1, 2, 4 and 9, and 
    test that claims it and read its assertions: a test that proves a weaker claim, or allows what the row forbids, is
    a finding at the row's severity. Green tests and test names are not evidence. When the diff adds UI and the repo
    has `DESIGN.md`: markup or a style block pasted between screens instead of a shared component, or a colour or font
-   that is not in DESIGN.md, is a `low` finding (one look at the diff, no hunting).
+   that is not in DESIGN.md, is a `low` finding (a consistency finding against DESIGN.md, not a style note; one look at the diff, no hunting).
 1. Boundaries: every number or time rule at −1 unit / exact / +1 unit, in the request's unit and its governing time zone
    ("up to N before" allows exactly N); a DST-crossing case where one exists.
 2. Rule parity and old operations × new data: for each "same as X" or reused flow, list X's checks from the code and

@@ -405,7 +405,7 @@ def _design_result_ok(result: dict) -> bool:
 
 def design_lint(file: str) -> dict:
     try:
-        out = subprocess.run(["npx", "--yes", "@google/design.md", "lint", file, "--json"],
+        out = subprocess.run(["npx", "--yes", "@google/design.md@0.4.0", "lint", file, "--json"],
                              capture_output=True, timeout=120)
         if out.returncode not in (0, 1):  # tool ran; 1 == findings present
             return {"ok": False, "errors": -1, "warnings": 0, "findings": [], "note": "tool-unavailable"}

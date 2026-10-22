@@ -1,6 +1,6 @@
 ---
 name: onboard
-description: Scan an existing repository and build a trusted, citation-verified knowledge base under docs/compound-v/architecture/ plus an AGENTS.md / CLAUDE.md bridge, CONVENTIONS.md, path-scoped .claude/rules and (for UI repos) DESIGN.md, all behind a human approval gate. Use when a team adopts Compound V on an existing codebase, or with --refresh when the session banner says architecture docs are stale.
+description: Scans an existing repository and builds a trusted, citation-verified knowledge base under docs/compound-v/architecture/ plus an AGENTS.md / CLAUDE.md bridge, CONVENTIONS.md, path-scoped .claude/rules and (for UI repos) DESIGN.md, all behind a human approval gate. Use when a team adopts Compound V on an existing codebase, or with --refresh when the session banner says architecture docs are stale.
 argument-hint: "[--refresh]"
 ---
 

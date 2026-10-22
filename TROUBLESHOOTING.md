@@ -27,10 +27,10 @@ Compound V's hooks only act in a project that is set up and has a first commit.
 | failed | A step ran and failed, and no review round is left | Fix it, then restart (below) |
 
 The Stop hook refuses the first stop of an unverified run once, with the reason. The second stop
-goes through and records the run `incomplete` or `failed`. A recorded outcome closes the run: it
-stays in `docs/compound-v/runs/` as evidence and cannot be reopened.
+goes through and records the run `incomplete` or `failed`. An incomplete or failed run reopens by itself
+when new evidence is written (a receipt, a review, a waiver or a stage move); a verified run stays closed.
 
-**Restart** to finish the same work under a new run. Pass the closed run's `base_commit` so the
+**Restart** (optional) to finish the same work under a fresh run instead. Pass the closed run's `base_commit` so the
 diff still covers the work, then re-attach the plan:
 
 ```bash

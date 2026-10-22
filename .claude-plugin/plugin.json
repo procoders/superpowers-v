@@ -1,6 +1,6 @@
 {
   "name": "compound-v",
-  "description": "A verified development cycle: brainstorm, conditional pre-flights, plan, native build, then verification with tree-bound receipts that the model cannot write for itself.",
+  "description": "Senior-engineer habits for Claude Code: a one-question-at-a-time brainstorm, one builder that researches, plans and codes (with a DESIGN.md design pass for UIs), then verification with tests, a real browser, an independent reviewer and a scope check, each a signed receipt bound to the working tree.",
   "version": "4.0.0",
   "author": {
     "name": "Oleg",
@@ -13,11 +13,11 @@
     "compound-v",
     "verification",
     "receipts",
-    "scope-gate",
+    "brainstorm",
     "code-review",
-    "subagents",
-    "code-archaeology",
-    "domain-expert"
+    "design-md",
+    "playwright",
+    "subagents"
   ],
   "types": "./types/index.d.ts"
 }

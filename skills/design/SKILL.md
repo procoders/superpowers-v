@@ -1,5 +1,6 @@
 ---
 name: design
+user-invocable: false
 description: Use inside a Compound V build when the change adds or changes a user interface (pages, screens, components, styles). Keeps the look consistent through the project's DESIGN.md, holds a small craft floor, and ends with a screenshot check. Skip it entirely for libraries, CLIs, APIs and other work with no user interface.
 ---
 

@@ -119,8 +119,10 @@ Costs are the CLI's estimate (last turn per session). UX = `RUBRIC-ux.md`, blind
 | G15, v4 at 873709c, reads allowed | $11.13 | 83 | 77 | 80 |
 | G14, v4 + design skill (893b541), reads allowed | $10.60 | 84, 80 | 83, 83 | 100, 100 |
 
-G14 vs G15 in the same sets: +6 (Codex) and +20 (Gemini) UX, rubric level, cost within noise. G14's review-round finding
-(failures from many networks locked out the correct login) became the S6 lockout rule.
+G14 vs G15 in the same sets: +6 (Codex) and +20 (Gemini) UX, rubric level, cost within noise. A judging finding
+became the S6 lockout rule: in bv4-r9 the build that locked out the correct login after failures from many networks
+was G15 (security 2/5; G14 3/5). The product quote "the only version that looks like a real boutique salon brand" is
+Gemini's on G14 (ux-r5).
 
 Plain vs v4 head-to-head (kit sets bfin-s and the release-gate set): plain A rubric 61 / 61, 57 / 61; considered
 capabilities 20 / 30, 23 / 25 (~25). v4 G10, G12, G13 considered 66 / 85, 61 / 76, 70 / 72 (~71). The judges' security

@@ -98,7 +98,7 @@ Hand-computing it desynchronises the audio and truncates the end card.
 
 Extract, don't guess: `curl -s https://amiainative.dev` and its linked CSS, then
 `grep -oE '#[0-9a-fA-F]{6}' | sort | uniq -c | sort -rn`. Cross-check against in-repo art
-(`docs/routing.svg`). Introducing a colour the brand does not own is a rejection.
+(`docs/routing.svg`; the full brand system is in `brand.md` here). Introducing a colour the brand does not own is a rejection.
 
 | token | hex | use |
 |---|---|---|

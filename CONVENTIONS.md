@@ -10,14 +10,14 @@ states it.
 - Dollar figures come only from the Claude Code CLI's own cost record (`cost-state` entries in the
   session transcript) and are labelled "the CLI's estimate". (`scripts/cvcore/usage.py:8-20`)
 - Absent stays absent: when any session's cost is unknown, the run's cost is `null`, never a
-  substituted zero. (`scripts/cvcore/usage.py:84-88`)
+  substituted zero. (`scripts/cvcore/usage.py:106-110`)
 - CI greps `scripts/` and `docs/` for claimed-savings phrasing and fails on a hit.
 
 ## Model policy
 
 - Opus by default: building, judging, reviewing (`agents/reviewer.md` is `model: opus`).
 - Sonnet only for mechanical work with nothing to decide, chosen per task at dispatch time, never in
-  agent frontmatter. (`scripts/lint-frontmatter.py:40-45`)
+  agent frontmatter. (`scripts/lint-frontmatter.py:41-45`)
 - **Never Haiku**, with one exception: the read-only `v-memory` docs search, whose tools must stay
   `Read, Grep, Glob`. (`agents/v-memory.md:4-5`, `scripts/lint-frontmatter.py:46-47`)
 - Fable only when the user chooses it, never in frontmatter.
@@ -28,8 +28,8 @@ states it.
 - Receipts, outcomes, scope verdicts and usage are written by `scripts/compound-v.py` from real
   command results. Receipts are HMAC-signed with a machine key. (`scripts/cvcore/receipts.py:21`)
 - Run records under `docs/compound-v/runs/` are never edited by hand; the guard hook denies
-  Write/Edit there. (`scripts/cvcore/hooks.py:217-236`)
-- Command output kept in a receipt is capped at the last 20 lines. (`scripts/cvcore/receipts.py:81-88`)
+  Write/Edit there. (`scripts/cvcore/hooks.py:289`)
+- Command output kept in a receipt is capped at the last 20 lines. (`scripts/cvcore/receipts.py:138-139`)
 
 ## Hooks fail open
 
@@ -37,21 +37,21 @@ states it.
   (`hooks/stop.sh:2`)
 - Every registration carries `"shell": "bash"`, a `timeout` of at most 10 s, and a `|| true` suffix,
   so a parse error before the trap still cannot block a stop or reject a prompt. (`hooks/hooks.json:2`)
-- A hook may refuse a stop **once** per tree and stage, never forever. (`scripts/cvcore/hooks.py:81-89`)
+- A hook may refuse a stop **once** per tree and stage, never forever. (`scripts/cvcore/hooks.py:89-95`)
 - Hooks are thin: all logic is in `scripts/cvcore/hooks.py`, called through `scripts/compound-v.py hook <event>`.
 
 ## Where state lives
 
 - Project state: `docs/compound-v/` only (specs, plans, pre-flights, runs, receipts, the triage log).
   (`scripts/cvcore/run.py:15`)
-- Per-clone state: `.git/compound-v/` only (the receipt key; the sandbox lets commands write there, not to `~/.claude`). (`scripts/cvcore/receipts.py:21-22`)
+- Per-clone state: `.git/compound-v/` only (the receipt key; the sandbox lets commands write there, not to `~/.claude`). (`scripts/cvcore/receipts.py:23,36-42`)
 - Per-session hook markers (refused-once, nudge count) are scratch files in the system temp dir, or
-  `CV_STATE_DIR`. (`scripts/cvcore/hooks.py:39-43`)
+  `CV_STATE_DIR`. (`scripts/cvcore/hooks.py:41-45`)
 - Nothing is ever written under `${CLAUDE_PLUGIN_ROOT}`.
 
 ## Python
 
-- Standard library only, Python 3.9 floor. (`skills/init/SKILL.md:17`)
+- Standard library only, Python 3.9 floor. (`skills/init/SKILL.md:20`)
 - No bytecode next to the scripts: the entry point sets `sys.dont_write_bytecode`, and hooks run
   Python with `-I -B`. (`scripts/compound-v.py:7-8`, `hooks/stop.sh:5`)
 - The one named exception is CI tooling: `scripts/lint-frontmatter.py` imports PyYAML.

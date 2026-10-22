@@ -1,6 +1,6 @@
 ---
 name: init
-description: Set up Compound V in this project. Probes git, Python, Codex, a browser runner and Superpowers; picks the reviewer and test command; writes .claude/compound-v.json and the two native project settings Compound V relies on (worktree base and run-record protection). Every write is shown as a diff and applied only on the user's yes. Run once per project, and again after installing Codex or Playwright.
+description: Sets up Compound V in this project. Probes git, Python, Codex, a browser runner and Superpowers; picks the reviewer and test command; writes .claude/compound-v.json and the two native project settings Compound V relies on (worktree base and run-record protection). Every write is shown as a diff and applied only on the user's yes. Run once per project, and again after installing Codex or Playwright.
 argument-hint: "[--check]"
 ---
 

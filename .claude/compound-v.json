@@ -1,10 +1,5 @@
 {
-  "memory": {
-    "extra_globs": [
-      "skills/**/*.md",
-      "commands/**/*.md",
-      "agents/**/*.md"
-    ],
-    "embeddings": false
-  }
+  "test_cmd": "python3 -m unittest discover -s tests/core",
+  "live_cmd": "python3 scripts/lint-frontmatter.py .",
+  "is_web": false
 }

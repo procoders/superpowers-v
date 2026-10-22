@@ -1,73 +1,19 @@
 .DS_Store
 *.log
+*.err
 node_modules/
 .env
 .env.local
-docs/archive/v3/_runs/
-
-# Compound V orchestrator run artifacts.
-# Worktrees live under $TMPDIR/compound-v/<run-id>/<job-id> (outside the repo) by
-# design; these guards catch any that accidentally land in-tree, plus the codex
-# adapter's transient last-message capture. The v3 audit trail archived under
-# docs/archive/v3/ stays committed.
-.worktrees/
-/compound-v/
-.job_result.txt
-
-# Codex --json event streams: transient run telemetry (liveness reads them live);
-# large and full of prompts/tool-calls — never committed as run substrate.
-docs/archive/v3/execution/*/logs/*.jsonl
-.v29-worktrees/
-docs/archive/v3/execution/2026-07-11-v2.9-pre-evaluation/baselines/
-
-# stray CLI stderr captures (e.g. agy/models probes)
-*.err
-
-# Harness-created agent worktrees. The existing `.worktrees/` guard above predates
-# them and does not match this path. Ignoring them is deliberate and has a stated
-# trade-off, per the scope-gate warning above: an ignored path is invisible to
-# `git ls-files --others --exclude-standard`, so the gate can no longer see a job
-# that writes INTO another agent's tree. That case is covered earlier and better —
-# hooks/lane-guard.sh denies a cross-tree write BEFORE it happens. What ignoring
-# buys is that every concurrent job stops having to hand-snapshot its siblings'
-# checkouts into --preexisting just to measure its own diff, and that a local
-# `lint-frontmatter.py .` stops reporting dozens of phantom issues from files that
-# are not in this checkout at all (observed three times: 51, 68, 68).
-.claude/worktrees/
-
-# Python bytecode. A local run of the repo's own test sweep with a
-# bytecode-writing interpreter leaves .pyc files next to the scripts.
-#
-# GIT IGNORES THESE; THE SCOPE GATE DOES NOT. Its third term is
-# `git ls-files --others --ignored --exclude-standard` precisely so a worker
-# cannot escape it by writing a gitignored path, and as of the fourth review pass
-# (2026-09-02) the gate keeps NO carve-outs at all: a `.pyc` outside a job's lane
-# is a violation exactly like any other file. The extension exemption 3.4.0
-# briefly carried was withdrawn — a forged unchecked hash-based `.pyc` is executed
-# in place by hooks/lane-guard.sh's loader and by the integration authority's, so
-# the gate was the only signal left for it and the exemption removed that too.
-#
-# So this stanza is HYGIENE ONLY (a quiet `git status`, a quiet linter). What
-# actually keeps bytecode out of a job's changed set is that nobody writes any:
-# every python command the pipeline emits carries `-B`, the scripts set
-# `sys.dont_write_bytecode`, CI exports PYTHONDONTWRITEBYTECODE=1, and the
-# implementer prompt tells the worker to do the same. Note that `-B` and
-# PYTHONDONTWRITEBYTECODE stop Python WRITING a cache, never READING one — the
-# loaders that import the matcher set PYTHONPYCACHEPREFIX / sys.pycache_prefix
-# for that half.
 __pycache__/
 *.pyc
 
-# Native persistent subagent memory (3.5.0), LOCAL scope only.
-# `memory: local` resolves to `.claude/agent-memory-local/<agent>/` and is the scope
-# whose whole point is that it is NOT checked in. `.claude/agent-memory/` — the
-# `project` scope our five review/pre-flight agents declare — is deliberately NOT
-# ignored: it is committed, shared through version control, and reviewable, and
-# ignoring it would also hide it from the scope gate's untracked probe.
+# Harness-created agent worktrees
+.claude/worktrees/
+
+# Local-scope subagent memory (`memory: local`) is never checked in
 .claude/agent-memory-local/
 
-# per-run mutex, written by the emitter; never part of the record
-.run.lock
-
-# per-run lane map, written by register-lane while the run is live; retired at MERGED/BLOCKED (finding 68)
-lane-map.json
+# Transient telemetry kept out of the archived v3 audit trail
+docs/archive/v3/execution/*/logs/*.jsonl
+docs/archive/v3/**/.run.lock
+docs/archive/v3/**/lane-map.json
